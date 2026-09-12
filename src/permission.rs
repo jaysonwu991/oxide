@@ -25,8 +25,7 @@ impl Permissions {
         let value = config
             .active_agent
             .as_ref()
-            .and_then(|agent| agent.permission.clone())
-            .or_else(|| config.ecosystem.permission.clone());
+            .and_then(|agent| agent.permission.clone());
         match value {
             Some(value) => Self::from_value(&value),
             None => Self::default(),

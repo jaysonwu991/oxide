@@ -1,4 +1,4 @@
-//! Persistent memory across sessions, modeled on `opencode-mem`: entries are
+//! Persistent memory across sessions: entries are
 //! stored per project (keyed by git remote or project root) and per user, and
 //! retrieved with a dependency-free lexical (tf-idf) search. The store lives
 //! under `~/.config/oxide/memory/`, never inside the repository.

@@ -1,9 +1,9 @@
 # oxide
 
-A native Rust AI coding agent CLI for the terminal, inspired by
-[opencode](https://opencode.ai). oxide streams from OpenAI-compatible and
-Anthropic models, runs a tool-using agent loop against your project, and
-understands the Claude Code + OpenCode configuration ecosystem out of the box.
+A native Rust AI coding agent CLI for the terminal. oxide streams from
+OpenAI-compatible and Anthropic models, runs a tool-using agent loop against
+your project, and understands its own `.oxide/` configuration layout out of the
+box, with Claude Code configuration support for compatibility.
 
 ## Features
 
@@ -16,7 +16,7 @@ understands the Claude Code + OpenCode configuration ecosystem out of the box.
 - MCP servers over stdio or HTTP, exposed as `<server>__<tool>`.
 - Multimodal prompts: attach images/PDFs with `--image` or `@path` references.
 - Project + global ecosystem discovery: rules, memory, commands, agents,
-  skills, MCP servers, and plugins from both `.opencode/` and `.claude/`.
+  skills, MCP servers, and plugins from `.oxide/` (plus the Claude Code layout).
 - Durable sessions, shadow-git snapshots (`/undo`, `/redo`), and automatic
   context compaction (`/compact`).
 - LSP diagnostics via rust-analyzer, typescript-language-server, pyright, gopls.
@@ -88,7 +88,7 @@ oxide [OPTIONS] [PROMPT] [COMMAND]
 | `[PROMPT]` | Prompt to run. Providing one implies non-interactive mode. |
 | `-m, --model <MODEL>` | Model to use (overrides config). |
 | `--provider <PROVIDER>` | Provider name (overrides config). |
-| `--agent <AGENT>` | Agent to run, from `.opencode/agent` or `.claude/agents`. |
+| `--agent <AGENT>` | Agent to run, from `.oxide/agents` (or `.claude/agents`). |
 | `-p, --print` | Print the response and exit instead of launching the TUI. |
 | `-c, --continue` | Resume the most recent session for this project. |
 | `--resume <ID>` | Resume a specific session by id. |
@@ -156,23 +156,29 @@ Any OpenAI-compatible endpoint can be used by setting `provider`, `base_url`,
 ## Ecosystem
 
 oxide discovers configuration from the project (up to the git root) and the
-user's global scope. Project entries override global entries with the same name.
+user's global scope. Project entries override global entries with the same name,
+and the Oxide layout overrides the Claude Code layout.
 
-**OpenCode layout**
+**Oxide layout**
 
-- `.opencode/agent/` or `.opencode/agents/` — agent definitions (Markdown with frontmatter)
-- `.opencode/command/` or `.opencode/commands/` — slash commands
-- `.opencode/skill/` or `.opencode/skills/` — skills (`SKILL.md`)
-- `.opencode/plugin/` or `.opencode/plugins/` — JS/TS plugins
-- `opencode.json` / `opencode.jsonc` — `instructions`, `skills.paths`, `agent`,
-  `command`, `mcp`, `plugin`, `permission`
+- `AGENTS.md` — project memory and instructions
+- `.oxide/agents/*.md` — subagents (frontmatter: `name`, `description`, `mode`, `permission`)
+- `.oxide/commands/*.md` — slash commands (`$ARGUMENTS`, `$1`, `$2`, …)
+- `.oxide/skills/*/SKILL.md` — on-demand skills
+- `.oxide/plugins/` — JS/TS plugin hooks
+- Global scope: `~/.oxide/`
 
-**Claude Code layout**
+This repository keeps its own agents, commands, skills, and plugins in
+`.oxide/`.
+
+**Claude Code compatibility**
+
+oxide also reads the Claude Code layout, so existing configurations work as-is:
 
 - `CLAUDE.md`, `CLAUDE.local.md` — project memory
 - `.claude/agents/`, `.claude/commands/`, `.claude/skills/`, `.claude/plugins/`
 - `.mcp.json` — MCP servers
-- Global: `~/.claude/`, `~/.claude.json`, `~/.config/opencode/`
+- Global scope: `~/.claude/`, `~/.claude.json`
 
 Slash commands are expanded from the ecosystem and also include built-ins:
 `/undo`, `/redo`, and `/compact`.

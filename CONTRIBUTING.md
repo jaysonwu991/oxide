@@ -51,7 +51,7 @@ Before opening a pull request, make sure `cargo fmt`, `cargo clippy`, and
 | `src/llm/` | Model clients: OpenAI-compatible and Anthropic. |
 | `src/tools.rs` | Built-in tool specs and execution. |
 | `src/mcp.rs` | MCP runtime and remote tool exposure. |
-| `src/ecosystem/` | Discovery of the OpenCode + Claude Code config ecosystem. |
+| `src/ecosystem/` | Discovery of the Oxide and Claude Code config ecosystems. |
 | `src/permission.rs` | Permission rule parsing and decisions. |
 | `src/session.rs` | Durable JSONL session log. |
 | `src/snapshots.rs` | Shadow-git snapshots backing `/undo` and `/redo`. |
@@ -61,6 +61,7 @@ Before opening a pull request, make sure `cargo fmt`, `cargo clippy`, and
 | `src/memory.rs` | Cross-session memory store. |
 | `src/media.rs` | Image/PDF attachments and `@path` references. |
 | `src/tui/` | ratatui + crossterm interface. |
+| `.oxide/` | Project agents, commands, skills, and plugins (Oxide layout). |
 
 ## Conventions
 
@@ -81,7 +82,10 @@ Before opening a pull request, make sure `cargo fmt`, `cargo clippy`, and
   and, if the API is not OpenAI-compatible, extend the dispatch in
   `src/llm/client.rs` (see `src/llm/anthropic.rs`).
 - **Ecosystem sources.** Parsing lives in `src/ecosystem/mod.rs`; frontmatter
-  handling is in `src/ecosystem/frontmatter.rs`.
+  handling is in `src/ecosystem/frontmatter.rs`. The native Oxide layout
+  (`.oxide/`, `AGENTS.md`) is read first and the Claude Code layout
+  (`.claude/`, `CLAUDE.md`, `.mcp.json`) is supported for compatibility, both at
+  project and global scope.
 
 ## Commits and pull requests
 

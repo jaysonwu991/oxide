@@ -1,9 +1,9 @@
-//! Discovery and loading of the Claude Code + OpenCode configuration
-//! ecosystem: rules, memory, commands, agents, skills, MCP servers and
-//! plugins. Both the OpenCode layout (`.opencode/`, `opencode.json`) and the
-//! Claude Code layout (`.claude/`, `CLAUDE.md`, `.mcp.json`) are understood,
-//! from the project scope and the user's global scope. Project entries
-//! override global entries with the same name.
+//! Discovery and loading of the configuration ecosystem: rules, memory,
+//! commands, agents, skills, MCP servers and plugins. The native Oxide layout
+//! (`.oxide/`, `AGENTS.md`) is read first, then the Claude Code layout
+//! (`.claude/`, `CLAUDE.md`, `.mcp.json`) for compatibility, from the project
+//! scope and the user's global scope. Project entries override global entries
+//! with the same name, and Oxide entries override Claude Code entries.
 
 mod frontmatter;
 
@@ -20,7 +20,6 @@ pub struct Ecosystem {
     pub skills: Vec<Skill>,
     pub mcp: Vec<McpServer>,
     pub plugins: Vec<PathBuf>,
-    pub permission: Option<Json>,
 }
 
 #[derive(Debug, Clone)]
@@ -123,26 +122,25 @@ impl Ecosystem {
 }
 
 /// Loads the ecosystem visible from `cwd`, merging global scope first and
-/// project scope second (project wins).
+/// project scope second (project wins). Within a scope the Oxide layout is
+/// loaded after the Claude Code layout so it takes precedence.
 pub fn load(cwd: &Path) -> Ecosystem {
     let mut ecosystem = Ecosystem::default();
 
     if let Some(home) = dirs::home_dir() {
-        load_opencode_dir(&mut ecosystem, &home.join(".config/opencode"));
         load_claude_dir(&mut ecosystem, &home.join(".claude"));
         load_claude_mcp(&mut ecosystem, &home.join(".claude.json"));
+        load_oxide_dir(&mut ecosystem, &home.join(".oxide"));
     }
 
     if let Some(root) = project_root(cwd) {
-        load_opencode_dir(&mut ecosystem, &root.join(".opencode"));
-        for name in ["opencode.json", "opencode.jsonc"] {
-            load_opencode_config(&mut ecosystem, &root.join(name));
-        }
         load_claude_dir(&mut ecosystem, &root.join(".claude"));
         for name in ["CLAUDE.md", "CLAUDE.local.md"] {
             push_memory(&mut ecosystem, &root.join(name));
         }
         load_claude_mcp(&mut ecosystem, &root.join(".mcp.json"));
+        load_oxide_dir(&mut ecosystem, &root.join(".oxide"));
+        push_memory(&mut ecosystem, &root.join("AGENTS.md"));
     }
 
     ecosystem
@@ -151,9 +149,7 @@ pub fn load(cwd: &Path) -> Ecosystem {
 pub(crate) fn project_root(cwd: &Path) -> Option<PathBuf> {
     let mut current = Some(cwd.to_path_buf());
     while let Some(dir) = current {
-        if dir.join(".git").exists()
-            || dir.join(".opencode").exists()
-            || dir.join(".claude").exists()
+        if dir.join(".git").exists() || dir.join(".oxide").exists() || dir.join(".claude").exists()
         {
             return Some(dir);
         }
@@ -163,153 +159,11 @@ pub(crate) fn project_root(cwd: &Path) -> Option<PathBuf> {
 }
 
 // ---------------------------------------------------------------------------
-// OpenCode layout
+// Oxide layout
 // ---------------------------------------------------------------------------
 
-fn load_opencode_dir(ecosystem: &mut Ecosystem, dir: &Path) {
-    for sub in ["agent", "agents"] {
-        for file in markdown_files(&dir.join(sub)) {
-            if let Some(agent) = agent_from_markdown(&file) {
-                upsert_agent(ecosystem, agent);
-            }
-        }
-    }
-    for sub in ["command", "commands"] {
-        for file in markdown_files(&dir.join(sub)) {
-            if let Some(command) = command_from_markdown(&file) {
-                upsert_command(ecosystem, command);
-            }
-        }
-    }
-    for sub in ["skill", "skills"] {
-        scan_skills(ecosystem, &dir.join(sub));
-    }
-    for sub in ["plugin", "plugins"] {
-        for file in files_with_extension(&dir.join(sub), &["ts", "js", "mjs", "cjs"]) {
-            ecosystem.plugins.push(file);
-        }
-    }
-}
-
-fn load_opencode_config(ecosystem: &mut Ecosystem, path: &Path) {
-    let Some(json) = read_json(path) else { return };
-    let base = path.parent().unwrap_or_else(|| Path::new("."));
-
-    if let Some(instructions) = json.get("instructions").and_then(Json::as_array) {
-        for item in instructions.iter().filter_map(Json::as_str) {
-            let file = base.join(item);
-            if let Some(content) = read(&file) {
-                ecosystem.rules.push(Rule {
-                    name: file_stem(&file),
-                    content,
-                });
-            }
-        }
-    }
-
-    if let Some(paths) = json
-        .get("skills")
-        .and_then(|skills| skills.get("paths"))
-        .and_then(Json::as_array)
-    {
-        for item in paths.iter().filter_map(Json::as_str) {
-            scan_skills(ecosystem, &base.join(item));
-        }
-    }
-
-    if let Some(agents) = json.get("agent").and_then(Json::as_object) {
-        for (name, config) in agents {
-            upsert_agent(ecosystem, agent_from_json(name, config));
-        }
-    }
-
-    if let Some(commands) = json.get("command").and_then(Json::as_object) {
-        for (name, config) in commands {
-            upsert_command(ecosystem, command_from_json(name, config));
-        }
-    }
-
-    if let Some(servers) = json.get("mcp").and_then(Json::as_object) {
-        for (name, config) in servers {
-            if let Some(server) = mcp_from_opencode(name, config) {
-                upsert_mcp(ecosystem, server);
-            }
-        }
-    }
-
-    if let Some(plugins) = json.get("plugin").and_then(Json::as_array) {
-        for item in plugins.iter().filter_map(Json::as_str) {
-            ecosystem.plugins.push(base.join(item));
-        }
-    }
-
-    if let Some(permission) = json.get("permission") {
-        ecosystem.permission = Some(permission.clone());
-    }
-}
-
-fn agent_from_json(name: &str, config: &Json) -> AgentDef {
-    AgentDef {
-        name: name.to_string(),
-        description: config
-            .get("description")
-            .and_then(Json::as_str)
-            .map(str::to_string),
-        mode: parse_mode(config.get("mode").and_then(Json::as_str)),
-        permission: config.get("permission").cloned(),
-        prompt: config
-            .get("prompt")
-            .and_then(Json::as_str)
-            .unwrap_or("")
-            .to_string(),
-    }
-}
-
-fn command_from_json(name: &str, config: &Json) -> CommandDef {
-    CommandDef {
-        name: name.to_string(),
-        description: config
-            .get("description")
-            .and_then(Json::as_str)
-            .map(str::to_string),
-        template: config
-            .get("template")
-            .and_then(Json::as_str)
-            .unwrap_or("")
-            .to_string(),
-    }
-}
-
-fn mcp_from_opencode(name: &str, config: &Json) -> Option<McpServer> {
-    let enabled = config
-        .get("enabled")
-        .and_then(Json::as_bool)
-        .unwrap_or(true);
-    match config.get("type").and_then(Json::as_str) {
-        Some("remote") => {
-            let url = config.get("url").and_then(Json::as_str)?.to_string();
-            Some(McpServer {
-                name: name.to_string(),
-                enabled,
-                kind: McpKind::Remote {
-                    url,
-                    headers: string_map(config.get("headers")),
-                },
-            })
-        }
-        _ => {
-            let command = json_string_list(config.get("command"))?;
-            Some(McpServer {
-                name: name.to_string(),
-                enabled,
-                kind: McpKind::Local {
-                    command,
-                    environment: string_map(config.get("environment")),
-                    cwd: config.get("cwd").and_then(Json::as_str).map(str::to_string),
-                },
-            })
-        }
-    }
+fn load_oxide_dir(ecosystem: &mut Ecosystem, dir: &Path) {
+    load_layout(ecosystem, dir, "AGENTS.md");
 }
 
 // ---------------------------------------------------------------------------
@@ -317,7 +171,11 @@ fn mcp_from_opencode(name: &str, config: &Json) -> Option<McpServer> {
 // ---------------------------------------------------------------------------
 
 fn load_claude_dir(ecosystem: &mut Ecosystem, dir: &Path) {
-    push_memory(ecosystem, &dir.join("CLAUDE.md"));
+    load_layout(ecosystem, dir, "CLAUDE.md");
+}
+
+fn load_layout(ecosystem: &mut Ecosystem, dir: &Path, memory_file: &str) {
+    push_memory(ecosystem, &dir.join(memory_file));
 
     for file in markdown_files(&dir.join("agents")) {
         if let Some(agent) = agent_from_markdown(&file) {
@@ -532,68 +390,13 @@ fn read(path: &Path) -> Option<String> {
 
 fn read_json(path: &Path) -> Option<Json> {
     let raw = read(path)?;
-    serde_json::from_str(&raw)
-        .ok()
-        .or_else(|| serde_json::from_str(&strip_jsonc(&raw)).ok())
+    serde_json::from_str(&raw).ok()
 }
 
 fn file_stem(path: &Path) -> String {
     path.file_stem()
         .map(|stem| stem.to_string_lossy().to_string())
         .unwrap_or_default()
-}
-
-/// Removes `//` and `/* */` comments so JSONC configs can be parsed by
-/// `serde_json`. String contents are preserved.
-fn strip_jsonc(input: &str) -> String {
-    let mut output = String::with_capacity(input.len());
-    let mut chars = input.chars().peekable();
-    let mut in_string = false;
-    let mut escaped = false;
-
-    while let Some(ch) = chars.next() {
-        if in_string {
-            output.push(ch);
-            if escaped {
-                escaped = false;
-            } else if ch == '\\' {
-                escaped = true;
-            } else if ch == '"' {
-                in_string = false;
-            }
-            continue;
-        }
-
-        match ch {
-            '"' => {
-                in_string = true;
-                output.push(ch);
-            }
-            '/' => match chars.peek() {
-                Some('/') => {
-                    for next in chars.by_ref() {
-                        if next == '\n' {
-                            output.push('\n');
-                            break;
-                        }
-                    }
-                }
-                Some('*') => {
-                    chars.next();
-                    let mut previous = '\0';
-                    for next in chars.by_ref() {
-                        if previous == '*' && next == '/' {
-                            break;
-                        }
-                        previous = next;
-                    }
-                }
-                _ => output.push(ch),
-            },
-            _ => output.push(ch),
-        }
-    }
-    output
 }
 
 #[cfg(test)]
@@ -608,27 +411,21 @@ mod tests {
     }
 
     #[test]
-    fn loads_both_layouts() {
-        let dir = temp_dir("both");
+    fn loads_claude_layout() {
+        let dir = temp_dir("claude");
         std::fs::create_dir_all(dir.join(".git")).unwrap();
-        std::fs::create_dir_all(dir.join(".opencode/agent")).unwrap();
-        std::fs::create_dir_all(dir.join(".opencode/command")).unwrap();
         std::fs::create_dir_all(dir.join(".claude/agents")).unwrap();
+        std::fs::create_dir_all(dir.join(".claude/commands")).unwrap();
         std::fs::create_dir_all(dir.join(".claude/skills/audit")).unwrap();
 
         std::fs::write(
-            dir.join(".opencode/agent/reviewer.md"),
-            "---\ndescription: reviews code\nmode: subagent\n---\nReview carefully.",
-        )
-        .unwrap();
-        std::fs::write(
-            dir.join(".opencode/command/build.md"),
-            "---\ndescription: build it\n---\nRun cargo build $ARGUMENTS",
-        )
-        .unwrap();
-        std::fs::write(
             dir.join(".claude/agents/planner.md"),
-            "---\nname: planner\ndescription: plans work\ntools: Read, Grep\n---\nPlan the work.",
+            "---\nname: planner\ndescription: plans work\n---\nPlan the work.",
+        )
+        .unwrap();
+        std::fs::write(
+            dir.join(".claude/commands/build.md"),
+            "---\ndescription: build it\n---\nRun cargo build $ARGUMENTS",
         )
         .unwrap();
         std::fs::write(
@@ -639,34 +436,65 @@ mod tests {
         std::fs::write(dir.join("CLAUDE.md"), "Project memory.").unwrap();
         std::fs::write(
             dir.join(".mcp.json"),
-            r#"{"mcpServers":{"fs":{"command":"npx","args":["-y","server-fs"]}}}"#,
+            r#"{"mcpServers":{
+                "fs":{"command":"npx","args":["-y","server-fs"]},
+                "remote":{"url":"https://example.com/mcp"}
+            }}"#,
         )
         .unwrap();
-        std::fs::write(
-            dir.join("opencode.json"),
-            r#"{
-                // jsonc comment
-                "instructions": ["AGENTS.md"],
-                "agent": {"inline": {"description": "inline agent", "prompt": "hi"}},
-                "command": {"lint": {"template": "lint it"}},
-                "mcp": {"remote": {"type": "remote", "url": "https://example.com/mcp"}}
-            }"#,
-        )
-        .unwrap();
-        std::fs::write(dir.join("AGENTS.md"), "Project rules.").unwrap();
 
         let ecosystem = load(&dir);
 
-        assert!(ecosystem.agent("reviewer").is_some());
         assert!(ecosystem.agent("planner").is_some());
-        assert!(ecosystem.agent("inline").is_some());
         assert!(ecosystem.command("build").is_some());
-        assert!(ecosystem.command("lint").is_some());
         assert!(ecosystem.skills.iter().any(|skill| skill.name == "audit"));
         assert!(ecosystem.mcp.iter().any(|server| server.name == "fs"));
         assert!(ecosystem.mcp.iter().any(|server| server.name == "remote"));
         assert!(!ecosystem.memory.is_empty());
-        assert!(ecosystem.rules.iter().any(|rule| rule.name == "AGENTS"));
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn loads_oxide_layout_and_overrides_claude() {
+        let dir = temp_dir("oxide");
+        std::fs::create_dir_all(dir.join(".git")).unwrap();
+        std::fs::create_dir_all(dir.join(".oxide/agents")).unwrap();
+        std::fs::create_dir_all(dir.join(".oxide/commands")).unwrap();
+        std::fs::create_dir_all(dir.join(".oxide/skills/audit")).unwrap();
+        std::fs::create_dir_all(dir.join(".claude/agents")).unwrap();
+
+        std::fs::write(dir.join("AGENTS.md"), "Project rules.").unwrap();
+        std::fs::write(
+            dir.join(".oxide/agents/planner.md"),
+            "---\nname: planner\ndescription: oxide planner\n---\nPlan.",
+        )
+        .unwrap();
+        std::fs::write(
+            dir.join(".oxide/commands/build.md"),
+            "---\ndescription: build it\n---\nRun cargo build $ARGUMENTS",
+        )
+        .unwrap();
+        std::fs::write(
+            dir.join(".oxide/skills/audit/SKILL.md"),
+            "---\nname: audit\ndescription: audits deps\n---\nAudit.",
+        )
+        .unwrap();
+        std::fs::write(
+            dir.join(".claude/agents/planner.md"),
+            "---\nname: planner\ndescription: claude planner\n---\nPlan.",
+        )
+        .unwrap();
+
+        let ecosystem = load(&dir);
+
+        assert_eq!(
+            ecosystem.agent("planner").unwrap().description.as_deref(),
+            Some("oxide planner")
+        );
+        assert!(ecosystem.command("build").is_some());
+        assert!(ecosystem.skills.iter().any(|skill| skill.name == "audit"));
+        assert!(ecosystem.memory.iter().any(|entry| entry.name == "AGENTS"));
 
         std::fs::remove_dir_all(&dir).ok();
     }

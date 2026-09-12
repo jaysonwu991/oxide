@@ -27,14 +27,20 @@ description: Use when navigating or modifying the oxide internals — the agent 
 - `src/llm/types.rs` — OpenAI-compatible request/response and `Message` types.
 - `src/llm/mod.rs` — module re-exports (`LlmClient`, `Message`, `ToolSpec`, ...).
 - `src/tools.rs` — `specs()` and `execute()`; the only place tools are wired.
+- `src/ecosystem/mod.rs` — Oxide (`.oxide/`, `AGENTS.md`) and Claude Code
+  (`.claude/`, `CLAUDE.md`, `.mcp.json`) layout discovery; `frontmatter.rs`
+  parses Markdown frontmatter.
 - `src/config.rs` — `Config`, `load`, `config_path`, `require_api_key`.
 - `src/tui/` — `run` entry plus `app`/`ui` for rendering and input.
 
 ## Adding a model provider
 
-`Config` is OpenAI-compatible: set `provider`, `model`, and `base_url`. Env
-overrides are `OXIDE_MODEL`, `OXIDE_PROVIDER`, `OPENAI_BASE_URL`, and
-`OPENAI_API_KEY`. Config on disk lives at
+Provider presets are resolved by `ProviderPreset::for_name` in `src/config.rs`;
+each sets a default `model` and `base_url`. Override them with `OXIDE_PROVIDER`,
+`OXIDE_MODEL`, `OXIDE_BASE_URL`, or `OXIDE_API_KEY`, or the provider-specific
+`*_API_KEY` / `*_BASE_URL` variables (`OPENAI_*`, `DEEPSEEK_*`, `ANTHROPIC_*`).
+OpenAI-compatible and Anthropic APIs are dispatched in `src/llm/client.rs` (see
+`src/llm/anthropic.rs`). Config on disk lives at
 `~/.config/oxide/config.json` (see `Config::config_path`).
 
 ## Invariants

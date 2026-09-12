@@ -1,12 +1,10 @@
-import type { Plugin } from "@opencode-ai/plugin"
-
-export const RustFmt: Plugin = async ({ $, directory }) => {
+export const RustFmt = async ({ $, directory }) => {
   return {
-    "tool.execute.after": async (input, output) => {
+    "tool.execute.after": async (input) => {
       const tool = input.tool
       if (tool !== "edit" && tool !== "write" && tool !== "write_file") return
 
-      const args = (input as { args?: Record<string, unknown> }).args ?? {}
+      const args = input.args ?? {}
       const filePath = args.filePath ?? args.path
       if (typeof filePath !== "string" || !filePath.endsWith(".rs")) return
 

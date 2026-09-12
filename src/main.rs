@@ -52,7 +52,7 @@ struct Cli {
     #[arg(long)]
     provider: Option<String>,
 
-    /// Agent to run (from .opencode/agent or .claude/agents)
+    /// Agent to run (from .oxide/agents or .claude/agents)
     #[arg(long)]
     agent: Option<String>,
 
