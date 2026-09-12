@@ -1,0 +1,211 @@
+# oxide
+
+A native Rust AI coding agent CLI for the terminal, inspired by
+[opencode](https://opencode.ai). oxide streams from OpenAI-compatible and
+Anthropic models, runs a tool-using agent loop against your project, and
+understands the Claude Code + OpenCode configuration ecosystem out of the box.
+
+## Features
+
+- Interactive TUI (ratatui) plus a non-interactive `-p/--print` mode.
+- OpenAI-compatible (OpenAI, DeepSeek, custom) and Anthropic Messages API clients.
+- Built-in tools: `read_file`, `write_file`, `list_dir`, `bash`, `glob`, `grep`,
+  `patch`, `webfetch`.
+- Agent-level tools: `task` (subagents), `skill` (on-demand skill loading),
+  `memory` (cross-session notes), `diagnostics` (LSP diagnostics).
+- MCP servers over stdio or HTTP, exposed as `<server>__<tool>`.
+- Multimodal prompts: attach images/PDFs with `--image` or `@path` references.
+- Project + global ecosystem discovery: rules, memory, commands, agents,
+  skills, MCP servers, and plugins from both `.opencode/` and `.claude/`.
+- Durable sessions, shadow-git snapshots (`/undo`, `/redo`), and automatic
+  context compaction (`/compact`).
+- LSP diagnostics via rust-analyzer, typescript-language-server, pyright, gopls.
+- Plugin hooks (`tool.execute.before` / `tool.execute.after`) run under bun/node.
+
+## Installation
+
+### Prebuilt binary
+
+```sh
+curl -fsSL https://github.com/jaysonwu991/oxide/releases/latest/download/install.sh | bash
+```
+
+The installer detects your OS/arch, downloads the matching release, verifies its
+SHA-256 checksum, and installs `oxide` to `~/.local/bin` by default.
+
+Overrides:
+
+| Variable | Purpose |
+| --- | --- |
+| `OXIDE_VERSION` | Version to install (with or without a leading `v`). Defaults to the latest release. |
+| `OXIDE_INSTALL_DIR` | Install directory. Defaults to `$HOME/.local/bin`. |
+| `OXIDE_REPO` | GitHub repo slug. Defaults to `jaysonwu991/oxide`. |
+
+Prebuilt targets: `aarch64-apple-darwin` (macOS Apple Silicon) and
+`x86_64-unknown-linux-gnu` (Linux x86_64).
+
+### From source
+
+Requires a stable Rust toolchain (edition 2021).
+
+```sh
+cargo install --path .
+```
+
+## Quick start
+
+```sh
+# Store a provider API key (interactive)
+oxide auth login openai
+
+# Launch the TUI in the current project
+oxide
+```
+
+Or provide credentials through the environment:
+
+```sh
+export OPENAI_API_KEY=sk-...
+oxide
+```
+
+Non-interactive use:
+
+```sh
+oxide -p "summarize this repository"
+echo "explain src/agent.rs" | oxide -p
+oxide -p "review the diff" --image screenshot.png
+```
+
+## CLI
+
+```
+oxide [OPTIONS] [PROMPT] [COMMAND]
+```
+
+| Flag | Description |
+| --- | --- |
+| `[PROMPT]` | Prompt to run. Providing one implies non-interactive mode. |
+| `-m, --model <MODEL>` | Model to use (overrides config). |
+| `--provider <PROVIDER>` | Provider name (overrides config). |
+| `--agent <AGENT>` | Agent to run, from `.opencode/agent` or `.claude/agents`. |
+| `-p, --print` | Print the response and exit instead of launching the TUI. |
+| `-c, --continue` | Resume the most recent session for this project. |
+| `--resume <ID>` | Resume a specific session by id. |
+| `--image <PATH>` | Attach an image or PDF (repeatable). |
+| `-C, --cwd <DIR>` | Working directory for the agent. |
+
+Credential management:
+
+```sh
+oxide auth login [provider] [--key <KEY>]
+oxide auth list
+oxide auth logout [provider]
+```
+
+Keys are stored in `auth.json` in the oxide config directory (mode `0600`) and
+resolved after environment variables and before the config file.
+
+## Configuration
+
+oxide reads `config.json` from the platform config directory:
+
+- Linux: `~/.config/oxide/config.json`
+- macOS: `~/Library/Application Support/oxide/config.json`
+
+```json
+{
+  "provider": "deepseek",
+  "model": "deepseek-chat",
+  "base_url": "https://api.deepseek.com/v1",
+  "api_key": "",
+  "system_prompt": "You are Oxide...",
+  "max_tokens": 8192,
+  "auto_approve": true
+}
+```
+
+`api_key` may be left empty when a key is available via `oxide auth` or the
+environment. `auto_approve` controls whether tool calls run without prompting;
+when `false`, permission rules that resolve to `ask` are denied in
+non-interactive mode.
+
+### Environment variables
+
+| Variable | Purpose |
+| --- | --- |
+| `OXIDE_PROVIDER` | Provider name. |
+| `OXIDE_MODEL` | Model name. |
+| `OXIDE_BASE_URL` | API base URL. |
+| `OXIDE_API_KEY` | API key. |
+| `OPENAI_API_KEY` / `OPENAI_BASE_URL` | OpenAI credentials. |
+| `DEEPSEEK_API_KEY` / `DEEPSEEK_BASE_URL` | DeepSeek credentials. |
+| `ANTHROPIC_API_KEY` / `ANTHROPIC_BASE_URL` | Anthropic credentials. |
+
+### Providers
+
+| Name | API | Default model | Base URL | Key env |
+| --- | --- | --- | --- | --- |
+| `openai`, `gpt`, `gpt-4`, `gpt-4o` | OpenAI-compatible | `gpt-4o-mini` | `https://api.openai.com/v1` | `OPENAI_API_KEY` |
+| `deepseek` | OpenAI-compatible | `deepseek-chat` | `https://api.deepseek.com/v1` | `DEEPSEEK_API_KEY` |
+| `anthropic` | Anthropic Messages | `claude-3-5-sonnet-latest` | `https://api.anthropic.com/v1` | `ANTHROPIC_API_KEY` |
+
+Any OpenAI-compatible endpoint can be used by setting `provider`, `base_url`,
+`model`, and a key.
+
+## Ecosystem
+
+oxide discovers configuration from the project (up to the git root) and the
+user's global scope. Project entries override global entries with the same name.
+
+**OpenCode layout**
+
+- `.opencode/agent/` or `.opencode/agents/` — agent definitions (Markdown with frontmatter)
+- `.opencode/command/` or `.opencode/commands/` — slash commands
+- `.opencode/skill/` or `.opencode/skills/` — skills (`SKILL.md`)
+- `.opencode/plugin/` or `.opencode/plugins/` — JS/TS plugins
+- `opencode.json` / `opencode.jsonc` — `instructions`, `skills.paths`, `agent`,
+  `command`, `mcp`, `plugin`, `permission`
+
+**Claude Code layout**
+
+- `CLAUDE.md`, `CLAUDE.local.md` — project memory
+- `.claude/agents/`, `.claude/commands/`, `.claude/skills/`, `.claude/plugins/`
+- `.mcp.json` — MCP servers
+- Global: `~/.claude/`, `~/.claude.json`, `~/.config/opencode/`
+
+Slash commands are expanded from the ecosystem and also include built-ins:
+`/undo`, `/redo`, and `/compact`.
+
+## Tools
+
+Built-in file and shell tools: `read_file`, `write_file`, `list_dir`, `bash`,
+`glob`, `grep`, `patch`, `webfetch`. Agent-level tools: `task`, `skill`,
+`memory`, `diagnostics`. Connected MCP tools appear as `<server>__<tool>`.
+
+`read_file` returns images and PDFs as viewable attachments, and `write_file`
+appends LSP diagnostics for the edited file.
+
+## Data locations
+
+Everything lives under the oxide config directory:
+
+- Credentials: `auth.json`
+- Sessions: `sessions/<project>/*.jsonl`
+- Snapshots: `snapshots/<project>/` (bare git repo)
+- Memory: `memory/`
+
+## Development
+
+```sh
+cargo build
+cargo test
+cargo clippy --all-targets -- -D warnings
+cargo fmt
+```
+
+See [CONTRIBUTING.md](CONTRIBUTING.md) for architecture notes and guidelines.
+
+## License
+
+MIT
