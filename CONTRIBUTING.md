@@ -49,7 +49,7 @@ Before opening a pull request, make sure `cargo fmt`, `cargo clippy`, and
 | `src/auth.rs` | `auth login` / `list` / `logout` and the credential store. |
 | `src/agent.rs` | Agent loop, parallel/sequential tool execution, steering queue, terminate hint, and the agent-level tools. |
 | `src/llm/` | Model clients: OpenAI-compatible and Anthropic, including reasoning effort / extended thinking. |
-| `src/tools.rs` | Built-in tool specs and execution; `ToolOutput` (text/media/terminate) and streaming `Progress`. |
+| `src/tools.rs` | Built-in tool specs and execution; `ToolOutput` (text/media/terminate), streaming `Progress`, and output truncation (line/byte caps, bash tail, saved full output). |
 | `src/mcp.rs` | MCP runtime and remote tool exposure. |
 | `src/mcp_config.rs` | `oxide mcp` CLI: read/write MCP servers in `.oxide/mcp.json`, including OAuth fields and `oxide mcp auth`. |
 | `src/mcp_oauth.rs` | OAuth authorization-code + PKCE flow for remote MCP servers. |
@@ -63,7 +63,7 @@ Before opening a pull request, make sure `cargo fmt`, `cargo clippy`, and
 | `src/plugin.rs` | Plugin host and tool hooks, including output rewriting and the terminate hint. |
 | `src/memory.rs` | Cross-session memory store. |
 | `src/media.rs` | Image/PDF attachments and `@path` references. |
-| `src/tui/` | ratatui + crossterm interface with incremental rendering, Shift+Tab mode and Ctrl+R reasoning cycling, and mid-run steering. |
+| `src/tui/` | ratatui + crossterm interface with incremental rendering, hidden-by-default tool output (Ctrl+O), Shift+Tab mode and Ctrl+R reasoning cycling, and mid-run steering. |
 | `.oxide/` | Project agents, commands, skills, and plugins (Oxide layout). |
 
 ## Conventions

@@ -36,6 +36,10 @@ box, with Claude Code configuration support for compatibility.
   in the TUI with Ctrl+R or set with `--reasoning` / `OXIDE_REASONING`. `auto`
   enables reasoning for models known to support it and maps to OpenAI
   `reasoning_effort` and Anthropic extended thinking.
+- Compact, bounded output: tool bodies are hidden in the TUI by default (Ctrl+O
+  toggles them), long action lines are truncated to the terminal width, and tool
+  results are capped by lines and bytes before they enter the model's context.
+  Capped output is saved to disk with a pointer so it stays recoverable.
 - Incremental TUI rendering: only conversation items that changed since the last
   frame are re-wrapped and re-styled.
 
@@ -267,6 +271,7 @@ cycle levels; `--reasoning` and `OXIDE_REASONING` set the starting level.
 | `OXIDE_API_KEY` | API key. |
 | `OXIDE_MODE` | Permission mode (`build`, `plan`, `auto-edit`). |
 | `OXIDE_REASONING` | Reasoning effort (`auto`, `off`, `low`, `medium`, `high`). |
+| `OXIDE_TRUNCATION_DIR` | Directory for saved truncated tool output (default `truncated/` in the config dir). |
 | `OPENAI_API_KEY` / `OPENAI_BASE_URL` | OpenAI credentials. |
 | `DEEPSEEK_API_KEY` / `DEEPSEEK_BASE_URL` | DeepSeek credentials. |
 | `ANTHROPIC_API_KEY` / `ANTHROPIC_BASE_URL` | Anthropic credentials. |
@@ -342,6 +347,15 @@ Connected MCP tools appear as `<server>__<tool>`.
 `read_file` returns images and PDFs as viewable attachments, and `write_file`
 appends LSP diagnostics for the edited file.
 
+Tool results are capped before they enter the model's context: at most 400 lines
+and 8 KB, with individual `read_file` lines trimmed at 2 000 characters. `bash`
+keeps the **tail** so the exit code and recent errors survive; other tools keep
+the head. When output is dropped, the full text is written under `truncated/` in
+the oxide config directory and the result includes the path plus a hint to grep
+it or `read_file` it with an offset, so the model can recover detail without
+re-running the tool. Set `OXIDE_TRUNCATION_DIR` to change where those files go;
+they are retained for 7 days.
+
 When the model requests several tools at once, the ones with no side effects
 (`read_file`, `list_dir`, `glob`, `grep`, `webfetch`, `memory`, `skill`,
 `diagnostics`) run concurrently; anything that writes to the workspace, spawns a
@@ -408,6 +422,7 @@ Everything lives under the oxide config directory:
 - Sessions: `sessions/<project>/*.jsonl`
 - Snapshots: `snapshots/<project>/` (bare git repo)
 - Memory: `memory/`
+- Truncated tool output: `truncated/` (retained 7 days; see `OXIDE_TRUNCATION_DIR`)
 - Context pruning config: `dcp.json` (global) and `.oxide/dcp.json` (project)
 
 ## Development

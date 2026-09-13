@@ -293,7 +293,7 @@ impl App {
         }
     }
 
-    /// Toggle whether file-tool output is shown in full or collapsed, and
+    /// Toggle whether long tool output is shown in full or collapsed, and
     /// invalidate the rendered-line cache so the change takes effect.
     pub fn toggle_tool_output(&mut self) {
         self.expand_tools = !self.expand_tools;

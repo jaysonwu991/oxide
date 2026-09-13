@@ -73,4 +73,8 @@ OpenAI-compatible and Anthropic APIs are dispatched in `src/llm/client.rs` (see
 - History is the single source of truth passed to `Finished`.
 - Context pruning only changes the outgoing request; history and the session log
   keep every original message.
-- Tool output is truncated (`MAX_OUTPUT = 30_000` bytes) before entering history.
+- Tool output is capped in `tools::execute` before entering history: at most
+  `MAX_OUTPUT_LINES` (400) lines and `MAX_OUTPUT_BYTES` (8 000) bytes. `bash`
+  keeps its tail (so the exit code survives), other tools keep the head, and
+  dropped content is saved under `truncated/` in the config dir
+  (`OXIDE_TRUNCATION_DIR`) with a pointer in the result.
