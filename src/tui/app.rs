@@ -156,6 +156,7 @@ pub struct App {
     pub attachments: Vec<ContentPart>,
     pub scroll: u16,
     pub auto_scroll: bool,
+    pub view_height: u16,
     pub busy: bool,
     pub busy_since: Option<Instant>,
     pub status: String,
@@ -189,6 +190,7 @@ impl App {
             attachments: Vec::new(),
             scroll: 0,
             auto_scroll: true,
+            view_height: 0,
             busy: false,
             busy_since: None,
             status: "ready".to_string(),
@@ -251,6 +253,34 @@ impl App {
             }
             None => {}
         }
+    }
+
+    /// The number of lines in one page, based on the last rendered viewport.
+    pub fn page_step(&self) -> u16 {
+        self.view_height.max(1)
+    }
+
+    /// Scrolls the conversation up by `lines` and stops following new output.
+    pub fn scroll_up(&mut self, lines: u16) {
+        self.scroll = self.scroll.saturating_sub(lines);
+        self.auto_scroll = false;
+    }
+
+    /// Scrolls the conversation down by `lines` and stops following new output.
+    pub fn scroll_down(&mut self, lines: u16) {
+        self.scroll = self.scroll.saturating_add(lines);
+        self.auto_scroll = false;
+    }
+
+    /// Jumps to the oldest visible output and stops following new output.
+    pub fn scroll_to_top(&mut self) {
+        self.scroll = 0;
+        self.auto_scroll = false;
+    }
+
+    /// Jumps back to the newest output and resumes following it.
+    pub fn scroll_to_bottom(&mut self) {
+        self.auto_scroll = true;
     }
 
     pub fn push_assistant_delta(&mut self, delta: String) {
