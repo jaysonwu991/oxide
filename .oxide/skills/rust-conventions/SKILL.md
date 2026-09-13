@@ -40,5 +40,6 @@ description: Use when writing, editing, or reviewing Rust code in this repositor
 
 1. Add a spec in `tools::specs()` with a JSON Schema for its parameters.
 2. Dispatch it in `tools::execute()`.
-3. Return `String` output; truncate via the existing `truncate` helper.
+3. Return a `ToolOutput` (text plus optional media parts); truncate text via the
+   existing `truncate` helper.
 4. Add a test covering both success and a failure path.

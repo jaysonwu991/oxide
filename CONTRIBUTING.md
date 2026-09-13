@@ -107,8 +107,9 @@ Releases are automated by GitHub Actions:
 To cut a release:
 
 ```sh
-git tag v0.1.0
-git push origin v0.1.0
+git tag v0.2.0
+git push origin v0.2.0
 ```
 
-The version in `Cargo.toml` should match the tag.
+The version in `Cargo.toml` should match the tag (for example `0.2.0` for
+`v0.2.0`).

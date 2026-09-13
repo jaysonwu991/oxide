@@ -3,7 +3,8 @@ description: Writes and improves Rust unit and integration tests. Use when tests
 mode: subagent
 color: success
 permission:
-  edit: allow
+  write_file: allow
+  patch: allow
   bash:
     "*": ask
     "cargo test*": allow

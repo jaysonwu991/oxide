@@ -200,7 +200,16 @@ This repository keeps its own agents, commands, skills, and plugins in
 A command's frontmatter can route it: `agent: <name>` runs the command with that
 agent's prompt and permissions, and `subtask: true` runs it in an isolated
 subagent context (the command's output is reported back to the main
-conversation).
+conversation). For example:
+
+```markdown
+---
+description: Lint the crate and fix every warning.
+agent: build
+---
+
+Run `cargo clippy --all-targets -- -D warnings` and fix each finding.
+```
 
 **Claude Code compatibility**
 

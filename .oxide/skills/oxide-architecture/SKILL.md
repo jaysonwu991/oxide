@@ -32,11 +32,15 @@ description: Use when navigating or modifying the oxide internals — the agent 
 - `src/llm/client.rs` — `LlmClient::stream_chat`; SSE parsing and turn assembly.
 - `src/llm/types.rs` — OpenAI-compatible request/response and `Message` types.
 - `src/llm/mod.rs` — module re-exports (`LlmClient`, `Message`, `ToolSpec`, ...).
+- `src/agent.rs` — the agent loop (`run`, `run_loop`, `dispatch`) and
+  `run_subagent` for `subtask` commands.
 - `src/tools.rs` — `specs()` and `execute()`; the only place tools are wired.
 - `src/ecosystem/mod.rs` — Oxide (`.oxide/`, `AGENTS.md`) and Claude Code
   (`.claude/`, `CLAUDE.md`, `.mcp.json`) layout discovery; `frontmatter.rs`
-  parses Markdown frontmatter.
-- `src/config.rs` — `Config`, `load`, `config_path`, `require_api_key`.
+  parses Markdown frontmatter; `resolve_command` returns command prompt +
+  `agent`/`subtask` routing.
+- `src/config.rs` — `Config`, `load`, `activate_agent`, `resolve_command`,
+  `config_path`, `require_api_key`.
 - `src/tui/` — `run` entry plus `app`/`ui` for rendering and input.
 
 ## Adding a model provider
