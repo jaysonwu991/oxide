@@ -330,7 +330,7 @@ oxide also reads the Claude Code layout, so existing configurations work as-is:
 - Global scope: `~/.claude/`, `~/.claude.json`
 
 Slash commands are expanded from the ecosystem and also include built-ins:
-`/undo`, `/redo`, `/compact`, and `/connect`.
+`/help`, `/undo`, `/redo`, `/compact`, and `/connect`.
 
 ## Tools
 

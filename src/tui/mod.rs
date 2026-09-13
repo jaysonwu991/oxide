@@ -79,47 +79,33 @@ async fn event_loop(
         config.reasoning,
     );
     app.items.push(ChatItem::Info(
-        "Ask me to build, refactor, debug or explain code. Ctrl+C to quit.".to_string(),
+        "Ask me to build, refactor, debug or explain code. Type /help for commands, Ctrl+C to quit."
+            .to_string(),
     ));
     app.items.push(ChatItem::Info(format!(
-        "mode: {} (Shift+Tab cycles build → auto-edit → plan)",
-        app.mode.label()
-    )));
-    app.items.push(ChatItem::Info(format!(
-        "reasoning: {} (Ctrl+R cycles auto → off → low → medium → high; auto resolves to {} for {})",
+        "mode: {} (Shift+Tab) · reasoning: {} → {} (Ctrl+R) · model: {}",
+        app.mode.label(),
         app.reasoning.label(),
         config.effective_reasoning().label(),
         config.model
     )));
     app.items.push(ChatItem::Info(format!(
-        "ecosystem: {}",
-        config.ecosystem.summary()
-    )));
-    app.items.push(ChatItem::Info(format!(
-        "mcp: {} server(s), {} tool(s) connected",
+        "ecosystem: {} · mcp: {} server(s), {} tool(s) · plugins: {}{} · memory: {} entr{}",
+        config.ecosystem.summary(),
         mcp.server_count(),
-        mcp.tool_count()
-    )));
-    app.items.push(ChatItem::Info(format!(
-        "plugins: {} loaded{}",
+        mcp.tool_count(),
         plugins.plugin_count(),
         if plugins.is_active() {
             ""
         } else {
             " (runtime unavailable)"
-        }
-    )));
-    app.items.push(ChatItem::Info(format!(
-        "memory: {} stored entr{}",
+        },
         config.memory.len(),
         if config.memory.len() == 1 { "y" } else { "ies" }
     )));
     app.items.push(ChatItem::Info(
-        "multimodal: attach images/PDFs with @path or Ctrl+V; the agent can read image/PDF files."
+        "tips: attach images/PDFs with @path or Ctrl+V · /undo and /redo revert file changes · /connect adds a provider"
             .to_string(),
-    ));
-    app.items.push(ChatItem::Info(
-        "snapshots: /undo and /redo revert the agent's file changes".to_string(),
     ));
     if config.api_key.trim().is_empty() {
         app.items.push(ChatItem::Info(
@@ -159,6 +145,7 @@ async fn event_loop(
 
     let mut reader = EventStream::new();
     let mut rx: Option<UnboundedReceiver<AgentEvent>> = None;
+    let mut tick = tokio::time::interval(std::time::Duration::from_millis(500));
 
     let (approval_tx, mut approval_rx) = unbounded_channel::<ApprovalRequest>();
     let approve: Approver = Arc::new(move |tool, detail| {
@@ -206,6 +193,7 @@ async fn event_loop(
                     app.pending_approval = Some(request);
                 }
             }
+            _ = tick.tick(), if app.busy => {}
         }
 
         if got_agent_event && !app.busy {
@@ -260,7 +248,7 @@ fn handle_key(
     }
 
     match key.code {
-        KeyCode::Esc => app.should_quit = true,
+        KeyCode::Esc => escape_action(app),
         KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
             app.should_quit = true;
         }
@@ -332,6 +320,7 @@ fn handle_key(
                 let (tx, new_rx) = unbounded_channel();
                 *rx = Some(new_rx);
                 app.busy = true;
+                app.busy_since = Some(std::time::Instant::now());
                 app.status = "compacting...".to_string();
                 tokio::spawn(async move {
                     match crate::compact::compact(&config, history).await {
@@ -361,6 +350,11 @@ fn handle_key(
                 }
                 app.connect = Some(state);
                 app.status = "connecting...".to_string();
+                return;
+            }
+            if raw == "/help" || raw == "/?" {
+                app.input.clear();
+                app.items.push(ChatItem::Info(help_text(config)));
                 return;
             }
             app.input.clear();
@@ -436,6 +430,7 @@ fn handle_key(
             app.items.push(ChatItem::User(shown));
             app.history.push(user);
             app.busy = true;
+            app.busy_since = Some(std::time::Instant::now());
             app.auto_scroll = true;
             app.assistant_open = false;
             app.status = "thinking...".to_string();
@@ -499,20 +494,66 @@ fn handle_key(
     }
 }
 
+fn escape_action(app: &mut App) {
+    if app.input.is_empty() {
+        app.should_quit = true;
+    } else {
+        app.input.clear();
+    }
+}
+
+fn help_text(config: &Config) -> String {
+    let mut lines = vec![
+        "built-in commands:".to_string(),
+        "  /help                 show this help".to_string(),
+        "  /connect [provider]   connect a provider and save its API key".to_string(),
+        "  /undo, /redo          revert or reapply the agent's file changes".to_string(),
+        "  /compact              summarize the conversation to free context".to_string(),
+        "keys: Enter send · Shift+Tab mode · Ctrl+R reasoning · Ctrl+V image · ↑/↓ scroll · Ctrl+C quit"
+            .to_string(),
+    ];
+    if !config.ecosystem.commands.is_empty() {
+        let names: Vec<String> = config
+            .ecosystem
+            .commands
+            .iter()
+            .map(|command| format!("/{}", command.name))
+            .collect();
+        lines.push(format!("commands: {}", names.join(", ")));
+    }
+    if !config.ecosystem.agents.is_empty() {
+        let names: Vec<&str> = config
+            .ecosystem
+            .agents
+            .iter()
+            .map(|agent| agent.name.as_str())
+            .collect();
+        lines.push(format!("agents: {}", names.join(", ")));
+    }
+    if !config.ecosystem.skills.is_empty() {
+        let names: Vec<&str> = config
+            .ecosystem
+            .skills
+            .iter()
+            .map(|skill| skill.name.as_str())
+            .collect();
+        lines.push(format!("skills: {}", names.join(", ")));
+    }
+    lines.join("\n")
+}
+
 fn resolve_provider_choice(value: &str) -> String {
-    match value.trim().to_ascii_lowercase().as_str() {
-        "1" | "openai" | "gpt" | "gpt-4" | "gpt-4o" => "openai".to_string(),
-        "2" | "deepseek" => "deepseek".to_string(),
-        "3" | "anthropic" => "anthropic".to_string(),
-        other => other.to_string(),
+    match value.trim() {
+        "1" => "openai".to_string(),
+        "2" => "deepseek".to_string(),
+        "3" => "anthropic".to_string(),
+        other => crate::auth::canonical_provider(other),
     }
 }
 
 fn handle_paste(text: String, app: &mut App) {
-    let text: String = text
-        .chars()
-        .filter(|ch| *ch != '\r' && *ch != '\n')
-        .collect();
+    let mut text = text;
+    text.retain(|ch| ch != '\r' && ch != '\n');
     if let Some(state) = app.connect.as_mut() {
         state.input.push_str(&text);
     } else {
@@ -633,6 +674,7 @@ fn handle_agent_event(event: AgentEvent, app: &mut App) {
         AgentEvent::Finished(history) => {
             app.history = history;
             app.busy = false;
+            app.busy_since = None;
             app.assistant_open = false;
             app.auto_scroll = true;
             app.status = "ready".to_string();
@@ -717,5 +759,38 @@ mod tests {
         handle_connect_key(key(KeyCode::Esc), &mut app, &mut config);
 
         assert!(app.connect.is_none());
+    }
+
+    #[test]
+    fn escape_clears_input_then_quits() {
+        let mut app = test_app();
+        app.input = "draft".to_string();
+
+        escape_action(&mut app);
+        assert!(app.input.is_empty());
+        assert!(!app.should_quit);
+
+        escape_action(&mut app);
+        assert!(app.should_quit);
+    }
+
+    #[test]
+    fn help_lists_builtins_and_discovered_commands() {
+        let mut config = Config::default();
+        config
+            .ecosystem
+            .commands
+            .push(crate::ecosystem::CommandDef {
+                name: "review".to_string(),
+                description: None,
+                template: String::new(),
+                agent: None,
+                subtask: false,
+            });
+
+        let help = help_text(&config);
+        assert!(help.contains("built-in commands"));
+        assert!(help.contains("/connect"));
+        assert!(help.contains("/review"));
     }
 }

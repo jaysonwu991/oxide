@@ -221,7 +221,7 @@ Focus: $ARGUMENTS
 - `agent: <name>` runs the command as that agent. `subtask: true` runs it in an
   isolated subagent context whose result is reported back to the main
   conversation.
-- Built-in commands: `/undo`, `/redo`, `/compact`, `/connect`.
+- Built-in commands: `/help`, `/undo`, `/redo`, `/compact`, `/connect`.
 - **Remove** a command by deleting its file.
 
 ## Skills

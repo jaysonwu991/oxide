@@ -155,7 +155,7 @@ pub fn logout(provider: Option<String>) -> Result<()> {
     Ok(())
 }
 
-fn canonical_provider(name: &str) -> String {
+pub fn canonical_provider(name: &str) -> String {
     match name.trim().to_ascii_lowercase().as_str() {
         "gpt" | "gpt-4" | "gpt-4o" => "openai".to_string(),
         other => other.to_string(),
