@@ -22,6 +22,35 @@ box, with Claude Code configuration support for compatibility.
 - LSP diagnostics via rust-analyzer, typescript-language-server, pyright, gopls.
 - Plugin hooks (`tool.execute.before` / `tool.execute.after`) run under bun/node.
 
+## Comparison
+
+oxide is a small, native terminal agent that deliberately borrows the Claude
+Code configuration layout so existing `.claude/` setups keep working. The table
+below compares the high-level shape of the three tools; feature sets move fast,
+so check each project's documentation for the current details.
+
+| Capability | oxide | [OpenCode](https://opencode.ai) | [Claude Code](https://docs.claude.com/en/docs/claude-code/overview) |
+| --- | --- | --- | --- |
+| Distribution | Native Rust binary | Open-source CLI (Node/Bun) | Proprietary CLI + apps |
+| License | MIT | Open source | Proprietary |
+| Model providers | OpenAI-compatible + Anthropic (OpenAI, DeepSeek, custom) | Any provider (bring your own keys) | Claude (Anthropic API, Bedrock, Vertex, third-party) |
+| Interfaces | Terminal TUI, `-p` print mode | Terminal, desktop, IDE, web | Terminal, IDE, desktop, web |
+| Project config | `.oxide/` + `AGENTS.md` (also reads `.claude/`) | `opencode.json` + `AGENTS.md` | `CLAUDE.md` + `.claude/` |
+| Subagents | `--agent`, `task`, command routing | Agents | Subagents, background agents |
+| Slash commands | `.oxide/commands` with `agent`/`subtask` routing | Commands | Commands |
+| Skills | `SKILL.md` | Agent Skills | Skills |
+| MCP servers | stdio + HTTP | MCP servers | MCP servers |
+| Plugins / hooks | JS/TS hooks (bun/node) | Plugins | Hooks, plugins, Agent SDK |
+| LSP diagnostics | Built in (rust-analyzer, TS, pyright, gopls) | Built in (LSP servers) | — |
+| Undo file changes | Shadow-git `/undo`, `/redo` | `/undo`, `/redo` | Git / checkpoints |
+| Sessions | Durable JSONL, `-c` / `--resume` | Sessions, share links | Sessions across surfaces |
+| Multimodal input | Images and PDFs (`--image`, `@path`) | Images | Images |
+
+A dash indicates no first-class built-in equivalent. Where oxide differs most:
+it is a single dependency-light Rust binary, it speaks both the
+OpenAI-compatible and Anthropic APIs directly, and it is compatible with the
+Claude Code on-disk layout while using its own `.oxide/` format.
+
 ## Installation
 
 ### Prebuilt binary
