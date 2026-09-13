@@ -19,12 +19,54 @@ struct PartialToolCall {
     arguments: String,
 }
 
+#[derive(Debug, serde::Deserialize)]
+struct ModelList {
+    data: Vec<ModelEntry>,
+}
+
+#[derive(Debug, serde::Deserialize)]
+struct ModelEntry {
+    id: String,
+}
+
 impl LlmClient {
     pub fn new(config: Config) -> Self {
         Self {
             http: reqwest::Client::new(),
             config,
         }
+    }
+
+    /// Lists the model ids the provider exposes, sorted and de-duplicated.
+    pub async fn list_models(&self) -> Result<Vec<String>> {
+        let url = format!("{}/models", self.config.base_url);
+        let request = match self.config.provider_kind() {
+            ProviderKind::Anthropic => self
+                .http
+                .get(&url)
+                .header("x-api-key", self.config.require_api_key()?)
+                .header("anthropic-version", anthropic::API_VERSION),
+            ProviderKind::OpenAi => self
+                .http
+                .get(&url)
+                .bearer_auth(self.config.require_api_key()?),
+        };
+
+        let response = request
+            .send()
+            .await
+            .with_context(|| format!("requesting {url}"))?;
+        let status = response.status();
+        if !status.is_success() {
+            let body = response.text().await.unwrap_or_default();
+            anyhow::bail!("provider returned {status}: {}", body.trim());
+        }
+
+        let list: ModelList = response.json().await.context("parsing model list")?;
+        let mut models: Vec<String> = list.data.into_iter().map(|model| model.id).collect();
+        models.sort();
+        models.dedup();
+        Ok(models)
     }
 
     /// Stream a chat completion. `on_text` is invoked synchronously for every

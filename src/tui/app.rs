@@ -86,6 +86,52 @@ impl Default for ConnectState {
     }
 }
 
+#[derive(Debug, Clone, Default)]
+pub struct ModelsState {
+    pub loading: bool,
+    pub all: Vec<String>,
+    pub filter: String,
+    pub selected: usize,
+    pub error: Option<String>,
+}
+
+impl ModelsState {
+    pub fn loading() -> Self {
+        Self {
+            loading: true,
+            ..Self::default()
+        }
+    }
+
+    pub fn ready(models: Vec<String>) -> Self {
+        Self {
+            all: models,
+            ..Self::default()
+        }
+    }
+
+    /// Models matching the current filter, in display order.
+    pub fn filtered(&self) -> Vec<&str> {
+        let filter = self.filter.to_ascii_lowercase();
+        self.all
+            .iter()
+            .map(String::as_str)
+            .filter(|model| filter.is_empty() || model.to_ascii_lowercase().contains(&filter))
+            .collect()
+    }
+
+    pub fn selected_model(&self) -> Option<&str> {
+        self.filtered().get(self.selected).copied()
+    }
+}
+
+/// A slash-command entry shown in the input autocomplete.
+#[derive(Debug, Clone)]
+pub struct CommandHint {
+    pub name: String,
+    pub description: String,
+}
+
 pub struct App {
     pub input: String,
     pub items: Vec<ChatItem>,
@@ -102,6 +148,9 @@ pub struct App {
     pub assistant_open: bool,
     pub pending_approval: Option<ApprovalRequest>,
     pub connect: Option<ConnectState>,
+    pub models: Option<ModelsState>,
+    pub suggestions: Vec<CommandHint>,
+    pub suggestion_index: usize,
     pub mode: Mode,
     pub reasoning: Reasoning,
     pub steering: Steering,
@@ -129,6 +178,9 @@ impl App {
             assistant_open: false,
             pending_approval: None,
             connect: None,
+            models: None,
+            suggestions: Vec::new(),
+            suggestion_index: 0,
             mode,
             reasoning,
             steering: Steering::new(),
