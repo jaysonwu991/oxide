@@ -16,8 +16,8 @@ const MAX_SUGGESTION_ROWS: usize = 8;
 const FILE_TOOLS: [&str; 3] = ["read_file", "write_file", "patch"];
 const COLLAPSE_MIN_LINES: usize = 4;
 
-/// Persistent keybinding reminder shown in the bottom bar.
-const TIPS: &str = "Enter send · Shift+Tab mode · Ctrl+R reasoning · Ctrl+O tools · Ctrl+C quit · ↑/↓ history · PgUp/PgDn scroll";
+/// Persistent keybinding reminder pinned above the input box.
+const TIPS: &str = "Enter send · Shift+Tab mode · Ctrl+R reasoning · Ctrl+O tools · Ctrl+C quit · ↑/↓ history · PgUp/PgDn/wheel scroll";
 
 /// Block-letter wordmark shown on the welcome screen.
 const BANNER: [&str; 6] = [
@@ -57,6 +57,7 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         .direction(Direction::Vertical)
         .constraints([
             Constraint::Min(3),
+            Constraint::Length(1),
             Constraint::Length(input_rows + 2),
             Constraint::Length(1),
             Constraint::Length(1),
@@ -64,9 +65,10 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         .split(frame.area());
 
     draw_messages(frame, app, chunks[0]);
-    draw_input(frame, app, chunks[1]);
-    draw_info(frame, app, chunks[2]);
-    draw_footer(frame, app, chunks[3]);
+    draw_tips(frame, chunks[1]);
+    draw_input(frame, app, chunks[2]);
+    draw_info(frame, app, chunks[3]);
+    draw_footer(frame, app, chunks[4]);
 
     if app.connect.is_some() {
         draw_connect(frame, app);
@@ -292,7 +294,18 @@ fn draw_info(frame: &mut Frame, app: &App, area: Rect) {
     );
 }
 
-/// Bottom bar: working directory on the left, keybinding tips on the right.
+/// Always-visible keybinding reminder pinned directly above the input box.
+fn draw_tips(frame: &mut Frame, area: Rect) {
+    frame.render_widget(
+        Paragraph::new(Span::styled(
+            format!(" {TIPS}"),
+            Style::default().fg(Color::DarkGray),
+        )),
+        area,
+    );
+}
+
+/// Bottom bar: working directory on the left, elapsed time on the right.
 fn draw_footer(frame: &mut Frame, app: &App, area: Rect) {
     let dim = Style::default().fg(Color::DarkGray);
     let width = area.width as usize;
@@ -306,7 +319,7 @@ fn draw_footer(frame: &mut Frame, app: &App, area: Rect) {
             Style::default().fg(Color::Yellow),
         )
     } else {
-        Span::styled(format!("{TIPS} "), dim)
+        Span::raw("")
     };
     let full = format!(" {}", display_path(&app.cwd));
     let short = format!(
@@ -416,6 +429,7 @@ fn draw_messages(frame: &mut Frame, app: &mut App, area: Rect) {
 
     let total = app.lines.len() as u16;
     let view = inner.height;
+    app.view_height = view;
     if app.auto_scroll {
         app.scroll = total.saturating_sub(view);
     } else {

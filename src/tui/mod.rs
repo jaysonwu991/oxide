@@ -14,8 +14,8 @@ use crate::snapshots::Snapshots;
 use crate::tui::app::{App, ChatItem, CommandHint, ConnectState, ConnectStep, ModelsState};
 use anyhow::Result;
 use crossterm::event::{
-    DisableBracketedPaste, EnableBracketedPaste, Event, EventStream, KeyCode, KeyEvent,
-    KeyModifiers,
+    DisableBracketedPaste, DisableMouseCapture, EnableBracketedPaste, EnableMouseCapture, Event,
+    EventStream, KeyCode, KeyEvent, KeyModifiers, MouseEvent, MouseEventKind,
 };
 use crossterm::execute;
 use crossterm::terminal::{
@@ -36,7 +36,12 @@ pub async fn run(config: Config, cwd: PathBuf, session: Option<SessionLog>) -> R
 
     enable_raw_mode()?;
     let mut stdout = std::io::stdout();
-    execute!(stdout, EnterAlternateScreen, EnableBracketedPaste)?;
+    execute!(
+        stdout,
+        EnterAlternateScreen,
+        EnableBracketedPaste,
+        EnableMouseCapture
+    )?;
     let mut terminal = Terminal::new(CrosstermBackend::new(stdout))?;
 
     let result = event_loop(
@@ -55,6 +60,7 @@ pub async fn run(config: Config, cwd: PathBuf, session: Option<SessionLog>) -> R
     execute!(
         terminal.backend_mut(),
         DisableBracketedPaste,
+        DisableMouseCapture,
         LeaveAlternateScreen
     )?;
     terminal.show_cursor()?;
@@ -176,6 +182,7 @@ async fn event_loop(
                         snapshots.as_ref(), &lsp, &mut session, &approve, &models_tx,
                     ),
                     Some(Ok(Event::Paste(text))) => handle_paste(text, &mut app),
+                    Some(Ok(Event::Mouse(mouse))) => handle_mouse(mouse, &mut app),
                     _ => {}
                 }
             }
@@ -547,6 +554,17 @@ fn handle_key(
                 }
             }
         }
+        KeyCode::Char('u') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+            let half = (app.view_height / 2).max(1);
+            app.scroll_up(half);
+        }
+        KeyCode::Char('d') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+            let half = (app.view_height / 2).max(1);
+            app.scroll_down(half);
+        }
+        KeyCode::Char('y') if key.modifiers.contains(KeyModifiers::CONTROL) => app.scroll_up(1),
+        KeyCode::Char('e') if key.modifiers.contains(KeyModifiers::CONTROL) => app.scroll_down(1),
+        KeyCode::Char('g') if key.modifiers.contains(KeyModifiers::CONTROL) => app.scroll_to_top(),
         KeyCode::Char(ch) => {
             app.input.push(ch);
             app.history_index = None;
@@ -570,9 +588,6 @@ fn handle_key(
             } else if !app.input_history.is_empty() {
                 app.history_prev();
                 refresh_suggestions(app, config);
-            } else {
-                app.scroll = app.scroll.saturating_sub(1);
-                app.auto_scroll = false;
             }
         }
         KeyCode::Down => {
@@ -582,19 +597,12 @@ fn handle_key(
             } else if app.history_index.is_some() {
                 app.history_next();
                 refresh_suggestions(app, config);
-            } else {
-                app.scroll = app.scroll.saturating_add(1);
-                app.auto_scroll = false;
             }
         }
-        KeyCode::PageUp => {
-            app.scroll = app.scroll.saturating_sub(10);
-            app.auto_scroll = false;
-        }
-        KeyCode::PageDown => {
-            app.scroll = app.scroll.saturating_add(10);
-            app.auto_scroll = false;
-        }
+        KeyCode::PageUp => app.scroll_up(app.page_step()),
+        KeyCode::PageDown => app.scroll_down(app.page_step()),
+        KeyCode::Home => app.scroll_to_top(),
+        KeyCode::End => app.scroll_to_bottom(),
         _ => {}
     }
 }
@@ -633,7 +641,7 @@ fn help_text(config: &Config) -> String {
         "  /models [filter]      list and switch the active model".to_string(),
         "  /undo, /redo          revert or reapply the agent's file changes".to_string(),
         "  /compact              summarize the conversation to free context".to_string(),
-        "keys: Enter send · Shift+Tab mode · Ctrl+R reasoning · Ctrl+V image · ↑/↓ history · PgUp/PgDn scroll · Ctrl+C quit"
+        "keys: Enter send · Shift+Tab mode · Ctrl+R reasoning · Ctrl+V image · ↑/↓ history · PgUp/PgDn/wheel scroll · Ctrl+U/D half page · Ctrl+C quit"
             .to_string(),
     ];
     if !config.ecosystem.commands.is_empty() {
@@ -821,6 +829,16 @@ fn handle_paste(text: String, app: &mut App) {
     } else {
         app.input.push_str(&text);
         app.auto_scroll = true;
+    }
+}
+
+/// Scrolls the conversation with the mouse wheel without stealing keys from
+/// the input box.
+fn handle_mouse(mouse: MouseEvent, app: &mut App) {
+    match mouse.kind {
+        MouseEventKind::ScrollUp => app.scroll_up(3),
+        MouseEventKind::ScrollDown => app.scroll_down(3),
+        _ => {}
     }
 }
 
@@ -1132,6 +1150,55 @@ mod tests {
         app.history_next();
         assert_eq!(app.input, "second");
         app.history_next();
+        assert!(app.input.is_empty());
+    }
+
+    #[test]
+    fn scroll_helpers_adjust_offset_and_follow_state() {
+        let mut app = test_app();
+        app.scroll = 30;
+
+        app.scroll_up(5);
+        assert_eq!(app.scroll, 25);
+        assert!(!app.auto_scroll);
+
+        app.scroll_down(10);
+        assert_eq!(app.scroll, 35);
+        assert!(!app.auto_scroll);
+
+        app.scroll_to_top();
+        assert_eq!(app.scroll, 0);
+        assert!(!app.auto_scroll);
+
+        app.scroll_to_bottom();
+        assert!(app.auto_scroll);
+    }
+
+    #[test]
+    fn page_step_uses_viewport_height() {
+        let mut app = test_app();
+        assert_eq!(app.page_step(), 1);
+        app.view_height = 24;
+        assert_eq!(app.page_step(), 24);
+    }
+
+    #[test]
+    fn mouse_wheel_scrolls_without_touching_history() {
+        let mut app = test_app();
+        app.remember_input("prompt");
+        app.scroll = 30;
+
+        handle_mouse(
+            MouseEvent {
+                kind: MouseEventKind::ScrollUp,
+                column: 0,
+                row: 0,
+                modifiers: KeyModifiers::NONE,
+            },
+            &mut app,
+        );
+        assert_eq!(app.scroll, 27);
+        assert_eq!(app.input_history, vec!["prompt".to_string()]);
         assert!(app.input.is_empty());
     }
 
