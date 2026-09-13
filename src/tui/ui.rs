@@ -12,21 +12,25 @@ const MAX_INPUT_ROWS: usize = 8;
 const MAX_MODEL_ROWS: usize = 12;
 const MAX_SUGGESTION_ROWS: usize = 8;
 
-/// A rounded panel with a colored border and title, shared by the conversation,
-/// input and popup surfaces.
+/// A rounded panel with a colored border and title, shared by the input and
+/// popup surfaces. An empty title leaves the top border unbroken.
 fn panel(title: &str, color: Color) -> Block<'static> {
-    Block::default()
+    let block = Block::default()
         .borders(Borders::ALL)
         .border_type(BorderType::Rounded)
-        .border_style(Style::default().fg(color))
-        .title(Span::styled(
+        .border_style(Style::default().fg(color));
+    if title.is_empty() {
+        block
+    } else {
+        block.title(Span::styled(
             format!(" {title} "),
             Style::default().fg(color).add_modifier(Modifier::BOLD),
         ))
+    }
 }
 
 pub fn draw(frame: &mut Frame, app: &mut App) {
-    let input_width = frame.area().width.saturating_sub(2) as usize;
+    let input_width = frame.area().width.saturating_sub(4) as usize;
     let input_rows = input_rows(&app.input, input_width) as u16;
     let chunks = Layout::default()
         .direction(Direction::Vertical)
@@ -34,7 +38,7 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
             Constraint::Length(1),
             Constraint::Min(3),
             Constraint::Length(input_rows + 2),
-            Constraint::Length(1),
+            Constraint::Length(2),
         ])
         .split(frame.area());
 
@@ -303,11 +307,13 @@ fn reasoning_style(reasoning: Reasoning) -> Style {
 }
 
 fn draw_messages(frame: &mut Frame, app: &mut App, area: Rect) {
-    let block = panel("conversation", Color::DarkGray);
-    let inner = block.inner(area);
-    frame.render_widget(block, area);
+    let inner = Rect {
+        x: area.x + 1,
+        width: area.width.saturating_sub(2),
+        ..area
+    };
 
-    let width = inner.width.saturating_sub(2) as usize;
+    let width = inner.width as usize;
     sync_lines(app, width);
 
     let total = app.lines.len() as u16;
@@ -447,26 +453,47 @@ fn draw_input(frame: &mut Frame, app: &App, area: Rect) {
         mode_color(app.mode)
     };
     let title = if app.attachments.is_empty() {
-        "message".to_string()
+        String::new()
     } else {
-        format!("message · {} attachment(s)", app.attachments.len())
+        format!("{} attachment(s)", app.attachments.len())
     };
     let block = panel(&title, border_color);
     let inner = block.inner(area);
     frame.render_widget(block, area);
 
-    let width = inner.width as usize;
+    let text_area = Rect {
+        x: inner.x + 2,
+        width: inner.width.saturating_sub(2),
+        ..inner
+    };
+    let prompt = Rect {
+        x: inner.x,
+        y: inner.y,
+        width: inner.width.min(2),
+        height: 1,
+    };
+    frame.render_widget(
+        Paragraph::new(Span::styled(
+            "> ",
+            Style::default()
+                .fg(border_color)
+                .add_modifier(Modifier::BOLD),
+        )),
+        prompt,
+    );
+
+    let width = text_area.width as usize;
     let paragraph = Paragraph::new(app.input.as_str())
         .wrap(Wrap { trim: false })
         .scroll((input_scroll(&app.input, width), 0));
-    frame.render_widget(paragraph, inner);
+    frame.render_widget(paragraph, text_area);
 
     if !app.busy && app.connect.is_none() && app.models.is_none() {
         let lines = wrap(&app.input, width);
         let last = lines.last().map(|line| line.chars().count()).unwrap_or(0);
-        let x = inner.x + last as u16;
-        let x = x.min(inner.x + inner.width.saturating_sub(1));
-        let y = inner.y + input_rows(&app.input, width) as u16 - 1;
+        let x = text_area.x + last as u16;
+        let x = x.min(text_area.x + text_area.width.saturating_sub(1));
+        let y = text_area.y + input_rows(&app.input, width) as u16 - 1;
         frame.set_cursor_position((x, y));
     }
 }
@@ -487,27 +514,39 @@ fn draw_status(frame: &mut Frame, app: &App, area: Rect) {
     } else {
         (Color::White, Color::DarkGray)
     };
-    let hint = if app.busy {
+    let pill = format!(" {} ", app.status);
+    let pad = " ".repeat(pill.chars().count() + 2);
+    let (primary, secondary) = if app.busy {
         let secs = app
             .busy_since
             .map(|start| start.elapsed().as_secs())
             .unwrap_or(0);
-        format!("working… {secs}s · Esc to cancel")
+        (
+            format!("{secs}s elapsed · Esc to cancel"),
+            "↑/↓ scroll conversation".to_string(),
+        )
     } else {
-        "Enter send · / commands · Shift+Tab mode · Ctrl+R reasoning · Ctrl+C quit".to_string()
+        (
+            "Enter send · Shift+Tab mode · Ctrl+R reasoning".to_string(),
+            "/ commands · Ctrl+C quit · ↑/↓ scroll".to_string(),
+        )
     };
-    let line = Line::from(vec![
-        Span::styled(
-            format!(" {} ", app.status),
-            Style::default()
-                .fg(status_fg)
-                .bg(status_bg)
-                .add_modifier(Modifier::BOLD),
-        ),
-        Span::raw("  "),
-        Span::styled(hint, Style::default().fg(Color::DarkGray)),
-    ]);
-    frame.render_widget(Paragraph::new(line), area);
+    let dim = Style::default().fg(Color::DarkGray);
+    let lines = vec![
+        Line::from(vec![
+            Span::styled(
+                pill,
+                Style::default()
+                    .fg(status_fg)
+                    .bg(status_bg)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::raw("  "),
+            Span::styled(primary, dim),
+        ]),
+        Line::from(Span::styled(format!("{pad}{secondary}"), dim)),
+    ];
+    frame.render_widget(Paragraph::new(lines), area);
 }
 
 fn push_wrapped<'a>(lines: &mut Vec<Line<'a>>, text: &str, width: usize, style: Style) {
@@ -526,13 +565,25 @@ fn wrap(text: &str, width: usize) -> Vec<String> {
         }
         let mut line = String::new();
         let mut count = 0usize;
-        for ch in raw.chars() {
-            if count >= width {
+        for word in raw.split_inclusive(' ') {
+            let len = word.chars().count();
+            if count > 0 && count + len > width {
                 out.push(std::mem::take(&mut line));
                 count = 0;
             }
-            line.push(ch);
-            count += 1;
+            if len > width {
+                for ch in word.chars() {
+                    if count >= width {
+                        out.push(std::mem::take(&mut line));
+                        count = 0;
+                    }
+                    line.push(ch);
+                    count += 1;
+                }
+            } else {
+                line.push_str(word);
+                count += len;
+            }
         }
         out.push(line);
     }
@@ -558,5 +609,14 @@ mod tests {
             input_scroll(&"a".repeat(100), 10),
             (10 - MAX_INPUT_ROWS) as u16
         );
+    }
+
+    #[test]
+    fn wrap_prefers_word_boundaries() {
+        assert_eq!(
+            wrap("the quick brown fox", 9),
+            ["the ", "quick ", "brown fox"]
+        );
+        assert_eq!(wrap("a".repeat(25).as_str(), 10).len(), 3);
     }
 }
