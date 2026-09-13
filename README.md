@@ -136,6 +136,7 @@ oxide reads `config.json` from the platform config directory:
 
 - Linux: `~/.config/oxide/config.json`
 - macOS: `~/Library/Application Support/oxide/config.json`
+- Windows: `%APPDATA%\oxide\config.json`
 
 ```json
 {
@@ -179,21 +180,27 @@ Any OpenAI-compatible endpoint can be used by setting `provider`, `base_url`,
 
 ## Ecosystem
 
-oxide discovers configuration from the project (up to the git root) and the
-user's global scope. Project entries override global entries with the same name,
-and the Oxide layout overrides the Claude Code layout.
+oxide discovers configuration from the project root (the nearest ancestor
+containing `.git`, `.oxide`, or `.claude`) and the user's global scope. Project
+entries override global entries with the same name, and the Oxide layout
+overrides the Claude Code layout.
 
 **Oxide layout**
 
 - `AGENTS.md` — project memory and instructions
 - `.oxide/agents/*.md` — subagents (frontmatter: `name`, `description`, `mode`, `permission`)
-- `.oxide/commands/*.md` — slash commands (`$ARGUMENTS`, `$1`, `$2`, …)
+- `.oxide/commands/*.md` — slash commands (`$ARGUMENTS`, `$1`, `$2`, …; optional `agent` and `subtask` frontmatter)
 - `.oxide/skills/*/SKILL.md` — on-demand skills
 - `.oxide/plugins/` — JS/TS plugin hooks
 - Global scope: `~/.oxide/`
 
 This repository keeps its own agents, commands, skills, and plugins in
 `.oxide/`.
+
+A command's frontmatter can route it: `agent: <name>` runs the command with that
+agent's prompt and permissions, and `subtask: true` runs it in an isolated
+subagent context (the command's output is reported back to the main
+conversation).
 
 **Claude Code compatibility**
 

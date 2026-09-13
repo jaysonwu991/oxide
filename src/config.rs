@@ -213,22 +213,29 @@ impl Config {
         config.ecosystem = ecosystem::load(cwd);
         config.memory = MemoryStore::load(cwd);
         if let Some(name) = agent {
-            let Some(active) = config.ecosystem.agent(&name).cloned() else {
-                let available: Vec<&str> = config
-                    .ecosystem
-                    .agents
-                    .iter()
-                    .map(|a| a.name.as_str())
-                    .collect();
-                anyhow::bail!(
-                    "unknown agent `{name}` (available: {})",
-                    available.join(", ")
-                );
-            };
-            config.active_agent = Some(active);
+            config.activate_agent(&name)?;
         }
 
         Ok(config)
+    }
+
+    /// Selects a discovered agent as the active one. Fails when the name is
+    /// unknown, listing the available agents.
+    pub fn activate_agent(&mut self, name: &str) -> Result<()> {
+        let Some(active) = self.ecosystem.agent(name).cloned() else {
+            let available: Vec<&str> = self
+                .ecosystem
+                .agents
+                .iter()
+                .map(|agent| agent.name.as_str())
+                .collect();
+            anyhow::bail!(
+                "unknown agent `{name}` (available: {})",
+                available.join(", ")
+            );
+        };
+        self.active_agent = Some(active);
+        Ok(())
     }
 
     pub fn require_api_key(&self) -> Result<&str> {
@@ -354,12 +361,10 @@ impl Config {
         sections.join("\n\n")
     }
 
-    /// Expands a leading `/command` in `input` using the loaded commands,
-    /// leaving the input untouched when it is not a known command.
-    pub fn expand_prompt(&self, input: &str) -> String {
-        self.ecosystem
-            .expand_command(input)
-            .unwrap_or_else(|| input.to_string())
+    /// Resolves a leading `/command` to its expanded prompt and any agent
+    /// routing (`agent`, `subtask`) declared in the command's frontmatter.
+    pub fn resolve_command(&self, input: &str) -> Option<ecosystem::ResolvedCommand> {
+        self.ecosystem.resolve_command(input)
     }
 }
 

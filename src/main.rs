@@ -157,7 +157,13 @@ async fn run_print(
     attachments: Vec<PathBuf>,
 ) -> Result<()> {
     config.require_api_key()?;
-    let prompt = config.expand_prompt(&prompt);
+    let resolved = config.resolve_command(&prompt);
+    let prompt = resolved
+        .as_ref()
+        .map(|command| command.prompt.clone())
+        .unwrap_or(prompt);
+    let command_agent = resolved.as_ref().and_then(|command| command.agent.clone());
+    let subtask = resolved.as_ref().is_some_and(|command| command.subtask);
     let log = match session {
         Some(log) => log,
         None => SessionLog::create(&cwd)?,
@@ -188,7 +194,18 @@ async fn run_print(
         approve,
     };
 
-    tokio::spawn(agent::run(config, cwd, history, tx, runtime));
+    if subtask {
+        let agent_name = command_agent.unwrap_or_default();
+        tokio::spawn(agent::run_subagent(
+            config, cwd, history, agent_name, prompt, tx, runtime,
+        ));
+    } else {
+        let mut config = config;
+        if let Some(name) = command_agent {
+            config.active_agent = config.ecosystem.agent(&name).cloned();
+        }
+        tokio::spawn(agent::run(config, cwd, history, tx, runtime));
+    }
 
     let mut stdout = io::stdout();
     while let Some(event) = rx.recv().await {

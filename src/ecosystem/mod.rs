@@ -33,6 +33,8 @@ pub struct CommandDef {
     pub name: String,
     pub description: Option<String>,
     pub template: String,
+    pub agent: Option<String>,
+    pub subtask: bool,
 }
 
 impl CommandDef {
@@ -43,6 +45,15 @@ impl CommandDef {
         }
         output
     }
+}
+
+/// A leading `/command` resolved against the ecosystem: the expanded prompt
+/// plus the agent routing requested by the command's frontmatter.
+#[derive(Debug, Clone)]
+pub struct ResolvedCommand {
+    pub prompt: String,
+    pub agent: Option<String>,
+    pub subtask: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -111,13 +122,20 @@ impl Ecosystem {
         self.commands.iter().find(|command| command.name == name)
     }
 
-    pub fn expand_command(&self, input: &str) -> Option<String> {
+    /// Resolves a leading `/command` into its expanded prompt and the agent
+    /// routing (`agent`, `subtask`) declared in the command's frontmatter.
+    pub fn resolve_command(&self, input: &str) -> Option<ResolvedCommand> {
         let trimmed = input.trim();
         let rest = trimmed.strip_prefix('/')?;
         let mut parts = rest.splitn(2, char::is_whitespace);
         let name = parts.next()?;
         let arguments = parts.next().unwrap_or("").trim();
-        self.command(name).map(|command| command.expand(arguments))
+        let command = self.command(name)?;
+        Some(ResolvedCommand {
+            prompt: command.expand(arguments),
+            agent: command.agent.clone(),
+            subtask: command.subtask,
+        })
     }
 }
 
@@ -253,10 +271,14 @@ fn agent_from_markdown(path: &Path) -> Option<AgentDef> {
 fn command_from_markdown(path: &Path) -> Option<CommandDef> {
     let raw = read(path)?;
     let front = frontmatter::parse(&raw);
+    let agent = front.get_str("agent");
+    let subtask = front.get_bool("subtask").unwrap_or(false);
     Some(CommandDef {
         name: file_stem(path),
         description: front.get_str("description"),
         template: front.body,
+        agent,
+        subtask,
     })
 }
 
@@ -535,7 +557,30 @@ mod tests {
             name: "greet".into(),
             description: None,
             template: "Hello $1 from $ARGUMENTS".into(),
+            agent: None,
+            subtask: false,
         };
         assert_eq!(command.expand("world"), "Hello world from world");
+    }
+
+    #[test]
+    fn resolves_command_agent_and_subtask() {
+        let dir = temp_dir("command_meta");
+        std::fs::create_dir_all(dir.join(".git")).unwrap();
+        std::fs::create_dir_all(dir.join(".oxide/commands")).unwrap();
+        std::fs::write(
+            dir.join(".oxide/commands/review.md"),
+            "---\ndescription: review\nagent: rust-reviewer\nsubtask: true\n---\nReview $ARGUMENTS",
+        )
+        .unwrap();
+
+        let ecosystem = load(&dir);
+        let resolved = ecosystem.resolve_command("/review the diff").unwrap();
+        assert_eq!(resolved.prompt, "Review the diff");
+        assert_eq!(resolved.agent.as_deref(), Some("rust-reviewer"));
+        assert!(resolved.subtask);
+        assert!(ecosystem.resolve_command("plain text").is_none());
+
+        std::fs::remove_dir_all(&dir).ok();
     }
 }

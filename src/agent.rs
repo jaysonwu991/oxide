@@ -63,6 +63,86 @@ pub fn run(
     run_depth(config, cwd, history, tx, runtime, 0)
 }
 
+/// Runs a slash command in an isolated subagent context. The subagent streams
+/// into `tx`, and its final text is appended to `history` as an assistant
+/// message before `Finished` is emitted with the merged history.
+pub fn run_subagent(
+    config: Config,
+    cwd: PathBuf,
+    history: Vec<Message>,
+    agent_name: String,
+    prompt: String,
+    tx: UnboundedSender<AgentEvent>,
+    runtime: Runtime,
+) -> RunFuture {
+    Box::pin(async move {
+        let agent = match config.ecosystem.agent(&agent_name).cloned() {
+            Some(agent) if agent.mode != AgentMode::Primary => agent,
+            Some(_) => {
+                let _ = tx.send(AgentEvent::Error(format!(
+                    "agent `{agent_name}` is primary and cannot run as a subagent"
+                )));
+                let _ = tx.send(AgentEvent::Finished(history));
+                return;
+            }
+            None => {
+                let _ = tx.send(AgentEvent::Error(format!("unknown agent `{agent_name}`")));
+                let _ = tx.send(AgentEvent::Finished(history));
+                return;
+            }
+        };
+
+        let session = runtime.session.clone();
+        let mut sub = config;
+        sub.active_agent = Some(agent);
+        let sub_runtime = Runtime {
+            session: None,
+            ..runtime
+        };
+
+        let (sub_tx, mut sub_rx) = tokio::sync::mpsc::unbounded_channel();
+        let handle = tokio::spawn(run_depth(
+            sub,
+            cwd,
+            vec![Message::user(prompt)],
+            sub_tx,
+            sub_runtime,
+            1,
+        ));
+
+        let mut report = String::new();
+        while let Some(event) = sub_rx.recv().await {
+            match event {
+                AgentEvent::Text(delta) => {
+                    report.push_str(&delta);
+                    let _ = tx.send(AgentEvent::Text(delta));
+                }
+                AgentEvent::ToolCall { name, args } => {
+                    let _ = tx.send(AgentEvent::ToolCall { name, args });
+                }
+                AgentEvent::ToolResult { name, output } => {
+                    let _ = tx.send(AgentEvent::ToolResult { name, output });
+                }
+                AgentEvent::Error(message) => {
+                    let _ = tx.send(AgentEvent::Error(message));
+                }
+                AgentEvent::Finished(_) => break,
+            }
+        }
+        let _ = handle.await;
+
+        let mut merged = history;
+        if !report.trim().is_empty() {
+            let message = Message::assistant(report, Vec::new());
+            if let Some(log) = &session {
+                let _ = log.append(&message);
+            }
+            merged.push(message);
+        }
+        let _ = tx.send(AgentEvent::Finished(merged));
+    })
+}
+
 fn run_depth(
     config: Config,
     cwd: PathBuf,

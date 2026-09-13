@@ -12,14 +12,20 @@ description: Use when navigating or modifying the oxide internals — the agent 
 2. Non-interactive mode (`-p/--print` or a positional prompt) reads the prompt
    and calls `run_print`; otherwise the TUI starts via `tui::run`.
 3. `agent::run(config, cwd, history, tx, runtime)` drives a turn:
-   - Prepends `Message::system(config.system_prompt)`.
+   - Prepends `Message::system(config.compose_system_prompt())`.
    - Calls `LlmClient::stream_chat`, forwarding text deltas as
      `AgentEvent::Text` through an unbounded mpsc channel.
    - Pushes the assistant message (with any tool calls) onto history.
    - If there are no tool calls, emits `AgentEvent::Finished(messages)`.
-   - Otherwise checks permissions, executes each call via `tools::execute`,
-     emits `ToolCall`/`ToolResult`, appends a `Message::tool`, and loops.
+   - Otherwise checks permissions, executes each call (`dispatch` routes the
+     agent-level `task`/`skill`/`memory`/`diagnostics` tools, else
+     `tools::execute`), emits `ToolCall`/`ToolResult`, appends a
+     `Message::tool`, and loops.
    - Stops after `MAX_STEPS = 25` iterations with an error event.
+4. A leading `/command` is resolved by `Config::resolve_command` into an expanded
+   prompt plus optional `agent`/`subtask` routing. Commands with `subtask: true`
+   run through `agent::run_subagent` in an isolated context and report their
+   final text back to the main conversation.
 
 ## Modules
 
@@ -40,8 +46,9 @@ each sets a default `model` and `base_url`. Override them with `OXIDE_PROVIDER`,
 `OXIDE_MODEL`, `OXIDE_BASE_URL`, or `OXIDE_API_KEY`, or the provider-specific
 `*_API_KEY` / `*_BASE_URL` variables (`OPENAI_*`, `DEEPSEEK_*`, `ANTHROPIC_*`).
 OpenAI-compatible and Anthropic APIs are dispatched in `src/llm/client.rs` (see
-`src/llm/anthropic.rs`). Config on disk lives at
-`~/.config/oxide/config.json` (see `Config::config_path`).
+`src/llm/anthropic.rs`). Config on disk lives in the oxide config dir
+(`dirs::config_dir()/oxide/config.json`; e.g. `~/.config/oxide` on Linux,
+`~/Library/Application Support/oxide` on macOS; see `Config::config_path`).
 
 ## Invariants
 

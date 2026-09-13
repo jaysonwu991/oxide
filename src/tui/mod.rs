@@ -3,6 +3,7 @@ pub mod ui;
 
 use crate::agent::{self, AgentEvent, ApprovalRequest, Approver, Runtime};
 use crate::config::Config;
+use crate::ecosystem::AgentMode;
 use crate::llm::Message;
 use crate::lsp::LspManager;
 use crate::mcp::McpRegistry;
@@ -286,7 +287,36 @@ fn handle_key(
                 return;
             }
             app.input.clear();
-            let prompt = config.expand_prompt(&raw);
+            let resolved = config.resolve_command(&raw);
+            let prompt = resolved
+                .as_ref()
+                .map(|command| command.prompt.clone())
+                .unwrap_or_else(|| raw.clone());
+            let command_agent = resolved.as_ref().and_then(|command| command.agent.clone());
+            let subtask = resolved.as_ref().is_some_and(|command| command.subtask);
+
+            if subtask && command_agent.is_none() {
+                app.items.push(ChatItem::Error(
+                    "subtask command requires an `agent` in its frontmatter".to_string(),
+                ));
+                return;
+            }
+            if let Some(name) = &command_agent {
+                match config.ecosystem.agent(name) {
+                    None => {
+                        app.items
+                            .push(ChatItem::Error(format!("unknown agent `{name}`")));
+                        return;
+                    }
+                    Some(agent) if subtask && agent.mode == AgentMode::Primary => {
+                        app.items.push(ChatItem::Error(format!(
+                            "agent `{name}` is primary and cannot run as a subagent"
+                        )));
+                        return;
+                    }
+                    Some(_) => {}
+                }
+            }
 
             let mut parts = std::mem::take(&mut app.attachments);
             for path in media::referenced_attachments(&raw, cwd) {
@@ -299,9 +329,9 @@ fn handle_key(
             }
             let media_count = parts.len();
             let user = if parts.is_empty() {
-                Message::user(prompt)
+                Message::user(prompt.clone())
             } else {
-                Message::user_parts(prompt, parts)
+                Message::user_parts(prompt.clone(), parts)
             };
 
             let log = match ensure_session(session, cwd) {
@@ -341,7 +371,17 @@ fn handle_key(
                 approve: Arc::clone(approve),
             };
             tokio::spawn(async move {
-                agent::run(config, cwd, history, tx, runtime).await;
+                if subtask {
+                    let agent_name = command_agent.unwrap_or_default();
+                    agent::run_subagent(config, cwd, history, agent_name, prompt, tx, runtime)
+                        .await;
+                } else {
+                    let mut config = config;
+                    if let Some(name) = command_agent {
+                        config.active_agent = config.ecosystem.agent(&name).cloned();
+                    }
+                    agent::run(config, cwd, history, tx, runtime).await;
+                }
             });
         }
         KeyCode::Char('v') if key.modifiers.contains(KeyModifiers::CONTROL) => {

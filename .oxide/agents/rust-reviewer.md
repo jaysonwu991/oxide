@@ -3,7 +3,8 @@ description: Reviews Rust code for correctness, idioms, error handling, and perf
 mode: subagent
 color: accent
 permission:
-  edit: deny
+  write_file: deny
+  patch: deny
   bash:
     "*": deny
     "cargo check*": allow

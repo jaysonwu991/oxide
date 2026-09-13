@@ -14,6 +14,10 @@ impl Frontmatter {
     pub fn get_str(&self, key: &str) -> Option<String> {
         self.get(key).and_then(Value::as_str).map(str::to_string)
     }
+
+    pub fn get_bool(&self, key: &str) -> Option<bool> {
+        self.get(key).and_then(Value::as_bool)
+    }
 }
 
 /// Splits a Markdown document into YAML frontmatter and body. Documents
