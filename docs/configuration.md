@@ -336,6 +336,7 @@ Everything lives under the oxide config directory:
 
 - `config.json` — provider and behavior settings
 - `auth.json` — stored API keys (mode `0600`)
+- `mcp-oauth/<server>.json` — OAuth tokens for remote MCP servers (mode `0600`)
 - `sessions/<project>/*.jsonl` — session history and pruning records
 - `snapshots/<project>/` — shadow-git snapshots for `/undo` and `/redo`
 - `memory/` — persistent memory entries

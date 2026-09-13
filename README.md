@@ -13,12 +13,13 @@ box, with Claude Code configuration support for compatibility.
   `patch`, `webfetch`.
 - Agent-level tools: `task` (subagents), `skill` (on-demand skill loading),
   `memory` (cross-session notes), `diagnostics` (LSP diagnostics).
-- MCP servers over stdio or HTTP, exposed as `<server>__<tool>`.
+- MCP servers over stdio or HTTP (including OAuth-protected remote servers),
+  exposed as `<server>__<tool>`.
 - Multimodal prompts: attach images/PDFs with `--image` or `@path` references.
 - Project + global ecosystem discovery: rules, memory, commands, agents,
   skills, MCP servers, and plugins from `.oxide/` (plus the Claude Code layout).
-- Durable sessions, shadow-git snapshots (`/undo`, `/redo`), and automatic
-  context compaction (`/compact`).
+- Durable sessions, shadow-git snapshots (`/undo`, `/redo`), and context
+  compaction (`/compact`).
 - Dynamic context pruning: a `compress` tool plus automatic tool-output
   deduplication and error purging that shrink outgoing context without altering
   session history.
@@ -42,7 +43,7 @@ so check each project's documentation for the current details.
 | Subagents | `--agent`, `task`, command routing | Agents | Subagents, background agents |
 | Slash commands | `.oxide/commands` with `agent`/`subtask` routing | Commands | Commands |
 | Skills | `SKILL.md` | Agent Skills | Skills |
-| MCP servers | stdio + HTTP, managed with `oxide mcp` | MCP servers | MCP servers |
+| MCP servers | stdio + HTTP + OAuth, managed with `oxide mcp` | MCP servers | MCP servers |
 | Plugins / hooks | JS/TS hooks (bun/node) | Plugins | Hooks, plugins, Agent SDK |
 | LSP diagnostics | Built in (rust-analyzer, TS, pyright, gopls) | Built in (LSP servers) | — |
 | Undo file changes | Shadow-git `/undo`, `/redo` | `/undo`, `/redo` | Git / checkpoints |
@@ -139,6 +140,7 @@ Manage MCP servers:
 
 ```sh
 oxide mcp add filesystem npx -y @modelcontextprotocol/server-filesystem .
+oxide mcp add --transport http slack https://mcp.slack.com/mcp
 oxide mcp list
 ```
 
@@ -350,6 +352,7 @@ Set `"enabled": false` to disable pruning, or `"compress": {"permission":
 Everything lives under the oxide config directory:
 
 - Credentials: `auth.json`
+- MCP OAuth tokens: `mcp-oauth/<server>.json` (mode `0600`)
 - Sessions: `sessions/<project>/*.jsonl`
 - Snapshots: `snapshots/<project>/` (bare git repo)
 - Memory: `memory/`
