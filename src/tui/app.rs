@@ -56,6 +56,35 @@ impl ChatItem {
     }
 }
 
+#[derive(Debug, Clone)]
+pub enum ConnectStep {
+    Provider,
+    Key { provider: String },
+}
+
+#[derive(Debug, Clone)]
+pub struct ConnectState {
+    pub step: ConnectStep,
+    pub input: String,
+    pub error: Option<String>,
+}
+
+impl ConnectState {
+    pub fn new() -> Self {
+        Self {
+            step: ConnectStep::Provider,
+            input: String::new(),
+            error: None,
+        }
+    }
+}
+
+impl Default for ConnectState {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 pub struct App {
     pub input: String,
     pub items: Vec<ChatItem>,
@@ -70,6 +99,7 @@ pub struct App {
     pub cwd: String,
     pub assistant_open: bool,
     pub pending_approval: Option<ApprovalRequest>,
+    pub connect: Option<ConnectState>,
     pub mode: Mode,
     pub reasoning: Reasoning,
     pub steering: Steering,
@@ -95,6 +125,7 @@ impl App {
             cwd,
             assistant_open: false,
             pending_approval: None,
+            connect: None,
             mode,
             reasoning,
             steering: Steering::new(),

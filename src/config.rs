@@ -223,6 +223,41 @@ fn explicit(raw: &Option<serde_json::Value>, key: &str) -> bool {
     raw.as_ref().is_some_and(|value| value.get(key).is_some())
 }
 
+/// The provider and entry from `auth.json` when exactly one credential is
+/// stored, so an unconfigured oxide can pick it without guessing.
+fn single_stored_provider(store: &AuthStore) -> Option<(&String, &crate::auth::AuthEntry)> {
+    if store.entries.len() == 1 {
+        store.entries.iter().next()
+    } else {
+        None
+    }
+}
+
+/// Adopts the sole stored credential when the config has no key yet, including
+/// the provider's preset model and base URL unless the config set them.
+fn apply_stored_provider_fallback(
+    config: &mut Config,
+    store: &AuthStore,
+    raw: &Option<serde_json::Value>,
+) {
+    if !config.api_key.trim().is_empty() {
+        return;
+    }
+    let Some((name, entry)) = single_stored_provider(store) else {
+        return;
+    };
+    config.provider = name.clone();
+    config.api_key = entry.key.clone();
+    if let Some(preset) = ProviderPreset::for_name(name) {
+        if !explicit(raw, "model") {
+            config.model = preset.model.to_string();
+        }
+        if !explicit(raw, "base_url") {
+            config.base_url = preset.base_url.to_string();
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Config {
     pub provider: String,
@@ -370,6 +405,15 @@ impl Config {
             }
         }
 
+        // When no provider was chosen anywhere, fall back to the sole stored
+        // credential so `oxide auth login <provider>` is enough to get started.
+        let provider_explicit = provider_overridden || explicit(&raw, "provider");
+        if !provider_explicit {
+            if let Ok(store) = AuthStore::load() {
+                apply_stored_provider_fallback(&mut config, &store, &raw);
+            }
+        }
+
         config.base_url = config.base_url.trim_end_matches('/').to_string();
 
         if let Some(value) = mode.or_else(|| env_nonempty("OXIDE_MODE")) {
@@ -417,13 +461,68 @@ impl Config {
 
     pub fn require_api_key(&self) -> Result<&str> {
         if self.api_key.trim().is_empty() {
-            anyhow::bail!(
-                "no API key found. Run `oxide auth login`, set {}, or add \"api_key\" to {}",
+            let mut message = format!(
+                "no API key found for `{}`. Run `oxide auth login`, set {}, or add \"api_key\" to {}",
+                self.provider,
                 self.key_env_name(),
                 Self::config_path().display()
             );
+            if let Ok(store) = AuthStore::load() {
+                let others: Vec<&str> = store
+                    .entries
+                    .keys()
+                    .filter(|name| name.as_str() != self.provider)
+                    .map(String::as_str)
+                    .collect();
+                if !others.is_empty() {
+                    message.push_str(&format!(
+                        "\nstored credentials exist for: {} (run with `--provider <name>`)",
+                        others.join(", ")
+                    ));
+                }
+            }
+            anyhow::bail!(message);
         }
         Ok(&self.api_key)
+    }
+
+    /// Applies a provider credential to the running config.
+    pub fn apply_provider(&mut self, provider: &str, key: &str) {
+        self.provider = provider.to_string();
+        self.api_key = key.to_string();
+        if let Some(preset) = ProviderPreset::for_name(provider) {
+            self.model = preset.model.to_string();
+            self.base_url = preset.base_url.to_string();
+        }
+    }
+
+    /// Persists the active provider in `config.json` so the next launch uses it,
+    /// preserving any other settings already in the file.
+    pub fn set_active_provider_at(path: &Path, provider: &str) -> Result<()> {
+        let mut value: serde_json::Value = if path.exists() {
+            let text = std::fs::read_to_string(path)
+                .with_context(|| format!("reading config at {}", path.display()))?;
+            serde_json::from_str(&text).unwrap_or_else(|_| serde_json::json!({}))
+        } else {
+            serde_json::json!({})
+        };
+        if !value.is_object() {
+            value = serde_json::json!({});
+        }
+        if let Some(object) = value.as_object_mut() {
+            object.insert(
+                "provider".to_string(),
+                serde_json::Value::String(provider.to_string()),
+            );
+        }
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent)
+                .with_context(|| format!("creating {}", parent.display()))?;
+        }
+        let text = serde_json::to_string_pretty(&value)?;
+        std::fs::write(path, text)
+            .with_context(|| format!("writing config to {}", path.display()))?;
+        Ok(())
     }
 
     /// The API dialect this configuration targets.
@@ -665,6 +764,126 @@ mod tests {
             ..Config::default()
         };
         assert!(plan.compose_system_prompt().contains("# Plan mode"));
+    }
+
+    #[test]
+    fn single_stored_provider_only_when_unambiguous() {
+        let mut store = AuthStore::default();
+        assert!(single_stored_provider(&store).is_none());
+
+        store.set("deepseek", "sk-deepseek");
+        let (name, entry) = single_stored_provider(&store).unwrap();
+        assert_eq!(name, "deepseek");
+        assert_eq!(entry.key, "sk-deepseek");
+
+        store.set("openai", "sk-openai");
+        assert!(single_stored_provider(&store).is_none());
+    }
+
+    fn temp_dir(tag: &str) -> PathBuf {
+        use std::sync::atomic::{AtomicU64, Ordering};
+        static COUNTER: AtomicU64 = AtomicU64::new(0);
+        let unique = format!(
+            "oxide-config-test-{tag}-{}-{}",
+            std::process::id(),
+            COUNTER.fetch_add(1, Ordering::Relaxed)
+        );
+        let dir = std::env::temp_dir().join(unique);
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    #[test]
+    fn apply_provider_updates_runtime_fields() {
+        let mut config = Config::default();
+        config.apply_provider("deepseek", "sk-test");
+        assert_eq!(config.provider, "deepseek");
+        assert_eq!(config.api_key, "sk-test");
+        assert_eq!(config.model, "deepseek-chat");
+        assert_eq!(config.base_url, "https://api.deepseek.com/v1");
+    }
+
+    #[test]
+    fn apply_provider_leaves_unknown_endpoint_untouched() {
+        let mut config = Config::default();
+        let model = config.model.clone();
+        let base_url = config.base_url.clone();
+        config.apply_provider("my-endpoint", "sk-test");
+        assert_eq!(config.provider, "my-endpoint");
+        assert_eq!(config.api_key, "sk-test");
+        assert_eq!(config.model, model);
+        assert_eq!(config.base_url, base_url);
+    }
+
+    #[test]
+    fn fallback_adopts_sole_stored_credential() {
+        let mut config = Config::default();
+        let mut store = AuthStore::default();
+        store.set("deepseek", "sk-deepseek");
+        apply_stored_provider_fallback(&mut config, &store, &None);
+        assert_eq!(config.provider, "deepseek");
+        assert_eq!(config.api_key, "sk-deepseek");
+        assert_eq!(config.model, "deepseek-chat");
+        assert_eq!(config.base_url, "https://api.deepseek.com/v1");
+    }
+
+    #[test]
+    fn fallback_keeps_existing_key() {
+        let mut config = Config {
+            api_key: "sk-openai".into(),
+            ..Config::default()
+        };
+        let mut store = AuthStore::default();
+        store.set("deepseek", "sk-deepseek");
+        apply_stored_provider_fallback(&mut config, &store, &None);
+        assert_eq!(config.provider, "openai");
+        assert_eq!(config.api_key, "sk-openai");
+    }
+
+    #[test]
+    fn fallback_ignores_multiple_credentials() {
+        let mut config = Config::default();
+        let mut store = AuthStore::default();
+        store.set("deepseek", "sk-deepseek");
+        store.set("anthropic", "sk-anthropic");
+        apply_stored_provider_fallback(&mut config, &store, &None);
+        assert_eq!(config.provider, "openai");
+        assert!(config.api_key.is_empty());
+    }
+
+    #[test]
+    fn fallback_respects_explicit_model_and_base_url() {
+        let raw = Some(serde_json::json!({
+            "model": "custom-model",
+            "base_url": "https://custom.example/v1"
+        }));
+        let mut config = Config {
+            model: "custom-model".into(),
+            base_url: "https://custom.example/v1".into(),
+            ..Config::default()
+        };
+        let mut store = AuthStore::default();
+        store.set("deepseek", "sk-deepseek");
+        apply_stored_provider_fallback(&mut config, &store, &raw);
+        assert_eq!(config.provider, "deepseek");
+        assert_eq!(config.api_key, "sk-deepseek");
+        assert_eq!(config.model, "custom-model");
+        assert_eq!(config.base_url, "https://custom.example/v1");
+    }
+
+    #[test]
+    fn set_active_provider_writes_and_preserves_settings() {
+        let dir = temp_dir("active-provider");
+        let path = dir.join("config.json");
+        std::fs::write(&path, r#"{"mode":"plan"}"#).unwrap();
+
+        Config::set_active_provider_at(&path, "anthropic").unwrap();
+
+        let value: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        assert_eq!(value["provider"], "anthropic");
+        assert_eq!(value["mode"], "plan");
+        std::fs::remove_dir_all(&dir).ok();
     }
 
     #[test]

@@ -1,9 +1,9 @@
 use crate::config::{Mode, Reasoning};
-use crate::tui::app::{App, ChatItem};
+use crate::tui::app::{App, ChatItem, ConnectStep};
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Borders, Paragraph, Wrap};
+use ratatui::widgets::{Block, Borders, Clear, Paragraph, Wrap};
 use ratatui::Frame;
 
 pub fn draw(frame: &mut Frame, app: &mut App) {
@@ -21,6 +21,81 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
     draw_messages(frame, app, chunks[1]);
     draw_input(frame, app, chunks[2]);
     draw_status(frame, app, chunks[3]);
+
+    if app.connect.is_some() {
+        draw_connect(frame, app);
+    }
+}
+
+fn centered_rect(percent_x: u16, percent_y: u16, area: Rect) -> Rect {
+    let vertical = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Percentage((100 - percent_y) / 2),
+            Constraint::Percentage(percent_y),
+            Constraint::Percentage((100 - percent_y) / 2),
+        ])
+        .split(area);
+    Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([
+            Constraint::Percentage((100 - percent_x) / 2),
+            Constraint::Percentage(percent_x),
+            Constraint::Percentage((100 - percent_x) / 2),
+        ])
+        .split(vertical[1])[1]
+}
+
+fn draw_connect(frame: &mut Frame, app: &App) {
+    let Some(state) = &app.connect else {
+        return;
+    };
+    let area = centered_rect(70, 40, frame.area());
+    frame.render_widget(Clear, area);
+
+    let (prompt, value) = match &state.step {
+        ConnectStep::Provider => (
+            "Provider: 1 openai · 2 deepseek · 3 anthropic, or type a name",
+            state.input.clone(),
+        ),
+        ConnectStep::Key { .. } => ("Enter API key", "*".repeat(state.input.chars().count())),
+    };
+    let title = match &state.step {
+        ConnectStep::Provider => " connect ",
+        ConnectStep::Key { provider } => provider.as_str(),
+    };
+
+    let mut lines = vec![
+        Line::from(Span::styled(prompt, Style::default().fg(Color::DarkGray))),
+        Line::from(""),
+    ];
+    if let Some(error) = &state.error {
+        lines.push(Line::from(Span::styled(
+            format!("error: {error}"),
+            Style::default().fg(Color::Red),
+        )));
+        lines.push(Line::from(""));
+    }
+    lines.push(Line::from(vec![
+        Span::styled("> ", Style::default().fg(Color::Cyan)),
+        Span::styled(value, Style::default().fg(Color::White)),
+    ]));
+    lines.push(Line::from(""));
+    lines.push(Line::from(Span::styled(
+        "Enter confirm · Esc cancel",
+        Style::default().fg(Color::DarkGray),
+    )));
+
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(Color::Cyan))
+        .title(Span::styled(title, Style::default().fg(Color::Cyan)));
+    frame.render_widget(
+        Paragraph::new(lines)
+            .block(block)
+            .wrap(Wrap { trim: false }),
+        area,
+    );
 }
 
 fn draw_header(frame: &mut Frame, app: &App, area: Rect) {
@@ -229,7 +304,7 @@ fn draw_input(frame: &mut Frame, app: &App, area: Rect) {
     let paragraph = Paragraph::new(app.input.clone()).wrap(Wrap { trim: false });
     frame.render_widget(paragraph, inner);
 
-    if !app.busy {
+    if !app.busy && app.connect.is_none() {
         let x = inner.x + app.input.chars().count() as u16;
         let x = x.min(inner.x + inner.width.saturating_sub(1));
         frame.set_cursor_position((x, inner.y));

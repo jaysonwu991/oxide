@@ -291,7 +291,6 @@ async fn main() -> Result<()> {
         };
         run_print(config, cwd, prompt, session, cli.image).await
     } else {
-        config.require_api_key()?;
         tui::run(config, cwd, session).await
     }
 }

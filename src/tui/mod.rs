@@ -11,9 +11,12 @@ use crate::media;
 use crate::plugin::PluginHost;
 use crate::session::SessionLog;
 use crate::snapshots::Snapshots;
-use crate::tui::app::{App, ChatItem};
+use crate::tui::app::{App, ChatItem, ConnectState, ConnectStep};
 use anyhow::Result;
-use crossterm::event::{Event, EventStream, KeyCode, KeyEvent, KeyModifiers};
+use crossterm::event::{
+    DisableBracketedPaste, EnableBracketedPaste, Event, EventStream, KeyCode, KeyEvent,
+    KeyModifiers,
+};
 use crossterm::execute;
 use crossterm::terminal::{
     disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen,
@@ -33,7 +36,7 @@ pub async fn run(config: Config, cwd: PathBuf, session: Option<SessionLog>) -> R
 
     enable_raw_mode()?;
     let mut stdout = std::io::stdout();
-    execute!(stdout, EnterAlternateScreen)?;
+    execute!(stdout, EnterAlternateScreen, EnableBracketedPaste)?;
     let mut terminal = Terminal::new(CrosstermBackend::new(stdout))?;
 
     let result = event_loop(
@@ -49,7 +52,11 @@ pub async fn run(config: Config, cwd: PathBuf, session: Option<SessionLog>) -> R
     .await;
 
     disable_raw_mode()?;
-    execute!(terminal.backend_mut(), LeaveAlternateScreen)?;
+    execute!(
+        terminal.backend_mut(),
+        DisableBracketedPaste,
+        LeaveAlternateScreen
+    )?;
     terminal.show_cursor()?;
     result
 }
@@ -114,6 +121,11 @@ async fn event_loop(
     app.items.push(ChatItem::Info(
         "snapshots: /undo and /redo revert the agent's file changes".to_string(),
     ));
+    if config.api_key.trim().is_empty() {
+        app.items.push(ChatItem::Info(
+            "no provider connected — type /connect to add an API key".to_string(),
+        ));
+    }
 
     if let Some(log) = &session {
         match log.messages() {
@@ -173,8 +185,13 @@ async fn event_loop(
         let mut got_agent_event = false;
         tokio::select! {
             maybe_event = reader.next() => {
-                if let Some(Ok(Event::Key(key))) = maybe_event {
-                    handle_key(key, &mut app, &mut config, &cwd, &mut rx, &mcp, &plugins, snapshots.as_ref(), &lsp, &mut session, &approve);
+                match maybe_event {
+                    Some(Ok(Event::Key(key))) => handle_key(
+                        key, &mut app, &mut config, &cwd, &mut rx, &mcp, &plugins,
+                        snapshots.as_ref(), &lsp, &mut session, &approve,
+                    ),
+                    Some(Ok(Event::Paste(text))) => handle_paste(text, &mut app),
+                    _ => {}
                 }
             }
             agent_event = recv_opt(&mut rx) => {
@@ -222,6 +239,11 @@ fn handle_key(
     session: &mut Option<SessionLog>,
     approve: &Approver,
 ) {
+    if app.connect.is_some() {
+        handle_connect_key(key, app, config);
+        return;
+    }
+
     if let Some(request) = app.pending_approval.take() {
         match key.code {
             KeyCode::Char('y') | KeyCode::Char('Y') => {
@@ -324,7 +346,30 @@ fn handle_key(
                 });
                 return;
             }
+            if raw == "/connect" || raw.starts_with("/connect ") {
+                app.input.clear();
+                let provider = raw
+                    .strip_prefix("/connect")
+                    .unwrap_or_default()
+                    .trim()
+                    .to_string();
+                let mut state = ConnectState::new();
+                if !provider.is_empty() {
+                    state.step = ConnectStep::Key {
+                        provider: resolve_provider_choice(&provider),
+                    };
+                }
+                app.connect = Some(state);
+                app.status = "connecting...".to_string();
+                return;
+            }
             app.input.clear();
+            if config.api_key.trim().is_empty() {
+                app.items.push(ChatItem::Error(
+                    "no provider connected — run /connect to add an API key".to_string(),
+                ));
+                return;
+            }
             let resolved = config.resolve_command(&raw);
             let prompt = resolved
                 .as_ref()
@@ -454,6 +499,90 @@ fn handle_key(
     }
 }
 
+fn resolve_provider_choice(value: &str) -> String {
+    match value.trim().to_ascii_lowercase().as_str() {
+        "1" | "openai" | "gpt" | "gpt-4" | "gpt-4o" => "openai".to_string(),
+        "2" | "deepseek" => "deepseek".to_string(),
+        "3" | "anthropic" => "anthropic".to_string(),
+        other => other.to_string(),
+    }
+}
+
+fn handle_paste(text: String, app: &mut App) {
+    let text: String = text
+        .chars()
+        .filter(|ch| *ch != '\r' && *ch != '\n')
+        .collect();
+    if let Some(state) = app.connect.as_mut() {
+        state.input.push_str(&text);
+    } else {
+        app.input.push_str(&text);
+        app.auto_scroll = true;
+    }
+}
+
+fn handle_connect_key(key: KeyEvent, app: &mut App, config: &mut Config) {
+    let Some(mut state) = app.connect.take() else {
+        return;
+    };
+    let mut keep = true;
+    match key.code {
+        KeyCode::Esc => {
+            keep = false;
+            app.status = "connect cancelled".to_string();
+        }
+        KeyCode::Enter => {
+            let value = state.input.trim().to_string();
+            match state.step.clone() {
+                ConnectStep::Provider => {
+                    if value.is_empty() {
+                        state.error = Some("enter a provider name or number".to_string());
+                    } else {
+                        state.step = ConnectStep::Key {
+                            provider: resolve_provider_choice(&value),
+                        };
+                        state.input.clear();
+                        state.error = None;
+                    }
+                }
+                ConnectStep::Key { provider } => {
+                    if value.is_empty() {
+                        state.error = Some("enter an API key".to_string());
+                    } else {
+                        match crate::auth::connect(&provider, &value) {
+                            Ok(name) => {
+                                config.apply_provider(&name, &value);
+                                app.model = config.model.clone();
+                                app.items.push(ChatItem::Info(format!(
+                                    "connected to {name} ({})",
+                                    config.model
+                                )));
+                                app.status = "ready".to_string();
+                                keep = false;
+                            }
+                            Err(err) => state.error = Some(format!("{err:#}")),
+                        }
+                    }
+                }
+            }
+        }
+        KeyCode::Backspace => {
+            state.input.pop();
+        }
+        KeyCode::Char(c)
+            if !key
+                .modifiers
+                .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT) =>
+        {
+            state.input.push(c);
+        }
+        _ => {}
+    }
+    if keep {
+        app.connect = Some(state);
+    }
+}
+
 fn ensure_session<'a>(session: &'a mut Option<SessionLog>, cwd: &Path) -> Result<&'a SessionLog> {
     if session.is_none() {
         *session = Some(SessionLog::create(cwd)?);
@@ -508,5 +637,85 @@ fn handle_agent_event(event: AgentEvent, app: &mut App) {
             app.auto_scroll = true;
             app.status = "ready".to_string();
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::config::{Config, Mode, Reasoning};
+
+    fn test_app() -> App {
+        App::new(
+            "test-model".to_string(),
+            "/tmp".to_string(),
+            Mode::Build,
+            Reasoning::Auto,
+        )
+    }
+
+    fn key(code: KeyCode) -> KeyEvent {
+        KeyEvent::new(code, KeyModifiers::NONE)
+    }
+
+    #[test]
+    fn provider_choice_maps_numbers_and_aliases() {
+        assert_eq!(resolve_provider_choice("1"), "openai");
+        assert_eq!(resolve_provider_choice("2"), "deepseek");
+        assert_eq!(resolve_provider_choice("3"), "anthropic");
+        assert_eq!(resolve_provider_choice("DeepSeek"), "deepseek");
+        assert_eq!(resolve_provider_choice("gpt-4o"), "openai");
+        assert_eq!(resolve_provider_choice("my-endpoint"), "my-endpoint");
+    }
+
+    #[test]
+    fn paste_appends_to_input_and_connect_prompt() {
+        let mut app = test_app();
+        handle_paste("sk-abc\ndef".to_string(), &mut app);
+        assert_eq!(app.input, "sk-abcdef");
+
+        app.connect = Some(ConnectState::new());
+        handle_paste("deepseek".to_string(), &mut app);
+        assert_eq!(app.connect.as_ref().unwrap().input, "deepseek");
+    }
+
+    #[test]
+    fn connect_selects_provider_then_waits_for_key() {
+        let mut app = test_app();
+        let mut config = Config::default();
+        app.connect = Some(ConnectState::new());
+
+        handle_connect_key(key(KeyCode::Char('2')), &mut app, &mut config);
+        handle_connect_key(key(KeyCode::Enter), &mut app, &mut config);
+
+        let state = app.connect.as_ref().unwrap();
+        assert!(matches!(
+            &state.step,
+            ConnectStep::Key { provider } if provider == "deepseek"
+        ));
+        assert!(state.input.is_empty());
+        assert!(state.error.is_none());
+    }
+
+    #[test]
+    fn connect_empty_provider_reports_error() {
+        let mut app = test_app();
+        let mut config = Config::default();
+        app.connect = Some(ConnectState::new());
+
+        handle_connect_key(key(KeyCode::Enter), &mut app, &mut config);
+
+        assert!(app.connect.as_ref().unwrap().error.is_some());
+    }
+
+    #[test]
+    fn connect_escape_cancels() {
+        let mut app = test_app();
+        let mut config = Config::default();
+        app.connect = Some(ConnectState::new());
+
+        handle_connect_key(key(KeyCode::Esc), &mut app, &mut config);
+
+        assert!(app.connect.is_none());
     }
 }

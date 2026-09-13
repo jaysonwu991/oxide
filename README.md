@@ -192,7 +192,9 @@ oxide auth logout [provider]
 ```
 
 Keys are stored in `auth.json` in the oxide config directory (mode `0600`) and
-resolved after environment variables and before the config file.
+resolved after environment variables and before the config file. You can also
+launch `oxide` with no key and run `/connect` inside the TUI to pick a provider
+and paste a key; the provider is then saved to `config.json`.
 
 MCP server management:
 
@@ -328,7 +330,7 @@ oxide also reads the Claude Code layout, so existing configurations work as-is:
 - Global scope: `~/.claude/`, `~/.claude.json`
 
 Slash commands are expanded from the ecosystem and also include built-ins:
-`/undo`, `/redo`, and `/compact`.
+`/undo`, `/redo`, `/compact`, and `/connect`.
 
 ## Tools
 

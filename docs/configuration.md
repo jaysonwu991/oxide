@@ -221,7 +221,7 @@ Focus: $ARGUMENTS
 - `agent: <name>` runs the command as that agent. `subtask: true` runs it in an
   isolated subagent context whose result is reported back to the main
   conversation.
-- Built-in commands: `/undo`, `/redo`, `/compact`.
+- Built-in commands: `/undo`, `/redo`, `/compact`, `/connect`.
 - **Remove** a command by deleting its file.
 
 ## Skills
@@ -363,11 +363,36 @@ options and an example.
 ## Providers and credentials
 
 Provider, model, base URL, and API key are read from `config.json`, environment
-variables, and `auth.json`, in the precedence order above. Store a key with:
+variables, and `auth.json`, in the precedence order above. There are two ways to
+connect a provider.
+
+### From the CLI
 
 ```sh
 oxide auth login openai
+oxide auth login deepseek --key sk-...
 ```
+
+Without arguments, `oxide auth login` prompts for the provider (a name or its
+1-based number) and reads the API key with hidden input; bracketed paste works.
+The key is stored in `auth.json` (mode `0600`) and the provider is written to
+`config.json` so the next launch uses it. Manage stored keys with
+`oxide auth list` and `oxide auth logout [provider]`.
+
+### From the TUI
+
+Start `oxide` even without a key, then run `/connect`:
+
+- `/connect` lists the providers — enter a number or name, then paste the API key.
+- `/connect deepseek` skips the picker and asks for the key directly.
+
+Press Enter to confirm and Esc to cancel. The key is stored in `auth.json` and
+the active provider is written to `config.json`, so it applies to the running
+session and the next launch.
+
+You can also provide a key without either flow via the `OPENAI_API_KEY` /
+`DEEPSEEK_API_KEY` / `ANTHROPIC_API_KEY` environment variables or an `api_key`
+entry in `config.json`; environment variables take precedence over `auth.json`.
 
 See [Configuration](../README.md#configuration) and
 [Providers](../README.md#providers) in the README for the full list.
