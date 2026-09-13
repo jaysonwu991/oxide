@@ -47,9 +47,9 @@ Before opening a pull request, make sure `cargo fmt`, `cargo clippy`, and
 | `src/main.rs` | CLI entry (clap), `-p/--print` mode, TUI dispatch, `auth`/`mcp` subcommands. |
 | `src/config.rs` | Config loading, provider presets, system prompt composition. |
 | `src/auth.rs` | `auth login` / `list` / `logout` and the credential store. |
-| `src/agent.rs` | Agent loop, tool execution, and the agent-level tools. |
+| `src/agent.rs` | Agent loop, parallel/sequential tool execution, steering queue, terminate hint, and the agent-level tools. |
 | `src/llm/` | Model clients: OpenAI-compatible and Anthropic. |
-| `src/tools.rs` | Built-in tool specs and execution. |
+| `src/tools.rs` | Built-in tool specs and execution; `ToolOutput` (text/media/terminate) and streaming `Progress`. |
 | `src/mcp.rs` | MCP runtime and remote tool exposure. |
 | `src/mcp_config.rs` | `oxide mcp` CLI: read/write MCP servers in `.oxide/mcp.json`, including OAuth fields and `oxide mcp auth`. |
 | `src/mcp_oauth.rs` | OAuth authorization-code + PKCE flow for remote MCP servers. |
@@ -60,10 +60,10 @@ Before opening a pull request, make sure `cargo fmt`, `cargo clippy`, and
 | `src/compact.rs` | Conversation summarization. |
 | `src/dcp.rs` | Dynamic context pruning: config, pruned view, nudges, compression records. |
 | `src/lsp.rs` | Minimal LSP client and diagnostics. |
-| `src/plugin.rs` | Plugin host and tool hooks. |
+| `src/plugin.rs` | Plugin host and tool hooks, including output rewriting and the terminate hint. |
 | `src/memory.rs` | Cross-session memory store. |
 | `src/media.rs` | Image/PDF attachments and `@path` references. |
-| `src/tui/` | ratatui + crossterm interface. |
+| `src/tui/` | ratatui + crossterm interface with incremental rendering and mid-run steering. |
 | `.oxide/` | Project agents, commands, skills, and plugins (Oxide layout). |
 
 ## Conventions
@@ -78,10 +78,12 @@ Before opening a pull request, make sure `cargo fmt`, `cargo clippy`, and
 ## Extending oxide
 
 - **Tools.** Register built-in tools in `tools::specs(&McpRegistry)` and
-  dispatch them in `tools::execute(call, cwd, &McpRegistry)`. Agent-level tools
-  (`task`, `skill`, `memory`, `diagnostics`, `compress`) are defined and
-  dispatched in `src/agent.rs`; `compress` and the pruned request view live in
-  `src/dcp.rs`.
+  dispatch them in `tools::execute(call, cwd, &McpRegistry, &Progress)`; report
+  incremental output through `Progress` and set `ToolOutput::terminate` to end
+  the turn. Read-only tools are listed in the `concurrency_safe` classifier in
+  `src/agent.rs` to run in parallel. Agent-level tools (`task`, `skill`, `memory`, `diagnostics`,
+  `compress`) are defined and dispatched in `src/agent.rs`; `compress` and the
+  pruned request view live in `src/dcp.rs`.
 - **Context pruning.** Configuration, deduplication, error purging, and nudges
   live in `src/dcp.rs`; compression records are persisted through
   `SessionLog::append_dcp` / `dcp_state`. The raw history is never modified, only

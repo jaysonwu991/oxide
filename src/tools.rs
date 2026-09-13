@@ -5,16 +5,21 @@ use anyhow::{Context, Result};
 use serde_json::{json, Value};
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
+use std::sync::Arc;
+use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::time::{timeout, Duration};
 
 const MAX_OUTPUT: usize = 30_000;
 
 /// The result of running a tool: always a text payload, optionally plus media
-/// parts (images/PDFs) that the model should see as content.
+/// parts (images/PDFs) that the model should see as content. `terminate` lets a
+/// tool (or a `tool.execute.after` plugin hook) end the turn instead of asking
+/// the model to react to the result.
 #[derive(Debug, Clone, Default)]
 pub struct ToolOutput {
     pub text: String,
     pub media: Vec<ContentPart>,
+    pub terminate: bool,
 }
 
 impl ToolOutput {
@@ -22,6 +27,7 @@ impl ToolOutput {
         Self {
             text: text.into(),
             media: Vec::new(),
+            terminate: false,
         }
     }
 
@@ -29,6 +35,28 @@ impl ToolOutput {
         Self {
             text: text.into(),
             media,
+            terminate: false,
+        }
+    }
+}
+
+pub type ProgressSink = Arc<dyn Fn(&str) + Send + Sync>;
+
+/// A best-effort sink for streaming tool progress to the UI. Tools that produce
+/// incremental output (currently `bash`) report each line as it arrives.
+#[derive(Clone, Default)]
+pub struct Progress {
+    sink: Option<ProgressSink>,
+}
+
+impl Progress {
+    pub fn new(sink: ProgressSink) -> Self {
+        Self { sink: Some(sink) }
+    }
+
+    pub fn report(&self, chunk: impl AsRef<str>) {
+        if let Some(sink) = &self.sink {
+            sink(chunk.as_ref());
         }
     }
 }
@@ -147,7 +175,12 @@ fn spec(name: &str, description: &str, parameters: Value) -> ToolSpec {
     }
 }
 
-pub async fn execute(call: &ToolCall, cwd: &Path, mcp: &McpRegistry) -> ToolOutput {
+pub async fn execute(
+    call: &ToolCall,
+    cwd: &Path,
+    mcp: &McpRegistry,
+    progress: &Progress,
+) -> ToolOutput {
     let name = call.function.name.as_str();
     let args: Value = match serde_json::from_str(&call.function.arguments) {
         Ok(value) => value,
@@ -161,7 +194,7 @@ pub async fn execute(call: &ToolCall, cwd: &Path, mcp: &McpRegistry) -> ToolOutp
             "read_file" => read_file(cwd, &args),
             "write_file" => write_file(cwd, &args).map(ToolOutput::text),
             "list_dir" => list_dir(cwd, &args).map(ToolOutput::text),
-            "bash" => bash(cwd, &args).await.map(ToolOutput::text),
+            "bash" => bash(cwd, &args, progress).await.map(ToolOutput::text),
             "glob" => glob(cwd, &args).map(ToolOutput::text),
             "grep" => grep(cwd, &args).map(ToolOutput::text),
             "patch" => patch(cwd, &args).map(ToolOutput::text),
@@ -174,6 +207,7 @@ pub async fn execute(call: &ToolCall, cwd: &Path, mcp: &McpRegistry) -> ToolOutp
         Ok(output) => ToolOutput {
             text: truncate(output.text),
             media: output.media,
+            terminate: output.terminate,
         },
         Err(err) => ToolOutput::text(format!("error: {err:#}")),
     }
@@ -594,7 +628,7 @@ fn html_to_text(html: &str) -> String {
     lines.join("\n")
 }
 
-async fn bash(cwd: &Path, args: &Value) -> Result<String> {
+async fn bash(cwd: &Path, args: &Value, progress: &Progress) -> Result<String> {
     let command = args
         .get("command")
         .and_then(Value::as_str)
@@ -604,41 +638,63 @@ async fn bash(cwd: &Path, args: &Value) -> Result<String> {
         .and_then(Value::as_u64)
         .unwrap_or(120);
 
-    let child = tokio::process::Command::new("sh")
+    let mut child = tokio::process::Command::new("sh")
         .arg("-c")
         .arg(command)
         .current_dir(cwd)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
-        .output();
-
-    let output = timeout(Duration::from_secs(secs), child)
-        .await
-        .with_context(|| format!("command timed out after {secs}s"))?
+        .spawn()
         .context("spawning shell")?;
 
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    let stderr = String::from_utf8_lossy(&output.stderr);
+    let stdout = child.stdout.take().context("capturing stdout")?;
+    let stderr = child.stderr.take().context("capturing stderr")?;
+    let stdout_task = tokio::spawn(read_stream(stdout, progress.clone()));
+    let stderr_task = tokio::spawn(read_stream(stderr, progress.clone()));
+
+    let status = match timeout(Duration::from_secs(secs), child.wait()).await {
+        Ok(status) => status.context("waiting for shell")?,
+        Err(_) => {
+            child.kill().await.ok();
+            anyhow::bail!("command timed out after {secs}s");
+        }
+    };
+    let stdout = stdout_task.await.context("joining stdout reader")?;
+    let stderr = stderr_task.await.context("joining stderr reader")?;
+
+    let stdout = stdout.trim_end();
+    let stderr = stderr.trim_end();
     let mut combined = String::new();
     if !stdout.trim().is_empty() {
-        combined.push_str(stdout.trim_end());
+        combined.push_str(stdout);
     }
     if !stderr.trim().is_empty() {
         if !combined.is_empty() {
             combined.push('\n');
         }
         combined.push_str("[stderr]\n");
-        combined.push_str(stderr.trim_end());
+        combined.push_str(stderr);
     }
     if combined.is_empty() {
         combined.push_str("(no output)");
     }
-    combined.push_str(&format!(
-        "\n[exit code: {}]",
-        output.status.code().unwrap_or(-1)
-    ));
+    combined.push_str(&format!("\n[exit code: {}]", status.code().unwrap_or(-1)));
     Ok(combined)
+}
+
+async fn read_stream<R>(reader: R, progress: Progress) -> String
+where
+    R: tokio::io::AsyncRead + Unpin,
+{
+    let mut lines = BufReader::new(reader).lines();
+    let mut out = String::new();
+    while let Ok(Some(line)) = lines.next_line().await {
+        progress.report(&line);
+        out.push_str(&line);
+        out.push('\n');
+    }
+    out
 }
 
 fn truncate(mut output: String) -> String {
@@ -675,6 +731,7 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         let mcp = McpRegistry::default();
 
+        let progress = Progress::default();
         let out = execute(
             &call(
                 "write_file",
@@ -682,6 +739,7 @@ mod tests {
             ),
             &dir,
             &mcp,
+            &progress,
         )
         .await;
         assert!(out.text.contains("wrote"), "{}", out.text);
@@ -693,14 +751,21 @@ mod tests {
             ),
             &dir,
             &mcp,
+            &progress,
         )
         .await;
         assert!(out.text.contains("two"), "{}", out.text);
 
-        let out = execute(&call("list_dir", json!({})), &dir, &mcp).await;
+        let out = execute(&call("list_dir", json!({})), &dir, &mcp, &progress).await;
         assert!(out.text.contains("a.txt"), "{}", out.text);
 
-        let out = execute(&call("bash", json!({ "command": "echo hi" })), &dir, &mcp).await;
+        let out = execute(
+            &call("bash", json!({ "command": "echo hi" })),
+            &dir,
+            &mcp,
+            &progress,
+        )
+        .await;
         assert!(
             out.text.contains("hi") && out.text.contains("exit code: 0"),
             "{}",
@@ -711,6 +776,7 @@ mod tests {
             &call("read_file", json!({ "path": "missing.txt" })),
             &dir,
             &mcp,
+            &progress,
         )
         .await;
         assert!(out.text.starts_with("error:"), "{}", out.text);
@@ -720,10 +786,43 @@ mod tests {
             &call("read_file", json!({ "path": "shot.png" })),
             &dir,
             &mcp,
+            &progress,
         )
         .await;
         assert_eq!(out.media.len(), 1, "{out:?}");
         assert!(out.text.contains("attached image"), "{}", out.text);
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[tokio::test]
+    async fn bash_streams_progress() {
+        let dir = std::env::temp_dir().join(format!("oxide_bash_stream_{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let mcp = McpRegistry::default();
+
+        let seen = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let sink = Arc::clone(&seen);
+        let progress = Progress::new(Arc::new(move |chunk: &str| {
+            sink.lock().unwrap().push(chunk.to_string());
+        }));
+
+        let out = execute(
+            &call("bash", json!({ "command": "echo one; echo two" })),
+            &dir,
+            &mcp,
+            &progress,
+        )
+        .await;
+        assert!(
+            out.text.contains("one") && out.text.contains("two"),
+            "{}",
+            out.text
+        );
+
+        let seen = seen.lock().unwrap();
+        assert!(seen.iter().any(|chunk| chunk == "one"), "{seen:?}");
+        assert!(seen.iter().any(|chunk| chunk == "two"), "{seen:?}");
 
         std::fs::remove_dir_all(&dir).ok();
     }

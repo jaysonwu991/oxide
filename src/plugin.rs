@@ -209,7 +209,7 @@ impl PluginHost {
         response.get("args").cloned()
     }
 
-    pub async fn tool_after(&self, tool: &str, args: &Value, output: &str) -> Option<String> {
+    pub async fn tool_after(&self, tool: &str, args: &Value, output: &str) -> Option<HookResult> {
         let host = self.inner.as_ref()?;
         let mut host = host.lock().await;
         let response = host
@@ -220,11 +220,27 @@ impl PluginHost {
             )
             .await
             .ok()?;
-        response
+        let text = response
             .get("output")
             .and_then(Value::as_str)
-            .map(str::to_string)
+            .map(str::to_string)?;
+        let terminate = response
+            .get("terminate")
+            .and_then(Value::as_bool)
+            .unwrap_or(false);
+        Some(HookResult {
+            output: text,
+            terminate,
+        })
     }
+}
+
+/// The result of a `tool.execute.after` hook: possibly-rewritten output text
+/// plus an optional request to end the turn once the batch finishes.
+#[derive(Debug, Clone)]
+pub struct HookResult {
+    pub output: String,
+    pub terminate: bool,
 }
 
 impl Drop for PluginHost {
@@ -324,6 +340,7 @@ export default async () => ({
   },
   "tool.execute.after": async (input, output) => {
     output.output = `${output.output} [seen]`;
+    if (input.tool === "bash") output.terminate = true;
   },
 });
 "#,
@@ -349,7 +366,14 @@ export default async () => ({
             .tool_after("write_file", &json!({ "path": "a.rs" }), "done")
             .await
             .unwrap();
-        assert_eq!(after, "done [seen]");
+        assert_eq!(after.output, "done [seen]");
+        assert!(!after.terminate);
+
+        let terminating = host
+            .tool_after("bash", &json!({ "command": "true" }), "ok")
+            .await
+            .unwrap();
+        assert!(terminating.terminate);
 
         drop(host);
         std::fs::remove_dir_all(&dir).ok();

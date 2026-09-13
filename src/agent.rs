@@ -1,7 +1,7 @@
 use crate::config::Config;
 use crate::dcp::{self, DcpState};
 use crate::ecosystem::AgentMode;
-use crate::llm::{FunctionSpec, LlmClient, Message, ToolSpec};
+use crate::llm::{FunctionSpec, LlmClient, Message, ToolCall, ToolSpec};
 use crate::lsp::LspManager;
 use crate::mcp::McpRegistry;
 use crate::memory::QueryScope;
@@ -15,7 +15,7 @@ use serde_json::{json, Value};
 use std::future::Future;
 use std::path::{Path, PathBuf};
 use std::pin::Pin;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use tokio::sync::mpsc::UnboundedSender;
 
 const MAX_STEPS: usize = 25;
@@ -32,6 +32,33 @@ pub struct ApprovalRequest {
     pub respond: tokio::sync::oneshot::Sender<bool>,
 }
 
+/// A queue of user messages typed while the agent is busy. They are injected
+/// into the conversation between steps, so the model sees the guidance without
+/// interrupting the in-flight tool batch.
+#[derive(Clone, Default)]
+pub struct Steering {
+    queue: Arc<Mutex<Vec<Message>>>,
+}
+
+impl Steering {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn push(&self, message: Message) {
+        if let Ok(mut queue) = self.queue.lock() {
+            queue.push(message);
+        }
+    }
+
+    pub fn drain(&self) -> Vec<Message> {
+        self.queue
+            .lock()
+            .map(|mut queue| std::mem::take(&mut *queue))
+            .unwrap_or_default()
+    }
+}
+
 #[derive(Clone)]
 pub struct Runtime {
     pub mcp: Arc<McpRegistry>,
@@ -40,12 +67,14 @@ pub struct Runtime {
     pub snapshots: Option<Arc<Snapshots>>,
     pub lsp: Arc<LspManager>,
     pub approve: Approver,
+    pub steering: Steering,
 }
 
 #[derive(Debug, Clone)]
 pub enum AgentEvent {
     Text(String),
     ToolCall { name: String, args: String },
+    ToolProgress { name: String, chunk: String },
     ToolResult { name: String, output: String },
     Error(String),
     Finished(Vec<Message>),
@@ -120,6 +149,9 @@ pub fn run_subagent(
                 }
                 AgentEvent::ToolCall { name, args } => {
                     let _ = tx.send(AgentEvent::ToolCall { name, args });
+                }
+                AgentEvent::ToolProgress { name, chunk } => {
+                    let _ = tx.send(AgentEvent::ToolProgress { name, chunk });
                 }
                 AgentEvent::ToolResult { name, output } => {
                     let _ = tx.send(AgentEvent::ToolResult { name, output });
@@ -198,6 +230,10 @@ async fn run_loop(
     let mut messages = history;
 
     for _ in 0..MAX_STEPS {
+        for steered in runtime.steering.drain() {
+            record(&runtime.session, depth, &steered);
+            messages.push(steered);
+        }
         if depth == 0 && !config.dcp.enabled && crate::compact::needs_compaction(&messages) {
             if let Ok(compacted) = crate::compact::compact(&config, messages.clone()).await {
                 messages = compacted;
@@ -240,92 +276,237 @@ async fn run_loop(
         messages.push(assistant);
 
         if tool_calls.is_empty() {
-            let _ = tx.send(AgentEvent::Finished(messages));
-            return;
+            let steered = runtime.steering.drain();
+            if steered.is_empty() {
+                let _ = tx.send(AgentEvent::Finished(messages));
+                return;
+            }
+            for message in steered {
+                record(&runtime.session, depth, &message);
+                messages.push(message);
+            }
+            continue;
         }
 
-        for original in &tool_calls {
-            let name = original.function.name.clone();
-            let _ = tx.send(AgentEvent::ToolCall {
-                name: name.clone(),
-                args: original.function.arguments.clone(),
-            });
+        let mut terminated: Vec<bool> = Vec::with_capacity(tool_calls.len());
+        let parallel = tool_calls.len() > 1
+            && tool_calls
+                .iter()
+                .all(|call| concurrency_safe(&call.function.name));
 
-            let mut call = original.clone();
-            let args =
-                serde_json::from_str::<Value>(&call.function.arguments).unwrap_or(Value::Null);
-            let effective_args = match runtime.plugins.tool_before(&name, &args).await {
-                Some(mutated) if mutated != args => {
-                    if let Ok(text) = serde_json::to_string(&mutated) {
-                        call.function.arguments = text;
-                    }
-                    mutated
-                }
-                _ => args,
-            };
+        if parallel {
+            enum Prepared {
+                Immediate(tools::ToolOutput),
+                Run { call: ToolCall, args: Value },
+            }
 
-            let subject = subject_for(&name, &effective_args);
-            let mut output = if name == "compress" && dcp_enabled {
-                match dcp::apply_compress(&mut dcp_state, &messages, &config.dcp, &effective_args) {
-                    Ok(text) => {
-                        if let Some(log) = &runtime.session {
-                            if let Some(compression) = dcp_state.compressions.last() {
-                                let _ = log.append_dcp(compression);
-                            }
+            let mut prepared = Vec::with_capacity(tool_calls.len());
+            for original in &tool_calls {
+                let name = original.function.name.clone();
+                let _ = tx.send(AgentEvent::ToolCall {
+                    name: name.clone(),
+                    args: original.function.arguments.clone(),
+                });
+
+                let mut call = original.clone();
+                let args =
+                    serde_json::from_str::<Value>(&call.function.arguments).unwrap_or(Value::Null);
+                let effective_args = match runtime.plugins.tool_before(&name, &args).await {
+                    Some(mutated) if mutated != args => {
+                        if let Ok(text) = serde_json::to_string(&mutated) {
+                            call.function.arguments = text;
                         }
-                        tools::ToolOutput::text(text)
+                        mutated
                     }
-                    Err(err) => tools::ToolOutput::text(format!("error: {err:#}")),
-                }
-            } else {
-                match permissions.decide(&name, &subject) {
-                    Action::Deny => {
-                        tools::ToolOutput::text(format!("error: permission denied for `{name}`"))
-                    }
+                    _ => args,
+                };
+                let subject = subject_for(&name, &effective_args);
+                prepared.push(match permissions.decide(&name, &subject) {
+                    Action::Deny => Prepared::Immediate(tools::ToolOutput::text(format!(
+                        "error: permission denied for `{name}`"
+                    ))),
                     Action::Ask if !config.auto_approve => {
                         if (runtime.approve)(name.clone(), subject.clone()).await {
-                            dispatch(&config, &cwd, &runtime, &call, depth).await
+                            Prepared::Run {
+                                call,
+                                args: effective_args,
+                            }
                         } else {
-                            tools::ToolOutput::text(format!(
+                            Prepared::Immediate(tools::ToolOutput::text(format!(
                                 "error: permission denied for `{name}`"
-                            ))
+                            )))
                         }
                     }
-                    _ => dispatch(&config, &cwd, &runtime, &call, depth).await,
-                }
-            };
-            if name == "write_file" && !output.text.starts_with("error:") {
-                if let Some(path) = effective_args.get("path").and_then(Value::as_str) {
-                    if let Some(diagnostics) = runtime.lsp.diagnostics(&cwd, Path::new(path)).await
-                    {
-                        output.text.push_str("\n\n");
-                        output.text.push_str(&diagnostics);
+                    _ => Prepared::Run {
+                        call,
+                        args: effective_args,
+                    },
+                });
+            }
+
+            let mut handles = Vec::with_capacity(prepared.len());
+            for item in prepared {
+                let config = config.clone();
+                let cwd = cwd.clone();
+                let runtime = runtime.clone();
+                let tx = tx.clone();
+                handles.push(tokio::spawn(async move {
+                    match item {
+                        Prepared::Immediate(output) => output,
+                        Prepared::Run { call, args } => {
+                            let name = call.function.name.clone();
+                            let progress = tools::Progress::new(Arc::new({
+                                let tx = tx.clone();
+                                let name = name.clone();
+                                move |chunk: &str| {
+                                    let _ = tx.send(AgentEvent::ToolProgress {
+                                        name: name.clone(),
+                                        chunk: chunk.to_string(),
+                                    });
+                                }
+                            }));
+                            let mut output =
+                                dispatch(&config, &cwd, &runtime, &call, depth, &progress).await;
+                            if let Some(result) =
+                                runtime.plugins.tool_after(&name, &args, &output.text).await
+                            {
+                                output.text = result.output;
+                                output.terminate |= result.terminate;
+                            }
+                            output
+                        }
+                    }
+                }));
+            }
+
+            for (handle, original) in handles.into_iter().zip(&tool_calls) {
+                let output = match handle.await {
+                    Ok(output) => output,
+                    Err(err) => tools::ToolOutput::text(format!("error: tool task failed: {err}")),
+                };
+                terminated.push(output.terminate);
+                let _ = tx.send(AgentEvent::ToolResult {
+                    name: original.function.name.clone(),
+                    output: output.text.clone(),
+                });
+                let tool_message = if output.media.is_empty() {
+                    Message::tool(original.id.clone(), output.text)
+                } else {
+                    Message::tool_parts(original.id.clone(), output.text, output.media)
+                };
+                record(&runtime.session, depth, &tool_message);
+                messages.push(tool_message);
+            }
+        } else {
+            for original in &tool_calls {
+                let name = original.function.name.clone();
+                let _ = tx.send(AgentEvent::ToolCall {
+                    name: name.clone(),
+                    args: original.function.arguments.clone(),
+                });
+
+                let mut call = original.clone();
+                let args =
+                    serde_json::from_str::<Value>(&call.function.arguments).unwrap_or(Value::Null);
+                let effective_args = match runtime.plugins.tool_before(&name, &args).await {
+                    Some(mutated) if mutated != args => {
+                        if let Ok(text) = serde_json::to_string(&mutated) {
+                            call.function.arguments = text;
+                        }
+                        mutated
+                    }
+                    _ => args,
+                };
+
+                let subject = subject_for(&name, &effective_args);
+                let progress = tools::Progress::new(Arc::new({
+                    let tx = tx.clone();
+                    let name = name.clone();
+                    move |chunk: &str| {
+                        let _ = tx.send(AgentEvent::ToolProgress {
+                            name: name.clone(),
+                            chunk: chunk.to_string(),
+                        });
+                    }
+                }));
+                let mut output = if name == "compress" && dcp_enabled {
+                    match dcp::apply_compress(
+                        &mut dcp_state,
+                        &messages,
+                        &config.dcp,
+                        &effective_args,
+                    ) {
+                        Ok(text) => {
+                            if let Some(log) = &runtime.session {
+                                if let Some(compression) = dcp_state.compressions.last() {
+                                    let _ = log.append_dcp(compression);
+                                }
+                            }
+                            tools::ToolOutput::text(text)
+                        }
+                        Err(err) => tools::ToolOutput::text(format!("error: {err:#}")),
+                    }
+                } else {
+                    match permissions.decide(&name, &subject) {
+                        Action::Deny => tools::ToolOutput::text(format!(
+                            "error: permission denied for `{name}`"
+                        )),
+                        Action::Ask if !config.auto_approve => {
+                            if (runtime.approve)(name.clone(), subject.clone()).await {
+                                dispatch(&config, &cwd, &runtime, &call, depth, &progress).await
+                            } else {
+                                tools::ToolOutput::text(format!(
+                                    "error: permission denied for `{name}`"
+                                ))
+                            }
+                        }
+                        _ => dispatch(&config, &cwd, &runtime, &call, depth, &progress).await,
+                    }
+                };
+                if name == "write_file" && !output.text.starts_with("error:") {
+                    if let Some(path) = effective_args.get("path").and_then(Value::as_str) {
+                        if let Some(diagnostics) =
+                            runtime.lsp.diagnostics(&cwd, Path::new(path)).await
+                        {
+                            output.text.push_str("\n\n");
+                            output.text.push_str(&diagnostics);
+                        }
                     }
                 }
-            }
-            let text = runtime
-                .plugins
-                .tool_after(&name, &effective_args, &output.text)
-                .await
-                .unwrap_or(output.text);
+                if let Some(result) = runtime
+                    .plugins
+                    .tool_after(&name, &effective_args, &output.text)
+                    .await
+                {
+                    output.text = result.output;
+                    output.terminate |= result.terminate;
+                }
+                terminated.push(output.terminate);
+                let text = output.text.clone();
 
-            let _ = tx.send(AgentEvent::ToolResult {
-                name,
-                output: text.clone(),
-            });
-            let tool_message = if output.media.is_empty() {
-                Message::tool(call.id.clone(), text)
-            } else {
-                Message::tool_parts(call.id.clone(), text, output.media)
-            };
-            record(&runtime.session, depth, &tool_message);
-            messages.push(tool_message);
+                let _ = tx.send(AgentEvent::ToolResult {
+                    name,
+                    output: text.clone(),
+                });
+                let tool_message = if output.media.is_empty() {
+                    Message::tool(call.id.clone(), text)
+                } else {
+                    Message::tool_parts(call.id.clone(), text, output.media)
+                };
+                record(&runtime.session, depth, &tool_message);
+                messages.push(tool_message);
+            }
         }
 
         if depth == 0 {
             if let Some(snapshots) = &runtime.snapshots {
                 let _ = snapshots.commit("turn");
             }
+        }
+
+        if batch_terminates(&terminated) {
+            let _ = tx.send(AgentEvent::Finished(messages));
+            return;
         }
     }
 
@@ -335,12 +516,36 @@ async fn run_loop(
     let _ = tx.send(AgentEvent::Finished(messages));
 }
 
+/// A batch ends the turn when every tool result in it requested termination.
+fn batch_terminates(terminated: &[bool]) -> bool {
+    !terminated.is_empty() && terminated.iter().all(|value| *value)
+}
+
+/// Tools with no cross-call side effects can run concurrently when the model
+/// batches several of them. Anything that mutates the workspace (`write_file`,
+/// `patch`, `bash`), spawns work (`task`), or has unknown remote effects (MCP)
+/// stays on the sequential path so result ordering and side effects are stable.
+fn concurrency_safe(name: &str) -> bool {
+    matches!(
+        name,
+        "read_file"
+            | "list_dir"
+            | "glob"
+            | "grep"
+            | "webfetch"
+            | "memory"
+            | "skill"
+            | "diagnostics"
+    )
+}
+
 async fn dispatch(
     config: &Config,
     cwd: &Path,
     runtime: &Runtime,
     call: &crate::llm::ToolCall,
     depth: usize,
+    progress: &tools::Progress,
 ) -> tools::ToolOutput {
     match call.function.name.as_str() {
         "task" => tools::ToolOutput::text(
@@ -349,7 +554,7 @@ async fn dispatch(
         "skill" => tools::ToolOutput::text(skill(config, &call.function.arguments)),
         "memory" => tools::ToolOutput::text(memory(config, &call.function.arguments)),
         "diagnostics" => lsp_diagnostics(runtime, cwd, &call.function.arguments).await,
-        _ => tools::execute(call, cwd, &runtime.mcp).await,
+        _ => tools::execute(call, cwd, &runtime.mcp, progress).await,
     }
 }
 
@@ -443,7 +648,9 @@ async fn task_inner(
             AgentEvent::Text(delta) => output.push_str(&delta),
             AgentEvent::Error(message) => error = Some(message),
             AgentEvent::Finished(_) => break,
-            AgentEvent::ToolCall { .. } | AgentEvent::ToolResult { .. } => {}
+            AgentEvent::ToolCall { .. }
+            | AgentEvent::ToolProgress { .. }
+            | AgentEvent::ToolResult { .. } => {}
         }
     }
     let _ = handle.await;
@@ -770,6 +977,51 @@ mod tests {
             prompt: String::new(),
         });
         assert!(task_spec(&config).function.description.contains("reviewer"));
+    }
+
+    #[test]
+    fn only_read_only_tools_are_concurrency_safe() {
+        for name in [
+            "read_file",
+            "list_dir",
+            "glob",
+            "grep",
+            "webfetch",
+            "memory",
+            "skill",
+            "diagnostics",
+        ] {
+            assert!(concurrency_safe(name), "{name} should be concurrency-safe");
+        }
+        for name in [
+            "write_file",
+            "patch",
+            "bash",
+            "task",
+            "compress",
+            "mcp__server__tool",
+        ] {
+            assert!(!concurrency_safe(name), "{name} must stay sequential");
+        }
+    }
+
+    #[test]
+    fn batch_terminates_only_when_all_request_it() {
+        assert!(!batch_terminates(&[]));
+        assert!(!batch_terminates(&[true, false]));
+        assert!(batch_terminates(&[true, true]));
+    }
+
+    #[test]
+    fn steering_queue_drains_in_order() {
+        let steering = Steering::new();
+        steering.push(Message::user("first"));
+        steering.push(Message::user("second"));
+        let drained = steering.drain();
+        assert_eq!(drained.len(), 2);
+        assert_eq!(drained[0].display().as_deref(), Some("first"));
+        assert_eq!(drained[1].display().as_deref(), Some("second"));
+        assert!(steering.drain().is_empty());
     }
 
     #[test]

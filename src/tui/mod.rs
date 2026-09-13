@@ -229,6 +229,15 @@ fn handle_key(
         }
         KeyCode::Enter => {
             if app.busy {
+                let raw = app.input.trim().to_string();
+                if raw.is_empty() {
+                    return;
+                }
+                app.input.clear();
+                app.items.push(ChatItem::User(raw.clone()));
+                app.auto_scroll = true;
+                app.steering.push(Message::user(raw));
+                app.status = "queued guidance...".to_string();
                 return;
             }
             let raw = app.input.trim().to_string();
@@ -369,6 +378,7 @@ fn handle_key(
                 snapshots: snapshots.cloned(),
                 lsp: Arc::clone(lsp),
                 approve: Arc::clone(approve),
+                steering: app.steering.clone(),
             };
             tokio::spawn(async move {
                 if subtask {
@@ -433,6 +443,26 @@ fn handle_agent_event(event: AgentEvent, app: &mut App) {
             app.auto_scroll = true;
             app.items.push(ChatItem::Tool { name, args });
             app.status = "running tool...".to_string();
+        }
+        AgentEvent::ToolProgress { name, chunk } => {
+            app.auto_scroll = true;
+            let append = matches!(
+                app.items.last(),
+                Some(ChatItem::ToolProgress { name: last, .. }) if last == &name
+            );
+            if append {
+                if let Some(ChatItem::ToolProgress { output, .. }) = app.items.last_mut() {
+                    if !output.is_empty() {
+                        output.push('\n');
+                    }
+                    output.push_str(&chunk);
+                }
+            } else {
+                app.items.push(ChatItem::ToolProgress {
+                    name,
+                    output: chunk,
+                });
+            }
         }
         AgentEvent::ToolResult { name, output } => {
             app.auto_scroll = true;

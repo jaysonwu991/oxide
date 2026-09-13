@@ -324,6 +324,7 @@ async fn run_print(
         snapshots: Snapshots::open(&cwd).ok().map(Arc::new),
         lsp: Arc::new(LspManager::new()),
         approve,
+        steering: crate::agent::Steering::new(),
     };
 
     if subtask {
@@ -348,6 +349,9 @@ async fn run_print(
             }
             AgentEvent::ToolCall { name, args } => {
                 eprintln!("\n[tool] {name} {args}");
+            }
+            AgentEvent::ToolProgress { chunk, .. } => {
+                eprintln!("{chunk}");
             }
             AgentEvent::ToolResult { name, output } => {
                 eprintln!("[result: {name}] {} bytes", output.len());

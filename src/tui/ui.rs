@@ -51,67 +51,9 @@ fn draw_messages(frame: &mut Frame, app: &mut App, area: Rect) {
     frame.render_widget(block, area);
 
     let width = inner.width.saturating_sub(2) as usize;
-    let mut lines: Vec<Line> = Vec::new();
+    sync_lines(app, width);
 
-    for item in &app.items {
-        match item {
-            ChatItem::User(text) => {
-                lines.push(Line::from(Span::styled(
-                    "you",
-                    Style::default()
-                        .fg(Color::Cyan)
-                        .add_modifier(Modifier::BOLD),
-                )));
-                push_wrapped(&mut lines, text, width, Style::default());
-            }
-            ChatItem::Assistant(text) => {
-                lines.push(Line::from(Span::styled(
-                    "assistant",
-                    Style::default()
-                        .fg(Color::Green)
-                        .add_modifier(Modifier::BOLD),
-                )));
-                push_wrapped(&mut lines, text, width, Style::default());
-            }
-            ChatItem::Tool { name, args } => {
-                lines.push(Line::from(Span::styled(
-                    format!("tool: {name} {args}"),
-                    Style::default().fg(Color::Yellow),
-                )));
-            }
-            ChatItem::ToolResult { name, output } => {
-                lines.push(Line::from(Span::styled(
-                    format!("result: {name}"),
-                    Style::default().fg(Color::DarkGray),
-                )));
-                push_wrapped(
-                    &mut lines,
-                    output,
-                    width,
-                    Style::default().fg(Color::DarkGray),
-                );
-            }
-            ChatItem::Error(text) => {
-                push_wrapped(
-                    &mut lines,
-                    &format!("error: {text}"),
-                    width,
-                    Style::default().fg(Color::Red),
-                );
-            }
-            ChatItem::Info(text) => {
-                push_wrapped(
-                    &mut lines,
-                    text,
-                    width,
-                    Style::default().fg(Color::DarkGray),
-                );
-            }
-        }
-        lines.push(Line::from(""));
-    }
-
-    let total = lines.len() as u16;
+    let total = app.lines.len() as u16;
     let view = inner.height;
     if app.auto_scroll {
         app.scroll = total.saturating_sub(view);
@@ -119,10 +61,117 @@ fn draw_messages(frame: &mut Frame, app: &mut App, area: Rect) {
         app.scroll = app.scroll.min(total.saturating_sub(view));
     }
 
-    let paragraph = Paragraph::new(lines)
+    let paragraph = Paragraph::new(app.lines.clone())
         .wrap(Wrap { trim: false })
         .scroll((app.scroll, 0));
     frame.render_widget(paragraph, inner);
+}
+
+/// Incrementally rebuild the rendered lines, reusing everything before the
+/// first changed conversation item. Items are append-mostly, so a cache keyed by
+/// per-item signatures keeps redraws proportional to what actually changed.
+fn sync_lines(app: &mut App, width: usize) {
+    if app.render_width != width {
+        app.lines.clear();
+        app.line_offsets.clear();
+        app.signatures.clear();
+        app.render_width = width;
+    }
+
+    let count = app.items.len();
+    if app.signatures.len() > count {
+        let cut = app
+            .line_offsets
+            .get(count)
+            .copied()
+            .unwrap_or(app.lines.len());
+        app.lines.truncate(cut);
+        app.line_offsets.truncate(count);
+        app.signatures.truncate(count);
+    }
+
+    let mut start = 0;
+    while start < count
+        && start < app.signatures.len()
+        && app.signatures[start] == app.items[start].signature()
+    {
+        start += 1;
+    }
+    if start == count {
+        return;
+    }
+
+    let cut = app
+        .line_offsets
+        .get(start)
+        .copied()
+        .unwrap_or(app.lines.len());
+    app.lines.truncate(cut);
+    app.line_offsets.truncate(start);
+    app.signatures.truncate(start);
+
+    for index in start..count {
+        let signature = app.items[index].signature();
+        let offset = app.lines.len();
+        app.line_offsets.push(offset);
+        app.signatures.push(signature);
+        render_item(&app.items[index], width, &mut app.lines);
+        app.lines.push(Line::from(""));
+    }
+}
+
+fn render_item(item: &ChatItem, width: usize, lines: &mut Vec<Line<'static>>) {
+    match item {
+        ChatItem::User(text) => {
+            lines.push(Line::from(Span::styled(
+                "you",
+                Style::default()
+                    .fg(Color::Cyan)
+                    .add_modifier(Modifier::BOLD),
+            )));
+            push_wrapped(lines, text, width, Style::default());
+        }
+        ChatItem::Assistant(text) => {
+            lines.push(Line::from(Span::styled(
+                "assistant",
+                Style::default()
+                    .fg(Color::Green)
+                    .add_modifier(Modifier::BOLD),
+            )));
+            push_wrapped(lines, text, width, Style::default());
+        }
+        ChatItem::Tool { name, args } => {
+            lines.push(Line::from(Span::styled(
+                format!("tool: {name} {args}"),
+                Style::default().fg(Color::Yellow),
+            )));
+        }
+        ChatItem::ToolProgress { name, output } => {
+            lines.push(Line::from(Span::styled(
+                format!("progress: {name}"),
+                Style::default().fg(Color::DarkGray),
+            )));
+            push_wrapped(lines, output, width, Style::default().fg(Color::DarkGray));
+        }
+        ChatItem::ToolResult { name, output } => {
+            lines.push(Line::from(Span::styled(
+                format!("result: {name}"),
+                Style::default().fg(Color::DarkGray),
+            )));
+            push_wrapped(lines, output, width, Style::default().fg(Color::DarkGray));
+        }
+        ChatItem::Error(text) => {
+            push_wrapped(
+                lines,
+                &format!("error: {text}"),
+                width,
+                Style::default().fg(Color::Red),
+            );
+        }
+        ChatItem::Info(text) => {
+            push_wrapped(lines, text, width, Style::default().fg(Color::DarkGray));
+        }
+    }
 }
 
 fn draw_input(frame: &mut Frame, app: &App, area: Rect) {

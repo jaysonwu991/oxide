@@ -24,7 +24,13 @@ box, with Claude Code configuration support for compatibility.
   deduplication and error purging that shrink outgoing context without altering
   session history.
 - LSP diagnostics via rust-analyzer, typescript-language-server, pyright, gopls.
-- Plugin hooks (`tool.execute.before` / `tool.execute.after`) run under bun/node.
+- Plugin hooks (`tool.execute.before` / `tool.execute.after`) run under bun/node,
+  and a hook can end the turn by setting `output.terminate = true`.
+- Agent-harness niceties: read-only tool calls in a batch run in parallel while
+  preserving model order, `bash` output streams into the UI as it arrives, and
+  typing while the agent works steers it between steps.
+- Incremental TUI rendering: only conversation items that changed since the last
+  frame are re-wrapped and re-styled.
 
 ## Comparison
 
@@ -301,6 +307,18 @@ Connected MCP tools appear as `<server>__<tool>`.
 
 `read_file` returns images and PDFs as viewable attachments, and `write_file`
 appends LSP diagnostics for the edited file.
+
+When the model requests several tools at once, the ones with no side effects
+(`read_file`, `list_dir`, `glob`, `grep`, `webfetch`, `memory`, `skill`,
+`diagnostics`) run concurrently; anything that writes to the workspace, spawns a
+subagent, or has unknown remote effects stays sequential. Results are recorded in
+the model's original call order. `bash` streams stdout and stderr line by line
+into the TUI (and to stderr in `-p` mode) before the final combined output.
+
+While the agent is busy, pressing Enter queues the current input as steering
+rather than starting a new run; the message is injected into the conversation
+before the next model call. A `tool.execute.after` plugin can also request
+termination for the batch with `output.terminate = true`.
 
 ## Context pruning
 

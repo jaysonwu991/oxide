@@ -255,6 +255,7 @@ export const RustFmt = async ({ $, directory }) => {
     },
     "tool.execute.after": async (input, output) => {
       // input.tool, input.args — mutate output.output to change the result
+      // output.terminate = true — end the turn once this batch finishes
     },
   }
 }
@@ -264,6 +265,8 @@ export const RustFmt = async ({ $, directory }) => {
   arguments.
 - `tool.execute.after` runs after a tool; mutate `output.output` to alter the
   result text.
+- Set `output.terminate = true` in `tool.execute.after` to skip the follow-up
+  model call. The turn ends only when every tool result in the batch terminates.
 - The `$` helper runs shell commands (`await $\`cmd\`.cwd(dir).quiet().nothrow()`).
 - **Remove** a plugin by deleting its file.
 
