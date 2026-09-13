@@ -97,7 +97,20 @@ pub enum McpKind {
     Remote {
         url: String,
         headers: BTreeMap<String, String>,
+        oauth: Option<McpOAuth>,
     },
+}
+
+/// OAuth settings for a remote MCP server, mirroring the Claude Code `oauth`
+/// block (`clientId`, `callbackPort`) plus optional secret, scopes and redirect.
+#[derive(Debug, Clone, Default)]
+pub struct McpOAuth {
+    pub client_id: Option<String>,
+    pub client_secret: Option<String>,
+    pub callback_port: Option<u16>,
+    pub scopes: Vec<String>,
+    pub redirect_uri: Option<String>,
+    pub scope_param: Option<String>,
 }
 
 impl Ecosystem {
@@ -147,7 +160,7 @@ pub fn load(cwd: &Path) -> Ecosystem {
 
     if let Some(home) = dirs::home_dir() {
         load_claude_dir(&mut ecosystem, &home.join(".claude"));
-        load_claude_mcp(&mut ecosystem, &home.join(".claude.json"));
+        load_mcp(&mut ecosystem, &home.join(".claude.json"));
         load_oxide_dir(&mut ecosystem, &home.join(".oxide"));
     }
 
@@ -156,7 +169,7 @@ pub fn load(cwd: &Path) -> Ecosystem {
         for name in ["CLAUDE.md", "CLAUDE.local.md"] {
             push_memory(&mut ecosystem, &root.join(name));
         }
-        load_claude_mcp(&mut ecosystem, &root.join(".mcp.json"));
+        load_mcp(&mut ecosystem, &root.join(".mcp.json"));
         load_oxide_dir(&mut ecosystem, &root.join(".oxide"));
         push_memory(&mut ecosystem, &root.join("AGENTS.md"));
     }
@@ -182,6 +195,7 @@ pub(crate) fn project_root(cwd: &Path) -> Option<PathBuf> {
 
 fn load_oxide_dir(ecosystem: &mut Ecosystem, dir: &Path) {
     load_layout(ecosystem, dir, "AGENTS.md");
+    load_mcp(ecosystem, &dir.join("mcp.json"));
 }
 
 // ---------------------------------------------------------------------------
@@ -214,7 +228,7 @@ fn load_layout(ecosystem: &mut Ecosystem, dir: &Path, memory_file: &str) {
     }
 }
 
-fn load_claude_mcp(ecosystem: &mut Ecosystem, path: &Path) {
+fn load_mcp(ecosystem: &mut Ecosystem, path: &Path) {
     let Some(json) = read_json(path) else { return };
     if let Some(servers) = json.get("mcpServers").and_then(Json::as_object) {
         for (name, config) in servers {
@@ -233,6 +247,7 @@ fn mcp_from_claude(name: &str, config: &Json) -> Option<McpServer> {
             kind: McpKind::Remote {
                 url: url.to_string(),
                 headers: string_map(config.get("headers")),
+                oauth: parse_oauth(config.get("oauth")).or_else(|| known_oauth(url)),
             },
         });
     }
@@ -248,6 +263,72 @@ fn mcp_from_claude(name: &str, config: &Json) -> Option<McpServer> {
             cwd: None,
         },
     })
+}
+
+pub(crate) fn parse_oauth(value: Option<&Json>) -> Option<McpOAuth> {
+    let object = value?.as_object()?;
+    let callback_port = object
+        .get("callbackPort")
+        .or_else(|| object.get("callback_port"))
+        .and_then(Json::as_u64)
+        .and_then(|port| u16::try_from(port).ok());
+    let scopes = json_string_list(object.get("scopes")).unwrap_or_else(|| {
+        object
+            .get("scope")
+            .and_then(Json::as_str)
+            .map(|scope| {
+                scope
+                    .split([',', ' '])
+                    .filter(|s| !s.is_empty())
+                    .map(str::to_string)
+                    .collect()
+            })
+            .unwrap_or_default()
+    });
+    Some(McpOAuth {
+        client_id: object
+            .get("clientId")
+            .or_else(|| object.get("client_id"))
+            .and_then(Json::as_str)
+            .map(str::to_string),
+        client_secret: object
+            .get("clientSecret")
+            .or_else(|| object.get("client_secret"))
+            .and_then(Json::as_str)
+            .map(str::to_string),
+        callback_port,
+        scopes,
+        redirect_uri: object
+            .get("redirectUri")
+            .or_else(|| object.get("redirect_uri"))
+            .and_then(Json::as_str)
+            .map(str::to_string),
+        scope_param: object
+            .get("scopeParam")
+            .or_else(|| object.get("scope_param"))
+            .and_then(Json::as_str)
+            .map(str::to_string),
+    })
+}
+
+const SLACK_MCP_URL: &str = "https://mcp.slack.com/mcp";
+const SLACK_MCP_CLIENT_ID: &str = "1601185624273.8899143856786";
+const SLACK_MCP_CALLBACK_PORT: u16 = 3118;
+
+/// Built-in OAuth client defaults for well-known remote servers that do not
+/// support dynamic client registration, so they can be added by URL alone.
+pub(crate) fn known_oauth(url: &str) -> Option<McpOAuth> {
+    if url
+        .trim_end_matches('/')
+        .eq_ignore_ascii_case(SLACK_MCP_URL)
+    {
+        return Some(McpOAuth {
+            client_id: Some(SLACK_MCP_CLIENT_ID.to_string()),
+            callback_port: Some(SLACK_MCP_CALLBACK_PORT),
+            ..McpOAuth::default()
+        });
+    }
+    None
 }
 
 // ---------------------------------------------------------------------------
@@ -517,6 +598,31 @@ mod tests {
         assert!(ecosystem.command("build").is_some());
         assert!(ecosystem.skills.iter().any(|skill| skill.name == "audit"));
         assert!(ecosystem.memory.iter().any(|entry| entry.name == "AGENTS"));
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn loads_oxide_mcp_servers_and_overrides_mcp_json() {
+        let dir = temp_dir("oxide_mcp");
+        std::fs::create_dir_all(dir.join(".git")).unwrap();
+        std::fs::create_dir_all(dir.join(".oxide")).unwrap();
+        std::fs::write(
+            dir.join(".mcp.json"),
+            r#"{"mcpServers":{"shared":{"url":"https://example.com/mcp"},"claude":{"command":"npx"}}}"#,
+        )
+        .unwrap();
+        std::fs::write(
+            dir.join(".oxide/mcp.json"),
+            r#"{"mcpServers":{"shared":{"command":"npx","args":["-y","server-fs"]}}}"#,
+        )
+        .unwrap();
+
+        let ecosystem = load(&dir);
+
+        let shared = ecosystem.mcp.iter().find(|s| s.name == "shared").unwrap();
+        assert!(matches!(shared.kind, McpKind::Local { .. }));
+        assert!(ecosystem.mcp.iter().any(|s| s.name == "claude"));
 
         std::fs::remove_dir_all(&dir).ok();
     }

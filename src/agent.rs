@@ -1,4 +1,5 @@
 use crate::config::Config;
+use crate::dcp::{self, DcpState};
 use crate::ecosystem::AgentMode;
 use crate::llm::{FunctionSpec, LlmClient, Message, ToolSpec};
 use crate::lsp::LspManager;
@@ -164,6 +165,16 @@ async fn run_loop(
 ) {
     let client = LlmClient::new(config.clone());
     let permissions = Permissions::from_config(&config);
+    let dcp_enabled = depth == 0 && config.dcp.enabled;
+    let mut dcp_state = if dcp_enabled {
+        runtime
+            .session
+            .as_ref()
+            .map(|log| log.dcp_state())
+            .unwrap_or_default()
+    } else {
+        DcpState::default()
+    };
     let mut tool_specs = tools::specs(&runtime.mcp);
     if depth < MAX_TASK_DEPTH
         && config
@@ -179,17 +190,35 @@ async fn run_loop(
     }
     tool_specs.push(memory_spec());
     tool_specs.push(lsp_spec());
+    if dcp_enabled {
+        if let Some(spec) = dcp::compress_spec(&config.dcp) {
+            tool_specs.push(spec);
+        }
+    }
     let mut messages = history;
 
     for _ in 0..MAX_STEPS {
-        if depth == 0 && crate::compact::needs_compaction(&messages) {
+        if depth == 0 && !config.dcp.enabled && crate::compact::needs_compaction(&messages) {
             if let Ok(compacted) = crate::compact::compact(&config, messages.clone()).await {
                 messages = compacted;
             }
         }
-        let mut request = Vec::with_capacity(messages.len() + 1);
+        let mut request = Vec::with_capacity(messages.len() + 2);
         request.push(Message::system(config.compose_system_prompt()));
-        request.extend(messages.iter().cloned());
+        if dcp_enabled {
+            request.extend(dcp::prune(&messages, &dcp_state, &config.dcp));
+            let iterations = messages
+                .iter()
+                .rev()
+                .take_while(|message| message.role != "user")
+                .filter(|message| message.role == "assistant")
+                .count();
+            if let Some(nudge) = dcp::nudge(&messages, &dcp_state, &config.dcp, iterations) {
+                request.push(Message::system(nudge));
+            }
+        } else {
+            request.extend(messages.iter().cloned());
+        }
 
         let turn = match client
             .stream_chat(&request, &tool_specs, |delta| {
@@ -236,18 +265,34 @@ async fn run_loop(
             };
 
             let subject = subject_for(&name, &effective_args);
-            let mut output = match permissions.decide(&name, &subject) {
-                Action::Deny => {
-                    tools::ToolOutput::text(format!("error: permission denied for `{name}`"))
+            let mut output = if name == "compress" && dcp_enabled {
+                match dcp::apply_compress(&mut dcp_state, &messages, &config.dcp, &effective_args) {
+                    Ok(text) => {
+                        if let Some(log) = &runtime.session {
+                            if let Some(compression) = dcp_state.compressions.last() {
+                                let _ = log.append_dcp(compression);
+                            }
+                        }
+                        tools::ToolOutput::text(text)
+                    }
+                    Err(err) => tools::ToolOutput::text(format!("error: {err:#}")),
                 }
-                Action::Ask if !config.auto_approve => {
-                    if (runtime.approve)(name.clone(), subject.clone()).await {
-                        dispatch(&config, &cwd, &runtime, &call, depth).await
-                    } else {
+            } else {
+                match permissions.decide(&name, &subject) {
+                    Action::Deny => {
                         tools::ToolOutput::text(format!("error: permission denied for `{name}`"))
                     }
+                    Action::Ask if !config.auto_approve => {
+                        if (runtime.approve)(name.clone(), subject.clone()).await {
+                            dispatch(&config, &cwd, &runtime, &call, depth).await
+                        } else {
+                            tools::ToolOutput::text(format!(
+                                "error: permission denied for `{name}`"
+                            ))
+                        }
+                    }
+                    _ => dispatch(&config, &cwd, &runtime, &call, depth).await,
                 }
-                _ => dispatch(&config, &cwd, &runtime, &call, depth).await,
             };
             if name == "write_file" && !output.text.starts_with("error:") {
                 if let Some(path) = effective_args.get("path").and_then(Value::as_str) {

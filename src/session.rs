@@ -9,6 +9,7 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
+use crate::dcp::{Compression, DcpState};
 use crate::llm::Message;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -24,6 +25,7 @@ pub struct SessionHeader {
 enum Record {
     Header(SessionHeader),
     Message(Box<Message>),
+    Dcp(Compression),
 }
 
 #[derive(Debug, Clone)]
@@ -117,6 +119,37 @@ impl SessionLog {
 
     pub fn messages(&self) -> Result<Vec<Message>> {
         read_messages(&self.path)
+    }
+
+    /// Appends a dynamic-context-pruning compression record.
+    pub fn append_dcp(&self, compression: &Compression) -> Result<()> {
+        let mut file = std::fs::OpenOptions::new()
+            .append(true)
+            .open(&self.path)
+            .with_context(|| format!("opening session log {}", self.path.display()))?;
+        writeln!(
+            file,
+            "{}",
+            serde_json::to_string(&Record::Dcp(compression.clone()))?
+        )?;
+        Ok(())
+    }
+
+    /// Reconstructs pruning state by replaying compression records.
+    pub fn dcp_state(&self) -> DcpState {
+        let mut state = DcpState::default();
+        let Ok(raw) = std::fs::read_to_string(&self.path) else {
+            return state;
+        };
+        for line in raw.lines() {
+            if line.trim().is_empty() {
+                continue;
+            }
+            if let Ok(Record::Dcp(compression)) = serde_json::from_str::<Record>(line) {
+                state.compressions.push(compression);
+            }
+        }
+        state
     }
 }
 
@@ -215,6 +248,31 @@ mod tests {
         let latest = SessionLog::latest_in(&dir).unwrap();
         assert_eq!(latest.id(), second.id());
         assert_ne!(first.id(), second.id());
+
+        std::fs::remove_dir_all(&dir).ok();
+        std::fs::remove_dir_all(&cwd).ok();
+    }
+
+    #[test]
+    fn dcp_records_round_trip() {
+        use crate::dcp::{Compression, Range};
+
+        let dir = temp_dir("dcp");
+        let cwd = temp_dir("dcp_proj");
+        let log = SessionLog::create_in(&dir, &cwd).unwrap();
+        log.append_dcp(&Compression {
+            seq: 0,
+            ranges: vec![Range { start: 0, end: 1 }],
+            summary: "did the first thing".into(),
+        })
+        .unwrap();
+        log.append(&Message::user("still here")).unwrap();
+
+        let reopened = SessionLog::open(log.path().to_path_buf()).unwrap();
+        let state = reopened.dcp_state();
+        assert_eq!(state.compressions.len(), 1);
+        assert_eq!(state.compressions[0].summary, "did the first thing");
+        assert_eq!(reopened.messages().unwrap().len(), 1);
 
         std::fs::remove_dir_all(&dir).ok();
         std::fs::remove_dir_all(&cwd).ok();

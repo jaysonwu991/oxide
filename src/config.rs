@@ -90,6 +90,8 @@ pub struct Config {
     pub active_agent: Option<AgentDef>,
     #[serde(skip)]
     pub memory: MemoryStore,
+    #[serde(skip)]
+    pub dcp: crate::dcp::DcpConfig,
 }
 
 fn default_system_prompt() -> String {
@@ -117,6 +119,7 @@ impl Default for Config {
             ecosystem: Ecosystem::default(),
             active_agent: None,
             memory: MemoryStore::default(),
+            dcp: crate::dcp::DcpConfig::default(),
         }
     }
 }
@@ -212,6 +215,7 @@ impl Config {
 
         config.ecosystem = ecosystem::load(cwd);
         config.memory = MemoryStore::load(cwd);
+        config.dcp = crate::dcp::load_config(cwd);
         if let Some(name) = agent {
             config.activate_agent(&name)?;
         }
@@ -356,6 +360,15 @@ impl Config {
                 list.push_str(&format!("\n- {} ({state}, {transport})", server.name));
             }
             sections.push(list);
+        }
+
+        if self.dcp.enabled {
+            sections.push(
+                "# Context pruning\nUse the `compress` tool to replace closed, stale spans of the \
+                 conversation with concise summaries and keep the context small. Message numbers \
+                 are listed in periodic context reminders. Session history is never modified."
+                    .to_string(),
+            );
         }
 
         sections.join("\n\n")
