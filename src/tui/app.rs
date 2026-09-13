@@ -8,11 +8,22 @@ use std::time::Instant;
 
 #[derive(Debug, Clone)]
 pub enum ChatItem {
+    Banner,
     User(String),
     Assistant(String),
-    Tool { name: String, args: String },
-    ToolProgress { name: String, output: String },
-    ToolResult { name: String, output: String },
+    Tool {
+        name: String,
+        args: String,
+    },
+    ToolProgress {
+        name: String,
+        output: String,
+    },
+    ToolResult {
+        name: String,
+        args: String,
+        output: String,
+    },
     Error(String),
     Info(String),
 }
@@ -21,6 +32,9 @@ impl ChatItem {
     pub fn signature(&self) -> u64 {
         let mut hasher = DefaultHasher::new();
         match self {
+            ChatItem::Banner => {
+                7u8.hash(&mut hasher);
+            }
             ChatItem::User(text) => {
                 0u8.hash(&mut hasher);
                 text.hash(&mut hasher);
@@ -39,9 +53,10 @@ impl ChatItem {
                 name.hash(&mut hasher);
                 output.hash(&mut hasher);
             }
-            ChatItem::ToolResult { name, output } => {
+            ChatItem::ToolResult { name, args, output } => {
                 4u8.hash(&mut hasher);
                 name.hash(&mut hasher);
+                args.hash(&mut hasher);
                 output.hash(&mut hasher);
             }
             ChatItem::Error(text) => {
@@ -134,6 +149,8 @@ pub struct CommandHint {
 
 pub struct App {
     pub input: String,
+    pub input_history: Vec<String>,
+    pub history_index: Option<usize>,
     pub items: Vec<ChatItem>,
     pub history: Vec<Message>,
     pub attachments: Vec<ContentPart>,
@@ -165,6 +182,8 @@ impl App {
     pub fn new(model: String, cwd: String, mode: Mode, reasoning: Reasoning) -> Self {
         Self {
             input: String::new(),
+            input_history: Vec::new(),
+            history_index: None,
             items: Vec::new(),
             history: Vec::new(),
             attachments: Vec::new(),
@@ -190,6 +209,47 @@ impl App {
             line_offsets: Vec::new(),
             signatures: Vec::new(),
             render_width: 0,
+        }
+    }
+
+    /// Records a submitted input so it can be recalled with the Up key.
+    pub fn remember_input(&mut self, raw: &str) {
+        if raw.trim().is_empty() {
+            self.history_index = None;
+            return;
+        }
+        if self.input_history.last().map(String::as_str) != Some(raw) {
+            self.input_history.push(raw.to_string());
+        }
+        self.history_index = None;
+    }
+
+    /// Recalls the previous input, walking backwards through history.
+    pub fn history_prev(&mut self) {
+        if self.input_history.is_empty() {
+            return;
+        }
+        let index = match self.history_index {
+            Some(0) => 0,
+            Some(index) => index - 1,
+            None => self.input_history.len() - 1,
+        };
+        self.history_index = Some(index);
+        self.input = self.input_history[index].clone();
+    }
+
+    /// Recalls the next input, clearing the box past the newest entry.
+    pub fn history_next(&mut self) {
+        match self.history_index {
+            Some(index) if index + 1 < self.input_history.len() => {
+                self.history_index = Some(index + 1);
+                self.input = self.input_history[index + 1].clone();
+            }
+            Some(_) => {
+                self.history_index = None;
+                self.input.clear();
+            }
+            None => {}
         }
     }
 

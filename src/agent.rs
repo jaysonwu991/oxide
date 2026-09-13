@@ -73,9 +73,19 @@ pub struct Runtime {
 #[derive(Debug, Clone)]
 pub enum AgentEvent {
     Text(String),
-    ToolCall { name: String, args: String },
-    ToolProgress { name: String, chunk: String },
-    ToolResult { name: String, output: String },
+    ToolCall {
+        name: String,
+        args: String,
+    },
+    ToolProgress {
+        name: String,
+        chunk: String,
+    },
+    ToolResult {
+        name: String,
+        args: String,
+        output: String,
+    },
     Error(String),
     Finished(Vec<Message>),
 }
@@ -153,8 +163,8 @@ pub fn run_subagent(
                 AgentEvent::ToolProgress { name, chunk } => {
                     let _ = tx.send(AgentEvent::ToolProgress { name, chunk });
                 }
-                AgentEvent::ToolResult { name, output } => {
-                    let _ = tx.send(AgentEvent::ToolResult { name, output });
+                AgentEvent::ToolResult { name, args, output } => {
+                    let _ = tx.send(AgentEvent::ToolResult { name, args, output });
                 }
                 AgentEvent::Error(message) => {
                     let _ = tx.send(AgentEvent::Error(message));
@@ -388,6 +398,7 @@ async fn run_loop(
                 terminated.push(output.terminate);
                 let _ = tx.send(AgentEvent::ToolResult {
                     name: original.function.name.clone(),
+                    args: original.function.arguments.clone(),
                     output: output.text.clone(),
                 });
                 let tool_message = if output.media.is_empty() {
@@ -487,6 +498,7 @@ async fn run_loop(
 
                 let _ = tx.send(AgentEvent::ToolResult {
                     name,
+                    args: serde_json::to_string(&effective_args).unwrap_or_default(),
                     output: text.clone(),
                 });
                 let tool_message = if output.media.is_empty() {
