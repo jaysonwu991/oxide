@@ -16,6 +16,19 @@ const MAX_SUGGESTION_ROWS: usize = 8;
 const FILE_TOOLS: [&str; 3] = ["read_file", "write_file", "patch"];
 const COLLAPSE_MIN_LINES: usize = 4;
 
+/// Persistent keybinding reminder shown in the bottom bar.
+const TIPS: &str = "Enter send · Shift+Tab mode · Ctrl+R reasoning · Ctrl+O tools · Ctrl+C quit · ↑/↓ history · PgUp/PgDn scroll";
+
+/// Block-letter wordmark shown on the welcome screen.
+const BANNER: [&str; 6] = [
+    " ██████╗  ██╗  ██╗ ██╗ ██████╗  ███████╗",
+    "██╔═══██╗ ╚██╗██╔╝ ██║ ██╔══██╗ ██╔════╝",
+    "██║   ██║  ╚███╔╝  ██║ ██║  ██║ █████╗  ",
+    "██║   ██║  ██╔██╗  ██║ ██║  ██║ ██╔══╝  ",
+    "╚██████╔╝ ██╔╝ ██╗ ██║ ██████╔╝ ███████╗",
+    " ╚═════╝  ╚═╝  ╚═╝ ╚═╝ ╚═════╝  ╚══════╝",
+];
+
 fn is_file_tool(name: &str) -> bool {
     FILE_TOOLS.contains(&name)
 }
@@ -43,26 +56,24 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Length(1),
             Constraint::Min(3),
-            Constraint::Length(1),
             Constraint::Length(input_rows + 2),
-            Constraint::Length(2),
+            Constraint::Length(1),
+            Constraint::Length(1),
         ])
         .split(frame.area());
 
-    draw_header(frame, app, chunks[0]);
-    draw_messages(frame, app, chunks[1]);
-    draw_cwd(frame, app, chunks[2]);
-    draw_input(frame, app, chunks[3]);
-    draw_status(frame, app, chunks[4]);
+    draw_messages(frame, app, chunks[0]);
+    draw_input(frame, app, chunks[1]);
+    draw_info(frame, app, chunks[2]);
+    draw_footer(frame, app, chunks[3]);
 
     if app.connect.is_some() {
         draw_connect(frame, app);
     } else if app.models.is_some() {
         draw_models(frame, app);
     } else if !app.suggestions.is_empty() {
-        draw_suggestions(frame, app, chunks[1]);
+        draw_suggestions(frame, app, chunks[0]);
     }
 }
 
@@ -249,42 +260,103 @@ fn draw_suggestions(frame: &mut Frame, app: &App, area: Rect) {
     frame.render_stateful_widget(list, popup, &mut list_state);
 }
 
-fn draw_header(frame: &mut Frame, app: &App, area: Rect) {
-    let title = Line::from(vec![
-        Span::styled(
-            " oxide ",
-            Style::default()
-                .fg(Color::Black)
-                .bg(Color::Cyan)
-                .add_modifier(Modifier::BOLD),
-        ),
-        Span::raw("  "),
-        Span::styled("model ", Style::default().fg(Color::DarkGray)),
+/// Compact mode · model · reasoning line shown just below the input, with the
+/// current status right-aligned.
+fn draw_info(frame: &mut Frame, app: &App, area: Rect) {
+    let left = vec![
+        Span::styled(format!(" {} ", app.mode.label()), mode_style(app.mode)),
+        Span::raw(" "),
         Span::styled(
             app.model.clone(),
             Style::default()
                 .fg(Color::Cyan)
                 .add_modifier(Modifier::BOLD),
         ),
-        Span::raw("  "),
-        Span::styled(format!(" {} ", app.mode.label()), mode_style(app.mode)),
         Span::raw(" "),
         Span::styled(
             format!(" {} ", app.reasoning.label()),
             reasoning_style(app.reasoning),
         ),
-    ]);
-    frame.render_widget(Paragraph::new(title), area);
-}
-
-fn draw_cwd(frame: &mut Frame, app: &App, area: Rect) {
+    ];
+    let status_style = if app.busy {
+        Style::default().fg(Color::Yellow)
+    } else if app.status == "ready" {
+        Style::default().fg(Color::DarkGray)
+    } else {
+        Style::default().fg(Color::White)
+    };
+    let right = Span::styled(app.status.clone(), status_style);
     frame.render_widget(
-        Paragraph::new(Line::from(Span::styled(
-            format!(" {}", display_path(&app.cwd)),
-            Style::default().fg(Color::DarkGray),
-        ))),
+        Paragraph::new(justified(left, right, area.width as usize)),
         area,
     );
+}
+
+/// Bottom bar: working directory on the left, keybinding tips on the right.
+fn draw_footer(frame: &mut Frame, app: &App, area: Rect) {
+    let dim = Style::default().fg(Color::DarkGray);
+    let width = area.width as usize;
+    let right = if app.busy {
+        let secs = app
+            .busy_since
+            .map(|start| start.elapsed().as_secs())
+            .unwrap_or(0);
+        Span::styled(
+            format!("{secs}s · Esc to cancel "),
+            Style::default().fg(Color::Yellow),
+        )
+    } else {
+        Span::styled(format!("{TIPS} "), dim)
+    };
+    let full = format!(" {}", display_path(&app.cwd));
+    let short = format!(
+        " {}",
+        app.cwd
+            .rsplit('/')
+            .next()
+            .filter(|name| !name.is_empty())
+            .unwrap_or(&app.cwd)
+    );
+    let left = if full.chars().count() + right.content.chars().count() + 40 <= width {
+        full
+    } else {
+        short
+    };
+    frame.render_widget(
+        Paragraph::new(justified(vec![Span::styled(left, dim)], right, width)),
+        area,
+    );
+}
+
+/// Lay out left-aligned spans and a right-aligned span, truncating the right
+/// side with an ellipsis when the row is too narrow for both.
+fn justified(left: Vec<Span<'static>>, right: Span<'static>, width: usize) -> Line<'static> {
+    let left_len: usize = left.iter().map(|span| span.content.chars().count()).sum();
+    let right_len = right.content.chars().count();
+    let mut spans = left;
+    if left_len + right_len <= width {
+        spans.push(Span::raw(" ".repeat(width - left_len - right_len)));
+        spans.push(right);
+    } else if width > left_len + 1 {
+        spans.push(Span::raw(" "));
+        spans.push(Span::styled(
+            truncate(&right.content, width - left_len - 1),
+            right.style,
+        ));
+    }
+    Line::from(spans)
+}
+
+fn truncate(text: &str, width: usize) -> String {
+    if text.chars().count() <= width {
+        return text.to_string();
+    }
+    if width == 0 {
+        return String::new();
+    }
+    let mut out: String = text.chars().take(width - 1).collect();
+    out.push('…');
+    out
 }
 
 /// Abbreviate a path under the user's home directory with a leading `~`.
@@ -405,13 +477,16 @@ fn sync_lines(app: &mut App, width: usize) {
         app.line_offsets.push(offset);
         app.signatures.push(signature);
         render_item(&app.items[index], width, app.expand_tools, &mut app.lines);
-        app.lines.push(Line::from(""));
+        if app.lines.len() > offset {
+            app.lines.push(Line::from(""));
+        }
     }
 }
 
 fn render_item(item: &ChatItem, width: usize, expand_tools: bool, lines: &mut Vec<Line<'static>>) {
     let bold = Modifier::BOLD;
     match item {
+        ChatItem::Banner => render_banner(width, lines),
         ChatItem::User(text) => {
             lines.push(Line::from(vec![
                 Span::styled("❯ ", Style::default().fg(Color::Cyan).add_modifier(bold)),
@@ -430,31 +505,72 @@ fn render_item(item: &ChatItem, width: usize, expand_tools: bool, lines: &mut Ve
             push_wrapped(lines, text, width, Style::default());
         }
         ChatItem::Tool { name, args } => {
-            lines.push(Line::from(vec![
-                Span::styled("⚙ ", Style::default().fg(Color::Yellow)),
-                Span::styled(
-                    name.clone(),
-                    Style::default().fg(Color::Yellow).add_modifier(bold),
-                ),
-                Span::styled(
-                    format!(" {}", tool_arg_summary(name, args)),
-                    Style::default().fg(Color::DarkGray),
-                ),
-            ]));
+            if let Some(path) = file_tool_path(name, args) {
+                let (verb, color) = if name == "write_file" {
+                    ("Edit", Color::Yellow)
+                } else {
+                    ("Read", Color::Cyan)
+                };
+                lines.push(action_line(verb, &path, color, bold));
+            } else if let Some(command) = bash_command(name, args) {
+                lines.push(action_line("Run", &command, Color::Blue, bold));
+            } else {
+                lines.push(Line::from(vec![
+                    Span::styled("⚙ ", Style::default().fg(Color::Yellow)),
+                    Span::styled(
+                        name.clone(),
+                        Style::default().fg(Color::Yellow).add_modifier(bold),
+                    ),
+                    Span::styled(
+                        format!(" {}", tool_arg_summary(name, args)),
+                        Style::default().fg(Color::DarkGray),
+                    ),
+                ]));
+            }
         }
         ChatItem::ToolProgress { name, output } => {
-            lines.push(Line::from(vec![
-                Span::styled("⋯ ", Style::default().fg(Color::DarkGray)),
-                Span::styled(name.clone(), Style::default().fg(Color::DarkGray)),
-            ]));
+            if name != "bash" {
+                lines.push(Line::from(vec![
+                    Span::styled("⋯ ", Style::default().fg(Color::DarkGray)),
+                    Span::styled(name.clone(), Style::default().fg(Color::DarkGray)),
+                ]));
+            }
             push_tool_body(lines, name, output, width, expand_tools);
         }
-        ChatItem::ToolResult { name, output } => {
-            lines.push(Line::from(vec![
-                Span::styled("↳ ", Style::default().fg(Color::DarkGray)),
-                Span::styled(name.clone(), Style::default().fg(Color::DarkGray)),
-            ]));
-            push_tool_body(lines, name, output, width, expand_tools);
+        ChatItem::ToolResult { name, args, output } => {
+            if let Some(path) = file_tool_path(name, args) {
+                if name == "read_file" {
+                    if output.starts_with("error:") {
+                        push_wrapped(lines, output, width, Style::default().fg(Color::Red));
+                    }
+                } else if output.starts_with("error:") {
+                    lines.push(action_line("Edit failed", &path, Color::Red, bold));
+                    push_wrapped(lines, output, width, Style::default().fg(Color::Red));
+                } else {
+                    lines.push(action_line("Edited", &path, Color::Green, bold));
+                    if let Some((_, rest)) = output.split_once("\n\n") {
+                        if !rest.trim().is_empty() {
+                            push_wrapped(lines, rest, width, Style::default().fg(Color::DarkGray));
+                        }
+                    }
+                }
+            } else if let Some(command) = bash_command(name, args) {
+                let exit = bash_exit_code(output);
+                let failed = exit
+                    .map(|code| code != 0)
+                    .unwrap_or_else(|| output.starts_with("error:"));
+                let color = if failed { Color::Red } else { Color::Green };
+                lines.push(action_line("Ran", &command, color, bold));
+                if exit.is_none() && !output.trim().is_empty() {
+                    push_wrapped(lines, output, width, Style::default().fg(Color::Red));
+                }
+            } else {
+                lines.push(Line::from(vec![
+                    Span::styled("↳ ", Style::default().fg(Color::DarkGray)),
+                    Span::styled(name.clone(), Style::default().fg(Color::DarkGray)),
+                ]));
+                push_tool_body(lines, name, output, width, expand_tools);
+            }
         }
         ChatItem::Error(text) => {
             push_wrapped(
@@ -472,6 +588,45 @@ fn render_item(item: &ChatItem, width: usize, expand_tools: bool, lines: &mut Ve
                 Style::default().fg(Color::DarkGray),
             );
         }
+    }
+}
+
+/// Centers the block-letter wordmark, falling back to plain text when the
+/// terminal is too narrow for the art.
+fn render_banner(width: usize, lines: &mut Vec<Line<'static>>) {
+    let art_width = BANNER
+        .iter()
+        .map(|line| line.chars().count())
+        .max()
+        .unwrap_or(0);
+    if art_width > width {
+        lines.push(Line::from(Span::styled(
+            "oxide",
+            Style::default()
+                .fg(Color::Cyan)
+                .add_modifier(Modifier::BOLD),
+        )));
+        return;
+    }
+    let colors = [
+        Color::Cyan,
+        Color::LightCyan,
+        Color::LightMagenta,
+        Color::Magenta,
+        Color::LightMagenta,
+        Color::Cyan,
+    ];
+    for (index, art) in BANNER.iter().enumerate() {
+        let pad = (width - art.chars().count()) / 2;
+        lines.push(Line::from(vec![
+            Span::raw(" ".repeat(pad)),
+            Span::styled(
+                (*art).to_string(),
+                Style::default()
+                    .fg(colors[index % colors.len()])
+                    .add_modifier(Modifier::BOLD),
+            ),
+        ]));
     }
 }
 
@@ -538,47 +693,52 @@ fn input_scroll(input: &str, width: usize) -> u16 {
     wrap(input, width).len().saturating_sub(MAX_INPUT_ROWS) as u16
 }
 
-fn draw_status(frame: &mut Frame, app: &App, area: Rect) {
-    let (status_fg, status_bg) = if app.busy {
-        (Color::Black, Color::Yellow)
-    } else if app.status == "ready" {
-        (Color::Black, Color::Green)
+/// Path argument for a `read_file`/`write_file` call, when present.
+fn file_tool_path(name: &str, args: &str) -> Option<String> {
+    if name != "read_file" && name != "write_file" {
+        return None;
+    }
+    let value: serde_json::Value = serde_json::from_str(args).ok()?;
+    value
+        .get("path")
+        .and_then(|v| v.as_str())
+        .filter(|path| !path.is_empty())
+        .map(str::to_string)
+}
+
+fn action_line(verb: &str, subject: &str, color: Color, bold: Modifier) -> Line<'static> {
+    Line::from(vec![
+        Span::styled("→ ", Style::default().fg(color)),
+        Span::styled(
+            verb.to_string(),
+            Style::default().fg(color).add_modifier(bold),
+        ),
+        Span::styled(format!(" {subject}"), Style::default().fg(Color::DarkGray)),
+    ])
+}
+
+/// Shell command for a `bash` call, flattened to a single line for display.
+fn bash_command(name: &str, args: &str) -> Option<String> {
+    if name != "bash" {
+        return None;
+    }
+    let value: serde_json::Value = serde_json::from_str(args).ok()?;
+    let command = value.get("command").and_then(|v| v.as_str())?;
+    let command = command.split_whitespace().collect::<Vec<_>>().join(" ");
+    if command.is_empty() {
+        None
     } else {
-        (Color::White, Color::DarkGray)
-    };
-    let pill = format!(" {} ", app.status);
-    let pad = " ".repeat(pill.chars().count() + 2);
-    let (primary, secondary) = if app.busy {
-        let secs = app
-            .busy_since
-            .map(|start| start.elapsed().as_secs())
-            .unwrap_or(0);
-        (
-            format!("{secs}s elapsed · Esc to cancel"),
-            "↑/↓ scroll conversation".to_string(),
-        )
-    } else {
-        (
-            "Enter send · Shift+Tab mode · Ctrl+R reasoning".to_string(),
-            "/ commands · Ctrl+O tools · Ctrl+C quit · ↑/↓ scroll".to_string(),
-        )
-    };
-    let dim = Style::default().fg(Color::DarkGray);
-    let lines = vec![
-        Line::from(vec![
-            Span::styled(
-                pill,
-                Style::default()
-                    .fg(status_fg)
-                    .bg(status_bg)
-                    .add_modifier(Modifier::BOLD),
-            ),
-            Span::raw("  "),
-            Span::styled(primary, dim),
-        ]),
-        Line::from(Span::styled(format!("{pad}{secondary}"), dim)),
-    ];
-    frame.render_widget(Paragraph::new(lines), area);
+        Some(command)
+    }
+}
+
+fn bash_exit_code(output: &str) -> Option<i32> {
+    output
+        .lines()
+        .rev()
+        .find_map(|line| line.strip_prefix("[exit code: "))
+        .and_then(|rest| rest.strip_suffix(']'))
+        .and_then(|code| code.trim().parse().ok())
 }
 
 /// Summarize a tool call's arguments for display. File tools otherwise dump
@@ -695,6 +855,45 @@ mod tests {
     }
 
     #[test]
+    fn justified_right_aligns_and_truncates() {
+        let line = justified(vec![Span::raw("ab")], Span::raw("cd"), 6);
+        let text: String = line
+            .spans
+            .iter()
+            .map(|span| span.content.as_ref())
+            .collect();
+        assert_eq!(text, "ab  cd");
+
+        let line = justified(vec![Span::raw("left")], Span::raw("long-right"), 8);
+        let text: String = line
+            .spans
+            .iter()
+            .map(|span| span.content.as_ref())
+            .collect();
+        assert_eq!(text.chars().count(), 8);
+        assert!(text.ends_with('…'));
+    }
+
+    #[test]
+    fn truncate_is_char_safe() {
+        assert_eq!(truncate("hello", 10), "hello");
+        assert_eq!(truncate("hello", 3), "he…");
+        assert_eq!(truncate("hello", 0), "");
+        assert_eq!(truncate("héllo", 2), "h…");
+    }
+
+    #[test]
+    fn banner_centers_or_falls_back_when_narrow() {
+        let mut wide = Vec::new();
+        render_banner(80, &mut wide);
+        assert_eq!(wide.len(), BANNER.len());
+
+        let mut narrow = Vec::new();
+        render_banner(10, &mut narrow);
+        assert_eq!(narrow.len(), 1);
+    }
+
+    #[test]
     fn file_tool_args_are_abbreviated() {
         let write = r#"{"path":"src/main.rs","content":"a\nb\nc"}"#;
         assert_eq!(
@@ -726,5 +925,112 @@ mod tests {
             ["the ", "quick ", "brown fox"]
         );
         assert_eq!(wrap("a".repeat(25).as_str(), 10).len(), 3);
+    }
+
+    fn line_text(line: &Line) -> String {
+        line.spans
+            .iter()
+            .map(|span| span.content.as_ref())
+            .collect()
+    }
+
+    #[test]
+    fn file_tools_render_concise_actions() {
+        let args = r#"{"path":"src/main.rs"}"#;
+
+        let mut lines = Vec::new();
+        render_item(
+            &ChatItem::Tool {
+                name: "read_file".into(),
+                args: args.into(),
+            },
+            80,
+            false,
+            &mut lines,
+        );
+        assert_eq!(line_text(&lines[0]), "→ Read src/main.rs");
+
+        let mut lines = Vec::new();
+        render_item(
+            &ChatItem::Tool {
+                name: "write_file".into(),
+                args: args.into(),
+            },
+            80,
+            false,
+            &mut lines,
+        );
+        assert_eq!(line_text(&lines[0]), "→ Edit src/main.rs");
+
+        let mut lines = Vec::new();
+        render_item(
+            &ChatItem::ToolResult {
+                name: "read_file".into(),
+                args: args.into(),
+                output: "     1\tfn main() {}".into(),
+            },
+            80,
+            false,
+            &mut lines,
+        );
+        assert!(lines.is_empty());
+
+        let mut lines = Vec::new();
+        render_item(
+            &ChatItem::ToolResult {
+                name: "write_file".into(),
+                args: args.into(),
+                output: "wrote 12 bytes to /x".into(),
+            },
+            80,
+            false,
+            &mut lines,
+        );
+        assert_eq!(line_text(&lines[0]), "→ Edited src/main.rs");
+    }
+
+    #[test]
+    fn bash_renders_run_and_ran_actions() {
+        let args = r#"{"command":"cargo   test\n--all"}"#;
+
+        let mut lines = Vec::new();
+        render_item(
+            &ChatItem::Tool {
+                name: "bash".into(),
+                args: args.into(),
+            },
+            80,
+            false,
+            &mut lines,
+        );
+        assert_eq!(line_text(&lines[0]), "→ Run cargo test --all");
+
+        let mut lines = Vec::new();
+        render_item(
+            &ChatItem::ToolResult {
+                name: "bash".into(),
+                args: args.into(),
+                output: "ok\n[exit code: 0]".into(),
+            },
+            80,
+            false,
+            &mut lines,
+        );
+        assert_eq!(line_text(&lines[0]), "→ Ran cargo test --all");
+        assert_eq!(lines.len(), 1);
+        assert_eq!(lines[0].spans[1].style.fg, Some(Color::Green));
+
+        let mut lines = Vec::new();
+        render_item(
+            &ChatItem::ToolResult {
+                name: "bash".into(),
+                args: args.into(),
+                output: "boom\n[exit code: 1]".into(),
+            },
+            80,
+            false,
+            &mut lines,
+        );
+        assert_eq!(lines[0].spans[1].style.fg, Some(Color::Red));
     }
 }

@@ -78,17 +78,11 @@ async fn event_loop(
         config.mode,
         config.reasoning,
     );
+    app.items.push(ChatItem::Banner);
     app.items.push(ChatItem::Info(
         "Ask me to build, refactor, debug or explain code. Type /help for commands, Ctrl+C to quit."
             .to_string(),
     ));
-    app.items.push(ChatItem::Info(format!(
-        "mode: {} (Shift+Tab) · reasoning: {} → {} (Ctrl+R) · model: {}",
-        app.mode.label(),
-        app.reasoning.label(),
-        config.effective_reasoning().label(),
-        config.model
-    )));
     app.items.push(ChatItem::Info(format!(
         "ecosystem: {} · mcp: {} server(s), {} tool(s) · plugins: {}{} · memory: {} entr{}",
         config.ecosystem.summary(),
@@ -104,7 +98,7 @@ async fn event_loop(
         if config.memory.len() == 1 { "y" } else { "ies" }
     )));
     app.items.push(ChatItem::Info(
-        "tips: type / to list commands · /models switches model · @path or Ctrl+V attaches images · /undo and /redo revert changes"
+        "tips: type / to list commands · /init writes AGENTS.md · /models switches model · @path or Ctrl+V attaches images · ↑ recalls history"
             .to_string(),
     ));
     if config.api_key.trim().is_empty() {
@@ -120,6 +114,9 @@ async fn event_loop(
                     match message.role.as_str() {
                         "user" => {
                             if let Some(content) = message.display() {
+                                if !content.trim().is_empty() {
+                                    app.input_history.push(content.clone());
+                                }
                                 app.items.push(ChatItem::User(content));
                             }
                         }
@@ -295,6 +292,7 @@ fn handle_key(
                 if raw.is_empty() {
                     return;
                 }
+                app.remember_input(&raw);
                 app.input.clear();
                 app.items.push(ChatItem::User(raw.clone()));
                 app.auto_scroll = true;
@@ -314,6 +312,7 @@ fn handle_key(
                     return;
                 }
             }
+            app.remember_input(&raw);
             if raw == "/undo" || raw == "/redo" {
                 app.input.clear();
                 refresh_suggestions(app, config);
@@ -421,6 +420,7 @@ fn handle_key(
                 app.items.push(ChatItem::Info(help_text(config)));
                 return;
             }
+            let init = raw == "/init";
             app.input.clear();
             refresh_suggestions(app, config);
             if config.api_key.trim().is_empty() {
@@ -429,11 +429,19 @@ fn handle_key(
                 ));
                 return;
             }
-            let resolved = config.resolve_command(&raw);
-            let prompt = resolved
-                .as_ref()
-                .map(|command| command.prompt.clone())
-                .unwrap_or_else(|| raw.clone());
+            let resolved = if init {
+                None
+            } else {
+                config.resolve_command(&raw)
+            };
+            let prompt = if init {
+                init_prompt()
+            } else {
+                resolved
+                    .as_ref()
+                    .map(|command| command.prompt.clone())
+                    .unwrap_or_else(|| raw.clone())
+            };
             let command_agent = resolved.as_ref().and_then(|command| command.agent.clone());
             let subtask = resolved.as_ref().is_some_and(|command| command.subtask);
 
@@ -541,11 +549,13 @@ fn handle_key(
         }
         KeyCode::Char(ch) => {
             app.input.push(ch);
+            app.history_index = None;
             app.auto_scroll = true;
             refresh_suggestions(app, config);
         }
         KeyCode::Backspace => {
             app.input.pop();
+            app.history_index = None;
             refresh_suggestions(app, config);
         }
         KeyCode::Tab if !app.suggestions.is_empty() => {
@@ -557,6 +567,9 @@ fn handle_key(
         KeyCode::Up => {
             if !app.suggestions.is_empty() {
                 app.suggestion_index = app.suggestion_index.saturating_sub(1);
+            } else if !app.input_history.is_empty() {
+                app.history_prev();
+                refresh_suggestions(app, config);
             } else {
                 app.scroll = app.scroll.saturating_sub(1);
                 app.auto_scroll = false;
@@ -566,10 +579,21 @@ fn handle_key(
             if !app.suggestions.is_empty() {
                 let last = app.suggestions.len().saturating_sub(1);
                 app.suggestion_index = (app.suggestion_index + 1).min(last);
+            } else if app.history_index.is_some() {
+                app.history_next();
+                refresh_suggestions(app, config);
             } else {
                 app.scroll = app.scroll.saturating_add(1);
                 app.auto_scroll = false;
             }
+        }
+        KeyCode::PageUp => {
+            app.scroll = app.scroll.saturating_sub(10);
+            app.auto_scroll = false;
+        }
+        KeyCode::PageDown => {
+            app.scroll = app.scroll.saturating_add(10);
+            app.auto_scroll = false;
         }
         _ => {}
     }
@@ -583,15 +607,33 @@ fn escape_action(app: &mut App) {
     }
 }
 
+/// The instruction sent to the agent by the `/init` command.
+fn init_prompt() -> String {
+    "Initialize this project's AGENTS.md file.\n\n\
+     Analyze the repository to understand its structure, build/lint/test commands and \
+     conventions. Then create AGENTS.md at the project root, or update it in place if it \
+     already exists — never blindly replace existing content.\n\n\
+     Read key files first (README, manifests, CI config, and any existing AGENTS.md or \
+     CLAUDE.md), then cover the things future agent sessions need most:\n\
+     - build, lint and test commands\n\
+     - command order and focused verification steps when they matter\n\
+     - architecture and repo structure that is not obvious from filenames alone\n\
+     - project-specific conventions, setup quirks and operational gotchas\n\
+     - references to existing instruction sources such as Cursor or Copilot rules\n\n\
+     Keep it concise and specific to this project. When done, report what you wrote."
+        .to_string()
+}
+
 fn help_text(config: &Config) -> String {
     let mut lines = vec![
         "built-in commands:".to_string(),
         "  /help                 show this help".to_string(),
+        "  /init                 create or update AGENTS.md for this project".to_string(),
         "  /connect [provider]   connect a provider and save its API key".to_string(),
         "  /models [filter]      list and switch the active model".to_string(),
         "  /undo, /redo          revert or reapply the agent's file changes".to_string(),
         "  /compact              summarize the conversation to free context".to_string(),
-        "keys: Enter send · Shift+Tab mode · Ctrl+R reasoning · Ctrl+V image · ↑/↓ scroll · Ctrl+C quit"
+        "keys: Enter send · Shift+Tab mode · Ctrl+R reasoning · Ctrl+V image · ↑/↓ history · PgUp/PgDn scroll · Ctrl+C quit"
             .to_string(),
     ];
     if !config.ecosystem.commands.is_empty() {
@@ -639,6 +681,10 @@ fn builtin_commands() -> Vec<CommandHint> {
         CommandHint {
             name: "help".to_string(),
             description: "show help".to_string(),
+        },
+        CommandHint {
+            name: "init".to_string(),
+            description: "create or update AGENTS.md".to_string(),
         },
         CommandHint {
             name: "models".to_string(),
@@ -879,9 +925,9 @@ fn handle_agent_event(event: AgentEvent, app: &mut App) {
                 });
             }
         }
-        AgentEvent::ToolResult { name, output } => {
+        AgentEvent::ToolResult { name, args, output } => {
             app.auto_scroll = true;
-            app.items.push(ChatItem::ToolResult { name, output });
+            app.items.push(ChatItem::ToolResult { name, args, output });
             app.status = "thinking...".to_string();
         }
         AgentEvent::Error(message) => {
@@ -1068,5 +1114,45 @@ mod tests {
 
         state.filter = "missing".to_string();
         assert!(state.selected_model().is_none());
+    }
+
+    #[test]
+    fn up_recalls_submitted_input() {
+        let mut app = test_app();
+        app.remember_input("first");
+        app.remember_input("second");
+
+        app.history_prev();
+        assert_eq!(app.input, "second");
+        app.history_prev();
+        assert_eq!(app.input, "first");
+        app.history_prev();
+        assert_eq!(app.input, "first");
+
+        app.history_next();
+        assert_eq!(app.input, "second");
+        app.history_next();
+        assert!(app.input.is_empty());
+    }
+
+    #[test]
+    fn remember_input_dedupes_consecutive_and_ignores_blank() {
+        let mut app = test_app();
+        app.remember_input("same");
+        app.remember_input("same");
+        app.remember_input("   ");
+        assert_eq!(app.input_history, vec!["same".to_string()]);
+    }
+
+    #[test]
+    fn init_is_a_builtin_command() {
+        let config = Config::default();
+        let mut app = test_app();
+        app.input = "/ini".to_string();
+        refresh_suggestions(&mut app, &config);
+        assert_eq!(app.suggestions.len(), 1);
+        assert_eq!(app.suggestions[0].name, "init");
+        assert!(help_text(&config).contains("/init"));
+        assert!(init_prompt().contains("AGENTS.md"));
     }
 }

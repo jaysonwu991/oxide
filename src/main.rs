@@ -367,7 +367,7 @@ async fn run_print(
             AgentEvent::ToolProgress { chunk, .. } => {
                 eprintln!("{chunk}");
             }
-            AgentEvent::ToolResult { name, output } => {
+            AgentEvent::ToolResult { name, output, .. } => {
                 eprintln!("[result: {name}] {} bytes", output.len());
             }
             AgentEvent::Error(message) => {
