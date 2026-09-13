@@ -6,13 +6,17 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Clear, Paragraph, Wrap};
 use ratatui::Frame;
 
+const MAX_INPUT_ROWS: usize = 8;
+
 pub fn draw(frame: &mut Frame, app: &mut App) {
+    let input_width = frame.area().width.saturating_sub(2) as usize;
+    let input_rows = input_rows(&app.input, input_width) as u16;
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
             Constraint::Length(1),
             Constraint::Min(3),
-            Constraint::Length(3),
+            Constraint::Length(input_rows + 2),
             Constraint::Length(1),
         ])
         .split(frame.area());
@@ -108,7 +112,7 @@ fn draw_header(frame: &mut Frame, app: &App, area: Rect) {
                 .add_modifier(Modifier::BOLD),
         ),
         Span::raw("  "),
-        Span::styled(app.model.clone(), Style::default().fg(Color::Cyan)),
+        Span::styled(app.model.as_str(), Style::default().fg(Color::Cyan)),
         Span::raw("  "),
         Span::styled(format!(" {} ", app.mode.label()), mode_style(app.mode)),
         Span::raw(" "),
@@ -117,7 +121,7 @@ fn draw_header(frame: &mut Frame, app: &App, area: Rect) {
             reasoning_style(app.reasoning),
         ),
         Span::styled("  ·  ", Style::default().fg(Color::DarkGray)),
-        Span::styled(app.cwd.clone(), Style::default().fg(Color::DarkGray)),
+        Span::styled(app.cwd.as_str(), Style::default().fg(Color::DarkGray)),
     ]);
     frame.render_widget(Paragraph::new(title), area);
 }
@@ -301,21 +305,40 @@ fn draw_input(frame: &mut Frame, app: &App, area: Rect) {
     let inner = block.inner(area);
     frame.render_widget(block, area);
 
-    let paragraph = Paragraph::new(app.input.clone()).wrap(Wrap { trim: false });
+    let width = inner.width as usize;
+    let paragraph = Paragraph::new(app.input.as_str())
+        .wrap(Wrap { trim: false })
+        .scroll((input_scroll(&app.input, width), 0));
     frame.render_widget(paragraph, inner);
 
     if !app.busy && app.connect.is_none() {
-        let x = inner.x + app.input.chars().count() as u16;
+        let lines = wrap(&app.input, width);
+        let last = lines.last().map(|line| line.chars().count()).unwrap_or(0);
+        let x = inner.x + last as u16;
         let x = x.min(inner.x + inner.width.saturating_sub(1));
-        frame.set_cursor_position((x, inner.y));
+        let y = inner.y + input_rows(&app.input, width) as u16 - 1;
+        frame.set_cursor_position((x, y));
     }
+}
+
+fn input_rows(input: &str, width: usize) -> usize {
+    wrap(input, width).len().clamp(1, MAX_INPUT_ROWS)
+}
+
+fn input_scroll(input: &str, width: usize) -> u16 {
+    wrap(input, width).len().saturating_sub(MAX_INPUT_ROWS) as u16
 }
 
 fn draw_status(frame: &mut Frame, app: &App, area: Rect) {
     let hint = if app.busy {
-        "working…  Esc to quit"
+        let secs = app
+            .busy_since
+            .map(|start| start.elapsed().as_secs())
+            .unwrap_or(0);
+        format!("working… {secs}s · Esc to quit")
     } else {
         "Enter send · Shift+Tab mode · Ctrl+R reasoning · @image · ↑/↓ scroll · Ctrl+C quit"
+            .to_string()
     };
     let line = Line::from(vec![
         Span::styled(
@@ -343,13 +366,38 @@ fn wrap(text: &str, width: usize) -> Vec<String> {
             continue;
         }
         let mut line = String::new();
+        let mut count = 0usize;
         for ch in raw.chars() {
-            if line.chars().count() >= width {
+            if count >= width {
                 out.push(std::mem::take(&mut line));
+                count = 0;
             }
             line.push(ch);
+            count += 1;
         }
         out.push(line);
     }
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn input_rows_grows_and_clamps() {
+        assert_eq!(input_rows("", 10), 1);
+        assert_eq!(input_rows("hello", 10), 1);
+        assert_eq!(input_rows("hello\nworld", 10), 2);
+        assert_eq!(input_rows(&"a".repeat(100), 10), MAX_INPUT_ROWS);
+    }
+
+    #[test]
+    fn input_scroll_follows_tail() {
+        assert_eq!(input_scroll("hi", 10), 0);
+        assert_eq!(
+            input_scroll(&"a".repeat(100), 10),
+            (10 - MAX_INPUT_ROWS) as u16
+        );
+    }
 }

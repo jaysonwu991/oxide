@@ -4,6 +4,7 @@ use crate::llm::{ContentPart, Message};
 use ratatui::text::Line;
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
+use std::time::Instant;
 
 #[derive(Debug, Clone)]
 pub enum ChatItem {
@@ -93,6 +94,7 @@ pub struct App {
     pub scroll: u16,
     pub auto_scroll: bool,
     pub busy: bool,
+    pub busy_since: Option<Instant>,
     pub status: String,
     pub should_quit: bool,
     pub model: String,
@@ -119,6 +121,7 @@ impl App {
             scroll: 0,
             auto_scroll: true,
             busy: false,
+            busy_since: None,
             status: "ready".to_string(),
             should_quit: false,
             model,
