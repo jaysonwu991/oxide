@@ -44,18 +44,20 @@ Before opening a pull request, make sure `cargo fmt`, `cargo clippy`, and
 
 | Path | Responsibility |
 | --- | --- |
-| `src/main.rs` | CLI entry (clap), `-p/--print` mode, TUI dispatch. |
+| `src/main.rs` | CLI entry (clap), `-p/--print` mode, TUI dispatch, `auth`/`mcp` subcommands. |
 | `src/config.rs` | Config loading, provider presets, system prompt composition. |
 | `src/auth.rs` | `auth login` / `list` / `logout` and the credential store. |
 | `src/agent.rs` | Agent loop, tool execution, and the agent-level tools. |
 | `src/llm/` | Model clients: OpenAI-compatible and Anthropic. |
 | `src/tools.rs` | Built-in tool specs and execution. |
 | `src/mcp.rs` | MCP runtime and remote tool exposure. |
+| `src/mcp_config.rs` | `oxide mcp` CLI: read/write MCP servers in `.oxide/mcp.json`. |
 | `src/ecosystem/` | Discovery of the Oxide and Claude Code config ecosystems. |
 | `src/permission.rs` | Permission rule parsing and decisions. |
 | `src/session.rs` | Durable JSONL session log. |
 | `src/snapshots.rs` | Shadow-git snapshots backing `/undo` and `/redo`. |
 | `src/compact.rs` | Conversation summarization. |
+| `src/dcp.rs` | Dynamic context pruning: config, pruned view, nudges, compression records. |
 | `src/lsp.rs` | Minimal LSP client and diagnostics. |
 | `src/plugin.rs` | Plugin host and tool hooks. |
 | `src/memory.rs` | Cross-session memory store. |
@@ -76,8 +78,13 @@ Before opening a pull request, make sure `cargo fmt`, `cargo clippy`, and
 
 - **Tools.** Register built-in tools in `tools::specs(&McpRegistry)` and
   dispatch them in `tools::execute(call, cwd, &McpRegistry)`. Agent-level tools
-  (`task`, `skill`, `memory`, `diagnostics`) are defined and dispatched in
-  `src/agent.rs`.
+  (`task`, `skill`, `memory`, `diagnostics`, `compress`) are defined and
+  dispatched in `src/agent.rs`; `compress` and the pruned request view live in
+  `src/dcp.rs`.
+- **Context pruning.** Configuration, deduplication, error purging, and nudges
+  live in `src/dcp.rs`; compression records are persisted through
+  `SessionLog::append_dcp` / `dcp_state`. The raw history is never modified, only
+  the outgoing request.
 - **Providers.** Add a preset in `ProviderPreset::for_name` in `src/config.rs`
   and, if the API is not OpenAI-compatible, extend the dispatch in
   `src/llm/client.rs` (see `src/llm/anthropic.rs`).

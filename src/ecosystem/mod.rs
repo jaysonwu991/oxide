@@ -147,7 +147,7 @@ pub fn load(cwd: &Path) -> Ecosystem {
 
     if let Some(home) = dirs::home_dir() {
         load_claude_dir(&mut ecosystem, &home.join(".claude"));
-        load_claude_mcp(&mut ecosystem, &home.join(".claude.json"));
+        load_mcp(&mut ecosystem, &home.join(".claude.json"));
         load_oxide_dir(&mut ecosystem, &home.join(".oxide"));
     }
 
@@ -156,7 +156,7 @@ pub fn load(cwd: &Path) -> Ecosystem {
         for name in ["CLAUDE.md", "CLAUDE.local.md"] {
             push_memory(&mut ecosystem, &root.join(name));
         }
-        load_claude_mcp(&mut ecosystem, &root.join(".mcp.json"));
+        load_mcp(&mut ecosystem, &root.join(".mcp.json"));
         load_oxide_dir(&mut ecosystem, &root.join(".oxide"));
         push_memory(&mut ecosystem, &root.join("AGENTS.md"));
     }
@@ -182,6 +182,7 @@ pub(crate) fn project_root(cwd: &Path) -> Option<PathBuf> {
 
 fn load_oxide_dir(ecosystem: &mut Ecosystem, dir: &Path) {
     load_layout(ecosystem, dir, "AGENTS.md");
+    load_mcp(ecosystem, &dir.join("mcp.json"));
 }
 
 // ---------------------------------------------------------------------------
@@ -214,7 +215,7 @@ fn load_layout(ecosystem: &mut Ecosystem, dir: &Path, memory_file: &str) {
     }
 }
 
-fn load_claude_mcp(ecosystem: &mut Ecosystem, path: &Path) {
+fn load_mcp(ecosystem: &mut Ecosystem, path: &Path) {
     let Some(json) = read_json(path) else { return };
     if let Some(servers) = json.get("mcpServers").and_then(Json::as_object) {
         for (name, config) in servers {
@@ -517,6 +518,31 @@ mod tests {
         assert!(ecosystem.command("build").is_some());
         assert!(ecosystem.skills.iter().any(|skill| skill.name == "audit"));
         assert!(ecosystem.memory.iter().any(|entry| entry.name == "AGENTS"));
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn loads_oxide_mcp_servers_and_overrides_mcp_json() {
+        let dir = temp_dir("oxide_mcp");
+        std::fs::create_dir_all(dir.join(".git")).unwrap();
+        std::fs::create_dir_all(dir.join(".oxide")).unwrap();
+        std::fs::write(
+            dir.join(".mcp.json"),
+            r#"{"mcpServers":{"shared":{"url":"https://example.com/mcp"},"claude":{"command":"npx"}}}"#,
+        )
+        .unwrap();
+        std::fs::write(
+            dir.join(".oxide/mcp.json"),
+            r#"{"mcpServers":{"shared":{"command":"npx","args":["-y","server-fs"]}}}"#,
+        )
+        .unwrap();
+
+        let ecosystem = load(&dir);
+
+        let shared = ecosystem.mcp.iter().find(|s| s.name == "shared").unwrap();
+        assert!(matches!(shared.kind, McpKind::Local { .. }));
+        assert!(ecosystem.mcp.iter().any(|s| s.name == "claude"));
 
         std::fs::remove_dir_all(&dir).ok();
     }

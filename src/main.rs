@@ -2,10 +2,12 @@ mod agent;
 mod auth;
 mod compact;
 mod config;
+mod dcp;
 mod ecosystem;
 mod llm;
 mod lsp;
 mod mcp;
+mod mcp_config;
 mod media;
 mod memory;
 mod permission;
@@ -84,6 +86,63 @@ enum Command {
         #[command(subcommand)]
         action: AuthAction,
     },
+    /// Manage MCP servers
+    Mcp {
+        #[command(subcommand)]
+        action: McpAction,
+    },
+}
+
+#[derive(Subcommand, Debug)]
+enum McpAction {
+    /// List configured MCP servers
+    List,
+    /// Show a server's configuration
+    Get {
+        /// Server name
+        name: String,
+    },
+    /// Add an MCP server
+    Add {
+        /// Server name
+        name: String,
+        /// Command and arguments (stdio) or URL (http)
+        #[arg(allow_hyphen_values = true)]
+        command: Vec<String>,
+        /// Transport: stdio (default) or http
+        #[arg(long)]
+        transport: Option<String>,
+        /// Environment variable KEY=VALUE (repeatable, stdio)
+        #[arg(long = "env", value_name = "KEY=VALUE")]
+        env: Vec<String>,
+        /// HTTP header KEY=VALUE (repeatable, http)
+        #[arg(long = "header", value_name = "KEY=VALUE")]
+        header: Vec<String>,
+        /// Working directory for a stdio server
+        #[arg(long)]
+        cwd: Option<String>,
+        /// Where to store the server: project (default) or global
+        #[arg(short, long)]
+        scope: Option<String>,
+    },
+    /// Add a server from a JSON object
+    AddJson {
+        /// Server name
+        name: String,
+        /// JSON object with `command` (stdio) or `url` (http)
+        json: String,
+        /// Where to store the server: project (default) or global
+        #[arg(short, long)]
+        scope: Option<String>,
+    },
+    /// Remove an MCP server
+    Remove {
+        /// Server name
+        name: String,
+        /// Where to remove from: project (default) or global
+        #[arg(short, long)]
+        scope: Option<String>,
+    },
 }
 
 #[derive(Subcommand, Debug)]
@@ -108,11 +167,46 @@ enum AuthAction {
 #[tokio::main]
 async fn main() -> Result<()> {
     let cli = Cli::parse();
-    if let Some(Command::Auth { action }) = cli.command {
-        return match action {
-            AuthAction::Login { provider, key } => auth::login(provider, key),
-            AuthAction::List => auth::list(),
-            AuthAction::Logout { provider } => auth::logout(provider),
+    if let Some(command) = cli.command {
+        return match command {
+            Command::Auth { action } => match action {
+                AuthAction::Login { provider, key } => auth::login(provider, key),
+                AuthAction::List => auth::list(),
+                AuthAction::Logout { provider } => auth::logout(provider),
+            },
+            Command::Mcp { action } => {
+                let current_dir = std::env::current_dir().context("resolving current directory")?;
+                match action {
+                    McpAction::List => mcp_config::list(&current_dir),
+                    McpAction::Get { name } => mcp_config::get(&current_dir, &name),
+                    McpAction::Add {
+                        name,
+                        command,
+                        transport,
+                        env,
+                        header,
+                        cwd,
+                        scope,
+                    } => mcp_config::add(
+                        &current_dir,
+                        mcp_config::AddRequest {
+                            scope,
+                            transport,
+                            name,
+                            command,
+                            env,
+                            header,
+                            cwd,
+                        },
+                    ),
+                    McpAction::AddJson { name, json, scope } => {
+                        mcp_config::add_json(&current_dir, scope, name, &json)
+                    }
+                    McpAction::Remove { name, scope } => {
+                        mcp_config::remove(&current_dir, scope, name)
+                    }
+                }
+            }
         };
     }
     let cwd = match &cli.cwd {

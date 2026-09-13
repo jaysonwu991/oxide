@@ -19,6 +19,9 @@ box, with Claude Code configuration support for compatibility.
   skills, MCP servers, and plugins from `.oxide/` (plus the Claude Code layout).
 - Durable sessions, shadow-git snapshots (`/undo`, `/redo`), and automatic
   context compaction (`/compact`).
+- Dynamic context pruning: a `compress` tool plus automatic tool-output
+  deduplication and error purging that shrink outgoing context without altering
+  session history.
 - LSP diagnostics via rust-analyzer, typescript-language-server, pyright, gopls.
 - Plugin hooks (`tool.execute.before` / `tool.execute.after`) run under bun/node.
 
@@ -39,17 +42,19 @@ so check each project's documentation for the current details.
 | Subagents | `--agent`, `task`, command routing | Agents | Subagents, background agents |
 | Slash commands | `.oxide/commands` with `agent`/`subtask` routing | Commands | Commands |
 | Skills | `SKILL.md` | Agent Skills | Skills |
-| MCP servers | stdio + HTTP | MCP servers | MCP servers |
+| MCP servers | stdio + HTTP, managed with `oxide mcp` | MCP servers | MCP servers |
 | Plugins / hooks | JS/TS hooks (bun/node) | Plugins | Hooks, plugins, Agent SDK |
 | LSP diagnostics | Built in (rust-analyzer, TS, pyright, gopls) | Built in (LSP servers) | — |
 | Undo file changes | Shadow-git `/undo`, `/redo` | `/undo`, `/redo` | Git / checkpoints |
 | Sessions | Durable JSONL, `-c` / `--resume` | Sessions, share links | Sessions across surfaces |
+| Context management | Built-in pruning (`compress` tool, dedup, error purge) | Auto-compaction + DCP plugin | Auto-compaction |
 | Multimodal input | Images and PDFs (`--image`, `@path`) | Images | Images |
 
 A dash indicates no first-class built-in equivalent. Where oxide differs most:
 it is a single dependency-light Rust binary, it speaks both the
-OpenAI-compatible and Anthropic APIs directly, and it is compatible with the
-Claude Code on-disk layout while using its own `.oxide/` format.
+OpenAI-compatible and Anthropic APIs directly, it builds dynamic context
+pruning into the agent loop instead of requiring a plugin, and it is compatible
+with the Claude Code on-disk layout while using its own `.oxide/` format.
 
 ## Installation
 
@@ -130,6 +135,13 @@ echo "explain src/agent.rs" | oxide -p
 oxide -p "review the diff" --image screenshot.png
 ```
 
+Manage MCP servers:
+
+```sh
+oxide mcp add filesystem npx -y @modelcontextprotocol/server-filesystem .
+oxide mcp list
+```
+
 ## CLI
 
 ```
@@ -158,6 +170,20 @@ oxide auth logout [provider]
 
 Keys are stored in `auth.json` in the oxide config directory (mode `0600`) and
 resolved after environment variables and before the config file.
+
+MCP server management:
+
+```sh
+oxide mcp list
+oxide mcp get <name>
+oxide mcp add [--scope project|global] [--transport stdio|http] <name> <command|url> [args...]
+oxide mcp add-json [--scope project|global] <name> '<json>'
+oxide mcp remove [--scope project|global] <name>
+```
+
+`--scope project` (the default) writes `<root>/.oxide/mcp.json`; `--scope global`
+writes `~/.oxide/mcp.json`. See
+[docs/configuration.md](docs/configuration.md#mcp-servers) for examples.
 
 ## Configuration
 
@@ -221,10 +247,15 @@ overrides the Claude Code layout.
 - `.oxide/commands/*.md` — slash commands (`$ARGUMENTS`, `$1`, `$2`, …; optional `agent` and `subtask` frontmatter)
 - `.oxide/skills/*/SKILL.md` — on-demand skills
 - `.oxide/plugins/` — JS/TS plugin hooks
+- `.oxide/mcp.json` — MCP servers (same schema as `.mcp.json`; manage with `oxide mcp`)
 - Global scope: `~/.oxide/`
 
 This repository keeps its own agents, commands, skills, and plugins in
 `.oxide/`.
+
+For task-by-task instructions — adding and removing MCP servers, subagents,
+slash commands, skills, plugins, and permission rules — see
+[docs/configuration.md](docs/configuration.md).
 
 A command's frontmatter can route it: `agent: <name>` runs the command with that
 agent's prompt and permissions, and `subtask: true` runs it in an isolated
@@ -256,10 +287,56 @@ Slash commands are expanded from the ecosystem and also include built-ins:
 
 Built-in file and shell tools: `read_file`, `write_file`, `list_dir`, `bash`,
 `glob`, `grep`, `patch`, `webfetch`. Agent-level tools: `task`, `skill`,
-`memory`, `diagnostics`. Connected MCP tools appear as `<server>__<tool>`.
+`memory`, `diagnostics`, and `compress` (when context pruning is enabled).
+Connected MCP tools appear as `<server>__<tool>`.
 
 `read_file` returns images and PDFs as viewable attachments, and `write_file`
 appends LSP diagnostics for the edited file.
+
+## Context pruning
+
+oxide prunes the context it sends to the model without ever modifying the
+session history. Pruning is controlled by `.oxide/dcp.json` (project) and
+`dcp.json` in the oxide config directory (global), with the project file
+overriding the global one.
+
+- **`compress` tool** — the model can replace closed, stale spans of the
+  conversation with a concise summary. It receives message numbers in periodic
+  context reminders and passes one or more `ranges` plus a `summary`. Overlapping
+  compressions keep the newest summary.
+- **Deduplication** — repeated tool calls with identical arguments keep only the
+  most recent output.
+- **Purge errors** — errored tool outputs are replaced with a short marker after
+  a configurable number of turns.
+- **Nudges** — when the estimated context grows large, a reminder with the
+  conversation index is injected so the model can compress.
+
+Compression records are stored in the session log, so a resumed session rebuilds
+the same pruned view. When pruning is enabled it replaces the legacy automatic
+`/compact` pass (the `/compact` command remains available).
+
+```json
+{
+  "enabled": true,
+  "compress": {
+    "permission": "allow",
+    "minContextLimit": 16000,
+    "maxContextLimit": 32000,
+    "nudgeFrequency": 5,
+    "iterationNudgeThreshold": 15
+  },
+  "strategies": {
+    "deduplication": { "enabled": true },
+    "purgeErrors": { "enabled": true, "turns": 4 }
+  },
+  "protectedTools": [],
+  "protectedFilePatterns": []
+}
+```
+
+Set `"enabled": false` to disable pruning, or `"compress": {"permission":
+"deny"}` to disable only the `compress` tool. `protectedTools` and
+`protectedFilePatterns` exclude tools and file paths from pruning.
 
 ## Data locations
 
@@ -269,6 +346,7 @@ Everything lives under the oxide config directory:
 - Sessions: `sessions/<project>/*.jsonl`
 - Snapshots: `snapshots/<project>/` (bare git repo)
 - Memory: `memory/`
+- Context pruning config: `dcp.json` (global) and `.oxide/dcp.json` (project)
 
 ## Development
 
