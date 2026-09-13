@@ -1,14 +1,29 @@
 use crate::config::{Mode, Reasoning};
 use crate::tui::app::{App, ChatItem, ConnectStep};
-use ratatui::layout::{Constraint, Direction, Layout, Rect};
+use ratatui::layout::{Alignment, Constraint, Direction, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Borders, Clear, List, ListItem, ListState, Paragraph, Wrap};
+use ratatui::widgets::{
+    Block, BorderType, Borders, Clear, List, ListItem, ListState, Paragraph, Wrap,
+};
 use ratatui::Frame;
 
 const MAX_INPUT_ROWS: usize = 8;
 const MAX_MODEL_ROWS: usize = 12;
 const MAX_SUGGESTION_ROWS: usize = 8;
+
+/// A rounded panel with a colored border and title, shared by the conversation,
+/// input and popup surfaces.
+fn panel(title: &str, color: Color) -> Block<'static> {
+    Block::default()
+        .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
+        .border_style(Style::default().fg(color))
+        .title(Span::styled(
+            format!(" {title} "),
+            Style::default().fg(color).add_modifier(Modifier::BOLD),
+        ))
+}
 
 pub fn draw(frame: &mut Frame, app: &mut App) {
     let input_width = frame.area().width.saturating_sub(2) as usize;
@@ -96,10 +111,7 @@ fn draw_connect(frame: &mut Frame, app: &App) {
         Style::default().fg(Color::DarkGray),
     )));
 
-    let block = Block::default()
-        .borders(Borders::ALL)
-        .border_style(Style::default().fg(Color::Cyan))
-        .title(Span::styled(title, Style::default().fg(Color::Cyan)));
+    let block = panel(title, Color::Cyan);
     frame.render_widget(
         Paragraph::new(lines)
             .block(block)
@@ -120,10 +132,7 @@ fn draw_models(frame: &mut Frame, app: &App) {
     } else {
         format!(" models · {} ", state.filter)
     };
-    let block = Block::default()
-        .borders(Borders::ALL)
-        .border_style(Style::default().fg(Color::Cyan))
-        .title(Span::styled(title, Style::default().fg(Color::Cyan)));
+    let block = panel(&title, Color::Cyan);
     let inner = block.inner(area);
     frame.render_widget(block, area);
 
@@ -211,13 +220,7 @@ fn draw_suggestions(frame: &mut Frame, app: &App, area: Rect) {
             ]))
         })
         .collect();
-    let block = Block::default()
-        .borders(Borders::ALL)
-        .border_style(Style::default().fg(Color::DarkGray))
-        .title(Span::styled(
-            " commands ",
-            Style::default().fg(Color::DarkGray),
-        ));
+    let block = panel("commands", Color::DarkGray);
     let list = List::new(items)
         .block(block)
         .highlight_style(
@@ -233,6 +236,10 @@ fn draw_suggestions(frame: &mut Frame, app: &App, area: Rect) {
 }
 
 fn draw_header(frame: &mut Frame, app: &App, area: Rect) {
+    let cwd = format!("{} ", app.cwd);
+    let cwd_width = cwd.chars().count() as u16;
+    let cols = Layout::horizontal([Constraint::Min(0), Constraint::Length(cwd_width)]).split(area);
+
     let title = Line::from(vec![
         Span::styled(
             " oxide ",
@@ -242,9 +249,12 @@ fn draw_header(frame: &mut Frame, app: &App, area: Rect) {
                 .add_modifier(Modifier::BOLD),
         ),
         Span::raw("  "),
+        Span::styled("model ", Style::default().fg(Color::DarkGray)),
         Span::styled(
-            format!("model: {}", app.model),
-            Style::default().fg(Color::Cyan),
+            app.model.clone(),
+            Style::default()
+                .fg(Color::Cyan)
+                .add_modifier(Modifier::BOLD),
         ),
         Span::raw("  "),
         Span::styled(format!(" {} ", app.mode.label()), mode_style(app.mode)),
@@ -253,46 +263,47 @@ fn draw_header(frame: &mut Frame, app: &App, area: Rect) {
             format!(" {} ", app.reasoning.label()),
             reasoning_style(app.reasoning),
         ),
-        Span::styled("  ·  ", Style::default().fg(Color::DarkGray)),
-        Span::styled(app.cwd.as_str(), Style::default().fg(Color::DarkGray)),
     ]);
-    frame.render_widget(Paragraph::new(title), area);
+    frame.render_widget(Paragraph::new(title), cols[0]);
+    frame.render_widget(
+        Paragraph::new(
+            Line::from(Span::styled(cwd, Style::default().fg(Color::DarkGray)))
+                .alignment(Alignment::Right),
+        ),
+        cols[1],
+    );
+}
+
+fn mode_color(mode: Mode) -> Color {
+    match mode {
+        Mode::Build => Color::Cyan,
+        Mode::AutoEdit => Color::Yellow,
+        Mode::Plan => Color::Magenta,
+    }
 }
 
 fn mode_style(mode: Mode) -> Style {
-    let background = match mode {
-        Mode::Build => Color::DarkGray,
-        Mode::AutoEdit => Color::Yellow,
-        Mode::Plan => Color::Magenta,
+    let (fg, bg) = match mode {
+        Mode::Build => (Color::Black, Color::Cyan),
+        Mode::AutoEdit => (Color::Black, Color::Yellow),
+        Mode::Plan => (Color::Black, Color::Magenta),
     };
-    Style::default()
-        .fg(Color::Black)
-        .bg(background)
-        .add_modifier(Modifier::BOLD)
+    Style::default().fg(fg).bg(bg).add_modifier(Modifier::BOLD)
 }
 
 fn reasoning_style(reasoning: Reasoning) -> Style {
-    let background = match reasoning {
-        Reasoning::Auto => Color::Green,
-        Reasoning::Off => Color::DarkGray,
-        Reasoning::Low => Color::Cyan,
-        Reasoning::Medium => Color::Blue,
-        Reasoning::High => Color::Magenta,
+    let (fg, bg) = match reasoning {
+        Reasoning::Auto => (Color::Black, Color::Green),
+        Reasoning::Off => (Color::White, Color::DarkGray),
+        Reasoning::Low => (Color::Black, Color::Cyan),
+        Reasoning::Medium => (Color::White, Color::Blue),
+        Reasoning::High => (Color::White, Color::Magenta),
     };
-    Style::default()
-        .fg(Color::Black)
-        .bg(background)
-        .add_modifier(Modifier::BOLD)
+    Style::default().fg(fg).bg(bg).add_modifier(Modifier::BOLD)
 }
 
 fn draw_messages(frame: &mut Frame, app: &mut App, area: Rect) {
-    let block = Block::default()
-        .borders(Borders::ALL)
-        .border_style(Style::default().fg(Color::DarkGray))
-        .title(Span::styled(
-            " conversation ",
-            Style::default().fg(Color::DarkGray),
-        ));
+    let block = panel("conversation", Color::DarkGray);
     let inner = block.inner(area);
     frame.render_widget(block, area);
 
@@ -367,55 +378,64 @@ fn sync_lines(app: &mut App, width: usize) {
 }
 
 fn render_item(item: &ChatItem, width: usize, lines: &mut Vec<Line<'static>>) {
+    let bold = Modifier::BOLD;
     match item {
         ChatItem::User(text) => {
-            lines.push(Line::from(Span::styled(
-                "you",
-                Style::default()
-                    .fg(Color::Cyan)
-                    .add_modifier(Modifier::BOLD),
-            )));
+            lines.push(Line::from(vec![
+                Span::styled("❯ ", Style::default().fg(Color::Cyan).add_modifier(bold)),
+                Span::styled("you", Style::default().fg(Color::Cyan).add_modifier(bold)),
+            ]));
             push_wrapped(lines, text, width, Style::default());
         }
         ChatItem::Assistant(text) => {
-            lines.push(Line::from(Span::styled(
-                "assistant",
-                Style::default()
-                    .fg(Color::Green)
-                    .add_modifier(Modifier::BOLD),
-            )));
+            lines.push(Line::from(vec![
+                Span::styled("◆ ", Style::default().fg(Color::Green).add_modifier(bold)),
+                Span::styled(
+                    "oxide",
+                    Style::default().fg(Color::Green).add_modifier(bold),
+                ),
+            ]));
             push_wrapped(lines, text, width, Style::default());
         }
         ChatItem::Tool { name, args } => {
-            lines.push(Line::from(Span::styled(
-                format!("tool: {name} {args}"),
-                Style::default().fg(Color::Yellow),
-            )));
+            lines.push(Line::from(vec![
+                Span::styled("⚙ ", Style::default().fg(Color::Yellow)),
+                Span::styled(
+                    name.clone(),
+                    Style::default().fg(Color::Yellow).add_modifier(bold),
+                ),
+                Span::styled(format!(" {args}"), Style::default().fg(Color::DarkGray)),
+            ]));
         }
         ChatItem::ToolProgress { name, output } => {
-            lines.push(Line::from(Span::styled(
-                format!("progress: {name}"),
-                Style::default().fg(Color::DarkGray),
-            )));
+            lines.push(Line::from(vec![
+                Span::styled("⋯ ", Style::default().fg(Color::DarkGray)),
+                Span::styled(name.clone(), Style::default().fg(Color::DarkGray)),
+            ]));
             push_wrapped(lines, output, width, Style::default().fg(Color::DarkGray));
         }
         ChatItem::ToolResult { name, output } => {
-            lines.push(Line::from(Span::styled(
-                format!("result: {name}"),
-                Style::default().fg(Color::DarkGray),
-            )));
+            lines.push(Line::from(vec![
+                Span::styled("↳ ", Style::default().fg(Color::DarkGray)),
+                Span::styled(name.clone(), Style::default().fg(Color::DarkGray)),
+            ]));
             push_wrapped(lines, output, width, Style::default().fg(Color::DarkGray));
         }
         ChatItem::Error(text) => {
             push_wrapped(
                 lines,
-                &format!("error: {text}"),
+                &format!("✗ {text}"),
                 width,
                 Style::default().fg(Color::Red),
             );
         }
         ChatItem::Info(text) => {
-            push_wrapped(lines, text, width, Style::default().fg(Color::DarkGray));
+            push_wrapped(
+                lines,
+                &format!("· {text}"),
+                width,
+                Style::default().fg(Color::DarkGray),
+            );
         }
     }
 }
@@ -424,17 +444,14 @@ fn draw_input(frame: &mut Frame, app: &App, area: Rect) {
     let border_color = if app.busy {
         Color::DarkGray
     } else {
-        Color::Cyan
+        mode_color(app.mode)
     };
     let title = if app.attachments.is_empty() {
-        " message ".to_string()
+        "message".to_string()
     } else {
-        format!(" message · {} attachment(s) ", app.attachments.len())
+        format!("message · {} attachment(s)", app.attachments.len())
     };
-    let block = Block::default()
-        .borders(Borders::ALL)
-        .border_style(Style::default().fg(border_color))
-        .title(Span::styled(title, Style::default().fg(border_color)));
+    let block = panel(&title, border_color);
     let inner = block.inner(area);
     frame.render_widget(block, area);
 
@@ -463,20 +480,29 @@ fn input_scroll(input: &str, width: usize) -> u16 {
 }
 
 fn draw_status(frame: &mut Frame, app: &App, area: Rect) {
+    let (status_fg, status_bg) = if app.busy {
+        (Color::Black, Color::Yellow)
+    } else if app.status == "ready" {
+        (Color::Black, Color::Green)
+    } else {
+        (Color::White, Color::DarkGray)
+    };
     let hint = if app.busy {
         let secs = app
             .busy_since
             .map(|start| start.elapsed().as_secs())
             .unwrap_or(0);
-        format!("working… {secs}s · Esc to quit")
+        format!("working… {secs}s · Esc to cancel")
     } else {
-        "Enter send · / commands · Shift+Tab mode · Ctrl+R reasoning · @image · Ctrl+C quit"
-            .to_string()
+        "Enter send · / commands · Shift+Tab mode · Ctrl+R reasoning · Ctrl+C quit".to_string()
     };
     let line = Line::from(vec![
         Span::styled(
             format!(" {} ", app.status),
-            Style::default().fg(Color::Black).bg(Color::DarkGray),
+            Style::default()
+                .fg(status_fg)
+                .bg(status_bg)
+                .add_modifier(Modifier::BOLD),
         ),
         Span::raw("  "),
         Span::styled(hint, Style::default().fg(Color::DarkGray)),
