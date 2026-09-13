@@ -40,6 +40,9 @@ box, with Claude Code configuration support for compatibility.
   toggles them), long action lines are truncated to the terminal width, and tool
   results are capped by lines and bytes before they enter the model's context.
   Capped output is saved to disk with a pointer so it stays recoverable.
+- OpenCode-style transcript: shell calls render as `$ command` with their output
+  and a `⋯ Ctrl+O to expand` hint, file edits show a colored line-numbered diff,
+  and each model turn is timed with `+ Thought: Nms`.
 - Incremental TUI rendering: only conversation items that changed since the last
   frame are re-wrapped and re-styled.
 

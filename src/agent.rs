@@ -73,6 +73,9 @@ pub struct Runtime {
 #[derive(Debug, Clone)]
 pub enum AgentEvent {
     Text(String),
+    Thought {
+        millis: u64,
+    },
     ToolCall {
         name: String,
         args: String,
@@ -85,6 +88,7 @@ pub enum AgentEvent {
         name: String,
         args: String,
         output: String,
+        diff: Option<tools::DiffPreview>,
     },
     Error(String),
     Finished(Vec<Message>),
@@ -157,14 +161,27 @@ pub fn run_subagent(
                     report.push_str(&delta);
                     let _ = tx.send(AgentEvent::Text(delta));
                 }
+                AgentEvent::Thought { millis } => {
+                    let _ = tx.send(AgentEvent::Thought { millis });
+                }
                 AgentEvent::ToolCall { name, args } => {
                     let _ = tx.send(AgentEvent::ToolCall { name, args });
                 }
                 AgentEvent::ToolProgress { name, chunk } => {
                     let _ = tx.send(AgentEvent::ToolProgress { name, chunk });
                 }
-                AgentEvent::ToolResult { name, args, output } => {
-                    let _ = tx.send(AgentEvent::ToolResult { name, args, output });
+                AgentEvent::ToolResult {
+                    name,
+                    args,
+                    output,
+                    diff,
+                } => {
+                    let _ = tx.send(AgentEvent::ToolResult {
+                        name,
+                        args,
+                        output,
+                        diff,
+                    });
                 }
                 AgentEvent::Error(message) => {
                     let _ = tx.send(AgentEvent::Error(message));
@@ -266,8 +283,16 @@ async fn run_loop(
             request.extend(messages.iter().cloned());
         }
 
+        let started = std::time::Instant::now();
+        let mut thought_sent = false;
         let turn = match client
             .stream_chat(&request, &tool_specs, |delta| {
+                if !thought_sent {
+                    thought_sent = true;
+                    let _ = tx.send(AgentEvent::Thought {
+                        millis: started.elapsed().as_millis() as u64,
+                    });
+                }
                 let _ = tx.send(AgentEvent::Text(delta));
             })
             .await
@@ -279,6 +304,11 @@ async fn run_loop(
                 return;
             }
         };
+        if !thought_sent {
+            let _ = tx.send(AgentEvent::Thought {
+                millis: started.elapsed().as_millis() as u64,
+            });
+        }
 
         let tool_calls = turn.tool_calls.clone();
         let assistant = Message::assistant(turn.content, tool_calls.clone())
@@ -400,6 +430,7 @@ async fn run_loop(
                     name: original.function.name.clone(),
                     args: original.function.arguments.clone(),
                     output: output.text.clone(),
+                    diff: output.diff.clone(),
                 });
                 let tool_message = if output.media.is_empty() {
                     Message::tool(original.id.clone(), output.text)
@@ -500,6 +531,7 @@ async fn run_loop(
                     name,
                     args: serde_json::to_string(&effective_args).unwrap_or_default(),
                     output: text.clone(),
+                    diff: output.diff.clone(),
                 });
                 let tool_message = if output.media.is_empty() {
                     Message::tool(call.id.clone(), text)
@@ -663,7 +695,8 @@ async fn task_inner(
             AgentEvent::Finished(_) => break,
             AgentEvent::ToolCall { .. }
             | AgentEvent::ToolProgress { .. }
-            | AgentEvent::ToolResult { .. } => {}
+            | AgentEvent::ToolResult { .. }
+            | AgentEvent::Thought { .. } => {}
         }
     }
     let _ = handle.await;

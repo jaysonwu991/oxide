@@ -917,6 +917,10 @@ fn handle_agent_event(event: AgentEvent, app: &mut App) {
             app.auto_scroll = true;
             app.push_assistant_delta(delta);
         }
+        AgentEvent::Thought { millis } => {
+            app.auto_scroll = true;
+            app.items.push(ChatItem::Thought(millis));
+        }
         AgentEvent::ToolCall { name, args } => {
             app.assistant_open = false;
             app.auto_scroll = true;
@@ -943,9 +947,14 @@ fn handle_agent_event(event: AgentEvent, app: &mut App) {
                 });
             }
         }
-        AgentEvent::ToolResult { name, args, output } => {
+        AgentEvent::ToolResult {
+            name,
+            args,
+            output,
+            diff,
+        } => {
             app.auto_scroll = true;
-            app.items.push(ChatItem::ToolResult { name, args, output });
+            app.resolve_tool(name, args, output, diff);
             app.status = "thinking...".to_string();
         }
         AgentEvent::Error(message) => {

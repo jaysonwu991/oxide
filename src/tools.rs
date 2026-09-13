@@ -1,3 +1,4 @@
+use crate::diff;
 use crate::llm::{ContentPart, FunctionSpec, ToolCall, ToolSpec};
 use crate::mcp::McpRegistry;
 use crate::media;
@@ -18,6 +19,14 @@ const TRUNCATION_RETENTION_SECS: u64 = 7 * 24 * 60 * 60;
 
 static TRUNCATION_ID: AtomicU64 = AtomicU64::new(0);
 
+/// A line-numbered diff of a file edit, carried alongside the tool result for
+/// display only. It is never sent to the model (the text result is).
+#[derive(Debug, Clone, Default)]
+pub struct DiffPreview {
+    pub path: String,
+    pub text: String,
+}
+
 /// The result of running a tool: always a text payload, optionally plus media
 /// parts (images/PDFs) that the model should see as content. `terminate` lets a
 /// tool (or a `tool.execute.after` plugin hook) end the turn instead of asking
@@ -27,6 +36,7 @@ pub struct ToolOutput {
     pub text: String,
     pub media: Vec<ContentPart>,
     pub terminate: bool,
+    pub diff: Option<DiffPreview>,
 }
 
 impl ToolOutput {
@@ -35,6 +45,7 @@ impl ToolOutput {
             text: text.into(),
             media: Vec::new(),
             terminate: false,
+            diff: None,
         }
     }
 
@@ -43,7 +54,16 @@ impl ToolOutput {
             text: text.into(),
             media,
             terminate: false,
+            diff: None,
         }
+    }
+
+    pub fn with_diff(mut self, path: impl Into<String>, text: impl Into<String>) -> Self {
+        self.diff = Some(DiffPreview {
+            path: path.into(),
+            text: text.into(),
+        });
+        self
     }
 }
 
@@ -199,12 +219,12 @@ pub async fn execute(
     } else {
         match name {
             "read_file" => read_file(cwd, &args),
-            "write_file" => write_file(cwd, &args).map(ToolOutput::text),
+            "write_file" => write_file(cwd, &args),
             "list_dir" => list_dir(cwd, &args).map(ToolOutput::text),
             "bash" => bash(cwd, &args, progress).await.map(ToolOutput::text),
             "glob" => glob(cwd, &args).map(ToolOutput::text),
             "grep" => grep(cwd, &args).map(ToolOutput::text),
-            "patch" => patch(cwd, &args).map(ToolOutput::text),
+            "patch" => patch(cwd, &args),
             "webfetch" => webfetch(&args).await.map(ToolOutput::text),
             other => Err(anyhow::anyhow!("unknown tool `{other}`")),
         }
@@ -215,6 +235,7 @@ pub async fn execute(
             text: truncate(name, output.text),
             media: output.media,
             terminate: output.terminate,
+            diff: output.diff,
         },
         Err(err) => ToolOutput::text(format!("error: {err:#}")),
     }
@@ -293,7 +314,7 @@ fn read_file(cwd: &Path, args: &Value) -> Result<ToolOutput> {
     Ok(ToolOutput::text(out))
 }
 
-fn write_file(cwd: &Path, args: &Value) -> Result<String> {
+fn write_file(cwd: &Path, args: &Value) -> Result<ToolOutput> {
     let path = args
         .get("path")
         .and_then(Value::as_str)
@@ -308,12 +329,17 @@ fn write_file(cwd: &Path, args: &Value) -> Result<String> {
         std::fs::create_dir_all(parent)
             .with_context(|| format!("creating {}", parent.display()))?;
     }
+    let previous = std::fs::read_to_string(&full).unwrap_or_default();
     std::fs::write(&full, content).with_context(|| format!("writing {}", full.display()))?;
-    Ok(format!(
+    let output = ToolOutput::text(format!(
         "wrote {} bytes to {}",
         content.len(),
         full.display()
-    ))
+    ));
+    match diff::preview(&previous, content) {
+        Some(diff) => Ok(output.with_diff(path, diff)),
+        None => Ok(output),
+    }
 }
 
 fn list_dir(cwd: &Path, args: &Value) -> Result<String> {
@@ -433,13 +459,14 @@ fn grep(cwd: &Path, args: &Value) -> Result<String> {
     Ok(out)
 }
 
-fn patch(cwd: &Path, args: &Value) -> Result<String> {
+fn patch(cwd: &Path, args: &Value) -> Result<ToolOutput> {
     let diff = args
         .get("diff")
         .and_then(Value::as_str)
         .context("missing `diff`")?;
     let lines: Vec<&str> = diff.lines().collect();
     let mut applied: Vec<String> = Vec::new();
+    let mut previews: Vec<(String, String)> = Vec::new();
     let mut i = 0;
 
     while i < lines.len() {
@@ -502,14 +529,37 @@ fn patch(cwd: &Path, args: &Value) -> Result<String> {
         if trailing_newline {
             out.push('\n');
         }
-        std::fs::write(&full, out).with_context(|| format!("writing {}", full.display()))?;
+        std::fs::write(&full, &out).with_context(|| format!("writing {}", full.display()))?;
+        if let Some(preview) = diff::preview(&original, &out) {
+            previews.push((target.clone(), preview));
+        }
         applied.push(target);
     }
 
     if applied.is_empty() {
         anyhow::bail!("no file patches found in diff");
     }
-    Ok(format!("patched {}", applied.join(", ")))
+    let output = ToolOutput::text(format!("patched {}", applied.join(", ")));
+    if previews.is_empty() {
+        return Ok(output);
+    }
+    let path = if previews.len() == 1 {
+        previews[0].0.clone()
+    } else {
+        format!("{} files", previews.len())
+    };
+    let text = previews
+        .iter()
+        .map(|(file, diff)| {
+            if previews.len() == 1 {
+                diff.clone()
+            } else {
+                format!("  {file}\n{diff}")
+            }
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    Ok(output.with_diff(path, text))
 }
 
 async fn webfetch(args: &Value) -> Result<String> {
@@ -983,11 +1033,27 @@ mod tests {
  three
 ";
         let out = patch(&dir, &json!({ "diff": diff })).unwrap();
-        assert!(out.contains("f.txt"), "{out}");
+        assert!(out.text.contains("f.txt"), "{}", out.text);
+        assert!(out.diff.is_some());
         assert_eq!(
             std::fs::read_to_string(dir.join("f.txt")).unwrap(),
             "one\nTWO\nthree\n"
         );
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn write_file_reports_a_diff() {
+        let dir = std::env::temp_dir().join(format!("oxide_write_diff_{}", std::process::id()));
+        std::fs::remove_dir_all(&dir).ok();
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("f.txt"), "one\ntwo\n").unwrap();
+
+        let out = write_file(&dir, &json!({ "path": "f.txt", "content": "one\nTWO\n" })).unwrap();
+        let diff = out.diff.expect("write_file should report a diff");
+        assert!(diff.text.contains("TWO"), "{}", diff.text);
+        assert!(diff.text.contains("two"), "{}", diff.text);
 
         std::fs::remove_dir_all(&dir).ok();
     }
