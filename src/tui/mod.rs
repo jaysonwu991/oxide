@@ -470,8 +470,7 @@ fn handle_key(
                     app.status = format!("{} attachment(s) pending", app.attachments.len());
                 }
                 None => {
-                    app.status =
-                        "no clipboard image (install pngpaste, wl-paste or xclip)".to_string();
+                    app.status = "no image found on clipboard".to_string();
                 }
             }
         }

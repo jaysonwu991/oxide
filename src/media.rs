@@ -119,8 +119,9 @@ pub fn expand_path(raw: &str, cwd: &Path) -> PathBuf {
     }
 }
 
-/// Best-effort clipboard image grab. Requires a platform helper
-/// (`pngpaste` on macOS, `wl-paste` or `xclip` on Linux) to be installed.
+/// Best-effort clipboard image grab. On macOS this uses the built-in
+/// `osascript` (falling back to `pngpaste`); on Linux it needs `wl-paste` or
+/// `xclip`.
 pub fn clipboard_image() -> Option<ContentPart> {
     let bytes = clipboard_bytes()?;
     if bytes.is_empty() {
@@ -136,7 +137,31 @@ pub fn clipboard_image() -> Option<ContentPart> {
 
 #[cfg(target_os = "macos")]
 fn clipboard_bytes() -> Option<Vec<u8>> {
-    run_stdout("pngpaste", &["-"])
+    run_stdout("pngpaste", &["-"]).or_else(clipboard_bytes_osascript)
+}
+
+/// Extracts the clipboard image with the built-in `osascript`, avoiding a
+/// dependency on `pngpaste`. Returns `None` when the clipboard holds no image.
+#[cfg(target_os = "macos")]
+fn clipboard_bytes_osascript() -> Option<Vec<u8>> {
+    let path = std::env::temp_dir().join(format!("oxide-clipboard-{}.png", std::process::id()));
+    let path_str = path.to_str()?;
+    let script = format!(
+        "set theFile to (open for access POSIX file \"{path_str}\" with write permission)\n\
+         write (the clipboard as «class PNGf») to theFile\n\
+         close access theFile"
+    );
+    let output = Command::new("osascript")
+        .args(["-e", &script])
+        .output()
+        .ok()?;
+    let bytes = if output.status.success() {
+        std::fs::read(&path).ok()
+    } else {
+        None
+    };
+    let _ = std::fs::remove_file(&path);
+    bytes.filter(|bytes| !bytes.is_empty())
 }
 
 #[cfg(target_os = "linux")]
