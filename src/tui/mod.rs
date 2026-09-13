@@ -4,14 +4,14 @@ pub mod ui;
 use crate::agent::{self, AgentEvent, ApprovalRequest, Approver, Runtime};
 use crate::config::Config;
 use crate::ecosystem::AgentMode;
-use crate::llm::Message;
+use crate::llm::{LlmClient, Message};
 use crate::lsp::LspManager;
 use crate::mcp::McpRegistry;
 use crate::media;
 use crate::plugin::PluginHost;
 use crate::session::SessionLog;
 use crate::snapshots::Snapshots;
-use crate::tui::app::{App, ChatItem, ConnectState, ConnectStep};
+use crate::tui::app::{App, ChatItem, CommandHint, ConnectState, ConnectStep, ModelsState};
 use anyhow::Result;
 use crossterm::event::{
     DisableBracketedPaste, EnableBracketedPaste, Event, EventStream, KeyCode, KeyEvent,
@@ -26,7 +26,7 @@ use ratatui::backend::CrosstermBackend;
 use ratatui::Terminal;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use tokio::sync::mpsc::{unbounded_channel, UnboundedReceiver};
+use tokio::sync::mpsc::{unbounded_channel, UnboundedReceiver, UnboundedSender};
 
 pub async fn run(config: Config, cwd: PathBuf, session: Option<SessionLog>) -> Result<()> {
     let mcp = Arc::new(McpRegistry::connect(&config.ecosystem.mcp).await);
@@ -104,7 +104,7 @@ async fn event_loop(
         if config.memory.len() == 1 { "y" } else { "ies" }
     )));
     app.items.push(ChatItem::Info(
-        "tips: attach images/PDFs with @path or Ctrl+V · /undo and /redo revert file changes · /connect adds a provider"
+        "tips: type / to list commands · /models switches model · @path or Ctrl+V attaches images · /undo and /redo revert changes"
             .to_string(),
     ));
     if config.api_key.trim().is_empty() {
@@ -145,6 +145,7 @@ async fn event_loop(
 
     let mut reader = EventStream::new();
     let mut rx: Option<UnboundedReceiver<AgentEvent>> = None;
+    let (models_tx, mut models_rx) = unbounded_channel::<Result<Vec<String>, String>>();
     let mut tick = tokio::time::interval(std::time::Duration::from_millis(500));
 
     let (approval_tx, mut approval_rx) = unbounded_channel::<ApprovalRequest>();
@@ -175,7 +176,7 @@ async fn event_loop(
                 match maybe_event {
                     Some(Ok(Event::Key(key))) => handle_key(
                         key, &mut app, &mut config, &cwd, &mut rx, &mcp, &plugins,
-                        snapshots.as_ref(), &lsp, &mut session, &approve,
+                        snapshots.as_ref(), &lsp, &mut session, &approve, &models_tx,
                     ),
                     Some(Ok(Event::Paste(text))) => handle_paste(text, &mut app),
                     _ => {}
@@ -185,6 +186,11 @@ async fn event_loop(
                 if let Some(event) = agent_event {
                     handle_agent_event(event, &mut app);
                     got_agent_event = true;
+                }
+            }
+            result = models_rx.recv() => {
+                if let Some(result) = result {
+                    handle_model_result(result, &mut app);
                 }
             }
             approval = approval_rx.recv() => {
@@ -226,9 +232,15 @@ fn handle_key(
     lsp: &Arc<LspManager>,
     session: &mut Option<SessionLog>,
     approve: &Approver,
+    models_tx: &UnboundedSender<Result<Vec<String>, String>>,
 ) {
     if app.connect.is_some() {
         handle_connect_key(key, app, config);
+        return;
+    }
+
+    if app.models.is_some() {
+        handle_models_key(key, app, config);
         return;
     }
 
@@ -248,7 +260,10 @@ fn handle_key(
     }
 
     match key.code {
-        KeyCode::Esc => escape_action(app),
+        KeyCode::Esc => {
+            escape_action(app);
+            refresh_suggestions(app, config);
+        }
         KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
             app.should_quit = true;
         }
@@ -283,8 +298,17 @@ fn handle_key(
             if raw.is_empty() && app.attachments.is_empty() {
                 return;
             }
+            if let Some(hint) = app.suggestions.get(app.suggestion_index) {
+                let completed = format!("/{}", hint.name);
+                if raw != completed {
+                    app.input = completed;
+                    refresh_suggestions(app, config);
+                    return;
+                }
+            }
             if raw == "/undo" || raw == "/redo" {
                 app.input.clear();
+                refresh_suggestions(app, config);
                 let result = match snapshots {
                     Some(snapshots) => {
                         if raw == "/undo" {
@@ -311,6 +335,7 @@ fn handle_key(
             }
             if raw == "/compact" {
                 app.input.clear();
+                refresh_suggestions(app, config);
                 if app.busy {
                     return;
                 }
@@ -337,6 +362,7 @@ fn handle_key(
             }
             if raw == "/connect" || raw.starts_with("/connect ") {
                 app.input.clear();
+                refresh_suggestions(app, config);
                 let provider = raw
                     .strip_prefix("/connect")
                     .unwrap_or_default()
@@ -352,12 +378,43 @@ fn handle_key(
                 app.status = "connecting...".to_string();
                 return;
             }
+            if raw == "/models" || raw.starts_with("/models ") {
+                app.input.clear();
+                refresh_suggestions(app, config);
+                if config.api_key.trim().is_empty() {
+                    app.items.push(ChatItem::Error(
+                        "no provider connected — run /connect to add an API key".to_string(),
+                    ));
+                    return;
+                }
+                let filter = raw
+                    .strip_prefix("/models")
+                    .unwrap_or_default()
+                    .trim()
+                    .to_string();
+                let mut state = ModelsState::loading();
+                state.filter = filter;
+                app.models = Some(state);
+                app.status = "loading models...".to_string();
+                let config = config.clone();
+                let tx = models_tx.clone();
+                tokio::spawn(async move {
+                    let result = LlmClient::new(config)
+                        .list_models()
+                        .await
+                        .map_err(|err| format!("{err:#}"));
+                    let _ = tx.send(result);
+                });
+                return;
+            }
             if raw == "/help" || raw == "/?" {
                 app.input.clear();
+                refresh_suggestions(app, config);
                 app.items.push(ChatItem::Info(help_text(config)));
                 return;
             }
             app.input.clear();
+            refresh_suggestions(app, config);
             if config.api_key.trim().is_empty() {
                 app.items.push(ChatItem::Error(
                     "no provider connected — run /connect to add an API key".to_string(),
@@ -477,17 +534,34 @@ fn handle_key(
         KeyCode::Char(ch) => {
             app.input.push(ch);
             app.auto_scroll = true;
+            refresh_suggestions(app, config);
         }
         KeyCode::Backspace => {
             app.input.pop();
+            refresh_suggestions(app, config);
+        }
+        KeyCode::Tab if !app.suggestions.is_empty() => {
+            if let Some(hint) = app.suggestions.get(app.suggestion_index) {
+                app.input = format!("/{}", hint.name);
+                refresh_suggestions(app, config);
+            }
         }
         KeyCode::Up => {
-            app.scroll = app.scroll.saturating_sub(1);
-            app.auto_scroll = false;
+            if !app.suggestions.is_empty() {
+                app.suggestion_index = app.suggestion_index.saturating_sub(1);
+            } else {
+                app.scroll = app.scroll.saturating_sub(1);
+                app.auto_scroll = false;
+            }
         }
         KeyCode::Down => {
-            app.scroll = app.scroll.saturating_add(1);
-            app.auto_scroll = false;
+            if !app.suggestions.is_empty() {
+                let last = app.suggestions.len().saturating_sub(1);
+                app.suggestion_index = (app.suggestion_index + 1).min(last);
+            } else {
+                app.scroll = app.scroll.saturating_add(1);
+                app.auto_scroll = false;
+            }
         }
         _ => {}
     }
@@ -506,6 +580,7 @@ fn help_text(config: &Config) -> String {
         "built-in commands:".to_string(),
         "  /help                 show this help".to_string(),
         "  /connect [provider]   connect a provider and save its API key".to_string(),
+        "  /models [filter]      list and switch the active model".to_string(),
         "  /undo, /redo          revert or reapply the agent's file changes".to_string(),
         "  /compact              summarize the conversation to free context".to_string(),
         "keys: Enter send · Shift+Tab mode · Ctrl+R reasoning · Ctrl+V image · ↑/↓ scroll · Ctrl+C quit"
@@ -550,11 +625,145 @@ fn resolve_provider_choice(value: &str) -> String {
     }
 }
 
+/// The built-in slash commands surfaced in the input autocomplete.
+fn builtin_commands() -> Vec<CommandHint> {
+    vec![
+        CommandHint {
+            name: "help".to_string(),
+            description: "show help".to_string(),
+        },
+        CommandHint {
+            name: "models".to_string(),
+            description: "choose a model".to_string(),
+        },
+        CommandHint {
+            name: "connect".to_string(),
+            description: "connect a provider".to_string(),
+        },
+        CommandHint {
+            name: "compact".to_string(),
+            description: "summarize the conversation".to_string(),
+        },
+        CommandHint {
+            name: "undo".to_string(),
+            description: "revert file changes".to_string(),
+        },
+        CommandHint {
+            name: "redo".to_string(),
+            description: "reapply file changes".to_string(),
+        },
+    ]
+}
+
+/// Recomputes the slash-command suggestions for the current input.
+fn refresh_suggestions(app: &mut App, config: &Config) {
+    app.suggestions.clear();
+    app.suggestion_index = 0;
+    if app.connect.is_some() || app.models.is_some() || app.busy {
+        return;
+    }
+    let Some(query) = app.input.strip_prefix('/') else {
+        return;
+    };
+    if query.contains(char::is_whitespace) {
+        return;
+    }
+    let query = query.to_ascii_lowercase();
+    let mut hints = builtin_commands();
+    for command in &config.ecosystem.commands {
+        hints.push(CommandHint {
+            name: command.name.clone(),
+            description: command.description.clone().unwrap_or_default(),
+        });
+    }
+    app.suggestions = hints
+        .into_iter()
+        .filter(|hint| hint.name.to_ascii_lowercase().starts_with(&query))
+        .collect();
+}
+
+fn handle_models_key(key: KeyEvent, app: &mut App, config: &mut Config) {
+    let Some(mut state) = app.models.take() else {
+        return;
+    };
+    let mut keep = true;
+    match key.code {
+        KeyCode::Esc => {
+            keep = false;
+            app.status = "model unchanged".to_string();
+        }
+        KeyCode::Up => {
+            state.selected = state.selected.saturating_sub(1);
+        }
+        KeyCode::Down => {
+            let last = state.filtered().len().saturating_sub(1);
+            state.selected = (state.selected + 1).min(last);
+        }
+        KeyCode::Backspace => {
+            state.filter.pop();
+            state.selected = 0;
+        }
+        KeyCode::Enter => {
+            if let Some(model) = state.selected_model().map(str::to_string) {
+                match Config::set_active_model_at(&Config::config_path(), &model) {
+                    Ok(()) => {
+                        config.model = model.clone();
+                        app.model = model.clone();
+                        app.items
+                            .push(ChatItem::Info(format!("model set to {model}")));
+                        app.status = "ready".to_string();
+                    }
+                    Err(err) => state.error = Some(format!("{err:#}")),
+                }
+                keep = false;
+            }
+        }
+        KeyCode::Char(c)
+            if !key
+                .modifiers
+                .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT) =>
+        {
+            state.filter.push(c);
+            state.selected = 0;
+        }
+        _ => {}
+    }
+    if keep {
+        app.models = Some(state);
+    }
+}
+
+fn handle_model_result(result: Result<Vec<String>, String>, app: &mut App) {
+    if app.models.is_none() {
+        return;
+    }
+    match result {
+        Ok(models) if models.is_empty() => {
+            app.models = None;
+            app.items
+                .push(ChatItem::Error("provider returned no models".to_string()));
+            app.status = "ready".to_string();
+        }
+        Ok(models) => {
+            app.status = format!("{} model(s) — pick one", models.len());
+            app.models = Some(ModelsState::ready(models));
+        }
+        Err(err) => {
+            app.models = None;
+            app.items.push(ChatItem::Error(format!("models: {err}")));
+            app.status = "ready".to_string();
+        }
+    }
+}
+
 fn handle_paste(text: String, app: &mut App) {
     let mut text = text;
     text.retain(|ch| ch != '\r' && ch != '\n');
     if let Some(state) = app.connect.as_mut() {
         state.input.push_str(&text);
+    } else if let Some(state) = app.models.as_mut() {
+        state.filter.push_str(&text);
+        state.selected = 0;
     } else {
         app.input.push_str(&text);
         app.auto_scroll = true;
@@ -791,5 +1000,65 @@ mod tests {
         assert!(help.contains("built-in commands"));
         assert!(help.contains("/connect"));
         assert!(help.contains("/review"));
+    }
+
+    #[test]
+    fn suggestions_show_for_slash_and_filter() {
+        let config = Config::default();
+        let mut app = test_app();
+
+        app.input = "/".to_string();
+        refresh_suggestions(&mut app, &config);
+        assert!(app.suggestions.iter().any(|hint| hint.name == "models"));
+
+        app.input = "/mo".to_string();
+        refresh_suggestions(&mut app, &config);
+        assert_eq!(app.suggestions.len(), 1);
+        assert_eq!(app.suggestions[0].name, "models");
+
+        app.input = "hello".to_string();
+        refresh_suggestions(&mut app, &config);
+        assert!(app.suggestions.is_empty());
+
+        app.input = "/models foo".to_string();
+        refresh_suggestions(&mut app, &config);
+        assert!(app.suggestions.is_empty());
+    }
+
+    #[test]
+    fn suggestions_include_ecosystem_commands() {
+        let mut config = Config::default();
+        config
+            .ecosystem
+            .commands
+            .push(crate::ecosystem::CommandDef {
+                name: "review".to_string(),
+                description: Some("review the diff".to_string()),
+                template: String::new(),
+                agent: None,
+                subtask: false,
+            });
+        let mut app = test_app();
+        app.input = "/rev".to_string();
+        refresh_suggestions(&mut app, &config);
+        assert_eq!(app.suggestions.len(), 1);
+        assert_eq!(app.suggestions[0].name, "review");
+    }
+
+    #[test]
+    fn models_state_filters_and_selects() {
+        let mut state = ModelsState::ready(vec![
+            "deepseek-chat".to_string(),
+            "deepseek-reasoner".to_string(),
+        ]);
+        assert_eq!(state.filtered().len(), 2);
+        assert_eq!(state.selected_model(), Some("deepseek-chat"));
+
+        state.filter = "reason".to_string();
+        assert_eq!(state.filtered(), vec!["deepseek-reasoner"]);
+        assert_eq!(state.selected_model(), Some("deepseek-reasoner"));
+
+        state.filter = "missing".to_string();
+        assert!(state.selected_model().is_none());
     }
 }

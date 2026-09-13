@@ -509,27 +509,36 @@ impl Config {
     /// Persists the active provider in `config.json` so the next launch uses it,
     /// preserving any other settings already in the file.
     pub fn set_active_provider_at(path: &Path, provider: &str) -> Result<()> {
-        let mut value: serde_json::Value = if path.exists() {
+        Self::set_active_field_at(path, "provider", provider)
+    }
+
+    /// Persists the selected model in `config.json`, preserving other settings.
+    pub fn set_active_model_at(path: &Path, model: &str) -> Result<()> {
+        Self::set_active_field_at(path, "model", model)
+    }
+
+    fn set_active_field_at(path: &Path, key: &str, value: &str) -> Result<()> {
+        let mut root: serde_json::Value = if path.exists() {
             let text = std::fs::read_to_string(path)
                 .with_context(|| format!("reading config at {}", path.display()))?;
             serde_json::from_str(&text).unwrap_or_else(|_| serde_json::json!({}))
         } else {
             serde_json::json!({})
         };
-        if !value.is_object() {
-            value = serde_json::json!({});
+        if !root.is_object() {
+            root = serde_json::json!({});
         }
-        if let Some(object) = value.as_object_mut() {
+        if let Some(object) = root.as_object_mut() {
             object.insert(
-                "provider".to_string(),
-                serde_json::Value::String(provider.to_string()),
+                key.to_string(),
+                serde_json::Value::String(value.to_string()),
             );
         }
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent)
                 .with_context(|| format!("creating {}", parent.display()))?;
         }
-        let text = serde_json::to_string_pretty(&value)?;
+        let text = serde_json::to_string_pretty(&root)?;
         std::fs::write(path, text)
             .with_context(|| format!("writing config to {}", path.display()))?;
         Ok(())
@@ -901,6 +910,22 @@ mod tests {
         let value: serde_json::Value =
             serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
         assert_eq!(value["provider"], "anthropic");
+        assert_eq!(value["mode"], "plan");
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn set_active_model_writes_and_preserves_settings() {
+        let dir = temp_dir("active-model");
+        let path = dir.join("config.json");
+        std::fs::write(&path, r#"{"provider":"deepseek","mode":"plan"}"#).unwrap();
+
+        Config::set_active_model_at(&path, "deepseek-reasoner").unwrap();
+
+        let value: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        assert_eq!(value["model"], "deepseek-reasoner");
+        assert_eq!(value["provider"], "deepseek");
         assert_eq!(value["mode"], "plan");
         std::fs::remove_dir_all(&dir).ok();
     }

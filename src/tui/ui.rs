@@ -3,10 +3,12 @@ use crate::tui::app::{App, ChatItem, ConnectStep};
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Borders, Clear, Paragraph, Wrap};
+use ratatui::widgets::{Block, Borders, Clear, List, ListItem, ListState, Paragraph, Wrap};
 use ratatui::Frame;
 
 const MAX_INPUT_ROWS: usize = 8;
+const MAX_MODEL_ROWS: usize = 12;
+const MAX_SUGGESTION_ROWS: usize = 8;
 
 pub fn draw(frame: &mut Frame, app: &mut App) {
     let input_width = frame.area().width.saturating_sub(2) as usize;
@@ -28,6 +30,10 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
 
     if app.connect.is_some() {
         draw_connect(frame, app);
+    } else if app.models.is_some() {
+        draw_models(frame, app);
+    } else if !app.suggestions.is_empty() {
+        draw_suggestions(frame, app, chunks[1]);
     }
 }
 
@@ -102,6 +108,130 @@ fn draw_connect(frame: &mut Frame, app: &App) {
     );
 }
 
+fn draw_models(frame: &mut Frame, app: &App) {
+    let Some(state) = &app.models else {
+        return;
+    };
+    let area = centered_rect(70, 60, frame.area());
+    frame.render_widget(Clear, area);
+
+    let title = if state.filter.is_empty() {
+        " models ".to_string()
+    } else {
+        format!(" models · {} ", state.filter)
+    };
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(Color::Cyan))
+        .title(Span::styled(title, Style::default().fg(Color::Cyan)));
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+
+    if state.loading {
+        frame.render_widget(
+            Paragraph::new(Span::styled(
+                "loading models…",
+                Style::default().fg(Color::DarkGray),
+            )),
+            inner,
+        );
+        return;
+    }
+    if let Some(error) = &state.error {
+        frame.render_widget(
+            Paragraph::new(Span::styled(
+                format!("error: {error}"),
+                Style::default().fg(Color::Red),
+            )),
+            inner,
+        );
+        return;
+    }
+
+    let models = state.filtered();
+    if models.is_empty() {
+        frame.render_widget(
+            Paragraph::new(Span::styled(
+                "no matching models",
+                Style::default().fg(Color::DarkGray),
+            )),
+            inner,
+        );
+        return;
+    }
+
+    let rows = inner.height.saturating_sub(1) as usize;
+    let visible = models.len().min(MAX_MODEL_ROWS).min(rows.max(1));
+    let offset = state
+        .selected
+        .saturating_sub(visible.saturating_sub(1))
+        .min(models.len().saturating_sub(visible));
+    let items: Vec<ListItem> = models[offset..offset + visible]
+        .iter()
+        .map(|model| ListItem::new(Line::from(*model)))
+        .collect();
+    let list = List::new(items)
+        .highlight_style(
+            Style::default()
+                .fg(Color::Black)
+                .bg(Color::Cyan)
+                .add_modifier(Modifier::BOLD),
+        )
+        .highlight_symbol("> ");
+    let mut list_state = ListState::default();
+    list_state.select(Some(state.selected.saturating_sub(offset)));
+    frame.render_stateful_widget(list, inner, &mut list_state);
+}
+
+fn draw_suggestions(frame: &mut Frame, app: &App, area: Rect) {
+    if app.suggestions.is_empty() || area.height < 3 {
+        return;
+    }
+    let count = app.suggestions.len().min(MAX_SUGGESTION_ROWS);
+    let height = count as u16 + 2;
+    let width = area.width.min(64);
+    let popup = Rect {
+        x: area.x,
+        y: area.y + area.height.saturating_sub(height),
+        width,
+        height,
+    };
+    frame.render_widget(Clear, popup);
+
+    let offset = app.suggestion_index.saturating_sub(count.saturating_sub(1));
+    let items: Vec<ListItem> = app.suggestions[offset..offset + count]
+        .iter()
+        .map(|hint| {
+            ListItem::new(Line::from(vec![
+                Span::styled(format!("/{}", hint.name), Style::default().fg(Color::Cyan)),
+                Span::styled(
+                    format!("  {}", hint.description),
+                    Style::default().fg(Color::DarkGray),
+                ),
+            ]))
+        })
+        .collect();
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(Color::DarkGray))
+        .title(Span::styled(
+            " commands ",
+            Style::default().fg(Color::DarkGray),
+        ));
+    let list = List::new(items)
+        .block(block)
+        .highlight_style(
+            Style::default()
+                .fg(Color::Black)
+                .bg(Color::Cyan)
+                .add_modifier(Modifier::BOLD),
+        )
+        .highlight_symbol("> ");
+    let mut list_state = ListState::default();
+    list_state.select(Some(app.suggestion_index.saturating_sub(offset)));
+    frame.render_stateful_widget(list, popup, &mut list_state);
+}
+
 fn draw_header(frame: &mut Frame, app: &App, area: Rect) {
     let title = Line::from(vec![
         Span::styled(
@@ -112,7 +242,10 @@ fn draw_header(frame: &mut Frame, app: &App, area: Rect) {
                 .add_modifier(Modifier::BOLD),
         ),
         Span::raw("  "),
-        Span::styled(app.model.as_str(), Style::default().fg(Color::Cyan)),
+        Span::styled(
+            format!("model: {}", app.model),
+            Style::default().fg(Color::Cyan),
+        ),
         Span::raw("  "),
         Span::styled(format!(" {} ", app.mode.label()), mode_style(app.mode)),
         Span::raw(" "),
@@ -311,7 +444,7 @@ fn draw_input(frame: &mut Frame, app: &App, area: Rect) {
         .scroll((input_scroll(&app.input, width), 0));
     frame.render_widget(paragraph, inner);
 
-    if !app.busy && app.connect.is_none() {
+    if !app.busy && app.connect.is_none() && app.models.is_none() {
         let lines = wrap(&app.input, width);
         let last = lines.last().map(|line| line.chars().count()).unwrap_or(0);
         let x = inner.x + last as u16;
@@ -337,7 +470,7 @@ fn draw_status(frame: &mut Frame, app: &App, area: Rect) {
             .unwrap_or(0);
         format!("working… {secs}s · Esc to quit")
     } else {
-        "Enter send · Shift+Tab mode · Ctrl+R reasoning · @image · ↑/↓ scroll · Ctrl+C quit"
+        "Enter send · / commands · Shift+Tab mode · Ctrl+R reasoning · @image · Ctrl+C quit"
             .to_string()
     };
     let line = Line::from(vec![
