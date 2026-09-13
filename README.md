@@ -26,6 +26,8 @@ box, with Claude Code configuration support for compatibility.
 
 ### Prebuilt binary
 
+#### macOS and Linux
+
 ```sh
 curl -fsSL https://github.com/jaysonwu991/oxide/releases/latest/download/install.sh | bash
 ```
@@ -41,9 +43,30 @@ Overrides:
 | `OXIDE_INSTALL_DIR` | Install directory. Defaults to `$HOME/.local/bin`. |
 | `OXIDE_REPO` | GitHub repo slug. Defaults to `jaysonwu991/oxide`. |
 
-Prebuilt targets: `aarch64-apple-darwin` and `x86_64-apple-darwin` (macOS),
-`x86_64-unknown-linux-gnu` and `aarch64-unknown-linux-gnu` (Linux), plus
-`x86_64-pc-windows-msvc` (Windows, `.zip` archive).
+#### Windows (x86_64)
+
+The shell installer targets macOS and Linux. On Windows, download the `.zip`
+from the [latest release](https://github.com/jaysonwu991/oxide/releases/latest):
+
+```powershell
+$repo = "jaysonwu991/oxide"
+$tag  = (Invoke-RestMethod "https://api.github.com/repos/$repo/releases/latest").tag_name
+$url  = "https://github.com/$repo/releases/download/$tag/oxide-$tag-win32-x64.zip"
+Invoke-WebRequest $url -OutFile oxide.zip
+Expand-Archive oxide.zip -DestinationPath "$env:LOCALAPPDATA\Programs\oxide" -Force
+```
+
+Then add `%LOCALAPPDATA%\Programs\oxide` to your `PATH`.
+
+### Supported platforms
+
+| Platform | Rust target | Archive |
+| --- | --- | --- |
+| macOS (Apple Silicon) | `aarch64-apple-darwin` | `.tar.gz` |
+| macOS (Intel) | `x86_64-apple-darwin` | `.tar.gz` |
+| Linux (x86_64) | `x86_64-unknown-linux-gnu` | `.tar.gz` |
+| Linux (ARM64) | `aarch64-unknown-linux-gnu` | `.tar.gz` |
+| Windows (x86_64) | `x86_64-pc-windows-msvc` | `.zip` |
 
 ### From source
 
