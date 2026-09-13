@@ -261,9 +261,13 @@ fn apply_stored_provider_fallback(
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Config {
+    #[serde(default = "default_provider")]
     pub provider: String,
+    #[serde(default)]
     pub model: String,
+    #[serde(default)]
     pub base_url: String,
+    #[serde(default)]
     pub api_key: String,
     #[serde(default = "default_system_prompt")]
     pub system_prompt: String,
@@ -283,6 +287,10 @@ pub struct Config {
     pub memory: MemoryStore,
     #[serde(skip)]
     pub dcp: crate::dcp::DcpConfig,
+}
+
+fn default_provider() -> String {
+    "openai".to_string()
 }
 
 fn default_system_prompt() -> String {
@@ -871,6 +879,15 @@ mod tests {
         assert_eq!(config.api_key, "sk-deepseek");
         assert_eq!(config.model, "custom-model");
         assert_eq!(config.base_url, "https://custom.example/v1");
+    }
+
+    #[test]
+    fn config_parses_provider_only_file() {
+        let config: Config = serde_json::from_str(r#"{"provider":"deepseek"}"#).unwrap();
+        assert_eq!(config.provider, "deepseek");
+        assert!(config.model.is_empty());
+        assert!(config.base_url.is_empty());
+        assert!(config.api_key.is_empty());
     }
 
     #[test]
