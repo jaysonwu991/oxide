@@ -1,4 +1,5 @@
 use crate::config::{Mode, Reasoning};
+use crate::tools::DiffPreview;
 use crate::tui::app::{App, ChatItem, ConnectStep};
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
@@ -14,10 +15,13 @@ const MAX_MODEL_ROWS: usize = 12;
 const MAX_SUGGESTION_ROWS: usize = 8;
 
 const FILE_TOOLS: [&str; 3] = ["read_file", "write_file", "patch"];
-const COLLAPSE_MIN_LINES: usize = 4;
 
-/// Persistent keybinding reminder pinned above the input box.
-const TIPS: &str = "Enter send · Shift+Tab mode · Ctrl+R reasoning · Ctrl+O tools · Ctrl+C quit · ↑/↓ history · PgUp/PgDn/wheel scroll";
+/// Persistent keybinding reminder pinned above the input box, kept to two
+/// short lines so the full set stays visible on an 80-column terminal.
+const TIPS: [&str; 2] = [
+    "Enter send · Shift+Tab mode · Ctrl+R reasoning · Ctrl+O tools · Ctrl+C quit",
+    "↑/↓ history · PgUp/PgDn/wheel scroll",
+];
 
 /// Block-letter wordmark shown on the welcome screen.
 const BANNER: [&str; 6] = [
@@ -57,7 +61,7 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         .direction(Direction::Vertical)
         .constraints([
             Constraint::Min(3),
-            Constraint::Length(1),
+            Constraint::Length(2),
             Constraint::Length(input_rows + 2),
             Constraint::Length(1),
             Constraint::Length(1),
@@ -296,13 +300,16 @@ fn draw_info(frame: &mut Frame, app: &App, area: Rect) {
 
 /// Always-visible keybinding reminder pinned directly above the input box.
 fn draw_tips(frame: &mut Frame, area: Rect) {
-    frame.render_widget(
-        Paragraph::new(Span::styled(
-            format!(" {TIPS}"),
-            Style::default().fg(Color::DarkGray),
-        )),
-        area,
-    );
+    let lines: Vec<Line> = TIPS
+        .iter()
+        .map(|tip| {
+            Line::from(Span::styled(
+                format!(" {tip}"),
+                Style::default().fg(Color::DarkGray),
+            ))
+        })
+        .collect();
+    frame.render_widget(Paragraph::new(lines), area);
 }
 
 /// Bottom bar: working directory on the left, elapsed time on the right.
@@ -525,9 +532,9 @@ fn render_item(item: &ChatItem, width: usize, expand_tools: bool, lines: &mut Ve
                 } else {
                     ("Read", Color::Cyan)
                 };
-                lines.push(action_line(verb, &path, color, bold));
+                lines.push(action_line(verb, &path, color, bold, width));
             } else if let Some(command) = bash_command(name, args) {
-                lines.push(action_line("Run", &command, Color::Blue, bold));
+                lines.push(command_line(&command, Color::Blue, bold, width));
             } else {
                 lines.push(Line::from(vec![
                     Span::styled("⚙ ", Style::default().fg(Color::Yellow)),
@@ -549,19 +556,33 @@ fn render_item(item: &ChatItem, width: usize, expand_tools: bool, lines: &mut Ve
                     Span::styled(name.clone(), Style::default().fg(Color::DarkGray)),
                 ]));
             }
-            push_tool_body(lines, name, output, width, expand_tools);
+            push_tool_body(lines, output, width, expand_tools);
         }
-        ChatItem::ToolResult { name, args, output } => {
-            if let Some(path) = file_tool_path(name, args) {
+        ChatItem::ToolResult {
+            name,
+            args,
+            output,
+            diff,
+        } => {
+            if let Some(diff) = diff {
+                render_diff(diff, width, expand_tools, lines);
+                if output.starts_with("error:") {
+                    push_wrapped(lines, output, width, Style::default().fg(Color::Red));
+                } else if let Some((_, rest)) = output.split_once("\n\n") {
+                    if !rest.trim().is_empty() {
+                        push_wrapped(lines, rest, width, Style::default().fg(Color::DarkGray));
+                    }
+                }
+            } else if let Some(path) = file_tool_path(name, args) {
                 if name == "read_file" {
                     if output.starts_with("error:") {
                         push_wrapped(lines, output, width, Style::default().fg(Color::Red));
                     }
                 } else if output.starts_with("error:") {
-                    lines.push(action_line("Edit failed", &path, Color::Red, bold));
+                    lines.push(action_line("Edit failed", &path, Color::Red, bold, width));
                     push_wrapped(lines, output, width, Style::default().fg(Color::Red));
                 } else {
-                    lines.push(action_line("Edited", &path, Color::Green, bold));
+                    lines.push(action_line("Edited", &path, Color::Green, bold, width));
                     if let Some((_, rest)) = output.split_once("\n\n") {
                         if !rest.trim().is_empty() {
                             push_wrapped(lines, rest, width, Style::default().fg(Color::DarkGray));
@@ -574,17 +595,31 @@ fn render_item(item: &ChatItem, width: usize, expand_tools: bool, lines: &mut Ve
                     .map(|code| code != 0)
                     .unwrap_or_else(|| output.starts_with("error:"));
                 let color = if failed { Color::Red } else { Color::Green };
-                lines.push(action_line("Ran", &command, color, bold));
+                lines.push(command_line(&command, color, bold, width));
                 if exit.is_none() && !output.trim().is_empty() {
                     push_wrapped(lines, output, width, Style::default().fg(Color::Red));
+                } else if expand_tools {
+                    push_tool_body(lines, output, width, true);
+                } else if bash_has_body(output) {
+                    push_collapsed_hint(lines, width);
                 }
             } else {
                 lines.push(Line::from(vec![
                     Span::styled("↳ ", Style::default().fg(Color::DarkGray)),
                     Span::styled(name.clone(), Style::default().fg(Color::DarkGray)),
                 ]));
-                push_tool_body(lines, name, output, width, expand_tools);
+                if expand_tools {
+                    push_tool_body(lines, output, width, true);
+                } else if !output.trim().is_empty() {
+                    push_collapsed_hint(lines, width);
+                }
             }
+        }
+        ChatItem::Thought(millis) => {
+            lines.push(Line::from(Span::styled(
+                format!("+ Thought: {millis}ms"),
+                Style::default().fg(Color::DarkGray),
+            )));
         }
         ChatItem::Error(text) => {
             push_wrapped(
@@ -720,7 +755,15 @@ fn file_tool_path(name: &str, args: &str) -> Option<String> {
         .map(str::to_string)
 }
 
-fn action_line(verb: &str, subject: &str, color: Color, bold: Modifier) -> Line<'static> {
+fn action_line(
+    verb: &str,
+    subject: &str,
+    color: Color,
+    bold: Modifier,
+    width: usize,
+) -> Line<'static> {
+    let prefix = 2 + verb.chars().count() + 1;
+    let subject = truncate(subject, width.saturating_sub(prefix));
     Line::from(vec![
         Span::styled("→ ", Style::default().fg(color)),
         Span::styled(
@@ -728,6 +771,15 @@ fn action_line(verb: &str, subject: &str, color: Color, bold: Modifier) -> Line<
             Style::default().fg(color).add_modifier(bold),
         ),
         Span::styled(format!(" {subject}"), Style::default().fg(Color::DarkGray)),
+    ])
+}
+
+/// Render a shell command as `$ <command>`, truncating to a single line.
+fn command_line(command: &str, color: Color, bold: Modifier, width: usize) -> Line<'static> {
+    let command = truncate(command, width.saturating_sub(2));
+    Line::from(vec![
+        Span::styled("$ ", Style::default().fg(color).add_modifier(bold)),
+        Span::styled(command, Style::default().fg(color).add_modifier(bold)),
     ])
 }
 
@@ -785,25 +837,75 @@ fn tool_arg_summary(name: &str, args: &str) -> String {
     }
 }
 
-/// Render a tool's output, collapsing long file reads/writes to a single
-/// summary line unless the user expands them with Ctrl+O.
-fn push_tool_body(
-    lines: &mut Vec<Line<'static>>,
-    name: &str,
-    output: &str,
-    width: usize,
-    expand_tools: bool,
-) {
-    let dim = Style::default().fg(Color::DarkGray);
-    let line_count = output.lines().count();
-    if is_file_tool(name) && !expand_tools && line_count >= COLLAPSE_MIN_LINES {
-        lines.push(Line::from(Span::styled(
-            format!("  {line_count} lines collapsed · Ctrl+O to expand"),
-            dim,
-        )));
+/// Render a tool's output. Output is hidden by default so the conversation
+/// stays a compact action list (like the opencode reference); Ctrl+O reveals
+/// the full body.
+fn push_tool_body(lines: &mut Vec<Line<'static>>, output: &str, width: usize, expand_tools: bool) {
+    if !expand_tools {
         return;
     }
-    push_wrapped(lines, output, width, dim);
+    push_wrapped(lines, output, width, Style::default().fg(Color::DarkGray));
+}
+
+/// A one-line affordance shown when a tool body is hidden, mirroring the
+/// opencode "click to expand" hint.
+fn push_collapsed_hint(lines: &mut Vec<Line<'static>>, width: usize) {
+    let hint = "  ⋯ Ctrl+O to expand";
+    lines.push(Line::from(Span::styled(
+        truncate(hint, width),
+        Style::default().fg(Color::DarkGray),
+    )));
+}
+
+/// Whether a `bash` result has output beyond the trailing exit-code line.
+fn bash_has_body(output: &str) -> bool {
+    output
+        .lines()
+        .filter(|line| !line.starts_with("[exit code: "))
+        .any(|line| !line.trim().is_empty())
+}
+
+/// How many diff lines to show before the user expands the view with Ctrl+O.
+const DIFF_PREVIEW_LINES: usize = 40;
+
+/// Render a file edit as a colored, line-numbered diff, mirroring the opencode
+/// edit view.
+fn render_diff(
+    diff: &DiffPreview,
+    width: usize,
+    expand_tools: bool,
+    lines: &mut Vec<Line<'static>>,
+) {
+    lines.push(action_line(
+        "Edit",
+        &diff.path,
+        Color::Yellow,
+        Modifier::BOLD,
+        width,
+    ));
+    let all: Vec<&str> = diff.text.lines().collect();
+    let limit = if expand_tools {
+        all.len()
+    } else {
+        DIFF_PREVIEW_LINES.min(all.len())
+    };
+    for line in &all[..limit] {
+        lines.push(Line::from(Span::styled(
+            truncate(line, width),
+            diff_line_style(line),
+        )));
+    }
+    if limit < all.len() {
+        push_collapsed_hint(lines, width);
+    }
+}
+
+fn diff_line_style(line: &str) -> Style {
+    match line.chars().next() {
+        Some('+') => Style::default().fg(Color::Green),
+        Some('-') => Style::default().fg(Color::Red),
+        _ => Style::default().fg(Color::DarkGray),
+    }
 }
 
 fn push_wrapped<'a>(lines: &mut Vec<Line<'a>>, text: &str, width: usize, style: Style) {
@@ -982,6 +1084,7 @@ mod tests {
                 name: "read_file".into(),
                 args: args.into(),
                 output: "     1\tfn main() {}".into(),
+                diff: None,
             },
             80,
             false,
@@ -995,6 +1098,7 @@ mod tests {
                 name: "write_file".into(),
                 args: args.into(),
                 output: "wrote 12 bytes to /x".into(),
+                diff: None,
             },
             80,
             false,
@@ -1004,7 +1108,7 @@ mod tests {
     }
 
     #[test]
-    fn bash_renders_run_and_ran_actions() {
+    fn bash_renders_command_and_result() {
         let args = r#"{"command":"cargo   test\n--all"}"#;
 
         let mut lines = Vec::new();
@@ -1017,7 +1121,7 @@ mod tests {
             false,
             &mut lines,
         );
-        assert_eq!(line_text(&lines[0]), "→ Run cargo test --all");
+        assert_eq!(line_text(&lines[0]), "$ cargo test --all");
 
         let mut lines = Vec::new();
         render_item(
@@ -1025,13 +1129,14 @@ mod tests {
                 name: "bash".into(),
                 args: args.into(),
                 output: "ok\n[exit code: 0]".into(),
+                diff: None,
             },
             80,
             false,
             &mut lines,
         );
-        assert_eq!(line_text(&lines[0]), "→ Ran cargo test --all");
-        assert_eq!(lines.len(), 1);
+        assert_eq!(line_text(&lines[0]), "$ cargo test --all");
+        assert_eq!(lines.len(), 2);
         assert_eq!(lines[0].spans[1].style.fg, Some(Color::Green));
 
         let mut lines = Vec::new();
@@ -1040,11 +1145,89 @@ mod tests {
                 name: "bash".into(),
                 args: args.into(),
                 output: "boom\n[exit code: 1]".into(),
+                diff: None,
             },
             80,
             false,
             &mut lines,
         );
         assert_eq!(lines[0].spans[1].style.fg, Some(Color::Red));
+    }
+
+    #[test]
+    fn long_bash_command_truncates_to_one_line() {
+        let command = format!("echo {}", "a".repeat(80));
+        let args = format!(r#"{{"command":"{command}"}}"#);
+
+        let mut lines = Vec::new();
+        render_item(
+            &ChatItem::Tool {
+                name: "bash".into(),
+                args,
+            },
+            40,
+            false,
+            &mut lines,
+        );
+        assert_eq!(lines.len(), 1);
+        let text = line_text(&lines[0]);
+        assert_eq!(text.chars().count(), 40);
+        assert!(text.ends_with('…'));
+    }
+
+    #[test]
+    fn tool_output_is_hidden_until_expanded() {
+        let output = (0..10)
+            .map(|index| format!("line {index}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+
+        let mut collapsed = Vec::new();
+        render_item(
+            &ChatItem::ToolProgress {
+                name: "bash".into(),
+                output: output.clone(),
+            },
+            80,
+            false,
+            &mut collapsed,
+        );
+        assert!(collapsed.is_empty());
+
+        let mut expanded = Vec::new();
+        render_item(
+            &ChatItem::ToolProgress {
+                name: "bash".into(),
+                output,
+            },
+            80,
+            true,
+            &mut expanded,
+        );
+        assert_eq!(expanded.len(), 10);
+    }
+
+    #[test]
+    fn edit_result_renders_colored_diff() {
+        let diff = DiffPreview {
+            path: "src/main.rs".into(),
+            text: "   1   1  a\n-  2      b\n+      2  B".into(),
+        };
+        let mut lines = Vec::new();
+        render_item(
+            &ChatItem::ToolResult {
+                name: "write_file".into(),
+                args: r#"{"path":"src/main.rs"}"#.into(),
+                output: "wrote 12 bytes to /x".into(),
+                diff: Some(diff),
+            },
+            80,
+            false,
+            &mut lines,
+        );
+        assert_eq!(line_text(&lines[0]), "→ Edit src/main.rs");
+        assert_eq!(lines[1].spans[0].style.fg, Some(Color::DarkGray));
+        assert_eq!(lines[2].spans[0].style.fg, Some(Color::Red));
+        assert_eq!(lines[3].spans[0].style.fg, Some(Color::Green));
     }
 }

@@ -1,6 +1,7 @@
 use crate::agent::{ApprovalRequest, Steering};
 use crate::config::{Mode, Reasoning};
 use crate::llm::{ContentPart, Message};
+use crate::tools::DiffPreview;
 use ratatui::text::Line;
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
@@ -23,7 +24,9 @@ pub enum ChatItem {
         name: String,
         args: String,
         output: String,
+        diff: Option<DiffPreview>,
     },
+    Thought(u64),
     Error(String),
     Info(String),
 }
@@ -53,11 +56,24 @@ impl ChatItem {
                 name.hash(&mut hasher);
                 output.hash(&mut hasher);
             }
-            ChatItem::ToolResult { name, args, output } => {
+            ChatItem::ToolResult {
+                name,
+                args,
+                output,
+                diff,
+            } => {
                 4u8.hash(&mut hasher);
                 name.hash(&mut hasher);
                 args.hash(&mut hasher);
                 output.hash(&mut hasher);
+                if let Some(diff) = diff {
+                    diff.path.hash(&mut hasher);
+                    diff.text.hash(&mut hasher);
+                }
+            }
+            ChatItem::Thought(millis) => {
+                7u8.hash(&mut hasher);
+                millis.hash(&mut hasher);
             }
             ChatItem::Error(text) => {
                 5u8.hash(&mut hasher);
@@ -293,12 +309,60 @@ impl App {
         }
     }
 
-    /// Toggle whether file-tool output is shown in full or collapsed, and
+    /// Toggle whether long tool output is shown in full or collapsed, and
     /// invalidate the rendered-line cache so the change takes effect.
     pub fn toggle_tool_output(&mut self) {
         self.expand_tools = !self.expand_tools;
         self.lines.clear();
         self.line_offsets.clear();
         self.signatures.clear();
+    }
+
+    /// Fold a tool result into the pending call it belongs to, so the
+    /// conversation shows one entry per call (like the opencode reference)
+    /// rather than a call line followed by a separate result line. Falls back
+    /// to appending when no matching pending call is found.
+    pub fn resolve_tool(
+        &mut self,
+        name: String,
+        args: String,
+        output: String,
+        diff: Option<DiffPreview>,
+    ) {
+        let mut progress = Vec::new();
+        let mut index = self.items.len();
+        let mut tool = None;
+        while index > 0 {
+            match &self.items[index - 1] {
+                ChatItem::ToolProgress { name: pending, .. } if pending == &name => {
+                    index -= 1;
+                    progress.push(index);
+                }
+                ChatItem::Tool { name: pending, .. } if pending == &name => {
+                    tool = Some(index - 1);
+                    break;
+                }
+                _ => break,
+            }
+        }
+        match tool {
+            Some(tool) => {
+                for index in progress {
+                    self.items.remove(index);
+                }
+                self.items[tool] = ChatItem::ToolResult {
+                    name,
+                    args,
+                    output,
+                    diff,
+                };
+            }
+            None => self.items.push(ChatItem::ToolResult {
+                name,
+                args,
+                output,
+                diff,
+            }),
+        }
     }
 }

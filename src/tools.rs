@@ -1,3 +1,4 @@
+use crate::diff;
 use crate::llm::{ContentPart, FunctionSpec, ToolCall, ToolSpec};
 use crate::mcp::McpRegistry;
 use crate::media;
@@ -5,12 +6,26 @@ use anyhow::{Context, Result};
 use serde_json::{json, Value};
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::time::{timeout, Duration};
 
-const MAX_OUTPUT: usize = 8_000;
+const MAX_OUTPUT_BYTES: usize = 8_000;
+const MAX_OUTPUT_LINES: usize = 400;
+const MAX_LINE_LEN: usize = 2_000;
 const DEFAULT_READ_LINES: usize = 400;
+const TRUNCATION_RETENTION_SECS: u64 = 7 * 24 * 60 * 60;
+
+static TRUNCATION_ID: AtomicU64 = AtomicU64::new(0);
+
+/// A line-numbered diff of a file edit, carried alongside the tool result for
+/// display only. It is never sent to the model (the text result is).
+#[derive(Debug, Clone, Default)]
+pub struct DiffPreview {
+    pub path: String,
+    pub text: String,
+}
 
 /// The result of running a tool: always a text payload, optionally plus media
 /// parts (images/PDFs) that the model should see as content. `terminate` lets a
@@ -21,6 +36,7 @@ pub struct ToolOutput {
     pub text: String,
     pub media: Vec<ContentPart>,
     pub terminate: bool,
+    pub diff: Option<DiffPreview>,
 }
 
 impl ToolOutput {
@@ -29,6 +45,7 @@ impl ToolOutput {
             text: text.into(),
             media: Vec::new(),
             terminate: false,
+            diff: None,
         }
     }
 
@@ -37,7 +54,16 @@ impl ToolOutput {
             text: text.into(),
             media,
             terminate: false,
+            diff: None,
         }
+    }
+
+    pub fn with_diff(mut self, path: impl Into<String>, text: impl Into<String>) -> Self {
+        self.diff = Some(DiffPreview {
+            path: path.into(),
+            text: text.into(),
+        });
+        self
     }
 }
 
@@ -193,12 +219,12 @@ pub async fn execute(
     } else {
         match name {
             "read_file" => read_file(cwd, &args),
-            "write_file" => write_file(cwd, &args).map(ToolOutput::text),
+            "write_file" => write_file(cwd, &args),
             "list_dir" => list_dir(cwd, &args).map(ToolOutput::text),
             "bash" => bash(cwd, &args, progress).await.map(ToolOutput::text),
             "glob" => glob(cwd, &args).map(ToolOutput::text),
             "grep" => grep(cwd, &args).map(ToolOutput::text),
-            "patch" => patch(cwd, &args).map(ToolOutput::text),
+            "patch" => patch(cwd, &args),
             "webfetch" => webfetch(&args).await.map(ToolOutput::text),
             other => Err(anyhow::anyhow!("unknown tool `{other}`")),
         }
@@ -206,9 +232,10 @@ pub async fn execute(
 
     match result {
         Ok(output) => ToolOutput {
-            text: truncate(output.text),
+            text: truncate(name, output.text),
             media: output.media,
             terminate: output.terminate,
+            diff: output.diff,
         },
         Err(err) => ToolOutput::text(format!("error: {err:#}")),
     }
@@ -257,13 +284,23 @@ fn read_file(cwd: &Path, args: &Value) -> Result<ToolOutput> {
         std::fs::read_to_string(&full).with_context(|| format!("reading {}", full.display()))?;
 
     let total = content.lines().count();
-    let numbered: Vec<String> = content
-        .lines()
-        .enumerate()
-        .skip(offset - 1)
-        .take(limit)
-        .map(|(i, line)| format!("{:>6}\t{line}", i + 1))
-        .collect();
+    let budget = MAX_OUTPUT_BYTES.saturating_sub(128);
+    let mut numbered: Vec<String> = Vec::new();
+    let mut used = 0usize;
+    for (i, line) in content.lines().enumerate().skip(offset - 1).take(limit) {
+        let shown = if line.chars().count() > MAX_LINE_LEN {
+            let prefix: String = line.chars().take(MAX_LINE_LEN).collect();
+            format!("{prefix} …")
+        } else {
+            line.to_string()
+        };
+        let entry = format!("{:>6}\t{shown}", i + 1);
+        if !numbered.is_empty() && used + entry.len() + 1 > budget {
+            break;
+        }
+        used += entry.len() + 1;
+        numbered.push(entry);
+    }
 
     let mut out = numbered.join("\n");
     let read_to = (offset - 1) + numbered.len();
@@ -277,7 +314,7 @@ fn read_file(cwd: &Path, args: &Value) -> Result<ToolOutput> {
     Ok(ToolOutput::text(out))
 }
 
-fn write_file(cwd: &Path, args: &Value) -> Result<String> {
+fn write_file(cwd: &Path, args: &Value) -> Result<ToolOutput> {
     let path = args
         .get("path")
         .and_then(Value::as_str)
@@ -292,12 +329,17 @@ fn write_file(cwd: &Path, args: &Value) -> Result<String> {
         std::fs::create_dir_all(parent)
             .with_context(|| format!("creating {}", parent.display()))?;
     }
+    let previous = std::fs::read_to_string(&full).unwrap_or_default();
     std::fs::write(&full, content).with_context(|| format!("writing {}", full.display()))?;
-    Ok(format!(
+    let output = ToolOutput::text(format!(
         "wrote {} bytes to {}",
         content.len(),
         full.display()
-    ))
+    ));
+    match diff::preview(&previous, content) {
+        Some(diff) => Ok(output.with_diff(path, diff)),
+        None => Ok(output),
+    }
 }
 
 fn list_dir(cwd: &Path, args: &Value) -> Result<String> {
@@ -417,13 +459,14 @@ fn grep(cwd: &Path, args: &Value) -> Result<String> {
     Ok(out)
 }
 
-fn patch(cwd: &Path, args: &Value) -> Result<String> {
+fn patch(cwd: &Path, args: &Value) -> Result<ToolOutput> {
     let diff = args
         .get("diff")
         .and_then(Value::as_str)
         .context("missing `diff`")?;
     let lines: Vec<&str> = diff.lines().collect();
     let mut applied: Vec<String> = Vec::new();
+    let mut previews: Vec<(String, String)> = Vec::new();
     let mut i = 0;
 
     while i < lines.len() {
@@ -486,14 +529,37 @@ fn patch(cwd: &Path, args: &Value) -> Result<String> {
         if trailing_newline {
             out.push('\n');
         }
-        std::fs::write(&full, out).with_context(|| format!("writing {}", full.display()))?;
+        std::fs::write(&full, &out).with_context(|| format!("writing {}", full.display()))?;
+        if let Some(preview) = diff::preview(&original, &out) {
+            previews.push((target.clone(), preview));
+        }
         applied.push(target);
     }
 
     if applied.is_empty() {
         anyhow::bail!("no file patches found in diff");
     }
-    Ok(format!("patched {}", applied.join(", ")))
+    let output = ToolOutput::text(format!("patched {}", applied.join(", ")));
+    if previews.is_empty() {
+        return Ok(output);
+    }
+    let path = if previews.len() == 1 {
+        previews[0].0.clone()
+    } else {
+        format!("{} files", previews.len())
+    };
+    let text = previews
+        .iter()
+        .map(|(file, diff)| {
+            if previews.len() == 1 {
+                diff.clone()
+            } else {
+                format!("  {file}\n{diff}")
+            }
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    Ok(output.with_diff(path, text))
 }
 
 async fn webfetch(args: &Value) -> Result<String> {
@@ -722,16 +788,97 @@ where
     out
 }
 
-fn truncate(mut output: String) -> String {
-    if output.len() > MAX_OUTPUT {
-        let mut cut = MAX_OUTPUT;
-        while !output.is_char_boundary(cut) {
-            cut -= 1;
-        }
-        output.truncate(cut);
-        output.push_str("\n... [output truncated]");
+/// Cap tool output so a single result cannot dominate the context window. The
+/// preview keeps at most `MAX_OUTPUT_LINES` lines and `MAX_OUTPUT_BYTES` bytes:
+/// `bash` keeps its tail (where errors and the exit code live), everything else
+/// keeps its head. When content is dropped, the full text is saved under the
+/// oxide config dir and the result points at it so the model can inspect the
+/// full output without re-running the tool.
+fn truncate(name: &str, output: String) -> String {
+    truncate_into(name, output, truncation_dir().as_deref())
+}
+
+fn truncate_into(name: &str, output: String, dir: Option<&Path>) -> String {
+    let lines: Vec<&str> = output.lines().collect();
+    if output.len() <= MAX_OUTPUT_BYTES && lines.len() <= MAX_OUTPUT_LINES {
+        return output;
     }
-    output
+
+    let tail = name == "bash";
+    let keep = MAX_OUTPUT_LINES.min(lines.len());
+    let start = if tail { lines.len() - keep } else { 0 };
+    let kept = &lines[start..start + keep];
+    let dropped_lines = lines.len() - keep;
+
+    let mut preview = kept.join("\n");
+    let mut dropped_bytes = 0;
+    if preview.len() > MAX_OUTPUT_BYTES {
+        if tail {
+            let mut cut = preview.len() - MAX_OUTPUT_BYTES;
+            while !preview.is_char_boundary(cut) {
+                cut += 1;
+            }
+            dropped_bytes = cut;
+            preview = preview[cut..].to_string();
+        } else {
+            let mut cut = MAX_OUTPUT_BYTES;
+            while !preview.is_char_boundary(cut) {
+                cut -= 1;
+            }
+            dropped_bytes = preview.len() - cut;
+            preview.truncate(cut);
+        }
+    }
+
+    let mut result =
+        format!("... [output truncated: {dropped_lines} lines / {dropped_bytes} bytes dropped]\n");
+    if let Some(path) = dir.and_then(|dir| save_truncated(dir, &output)) {
+        result.push_str(&format!(
+            "Full output saved to: {}\nUse grep or read_file with offset to inspect it.\n",
+            path.display()
+        ));
+    }
+    result.push_str(&preview);
+    result
+}
+
+fn truncation_dir() -> Option<PathBuf> {
+    if let Ok(dir) = std::env::var("OXIDE_TRUNCATION_DIR") {
+        return Some(PathBuf::from(dir));
+    }
+    Some(dirs::config_dir()?.join("oxide").join("truncated"))
+}
+
+fn save_truncated(dir: &Path, text: &str) -> Option<PathBuf> {
+    std::fs::create_dir_all(dir).ok()?;
+    cleanup_truncated(dir);
+    let stamp = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis())
+        .unwrap_or(0);
+    let id = TRUNCATION_ID.fetch_add(1, Ordering::Relaxed);
+    let path = dir.join(format!("tool_{stamp}_{id}.txt"));
+    std::fs::write(&path, text).ok()?;
+    Some(path)
+}
+
+fn cleanup_truncated(dir: &Path) {
+    let cutoff = std::time::SystemTime::now()
+        .checked_sub(std::time::Duration::from_secs(TRUNCATION_RETENTION_SECS));
+    let Some(cutoff) = cutoff else {
+        return;
+    };
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let Ok(meta) = entry.metadata() else {
+            continue;
+        };
+        if meta.modified().map(|m| m < cutoff).unwrap_or(false) {
+            let _ = std::fs::remove_file(entry.path());
+        }
+    }
 }
 
 #[cfg(test)]
@@ -886,11 +1033,96 @@ mod tests {
  three
 ";
         let out = patch(&dir, &json!({ "diff": diff })).unwrap();
-        assert!(out.contains("f.txt"), "{out}");
+        assert!(out.text.contains("f.txt"), "{}", out.text);
+        assert!(out.diff.is_some());
         assert_eq!(
             std::fs::read_to_string(dir.join("f.txt")).unwrap(),
             "one\nTWO\nthree\n"
         );
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn write_file_reports_a_diff() {
+        let dir = std::env::temp_dir().join(format!("oxide_write_diff_{}", std::process::id()));
+        std::fs::remove_dir_all(&dir).ok();
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("f.txt"), "one\ntwo\n").unwrap();
+
+        let out = write_file(&dir, &json!({ "path": "f.txt", "content": "one\nTWO\n" })).unwrap();
+        let diff = out.diff.expect("write_file should report a diff");
+        assert!(diff.text.contains("TWO"), "{}", diff.text);
+        assert!(diff.text.contains("two"), "{}", diff.text);
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn truncate_keeps_bash_tail_and_exit_code() {
+        let dir = std::env::temp_dir().join(format!("oxide_trunc_bash_{}", std::process::id()));
+        std::fs::remove_dir_all(&dir).ok();
+
+        let mut output = String::new();
+        for i in 0..(MAX_OUTPUT_LINES + 50) {
+            output.push_str(&format!("line {i}\n"));
+        }
+        output.push_str("[exit code: 7]");
+
+        let result = truncate_into("bash", output, Some(&dir));
+        assert!(result.contains("[exit code: 7]"), "{result}");
+        assert!(result.contains("output truncated"), "{result}");
+        assert!(!result.contains("line 0\n"), "{result}");
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn truncate_keeps_head_for_reads() {
+        let dir = std::env::temp_dir().join(format!("oxide_trunc_head_{}", std::process::id()));
+        std::fs::remove_dir_all(&dir).ok();
+
+        let mut output = String::new();
+        for i in 0..(MAX_OUTPUT_LINES + 50) {
+            output.push_str(&format!("line {i}\n"));
+        }
+
+        let result = truncate_into("read_file", output, Some(&dir));
+        assert!(result.contains("line 0\n"), "{result}");
+        assert!(
+            !result.contains(&format!("line {}\n", MAX_OUTPUT_LINES + 40)),
+            "{result}"
+        );
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn truncate_saves_full_output() {
+        let dir = std::env::temp_dir().join(format!("oxide_trunc_save_{}", std::process::id()));
+        std::fs::remove_dir_all(&dir).ok();
+
+        let output = "x".repeat(MAX_OUTPUT_BYTES + 100);
+        let result = truncate_into("read_file", output.clone(), Some(&dir));
+        assert!(result.contains("Full output saved to:"), "{result}");
+
+        let saved: Vec<_> = std::fs::read_dir(&dir).unwrap().flatten().collect();
+        assert_eq!(saved.len(), 1, "{saved:?}");
+        assert_eq!(std::fs::read_to_string(saved[0].path()).unwrap(), output);
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn read_file_caps_long_lines() {
+        let dir = std::env::temp_dir().join(format!("oxide_read_cap_{}", std::process::id()));
+        std::fs::remove_dir_all(&dir).ok();
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("long.txt"), "a".repeat(MAX_LINE_LEN + 500)).unwrap();
+
+        let out = read_file(&dir, &json!({ "path": "long.txt" })).unwrap();
+        assert!(out.text.contains('…'), "{}", out.text);
+        assert!(out.text.len() < MAX_LINE_LEN + 100, "{}", out.text.len());
 
         std::fs::remove_dir_all(&dir).ok();
     }

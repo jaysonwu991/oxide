@@ -48,13 +48,17 @@ description: Use when navigating or modifying the oxide internals — the agent 
   `config_path`, `require_api_key`.
 - `src/dcp.rs` — dynamic context pruning: `DcpConfig` (`.oxide/dcp.json`),
   `DcpState`, `prune`, `nudge`, `apply_compress`, `compress_spec`.
+- `src/diff.rs` — `preview(old, new)` LCS line diff with context windows and gap
+  markers, used for the TUI's colored edit previews.
 - `src/session.rs` — durable JSONL session log; also stores DCP compression
   records (`append_dcp`, `dcp_state`).
 - `src/mcp.rs` / `src/mcp_config.rs` / `src/mcp_oauth.rs` — MCP runtime
   (`McpRegistry`, stdio/HTTP), the `oxide mcp` CLI that reads/writes
   `.oxide/mcp.json`, and the OAuth authorization-code + PKCE flow for remote
   servers.
-- `src/tui/` — `run` entry plus `app`/`ui` for rendering and input.
+- `src/tui/` — `run` entry plus `app`/`ui` for rendering and input; hides tool
+  bodies by default (Ctrl+O), renders shell calls as `$ command`, shows colored
+  edit diffs and per-turn thought timing.
 
 ## Adding a model provider
 
@@ -73,4 +77,8 @@ OpenAI-compatible and Anthropic APIs are dispatched in `src/llm/client.rs` (see
 - History is the single source of truth passed to `Finished`.
 - Context pruning only changes the outgoing request; history and the session log
   keep every original message.
-- Tool output is truncated (`MAX_OUTPUT = 30_000` bytes) before entering history.
+- Tool output is capped in `tools::execute` before entering history: at most
+  `MAX_OUTPUT_LINES` (400) lines and `MAX_OUTPUT_BYTES` (8 000) bytes. `bash`
+  keeps its tail (so the exit code survives), other tools keep the head, and
+  dropped content is saved under `truncated/` in the config dir
+  (`OXIDE_TRUNCATION_DIR`) with a pointer in the result.

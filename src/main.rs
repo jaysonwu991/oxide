@@ -3,6 +3,7 @@ mod auth;
 mod compact;
 mod config;
 mod dcp;
+mod diff;
 mod ecosystem;
 mod llm;
 mod lsp;
@@ -361,6 +362,7 @@ async fn run_print(
                 print!("{delta}");
                 stdout.flush()?;
             }
+            AgentEvent::Thought { .. } => {}
             AgentEvent::ToolCall { name, args } => {
                 eprintln!("\n[tool] {name} {args}");
             }

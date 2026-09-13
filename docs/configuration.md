@@ -407,6 +407,7 @@ Everything lives under the oxide config directory:
 - `sessions/<project>/*.jsonl` — session history and pruning records
 - `snapshots/<project>/` — shadow-git snapshots for `/undo` and `/redo`
 - `memory/` — persistent memory entries
+- `truncated/` — full text of tool outputs that exceeded the line/byte cap, retained 7 days (override with `OXIDE_TRUNCATION_DIR`)
 - `dcp.json` — global context-pruning config
 
 Deleting a session file removes that conversation; deleting `snapshots/`
