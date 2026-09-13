@@ -832,8 +832,8 @@ mod tests {
         );
 
         let seen = seen.lock().unwrap();
-        assert!(seen.iter().any(|chunk| chunk == "one"), "{seen:?}");
-        assert!(seen.iter().any(|chunk| chunk == "two"), "{seen:?}");
+        assert!(seen.iter().any(|chunk| chunk.trim() == "one"), "{seen:?}");
+        assert!(seen.iter().any(|chunk| chunk.trim() == "two"), "{seen:?}");
 
         std::fs::remove_dir_all(&dir).ok();
     }

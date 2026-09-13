@@ -42,7 +42,14 @@ impl Snapshots {
 
     fn git(&self, args: &[&str]) -> Result<String> {
         let output = Command::new("git")
-            .args(["-c", "user.name=oxide", "-c", "user.email=oxide@localhost"])
+            .args([
+                "-c",
+                "user.name=oxide",
+                "-c",
+                "user.email=oxide@localhost",
+                "-c",
+                "core.autocrlf=false",
+            ])
             .arg(format!("--git-dir={}", self.git_dir.display()))
             .arg(format!("--work-tree={}", self.work_tree.display()))
             .args(args)
