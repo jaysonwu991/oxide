@@ -4,6 +4,7 @@
 use crate::llm::{ContentPart, FileData, ImageUrl};
 use anyhow::{Context, Result};
 use std::path::{Path, PathBuf};
+#[cfg(any(target_os = "macos", target_os = "linux"))]
 use std::process::Command;
 
 const ALPHABET: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
@@ -153,6 +154,7 @@ fn clipboard_bytes() -> Option<Vec<u8>> {
     None
 }
 
+#[cfg(any(target_os = "macos", target_os = "linux"))]
 fn run_stdout(command: &str, args: &[&str]) -> Option<Vec<u8>> {
     let output = Command::new(command).args(args).output().ok()?;
     if output.status.success() && !output.stdout.is_empty() {
