@@ -113,9 +113,9 @@ Releases are automated by GitHub Actions:
 
 1. `ci.yml` runs formatting, clippy, tests, and a release build on pushes to
    `main` and on pull requests.
-2. `release.yml` triggers on `v*` tags, builds the supported targets, packages
-   each binary with a `.sha256` checksum, and publishes a GitHub Release with
-   `install.sh` attached.
+2. `release.yml` triggers on `v*` tags, builds the supported targets (including
+   `x86_64-pc-windows-msvc`), packages each binary with a `.sha256` checksum,
+   and publishes a GitHub Release with `install.sh` and `install.ps1` attached.
 
 To cut a release:
 

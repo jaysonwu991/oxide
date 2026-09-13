@@ -95,18 +95,22 @@ Overrides:
 
 #### Windows (x86_64)
 
-The shell installer targets macOS and Linux. On Windows, download the `.zip`
-from the [latest release](https://github.com/jaysonwu991/oxide/releases/latest):
-
 ```powershell
-$repo = "jaysonwu991/oxide"
-$tag  = (Invoke-RestMethod "https://api.github.com/repos/$repo/releases/latest").tag_name
-$url  = "https://github.com/$repo/releases/download/$tag/oxide-$tag-win32-x64.zip"
-Invoke-WebRequest $url -OutFile oxide.zip
-Expand-Archive oxide.zip -DestinationPath "$env:LOCALAPPDATA\Programs\oxide" -Force
+irm https://github.com/jaysonwu991/oxide/releases/latest/download/install.ps1 | iex
 ```
 
-Then add `%LOCALAPPDATA%\Programs\oxide` to your `PATH`.
+The PowerShell installer detects your OS/arch, downloads the matching release,
+verifies its SHA-256 checksum, and installs `oxide.exe` to
+`%LOCALAPPDATA%\Programs\oxide` by default. The same script also runs on macOS
+and Linux under PowerShell (`pwsh`), installing `oxide` to `~/.local/bin`.
+
+Overrides:
+
+| Variable | Purpose |
+| --- | --- |
+| `OXIDE_VERSION` | Version to install (with or without a leading `v`). Defaults to the latest release. |
+| `OXIDE_INSTALL_DIR` | Install directory. Defaults to `%LOCALAPPDATA%\Programs\oxide` on Windows, `$HOME/.local/bin` elsewhere. |
+| `OXIDE_REPO` | GitHub repo slug. Defaults to `jaysonwu991/oxide`. |
 
 ### Supported platforms
 

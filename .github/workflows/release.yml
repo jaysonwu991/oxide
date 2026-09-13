@@ -94,10 +94,11 @@ jobs:
             mv "${asset}.tar.gz" "${GITHUB_WORKSPACE}/${asset}.tar.gz"
             archive="${asset}.tar.gz"
           fi
+          cd "${GITHUB_WORKSPACE}"
           if command -v sha256sum >/dev/null 2>&1; then
-            sha256sum "${GITHUB_WORKSPACE}/${archive}" > "${GITHUB_WORKSPACE}/${archive}.sha256"
+            sha256sum "${archive}" > "${archive}.sha256"
           else
-            shasum -a 256 "${GITHUB_WORKSPACE}/${archive}" > "${GITHUB_WORKSPACE}/${archive}.sha256"
+            shasum -a 256 "${archive}" > "${archive}.sha256"
           fi
       - uses: actions/upload-artifact@v4
         with:
@@ -146,4 +147,4 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           find assets -type f -exec gh release upload "${GITHUB_REF_NAME}" --repo "${{ github.repository }}" --clobber {} \;
-          gh release upload "${GITHUB_REF_NAME}" --repo "${{ github.repository }}" --clobber install.sh
+          gh release upload "${GITHUB_REF_NAME}" --repo "${{ github.repository }}" --clobber install.sh install.ps1

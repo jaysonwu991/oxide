@@ -538,11 +538,12 @@ for line in sys.stdin:
 
     #[tokio::test]
     async fn connects_to_stdio_server_and_calls_tool() {
-        if std::process::Command::new("python3")
-            .arg("--version")
-            .output()
-            .is_err()
-        {
+        if !matches!(
+            std::process::Command::new("python3")
+                .arg("--version")
+                .output(),
+            Ok(output) if output.status.success()
+        ) {
             return;
         }
 

@@ -638,9 +638,20 @@ async fn bash(cwd: &Path, args: &Value, progress: &Progress) -> Result<String> {
         .and_then(Value::as_u64)
         .unwrap_or(120);
 
-    let mut child = tokio::process::Command::new("sh")
-        .arg("-c")
-        .arg(command)
+    #[cfg(windows)]
+    let mut shell = {
+        let mut shell = tokio::process::Command::new("cmd");
+        shell.arg("/C").arg(command);
+        shell
+    };
+    #[cfg(not(windows))]
+    let mut shell = {
+        let mut shell = tokio::process::Command::new("sh");
+        shell.arg("-c").arg(command);
+        shell
+    };
+
+    let mut child = shell
         .current_dir(cwd)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
@@ -808,7 +819,7 @@ mod tests {
         }));
 
         let out = execute(
-            &call("bash", json!({ "command": "echo one; echo two" })),
+            &call("bash", json!({ "command": "echo one && echo two" })),
             &dir,
             &mcp,
             &progress,
