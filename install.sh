@@ -14,6 +14,8 @@ set -eu
 REPO="${OXIDE_REPO:-jaysonwu991/oxide}"
 VERSION="${OXIDE_VERSION:-}"
 INSTALL_DIR="${OXIDE_INSTALL_DIR:-$HOME/.local/bin}"
+BASE_URL="https://github.com/${REPO}"
+MANIFEST_NAME="oxide-manifest"
 
 err() {
     printf 'oxide-install: error: %s\n' "$*" >&2
@@ -46,42 +48,55 @@ fetch() {
     fi
 }
 
-detect_target() {
+detect_platform() {
     os="$(uname -s)"
     arch="$(uname -m)"
 
     case "$os" in
-        Darwin) os_part="apple-darwin" ;;
-        Linux) os_part="unknown-linux-gnu" ;;
+        Darwin) os_part="darwin" ;;
+        Linux) os_part="linux" ;;
         *) err "unsupported operating system: $os" ;;
     esac
 
     case "$arch" in
-        arm64 | aarch64) arch_part="aarch64" ;;
-        x86_64 | amd64) arch_part="x86_64" ;;
+        arm64 | aarch64) arch_part="arm64" ;;
+        x86_64 | amd64) arch_part="x64" ;;
         *) err "unsupported architecture: $arch" ;;
     esac
 
-    target="${arch_part}-${os_part}"
-    case "$target" in
-        aarch64-apple-darwin | x86_64-unknown-linux-gnu) ;;
-        *) err "no prebuilt binary available for $target" ;;
+    platform="${os_part}-${arch_part}"
+    case "$platform" in
+        darwin-arm64 | darwin-x64 | linux-x64 | linux-arm64) ;;
+        *) err "no prebuilt binary available for ${platform}" ;;
     esac
 
-    printf '%s' "$target"
+    printf '%s' "$platform"
 }
 
-resolve_version() {
+manifest_asset() {
+    body="$1"
+    platform="$2"
+    name="$(printf '%s\n' "$body" | awk -F': ' -v k="$platform" '$1 == k {sub(/^[[:space:]]*/, "", $2); sub(/[[:space:]]*$/, "", $2); print $2; exit}')"
+    [ -n "$name" ] || err "no asset for ${platform}; supported targets: darwin-arm64, darwin-x64, linux-x64, linux-arm64"
+    printf '%s' "$name"
+}
+
+resolve_url() {
+    platform="$1"
+
     if [ -n "$VERSION" ]; then
-        printf '%s' "${VERSION#v}"
+        ver="${VERSION#v}"
+        printf '%s/releases/download/v%s/oxide-v%s-%s.tar.gz' "$BASE_URL" "$ver" "$ver" "$platform"
         return
     fi
 
-    tag="$(fetch "https://api.github.com/repos/${REPO}/releases/latest" \
-        | grep -m1 '"tag_name"' \
-        | sed -E 's/.*"tag_name"[[:space:]]*:[[:space:]]*"([^"]+)".*/\1/')"
-    [ -n "$tag" ] || err "could not determine the latest release for ${REPO}"
-    printf '%s' "${tag#v}"
+    info "fetching ${MANIFEST_NAME}"
+    manifest="$(fetch "${BASE_URL}/releases/latest/download/${MANIFEST_NAME}")" \
+        || err "could not fetch ${MANIFEST_NAME}; has a release been published?"
+    ver="$(printf '%s\n' "$manifest" | awk -F': ' '/^version:/ {print $2; exit}')"
+    [ -n "$ver" ] || err "could not read version from ${MANIFEST_NAME}"
+    asset="$(manifest_asset "$manifest" "$platform")"
+    printf '%s/releases/download/%s/%s' "$BASE_URL" "$ver" "$asset"
 }
 
 verify_checksum() {
@@ -109,15 +124,14 @@ main() {
     command -v tar >/dev/null 2>&1 || err "tar is required"
     command -v mktemp >/dev/null 2>&1 || err "mktemp is required"
 
-    target="$(detect_target)"
-    version="$(resolve_version)"
-    archive="oxide-${target}.tar.gz"
-    url="https://github.com/${REPO}/releases/download/v${version}/${archive}"
+    platform="$(detect_platform)"
+    url="$(resolve_url "$platform")"
+    archive="${url##*/}"
 
     tmp="$(mktemp -d)"
     trap 'rm -rf "$tmp"' EXIT INT TERM
 
-    info "downloading oxide ${version} for ${target}"
+    info "downloading ${archive} for ${platform}"
     download "$url" "${tmp}/${archive}"
 
     if download "${url}.sha256" "${tmp}/${archive}.sha256" 2>/dev/null; then

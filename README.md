@@ -41,8 +41,9 @@ Overrides:
 | `OXIDE_INSTALL_DIR` | Install directory. Defaults to `$HOME/.local/bin`. |
 | `OXIDE_REPO` | GitHub repo slug. Defaults to `jaysonwu991/oxide`. |
 
-Prebuilt targets: `aarch64-apple-darwin` (macOS Apple Silicon) and
-`x86_64-unknown-linux-gnu` (Linux x86_64).
+Prebuilt targets: `aarch64-apple-darwin` and `x86_64-apple-darwin` (macOS),
+`x86_64-unknown-linux-gnu` and `aarch64-unknown-linux-gnu` (Linux), plus
+`x86_64-pc-windows-msvc` (Windows, `.zip` archive).
 
 ### From source
 
