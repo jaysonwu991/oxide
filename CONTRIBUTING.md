@@ -117,12 +117,10 @@ Releases are automated by GitHub Actions:
    `x86_64-pc-windows-msvc`), packages each binary with a `.sha256` checksum,
    and publishes a GitHub Release with `install.sh` and `install.ps1` attached.
 
-To cut a release:
+To cut a release, make sure the version in `Cargo.toml` matches the tag, then
+push a `vX.Y.Z` tag:
 
 ```sh
-git tag v0.3.0
-git push origin v0.3.0
+git tag vX.Y.Z
+git push origin vX.Y.Z
 ```
-
-The version in `Cargo.toml` should match the tag (for example `0.3.0` for
-`v0.3.0`).
