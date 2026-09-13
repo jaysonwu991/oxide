@@ -72,6 +72,12 @@ pub fn request_body(config: &Config, messages: &[Message], tools: &[ToolSpec]) -
         let specs: Vec<Value> = tools.iter().map(tool_schema).collect();
         body["tools"] = json!(specs);
     }
+    if let Some(budget) = config
+        .effective_reasoning()
+        .budget_tokens(config.max_tokens)
+    {
+        body["thinking"] = json!({ "type": "enabled", "budget_tokens": budget });
+    }
     body
 }
 
@@ -90,14 +96,24 @@ pub fn apply_event(
         Some("content_block_start") => {
             let index = value["index"].as_u64().unwrap_or(0) as usize;
             let block = &value["content_block"];
-            if block["type"] == "tool_use" {
-                let partial = partials.entry(index).or_default();
-                if let Some(id) = block["id"].as_str() {
-                    partial.id = id.to_string();
+            match block["type"].as_str() {
+                Some("tool_use") => {
+                    let partial = partials.entry(index).or_default();
+                    if let Some(id) = block["id"].as_str() {
+                        partial.id = id.to_string();
+                    }
+                    if let Some(name) = block["name"].as_str() {
+                        partial.name = name.to_string();
+                    }
                 }
-                if let Some(name) = block["name"].as_str() {
-                    partial.name = name.to_string();
+                Some("thinking") => {
+                    turn.thinking
+                        .push(json!({ "type": "thinking", "thinking": "", "signature": "" }));
                 }
+                Some("redacted_thinking") => {
+                    turn.thinking.push(block.clone());
+                }
+                _ => {}
             }
         }
         Some("content_block_delta") => {
@@ -119,6 +135,23 @@ pub fn apply_event(
                             .or_default()
                             .arguments
                             .push_str(fragment);
+                    }
+                }
+                Some("thinking_delta") => {
+                    if let Some(fragment) = delta["thinking"].as_str() {
+                        if let Some(block) = turn.thinking.last_mut() {
+                            let mut text =
+                                block["thinking"].as_str().unwrap_or_default().to_string();
+                            text.push_str(fragment);
+                            block["thinking"] = json!(text);
+                        }
+                    }
+                }
+                Some("signature_delta") => {
+                    if let Some(signature) = delta["signature"].as_str() {
+                        if let Some(block) = turn.thinking.last_mut() {
+                            block["signature"] = json!(signature);
+                        }
                     }
                 }
                 _ => {}
@@ -192,6 +225,9 @@ fn split_data_url(url: &str) -> (String, String) {
 
 fn assistant_blocks(message: &Message) -> Vec<Value> {
     let mut blocks = Vec::new();
+    if let Some(thinking) = &message.thinking {
+        blocks.extend(thinking.iter().cloned());
+    }
     if let Some(content) = &message.content {
         let text = content.display();
         if !text.is_empty() {
@@ -278,6 +314,7 @@ fn merge_adjacent(messages: Vec<Value>) -> Vec<Value> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::config::Reasoning;
     use crate::llm::types::{FunctionSpec, ImageUrl};
 
     fn config() -> Config {
@@ -348,6 +385,62 @@ mod tests {
         assert_eq!(block["source"]["type"], "base64");
         assert_eq!(block["source"]["media_type"], "image/png");
         assert_eq!(block["source"]["data"], "AAAA");
+    }
+
+    #[test]
+    fn enables_thinking_when_reasoning_requested() {
+        let cfg = Config {
+            model: "claude-sonnet-4".into(),
+            max_tokens: 8192,
+            reasoning: Reasoning::High,
+            ..config()
+        };
+        let body = request_body(&cfg, &[Message::user("hi")], &[]);
+        assert_eq!(body["thinking"]["type"], "enabled");
+        assert_eq!(body["thinking"]["budget_tokens"], 7168);
+    }
+
+    #[test]
+    fn omits_thinking_when_reasoning_off() {
+        let cfg = Config {
+            reasoning: Reasoning::Off,
+            ..config()
+        };
+        let body = request_body(&cfg, &[Message::user("hi")], &[]);
+        assert!(body.get("thinking").is_none());
+    }
+
+    #[test]
+    fn replays_thinking_blocks_before_tool_use() {
+        let thinking = vec![json!({
+            "type": "thinking",
+            "thinking": "hmm",
+            "signature": "sig"
+        })];
+        let message =
+            Message::assistant("", vec![call("toolu_1", "bash", "{}")]).with_thinking(thinking);
+        let body = request_body(&config(), &[message], &[spec("bash")]);
+        let content = body["messages"][0]["content"].as_array().unwrap();
+        assert_eq!(content[0]["type"], "thinking");
+        assert_eq!(content[0]["signature"], "sig");
+        assert_eq!(content[1]["type"], "tool_use");
+    }
+
+    #[test]
+    fn parses_thinking_stream_events() {
+        let mut turn = AssistantTurn::default();
+        let mut partials = BTreeMap::new();
+        let events = [
+            r#"{"type":"content_block_start","index":0,"content_block":{"type":"thinking","thinking":""}}"#,
+            r#"{"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":"step"}}"#,
+            r#"{"type":"content_block_delta","index":0,"delta":{"type":"signature_delta","signature":"abc"}}"#,
+        ];
+        for event in events {
+            apply_event(event, &mut turn, &mut partials, &mut |_| {}).unwrap();
+        }
+        assert_eq!(turn.thinking.len(), 1);
+        assert_eq!(turn.thinking[0]["thinking"], "step");
+        assert_eq!(turn.thinking[0]["signature"], "abc");
     }
 
     #[test]

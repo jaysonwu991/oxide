@@ -57,7 +57,7 @@ pub async fn run(config: Config, cwd: PathBuf, session: Option<SessionLog>) -> R
 #[allow(clippy::too_many_arguments)]
 async fn event_loop(
     terminal: &mut Terminal<CrosstermBackend<std::io::Stdout>>,
-    config: Config,
+    mut config: Config,
     cwd: PathBuf,
     mcp: Arc<McpRegistry>,
     plugins: Arc<PluginHost>,
@@ -65,10 +65,25 @@ async fn event_loop(
     lsp: Arc<LspManager>,
     mut session: Option<SessionLog>,
 ) -> Result<()> {
-    let mut app = App::new(config.model.clone(), cwd.display().to_string());
+    let mut app = App::new(
+        config.model.clone(),
+        cwd.display().to_string(),
+        config.mode,
+        config.reasoning,
+    );
     app.items.push(ChatItem::Info(
         "Ask me to build, refactor, debug or explain code. Ctrl+C to quit.".to_string(),
     ));
+    app.items.push(ChatItem::Info(format!(
+        "mode: {} (Shift+Tab cycles build → auto-edit → plan)",
+        app.mode.label()
+    )));
+    app.items.push(ChatItem::Info(format!(
+        "reasoning: {} (Ctrl+R cycles auto → off → low → medium → high; auto resolves to {} for {})",
+        app.reasoning.label(),
+        config.effective_reasoning().label(),
+        config.model
+    )));
     app.items.push(ChatItem::Info(format!(
         "ecosystem: {}",
         config.ecosystem.summary()
@@ -159,7 +174,7 @@ async fn event_loop(
         tokio::select! {
             maybe_event = reader.next() => {
                 if let Some(Ok(Event::Key(key))) = maybe_event {
-                    handle_key(key, &mut app, &config, &cwd, &mut rx, &mcp, &plugins, snapshots.as_ref(), &lsp, &mut session, &approve);
+                    handle_key(key, &mut app, &mut config, &cwd, &mut rx, &mcp, &plugins, snapshots.as_ref(), &lsp, &mut session, &approve);
                 }
             }
             agent_event = recv_opt(&mut rx) => {
@@ -197,7 +212,7 @@ async fn recv_opt(rx: &mut Option<UnboundedReceiver<AgentEvent>>) -> Option<Agen
 fn handle_key(
     key: KeyEvent,
     app: &mut App,
-    config: &Config,
+    config: &mut Config,
     cwd: &Path,
     rx: &mut Option<UnboundedReceiver<AgentEvent>>,
     mcp: &Arc<McpRegistry>,
@@ -227,8 +242,31 @@ fn handle_key(
         KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
             app.should_quit = true;
         }
+        KeyCode::BackTab => {
+            config.mode = config.mode.next();
+            app.mode = config.mode;
+            app.status = format!("mode: {}", app.mode.label());
+        }
+        KeyCode::Char('r') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+            config.reasoning = config.reasoning.next();
+            app.reasoning = config.reasoning;
+            app.status = format!(
+                "reasoning: {} (effective: {})",
+                app.reasoning.label(),
+                config.effective_reasoning().label()
+            );
+        }
         KeyCode::Enter => {
             if app.busy {
+                let raw = app.input.trim().to_string();
+                if raw.is_empty() {
+                    return;
+                }
+                app.input.clear();
+                app.items.push(ChatItem::User(raw.clone()));
+                app.auto_scroll = true;
+                app.steering.push(Message::user(raw));
+                app.status = "queued guidance...".to_string();
                 return;
             }
             let raw = app.input.trim().to_string();
@@ -369,6 +407,7 @@ fn handle_key(
                 snapshots: snapshots.cloned(),
                 lsp: Arc::clone(lsp),
                 approve: Arc::clone(approve),
+                steering: app.steering.clone(),
             };
             tokio::spawn(async move {
                 if subtask {
@@ -433,6 +472,26 @@ fn handle_agent_event(event: AgentEvent, app: &mut App) {
             app.auto_scroll = true;
             app.items.push(ChatItem::Tool { name, args });
             app.status = "running tool...".to_string();
+        }
+        AgentEvent::ToolProgress { name, chunk } => {
+            app.auto_scroll = true;
+            let append = matches!(
+                app.items.last(),
+                Some(ChatItem::ToolProgress { name: last, .. }) if last == &name
+            );
+            if append {
+                if let Some(ChatItem::ToolProgress { output, .. }) = app.items.last_mut() {
+                    if !output.is_empty() {
+                        output.push('\n');
+                    }
+                    output.push_str(&chunk);
+                }
+            } else {
+                app.items.push(ChatItem::ToolProgress {
+                    name,
+                    output: chunk,
+                });
+            }
         }
         AgentEvent::ToolResult { name, output } => {
             app.auto_scroll = true;

@@ -1,4 +1,4 @@
-use crate::config::Config;
+use crate::config::{Config, Mode};
 use serde_json::Value;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -18,18 +18,21 @@ enum RuleSet {
 pub struct Permissions {
     baseline: Option<Action>,
     rules: Vec<(String, RuleSet)>,
+    mode: Mode,
 }
 
 impl Permissions {
     pub fn from_config(config: &Config) -> Self {
-        let value = config
+        let mut permissions = match config
             .active_agent
             .as_ref()
-            .and_then(|agent| agent.permission.clone());
-        match value {
+            .and_then(|agent| agent.permission.clone())
+        {
             Some(value) => Self::from_value(&value),
             None => Self::default(),
-        }
+        };
+        permissions.mode = config.mode;
+        permissions
     }
 
     fn from_value(value: &Value) -> Self {
@@ -37,6 +40,7 @@ impl Permissions {
             Value::String(action) => Self {
                 baseline: Action::parse_str(action),
                 rules: Vec::new(),
+                mode: Mode::default(),
             },
             Value::Object(map) => {
                 let mut rules = Vec::new();
@@ -62,6 +66,7 @@ impl Permissions {
                 Self {
                     baseline: None,
                     rules,
+                    mode: Mode::default(),
                 }
             }
             _ => Self::default(),
@@ -85,8 +90,18 @@ impl Permissions {
                 }
             }
         }
-        action
+        match self.mode {
+            Mode::Plan if plan_blocked(tool) => Action::Deny,
+            Mode::AutoEdit if matches!(tool, "write_file" | "patch") => Action::Allow,
+            _ => action,
+        }
     }
+}
+
+/// Tools that change the workspace (or have unknown remote side effects) are
+/// blocked while in plan mode. Read-only tools remain available.
+fn plan_blocked(tool: &str) -> bool {
+    matches!(tool, "write_file" | "patch" | "bash") || tool.contains("__")
 }
 
 impl Action {
@@ -177,6 +192,33 @@ mod tests {
     fn top_level_string_sets_baseline() {
         let permissions = Permissions::from_value(&json!("deny"));
         assert_eq!(permissions.decide("read_file", "a.rs"), Action::Deny);
+    }
+
+    #[test]
+    fn plan_mode_blocks_workspace_mutations() {
+        let config = Config {
+            mode: Mode::Plan,
+            ..Config::default()
+        };
+        let permissions = Permissions::from_config(&config);
+        assert_eq!(permissions.decide("write_file", "a.rs"), Action::Deny);
+        assert_eq!(permissions.decide("patch", "a.rs"), Action::Deny);
+        assert_eq!(permissions.decide("bash", "ls"), Action::Deny);
+        assert_eq!(permissions.decide("server__remote", ""), Action::Deny);
+        assert_eq!(permissions.decide("read_file", "a.rs"), Action::Allow);
+        assert_eq!(permissions.decide("grep", "TODO"), Action::Allow);
+    }
+
+    #[test]
+    fn auto_edit_mode_approves_file_edits() {
+        let config = Config {
+            mode: Mode::AutoEdit,
+            ..Config::default()
+        };
+        let permissions = Permissions::from_config(&config);
+        assert_eq!(permissions.decide("write_file", "a.rs"), Action::Allow);
+        assert_eq!(permissions.decide("patch", "a.rs"), Action::Allow);
+        assert_eq!(permissions.decide("bash", "ls"), Action::Ask);
     }
 
     #[test]

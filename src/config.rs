@@ -62,6 +62,157 @@ impl ProviderPreset {
     }
 }
 
+/// The agent's permission mode, modelled on Claude Code. `Build` is the normal
+/// mode and follows the active agent's permission rules; `Plan` is read-only and
+/// forbids workspace mutations; `AutoEdit` auto-approves file edits.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "kebab-case")]
+pub enum Mode {
+    #[default]
+    Build,
+    Plan,
+    #[serde(
+        alias = "auto_edit",
+        alias = "autoedit",
+        alias = "accept-edits",
+        alias = "acceptEdits"
+    )]
+    AutoEdit,
+}
+
+impl Mode {
+    /// Parses a user-supplied mode name, accepting common aliases.
+    pub fn parse(value: &str) -> Option<Self> {
+        match value.trim().to_ascii_lowercase().replace('_', "-").as_str() {
+            "build" | "default" | "normal" => Some(Mode::Build),
+            "plan" => Some(Mode::Plan),
+            "auto-edit" | "autoedit" | "accept-edits" | "acceptedits" | "edit" => {
+                Some(Mode::AutoEdit)
+            }
+            _ => None,
+        }
+    }
+
+    /// The next mode in the cycle used by the TUI (build → auto-edit → plan).
+    pub fn next(self) -> Self {
+        match self {
+            Mode::Build => Mode::AutoEdit,
+            Mode::AutoEdit => Mode::Plan,
+            Mode::Plan => Mode::Build,
+        }
+    }
+
+    /// A short lowercase label used in the UI and CLI.
+    pub fn label(self) -> &'static str {
+        match self {
+            Mode::Build => "build",
+            Mode::Plan => "plan",
+            Mode::AutoEdit => "auto-edit",
+        }
+    }
+}
+
+/// How much reasoning effort to ask the model for. `Auto` (the default) turns
+/// reasoning on for models known to support it and off otherwise; the explicit
+/// levels map to OpenAI's `reasoning_effort` and Anthropic's extended-thinking
+/// budget.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "kebab-case")]
+pub enum Reasoning {
+    #[default]
+    Auto,
+    Off,
+    Low,
+    Medium,
+    High,
+}
+
+impl Reasoning {
+    /// Parses a user-supplied level, accepting common aliases.
+    pub fn parse(value: &str) -> Option<Self> {
+        match value.trim().to_ascii_lowercase().replace('_', "-").as_str() {
+            "" | "auto" | "default" => Some(Reasoning::Auto),
+            "off" | "none" | "disabled" => Some(Reasoning::Off),
+            "low" | "minimal" | "small" => Some(Reasoning::Low),
+            "medium" | "med" => Some(Reasoning::Medium),
+            "high" | "xhigh" | "x-high" => Some(Reasoning::High),
+            _ => None,
+        }
+    }
+
+    /// A short lowercase label used in the UI and CLI.
+    pub fn label(self) -> &'static str {
+        match self {
+            Reasoning::Auto => "auto",
+            Reasoning::Off => "off",
+            Reasoning::Low => "low",
+            Reasoning::Medium => "medium",
+            Reasoning::High => "high",
+        }
+    }
+
+    /// The cycle used by the TUI (auto → off → low → medium → high).
+    pub fn next(self) -> Self {
+        match self {
+            Reasoning::Auto => Reasoning::Off,
+            Reasoning::Off => Reasoning::Low,
+            Reasoning::Low => Reasoning::Medium,
+            Reasoning::Medium => Reasoning::High,
+            Reasoning::High => Reasoning::Auto,
+        }
+    }
+
+    /// Resolves `Auto` against the model name.
+    pub fn resolve(self, model: &str) -> Self {
+        match self {
+            Reasoning::Auto => {
+                if supports_reasoning(model) {
+                    Reasoning::Medium
+                } else {
+                    Reasoning::Off
+                }
+            }
+            other => other,
+        }
+    }
+
+    /// The OpenAI-compatible `reasoning_effort` value, if any.
+    pub fn effort(self) -> Option<&'static str> {
+        match self {
+            Reasoning::Low => Some("low"),
+            Reasoning::Medium => Some("medium"),
+            Reasoning::High => Some("high"),
+            Reasoning::Auto | Reasoning::Off => None,
+        }
+    }
+
+    /// The Anthropic extended-thinking budget in tokens, if enabled.
+    pub fn budget_tokens(self, max_tokens: u32) -> Option<u32> {
+        let desired = match self {
+            Reasoning::Low => 2048,
+            Reasoning::Medium => 6144,
+            Reasoning::High => 12_288,
+            Reasoning::Auto | Reasoning::Off => return None,
+        };
+        let budget = desired.min(max_tokens.saturating_sub(1024));
+        (budget >= 1024).then_some(budget)
+    }
+}
+
+/// Models known to accept reasoning controls.
+fn supports_reasoning(model: &str) -> bool {
+    let model = model.to_ascii_lowercase();
+    model.starts_with("o1")
+        || model.starts_with("o3")
+        || model.starts_with("o4")
+        || model.starts_with("gpt-5")
+        || model.contains("claude-3-7")
+        || model.contains("claude-3.7")
+        || model.contains("claude-sonnet-4")
+        || model.contains("claude-opus-4")
+        || model.contains("claude-4")
+}
+
 fn env_nonempty(name: &str) -> Option<String> {
     std::env::var(name)
         .ok()
@@ -84,6 +235,10 @@ pub struct Config {
     pub max_tokens: u32,
     #[serde(default = "default_true")]
     pub auto_approve: bool,
+    #[serde(default)]
+    pub mode: Mode,
+    #[serde(default)]
+    pub reasoning: Reasoning,
     #[serde(skip)]
     pub ecosystem: Ecosystem,
     #[serde(skip)]
@@ -116,6 +271,8 @@ impl Default for Config {
             system_prompt: default_system_prompt(),
             max_tokens: default_max_tokens(),
             auto_approve: true,
+            mode: Mode::default(),
+            reasoning: Reasoning::default(),
             ecosystem: Ecosystem::default(),
             active_agent: None,
             memory: MemoryStore::default(),
@@ -139,6 +296,8 @@ impl Config {
         model: Option<String>,
         provider: Option<String>,
         agent: Option<String>,
+        mode: Option<String>,
+        reasoning: Option<String>,
     ) -> Result<Self> {
         let path = Self::config_path();
         let raw: Option<serde_json::Value> = if path.exists() {
@@ -213,6 +372,20 @@ impl Config {
 
         config.base_url = config.base_url.trim_end_matches('/').to_string();
 
+        if let Some(value) = mode.or_else(|| env_nonempty("OXIDE_MODE")) {
+            config.mode = Mode::parse(&value).with_context(|| {
+                format!("unknown mode `{value}` (expected build, plan, or auto-edit)")
+            })?;
+        }
+
+        if let Some(value) = reasoning.or_else(|| env_nonempty("OXIDE_REASONING")) {
+            config.reasoning = Reasoning::parse(&value).with_context(|| {
+                format!(
+                    "unknown reasoning level `{value}` (expected auto, off, low, medium, or high)"
+                )
+            })?;
+        }
+
         config.ecosystem = ecosystem::load(cwd);
         config.memory = MemoryStore::load(cwd);
         config.dcp = crate::dcp::load_config(cwd);
@@ -267,11 +440,26 @@ impl Config {
             .unwrap_or("OPENAI_API_KEY")
     }
 
+    /// The reasoning level to use after resolving `Auto` against the model.
+    pub fn effective_reasoning(&self) -> Reasoning {
+        self.reasoning.resolve(&self.model)
+    }
+
     /// Builds the effective system prompt from the base prompt plus the active
     /// agent, loaded memory, instructions, and an index of available
     /// skills/commands/subagents.
     pub fn compose_system_prompt(&self) -> String {
         let mut sections = vec![self.system_prompt.clone()];
+
+        if self.mode == Mode::Plan {
+            sections.push(
+                "# Plan mode\nYou are in plan mode: do not modify files or run commands that \
+                 change the workspace. Investigate the codebase with read-only tools and produce \
+                 a clear, ordered implementation plan. Explain trade-offs and list the files you \
+                 would change. Wait for the user to switch to build mode before making any edits."
+                    .to_string(),
+            );
+        }
 
         if let Some(agent) = &self.active_agent {
             sections.push(format!(
@@ -412,6 +600,71 @@ mod tests {
             "ANTHROPIC_API_KEY"
         );
         assert!(ProviderPreset::for_name("custom-endpoint").is_none());
+    }
+
+    #[test]
+    fn mode_parses_aliases_and_cycles() {
+        assert_eq!(Mode::parse("build"), Some(Mode::Build));
+        assert_eq!(Mode::parse("PLAN"), Some(Mode::Plan));
+        assert_eq!(Mode::parse("auto_edit"), Some(Mode::AutoEdit));
+        assert_eq!(Mode::parse("accept-edits"), Some(Mode::AutoEdit));
+        assert_eq!(Mode::parse("nonsense"), None);
+
+        assert_eq!(Mode::default(), Mode::Build);
+        assert_eq!(Mode::Build.next(), Mode::AutoEdit);
+        assert_eq!(Mode::AutoEdit.next(), Mode::Plan);
+        assert_eq!(Mode::Plan.next(), Mode::Build);
+    }
+
+    #[test]
+    fn reasoning_parses_aliases_and_cycles() {
+        assert_eq!(Reasoning::parse("auto"), Some(Reasoning::Auto));
+        assert_eq!(Reasoning::parse("OFF"), Some(Reasoning::Off));
+        assert_eq!(Reasoning::parse("small"), Some(Reasoning::Low));
+        assert_eq!(Reasoning::parse("medium"), Some(Reasoning::Medium));
+        assert_eq!(Reasoning::parse("xhigh"), Some(Reasoning::High));
+        assert_eq!(Reasoning::parse("nonsense"), None);
+
+        assert_eq!(Reasoning::default(), Reasoning::Auto);
+        assert_eq!(Reasoning::Auto.next(), Reasoning::Off);
+        assert_eq!(Reasoning::Off.next(), Reasoning::Low);
+        assert_eq!(Reasoning::Low.next(), Reasoning::Medium);
+        assert_eq!(Reasoning::Medium.next(), Reasoning::High);
+        assert_eq!(Reasoning::High.next(), Reasoning::Auto);
+    }
+
+    #[test]
+    fn auto_reasoning_detects_reasoning_models() {
+        assert_eq!(Reasoning::Auto.resolve("gpt-4o-mini"), Reasoning::Off);
+        assert_eq!(Reasoning::Auto.resolve("o3-mini"), Reasoning::Medium);
+        assert_eq!(Reasoning::Auto.resolve("gpt-5"), Reasoning::Medium);
+        assert_eq!(
+            Reasoning::Auto.resolve("claude-sonnet-4-20250514"),
+            Reasoning::Medium
+        );
+        assert_eq!(Reasoning::High.resolve("gpt-4o-mini"), Reasoning::High);
+    }
+
+    #[test]
+    fn reasoning_maps_to_provider_controls() {
+        assert_eq!(Reasoning::Off.effort(), None);
+        assert_eq!(Reasoning::Medium.effort(), Some("medium"));
+        assert_eq!(Reasoning::High.budget_tokens(8192), Some(7168));
+        assert_eq!(Reasoning::Low.budget_tokens(4096), Some(2048));
+        assert_eq!(Reasoning::Off.budget_tokens(8192), None);
+        assert_eq!(Reasoning::High.budget_tokens(1024), None);
+    }
+
+    #[test]
+    fn plan_mode_adds_prompt_instructions() {
+        let build = Config::default();
+        assert!(!build.compose_system_prompt().contains("# Plan mode"));
+
+        let plan = Config {
+            mode: Mode::Plan,
+            ..Config::default()
+        };
+        assert!(plan.compose_system_prompt().contains("# Plan mode"));
     }
 
     #[test]

@@ -45,25 +45,25 @@ Before opening a pull request, make sure `cargo fmt`, `cargo clippy`, and
 | Path | Responsibility |
 | --- | --- |
 | `src/main.rs` | CLI entry (clap), `-p/--print` mode, TUI dispatch, `auth`/`mcp` subcommands. |
-| `src/config.rs` | Config loading, provider presets, system prompt composition. |
+| `src/config.rs` | Config loading, provider presets, agent `Mode` and `Reasoning`, system prompt composition. |
 | `src/auth.rs` | `auth login` / `list` / `logout` and the credential store. |
-| `src/agent.rs` | Agent loop, tool execution, and the agent-level tools. |
-| `src/llm/` | Model clients: OpenAI-compatible and Anthropic. |
-| `src/tools.rs` | Built-in tool specs and execution. |
+| `src/agent.rs` | Agent loop, parallel/sequential tool execution, steering queue, terminate hint, and the agent-level tools. |
+| `src/llm/` | Model clients: OpenAI-compatible and Anthropic, including reasoning effort / extended thinking. |
+| `src/tools.rs` | Built-in tool specs and execution; `ToolOutput` (text/media/terminate) and streaming `Progress`. |
 | `src/mcp.rs` | MCP runtime and remote tool exposure. |
 | `src/mcp_config.rs` | `oxide mcp` CLI: read/write MCP servers in `.oxide/mcp.json`, including OAuth fields and `oxide mcp auth`. |
 | `src/mcp_oauth.rs` | OAuth authorization-code + PKCE flow for remote MCP servers. |
 | `src/ecosystem/` | Discovery of the Oxide and Claude Code config ecosystems. |
-| `src/permission.rs` | Permission rule parsing and decisions. |
+| `src/permission.rs` | Permission rule parsing and decisions, including `build`/`plan`/`auto-edit` mode overrides. |
 | `src/session.rs` | Durable JSONL session log. |
 | `src/snapshots.rs` | Shadow-git snapshots backing `/undo` and `/redo`. |
 | `src/compact.rs` | Conversation summarization. |
 | `src/dcp.rs` | Dynamic context pruning: config, pruned view, nudges, compression records. |
 | `src/lsp.rs` | Minimal LSP client and diagnostics. |
-| `src/plugin.rs` | Plugin host and tool hooks. |
+| `src/plugin.rs` | Plugin host and tool hooks, including output rewriting and the terminate hint. |
 | `src/memory.rs` | Cross-session memory store. |
 | `src/media.rs` | Image/PDF attachments and `@path` references. |
-| `src/tui/` | ratatui + crossterm interface. |
+| `src/tui/` | ratatui + crossterm interface with incremental rendering, Shift+Tab mode and Ctrl+R reasoning cycling, and mid-run steering. |
 | `.oxide/` | Project agents, commands, skills, and plugins (Oxide layout). |
 
 ## Conventions
@@ -78,17 +78,22 @@ Before opening a pull request, make sure `cargo fmt`, `cargo clippy`, and
 ## Extending oxide
 
 - **Tools.** Register built-in tools in `tools::specs(&McpRegistry)` and
-  dispatch them in `tools::execute(call, cwd, &McpRegistry)`. Agent-level tools
-  (`task`, `skill`, `memory`, `diagnostics`, `compress`) are defined and
-  dispatched in `src/agent.rs`; `compress` and the pruned request view live in
-  `src/dcp.rs`.
+  dispatch them in `tools::execute(call, cwd, &McpRegistry, &Progress)`; report
+  incremental output through `Progress` and set `ToolOutput::terminate` to end
+  the turn. Read-only tools are listed in the `concurrency_safe` classifier in
+  `src/agent.rs` to run in parallel. Agent-level tools (`task`, `skill`, `memory`, `diagnostics`,
+  `compress`) are defined and dispatched in `src/agent.rs`; `compress` and the
+  pruned request view live in `src/dcp.rs`.
 - **Context pruning.** Configuration, deduplication, error purging, and nudges
   live in `src/dcp.rs`; compression records are persisted through
   `SessionLog::append_dcp` / `dcp_state`. The raw history is never modified, only
   the outgoing request.
 - **Providers.** Add a preset in `ProviderPreset::for_name` in `src/config.rs`
   and, if the API is not OpenAI-compatible, extend the dispatch in
-  `src/llm/client.rs` (see `src/llm/anthropic.rs`).
+  `src/llm/client.rs` (see `src/llm/anthropic.rs`). Reasoning levels come from
+  `Config::effective_reasoning`; OpenAI maps them to `reasoning_effort`
+  (`src/llm/client.rs`) and Anthropic to extended-thinking `budget_tokens`
+  (`src/llm/anthropic.rs`).
 - **Ecosystem sources.** Parsing lives in `src/ecosystem/mod.rs`; frontmatter
   handling is in `src/ecosystem/frontmatter.rs`. The native Oxide layout
   (`.oxide/`, `AGENTS.md`) is read first and the Claude Code layout
