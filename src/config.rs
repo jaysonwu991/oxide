@@ -1,4 +1,4 @@
-use crate::auth::AuthStore;
+use crate::auth::{canonical_provider, AuthStore};
 use crate::ecosystem::{self, AgentDef, Ecosystem, McpKind};
 use crate::memory::{MemoryStore, Scope};
 use anyhow::{Context, Result};
@@ -34,8 +34,9 @@ pub struct ProviderPreset {
 
 impl ProviderPreset {
     pub fn for_name(name: &str) -> Option<Self> {
-        let preset = match name.trim().to_ascii_lowercase().as_str() {
-            "openai" | "gpt" | "gpt-4" | "gpt-4o" => Self {
+        let name = canonical_provider(name);
+        let preset = match name.as_str() {
+            "openai" => Self {
                 kind: ProviderKind::OpenAi,
                 base_url: "https://api.openai.com/v1",
                 base_url_env: "OPENAI_BASE_URL",
@@ -352,10 +353,10 @@ impl Config {
             None => Self::default(),
         };
 
-        let provider_from_env = env_nonempty("OXIDE_PROVIDER").is_some();
-        let provider_overridden = provider.is_some() || provider_from_env;
+        let provider_from_env = env_nonempty("OXIDE_PROVIDER");
+        let provider_overridden = provider.is_some() || provider_from_env.is_some();
         config.provider = provider
-            .or_else(|| env_nonempty("OXIDE_PROVIDER"))
+            .or(provider_from_env)
             .unwrap_or_else(|| config.provider.clone());
         let preset = ProviderPreset::for_name(&config.provider);
 
@@ -381,7 +382,8 @@ impl Config {
             config.base_url = url;
         }
 
-        if let Ok(store) = AuthStore::load() {
+        let store = AuthStore::load().ok();
+        if let Some(store) = &store {
             if let Some(key) = store.key(&config.provider) {
                 config.api_key = key.to_string();
             }
@@ -409,8 +411,8 @@ impl Config {
         // credential so `oxide auth login <provider>` is enough to get started.
         let provider_explicit = provider_overridden || explicit(&raw, "provider");
         if !provider_explicit {
-            if let Ok(store) = AuthStore::load() {
-                apply_stored_provider_fallback(&mut config, &store, &raw);
+            if let Some(store) = &store {
+                apply_stored_provider_fallback(&mut config, store, &raw);
             }
         }
 
