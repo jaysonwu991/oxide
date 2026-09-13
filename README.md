@@ -185,6 +185,13 @@ oxide mcp remove [--scope project|global] <name>
 writes `~/.oxide/mcp.json`. See
 [docs/configuration.md](docs/configuration.md#mcp-servers) for examples.
 
+Remote servers can require OAuth. Slack's MCP server works with the URL alone
+(its public client is built in); for other servers add an `oauth` block and
+authorize with `oxide mcp auth <name>`. oxide runs the authorization-code flow
+with PKCE and refreshes the token automatically. See
+[Connecting to the Slack MCP server](docs/configuration.md#connect-to-the-slack-mcp-server)
+for a worked example.
+
 ## Configuration
 
 oxide reads `config.json` from the platform config directory:

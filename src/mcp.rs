@@ -1,10 +1,13 @@
 use crate::ecosystem::{McpKind, McpServer};
 use crate::llm::{FunctionSpec, ToolSpec};
+use crate::mcp_oauth::OAuthState;
 use anyhow::{bail, Context, Result};
-use reqwest::header::{HeaderMap, HeaderName, HeaderValue, ACCEPT, CONTENT_TYPE};
+use reqwest::header::{HeaderMap, HeaderName, HeaderValue, ACCEPT, AUTHORIZATION, CONTENT_TYPE};
 use serde_json::{json, Value};
 use std::collections::HashMap;
+use std::io::IsTerminal;
 use std::process::Stdio;
+use std::sync::Arc;
 use std::time::Duration;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::process::{Child, ChildStdin, ChildStdout};
@@ -145,6 +148,7 @@ enum Transport {
         client: reqwest::Client,
         url: String,
         headers: HeaderMap,
+        oauth: Option<Arc<OAuthState>>,
     },
 }
 
@@ -183,7 +187,11 @@ impl McpConnection {
                     _child: child,
                 }
             }
-            McpKind::Remote { url, headers } => {
+            McpKind::Remote {
+                url,
+                headers,
+                oauth,
+            } => {
                 let mut map = HeaderMap::new();
                 for (key, value) in headers {
                     let name = HeaderName::try_from(key.as_str())
@@ -192,10 +200,22 @@ impl McpConnection {
                         .with_context(|| format!("invalid MCP header value for `{key}`"))?;
                     map.insert(name, value);
                 }
+                let oauth = match oauth {
+                    Some(config) => {
+                        let state = Arc::new(OAuthState::new(&server.name, config, url));
+                        state
+                            .ensure_authorized(std::io::stdin().is_terminal())
+                            .await
+                            .with_context(|| format!("authorizing MCP server `{}`", server.name))?;
+                        Some(state)
+                    }
+                    None => None,
+                };
                 Transport::Remote {
                     client: reqwest::Client::new(),
                     url: url.clone(),
                     headers: map,
+                    oauth,
                 }
             }
         };
@@ -277,8 +297,10 @@ impl McpConnection {
                 client,
                 url,
                 headers,
+                oauth,
             } => {
-                post_json(client, url, headers, &payload)
+                let headers = remote_headers(oauth, headers).await?;
+                post_json(client, url, &headers, &payload)
                     .send()
                     .await
                     .context("sending MCP notification")?;
@@ -321,8 +343,10 @@ impl McpConnection {
                 client,
                 url,
                 headers,
+                oauth,
             } => {
-                let request = post_json(client, url, headers, &payload);
+                let headers = remote_headers(oauth, headers).await?;
+                let request = post_json(client, url, &headers, &payload);
                 let response = tokio::time::timeout(REQUEST_TIMEOUT, request.send())
                     .await
                     .map_err(|_| anyhow::anyhow!("MCP server `{}` timed out", self.name))?
@@ -349,6 +373,17 @@ impl McpConnection {
             }
         }
     }
+}
+
+async fn remote_headers(oauth: &Option<Arc<OAuthState>>, base: &HeaderMap) -> Result<HeaderMap> {
+    let mut map = base.clone();
+    if let Some(state) = oauth {
+        let token = state.access_token().await?;
+        let value = HeaderValue::from_str(&format!("Bearer {token}"))
+            .context("building MCP authorization header")?;
+        map.insert(AUTHORIZATION, value);
+    }
+    Ok(map)
 }
 
 fn post_json(

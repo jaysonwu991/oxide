@@ -51,7 +51,8 @@ Before opening a pull request, make sure `cargo fmt`, `cargo clippy`, and
 | `src/llm/` | Model clients: OpenAI-compatible and Anthropic. |
 | `src/tools.rs` | Built-in tool specs and execution. |
 | `src/mcp.rs` | MCP runtime and remote tool exposure. |
-| `src/mcp_config.rs` | `oxide mcp` CLI: read/write MCP servers in `.oxide/mcp.json`. |
+| `src/mcp_config.rs` | `oxide mcp` CLI: read/write MCP servers in `.oxide/mcp.json`, including OAuth fields and `oxide mcp auth`. |
+| `src/mcp_oauth.rs` | OAuth authorization-code + PKCE flow for remote MCP servers. |
 | `src/ecosystem/` | Discovery of the Oxide and Claude Code config ecosystems. |
 | `src/permission.rs` | Permission rule parsing and decisions. |
 | `src/session.rs` | Durable JSONL session log. |

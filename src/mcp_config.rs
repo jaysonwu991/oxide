@@ -128,12 +128,46 @@ fn parse_pairs(values: &[String], flag: &str) -> Result<Map<String, Value>> {
     Ok(map)
 }
 
+#[derive(Default)]
+struct OAuthArgs {
+    client_id: Option<String>,
+    client_secret: Option<String>,
+    callback_port: Option<u16>,
+    scopes: Vec<String>,
+    redirect_uri: Option<String>,
+}
+
+fn build_oauth(args: OAuthArgs) -> Option<Value> {
+    let mut entry = Map::new();
+    if let Some(client_id) = args.client_id {
+        entry.insert("clientId".to_string(), json!(client_id));
+    }
+    if let Some(client_secret) = args.client_secret {
+        entry.insert("clientSecret".to_string(), json!(client_secret));
+    }
+    if let Some(port) = args.callback_port {
+        entry.insert("callbackPort".to_string(), json!(port));
+    }
+    if !args.scopes.is_empty() {
+        entry.insert("scopes".to_string(), json!(args.scopes));
+    }
+    if let Some(redirect_uri) = args.redirect_uri {
+        entry.insert("redirectUri".to_string(), json!(redirect_uri));
+    }
+    if entry.is_empty() {
+        None
+    } else {
+        Some(Value::Object(entry))
+    }
+}
+
 fn build_entry(
     transport: &str,
     command: &[String],
     env: &[String],
     header: &[String],
     server_cwd: Option<String>,
+    oauth: OAuthArgs,
 ) -> Result<Value> {
     match transport {
         "" | "stdio" => {
@@ -161,15 +195,34 @@ fn build_entry(
                 bail!("expected exactly one URL for `--transport {transport}`");
             }
             let mut entry = Map::new();
+            entry.insert("type".to_string(), json!(transport));
             entry.insert("url".to_string(), json!(command[0]));
             let headers = parse_pairs(header, "--header")?;
             if !headers.is_empty() {
                 entry.insert("headers".to_string(), Value::Object(headers));
             }
+            if let Some(oauth) =
+                build_oauth(oauth).or_else(|| known_oauth_entry(command[0].as_str()))
+            {
+                entry.insert("oauth".to_string(), oauth);
+            }
             Ok(Value::Object(entry))
         }
         other => bail!("unknown transport `{other}` (expected `stdio` or `http`)"),
     }
+}
+
+/// OAuth defaults for well-known servers (e.g. Slack) that cannot register
+/// clients dynamically, so they can be added by URL alone.
+fn known_oauth_entry(url: &str) -> Option<Value> {
+    let known = crate::ecosystem::known_oauth(url)?;
+    build_oauth(OAuthArgs {
+        client_id: known.client_id,
+        client_secret: known.client_secret,
+        callback_port: known.callback_port,
+        scopes: known.scopes,
+        redirect_uri: known.redirect_uri,
+    })
 }
 
 fn validate_name(name: &str) -> Result<()> {
@@ -200,6 +253,11 @@ pub struct AddRequest {
     pub env: Vec<String>,
     pub header: Vec<String>,
     pub cwd: Option<String>,
+    pub oauth_client_id: Option<String>,
+    pub oauth_client_secret: Option<String>,
+    pub callback_port: Option<u16>,
+    pub oauth_scope: Vec<String>,
+    pub redirect_uri: Option<String>,
 }
 
 // The `command` positional accepts hyphen values so server arguments like
@@ -237,6 +295,31 @@ impl AddRequest {
                         self.scope = Some(value);
                     }
                 }
+                "--oauth-client-id" => {
+                    if let Some(value) = iter.next() {
+                        self.oauth_client_id = Some(value);
+                    }
+                }
+                "--oauth-client-secret" => {
+                    if let Some(value) = iter.next() {
+                        self.oauth_client_secret = Some(value);
+                    }
+                }
+                "--callback-port" => {
+                    if let Some(value) = iter.next() {
+                        self.callback_port = value.parse().ok();
+                    }
+                }
+                "--oauth-scope" => {
+                    if let Some(value) = iter.next() {
+                        self.oauth_scope.push(value);
+                    }
+                }
+                "--redirect-uri" => {
+                    if let Some(value) = iter.next() {
+                        self.redirect_uri = Some(value);
+                    }
+                }
                 _ => args.push(token),
             }
         }
@@ -255,6 +338,13 @@ pub fn add(cwd: &Path, request: AddRequest) -> Result<()> {
         &request.env,
         &request.header,
         request.cwd,
+        OAuthArgs {
+            client_id: request.oauth_client_id,
+            client_secret: request.oauth_client_secret,
+            callback_port: request.callback_port,
+            scopes: request.oauth_scope,
+            redirect_uri: request.redirect_uri,
+        },
     )?;
     let path = upsert(cwd, scope, &request.name, entry)?;
     println!(
@@ -263,6 +353,38 @@ pub fn add(cwd: &Path, request: AddRequest) -> Result<()> {
         path.display(),
         scope.label()
     );
+    Ok(())
+}
+
+/// Run the OAuth authorization-code flow for a configured remote server,
+/// storing the resulting token under the oxide config directory.
+pub async fn auth(cwd: &Path, scope: Option<String>, name: String) -> Result<()> {
+    Scope::parse(scope.as_deref())?;
+    let mut found = None;
+    for source in sources(cwd).into_iter().rev() {
+        let root = read_file(&source.path)?;
+        if let Some(config) = root
+            .get("mcpServers")
+            .and_then(Value::as_object)
+            .and_then(|servers| servers.get(&name))
+        {
+            found = Some((source.label.clone(), config.clone()));
+            break;
+        }
+    }
+    let Some((label, config)) = found else {
+        bail!("no MCP server named `{name}`");
+    };
+    let url = config
+        .get("url")
+        .and_then(Value::as_str)
+        .with_context(|| format!("MCP server `{name}` is not a remote (http) server"))?;
+    let oauth = crate::ecosystem::parse_oauth(config.get("oauth"))
+        .or_else(|| crate::ecosystem::known_oauth(url))
+        .with_context(|| format!("MCP server `{name}` has no `oauth` configuration"))?;
+    let state = crate::mcp_oauth::OAuthState::new(&name, &oauth, url);
+    state.ensure_authorized(true).await?;
+    println!("authorized MCP server `{name}` ({label})");
     Ok(())
 }
 
@@ -368,7 +490,13 @@ fn try_remove(path: &Path, name: &str) -> Result<bool> {
 
 fn describe(config: &Value) -> (&'static str, String) {
     if let Some(url) = config.get("url").and_then(Value::as_str) {
-        return ("http", url.to_string());
+        let suffix =
+            if config.get("oauth").is_some() || crate::ecosystem::known_oauth(url).is_some() {
+                " (oauth)"
+            } else {
+                ""
+            };
+        return ("http", format!("{url}{suffix}"));
     }
     if let Some(command) = config.get("command").and_then(Value::as_str) {
         let mut parts = vec![command.to_string()];
@@ -418,6 +546,11 @@ mod tests {
             env: Vec::new(),
             header: Vec::new(),
             cwd: None,
+            oauth_client_id: None,
+            oauth_client_secret: None,
+            callback_port: None,
+            oauth_scope: Vec::new(),
+            redirect_uri: None,
         }
         .absorb_trailing_options();
 
@@ -430,6 +563,41 @@ mod tests {
     }
 
     #[test]
+    fn absorbs_oauth_options_placed_after_the_command() {
+        let request = AddRequest {
+            scope: None,
+            transport: Some("http".to_string()),
+            name: "slack".to_string(),
+            command: vec![
+                "https://mcp.slack.com/mcp".to_string(),
+                "--oauth-client-id".to_string(),
+                "1601185624273.8899143856786".to_string(),
+                "--callback-port".to_string(),
+                "3118".to_string(),
+                "--oauth-scope".to_string(),
+                "chat:write".to_string(),
+            ],
+            env: Vec::new(),
+            header: Vec::new(),
+            cwd: None,
+            oauth_client_id: None,
+            oauth_client_secret: None,
+            callback_port: None,
+            oauth_scope: Vec::new(),
+            redirect_uri: None,
+        }
+        .absorb_trailing_options();
+
+        assert_eq!(request.command, vec!["https://mcp.slack.com/mcp"]);
+        assert_eq!(
+            request.oauth_client_id.as_deref(),
+            Some("1601185624273.8899143856786")
+        );
+        assert_eq!(request.callback_port, Some(3118));
+        assert_eq!(request.oauth_scope, vec!["chat:write"]);
+    }
+
+    #[test]
     fn builds_stdio_and_http_entries() {
         let stdio = build_entry(
             "stdio",
@@ -437,6 +605,7 @@ mod tests {
             &["TOKEN=abc".to_string()],
             &[],
             None,
+            OAuthArgs::default(),
         )
         .unwrap();
         assert_eq!(stdio["command"], "npx");
@@ -449,14 +618,56 @@ mod tests {
             &[],
             &["Authorization=Bearer x".to_string()],
             None,
+            OAuthArgs::default(),
         )
         .unwrap();
         assert_eq!(http["url"], "https://example.com/mcp");
         assert_eq!(http["headers"]["Authorization"], "Bearer x");
+        assert!(http.get("oauth").is_none());
 
-        assert!(build_entry("stdio", &[], &[], &[], None).is_err());
-        assert!(build_entry("http", &[], &[], &[], None).is_err());
-        assert!(build_entry("carrier-pigeon", &[], &[], &[], None).is_err());
+        assert!(build_entry("stdio", &[], &[], &[], None, OAuthArgs::default()).is_err());
+        assert!(build_entry("http", &[], &[], &[], None, OAuthArgs::default()).is_err());
+        assert!(build_entry("carrier-pigeon", &[], &[], &[], None, OAuthArgs::default()).is_err());
+    }
+
+    #[test]
+    fn builds_oauth_remote_entry() {
+        let entry = build_entry(
+            "http",
+            &["https://mcp.slack.com/mcp".to_string()],
+            &[],
+            &[],
+            None,
+            OAuthArgs {
+                client_id: Some("1601185624273.8899143856786".to_string()),
+                client_secret: None,
+                callback_port: Some(3118),
+                scopes: Vec::new(),
+                redirect_uri: None,
+            },
+        )
+        .unwrap();
+        assert_eq!(entry["type"], "http");
+        assert_eq!(entry["url"], "https://mcp.slack.com/mcp");
+        assert_eq!(entry["oauth"]["clientId"], "1601185624273.8899143856786");
+        assert_eq!(entry["oauth"]["callbackPort"], 3118);
+        assert!(entry["oauth"].get("clientSecret").is_none());
+    }
+
+    #[test]
+    fn builds_default_oauth_entry_for_known_server() {
+        let entry = build_entry(
+            "http",
+            &["https://mcp.slack.com/mcp".to_string()],
+            &[],
+            &[],
+            None,
+            OAuthArgs::default(),
+        )
+        .unwrap();
+        assert_eq!(entry["type"], "http");
+        assert_eq!(entry["oauth"]["clientId"], "1601185624273.8899143856786");
+        assert_eq!(entry["oauth"]["callbackPort"], 3118);
     }
 
     #[test]
@@ -474,6 +685,11 @@ mod tests {
                 env: Vec::new(),
                 header: Vec::new(),
                 cwd: None,
+                oauth_client_id: None,
+                oauth_client_secret: None,
+                callback_port: None,
+                oauth_scope: Vec::new(),
+                redirect_uri: None,
             },
         )
         .unwrap();

@@ -60,6 +60,76 @@ oxide mcp remove extra
 Options may appear before or after the server name. `oxide mcp remove` falls
 back to every scope when the server is not in the requested one.
 
+### OAuth for remote servers
+
+Remote servers that require OAuth advertise it through MCP metadata discovery.
+Add an `oauth` block (Claude Code-compatible); public clients using PKCE need no
+secret:
+
+```json
+{
+  "mcpServers": {
+    "remote": {
+      "type": "http",
+      "url": "https://example.com/mcp",
+      "oauth": { "clientId": "YOUR_CLIENT_ID", "callbackPort": 3118 }
+    }
+  }
+}
+```
+
+oxide discovers the authorization server from
+`/.well-known/oauth-protected-resource`, runs the authorization-code flow with
+PKCE (`S256`) on a loopback callback, stores the token under
+`mcp-oauth/<server>.json` in the oxide config directory (mode `0600`), and
+refreshes it automatically. Run the flow up front with:
+
+```sh
+oxide mcp auth <name>
+```
+
+`oxide mcp auth` also runs automatically on first use when a terminal is
+attached; in non-interactive runs, authorize first. `clientSecret` is optional
+and only sent for confidential clients; `scopes` and `redirectUri` override the
+discovered defaults.
+
+#### Connect to the Slack MCP server
+
+Slack's MCP server is a remote HTTP server that uses OAuth but does not support
+dynamic client registration. oxide has Slack's public PKCE client built in, so
+adding the server by URL is enough:
+
+```sh
+oxide mcp add --transport http slack https://mcp.slack.com/mcp
+oxide mcp auth slack
+```
+
+oxide fills in the `oauth` block with the client ID
+`1601185624273.8899143856786` and callback port `3118`. To use your own Slack
+app instead, pass `--oauth-client-id` (and optionally
+`--oauth-client-secret` / `--oauth-scope`) explicitly.
+
+Or add it to `.mcp.json` / `.oxide/mcp.json` directly:
+
+```json
+{
+  "mcpServers": {
+    "slack": {
+      "type": "http",
+      "url": "https://mcp.slack.com/mcp",
+      "oauth": {
+        "clientId": "1601185624273.8899143856786",
+        "callbackPort": 3118
+      }
+    }
+  }
+}
+```
+
+`oxide mcp auth slack` opens Slack's consent screen in your browser and waits on
+`http://localhost:3118/callback`. Once authorized, the Slack tools appear as
+`slack__<tool>`.
+
 ### File schema
 
 You can also edit the files directly. The schema is the same in every file.

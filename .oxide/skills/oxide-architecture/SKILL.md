@@ -50,8 +50,10 @@ description: Use when navigating or modifying the oxide internals — the agent 
   `DcpState`, `prune`, `nudge`, `apply_compress`, `compress_spec`.
 - `src/session.rs` — durable JSONL session log; also stores DCP compression
   records (`append_dcp`, `dcp_state`).
-- `src/mcp.rs` / `src/mcp_config.rs` — MCP runtime (`McpRegistry`, stdio/HTTP)
-  and the `oxide mcp` CLI that reads/writes `.oxide/mcp.json`.
+- `src/mcp.rs` / `src/mcp_config.rs` / `src/mcp_oauth.rs` — MCP runtime
+  (`McpRegistry`, stdio/HTTP), the `oxide mcp` CLI that reads/writes
+  `.oxide/mcp.json`, and the OAuth authorization-code + PKCE flow for remote
+  servers.
 - `src/tui/` — `run` entry plus `app`/`ui` for rendering and input.
 
 ## Adding a model provider

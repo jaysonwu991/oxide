@@ -8,6 +8,7 @@ mod llm;
 mod lsp;
 mod mcp;
 mod mcp_config;
+mod mcp_oauth;
 mod media;
 mod memory;
 mod permission;
@@ -80,6 +81,7 @@ struct Cli {
 }
 
 #[derive(Subcommand, Debug)]
+#[allow(clippy::large_enum_variant)]
 enum Command {
     /// Manage provider credentials
     Auth {
@@ -121,6 +123,21 @@ enum McpAction {
         /// Working directory for a stdio server
         #[arg(long)]
         cwd: Option<String>,
+        /// OAuth client ID (remote server)
+        #[arg(long)]
+        oauth_client_id: Option<String>,
+        /// OAuth client secret (remote server)
+        #[arg(long)]
+        oauth_client_secret: Option<String>,
+        /// OAuth loopback callback port (remote server)
+        #[arg(long)]
+        callback_port: Option<u16>,
+        /// OAuth scope (repeatable, remote server)
+        #[arg(long = "oauth-scope", value_name = "SCOPE")]
+        oauth_scope: Vec<String>,
+        /// OAuth redirect URI override (remote server)
+        #[arg(long)]
+        redirect_uri: Option<String>,
         /// Where to store the server: project (default) or global
         #[arg(short, long)]
         scope: Option<String>,
@@ -140,6 +157,14 @@ enum McpAction {
         /// Server name
         name: String,
         /// Where to remove from: project (default) or global
+        #[arg(short, long)]
+        scope: Option<String>,
+    },
+    /// Authorize an OAuth-protected remote server
+    Auth {
+        /// Server name
+        name: String,
+        /// Where to look for the server: project (default) or global
         #[arg(short, long)]
         scope: Option<String>,
     },
@@ -186,6 +211,11 @@ async fn main() -> Result<()> {
                         env,
                         header,
                         cwd,
+                        oauth_client_id,
+                        oauth_client_secret,
+                        callback_port,
+                        oauth_scope,
+                        redirect_uri,
                         scope,
                     } => mcp_config::add(
                         &current_dir,
@@ -197,6 +227,11 @@ async fn main() -> Result<()> {
                             env,
                             header,
                             cwd,
+                            oauth_client_id,
+                            oauth_client_secret,
+                            callback_port,
+                            oauth_scope,
+                            redirect_uri,
                         },
                     ),
                     McpAction::AddJson { name, json, scope } => {
@@ -204,6 +239,9 @@ async fn main() -> Result<()> {
                     }
                     McpAction::Remove { name, scope } => {
                         mcp_config::remove(&current_dir, scope, name)
+                    }
+                    McpAction::Auth { name, scope } => {
+                        mcp_config::auth(&current_dir, scope, name).await
                     }
                 }
             }
