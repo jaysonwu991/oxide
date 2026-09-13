@@ -9,7 +9,8 @@ use std::sync::Arc;
 use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::time::{timeout, Duration};
 
-const MAX_OUTPUT: usize = 30_000;
+const MAX_OUTPUT: usize = 8_000;
+const DEFAULT_READ_LINES: usize = 400;
 
 /// The result of running a tool: always a text payload, optionally plus media
 /// parts (images/PDFs) that the model should see as content. `terminate` lets a
@@ -71,7 +72,7 @@ pub fn specs(mcp: &McpRegistry) -> Vec<ToolSpec> {
                 "properties": {
                     "path": { "type": "string", "description": "File path relative to the project root" },
                     "offset": { "type": "integer", "description": "1-based line number to start from (text only)" },
-                    "limit": { "type": "integer", "description": "Maximum number of lines to return (text only)" }
+                    "limit": { "type": "integer", "description": "Maximum number of lines to return (text only, default 400)" }
                 },
                 "required": ["path"]
             }),
@@ -247,11 +248,15 @@ fn read_file(cwd: &Path, args: &Value) -> Result<ToolOutput> {
         .and_then(Value::as_u64)
         .unwrap_or(1)
         .max(1) as usize;
-    let limit = args.get("limit").and_then(Value::as_u64).unwrap_or(2000) as usize;
+    let limit = args
+        .get("limit")
+        .and_then(Value::as_u64)
+        .unwrap_or(DEFAULT_READ_LINES as u64) as usize;
 
     let content =
         std::fs::read_to_string(&full).with_context(|| format!("reading {}", full.display()))?;
 
+    let total = content.lines().count();
     let numbered: Vec<String> = content
         .lines()
         .enumerate()
@@ -260,7 +265,16 @@ fn read_file(cwd: &Path, args: &Value) -> Result<ToolOutput> {
         .map(|(i, line)| format!("{:>6}\t{line}", i + 1))
         .collect();
 
-    Ok(ToolOutput::text(numbered.join("\n")))
+    let mut out = numbered.join("\n");
+    let read_to = (offset - 1) + numbered.len();
+    if read_to < total {
+        out.push_str(&format!(
+            "\n... [{} more lines; use offset={}]",
+            total - read_to,
+            read_to + 1
+        ));
+    }
+    Ok(ToolOutput::text(out))
 }
 
 fn write_file(cwd: &Path, args: &Value) -> Result<String> {
@@ -307,7 +321,7 @@ fn list_dir(cwd: &Path, args: &Value) -> Result<String> {
     Ok(entries.join("\n"))
 }
 
-const MAX_MATCHES: usize = 500;
+const MAX_MATCHES: usize = 200;
 
 fn glob(cwd: &Path, args: &Value) -> Result<String> {
     let pattern = args

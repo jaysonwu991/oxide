@@ -1,6 +1,6 @@
 use crate::config::{Mode, Reasoning};
 use crate::tui::app::{App, ChatItem, ConnectStep};
-use ratatui::layout::{Alignment, Constraint, Direction, Layout, Rect};
+use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{
@@ -8,9 +8,17 @@ use ratatui::widgets::{
 };
 use ratatui::Frame;
 
-const MAX_INPUT_ROWS: usize = 8;
+const MIN_INPUT_ROWS: usize = 3;
+const MAX_INPUT_ROWS: usize = 12;
 const MAX_MODEL_ROWS: usize = 12;
 const MAX_SUGGESTION_ROWS: usize = 8;
+
+const FILE_TOOLS: [&str; 3] = ["read_file", "write_file", "patch"];
+const COLLAPSE_MIN_LINES: usize = 4;
+
+fn is_file_tool(name: &str) -> bool {
+    FILE_TOOLS.contains(&name)
+}
 
 /// A rounded panel with a colored border and title, shared by the input and
 /// popup surfaces. An empty title leaves the top border unbroken.
@@ -37,6 +45,7 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         .constraints([
             Constraint::Length(1),
             Constraint::Min(3),
+            Constraint::Length(1),
             Constraint::Length(input_rows + 2),
             Constraint::Length(2),
         ])
@@ -44,8 +53,9 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
 
     draw_header(frame, app, chunks[0]);
     draw_messages(frame, app, chunks[1]);
-    draw_input(frame, app, chunks[2]);
-    draw_status(frame, app, chunks[3]);
+    draw_cwd(frame, app, chunks[2]);
+    draw_input(frame, app, chunks[3]);
+    draw_status(frame, app, chunks[4]);
 
     if app.connect.is_some() {
         draw_connect(frame, app);
@@ -240,10 +250,6 @@ fn draw_suggestions(frame: &mut Frame, app: &App, area: Rect) {
 }
 
 fn draw_header(frame: &mut Frame, app: &App, area: Rect) {
-    let cwd = format!("{} ", app.cwd);
-    let cwd_width = cwd.chars().count() as u16;
-    let cols = Layout::horizontal([Constraint::Min(0), Constraint::Length(cwd_width)]).split(area);
-
     let title = Line::from(vec![
         Span::styled(
             " oxide ",
@@ -268,14 +274,34 @@ fn draw_header(frame: &mut Frame, app: &App, area: Rect) {
             reasoning_style(app.reasoning),
         ),
     ]);
-    frame.render_widget(Paragraph::new(title), cols[0]);
+    frame.render_widget(Paragraph::new(title), area);
+}
+
+fn draw_cwd(frame: &mut Frame, app: &App, area: Rect) {
     frame.render_widget(
-        Paragraph::new(
-            Line::from(Span::styled(cwd, Style::default().fg(Color::DarkGray)))
-                .alignment(Alignment::Right),
-        ),
-        cols[1],
+        Paragraph::new(Line::from(Span::styled(
+            format!(" {}", display_path(&app.cwd)),
+            Style::default().fg(Color::DarkGray),
+        ))),
+        area,
     );
+}
+
+/// Abbreviate a path under the user's home directory with a leading `~`.
+fn display_path(path: &str) -> String {
+    if let Some(home) = dirs::home_dir() {
+        let home = home.to_string_lossy();
+        if path == home {
+            return "~".to_string();
+        }
+        if let Some(rest) = path
+            .strip_prefix(home.as_ref())
+            .and_then(|r| r.strip_prefix('/'))
+        {
+            return format!("~/{rest}");
+        }
+    }
+    path.to_string()
 }
 
 fn mode_color(mode: Mode) -> Color {
@@ -378,12 +404,12 @@ fn sync_lines(app: &mut App, width: usize) {
         let offset = app.lines.len();
         app.line_offsets.push(offset);
         app.signatures.push(signature);
-        render_item(&app.items[index], width, &mut app.lines);
+        render_item(&app.items[index], width, app.expand_tools, &mut app.lines);
         app.lines.push(Line::from(""));
     }
 }
 
-fn render_item(item: &ChatItem, width: usize, lines: &mut Vec<Line<'static>>) {
+fn render_item(item: &ChatItem, width: usize, expand_tools: bool, lines: &mut Vec<Line<'static>>) {
     let bold = Modifier::BOLD;
     match item {
         ChatItem::User(text) => {
@@ -410,7 +436,10 @@ fn render_item(item: &ChatItem, width: usize, lines: &mut Vec<Line<'static>>) {
                     name.clone(),
                     Style::default().fg(Color::Yellow).add_modifier(bold),
                 ),
-                Span::styled(format!(" {args}"), Style::default().fg(Color::DarkGray)),
+                Span::styled(
+                    format!(" {}", tool_arg_summary(name, args)),
+                    Style::default().fg(Color::DarkGray),
+                ),
             ]));
         }
         ChatItem::ToolProgress { name, output } => {
@@ -418,14 +447,14 @@ fn render_item(item: &ChatItem, width: usize, lines: &mut Vec<Line<'static>>) {
                 Span::styled("⋯ ", Style::default().fg(Color::DarkGray)),
                 Span::styled(name.clone(), Style::default().fg(Color::DarkGray)),
             ]));
-            push_wrapped(lines, output, width, Style::default().fg(Color::DarkGray));
+            push_tool_body(lines, name, output, width, expand_tools);
         }
         ChatItem::ToolResult { name, output } => {
             lines.push(Line::from(vec![
                 Span::styled("↳ ", Style::default().fg(Color::DarkGray)),
                 Span::styled(name.clone(), Style::default().fg(Color::DarkGray)),
             ]));
-            push_wrapped(lines, output, width, Style::default().fg(Color::DarkGray));
+            push_tool_body(lines, name, output, width, expand_tools);
         }
         ChatItem::Error(text) => {
             push_wrapped(
@@ -493,13 +522,16 @@ fn draw_input(frame: &mut Frame, app: &App, area: Rect) {
         let last = lines.last().map(|line| line.chars().count()).unwrap_or(0);
         let x = text_area.x + last as u16;
         let x = x.min(text_area.x + text_area.width.saturating_sub(1));
-        let y = text_area.y + input_rows(&app.input, width) as u16 - 1;
+        let cursor_line = lines.len().clamp(1, MAX_INPUT_ROWS) - 1;
+        let y = text_area.y + cursor_line as u16;
         frame.set_cursor_position((x, y));
     }
 }
 
 fn input_rows(input: &str, width: usize) -> usize {
-    wrap(input, width).len().clamp(1, MAX_INPUT_ROWS)
+    wrap(input, width)
+        .len()
+        .clamp(MIN_INPUT_ROWS, MAX_INPUT_ROWS)
 }
 
 fn input_scroll(input: &str, width: usize) -> u16 {
@@ -528,7 +560,7 @@ fn draw_status(frame: &mut Frame, app: &App, area: Rect) {
     } else {
         (
             "Enter send · Shift+Tab mode · Ctrl+R reasoning".to_string(),
-            "/ commands · Ctrl+C quit · ↑/↓ scroll".to_string(),
+            "/ commands · Ctrl+O tools · Ctrl+C quit · ↑/↓ scroll".to_string(),
         )
     };
     let dim = Style::default().fg(Color::DarkGray);
@@ -547,6 +579,57 @@ fn draw_status(frame: &mut Frame, app: &App, area: Rect) {
         Line::from(Span::styled(format!("{pad}{secondary}"), dim)),
     ];
     frame.render_widget(Paragraph::new(lines), area);
+}
+
+/// Summarize a tool call's arguments for display. File tools otherwise dump
+/// their entire payload (e.g. `write_file` carries the full file content), so
+/// show just the path and a compact size hint instead.
+fn tool_arg_summary(name: &str, args: &str) -> String {
+    if !is_file_tool(name) {
+        return args.to_string();
+    }
+    let Ok(value) = serde_json::from_str::<serde_json::Value>(args) else {
+        return args.to_string();
+    };
+    let path = value.get("path").and_then(|v| v.as_str()).unwrap_or("");
+    let summary = match name {
+        "write_file" => value
+            .get("content")
+            .and_then(|v| v.as_str())
+            .map(|content| format!("{path} · {} lines", content.lines().count())),
+        "read_file" => value
+            .get("offset")
+            .and_then(|v| v.as_u64())
+            .map(|offset| format!("{path} · from line {offset}")),
+        _ => None,
+    };
+    let summary = summary.unwrap_or_else(|| path.to_string());
+    if summary.is_empty() {
+        args.to_string()
+    } else {
+        summary
+    }
+}
+
+/// Render a tool's output, collapsing long file reads/writes to a single
+/// summary line unless the user expands them with Ctrl+O.
+fn push_tool_body(
+    lines: &mut Vec<Line<'static>>,
+    name: &str,
+    output: &str,
+    width: usize,
+    expand_tools: bool,
+) {
+    let dim = Style::default().fg(Color::DarkGray);
+    let line_count = output.lines().count();
+    if is_file_tool(name) && !expand_tools && line_count >= COLLAPSE_MIN_LINES {
+        lines.push(Line::from(Span::styled(
+            format!("  {line_count} lines collapsed · Ctrl+O to expand"),
+            dim,
+        )));
+        return;
+    }
+    push_wrapped(lines, output, width, dim);
 }
 
 fn push_wrapped<'a>(lines: &mut Vec<Line<'a>>, text: &str, width: usize, style: Style) {
@@ -596,19 +679,44 @@ mod tests {
 
     #[test]
     fn input_rows_grows_and_clamps() {
-        assert_eq!(input_rows("", 10), 1);
-        assert_eq!(input_rows("hello", 10), 1);
-        assert_eq!(input_rows("hello\nworld", 10), 2);
-        assert_eq!(input_rows(&"a".repeat(100), 10), MAX_INPUT_ROWS);
+        assert_eq!(input_rows("", 10), MIN_INPUT_ROWS);
+        assert_eq!(input_rows("hello", 10), MIN_INPUT_ROWS);
+        assert_eq!(input_rows("hello\nworld", 10), MIN_INPUT_ROWS);
+        assert_eq!(input_rows(&"a".repeat(200), 10), MAX_INPUT_ROWS);
     }
 
     #[test]
     fn input_scroll_follows_tail() {
         assert_eq!(input_scroll("hi", 10), 0);
         assert_eq!(
-            input_scroll(&"a".repeat(100), 10),
-            (10 - MAX_INPUT_ROWS) as u16
+            input_scroll(&"a".repeat(200), 10),
+            (20 - MAX_INPUT_ROWS) as u16
         );
+    }
+
+    #[test]
+    fn file_tool_args_are_abbreviated() {
+        let write = r#"{"path":"src/main.rs","content":"a\nb\nc"}"#;
+        assert_eq!(
+            tool_arg_summary("write_file", write),
+            "src/main.rs · 3 lines"
+        );
+        let read = r#"{"path":"src/main.rs","offset":10}"#;
+        assert_eq!(
+            tool_arg_summary("read_file", read),
+            "src/main.rs · from line 10"
+        );
+        assert_eq!(tool_arg_summary("bash", "ls -la"), "ls -la");
+    }
+
+    #[test]
+    fn display_path_abbreviates_home() {
+        if let Some(home) = dirs::home_dir() {
+            let home = home.to_string_lossy();
+            assert_eq!(display_path(&home), "~");
+            assert_eq!(display_path(&format!("{home}/projects/x")), "~/projects/x");
+        }
+        assert_eq!(display_path("/tmp/other"), "/tmp/other");
     }
 
     #[test]

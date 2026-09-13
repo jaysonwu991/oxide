@@ -281,6 +281,14 @@ fn handle_key(
                 config.effective_reasoning().label()
             );
         }
+        KeyCode::Char('o') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+            app.toggle_tool_output();
+            app.status = if app.expand_tools {
+                "tool output expanded".to_string()
+            } else {
+                "tool output collapsed".to_string()
+            };
+        }
         KeyCode::Enter => {
             if app.busy {
                 let raw = app.input.trim().to_string();

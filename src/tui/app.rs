@@ -154,6 +154,7 @@ pub struct App {
     pub mode: Mode,
     pub reasoning: Reasoning,
     pub steering: Steering,
+    pub expand_tools: bool,
     pub lines: Vec<Line<'static>>,
     pub line_offsets: Vec<usize>,
     pub signatures: Vec<u64>,
@@ -184,6 +185,7 @@ impl App {
             mode,
             reasoning,
             steering: Steering::new(),
+            expand_tools: false,
             lines: Vec::new(),
             line_offsets: Vec::new(),
             signatures: Vec::new(),
@@ -199,5 +201,14 @@ impl App {
         if let Some(ChatItem::Assistant(buffer)) = self.items.last_mut() {
             buffer.push_str(&delta);
         }
+    }
+
+    /// Toggle whether file-tool output is shown in full or collapsed, and
+    /// invalidate the rendered-line cache so the change takes effect.
+    pub fn toggle_tool_output(&mut self) {
+        self.expand_tools = !self.expand_tools;
+        self.lines.clear();
+        self.line_offsets.clear();
+        self.signatures.clear();
     }
 }
