@@ -271,7 +271,8 @@ async fn run_loop(
         };
 
         let tool_calls = turn.tool_calls.clone();
-        let assistant = Message::assistant(turn.content, tool_calls.clone());
+        let assistant = Message::assistant(turn.content, tool_calls.clone())
+            .with_thinking(turn.thinking.clone());
         record(&runtime.session, depth, &assistant);
         messages.push(assistant);
 

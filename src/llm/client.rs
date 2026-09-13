@@ -54,9 +54,17 @@ impl LlmClient {
         F: FnMut(String),
     {
         let url = format!("{}/chat/completions", self.config.base_url);
+        let messages = messages
+            .iter()
+            .cloned()
+            .map(|mut message| {
+                message.thinking = None;
+                message
+            })
+            .collect();
         let request = ChatRequest {
             model: self.config.model.clone(),
-            messages: messages.to_vec(),
+            messages,
             stream: true,
             max_tokens: self.config.max_tokens,
             tools: if tools.is_empty() {
@@ -64,6 +72,11 @@ impl LlmClient {
             } else {
                 Some(tools.to_vec())
             },
+            reasoning_effort: self
+                .config
+                .effective_reasoning()
+                .effort()
+                .map(str::to_string),
         };
 
         let response = self

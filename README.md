@@ -29,6 +29,13 @@ box, with Claude Code configuration support for compatibility.
 - Agent-harness niceties: read-only tool calls in a batch run in parallel while
   preserving model order, `bash` output streams into the UI as it arrives, and
   typing while the agent works steers it between steps.
+- Agent modes: `build` (default), `plan` (read-only planning), and `auto-edit`
+  (auto-approve file edits), cycled in the TUI with Shift+Tab or set with
+  `--mode` / `OXIDE_MODE`.
+- Reasoning effort: `auto` (default), `off`, `low`, `medium`, or `high`, cycled
+  in the TUI with Ctrl+R or set with `--reasoning` / `OXIDE_REASONING`. `auto`
+  enables reasoning for models known to support it and maps to OpenAI
+  `reasoning_effort` and Anthropic extended thinking.
 - Incremental TUI rendering: only conversation items that changed since the last
   frame are re-wrapped and re-styled.
 
@@ -47,6 +54,8 @@ so check each project's documentation for the current details.
 | Interfaces | Terminal TUI, `-p` print mode | Terminal, desktop, IDE, web | Terminal, IDE, desktop, web |
 | Project config | `.oxide/` + `AGENTS.md` (also reads `.claude/`) | `opencode.json` + `AGENTS.md` | `CLAUDE.md` + `.claude/` |
 | Subagents | `--agent`, `task`, command routing | Agents | Subagents, background agents |
+| Permission modes | `build` / `plan` / `auto-edit` (Shift+Tab, `--mode`) | Build / plan agents | default / accept-edits / plan / bypass |
+| Reasoning effort | `auto` / `off` / `low` / `medium` / `high` (Ctrl+R, `--reasoning`) | Model-dependent | Extended thinking |
 | Slash commands | `.oxide/commands` with `agent`/`subtask` routing | Commands | Commands |
 | Skills | `SKILL.md` | Agent Skills | Skills |
 | MCP servers | stdio + HTTP + OAuth, managed with `oxide mcp` | MCP servers | MCP servers |
@@ -162,6 +171,8 @@ oxide [OPTIONS] [PROMPT] [COMMAND]
 | `-m, --model <MODEL>` | Model to use (overrides config). |
 | `--provider <PROVIDER>` | Provider name (overrides config). |
 | `--agent <AGENT>` | Agent to run, from `.oxide/agents` (or `.claude/agents`). |
+| `--mode <MODE>` | Permission mode: `build` (default), `plan` (read-only), or `auto-edit`. |
+| `--reasoning <LEVEL>` | Reasoning effort: `auto` (default), `off`, `low`, `medium`, or `high`. |
 | `-p, --print` | Print the response and exit instead of launching the TUI. |
 | `-c, --continue` | Resume the most recent session for this project. |
 | `--resume <ID>` | Resume a specific session by id. |
@@ -216,7 +227,9 @@ oxide reads `config.json` from the platform config directory:
   "api_key": "",
   "system_prompt": "You are Oxide...",
   "max_tokens": 8192,
-  "auto_approve": true
+  "auto_approve": true,
+  "mode": "build",
+  "reasoning": "auto"
 }
 ```
 
@@ -224,6 +237,19 @@ oxide reads `config.json` from the platform config directory:
 environment. `auto_approve` controls whether tool calls run without prompting;
 when `false`, permission rules that resolve to `ask` are denied in
 non-interactive mode.
+
+`mode` selects the agent's permission mode. `build` follows the active agent's
+permission rules; `plan` is read-only (workspace mutations and unknown MCP tools
+are denied) and instructs the model to produce an implementation plan; `auto-edit`
+auto-approves `write_file` and `patch` while other rules still apply. In the TUI
+press Shift+Tab to cycle modes; `--mode` and `OXIDE_MODE` set the starting mode.
+
+`reasoning` controls how much reasoning effort oxide requests. `auto` (the
+default) turns reasoning on for models known to support it (OpenAI o-series and
+`gpt-5`, Anthropic Claude 3.7/4) and off otherwise; `off`, `low`, `medium`, and
+`high` force a level. It maps to OpenAI's `reasoning_effort` and Anthropic's
+extended-thinking budget (kept below `max_tokens`). In the TUI press Ctrl+R to
+cycle levels; `--reasoning` and `OXIDE_REASONING` set the starting level.
 
 ### Environment variables
 
@@ -233,6 +259,8 @@ non-interactive mode.
 | `OXIDE_MODEL` | Model name. |
 | `OXIDE_BASE_URL` | API base URL. |
 | `OXIDE_API_KEY` | API key. |
+| `OXIDE_MODE` | Permission mode (`build`, `plan`, `auto-edit`). |
+| `OXIDE_REASONING` | Reasoning effort (`auto`, `off`, `low`, `medium`, `high`). |
 | `OPENAI_API_KEY` / `OPENAI_BASE_URL` | OpenAI credentials. |
 | `DEEPSEEK_API_KEY` / `DEEPSEEK_BASE_URL` | DeepSeek credentials. |
 | `ANTHROPIC_API_KEY` / `ANTHROPIC_BASE_URL` | Anthropic credentials. |

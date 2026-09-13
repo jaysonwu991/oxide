@@ -1,4 +1,5 @@
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Message {
@@ -9,6 +10,10 @@ pub struct Message {
     pub tool_calls: Option<Vec<ToolCall>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub tool_call_id: Option<String>,
+    /// Anthropic extended-thinking blocks captured from the assistant turn so
+    /// they can be replayed with tool results. Never sent to OpenAI.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub thinking: Option<Vec<Value>>,
 }
 
 /// Message content is either a plain string (the common case) or an ordered
@@ -91,6 +96,7 @@ impl Message {
             content: Some(MessageContent::Text(content.into())),
             tool_calls: None,
             tool_call_id: None,
+            thinking: None,
         }
     }
 
@@ -100,6 +106,7 @@ impl Message {
             content: Some(MessageContent::Text(content.into())),
             tool_calls: None,
             tool_call_id: None,
+            thinking: None,
         }
     }
 
@@ -110,6 +117,7 @@ impl Message {
             content: Some(MessageContent::from_text_and_parts(text.into(), parts)),
             tool_calls: None,
             tool_call_id: None,
+            thinking: None,
         }
     }
 
@@ -128,6 +136,7 @@ impl Message {
                 Some(tool_calls)
             },
             tool_call_id: None,
+            thinking: None,
         }
     }
 
@@ -137,6 +146,7 @@ impl Message {
             content: Some(MessageContent::Text(content.into())),
             tool_calls: None,
             tool_call_id: Some(tool_call_id.into()),
+            thinking: None,
         }
     }
 
@@ -151,12 +161,21 @@ impl Message {
             content: Some(MessageContent::from_text_and_parts(text.into(), parts)),
             tool_calls: None,
             tool_call_id: Some(tool_call_id.into()),
+            thinking: None,
         }
     }
 
     /// The message text with media parts rendered as markers.
     pub fn display(&self) -> Option<String> {
         self.content.as_ref().map(MessageContent::display)
+    }
+
+    /// Attaches Anthropic thinking blocks when the turn produced any.
+    pub fn with_thinking(mut self, thinking: Vec<Value>) -> Self {
+        if !thinking.is_empty() {
+            self.thinking = Some(thinking);
+        }
+        self
     }
 }
 
@@ -196,12 +215,15 @@ pub struct ChatRequest {
     pub max_tokens: u32,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub tools: Option<Vec<ToolSpec>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reasoning_effort: Option<String>,
 }
 
 #[derive(Debug, Default)]
 pub struct AssistantTurn {
     pub content: String,
     pub tool_calls: Vec<ToolCall>,
+    pub thinking: Vec<Value>,
 }
 
 #[derive(Debug, Deserialize)]

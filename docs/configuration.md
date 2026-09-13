@@ -2,7 +2,7 @@
 
 This guide covers day-to-day configuration: where files live, and how to add or
 remove MCP servers, subagents, slash commands, skills, plugins, permissions,
-memory, and context pruning.
+modes, reasoning, memory, and context pruning.
 
 ## Scopes and precedence
 
@@ -302,6 +302,45 @@ permission:
   wildcards. The last matching rule wins.
 - `auto_approve: true` in `config.json` skips prompts for `ask` rules. When
   `false`, `ask` is denied in non-interactive (`-p`) mode.
+- The active [mode](#modes) is applied after the rules: `plan` denies workspace
+  mutations, `auto-edit` approves file edits.
+
+## Modes
+
+The agent runs in one of three permission modes, modelled on Claude Code:
+
+| Mode | Behavior |
+| --- | --- |
+| `build` (default) | Follows the active agent's permission rules. |
+| `plan` | Read-only: `write_file`, `patch`, `bash`, and unknown MCP tools are denied, and the model is instructed to produce an implementation plan. |
+| `auto-edit` | Auto-approves `write_file` and `patch`; other rules still apply. |
+
+Set the starting mode with `--mode build|plan|auto-edit`, the `OXIDE_MODE`
+environment variable, or `"mode": "..."` in `config.json`. In the TUI, press
+Shift+Tab to cycle build → auto-edit → plan; the current mode is shown in the
+header. Plan mode keeps read-only tools available and is useful for review and
+planning before switching back to build.
+
+## Reasoning
+
+Reasoning effort controls how much internal reasoning oxide asks the model to
+spend before answering:
+
+| Level | Behavior |
+| --- | --- |
+| `auto` (default) | Enables reasoning for models known to support it (OpenAI o-series and `gpt-5`, Anthropic Claude 3.7/4) and turns it off otherwise. Resolves to `medium` when supported. |
+| `off` | Never request reasoning. |
+| `low` / `medium` / `high` | Force that level of effort. |
+
+The level maps to OpenAI's `reasoning_effort` parameter and to Anthropic's
+extended-thinking `budget_tokens` (scaled by level and kept below `max_tokens`).
+Thinking blocks returned by Anthropic are replayed on later turns so multi-step
+tool use keeps its reasoning context.
+
+Set the starting level with `--reasoning auto|off|low|medium|high`, the
+`OXIDE_REASONING` environment variable, or `"reasoning": "..."` in `config.json`.
+In the TUI, press Ctrl+R to cycle auto → off → low → medium → high; the current
+level is shown in the header.
 
 ## Memory and instructions
 

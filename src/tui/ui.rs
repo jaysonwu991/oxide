@@ -1,3 +1,4 @@
+use crate::config::{Mode, Reasoning};
 use crate::tui::app::{App, ChatItem};
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
@@ -33,10 +34,43 @@ fn draw_header(frame: &mut Frame, app: &App, area: Rect) {
         ),
         Span::raw("  "),
         Span::styled(app.model.clone(), Style::default().fg(Color::Cyan)),
+        Span::raw("  "),
+        Span::styled(format!(" {} ", app.mode.label()), mode_style(app.mode)),
+        Span::raw(" "),
+        Span::styled(
+            format!(" {} ", app.reasoning.label()),
+            reasoning_style(app.reasoning),
+        ),
         Span::styled("  ·  ", Style::default().fg(Color::DarkGray)),
         Span::styled(app.cwd.clone(), Style::default().fg(Color::DarkGray)),
     ]);
     frame.render_widget(Paragraph::new(title), area);
+}
+
+fn mode_style(mode: Mode) -> Style {
+    let background = match mode {
+        Mode::Build => Color::DarkGray,
+        Mode::AutoEdit => Color::Yellow,
+        Mode::Plan => Color::Magenta,
+    };
+    Style::default()
+        .fg(Color::Black)
+        .bg(background)
+        .add_modifier(Modifier::BOLD)
+}
+
+fn reasoning_style(reasoning: Reasoning) -> Style {
+    let background = match reasoning {
+        Reasoning::Auto => Color::Green,
+        Reasoning::Off => Color::DarkGray,
+        Reasoning::Low => Color::Cyan,
+        Reasoning::Medium => Color::Blue,
+        Reasoning::High => Color::Magenta,
+    };
+    Style::default()
+        .fg(Color::Black)
+        .bg(background)
+        .add_modifier(Modifier::BOLD)
 }
 
 fn draw_messages(frame: &mut Frame, app: &mut App, area: Rect) {
@@ -206,7 +240,7 @@ fn draw_status(frame: &mut Frame, app: &App, area: Rect) {
     let hint = if app.busy {
         "working…  Esc to quit"
     } else {
-        "Enter send · @image · Ctrl+V paste · ↑/↓ scroll · Ctrl+C quit"
+        "Enter send · Shift+Tab mode · Ctrl+R reasoning · @image · ↑/↓ scroll · Ctrl+C quit"
     };
     let line = Line::from(vec![
         Span::styled(

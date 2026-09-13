@@ -59,6 +59,14 @@ struct Cli {
     #[arg(long)]
     agent: Option<String>,
 
+    /// Permission mode: build (default), plan (read-only), or auto-edit
+    #[arg(long, value_name = "MODE")]
+    mode: Option<String>,
+
+    /// Reasoning effort: auto (default), off, low, medium, or high
+    #[arg(long, value_name = "LEVEL")]
+    reasoning: Option<String>,
+
     /// Print the response and exit instead of launching the TUI
     #[arg(short = 'p', long)]
     print: bool,
@@ -251,7 +259,14 @@ async fn main() -> Result<()> {
         Some(path) => path.clone(),
         None => std::env::current_dir().context("resolving current directory")?,
     };
-    let config = Config::load(&cwd, cli.model, cli.provider, cli.agent)?;
+    let config = Config::load(
+        &cwd,
+        cli.model,
+        cli.provider,
+        cli.agent,
+        cli.mode,
+        cli.reasoning,
+    )?;
     let session = if cli.continue_session || cli.resume.is_some() {
         Some(match &cli.resume {
             Some(id) => SessionLog::open_id(&cwd, id)?,

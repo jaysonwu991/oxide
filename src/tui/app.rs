@@ -1,4 +1,5 @@
 use crate::agent::{ApprovalRequest, Steering};
+use crate::config::{Mode, Reasoning};
 use crate::llm::{ContentPart, Message};
 use ratatui::text::Line;
 use std::collections::hash_map::DefaultHasher;
@@ -69,6 +70,8 @@ pub struct App {
     pub cwd: String,
     pub assistant_open: bool,
     pub pending_approval: Option<ApprovalRequest>,
+    pub mode: Mode,
+    pub reasoning: Reasoning,
     pub steering: Steering,
     pub lines: Vec<Line<'static>>,
     pub line_offsets: Vec<usize>,
@@ -77,7 +80,7 @@ pub struct App {
 }
 
 impl App {
-    pub fn new(model: String, cwd: String) -> Self {
+    pub fn new(model: String, cwd: String, mode: Mode, reasoning: Reasoning) -> Self {
         Self {
             input: String::new(),
             items: Vec::new(),
@@ -92,6 +95,8 @@ impl App {
             cwd,
             assistant_open: false,
             pending_approval: None,
+            mode,
+            reasoning,
             steering: Steering::new(),
             lines: Vec::new(),
             line_offsets: Vec::new(),
