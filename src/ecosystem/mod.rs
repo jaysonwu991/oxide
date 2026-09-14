@@ -16,10 +16,18 @@ pub struct Ecosystem {
     pub rules: Vec<Rule>,
     pub memory: Vec<Rule>,
     pub commands: Vec<CommandDef>,
+    pub prompt_templates: Vec<PromptTemplate>,
     pub agents: Vec<AgentDef>,
     pub skills: Vec<Skill>,
     pub mcp: Vec<McpServer>,
     pub plugins: Vec<PathBuf>,
+    /// Context files that were loaded (`AGENTS.md`/`CLAUDE.md`/overrides),
+    /// kept so the TUI can show them in the startup header.
+    pub context_files: Vec<PathBuf>,
+    /// Replaces the default system prompt (`.oxide/SYSTEM.md`).
+    pub system_prompt: Option<String>,
+    /// Appended to the default system prompt (`.oxide/APPEND_SYSTEM.md`).
+    pub append_system_prompt: Vec<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -35,6 +43,25 @@ pub struct CommandDef {
     pub template: String,
     pub agent: Option<String>,
     pub subtask: bool,
+}
+
+/// A reusable prompt snippet invoked as `/<name>`, loaded from `prompts/*.md`
+/// (Pi's prompt templates). Frontmatter supplies `description` and an optional
+/// `argument-hint` shown in autocomplete.
+#[derive(Debug, Clone)]
+pub struct PromptTemplate {
+    pub name: String,
+    pub description: Option<String>,
+    pub argument_hint: Option<String>,
+    pub body: String,
+}
+
+impl PromptTemplate {
+    /// Expands positional arguments, `$@`/`$ARGUMENTS`, `${N:-default}` and
+    /// `${@:N}`/`${@:N:L}` slices, matching Pi's prompt-template semantics.
+    pub fn expand(&self, arguments: &str) -> String {
+        crate::ecosystem::expand_prompt_template(&self.body, arguments)
+    }
 }
 
 impl CommandDef {
@@ -116,9 +143,10 @@ pub struct McpOAuth {
 impl Ecosystem {
     pub fn summary(&self) -> String {
         format!(
-            "{} agents, {} commands, {} skills, {} MCP servers, {} rules, {} memory files, {} plugins",
+            "{} agents, {} commands, {} prompts, {} skills, {} MCP servers, {} rules, {} memory files, {} plugins",
             self.agents.len(),
             self.commands.len(),
+            self.prompt_templates.len(),
             self.skills.len(),
             self.mcp.len(),
             self.rules.len(),
@@ -135,46 +163,136 @@ impl Ecosystem {
         self.commands.iter().find(|command| command.name == name)
     }
 
+    pub fn prompt_template(&self, name: &str) -> Option<&PromptTemplate> {
+        self.prompt_templates
+            .iter()
+            .find(|template| template.name == name)
+    }
+
     /// Resolves a leading `/command` into its expanded prompt and the agent
     /// routing (`agent`, `subtask`) declared in the command's frontmatter.
+    /// Prompt templates are expanded as plain prompts (no routing).
     pub fn resolve_command(&self, input: &str) -> Option<ResolvedCommand> {
         let trimmed = input.trim();
         let rest = trimmed.strip_prefix('/')?;
         let mut parts = rest.splitn(2, char::is_whitespace);
         let name = parts.next()?;
         let arguments = parts.next().unwrap_or("").trim();
-        let command = self.command(name)?;
+        if let Some(command) = self.command(name) {
+            return Some(ResolvedCommand {
+                prompt: command.expand(arguments),
+                agent: command.agent.clone(),
+                subtask: command.subtask,
+            });
+        }
+        let template = self.prompt_template(name)?;
         Some(ResolvedCommand {
-            prompt: command.expand(arguments),
-            agent: command.agent.clone(),
-            subtask: command.subtask,
+            prompt: template.expand(arguments),
+            agent: None,
+            subtask: false,
         })
     }
 }
 
 /// Loads the ecosystem visible from `cwd`, merging global scope first and
 /// project scope second (project wins). Within a scope the Oxide layout is
-/// loaded after the Claude Code layout so it takes precedence.
+/// loaded after the Claude Code layout so it takes precedence. Context files
+/// (`AGENTS.md`/`CLAUDE.md`, with `AGENTS.override.md` winning per directory)
+/// are collected by walking from the filesystem root down to `cwd`, matching
+/// Pi's layering.
 pub fn load(cwd: &Path) -> Ecosystem {
+    load_with(cwd, true)
+}
+
+/// Like [`load`], but `load_context` controls whether `AGENTS.md`/
+/// `CLAUDE.md` context files are collected (the `--no-context-files` flag).
+pub fn load_with(cwd: &Path, load_context: bool) -> Ecosystem {
+    load_opts(
+        cwd,
+        LoadOptions {
+            context_files: load_context,
+            project_resources: true,
+        },
+    )
+}
+
+/// Which scopes to load. Global resources are always trusted; project resources
+/// are gated behind the project trust decision.
+#[derive(Debug, Clone, Copy)]
+pub struct LoadOptions {
+    pub context_files: bool,
+    pub project_resources: bool,
+}
+
+impl Default for LoadOptions {
+    fn default() -> Self {
+        Self {
+            context_files: true,
+            project_resources: true,
+        }
+    }
+}
+
+/// Loads the ecosystem honoring explicit scope options.
+pub fn load_opts(cwd: &Path, options: LoadOptions) -> Ecosystem {
     let mut ecosystem = Ecosystem::default();
+
+    if options.context_files {
+        load_context_files(&mut ecosystem, cwd);
+    }
 
     if let Some(home) = dirs::home_dir() {
         load_claude_dir(&mut ecosystem, &home.join(".claude"));
         load_mcp(&mut ecosystem, &home.join(".claude.json"));
         load_oxide_dir(&mut ecosystem, &home.join(".oxide"));
     }
+    if let Some(config) = dirs::config_dir() {
+        load_oxide_dir(&mut ecosystem, &config.join("oxide"));
+    }
 
-    if let Some(root) = project_root(cwd) {
-        load_claude_dir(&mut ecosystem, &root.join(".claude"));
-        for name in ["CLAUDE.md", "CLAUDE.local.md"] {
-            push_memory(&mut ecosystem, &root.join(name));
+    if options.project_resources {
+        if let Some(root) = project_root(cwd) {
+            load_claude_dir(&mut ecosystem, &root.join(".claude"));
+            load_mcp(&mut ecosystem, &root.join(".mcp.json"));
+            load_oxide_dir(&mut ecosystem, &root.join(".oxide"));
         }
-        load_mcp(&mut ecosystem, &root.join(".mcp.json"));
-        load_oxide_dir(&mut ecosystem, &root.join(".oxide"));
-        push_memory(&mut ecosystem, &root.join("AGENTS.md"));
     }
 
     ecosystem
+}
+
+/// Walks from the filesystem root down to `cwd`, collecting the nearest
+/// context file in each directory. `AGENTS.override.md` in a directory replaces
+/// `AGENTS.md`/`CLAUDE.md` for that directory only; other directories still
+/// layer normally. The global `~/.oxide/AGENTS.md` is loaded first (lowest
+/// precedence) so project instructions can override it.
+pub fn load_context_files(ecosystem: &mut Ecosystem, cwd: &Path) {
+    if let Some(home) = dirs::home_dir() {
+        push_context(ecosystem, &home.join(".oxide").join("AGENTS.md"));
+    }
+
+    let mut ancestors: Vec<PathBuf> = cwd.ancestors().map(Path::to_path_buf).collect::<Vec<_>>();
+    ancestors.reverse();
+    for dir in ancestors {
+        let override_path = dir.join("AGENTS.override.md");
+        if override_path.is_file() {
+            push_context(ecosystem, &override_path);
+            continue;
+        }
+        for name in ["AGENTS.md", "CLAUDE.md"] {
+            push_context(ecosystem, &dir.join(name));
+        }
+    }
+}
+
+fn push_context(ecosystem: &mut Ecosystem, path: &Path) {
+    if let Some(content) = read(path) {
+        ecosystem.context_files.push(path.to_path_buf());
+        ecosystem.memory.push(Rule {
+            name: path.display().to_string(),
+            content,
+        });
+    }
 }
 
 pub(crate) fn project_root(cwd: &Path) -> Option<PathBuf> {
@@ -196,6 +314,12 @@ pub(crate) fn project_root(cwd: &Path) -> Option<PathBuf> {
 fn load_oxide_dir(ecosystem: &mut Ecosystem, dir: &Path) {
     load_layout(ecosystem, dir, "AGENTS.md");
     load_mcp(ecosystem, &dir.join("mcp.json"));
+    if let Some(content) = read(&dir.join("SYSTEM.md")) {
+        ecosystem.system_prompt = Some(content);
+    }
+    if let Some(content) = read(&dir.join("APPEND_SYSTEM.md")) {
+        ecosystem.append_system_prompt.push(content);
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -207,6 +331,9 @@ fn load_claude_dir(ecosystem: &mut Ecosystem, dir: &Path) {
 }
 
 fn load_layout(ecosystem: &mut Ecosystem, dir: &Path, memory_file: &str) {
+    // `memory_file` (AGENTS.md/CLAUDE.md) placed directly in a layout directory
+    // such as `.claude/` is still honored; top-level context files are collected
+    // separately by `load_context_files`.
     push_memory(ecosystem, &dir.join(memory_file));
 
     for file in markdown_files(&dir.join("agents")) {
@@ -220,6 +347,11 @@ fn load_layout(ecosystem: &mut Ecosystem, dir: &Path, memory_file: &str) {
         }
     }
     scan_skills(ecosystem, &dir.join("skills"));
+    for file in markdown_files(&dir.join("prompts")) {
+        if let Some(template) = prompt_template_from_markdown(&file) {
+            upsert_prompt_template(ecosystem, template);
+        }
+    }
 
     if let Ok(entries) = std::fs::read_dir(dir.join("plugins")) {
         for entry in entries.flatten() {
@@ -363,6 +495,121 @@ fn command_from_markdown(path: &Path) -> Option<CommandDef> {
     })
 }
 
+fn prompt_template_from_markdown(path: &Path) -> Option<PromptTemplate> {
+    let raw = read(path)?;
+    let front = frontmatter::parse(&raw);
+    // `description` is optional; fall back to the first non-empty body line.
+    let description = front.get_str("description").or_else(|| {
+        front
+            .body
+            .lines()
+            .map(str::trim)
+            .find(|line| !line.is_empty())
+            .map(str::to_string)
+    });
+    Some(PromptTemplate {
+        name: file_stem(path),
+        description,
+        argument_hint: front.get_str("argument-hint"),
+        body: front.body,
+    })
+}
+
+/// Expands a prompt template body Pi-style: `$1`, `$2`, … positional args,
+/// `$@`/`$ARGUMENTS`, `${N:-default}`, and `${@:N}`/`${@:N:L}` slices.
+pub fn expand_prompt_template(body: &str, arguments: &str) -> String {
+    let args: Vec<&str> = arguments.split_whitespace().collect();
+    let joined = args.join(" ");
+    let mut out = String::with_capacity(body.len());
+    let chars: Vec<char> = body.chars().collect();
+    let mut i = 0;
+    while i < chars.len() {
+        let ch = chars[i];
+        if ch == '$' && i + 1 < chars.len() {
+            let next = chars[i + 1];
+            let (value, consumed) = if next == '{' {
+                expand_braced(&chars[i..], &args, &joined)
+            } else if next == '@' {
+                (joined.clone(), 2)
+            } else if chars[i + 1..].starts_with(&['A', 'R', 'G', 'U', 'M', 'E', 'N', 'T', 'S']) {
+                (joined.clone(), 1 + "ARGUMENTS".len())
+            } else if next.is_ascii_digit() {
+                let mut end = i + 1;
+                while end < chars.len() && chars[end].is_ascii_digit() {
+                    end += 1;
+                }
+                let index: usize = chars[i + 1..end]
+                    .iter()
+                    .collect::<String>()
+                    .parse()
+                    .unwrap_or(0);
+                (
+                    index
+                        .checked_sub(1)
+                        .and_then(|i| args.get(i))
+                        .map(|s| s.to_string())
+                        .unwrap_or_default(),
+                    end - i,
+                )
+            } else {
+                (String::from("$"), 1)
+            };
+            out.push_str(&value);
+            i += consumed;
+            continue;
+        }
+        out.push(ch);
+        i += 1;
+    }
+    out
+}
+
+/// Handles a `${...}` expression starting at `chars[0] == '$'`. Returns the
+/// replacement and how many characters were consumed.
+fn expand_braced(chars: &[char], args: &[&str], joined: &str) -> (String, usize) {
+    let Some(close) = chars.iter().position(|c| *c == '}') else {
+        return (String::from("$"), 1);
+    };
+    let inner: String = chars[2..close].iter().collect();
+    let consumed = close + 1;
+    let (expr, default) = match inner.split_once(":-") {
+        Some((expr, default)) => (expr.trim(), Some(default)),
+        None => (inner.trim(), None),
+    };
+    let value = if expr == "@" || expr.eq_ignore_ascii_case("ARGUMENTS") {
+        Some(joined.to_string())
+    } else if let Some(slice) = expr.strip_prefix('@') {
+        // `${@:N}` or `${@:N:L}` — `slice` starts with `:`.
+        let slice = slice.trim_start_matches(':');
+        let parts: Vec<&str> = slice.split(':').collect();
+        let start = parts
+            .first()
+            .and_then(|s| s.trim().parse::<usize>().ok())
+            .unwrap_or(1);
+        let count = parts.get(1).and_then(|s| s.trim().parse::<usize>().ok());
+        let selected: Vec<&str> = args
+            .iter()
+            .skip(start.saturating_sub(1))
+            .take(count.unwrap_or(usize::MAX))
+            .copied()
+            .collect();
+        Some(selected.join(" "))
+    } else if let Ok(index) = expr.parse::<usize>() {
+        index
+            .checked_sub(1)
+            .and_then(|i| args.get(i))
+            .map(|s| s.to_string())
+    } else {
+        None
+    };
+    let value = value.filter(|v| !v.is_empty());
+    match (value, default) {
+        (Some(value), _) => (value, consumed),
+        (None, Some(default)) => (default.to_string(), consumed),
+        (None, None) => (String::new(), consumed),
+    }
+}
+
 fn push_skill(ecosystem: &mut Ecosystem, path: &Path) {
     let Some(raw) = read(path) else { return };
     let front = frontmatter::parse(&raw);
@@ -402,6 +649,13 @@ fn upsert_command(ecosystem: &mut Ecosystem, command: CommandDef) {
         .commands
         .retain(|existing| existing.name != command.name);
     ecosystem.commands.push(command);
+}
+
+fn upsert_prompt_template(ecosystem: &mut Ecosystem, template: PromptTemplate) {
+    ecosystem
+        .prompt_templates
+        .retain(|existing| existing.name != template.name);
+    ecosystem.prompt_templates.push(template);
 }
 
 fn upsert_mcp(ecosystem: &mut Ecosystem, server: McpServer) {
@@ -597,7 +851,53 @@ mod tests {
         );
         assert!(ecosystem.command("build").is_some());
         assert!(ecosystem.skills.iter().any(|skill| skill.name == "audit"));
-        assert!(ecosystem.memory.iter().any(|entry| entry.name == "AGENTS"));
+        assert!(ecosystem
+            .context_files
+            .iter()
+            .any(|path| path == &dir.join("AGENTS.md")));
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn override_file_replaces_context_in_its_directory() {
+        let dir = temp_dir("ctx_override");
+        std::fs::create_dir_all(dir.join(".git")).unwrap();
+        std::fs::create_dir_all(dir.join("sub")).unwrap();
+        std::fs::write(dir.join("AGENTS.md"), "root rules").unwrap();
+        std::fs::write(dir.join("sub/AGENTS.md"), "sub rules").unwrap();
+        std::fs::write(dir.join("sub/AGENTS.override.md"), "override rules").unwrap();
+
+        let ecosystem = load(&dir.join("sub"));
+
+        let joined: String = ecosystem
+            .memory
+            .iter()
+            .map(|entry| entry.content.clone())
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(joined.contains("root rules"));
+        assert!(!joined.contains("sub rules"));
+        assert!(joined.contains("override rules"));
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn system_and_append_prompt_files_load() {
+        let dir = temp_dir("sysprompt");
+        std::fs::create_dir_all(dir.join(".git")).unwrap();
+        std::fs::create_dir_all(dir.join(".oxide")).unwrap();
+        std::fs::write(dir.join(".oxide/SYSTEM.md"), "replacement prompt").unwrap();
+        std::fs::write(dir.join(".oxide/APPEND_SYSTEM.md"), "extra guidance").unwrap();
+
+        let ecosystem = load(&dir);
+
+        assert_eq!(
+            ecosystem.system_prompt.as_deref(),
+            Some("replacement prompt")
+        );
+        assert_eq!(ecosystem.append_system_prompt, vec!["extra guidance"]);
 
         std::fs::remove_dir_all(&dir).ok();
     }
@@ -686,6 +986,49 @@ mod tests {
         assert_eq!(resolved.agent.as_deref(), Some("rust-reviewer"));
         assert!(resolved.subtask);
         assert!(ecosystem.resolve_command("plain text").is_none());
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn prompt_template_expansion_matches_pi() {
+        assert_eq!(expand_prompt_template("Hi $1", "world"), "Hi world");
+        assert_eq!(expand_prompt_template("$@", "a b c"), "a b c");
+        assert_eq!(expand_prompt_template("$ARGUMENTS", "a b"), "a b");
+        assert_eq!(expand_prompt_template("${1:-7} bullets", ""), "7 bullets");
+        assert_eq!(expand_prompt_template("${1:-7} bullets", "3"), "3 bullets");
+        assert_eq!(expand_prompt_template("${@:-none}", ""), "none");
+        assert_eq!(expand_prompt_template("${@:2}", "a b c"), "b c");
+        assert_eq!(expand_prompt_template("${@:2:1}", "a b c"), "b");
+        assert_eq!(expand_prompt_template("${@:2:3}", "a b c d e"), "b c d");
+        assert_eq!(expand_prompt_template("${@:2:3}", "a"), "");
+        assert_eq!(expand_prompt_template("cost is $5", "a"), "cost is ");
+        assert_eq!(expand_prompt_template("literal ${x}", "a"), "literal ");
+    }
+
+    #[test]
+    fn loads_prompt_templates_from_prompts_dir() {
+        let dir = temp_dir("prompts");
+        std::fs::create_dir_all(dir.join(".git")).unwrap();
+        std::fs::create_dir_all(dir.join(".oxide/prompts")).unwrap();
+        std::fs::write(
+            dir.join(".oxide/prompts/review.md"),
+            "---\ndescription: review staged changes\nargument-hint: <focus>\n---\nReview $1 focus: ${2:-all}",
+        )
+        .unwrap();
+
+        let ecosystem = load(&dir);
+        let template = ecosystem.prompt_template("review").unwrap();
+        assert_eq!(
+            template.description.as_deref(),
+            Some("review staged changes")
+        );
+        assert_eq!(template.argument_hint.as_deref(), Some("<focus>"));
+
+        // Prompt templates resolve through the same path as commands.
+        let resolved = ecosystem.resolve_command("/review security").unwrap();
+        assert_eq!(resolved.prompt, "Review security focus: all");
+        assert!(resolved.agent.is_none());
 
         std::fs::remove_dir_all(&dir).ok();
     }

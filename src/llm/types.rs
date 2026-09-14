@@ -217,6 +217,26 @@ pub struct ChatRequest {
     pub tools: Option<Vec<ToolSpec>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub reasoning_effort: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub stream_options: Option<StreamOptions>,
+}
+
+/// Asks OpenAI-compatible providers to include token usage on the stream.
+#[derive(Debug, Serialize)]
+pub struct StreamOptions {
+    pub include_usage: bool,
+}
+
+#[derive(Debug, Default, Clone, Copy)]
+pub struct Usage {
+    pub input: u64,
+    pub output: u64,
+}
+
+impl Usage {
+    pub fn total(&self) -> u64 {
+        self.input + self.output
+    }
 }
 
 #[derive(Debug, Default)]
@@ -224,12 +244,24 @@ pub struct AssistantTurn {
     pub content: String,
     pub tool_calls: Vec<ToolCall>,
     pub thinking: Vec<Value>,
+    pub usage: Usage,
 }
 
 #[derive(Debug, Deserialize)]
 pub struct StreamChunk {
     #[serde(default)]
     pub choices: Vec<StreamChoice>,
+    #[serde(default)]
+    pub usage: Option<StreamUsage>,
+}
+
+/// Token counts as reported by OpenAI-compatible providers.
+#[derive(Debug, Default, Deserialize)]
+pub struct StreamUsage {
+    #[serde(default)]
+    pub prompt_tokens: u64,
+    #[serde(default)]
+    pub completion_tokens: u64,
 }
 
 #[derive(Debug, Deserialize)]

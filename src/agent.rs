@@ -68,6 +68,7 @@ pub struct Runtime {
     pub lsp: Arc<LspManager>,
     pub approve: Approver,
     pub steering: Steering,
+    pub follow_ups: Steering,
 }
 
 #[derive(Debug, Clone)]
@@ -89,6 +90,11 @@ pub enum AgentEvent {
         args: String,
         output: String,
         diff: Option<tools::DiffPreview>,
+    },
+    /// Token usage reported by the provider for the turn just completed.
+    Usage {
+        input: u64,
+        output: u64,
     },
     Error(String),
     Finished(Vec<Message>),
@@ -141,6 +147,7 @@ pub fn run_subagent(
         sub.active_agent = Some(agent);
         let sub_runtime = Runtime {
             session: None,
+            follow_ups: Steering::new(),
             ..runtime
         };
 
@@ -182,6 +189,9 @@ pub fn run_subagent(
                         output,
                         diff,
                     });
+                }
+                AgentEvent::Usage { input, output } => {
+                    let _ = tx.send(AgentEvent::Usage { input, output });
                 }
                 AgentEvent::Error(message) => {
                     let _ = tx.send(AgentEvent::Error(message));
@@ -254,6 +264,9 @@ async fn run_loop(
             tool_specs.push(spec);
         }
     }
+    if config.tool_filter.is_restrictive() {
+        tool_specs.retain(|spec| config.tool_filter.permits(&spec.function.name));
+    }
     let mut messages = history;
 
     for _ in 0..MAX_STEPS {
@@ -315,12 +328,28 @@ async fn run_loop(
             .with_thinking(turn.thinking.clone());
         record(&runtime.session, depth, &assistant);
         messages.push(assistant);
+        if turn.usage.total() > 0 {
+            let _ = tx.send(AgentEvent::Usage {
+                input: turn.usage.input,
+                output: turn.usage.output,
+            });
+        }
 
         if tool_calls.is_empty() {
             let steered = runtime.steering.drain();
             if steered.is_empty() {
-                let _ = tx.send(AgentEvent::Finished(messages));
-                return;
+                // Follow-up messages are delivered only once all work is done,
+                // so they are drained here, just before finishing.
+                let follow_ups = runtime.follow_ups.drain();
+                if follow_ups.is_empty() {
+                    let _ = tx.send(AgentEvent::Finished(messages));
+                    return;
+                }
+                for message in follow_ups {
+                    record(&runtime.session, depth, &message);
+                    messages.push(message);
+                }
+                continue;
             }
             for message in steered {
                 record(&runtime.session, depth, &message);
@@ -506,7 +535,10 @@ async fn run_loop(
                         _ => dispatch(&config, &cwd, &runtime, &call, depth, &progress).await,
                     }
                 };
-                if name == "write_file" && !output.text.starts_with("error:") {
+                let canonical_name = crate::tools::canonical_tool_name(&name);
+                if matches!(canonical_name, "write_file" | "edit")
+                    && !output.text.starts_with("error:")
+                {
                     if let Some(path) = effective_args.get("path").and_then(Value::as_str) {
                         if let Some(diagnostics) =
                             runtime.lsp.diagnostics(&cwd, Path::new(path)).await
@@ -572,7 +604,7 @@ fn batch_terminates(terminated: &[bool]) -> bool {
 /// stays on the sequential path so result ordering and side effects are stable.
 fn concurrency_safe(name: &str) -> bool {
     matches!(
-        name,
+        crate::tools::canonical_tool_name(name),
         "read_file"
             | "list_dir"
             | "glob"
@@ -592,6 +624,12 @@ async fn dispatch(
     depth: usize,
     progress: &tools::Progress,
 ) -> tools::ToolOutput {
+    if config.tool_filter.is_restrictive() && !config.tool_filter.permits(&call.function.name) {
+        return tools::ToolOutput::text(format!(
+            "error: tool `{}` is disabled",
+            call.function.name
+        ));
+    }
     match call.function.name.as_str() {
         "task" => tools::ToolOutput::text(
             task(config, cwd, runtime, &call.function.arguments, depth).await,
@@ -675,6 +713,7 @@ async fn task_inner(
     let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
     let sub_runtime = Runtime {
         session: None,
+        follow_ups: Steering::new(),
         ..runtime.clone()
     };
     let handle = tokio::spawn(run_depth(
@@ -696,6 +735,7 @@ async fn task_inner(
             AgentEvent::ToolCall { .. }
             | AgentEvent::ToolProgress { .. }
             | AgentEvent::ToolResult { .. }
+            | AgentEvent::Usage { .. }
             | AgentEvent::Thought { .. } => {}
         }
     }
@@ -1028,9 +1068,9 @@ mod tests {
     #[test]
     fn only_read_only_tools_are_concurrency_safe() {
         for name in [
-            "read_file",
-            "list_dir",
-            "glob",
+            "read",
+            "ls",
+            "find",
             "grep",
             "webfetch",
             "memory",
@@ -1040,8 +1080,8 @@ mod tests {
             assert!(concurrency_safe(name), "{name} should be concurrency-safe");
         }
         for name in [
-            "write_file",
-            "patch",
+            "write",
+            "edit",
             "bash",
             "task",
             "compress",
@@ -1068,6 +1108,18 @@ mod tests {
         assert_eq!(drained[0].display().as_deref(), Some("first"));
         assert_eq!(drained[1].display().as_deref(), Some("second"));
         assert!(steering.drain().is_empty());
+    }
+
+    #[test]
+    fn follow_ups_are_separate_from_steering() {
+        let steering = Steering::new();
+        let follow_ups = Steering::new();
+        steering.push(Message::user("steer"));
+        follow_ups.push(Message::user("later"));
+        assert_eq!(steering.drain().len(), 1);
+        assert_eq!(follow_ups.drain().len(), 1);
+        assert!(steering.drain().is_empty());
+        assert!(follow_ups.drain().is_empty());
     }
 
     #[test]

@@ -165,6 +165,23 @@ pub struct CommandHint {
     pub description: String,
 }
 
+#[derive(Debug, Clone)]
+pub struct TrustState {
+    pub dir: String,
+    pub resources: Vec<String>,
+    pub selected: usize,
+}
+
+impl TrustState {
+    pub fn new(dir: String, resources: Vec<String>) -> Self {
+        Self {
+            dir,
+            resources,
+            selected: 0,
+        }
+    }
+}
+
 pub struct App {
     pub input: String,
     pub input_history: Vec<String>,
@@ -185,11 +202,19 @@ pub struct App {
     pub pending_approval: Option<ApprovalRequest>,
     pub connect: Option<ConnectState>,
     pub models: Option<ModelsState>,
+    pub trust: Option<TrustState>,
     pub suggestions: Vec<CommandHint>,
     pub suggestion_index: usize,
     pub mode: Mode,
     pub reasoning: Reasoning,
+    pub tokens_in: u64,
+    pub tokens_out: u64,
+    pub context_used: u64,
+    pub context_limit: u64,
+    pub session_name: Option<String>,
+    pub theme: crate::theme::Theme,
     pub steering: Steering,
+    pub follow_ups: Steering,
     pub expand_tools: bool,
     pub lines: Vec<Line<'static>>,
     pub line_offsets: Vec<usize>,
@@ -219,11 +244,19 @@ impl App {
             pending_approval: None,
             connect: None,
             models: None,
+            trust: None,
             suggestions: Vec::new(),
             suggestion_index: 0,
             mode,
             reasoning,
+            tokens_in: 0,
+            tokens_out: 0,
+            context_used: 0,
+            context_limit: 0,
+            session_name: None,
+            theme: crate::theme::Theme::default(),
             steering: Steering::new(),
+            follow_ups: Steering::new(),
             expand_tools: false,
             lines: Vec::new(),
             line_offsets: Vec::new(),

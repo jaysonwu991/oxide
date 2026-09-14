@@ -287,6 +287,18 @@ pub struct Config {
     pub memory: MemoryStore,
     #[serde(skip)]
     pub dcp: crate::dcp::DcpConfig,
+    #[serde(skip)]
+    pub tool_filter: crate::cli::ToolFilter,
+    #[serde(skip)]
+    pub ephemeral: bool,
+    #[serde(skip)]
+    pub load_context_files: bool,
+    #[serde(skip)]
+    pub default_project_trust: crate::trust::DefaultTrust,
+    #[serde(skip)]
+    pub trusted: bool,
+    #[serde(skip)]
+    pub theme: crate::theme::Theme,
 }
 
 fn default_provider() -> String {
@@ -305,6 +317,26 @@ fn default_true() -> bool {
     true
 }
 
+/// Reads `defaultProjectTrust` from the global `settings.json` in the oxide
+/// config directory (Pi keeps the same key in `~/.pi/agent/settings.json`).
+fn load_default_project_trust() -> crate::trust::DefaultTrust {
+    let path = dirs::config_dir()
+        .unwrap_or_else(|| PathBuf::from("."))
+        .join("oxide")
+        .join("settings.json");
+    let Ok(text) = std::fs::read_to_string(path) else {
+        return crate::trust::DefaultTrust::default();
+    };
+    let Ok(value) = serde_json::from_str::<serde_json::Value>(&text) else {
+        return crate::trust::DefaultTrust::default();
+    };
+    value
+        .get("defaultProjectTrust")
+        .and_then(|value| value.as_str())
+        .and_then(crate::trust::DefaultTrust::parse)
+        .unwrap_or_default()
+}
+
 impl Default for Config {
     fn default() -> Self {
         Self {
@@ -321,6 +353,12 @@ impl Default for Config {
             active_agent: None,
             memory: MemoryStore::default(),
             dcp: crate::dcp::DcpConfig::default(),
+            tool_filter: crate::cli::ToolFilter::default(),
+            ephemeral: false,
+            load_context_files: true,
+            default_project_trust: crate::trust::DefaultTrust::default(),
+            trusted: true,
+            theme: crate::theme::Theme::default(),
         }
     }
 }
@@ -440,6 +478,7 @@ impl Config {
             })?;
         }
 
+        config.default_project_trust = load_default_project_trust();
         config.ecosystem = ecosystem::load(cwd);
         config.memory = MemoryStore::load(cwd);
         config.dcp = crate::dcp::load_config(cwd);
@@ -448,6 +487,23 @@ impl Config {
         }
 
         Ok(config)
+    }
+
+    /// Reloads the ecosystem honoring a trust decision. Untrusted projects keep
+    /// context files but drop project-local resources that can execute or
+    /// reshape the agent.
+    pub fn reload_ecosystem(&mut self, cwd: &Path) {
+        self.ecosystem = if self.trusted {
+            ecosystem::load_with(cwd, self.load_context_files)
+        } else {
+            ecosystem::load_opts(
+                cwd,
+                ecosystem::LoadOptions {
+                    context_files: self.load_context_files,
+                    project_resources: false,
+                },
+            )
+        };
     }
 
     /// Selects a discovered agent as the active one. Fails when the name is
@@ -567,7 +623,20 @@ impl Config {
     /// agent, loaded memory, instructions, and an index of available
     /// skills/commands/subagents.
     pub fn compose_system_prompt(&self) -> String {
-        let mut sections = vec![self.system_prompt.clone()];
+        // `.oxide/SYSTEM.md` replaces the default prompt; `APPEND_SYSTEM.md`
+        // (and CLI `--append-system-prompt`) layer on top.
+        let mut sections = vec![self
+            .ecosystem
+            .system_prompt
+            .clone()
+            .unwrap_or_else(|| self.system_prompt.clone())];
+        sections.extend(
+            self.ecosystem
+                .append_system_prompt
+                .iter()
+                .map(|text| text.trim().to_string())
+                .filter(|text| !text.is_empty()),
+        );
 
         if self.mode == Mode::Plan {
             sections.push(
@@ -588,7 +657,7 @@ impl Config {
 
         for memory in &self.ecosystem.memory {
             sections.push(format!(
-                "# Memory: {}\n{}",
+                "# Context: {}\n{}",
                 memory.name,
                 memory.content.trim()
             ));
@@ -627,11 +696,18 @@ impl Config {
             sections.push(list);
         }
 
-        if !self.ecosystem.commands.is_empty() {
+        if !self.ecosystem.commands.is_empty() || !self.ecosystem.prompt_templates.is_empty() {
             let mut list = String::from("# Available commands");
             for command in &self.ecosystem.commands {
                 let description = command.description.clone().unwrap_or_default();
                 list.push_str(&format!("\n- /{}: {}", command.name, description));
+            }
+            for template in &self.ecosystem.prompt_templates {
+                if self.ecosystem.command(&template.name).is_some() {
+                    continue;
+                }
+                let description = template.description.clone().unwrap_or_default();
+                list.push_str(&format!("\n- /{}: {}", template.name, description));
             }
             sections.push(list);
         }

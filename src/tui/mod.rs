@@ -11,8 +11,10 @@ use crate::media;
 use crate::plugin::PluginHost;
 use crate::session::SessionLog;
 use crate::snapshots::Snapshots;
-use crate::tui::app::{App, ChatItem, CommandHint, ConnectState, ConnectStep, ModelsState};
-use anyhow::Result;
+use crate::tui::app::{
+    App, ChatItem, CommandHint, ConnectState, ConnectStep, ModelsState, TrustState,
+};
+use anyhow::{Context, Result};
 use crossterm::event::{
     DisableBracketedPaste, DisableMouseCapture, EnableBracketedPaste, EnableMouseCapture, Event,
     EventStream, KeyCode, KeyEvent, KeyModifiers, MouseEvent, MouseEventKind,
@@ -84,6 +86,32 @@ async fn event_loop(
         config.mode,
         config.reasoning,
     );
+    app.context_limit = context_limit(&config);
+    app.session_name = session.as_ref().and_then(|log| log.name());
+    app.theme = config.theme.clone();
+
+    // Project trust: prompt once for projects with resources that can execute
+    // or reshape the agent, unless a decision was saved or the default applies.
+    let trust_store = crate::trust::TrustStore::load().unwrap_or_default();
+    if let Some(saved) = trust_store.decision(&cwd) {
+        config.trusted = saved;
+    } else if crate::trust::requires_trust(&cwd)
+        && config.default_project_trust == crate::trust::DefaultTrust::Ask
+    {
+        config.trusted = false;
+        app.trust = Some(TrustState::new(
+            cwd.display().to_string(),
+            crate::trust::project_resources(&cwd),
+        ));
+    } else {
+        config.trusted =
+            crate::trust::resolve(&trust_store, &cwd, None, config.default_project_trust)
+                .is_trusted();
+    }
+    if !config.trusted {
+        config.reload_ecosystem(&cwd);
+    }
+
     app.items.push(ChatItem::Banner);
     app.items.push(ChatItem::Info(
         "Ask me to build, refactor, debug or explain code. Type /help for commands, Ctrl+C to quit."
@@ -107,6 +135,22 @@ async fn event_loop(
         "tips: type / to list commands · /init writes AGENTS.md · /models switches model · @path or Ctrl+V attaches images · ↑ recalls history"
             .to_string(),
     ));
+    if !config.ecosystem.context_files.is_empty() {
+        let files: Vec<String> = config
+            .ecosystem
+            .context_files
+            .iter()
+            .map(|path| {
+                path.file_name()
+                    .map(|name| name.to_string_lossy().to_string())
+                    .unwrap_or_else(|| path.display().to_string())
+            })
+            .collect();
+        app.items.push(ChatItem::Info(format!(
+            "context files: {}",
+            files.join(", ")
+        )));
+    }
     if config.api_key.trim().is_empty() {
         app.items.push(ChatItem::Info(
             "Welcome! Connect a model provider to send your first message.".to_string(),
@@ -226,6 +270,12 @@ async fn recv_opt(rx: &mut Option<UnboundedReceiver<AgentEvent>>) -> Option<Agen
 }
 
 #[allow(clippy::too_many_arguments)]
+/// Ctrl+C is a global quit shortcut, honored even while a dialog is open.
+fn is_quit_shortcut(key: &KeyEvent) -> bool {
+    key.code == KeyCode::Char('c') && key.modifiers.contains(KeyModifiers::CONTROL)
+}
+
+#[allow(clippy::too_many_arguments)]
 fn handle_key(
     key: KeyEvent,
     app: &mut App,
@@ -240,8 +290,19 @@ fn handle_key(
     approve: &Approver,
     models_tx: &UnboundedSender<Result<Vec<String>, String>>,
 ) {
+    // Ctrl+C always quits, even while a dialog or the trust prompt is open.
+    if is_quit_shortcut(&key) {
+        app.should_quit = true;
+        return;
+    }
+
     if app.connect.is_some() {
         handle_connect_key(key, app, config);
+        return;
+    }
+
+    if app.trust.is_some() {
+        handle_trust_key(key, app, config, cwd);
         return;
     }
 
@@ -269,9 +330,6 @@ fn handle_key(
         KeyCode::Esc => {
             escape_action(app);
             refresh_suggestions(app, config);
-        }
-        KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-            app.should_quit = true;
         }
         KeyCode::BackTab => {
             config.mode = config.mode.next();
@@ -305,8 +363,13 @@ fn handle_key(
                 app.input.clear();
                 app.items.push(ChatItem::User(raw.clone()));
                 app.auto_scroll = true;
-                app.steering.push(Message::user(raw));
-                app.status = "queued guidance...".to_string();
+                if key.modifiers.contains(KeyModifiers::ALT) {
+                    app.follow_ups.push(Message::user(raw));
+                    app.status = "queued follow-up...".to_string();
+                } else {
+                    app.steering.push(Message::user(raw));
+                    app.status = "queued guidance...".to_string();
+                }
                 return;
             }
             let raw = app.input.trim().to_string();
@@ -376,14 +439,18 @@ fn handle_key(
                 });
                 return;
             }
-            if raw == "/connect" || raw.starts_with("/connect ") {
+            if raw == "/connect"
+                || raw.starts_with("/connect ")
+                || raw == "/login"
+                || raw.starts_with("/login ")
+            {
                 app.input.clear();
                 refresh_suggestions(app, config);
-                let provider = raw
+                let rest = raw
                     .strip_prefix("/connect")
-                    .unwrap_or_default()
-                    .trim()
-                    .to_string();
+                    .or_else(|| raw.strip_prefix("/login"))
+                    .unwrap_or_default();
+                let provider = rest.trim().to_string();
                 let mut state = ConnectState::new();
                 if !provider.is_empty() {
                     state.step = ConnectStep::Key {
@@ -392,6 +459,29 @@ fn handle_key(
                 }
                 app.connect = Some(state);
                 app.status = "connecting...".to_string();
+                return;
+            }
+            if raw == "/logout" || raw.starts_with("/logout ") {
+                app.input.clear();
+                refresh_suggestions(app, config);
+                let requested = raw.strip_prefix("/logout").unwrap_or_default().trim();
+                let provider = if requested.is_empty() {
+                    config.provider.clone()
+                } else {
+                    crate::auth::canonical_provider(requested)
+                };
+                match logout_provider(&provider) {
+                    Ok(true) => {
+                        config.api_key.clear();
+                        app.items.push(ChatItem::Info(format!(
+                            "logged out of {provider} — run /login to reconnect"
+                        )));
+                    }
+                    Ok(false) => app.items.push(ChatItem::Info(format!(
+                        "no stored credentials for {provider}"
+                    ))),
+                    Err(err) => app.items.push(ChatItem::Error(format!("{err:#}"))),
+                }
                 return;
             }
             if raw == "/models" || raw.starts_with("/models ") {
@@ -427,6 +517,275 @@ fn handle_key(
                 app.input.clear();
                 refresh_suggestions(app, config);
                 app.items.push(ChatItem::Info(help_text(config)));
+                return;
+            }
+            if raw == "/clone" {
+                app.input.clear();
+                refresh_suggestions(app, config);
+                if app.busy {
+                    return;
+                }
+                match SessionLog::fork(cwd, &app.history) {
+                    Ok(log) => {
+                        app.items.push(ChatItem::Info(format!(
+                            "cloned session into {} ({} messages)",
+                            log.id(),
+                            app.history.len()
+                        )));
+                        *session = Some(log);
+                    }
+                    Err(err) => app.items.push(ChatItem::Error(format!("{err:#}"))),
+                }
+                return;
+            }
+            if raw == "/fork" || raw.starts_with("/fork ") {
+                app.input.clear();
+                refresh_suggestions(app, config);
+                if app.busy {
+                    return;
+                }
+                let requested = raw
+                    .strip_prefix("/fork")
+                    .unwrap_or_default()
+                    .trim()
+                    .parse::<usize>()
+                    .ok();
+                match requested {
+                    Some(index) => match fork_point(&app.history, index) {
+                        Some((cut, prompt)) => match SessionLog::fork(cwd, &app.history[..cut]) {
+                            Ok(log) => {
+                                app.history.truncate(cut);
+                                *session = Some(log);
+                                app.input = prompt;
+                                app.items.push(ChatItem::Info(format!(
+                                    "forked at message {index} — edit and resend"
+                                )));
+                            }
+                            Err(err) => app.items.push(ChatItem::Error(format!("{err:#}"))),
+                        },
+                        None => app.items.push(ChatItem::Error(format!(
+                            "no user message at index {index} (1-based)"
+                        ))),
+                    },
+                    None => {
+                        for (position, message) in user_messages(&app.history) {
+                            let preview: String = message.chars().take(72).collect();
+                            app.items
+                                .push(ChatItem::Info(format!("{position}. {preview}")));
+                        }
+                        app.items.push(ChatItem::Info(
+                            "use /fork <n> to branch from a user message".to_string(),
+                        ));
+                    }
+                }
+                return;
+            }
+            if raw == "/tree" {
+                app.input.clear();
+                refresh_suggestions(app, config);
+                for (position, message) in user_messages(&app.history) {
+                    let preview: String = message.chars().take(72).collect();
+                    app.items
+                        .push(ChatItem::Info(format!("{position}. {preview}")));
+                }
+                app.items.push(ChatItem::Info(
+                    "branch with /fork <n> or duplicate with /clone".to_string(),
+                ));
+                return;
+            }
+            if raw == "/new" {
+                app.input.clear();
+                refresh_suggestions(app, config);
+                if app.busy {
+                    return;
+                }
+                app.history.clear();
+                app.items.clear();
+                app.steering = crate::agent::Steering::new();
+                app.follow_ups = crate::agent::Steering::new();
+                match SessionLog::create(cwd) {
+                    Ok(log) => {
+                        app.items
+                            .push(ChatItem::Info(format!("new session {}", log.id())));
+                        *session = Some(log);
+                    }
+                    Err(err) => app.items.push(ChatItem::Error(format!("session: {err:#}"))),
+                }
+                return;
+            }
+            if raw == "/session" {
+                app.input.clear();
+                refresh_suggestions(app, config);
+                app.items
+                    .push(ChatItem::Info(session_info(session, &app.history)));
+                return;
+            }
+            if raw == "/name" || raw.starts_with("/name ") {
+                app.input.clear();
+                refresh_suggestions(app, config);
+                let name = raw.strip_prefix("/name").unwrap_or_default().trim();
+                if name.is_empty() {
+                    app.items
+                        .push(ChatItem::Error("usage: /name <name>".into()));
+                    return;
+                }
+                let log = match ensure_session(session, cwd) {
+                    Ok(log) => log,
+                    Err(err) => {
+                        app.items.push(ChatItem::Error(format!("session: {err:#}")));
+                        return;
+                    }
+                };
+                match log.set_name(name) {
+                    Ok(()) => app
+                        .items
+                        .push(ChatItem::Info(format!("session named `{name}`"))),
+                    Err(err) => app.items.push(ChatItem::Error(format!("{err:#}"))),
+                }
+                return;
+            }
+            if raw == "/model" || raw.starts_with("/model ") {
+                app.input.clear();
+                refresh_suggestions(app, config);
+                let requested = raw.strip_prefix("/model").unwrap_or_default().trim();
+                if requested.is_empty() {
+                    app.items.push(ChatItem::Info(format!(
+                        "model: {} ({}); usage: /model <id>",
+                        config.model, config.provider
+                    )));
+                    return;
+                }
+                config.model = requested.to_string();
+                if let Err(err) = Config::set_active_model_at(&Config::config_path(), requested) {
+                    app.items.push(ChatItem::Error(format!("{err:#}")));
+                }
+                app.items
+                    .push(ChatItem::Info(format!("model set to {requested}")));
+                return;
+            }
+            if raw == "/thinking" || raw.starts_with("/thinking ") {
+                app.input.clear();
+                refresh_suggestions(app, config);
+                let requested = raw.strip_prefix("/thinking").unwrap_or_default().trim();
+                if requested.is_empty() {
+                    app.items.push(ChatItem::Info(format!(
+                        "thinking: {}; usage: /thinking <off|low|medium|high|auto>",
+                        config.reasoning.label()
+                    )));
+                    return;
+                }
+                match crate::config::Reasoning::parse(requested) {
+                    Some(level) => {
+                        config.reasoning = level;
+                        app.items
+                            .push(ChatItem::Info(format!("thinking set to {}", level.label())));
+                    }
+                    None => app.items.push(ChatItem::Error(format!(
+                        "unknown thinking level `{requested}`",
+                    ))),
+                }
+                return;
+            }
+            if raw == "/theme" || raw.starts_with("/theme ") {
+                app.input.clear();
+                refresh_suggestions(app, config);
+                let requested = raw.strip_prefix("/theme").unwrap_or_default().trim();
+                if requested.is_empty() {
+                    let names = crate::theme::names(cwd);
+                    app.items.push(ChatItem::Info(format!(
+                        "theme: {}; available: {}",
+                        app.theme.name,
+                        names.join(", ")
+                    )));
+                    return;
+                }
+                let theme = crate::theme::load(cwd, requested);
+                if !crate::theme::names(cwd).iter().any(|n| n == requested) {
+                    app.items
+                        .push(ChatItem::Error(format!("unknown theme `{requested}`")));
+                    return;
+                }
+                config.theme = theme.clone();
+                app.theme = theme;
+                app.items
+                    .push(ChatItem::Info(format!("theme set to {requested}")));
+                return;
+            }
+            if raw == "/trust" || raw.starts_with("/trust ") {
+                app.input.clear();
+                refresh_suggestions(app, config);
+                let requested = raw.strip_prefix("/trust").unwrap_or_default().trim();
+                let mut store = crate::trust::TrustStore::load().unwrap_or_default();
+                if requested == "show" {
+                    let decision = store.decision(cwd);
+                    app.items.push(ChatItem::Info(format!(
+                        "project trust: {}\ndefault: {}",
+                        match decision {
+                            Some(true) => "trusted".to_string(),
+                            Some(false) => "declined".to_string(),
+                            None => "no saved decision".to_string(),
+                        },
+                        config.default_project_trust.label()
+                    )));
+                    return;
+                }
+                let trusted = !matches!(requested, "off" | "no" | "deny" | "never");
+                store.set(cwd, trusted);
+                match store.save() {
+                    Ok(()) => {
+                        config.trusted = trusted;
+                        config.reload_ecosystem(cwd);
+                        app.items.push(ChatItem::Info(if trusted {
+                            "saved trust decision: trusted".to_string()
+                        } else {
+                            "saved trust decision: declined".to_string()
+                        }));
+                    }
+                    Err(err) => app.items.push(ChatItem::Error(format!("{err:#}"))),
+                }
+                return;
+            }
+            if raw == "/reload" {
+                app.input.clear();
+                match Config::load(
+                    cwd,
+                    None,
+                    None,
+                    None,
+                    Some(config.mode.label().to_string()),
+                    Some(config.reasoning.label().to_string()),
+                ) {
+                    Ok(mut reloaded) => {
+                        reloaded.load_context_files = config.load_context_files;
+                        if !config.load_context_files {
+                            reloaded.ecosystem = crate::ecosystem::load_with(cwd, false);
+                        }
+                        *config = reloaded;
+                        refresh_suggestions(app, config);
+                        app.items.push(ChatItem::Info(
+                            "reloaded config, commands and skills".into(),
+                        ));
+                    }
+                    Err(err) => app.items.push(ChatItem::Error(format!("{err:#}"))),
+                }
+                return;
+            }
+            if raw == "/hotkeys" {
+                app.input.clear();
+                refresh_suggestions(app, config);
+                app.items.push(ChatItem::Info(hotkeys_text()));
+                return;
+            }
+            if raw == "/export" || raw.starts_with("/export ") {
+                app.input.clear();
+                refresh_suggestions(app, config);
+                let target = raw.strip_prefix("/export").unwrap_or_default().trim();
+                match export_session(session, &app.history, cwd, target) {
+                    Ok(path) => app
+                        .items
+                        .push(ChatItem::Info(format!("exported to {}", path.display()))),
+                    Err(err) => app.items.push(ChatItem::Error(format!("{err:#}"))),
+                }
                 return;
             }
             let init = raw == "/init";
@@ -530,6 +889,7 @@ fn handle_key(
                 lsp: Arc::clone(lsp),
                 approve: Arc::clone(approve),
                 steering: app.steering.clone(),
+                follow_ups: app.follow_ups.clone(),
             };
             tokio::spawn(async move {
                 if subtask {
@@ -634,16 +994,41 @@ fn init_prompt() -> String {
         .to_string()
 }
 
+/// The model's context window, used to show a Pi-style context percentage.
+/// Configurable with `OXIDE_CONTEXT_LIMIT`; falls back to a 128k default.
+fn context_limit(config: &Config) -> u64 {
+    std::env::var("OXIDE_CONTEXT_LIMIT")
+        .ok()
+        .and_then(|value| value.trim().parse::<u64>().ok())
+        .filter(|value| *value > 0)
+        .unwrap_or_else(|| (config.max_tokens as u64).max(128_000))
+}
+
 fn help_text(config: &Config) -> String {
     let mut lines = vec![
         "built-in commands:".to_string(),
         "  /help                 show this help".to_string(),
+        "  /hotkeys              show the keyboard shortcuts".to_string(),
+        "  /new                  start a new session".to_string(),
+        "  /session              show session file, id, name, and stats".to_string(),
+        "  /name <name>          name the current session".to_string(),
+        "  /model [id]           show or switch the active model".to_string(),
+        "  /thinking [level]     show or set the thinking level".to_string(),
+        "  /export [file]        export the session to HTML".to_string(),
+        "  /tree                 list user messages for branching".to_string(),
+        "  /fork [n]             branch a new session from message n".to_string(),
+        "  /clone                duplicate the current session".to_string(),
+        "  /reload               reload config, commands, and skills".to_string(),
+        "  /trust [show|off]     save or show the project trust decision".to_string(),
+        "  /theme [name]         show or switch the color theme".to_string(),
         "  /init                 create or update AGENTS.md for this project".to_string(),
         "  /connect [provider]   connect a provider and save its API key".to_string(),
+        "  /login                 alias of /connect (Pi-style)".to_string(),
+        "  /logout [provider]     remove stored credentials".to_string(),
         "  /models [filter]      list and switch the active model".to_string(),
         "  /undo, /redo          revert or reapply the agent's file changes".to_string(),
         "  /compact              summarize the conversation to free context".to_string(),
-        "keys: Enter send · Shift+Tab mode · Ctrl+R reasoning · Ctrl+V image · ↑/↓ history · PgUp/PgDn/wheel scroll · Ctrl+U/D half page · Ctrl+C quit"
+        "keys: Enter send · Alt+Enter follow-up · Shift+Tab mode · Ctrl+R reasoning · Ctrl+V image · ↑/↓ history · PgUp/PgDn/wheel scroll · Ctrl+U/D half page · Ctrl+C quit"
             .to_string(),
     ];
     if !config.ecosystem.commands.is_empty() {
@@ -676,6 +1061,137 @@ fn help_text(config: &Config) -> String {
     lines.join("\n")
 }
 
+/// Removes a stored credential, returning whether one existed.
+fn logout_provider(provider: &str) -> Result<bool> {
+    let mut store = crate::auth::AuthStore::load()?;
+    if store.remove(provider) {
+        store.save()?;
+        Ok(true)
+    } else {
+        Ok(false)
+    }
+}
+
+/// Keyboard shortcuts shown by `/hotkeys`.
+fn hotkeys_text() -> String {
+    [
+        "keyboard shortcuts:",
+        "  Enter                 send (queues steering while busy)",
+        "  Alt+Enter             queue a follow-up message",
+        "  Esc                   cancel the current run",
+        "  Shift+Tab             cycle permission mode",
+        "  Ctrl+R                cycle reasoning/thinking level",
+        "  Ctrl+O                toggle tool output",
+        "  Ctrl+V                attach a clipboard image",
+        "  Ctrl+U / Ctrl+D       scroll half a page",
+        "  PgUp / PgDn / wheel   scroll the transcript",
+        "  Up / Down             input history",
+        "  Ctrl+C                quit",
+    ]
+    .join("\n")
+}
+
+/// 1-based positions and text of user messages, for `/tree` and `/fork`.
+fn user_messages(history: &[Message]) -> Vec<(usize, String)> {
+    let mut out = Vec::new();
+    let mut position = 0;
+    for message in history {
+        if message.role == "user" {
+            position += 1;
+            out.push((position, message.display().unwrap_or_default()));
+        }
+    }
+    out
+}
+
+/// Finds the history index just before the `index`-th user message and the
+/// message text, so `/fork` can branch there.
+fn fork_point(history: &[Message], index: usize) -> Option<(usize, String)> {
+    if index == 0 {
+        return None;
+    }
+    let mut seen = 0;
+    for (position, message) in history.iter().enumerate() {
+        if message.role == "user" {
+            seen += 1;
+            if seen == index {
+                return Some((position, message.display().unwrap_or_default()));
+            }
+        }
+    }
+    None
+}
+
+/// Human-readable session summary shown by `/session`.
+fn session_info(session: &Option<SessionLog>, history: &[Message]) -> String {
+    match session {
+        Some(log) => {
+            let name = log.name().unwrap_or_else(|| "(unnamed)".to_string());
+            let user = history.iter().filter(|m| m.role == "user").count();
+            let assistant = history.iter().filter(|m| m.role == "assistant").count();
+            let tools = history.iter().filter(|m| m.role == "tool").count();
+            format!(
+                "session {}\nname: {}\nfile: {}\nmessages: {} user · {} assistant · {} tool",
+                log.id(),
+                name,
+                log.cwd(),
+                user,
+                assistant,
+                tools
+            )
+        }
+        None => "no session yet (send a message to create one)".to_string(),
+    }
+}
+
+/// Writes the session transcript to an HTML file. Returns the written path.
+fn export_session(
+    session: &Option<SessionLog>,
+    history: &[Message],
+    cwd: &Path,
+    target: &str,
+) -> Result<PathBuf> {
+    let path = if target.is_empty() {
+        let id = session
+            .as_ref()
+            .map(|log| log.id().to_string())
+            .unwrap_or_else(|| "session".to_string());
+        cwd.join(format!("oxide-{id}.html"))
+    } else {
+        let path = PathBuf::from(target);
+        if path.is_absolute() {
+            path
+        } else {
+            cwd.join(path)
+        }
+    };
+    let mut body = String::from(
+        "<!doctype html>\n<meta charset=\"utf-8\">\n<title>oxide session</title>\n\
+         <style>body{font-family:ui-monospace,monospace;max-width:48rem;margin:2rem auto;padding:0 1rem}\
+         .user{color:#0a7}.assistant{color:#333}.tool{color:#888}pre{white-space:pre-wrap}</style>\n",
+    );
+    for message in history {
+        let class = match message.role.as_str() {
+            "user" => "user",
+            "assistant" => "assistant",
+            _ => "tool",
+        };
+        body.push_str(&format!(
+            "<pre class=\"{class}\">{}: {}</pre>\n",
+            html_escape(&message.role),
+            html_escape(&message.display().unwrap_or_default())
+        ));
+    }
+    std::fs::write(&path, body).with_context(|| format!("writing {}", path.display()))?;
+    Ok(path)
+}
+
+fn html_escape(text: &str) -> String {
+    text.replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+}
+
 fn resolve_provider_choice(value: &str) -> String {
     match value.trim() {
         "1" => "openai".to_string(),
@@ -693,8 +1209,68 @@ fn builtin_commands() -> Vec<CommandHint> {
             description: "show help".to_string(),
         },
         CommandHint {
+            name: "hotkeys".to_string(),
+            description: "show keyboard shortcuts".to_string(),
+        },
+        CommandHint {
+            name: "new".to_string(),
+            description: "start a new session".to_string(),
+        },
+        CommandHint {
+            name: "session".to_string(),
+            description: "show session info".to_string(),
+        },
+        CommandHint {
+            name: "tree".to_string(),
+            description: "list user messages for branching".to_string(),
+        },
+        CommandHint {
+            name: "fork".to_string(),
+            description: "branch a new session from a message".to_string(),
+        },
+        CommandHint {
+            name: "clone".to_string(),
+            description: "duplicate the session".to_string(),
+        },
+        CommandHint {
+            name: "name".to_string(),
+            description: "name the session".to_string(),
+        },
+        CommandHint {
+            name: "model".to_string(),
+            description: "switch the model".to_string(),
+        },
+        CommandHint {
+            name: "thinking".to_string(),
+            description: "set the thinking level".to_string(),
+        },
+        CommandHint {
+            name: "export".to_string(),
+            description: "export the session to HTML".to_string(),
+        },
+        CommandHint {
+            name: "theme".to_string(),
+            description: "switch the color theme".to_string(),
+        },
+        CommandHint {
+            name: "trust".to_string(),
+            description: "save project trust decision".to_string(),
+        },
+        CommandHint {
+            name: "reload".to_string(),
+            description: "reload config and skills".to_string(),
+        },
+        CommandHint {
             name: "init".to_string(),
             description: "create or update AGENTS.md".to_string(),
+        },
+        CommandHint {
+            name: "login".to_string(),
+            description: "connect a provider (alias of /connect)".to_string(),
+        },
+        CommandHint {
+            name: "logout".to_string(),
+            description: "remove stored credentials".to_string(),
         },
         CommandHint {
             name: "models".to_string(),
@@ -723,7 +1299,7 @@ fn builtin_commands() -> Vec<CommandHint> {
 fn refresh_suggestions(app: &mut App, config: &Config) {
     app.suggestions.clear();
     app.suggestion_index = 0;
-    if app.connect.is_some() || app.models.is_some() || app.busy {
+    if app.connect.is_some() || app.models.is_some() || app.trust.is_some() || app.busy {
         return;
     }
     let Some(query) = app.input.strip_prefix('/') else {
@@ -738,6 +1314,23 @@ fn refresh_suggestions(app: &mut App, config: &Config) {
         hints.push(CommandHint {
             name: command.name.clone(),
             description: command.description.clone().unwrap_or_default(),
+        });
+    }
+    for template in &config.ecosystem.prompt_templates {
+        if config.ecosystem.command(&template.name).is_some() {
+            continue;
+        }
+        let mut description = template.description.clone().unwrap_or_default();
+        if let Some(hint) = &template.argument_hint {
+            if !description.is_empty() {
+                description = format!("{hint} — {description}");
+            } else {
+                description = hint.clone();
+            }
+        }
+        hints.push(CommandHint {
+            name: template.name.clone(),
+            description,
         });
     }
     app.suggestions = hints
@@ -844,6 +1437,48 @@ fn handle_mouse(mouse: MouseEvent, app: &mut App) {
     }
 }
 
+fn handle_trust_key(key: KeyEvent, app: &mut App, config: &mut Config, cwd: &Path) {
+    let Some(mut state) = app.trust.take() else {
+        return;
+    };
+    let mut keep = true;
+    match key.code {
+        KeyCode::Left | KeyCode::Char('h') => state.selected = 0,
+        KeyCode::Right | KeyCode::Char('l') | KeyCode::Tab => state.selected = 1,
+        KeyCode::Char('t') | KeyCode::Char('T') | KeyCode::Char('y') => state.selected = 0,
+        KeyCode::Char('n') | KeyCode::Char('N') => state.selected = 1,
+        KeyCode::Esc => {
+            // Escape declines for this session without saving a decision.
+            config.trusted = false;
+            config.reload_ecosystem(cwd);
+            app.items
+                .push(ChatItem::Info("project resources not trusted".to_string()));
+            return;
+        }
+        KeyCode::Enter => {
+            let trusted = state.selected == 0;
+            let path = crate::trust::TrustStore::path();
+            let mut store = crate::trust::TrustStore::load().unwrap_or_default();
+            store.set(cwd, trusted);
+            if let Err(err) = store.save_to(&path) {
+                app.items.push(ChatItem::Error(format!("{err:#}")));
+            }
+            config.trusted = trusted;
+            config.reload_ecosystem(cwd);
+            app.items.push(ChatItem::Info(if trusted {
+                format!("trusted {} — project resources loaded", cwd.display())
+            } else {
+                format!("declined trust for {}", cwd.display())
+            }));
+            keep = false;
+        }
+        _ => {}
+    }
+    if keep && app.trust.is_none() {
+        app.trust = Some(state);
+    }
+}
+
 fn handle_connect_key(key: KeyEvent, app: &mut App, config: &mut Config) {
     let Some(mut state) = app.connect.take() else {
         return;
@@ -878,7 +1513,8 @@ fn handle_connect_key(key: KeyEvent, app: &mut App, config: &mut Config) {
                                 config.apply_provider(&name, &value);
                                 app.model = config.model.clone();
                                 app.items.push(ChatItem::Info(format!(
-                                    "connected to {name} ({})",
+                                    "logged in to {} · model {}",
+                                    crate::auth::provider_label(&name),
                                     config.model
                                 )));
                                 app.status = "ready".to_string();
@@ -973,6 +1609,11 @@ fn handle_agent_event(event: AgentEvent, app: &mut App) {
             app.resolve_tool(name, args, output, diff);
             app.status = "thinking...".to_string();
         }
+        AgentEvent::Usage { input, output } => {
+            app.tokens_in = app.tokens_in.saturating_add(input);
+            app.tokens_out = app.tokens_out.saturating_add(output);
+            app.context_used = input;
+        }
         AgentEvent::Error(message) => {
             app.items.push(ChatItem::Error(message));
         }
@@ -1003,6 +1644,25 @@ mod tests {
 
     fn key(code: KeyCode) -> KeyEvent {
         KeyEvent::new(code, KeyModifiers::NONE)
+    }
+
+    #[test]
+    fn user_messages_and_fork_points_are_one_based() {
+        let history = vec![
+            Message::user("first"),
+            Message::assistant("reply", vec![]),
+            Message::user("second"),
+        ];
+        let messages = user_messages(&history);
+        assert_eq!(messages.len(), 2);
+        assert_eq!(messages[0].0, 1);
+        assert_eq!(messages[1].0, 2);
+        assert_eq!(messages[1].1, "second");
+
+        assert_eq!(fork_point(&history, 1).unwrap().0, 0);
+        assert_eq!(fork_point(&history, 2).unwrap().0, 2);
+        assert!(fork_point(&history, 3).is_none());
+        assert!(fork_point(&history, 0).is_none());
     }
 
     #[test]
@@ -1090,6 +1750,16 @@ mod tests {
     }
 
     #[test]
+    fn ctrl_c_is_a_global_quit_shortcut() {
+        assert!(is_quit_shortcut(&KeyEvent::new(
+            KeyCode::Char('c'),
+            KeyModifiers::CONTROL
+        )));
+        assert!(!is_quit_shortcut(&key(KeyCode::Char('c'))));
+        assert!(!is_quit_shortcut(&key(KeyCode::Char('d'))));
+    }
+
+    #[test]
     fn escape_clears_input_then_quits() {
         let mut app = test_app();
         app.input = "draft".to_string();
@@ -1131,10 +1801,9 @@ mod tests {
         refresh_suggestions(&mut app, &config);
         assert!(app.suggestions.iter().any(|hint| hint.name == "models"));
 
-        app.input = "/mo".to_string();
+        app.input = "/models".to_string();
         refresh_suggestions(&mut app, &config);
-        assert_eq!(app.suggestions.len(), 1);
-        assert_eq!(app.suggestions[0].name, "models");
+        assert!(app.suggestions.iter().any(|hint| hint.name == "models"));
 
         app.input = "hello".to_string();
         refresh_suggestions(&mut app, &config);

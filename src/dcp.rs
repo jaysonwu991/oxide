@@ -22,6 +22,7 @@ const DEFAULT_PROTECTED_TOOLS: &[&str] = &[
     "compress",
     "write_file",
     "patch",
+    "edit",
 ];
 
 const DEFAULT_COMPRESS_PROTECTED_TOOLS: &[&str] = &["task", "skill", "memory", "diagnostics"];
@@ -292,7 +293,10 @@ fn file_protected(
     let Some((name, arguments)) = message.tool_call_id.as_ref().and_then(|id| names.get(id)) else {
         return false;
     };
-    if !matches!(name.as_str(), "read_file" | "write_file" | "patch") {
+    if !matches!(
+        crate::tools::canonical_tool_name(name),
+        "read_file" | "write_file" | "patch" | "edit"
+    ) {
         return false;
     }
     let Ok(args) = serde_json::from_str::<Value>(arguments) else {

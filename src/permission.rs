@@ -34,7 +34,6 @@ impl Permissions {
         permissions.mode = config.mode;
         permissions
     }
-
     fn from_value(value: &Value) -> Self {
         match value {
             Value::String(action) => Self {
@@ -74,9 +73,10 @@ impl Permissions {
     }
 
     pub fn decide(&self, tool: &str, subject: &str) -> Action {
+        let tool = crate::tools::canonical_tool_name(tool);
         let mut action = self.baseline.unwrap_or_else(|| default_action(tool));
         for (name, rule) in &self.rules {
-            if name != "*" && name != tool {
+            if name != "*" && name != tool && crate::tools::canonical_tool_name(name) != tool {
                 continue;
             }
             match rule {
@@ -92,7 +92,7 @@ impl Permissions {
         }
         match self.mode {
             Mode::Plan if plan_blocked(tool) => Action::Deny,
-            Mode::AutoEdit if matches!(tool, "write_file" | "patch") => Action::Allow,
+            Mode::AutoEdit if matches!(tool, "write_file" | "patch" | "edit") => Action::Allow,
             _ => action,
         }
     }
@@ -101,7 +101,7 @@ impl Permissions {
 /// Tools that change the workspace (or have unknown remote side effects) are
 /// blocked while in plan mode. Read-only tools remain available.
 fn plan_blocked(tool: &str) -> bool {
-    matches!(tool, "write_file" | "patch" | "bash") || tool.contains("__")
+    matches!(tool, "write_file" | "patch" | "edit" | "bash") || tool.contains("__")
 }
 
 impl Action {
@@ -118,13 +118,13 @@ impl Action {
 fn default_action(tool: &str) -> Action {
     match tool {
         "read_file" | "list_dir" | "glob" | "grep" | "webfetch" => Action::Allow,
-        "write_file" | "patch" | "bash" => Action::Ask,
+        "write_file" | "patch" | "edit" | "bash" => Action::Ask,
         _ => Action::Allow,
     }
 }
 
 pub fn subject_for(tool: &str, args: &Value) -> String {
-    match tool {
+    match crate::tools::canonical_tool_name(tool) {
         "bash" => args
             .get("command")
             .and_then(Value::as_str)

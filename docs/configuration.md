@@ -1,8 +1,9 @@
 # Configuration guide
 
 This guide covers day-to-day configuration: where files live, and how to add or
-remove MCP servers, subagents, slash commands, skills, plugins, permissions,
-modes, reasoning, memory, and context pruning.
+remove MCP servers, subagents, slash commands, prompt templates, skills, plugins,
+permissions, modes, reasoning, memory, project trust, themes, and context
+pruning.
 
 ## Scopes and precedence
 
@@ -13,13 +14,15 @@ oxide merges two scopes:
 - **Project** — the nearest ancestor of the working directory containing `.git`,
   `.oxide`, or `.claude`.
 
-Project settings override global settings with the same name. oxide reads its
-native `.oxide/` layout and also reads the Claude Code layout (`.claude/`,
-`CLAUDE.md`, `.mcp.json`) for compatibility; within a scope, `.oxide/` wins over
-`.claude/`.
+Project entries override global entries with the same name (for agents,
+commands, prompt templates, skills, and MCP servers). oxide reads its native
+`.oxide/` layout and also reads the Claude Code layout (`.claude/`, `CLAUDE.md`,
+`.mcp.json`) for compatibility; within a scope, `.oxide/` wins over `.claude/`.
 
 Provider and credential precedence is: CLI flags > environment variables >
-`auth.json` > `config.json` > provider preset.
+`auth.json` > `config.json` > provider preset. Behavior settings live in
+`config.json` (global); the `settings.json` file is global-only today and
+currently supplies `defaultProjectTrust`.
 
 ## MCP servers
 
@@ -180,8 +183,8 @@ name: rust-reviewer
 description: Reviews Rust changes for correctness and style.
 mode: subagent
 permission:
-  write_file: deny
-  patch: deny
+  write: deny
+  edit: deny
   bash:
     "cargo *": allow
     "*": ask
@@ -221,8 +224,33 @@ Focus: $ARGUMENTS
 - `agent: <name>` runs the command as that agent. `subtask: true` runs it in an
   isolated subagent context whose result is reported back to the main
   conversation.
-- Built-in commands: `/help`, `/undo`, `/redo`, `/compact`, `/connect`.
+- Built-in commands: `/help`, `/hotkeys`, `/new`, `/session`, `/tree`, `/fork`,
+  `/clone`, `/name`, `/model`, `/thinking`, `/theme`, `/trust`, `/export`,
+  `/reload`, `/init`, `/login`, `/logout`, `/models`, `/connect`, `/undo`,
+  `/redo`, and `/compact`.
 - **Remove** a command by deleting its file.
+
+## Prompt templates
+
+Create `.oxide/prompts/<name>.md` (or `.claude/prompts/<name>.md`):
+
+```markdown
+---
+description: Create a component
+argument-hint: <name> [features]
+---
+Create a component named $1 with features: $@
+```
+
+- Invoke with `/<name> [args]`; the filename becomes the command name.
+- `description` is optional (the first non-empty line is used when absent), and
+  `argument-hint` shows the expected arguments in autocomplete.
+- Arguments: `$1`, `$2`, … positional; `$@` or `$ARGUMENTS` for all;
+  `${1:-default}` and `${@:-default}` for defaults; `${@:2}` and `${@:2:3}` for
+  slices.
+- Prompt templates resolve through the same `/` path as commands; a command with
+  the same name wins.
+- **Remove** a template by deleting its file.
 
 ## Skills
 
@@ -272,8 +300,8 @@ export const RustFmt = async ({ $, directory }) => {
 
 ## Permissions
 
-Default actions: `read_file`, `list_dir`, `glob`, `grep`, and `webfetch` are
-allowed; `write_file`, `patch`, and `bash` ask; everything else is allowed.
+Default actions: `read`, `ls`, `find`, `grep`, and `webfetch` are allowed;
+`write`, `edit`, `patch`, and `bash` ask; everything else is allowed.
 
 Override per agent with `permission` in the agent frontmatter. Use a flat action
 for every tool:
@@ -287,8 +315,8 @@ tools:
 
 ```yaml
 permission:
-  write_file: allow
-  patch: deny
+  write: allow
+  edit: deny
   bash:
     "cargo *": allow
     "git *": allow
@@ -296,8 +324,9 @@ permission:
 ```
 
 - Actions are `allow`, `ask`, and `deny`.
-- Tool keys are real tool names (`read_file`, `write_file`, `patch`, `bash`,
-  `list_dir`, `glob`, `grep`, `webfetch`).
+- Tool keys accept Pi names (`read`, `write`, `edit`, `bash`, `ls`, `find`,
+  `grep`, `webfetch`) and legacy aliases (`read_file`, `write_file`, `patch`,
+  `list_dir`, `glob`).
 - Patterns match the `bash` command or a file tool's `path`; `*` and `?` are
   wildcards. The last matching rule wins.
 - `auto_approve: true` in `config.json` skips prompts for `ask` rules. When
@@ -312,8 +341,8 @@ The agent runs in one of three permission modes, modelled on Claude Code:
 | Mode | Behavior |
 | --- | --- |
 | `build` (default) | Follows the active agent's permission rules. |
-| `plan` | Read-only: `write_file`, `patch`, `bash`, and unknown MCP tools are denied, and the model is instructed to produce an implementation plan. |
-| `auto-edit` | Auto-approves `write_file` and `patch`; other rules still apply. |
+| `plan` | Read-only: `write`, `edit`, `patch`, `bash`, and unknown MCP tools are denied, and the model is instructed to produce an implementation plan. |
+| `auto-edit` | Auto-approves `write`, `edit`, and `patch`; other rules still apply. |
 
 Set the starting mode with `--mode build|plan|auto-edit`, the `OXIDE_MODE`
 environment variable, or `"mode": "..."` in `config.json`. In the TUI, press
@@ -344,14 +373,44 @@ level is shown in the header.
 
 ## Memory and instructions
 
-These files are added to the system prompt:
+Context files are collected by walking every ancestor directory from the
+filesystem root down to the working directory, so nested projects layer their
+instructions:
 
-- Project: `AGENTS.md`, and `CLAUDE.md` / `CLAUDE.local.md` for compatibility.
-- Global: `~/.oxide/AGENTS.md`, and `~/.claude/CLAUDE.md` for compatibility.
+- `AGENTS.md` (or `CLAUDE.md`) in each directory.
+- `AGENTS.override.md` replaces `AGENTS.md`/`CLAUDE.md` for that directory only.
+- Global `~/.oxide/AGENTS.md` is loaded first (lowest precedence).
+- Disable discovery with `--no-context-files`.
+
+Replace the default system prompt with `.oxide/SYSTEM.md` (project) or
+`~/.oxide/SYSTEM.md` (global); append without replacing with
+`.oxide/APPEND_SYSTEM.md`. `--system-prompt <text>` and
+`--append-system-prompt <text>` override for one run.
 
 Persistent cross-session memory is managed by the `memory` tool and stored under
 `memory/` in the oxide config dir; recent entries are injected automatically.
 Use the `memory` tool to add, search, or forget entries.
+
+## Project trust
+
+Project-local resources that can change behavior or execute code (agents,
+commands, prompts, skills, plugins, `SYSTEM.md`) load only after the project is
+trusted. On interactive startup oxide asks when a project requires trust and no
+decision is saved; non-interactive runs use `defaultProjectTrust` (in
+`settings.json`) without prompting.
+
+- `defaultProjectTrust`: `ask` (default), `always`, or `never`.
+- `--approve`/`-a` and `--no-approve` override for one run.
+- `/trust [show|off]` saves a decision for the current directory to `trust.json`
+  (the closest saved decision on the current or a parent path applies).
+- Context files always load regardless of trust.
+
+## Themes
+
+oxide ships `dark` and `light`. Add custom themes as JSON under
+`.oxide/themes/<name>.json` or `<config>/oxide/themes/<name>.json`, then select
+one with `--use-theme <name>` or `/theme <name>`. Colors accept names or
+`#rrggbb`; unset slots fall back to the built-in `dark` theme.
 
 ## Context pruning
 
@@ -363,34 +422,24 @@ options and an example.
 ## Providers and credentials
 
 Provider, model, base URL, and API key are read from `config.json`, environment
-variables, and `auth.json`, in the precedence order above. There are two ways to
-connect a provider.
-
-### From the CLI
-
-```sh
-oxide auth login openai
-oxide auth login deepseek --key sk-...
-```
-
-Without arguments, `oxide auth login` prompts for the provider (a name or its
-1-based number) and reads the API key with hidden input; bracketed paste works.
-The key is stored in `auth.json` (mode `0600`) and the provider is written to
-`config.json` so the next launch uses it. Manage stored keys with
-`oxide auth list` and `oxide auth logout [provider]`.
+variables, and `auth.json`, in the precedence order above. Authentication happens
+inside the TUI, like Pi.
 
 ### From the TUI
 
-Start `oxide` even without a key, then run `/connect`:
+Start `oxide` even without a key, then run `/login`:
 
-- `/connect` lists the providers — enter a number or name, then paste the API key.
-- `/connect deepseek` skips the picker and asks for the key directly.
+- `/login` lists the providers — enter a number or name, then paste the API key.
+- `/login deepseek` skips the picker and asks for the key directly.
+- `/logout` removes the active provider's stored credential; `/logout <provider>`
+  removes a specific one.
 
-Press Enter to confirm and Esc to cancel. The key is stored in `auth.json` and
-the active provider is written to `config.json`, so it applies to the running
-session and the next launch.
+Press Enter to confirm and Esc to cancel. The key is stored in `auth.json`
+(mode `0600`) and the active provider is written to `config.json`, so it applies
+to the running session and the next launch. `/connect` remains an alias of
+`/login`.
 
-You can also provide a key without either flow via the `OPENAI_API_KEY` /
+You can also provide a key without the login flow via the `OPENAI_API_KEY` /
 `DEEPSEEK_API_KEY` / `ANTHROPIC_API_KEY` environment variables or an `api_key`
 entry in `config.json`; environment variables take precedence over `auth.json`.
 
@@ -407,6 +456,9 @@ Everything lives under the oxide config directory:
 - `sessions/<project>/*.jsonl` — session history and pruning records
 - `snapshots/<project>/` — shadow-git snapshots for `/undo` and `/redo`
 - `memory/` — persistent memory entries
+- `trust.json` — saved project trust decisions
+- `settings.json` — global settings such as `defaultProjectTrust`
+- `themes/<name>.json` — custom TUI themes
 - `truncated/` — full text of tool outputs that exceeded the line/byte cap, retained 7 days (override with `OXIDE_TRUNCATION_DIR`)
 - `dcp.json` — global context-pruning config
 

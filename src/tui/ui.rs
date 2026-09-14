@@ -14,17 +14,10 @@ const MAX_INPUT_ROWS: usize = 12;
 const MAX_MODEL_ROWS: usize = 12;
 const MAX_SUGGESTION_ROWS: usize = 8;
 
-const FILE_TOOLS: [&str; 3] = ["read_file", "write_file", "patch"];
+const FILE_TOOLS: [&str; 4] = ["read_file", "write_file", "patch", "edit"];
 
 // Crossterm maps unsuffixed ANSI colors to dark variants, so accents use the
 // light variants to remain readable on common dark terminal backgrounds.
-
-/// Persistent keybinding reminder pinned above the input box, kept to two
-/// short lines so the full set stays visible on an 80-column terminal.
-const TIPS: [&str; 2] = [
-    "Enter send · Shift+Tab mode · Ctrl+R reasoning · Ctrl+O tools · Ctrl+C quit",
-    "↑/↓ history · PgUp/PgDn/wheel scroll",
-];
 
 /// Block-letter wordmark shown on the welcome screen.
 const BANNER: [&str; 6] = [
@@ -37,7 +30,7 @@ const BANNER: [&str; 6] = [
 ];
 
 fn is_file_tool(name: &str) -> bool {
-    FILE_TOOLS.contains(&name)
+    FILE_TOOLS.contains(&crate::tools::canonical_tool_name(name))
 }
 
 /// A rounded panel with a colored border and title, shared by the input and
@@ -64,7 +57,6 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         .direction(Direction::Vertical)
         .constraints([
             Constraint::Min(3),
-            Constraint::Length(2),
             Constraint::Length(input_rows + 2),
             Constraint::Length(1),
             Constraint::Length(1),
@@ -72,18 +64,76 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         .split(frame.area());
 
     draw_messages(frame, app, chunks[0]);
-    draw_tips(frame, chunks[1]);
-    draw_input(frame, app, chunks[2]);
-    draw_info(frame, app, chunks[3]);
-    draw_footer(frame, app, chunks[4]);
+    draw_input(frame, app, chunks[1]);
+    draw_status(frame, app, chunks[2]);
+    draw_footer(frame, app, chunks[3]);
 
     if app.connect.is_some() {
         draw_connect(frame, app);
+    } else if app.trust.is_some() {
+        draw_trust(frame, app);
     } else if app.models.is_some() {
         draw_models(frame, app);
     } else if !app.suggestions.is_empty() {
         draw_suggestions(frame, app, chunks[0]);
     }
+}
+
+fn draw_trust(frame: &mut Frame, app: &App) {
+    let Some(state) = &app.trust else {
+        return;
+    };
+    let area = centered_rect(74, 46, frame.area());
+    frame.render_widget(Clear, area);
+
+    let mut lines = vec![Line::from(Span::styled(
+        format!(" Trust project {}?", state.dir),
+        Style::default()
+            .fg(Color::LightYellow)
+            .add_modifier(Modifier::BOLD),
+    ))];
+    lines.push(Line::from(""));
+    lines.push(Line::from(Span::styled(
+        "This project contains local resources the agent will load and, for",
+        Style::default().fg(Color::Gray),
+    )));
+    lines.push(Line::from(Span::styled(
+        "plugins, execute. Only trust repositories you have reviewed.",
+        Style::default().fg(Color::Gray),
+    )));
+    lines.push(Line::from(""));
+    for resource in &state.resources {
+        lines.push(Line::from(Span::styled(
+            format!("   • {resource}"),
+            Style::default().fg(Color::White),
+        )));
+    }
+    lines.push(Line::from(""));
+    let options = ["Trust and load resources", "Do not load resources"];
+    for (index, label) in options.iter().enumerate() {
+        let selected = state.selected == index;
+        let style = if selected {
+            Style::default()
+                .fg(Color::LightCyan)
+                .add_modifier(Modifier::BOLD)
+        } else {
+            Style::default().fg(Color::White)
+        };
+        lines.push(Line::from(Span::styled(
+            format!(" {} {label}", if selected { "›" } else { " " }),
+            style,
+        )));
+    }
+    lines.push(Line::from(""));
+    lines.push(Line::from(Span::styled(
+        "←/→ choose · Enter confirm · Esc decline for this session",
+        Style::default().fg(Color::Gray),
+    )));
+
+    frame.render_widget(
+        Paragraph::new(lines).block(panel(" project trust ", Color::LightYellow)),
+        area,
+    );
 }
 
 fn centered_rect(percent_x: u16, percent_y: u16, area: Rect) -> Rect {
@@ -299,102 +349,136 @@ fn draw_suggestions(frame: &mut Frame, app: &App, area: Rect) {
     frame.render_stateful_widget(list, popup, &mut list_state);
 }
 
-/// Compact mode · model · reasoning line shown just below the input, with the
-/// current status right-aligned.
-fn draw_info(frame: &mut Frame, app: &App, area: Rect) {
-    let left = vec![
-        Span::styled(format!(" {} ", app.mode.label()), mode_style(app.mode)),
-        Span::raw(" "),
-        Span::styled(
-            app.model.clone(),
-            Style::default()
-                .fg(Color::LightCyan)
-                .add_modifier(Modifier::BOLD),
-        ),
-        Span::raw(" "),
-        Span::styled(
-            format!(" {} ", app.reasoning.label()),
-            reasoning_style(app.reasoning),
-        ),
-    ];
-    let status_style = if app.busy {
-        Style::default().fg(Color::LightYellow)
-    } else if app.status == "ready" {
-        Style::default().fg(Color::Gray)
-    } else {
-        Style::default().fg(Color::White)
-    };
-    let right = Span::styled(app.status.clone(), status_style);
-    frame.render_widget(
-        Paragraph::new(justified(left, right, area.width as usize)),
-        area,
-    );
-}
-
-/// Always-visible keybinding reminder pinned directly above the input box.
-fn draw_tips(frame: &mut Frame, area: Rect) {
-    let lines: Vec<Line> = TIPS
-        .iter()
-        .map(|tip| {
-            Line::from(Span::styled(
-                format!(" {tip}"),
-                Style::default().fg(Color::Gray),
-            ))
-        })
-        .collect();
-    frame.render_widget(Paragraph::new(lines), area);
-}
-
-/// Bottom bar: working directory on the left, elapsed time on the right.
-fn draw_footer(frame: &mut Frame, app: &App, area: Rect) {
-    let dim = Style::default().fg(Color::Gray);
-    let width = area.width as usize;
-    let right = if app.busy {
+/// A thin line under the editor showing the working indicator, elapsed time,
+/// and the most useful key hints — Pi's status row.
+fn draw_status(frame: &mut Frame, app: &App, area: Rect) {
+    let dim = Style::default().fg(app.theme.info);
+    let busy_style = Style::default().fg(app.theme.tool);
+    let mut spans = Vec::new();
+    if app.busy {
         let secs = app
             .busy_since
             .map(|start| start.elapsed().as_secs())
             .unwrap_or(0);
+        spans.push(Span::styled(
+            format!("  {} ", spinner(app.busy_since)),
+            busy_style,
+        ));
+        spans.push(Span::styled(
+            format!("Working · {secs}s · Esc to cancel"),
+            busy_style,
+        ));
+    } else {
+        spans.push(Span::styled("  ready", dim));
+    }
+    let hints = if app.busy {
+        "Enter queue · Alt+Enter follow-up"
+    } else {
+        "Enter send · Shift+Enter newline · / commands · Ctrl+O tools"
+    };
+    let width = area.width as usize;
+    let used: usize = spans.iter().map(|s| s.content.chars().count()).sum();
+    if used + hints.chars().count() + 3 <= width {
+        spans.push(Span::raw(
+            " ".repeat(width - used - hints.chars().count() - 2),
+        ));
+        spans.push(Span::styled(hints, dim));
+    }
+    frame.render_widget(Paragraph::new(Line::from(spans)), area);
+}
+
+/// The spinner glyph rotates once per tick, so the editor border animates
+/// while the agent is working without a separate timer.
+fn spinner(since: Option<std::time::Instant>) -> &'static str {
+    const FRAMES: [&str; 4] = ["⠋", "⠙", "⠹", "⠸"];
+    let tick = since
+        .map(|start| start.elapsed().as_millis() / 120)
+        .unwrap_or(0);
+    FRAMES[(tick as usize) % FRAMES.len()]
+}
+
+/// Pi-style footer: working directory, session name, token totals, context
+/// usage, model, and thinking level.
+fn draw_footer(frame: &mut Frame, app: &App, area: Rect) {
+    let dim = Style::default().fg(app.theme.info);
+    let mut spans = vec![Span::styled(format!(" {}", display_path(&app.cwd)), dim)];
+    if let Some(name) = &app.session_name {
+        spans.push(Span::styled(format!(" · {name}"), dim));
+    }
+    if app.tokens_in > 0 || app.tokens_out > 0 {
+        spans.push(Span::styled(
+            format!(
+                " · ↑{} ↓{}",
+                compact_tokens(app.tokens_in),
+                compact_tokens(app.tokens_out)
+            ),
+            dim,
+        ));
+    }
+    if app.context_limit > 0 && app.context_used > 0 {
+        let pct = (app.context_used as f64 / app.context_limit as f64 * 100.0).round() as u64;
+        let color = if pct >= 85 {
+            app.theme.error
+        } else if pct >= 60 {
+            app.theme.tool
+        } else {
+            app.theme.info
+        };
+        spans.push(Span::styled(
+            format!(" · {pct}% ctx"),
+            Style::default().fg(color),
+        ));
+    }
+    let right = Line::from(vec![
         Span::styled(
-            format!("{secs}s · Esc to cancel "),
-            Style::default().fg(Color::LightYellow),
-        )
-    } else {
-        Span::raw("")
-    };
-    let full = format!(" {}", display_path(&app.cwd));
-    let short = format!(
-        " {}",
-        app.cwd
-            .rsplit('/')
-            .next()
-            .filter(|name| !name.is_empty())
-            .unwrap_or(&app.cwd)
-    );
-    let left = if full.chars().count() + right.content.chars().count() + 40 <= width {
-        full
-    } else {
-        short
-    };
+            app.model.clone(),
+            Style::default()
+                .fg(app.theme.accent)
+                .add_modifier(Modifier::BOLD),
+        ),
+        Span::styled(format!(" · {} ", app.mode.label()), mode_style(app.mode)),
+        Span::styled(
+            format!("{} ", app.reasoning.label()),
+            reasoning_style(app.reasoning),
+        ),
+    ]);
     frame.render_widget(
-        Paragraph::new(justified(vec![Span::styled(left, dim)], right, width)),
+        Paragraph::new(justified_line(spans, right, area.width as usize)),
         area,
     );
 }
 
-/// Lay out left-aligned spans and a right-aligned span, truncating the right
-/// side with an ellipsis when the row is too narrow for both.
-fn justified(left: Vec<Span<'static>>, right: Span<'static>, width: usize) -> Line<'static> {
+/// Formats token counts compactly (1234 -> "1.2k").
+fn compact_tokens(value: u64) -> String {
+    if value >= 1_000_000 {
+        format!("{:.1}M", value as f64 / 1_000_000.0)
+    } else if value >= 1_000 {
+        format!("{:.1}k", value as f64 / 1_000.0)
+    } else {
+        value.to_string()
+    }
+}
+
+/// Like [`justified`], but the right side is a styled span sequence.
+fn justified_line(left: Vec<Span<'static>>, right: Line<'static>, width: usize) -> Line<'static> {
     let left_len: usize = left.iter().map(|span| span.content.chars().count()).sum();
-    let right_len = right.content.chars().count();
+    let right_len: usize = right.spans.iter().map(|s| s.content.chars().count()).sum();
     let mut spans = left;
     if left_len + right_len <= width {
         spans.push(Span::raw(" ".repeat(width - left_len - right_len)));
-        spans.push(right);
-    } else if width > left_len + 1 {
+        spans.extend(right.spans);
+    } else {
         spans.push(Span::raw(" "));
         spans.push(Span::styled(
-            truncate(&right.content, width - left_len - 1),
-            right.style,
+            truncate(
+                &right
+                    .spans
+                    .iter()
+                    .map(|s| s.content.to_string())
+                    .collect::<String>(),
+                width.saturating_sub(left_len + 1),
+            ),
+            Style::default().fg(Color::Gray),
         ));
     }
     Line::from(spans)
@@ -429,11 +513,14 @@ fn display_path(path: &str) -> String {
     path.to_string()
 }
 
-fn mode_color(mode: Mode) -> Color {
-    match mode {
-        Mode::Build => Color::LightCyan,
-        Mode::AutoEdit => Color::LightYellow,
-        Mode::Plan => Color::LightMagenta,
+/// The editor border color reflects the active thinking level (Pi behavior).
+fn reasoning_color(reasoning: Reasoning, theme: &crate::theme::Theme) -> Color {
+    match reasoning {
+        Reasoning::Auto => theme.thinking_low,
+        Reasoning::Off => theme.thinking_off,
+        Reasoning::Low => theme.thinking_low,
+        Reasoning::Medium => theme.thinking_medium,
+        Reasoning::High => theme.thinking_high,
     }
 }
 
@@ -569,7 +656,10 @@ fn render_item(item: &ChatItem, width: usize, expand_tools: bool, lines: &mut Ve
         }
         ChatItem::Tool { name, args } => {
             if let Some(path) = file_tool_path(name, args) {
-                let (verb, color) = if name == "write_file" {
+                let (verb, color) = if matches!(
+                    crate::tools::canonical_tool_name(name),
+                    "write_file" | "patch" | "edit"
+                ) {
                     ("Edit", Color::LightYellow)
                 } else {
                     ("Read", Color::LightCyan)
@@ -592,7 +682,7 @@ fn render_item(item: &ChatItem, width: usize, expand_tools: bool, lines: &mut Ve
             }
         }
         ChatItem::ToolProgress { name, output } => {
-            if name != "bash" {
+            if crate::tools::canonical_tool_name(name) != "bash" {
                 lines.push(Line::from(vec![
                     Span::styled("⋯ ", Style::default().fg(Color::Gray)),
                     Span::styled(name.clone(), Style::default().fg(Color::Gray)),
@@ -616,7 +706,7 @@ fn render_item(item: &ChatItem, width: usize, expand_tools: bool, lines: &mut Ve
                     }
                 }
             } else if let Some(path) = file_tool_path(name, args) {
-                if name == "read_file" {
+                if crate::tools::canonical_tool_name(name) == "read_file" {
                     if output.starts_with("error:") {
                         lines.push(action_line(
                             "Read failed",
@@ -747,9 +837,9 @@ fn render_banner(width: usize, lines: &mut Vec<Line<'static>>) {
 
 fn draw_input(frame: &mut Frame, app: &App, area: Rect) {
     let border_color = if app.busy {
-        Color::Gray
+        app.theme.dim
     } else {
-        mode_color(app.mode)
+        reasoning_color(app.reasoning, &app.theme)
     };
     let title = if app.attachments.is_empty() {
         String::new()
@@ -818,7 +908,8 @@ fn input_scroll(input: &str, width: usize) -> u16 {
 
 /// Path argument for a `read_file`/`write_file` call, when present.
 fn file_tool_path(name: &str, args: &str) -> Option<String> {
-    if name != "read_file" && name != "write_file" {
+    let name = crate::tools::canonical_tool_name(name);
+    if !matches!(name, "read_file" | "write_file" | "patch" | "edit") {
         return None;
     }
     let value: serde_json::Value = serde_json::from_str(args).ok()?;
@@ -851,7 +942,7 @@ fn action_line(
 /// Render a shell command as `$ <command>`, truncating to a single line.
 /// Shell command for a `bash` call, flattened to a single line for display.
 fn bash_command(name: &str, args: &str) -> Option<String> {
-    if name != "bash" {
+    if crate::tools::canonical_tool_name(name) != "bash" {
         return None;
     }
     let value: serde_json::Value = serde_json::from_str(args).ok()?;
@@ -887,11 +978,15 @@ fn tool_arg_summary(name: &str, args: &str) -> String {
         return args.to_string();
     };
     let path = value.get("path").and_then(|v| v.as_str()).unwrap_or("");
-    let summary = match name {
+    let summary = match crate::tools::canonical_tool_name(name) {
         "write_file" => value
             .get("content")
             .and_then(|v| v.as_str())
             .map(|content| format!("{path} · {} lines", content.lines().count())),
+        "edit" => value
+            .get("edits")
+            .and_then(|v| v.as_array())
+            .map(|edits| format!("{path} · {} edit(s)", edits.len())),
         "read_file" => value
             .get("offset")
             .and_then(|v| v.as_u64())
@@ -1041,7 +1136,7 @@ mod tests {
 
     #[test]
     fn justified_right_aligns_and_truncates() {
-        let line = justified(vec![Span::raw("ab")], Span::raw("cd"), 6);
+        let line = justified_line(vec![Span::raw("ab")], Line::from(Span::raw("cd")), 6);
         let text: String = line
             .spans
             .iter()
@@ -1049,7 +1144,11 @@ mod tests {
             .collect();
         assert_eq!(text, "ab  cd");
 
-        let line = justified(vec![Span::raw("left")], Span::raw("long-right"), 8);
+        let line = justified_line(
+            vec![Span::raw("left")],
+            Line::from(Span::raw("long-right")),
+            8,
+        );
         let text: String = line
             .spans
             .iter()
@@ -1318,5 +1417,42 @@ mod tests {
         assert_eq!(lines[1].spans[0].style.fg, Some(Color::Gray));
         assert_eq!(lines[2].spans[0].style.fg, Some(Color::LightRed));
         assert_eq!(lines[3].spans[0].style.fg, Some(Color::LightGreen));
+    }
+
+    fn row_of(buffer: &ratatui::buffer::Buffer, needle: &str) -> Option<u16> {
+        (0..buffer.area.height).find(|y| {
+            let row: String = (0..buffer.area.width)
+                .map(|x| buffer[(x, *y)].symbol())
+                .collect();
+            row.contains(needle)
+        })
+    }
+
+    #[test]
+    fn status_sits_below_the_input_box() {
+        use crate::config::{Mode, Reasoning};
+        use ratatui::backend::TestBackend;
+        use ratatui::Terminal;
+
+        let mut app = App::new(
+            "gpt-4o".into(),
+            "/tmp/project".into(),
+            Mode::Build,
+            Reasoning::Auto,
+        );
+        app.status = "ready".into();
+        let mut terminal = Terminal::new(TestBackend::new(69, 24)).unwrap();
+        terminal.draw(|frame| draw(frame, &mut app)).unwrap();
+        let buffer = terminal.backend().buffer().clone();
+
+        let input_top = row_of(&buffer, "╭").expect("input box border");
+        let status = row_of(&buffer, "ready").expect("status row");
+        assert!(
+            status > input_top,
+            "status should render below the input box (input at {input_top}, status at {status})"
+        );
+
+        let input_bottom = row_of(&buffer, "╰").expect("input box bottom border");
+        assert_eq!(status, input_bottom + 1);
     }
 }
