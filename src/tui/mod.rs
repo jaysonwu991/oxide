@@ -109,8 +109,10 @@ async fn event_loop(
     ));
     if config.api_key.trim().is_empty() {
         app.items.push(ChatItem::Info(
-            "no provider connected — type /connect to add an API key".to_string(),
+            "Welcome! Connect a model provider to send your first message.".to_string(),
         ));
+        app.connect = Some(ConnectState::new());
+        app.status = "setup required".to_string();
     }
 
     if let Some(log) = &session {
@@ -856,15 +858,16 @@ fn handle_connect_key(key: KeyEvent, app: &mut App, config: &mut Config) {
             let value = state.input.trim().to_string();
             match state.step.clone() {
                 ConnectStep::Provider => {
-                    if value.is_empty() {
-                        state.error = Some("enter a provider name or number".to_string());
+                    let provider = if value.is_empty() {
+                        crate::auth::KNOWN_PROVIDERS[state.selected]
+                            .name
+                            .to_string()
                     } else {
-                        state.step = ConnectStep::Key {
-                            provider: resolve_provider_choice(&value),
-                        };
-                        state.input.clear();
-                        state.error = None;
-                    }
+                        resolve_provider_choice(&value)
+                    };
+                    state.step = ConnectStep::Key { provider };
+                    state.input.clear();
+                    state.error = None;
                 }
                 ConnectStep::Key { provider } => {
                     if value.is_empty() {
@@ -888,7 +891,19 @@ fn handle_connect_key(key: KeyEvent, app: &mut App, config: &mut Config) {
             }
         }
         KeyCode::Backspace => {
-            state.input.pop();
+            if state.input.is_empty() && matches!(state.step, ConnectStep::Key { .. }) {
+                state.step = ConnectStep::Provider;
+                state.error = None;
+            } else {
+                state.input.pop();
+                state.error = None;
+            }
+        }
+        KeyCode::Up if matches!(state.step, ConnectStep::Provider) && state.input.is_empty() => {
+            state.selected = state.selected.saturating_sub(1);
+        }
+        KeyCode::Down if matches!(state.step, ConnectStep::Provider) && state.input.is_empty() => {
+            state.selected = (state.selected + 1).min(crate::auth::KNOWN_PROVIDERS.len() - 1);
         }
         KeyCode::Char(c)
             if !key
@@ -896,6 +911,7 @@ fn handle_connect_key(key: KeyEvent, app: &mut App, config: &mut Config) {
                 .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT) =>
         {
             state.input.push(c);
+            state.error = None;
         }
         _ => {}
     }
@@ -1029,14 +1045,37 @@ mod tests {
     }
 
     #[test]
-    fn connect_empty_provider_reports_error() {
+    fn connect_enter_accepts_highlighted_provider() {
         let mut app = test_app();
         let mut config = Config::default();
         app.connect = Some(ConnectState::new());
 
         handle_connect_key(key(KeyCode::Enter), &mut app, &mut config);
 
-        assert!(app.connect.as_ref().unwrap().error.is_some());
+        assert!(matches!(
+            &app.connect.as_ref().unwrap().step,
+            ConnectStep::Key { provider } if provider == "openai"
+        ));
+    }
+
+    #[test]
+    fn connect_arrows_select_provider_and_backspace_returns() {
+        let mut app = test_app();
+        let mut config = Config::default();
+        app.connect = Some(ConnectState::new());
+
+        handle_connect_key(key(KeyCode::Down), &mut app, &mut config);
+        handle_connect_key(key(KeyCode::Enter), &mut app, &mut config);
+        assert!(matches!(
+            &app.connect.as_ref().unwrap().step,
+            ConnectStep::Key { provider } if provider == "deepseek"
+        ));
+
+        handle_connect_key(key(KeyCode::Backspace), &mut app, &mut config);
+        assert!(matches!(
+            app.connect.as_ref().unwrap().step,
+            ConnectStep::Provider
+        ));
     }
 
     #[test]

@@ -11,10 +11,10 @@ use std::sync::Arc;
 use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::time::{timeout, Duration};
 
-const MAX_OUTPUT_BYTES: usize = 8_000;
-const MAX_OUTPUT_LINES: usize = 400;
-const MAX_LINE_LEN: usize = 2_000;
-const DEFAULT_READ_LINES: usize = 400;
+const MAX_OUTPUT_BYTES: usize = 6_000;
+const MAX_OUTPUT_LINES: usize = 250;
+const MAX_LINE_LEN: usize = 1_000;
+const DEFAULT_READ_LINES: usize = 250;
 const TRUNCATION_RETENTION_SECS: u64 = 7 * 24 * 60 * 60;
 
 static TRUNCATION_ID: AtomicU64 = AtomicU64::new(0);
@@ -294,7 +294,7 @@ fn read_file(cwd: &Path, args: &Value) -> Result<ToolOutput> {
         } else {
             line.to_string()
         };
-        let entry = format!("{:>6}\t{shown}", i + 1);
+        let entry = format!("{}|{shown}", i + 1);
         if !numbered.is_empty() && used + entry.len() + 1 > budget {
             break;
         }
@@ -331,11 +331,7 @@ fn write_file(cwd: &Path, args: &Value) -> Result<ToolOutput> {
     }
     let previous = std::fs::read_to_string(&full).unwrap_or_default();
     std::fs::write(&full, content).with_context(|| format!("writing {}", full.display()))?;
-    let output = ToolOutput::text(format!(
-        "wrote {} bytes to {}",
-        content.len(),
-        full.display()
-    ));
+    let output = ToolOutput::text(format!("wrote {} bytes", content.len()));
     match diff::preview(&previous, content) {
         Some(diff) => Ok(output.with_diff(path, diff)),
         None => Ok(output),
@@ -767,10 +763,10 @@ async fn bash(cwd: &Path, args: &Value, progress: &Progress) -> Result<String> {
         combined.push_str("[stderr]\n");
         combined.push_str(stderr);
     }
-    if combined.is_empty() {
-        combined.push_str("(no output)");
+    if !combined.is_empty() {
+        combined.push('\n');
     }
-    combined.push_str(&format!("\n[exit code: {}]", status.code().unwrap_or(-1)));
+    combined.push_str(&format!("[exit: {}]", status.code().unwrap_or(-1)));
     Ok(combined)
 }
 
@@ -789,8 +785,8 @@ where
 }
 
 /// Cap tool output so a single result cannot dominate the context window. The
-/// preview keeps at most `MAX_OUTPUT_LINES` lines and `MAX_OUTPUT_BYTES` bytes:
-/// `bash` keeps its tail (where errors and the exit code live), everything else
+/// preview uses a tool-specific line and byte budget. `bash` keeps its tail
+/// (where errors and the exit code live), everything else
 /// keeps its head. When content is dropped, the full text is saved under the
 /// oxide config dir and the result points at it so the model can inspect the
 /// full output without re-running the tool.
@@ -799,29 +795,30 @@ fn truncate(name: &str, output: String) -> String {
 }
 
 fn truncate_into(name: &str, output: String, dir: Option<&Path>) -> String {
+    let (max_bytes, max_lines) = output_limits(name);
     let lines: Vec<&str> = output.lines().collect();
-    if output.len() <= MAX_OUTPUT_BYTES && lines.len() <= MAX_OUTPUT_LINES {
+    if output.len() <= max_bytes && lines.len() <= max_lines {
         return output;
     }
 
     let tail = name == "bash";
-    let keep = MAX_OUTPUT_LINES.min(lines.len());
+    let keep = max_lines.min(lines.len());
     let start = if tail { lines.len() - keep } else { 0 };
     let kept = &lines[start..start + keep];
     let dropped_lines = lines.len() - keep;
 
     let mut preview = kept.join("\n");
     let mut dropped_bytes = 0;
-    if preview.len() > MAX_OUTPUT_BYTES {
+    if preview.len() > max_bytes {
         if tail {
-            let mut cut = preview.len() - MAX_OUTPUT_BYTES;
+            let mut cut = preview.len() - max_bytes;
             while !preview.is_char_boundary(cut) {
                 cut += 1;
             }
             dropped_bytes = cut;
             preview = preview[cut..].to_string();
         } else {
-            let mut cut = MAX_OUTPUT_BYTES;
+            let mut cut = max_bytes;
             while !preview.is_char_boundary(cut) {
                 cut -= 1;
             }
@@ -830,16 +827,23 @@ fn truncate_into(name: &str, output: String, dir: Option<&Path>) -> String {
         }
     }
 
-    let mut result =
-        format!("... [output truncated: {dropped_lines} lines / {dropped_bytes} bytes dropped]\n");
+    let mut result = format!("[truncated: {dropped_lines} lines, {dropped_bytes} bytes");
     if let Some(path) = dir.and_then(|dir| save_truncated(dir, &output)) {
-        result.push_str(&format!(
-            "Full output saved to: {}\nUse grep or read_file with offset to inspect it.\n",
-            path.display()
-        ));
+        result.push_str(&format!("; full: {}", path.display()));
     }
+    result.push_str("]\n");
     result.push_str(&preview);
     result
+}
+
+fn output_limits(name: &str) -> (usize, usize) {
+    match name {
+        "bash" => (5_000, 160),
+        "grep" | "glob" | "list_dir" => (4_000, 160),
+        "webfetch" => (6_000, 200),
+        "write_file" | "patch" => (3_000, 120),
+        _ => (MAX_OUTPUT_BYTES, MAX_OUTPUT_LINES),
+    }
 }
 
 fn truncation_dir() -> Option<PathBuf> {
@@ -939,7 +943,7 @@ mod tests {
         )
         .await;
         assert!(
-            out.text.contains("hi") && out.text.contains("exit code: 0"),
+            out.text.contains("hi") && out.text.contains("[exit: 0]"),
             "{}",
             out.text
         );
@@ -1067,11 +1071,11 @@ mod tests {
         for i in 0..(MAX_OUTPUT_LINES + 50) {
             output.push_str(&format!("line {i}\n"));
         }
-        output.push_str("[exit code: 7]");
+        output.push_str("[exit: 7]");
 
         let result = truncate_into("bash", output, Some(&dir));
-        assert!(result.contains("[exit code: 7]"), "{result}");
-        assert!(result.contains("output truncated"), "{result}");
+        assert!(result.contains("[exit: 7]"), "{result}");
+        assert!(result.contains("[truncated:"), "{result}");
         assert!(!result.contains("line 0\n"), "{result}");
 
         std::fs::remove_dir_all(&dir).ok();
@@ -1104,7 +1108,7 @@ mod tests {
 
         let output = "x".repeat(MAX_OUTPUT_BYTES + 100);
         let result = truncate_into("read_file", output.clone(), Some(&dir));
-        assert!(result.contains("Full output saved to:"), "{result}");
+        assert!(result.contains("; full:"), "{result}");
 
         let saved: Vec<_> = std::fs::read_dir(&dir).unwrap().flatten().collect();
         assert_eq!(saved.len(), 1, "{saved:?}");

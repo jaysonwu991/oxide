@@ -183,10 +183,10 @@ enum McpAction {
 enum AuthAction {
     /// Store an API key for a provider
     Login {
-        /// Provider name (openai, deepseek, anthropic); prompts when omitted
+        /// Provider name (openai, deepseek, anthropic); opens setup when omitted
         provider: Option<String>,
-        /// API key; prompts when omitted
-        #[arg(long)]
+        /// API key (less secure than the hidden prompt; useful for scripts)
+        #[arg(long, value_name = "API_KEY")]
         key: Option<String>,
     },
     /// List stored credentials
