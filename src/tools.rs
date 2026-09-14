@@ -1384,20 +1384,26 @@ mod tests {
 
     #[tokio::test]
     async fn webfetch_converts_html_to_markdown() {
-        use tokio::io::AsyncWriteExt;
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
         let body = "<h1>Title</h1><p>Hello <b>world</b></p>";
         let _server = tokio::spawn(async move {
             while let Ok((mut socket, _)) = listener.accept().await {
-                let response = format!(
-                    "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
-                    body.len(),
-                    body
-                );
-                let _ = socket.write_all(response.as_bytes()).await;
-                let _ = socket.shutdown().await;
+                tokio::spawn(async move {
+                    // Drain the request first: closing a socket that still has
+                    // unread data sends an RST on Windows (os error 10053).
+                    let mut buf = [0u8; 1024];
+                    let _ = socket.read(&mut buf).await;
+                    let response = format!(
+                        "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                        body.len(),
+                        body
+                    );
+                    let _ = socket.write_all(response.as_bytes()).await;
+                    let _ = socket.shutdown().await;
+                });
             }
         });
 
