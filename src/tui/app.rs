@@ -98,6 +98,7 @@ pub enum ConnectStep {
 pub struct ConnectState {
     pub step: ConnectStep,
     pub input: String,
+    pub selected: usize,
     pub error: Option<String>,
 }
 
@@ -106,6 +107,7 @@ impl ConnectState {
         Self {
             step: ConnectStep::Provider,
             input: String::new(),
+            selected: 0,
             error: None,
         }
     }

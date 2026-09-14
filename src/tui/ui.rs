@@ -16,6 +16,9 @@ const MAX_SUGGESTION_ROWS: usize = 8;
 
 const FILE_TOOLS: [&str; 3] = ["read_file", "write_file", "patch"];
 
+// Crossterm maps unsuffixed ANSI colors to dark variants, so accents use the
+// light variants to remain readable on common dark terminal backgrounds.
+
 /// Persistent keybinding reminder pinned above the input box, kept to two
 /// short lines so the full set stays visible on an 80-column terminal.
 const TIPS: [&str; 2] = [
@@ -106,43 +109,70 @@ fn draw_connect(frame: &mut Frame, app: &App) {
     let Some(state) = &app.connect else {
         return;
     };
-    let area = centered_rect(70, 40, frame.area());
+    let area = centered_rect(72, 54, frame.area());
     frame.render_widget(Clear, area);
 
     let (prompt, value) = match &state.step {
         ConnectStep::Provider => (
-            "Provider: 1 openai · 2 deepseek · 3 anthropic, or type a name",
+            "Choose a provider, or type a custom provider name",
             state.input.clone(),
         ),
-        ConnectStep::Key { .. } => ("Enter API key", "*".repeat(state.input.chars().count())),
+        ConnectStep::Key { provider } => (
+            crate::auth::provider_option(provider)
+                .map(|option| option.key_url)
+                .unwrap_or("Paste the API key for this provider"),
+            "*".repeat(state.input.chars().count()),
+        ),
     };
     let title = match &state.step {
         ConnectStep::Provider => " connect ",
         ConnectStep::Key { provider } => provider.as_str(),
     };
 
-    let mut lines = vec![
-        Line::from(Span::styled(prompt, Style::default().fg(Color::DarkGray))),
-        Line::from(""),
-    ];
+    let mut lines = vec![Line::from(Span::styled(
+        prompt,
+        Style::default().fg(Color::Gray),
+    ))];
+    if matches!(state.step, ConnectStep::Provider) {
+        lines.push(Line::from(""));
+        for (index, option) in crate::auth::KNOWN_PROVIDERS.iter().enumerate() {
+            let selected = state.input.is_empty() && state.selected == index;
+            let marker = if selected { "›" } else { " " };
+            let style = if selected {
+                Style::default()
+                    .fg(Color::LightCyan)
+                    .add_modifier(Modifier::BOLD)
+            } else {
+                Style::default().fg(Color::White)
+            };
+            lines.push(Line::from(vec![
+                Span::styled(format!(" {marker} {:<10}", option.label), style),
+                Span::styled(option.description, Style::default().fg(Color::Gray)),
+            ]));
+        }
+    }
+    lines.push(Line::from(""));
     if let Some(error) = &state.error {
         lines.push(Line::from(Span::styled(
             format!("error: {error}"),
-            Style::default().fg(Color::Red),
+            Style::default().fg(Color::LightRed),
         )));
         lines.push(Line::from(""));
     }
     lines.push(Line::from(vec![
-        Span::styled("> ", Style::default().fg(Color::Cyan)),
+        Span::styled("> ", Style::default().fg(Color::LightCyan)),
         Span::styled(value, Style::default().fg(Color::White)),
     ]));
     lines.push(Line::from(""));
     lines.push(Line::from(Span::styled(
-        "Enter confirm · Esc cancel",
-        Style::default().fg(Color::DarkGray),
+        match state.step {
+            ConnectStep::Provider => "↑/↓ choose · Enter continue · Esc cancel",
+            ConnectStep::Key { .. } => "Enter connect · Backspace back · Esc cancel",
+        },
+        Style::default().fg(Color::Gray),
     )));
 
-    let block = panel(title, Color::Cyan);
+    let block = panel(title, Color::LightCyan);
     frame.render_widget(
         Paragraph::new(lines)
             .block(block)
@@ -163,7 +193,7 @@ fn draw_models(frame: &mut Frame, app: &App) {
     } else {
         format!(" models · {} ", state.filter)
     };
-    let block = panel(&title, Color::Cyan);
+    let block = panel(&title, Color::LightCyan);
     let inner = block.inner(area);
     frame.render_widget(block, area);
 
@@ -171,7 +201,7 @@ fn draw_models(frame: &mut Frame, app: &App) {
         frame.render_widget(
             Paragraph::new(Span::styled(
                 "loading models…",
-                Style::default().fg(Color::DarkGray),
+                Style::default().fg(Color::Gray),
             )),
             inner,
         );
@@ -181,7 +211,7 @@ fn draw_models(frame: &mut Frame, app: &App) {
         frame.render_widget(
             Paragraph::new(Span::styled(
                 format!("error: {error}"),
-                Style::default().fg(Color::Red),
+                Style::default().fg(Color::LightRed),
             )),
             inner,
         );
@@ -193,7 +223,7 @@ fn draw_models(frame: &mut Frame, app: &App) {
         frame.render_widget(
             Paragraph::new(Span::styled(
                 "no matching models",
-                Style::default().fg(Color::DarkGray),
+                Style::default().fg(Color::Gray),
             )),
             inner,
         );
@@ -214,7 +244,7 @@ fn draw_models(frame: &mut Frame, app: &App) {
         .highlight_style(
             Style::default()
                 .fg(Color::Black)
-                .bg(Color::Cyan)
+                .bg(Color::LightCyan)
                 .add_modifier(Modifier::BOLD),
         )
         .highlight_symbol("> ");
@@ -243,21 +273,24 @@ fn draw_suggestions(frame: &mut Frame, app: &App, area: Rect) {
         .iter()
         .map(|hint| {
             ListItem::new(Line::from(vec![
-                Span::styled(format!("/{}", hint.name), Style::default().fg(Color::Cyan)),
+                Span::styled(
+                    format!("/{}", hint.name),
+                    Style::default().fg(Color::LightCyan),
+                ),
                 Span::styled(
                     format!("  {}", hint.description),
-                    Style::default().fg(Color::DarkGray),
+                    Style::default().fg(Color::Gray),
                 ),
             ]))
         })
         .collect();
-    let block = panel("commands", Color::DarkGray);
+    let block = panel("commands", Color::Gray);
     let list = List::new(items)
         .block(block)
         .highlight_style(
             Style::default()
                 .fg(Color::Black)
-                .bg(Color::Cyan)
+                .bg(Color::LightCyan)
                 .add_modifier(Modifier::BOLD),
         )
         .highlight_symbol("> ");
@@ -275,7 +308,7 @@ fn draw_info(frame: &mut Frame, app: &App, area: Rect) {
         Span::styled(
             app.model.clone(),
             Style::default()
-                .fg(Color::Cyan)
+                .fg(Color::LightCyan)
                 .add_modifier(Modifier::BOLD),
         ),
         Span::raw(" "),
@@ -285,9 +318,9 @@ fn draw_info(frame: &mut Frame, app: &App, area: Rect) {
         ),
     ];
     let status_style = if app.busy {
-        Style::default().fg(Color::Yellow)
+        Style::default().fg(Color::LightYellow)
     } else if app.status == "ready" {
-        Style::default().fg(Color::DarkGray)
+        Style::default().fg(Color::Gray)
     } else {
         Style::default().fg(Color::White)
     };
@@ -305,7 +338,7 @@ fn draw_tips(frame: &mut Frame, area: Rect) {
         .map(|tip| {
             Line::from(Span::styled(
                 format!(" {tip}"),
-                Style::default().fg(Color::DarkGray),
+                Style::default().fg(Color::Gray),
             ))
         })
         .collect();
@@ -314,7 +347,7 @@ fn draw_tips(frame: &mut Frame, area: Rect) {
 
 /// Bottom bar: working directory on the left, elapsed time on the right.
 fn draw_footer(frame: &mut Frame, app: &App, area: Rect) {
-    let dim = Style::default().fg(Color::DarkGray);
+    let dim = Style::default().fg(Color::Gray);
     let width = area.width as usize;
     let right = if app.busy {
         let secs = app
@@ -323,7 +356,7 @@ fn draw_footer(frame: &mut Frame, app: &App, area: Rect) {
             .unwrap_or(0);
         Span::styled(
             format!("{secs}s · Esc to cancel "),
-            Style::default().fg(Color::Yellow),
+            Style::default().fg(Color::LightYellow),
         )
     } else {
         Span::raw("")
@@ -398,28 +431,28 @@ fn display_path(path: &str) -> String {
 
 fn mode_color(mode: Mode) -> Color {
     match mode {
-        Mode::Build => Color::Cyan,
-        Mode::AutoEdit => Color::Yellow,
-        Mode::Plan => Color::Magenta,
+        Mode::Build => Color::LightCyan,
+        Mode::AutoEdit => Color::LightYellow,
+        Mode::Plan => Color::LightMagenta,
     }
 }
 
 fn mode_style(mode: Mode) -> Style {
     let (fg, bg) = match mode {
-        Mode::Build => (Color::Black, Color::Cyan),
-        Mode::AutoEdit => (Color::Black, Color::Yellow),
-        Mode::Plan => (Color::Black, Color::Magenta),
+        Mode::Build => (Color::Black, Color::LightCyan),
+        Mode::AutoEdit => (Color::Black, Color::LightYellow),
+        Mode::Plan => (Color::Black, Color::LightMagenta),
     };
     Style::default().fg(fg).bg(bg).add_modifier(Modifier::BOLD)
 }
 
 fn reasoning_style(reasoning: Reasoning) -> Style {
     let (fg, bg) = match reasoning {
-        Reasoning::Auto => (Color::Black, Color::Green),
-        Reasoning::Off => (Color::White, Color::DarkGray),
-        Reasoning::Low => (Color::Black, Color::Cyan),
-        Reasoning::Medium => (Color::White, Color::Blue),
-        Reasoning::High => (Color::White, Color::Magenta),
+        Reasoning::Auto => (Color::Black, Color::LightGreen),
+        Reasoning::Off => (Color::Black, Color::Gray),
+        Reasoning::Low => (Color::Black, Color::LightCyan),
+        Reasoning::Medium => (Color::Black, Color::LightBlue),
+        Reasoning::High => (Color::Black, Color::LightMagenta),
     };
     Style::default().fg(fg).bg(bg).add_modifier(Modifier::BOLD)
 }
@@ -510,17 +543,26 @@ fn render_item(item: &ChatItem, width: usize, expand_tools: bool, lines: &mut Ve
         ChatItem::Banner => render_banner(width, lines),
         ChatItem::User(text) => {
             lines.push(Line::from(vec![
-                Span::styled("❯ ", Style::default().fg(Color::Cyan).add_modifier(bold)),
-                Span::styled("you", Style::default().fg(Color::Cyan).add_modifier(bold)),
+                Span::styled(
+                    "❯ ",
+                    Style::default().fg(Color::LightCyan).add_modifier(bold),
+                ),
+                Span::styled(
+                    "you",
+                    Style::default().fg(Color::LightCyan).add_modifier(bold),
+                ),
             ]));
             push_wrapped(lines, text, width, Style::default());
         }
         ChatItem::Assistant(text) => {
             lines.push(Line::from(vec![
-                Span::styled("◆ ", Style::default().fg(Color::Green).add_modifier(bold)),
+                Span::styled(
+                    "◆ ",
+                    Style::default().fg(Color::LightGreen).add_modifier(bold),
+                ),
                 Span::styled(
                     "oxide",
-                    Style::default().fg(Color::Green).add_modifier(bold),
+                    Style::default().fg(Color::LightGreen).add_modifier(bold),
                 ),
             ]));
             push_wrapped(lines, text, width, Style::default());
@@ -528,23 +570,23 @@ fn render_item(item: &ChatItem, width: usize, expand_tools: bool, lines: &mut Ve
         ChatItem::Tool { name, args } => {
             if let Some(path) = file_tool_path(name, args) {
                 let (verb, color) = if name == "write_file" {
-                    ("Edit", Color::Yellow)
+                    ("Edit", Color::LightYellow)
                 } else {
-                    ("Read", Color::Cyan)
+                    ("Read", Color::LightCyan)
                 };
                 lines.push(action_line(verb, &path, color, bold, width));
             } else if let Some(command) = bash_command(name, args) {
-                lines.push(command_line(&command, Color::Blue, bold, width));
+                lines.push(action_line("Run", &command, Color::LightBlue, bold, width));
             } else {
                 lines.push(Line::from(vec![
-                    Span::styled("⚙ ", Style::default().fg(Color::Yellow)),
+                    Span::styled("⚙ ", Style::default().fg(Color::LightYellow)),
                     Span::styled(
                         name.clone(),
-                        Style::default().fg(Color::Yellow).add_modifier(bold),
+                        Style::default().fg(Color::LightYellow).add_modifier(bold),
                     ),
                     Span::styled(
                         format!(" {}", tool_arg_summary(name, args)),
-                        Style::default().fg(Color::DarkGray),
+                        Style::default().fg(Color::Gray),
                     ),
                 ]));
             }
@@ -552,8 +594,8 @@ fn render_item(item: &ChatItem, width: usize, expand_tools: bool, lines: &mut Ve
         ChatItem::ToolProgress { name, output } => {
             if name != "bash" {
                 lines.push(Line::from(vec![
-                    Span::styled("⋯ ", Style::default().fg(Color::DarkGray)),
-                    Span::styled(name.clone(), Style::default().fg(Color::DarkGray)),
+                    Span::styled("⋯ ", Style::default().fg(Color::Gray)),
+                    Span::styled(name.clone(), Style::default().fg(Color::Gray)),
                 ]));
             }
             push_tool_body(lines, output, width, expand_tools);
@@ -567,25 +609,40 @@ fn render_item(item: &ChatItem, width: usize, expand_tools: bool, lines: &mut Ve
             if let Some(diff) = diff {
                 render_diff(diff, width, expand_tools, lines);
                 if output.starts_with("error:") {
-                    push_wrapped(lines, output, width, Style::default().fg(Color::Red));
+                    push_wrapped(lines, output, width, Style::default().fg(Color::LightRed));
                 } else if let Some((_, rest)) = output.split_once("\n\n") {
                     if !rest.trim().is_empty() {
-                        push_wrapped(lines, rest, width, Style::default().fg(Color::DarkGray));
+                        push_wrapped(lines, rest, width, Style::default().fg(Color::Gray));
                     }
                 }
             } else if let Some(path) = file_tool_path(name, args) {
                 if name == "read_file" {
                     if output.starts_with("error:") {
-                        push_wrapped(lines, output, width, Style::default().fg(Color::Red));
+                        lines.push(action_line(
+                            "Read failed",
+                            &path,
+                            Color::LightRed,
+                            bold,
+                            width,
+                        ));
+                        push_wrapped(lines, output, width, Style::default().fg(Color::LightRed));
+                    } else {
+                        lines.push(action_line("Read", &path, Color::LightGreen, bold, width));
                     }
                 } else if output.starts_with("error:") {
-                    lines.push(action_line("Edit failed", &path, Color::Red, bold, width));
-                    push_wrapped(lines, output, width, Style::default().fg(Color::Red));
+                    lines.push(action_line(
+                        "Edit failed",
+                        &path,
+                        Color::LightRed,
+                        bold,
+                        width,
+                    ));
+                    push_wrapped(lines, output, width, Style::default().fg(Color::LightRed));
                 } else {
-                    lines.push(action_line("Edited", &path, Color::Green, bold, width));
+                    lines.push(action_line("Edited", &path, Color::LightGreen, bold, width));
                     if let Some((_, rest)) = output.split_once("\n\n") {
                         if !rest.trim().is_empty() {
-                            push_wrapped(lines, rest, width, Style::default().fg(Color::DarkGray));
+                            push_wrapped(lines, rest, width, Style::default().fg(Color::Gray));
                         }
                     }
                 }
@@ -594,31 +651,40 @@ fn render_item(item: &ChatItem, width: usize, expand_tools: bool, lines: &mut Ve
                 let failed = exit
                     .map(|code| code != 0)
                     .unwrap_or_else(|| output.starts_with("error:"));
-                let color = if failed { Color::Red } else { Color::Green };
-                lines.push(command_line(&command, color, bold, width));
+                let color = if failed {
+                    Color::LightRed
+                } else {
+                    Color::LightGreen
+                };
+                let subject = match exit {
+                    Some(code) => format!("{command} · exit {code}"),
+                    None => command,
+                };
+                let verb = if failed { "Run failed" } else { "Ran" };
+                lines.push(action_line(verb, &subject, color, bold, width));
                 if exit.is_none() && !output.trim().is_empty() {
-                    push_wrapped(lines, output, width, Style::default().fg(Color::Red));
+                    push_wrapped(lines, output, width, Style::default().fg(Color::LightRed));
                 } else if expand_tools {
                     push_tool_body(lines, output, width, true);
                 } else if bash_has_body(output) {
-                    push_collapsed_hint(lines, width);
+                    push_collapsed_hint(lines, width, output.lines().count().saturating_sub(1));
                 }
             } else {
                 lines.push(Line::from(vec![
-                    Span::styled("↳ ", Style::default().fg(Color::DarkGray)),
-                    Span::styled(name.clone(), Style::default().fg(Color::DarkGray)),
+                    Span::styled("↳ ", Style::default().fg(Color::Gray)),
+                    Span::styled(name.clone(), Style::default().fg(Color::Gray)),
                 ]));
                 if expand_tools {
                     push_tool_body(lines, output, width, true);
                 } else if !output.trim().is_empty() {
-                    push_collapsed_hint(lines, width);
+                    push_collapsed_hint(lines, width, output.lines().count());
                 }
             }
         }
         ChatItem::Thought(millis) => {
             lines.push(Line::from(Span::styled(
                 format!("+ Thought: {millis}ms"),
-                Style::default().fg(Color::DarkGray),
+                Style::default().fg(Color::Gray),
             )));
         }
         ChatItem::Error(text) => {
@@ -626,7 +692,7 @@ fn render_item(item: &ChatItem, width: usize, expand_tools: bool, lines: &mut Ve
                 lines,
                 &format!("✗ {text}"),
                 width,
-                Style::default().fg(Color::Red),
+                Style::default().fg(Color::LightRed),
             );
         }
         ChatItem::Info(text) => {
@@ -634,7 +700,7 @@ fn render_item(item: &ChatItem, width: usize, expand_tools: bool, lines: &mut Ve
                 lines,
                 &format!("· {text}"),
                 width,
-                Style::default().fg(Color::DarkGray),
+                Style::default().fg(Color::Gray),
             );
         }
     }
@@ -652,18 +718,18 @@ fn render_banner(width: usize, lines: &mut Vec<Line<'static>>) {
         lines.push(Line::from(Span::styled(
             "oxide",
             Style::default()
-                .fg(Color::Cyan)
+                .fg(Color::LightCyan)
                 .add_modifier(Modifier::BOLD),
         )));
         return;
     }
     let colors = [
-        Color::Cyan,
+        Color::LightCyan,
         Color::LightCyan,
         Color::LightMagenta,
-        Color::Magenta,
         Color::LightMagenta,
-        Color::Cyan,
+        Color::LightMagenta,
+        Color::LightCyan,
     ];
     for (index, art) in BANNER.iter().enumerate() {
         let pad = (width - art.chars().count()) / 2;
@@ -681,7 +747,7 @@ fn render_banner(width: usize, lines: &mut Vec<Line<'static>>) {
 
 fn draw_input(frame: &mut Frame, app: &App, area: Rect) {
     let border_color = if app.busy {
-        Color::DarkGray
+        Color::Gray
     } else {
         mode_color(app.mode)
     };
@@ -716,7 +782,15 @@ fn draw_input(frame: &mut Frame, app: &App, area: Rect) {
     );
 
     let width = text_area.width as usize;
-    let paragraph = Paragraph::new(app.input.as_str())
+    let input = if app.input.is_empty() && !app.busy {
+        Span::styled(
+            "Ask Oxide to build, debug, or explain…",
+            Style::default().fg(Color::Gray),
+        )
+    } else {
+        Span::raw(app.input.as_str())
+    };
+    let paragraph = Paragraph::new(input)
         .wrap(Wrap { trim: false })
         .scroll((input_scroll(&app.input, width), 0));
     frame.render_widget(paragraph, text_area);
@@ -770,19 +844,11 @@ fn action_line(
             verb.to_string(),
             Style::default().fg(color).add_modifier(bold),
         ),
-        Span::styled(format!(" {subject}"), Style::default().fg(Color::DarkGray)),
+        Span::styled(format!(" {subject}"), Style::default().fg(Color::Gray)),
     ])
 }
 
 /// Render a shell command as `$ <command>`, truncating to a single line.
-fn command_line(command: &str, color: Color, bold: Modifier, width: usize) -> Line<'static> {
-    let command = truncate(command, width.saturating_sub(2));
-    Line::from(vec![
-        Span::styled("$ ", Style::default().fg(color).add_modifier(bold)),
-        Span::styled(command, Style::default().fg(color).add_modifier(bold)),
-    ])
-}
-
 /// Shell command for a `bash` call, flattened to a single line for display.
 fn bash_command(name: &str, args: &str) -> Option<String> {
     if name != "bash" {
@@ -802,7 +868,10 @@ fn bash_exit_code(output: &str) -> Option<i32> {
     output
         .lines()
         .rev()
-        .find_map(|line| line.strip_prefix("[exit code: "))
+        .find_map(|line| {
+            line.strip_prefix("[exit: ")
+                .or_else(|| line.strip_prefix("[exit code: "))
+        })
         .and_then(|rest| rest.strip_suffix(']'))
         .and_then(|code| code.trim().parse().ok())
 }
@@ -844,16 +913,16 @@ fn push_tool_body(lines: &mut Vec<Line<'static>>, output: &str, width: usize, ex
     if !expand_tools {
         return;
     }
-    push_wrapped(lines, output, width, Style::default().fg(Color::DarkGray));
+    push_wrapped(lines, output, width, Style::default().fg(Color::Gray));
 }
 
 /// A one-line affordance shown when a tool body is hidden, mirroring the
 /// opencode "click to expand" hint.
-fn push_collapsed_hint(lines: &mut Vec<Line<'static>>, width: usize) {
-    let hint = "  ⋯ Ctrl+O to expand";
+fn push_collapsed_hint(lines: &mut Vec<Line<'static>>, width: usize, hidden_lines: usize) {
+    let hint = format!("  ⋯ {hidden_lines} lines · Ctrl+O to expand");
     lines.push(Line::from(Span::styled(
-        truncate(hint, width),
-        Style::default().fg(Color::DarkGray),
+        truncate(&hint, width),
+        Style::default().fg(Color::Gray),
     )));
 }
 
@@ -861,12 +930,12 @@ fn push_collapsed_hint(lines: &mut Vec<Line<'static>>, width: usize) {
 fn bash_has_body(output: &str) -> bool {
     output
         .lines()
-        .filter(|line| !line.starts_with("[exit code: "))
+        .filter(|line| !line.starts_with("[exit: ") && !line.starts_with("[exit code: "))
         .any(|line| !line.trim().is_empty())
 }
 
 /// How many diff lines to show before the user expands the view with Ctrl+O.
-const DIFF_PREVIEW_LINES: usize = 40;
+const DIFF_PREVIEW_LINES: usize = 12;
 
 /// Render a file edit as a colored, line-numbered diff, mirroring the opencode
 /// edit view.
@@ -877,9 +946,9 @@ fn render_diff(
     lines: &mut Vec<Line<'static>>,
 ) {
     lines.push(action_line(
-        "Edit",
+        "Edited",
         &diff.path,
-        Color::Yellow,
+        Color::LightGreen,
         Modifier::BOLD,
         width,
     ));
@@ -896,15 +965,15 @@ fn render_diff(
         )));
     }
     if limit < all.len() {
-        push_collapsed_hint(lines, width);
+        push_collapsed_hint(lines, width, all.len() - limit);
     }
 }
 
 fn diff_line_style(line: &str) -> Style {
     match line.chars().next() {
-        Some('+') => Style::default().fg(Color::Green),
-        Some('-') => Style::default().fg(Color::Red),
-        _ => Style::default().fg(Color::DarkGray),
+        Some('+') => Style::default().fg(Color::LightGreen),
+        Some('-') => Style::default().fg(Color::LightRed),
+        _ => Style::default().fg(Color::Gray),
     }
 }
 
@@ -1090,7 +1159,7 @@ mod tests {
             false,
             &mut lines,
         );
-        assert!(lines.is_empty());
+        assert_eq!(line_text(&lines[0]), "→ Read src/main.rs");
 
         let mut lines = Vec::new();
         render_item(
@@ -1121,37 +1190,57 @@ mod tests {
             false,
             &mut lines,
         );
-        assert_eq!(line_text(&lines[0]), "$ cargo test --all");
+        assert_eq!(line_text(&lines[0]), "→ Run cargo test --all");
 
         let mut lines = Vec::new();
         render_item(
             &ChatItem::ToolResult {
                 name: "bash".into(),
                 args: args.into(),
-                output: "ok\n[exit code: 0]".into(),
+                output: "ok\n[exit: 0]".into(),
                 diff: None,
             },
             80,
             false,
             &mut lines,
         );
-        assert_eq!(line_text(&lines[0]), "$ cargo test --all");
+        assert_eq!(line_text(&lines[0]), "→ Ran cargo test --all · exit 0");
         assert_eq!(lines.len(), 2);
-        assert_eq!(lines[0].spans[1].style.fg, Some(Color::Green));
+        assert_eq!(lines[0].spans[1].style.fg, Some(Color::LightGreen));
 
         let mut lines = Vec::new();
         render_item(
             &ChatItem::ToolResult {
                 name: "bash".into(),
                 args: args.into(),
-                output: "boom\n[exit code: 1]".into(),
+                output: "boom\n[exit: 1]".into(),
                 diff: None,
             },
             80,
             false,
             &mut lines,
         );
-        assert_eq!(lines[0].spans[1].style.fg, Some(Color::Red));
+        assert_eq!(
+            line_text(&lines[0]),
+            "→ Run failed cargo test --all · exit 1"
+        );
+        assert_eq!(lines[0].spans[1].style.fg, Some(Color::LightRed));
+    }
+
+    #[test]
+    fn badges_use_dark_text_on_bright_backgrounds() {
+        for mode in [Mode::Build, Mode::AutoEdit, Mode::Plan] {
+            assert_eq!(mode_style(mode).fg, Some(Color::Black));
+        }
+        for reasoning in [
+            Reasoning::Auto,
+            Reasoning::Off,
+            Reasoning::Low,
+            Reasoning::Medium,
+            Reasoning::High,
+        ] {
+            assert_eq!(reasoning_style(reasoning).fg, Some(Color::Black));
+        }
     }
 
     #[test]
@@ -1225,9 +1314,9 @@ mod tests {
             false,
             &mut lines,
         );
-        assert_eq!(line_text(&lines[0]), "→ Edit src/main.rs");
-        assert_eq!(lines[1].spans[0].style.fg, Some(Color::DarkGray));
-        assert_eq!(lines[2].spans[0].style.fg, Some(Color::Red));
-        assert_eq!(lines[3].spans[0].style.fg, Some(Color::Green));
+        assert_eq!(line_text(&lines[0]), "→ Edited src/main.rs");
+        assert_eq!(lines[1].spans[0].style.fg, Some(Color::Gray));
+        assert_eq!(lines[2].spans[0].style.fg, Some(Color::LightRed));
+        assert_eq!(lines[3].spans[0].style.fg, Some(Color::LightGreen));
     }
 }

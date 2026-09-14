@@ -233,7 +233,22 @@ fn merge(base: &mut Value, overlay: &Value) {
 pub fn estimate_tokens(messages: &[Message]) -> usize {
     messages
         .iter()
-        .map(|message| message.display().map(|text| text.len()).unwrap_or(0) / 4 + 4)
+        .map(|message| {
+            let content = message.display().map(|text| text.len()).unwrap_or(0);
+            let calls = message
+                .tool_calls
+                .as_ref()
+                .map(|calls| {
+                    calls
+                        .iter()
+                        .map(|call| {
+                            call.function.name.len() + call.function.arguments.len() + call.id.len()
+                        })
+                        .sum::<usize>()
+                })
+                .unwrap_or(0);
+            (content + calls) / 4 + 4
+        })
         .sum()
 }
 
@@ -715,6 +730,16 @@ mod tests {
         assert!(cfg.enabled);
         assert!(cfg.strategies.deduplication.enabled);
         assert!(cfg.compress.min_context_limit < cfg.compress.max_context_limit);
+    }
+
+    #[test]
+    fn token_estimate_includes_tool_arguments() {
+        let messages = vec![tool_call(
+            "call-1",
+            "write_file",
+            &format!(r#"{{"path":"x","content":"{}"}}"#, "x".repeat(400)),
+        )];
+        assert!(estimate_tokens(&messages) >= 100);
     }
 
     #[test]

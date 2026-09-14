@@ -5,7 +5,34 @@ use std::io::{self, IsTerminal, Write};
 use std::path::{Path, PathBuf};
 
 const AUTH_FILE: &str = "auth.json";
-const KNOWN_PROVIDERS: [&str; 3] = ["openai", "deepseek", "anthropic"];
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct ProviderOption {
+    pub name: &'static str,
+    pub label: &'static str,
+    pub description: &'static str,
+    pub key_url: &'static str,
+}
+
+pub(crate) const KNOWN_PROVIDERS: [ProviderOption; 3] = [
+    ProviderOption {
+        name: "openai",
+        label: "OpenAI",
+        description: "GPT models",
+        key_url: "https://platform.openai.com/api-keys",
+    },
+    ProviderOption {
+        name: "deepseek",
+        label: "DeepSeek",
+        description: "DeepSeek chat and reasoning models",
+        key_url: "https://platform.deepseek.com/api_keys",
+    },
+    ProviderOption {
+        name: "anthropic",
+        label: "Anthropic",
+        description: "Claude models",
+        key_url: "https://console.anthropic.com/settings/keys",
+    },
+];
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AuthEntry {
@@ -84,6 +111,10 @@ impl AuthStore {
 }
 
 pub fn login(provider: Option<String>, key: Option<String>) -> Result<()> {
+    let interactive = io::stdin().is_terminal();
+    if interactive {
+        println!("Oxide provider setup\n");
+    }
     let provider = match provider {
         Some(provider) => provider,
         None => prompt_provider()?,
@@ -91,18 +122,27 @@ pub fn login(provider: Option<String>, key: Option<String>) -> Result<()> {
     let name = canonical_provider(&provider);
     let key = match key {
         Some(key) => key,
-        None => read_secret(&format!("Enter API key for {name}: "))?,
+        None => {
+            if interactive {
+                if let Some(option) = provider_option(&name) {
+                    println!("Create or copy a key: {}", option.key_url);
+                }
+                println!("Your key is hidden while you type or paste it.");
+            }
+            read_secret(&format!("API key for {}: ", provider_label(&name)))?
+        }
     };
     let key = key.trim().to_string();
     if key.is_empty() {
         anyhow::bail!("no API key provided");
     }
     connect(&name, &key)?;
+    println!("Connected to {}.", provider_label(&name));
     println!(
-        "stored credentials for {name} in {}",
+        "Credentials saved securely at {}",
         AuthStore::path().display()
     );
-    println!("active provider set to {name}");
+    println!("Next: run `oxide` to start coding.");
     Ok(())
 }
 
@@ -162,12 +202,29 @@ pub fn canonical_provider(name: &str) -> String {
     }
 }
 
+pub(crate) fn provider_option(name: &str) -> Option<&'static ProviderOption> {
+    let name = canonical_provider(name);
+    KNOWN_PROVIDERS.iter().find(|option| option.name == name)
+}
+
+pub(crate) fn provider_label(name: &str) -> &str {
+    provider_option(name)
+        .map(|option| option.label)
+        .unwrap_or(name)
+}
+
 fn prompt_provider() -> Result<String> {
-    println!("select a provider:");
-    for (index, name) in KNOWN_PROVIDERS.iter().enumerate() {
-        println!("  {}. {name}", index + 1);
+    println!("Choose a provider:");
+    for (index, option) in KNOWN_PROVIDERS.iter().enumerate() {
+        println!(
+            "  {}. {:<10} {}",
+            index + 1,
+            option.label,
+            option.description
+        );
     }
-    print!("provider name or number: ");
+    println!("  Or type the name of a custom OpenAI-compatible provider.");
+    print!("Provider [1]: ");
     io::stdout().flush()?;
     let mut line = String::new();
     io::stdin()
@@ -176,11 +233,11 @@ fn prompt_provider() -> Result<String> {
     let line = line.trim();
     if let Ok(index) = line.parse::<usize>() {
         if (1..=KNOWN_PROVIDERS.len()).contains(&index) {
-            return Ok(KNOWN_PROVIDERS[index - 1].to_string());
+            return Ok(KNOWN_PROVIDERS[index - 1].name.to_string());
         }
     }
     if line.is_empty() {
-        anyhow::bail!("no provider provided");
+        return Ok(KNOWN_PROVIDERS[0].name.to_string());
     }
     Ok(line.to_string())
 }
@@ -200,56 +257,119 @@ fn read_secret(prompt: &str) -> Result<String> {
 /// (including bracketed paste) working while the input stays hidden, unlike
 /// `stty -echo` which drops paste events in some terminals.
 fn read_secret_interactive(prompt: &str) -> Result<String> {
+    use crossterm::cursor::{Hide, RestorePosition, SavePosition, Show};
     use crossterm::event::{
         self, DisableBracketedPaste, EnableBracketedPaste, Event, KeyCode, KeyEventKind,
         KeyModifiers,
     };
     use crossterm::execute;
-    use crossterm::terminal::{disable_raw_mode, enable_raw_mode};
-
-    print!("{prompt}");
-    io::stdout().flush()?;
+    use crossterm::terminal::{disable_raw_mode, enable_raw_mode, size, Clear, ClearType};
 
     enable_raw_mode().context("enabling terminal input")?;
-    let _ = execute!(io::stdout(), EnableBracketedPaste);
+    let mut stdout = io::stdout();
+    if let Err(error) = execute!(stdout, EnableBracketedPaste, Hide, SavePosition) {
+        let _ = disable_raw_mode();
+        return Err(error).context("preparing secure API key input");
+    }
 
     let mut secret = String::new();
-    let result = loop {
-        match event::read() {
-            Ok(Event::Key(key)) => {
-                if key.kind == KeyEventKind::Release {
-                    continue;
+    let result = (|| -> Result<()> {
+        draw_secret_box(&mut stdout, prompt, 0, size().ok().map(|(width, _)| width))?;
+        loop {
+            match event::read() {
+                Ok(Event::Key(key)) => {
+                    if key.kind == KeyEventKind::Release {
+                        continue;
+                    }
+                    match key.code {
+                        KeyCode::Enter => break Ok(()),
+                        KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                            break Err(anyhow::anyhow!("cancelled"));
+                        }
+                        KeyCode::Backspace => {
+                            secret.pop();
+                            draw_secret_box(
+                                &mut stdout,
+                                prompt,
+                                secret.chars().count(),
+                                size().ok().map(|(width, _)| width),
+                            )?;
+                        }
+                        KeyCode::Char(c)
+                            if !key
+                                .modifiers
+                                .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT) =>
+                        {
+                            secret.push(c);
+                            draw_secret_box(
+                                &mut stdout,
+                                prompt,
+                                secret.chars().count(),
+                                size().ok().map(|(width, _)| width),
+                            )?;
+                        }
+                        _ => {}
+                    }
                 }
-                match key.code {
-                    KeyCode::Enter => break Ok(()),
-                    KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                        break Err(anyhow::anyhow!("cancelled"));
-                    }
-                    KeyCode::Backspace => {
-                        secret.pop();
-                    }
-                    KeyCode::Char(c)
-                        if !key
-                            .modifiers
-                            .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT) =>
-                    {
-                        secret.push(c);
-                    }
-                    _ => {}
+                Ok(Event::Paste(text)) => {
+                    secret.push_str(&text);
+                    draw_secret_box(
+                        &mut stdout,
+                        prompt,
+                        secret.chars().count(),
+                        size().ok().map(|(width, _)| width),
+                    )?;
                 }
+                Ok(Event::Resize(width, _)) => {
+                    draw_secret_box(&mut stdout, prompt, secret.chars().count(), Some(width))?;
+                }
+                Ok(_) => {}
+                Err(error) => break Err(anyhow::anyhow!("reading API key: {error}")),
             }
-            Ok(Event::Paste(text)) => secret.push_str(&text),
-            Ok(_) => {}
-            Err(error) => break Err(anyhow::anyhow!("reading API key: {error}")),
         }
-    };
+    })();
 
-    let _ = execute!(io::stdout(), DisableBracketedPaste);
+    let _ = execute!(
+        stdout,
+        RestorePosition,
+        Clear(ClearType::FromCursorDown),
+        DisableBracketedPaste,
+        Show
+    );
     disable_raw_mode().context("restoring terminal input")?;
-    println!();
 
     result?;
     Ok(secret.trim().to_string())
+}
+
+fn draw_secret_box(
+    output: &mut impl Write,
+    prompt: &str,
+    secret_len: usize,
+    terminal_width: Option<u16>,
+) -> Result<()> {
+    use crossterm::cursor::RestorePosition;
+    use crossterm::execute;
+    use crossterm::terminal::{Clear, ClearType};
+
+    let width = terminal_width.unwrap_or(60).clamp(24, 72) as usize;
+    let box_width = width.saturating_sub(2);
+    let visible = secret_len.min(box_width.saturating_sub(2));
+    let hidden = "*".repeat(visible);
+    let padding = " ".repeat(box_width.saturating_sub(visible + 2));
+    let overflow = if secret_len > visible { "…" } else { " " };
+
+    execute!(output, RestorePosition, Clear(ClearType::FromCursorDown))?;
+    writeln!(output, "{prompt}")?;
+    writeln!(output, "┌{}┐", "─".repeat(box_width))?;
+    writeln!(output, "│ {hidden}{padding}{overflow}│")?;
+    writeln!(output, "└{}┘", "─".repeat(box_width))?;
+    write!(
+        output,
+        "Paste or type your key · Enter to connect · Ctrl+C to cancel"
+    )?;
+    output.flush()?;
+    Ok(())
 }
 
 fn mask(key: &str) -> String {
@@ -309,6 +429,15 @@ mod tests {
     fn masks_keys() {
         assert_eq!(mask("short"), "****");
         assert_eq!(mask("sk-abcdefghijkl"), "****ijkl");
+    }
+
+    #[test]
+    fn secret_box_shows_one_star_per_character() {
+        let mut output = Vec::new();
+        draw_secret_box(&mut output, "API key:", 7, Some(40)).unwrap();
+        let rendered = String::from_utf8(output).unwrap();
+        assert!(rendered.contains("*******"));
+        assert!(!rendered.contains("********"));
     }
 
     fn temp_dir(tag: &str) -> PathBuf {
