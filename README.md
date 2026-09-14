@@ -7,17 +7,23 @@ box, with Claude Code configuration support for compatibility.
 
 ## Features
 
-- Interactive TUI (ratatui) plus a non-interactive `-p/--print` mode.
+- Interactive TUI (ratatui) plus non-interactive `-p/--print`, `--mode json`
+  (JSONL event stream), and `--mode rpc` (JSONL over stdin/stdout) modes. In the
+  TUI, `/login` (`/connect`) and `/logout` manage provider credentials.
 - OpenAI-compatible (OpenAI, DeepSeek, custom) and Anthropic Messages API clients.
-- Built-in tools: `read_file`, `write_file`, `list_dir`, `bash`, `glob`, `grep`,
-  `patch`, `webfetch`.
+- Built-in tools under Pi-style names: `read`, `write`, `edit`, `bash`, `grep`,
+  `find`, `ls`, `webfetch`. The legacy names (`read_file`, `write_file`,
+  `patch`, `list_dir`, `glob`) are still accepted everywhere, including in
+  permission rules.
 - Agent-level tools: `task` (subagents), `skill` (on-demand skill loading),
   `memory` (cross-session notes), `diagnostics` (LSP diagnostics).
 - MCP servers over stdio or HTTP (including OAuth-protected remote servers),
   exposed as `<server>__<tool>`.
-- Multimodal prompts: attach images/PDFs with `--image` or `@path` references.
-- Project + global ecosystem discovery: rules, memory, commands, agents,
-  skills, MCP servers, and plugins from `.oxide/` (plus the Claude Code layout).
+- Multimodal prompts: attach images/PDFs with `--image` or `@path` references,
+  and pass prompt files as `oxide @file "message"`.
+- Project + global ecosystem discovery: rules, memory, commands, prompt
+  templates, agents, skills, MCP servers, and plugins from `.oxide/` (plus the
+  Claude Code layout).
 - Durable sessions, shadow-git snapshots (`/undo`, `/redo`), and context
   compaction (`/compact`).
 - Dynamic context pruning: a `compress` tool plus automatic tool-output
@@ -28,7 +34,9 @@ box, with Claude Code configuration support for compatibility.
   and a hook can end the turn by setting `output.terminate = true`.
 - Agent-harness niceties: read-only tool calls in a batch run in parallel while
   preserving model order, `bash` output streams into the UI as it arrives, and
-  typing while the agent works steers it between steps.
+  typing while the agent works steers it between steps. Enter queues a steering
+  message while busy; Alt+Enter queues a follow-up delivered after all work
+  finishes.
 - Agent modes: `build` (default), `plan` (read-only planning), and `auto-edit`
   (auto-approve file edits), cycled in the TUI with Shift+Tab or set with
   `--mode` / `OXIDE_MODE`.
@@ -43,8 +51,25 @@ box, with Claude Code configuration support for compatibility.
 - OpenCode-style transcript: shell calls render as `$ command` with their output
   and a `⋯ Ctrl+O to expand` hint, file edits show a colored line-numbered diff,
   and each model turn is timed with `+ Thought: Nms`.
-- Incremental TUI rendering: only conversation items that changed since the last
-  frame are re-wrapped and re-styled.
+- Tool selection: `--tools`/`-t` allowlists and `--exclude-tools`/`-x`
+  disables tools (accepting both Pi and legacy names); disabled tools are hidden
+  from the model and refused if requested.
+- Pi-style session flags: `--session <path|id>`, `--no-session`, `--name`, plus
+  TUI commands `/new`, `/session`, `/name`, `/model`, `/thinking`, `/export`,
+  `/reload`, and `/hotkeys`.
+- Session branching: `/tree` lists user messages, `/fork <n>` branches a new
+  session from one, and `/clone` duplicates the current session.
+- Project trust: project-local resources (agents, commands, prompts, skills,
+  plugins, `SYSTEM.md`) load only after the project is trusted; decisions are
+  saved per directory in `trust.json`, `defaultProjectTrust` sets the fallback,
+  `--approve`/`-a` and `--no-approve` override for one run, and `/trust` saves a
+  decision.
+- Themes: built-in `dark` and `light` plus custom `.oxide/themes/<name>.json`,
+  selected with `--use-theme` or `/theme`.
+- Pi-style footer: working directory, session name, token totals (`↑`/`↓`),
+  context usage percentage, model, mode, and thinking level, with a spinner and
+  key hints on the status row. The editor border color reflects the thinking
+  level.
 
 ## Comparison
 
@@ -58,18 +83,20 @@ so check each project's documentation for the current details.
 | Distribution | Native Rust binary | Open-source CLI (Node/Bun) | Proprietary CLI + apps |
 | License | MIT | Open source | Proprietary |
 | Model providers | OpenAI-compatible + Anthropic (OpenAI, DeepSeek, custom) | Any provider (bring your own keys) | Claude (Anthropic API, Bedrock, Vertex, third-party) |
-| Interfaces | Terminal TUI, `-p` print mode | Terminal, desktop, IDE, web | Terminal, IDE, desktop, web |
+| Interfaces | Terminal TUI, `-p` print, JSON/RPC modes | Terminal, desktop, IDE, web | Terminal, IDE, desktop, web |
 | Project config | `.oxide/` + `AGENTS.md` (also reads `.claude/`) | `opencode.json` + `AGENTS.md` | `CLAUDE.md` + `.claude/` |
 | Subagents | `--agent`, `task`, command routing | Agents | Subagents, background agents |
 | Permission modes | `build` / `plan` / `auto-edit` (Shift+Tab, `--mode`) | Build / plan agents | default / accept-edits / plan / bypass |
 | Reasoning effort | `auto` / `off` / `low` / `medium` / `high` (Ctrl+R, `--reasoning`) | Model-dependent | Extended thinking |
-| Slash commands | `.oxide/commands` with `agent`/`subtask` routing | Commands | Commands |
+| Slash commands | `.oxide/commands` + `.oxide/prompts`, `agent`/`subtask` routing | Commands | Commands |
 | Skills | `SKILL.md` | Agent Skills | Skills |
 | MCP servers | stdio + HTTP + OAuth, managed with `oxide mcp` | MCP servers | MCP servers |
 | Plugins / hooks | JS/TS hooks (bun/node) | Plugins | Hooks, plugins, Agent SDK |
 | LSP diagnostics | Built in (rust-analyzer, TS, pyright, gopls) | Built in (LSP servers) | — |
 | Undo file changes | Shadow-git `/undo`, `/redo` | `/undo`, `/redo` | Git / checkpoints |
-| Sessions | Durable JSONL, `-c` / `--resume` | Sessions, share links | Sessions across surfaces |
+| Sessions | Durable JSONL, `-c` / `--resume`, `/tree` / `/fork` / `/clone` | Sessions, share links | Sessions across surfaces |
+| Project trust | `trust.json`, `--approve` / `/trust` | — | — |
+| Themes | Built-in `dark` / `light`, custom `.oxide/themes` | Themes | — |
 | Context management | Built-in pruning (`compress` tool, dedup, error purge) | Auto-compaction + DCP plugin | Auto-compaction |
 | Multimodal input | Images and PDFs (`--image`, `@path`) | Images | Images |
 
@@ -140,11 +167,11 @@ cargo install --path .
 ## Quick start
 
 ```sh
-# Store a provider API key (interactive)
-oxide auth login openai
-
 # Launch the TUI in the current project
 oxide
+
+# Then connect a provider from inside the TUI
+/login
 ```
 
 Or provide credentials through the environment:
@@ -173,35 +200,57 @@ oxide mcp list
 ## CLI
 
 ```
-oxide [OPTIONS] [PROMPT] [COMMAND]
+oxide [OPTIONS] [@files...] [PROMPT...] [COMMAND]
 ```
 
 | Flag | Description |
 | --- | --- |
-| `[PROMPT]` | Prompt to run. Providing one implies non-interactive mode. |
+| `[PROMPT]...` | Prompt words. `@path` reads a file into the prompt (images/PDFs become attachments). Providing one implies non-interactive mode. |
 | `-m, --model <MODEL>` | Model to use (overrides config). |
 | `--provider <PROVIDER>` | Provider name (overrides config). |
 | `--agent <AGENT>` | Agent to run, from `.oxide/agents` (or `.claude/agents`). |
-| `--mode <MODE>` | Permission mode: `build` (default), `plan` (read-only), or `auto-edit`. |
+| `--mode <MODE>` | Permission mode `build` (default), `plan` (read-only), `auto-edit`, or output mode `print`, `json`, or `rpc`. |
 | `--reasoning <LEVEL>` | Reasoning effort: `auto` (default), `off`, `low`, `medium`, or `high`. |
+| `--system-prompt <TEXT>` | Replace the default system prompt for this run. |
+| `--append-system-prompt <TEXT>` | Append text to the system prompt (repeatable). |
+| `--no-context-files` | Disable `AGENTS.md`/`CLAUDE.md` context-file discovery. |
+| `-t, --tools <LIST>` | Allowlist tools (comma-separated, Pi or legacy names). |
+| `-x, --exclude-tools <LIST>` | Disable tools (comma-separated). |
+| `-a, --approve` | Trust project-local resources for this run. |
+| `--no-approve` | Ignore project-local resources for this run. |
+| `--use-theme <NAME>` | TUI theme (`dark`, `light`, or a custom `.oxide/themes` file). |
+| `--session <PATH\|ID>` | Use a specific session file or id. |
+| `-n, --name <NAME>` | Set the session display name at startup. |
+| `--no-session` | Ephemeral mode: do not save the session. |
 | `-p, --print` | Print the response and exit instead of launching the TUI. |
 | `-c, --continue` | Resume the most recent session for this project. |
 | `--resume <ID>` | Resume a specific session by id. |
 | `--image <PATH>` | Attach an image or PDF (repeatable). |
 | `-C, --cwd <DIR>` | Working directory for the agent. |
 
-Credential management:
+Non-interactive examples:
 
 ```sh
-oxide auth login [provider] [--key <KEY>]
-oxide auth list
-oxide auth logout [provider]
+oxide -p "summarize this repository"
+oxide @prompt.md "answer this"          # include a file in the prompt
+cat README.md | oxide -p "summarize"    # merge piped stdin
+oxide --mode json "list files"           # JSONL events on stdout
+oxide --mode rpc                         # JSONL prompts over stdin
+oxide -t read,grep,find -p "review"      # read-only tool allowlist
+oxide --session <id> -p "continue"       # reuse a specific session
 ```
 
+Credential management happens inside the TUI with the Pi-style commands:
+
+```text
+/login [provider]    connect a provider and store its API key
+/logout [provider]   remove stored credentials
+```
+
+`/login` opens a provider picker (`/login <provider>` skips straight to the key).
 Keys are stored in `auth.json` in the oxide config directory (mode `0600`) and
-resolved after environment variables and before the config file. You can also
-launch `oxide` with no key and run `/connect` inside the TUI to pick a provider
-and paste a key; the provider is then saved to `config.json`.
+resolved after environment variables and before the config file. The active
+provider is written to `config.json` so the next launch uses it.
 
 MCP server management:
 
@@ -242,11 +291,12 @@ oxide reads `config.json` from the platform config directory:
   "max_tokens": 8192,
   "auto_approve": true,
   "mode": "build",
-  "reasoning": "auto"
+  "reasoning": "auto",
+  "theme": "dark"
 }
 ```
 
-`api_key` may be left empty when a key is available via `oxide auth` or the
+`api_key` may be left empty when a key is available via `/login` or the
 environment. `auto_approve` controls whether tool calls run without prompting;
 when `false`, permission rules that resolve to `ask` are denied in
 non-interactive mode.
@@ -254,8 +304,9 @@ non-interactive mode.
 `mode` selects the agent's permission mode. `build` follows the active agent's
 permission rules; `plan` is read-only (workspace mutations and unknown MCP tools
 are denied) and instructs the model to produce an implementation plan; `auto-edit`
-auto-approves `write_file` and `patch` while other rules still apply. In the TUI
-press Shift+Tab to cycle modes; `--mode` and `OXIDE_MODE` set the starting mode.
+auto-approves `write`, `edit`, and `patch` while other rules still apply. In the
+TUI press Shift+Tab to cycle modes; `--mode` and `OXIDE_MODE` set the starting
+mode.
 
 `reasoning` controls how much reasoning effort oxide requests. `auto` (the
 default) turns reasoning on for models known to support it (OpenAI o-series and
@@ -274,6 +325,7 @@ cycle levels; `--reasoning` and `OXIDE_REASONING` set the starting level.
 | `OXIDE_API_KEY` | API key. |
 | `OXIDE_MODE` | Permission mode (`build`, `plan`, `auto-edit`). |
 | `OXIDE_REASONING` | Reasoning effort (`auto`, `off`, `low`, `medium`, `high`). |
+| `OXIDE_CONTEXT_LIMIT` | Model context window in tokens, used for the footer's context percentage (default 128000). |
 | `OXIDE_TRUNCATION_DIR` | Directory for saved truncated tool output (default `truncated/` in the config dir). |
 | `OPENAI_API_KEY` / `OPENAI_BASE_URL` | OpenAI credentials. |
 | `DEEPSEEK_API_KEY` / `DEEPSEEK_BASE_URL` | DeepSeek credentials. |
@@ -290,6 +342,19 @@ cycle levels; `--reasoning` and `OXIDE_REASONING` set the starting level.
 Any OpenAI-compatible endpoint can be used by setting `provider`, `base_url`,
 `model`, and a key.
 
+## Context files and system prompt
+
+oxide loads `AGENTS.md` (or `CLAUDE.md`) as project instructions by walking
+every ancestor directory from the filesystem root down to the working
+directory, so nested projects layer their instructions. If a directory contains
+`AGENTS.override.md`, it replaces `AGENTS.md`/`CLAUDE.md` for that directory
+only. The global `~/.oxide/AGENTS.md` is loaded first (lowest precedence).
+
+- Disable discovery with `--no-context-files`.
+- Replace the default system prompt with `.oxide/SYSTEM.md` (project) or `~/.oxide/SYSTEM.md` (global); append without replacing with `.oxide/APPEND_SYSTEM.md` or its global equivalent.
+- `--system-prompt <text>` replaces the prompt for one run; `--append-system-prompt <text>` appends (repeatable).
+- The startup header lists the loaded context files, and `/reload` re-reads them.
+
 ## Ecosystem
 
 oxide discovers configuration from the project root (the nearest ancestor
@@ -302,12 +367,15 @@ overrides the Claude Code layout.
 - `AGENTS.md` — project memory and instructions
 - `.oxide/agents/*.md` — subagents (frontmatter: `name`, `description`, `mode`, `permission`)
 - `.oxide/commands/*.md` — slash commands (`$ARGUMENTS`, `$1`, `$2`, …; optional `agent` and `subtask` frontmatter)
+- `.oxide/prompts/*.md` — prompt templates (Pi-style; frontmatter `description` and `argument-hint`, arguments `$1`, `$@`, `${1:-default}`, `${@:2:3}`)
 - `.oxide/skills/*/SKILL.md` — on-demand skills
+- `.oxide/themes/*.json` — TUI color themes (built-in `dark`/`light` plus custom)
 - `.oxide/plugins/` — JS/TS plugin hooks
+- `.oxide/SYSTEM.md`, `.oxide/APPEND_SYSTEM.md` — replace or extend the system prompt
 - `.oxide/mcp.json` — MCP servers (same schema as `.mcp.json`; manage with `oxide mcp`)
 - Global scope: `~/.oxide/`
 
-This repository keeps its own agents, commands, skills, and plugins in
+This repository keeps its own agents, commands, prompts, skills, and plugins in
 `.oxide/`.
 
 For task-by-task instructions — adding and removing MCP servers, subagents,
@@ -338,38 +406,99 @@ oxide also reads the Claude Code layout, so existing configurations work as-is:
 - Global scope: `~/.claude/`, `~/.claude.json`
 
 Slash commands are expanded from the ecosystem and also include built-ins:
-`/help`, `/undo`, `/redo`, `/compact`, and `/connect`.
+`/help`, `/hotkeys`, `/new`, `/session`, `/tree`, `/fork`, `/clone`, `/name`,
+`/model`, `/thinking`, `/theme`, `/trust`, `/export`, `/reload`, `/init`,
+`/login`, `/logout`, `/models`, `/connect`, `/undo`, `/redo`, and `/compact`.
 
 ## Tools
 
-Built-in file and shell tools: `read_file`, `write_file`, `list_dir`, `bash`,
-`glob`, `grep`, `patch`, `webfetch`. Agent-level tools: `task`, `skill`,
-`memory`, `diagnostics`, and `compress` (when context pruning is enabled).
-Connected MCP tools appear as `<server>__<tool>`.
+Built-in file and shell tools use Pi-style names: `read`, `write`, `edit`,
+`bash`, `grep`, `find`, `ls`, `webfetch` (legacy aliases `read_file`,
+`write_file`, `patch`, `list_dir`, `glob` remain accepted, and `patch` also
+applies unified diffs). Agent-level tools: `task`, `skill`, `memory`,
+`diagnostics`, and `compress` (when context pruning is enabled). Connected MCP
+tools appear as `<server>__<tool>`.
 
-`read_file` returns images and PDFs as viewable attachments, and `write_file`
-appends LSP diagnostics for the edited file.
+| Tool | Parameters |
+| --- | --- |
+| `read` | `path`, `offset?`, `limit?` |
+| `write` | `path`, `content` |
+| `edit` | `path`, `edits: [{ oldText, newText }]` |
+| `bash` | `command`, `timeout?` (ms) |
+| `grep` | `pattern`, `path?`, `glob?`, `ignoreCase?`, `literal?`, `context?`, `limit?` |
+| `find` | `pattern`, `path?`, `limit?` |
+| `ls` | `path?`, `limit?` |
+| `patch` | `diff` (unified diff) |
+| `webfetch` | `url`, `format?` (`markdown` default, `text`, or raw `html`) |
 
-Tool results are capped before they enter the model's context: at most 400 lines
-and 8 KB, with individual `read_file` lines trimmed at 2 000 characters. `bash`
-keeps the **tail** so the exit code and recent errors survive; other tools keep
-the head. When output is dropped, the full text is written under `truncated/` in
-the oxide config directory and the result includes the path plus a hint to grep
-it or `read_file` it with an offset, so the model can recover detail without
-re-running the tool. Set `OXIDE_TRUNCATION_DIR` to change where those files go;
-they are retained for 7 days.
+`edit` performs exact text replacement: each `oldText` is matched against the
+original file (never incrementally) and must be unique, so a non-unique or
+missing match is rejected rather than silently corrupting a file. Line endings
+and a leading BOM are preserved. `write` and `edit` append LSP diagnostics for
+the edited file. `find` and `grep` respect `.gitignore`. `webfetch` converts
+HTML to Markdown (`format: "markdown"`, the default), readable plain text
+(`format: "text"`), or returns the raw body (`format: "html"`); the converter
+is dependency-free and handles headings, paragraphs, lists, tables, links,
+images, inline and fenced code, blockquotes, and HTML entities.
+
+Tool results are capped before they enter the model's context. The default cap
+is 250 lines and 6 KB (per-tool overrides: `bash` 160 lines / 5 KB, `grep`,
+`find`, and `ls` 160 / 4 KB, `webfetch` 200 / 6 KB, and `write`, `edit`, and
+`patch` 120 / 3 KB), with individual `read` lines trimmed at 1 000 characters.
+`bash` keeps the **tail** so the exit code and recent errors survive; other
+tools keep the head. When output is dropped, the full text is written under
+`truncated/` in the oxide config directory and the result includes the path plus
+a hint to grep it or `read` it with an offset, so the model can recover detail
+without re-running the tool. Set `OXIDE_TRUNCATION_DIR` to change where those
+files go; they are retained for 7 days.
 
 When the model requests several tools at once, the ones with no side effects
-(`read_file`, `list_dir`, `glob`, `grep`, `webfetch`, `memory`, `skill`,
-`diagnostics`) run concurrently; anything that writes to the workspace, spawns a
-subagent, or has unknown remote effects stays sequential. Results are recorded in
-the model's original call order. `bash` streams stdout and stderr line by line
-into the TUI (and to stderr in `-p` mode) before the final combined output.
+(`read`, `ls`, `find`, `grep`, `webfetch`, `memory`, `skill`, `diagnostics`) run
+concurrently; anything that writes to the workspace, spawns a subagent, or has
+unknown remote effects stays sequential. Results are recorded in the model's
+original call order. `bash` streams stdout and stderr line by line into the TUI
+(and to stderr in `-p` mode) before the final combined output.
 
 While the agent is busy, pressing Enter queues the current input as steering
 rather than starting a new run; the message is injected into the conversation
 before the next model call. A `tool.execute.after` plugin can also request
 termination for the batch with `output.terminate = true`.
+
+## Project trust
+
+Projects may contain local resources that change how the agent behaves or
+execute code — agents, commands, prompts, skills, plugins, and `SYSTEM.md`.
+oxide treats the presence of any of these as requiring trust. When a project
+requires trust and no decision has been saved for it (or a parent directory),
+the TUI asks before loading them.
+
+- `defaultProjectTrust` in `settings.json` controls the fallback: `ask`
+  (default), `always`, or `never`.
+- `--approve`/`-a` trusts project resources for one run; `--no-approve` ignores
+  them.
+- `/trust [show|off]` saves a decision for the current directory to `trust.json`.
+- Non-interactive modes (`-p`, `--mode json`, `--mode rpc`) never prompt: with
+  the `ask`/`never` default they ignore project resources unless approved.
+- Context files (`AGENTS.md`/`CLAUDE.md`) always load, trusted or not.
+
+## Themes
+
+oxide ships `dark` and `light` themes. Add a custom theme as JSON under
+`.oxide/themes/<name>.json` (project) or `<config>/oxide/themes/<name>.json`
+(global), then select it with `--use-theme <name>` or `/theme <name>`. Colors
+accept names (`cyan`, `lightblue`) or `#rrggbb`; unspecified slots fall back to
+the built-in `dark` theme:
+
+```json
+{
+  "accent": "#5fd7ff",
+  "tool": "cyan",
+  "border": "#5fd7ff"
+}
+```
+
+Available slots: `accent`, `user`, `assistant`, `tool`, `error`, `info`, `dim`,
+`border`, `thinking_off`, `thinking_low`, `thinking_medium`, `thinking_high`.
 
 ## Context pruning
 
@@ -423,8 +552,12 @@ Everything lives under the oxide config directory:
 - Credentials: `auth.json`
 - MCP OAuth tokens: `mcp-oauth/<server>.json` (mode `0600`)
 - Sessions: `sessions/<project>/*.jsonl`
+- Session names: `sessions/<project>/<id>.name`
 - Snapshots: `snapshots/<project>/` (bare git repo)
 - Memory: `memory/`
+- Project trust: `trust.json`
+- Settings: `settings.json` (e.g. `defaultProjectTrust`)
+- Themes: `themes/<name>.json`
 - Truncated tool output: `truncated/` (retained 7 days; see `OXIDE_TRUNCATION_DIR`)
 - Context pruning config: `dcp.json` (global) and `.oxide/dcp.json` (project)
 

@@ -18,6 +18,8 @@ pub struct SessionHeader {
     pub project: String,
     pub cwd: String,
     pub created_at: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -49,6 +51,7 @@ impl SessionLog {
             project: crate::memory::project_id(cwd),
             cwd: cwd.display().to_string(),
             created_at: now_secs(),
+            name: None,
         };
         let mut file = std::fs::OpenOptions::new()
             .create_new(true)
@@ -66,6 +69,16 @@ impl SessionLog {
     pub fn open(path: PathBuf) -> Result<Self> {
         let header = read_header(&path)?;
         Ok(Self { path, header })
+    }
+
+    /// Creates a new session seeded with `messages` (used by `/fork` and
+    /// `/clone`). Returns the new log so the caller can continue in it.
+    pub fn fork(cwd: &Path, messages: &[Message]) -> Result<Self> {
+        let log = Self::create(cwd)?;
+        for message in messages {
+            log.append(message)?;
+        }
+        Ok(log)
     }
 
     pub fn open_id(cwd: &Path, id: &str) -> Result<Self> {
@@ -97,6 +110,39 @@ impl SessionLog {
 
     pub fn id(&self) -> &str {
         &self.header.id
+    }
+
+    /// The recorded working directory for this session.
+    pub fn cwd(&self) -> &str {
+        &self.header.cwd
+    }
+
+    /// Sets a human-readable display name for the session and persists it in a
+    /// sidecar file (the append-only log header is never rewritten).
+    pub fn set_name(&self, name: &str) -> Result<()> {
+        let path = self.path.with_extension("name");
+        std::fs::write(&path, name)
+            .with_context(|| format!("writing session name {}", path.display()))?;
+        Ok(())
+    }
+
+    /// The session display name, when one was set with `--name` or `/name`.
+    pub fn name(&self) -> Option<String> {
+        let path = self.path.with_extension("name");
+        std::fs::read_to_string(path)
+            .ok()
+            .map(|value| value.trim().to_string())
+            .filter(|value| !value.is_empty())
+    }
+
+    /// Opens a session log at an explicit path, accepting either a full path or
+    /// an id resolved against the project's session directory.
+    pub fn open_ref(cwd: &Path, reference: &str) -> Result<Self> {
+        let path = Path::new(reference);
+        if path.exists() {
+            return Self::open(path.to_path_buf());
+        }
+        Self::open_id(cwd, reference)
     }
 
     #[cfg(test)]
@@ -273,6 +319,27 @@ mod tests {
         assert_eq!(state.compressions.len(), 1);
         assert_eq!(state.compressions[0].summary, "did the first thing");
         assert_eq!(reopened.messages().unwrap().len(), 1);
+
+        std::fs::remove_dir_all(&dir).ok();
+        std::fs::remove_dir_all(&cwd).ok();
+    }
+
+    #[test]
+    fn fork_copies_messages_into_a_new_session() {
+        let dir = temp_dir("fork");
+        let cwd = temp_dir("fork_proj");
+        let parent = SessionLog::create_in(&dir, &cwd).unwrap();
+        parent.append(&Message::user("one")).unwrap();
+        parent.append(&Message::assistant("two", vec![])).unwrap();
+        parent.append(&Message::user("three")).unwrap();
+
+        let messages = parent.messages().unwrap();
+        let fork = SessionLog::fork(&cwd, &messages[..2]).unwrap();
+        assert_ne!(fork.id(), parent.id());
+        let copied = fork.messages().unwrap();
+        assert_eq!(copied.len(), 2);
+        assert_eq!(copied[0].display().as_deref(), Some("one"));
+        assert_eq!(copied[1].display().as_deref(), Some("two"));
 
         std::fs::remove_dir_all(&dir).ok();
         std::fs::remove_dir_all(&cwd).ok();

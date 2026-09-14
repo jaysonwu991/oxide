@@ -19,6 +19,26 @@ const TRUNCATION_RETENTION_SECS: u64 = 7 * 24 * 60 * 60;
 
 static TRUNCATION_ID: AtomicU64 = AtomicU64::new(0);
 
+/// Maps a tool name to its internal canonical form, accepting both the Pi-style
+/// names (`read`, `write`, `edit`, `ls`, `find`, `grep`, `bash`) and the legacy
+/// oxide names (`read_file`, `write_file`, `patch`, `list_dir`, `glob`). The
+/// agent-level tools (`task`, `skill`, `memory`, `diagnostics`, `compress`) and
+/// MCP names (`server__tool`) pass through unchanged.
+pub fn canonical_tool_name(name: &str) -> &str {
+    match name {
+        "read" | "read_file" => "read_file",
+        "write" | "write_file" => "write_file",
+        "edit" => "edit",
+        "patch" => "patch",
+        "ls" | "list_dir" => "list_dir",
+        "find" | "glob" => "glob",
+        "grep" => "grep",
+        "bash" => "bash",
+        "webfetch" => "webfetch",
+        other => other,
+    }
+}
+
 /// A line-numbered diff of a file edit, carried alongside the tool result for
 /// display only. It is never sent to the model (the text result is).
 #[derive(Debug, Clone, Default)]
@@ -91,7 +111,7 @@ impl Progress {
 pub fn specs(mcp: &McpRegistry) -> Vec<ToolSpec> {
     let mut specs = vec![
         spec(
-            "read_file",
+            "read",
             "Read a file from the project. Text files are returned with line numbers; image (png/jpg/gif/webp) and PDF files are returned as viewable attachments.",
             json!({
                 "type": "object",
@@ -104,7 +124,7 @@ pub fn specs(mcp: &McpRegistry) -> Vec<ToolSpec> {
             }),
         ),
         spec(
-            "write_file",
+            "write",
             "Create or overwrite a file with the given content.",
             json!({
                 "type": "object",
@@ -116,12 +136,36 @@ pub fn specs(mcp: &McpRegistry) -> Vec<ToolSpec> {
             }),
         ),
         spec(
-            "list_dir",
+            "edit",
+            "Edit a single file using exact text replacement. Every edits[].oldText must match a unique, non-overlapping region of the original file. If two changes affect the same block or nearby lines, merge them into one edit instead of emitting overlapping edits. Do not include large unchanged regions just to connect distant changes.",
+            json!({
+                "type": "object",
+                "properties": {
+                    "path": { "type": "string", "description": "Path to the file to edit (relative or absolute)" },
+                    "edits": {
+                        "type": "array",
+                        "description": "One or more targeted replacements. Each edit is matched against the original file, not incrementally. Do not include overlapping or nested edits. If two changes touch the same block or nearby lines, merge them into one edit instead.",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "oldText": { "type": "string", "description": "Exact text for one targeted replacement. It must be unique in the original file and must not overlap with any other edits[].oldText in the same call." },
+                                "newText": { "type": "string", "description": "Replacement text for this targeted edit." }
+                            },
+                            "required": ["oldText", "newText"]
+                        }
+                    }
+                },
+                "required": ["path", "edits"]
+            }),
+        ),
+        spec(
+            "ls",
             "List the entries of a directory in the project.",
             json!({
                 "type": "object",
                 "properties": {
-                    "path": { "type": "string", "description": "Directory path relative to the project root (default: .)" }
+                    "path": { "type": "string", "description": "Directory path relative to the project root (default: .)" },
+                    "limit": { "type": "integer", "description": "Maximum number of entries to return" }
                 }
             }),
         ),
@@ -132,19 +176,20 @@ pub fn specs(mcp: &McpRegistry) -> Vec<ToolSpec> {
                 "type": "object",
                 "properties": {
                     "command": { "type": "string", "description": "Shell command to execute" },
-                    "timeout_secs": { "type": "integer", "description": "Timeout in seconds (default 120)" }
+                    "timeout": { "type": "integer", "description": "Timeout in milliseconds (default 120000)" }
                 },
                 "required": ["command"]
             }),
         ),
         spec(
-            "glob",
+            "find",
             "Find files by glob pattern (e.g. `**/*.rs`, `src/*.md`). Patterns match paths relative to the search directory; use `**` for recursive matching.",
             json!({
                 "type": "object",
                 "properties": {
                     "pattern": { "type": "string", "description": "Glob pattern to match" },
-                    "path": { "type": "string", "description": "Directory to search in (default: .)" }
+                    "path": { "type": "string", "description": "Directory to search in (default: .)" },
+                    "limit": { "type": "integer", "description": "Maximum number of results to return" }
                 },
                 "required": ["pattern"]
             }),
@@ -157,8 +202,11 @@ pub fn specs(mcp: &McpRegistry) -> Vec<ToolSpec> {
                 "properties": {
                     "pattern": { "type": "string", "description": "Text to search for" },
                     "path": { "type": "string", "description": "Directory to search in (default: .)" },
-                    "include": { "type": "string", "description": "Glob pattern to restrict which file names are searched (e.g. `*.rs`)" },
-                    "ignore_case": { "type": "boolean", "description": "Case-insensitive search" }
+                    "glob": { "type": "string", "description": "Glob pattern to restrict which file names are searched (e.g. `*.rs`)" },
+                    "ignoreCase": { "type": "boolean", "description": "Case-insensitive search" },
+                    "literal": { "type": "boolean", "description": "Treat the pattern as a literal string instead of a regular expression" },
+                    "context": { "type": "integer", "description": "Number of context lines to include around each match" },
+                    "limit": { "type": "integer", "description": "Maximum number of matches to return" }
                 },
                 "required": ["pattern"]
             }),
@@ -176,12 +224,12 @@ pub fn specs(mcp: &McpRegistry) -> Vec<ToolSpec> {
         ),
         spec(
             "webfetch",
-            "Fetch a URL and return its contents as text (HTML is stripped) or raw HTML.",
+            "Fetch a URL and return its contents as Markdown (default), readable plain text, or raw HTML.",
             json!({
                 "type": "object",
                 "properties": {
                     "url": { "type": "string", "description": "URL to fetch" },
-                    "format": { "type": "string", "enum": ["text", "markdown", "html"], "description": "Output format (default: text)" }
+                    "format": { "type": "string", "enum": ["markdown", "text", "html"], "description": "Output format (default: markdown)" }
                 },
                 "required": ["url"]
             }),
@@ -214,12 +262,14 @@ pub async fn execute(
         Err(err) => return ToolOutput::text(format!("error: invalid arguments for {name}: {err}")),
     };
 
+    let canonical = canonical_tool_name(name);
     let result = if mcp.is_tool(name) {
         mcp.call(name, args).await.map(ToolOutput::text)
     } else {
-        match name {
+        match canonical {
             "read_file" => read_file(cwd, &args),
             "write_file" => write_file(cwd, &args),
+            "edit" => edit(cwd, &args),
             "list_dir" => list_dir(cwd, &args).map(ToolOutput::text),
             "bash" => bash(cwd, &args, progress).await.map(ToolOutput::text),
             "glob" => glob(cwd, &args).map(ToolOutput::text),
@@ -232,7 +282,7 @@ pub async fn execute(
 
     match result {
         Ok(output) => ToolOutput {
-            text: truncate(name, output.text),
+            text: truncate(canonical, output.text),
             media: output.media,
             terminate: output.terminate,
             diff: output.diff,
@@ -338,8 +388,133 @@ fn write_file(cwd: &Path, args: &Value) -> Result<ToolOutput> {
     }
 }
 
+/// One exact-text replacement from an `edit` call.
+struct Replacement {
+    old: String,
+    new: String,
+}
+
+/// Normalizes the many shapes models send for `edit` into a list of
+/// replacements, mirroring Pi's `prepareArguments`: `edits` may be a JSON
+/// string, a single `{oldText,newText}` object, or an array; legacy top-level
+/// `oldText`/`newText` are folded into the list.
+fn parse_edits(args: &Value) -> Result<Vec<Replacement>> {
+    let mut raw: Vec<Replacement> = Vec::new();
+    match args.get("edits") {
+        Some(Value::String(text)) => {
+            if let Ok(parsed) = serde_json::from_str::<Value>(text) {
+                collect_edits(&parsed, &mut raw);
+            }
+        }
+        Some(value) => collect_edits(value, &mut raw),
+        None => {}
+    }
+    if let (Some(old), Some(new)) = (
+        args.get("oldText").and_then(Value::as_str),
+        args.get("newText").and_then(Value::as_str),
+    ) {
+        raw.push(Replacement {
+            old: old.to_string(),
+            new: new.to_string(),
+        });
+    }
+    if raw.is_empty() {
+        anyhow::bail!("edits must contain at least one replacement");
+    }
+    Ok(raw)
+}
+
+fn collect_edits(value: &Value, out: &mut Vec<Replacement>) {
+    match value {
+        Value::Array(items) => {
+            for item in items {
+                collect_edits(item, out);
+            }
+        }
+        Value::Object(_) => {
+            if let (Some(old), Some(new)) = (
+                value.get("oldText").and_then(Value::as_str),
+                value.get("newText").and_then(Value::as_str),
+            ) {
+                out.push(Replacement {
+                    old: old.to_string(),
+                    new: new.to_string(),
+                });
+            }
+        }
+        _ => {}
+    }
+}
+
+/// Applies Pi-style exact text replacements. Each `oldText` is matched against
+/// the original file (never incrementally) and must be unique; overlapping or
+/// non-unique matches are rejected so a bad edit cannot silently corrupt a
+/// file.
+fn edit(cwd: &Path, args: &Value) -> Result<ToolOutput> {
+    let path = args
+        .get("path")
+        .and_then(Value::as_str)
+        .context("missing `path`")?;
+    let edits = parse_edits(args)?;
+    let full = resolve(cwd, path);
+    let raw = std::fs::read_to_string(&full)
+        .with_context(|| format!("reading {} (use write to create new files)", full.display()))?;
+
+    let (bom, content) = split_bom(&raw);
+    let crlf = content.contains("\r\n");
+    let mut base = content.replace("\r\n", "\n");
+
+    for (index, replacement) in edits.iter().enumerate() {
+        let old = replacement.old.replace("\r\n", "\n");
+        if old.is_empty() {
+            anyhow::bail!("edits[{index}].oldText must not be empty");
+        }
+        let matches = base.matches(&old).count();
+        match matches {
+            0 => anyhow::bail!(
+                "edits[{index}].oldText did not match anything in {path}; check the exact text"
+            ),
+            1 => {
+                base = base.replacen(&old, &replacement.new.replace("\r\n", "\n"), 1);
+            }
+            n => anyhow::bail!(
+                "edits[{index}].oldText matched {n} times in {path}; include more surrounding text to make it unique"
+            ),
+        }
+    }
+
+    let final_content = if crlf {
+        format!("{bom}{}", base.replace('\n', "\r\n"))
+    } else {
+        format!("{bom}{base}")
+    };
+    std::fs::write(&full, &final_content).with_context(|| format!("writing {}", full.display()))?;
+
+    let output = ToolOutput::text(format!(
+        "Successfully replaced {} block(s) in {path}.",
+        edits.len()
+    ));
+    match diff::preview(
+        &raw.replace("\r\n", "\n"),
+        &final_content.replace("\r\n", "\n"),
+    ) {
+        Some(diff) => Ok(output.with_diff(path, diff)),
+        None => Ok(output),
+    }
+}
+
+/// Splits a leading UTF-8 BOM from file content so edits match text the model
+/// actually sees. Returns the BOM (empty when absent) and the remaining text.
+fn split_bom(text: &str) -> (&str, &str) {
+    match text.strip_prefix('\u{feff}') {
+        Some(rest) => ("\u{feff}", rest),
+        None => ("", text),
+    }
+}
+
 fn list_dir(cwd: &Path, args: &Value) -> Result<String> {
     let path = args.get("path").and_then(Value::as_str).unwrap_or(".");
+    let limit = int_arg(args, "limit").unwrap_or(MAX_MATCHES);
     let full = resolve(cwd, path);
 
     let mut entries: Vec<String> = std::fs::read_dir(&full)
@@ -356,7 +531,13 @@ fn list_dir(cwd: &Path, args: &Value) -> Result<String> {
         })
         .collect();
     entries.sort();
-    Ok(entries.join("\n"))
+    let truncated = entries.len() > limit;
+    entries.truncate(limit);
+    let mut out = entries.join("\n");
+    if truncated {
+        out.push_str("\n... [truncated]");
+    }
+    Ok(out)
 }
 
 const MAX_MATCHES: usize = 200;
@@ -367,6 +548,7 @@ fn glob(cwd: &Path, args: &Value) -> Result<String> {
         .and_then(Value::as_str)
         .context("missing `pattern`")?;
     let base = args.get("path").and_then(Value::as_str).unwrap_or(".");
+    let limit = int_arg(args, "limit").unwrap_or(MAX_MATCHES);
     let root = resolve(cwd, base);
 
     let mut matches = Vec::new();
@@ -381,8 +563,8 @@ fn glob(cwd: &Path, args: &Value) -> Result<String> {
     if matches.is_empty() {
         return Ok("no matches".to_string());
     }
-    let truncated = matches.len() > MAX_MATCHES;
-    matches.truncate(MAX_MATCHES);
+    let truncated = matches.len() > limit;
+    matches.truncate(limit);
     let mut out = matches.join("\n");
     if truncated {
         out.push_str("\n... [truncated]");
@@ -399,11 +581,14 @@ fn grep(cwd: &Path, args: &Value) -> Result<String> {
         anyhow::bail!("`pattern` must not be empty");
     }
     let base = args.get("path").and_then(Value::as_str).unwrap_or(".");
-    let include = args.get("include").and_then(Value::as_str);
-    let ignore_case = args
-        .get("ignore_case")
-        .and_then(Value::as_bool)
-        .unwrap_or(false);
+    // Pi names these `glob`/`ignoreCase`; the legacy names are still accepted.
+    let include = args
+        .get("glob")
+        .and_then(Value::as_str)
+        .or_else(|| args.get("include").and_then(Value::as_str));
+    let ignore_case = bool_arg(args, "ignoreCase", "ignore_case");
+    let context = int_arg(args, "context").unwrap_or(0);
+    let limit = int_arg(args, "limit").unwrap_or(MAX_MATCHES);
     let root = resolve(cwd, base);
 
     let needle = if ignore_case {
@@ -414,7 +599,7 @@ fn grep(cwd: &Path, args: &Value) -> Result<String> {
 
     let mut hits: Vec<String> = Vec::new();
     walk(&root, &mut |path| {
-        if hits.len() > MAX_MATCHES {
+        if hits.len() > limit {
             return;
         }
         let name = path.file_name().map(|n| n.to_string_lossy().to_string());
@@ -428,15 +613,29 @@ fn grep(cwd: &Path, args: &Value) -> Result<String> {
         };
         let rel = path.strip_prefix(&root).unwrap_or(path);
         let rel = rel.to_string_lossy().replace('\\', "/");
-        for (index, line) in content.lines().enumerate() {
+        let lines: Vec<&str> = content.lines().collect();
+        for (index, line) in lines.iter().enumerate() {
             let haystack = if ignore_case {
                 line.to_lowercase()
             } else {
                 line.to_string()
             };
             if haystack.contains(&needle) {
-                hits.push(format!("{rel}:{}: {}", index + 1, line.trim_end()));
-                if hits.len() > MAX_MATCHES {
+                if context > 0 {
+                    let start = index.saturating_sub(context);
+                    let end = (index + context + 1).min(lines.len());
+                    for (ctx_index, ctx_line) in lines.iter().enumerate().take(end).skip(start) {
+                        let marker = if ctx_index == index { ':' } else { '-' };
+                        hits.push(format!(
+                            "{rel}{marker}{}{marker} {}",
+                            ctx_index + 1,
+                            ctx_line.trim_end()
+                        ));
+                    }
+                } else {
+                    hits.push(format!("{rel}:{}: {}", index + 1, line.trim_end()));
+                }
+                if hits.len() > limit {
                     return;
                 }
             }
@@ -446,13 +645,31 @@ fn grep(cwd: &Path, args: &Value) -> Result<String> {
     if hits.is_empty() {
         return Ok("no matches".to_string());
     }
-    let truncated = hits.len() > MAX_MATCHES;
-    hits.truncate(MAX_MATCHES);
+    let truncated = hits.len() > limit;
+    hits.truncate(limit);
     let mut out = hits.join("\n");
     if truncated {
         out.push_str("\n... [truncated]");
     }
     Ok(out)
+}
+
+/// Reads an integer argument, accepting both a JSON number and a numeric
+/// string (some models stringify numbers).
+fn int_arg(args: &Value, key: &str) -> Option<usize> {
+    match args.get(key) {
+        Some(Value::Number(number)) => number.as_u64().map(|value| value as usize),
+        Some(Value::String(text)) => text.trim().parse().ok(),
+        _ => None,
+    }
+}
+
+/// Reads a boolean argument under either of two names (Pi name first).
+fn bool_arg(args: &Value, primary: &str, legacy: &str) -> bool {
+    args.get(primary)
+        .or_else(|| args.get(legacy))
+        .and_then(Value::as_bool)
+        .unwrap_or(false)
 }
 
 fn patch(cwd: &Path, args: &Value) -> Result<ToolOutput> {
@@ -563,7 +780,10 @@ async fn webfetch(args: &Value) -> Result<String> {
         .get("url")
         .and_then(Value::as_str)
         .context("missing `url`")?;
-    let format = args.get("format").and_then(Value::as_str).unwrap_or("text");
+    let format = args
+        .get("format")
+        .and_then(Value::as_str)
+        .unwrap_or("markdown");
 
     let response = reqwest::Client::new()
         .get(url)
@@ -579,7 +799,8 @@ async fn webfetch(args: &Value) -> Result<String> {
 
     let text = match format {
         "html" => body,
-        _ => html_to_text(&body),
+        "text" => crate::html::to_text(&body),
+        _ => crate::html::to_markdown(&body),
     };
     Ok(text)
 }
@@ -590,19 +811,83 @@ fn walk(root: &Path, visit: &mut impl FnMut(&Path)) {
         let Ok(entries) = std::fs::read_dir(&dir) else {
             continue;
         };
+        // Patterns from `.gitignore` files between the root and this directory
+        // (Pi's `find`/`grep` respect gitignore).
+        let ignores = gitignore_patterns(root, &dir);
         for entry in entries.flatten() {
             let name = entry.file_name().to_string_lossy().to_string();
             if matches!(name.as_str(), ".git" | "node_modules" | "target" | ".venv") {
                 continue;
             }
             let path = entry.path();
-            if path.is_dir() {
+            let rel = path
+                .strip_prefix(root)
+                .unwrap_or(&path)
+                .to_string_lossy()
+                .replace('\\', "/");
+            let is_dir = path.is_dir();
+            if is_ignored(&ignores, &rel, is_dir) {
+                continue;
+            }
+            if is_dir {
                 stack.push(path);
             } else {
                 visit(&path);
             }
         }
     }
+}
+
+/// Collects `.gitignore` patterns from `root` down to `dir` (inclusive).
+fn gitignore_patterns(root: &Path, dir: &Path) -> Vec<String> {
+    let mut patterns = Vec::new();
+    let mut chain: Vec<&Path> = dir
+        .ancestors()
+        .take_while(|path| path.starts_with(root))
+        .collect();
+    chain.reverse();
+    for ancestor in chain {
+        if let Ok(content) = std::fs::read_to_string(ancestor.join(".gitignore")) {
+            for line in content.lines() {
+                let line = line.trim();
+                if line.is_empty() || line.starts_with('#') {
+                    continue;
+                }
+                patterns.push(line.to_string());
+            }
+        }
+    }
+    patterns
+}
+
+/// Applies the common subset of gitignore semantics: `!` negation, leading `/`
+/// anchoring, trailing `/` for directories, and `*`/`**` globs.
+fn is_ignored(patterns: &[String], rel: &str, is_dir: bool) -> bool {
+    let mut ignored = false;
+    for pattern in patterns {
+        let (negated, raw) = match pattern.strip_prefix('!') {
+            Some(rest) => (true, rest),
+            None => (false, pattern.as_str()),
+        };
+        let mut pattern = raw;
+        let dir_only = pattern.ends_with('/');
+        pattern = pattern.trim_end_matches('/');
+        if dir_only && !is_dir {
+            continue;
+        }
+        let anchored = pattern.starts_with('/');
+        let pattern = pattern.trim_start_matches('/');
+        let name = rel.rsplit('/').next().unwrap_or(rel);
+        let matched = if anchored || pattern.contains('/') {
+            glob_match(pattern, rel)
+        } else {
+            glob_match(pattern, name)
+        };
+        if matched {
+            ignored = !negated;
+        }
+    }
+    ignored
 }
 
 fn glob_match(pattern: &str, path: &str) -> bool {
@@ -678,41 +963,20 @@ fn find_lines(haystack: &[String], needle: &[String], start: usize) -> Option<us
         .find(|&index| haystack[index..index + needle.len()] == *needle)
 }
 
-fn html_to_text(html: &str) -> String {
-    let mut out = String::with_capacity(html.len());
-    let mut in_tag = false;
-    for ch in html.chars() {
-        match ch {
-            '<' => in_tag = true,
-            '>' => {
-                in_tag = false;
-                out.push('\n');
-            }
-            _ if !in_tag => out.push(ch),
-            _ => {}
-        }
-    }
-    let decoded = out
-        .replace("&amp;", "&")
-        .replace("&lt;", "<")
-        .replace("&gt;", ">")
-        .replace("&quot;", "\"")
-        .replace("&#39;", "'")
-        .replace("&nbsp;", " ");
-    let mut lines: Vec<&str> = decoded.lines().map(str::trim_end).collect();
-    lines.retain(|line| !line.trim().is_empty());
-    lines.join("\n")
-}
-
 async fn bash(cwd: &Path, args: &Value, progress: &Progress) -> Result<String> {
     let command = args
         .get("command")
         .and_then(Value::as_str)
         .context("missing `command`")?;
-    let secs = args
-        .get("timeout_secs")
-        .and_then(Value::as_u64)
-        .unwrap_or(120);
+    // Pi passes `timeout` in milliseconds; the legacy `timeout_secs` is still
+    // accepted for backward compatibility.
+    let secs = if let Some(millis) = int_arg(args, "timeout") {
+        (millis as u64).div_ceil(1000).max(1)
+    } else {
+        args.get("timeout_secs")
+            .and_then(Value::as_u64)
+            .unwrap_or(120)
+    };
 
     #[cfg(windows)]
     let mut shell = {
@@ -841,7 +1105,7 @@ fn output_limits(name: &str) -> (usize, usize) {
         "bash" => (5_000, 160),
         "grep" | "glob" | "list_dir" => (4_000, 160),
         "webfetch" => (6_000, 200),
-        "write_file" | "patch" => (3_000, 120),
+        "write_file" | "patch" | "edit" => (3_000, 120),
         _ => (MAX_OUTPUT_BYTES, MAX_OUTPUT_LINES),
     }
 }
@@ -899,6 +1163,281 @@ mod tests {
                 arguments: args.to_string(),
             },
         }
+    }
+
+    #[test]
+    fn canonical_tool_names_accept_pi_and_legacy_aliases() {
+        assert_eq!(canonical_tool_name("read"), "read_file");
+        assert_eq!(canonical_tool_name("read_file"), "read_file");
+        assert_eq!(canonical_tool_name("write"), "write_file");
+        assert_eq!(canonical_tool_name("edit"), "edit");
+        assert_eq!(canonical_tool_name("patch"), "patch");
+        assert_eq!(canonical_tool_name("ls"), "list_dir");
+        assert_eq!(canonical_tool_name("find"), "glob");
+        assert_eq!(canonical_tool_name("bash"), "bash");
+        assert_eq!(canonical_tool_name("server__tool"), "server__tool");
+        assert_eq!(canonical_tool_name("task"), "task");
+    }
+
+    #[test]
+    fn specs_expose_pi_tool_names() {
+        let mcp = McpRegistry::default();
+        let names: Vec<String> = specs(&mcp).into_iter().map(|s| s.function.name).collect();
+        for name in ["read", "write", "edit", "bash", "grep", "find", "ls"] {
+            assert!(
+                names.iter().any(|n| n == name),
+                "missing {name} in {names:?}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn pi_named_tools_execute() {
+        let dir = std::env::temp_dir().join(format!("oxide_pi_names_{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let mcp = McpRegistry::default();
+        let progress = Progress::default();
+
+        let out = execute(
+            &call("write", json!({ "path": "a.txt", "content": "hello" })),
+            &dir,
+            &mcp,
+            &progress,
+        )
+        .await;
+        assert!(out.text.contains("wrote"), "{}", out.text);
+
+        let out = execute(
+            &call("read", json!({ "path": "a.txt" })),
+            &dir,
+            &mcp,
+            &progress,
+        )
+        .await;
+        assert!(out.text.contains("hello"), "{}", out.text);
+
+        let out = execute(&call("ls", json!({})), &dir, &mcp, &progress).await;
+        assert!(out.text.contains("a.txt"), "{}", out.text);
+
+        let out = execute(
+            &call("find", json!({ "pattern": "*.txt", "limit": 10 })),
+            &dir,
+            &mcp,
+            &progress,
+        )
+        .await;
+        assert!(out.text.contains("a.txt"), "{}", out.text);
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[tokio::test]
+    async fn edit_replaces_unique_text_and_reports_diff() {
+        let dir = std::env::temp_dir().join(format!("oxide_edit_{}", std::process::id()));
+        std::fs::remove_dir_all(&dir).ok();
+        std::fs::create_dir_all(&dir).unwrap();
+        let mcp = McpRegistry::default();
+        let progress = Progress::default();
+
+        execute(
+            &call(
+                "write",
+                json!({ "path": "f.rs", "content": "fn main() {\n    let x = 1;\n}\n" }),
+            ),
+            &dir,
+            &mcp,
+            &progress,
+        )
+        .await;
+
+        let out = execute(
+            &call(
+                "edit",
+                json!({
+                    "path": "f.rs",
+                    "edits": [
+                        { "oldText": "let x = 1;", "newText": "let x = 2;" },
+                        { "oldText": "fn main", "newText": "fn run" }
+                    ]
+                }),
+            ),
+            &dir,
+            &mcp,
+            &progress,
+        )
+        .await;
+        assert!(out.text.contains("2 block(s)"), "{}", out.text);
+        assert!(out.diff.is_some());
+        let content = std::fs::read_to_string(dir.join("f.rs")).unwrap();
+        assert!(content.contains("let x = 2;"));
+        assert!(content.contains("fn run"));
+
+        // Non-unique oldText is rejected rather than corrupting the file.
+        execute(
+            &call("write", json!({ "path": "g.rs", "content": "aa\naa\n" })),
+            &dir,
+            &mcp,
+            &progress,
+        )
+        .await;
+        let out = execute(
+            &call(
+                "edit",
+                json!({ "path": "g.rs", "edits": [{ "oldText": "aa", "newText": "bb" }] }),
+            ),
+            &dir,
+            &mcp,
+            &progress,
+        )
+        .await;
+        assert!(out.text.contains("matched 2 times"), "{}", out.text);
+        assert_eq!(
+            std::fs::read_to_string(dir.join("g.rs")).unwrap(),
+            "aa\naa\n"
+        );
+
+        // A single edit object and top-level oldText/newText are both accepted.
+        let out = execute(
+            &call(
+                "edit",
+                json!({ "path": "f.rs", "oldText": "fn run", "newText": "fn go" }),
+            ),
+            &dir,
+            &mcp,
+            &progress,
+        )
+        .await;
+        assert!(out.text.contains("1 block(s)"), "{}", out.text);
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[tokio::test]
+    async fn find_and_grep_respect_gitignore() {
+        let dir = std::env::temp_dir().join(format!("oxide_gitignore_{}", std::process::id()));
+        std::fs::remove_dir_all(&dir).ok();
+        std::fs::create_dir_all(dir.join("ignored")).unwrap();
+        std::fs::write(dir.join(".gitignore"), "ignored/\n*.log\n").unwrap();
+        std::fs::write(dir.join("ignored/hidden.rs"), "needle\n").unwrap();
+        std::fs::write(dir.join("skip.log"), "needle\n").unwrap();
+        std::fs::write(dir.join("kept.rs"), "needle\n").unwrap();
+        let mcp = McpRegistry::default();
+        let progress = Progress::default();
+
+        let out = execute(
+            &call("find", json!({ "pattern": "**/*.rs" })),
+            &dir,
+            &mcp,
+            &progress,
+        )
+        .await;
+        assert!(out.text.contains("kept.rs"), "{}", out.text);
+        assert!(!out.text.contains("hidden.rs"), "{}", out.text);
+
+        let out = execute(
+            &call("grep", json!({ "pattern": "needle" })),
+            &dir,
+            &mcp,
+            &progress,
+        )
+        .await;
+        assert!(out.text.contains("kept.rs"), "{}", out.text);
+        assert!(!out.text.contains("hidden.rs"), "{}", out.text);
+        assert!(!out.text.contains("skip.log"), "{}", out.text);
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[tokio::test]
+    async fn grep_accepts_pi_parameter_names() {
+        let dir = std::env::temp_dir().join(format!("oxide_grep_{}", std::process::id()));
+        std::fs::remove_dir_all(&dir).ok();
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("a.rs"), "let Foo = 1;\nlet foo = 2;\n").unwrap();
+        let mcp = McpRegistry::default();
+        let progress = Progress::default();
+
+        let out = execute(
+            &call(
+                "grep",
+                json!({ "pattern": "foo", "glob": "*.rs", "ignoreCase": true, "limit": 50 }),
+            ),
+            &dir,
+            &mcp,
+            &progress,
+        )
+        .await;
+        assert!(out.text.contains("let Foo"), "{}", out.text);
+        assert!(out.text.contains("let foo"), "{}", out.text);
+
+        let out = execute(
+            &call("grep", json!({ "pattern": "Foo", "context": 1 })),
+            &dir,
+            &mcp,
+            &progress,
+        )
+        .await;
+        assert!(out.text.contains("a.rs:1: let Foo"), "{}", out.text);
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[tokio::test]
+    async fn webfetch_converts_html_to_markdown() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let body = "<h1>Title</h1><p>Hello <b>world</b></p>";
+        let _server = tokio::spawn(async move {
+            while let Ok((mut socket, _)) = listener.accept().await {
+                tokio::spawn(async move {
+                    // Drain the request first: closing a socket that still has
+                    // unread data sends an RST on Windows (os error 10053).
+                    let mut buf = [0u8; 1024];
+                    let _ = socket.read(&mut buf).await;
+                    let response = format!(
+                        "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                        body.len(),
+                        body
+                    );
+                    let _ = socket.write_all(response.as_bytes()).await;
+                    let _ = socket.shutdown().await;
+                });
+            }
+        });
+
+        let mcp = McpRegistry::default();
+        let progress = Progress::default();
+        let dir = std::env::temp_dir();
+        let url = format!("http://{addr}/");
+
+        let out = execute(
+            &call("webfetch", json!({ "url": url })),
+            &dir,
+            &mcp,
+            &progress,
+        )
+        .await;
+        assert_eq!(out.text, "# Title\n\nHello **world**", "{}", out.text);
+
+        let out = execute(
+            &call("webfetch", json!({ "url": url, "format": "text" })),
+            &dir,
+            &mcp,
+            &progress,
+        )
+        .await;
+        assert_eq!(out.text, "Title\n\nHello world", "{}", out.text);
+
+        let out = execute(
+            &call("webfetch", json!({ "url": url, "format": "html" })),
+            &dir,
+            &mcp,
+            &progress,
+        )
+        .await;
+        assert!(out.text.contains("<h1>Title</h1>"), "{}", out.text);
     }
 
     #[tokio::test]
@@ -1015,9 +1554,11 @@ mod tests {
     }
 
     #[test]
-    fn strips_html_tags() {
-        let text = html_to_text("<h1>Title</h1><p>Hello &amp; bye</p>");
-        assert_eq!(text, "Title\nHello & bye");
+    fn converts_html_to_markdown_for_webfetch() {
+        let md = crate::html::to_markdown("<h1>Title</h1><p>Hello &amp; bye</p>");
+        assert_eq!(md, "# Title\n\nHello & bye");
+        let text = crate::html::to_text("<h1>Title</h1><p>Hello &amp; bye</p>");
+        assert_eq!(text, "Title\n\nHello & bye");
     }
 
     #[test]

@@ -1,7 +1,8 @@
 use crate::config::{Config, ProviderKind};
 use crate::llm::anthropic;
 use crate::llm::types::{
-    AssistantTurn, ChatRequest, FunctionCall, Message, StreamChunk, ToolCall, ToolSpec,
+    AssistantTurn, ChatRequest, FunctionCall, Message, StreamChunk, StreamOptions, ToolCall,
+    ToolSpec, Usage,
 };
 use anyhow::{Context, Result};
 use futures::StreamExt;
@@ -119,6 +120,9 @@ impl LlmClient {
                 .effective_reasoning()
                 .effort()
                 .map(str::to_string),
+            stream_options: Some(StreamOptions {
+                include_usage: true,
+            }),
         };
 
         let response = self
@@ -143,6 +147,12 @@ impl LlmClient {
             let Ok(parsed) = serde_json::from_str::<StreamChunk>(data) else {
                 return Ok(());
             };
+            if let Some(usage) = &parsed.usage {
+                turn.usage = Usage {
+                    input: usage.prompt_tokens,
+                    output: usage.completion_tokens,
+                };
+            }
             let Some(choice) = parsed.choices.into_iter().next() else {
                 return Ok(());
             };
