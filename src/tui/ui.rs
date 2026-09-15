@@ -572,43 +572,34 @@ fn draw_messages(frame: &mut Frame, app: &mut App, area: Rect) {
         app.scroll = app.scroll.min(total.saturating_sub(view));
     }
 
-    let paragraph = Paragraph::new(app.lines.clone())
-        .wrap(Wrap { trim: false })
-        .scroll((app.scroll, 0));
+    let start = app.scroll as usize;
+    let end = (start + view as usize).min(app.lines.len());
+    let paragraph = Paragraph::new(app.lines[start..end].to_vec()).wrap(Wrap { trim: false });
     frame.render_widget(paragraph, inner);
 }
 
-/// Incrementally rebuild the rendered lines, reusing everything before the
-/// first changed conversation item. Items are append-mostly, so a cache keyed by
-/// per-item signatures keeps redraws proportional to what actually changed.
+/// Incrementally rebuild rendered lines from the first item explicitly marked
+/// dirty. Appends are detected from the cached item count, avoiding full-history
+/// hashing on every streamed delta or spinner tick.
 fn sync_lines(app: &mut App, width: usize) {
     if app.render_width != width {
         app.lines.clear();
         app.line_offsets.clear();
-        app.signatures.clear();
+        app.render_dirty_from = Some(0);
         app.render_width = width;
     }
 
     let count = app.items.len();
-    if app.signatures.len() > count {
-        let cut = app
-            .line_offsets
-            .get(count)
-            .copied()
-            .unwrap_or(app.lines.len());
-        app.lines.truncate(cut);
-        app.line_offsets.truncate(count);
-        app.signatures.truncate(count);
+    let cached = app.line_offsets.len();
+    if cached > count {
+        app.mark_render_dirty(count.saturating_sub(1));
     }
-
-    let mut start = 0;
-    while start < count
-        && start < app.signatures.len()
-        && app.signatures[start] == app.items[start].signature()
-    {
-        start += 1;
-    }
-    if start == count {
+    let start = app
+        .render_dirty_from
+        .unwrap_or(cached)
+        .min(cached)
+        .min(count);
+    if start == count && cached == count {
         return;
     }
 
@@ -619,13 +610,10 @@ fn sync_lines(app: &mut App, width: usize) {
         .unwrap_or(app.lines.len());
     app.lines.truncate(cut);
     app.line_offsets.truncate(start);
-    app.signatures.truncate(start);
 
     for index in start..count {
-        let signature = app.items[index].signature();
         let offset = app.lines.len();
         app.line_offsets.push(offset);
-        app.signatures.push(signature);
         render_item_themed(
             &app.items[index],
             width,
@@ -637,6 +625,7 @@ fn sync_lines(app: &mut App, width: usize) {
             app.lines.push(Line::from(""));
         }
     }
+    app.render_dirty_from = None;
 }
 
 fn render_item_themed(
@@ -1160,6 +1149,26 @@ mod tests {
             input_scroll(&"a".repeat(200), 10),
             (20 - MAX_INPUT_ROWS) as u16
         );
+    }
+
+    #[test]
+    fn render_cache_rebuilds_only_from_the_dirty_item() {
+        let mut app = App::new("model".into(), "/tmp".into(), Mode::Build, Reasoning::Auto);
+        app.items.push(ChatItem::User("first".into()));
+        app.push_assistant_delta("second".into());
+        sync_lines(&mut app, 40);
+        let first_offset = app.line_offsets[0];
+
+        app.push_assistant_delta(" updated".into());
+        assert_eq!(app.render_dirty_from, Some(1));
+        sync_lines(&mut app, 40);
+
+        assert_eq!(app.line_offsets[0], first_offset);
+        assert!(app
+            .lines
+            .iter()
+            .any(|line| line_text(line).contains("updated")));
+        assert_eq!(app.render_dirty_from, None);
     }
 
     #[test]

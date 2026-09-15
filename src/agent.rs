@@ -359,6 +359,7 @@ async fn run_loop(
         }
 
         let mut terminated: Vec<bool> = Vec::with_capacity(tool_calls.len());
+        let mut snapshot_needed = depth == 0 && runtime.plugins.is_active();
         let parallel = tool_calls.len() > 1
             && tool_calls
                 .iter()
@@ -527,6 +528,7 @@ async fn run_loop(
                     )
                     .await
                     {
+                        snapshot_needed |= tool_may_mutate_workspace(&name);
                         dispatch(&config, &cwd, &runtime, &call, depth, &progress).await
                     } else {
                         tools::ToolOutput::text(format!("error: permission denied for `{name}`"))
@@ -572,7 +574,7 @@ async fn run_loop(
             }
         }
 
-        if depth == 0 {
+        if snapshot_needed {
             if let Some(snapshots) = &runtime.snapshots {
                 let _ = snapshots.commit("turn");
             }
@@ -621,6 +623,12 @@ fn concurrency_safe(name: &str) -> bool {
             | "skill"
             | "diagnostics"
     )
+}
+
+fn tool_may_mutate_workspace(name: &str) -> bool {
+    let canonical = crate::tools::canonical_tool_name(name);
+    matches!(canonical, "write_file" | "patch" | "edit" | "bash" | "task")
+        || canonical.contains("__")
 }
 
 async fn dispatch(
@@ -1096,6 +1104,16 @@ mod tests {
             "mcp__server__tool",
         ] {
             assert!(!concurrency_safe(name), "{name} must stay sequential");
+        }
+    }
+
+    #[test]
+    fn snapshot_classification_covers_unknown_side_effects() {
+        for name in ["write", "edit", "patch", "bash", "task", "server__tool"] {
+            assert!(tool_may_mutate_workspace(name), "{name} may mutate");
+        }
+        for name in ["read", "ls", "find", "grep", "webfetch", "diagnostics"] {
+            assert!(!tool_may_mutate_workspace(name), "{name} is read-only");
         }
     }
 
