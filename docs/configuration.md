@@ -357,11 +357,12 @@ spend before answering:
 
 | Level | Behavior |
 | --- | --- |
-| `auto` (default) | Enables reasoning for models known to support it (OpenAI o-series and `gpt-5`, Anthropic Claude 3.7/4) and turns it off otherwise. Resolves to `medium` when supported. |
+| `auto` (default) | Uses provider-native behavior. Newer Claude models use adaptive thinking; other providers receive no forced effort. |
 | `off` | Never request reasoning. |
 | `low` / `medium` / `high` | Force that level of effort. |
 
-The level maps to OpenAI's `reasoning_effort` parameter and to Anthropic's
+Explicit levels map to OpenAI-compatible `reasoning_effort`, newer Anthropic
+adaptive thinking with `output_config.effort`, or legacy Anthropic
 extended-thinking `budget_tokens` (scaled by level and kept below `max_tokens`).
 Thinking blocks returned by Anthropic are replayed on later turns so multi-step
 tool use keeps its reasoning context.

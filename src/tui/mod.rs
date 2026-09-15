@@ -2,7 +2,7 @@ pub mod app;
 pub mod ui;
 
 use crate::agent::{self, AgentEvent, ApprovalRequest, Approver, Runtime};
-use crate::config::Config;
+use crate::config::{Config, Reasoning};
 use crate::ecosystem::AgentMode;
 use crate::llm::{LlmClient, Message};
 use crate::lsp::LspManager;
@@ -344,11 +344,11 @@ fn handle_key(
         KeyCode::Char('r') if key.modifiers.contains(KeyModifiers::CONTROL) => {
             config.reasoning = config.reasoning.next();
             app.reasoning = config.reasoning;
-            app.status = format!(
-                "reasoning: {} (effective: {})",
-                app.reasoning.label(),
-                config.effective_reasoning().label()
-            );
+            app.status = if app.reasoning == Reasoning::Auto {
+                "reasoning: auto (provider native)".to_string()
+            } else {
+                format!("reasoning: {}", app.reasoning.label())
+            };
         }
         KeyCode::Char('o') if key.modifiers.contains(KeyModifiers::CONTROL) => {
             app.toggle_tool_output();

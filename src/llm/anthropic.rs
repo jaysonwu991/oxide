@@ -1,4 +1,4 @@
-use crate::config::Config;
+use crate::config::{supports_adaptive_thinking, Config, Reasoning};
 use crate::llm::types::{
     AssistantTurn, ContentPart, FunctionCall, Message, MessageContent, ToolCall, ToolSpec,
 };
@@ -72,11 +72,22 @@ pub fn request_body(config: &Config, messages: &[Message], tools: &[ToolSpec]) -
         let specs: Vec<Value> = tools.iter().map(tool_schema).collect();
         body["tools"] = json!(specs);
     }
-    if let Some(budget) = config
-        .effective_reasoning()
-        .budget_tokens(config.max_tokens)
-    {
-        body["thinking"] = json!({ "type": "enabled", "budget_tokens": budget });
+    let adaptive = supports_adaptive_thinking(&config.model);
+    match config.reasoning {
+        Reasoning::Off => {}
+        Reasoning::Auto if adaptive => {
+            body["thinking"] = json!({ "type": "adaptive" });
+        }
+        Reasoning::Auto => {}
+        level if adaptive => {
+            body["thinking"] = json!({ "type": "adaptive" });
+            body["output_config"] = json!({ "effort": level.effort() });
+        }
+        level => {
+            if let Some(budget) = level.budget_tokens(config.max_tokens) {
+                body["thinking"] = json!({ "type": "enabled", "budget_tokens": budget });
+            }
+        }
     }
     body
 }
@@ -330,7 +341,6 @@ fn merge_adjacent(messages: Vec<Value>) -> Vec<Value> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::Reasoning;
     use crate::llm::types::{FunctionSpec, ImageUrl};
 
     fn config() -> Config {
@@ -414,6 +424,26 @@ mod tests {
         let body = request_body(&cfg, &[Message::user("hi")], &[]);
         assert_eq!(body["thinking"]["type"], "enabled");
         assert_eq!(body["thinking"]["budget_tokens"], 7168);
+    }
+
+    #[test]
+    fn adaptive_models_use_native_thinking_and_effort() {
+        let cfg = Config {
+            model: "claude-opus-4-8".into(),
+            reasoning: Reasoning::Auto,
+            ..config()
+        };
+        let body = request_body(&cfg, &[Message::user("hi")], &[]);
+        assert_eq!(body["thinking"]["type"], "adaptive");
+        assert!(body.get("output_config").is_none());
+
+        let cfg = Config {
+            reasoning: Reasoning::Medium,
+            ..cfg
+        };
+        let body = request_body(&cfg, &[Message::user("hi")], &[]);
+        assert_eq!(body["thinking"]["type"], "adaptive");
+        assert_eq!(body["output_config"]["effort"], "medium");
     }
 
     #[test]

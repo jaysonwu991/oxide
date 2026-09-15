@@ -1,4 +1,4 @@
-use crate::config::{Config, ProviderKind};
+use crate::config::{supports_adaptive_thinking, Config, ProviderKind, Reasoning};
 use crate::llm::anthropic;
 use crate::llm::types::{
     AssistantTurn, ChatRequest, FunctionCall, Message, StreamChunk, StreamOptions, ToolCall,
@@ -100,33 +100,7 @@ impl LlmClient {
         F: FnMut(String),
     {
         let url = format!("{}/chat/completions", self.config.base_url);
-        let messages = messages
-            .iter()
-            .cloned()
-            .map(|mut message| {
-                message.thinking = None;
-                message
-            })
-            .collect();
-        let request = ChatRequest {
-            model: self.config.model.clone(),
-            messages,
-            stream: true,
-            max_tokens: self.config.max_tokens,
-            tools: if tools.is_empty() {
-                None
-            } else {
-                Some(tools.to_vec())
-            },
-            reasoning_effort: self
-                .config
-                .effective_reasoning()
-                .effort()
-                .map(str::to_string),
-            stream_options: Some(StreamOptions {
-                include_usage: true,
-            }),
-        };
+        let request = openai_request(&self.config, messages, tools);
 
         let response = self
             .authenticate_openai(self.http.post(&url))?
@@ -271,6 +245,58 @@ impl LlmClient {
     }
 }
 
+fn openai_request(config: &Config, messages: &[Message], tools: &[ToolSpec]) -> ChatRequest {
+    let messages = messages
+        .iter()
+        .cloned()
+        .map(|mut message| {
+            message.thinking = None;
+            message
+        })
+        .collect();
+    let (reasoning_effort, thinking, output_config) = openai_reasoning(config);
+    ChatRequest {
+        model: config.model.clone(),
+        messages,
+        stream: true,
+        max_tokens: config.max_tokens,
+        tools: if tools.is_empty() {
+            None
+        } else {
+            Some(tools.to_vec())
+        },
+        reasoning_effort,
+        thinking,
+        output_config,
+        stream_options: Some(StreamOptions {
+            include_usage: true,
+        }),
+    }
+}
+
+fn openai_reasoning(
+    config: &Config,
+) -> (
+    Option<String>,
+    Option<serde_json::Value>,
+    Option<serde_json::Value>,
+) {
+    let adaptive = config.is_portkey() && supports_adaptive_thinking(&config.model);
+    match config.reasoning {
+        Reasoning::Off => (None, None, None),
+        Reasoning::Auto if adaptive => {
+            (None, Some(serde_json::json!({ "type": "adaptive" })), None)
+        }
+        Reasoning::Auto => (None, None, None),
+        level if adaptive => (
+            None,
+            Some(serde_json::json!({ "type": "adaptive" })),
+            Some(serde_json::json!({ "effort": level.effort() })),
+        ),
+        level => (level.effort().map(str::to_string), None, None),
+    }
+}
+
 async fn read_sse<F>(response: reqwest::Response, mut on_data: F) -> Result<()>
 where
     F: FnMut(&str) -> Result<()>,
@@ -344,6 +370,64 @@ mod tests {
             ..Config::default()
         };
         assert_eq!(config.model_catalog(), vec!["custom-a", "custom-b"]);
+    }
+
+    #[test]
+    fn auto_uses_provider_native_reasoning() {
+        for provider in ["openai", "deepseek", "custom"] {
+            let config = Config {
+                provider: provider.into(),
+                model: "reasoning-model".into(),
+                reasoning: Reasoning::Auto,
+                ..Config::default()
+            };
+            assert_eq!(openai_reasoning(&config), (None, None, None));
+            let body =
+                serde_json::to_value(openai_request(&config, &[Message::user("hi")], &[])).unwrap();
+            assert!(body.get("reasoning_effort").is_none());
+            assert!(body.get("thinking").is_none());
+            assert!(body.get("output_config").is_none());
+        }
+    }
+
+    #[test]
+    fn portkey_adaptive_claude_uses_native_thinking() {
+        let config = Config {
+            provider: "portkey".into(),
+            model: "claude-sonnet-5".into(),
+            reasoning: Reasoning::Auto,
+            ..Config::default()
+        };
+        let (effort, thinking, output) = openai_reasoning(&config);
+        assert_eq!(effort, None);
+        assert_eq!(thinking.unwrap()["type"], "adaptive");
+        assert_eq!(output, None);
+        let body =
+            serde_json::to_value(openai_request(&config, &[Message::user("hi")], &[])).unwrap();
+        assert_eq!(body["thinking"]["type"], "adaptive");
+        assert!(body.get("reasoning_effort").is_none());
+        assert!(body.get("output_config").is_none());
+        assert_eq!(body["stream_options"]["include_usage"], true);
+
+        let config = Config {
+            reasoning: Reasoning::High,
+            ..config
+        };
+        let (effort, thinking, output) = openai_reasoning(&config);
+        assert_eq!(effort, None);
+        assert_eq!(thinking.unwrap()["type"], "adaptive");
+        assert_eq!(output.unwrap()["effort"], "high");
+    }
+
+    #[test]
+    fn explicit_reasoning_uses_openai_compatible_effort() {
+        let config = Config {
+            provider: "deepseek".into(),
+            model: "deepseek-reasoner".into(),
+            reasoning: Reasoning::Low,
+            ..Config::default()
+        };
+        assert_eq!(openai_reasoning(&config), (Some("low".into()), None, None));
     }
 
     #[test]
