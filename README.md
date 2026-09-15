@@ -12,16 +12,17 @@ box, with Claude Code configuration support for compatibility.
   TUI, `/login` (`/connect`) and `/logout` manage provider credentials.
 - OpenAI-compatible (OpenAI, DeepSeek, Portkey, custom) and Anthropic Messages API clients.
 - Built-in tools under Pi-style names: `read`, `write`, `edit`, `bash`, `grep`,
-  `find`, `ls`, `webfetch`. The legacy names (`read_file`, `write_file`,
-  `patch`, `list_dir`, `glob`) are still accepted everywhere, including in
-  permission rules.
+  `find`, `ls`, `webfetch`. Compatibility names (`read_file`, `write_file`,
+  `list_dir`, `glob`) and the unified-diff `patch` tool are accepted everywhere,
+  including in permission rules.
 - Agent-level tools: `task` (subagents), `skill` (on-demand skill loading),
-  `memory` (cross-session notes), `diagnostics` (LSP diagnostics).
+  `memory` (cross-session notes), `diagnostics` (LSP diagnostics), and
+  `compress` (when context pruning is enabled).
 - MCP servers over stdio or HTTP (including OAuth-protected remote servers),
   exposed as `<server>__<tool>`.
 - Multimodal prompts: attach images/PDFs with `--image` or `@path` references,
   and pass prompt files as `oxide @file "message"`.
-- Project + global ecosystem discovery: rules, memory, commands, prompt
+- Project + global ecosystem discovery: instructions, commands, prompt
   templates, agents, skills, MCP servers, and plugins from `.oxide/` (plus the
   Claude Code layout).
 - Durable sessions, shadow-git snapshots (`/undo`, `/redo`), and context
@@ -232,7 +233,8 @@ oxide mcp list
 ## CLI
 
 ```
-oxide [OPTIONS] [@files...] [PROMPT...] [COMMAND]
+oxide [OPTIONS] [@files...] [PROMPT...]
+oxide mcp <COMMAND>
 ```
 
 | Flag | Description |
@@ -292,6 +294,7 @@ oxide mcp get <name>
 oxide mcp add [--scope project|global] [--transport stdio|http] <name> <command|url> [args...]
 oxide mcp add-json [--scope project|global] <name> '<json>'
 oxide mcp remove [--scope project|global] <name>
+oxide mcp auth [--scope project|global] <name>
 ```
 
 `--scope project` (the default) writes `<root>/.oxide/mcp.json`; `--scope global`
@@ -334,11 +337,11 @@ when `false`, permission rules that resolve to `ask` are denied in
 non-interactive mode.
 
 `mode` selects the agent's permission mode. `build` follows the active agent's
-permission rules; `plan` is read-only (workspace mutations and unknown MCP tools
-are denied) and instructs the model to produce an implementation plan; `auto-edit`
-auto-approves `write`, `edit`, and `patch` while other rules still apply. In the
-TUI press Shift+Tab to cycle modes; `--mode` and `OXIDE_MODE` set the starting
-mode.
+permission rules; `plan` is read-only (workspace mutations and all MCP tools
+are denied) and instructs the model to produce an implementation plan;
+`auto-edit` auto-approves `write`, `edit`, and `patch` while other rules still
+apply. In the TUI press Shift+Tab to cycle modes; `--mode` and `OXIDE_MODE` set
+the starting mode.
 
 `reasoning` controls how much reasoning effort oxide requests. `auto` (the
 default) leaves reasoning behavior and effort to the provider/model. Newer
@@ -380,27 +383,16 @@ the starting level.
 Any OpenAI-compatible endpoint can be used by setting `provider`, `base_url`,
 `model`, and a key.
 
-Claude Sonnet 5 is the Portkey preset default. `/models` discovers the live
-catalog when the connected key permits it. Restricted keys fall back to the
-built-in catalog; set `model_catalog` in `config.json` or `PORTKEY_MODELS` to use a
-different account-specific catalog. Custom gateways can set `base_url` (or
-`PORTKEY_BASE_URL`) and `portkey_config` (or `PORTKEY_CONFIG`). Known model IDs
-receive friendly display names; all other IDs are shown and sent unchanged.
+### Portkey
 
-For example, the equivalent of a custom Claude Code Portkey configuration is:
+Run `/login portkey` in the TUI, or set `PORTKEY_API_KEY`, then select a model
+with `/models` or `"model"` in `config.json`. The preset uses
+`https://api.portkey.ai/v1`, sends the key as `x-portkey-api-key`, and defaults
+to `claude-sonnet-5`.
 
-```json
-{
-  "provider": "portkey",
-  "base_url": "https://gateway.example.com/v1",
-  "portkey_config": "pc-example",
-  "model": "claude-sonnet-5",
-  "model_catalog": ["claude-sonnet-5", "account-specific-model"]
-}
-```
-
-Keep the API key in `auth.json` via `/login portkey` or in `PORTKEY_API_KEY`,
-rather than checking it into `config.json`.
+For custom gateways, Config IDs, environment precedence, and model-catalog
+fallbacks, see the full [Portkey configuration](docs/configuration.md#portkey)
+section.
 
 ## Context files and system prompt
 
@@ -410,9 +402,13 @@ directory, so nested projects layer their instructions. If a directory contains
 `AGENTS.override.md`, it replaces `AGENTS.md`/`CLAUDE.md` for that directory
 only. The global `~/.oxide/AGENTS.md` is loaded first (lowest precedence).
 
-- Disable discovery with `--no-context-files`.
-- Replace the default system prompt with `.oxide/SYSTEM.md` (project) or `~/.oxide/SYSTEM.md` (global); append without replacing with `.oxide/APPEND_SYSTEM.md` or its global equivalent.
-- `--system-prompt <text>` replaces the prompt for one run; `--append-system-prompt <text>` appends (repeatable).
+- Disable ancestor context-file discovery with `--no-context-files`.
+- Replace the default system prompt with `.oxide/SYSTEM.md` (project),
+  `~/.oxide/SYSTEM.md`, or the corresponding platform config-directory file.
+  Append without replacing with `APPEND_SYSTEM.md` in the same locations.
+- `--system-prompt <text>` replaces the configured base prompt for one run, and
+  `--append-system-prompt <text>` appends to that base (repeatable). A loaded
+  `SYSTEM.md` remains the higher-precedence replacement.
 - The startup welcome area lists loaded context files, and `/reload` re-reads them.
 
 ## Ecosystem
@@ -425,6 +421,7 @@ overrides the Claude Code layout.
 **Oxide layout**
 
 - `AGENTS.md` — project memory and instructions
+- `.oxide/AGENTS.md` — additional layout-scoped instructions
 - `.oxide/agents/*.md` — subagents (frontmatter: `name`, `description`, `mode`, `permission`)
 - `.oxide/commands/*.md` — slash commands (`$ARGUMENTS`, `$1`, `$2`, …; optional `agent` and `subtask` frontmatter)
 - `.oxide/prompts/*.md` — prompt templates (Pi-style; frontmatter `description` and `argument-hint`, arguments `$1`, `$@`, `${1:-default}`, `${@:2:3}`)
@@ -433,7 +430,8 @@ overrides the Claude Code layout.
 - `.oxide/plugins/` — JS/TS plugin hooks
 - `.oxide/SYSTEM.md`, `.oxide/APPEND_SYSTEM.md` — replace or extend the system prompt
 - `.oxide/mcp.json` — MCP servers (same schema as `.mcp.json`; manage with `oxide mcp`)
-- Global scope: `~/.oxide/`
+- Global scope: `~/.oxide/` and the platform oxide config directory (the latter
+  has higher precedence)
 
 This repository keeps its own agents, commands, prompts, skills, and plugins in
 `.oxide/`.
@@ -460,7 +458,8 @@ Run `cargo clippy --all-targets -- -D warnings` and fix each finding.
 
 oxide also reads the Claude Code layout, so existing configurations work as-is:
 
-- `CLAUDE.md`, `CLAUDE.local.md` — project memory
+- `CLAUDE.md` — project memory and instructions
+- `.claude/CLAUDE.md` — additional layout-scoped instructions
 - `.claude/agents/`, `.claude/commands/`, `.claude/skills/`, `.claude/plugins/`
 - `.mcp.json` — MCP servers
 - Global scope: `~/.claude/`, `~/.claude.json`
@@ -473,19 +472,19 @@ Slash commands are expanded from the ecosystem and also include built-ins:
 ## Tools
 
 Built-in file and shell tools use Pi-style names: `read`, `write`, `edit`,
-`bash`, `grep`, `find`, `ls`, `webfetch` (legacy aliases `read_file`,
-`write_file`, `patch`, `list_dir`, `glob` remain accepted, and `patch` also
-applies unified diffs). Agent-level tools: `task`, `skill`, `memory`,
+`bash`, `grep`, `find`, `ls`, and `webfetch`. Compatibility names
+`read_file`, `write_file`, `list_dir`, and `glob` remain accepted; `patch` is
+the unified-diff editing tool. Agent-level tools: `task`, `skill`, `memory`,
 `diagnostics`, and `compress` (when context pruning is enabled). Connected MCP
 tools appear as `<server>__<tool>`.
 
 | Tool | Parameters |
 | --- | --- |
-| `read` | `path`, `offset?`, `limit?` |
+| `read` | `path`, `offset?` (1-based), `limit?` (default 250 lines) |
 | `write` | `path`, `content` |
 | `edit` | `path`, `edits: [{ oldText, newText }]` |
-| `bash` | `command`, `timeout?` (ms) |
-| `grep` | `pattern`, `path?`, `glob?`, `ignoreCase?`, `literal?`, `context?`, `limit?` |
+| `bash` | `command`, `timeout?` in milliseconds (default 120000) |
+| `grep` | `pattern`, `path?`, `glob?`, `ignoreCase?`, `context?`, `limit?` |
 | `find` | `pattern`, `path?`, `limit?` |
 | `ls` | `path?`, `limit?` |
 | `patch` | `diff` (unified diff) |
@@ -527,7 +526,8 @@ termination for the batch with `output.terminate = true`.
 ## Project trust
 
 Projects may contain local resources that change how the agent behaves or
-execute code — agents, commands, prompts, skills, plugins, and `SYSTEM.md`.
+execute code — agents, commands, prompts, skills, plugins, `SYSTEM.md`, and
+`APPEND_SYSTEM.md`.
 oxide treats the presence of any of these as requiring trust. When a project
 requires trust and no decision has been saved for it (or a parent directory),
 the TUI asks before loading them.
@@ -538,7 +538,7 @@ the TUI asks before loading them.
   them.
 - `/trust [show|off]` saves a decision for the current directory to `trust.json`.
 - Non-interactive modes (`-p`, `--mode json`, `--mode rpc`) never prompt: with
-  the `ask`/`never` default they ignore project resources unless approved.
+  the `ask` or `never` setting they ignore project resources unless approved.
 - Context files (`AGENTS.md`/`CLAUDE.md`) always load, trusted or not.
 
 ## Themes
@@ -602,7 +602,8 @@ the same pruned view. When pruning is enabled it replaces the legacy automatic
     "minContextLimit": 16000,
     "maxContextLimit": 32000,
     "nudgeFrequency": 5,
-    "iterationNudgeThreshold": 15
+    "iterationNudgeThreshold": 15,
+    "protectedTools": ["task", "skill", "memory", "diagnostics"]
   },
   "strategies": {
     "deduplication": { "enabled": true },
@@ -614,13 +615,16 @@ the same pruned view. When pruning is enabled it replaces the legacy automatic
 ```
 
 Set `"enabled": false` to disable pruning, or `"compress": {"permission":
-"deny"}` to disable only the `compress` tool. `protectedTools` and
-`protectedFilePatterns` exclude tools and file paths from pruning.
+"deny"}` to disable only the `compress` tool. Top-level `protectedTools` and
+`protectedFilePatterns` protect matching results from deduplication and error
+purging. `compress.protectedTools` retains matching tool outputs alongside a
+model-written compression summary.
 
 ## Data locations
 
-Everything lives under the oxide config directory:
+Runtime state lives under the platform oxide config directory:
 
+- Main configuration: `config.json`
 - Credentials: `auth.json`
 - MCP OAuth tokens: `mcp-oauth/<server>.json` (mode `0600`)
 - Sessions: `sessions/<project>/*.jsonl`
@@ -632,6 +636,10 @@ Everything lives under the oxide config directory:
 - Themes: `themes/<name>.json`
 - Truncated tool output: `truncated/` (retained 7 days; see `OXIDE_TRUNCATION_DIR`)
 - Context pruning config: `dcp.json` (global) and `.oxide/dcp.json` (project)
+
+Global ecosystem resources such as agents, commands, prompts, skills, plugins,
+and MCP definitions may also live under `~/.oxide/`; compatibility resources
+are read from `~/.claude/` and `~/.claude.json`.
 
 ## Development
 

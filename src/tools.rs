@@ -122,7 +122,7 @@ pub fn specs(mcp: &McpRegistry) -> Vec<ToolSpec> {
                 "properties": {
                     "path": { "type": "string", "description": "File path relative to the project root" },
                     "offset": { "type": "integer", "description": "1-based line number to start from (text only)" },
-                    "limit": { "type": "integer", "description": "Maximum number of lines to return (text only, default 400)" }
+                    "limit": { "type": "integer", "description": "Maximum number of lines to return (text only, default 250)" }
                 },
                 "required": ["path"]
             }),
@@ -208,7 +208,6 @@ pub fn specs(mcp: &McpRegistry) -> Vec<ToolSpec> {
                     "path": { "type": "string", "description": "Directory to search in (default: .)" },
                     "glob": { "type": "string", "description": "Glob pattern to restrict which file names are searched (e.g. `*.rs`)" },
                     "ignoreCase": { "type": "boolean", "description": "Case-insensitive search" },
-                    "literal": { "type": "boolean", "description": "Treat the pattern as a literal string instead of a regular expression" },
                     "context": { "type": "integer", "description": "Number of context lines to include around each match" },
                     "limit": { "type": "integer", "description": "Maximum number of matches to return" }
                 },

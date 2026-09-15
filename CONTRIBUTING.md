@@ -38,7 +38,9 @@ cargo run -- -p "summarize this repository"
 | `cargo fmt` | Format the code. |
 
 Before opening a pull request, make sure `cargo fmt`, `cargo clippy`, and
-`cargo test` all pass. CI runs the same checks.
+`cargo test` all pass. CI checks formatting with `cargo fmt --all -- --check`,
+runs clippy and tests with `--locked`, and builds the release profile on Linux,
+macOS, and Windows.
 
 ## Project layout
 
@@ -51,7 +53,7 @@ Before opening a pull request, make sure `cargo fmt`, `cargo clippy`, and
 | `src/trust.rs` | Project trust: per-directory decisions and gating of project-local resources. |
 | `src/theme.rs` | Semantic TUI color themes (built-in and custom JSON), including focus, speaker, success, tool, error, and supporting-text roles. |
 | `src/agent.rs` | Agent loop, parallel/sequential tool execution, steering and follow-up queues, terminate hint, and the agent-level tools. |
-| `src/llm/` | Model clients: OpenAI-compatible and Anthropic, including reasoning effort / extended thinking. |
+| `src/llm/` | Model clients: OpenAI-compatible and Anthropic, including reasoning effort and Anthropic adaptive/extended thinking. |
 | `src/tools.rs` | Built-in tool specs and execution; `ToolOutput` (text/media/diff/terminate), streaming `Progress`, and output truncation (line/byte caps, bash tail, saved full output). |
 | `src/mcp.rs` | MCP runtime and remote tool exposure. |
 | `src/mcp_config.rs` | `oxide mcp` CLI: read/write MCP servers in `.oxide/mcp.json`, including OAuth fields and `oxide mcp auth`. |
@@ -99,16 +101,18 @@ Before opening a pull request, make sure `cargo fmt`, `cargo clippy`, and
   the outgoing request.
 - **Providers.** Add a preset in `ProviderPreset::for_name` in `src/config.rs`
   and, if the API is not OpenAI-compatible, extend the dispatch in
-  `src/llm/client.rs` (see `src/llm/anthropic.rs`). Reasoning levels come from
-  `Config::effective_reasoning`; OpenAI maps them to `reasoning_effort`
-  (`src/llm/client.rs`) and Anthropic to extended-thinking `budget_tokens`
-  (`src/llm/anthropic.rs`).
+  `src/llm/client.rs` (see `src/llm/anthropic.rs`). OpenAI-compatible providers
+  map explicit reasoning levels to `reasoning_effort`; Portkey-hosted newer
+  Claude models and the Anthropic client use adaptive thinking where supported,
+  with an Anthropic extended-thinking `budget_tokens` fallback for older
+  models.
 - **Ecosystem sources.** Parsing lives in `src/ecosystem/mod.rs`; frontmatter
   handling is in `src/ecosystem/frontmatter.rs`. The native Oxide layout
-  (`.oxide/`, `AGENTS.md`) is read first and the Claude Code layout
-  (`.claude/`, `CLAUDE.md`, `.mcp.json`) is supported for compatibility, both at
-  project and global scope. Context files are collected by walking ancestor
-  directories; `ecosystem::load_opts` controls whether project resources load.
+  (`.oxide/`, `AGENTS.md`) and Claude Code layout (`.claude/`, `CLAUDE.md`,
+  `.mcp.json`) are supported at project and global scope. Claude-compatible
+  entries load first so native Oxide entries win on name collisions. Context
+  files are collected by walking ancestor directories; `ecosystem::load_opts`
+  controls whether project resources load.
 - **Project trust.** `src/trust.rs` owns the decision store and resource
   detection; untrusted runs reload via `Config::reload_ecosystem`.
 - **Themes.** Add a slot in `Theme`/`ThemeFile` in `src/theme.rs` and use it from
