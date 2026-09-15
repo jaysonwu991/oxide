@@ -13,8 +13,24 @@ You can see images and PDFs attached to user messages, and read_file returns ima
 Prefer small, focused changes and verify your work. \
 Be concise. When you are done, give a short summary of what you changed.";
 
+pub fn model_label(model: &str) -> &str {
+    match model {
+        "claude-haiku-4-5" => "Claude Haiku 4.5",
+        "claude-opus-4-8" => "Claude Opus 4.8",
+        "claude-opus-5" => "Claude Opus 5",
+        "claude-sonnet-4-6" => "Claude Sonnet 4.6",
+        "claude-sonnet-5" => "Claude Sonnet 5",
+        "glm-5.2" => "GLM-5.2",
+        "gpt-5.4" => "GPT-5.4",
+        "gpt-5.6-luna" => "GPT-5.6 Luna",
+        "gpt-5.6-sol" => "GPT-5.6 Sol",
+        "gpt-5.6-terra" => "GPT-5.6 Terra",
+        _ => model,
+    }
+}
+
 /// The API dialect a provider speaks. OpenAI-compatible providers (OpenAI,
-/// DeepSeek, and most others) share one client; Anthropic uses its own
+/// DeepSeek, Portkey, and most others) share one client; Anthropic uses its own
 /// Messages API.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ProviderKind {
@@ -49,6 +65,13 @@ impl ProviderPreset {
                 base_url_env: "DEEPSEEK_BASE_URL",
                 model: "deepseek-chat",
                 key_env: "DEEPSEEK_API_KEY",
+            },
+            "portkey" => Self {
+                kind: ProviderKind::OpenAi,
+                base_url: "https://api.portkey.ai/v1",
+                base_url_env: "PORTKEY_BASE_URL",
+                model: "claude-sonnet-5",
+                key_env: "PORTKEY_API_KEY",
             },
             "anthropic" => Self {
                 kind: ProviderKind::Anthropic,
@@ -202,7 +225,11 @@ impl Reasoning {
 
 /// Models known to accept reasoning controls.
 fn supports_reasoning(model: &str) -> bool {
-    let model = model.to_ascii_lowercase();
+    let model = model
+        .rsplit('/')
+        .next()
+        .unwrap_or(model)
+        .to_ascii_lowercase();
     model.starts_with("o1")
         || model.starts_with("o3")
         || model.starts_with("o4")
@@ -210,7 +237,9 @@ fn supports_reasoning(model: &str) -> bool {
         || model.contains("claude-3-7")
         || model.contains("claude-3.7")
         || model.contains("claude-sonnet-4")
+        || model.contains("claude-sonnet-5")
         || model.contains("claude-opus-4")
+        || model.contains("claude-opus-5")
         || model.contains("claude-4")
 }
 
@@ -614,6 +643,10 @@ impl Config {
             .unwrap_or("OPENAI_API_KEY")
     }
 
+    pub fn is_portkey(&self) -> bool {
+        canonical_provider(&self.provider) == "portkey"
+    }
+
     /// The reasoning level to use after resolving `Auto` against the model.
     pub fn effective_reasoning(&self) -> Reasoning {
         self.reasoning.resolve(&self.model)
@@ -768,7 +801,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn presets_cover_gpt_deepseek_and_anthropic() {
+    fn presets_cover_built_in_providers() {
         assert_eq!(
             ProviderPreset::for_name("openai").unwrap().kind,
             ProviderKind::OpenAi
@@ -793,6 +826,11 @@ mod tests {
             ProviderPreset::for_name("anthropic").unwrap().key_env,
             "ANTHROPIC_API_KEY"
         );
+        let portkey = ProviderPreset::for_name("portkey").unwrap();
+        assert_eq!(portkey.kind, ProviderKind::OpenAi);
+        assert_eq!(portkey.base_url, "https://api.portkey.ai/v1");
+        assert_eq!(portkey.model, "claude-sonnet-5");
+        assert_eq!(portkey.key_env, "PORTKEY_API_KEY");
         assert!(ProviderPreset::for_name("custom-endpoint").is_none());
     }
 
@@ -833,7 +871,15 @@ mod tests {
         assert_eq!(Reasoning::Auto.resolve("o3-mini"), Reasoning::Medium);
         assert_eq!(Reasoning::Auto.resolve("gpt-5"), Reasoning::Medium);
         assert_eq!(
+            Reasoning::Auto.resolve("@openai-prod/o3-mini"),
+            Reasoning::Medium
+        );
+        assert_eq!(
             Reasoning::Auto.resolve("claude-sonnet-4-20250514"),
+            Reasoning::Medium
+        );
+        assert_eq!(
+            Reasoning::Auto.resolve("claude-sonnet-5"),
             Reasoning::Medium
         );
         assert_eq!(Reasoning::High.resolve("gpt-4o-mini"), Reasoning::High);
@@ -896,6 +942,25 @@ mod tests {
         assert_eq!(config.api_key, "sk-test");
         assert_eq!(config.model, "deepseek-chat");
         assert_eq!(config.base_url, "https://api.deepseek.com/v1");
+    }
+
+    #[test]
+    fn apply_portkey_provider_updates_runtime_fields() {
+        let mut config = Config::default();
+        config.apply_provider("portkey", "pk-test");
+        assert_eq!(config.provider, "portkey");
+        assert_eq!(config.api_key, "pk-test");
+        assert_eq!(config.model, "claude-sonnet-5");
+        assert_eq!(config.base_url, "https://api.portkey.ai/v1");
+        assert_eq!(config.key_env_name(), "PORTKEY_API_KEY");
+        assert!(config.is_portkey());
+    }
+
+    #[test]
+    fn portkey_model_labels_are_friendly() {
+        assert_eq!(model_label("claude-sonnet-5"), "Claude Sonnet 5");
+        assert_eq!(model_label("gpt-5.6-terra"), "GPT-5.6 Terra");
+        assert_eq!(model_label("custom-model"), "custom-model");
     }
 
     #[test]

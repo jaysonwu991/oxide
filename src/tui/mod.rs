@@ -1214,6 +1214,7 @@ fn resolve_provider_choice(value: &str) -> String {
         "1" => "openai".to_string(),
         "2" => "deepseek".to_string(),
         "3" => "anthropic".to_string(),
+        "4" => "portkey".to_string(),
         other => crate::auth::canonical_provider(other),
     }
 }
@@ -1720,7 +1721,9 @@ mod tests {
         assert_eq!(resolve_provider_choice("1"), "openai");
         assert_eq!(resolve_provider_choice("2"), "deepseek");
         assert_eq!(resolve_provider_choice("3"), "anthropic");
+        assert_eq!(resolve_provider_choice("4"), "portkey");
         assert_eq!(resolve_provider_choice("DeepSeek"), "deepseek");
+        assert_eq!(resolve_provider_choice("Port-Key"), "portkey");
         assert_eq!(resolve_provider_choice("gpt-4o"), "openai");
         assert_eq!(resolve_provider_choice("my-endpoint"), "my-endpoint");
     }
@@ -1905,6 +1908,10 @@ mod tests {
         state.filter = "reason".to_string();
         assert_eq!(state.filtered(), vec!["deepseek-reasoner"]);
         assert_eq!(state.selected_model(), Some("deepseek-reasoner"));
+
+        state = ModelsState::ready(vec!["claude-sonnet-5".to_string()]);
+        state.filter = "Claude Sonnet 5".to_string();
+        assert_eq!(state.selected_model(), Some("claude-sonnet-5"));
 
         state.filter = "missing".to_string();
         assert!(state.selected_model().is_none());

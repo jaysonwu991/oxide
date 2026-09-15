@@ -10,7 +10,7 @@ box, with Claude Code configuration support for compatibility.
 - Interactive TUI (ratatui) plus non-interactive `-p/--print`, `--mode json`
   (JSONL event stream), and `--mode rpc` (JSONL over stdin/stdout) modes. In the
   TUI, `/login` (`/connect`) and `/logout` manage provider credentials.
-- OpenAI-compatible (OpenAI, DeepSeek, custom) and Anthropic Messages API clients.
+- OpenAI-compatible (OpenAI, DeepSeek, Portkey, custom) and Anthropic Messages API clients.
 - Built-in tools under Pi-style names: `read`, `write`, `edit`, `bash`, `grep`,
   `find`, `ls`, `webfetch`. The legacy names (`read_file`, `write_file`,
   `patch`, `list_dir`, `glob`) are still accepted everywhere, including in
@@ -84,7 +84,7 @@ so check each project's documentation for the current details.
 | --- | --- | --- | --- |
 | Distribution | Native Rust binary | Open-source CLI (Node/Bun) | Proprietary CLI + apps |
 | License | MIT | Open source | Proprietary |
-| Model providers | OpenAI-compatible + Anthropic (OpenAI, DeepSeek, custom) | Any provider (bring your own keys) | Claude (Anthropic API, Bedrock, Vertex, third-party) |
+| Model providers | OpenAI-compatible + Anthropic (OpenAI, DeepSeek, Portkey, custom) | Any provider (bring your own keys) | Claude (Anthropic API, Bedrock, Vertex, third-party) |
 | Interfaces | Terminal TUI, `-p` print, JSON/RPC modes | Terminal, desktop, IDE, web | Terminal, IDE, desktop, web |
 | Project config | `.oxide/` + `AGENTS.md` (also reads `.claude/`) | `opencode.json` + `AGENTS.md` | `CLAUDE.md` + `.claude/` |
 | Subagents | `--agent`, `task`, command routing | Agents | Subagents, background agents |
@@ -179,9 +179,9 @@ oxide
 ### Keyboard shortcuts
 
 The welcome area summarizes the loaded ecosystem and shows the most commonly
-used shortcuts above the editor. The single-line footer combines live state
-such as `ready`, `thinking`, tool activity, and elapsed time with the current
-project, session, model, mode, and thinking level.
+used shortcuts above the editor. The two-row footer combines live state such as
+`ready`, `thinking`, tool activity, and elapsed time with the current project,
+Git branch, model, mode, and thinking level.
 
 | Key | Action |
 | --- | --- |
@@ -361,6 +361,7 @@ cycle levels; `--reasoning` and `OXIDE_REASONING` set the starting level.
 | `OPENAI_API_KEY` / `OPENAI_BASE_URL` | OpenAI credentials. |
 | `DEEPSEEK_API_KEY` / `DEEPSEEK_BASE_URL` | DeepSeek credentials. |
 | `ANTHROPIC_API_KEY` / `ANTHROPIC_BASE_URL` | Anthropic credentials. |
+| `PORTKEY_API_KEY` / `PORTKEY_BASE_URL` | Portkey AI Gateway credentials. |
 
 ### Providers
 
@@ -369,9 +370,15 @@ cycle levels; `--reasoning` and `OXIDE_REASONING` set the starting level.
 | `openai`, `gpt`, `gpt-4`, `gpt-4o` | OpenAI-compatible | `gpt-4o-mini` | `https://api.openai.com/v1` | `OPENAI_API_KEY` |
 | `deepseek` | OpenAI-compatible | `deepseek-chat` | `https://api.deepseek.com/v1` | `DEEPSEEK_API_KEY` |
 | `anthropic` | Anthropic Messages | `claude-3-5-sonnet-latest` | `https://api.anthropic.com/v1` | `ANTHROPIC_API_KEY` |
+| `portkey`, `port-key` | OpenAI-compatible gateway | `claude-sonnet-5` | `https://api.portkey.ai/v1` | `PORTKEY_API_KEY` |
 
 Any OpenAI-compatible endpoint can be used by setting `provider`, `base_url`,
 `model`, and a key.
+
+Claude Sonnet 5 is the Portkey preset default. `/models` discovers the catalog
+available to the connected Portkey API key, so other accounts and custom
+catalogs work without code changes. Known model IDs receive friendly display
+names; all other IDs are shown and sent unchanged.
 
 ## Context files and system prompt
 

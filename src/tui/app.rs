@@ -3,6 +3,7 @@ use crate::config::{Mode, Reasoning};
 use crate::llm::{ContentPart, Message};
 use crate::tools::DiffPreview;
 use ratatui::text::Line;
+use std::process::Command;
 use std::time::Instant;
 
 #[derive(Debug, Clone)]
@@ -90,7 +91,13 @@ impl ModelsState {
         self.all
             .iter()
             .map(String::as_str)
-            .filter(|model| filter.is_empty() || model.to_ascii_lowercase().contains(&filter))
+            .filter(|model| {
+                filter.is_empty()
+                    || model.to_ascii_lowercase().contains(&filter)
+                    || crate::config::model_label(model)
+                        .to_ascii_lowercase()
+                        .contains(&filter)
+            })
             .collect()
     }
 
@@ -139,6 +146,7 @@ pub struct App {
     pub should_quit: bool,
     pub model: String,
     pub cwd: String,
+    pub git_branch: Option<String>,
     pub assistant_open: bool,
     pub pending_approval: Option<ApprovalRequest>,
     pub connect: Option<ConnectState>,
@@ -165,6 +173,7 @@ pub struct App {
 
 impl App {
     pub fn new(model: String, cwd: String, mode: Mode, reasoning: Reasoning) -> Self {
+        let git_branch = current_git_branch(&cwd);
         Self {
             input: String::new(),
             input_history: Vec::new(),
@@ -181,6 +190,7 @@ impl App {
             should_quit: false,
             model,
             cwd,
+            git_branch,
             assistant_open: false,
             pending_approval: None,
             connect: None,
@@ -360,4 +370,17 @@ impl App {
             }),
         }
     }
+}
+
+fn current_git_branch(cwd: &str) -> Option<String> {
+    let output = Command::new("git")
+        .args(["-C", cwd, "branch", "--show-current"])
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let branch = String::from_utf8(output.stdout).ok()?;
+    let branch = branch.trim();
+    (!branch.is_empty()).then(|| branch.to_string())
 }

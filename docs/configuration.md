@@ -457,7 +457,7 @@ inside the TUI, like Pi.
 Start `oxide` even without a key, then run `/login`:
 
 - `/login` lists the providers — enter a number or name, then paste the API key.
-- `/login deepseek` skips the picker and asks for the key directly.
+- `/login deepseek` or `/login portkey` skips the picker and asks for the key directly.
 - `/logout` removes the active provider's stored credential; `/logout <provider>`
   removes a specific one.
 
@@ -467,8 +467,9 @@ to the running session and the next launch. `/connect` remains an alias of
 `/login`.
 
 You can also provide a key without the login flow via the `OPENAI_API_KEY` /
-`DEEPSEEK_API_KEY` / `ANTHROPIC_API_KEY` environment variables or an `api_key`
-entry in `config.json`; environment variables take precedence over `auth.json`.
+`DEEPSEEK_API_KEY` / `ANTHROPIC_API_KEY` / `PORTKEY_API_KEY` environment
+variables or an `api_key` entry in `config.json`; environment variables take
+precedence over `auth.json`.
 
 See [Configuration](../README.md#configuration) and
 [Providers](../README.md#providers) in the README for the full list.
