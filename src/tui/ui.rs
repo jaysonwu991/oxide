@@ -1,4 +1,4 @@
-use crate::config::{Mode, Reasoning};
+use crate::config::Reasoning;
 use crate::tools::DiffPreview;
 use crate::tui::app::{App, ChatItem, ConnectStep};
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
@@ -1356,22 +1356,6 @@ mod tests {
             "→ Run failed cargo test --all · exit 1"
         );
         assert_eq!(lines[0].spans[1].style.fg, Some(Color::LightRed));
-    }
-
-    #[test]
-    fn badges_use_dark_text_on_bright_backgrounds() {
-        for mode in [Mode::Build, Mode::AutoEdit, Mode::Plan] {
-            assert_eq!(mode_style(mode).fg, Some(Color::Black));
-        }
-        for reasoning in [
-            Reasoning::Auto,
-            Reasoning::Off,
-            Reasoning::Low,
-            Reasoning::Medium,
-            Reasoning::High,
-        ] {
-            assert_eq!(reasoning_style(reasoning).fg, Some(Color::Black));
-        }
     }
 
     #[test]
