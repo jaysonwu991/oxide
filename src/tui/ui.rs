@@ -1116,6 +1116,7 @@ fn wrap(text: &str, width: usize) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::config::Mode;
 
     #[test]
     fn input_rows_grows_and_clamps() {
