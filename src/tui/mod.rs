@@ -114,8 +114,7 @@ async fn event_loop(
 
     app.items.push(ChatItem::Banner);
     app.items.push(ChatItem::Info(
-        "Ask me to build, refactor, debug or explain code. Type /help for commands, Ctrl+C to quit."
-            .to_string(),
+        "Build, refactor, debug, and understand your code.".to_string(),
     ));
     app.items.push(ChatItem::Info(format!(
         "ecosystem: {} · mcp: {} server(s), {} tool(s) · plugins: {}{} · memory: {} entr{}",
@@ -132,7 +131,7 @@ async fn event_loop(
         if config.memory.len() == 1 { "y" } else { "ies" }
     )));
     app.items.push(ChatItem::Info(
-        "tips: type / to list commands · /init writes AGENTS.md · /models switches model · @path or Ctrl+V attaches images · ↑ recalls history"
+        "tips: Enter send or guide · Alt+Enter follow-up · Shift+Enter newline · / commands · Ctrl+O tool details · /models switch model · /init create AGENTS.md · @path or Ctrl+V attach images · ↑/↓ history · Ctrl+C quit"
             .to_string(),
     ));
     if !config.ecosystem.context_files.is_empty() {
@@ -275,6 +274,10 @@ fn is_quit_shortcut(key: &KeyEvent) -> bool {
     key.code == KeyCode::Char('c') && key.modifiers.contains(KeyModifiers::CONTROL)
 }
 
+fn is_newline_shortcut(key: &KeyEvent) -> bool {
+    key.code == KeyCode::Enter && key.modifiers.contains(KeyModifiers::SHIFT)
+}
+
 #[allow(clippy::too_many_arguments)]
 fn handle_key(
     key: KeyEvent,
@@ -352,6 +355,11 @@ fn handle_key(
             } else {
                 "tool output collapsed".to_string()
             };
+        }
+        KeyCode::Enter if is_newline_shortcut(&key) => {
+            app.input.push('\n');
+            app.auto_scroll = true;
+            refresh_suggestions(app, config);
         }
         KeyCode::Enter => {
             if app.busy {
@@ -707,6 +715,7 @@ fn handle_key(
                 }
                 config.theme = theme.clone();
                 app.theme = theme;
+                app.invalidate_render_cache();
                 app.items
                     .push(ChatItem::Info(format!("theme set to {requested}")));
                 return;
@@ -1028,7 +1037,7 @@ fn help_text(config: &Config) -> String {
         "  /models [filter]      list and switch the active model".to_string(),
         "  /undo, /redo          revert or reapply the agent's file changes".to_string(),
         "  /compact              summarize the conversation to free context".to_string(),
-        "keys: Enter send · Alt+Enter follow-up · Shift+Tab mode · Ctrl+R reasoning · Ctrl+V image · ↑/↓ history · PgUp/PgDn/wheel scroll · Ctrl+U/D half page · Ctrl+C quit"
+        "keys: Enter send/guide · Shift+Enter newline · Alt+Enter follow-up while busy · Shift+Tab mode · Ctrl+R reasoning · Ctrl+O tool details · Ctrl+V image · ↑/↓ history · PgUp/PgDn/wheel scroll · Ctrl+U/D half page · Ctrl+C quit"
             .to_string(),
     ];
     if !config.ecosystem.commands.is_empty() {
@@ -1077,14 +1086,19 @@ fn hotkeys_text() -> String {
     [
         "keyboard shortcuts:",
         "  Enter                 send (queues steering while busy)",
-        "  Alt+Enter             queue a follow-up message",
-        "  Esc                   cancel the current run",
+        "  Shift+Enter           insert a newline",
+        "  Alt+Enter             queue a follow-up while busy",
+        "  Esc                   clear input; with empty input, quit",
         "  Shift+Tab             cycle permission mode",
         "  Ctrl+R                cycle reasoning/thinking level",
         "  Ctrl+O                toggle tool output",
         "  Ctrl+V                attach a clipboard image",
+        "  Tab                   complete the selected slash command",
+        "  Ctrl+Y / Ctrl+E       scroll one line",
         "  Ctrl+U / Ctrl+D       scroll half a page",
         "  PgUp / PgDn / wheel   scroll the transcript",
+        "  Ctrl+G / Home         scroll to the top",
+        "  End                   return to the latest message",
         "  Up / Down             input history",
         "  Ctrl+C                quit",
     ]
@@ -1757,6 +1771,15 @@ mod tests {
         )));
         assert!(!is_quit_shortcut(&key(KeyCode::Char('c'))));
         assert!(!is_quit_shortcut(&key(KeyCode::Char('d'))));
+    }
+
+    #[test]
+    fn shift_enter_is_a_newline_shortcut() {
+        assert!(is_newline_shortcut(&KeyEvent::new(
+            KeyCode::Enter,
+            KeyModifiers::SHIFT
+        )));
+        assert!(!is_newline_shortcut(&key(KeyCode::Enter)));
     }
 
     #[test]

@@ -48,9 +48,10 @@ box, with Claude Code configuration support for compatibility.
   toggles them), long action lines are truncated to the terminal width, and tool
   results are capped by lines and bytes before they enter the model's context.
   Capped output is saved to disk with a pointer so it stays recoverable.
-- OpenCode-style transcript: shell calls render as `$ command` with their output
-  and a `⋯ Ctrl+O to expand` hint, file edits show a colored line-numbered diff,
-  and each model turn is timed with `+ Thought: Nms`.
+- Compact agent transcript: shell calls render as `→ Run <command>` and finish
+  as `→ Ran <command> · exit <code>`. Hidden output uses a
+  `⋯ <lines> lines · Ctrl+O to expand` affordance, file edits show a colored
+  line-numbered diff, and each model turn is timed with `+ Thought: Nms`.
 - Tool selection: `--tools`/`-t` allowlists and `--exclude-tools`/`-x`
   disables tools (accepting both Pi and legacy names); disabled tools are hidden
   from the model and refused if requested.
@@ -66,10 +67,11 @@ box, with Claude Code configuration support for compatibility.
   decision.
 - Themes: built-in `dark` and `light` plus custom `.oxide/themes/<name>.json`,
   selected with `--use-theme` or `/theme`.
-- Pi-style footer: working directory, session name, token totals (`↑`/`↓`),
-  context usage percentage, model, mode, and thinking level, with a spinner and
-  key hints on the status row. The editor border color reflects the thinking
-  level.
+- Focused terminal layout: onboarding shortcuts live in the welcome tips,
+  current activity and elapsed time live in the status row, and the footer
+  shows the working directory, session name, token totals (`↑`/`↓`), context
+  usage, model, mode, and thinking level. The labeled editor grows to 12 rows,
+  and semantic colors keep dark, light, and custom themes consistent.
 
 ## Comparison
 
@@ -173,6 +175,35 @@ oxide
 # Then connect a provider from inside the TUI
 /login
 ```
+
+### TUI essentials
+
+The welcome area summarizes the loaded ecosystem and keeps the main shortcuts
+above the editor. The row below the editor is reserved for live state such as
+`ready`, `thinking`, tool activity, elapsed time, and the quit affordance.
+Persistent session and model details stay in the footer.
+
+| Key | Action |
+| --- | --- |
+| Enter | Send a message; while the agent is busy, queue guidance for its next step. |
+| Shift+Enter | Insert a newline without sending. |
+| Alt+Enter | While busy, queue a follow-up to run after the current work finishes. |
+| Esc | Clear the input; with empty input, quit. In dialogs, cancel or close. |
+| `/` | Open slash-command autocomplete. |
+| Tab | Complete the selected slash command. |
+| Up / Down | Recall input history or move through a picker. |
+| Shift+Tab | Cycle `build` → `auto-edit` → `plan`. |
+| Ctrl+R | Cycle the reasoning level. |
+| Ctrl+O | Expand or collapse tool-output details. |
+| Ctrl+V | Attach an image from the clipboard when the platform helper is available. |
+| PgUp / PgDn / mouse wheel | Scroll the transcript. |
+| Ctrl+Y / Ctrl+E | Scroll one line. |
+| Ctrl+U / Ctrl+D | Scroll half a page. |
+| Ctrl+G / Home | Scroll to the top. |
+| End | Return to the latest message and resume automatic scrolling. |
+| Ctrl+C | Quit. |
+
+Run `/hotkeys` for the in-app list and `/help` for commands, agents, and skills.
 
 Or provide credentials through the environment:
 
@@ -353,7 +384,7 @@ only. The global `~/.oxide/AGENTS.md` is loaded first (lowest precedence).
 - Disable discovery with `--no-context-files`.
 - Replace the default system prompt with `.oxide/SYSTEM.md` (project) or `~/.oxide/SYSTEM.md` (global); append without replacing with `.oxide/APPEND_SYSTEM.md` or its global equivalent.
 - `--system-prompt <text>` replaces the prompt for one run; `--append-system-prompt <text>` appends (repeatable).
-- The startup header lists the loaded context files, and `/reload` re-reads them.
+- The startup welcome area lists loaded context files, and `/reload` re-reads them.
 
 ## Ecosystem
 
@@ -492,13 +523,25 @@ the built-in `dark` theme:
 ```json
 {
   "accent": "#5fd7ff",
+  "success": "lightgreen",
   "tool": "cyan",
+  "error": "lightred",
+  "info": "gray",
   "border": "#5fd7ff"
 }
 ```
 
-Available slots: `accent`, `user`, `assistant`, `tool`, `error`, `info`, `dim`,
-`border`, `thinking_off`, `thinking_low`, `thinking_medium`, `thinking_high`.
+Available slots: `accent`, `user`, `assistant`, `success`, `tool`, `error`,
+`info`, `dim`, `border`, `thinking_off`, `thinking_low`, `thinking_medium`,
+`thinking_high`.
+
+Theme slots are semantic: `accent` marks focus and selections, `user` and
+`assistant` label speakers, `success` and `error` communicate outcomes, `tool`
+marks active tool work, and `info`/`dim` render supporting text. Selection rows
+also use reverse video and outcomes include text or symbols, so meaning does not
+depend on color alone. For accessible custom themes, keep every foreground
+readable against the terminal background and avoid assigning the same color to
+`success`, `error`, and `tool`.
 
 ## Context pruning
 
