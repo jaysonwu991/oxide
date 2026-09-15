@@ -89,23 +89,23 @@ fn draw_trust(frame: &mut Frame, app: &App) {
     let mut lines = vec![Line::from(Span::styled(
         format!(" Trust project {}?", state.dir),
         Style::default()
-            .fg(Color::LightYellow)
+            .fg(app.theme.tool)
             .add_modifier(Modifier::BOLD),
     ))];
     lines.push(Line::from(""));
     lines.push(Line::from(Span::styled(
         "This project contains local resources the agent will load and, for",
-        Style::default().fg(Color::Gray),
+        Style::default().fg(app.theme.info),
     )));
     lines.push(Line::from(Span::styled(
         "plugins, execute. Only trust repositories you have reviewed.",
-        Style::default().fg(Color::Gray),
+        Style::default().fg(app.theme.info),
     )));
     lines.push(Line::from(""));
     for resource in &state.resources {
         lines.push(Line::from(Span::styled(
             format!("   • {resource}"),
-            Style::default().fg(Color::White),
+            Style::default().fg(app.theme.assistant),
         )));
     }
     lines.push(Line::from(""));
@@ -114,10 +114,10 @@ fn draw_trust(frame: &mut Frame, app: &App) {
         let selected = state.selected == index;
         let style = if selected {
             Style::default()
-                .fg(Color::LightCyan)
+                .fg(app.theme.accent)
                 .add_modifier(Modifier::BOLD)
         } else {
-            Style::default().fg(Color::White)
+            Style::default().fg(app.theme.assistant)
         };
         lines.push(Line::from(Span::styled(
             format!(" {} {label}", if selected { "›" } else { " " }),
@@ -127,11 +127,11 @@ fn draw_trust(frame: &mut Frame, app: &App) {
     lines.push(Line::from(""));
     lines.push(Line::from(Span::styled(
         "←/→ choose · Enter confirm · Esc decline for this session",
-        Style::default().fg(Color::Gray),
+        Style::default().fg(app.theme.info),
     )));
 
     frame.render_widget(
-        Paragraph::new(lines).block(panel(" project trust ", Color::LightYellow)),
+        Paragraph::new(lines).block(panel("project trust", app.theme.tool)),
         area,
     );
 }
@@ -181,7 +181,7 @@ fn draw_connect(frame: &mut Frame, app: &App) {
 
     let mut lines = vec![Line::from(Span::styled(
         prompt,
-        Style::default().fg(Color::Gray),
+        Style::default().fg(app.theme.info),
     ))];
     if matches!(state.step, ConnectStep::Provider) {
         lines.push(Line::from(""));
@@ -190,14 +190,14 @@ fn draw_connect(frame: &mut Frame, app: &App) {
             let marker = if selected { "›" } else { " " };
             let style = if selected {
                 Style::default()
-                    .fg(Color::LightCyan)
+                    .fg(app.theme.accent)
                     .add_modifier(Modifier::BOLD)
             } else {
-                Style::default().fg(Color::White)
+                Style::default().fg(app.theme.assistant)
             };
             lines.push(Line::from(vec![
                 Span::styled(format!(" {marker} {:<10}", option.label), style),
-                Span::styled(option.description, Style::default().fg(Color::Gray)),
+                Span::styled(option.description, Style::default().fg(app.theme.info)),
             ]));
         }
     }
@@ -205,13 +205,13 @@ fn draw_connect(frame: &mut Frame, app: &App) {
     if let Some(error) = &state.error {
         lines.push(Line::from(Span::styled(
             format!("error: {error}"),
-            Style::default().fg(Color::LightRed),
+            Style::default().fg(app.theme.error),
         )));
         lines.push(Line::from(""));
     }
     lines.push(Line::from(vec![
-        Span::styled("> ", Style::default().fg(Color::LightCyan)),
-        Span::styled(value, Style::default().fg(Color::White)),
+        Span::styled("> ", Style::default().fg(app.theme.accent)),
+        Span::styled(value, Style::default().fg(app.theme.assistant)),
     ]));
     lines.push(Line::from(""));
     lines.push(Line::from(Span::styled(
@@ -219,10 +219,10 @@ fn draw_connect(frame: &mut Frame, app: &App) {
             ConnectStep::Provider => "↑/↓ choose · Enter continue · Esc cancel",
             ConnectStep::Key { .. } => "Enter connect · Backspace back · Esc cancel",
         },
-        Style::default().fg(Color::Gray),
+        Style::default().fg(app.theme.info),
     )));
 
-    let block = panel(title, Color::LightCyan);
+    let block = panel(title, app.theme.accent);
     frame.render_widget(
         Paragraph::new(lines)
             .block(block)
@@ -243,7 +243,7 @@ fn draw_models(frame: &mut Frame, app: &App) {
     } else {
         format!(" models · {} ", state.filter)
     };
-    let block = panel(&title, Color::LightCyan);
+    let block = panel(&title, app.theme.accent);
     let inner = block.inner(area);
     frame.render_widget(block, area);
 
@@ -251,7 +251,7 @@ fn draw_models(frame: &mut Frame, app: &App) {
         frame.render_widget(
             Paragraph::new(Span::styled(
                 "loading models…",
-                Style::default().fg(Color::Gray),
+                Style::default().fg(app.theme.info),
             )),
             inner,
         );
@@ -261,7 +261,7 @@ fn draw_models(frame: &mut Frame, app: &App) {
         frame.render_widget(
             Paragraph::new(Span::styled(
                 format!("error: {error}"),
-                Style::default().fg(Color::LightRed),
+                Style::default().fg(app.theme.error),
             )),
             inner,
         );
@@ -273,7 +273,7 @@ fn draw_models(frame: &mut Frame, app: &App) {
         frame.render_widget(
             Paragraph::new(Span::styled(
                 "no matching models",
-                Style::default().fg(Color::Gray),
+                Style::default().fg(app.theme.info),
             )),
             inner,
         );
@@ -293,9 +293,8 @@ fn draw_models(frame: &mut Frame, app: &App) {
     let list = List::new(items)
         .highlight_style(
             Style::default()
-                .fg(Color::Black)
-                .bg(Color::LightCyan)
-                .add_modifier(Modifier::BOLD),
+                .fg(app.theme.accent)
+                .add_modifier(Modifier::BOLD | Modifier::REVERSED),
         )
         .highlight_symbol("> ");
     let mut list_state = ListState::default();
@@ -325,23 +324,22 @@ fn draw_suggestions(frame: &mut Frame, app: &App, area: Rect) {
             ListItem::new(Line::from(vec![
                 Span::styled(
                     format!("/{}", hint.name),
-                    Style::default().fg(Color::LightCyan),
+                    Style::default().fg(app.theme.accent),
                 ),
                 Span::styled(
                     format!("  {}", hint.description),
-                    Style::default().fg(Color::Gray),
+                    Style::default().fg(app.theme.info),
                 ),
             ]))
         })
         .collect();
-    let block = panel("commands", Color::Gray);
+    let block = panel("commands", app.theme.border);
     let list = List::new(items)
         .block(block)
         .highlight_style(
             Style::default()
-                .fg(Color::Black)
-                .bg(Color::LightCyan)
-                .add_modifier(Modifier::BOLD),
+                .fg(app.theme.accent)
+                .add_modifier(Modifier::BOLD | Modifier::REVERSED),
         )
         .highlight_symbol("> ");
     let mut list_state = ListState::default();
@@ -349,41 +347,29 @@ fn draw_suggestions(frame: &mut Frame, app: &App, area: Rect) {
     frame.render_stateful_widget(list, popup, &mut list_state);
 }
 
-/// A thin line under the editor showing the working indicator, elapsed time,
-/// and the most useful key hints — Pi's status row.
+/// A thin state row under the editor. Static keyboard help lives in the
+/// welcome tips so this row stays focused on current activity.
 fn draw_status(frame: &mut Frame, app: &App, area: Rect) {
     let dim = Style::default().fg(app.theme.info);
     let busy_style = Style::default().fg(app.theme.tool);
-    let mut spans = Vec::new();
-    if app.busy {
+    let spans = if app.busy {
         let secs = app
             .busy_since
             .map(|start| start.elapsed().as_secs())
             .unwrap_or(0);
-        spans.push(Span::styled(
-            format!("  {} ", spinner(app.busy_since)),
-            busy_style,
-        ));
-        spans.push(Span::styled(
-            format!("Working · {secs}s · Esc to cancel"),
-            busy_style,
-        ));
+        vec![
+            Span::styled(format!("  {} ", spinner(app.busy_since)), busy_style),
+            Span::styled(
+                format!("{} · {secs}s · Esc clear/quit", app.status),
+                busy_style,
+            ),
+        ]
     } else {
-        spans.push(Span::styled("  ready", dim));
-    }
-    let hints = if app.busy {
-        "Enter queue · Alt+Enter follow-up"
-    } else {
-        "Enter send · Shift+Enter newline · / commands · Ctrl+O tools"
+        vec![
+            Span::styled("  ● ", Style::default().fg(app.theme.accent)),
+            Span::styled(app.status.clone(), dim),
+        ]
     };
-    let width = area.width as usize;
-    let used: usize = spans.iter().map(|s| s.content.chars().count()).sum();
-    if used + hints.chars().count() + 3 <= width {
-        spans.push(Span::raw(
-            " ".repeat(width - used - hints.chars().count() - 2),
-        ));
-        spans.push(Span::styled(hints, dim));
-    }
     frame.render_widget(Paragraph::new(Line::from(spans)), area);
 }
 
@@ -617,27 +603,33 @@ fn sync_lines(app: &mut App, width: usize) {
         let offset = app.lines.len();
         app.line_offsets.push(offset);
         app.signatures.push(signature);
-        render_item(&app.items[index], width, app.expand_tools, &mut app.lines);
+        render_item_themed(
+            &app.items[index],
+            width,
+            app.expand_tools,
+            &app.theme,
+            &mut app.lines,
+        );
         if app.lines.len() > offset {
             app.lines.push(Line::from(""));
         }
     }
 }
 
-fn render_item(item: &ChatItem, width: usize, expand_tools: bool, lines: &mut Vec<Line<'static>>) {
+fn render_item_themed(
+    item: &ChatItem,
+    width: usize,
+    expand_tools: bool,
+    theme: &crate::theme::Theme,
+    lines: &mut Vec<Line<'static>>,
+) {
     let bold = Modifier::BOLD;
     match item {
-        ChatItem::Banner => render_banner(width, lines),
+        ChatItem::Banner => render_banner_themed(width, theme, lines),
         ChatItem::User(text) => {
             lines.push(Line::from(vec![
-                Span::styled(
-                    "❯ ",
-                    Style::default().fg(Color::LightCyan).add_modifier(bold),
-                ),
-                Span::styled(
-                    "you",
-                    Style::default().fg(Color::LightCyan).add_modifier(bold),
-                ),
+                Span::styled("❯ ", Style::default().fg(theme.user).add_modifier(bold)),
+                Span::styled("you", Style::default().fg(theme.user).add_modifier(bold)),
             ]));
             push_wrapped(lines, text, width, Style::default());
         }
@@ -645,11 +637,11 @@ fn render_item(item: &ChatItem, width: usize, expand_tools: bool, lines: &mut Ve
             lines.push(Line::from(vec![
                 Span::styled(
                     "◆ ",
-                    Style::default().fg(Color::LightGreen).add_modifier(bold),
+                    Style::default().fg(theme.assistant).add_modifier(bold),
                 ),
                 Span::styled(
                     "oxide",
-                    Style::default().fg(Color::LightGreen).add_modifier(bold),
+                    Style::default().fg(theme.assistant).add_modifier(bold),
                 ),
             ]));
             push_wrapped(lines, text, width, Style::default());
@@ -660,23 +652,23 @@ fn render_item(item: &ChatItem, width: usize, expand_tools: bool, lines: &mut Ve
                     crate::tools::canonical_tool_name(name),
                     "write_file" | "patch" | "edit"
                 ) {
-                    ("Edit", Color::LightYellow)
+                    ("Edit", theme.tool)
                 } else {
-                    ("Read", Color::LightCyan)
+                    ("Read", theme.accent)
                 };
                 lines.push(action_line(verb, &path, color, bold, width));
             } else if let Some(command) = bash_command(name, args) {
-                lines.push(action_line("Run", &command, Color::LightBlue, bold, width));
+                lines.push(action_line("Run", &command, theme.tool, bold, width));
             } else {
                 lines.push(Line::from(vec![
-                    Span::styled("⚙ ", Style::default().fg(Color::LightYellow)),
+                    Span::styled("⚙ ", Style::default().fg(theme.tool)),
                     Span::styled(
                         name.clone(),
-                        Style::default().fg(Color::LightYellow).add_modifier(bold),
+                        Style::default().fg(theme.tool).add_modifier(bold),
                     ),
                     Span::styled(
                         format!(" {}", tool_arg_summary(name, args)),
-                        Style::default().fg(Color::Gray),
+                        Style::default().fg(theme.info),
                     ),
                 ]));
             }
@@ -684,11 +676,11 @@ fn render_item(item: &ChatItem, width: usize, expand_tools: bool, lines: &mut Ve
         ChatItem::ToolProgress { name, output } => {
             if crate::tools::canonical_tool_name(name) != "bash" {
                 lines.push(Line::from(vec![
-                    Span::styled("⋯ ", Style::default().fg(Color::Gray)),
-                    Span::styled(name.clone(), Style::default().fg(Color::Gray)),
+                    Span::styled("⋯ ", Style::default().fg(theme.info)),
+                    Span::styled(name.clone(), Style::default().fg(theme.info)),
                 ]));
             }
-            push_tool_body(lines, output, width, expand_tools);
+            push_tool_body(lines, output, width, expand_tools, theme.info);
         }
         ChatItem::ToolResult {
             name,
@@ -697,42 +689,30 @@ fn render_item(item: &ChatItem, width: usize, expand_tools: bool, lines: &mut Ve
             diff,
         } => {
             if let Some(diff) = diff {
-                render_diff(diff, width, expand_tools, lines);
+                render_diff(diff, width, expand_tools, theme, lines);
                 if output.starts_with("error:") {
-                    push_wrapped(lines, output, width, Style::default().fg(Color::LightRed));
+                    push_wrapped(lines, output, width, Style::default().fg(theme.error));
                 } else if let Some((_, rest)) = output.split_once("\n\n") {
                     if !rest.trim().is_empty() {
-                        push_wrapped(lines, rest, width, Style::default().fg(Color::Gray));
+                        push_wrapped(lines, rest, width, Style::default().fg(theme.info));
                     }
                 }
             } else if let Some(path) = file_tool_path(name, args) {
                 if crate::tools::canonical_tool_name(name) == "read_file" {
                     if output.starts_with("error:") {
-                        lines.push(action_line(
-                            "Read failed",
-                            &path,
-                            Color::LightRed,
-                            bold,
-                            width,
-                        ));
-                        push_wrapped(lines, output, width, Style::default().fg(Color::LightRed));
+                        lines.push(action_line("Read failed", &path, theme.error, bold, width));
+                        push_wrapped(lines, output, width, Style::default().fg(theme.error));
                     } else {
-                        lines.push(action_line("Read", &path, Color::LightGreen, bold, width));
+                        lines.push(action_line("Read", &path, theme.success, bold, width));
                     }
                 } else if output.starts_with("error:") {
-                    lines.push(action_line(
-                        "Edit failed",
-                        &path,
-                        Color::LightRed,
-                        bold,
-                        width,
-                    ));
-                    push_wrapped(lines, output, width, Style::default().fg(Color::LightRed));
+                    lines.push(action_line("Edit failed", &path, theme.error, bold, width));
+                    push_wrapped(lines, output, width, Style::default().fg(theme.error));
                 } else {
-                    lines.push(action_line("Edited", &path, Color::LightGreen, bold, width));
+                    lines.push(action_line("Edited", &path, theme.success, bold, width));
                     if let Some((_, rest)) = output.split_once("\n\n") {
                         if !rest.trim().is_empty() {
-                            push_wrapped(lines, rest, width, Style::default().fg(Color::Gray));
+                            push_wrapped(lines, rest, width, Style::default().fg(theme.info));
                         }
                     }
                 }
@@ -741,11 +721,7 @@ fn render_item(item: &ChatItem, width: usize, expand_tools: bool, lines: &mut Ve
                 let failed = exit
                     .map(|code| code != 0)
                     .unwrap_or_else(|| output.starts_with("error:"));
-                let color = if failed {
-                    Color::LightRed
-                } else {
-                    Color::LightGreen
-                };
+                let color = if failed { theme.error } else { theme.success };
                 let subject = match exit {
                     Some(code) => format!("{command} · exit {code}"),
                     None => command,
@@ -753,28 +729,33 @@ fn render_item(item: &ChatItem, width: usize, expand_tools: bool, lines: &mut Ve
                 let verb = if failed { "Run failed" } else { "Ran" };
                 lines.push(action_line(verb, &subject, color, bold, width));
                 if exit.is_none() && !output.trim().is_empty() {
-                    push_wrapped(lines, output, width, Style::default().fg(Color::LightRed));
+                    push_wrapped(lines, output, width, Style::default().fg(theme.error));
                 } else if expand_tools {
-                    push_tool_body(lines, output, width, true);
+                    push_tool_body(lines, output, width, true, theme.info);
                 } else if bash_has_body(output) {
-                    push_collapsed_hint(lines, width, output.lines().count().saturating_sub(1));
+                    push_collapsed_hint(
+                        lines,
+                        width,
+                        output.lines().count().saturating_sub(1),
+                        theme.info,
+                    );
                 }
             } else {
                 lines.push(Line::from(vec![
-                    Span::styled("↳ ", Style::default().fg(Color::Gray)),
-                    Span::styled(name.clone(), Style::default().fg(Color::Gray)),
+                    Span::styled("↳ ", Style::default().fg(theme.info)),
+                    Span::styled(name.clone(), Style::default().fg(theme.info)),
                 ]));
                 if expand_tools {
-                    push_tool_body(lines, output, width, true);
+                    push_tool_body(lines, output, width, true, theme.info);
                 } else if !output.trim().is_empty() {
-                    push_collapsed_hint(lines, width, output.lines().count());
+                    push_collapsed_hint(lines, width, output.lines().count(), theme.info);
                 }
             }
         }
         ChatItem::Thought(millis) => {
             lines.push(Line::from(Span::styled(
                 format!("+ Thought: {millis}ms"),
-                Style::default().fg(Color::Gray),
+                Style::default().fg(theme.info),
             )));
         }
         ChatItem::Error(text) => {
@@ -782,7 +763,7 @@ fn render_item(item: &ChatItem, width: usize, expand_tools: bool, lines: &mut Ve
                 lines,
                 &format!("✗ {text}"),
                 width,
-                Style::default().fg(Color::LightRed),
+                Style::default().fg(theme.error),
             );
         }
         ChatItem::Info(text) => {
@@ -790,7 +771,7 @@ fn render_item(item: &ChatItem, width: usize, expand_tools: bool, lines: &mut Ve
                 lines,
                 &format!("· {text}"),
                 width,
-                Style::default().fg(Color::Gray),
+                Style::default().fg(theme.info),
             );
         }
     }
@@ -798,7 +779,7 @@ fn render_item(item: &ChatItem, width: usize, expand_tools: bool, lines: &mut Ve
 
 /// Centers the block-letter wordmark, falling back to plain text when the
 /// terminal is too narrow for the art.
-fn render_banner(width: usize, lines: &mut Vec<Line<'static>>) {
+fn render_banner_themed(width: usize, theme: &crate::theme::Theme, lines: &mut Vec<Line<'static>>) {
     let art_width = BANNER
         .iter()
         .map(|line| line.chars().count())
@@ -808,19 +789,11 @@ fn render_banner(width: usize, lines: &mut Vec<Line<'static>>) {
         lines.push(Line::from(Span::styled(
             "oxide",
             Style::default()
-                .fg(Color::LightCyan)
+                .fg(theme.accent)
                 .add_modifier(Modifier::BOLD),
         )));
         return;
     }
-    let colors = [
-        Color::LightCyan,
-        Color::LightCyan,
-        Color::LightMagenta,
-        Color::LightMagenta,
-        Color::LightMagenta,
-        Color::LightCyan,
-    ];
     for (index, art) in BANNER.iter().enumerate() {
         let pad = (width - art.chars().count()) / 2;
         lines.push(Line::from(vec![
@@ -828,21 +801,41 @@ fn render_banner(width: usize, lines: &mut Vec<Line<'static>>) {
             Span::styled(
                 (*art).to_string(),
                 Style::default()
-                    .fg(colors[index % colors.len()])
+                    .fg(if index + 1 == BANNER.len() {
+                        theme.dim
+                    } else {
+                        theme.accent
+                    })
                     .add_modifier(Modifier::BOLD),
             ),
         ]));
     }
 }
 
+#[cfg(test)]
+fn render_item(item: &ChatItem, width: usize, expand_tools: bool, lines: &mut Vec<Line<'static>>) {
+    render_item_themed(
+        item,
+        width,
+        expand_tools,
+        &crate::theme::Theme::dark(),
+        lines,
+    );
+}
+
+#[cfg(test)]
+fn render_banner(width: usize, lines: &mut Vec<Line<'static>>) {
+    render_banner_themed(width, &crate::theme::Theme::dark(), lines);
+}
+
 fn draw_input(frame: &mut Frame, app: &App, area: Rect) {
     let border_color = if app.busy {
-        app.theme.dim
+        app.theme.info
     } else {
         reasoning_color(app.reasoning, &app.theme)
     };
     let title = if app.attachments.is_empty() {
-        String::new()
+        "message".to_string()
     } else {
         format!("{} attachment(s)", app.attachments.len())
     };
@@ -874,8 +867,8 @@ fn draw_input(frame: &mut Frame, app: &App, area: Rect) {
     let width = text_area.width as usize;
     let input = if app.input.is_empty() && !app.busy {
         Span::styled(
-            "Ask Oxide to build, debug, or explain…",
-            Style::default().fg(Color::Gray),
+            "Ask Oxide anything about your code…",
+            Style::default().fg(app.theme.info),
         )
     } else {
         Span::raw(app.input.as_str())
@@ -935,7 +928,7 @@ fn action_line(
             verb.to_string(),
             Style::default().fg(color).add_modifier(bold),
         ),
-        Span::styled(format!(" {subject}"), Style::default().fg(Color::Gray)),
+        Span::styled(format!(" {subject}"), Style::default().fg(color)),
     ])
 }
 
@@ -1004,20 +997,31 @@ fn tool_arg_summary(name: &str, args: &str) -> String {
 /// Render a tool's output. Output is hidden by default so the conversation
 /// stays a compact action list (like the opencode reference); Ctrl+O reveals
 /// the full body.
-fn push_tool_body(lines: &mut Vec<Line<'static>>, output: &str, width: usize, expand_tools: bool) {
+fn push_tool_body(
+    lines: &mut Vec<Line<'static>>,
+    output: &str,
+    width: usize,
+    expand_tools: bool,
+    color: Color,
+) {
     if !expand_tools {
         return;
     }
-    push_wrapped(lines, output, width, Style::default().fg(Color::Gray));
+    push_wrapped(lines, output, width, Style::default().fg(color));
 }
 
 /// A one-line affordance shown when a tool body is hidden, mirroring the
 /// opencode "click to expand" hint.
-fn push_collapsed_hint(lines: &mut Vec<Line<'static>>, width: usize, hidden_lines: usize) {
+fn push_collapsed_hint(
+    lines: &mut Vec<Line<'static>>,
+    width: usize,
+    hidden_lines: usize,
+    color: Color,
+) {
     let hint = format!("  ⋯ {hidden_lines} lines · Ctrl+O to expand");
     lines.push(Line::from(Span::styled(
         truncate(&hint, width),
-        Style::default().fg(Color::Gray),
+        Style::default().fg(color),
     )));
 }
 
@@ -1038,12 +1042,13 @@ fn render_diff(
     diff: &DiffPreview,
     width: usize,
     expand_tools: bool,
+    theme: &crate::theme::Theme,
     lines: &mut Vec<Line<'static>>,
 ) {
     lines.push(action_line(
         "Edited",
         &diff.path,
-        Color::LightGreen,
+        theme.success,
         Modifier::BOLD,
         width,
     ));
@@ -1056,19 +1061,19 @@ fn render_diff(
     for line in &all[..limit] {
         lines.push(Line::from(Span::styled(
             truncate(line, width),
-            diff_line_style(line),
+            diff_line_style(line, theme),
         )));
     }
     if limit < all.len() {
-        push_collapsed_hint(lines, width, all.len() - limit);
+        push_collapsed_hint(lines, width, all.len() - limit, theme.info);
     }
 }
 
-fn diff_line_style(line: &str) -> Style {
+fn diff_line_style(line: &str, theme: &crate::theme::Theme) -> Style {
     match line.chars().next() {
-        Some('+') => Style::default().fg(Color::LightGreen),
-        Some('-') => Style::default().fg(Color::LightRed),
-        _ => Style::default().fg(Color::Gray),
+        Some('+') => Style::default().fg(theme.success),
+        Some('-') => Style::default().fg(theme.error),
+        _ => Style::default().fg(theme.info),
     }
 }
 
@@ -1454,5 +1459,11 @@ mod tests {
 
         let input_bottom = row_of(&buffer, "╰").expect("input box bottom border");
         assert_eq!(status, input_bottom + 1);
+
+        let status_text: String = (0..buffer.area.width)
+            .map(|x| buffer[(x, status)].symbol())
+            .collect();
+        assert!(!status_text.contains("Enter send"));
+        assert!(!status_text.contains("Ctrl+O"));
     }
 }

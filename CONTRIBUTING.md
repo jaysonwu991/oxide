@@ -49,7 +49,7 @@ Before opening a pull request, make sure `cargo fmt`, `cargo clippy`, and
 | `src/config.rs` | Config loading, provider presets, agent `Mode` and `Reasoning`, system prompt composition, and `defaultProjectTrust`. |
 | `src/auth.rs` | Credential store backing the TUI `/login` and `/logout` commands. |
 | `src/trust.rs` | Project trust: per-directory decisions and gating of project-local resources. |
-| `src/theme.rs` | TUI color themes (built-in and custom JSON). |
+| `src/theme.rs` | Semantic TUI color themes (built-in and custom JSON), including focus, speaker, success, tool, error, and supporting-text roles. |
 | `src/agent.rs` | Agent loop, parallel/sequential tool execution, steering and follow-up queues, terminate hint, and the agent-level tools. |
 | `src/llm/` | Model clients: OpenAI-compatible and Anthropic, including reasoning effort / extended thinking. |
 | `src/tools.rs` | Built-in tool specs and execution; `ToolOutput` (text/media/diff/terminate), streaming `Progress`, and output truncation (line/byte caps, bash tail, saved full output). |
@@ -68,7 +68,7 @@ Before opening a pull request, make sure `cargo fmt`, `cargo clippy`, and
 | `src/plugin.rs` | Plugin host and tool hooks, including output rewriting and the terminate hint. |
 | `src/memory.rs` | Cross-session memory store. |
 | `src/media.rs` | Image/PDF attachments and `@path` references. |
-| `src/tui/` | ratatui + crossterm interface with incremental rendering, a Pi-style footer/status row, hidden-by-default tool output (Ctrl+O), `$ command` shell display, colored edit diffs, per-turn thought timing, Shift+Tab mode and Ctrl+R reasoning cycling, project-trust and theme dialogs, and mid-run steering. |
+| `src/tui/` | ratatui + crossterm interface with incremental rendering, welcome tips, a live state row and metadata footer, a growing labeled editor, hidden-by-default tool output (Ctrl+O), concise shell actions, colored edit diffs, per-turn thought timing, Shift+Tab mode and Ctrl+R reasoning cycling, theme-aware project-trust/provider dialogs, and mid-run steering. |
 | `.oxide/` | Project agents, commands, prompts, skills, and plugins (Oxide layout). |
 
 ## Conventions
@@ -112,7 +112,10 @@ Before opening a pull request, make sure `cargo fmt`, `cargo clippy`, and
 - **Project trust.** `src/trust.rs` owns the decision store and resource
   detection; untrusted runs reload via `Config::reload_ecosystem`.
 - **Themes.** Add a slot in `Theme`/`ThemeFile` in `src/theme.rs` and use it from
-  `src/tui/ui.rs` via `app.theme`.
+  `src/tui/ui.rs` via `app.theme`. Keep state understandable without color,
+  preserve readable dark/light defaults, document the slot in the README and
+  configuration guide, and invalidate the render cache when a visual setting
+  changes.
 
 ## Commits and pull requests
 

@@ -22,7 +22,7 @@ pub struct Ecosystem {
     pub mcp: Vec<McpServer>,
     pub plugins: Vec<PathBuf>,
     /// Context files that were loaded (`AGENTS.md`/`CLAUDE.md`/overrides),
-    /// kept so the TUI can show them in the startup header.
+    /// kept so the TUI can show them in the startup welcome area.
     pub context_files: Vec<PathBuf>,
     /// Replaces the default system prompt (`.oxide/SYSTEM.md`).
     pub system_prompt: Option<String>,

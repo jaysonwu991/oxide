@@ -15,6 +15,7 @@ pub struct Theme {
     pub accent: Color,
     pub user: Color,
     pub assistant: Color,
+    pub success: Color,
     pub tool: Color,
     pub error: Color,
     pub info: Color,
@@ -33,10 +34,11 @@ impl Theme {
             accent: Color::LightCyan,
             user: Color::LightCyan,
             assistant: Color::White,
+            success: Color::LightGreen,
             tool: Color::LightYellow,
             error: Color::LightRed,
             info: Color::Gray,
-            dim: Color::DarkGray,
+            dim: Color::Gray,
             border: Color::LightCyan,
             thinking_off: Color::Gray,
             thinking_low: Color::LightCyan,
@@ -51,10 +53,11 @@ impl Theme {
             accent: Color::Blue,
             user: Color::Blue,
             assistant: Color::Black,
+            success: Color::Green,
             tool: Color::Magenta,
             error: Color::Red,
             info: Color::DarkGray,
-            dim: Color::Gray,
+            dim: Color::DarkGray,
             border: Color::Blue,
             thinking_off: Color::Gray,
             thinking_low: Color::Cyan,
@@ -85,6 +88,7 @@ pub struct ThemeFile {
     pub accent: Option<String>,
     pub user: Option<String>,
     pub assistant: Option<String>,
+    pub success: Option<String>,
     pub tool: Option<String>,
     pub error: Option<String>,
     pub info: Option<String>,
@@ -104,6 +108,7 @@ impl ThemeFile {
             accent: parse_color(self.accent.as_deref()).unwrap_or(base.accent),
             user: parse_color(self.user.as_deref()).unwrap_or(base.user),
             assistant: parse_color(self.assistant.as_deref()).unwrap_or(base.assistant),
+            success: parse_color(self.success.as_deref()).unwrap_or(base.success),
             tool: parse_color(self.tool.as_deref()).unwrap_or(base.tool),
             error: parse_color(self.error.as_deref()).unwrap_or(base.error),
             info: parse_color(self.info.as_deref()).unwrap_or(base.info),
@@ -236,13 +241,14 @@ mod tests {
         std::fs::create_dir_all(dir.join(".oxide/themes")).unwrap();
         std::fs::write(
             dir.join(".oxide/themes/ocean.json"),
-            r##"{"accent":"#5fd7ff","tool":"cyan"}"##,
+            r##"{"accent":"#5fd7ff","success":"green","tool":"cyan"}"##,
         )
         .unwrap();
 
         let theme = load(&dir, "ocean");
         assert_eq!(theme.name, "ocean");
         assert_eq!(theme.accent, Color::Rgb(0x5f, 0xd7, 0xff));
+        assert_eq!(theme.success, Color::Green);
         assert_eq!(theme.tool, Color::Cyan);
         assert!(names(&dir).iter().any(|n| n == "ocean"));
 

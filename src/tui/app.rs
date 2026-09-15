@@ -265,6 +265,14 @@ impl App {
         }
     }
 
+    /// Rebuild styled conversation lines after a visual setting changes.
+    pub fn invalidate_render_cache(&mut self) {
+        self.lines.clear();
+        self.line_offsets.clear();
+        self.signatures.clear();
+        self.render_width = 0;
+    }
+
     /// Records a submitted input so it can be recalled with the Up key.
     pub fn remember_input(&mut self, raw: &str) {
         if raw.trim().is_empty() {

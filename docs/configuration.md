@@ -347,7 +347,7 @@ The agent runs in one of three permission modes, modelled on Claude Code:
 Set the starting mode with `--mode build|plan|auto-edit`, the `OXIDE_MODE`
 environment variable, or `"mode": "..."` in `config.json`. In the TUI, press
 Shift+Tab to cycle build → auto-edit → plan; the current mode is shown in the
-header. Plan mode keeps read-only tools available and is useful for review and
+footer. Plan mode keeps read-only tools available and is useful for review and
 planning before switching back to build.
 
 ## Reasoning
@@ -369,7 +369,7 @@ tool use keeps its reasoning context.
 Set the starting level with `--reasoning auto|off|low|medium|high`, the
 `OXIDE_REASONING` environment variable, or `"reasoning": "..."` in `config.json`.
 In the TUI, press Ctrl+R to cycle auto → off → low → medium → high; the current
-level is shown in the header.
+level is shown in the footer and changes the editor-border color.
 
 ## Memory and instructions
 
@@ -411,6 +411,33 @@ oxide ships `dark` and `light`. Add custom themes as JSON under
 `.oxide/themes/<name>.json` or `<config>/oxide/themes/<name>.json`, then select
 one with `--use-theme <name>` or `/theme <name>`. Colors accept names or
 `#rrggbb`; unset slots fall back to the built-in `dark` theme.
+
+```json
+{
+  "accent": "#5fd7ff",
+  "user": "lightcyan",
+  "assistant": "white",
+  "success": "lightgreen",
+  "tool": "lightyellow",
+  "error": "lightred",
+  "info": "gray",
+  "border": "#5fd7ff"
+}
+```
+
+Available slots are `accent`, `user`, `assistant`, `success`, `tool`, `error`,
+`info`, `dim`, `border`, `thinking_off`, `thinking_low`, `thinking_medium`, and
+`thinking_high`. The transcript, dialogs, autocomplete, status row, input, and
+footer use these semantic roles. `/theme` lists available themes; after a
+switch, oxide immediately rebuilds the styled transcript.
+
+Selections use reverse video and outcome rows retain words or symbols, so color
+is not the only state cue. When authoring a custom theme, choose foregrounds
+with strong contrast against the terminal background and keep `success`,
+`error`, and `tool` visually distinct.
+
+For the complete keyboard and layout guide, see
+[TUI essentials](../README.md#tui-essentials).
 
 ## Context pruning
 
