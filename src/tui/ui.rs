@@ -1474,7 +1474,8 @@ mod tests {
         assert_eq!(status, input_bottom + 1);
         assert_eq!(row_of(&buffer, "gpt-4o"), Some(status));
         assert_eq!(row_of(&buffer, "/tmp/project"), Some(status + 1));
-        assert_eq!(row_of(&buffer, "🌿 main"), Some(status + 1));
+        assert_eq!(row_of(&buffer, "🌿"), Some(status + 1));
+        assert_eq!(row_of(&buffer, "main"), Some(status + 1));
 
         let status_text: String = (0..buffer.area.width)
             .map(|x| buffer[(x, status)].symbol())
