@@ -471,6 +471,13 @@ You can also provide a key without the login flow via the `OPENAI_API_KEY` /
 variables or an `api_key` entry in `config.json`; environment variables take
 precedence over `auth.json`.
 
+Portkey custom gateways can set `base_url` / `PORTKEY_BASE_URL` and
+`portkey_config` / `PORTKEY_CONFIG`. Oxide sends the latter as
+`x-portkey-config` alongside `x-portkey-api-key`. If a restricted Portkey key
+cannot call `/models`, Oxide uses its fallback catalog; set `model_catalog` in
+`config.json` or comma-separated `PORTKEY_MODELS` to replace it for another
+Portkey account.
+
 See [Configuration](../README.md#configuration) and
 [Providers](../README.md#providers) in the README for the full list.
 
