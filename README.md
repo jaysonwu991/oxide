@@ -42,8 +42,9 @@ box, with Claude Code configuration support for compatibility.
   `--mode` / `OXIDE_MODE`.
 - Reasoning effort: `auto` (default), `off`, `low`, `medium`, or `high`, cycled
   in the TUI with Ctrl+R or set with `--reasoning` / `OXIDE_REASONING`. `auto`
-  enables reasoning for models known to support it and maps to OpenAI
-  `reasoning_effort` and Anthropic extended thinking.
+  uses the provider/model's native behavior; explicit levels map to
+  OpenAI-compatible effort, Anthropic adaptive thinking, or legacy extended
+  thinking as appropriate.
 - Compact, bounded output: tool bodies are hidden in the TUI by default (Ctrl+O
   toggles them), long action lines are truncated to the terminal width, and tool
   results are capped by lines and bytes before they enter the model's context.
@@ -340,11 +341,13 @@ TUI press Shift+Tab to cycle modes; `--mode` and `OXIDE_MODE` set the starting
 mode.
 
 `reasoning` controls how much reasoning effort oxide requests. `auto` (the
-default) turns reasoning on for models known to support it (OpenAI o-series and
-`gpt-5`, Anthropic Claude 3.7/4) and off otherwise; `off`, `low`, `medium`, and
-`high` force a level. It maps to OpenAI's `reasoning_effort` and Anthropic's
-extended-thinking budget (kept below `max_tokens`). In the TUI press Ctrl+R to
-cycle levels; `--reasoning` and `OXIDE_REASONING` set the starting level.
+default) leaves reasoning behavior and effort to the provider/model. Newer
+Claude models use adaptive thinking without a forced effort; other APIs receive
+no effort override. `off`, `low`, `medium`, and `high` force a level using
+OpenAI-compatible `reasoning_effort`, Anthropic adaptive thinking with
+`output_config.effort`, or a legacy Anthropic thinking budget as appropriate.
+In the TUI press Ctrl+R to cycle levels; `--reasoning` and `OXIDE_REASONING` set
+the starting level.
 
 ### Environment variables
 

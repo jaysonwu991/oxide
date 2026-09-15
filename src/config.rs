@@ -149,10 +149,9 @@ impl Mode {
     }
 }
 
-/// How much reasoning effort to ask the model for. `Auto` (the default) turns
-/// reasoning on for models known to support it and off otherwise; the explicit
-/// levels map to OpenAI's `reasoning_effort` and Anthropic's extended-thinking
-/// budget.
+/// How much reasoning effort to ask the model for. `Auto` (the default) leaves
+/// the effort to the provider or uses its native adaptive mode; explicit levels
+/// are translated by the active provider client.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "kebab-case")]
 pub enum Reasoning {
@@ -199,20 +198,6 @@ impl Reasoning {
         }
     }
 
-    /// Resolves `Auto` against the model name.
-    pub fn resolve(self, model: &str) -> Self {
-        match self {
-            Reasoning::Auto => {
-                if supports_reasoning(model) {
-                    Reasoning::Medium
-                } else {
-                    Reasoning::Off
-                }
-            }
-            other => other,
-        }
-    }
-
     /// The OpenAI-compatible `reasoning_effort` value, if any.
     pub fn effort(self) -> Option<&'static str> {
         match self {
@@ -236,24 +221,29 @@ impl Reasoning {
     }
 }
 
-/// Models known to accept reasoning controls.
-fn supports_reasoning(model: &str) -> bool {
-    let model = model
-        .rsplit('/')
-        .next()
-        .unwrap_or(model)
-        .to_ascii_lowercase();
-    model.starts_with("o1")
-        || model.starts_with("o3")
-        || model.starts_with("o4")
-        || model.starts_with("gpt-5")
-        || model.contains("claude-3-7")
-        || model.contains("claude-3.7")
-        || model.contains("claude-sonnet-4")
-        || model.contains("claude-sonnet-5")
-        || model.contains("claude-opus-4")
-        || model.contains("claude-opus-5")
-        || model.contains("claude-4")
+/// Newer Claude generations use adaptive thinking instead of fixed token
+/// budgets. Provider-prefixed and Bedrock model ids are accepted.
+pub fn supports_adaptive_thinking(model: &str) -> bool {
+    let model = model.to_ascii_lowercase();
+    let Some((_, suffix)) = model.split_once("claude-") else {
+        return false;
+    };
+    let parts: Vec<&str> = suffix.split(['-', '.', '_']).collect();
+    let Some(index) = parts
+        .iter()
+        .position(|part| part.len() <= 2 && part.chars().all(|ch| ch.is_ascii_digit()))
+    else {
+        return false;
+    };
+    let Ok(major) = parts[index].parse::<u32>() else {
+        return false;
+    };
+    let minor = parts
+        .get(index + 1)
+        .filter(|part| part.len() <= 2 && part.chars().all(|ch| ch.is_ascii_digit()))
+        .and_then(|part| part.parse::<u32>().ok())
+        .unwrap_or(0);
+    major > 4 || (major == 4 && minor >= 6)
 }
 
 fn env_nonempty(name: &str) -> Option<String> {
@@ -700,11 +690,6 @@ impl Config {
         models
     }
 
-    /// The reasoning level to use after resolving `Auto` against the model.
-    pub fn effective_reasoning(&self) -> Reasoning {
-        self.reasoning.resolve(&self.model)
-    }
-
     /// Builds the effective system prompt from the base prompt plus the active
     /// agent, loaded memory, instructions, and an index of available
     /// skills/commands/subagents.
@@ -919,23 +904,15 @@ mod tests {
     }
 
     #[test]
-    fn auto_reasoning_detects_reasoning_models() {
-        assert_eq!(Reasoning::Auto.resolve("gpt-4o-mini"), Reasoning::Off);
-        assert_eq!(Reasoning::Auto.resolve("o3-mini"), Reasoning::Medium);
-        assert_eq!(Reasoning::Auto.resolve("gpt-5"), Reasoning::Medium);
-        assert_eq!(
-            Reasoning::Auto.resolve("@openai-prod/o3-mini"),
-            Reasoning::Medium
-        );
-        assert_eq!(
-            Reasoning::Auto.resolve("claude-sonnet-4-20250514"),
-            Reasoning::Medium
-        );
-        assert_eq!(
-            Reasoning::Auto.resolve("claude-sonnet-5"),
-            Reasoning::Medium
-        );
-        assert_eq!(Reasoning::High.resolve("gpt-4o-mini"), Reasoning::High);
+    fn detects_adaptive_claude_models() {
+        assert!(supports_adaptive_thinking("claude-sonnet-5"));
+        assert!(supports_adaptive_thinking("claude-opus-4-8"));
+        assert!(supports_adaptive_thinking(
+            "us.anthropic.claude-sonnet-4-6-20250929-v1:0"
+        ));
+        assert!(!supports_adaptive_thinking("claude-haiku-4-5"));
+        assert!(!supports_adaptive_thinking("claude-sonnet-4"));
+        assert!(!supports_adaptive_thinking("gpt-5.4"));
     }
 
     #[test]
