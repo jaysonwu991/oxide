@@ -359,6 +359,7 @@ async fn run_loop(
         }
 
         let mut terminated: Vec<bool> = Vec::with_capacity(tool_calls.len());
+        let mut snapshot_needed = depth == 0 && runtime.plugins.is_active();
         let parallel = tool_calls.len() > 1
             && tool_calls
                 .iter()
@@ -391,27 +392,26 @@ async fn run_loop(
                     _ => args,
                 };
                 let subject = subject_for(&name, &effective_args);
-                prepared.push(match permissions.decide(&name, &subject) {
-                    Action::Deny => Prepared::Immediate(tools::ToolOutput::text(format!(
-                        "error: permission denied for `{name}`"
-                    ))),
-                    Action::Ask if !config.auto_approve => {
-                        if (runtime.approve)(name.clone(), subject.clone()).await {
-                            Prepared::Run {
-                                call,
-                                args: effective_args,
-                            }
-                        } else {
-                            Prepared::Immediate(tools::ToolOutput::text(format!(
-                                "error: permission denied for `{name}`"
-                            )))
+                prepared.push(
+                    if permission_granted(
+                        permissions.decide(&name, &subject),
+                        config.auto_approve,
+                        &runtime.approve,
+                        &name,
+                        &subject,
+                    )
+                    .await
+                    {
+                        Prepared::Run {
+                            call,
+                            args: effective_args,
                         }
-                    }
-                    _ => Prepared::Run {
-                        call,
-                        args: effective_args,
+                    } else {
+                        Prepared::Immediate(tools::ToolOutput::text(format!(
+                            "error: permission denied for `{name}`"
+                        )))
                     },
-                });
+                );
             }
 
             let mut handles = Vec::with_capacity(prepared.len());
@@ -519,20 +519,19 @@ async fn run_loop(
                         Err(err) => tools::ToolOutput::text(format!("error: {err:#}")),
                     }
                 } else {
-                    match permissions.decide(&name, &subject) {
-                        Action::Deny => tools::ToolOutput::text(format!(
-                            "error: permission denied for `{name}`"
-                        )),
-                        Action::Ask if !config.auto_approve => {
-                            if (runtime.approve)(name.clone(), subject.clone()).await {
-                                dispatch(&config, &cwd, &runtime, &call, depth, &progress).await
-                            } else {
-                                tools::ToolOutput::text(format!(
-                                    "error: permission denied for `{name}`"
-                                ))
-                            }
-                        }
-                        _ => dispatch(&config, &cwd, &runtime, &call, depth, &progress).await,
+                    if permission_granted(
+                        permissions.decide(&name, &subject),
+                        config.auto_approve,
+                        &runtime.approve,
+                        &name,
+                        &subject,
+                    )
+                    .await
+                    {
+                        snapshot_needed |= tool_may_mutate_workspace(&name);
+                        dispatch(&config, &cwd, &runtime, &call, depth, &progress).await
+                    } else {
+                        tools::ToolOutput::text(format!("error: permission denied for `{name}`"))
                     }
                 };
                 let canonical_name = crate::tools::canonical_tool_name(&name);
@@ -575,7 +574,7 @@ async fn run_loop(
             }
         }
 
-        if depth == 0 {
+        if snapshot_needed {
             if let Some(snapshots) = &runtime.snapshots {
                 let _ = snapshots.commit("turn");
             }
@@ -598,6 +597,16 @@ fn batch_terminates(terminated: &[bool]) -> bool {
     !terminated.is_empty() && terminated.iter().all(|value| *value)
 }
 
+async fn permission_granted(
+    action: Action,
+    auto_approve: bool,
+    approve: &Approver,
+    tool: &str,
+    subject: &str,
+) -> bool {
+    action == Action::Allow || auto_approve || approve(tool.to_string(), subject.to_string()).await
+}
+
 /// Tools with no cross-call side effects can run concurrently when the model
 /// batches several of them. Anything that mutates the workspace (`write_file`,
 /// `patch`, `bash`), spawns work (`task`), or has unknown remote effects (MCP)
@@ -614,6 +623,12 @@ fn concurrency_safe(name: &str) -> bool {
             | "skill"
             | "diagnostics"
     )
+}
+
+fn tool_may_mutate_workspace(name: &str) -> bool {
+    let canonical = crate::tools::canonical_tool_name(name);
+    matches!(canonical, "write_file" | "patch" | "edit" | "bash" | "task")
+        || canonical.contains("__")
 }
 
 async fn dispatch(
@@ -1029,6 +1044,7 @@ fn lsp_spec() -> ToolSpec {
 mod tests {
     use super::*;
     use crate::ecosystem::{AgentDef, Skill};
+    use std::sync::atomic::{AtomicUsize, Ordering};
 
     fn config_with_skill() -> Config {
         let mut config = Config::default();
@@ -1092,10 +1108,51 @@ mod tests {
     }
 
     #[test]
+    fn snapshot_classification_covers_unknown_side_effects() {
+        for name in ["write", "edit", "patch", "bash", "task", "server__tool"] {
+            assert!(tool_may_mutate_workspace(name), "{name} may mutate");
+        }
+        for name in ["read", "ls", "find", "grep", "webfetch", "diagnostics"] {
+            assert!(!tool_may_mutate_workspace(name), "{name} is read-only");
+        }
+    }
+
+    #[test]
     fn batch_terminates_only_when_all_request_it() {
         assert!(!batch_terminates(&[]));
         assert!(!batch_terminates(&[true, false]));
         assert!(batch_terminates(&[true, true]));
+    }
+
+    #[tokio::test]
+    async fn denied_permission_requests_approval() {
+        let calls = Arc::new(AtomicUsize::new(0));
+        let approve: Approver = Arc::new({
+            let calls = Arc::clone(&calls);
+            move |tool, subject| {
+                calls.fetch_add(1, Ordering::SeqCst);
+                Box::pin(async move { tool == "bash" && subject == "ls" })
+            }
+        });
+
+        assert!(permission_granted(Action::Deny, false, &approve, "bash", "ls").await);
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn allowed_and_auto_approved_permissions_skip_prompt() {
+        let calls = Arc::new(AtomicUsize::new(0));
+        let approve: Approver = Arc::new({
+            let calls = Arc::clone(&calls);
+            move |_, _| {
+                calls.fetch_add(1, Ordering::SeqCst);
+                Box::pin(async { false })
+            }
+        });
+
+        assert!(permission_granted(Action::Allow, false, &approve, "read", "a.rs").await);
+        assert!(permission_granted(Action::Deny, true, &approve, "bash", "ls").await);
+        assert_eq!(calls.load(Ordering::SeqCst), 0);
     }
 
     #[test]

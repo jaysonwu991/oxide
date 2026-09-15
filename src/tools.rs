@@ -4,11 +4,13 @@ use crate::mcp::McpRegistry;
 use crate::media;
 use anyhow::{Context, Result};
 use serde_json::{json, Value};
+use std::collections::VecDeque;
+use std::io::{BufWriter, Write};
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
-use tokio::io::{AsyncBufReadExt, BufReader};
+use tokio::io::AsyncReadExt;
 use tokio::time::{timeout, Duration};
 
 const MAX_OUTPUT_BYTES: usize = 6_000;
@@ -16,6 +18,8 @@ const MAX_OUTPUT_LINES: usize = 250;
 const MAX_LINE_LEN: usize = 1_000;
 const DEFAULT_READ_LINES: usize = 250;
 const TRUNCATION_RETENTION_SECS: u64 = 7 * 24 * 60 * 60;
+const PROGRESS_BATCH_BYTES: usize = 4_096;
+const PROGRESS_INTERVAL: Duration = Duration::from_millis(50);
 
 static TRUNCATION_ID: AtomicU64 = AtomicU64::new(0);
 
@@ -267,22 +271,39 @@ pub async fn execute(
         mcp.call(name, args).await.map(ToolOutput::text)
     } else {
         match canonical {
-            "read_file" => read_file(cwd, &args),
-            "write_file" => write_file(cwd, &args),
-            "edit" => edit(cwd, &args),
-            "list_dir" => list_dir(cwd, &args).map(ToolOutput::text),
             "bash" => bash(cwd, &args, progress).await.map(ToolOutput::text),
-            "glob" => glob(cwd, &args).map(ToolOutput::text),
-            "grep" => grep(cwd, &args).map(ToolOutput::text),
-            "patch" => patch(cwd, &args),
             "webfetch" => webfetch(&args).await.map(ToolOutput::text),
+            "read_file" | "write_file" | "edit" | "list_dir" | "glob" | "grep" | "patch" => {
+                let cwd = cwd.to_path_buf();
+                let args = args.clone();
+                let tool = canonical.to_string();
+                match tokio::task::spawn_blocking(move || match tool.as_str() {
+                    "read_file" => read_file(&cwd, &args),
+                    "write_file" => write_file(&cwd, &args),
+                    "edit" => edit(&cwd, &args),
+                    "list_dir" => list_dir(&cwd, &args).map(ToolOutput::text),
+                    "glob" => glob(&cwd, &args).map(ToolOutput::text),
+                    "grep" => grep(&cwd, &args).map(ToolOutput::text),
+                    "patch" => patch(&cwd, &args),
+                    _ => unreachable!(),
+                })
+                .await
+                {
+                    Ok(result) => result,
+                    Err(err) => Err(anyhow::anyhow!("{canonical} worker failed: {err}")),
+                }
+            }
             other => Err(anyhow::anyhow!("unknown tool `{other}`")),
         }
     };
 
     match result {
         Ok(output) => ToolOutput {
-            text: truncate(canonical, output.text),
+            text: if canonical == "bash" {
+                output.text
+            } else {
+                truncate(canonical, output.text)
+            },
             media: output.media,
             terminate: output.terminate,
             diff: output.diff,
@@ -558,6 +579,7 @@ fn glob(cwd: &Path, args: &Value) -> Result<String> {
         if glob_match(pattern, &rel) {
             matches.push(rel);
         }
+        true
     });
     matches.sort();
     if matches.is_empty() {
@@ -600,27 +622,27 @@ fn grep(cwd: &Path, args: &Value) -> Result<String> {
     let mut hits: Vec<String> = Vec::new();
     walk(&root, &mut |path| {
         if hits.len() > limit {
-            return;
+            return false;
         }
         let name = path.file_name().map(|n| n.to_string_lossy().to_string());
         if let (Some(include), Some(name)) = (include, name.as_deref()) {
             if !glob_match(include, name) {
-                return;
+                return true;
             }
         }
         let Ok(content) = std::fs::read_to_string(path) else {
-            return;
+            return true;
         };
         let rel = path.strip_prefix(&root).unwrap_or(path);
         let rel = rel.to_string_lossy().replace('\\', "/");
         let lines: Vec<&str> = content.lines().collect();
         for (index, line) in lines.iter().enumerate() {
-            let haystack = if ignore_case {
-                line.to_lowercase()
+            let matched = if ignore_case {
+                line.to_lowercase().contains(&needle)
             } else {
-                line.to_string()
+                line.contains(&needle)
             };
-            if haystack.contains(&needle) {
+            if matched {
                 if context > 0 {
                     let start = index.saturating_sub(context);
                     let end = (index + context + 1).min(lines.len());
@@ -636,10 +658,11 @@ fn grep(cwd: &Path, args: &Value) -> Result<String> {
                     hits.push(format!("{rel}:{}: {}", index + 1, line.trim_end()));
                 }
                 if hits.len() > limit {
-                    return;
+                    return false;
                 }
             }
         }
+        true
     });
 
     if hits.is_empty() {
@@ -805,15 +828,15 @@ async fn webfetch(args: &Value) -> Result<String> {
     Ok(text)
 }
 
-fn walk(root: &Path, visit: &mut impl FnMut(&Path)) {
-    let mut stack = vec![root.to_path_buf()];
-    while let Some(dir) = stack.pop() {
+fn walk(root: &Path, visit: &mut impl FnMut(&Path) -> bool) {
+    let mut stack = vec![(root.to_path_buf(), Arc::new(Vec::new()))];
+    while let Some((dir, inherited_ignores)) = stack.pop() {
         let Ok(entries) = std::fs::read_dir(&dir) else {
             continue;
         };
-        // Patterns from `.gitignore` files between the root and this directory
-        // (Pi's `find`/`grep` respect gitignore).
-        let ignores = gitignore_patterns(root, &dir);
+        let mut ignores = (*inherited_ignores).clone();
+        ignores.extend(gitignore_patterns(&dir));
+        let ignores = Arc::new(ignores);
         for entry in entries.flatten() {
             let name = entry.file_name().to_string_lossy().to_string();
             if matches!(name.as_str(), ".git" | "node_modules" | "target" | ".venv") {
@@ -830,31 +853,25 @@ fn walk(root: &Path, visit: &mut impl FnMut(&Path)) {
                 continue;
             }
             if is_dir {
-                stack.push(path);
-            } else {
-                visit(&path);
+                stack.push((path, Arc::clone(&ignores)));
+            } else if !visit(&path) {
+                return;
             }
         }
     }
 }
 
-/// Collects `.gitignore` patterns from `root` down to `dir` (inclusive).
-fn gitignore_patterns(root: &Path, dir: &Path) -> Vec<String> {
+/// Reads the `.gitignore` rules introduced by one directory. The walker carries
+/// inherited rules forward so ancestor files are not reopened for every child.
+fn gitignore_patterns(dir: &Path) -> Vec<String> {
     let mut patterns = Vec::new();
-    let mut chain: Vec<&Path> = dir
-        .ancestors()
-        .take_while(|path| path.starts_with(root))
-        .collect();
-    chain.reverse();
-    for ancestor in chain {
-        if let Ok(content) = std::fs::read_to_string(ancestor.join(".gitignore")) {
-            for line in content.lines() {
-                let line = line.trim();
-                if line.is_empty() || line.starts_with('#') {
-                    continue;
-                }
-                patterns.push(line.to_string());
+    if let Ok(content) = std::fs::read_to_string(dir.join(".gitignore")) {
+        for line in content.lines() {
+            let line = line.trim();
+            if line.is_empty() || line.starts_with('#') {
+                continue;
             }
+            patterns.push(line.to_string());
         }
     }
     patterns
@@ -1001,51 +1018,201 @@ async fn bash(cwd: &Path, args: &Value, progress: &Progress) -> Result<String> {
 
     let stdout = child.stdout.take().context("capturing stdout")?;
     let stderr = child.stderr.take().context("capturing stderr")?;
-    let stdout_task = tokio::spawn(read_stream(stdout, progress.clone()));
-    let stderr_task = tokio::spawn(read_stream(stderr, progress.clone()));
+    let stdout_task = tokio::spawn(read_stream(stdout, progress.clone(), "stdout"));
+    let stderr_task = tokio::spawn(read_stream(stderr, progress.clone(), "stderr"));
 
     let status = match timeout(Duration::from_secs(secs), child.wait()).await {
-        Ok(status) => status.context("waiting for shell")?,
+        Ok(status) => Some(status.context("waiting for shell")?),
         Err(_) => {
             child.kill().await.ok();
-            anyhow::bail!("command timed out after {secs}s");
+            None
         }
     };
-    let stdout = stdout_task.await.context("joining stdout reader")?;
-    let stderr = stderr_task.await.context("joining stderr reader")?;
-
-    let stdout = stdout.trim_end();
-    let stderr = stderr.trim_end();
-    let mut combined = String::new();
-    if !stdout.trim().is_empty() {
-        combined.push_str(stdout);
-    }
-    if !stderr.trim().is_empty() {
-        if !combined.is_empty() {
-            combined.push('\n');
-        }
-        combined.push_str("[stderr]\n");
-        combined.push_str(stderr);
-    }
-    if !combined.is_empty() {
-        combined.push('\n');
-    }
-    combined.push_str(&format!("[exit: {}]", status.code().unwrap_or(-1)));
-    Ok(combined)
+    let stdout = stdout_task.await.context("joining stdout reader")??;
+    let stderr = stderr_task.await.context("joining stderr reader")??;
+    let Some(status) = status else {
+        remove_stream_files(&[&stdout, &stderr]);
+        anyhow::bail!("command timed out after {secs}s");
+    };
+    finish_bash_output(stdout, stderr, status.code().unwrap_or(-1))
 }
 
-async fn read_stream<R>(reader: R, progress: Progress) -> String
+struct StreamCapture {
+    path: PathBuf,
+    tail: VecDeque<u8>,
+    bytes: usize,
+    lines: usize,
+}
+
+impl StreamCapture {
+    fn tail_text(&self) -> String {
+        String::from_utf8_lossy(&self.tail.iter().copied().collect::<Vec<_>>()).into_owned()
+    }
+}
+
+async fn read_stream<R>(mut reader: R, progress: Progress, label: &str) -> Result<StreamCapture>
 where
     R: tokio::io::AsyncRead + Unpin,
 {
-    let mut lines = BufReader::new(reader).lines();
-    let mut out = String::new();
-    while let Ok(Some(line)) = lines.next_line().await {
-        progress.report(&line);
-        out.push_str(&line);
-        out.push('\n');
+    let path = stream_temp_path(label);
+    let file = std::fs::File::create(&path)
+        .with_context(|| format!("creating command output spool {}", path.display()))?;
+    let mut spool = BufWriter::new(file);
+    let (max_bytes, _) = output_limits("bash");
+    let mut tail = VecDeque::new();
+    let mut total_bytes = 0usize;
+    let mut total_lines = 0usize;
+    let mut last_byte = None;
+    let mut progress_batch = VecDeque::new();
+    let mut last_progress = std::time::Instant::now();
+    let mut buffer = [0u8; 8_192];
+
+    loop {
+        let read = reader
+            .read(&mut buffer)
+            .await
+            .context("reading command output")?;
+        if read == 0 {
+            break;
+        }
+        let chunk = &buffer[..read];
+        spool.write_all(chunk).context("spooling command output")?;
+        total_bytes = total_bytes.saturating_add(read);
+        total_lines =
+            total_lines.saturating_add(chunk.iter().filter(|byte| **byte == b'\n').count());
+        last_byte = chunk.last().copied();
+
+        tail.extend(chunk);
+        let excess = tail.len().saturating_sub(max_bytes);
+        tail.drain(..excess);
+
+        progress_batch.extend(chunk);
+        let excess = progress_batch.len().saturating_sub(PROGRESS_BATCH_BYTES);
+        progress_batch.drain(..excess);
+        if last_progress.elapsed() >= PROGRESS_INTERVAL {
+            let bytes: Vec<u8> = progress_batch.iter().copied().collect();
+            let text = String::from_utf8_lossy(&bytes);
+            progress.report(text.trim_end());
+            progress_batch.clear();
+            last_progress = std::time::Instant::now();
+        }
     }
-    out
+    if !progress_batch.is_empty() {
+        let bytes: Vec<u8> = progress_batch.iter().copied().collect();
+        let text = String::from_utf8_lossy(&bytes);
+        progress.report(text.trim_end());
+    }
+    if total_bytes > 0 && last_byte != Some(b'\n') {
+        total_lines = total_lines.saturating_add(1);
+    }
+    spool.flush().context("flushing command output spool")?;
+    Ok(StreamCapture {
+        path,
+        tail,
+        bytes: total_bytes,
+        lines: total_lines,
+    })
+}
+
+fn stream_temp_path(label: &str) -> PathBuf {
+    let id = TRUNCATION_ID.fetch_add(1, Ordering::Relaxed);
+    std::env::temp_dir().join(format!(
+        "oxide-command-{}-{label}-{id}.log",
+        std::process::id()
+    ))
+}
+
+fn finish_bash_output(stdout: StreamCapture, stderr: StreamCapture, exit: i32) -> Result<String> {
+    let suffix = format!("[exit: {exit}]");
+    let marker_bytes = usize::from(stderr.lines > 0) * "[stderr]\n".len();
+    let total_bytes = stdout.bytes + stderr.bytes + marker_bytes + suffix.len();
+    let total_lines = stdout.lines + stderr.lines + usize::from(stderr.lines > 0) + 1;
+    let (max_bytes, max_lines) = output_limits("bash");
+
+    if total_bytes <= max_bytes && total_lines <= max_lines {
+        let mut output =
+            String::from_utf8_lossy(&std::fs::read(&stdout.path).unwrap_or_default()).into_owned();
+        if stderr.lines > 0 {
+            output.push_str("[stderr]\n");
+            output.push_str(&String::from_utf8_lossy(
+                &std::fs::read(&stderr.path).unwrap_or_default(),
+            ));
+        }
+        output.push_str(&suffix);
+        remove_stream_files(&[&stdout, &stderr]);
+        return Ok(output);
+    }
+
+    let mut preview = stdout.tail_text();
+    if stderr.lines > 0 {
+        preview.push_str("[stderr]\n");
+        preview.push_str(&stderr.tail_text());
+    }
+    preview.push_str(&suffix);
+    let preview = tail_preview(&preview, max_bytes, max_lines);
+    let saved = truncation_dir().and_then(|dir| {
+        save_bash_spool(&dir, &stdout.path, &stderr.path, stderr.lines > 0, &suffix)
+    });
+    remove_stream_files(&[&stdout, &stderr]);
+
+    let dropped_lines = total_lines.saturating_sub(preview.lines().count());
+    let dropped_bytes = total_bytes.saturating_sub(preview.len());
+    let mut output = format!("[truncated: {dropped_lines} lines, {dropped_bytes} bytes");
+    if let Some(path) = saved {
+        output.push_str(&format!("; full: {}", path.display()));
+    }
+    output.push_str("]\n");
+    output.push_str(&preview);
+    Ok(output)
+}
+
+fn tail_preview(text: &str, max_bytes: usize, max_lines: usize) -> String {
+    let lines: Vec<&str> = text.lines().collect();
+    let start = lines.len().saturating_sub(max_lines);
+    let mut preview = lines[start..].join("\n");
+    if preview.len() > max_bytes {
+        let mut cut = preview.len() - max_bytes;
+        while !preview.is_char_boundary(cut) {
+            cut += 1;
+        }
+        preview = preview[cut..].to_string();
+    }
+    preview
+}
+
+fn save_bash_spool(
+    dir: &Path,
+    stdout: &Path,
+    stderr: &Path,
+    has_stderr: bool,
+    suffix: &str,
+) -> Option<PathBuf> {
+    std::fs::create_dir_all(dir).ok()?;
+    cleanup_truncated(dir);
+    let id = TRUNCATION_ID.fetch_add(1, Ordering::Relaxed);
+    let path = dir.join(format!("tool_{}_{}.txt", now_millis(), id));
+    let mut output = BufWriter::new(std::fs::File::create(&path).ok()?);
+    std::io::copy(&mut std::fs::File::open(stdout).ok()?, &mut output).ok()?;
+    if has_stderr {
+        output.write_all(b"[stderr]\n").ok()?;
+        std::io::copy(&mut std::fs::File::open(stderr).ok()?, &mut output).ok()?;
+    }
+    output.write_all(suffix.as_bytes()).ok()?;
+    output.flush().ok()?;
+    Some(path)
+}
+
+fn remove_stream_files(captures: &[&StreamCapture]) {
+    for capture in captures {
+        let _ = std::fs::remove_file(&capture.path);
+    }
+}
+
+fn now_millis() -> u128 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|duration| duration.as_millis())
+        .unwrap_or(0)
 }
 
 /// Cap tool output so a single result cannot dominate the context window. The
@@ -1120,10 +1287,7 @@ fn truncation_dir() -> Option<PathBuf> {
 fn save_truncated(dir: &Path, text: &str) -> Option<PathBuf> {
     std::fs::create_dir_all(dir).ok()?;
     cleanup_truncated(dir);
-    let stamp = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_millis())
-        .unwrap_or(0);
+    let stamp = now_millis();
     let id = TRUNCATION_ID.fetch_add(1, Ordering::Relaxed);
     let path = dir.join(format!("tool_{stamp}_{id}.txt"));
     std::fs::write(&path, text).ok()?;
@@ -1536,9 +1700,55 @@ mod tests {
         );
 
         let seen = seen.lock().unwrap();
-        assert!(seen.iter().any(|chunk| chunk.trim() == "one"), "{seen:?}");
-        assert!(seen.iter().any(|chunk| chunk.trim() == "two"), "{seen:?}");
+        let streamed = seen.join("\n");
+        assert!(streamed.contains("one"), "{seen:?}");
+        assert!(streamed.contains("two"), "{seen:?}");
 
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[tokio::test]
+    async fn stream_capture_spools_full_output_and_bounds_memory() {
+        use tokio::io::AsyncWriteExt;
+
+        let (mut writer, reader) = tokio::io::duplex(32_768);
+        let payload = vec![b'x'; 20_000];
+        writer.write_all(&payload).await.unwrap();
+        drop(writer);
+
+        let updates = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let sink = Arc::clone(&updates);
+        let progress = Progress::new(Arc::new(move |chunk: &str| {
+            sink.lock().unwrap().push(chunk.to_string());
+        }));
+        let capture = read_stream(reader, progress, "test").await.unwrap();
+
+        assert_eq!(capture.bytes, payload.len());
+        assert!(capture.tail.len() <= output_limits("bash").0);
+        assert_eq!(std::fs::read(&capture.path).unwrap(), payload);
+        assert!(updates
+            .lock()
+            .unwrap()
+            .iter()
+            .all(|chunk| chunk.len() <= PROGRESS_BATCH_BYTES));
+        remove_stream_files(&[&capture]);
+    }
+
+    #[test]
+    fn walk_stops_when_visitor_requests_it() {
+        let dir = std::env::temp_dir().join(format!("oxide_walk_stop_{}", std::process::id()));
+        std::fs::remove_dir_all(&dir).ok();
+        std::fs::create_dir_all(&dir).unwrap();
+        for name in ["a", "b", "c"] {
+            std::fs::write(dir.join(name), name).unwrap();
+        }
+
+        let mut visited = 0;
+        walk(&dir, &mut |_| {
+            visited += 1;
+            false
+        });
+        assert_eq!(visited, 1);
         std::fs::remove_dir_all(&dir).ok();
     }
 

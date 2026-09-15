@@ -176,12 +176,12 @@ oxide
 /login
 ```
 
-### TUI essentials
+### Keyboard shortcuts
 
-The welcome area summarizes the loaded ecosystem and keeps the main shortcuts
-above the editor. The row below the editor is reserved for live state such as
-`ready`, `thinking`, tool activity, elapsed time, and the quit affordance.
-Persistent session and model details stay in the footer.
+The welcome area summarizes the loaded ecosystem and shows the most commonly
+used shortcuts above the editor. The single-line footer combines live state
+such as `ready`, `thinking`, tool activity, and elapsed time with the current
+project, session, model, mode, and thinking level.
 
 | Key | Action |
 | --- | --- |
@@ -193,7 +193,7 @@ Persistent session and model details stay in the footer.
 | Tab | Complete the selected slash command. |
 | Up / Down | Recall input history or move through a picker. |
 | Shift+Tab | Cycle `build` → `auto-edit` → `plan`. |
-| Ctrl+R | Cycle the reasoning level. |
+| Ctrl+R | Cycle the thinking level: `auto` → `off` → `low` → `medium` → `high`. |
 | Ctrl+O | Expand or collapse tool-output details. |
 | Ctrl+V | Attach an image from the clipboard when the platform helper is available. |
 | PgUp / PgDn / mouse wheel | Scroll the transcript. |

@@ -30,6 +30,8 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use tokio::sync::mpsc::{unbounded_channel, UnboundedReceiver, UnboundedSender};
 
+const MAX_TOOL_PROGRESS_BYTES: usize = 6_000;
+
 pub async fn run(config: Config, cwd: PathBuf, session: Option<SessionLog>) -> Result<()> {
     let mcp = Arc::new(McpRegistry::connect(&config.ecosystem.mcp).await);
     let plugins = Arc::new(PluginHost::spawn(&config.ecosystem.plugins, &cwd).await);
@@ -609,6 +611,7 @@ fn handle_key(
                 }
                 app.history.clear();
                 app.items.clear();
+                app.invalidate_render_cache();
                 app.steering = crate::agent::Steering::new();
                 app.follow_ups = crate::agent::Steering::new();
                 match SessionLog::create(cwd) {
@@ -1600,16 +1603,15 @@ fn handle_agent_event(event: AgentEvent, app: &mut App) {
                 Some(ChatItem::ToolProgress { name: last, .. }) if last == &name
             );
             if append {
+                let index = app.items.len() - 1;
                 if let Some(ChatItem::ToolProgress { output, .. }) = app.items.last_mut() {
-                    if !output.is_empty() {
-                        output.push('\n');
-                    }
-                    output.push_str(&chunk);
+                    append_tool_progress(output, &chunk);
                 }
+                app.mark_render_dirty(index);
             } else {
                 app.items.push(ChatItem::ToolProgress {
                     name,
-                    output: chunk,
+                    output: trailing_text(&chunk, MAX_TOOL_PROGRESS_BYTES),
                 });
             }
         }
@@ -1642,6 +1644,31 @@ fn handle_agent_event(event: AgentEvent, app: &mut App) {
     }
 }
 
+fn append_tool_progress(output: &mut String, chunk: &str) {
+    if !output.is_empty() {
+        output.push('\n');
+    }
+    output.push_str(chunk);
+    if output.len() > MAX_TOOL_PROGRESS_BYTES {
+        const MARKER: &str = "…\n";
+        *output = format!(
+            "{MARKER}{}",
+            trailing_text(output, MAX_TOOL_PROGRESS_BYTES - MARKER.len())
+        );
+    }
+}
+
+fn trailing_text(text: &str, max_bytes: usize) -> String {
+    if text.len() <= max_bytes {
+        return text.to_string();
+    }
+    let mut start = text.len() - max_bytes;
+    while !text.is_char_boundary(start) {
+        start += 1;
+    }
+    text[start..].to_string()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1654,6 +1681,15 @@ mod tests {
             Mode::Build,
             Reasoning::Auto,
         )
+    }
+
+    #[test]
+    fn tool_progress_keeps_a_bounded_utf8_tail() {
+        let mut output = "old".repeat(MAX_TOOL_PROGRESS_BYTES);
+        append_tool_progress(&mut output, "latest 🚀");
+        assert!(output.len() <= MAX_TOOL_PROGRESS_BYTES);
+        assert!(output.starts_with("…\n"));
+        assert!(output.ends_with("latest 🚀"));
     }
 
     fn key(code: KeyCode) -> KeyEvent {

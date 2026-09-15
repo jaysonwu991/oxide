@@ -3,8 +3,6 @@ use crate::config::{Mode, Reasoning};
 use crate::llm::{ContentPart, Message};
 use crate::tools::DiffPreview;
 use ratatui::text::Line;
-use std::collections::hash_map::DefaultHasher;
-use std::hash::{Hash, Hasher};
 use std::time::Instant;
 
 #[derive(Debug, Clone)]
@@ -29,63 +27,6 @@ pub enum ChatItem {
     Thought(u64),
     Error(String),
     Info(String),
-}
-
-impl ChatItem {
-    pub fn signature(&self) -> u64 {
-        let mut hasher = DefaultHasher::new();
-        match self {
-            ChatItem::Banner => {
-                7u8.hash(&mut hasher);
-            }
-            ChatItem::User(text) => {
-                0u8.hash(&mut hasher);
-                text.hash(&mut hasher);
-            }
-            ChatItem::Assistant(text) => {
-                1u8.hash(&mut hasher);
-                text.hash(&mut hasher);
-            }
-            ChatItem::Tool { name, args } => {
-                2u8.hash(&mut hasher);
-                name.hash(&mut hasher);
-                args.hash(&mut hasher);
-            }
-            ChatItem::ToolProgress { name, output } => {
-                3u8.hash(&mut hasher);
-                name.hash(&mut hasher);
-                output.hash(&mut hasher);
-            }
-            ChatItem::ToolResult {
-                name,
-                args,
-                output,
-                diff,
-            } => {
-                4u8.hash(&mut hasher);
-                name.hash(&mut hasher);
-                args.hash(&mut hasher);
-                output.hash(&mut hasher);
-                if let Some(diff) = diff {
-                    diff.path.hash(&mut hasher);
-                    diff.text.hash(&mut hasher);
-                }
-            }
-            ChatItem::Thought(millis) => {
-                7u8.hash(&mut hasher);
-                millis.hash(&mut hasher);
-            }
-            ChatItem::Error(text) => {
-                5u8.hash(&mut hasher);
-                text.hash(&mut hasher);
-            }
-            ChatItem::Info(text) => {
-                6u8.hash(&mut hasher);
-                text.hash(&mut hasher);
-            }
-        }
-        hasher.finish()
-    }
 }
 
 #[derive(Debug, Clone)]
@@ -218,7 +159,7 @@ pub struct App {
     pub expand_tools: bool,
     pub lines: Vec<Line<'static>>,
     pub line_offsets: Vec<usize>,
-    pub signatures: Vec<u64>,
+    pub render_dirty_from: Option<usize>,
     pub render_width: usize,
 }
 
@@ -260,7 +201,7 @@ impl App {
             expand_tools: false,
             lines: Vec::new(),
             line_offsets: Vec::new(),
-            signatures: Vec::new(),
+            render_dirty_from: Some(0),
             render_width: 0,
         }
     }
@@ -269,7 +210,7 @@ impl App {
     pub fn invalidate_render_cache(&mut self) {
         self.lines.clear();
         self.line_offsets.clear();
-        self.signatures.clear();
+        self.render_dirty_from = Some(0);
         self.render_width = 0;
     }
 
@@ -347,9 +288,11 @@ impl App {
             self.items.push(ChatItem::Assistant(String::new()));
             self.assistant_open = true;
         }
+        let index = self.items.len() - 1;
         if let Some(ChatItem::Assistant(buffer)) = self.items.last_mut() {
             buffer.push_str(&delta);
         }
+        self.mark_render_dirty(index);
     }
 
     /// Toggle whether long tool output is shown in full or collapsed, and
@@ -358,7 +301,15 @@ impl App {
         self.expand_tools = !self.expand_tools;
         self.lines.clear();
         self.line_offsets.clear();
-        self.signatures.clear();
+        self.render_dirty_from = Some(0);
+    }
+
+    pub fn mark_render_dirty(&mut self, index: usize) {
+        self.render_dirty_from = Some(
+            self.render_dirty_from
+                .map(|current| current.min(index))
+                .unwrap_or(index),
+        );
     }
 
     /// Fold a tool result into the pending call it belongs to, so the
@@ -399,6 +350,7 @@ impl App {
                     output,
                     diff,
                 };
+                self.mark_render_dirty(tool);
             }
             None => self.items.push(ChatItem::ToolResult {
                 name,

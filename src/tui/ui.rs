@@ -59,14 +59,12 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
             Constraint::Min(3),
             Constraint::Length(input_rows + 2),
             Constraint::Length(1),
-            Constraint::Length(1),
         ])
         .split(frame.area());
 
     draw_messages(frame, app, chunks[0]);
     draw_input(frame, app, chunks[1]);
-    draw_status(frame, app, chunks[2]);
-    draw_footer(frame, app, chunks[3]);
+    draw_footer(frame, app, chunks[2]);
 
     if app.connect.is_some() {
         draw_connect(frame, app);
@@ -347,47 +345,32 @@ fn draw_suggestions(frame: &mut Frame, app: &App, area: Rect) {
     frame.render_stateful_widget(list, popup, &mut list_state);
 }
 
-/// A thin state row under the editor. Static keyboard help lives in the
-/// welcome tips so this row stays focused on current activity.
-fn draw_status(frame: &mut Frame, app: &App, area: Rect) {
+/// Pi-style footer: current status, working directory, session name, token
+/// totals, context usage, model, mode, and thinking level.
+fn draw_footer(frame: &mut Frame, app: &App, area: Rect) {
     let dim = Style::default().fg(app.theme.info);
-    let busy_style = Style::default().fg(app.theme.tool);
-    let spans = if app.busy {
+    let mut spans = if app.busy {
         let secs = app
             .busy_since
             .map(|start| start.elapsed().as_secs())
             .unwrap_or(0);
         vec![
-            Span::styled(format!("  {} ", spinner(app.busy_since)), busy_style),
+            Span::styled(
+                format!(" {} ", spinner(app.busy_since)),
+                Style::default().fg(app.theme.tool),
+            ),
             Span::styled(
                 format!("{} · {secs}s · Esc clear/quit", app.status),
-                busy_style,
+                Style::default().fg(app.theme.tool),
             ),
         ]
     } else {
         vec![
-            Span::styled("  ● ", Style::default().fg(app.theme.accent)),
+            Span::styled(" ● ", Style::default().fg(app.theme.accent)),
             Span::styled(app.status.clone(), dim),
         ]
     };
-    frame.render_widget(Paragraph::new(Line::from(spans)), area);
-}
-
-/// The spinner glyph rotates once per tick, so the editor border animates
-/// while the agent is working without a separate timer.
-fn spinner(since: Option<std::time::Instant>) -> &'static str {
-    const FRAMES: [&str; 4] = ["⠋", "⠙", "⠹", "⠸"];
-    let tick = since
-        .map(|start| start.elapsed().as_millis() / 120)
-        .unwrap_or(0);
-    FRAMES[(tick as usize) % FRAMES.len()]
-}
-
-/// Pi-style footer: working directory, session name, token totals, context
-/// usage, model, and thinking level.
-fn draw_footer(frame: &mut Frame, app: &App, area: Rect) {
-    let dim = Style::default().fg(app.theme.info);
-    let mut spans = vec![Span::styled(format!(" {}", display_path(&app.cwd)), dim)];
+    spans.push(Span::styled(format!(" · {}", display_path(&app.cwd)), dim));
     if let Some(name) = &app.session_name {
         spans.push(Span::styled(format!(" · {name}"), dim));
     }
@@ -434,6 +417,16 @@ fn draw_footer(frame: &mut Frame, app: &App, area: Rect) {
     );
 }
 
+/// The spinner glyph rotates once per tick, so the editor border animates
+/// while the agent is working without a separate timer.
+fn spinner(since: Option<std::time::Instant>) -> &'static str {
+    const FRAMES: [&str; 4] = ["⠋", "⠙", "⠹", "⠸"];
+    let tick = since
+        .map(|start| start.elapsed().as_millis() / 120)
+        .unwrap_or(0);
+    FRAMES[(tick as usize) % FRAMES.len()]
+}
+
 /// Formats token counts compactly (1234 -> "1.2k").
 fn compact_tokens(value: u64) -> String {
     if value >= 1_000_000 {
@@ -449,25 +442,55 @@ fn compact_tokens(value: u64) -> String {
 fn justified_line(left: Vec<Span<'static>>, right: Line<'static>, width: usize) -> Line<'static> {
     let left_len: usize = left.iter().map(|span| span.content.chars().count()).sum();
     let right_len: usize = right.spans.iter().map(|s| s.content.chars().count()).sum();
-    let mut spans = left;
     if left_len + right_len <= width {
+        let mut spans = left;
         spans.push(Span::raw(" ".repeat(width - left_len - right_len)));
         spans.extend(right.spans);
-    } else {
-        spans.push(Span::raw(" "));
-        spans.push(Span::styled(
-            truncate(
-                &right
-                    .spans
-                    .iter()
-                    .map(|s| s.content.to_string())
-                    .collect::<String>(),
-                width.saturating_sub(left_len + 1),
-            ),
+        return Line::from(spans);
+    }
+
+    if right_len >= width {
+        let text = right
+            .spans
+            .iter()
+            .map(|span| span.content.to_string())
+            .collect::<String>();
+        return Line::from(Span::styled(
+            truncate(&text, width),
             Style::default().fg(Color::Gray),
         ));
     }
+
+    let left_width = width.saturating_sub(right_len + 1);
+    let mut spans = truncate_spans(left, left_width);
+    spans.push(Span::raw(" "));
+    spans.extend(right.spans);
     Line::from(spans)
+}
+
+fn truncate_spans(spans: Vec<Span<'static>>, width: usize) -> Vec<Span<'static>> {
+    let total: usize = spans.iter().map(|span| span.content.chars().count()).sum();
+    if total <= width {
+        return spans;
+    }
+    if width == 0 {
+        return Vec::new();
+    }
+
+    let mut remaining = width - 1;
+    let mut truncated = Vec::new();
+    for span in spans {
+        if remaining == 0 {
+            break;
+        }
+        let text: String = span.content.chars().take(remaining).collect();
+        remaining = remaining.saturating_sub(text.chars().count());
+        if !text.is_empty() {
+            truncated.push(Span::styled(text, span.style));
+        }
+    }
+    truncated.push(Span::raw("…"));
+    truncated
 }
 
 fn truncate(text: &str, width: usize) -> String {
@@ -549,43 +572,34 @@ fn draw_messages(frame: &mut Frame, app: &mut App, area: Rect) {
         app.scroll = app.scroll.min(total.saturating_sub(view));
     }
 
-    let paragraph = Paragraph::new(app.lines.clone())
-        .wrap(Wrap { trim: false })
-        .scroll((app.scroll, 0));
+    let start = app.scroll as usize;
+    let end = (start + view as usize).min(app.lines.len());
+    let paragraph = Paragraph::new(app.lines[start..end].to_vec()).wrap(Wrap { trim: false });
     frame.render_widget(paragraph, inner);
 }
 
-/// Incrementally rebuild the rendered lines, reusing everything before the
-/// first changed conversation item. Items are append-mostly, so a cache keyed by
-/// per-item signatures keeps redraws proportional to what actually changed.
+/// Incrementally rebuild rendered lines from the first item explicitly marked
+/// dirty. Appends are detected from the cached item count, avoiding full-history
+/// hashing on every streamed delta or spinner tick.
 fn sync_lines(app: &mut App, width: usize) {
     if app.render_width != width {
         app.lines.clear();
         app.line_offsets.clear();
-        app.signatures.clear();
+        app.render_dirty_from = Some(0);
         app.render_width = width;
     }
 
     let count = app.items.len();
-    if app.signatures.len() > count {
-        let cut = app
-            .line_offsets
-            .get(count)
-            .copied()
-            .unwrap_or(app.lines.len());
-        app.lines.truncate(cut);
-        app.line_offsets.truncate(count);
-        app.signatures.truncate(count);
+    let cached = app.line_offsets.len();
+    if cached > count {
+        app.mark_render_dirty(count.saturating_sub(1));
     }
-
-    let mut start = 0;
-    while start < count
-        && start < app.signatures.len()
-        && app.signatures[start] == app.items[start].signature()
-    {
-        start += 1;
-    }
-    if start == count {
+    let start = app
+        .render_dirty_from
+        .unwrap_or(cached)
+        .min(cached)
+        .min(count);
+    if start == count && cached == count {
         return;
     }
 
@@ -596,13 +610,10 @@ fn sync_lines(app: &mut App, width: usize) {
         .unwrap_or(app.lines.len());
     app.lines.truncate(cut);
     app.line_offsets.truncate(start);
-    app.signatures.truncate(start);
 
     for index in start..count {
-        let signature = app.items[index].signature();
         let offset = app.lines.len();
         app.line_offsets.push(offset);
-        app.signatures.push(signature);
         render_item_themed(
             &app.items[index],
             width,
@@ -614,6 +625,7 @@ fn sync_lines(app: &mut App, width: usize) {
             app.lines.push(Line::from(""));
         }
     }
+    app.render_dirty_from = None;
 }
 
 fn render_item_themed(
@@ -1140,6 +1152,26 @@ mod tests {
     }
 
     #[test]
+    fn render_cache_rebuilds_only_from_the_dirty_item() {
+        let mut app = App::new("model".into(), "/tmp".into(), Mode::Build, Reasoning::Auto);
+        app.items.push(ChatItem::User("first".into()));
+        app.push_assistant_delta("second".into());
+        sync_lines(&mut app, 40);
+        let first_offset = app.line_offsets[0];
+
+        app.push_assistant_delta(" updated".into());
+        assert_eq!(app.render_dirty_from, Some(1));
+        sync_lines(&mut app, 40);
+
+        assert_eq!(app.line_offsets[0], first_offset);
+        assert!(app
+            .lines
+            .iter()
+            .any(|line| line_text(line).contains("updated")));
+        assert_eq!(app.render_dirty_from, None);
+    }
+
+    #[test]
     fn justified_right_aligns_and_truncates() {
         let line = justified_line(vec![Span::raw("ab")], Line::from(Span::raw("cd")), 6);
         let text: String = line
@@ -1161,6 +1193,18 @@ mod tests {
             .collect();
         assert_eq!(text.chars().count(), 8);
         assert!(text.ends_with('…'));
+
+        let line = justified_line(
+            vec![Span::raw("very-long-left-side")],
+            Line::from(Span::raw("right")),
+            12,
+        );
+        let text: String = line
+            .spans
+            .iter()
+            .map(|span| span.content.as_ref())
+            .collect();
+        assert_eq!(text, "very-… right");
     }
 
     #[test]
@@ -1434,7 +1478,7 @@ mod tests {
     }
 
     #[test]
-    fn status_sits_below_the_input_box() {
+    fn status_and_model_share_the_row_below_the_input_box() {
         use crate::config::{Mode, Reasoning};
         use ratatui::backend::TestBackend;
         use ratatui::Terminal;
@@ -1459,6 +1503,7 @@ mod tests {
 
         let input_bottom = row_of(&buffer, "╰").expect("input box bottom border");
         assert_eq!(status, input_bottom + 1);
+        assert_eq!(row_of(&buffer, "gpt-4o"), Some(status));
 
         let status_text: String = (0..buffer.area.width)
             .map(|x| buffer[(x, status)].symbol())
