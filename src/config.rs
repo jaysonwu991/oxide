@@ -13,6 +13,19 @@ You can see images and PDFs attached to user messages, and read_file returns ima
 Prefer small, focused changes and verify your work. \
 Be concise. When you are done, give a short summary of what you changed.";
 
+const PORTKEY_FALLBACK_MODELS: &[&str] = &[
+    "claude-haiku-4-5",
+    "claude-opus-4-8",
+    "claude-opus-5",
+    "claude-sonnet-4-6",
+    "claude-sonnet-5",
+    "glm-5.2",
+    "gpt-5.4",
+    "gpt-5.6-luna",
+    "gpt-5.6-sol",
+    "gpt-5.6-terra",
+];
+
 pub fn model_label(model: &str) -> &str {
     match model {
         "claude-haiku-4-5" => "Claude Haiku 4.5",
@@ -298,6 +311,10 @@ pub struct Config {
     pub base_url: String,
     #[serde(default)]
     pub api_key: String,
+    #[serde(default)]
+    pub portkey_config: String,
+    #[serde(default)]
+    pub model_catalog: Vec<String>,
     #[serde(default = "default_system_prompt")]
     pub system_prompt: String,
     #[serde(default = "default_max_tokens")]
@@ -373,6 +390,8 @@ impl Default for Config {
             model: "gpt-4o-mini".to_string(),
             base_url: "https://api.openai.com/v1".to_string(),
             api_key: String::new(),
+            portkey_config: String::new(),
+            model_catalog: Vec::new(),
             system_prompt: default_system_prompt(),
             max_tokens: default_max_tokens(),
             auto_approve: true,
@@ -471,6 +490,19 @@ impl Config {
         }
         if let Some(key) = env_nonempty("OXIDE_API_KEY") {
             config.api_key = key;
+        }
+        if config.is_portkey() {
+            if let Some(value) = env_nonempty("PORTKEY_CONFIG") {
+                config.portkey_config = value;
+            }
+            if let Some(value) = env_nonempty("PORTKEY_MODELS") {
+                config.model_catalog = value
+                    .split(',')
+                    .map(str::trim)
+                    .filter(|model| !model.is_empty())
+                    .map(str::to_string)
+                    .collect();
+            }
         }
         let openai_key_fallback = match preset {
             Some(preset) => preset.kind == ProviderKind::OpenAi,
@@ -583,9 +615,13 @@ impl Config {
 
     /// Applies a provider credential to the running config.
     pub fn apply_provider(&mut self, provider: &str, key: &str) {
+        let provider_changed = canonical_provider(&self.provider) != canonical_provider(provider);
         self.provider = provider.to_string();
         self.api_key = key.to_string();
-        if let Some(preset) = ProviderPreset::for_name(provider) {
+        if provider_changed {
+            let Some(preset) = ProviderPreset::for_name(provider) else {
+                return;
+            };
             self.model = preset.model.to_string();
             self.base_url = preset.base_url.to_string();
         }
@@ -645,6 +681,23 @@ impl Config {
 
     pub fn is_portkey(&self) -> bool {
         canonical_provider(&self.provider) == "portkey"
+    }
+
+    pub fn model_catalog(&self) -> Vec<String> {
+        let mut models = if self.model_catalog.is_empty() && self.is_portkey() {
+            PORTKEY_FALLBACK_MODELS
+                .iter()
+                .map(|model| (*model).to_string())
+                .collect()
+        } else {
+            self.model_catalog.clone()
+        };
+        if self.is_portkey() && !self.model.trim().is_empty() {
+            models.push(self.model.clone());
+        }
+        models.sort();
+        models.dedup();
+        models
     }
 
     /// The reasoning level to use after resolving `Auto` against the model.
@@ -954,6 +1007,23 @@ mod tests {
         assert_eq!(config.base_url, "https://api.portkey.ai/v1");
         assert_eq!(config.key_env_name(), "PORTKEY_API_KEY");
         assert!(config.is_portkey());
+    }
+
+    #[test]
+    fn refreshing_portkey_credentials_preserves_custom_gateway() {
+        let mut config = Config {
+            provider: "portkey".into(),
+            model: "account-model".into(),
+            base_url: "https://gateway.example.com/v1".into(),
+            portkey_config: "pc-example".into(),
+            ..Config::default()
+        };
+        config.apply_provider("port-key", "pk-new");
+        assert_eq!(config.provider, "port-key");
+        assert_eq!(config.api_key, "pk-new");
+        assert_eq!(config.model, "account-model");
+        assert_eq!(config.base_url, "https://gateway.example.com/v1");
+        assert_eq!(config.portkey_config, "pc-example");
     }
 
     #[test]

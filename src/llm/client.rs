@@ -40,6 +40,9 @@ impl LlmClient {
 
     /// Lists the model ids the provider exposes, sorted and de-duplicated.
     pub async fn list_models(&self) -> Result<Vec<String>> {
+        if !self.config.model_catalog.is_empty() {
+            return Ok(self.config.model_catalog());
+        }
         let url = format!("{}/models", self.config.base_url);
         let request = match self.config.provider_kind() {
             ProviderKind::Anthropic => self
@@ -57,6 +60,9 @@ impl LlmClient {
         let status = response.status();
         if !status.is_success() {
             let body = response.text().await.unwrap_or_default();
+            if self.config.is_portkey() && status == reqwest::StatusCode::FORBIDDEN {
+                return Ok(self.config.model_catalog());
+            }
             anyhow::bail!("provider returned {status}: {}", body.trim());
         }
 
@@ -213,7 +219,12 @@ impl LlmClient {
     ) -> Result<reqwest::RequestBuilder> {
         let key = self.config.require_api_key()?;
         if self.config.is_portkey() {
-            Ok(request.header("x-portkey-api-key", key))
+            let request = request.header("x-portkey-api-key", key);
+            if self.config.portkey_config.trim().is_empty() {
+                Ok(request)
+            } else {
+                Ok(request.header("x-portkey-config", self.config.portkey_config.trim()))
+            }
         } else {
             Ok(request.bearer_auth(key))
         }
@@ -297,6 +308,7 @@ mod tests {
         let config = Config {
             provider: "portkey".into(),
             api_key: "pk-test".into(),
+            portkey_config: "pc-test".into(),
             ..Config::default()
         };
         let client = LlmClient::new(config);
@@ -306,7 +318,32 @@ mod tests {
             .build()
             .unwrap();
         assert_eq!(request.headers()["x-portkey-api-key"], "pk-test");
+        assert_eq!(request.headers()["x-portkey-config"], "pc-test");
         assert!(!request.headers().contains_key("authorization"));
+    }
+
+    #[test]
+    fn portkey_fallback_catalog_includes_requested_models_and_active_model() {
+        let config = Config {
+            provider: "portkey".into(),
+            model: "account-specific-model".into(),
+            ..Config::default()
+        };
+        let models = config.model_catalog();
+        assert!(models.contains(&"claude-sonnet-5".to_string()));
+        assert!(models.contains(&"gpt-5.6-sol".to_string()));
+        assert!(models.contains(&"account-specific-model".to_string()));
+    }
+
+    #[test]
+    fn custom_portkey_catalog_replaces_fallback_catalog() {
+        let config = Config {
+            provider: "portkey".into(),
+            model: "custom-b".into(),
+            model_catalog: vec!["custom-a".into(), "custom-b".into()],
+            ..Config::default()
+        };
+        assert_eq!(config.model_catalog(), vec!["custom-a", "custom-b"]);
     }
 
     #[test]

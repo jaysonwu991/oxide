@@ -362,6 +362,8 @@ cycle levels; `--reasoning` and `OXIDE_REASONING` set the starting level.
 | `DEEPSEEK_API_KEY` / `DEEPSEEK_BASE_URL` | DeepSeek credentials. |
 | `ANTHROPIC_API_KEY` / `ANTHROPIC_BASE_URL` | Anthropic credentials. |
 | `PORTKEY_API_KEY` / `PORTKEY_BASE_URL` | Portkey AI Gateway credentials. |
+| `PORTKEY_CONFIG` | Optional Portkey config ID sent as `x-portkey-config`. |
+| `PORTKEY_MODELS` | Optional comma-separated model catalog for keys that cannot call `/models`. |
 
 ### Providers
 
@@ -375,10 +377,27 @@ cycle levels; `--reasoning` and `OXIDE_REASONING` set the starting level.
 Any OpenAI-compatible endpoint can be used by setting `provider`, `base_url`,
 `model`, and a key.
 
-Claude Sonnet 5 is the Portkey preset default. `/models` discovers the catalog
-available to the connected Portkey API key, so other accounts and custom
-catalogs work without code changes. Known model IDs receive friendly display
-names; all other IDs are shown and sent unchanged.
+Claude Sonnet 5 is the Portkey preset default. `/models` discovers the live
+catalog when the connected key permits it. Restricted keys fall back to the
+built-in catalog; set `model_catalog` in `config.json` or `PORTKEY_MODELS` to use a
+different account-specific catalog. Custom gateways can set `base_url` (or
+`PORTKEY_BASE_URL`) and `portkey_config` (or `PORTKEY_CONFIG`). Known model IDs
+receive friendly display names; all other IDs are shown and sent unchanged.
+
+For example, the equivalent of a custom Claude Code Portkey configuration is:
+
+```json
+{
+  "provider": "portkey",
+  "base_url": "https://gateway.example.com/v1",
+  "portkey_config": "pc-example",
+  "model": "claude-sonnet-5",
+  "model_catalog": ["claude-sonnet-5", "account-specific-model"]
+}
+```
+
+Keep the API key in `auth.json` via `/login portkey` or in `PORTKEY_API_KEY`,
+rather than checking it into `config.json`.
 
 ## Context files and system prompt
 
