@@ -9,7 +9,7 @@ pub const DEFAULT_SYSTEM_PROMPT: &str = "\
 You are Oxide, an AI coding agent running in the user's terminal. \
 You help with software engineering tasks: writing, editing, debugging and explaining code. \
 Use the provided tools to inspect and modify the user's project. \
-You can see images and PDFs attached to user messages, and read_file returns image/PDF files as viewable attachments. \
+You can see images and PDFs attached to user messages, and read returns image/PDF files as viewable attachments. \
 Prefer small, focused changes and verify your work. \
 Be concise. When you are done, give a short summary of what you changed.";
 
@@ -505,7 +505,7 @@ impl Config {
         }
 
         // When no provider was chosen anywhere, fall back to the sole stored
-        // credential so `oxide auth login <provider>` is enough to get started.
+        // credential so one saved TUI login is enough to get started.
         let provider_explicit = provider_overridden || explicit(&raw, "provider");
         if !provider_explicit {
             if let Some(store) = &store {
@@ -579,7 +579,8 @@ impl Config {
     pub fn require_api_key(&self) -> Result<&str> {
         if self.api_key.trim().is_empty() {
             let mut message = format!(
-                "no API key found for `{}`. Run `oxide auth login`, set {}, or add \"api_key\" to {}",
+                "no API key found for `{}`. Start the TUI and run `/login {}`, set {}, or add \"api_key\" to {}",
+                self.provider,
                 self.provider,
                 self.key_env_name(),
                 Self::config_path().display()

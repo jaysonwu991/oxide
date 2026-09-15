@@ -7,8 +7,9 @@ description: Use when navigating or modifying the oxide internals — the agent 
 
 ## Request flow
 
-1. `src/main.rs` parses CLI args (clap), handles the `auth` and `mcp`
-   subcommands, resolves the working directory, and loads `Config`.
+1. `src/main.rs` parses CLI args (clap), handles the `mcp` subcommand, resolves
+   the working directory, and loads `Config`. Provider login and logout are TUI
+   slash commands rather than CLI subcommands.
 2. Non-interactive mode (`-p/--print` or a positional prompt) reads the prompt
    and calls `run_print`; otherwise the TUI starts via `tui::run`.
 3. `agent::run(config, cwd, history, tx, runtime)` drives a turn:
@@ -21,9 +22,10 @@ description: Use when navigating or modifying the oxide internals — the agent 
    - Pushes the assistant message (with any tool calls) onto history.
    - If there are no tool calls, emits `AgentEvent::Finished(messages)`.
    - Otherwise checks permissions, executes each call (`dispatch` routes the
-     agent-level `task`/`skill`/`memory`/`diagnostics` tools, else
-     `tools::execute`), emits `ToolCall`/`ToolResult`, appends a
-     `Message::tool`, and loops. A `compress` call is handled in the loop:
+     agent-level `task`/`skill`/`memory`/`diagnostics` tools, while `compress`
+     is handled directly by the loop and built-in/MCP tools go through
+     `tools::execute`), emits `ToolCall`/`ToolResult`, appends a `Message::tool`,
+     and loops. A `compress` call updates the pruning state:
      `dcp::apply_compress` updates the in-memory state and appends a record to
      the session log.
    - Stops after `MAX_STEPS = 25` iterations with an error event.
@@ -39,7 +41,8 @@ description: Use when navigating or modifying the oxide internals — the agent 
 - `src/llm/mod.rs` — module re-exports (`LlmClient`, `Message`, `ToolSpec`, ...).
 - `src/agent.rs` — the agent loop (`run`, `run_loop`, `dispatch`) and
   `run_subagent` for `subtask` commands.
-- `src/tools.rs` — `specs()` and `execute()`; the only place tools are wired.
+- `src/tools.rs` — built-in/MCP `specs()` and `execute()`; agent-level tools are
+  wired in `src/agent.rs`.
 - `src/ecosystem/mod.rs` — Oxide (`.oxide/`, `AGENTS.md`) and Claude Code
   (`.claude/`, `CLAUDE.md`, `.mcp.json`) layout discovery; `frontmatter.rs`
   parses Markdown frontmatter; `resolve_command` returns command prompt +
@@ -57,15 +60,17 @@ description: Use when navigating or modifying the oxide internals — the agent 
   `.oxide/mcp.json`, and the OAuth authorization-code + PKCE flow for remote
   servers.
 - `src/tui/` — `run` entry plus `app`/`ui` for rendering and input; hides tool
-  bodies by default (Ctrl+O), renders shell calls as `$ command`, shows colored
-  edit diffs and per-turn thought timing.
+  bodies by default (Ctrl+O), renders concise `Run`/`Ran` shell actions, shows
+  colored edit diffs and per-turn thought timing.
 
 ## Adding a model provider
 
 Provider presets are resolved by `ProviderPreset::for_name` in `src/config.rs`;
 each sets a default `model` and `base_url`. Override them with `OXIDE_PROVIDER`,
 `OXIDE_MODEL`, `OXIDE_BASE_URL`, or `OXIDE_API_KEY`, or the provider-specific
-`*_API_KEY` / `*_BASE_URL` variables (`OPENAI_*`, `DEEPSEEK_*`, `ANTHROPIC_*`).
+`*_API_KEY` / `*_BASE_URL` variables (`OPENAI_*`, `DEEPSEEK_*`, `ANTHROPIC_*`,
+`PORTKEY_*`). Portkey additionally supports `PORTKEY_CONFIG` and
+`PORTKEY_MODELS`.
 OpenAI-compatible and Anthropic APIs are dispatched in `src/llm/client.rs` (see
 `src/llm/anthropic.rs`). Config on disk lives in the oxide config dir
 (`dirs::config_dir()/oxide/config.json`; e.g. `~/.config/oxide` on Linux,
@@ -77,8 +82,9 @@ OpenAI-compatible and Anthropic APIs are dispatched in `src/llm/client.rs` (see
 - History is the single source of truth passed to `Finished`.
 - Context pruning only changes the outgoing request; history and the session log
   keep every original message.
-- Tool output is capped in `tools::execute` before entering history: at most
-  `MAX_OUTPUT_LINES` (400) lines and `MAX_OUTPUT_BYTES` (8 000) bytes. `bash`
-  keeps its tail (so the exit code survives), other tools keep the head, and
-  dropped content is saved under `truncated/` in the config dir
+- Tool output is capped before entering history. The general limit is
+  `MAX_OUTPUT_LINES` (250) lines and `MAX_OUTPUT_BYTES` (6,000) bytes, with
+  smaller per-tool limits for shell, search, listing, fetch, and edit results.
+  `bash` keeps its tail (so the exit code survives), other tools keep the head,
+  and dropped content is saved under `truncated/` in the config dir
   (`OXIDE_TRUNCATION_DIR`) with a pointer in the result.

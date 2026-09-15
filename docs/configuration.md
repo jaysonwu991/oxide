@@ -9,20 +9,29 @@ pruning.
 
 oxide merges two scopes:
 
-- **Global** — the oxide config directory: `~/.config/oxide` on Linux,
-  `~/Library/Application Support/oxide` on macOS, `%APPDATA%\oxide` on Windows.
+- **Global** — native resources can live in either `~/.oxide/` or the platform
+  oxide config directory (`~/.config/oxide` on Linux,
+  `~/Library/Application Support/oxide` on macOS, and `%APPDATA%\oxide` on
+  Windows). Claude Code-compatible resources come from `~/.claude/` and
+  `~/.claude.json`.
 - **Project** — the nearest ancestor of the working directory containing `.git`,
   `.oxide`, or `.claude`.
 
 Project entries override global entries with the same name (for agents,
 commands, prompt templates, skills, and MCP servers). oxide reads its native
 `.oxide/` layout and also reads the Claude Code layout (`.claude/`, `CLAUDE.md`,
-`.mcp.json`) for compatibility; within a scope, `.oxide/` wins over `.claude/`.
+`.mcp.json`) for compatibility. Native Oxide entries override Claude-compatible
+entries within the global or project scope. If both native global locations
+contain the same entry, the platform config directory wins over `~/.oxide/`.
 
-Provider and credential precedence is: CLI flags > environment variables >
-`auth.json` > `config.json` > provider preset. Behavior settings live in
-`config.json` (global); the `settings.json` file is global-only today and
-currently supplies `defaultProjectTrust`.
+Provider and model CLI flags take precedence over `OXIDE_*` environment
+variables, then `config.json` and provider presets. For API keys, the order is
+`OXIDE_API_KEY`, the selected provider's key variable, `auth.json`, and
+`config.json`; OpenAI-compatible providers also accept `OPENAI_API_KEY` as a
+last fallback. `OXIDE_BASE_URL` overrides the selected provider's base-URL
+variable, which overrides the file. Behavior settings live in `config.json`
+(global); the global-only `settings.json` currently supplies
+`defaultProjectTrust`.
 
 ## MCP servers
 
@@ -31,8 +40,13 @@ increasing precedence:
 
 1. Global `~/.claude.json`
 2. Global `~/.oxide/mcp.json`
-3. Project `<root>/.mcp.json`
-4. Project `<root>/.oxide/mcp.json`
+3. Global `<platform-config>/oxide/mcp.json`
+4. Project `<root>/.mcp.json`
+5. Project `<root>/.oxide/mcp.json`
+
+The `oxide mcp` management commands read the two home-directory files and the
+two project files; they do not manage the platform-config copy. `--scope
+global` writes `~/.oxide/mcp.json`.
 
 ### Manage from the CLI
 
@@ -61,7 +75,8 @@ oxide mcp remove extra
 ```
 
 Options may appear before or after the server name. `oxide mcp remove` falls
-back to every scope when the server is not in the requested one.
+back to every configured source when the server is not in the requested native
+file.
 
 ### OAuth for remote servers
 
@@ -194,8 +209,9 @@ You review Rust changes. Report findings by severity.
 ```
 
 - `name` defaults to the file stem; `description` is shown to the model.
-- `mode` is `subagent` (default), `primary`, or `all`. Only non-primary agents
-  can be spawned as subagents; `primary` agents are selectable with `--agent`.
+- `mode` is `subagent` (default), `primary`, or `all`. Only `subagent` and `all`
+  agents can be spawned through `task`; `--agent` can select any discovered
+  agent.
 - `permission` (optional) overrides the default tool permissions (see
   [Permissions](#permissions)).
 - Run an agent with `oxide --agent <name>`, through the `task` tool, or via a
@@ -341,7 +357,7 @@ The agent runs in one of three permission modes, modelled on Claude Code:
 | Mode | Behavior |
 | --- | --- |
 | `build` (default) | Follows the active agent's permission rules. |
-| `plan` | Read-only: `write`, `edit`, `patch`, `bash`, and unknown MCP tools are denied, and the model is instructed to produce an implementation plan. |
+| `plan` | Read-only: `write`, `edit`, `patch`, `bash`, and all MCP tools are denied, and the model is instructed to produce an implementation plan. |
 | `auto-edit` | Auto-approves `write`, `edit`, and `patch`; other rules still apply. |
 
 Set the starting mode with `--mode build|plan|auto-edit`, the `OXIDE_MODE`
@@ -381,12 +397,15 @@ instructions:
 - `AGENTS.md` (or `CLAUDE.md`) in each directory.
 - `AGENTS.override.md` replaces `AGENTS.md`/`CLAUDE.md` for that directory only.
 - Global `~/.oxide/AGENTS.md` is loaded first (lowest precedence).
-- Disable discovery with `--no-context-files`.
+- Disable ancestor context-file discovery with `--no-context-files`. This does
+  not disable layout-scoped `.oxide/AGENTS.md` or `.claude/CLAUDE.md` files.
 
-Replace the default system prompt with `.oxide/SYSTEM.md` (project) or
-`~/.oxide/SYSTEM.md` (global); append without replacing with
-`.oxide/APPEND_SYSTEM.md`. `--system-prompt <text>` and
-`--append-system-prompt <text>` override for one run.
+Replace the default system prompt with `.oxide/SYSTEM.md` (project),
+`~/.oxide/SYSTEM.md`, or the corresponding platform config-directory file;
+append without replacing with `APPEND_SYSTEM.md` in the same locations.
+`--system-prompt <text>` and `--append-system-prompt <text>` change the
+configured base for one run, but a loaded `SYSTEM.md` remains the
+higher-precedence replacement.
 
 Persistent cross-session memory is managed by the `memory` tool and stored under
 `memory/` in the oxide config dir; recent entries are injected automatically.
@@ -437,8 +456,8 @@ is not the only state cue. When authoring a custom theme, choose foregrounds
 with strong contrast against the terminal background and keep `success`,
 `error`, and `tool` visually distinct.
 
-For the complete keyboard and layout guide, see
-[TUI essentials](../README.md#tui-essentials).
+For the complete keyboard guide, see
+[Keyboard shortcuts](../README.md#keyboard-shortcuts).
 
 ## Context pruning
 
@@ -472,19 +491,75 @@ You can also provide a key without the login flow via the `OPENAI_API_KEY` /
 variables or an `api_key` entry in `config.json`; environment variables take
 precedence over `auth.json`.
 
-Portkey custom gateways can set `base_url` / `PORTKEY_BASE_URL` and
-`portkey_config` / `PORTKEY_CONFIG`. Oxide sends the latter as
-`x-portkey-config` alongside `x-portkey-api-key`. If a restricted Portkey key
-cannot call `/models`, Oxide uses its fallback catalog; set `model_catalog` in
-`config.json` or comma-separated `PORTKEY_MODELS` to replace it for another
-Portkey account.
-
 See [Configuration](../README.md#configuration) and
 [Providers](../README.md#providers) in the README for the full list.
 
+### Portkey
+
+Portkey uses the OpenAI-compatible Chat Completions API. Select the `portkey`
+provider and connect a Portkey API key from the TUI:
+
+```text
+/login portkey
+```
+
+Alternatively, set `PORTKEY_API_KEY`; `OXIDE_API_KEY` has higher precedence.
+If neither is set and no stored or configured Portkey key exists, Oxide also
+accepts `OPENAI_API_KEY` as the generic OpenAI-compatible fallback. Oxide sends
+the selected key as `x-portkey-api-key`, not as a bearer token. Keep API keys
+out of `config.json` when possible.
+
+The built-in preset uses `https://api.portkey.ai/v1` and
+`claude-sonnet-5`. A direct setup can use a Portkey Model Catalog identifier as
+the model:
+
+```json
+{
+  "provider": "portkey",
+  "model": "@provider-slug/model-name"
+}
+```
+
+For routing, fallbacks, retries, or other gateway behavior, set a saved Portkey
+Config ID. Oxide sends it as `x-portkey-config` on model-list and chat requests:
+
+```json
+{
+  "provider": "portkey",
+  "model": "claude-sonnet-5",
+  "portkey_config": "pc-example"
+}
+```
+
+`PORTKEY_CONFIG` overrides `portkey_config`. For a self-hosted or custom
+gateway, set `base_url`; `PORTKEY_BASE_URL` overrides the file and
+`OXIDE_BASE_URL` overrides both:
+
+```json
+{
+  "provider": "portkey",
+  "base_url": "https://gateway.example.com/v1",
+  "portkey_config": "pc-example",
+  "model": "account-model",
+  "model_catalog": ["account-model", "fallback-model"]
+}
+```
+
+`/models` normally requests `<base_url>/models`. If `model_catalog` is nonempty,
+Oxide uses it without making that request and includes the active model. When a
+Portkey `/models` request returns HTTP 403, Oxide falls back to its built-in
+list, again including the active model. Set `model_catalog`, or a
+comma-separated `PORTKEY_MODELS` override, for restricted or account-specific
+catalogs. Unknown model IDs are passed through unchanged.
+
+Refreshing the credential with `/login portkey` preserves an existing Portkey
+model, custom base URL, and Config ID when Portkey is already active. See
+Portkey's documentation for the current [gateway headers](https://portkey.ai/docs/api-reference/inference-api/headers)
+and [OpenAI-compatible setup](https://portkey.ai/docs/integrations/libraries/openai-compatible).
+
 ## Data locations and reset
 
-Everything lives under the oxide config directory:
+Runtime state lives under the platform oxide config directory:
 
 - `config.json` — provider and behavior settings
 - `auth.json` — stored API keys (mode `0600`)
@@ -497,6 +572,10 @@ Everything lives under the oxide config directory:
 - `themes/<name>.json` — custom TUI themes
 - `truncated/` — full text of tool outputs that exceeded the line/byte cap, retained 7 days (override with `OXIDE_TRUNCATION_DIR`)
 - `dcp.json` — global context-pruning config
+
+Global ecosystem resources can additionally live under `~/.oxide/` and
+`~/.claude/`; global Claude-compatible MCP configuration is read from
+`~/.claude.json`.
 
 Deleting a session file removes that conversation; deleting `snapshots/`
 removes undo history; deleting `auth.json` logs you out.

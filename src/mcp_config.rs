@@ -52,8 +52,9 @@ fn path_for(scope: Scope, cwd: &Path) -> Result<PathBuf> {
     }
 }
 
-/// Config files in ascending precedence order (later overrides earlier),
-/// matching `ecosystem::load`.
+/// Config files visible to the `oxide mcp` management commands, in ascending
+/// precedence order (later overrides earlier). The runtime additionally reads
+/// `<platform-config>/oxide/mcp.json` through `ecosystem::load`.
 fn sources(cwd: &Path) -> Vec<Source> {
     let mut list = Vec::new();
     if let Some(home) = dirs::home_dir() {

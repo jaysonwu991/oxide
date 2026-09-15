@@ -1,9 +1,9 @@
-//! Discovery and loading of the configuration ecosystem: rules, memory,
+//! Discovery and loading of the configuration ecosystem: instructions,
 //! commands, agents, skills, MCP servers and plugins. The native Oxide layout
-//! (`.oxide/`, `AGENTS.md`) is read first, then the Claude Code layout
-//! (`.claude/`, `CLAUDE.md`, `.mcp.json`) for compatibility, from the project
-//! scope and the user's global scope. Project entries override global entries
-//! with the same name, and Oxide entries override Claude Code entries.
+//! (`.oxide/`, `AGENTS.md`) and the Claude Code layout (`.claude/`, `CLAUDE.md`,
+//! `.mcp.json`) are read from the project scope and the user's global scope.
+//! Claude-compatible entries load first so native Oxide entries override them;
+//! project entries override global entries with the same name.
 
 mod frontmatter;
 
