@@ -47,10 +47,7 @@ impl LlmClient {
                 .get(&url)
                 .header("x-api-key", self.config.require_api_key()?)
                 .header("anthropic-version", anthropic::API_VERSION),
-            ProviderKind::OpenAi => self
-                .http
-                .get(&url)
-                .bearer_auth(self.config.require_api_key()?),
+            ProviderKind::OpenAi => self.authenticate_openai(self.http.get(&url))?,
         };
 
         let response = request
@@ -126,9 +123,7 @@ impl LlmClient {
         };
 
         let response = self
-            .http
-            .post(&url)
-            .bearer_auth(self.config.require_api_key()?)
+            .authenticate_openai(self.http.post(&url))?
             .json(&request)
             .send()
             .await
@@ -212,6 +207,18 @@ impl LlmClient {
         Ok(turn)
     }
 
+    fn authenticate_openai(
+        &self,
+        request: reqwest::RequestBuilder,
+    ) -> Result<reqwest::RequestBuilder> {
+        let key = self.config.require_api_key()?;
+        if self.config.is_portkey() {
+            Ok(request.header("x-portkey-api-key", key))
+        } else {
+            Ok(request.bearer_auth(key))
+        }
+    }
+
     async fn stream_anthropic<F>(
         &self,
         messages: &[Message],
@@ -279,4 +286,42 @@ where
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn portkey_uses_native_api_key_header() {
+        let config = Config {
+            provider: "portkey".into(),
+            api_key: "pk-test".into(),
+            ..Config::default()
+        };
+        let client = LlmClient::new(config);
+        let request = client
+            .authenticate_openai(client.http.get("https://example.test/models"))
+            .unwrap()
+            .build()
+            .unwrap();
+        assert_eq!(request.headers()["x-portkey-api-key"], "pk-test");
+        assert!(!request.headers().contains_key("authorization"));
+    }
+
+    #[test]
+    fn openai_keeps_bearer_authentication() {
+        let config = Config {
+            api_key: "sk-test".into(),
+            ..Config::default()
+        };
+        let client = LlmClient::new(config);
+        let request = client
+            .authenticate_openai(client.http.get("https://example.test/models"))
+            .unwrap()
+            .build()
+            .unwrap();
+        assert_eq!(request.headers()["authorization"], "Bearer sk-test");
+        assert!(!request.headers().contains_key("x-portkey-api-key"));
+    }
 }

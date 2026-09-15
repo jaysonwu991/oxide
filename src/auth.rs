@@ -12,7 +12,7 @@ pub(crate) struct ProviderOption {
     pub key_url: &'static str,
 }
 
-pub(crate) const KNOWN_PROVIDERS: [ProviderOption; 3] = [
+pub(crate) const KNOWN_PROVIDERS: [ProviderOption; 4] = [
     ProviderOption {
         name: "openai",
         label: "OpenAI",
@@ -30,6 +30,12 @@ pub(crate) const KNOWN_PROVIDERS: [ProviderOption; 3] = [
         label: "Anthropic",
         description: "Claude models",
         key_url: "https://console.anthropic.com/settings/keys",
+    },
+    ProviderOption {
+        name: "portkey",
+        label: "Portkey",
+        description: "AI gateway and model routing",
+        key_url: "https://app.portkey.ai/api-keys",
     },
 ];
 
@@ -130,6 +136,7 @@ fn connect_with(auth_path: &Path, config_path: &Path, provider: &str, key: &str)
 pub fn canonical_provider(name: &str) -> String {
     match name.trim().to_ascii_lowercase().as_str() {
         "gpt" | "gpt-4" | "gpt-4o" => "openai".to_string(),
+        "port-key" => "portkey".to_string(),
         other => other.to_string(),
     }
 }
@@ -167,6 +174,7 @@ mod tests {
         assert_eq!(canonical_provider("GPT-4o"), "openai");
         assert_eq!(canonical_provider("Anthropic"), "anthropic");
         assert_eq!(canonical_provider(" deepseek "), "deepseek");
+        assert_eq!(canonical_provider("Port-Key"), "portkey");
     }
 
     #[test]

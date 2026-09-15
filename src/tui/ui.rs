@@ -1,4 +1,4 @@
-use crate::config::{Mode, Reasoning};
+use crate::config::Reasoning;
 use crate::tools::DiffPreview;
 use crate::tui::app::{App, ChatItem, ConnectStep};
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
@@ -58,7 +58,7 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         .constraints([
             Constraint::Min(3),
             Constraint::Length(input_rows + 2),
-            Constraint::Length(1),
+            Constraint::Length(2),
         ])
         .split(frame.area());
 
@@ -286,7 +286,7 @@ fn draw_models(frame: &mut Frame, app: &App) {
         .min(models.len().saturating_sub(visible));
     let items: Vec<ListItem> = models[offset..offset + visible]
         .iter()
-        .map(|model| ListItem::new(Line::from(*model)))
+        .map(|model| ListItem::new(Line::from(crate::config::model_label(model))))
         .collect();
     let list = List::new(items)
         .highlight_style(
@@ -345,11 +345,14 @@ fn draw_suggestions(frame: &mut Frame, app: &App, area: Rect) {
     frame.render_stateful_widget(list, popup, &mut list_state);
 }
 
-/// Pi-style footer: current status, working directory, session name, token
-/// totals, context usage, model, mode, and thinking level.
+/// Two-row footer: runtime state and model controls above project context.
 fn draw_footer(frame: &mut Frame, app: &App, area: Rect) {
     let dim = Style::default().fg(app.theme.info);
-    let mut spans = if app.busy {
+    let rows = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Length(1), Constraint::Length(1)])
+        .split(area);
+    let mut left = if app.busy {
         let secs = app
             .busy_since
             .map(|start| start.elapsed().as_secs())
@@ -370,14 +373,10 @@ fn draw_footer(frame: &mut Frame, app: &App, area: Rect) {
             Span::styled(app.status.clone(), dim),
         ]
     };
-    spans.push(Span::styled(format!(" · {}", display_path(&app.cwd)), dim));
-    if let Some(name) = &app.session_name {
-        spans.push(Span::styled(format!(" · {name}"), dim));
-    }
     if app.tokens_in > 0 || app.tokens_out > 0 {
-        spans.push(Span::styled(
+        left.push(Span::styled(
             format!(
-                " · ↑{} ↓{}",
+                " ● ↑{} ↓{}",
                 compact_tokens(app.tokens_in),
                 compact_tokens(app.tokens_out)
             ),
@@ -393,28 +392,32 @@ fn draw_footer(frame: &mut Frame, app: &App, area: Rect) {
         } else {
             app.theme.info
         };
-        spans.push(Span::styled(
-            format!(" · {pct}% ctx"),
+        left.push(Span::styled(
+            format!(" ● {pct}%"),
             Style::default().fg(color),
         ));
     }
     let right = Line::from(vec![
         Span::styled(
-            app.model.clone(),
+            format!("● {}", crate::config::model_label(&app.model)),
             Style::default()
                 .fg(app.theme.accent)
                 .add_modifier(Modifier::BOLD),
         ),
-        Span::styled(format!(" · {} ", app.mode.label()), mode_style(app.mode)),
-        Span::styled(
-            format!("{} ", app.reasoning.label()),
-            reasoning_style(app.reasoning),
-        ),
+        Span::styled(format!(" ● {}", app.mode.label()), dim),
+        Span::styled(format!(" ● reasoning: {} ", app.reasoning.label()), dim),
     ]);
     frame.render_widget(
-        Paragraph::new(justified_line(spans, right, area.width as usize)),
-        area,
+        Paragraph::new(justified_line(left, right, area.width as usize)),
+        rows[0],
     );
+
+    let mut project = vec![Span::styled(format!(" ● {}", display_path(&app.cwd)), dim)];
+    if let Some(branch) = &app.git_branch {
+        project.push(Span::styled(format!(" ● 🌿 {branch}"), dim));
+    }
+    project.push(Span::styled(" ●", dim));
+    frame.render_widget(Paragraph::new(Line::from(project)), rows[1]);
 }
 
 /// The spinner glyph rotates once per tick, so the editor border animates
@@ -531,26 +534,6 @@ fn reasoning_color(reasoning: Reasoning, theme: &crate::theme::Theme) -> Color {
         Reasoning::Medium => theme.thinking_medium,
         Reasoning::High => theme.thinking_high,
     }
-}
-
-fn mode_style(mode: Mode) -> Style {
-    let (fg, bg) = match mode {
-        Mode::Build => (Color::Black, Color::LightCyan),
-        Mode::AutoEdit => (Color::Black, Color::LightYellow),
-        Mode::Plan => (Color::Black, Color::LightMagenta),
-    };
-    Style::default().fg(fg).bg(bg).add_modifier(Modifier::BOLD)
-}
-
-fn reasoning_style(reasoning: Reasoning) -> Style {
-    let (fg, bg) = match reasoning {
-        Reasoning::Auto => (Color::Black, Color::LightGreen),
-        Reasoning::Off => (Color::Black, Color::Gray),
-        Reasoning::Low => (Color::Black, Color::LightCyan),
-        Reasoning::Medium => (Color::Black, Color::LightBlue),
-        Reasoning::High => (Color::Black, Color::LightMagenta),
-    };
-    Style::default().fg(fg).bg(bg).add_modifier(Modifier::BOLD)
 }
 
 fn draw_messages(frame: &mut Frame, app: &mut App, area: Rect) {
@@ -1133,6 +1116,7 @@ fn wrap(text: &str, width: usize) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::config::Mode;
 
     #[test]
     fn input_rows_grows_and_clamps() {
@@ -1376,22 +1360,6 @@ mod tests {
     }
 
     #[test]
-    fn badges_use_dark_text_on_bright_backgrounds() {
-        for mode in [Mode::Build, Mode::AutoEdit, Mode::Plan] {
-            assert_eq!(mode_style(mode).fg, Some(Color::Black));
-        }
-        for reasoning in [
-            Reasoning::Auto,
-            Reasoning::Off,
-            Reasoning::Low,
-            Reasoning::Medium,
-            Reasoning::High,
-        ] {
-            assert_eq!(reasoning_style(reasoning).fg, Some(Color::Black));
-        }
-    }
-
-    #[test]
     fn long_bash_command_truncates_to_one_line() {
         let command = format!("echo {}", "a".repeat(80));
         let args = format!(r#"{{"command":"{command}"}}"#);
@@ -1478,7 +1446,7 @@ mod tests {
     }
 
     #[test]
-    fn status_and_model_share_the_row_below_the_input_box() {
+    fn footer_uses_runtime_and_project_rows_below_the_input_box() {
         use crate::config::{Mode, Reasoning};
         use ratatui::backend::TestBackend;
         use ratatui::Terminal;
@@ -1490,6 +1458,7 @@ mod tests {
             Reasoning::Auto,
         );
         app.status = "ready".into();
+        app.git_branch = Some("main".into());
         let mut terminal = Terminal::new(TestBackend::new(69, 24)).unwrap();
         terminal.draw(|frame| draw(frame, &mut app)).unwrap();
         let buffer = terminal.backend().buffer().clone();
@@ -1504,11 +1473,32 @@ mod tests {
         let input_bottom = row_of(&buffer, "╰").expect("input box bottom border");
         assert_eq!(status, input_bottom + 1);
         assert_eq!(row_of(&buffer, "gpt-4o"), Some(status));
+        assert_eq!(row_of(&buffer, "/tmp/project"), Some(status + 1));
+        assert_eq!(row_of(&buffer, "🌿"), Some(status + 1));
+        assert_eq!(row_of(&buffer, "main"), Some(status + 1));
 
         let status_text: String = (0..buffer.area.width)
             .map(|x| buffer[(x, status)].symbol())
             .collect();
         assert!(!status_text.contains("Enter send"));
         assert!(!status_text.contains("Ctrl+O"));
+    }
+
+    #[test]
+    fn footer_omits_branch_outside_a_git_repo() {
+        use crate::config::{Mode, Reasoning};
+        use ratatui::backend::TestBackend;
+        use ratatui::Terminal;
+
+        let mut app = App::new(
+            "gpt-4o".into(),
+            "/path/that/is/not/a/repository".into(),
+            Mode::Build,
+            Reasoning::Auto,
+        );
+        let mut terminal = Terminal::new(TestBackend::new(80, 24)).unwrap();
+        terminal.draw(|frame| draw(frame, &mut app)).unwrap();
+        let buffer = terminal.backend().buffer();
+        assert_eq!(row_of(buffer, "🌿"), None);
     }
 }
