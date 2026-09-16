@@ -51,20 +51,11 @@ fn panel(title: &str, color: Color) -> Block<'static> {
 }
 
 pub fn draw(frame: &mut Frame, app: &mut App) {
-    let input_width = frame.area().width.saturating_sub(4) as usize;
-    let input_rows = input_rows(&app.input, input_width) as u16;
-    let chunks = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([
-            Constraint::Min(3),
-            Constraint::Length(input_rows + 2),
-            Constraint::Length(2),
-        ])
-        .split(frame.area());
+    let [messages, input, footer] = main_areas(frame.area(), app);
 
-    draw_messages(frame, app, chunks[0]);
-    draw_input(frame, app, chunks[1]);
-    draw_footer(frame, app, chunks[2]);
+    draw_messages(frame, app, messages);
+    draw_input(frame, app, input);
+    draw_footer(frame, app, footer);
 
     if app.connect.is_some() {
         draw_connect(frame, app);
@@ -73,8 +64,22 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
     } else if app.models.is_some() {
         draw_models(frame, app);
     } else if !app.suggestions.is_empty() {
-        draw_suggestions(frame, app, chunks[0]);
+        draw_suggestions(frame, app, messages);
     }
+}
+
+fn main_areas(area: Rect, app: &App) -> [Rect; 3] {
+    let input_width = area.width.saturating_sub(4) as usize;
+    let input_rows = input_rows(&app.input, input_width) as u16;
+    let chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Min(3),
+            Constraint::Length(input_rows + 2),
+            Constraint::Length(2),
+        ])
+        .split(area);
+    [chunks[0], chunks[1], chunks[2]]
 }
 
 fn draw_trust(frame: &mut Frame, app: &App) {
@@ -300,42 +305,102 @@ fn draw_models(frame: &mut Frame, app: &App) {
     frame.render_stateful_widget(list, inner, &mut list_state);
 }
 
-fn draw_suggestions(frame: &mut Frame, app: &App, area: Rect) {
-    if app.suggestions.is_empty() || area.height < 3 {
-        return;
+#[derive(Clone, Copy)]
+struct SuggestionWindow {
+    popup: Rect,
+    offset: usize,
+    count: usize,
+}
+
+fn suggestion_window(app: &App, area: Rect) -> Option<SuggestionWindow> {
+    if app.suggestions.is_empty() || area.height < 3 || area.width < 6 {
+        return None;
     }
-    let count = app.suggestions.len().min(MAX_SUGGESTION_ROWS);
+    let count = app
+        .suggestions
+        .len()
+        .min(MAX_SUGGESTION_ROWS)
+        .min(area.height.saturating_sub(2) as usize);
+    if count == 0 {
+        return None;
+    }
     let height = count as u16 + 2;
-    let width = area.width.min(64);
     let popup = Rect {
-        x: area.x,
+        x: area.x.saturating_add(1),
         y: area.y + area.height.saturating_sub(height),
-        width,
+        width: area.width.saturating_sub(2).min(72),
         height,
     };
-    frame.render_widget(Clear, popup);
+    let offset = app
+        .suggestion_index
+        .saturating_sub(count.saturating_sub(1))
+        .min(app.suggestions.len().saturating_sub(count));
+    Some(SuggestionWindow {
+        popup,
+        offset,
+        count,
+    })
+}
 
-    let offset = app.suggestion_index.saturating_sub(count.saturating_sub(1));
-    let items: Vec<ListItem> = app.suggestions[offset..offset + count]
+pub(crate) fn suggestion_index_at(
+    app: &App,
+    terminal_area: Rect,
+    column: u16,
+    row: u16,
+) -> Option<usize> {
+    let [message_area, _, _] = main_areas(terminal_area, app);
+    let window = suggestion_window(app, message_area)?;
+    let inner = Rect {
+        x: window.popup.x.saturating_add(1),
+        y: window.popup.y.saturating_add(1),
+        width: window.popup.width.saturating_sub(2),
+        height: window.popup.height.saturating_sub(2),
+    };
+    if column < inner.x
+        || column >= inner.x.saturating_add(inner.width)
+        || row < inner.y
+        || row >= inner.y.saturating_add(inner.height)
+    {
+        return None;
+    }
+    Some(window.offset + usize::from(row - inner.y))
+}
+
+fn draw_suggestions(frame: &mut Frame, app: &App, area: Rect) {
+    let Some(window) = suggestion_window(app, area) else {
+        return;
+    };
+    frame.render_widget(Clear, window.popup);
+
+    let name_width = app.suggestions[window.offset..window.offset + window.count]
+        .iter()
+        .map(|hint| hint.name.chars().count())
+        .max()
+        .unwrap_or(0)
+        .min(24);
+    let items: Vec<ListItem> = app.suggestions[window.offset..window.offset + window.count]
         .iter()
         .map(|hint| {
             let prefix = if app.input.starts_with('/') { "/" } else { "@" };
+            let name = truncate(&hint.name, name_width);
             ListItem::new(Line::from(vec![
                 Span::styled(
-                    format!("{prefix}{}", hint.name),
-                    Style::default().fg(app.theme.accent),
+                    format!("{prefix}{name:<name_width$}"),
+                    Style::default()
+                        .fg(app.theme.accent)
+                        .add_modifier(Modifier::BOLD),
                 ),
                 Span::styled(
-                    format!("  {}", hint.description),
+                    format!("   {}", hint.description),
                     Style::default().fg(app.theme.info),
                 ),
             ]))
         })
         .collect();
     let title = if app.input.starts_with('/') {
-        "commands"
+        "commands · click or Tab to complete"
     } else {
-        "files"
+        "files · click or Tab to complete"
     };
     let block = panel(title, app.theme.border);
     let list = List::new(items)
@@ -343,78 +408,33 @@ fn draw_suggestions(frame: &mut Frame, app: &App, area: Rect) {
         .highlight_style(
             Style::default()
                 .fg(app.theme.accent)
-                .add_modifier(Modifier::BOLD | Modifier::REVERSED),
+                .add_modifier(Modifier::BOLD),
         )
-        .highlight_symbol("> ");
+        .highlight_symbol("› ");
     let mut list_state = ListState::default();
-    list_state.select(Some(app.suggestion_index.saturating_sub(offset)));
-    frame.render_stateful_widget(list, popup, &mut list_state);
+    list_state.select(Some(app.suggestion_index.saturating_sub(window.offset)));
+    frame.render_stateful_widget(list, window.popup, &mut list_state);
 }
 
-/// Two-row footer: runtime state and model controls above project context.
+/// Two-row, left-aligned footer: model controls above project context.
 fn draw_footer(frame: &mut Frame, app: &App, area: Rect) {
     let dim = Style::default().fg(app.theme.info);
     let rows = Layout::default()
         .direction(Direction::Vertical)
         .constraints([Constraint::Length(1), Constraint::Length(1)])
         .split(area);
-    let mut left = if app.busy {
-        let secs = app
-            .busy_since
-            .map(|start| start.elapsed().as_secs())
-            .unwrap_or(0);
-        vec![
-            Span::styled(
-                format!(" {} ", spinner(app.busy_since)),
-                Style::default().fg(app.theme.tool),
-            ),
-            Span::styled(
-                format!("{} · {secs}s · Esc clear/quit", app.status),
-                Style::default().fg(app.theme.tool),
-            ),
-        ]
-    } else {
-        vec![
-            Span::styled(" ● ", Style::default().fg(app.theme.accent)),
-            Span::styled(app.status.clone(), dim),
-        ]
-    };
-    if app.tokens_in > 0 || app.tokens_out > 0 {
-        left.push(Span::styled(
-            format!(
-                " ● ↑{} ↓{}",
-                compact_tokens(app.tokens_in),
-                compact_tokens(app.tokens_out)
-            ),
-            dim,
-        ));
-    }
-    if app.context_limit > 0 && app.context_used > 0 {
-        let pct = (app.context_used as f64 / app.context_limit as f64 * 100.0).round() as u64;
-        let color = if pct >= 85 {
-            app.theme.error
-        } else if pct >= 60 {
-            app.theme.tool
-        } else {
-            app.theme.info
-        };
-        left.push(Span::styled(
-            format!(" ● {pct}%"),
-            Style::default().fg(color),
-        ));
-    }
-    let right = Line::from(vec![
+    let model = vec![
         Span::styled(
-            format!("● {}", crate::config::model_label(&app.model)),
+            format!(" ● {}", crate::config::model_label(&app.model)),
             Style::default()
                 .fg(app.theme.accent)
                 .add_modifier(Modifier::BOLD),
         ),
         Span::styled(format!(" ● {}", app.mode.label()), dim),
-        Span::styled(format!(" ● reasoning: {} ", app.reasoning.label()), dim),
-    ]);
+        Span::styled(format!(" ● reasoning: {}", app.reasoning.label()), dim),
+    ];
     frame.render_widget(
-        Paragraph::new(justified_line(left, right, area.width as usize)),
+        Paragraph::new(Line::from(truncate_spans(model, area.width as usize))),
         rows[0],
     );
 
@@ -445,36 +465,6 @@ fn compact_tokens(value: u64) -> String {
     } else {
         value.to_string()
     }
-}
-
-/// Like [`justified`], but the right side is a styled span sequence.
-fn justified_line(left: Vec<Span<'static>>, right: Line<'static>, width: usize) -> Line<'static> {
-    let left_len: usize = left.iter().map(|span| span.content.chars().count()).sum();
-    let right_len: usize = right.spans.iter().map(|s| s.content.chars().count()).sum();
-    if left_len + right_len <= width {
-        let mut spans = left;
-        spans.push(Span::raw(" ".repeat(width - left_len - right_len)));
-        spans.extend(right.spans);
-        return Line::from(spans);
-    }
-
-    if right_len >= width {
-        let text = right
-            .spans
-            .iter()
-            .map(|span| span.content.to_string())
-            .collect::<String>();
-        return Line::from(Span::styled(
-            truncate(&text, width),
-            Style::default().fg(Color::Gray),
-        ));
-    }
-
-    let left_width = width.saturating_sub(right_len + 1);
-    let mut spans = truncate_spans(left, left_width);
-    spans.push(Span::raw(" "));
-    spans.extend(right.spans);
-    Line::from(spans)
 }
 
 fn truncate_spans(spans: Vec<Span<'static>>, width: usize) -> Vec<Span<'static>> {
@@ -835,12 +825,20 @@ fn draw_input(frame: &mut Frame, app: &App, area: Rect) {
     } else {
         reasoning_color(app.reasoning, &app.theme)
     };
-    let title = if app.attachments.is_empty() {
+    let label = if app.attachments.is_empty() {
         "message".to_string()
     } else {
         format!("{} attachment(s)", app.attachments.len())
     };
-    let block = panel(&title, border_color);
+    let title = truncate_spans(
+        input_title(app, label, border_color),
+        area.width.saturating_sub(2) as usize,
+    );
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
+        .border_style(Style::default().fg(border_color))
+        .title(Line::from(title));
     let inner = block.inner(area);
     frame.render_widget(block, area);
 
@@ -888,6 +886,60 @@ fn draw_input(frame: &mut Frame, app: &App, area: Rect) {
         let y = text_area.y + cursor_row.saturating_sub(scroll) as u16;
         frame.set_cursor_position((x, y));
     }
+}
+
+fn input_title(app: &App, label: String, border_color: Color) -> Vec<Span<'static>> {
+    let mut title = vec![Span::styled(
+        format!(" {label} "),
+        Style::default()
+            .fg(border_color)
+            .add_modifier(Modifier::BOLD),
+    )];
+    if app.busy {
+        let secs = app
+            .busy_since
+            .map(|start| start.elapsed().as_secs())
+            .unwrap_or(0);
+        title.push(Span::styled(
+            format!(
+                "● {} {} · {secs}s · Esc clear/quit ",
+                spinner(app.busy_since),
+                app.status
+            ),
+            Style::default().fg(app.theme.tool),
+        ));
+    } else {
+        title.push(Span::styled("● ", Style::default().fg(app.theme.accent)));
+        title.push(Span::styled(
+            format!("{} ", app.status),
+            Style::default().fg(app.theme.info),
+        ));
+    }
+    if app.tokens_in > 0 || app.tokens_out > 0 {
+        title.push(Span::styled(
+            format!(
+                "● ↑{} ↓{} ",
+                compact_tokens(app.tokens_in),
+                compact_tokens(app.tokens_out)
+            ),
+            Style::default().fg(app.theme.info),
+        ));
+    }
+    if app.context_limit > 0 && app.context_used > 0 {
+        let pct = (app.context_used as f64 / app.context_limit as f64 * 100.0).round() as u64;
+        let color = if pct >= 85 {
+            app.theme.error
+        } else if pct >= 60 {
+            app.theme.tool
+        } else {
+            app.theme.info
+        };
+        title.push(Span::styled(
+            format!("● {pct}% "),
+            Style::default().fg(color),
+        ));
+    }
+    title
 }
 
 fn input_rows(input: &str, width: usize) -> usize {
@@ -1192,39 +1244,11 @@ mod tests {
     }
 
     #[test]
-    fn justified_right_aligns_and_truncates() {
-        let line = justified_line(vec![Span::raw("ab")], Line::from(Span::raw("cd")), 6);
-        let text: String = line
-            .spans
-            .iter()
-            .map(|span| span.content.as_ref())
-            .collect();
-        assert_eq!(text, "ab  cd");
-
-        let line = justified_line(
-            vec![Span::raw("left")],
-            Line::from(Span::raw("long-right")),
-            8,
-        );
-        let text: String = line
-            .spans
-            .iter()
-            .map(|span| span.content.as_ref())
-            .collect();
+    fn styled_spans_truncate_from_the_right() {
+        let spans = truncate_spans(vec![Span::raw("left"), Span::raw("-right")], 8);
+        let text: String = spans.iter().map(|span| span.content.as_ref()).collect();
         assert_eq!(text.chars().count(), 8);
         assert!(text.ends_with('…'));
-
-        let line = justified_line(
-            vec![Span::raw("very-long-left-side")],
-            Line::from(Span::raw("right")),
-            12,
-        );
-        let text: String = line
-            .spans
-            .iter()
-            .map(|span| span.content.as_ref())
-            .collect();
-        assert_eq!(text, "very-… right");
     }
 
     #[test]
@@ -1482,7 +1506,7 @@ mod tests {
     }
 
     #[test]
-    fn footer_uses_runtime_and_project_rows_below_the_input_box() {
+    fn footer_keeps_model_and_project_rows_left_aligned_below_input() {
         use crate::config::{Mode, Reasoning};
         use ratatui::backend::TestBackend;
         use ratatui::Terminal;
@@ -1499,25 +1523,75 @@ mod tests {
         terminal.draw(|frame| draw(frame, &mut app)).unwrap();
         let buffer = terminal.backend().buffer().clone();
 
-        let input_top = row_of(&buffer, "╭").expect("input box border");
-        let status = row_of(&buffer, "ready").expect("status row");
-        assert!(
-            status > input_top,
-            "status should render below the input box (input at {input_top}, status at {status})"
-        );
-
+        let input_top = row_of(&buffer, "message").expect("input title");
+        assert_eq!(row_of(&buffer, "ready"), Some(input_top));
         let input_bottom = row_of(&buffer, "╰").expect("input box bottom border");
-        assert_eq!(status, input_bottom + 1);
-        assert_eq!(row_of(&buffer, "gpt-4o"), Some(status));
-        assert_eq!(row_of(&buffer, "/tmp/project"), Some(status + 1));
-        assert_eq!(row_of(&buffer, "🌿"), Some(status + 1));
-        assert_eq!(row_of(&buffer, "main"), Some(status + 1));
+        let model_row = input_bottom + 1;
+        assert_eq!(row_of(&buffer, "gpt-4o"), Some(model_row));
+        assert_eq!(row_of(&buffer, "/tmp/project"), Some(model_row + 1));
+        assert_eq!(row_of(&buffer, "🌿"), Some(model_row + 1));
+        assert_eq!(row_of(&buffer, "main"), Some(model_row + 1));
 
-        let status_text: String = (0..buffer.area.width)
-            .map(|x| buffer[(x, status)].symbol())
+        let model_text: String = (0..buffer.area.width)
+            .map(|x| buffer[(x, model_row)].symbol())
             .collect();
-        assert!(!status_text.contains("Enter send"));
-        assert!(!status_text.contains("Ctrl+O"));
+        assert!(model_text.starts_with(" ● gpt-4o ● build"));
+        assert!(!model_text.contains("Enter send"));
+        assert!(!model_text.contains("Ctrl+O"));
+    }
+
+    #[test]
+    fn input_title_places_runtime_usage_beside_message() {
+        use crate::config::{Mode, Reasoning};
+        use ratatui::backend::TestBackend;
+        use ratatui::Terminal;
+
+        let mut app = App::new(
+            "gpt-4o".into(),
+            "/tmp/project".into(),
+            Mode::Build,
+            Reasoning::Auto,
+        );
+        app.status = "ready".into();
+        app.tokens_in = 107_800;
+        app.tokens_out = 4_800;
+        app.context_used = 20;
+        app.context_limit = 100;
+        let mut terminal = Terminal::new(TestBackend::new(80, 24)).unwrap();
+        terminal.draw(|frame| draw(frame, &mut app)).unwrap();
+        let buffer = terminal.backend().buffer();
+
+        let input_row = row_of(buffer, "message").expect("input title");
+        let row: String = (0..buffer.area.width)
+            .map(|x| buffer[(x, input_row)].symbol())
+            .collect();
+        assert!(row.contains("message ● ready ● ↑107.8k ↓4.8k ● 20%"));
+        assert_ne!(row_of(buffer, "Ask Oxide"), Some(input_row));
+    }
+
+    #[test]
+    fn suggestion_hit_testing_tracks_the_visible_window() {
+        use crate::config::{Mode, Reasoning};
+
+        let mut app = App::new(
+            "gpt-4o".into(),
+            "/tmp/project".into(),
+            Mode::Build,
+            Reasoning::Auto,
+        );
+        app.set_input("/".to_string());
+        app.suggestions = (0..10)
+            .map(|index| crate::tui::app::CommandHint {
+                name: format!("command-{index}"),
+                description: String::new(),
+            })
+            .collect();
+        app.suggestion_index = 9;
+        let area = Rect::new(0, 0, 80, 24);
+
+        assert_eq!(suggestion_index_at(&app, area, 3, 8), Some(2));
+        assert_eq!(suggestion_index_at(&app, area, 3, 15), Some(9));
+        assert_eq!(suggestion_index_at(&app, area, 0, 8), None);
     }
 
     #[test]
