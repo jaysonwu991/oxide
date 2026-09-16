@@ -22,6 +22,7 @@ mod theme;
 mod tools;
 mod trust;
 mod tui;
+mod uninstall;
 
 use agent::{AgentEvent, Approver, Runtime};
 use anyhow::{Context, Result};
@@ -149,6 +150,21 @@ enum Command {
     Mcp {
         #[command(subcommand)]
         action: McpAction,
+    },
+    /// Uninstall Oxide and remove related files
+    Uninstall {
+        /// Keep configuration files
+        #[arg(short = 'c', long)]
+        keep_config: bool,
+        /// Keep session data, memory, and snapshots
+        #[arg(short = 'd', long)]
+        keep_data: bool,
+        /// Show what would be removed without removing it
+        #[arg(long)]
+        dry_run: bool,
+        /// Skip the confirmation prompt
+        #[arg(short = 'f', long)]
+        force: bool,
     },
 }
 
@@ -278,6 +294,17 @@ async fn main() -> Result<()> {
                     }
                 }
             }
+            Command::Uninstall {
+                keep_config,
+                keep_data,
+                dry_run,
+                force,
+            } => uninstall::run(uninstall::Options {
+                keep_config,
+                keep_data,
+                dry_run,
+                force,
+            }),
         };
     }
     let cwd = match &cli.cwd {
@@ -695,7 +722,8 @@ async fn run_rpc_mode(config: Config, cwd: PathBuf, session: Option<SessionLog>)
 
 #[cfg(test)]
 mod tests {
-    use super::split_mode;
+    use super::{split_mode, Cli, Command};
+    use clap::Parser;
 
     #[test]
     fn mode_splits_permission_and_output() {
@@ -711,5 +739,27 @@ mod tests {
             split_mode(Some("auto-edit")),
             (Some("auto-edit".to_string()), "print".to_string())
         );
+    }
+
+    #[test]
+    fn parses_uninstall_options() {
+        let cli = Cli::try_parse_from([
+            "oxide",
+            "uninstall",
+            "--keep-config",
+            "--keep-data",
+            "--dry-run",
+            "--force",
+        ])
+        .unwrap();
+        assert!(matches!(
+            cli.command,
+            Some(Command::Uninstall {
+                keep_config: true,
+                keep_data: true,
+                dry_run: true,
+                force: true,
+            })
+        ));
     }
 }
