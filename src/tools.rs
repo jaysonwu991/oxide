@@ -238,6 +238,32 @@ pub fn specs(mcp: &McpRegistry) -> Vec<ToolSpec> {
             }),
         ),
     ];
+    let configured = mcp.configured_servers();
+    if !configured.is_empty() {
+        let names: Vec<String> = configured.iter().map(|(name, _)| name.clone()).collect();
+        let sources = configured
+            .iter()
+            .map(|(name, source)| format!("`{name}` ({source})"))
+            .collect::<Vec<_>>()
+            .join(", ");
+        specs.push(spec(
+            "mcp_load",
+            &format!(
+                "Load one configured MCP server on demand and reveal its tools. Use this before answering requests that belong to a configured service, including when a document, ticket, or other service URL identifies the server. Configured servers: {sources}"
+            ),
+            json!({
+                "type": "object",
+                "properties": {
+                    "server": {
+                        "type": "string",
+                        "enum": names,
+                        "description": "Configured MCP server to load"
+                    }
+                },
+                "required": ["server"]
+            }),
+        ));
+    }
     specs.extend(mcp.tool_specs());
     specs
 }
@@ -270,6 +296,10 @@ pub async fn execute(
         mcp.call(name, args).await.map(ToolOutput::text)
     } else {
         match canonical {
+            "mcp_load" => match args.get("server").and_then(Value::as_str) {
+                Some(server) => mcp.load(server).await.map(ToolOutput::text),
+                None => Err(anyhow::anyhow!("missing `server`")),
+            },
             "bash" => bash(cwd, &args, progress).await.map(ToolOutput::text),
             "webfetch" => webfetch(&args).await.map(ToolOutput::text),
             "read_file" | "write_file" | "edit" | "list_dir" | "glob" | "grep" | "patch" => {
@@ -1352,6 +1382,34 @@ mod tests {
                 "missing {name} in {names:?}"
             );
         }
+    }
+
+    #[test]
+    fn specs_expose_compact_loader_for_configured_mcp_servers() {
+        let server = crate::ecosystem::McpServer {
+            name: "atlassian".to_string(),
+            enabled: true,
+            kind: crate::ecosystem::McpKind::Remote {
+                url: "https://mcp.atlassian.com/v1/mcp".to_string(),
+                headers: Default::default(),
+                oauth: None,
+            },
+        };
+        let mcp = McpRegistry::new(&[server]);
+        let loader = specs(&mcp)
+            .into_iter()
+            .find(|spec| spec.function.name == "mcp_load")
+            .unwrap();
+        assert!(loader.function.description.contains("atlassian"));
+        assert!(loader
+            .function
+            .description
+            .contains("https://mcp.atlassian.com/v1/mcp"));
+        assert_eq!(
+            loader.function.parameters["properties"]["server"]["enum"][0],
+            "atlassian"
+        );
+        assert_eq!(mcp.server_count(), 0);
     }
 
     #[tokio::test]

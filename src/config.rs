@@ -1,5 +1,5 @@
 use crate::auth::{canonical_provider, AuthStore};
-use crate::ecosystem::{self, AgentDef, Ecosystem, McpKind};
+use crate::ecosystem::{self, AgentDef, Ecosystem};
 use crate::memory::{MemoryStore, Scope};
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
@@ -800,20 +800,12 @@ impl Config {
         }
 
         if !self.ecosystem.mcp.is_empty() {
-            let mut list = String::from("# MCP servers");
-            for server in &self.ecosystem.mcp {
-                let transport = match &server.kind {
-                    McpKind::Local { command, .. } => format!("local: {}", command.join(" ")),
-                    McpKind::Remote { url, .. } => format!("remote: {url}"),
-                };
-                let state = if server.enabled {
-                    "enabled"
-                } else {
-                    "disabled"
-                };
-                list.push_str(&format!("\n- {} ({state}, {transport})", server.name));
-            }
-            sections.push(list);
+            sections.push(String::from(
+                "# MCP servers\nUse a matching MCP server automatically when the user asks about \
+                 content owned by that service or provides one of its URLs. Prefer its MCP tools \
+                 over webfetch so authenticated documents, tickets, and other resources remain \
+                 accessible. Call mcp_load for the matching server before using its tools.",
+            ));
         }
 
         if self.dcp.enabled {
@@ -936,6 +928,25 @@ mod tests {
             ..Config::default()
         };
         assert!(plan.compose_system_prompt().contains("# Plan mode"));
+    }
+
+    #[test]
+    fn mcp_prompt_routes_matching_service_content() {
+        let mut config = Config::default();
+        config.ecosystem.mcp.push(ecosystem::McpServer {
+            name: "documents".to_string(),
+            enabled: true,
+            kind: ecosystem::McpKind::Remote {
+                url: "https://docs.example.com/mcp".to_string(),
+                headers: Default::default(),
+                oauth: None,
+            },
+        });
+
+        let prompt = config.compose_system_prompt();
+        assert!(prompt.contains("Use a matching MCP server automatically"));
+        assert!(prompt.contains("Call mcp_load for the matching server"));
+        assert!(prompt.contains("Prefer its MCP tools over webfetch"));
     }
 
     #[test]

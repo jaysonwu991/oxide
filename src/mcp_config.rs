@@ -202,28 +202,13 @@ fn build_entry(
             if !headers.is_empty() {
                 entry.insert("headers".to_string(), Value::Object(headers));
             }
-            if let Some(oauth) =
-                build_oauth(oauth).or_else(|| known_oauth_entry(command[0].as_str()))
-            {
+            if let Some(oauth) = build_oauth(oauth) {
                 entry.insert("oauth".to_string(), oauth);
             }
             Ok(Value::Object(entry))
         }
         other => bail!("unknown transport `{other}` (expected `stdio` or `http`)"),
     }
-}
-
-/// OAuth defaults for well-known servers (e.g. Slack) that cannot register
-/// clients dynamically, so they can be added by URL alone.
-fn known_oauth_entry(url: &str) -> Option<Value> {
-    let known = crate::ecosystem::known_oauth(url)?;
-    build_oauth(OAuthArgs {
-        client_id: known.client_id,
-        client_secret: known.client_secret,
-        callback_port: known.callback_port,
-        scopes: known.scopes,
-        redirect_uri: known.redirect_uri,
-    })
 }
 
 fn validate_name(name: &str) -> Result<()> {
@@ -380,9 +365,7 @@ pub async fn auth(cwd: &Path, scope: Option<String>, name: String) -> Result<()>
         .get("url")
         .and_then(Value::as_str)
         .with_context(|| format!("MCP server `{name}` is not a remote (http) server"))?;
-    let oauth = crate::ecosystem::parse_oauth(config.get("oauth"))
-        .or_else(|| crate::ecosystem::known_oauth(url))
-        .with_context(|| format!("MCP server `{name}` has no `oauth` configuration"))?;
+    let oauth = crate::ecosystem::parse_oauth(config.get("oauth")).unwrap_or_default();
     let state = crate::mcp_oauth::OAuthState::new(&name, &oauth, url);
     state.ensure_authorized(true).await?;
     println!("authorized MCP server `{name}` ({label})");
@@ -568,15 +551,15 @@ mod tests {
         let request = AddRequest {
             scope: None,
             transport: Some("http".to_string()),
-            name: "slack".to_string(),
+            name: "remote".to_string(),
             command: vec![
-                "https://mcp.slack.com/mcp".to_string(),
+                "https://example.com/mcp".to_string(),
                 "--oauth-client-id".to_string(),
-                "1601185624273.8899143856786".to_string(),
+                "client-123".to_string(),
                 "--callback-port".to_string(),
-                "3118".to_string(),
+                "3000".to_string(),
                 "--oauth-scope".to_string(),
-                "chat:write".to_string(),
+                "files:read".to_string(),
             ],
             env: Vec::new(),
             header: Vec::new(),
@@ -589,13 +572,10 @@ mod tests {
         }
         .absorb_trailing_options();
 
-        assert_eq!(request.command, vec!["https://mcp.slack.com/mcp"]);
-        assert_eq!(
-            request.oauth_client_id.as_deref(),
-            Some("1601185624273.8899143856786")
-        );
-        assert_eq!(request.callback_port, Some(3118));
-        assert_eq!(request.oauth_scope, vec!["chat:write"]);
+        assert_eq!(request.command, vec!["https://example.com/mcp"]);
+        assert_eq!(request.oauth_client_id.as_deref(), Some("client-123"));
+        assert_eq!(request.callback_port, Some(3000));
+        assert_eq!(request.oauth_scope, vec!["files:read"]);
     }
 
     #[test]
@@ -635,40 +615,24 @@ mod tests {
     fn builds_oauth_remote_entry() {
         let entry = build_entry(
             "http",
-            &["https://mcp.slack.com/mcp".to_string()],
+            &["https://example.com/mcp".to_string()],
             &[],
             &[],
             None,
             OAuthArgs {
-                client_id: Some("1601185624273.8899143856786".to_string()),
+                client_id: Some("client-123".to_string()),
                 client_secret: None,
-                callback_port: Some(3118),
+                callback_port: Some(3000),
                 scopes: Vec::new(),
                 redirect_uri: None,
             },
         )
         .unwrap();
         assert_eq!(entry["type"], "http");
-        assert_eq!(entry["url"], "https://mcp.slack.com/mcp");
-        assert_eq!(entry["oauth"]["clientId"], "1601185624273.8899143856786");
-        assert_eq!(entry["oauth"]["callbackPort"], 3118);
+        assert_eq!(entry["url"], "https://example.com/mcp");
+        assert_eq!(entry["oauth"]["clientId"], "client-123");
+        assert_eq!(entry["oauth"]["callbackPort"], 3000);
         assert!(entry["oauth"].get("clientSecret").is_none());
-    }
-
-    #[test]
-    fn builds_default_oauth_entry_for_known_server() {
-        let entry = build_entry(
-            "http",
-            &["https://mcp.slack.com/mcp".to_string()],
-            &[],
-            &[],
-            None,
-            OAuthArgs::default(),
-        )
-        .unwrap();
-        assert_eq!(entry["type"], "http");
-        assert_eq!(entry["oauth"]["clientId"], "1601185624273.8899143856786");
-        assert_eq!(entry["oauth"]["callbackPort"], 3118);
     }
 
     #[test]

@@ -379,7 +379,7 @@ fn mcp_from_claude(name: &str, config: &Json) -> Option<McpServer> {
             kind: McpKind::Remote {
                 url: url.to_string(),
                 headers: string_map(config.get("headers")),
-                oauth: parse_oauth(config.get("oauth")).or_else(|| known_oauth(url)),
+                oauth: parse_oauth(config.get("oauth")),
             },
         });
     }
@@ -441,26 +441,6 @@ pub(crate) fn parse_oauth(value: Option<&Json>) -> Option<McpOAuth> {
             .and_then(Json::as_str)
             .map(str::to_string),
     })
-}
-
-const SLACK_MCP_URL: &str = "https://mcp.slack.com/mcp";
-const SLACK_MCP_CLIENT_ID: &str = "1601185624273.8899143856786";
-const SLACK_MCP_CALLBACK_PORT: u16 = 3118;
-
-/// Built-in OAuth client defaults for well-known remote servers that do not
-/// support dynamic client registration, so they can be added by URL alone.
-pub(crate) fn known_oauth(url: &str) -> Option<McpOAuth> {
-    if url
-        .trim_end_matches('/')
-        .eq_ignore_ascii_case(SLACK_MCP_URL)
-    {
-        return Some(McpOAuth {
-            client_id: Some(SLACK_MCP_CLIENT_ID.to_string()),
-            callback_port: Some(SLACK_MCP_CALLBACK_PORT),
-            ..McpOAuth::default()
-        });
-    }
-    None
 }
 
 // ---------------------------------------------------------------------------

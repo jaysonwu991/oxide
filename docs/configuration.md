@@ -78,27 +78,40 @@ Options may appear before or after the server name. `oxide mcp remove` falls
 back to every configured source when the server is not in the requested native
 file.
 
+At startup, oxide adds only the enabled server names and configured URLs or
+commands to the model context. It does not start a local process, make a remote
+request, or check OAuth until the model selects a matching server through the
+built-in `mcp_load` tool. The server's tools are then discovered and become
+available on the next agent step for the rest of the session.
+
+The model is instructed to select a matching server automatically when a
+request mentions content owned by that service or includes one of its URLs,
+preferring authenticated MCP tools over `webfetch` for documents, tickets, and
+similar resources. This behavior applies to every configured MCP server, not a
+hard-coded list of services. Remote servers that establish a Streamable HTTP
+session have their `Mcp-Session-Id` preserved across subsequent requests.
+
 ### OAuth for remote servers
 
 Remote servers that require OAuth advertise it through MCP metadata discovery.
-Add an `oauth` block (Claude Code-compatible); public clients using PKCE need no
-secret:
+Add the server by URL; no `oauth` block is required:
 
 ```json
 {
   "mcpServers": {
     "remote": {
       "type": "http",
-      "url": "https://example.com/mcp",
-      "oauth": { "clientId": "YOUR_CLIENT_ID", "callbackPort": 3118 }
+      "url": "https://example.com/mcp"
     }
   }
 }
 ```
 
-oxide discovers the authorization server from
-`/.well-known/oauth-protected-resource`, runs the authorization-code flow with
-PKCE (`S256`) on a loopback callback, stores the token under
+On a `401 Unauthorized` response, oxide reads the `WWW-Authenticate` challenge
+and falls back to the standard `/.well-known/oauth-protected-resource` URLs. It
+then discovers the authorization server, dynamically registers a client when
+supported, runs the authorization-code flow with PKCE (`S256`) on a loopback
+callback, stores the token under
 `mcp-oauth/<server>.json` in the oxide config directory (mode `0600`), and
 refreshes it automatically. Run the flow up front with:
 
@@ -107,46 +120,38 @@ oxide mcp auth <name>
 ```
 
 `oxide mcp auth` also runs automatically on first use when a terminal is
-attached; in non-interactive runs, authorize first. `clientSecret` is optional
-and only sent for confidential clients; `scopes` and `redirectUri` override the
-discovered defaults.
+attached; in non-interactive runs, authorize first. An optional Claude
+Code-compatible `oauth` block can provide a pre-registered `clientId`,
+`clientSecret`, `callbackPort`, `scopes`, or `redirectUri` when the authorization
+server does not support dynamic client registration or needs overrides.
 
-#### Connect to the Slack MCP server
+#### Connect to the Atlassian Rovo MCP server
 
-Slack's MCP server is a remote HTTP server that uses OAuth but does not support
-dynamic client registration. oxide has Slack's public PKCE client built in, so
-adding the server by URL is enough:
+Atlassian's remote MCP server exposes Jira, Confluence, and Compass tools over
+Streamable HTTP. Adding the server by URL is enough:
 
 ```sh
-oxide mcp add --transport http slack https://mcp.slack.com/mcp
-oxide mcp auth slack
+oxide mcp add --transport http atlassian https://mcp.atlassian.com/v1/mcp
 ```
 
-oxide fills in the `oauth` block with the client ID
-`1601185624273.8899143856786` and callback port `3118`. To use your own Slack
-app instead, pass `--oauth-client-id` (and optionally
-`--oauth-client-secret` / `--oauth-scope`) explicitly.
+On the first prompt that needs Atlassian, oxide loads the server, follows its
+OAuth discovery metadata, opens the consent screen, and dynamically registers
+the client. To authorize before starting oxide, run `oxide mcp auth atlassian`.
 
-Or add it to `.mcp.json` / `.oxide/mcp.json` directly:
+The equivalent `.mcp.json` / `.oxide/mcp.json` entry is:
 
 ```json
 {
   "mcpServers": {
-    "slack": {
+    "atlassian": {
       "type": "http",
-      "url": "https://mcp.slack.com/mcp",
-      "oauth": {
-        "clientId": "1601185624273.8899143856786",
-        "callbackPort": 3118
-      }
+      "url": "https://mcp.atlassian.com/v1/mcp"
     }
   }
 }
 ```
 
-`oxide mcp auth slack` opens Slack's consent screen in your browser and waits on
-`http://localhost:3118/callback`. Once authorized, the Slack tools appear as
-`slack__<tool>`.
+Once authorized, the tools appear as `atlassian__<tool>`.
 
 ### File schema
 
@@ -563,6 +568,7 @@ Runtime state lives under the platform oxide config directory:
 
 - `config.json` — provider and behavior settings
 - `auth.json` — stored API keys (mode `0600`)
+- `model-cache.json` — provider model lists (refreshed after 24 hours)
 - `mcp-oauth/<server>.json` — OAuth tokens for remote MCP servers (mode `0600`)
 - `sessions/<project>/*.jsonl` — session history and pruning records
 - `snapshots/<project>/` — shadow-git snapshots for `/undo` and `/redo`

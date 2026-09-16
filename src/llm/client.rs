@@ -6,7 +6,15 @@ use crate::llm::types::{
 };
 use anyhow::{Context, Result};
 use futures::StreamExt;
+use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
+use std::path::{Path, PathBuf};
+use std::sync::{Mutex, OnceLock};
+use std::time::{SystemTime, UNIX_EPOCH};
+
+const MODEL_CACHE_TTL_SECS: u64 = 24 * 60 * 60;
+const MODEL_CACHE_FILE: &str = "model-cache.json";
+static MODEL_CACHE_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
 
 pub struct LlmClient {
     http: reqwest::Client,
@@ -30,6 +38,17 @@ struct ModelEntry {
     id: String,
 }
 
+#[derive(Debug, Default, serde::Serialize, serde::Deserialize)]
+struct ModelCache {
+    entries: BTreeMap<String, CachedModels>,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+struct CachedModels {
+    updated_at: u64,
+    models: Vec<String>,
+}
+
 impl LlmClient {
     pub fn new(config: Config) -> Self {
         Self {
@@ -43,6 +62,27 @@ impl LlmClient {
         if !self.config.model_catalog.is_empty() {
             return Ok(self.config.model_catalog());
         }
+        let cache_key = model_cache_key(&self.config);
+        let cached = cached_models(&cache_key);
+        if let Some(entry) = cached.as_ref().filter(|entry| entry.is_fresh()) {
+            return Ok(entry.models.clone());
+        }
+
+        match self.fetch_models().await {
+            Ok(models) => {
+                if !models.is_empty() {
+                    store_cached_models(&cache_key, &models);
+                }
+                Ok(models)
+            }
+            Err(err) => match cached {
+                Some(entry) => Ok(entry.models),
+                None => Err(err),
+            },
+        }
+    }
+
+    async fn fetch_models(&self) -> Result<Vec<String>> {
         let url = format!("{}/models", self.config.base_url);
         let request = match self.config.provider_kind() {
             ProviderKind::Anthropic => self
@@ -245,6 +285,80 @@ impl LlmClient {
     }
 }
 
+impl CachedModels {
+    fn is_fresh(&self) -> bool {
+        now_secs().saturating_sub(self.updated_at) < MODEL_CACHE_TTL_SECS
+    }
+}
+
+fn model_cache_key(config: &Config) -> String {
+    let identity = format!(
+        "{}\n{}\n{}",
+        config.provider, config.base_url, config.portkey_config
+    );
+    format!("{:x}", Sha256::digest(identity.as_bytes()))
+}
+
+fn model_cache_path() -> Option<PathBuf> {
+    Some(dirs::config_dir()?.join("oxide").join(MODEL_CACHE_FILE))
+}
+
+fn cached_models(key: &str) -> Option<CachedModels> {
+    let path = model_cache_path()?;
+    let _guard = MODEL_CACHE_LOCK
+        .get_or_init(|| Mutex::new(()))
+        .lock()
+        .ok()?;
+    load_model_cache(&path).entries.get(key).cloned()
+}
+
+fn store_cached_models(key: &str, models: &[String]) {
+    let Some(path) = model_cache_path() else {
+        return;
+    };
+    let Ok(_guard) = MODEL_CACHE_LOCK.get_or_init(|| Mutex::new(())).lock() else {
+        return;
+    };
+    let mut cache = load_model_cache(&path);
+    cache.entries.insert(
+        key.to_string(),
+        CachedModels {
+            updated_at: now_secs(),
+            models: models.to_vec(),
+        },
+    );
+    let Some(parent) = path.parent() else {
+        return;
+    };
+    if std::fs::create_dir_all(parent).is_err() {
+        return;
+    }
+    let Ok(text) = serde_json::to_string_pretty(&cache) else {
+        return;
+    };
+    let temporary = path.with_extension(format!("tmp-{}", std::process::id()));
+    if std::fs::write(&temporary, text).is_err() {
+        return;
+    }
+    if std::fs::rename(&temporary, &path).is_err() {
+        let _ = std::fs::remove_file(&temporary);
+    }
+}
+
+fn load_model_cache(path: &Path) -> ModelCache {
+    std::fs::read_to_string(path)
+        .ok()
+        .and_then(|text| serde_json::from_str(&text).ok())
+        .unwrap_or_default()
+}
+
+fn now_secs() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs()
+}
+
 fn openai_request(config: &Config, messages: &[Message], tools: &[ToolSpec]) -> ChatRequest {
     let messages = messages
         .iter()
@@ -444,5 +558,34 @@ mod tests {
             .unwrap();
         assert_eq!(request.headers()["authorization"], "Bearer sk-test");
         assert!(!request.headers().contains_key("x-portkey-api-key"));
+    }
+
+    #[test]
+    fn model_cache_keys_include_provider_endpoint_and_gateway_config() {
+        let base = Config {
+            provider: "portkey".into(),
+            base_url: "https://gateway.example/v1".into(),
+            portkey_config: "team-a".into(),
+            ..Config::default()
+        };
+        let mut changed = base.clone();
+        changed.portkey_config = "team-b".into();
+        assert_ne!(model_cache_key(&base), model_cache_key(&changed));
+        assert!(!model_cache_key(&base).contains("gateway.example"));
+    }
+
+    #[test]
+    fn model_cache_freshness_expires_after_ttl() {
+        let current = now_secs();
+        assert!(CachedModels {
+            updated_at: current,
+            models: vec!["model".into()]
+        }
+        .is_fresh());
+        assert!(!CachedModels {
+            updated_at: current.saturating_sub(MODEL_CACHE_TTL_SECS + 1),
+            models: vec!["model".into()]
+        }
+        .is_fresh());
     }
 }

@@ -1,7 +1,7 @@
 //! OAuth 2.0 (authorization code + PKCE) support for remote MCP servers.
 //!
-//! Remote MCP servers such as Slack's require the client to obtain a bearer
-//! token before calling `tools/*`. This module discovers the authorization
+//! Remote MCP servers can require the client to obtain a bearer token before
+//! calling `tools/*`. This module discovers the authorization
 //! server, runs the browser-based authorization-code flow with PKCE, stores the
 //! resulting token under the oxide config dir, and refreshes it as needed.
 
@@ -38,6 +38,8 @@ pub struct StoredAuth {
     pub client_id: Option<String>,
     #[serde(default)]
     pub token_endpoint: Option<String>,
+    #[serde(default)]
+    pub resource_url: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -56,6 +58,8 @@ pub struct OAuthState {
     client: reqwest::Client,
     auth: Mutex<Option<StoredAuth>>,
     metadata: Mutex<Option<Metadata>>,
+    resource_metadata_url: Mutex<Option<String>>,
+    challenge_scopes: Mutex<Vec<String>>,
 }
 
 impl OAuthState {
@@ -69,8 +73,33 @@ impl OAuthState {
             config: config.clone(),
             resource_url: resource_url.to_string(),
             client,
-            auth: Mutex::new(load_stored(name)),
+            auth: Mutex::new(
+                load_stored(name).filter(|auth| auth.resource_url.as_deref() == Some(resource_url)),
+            ),
             metadata: Mutex::new(None),
+            resource_metadata_url: Mutex::new(None),
+            challenge_scopes: Mutex::new(Vec::new()),
+        }
+    }
+
+    /// Records OAuth discovery hints from a 401 `WWW-Authenticate` challenge.
+    pub async fn note_unauthorized(&self, headers: &reqwest::header::HeaderMap) {
+        if let Some(auth) = self.auth.lock().await.as_mut() {
+            auth.expires_at = Some(0);
+        }
+        let challenges = headers
+            .get_all(reqwest::header::WWW_AUTHENTICATE)
+            .iter()
+            .filter_map(|value| value.to_str().ok())
+            .collect::<Vec<_>>()
+            .join(",");
+        if let Some(url) = challenge_parameter(&challenges, "resource_metadata") {
+            *self.resource_metadata_url.lock().await = Some(url);
+            *self.metadata.lock().await = None;
+        }
+        if let Some(scope) = challenge_parameter(&challenges, "scope") {
+            *self.challenge_scopes.lock().await =
+                scope.split_whitespace().map(str::to_string).collect();
         }
     }
 
@@ -96,21 +125,15 @@ impl OAuthState {
         Ok(())
     }
 
-    /// Returns a valid bearer token, refreshing it when it is close to expiry.
-    pub async fn access_token(&self) -> Result<String> {
+    /// Returns a stored token when available without starting an interactive flow.
+    pub async fn access_token_if_available(&self) -> Option<String> {
         if let Some(token) = self.valid_token().await {
-            return Ok(token);
+            return Some(token);
         }
         if self.try_refresh().await {
-            if let Some(token) = self.valid_token().await {
-                return Ok(token);
-            }
+            return self.valid_token().await;
         }
-        bail!(
-            "`{}` is not authenticated; run `oxide mcp auth {}`",
-            self.name,
-            self.name
-        )
+        None
     }
 
     async fn valid_token(&self) -> Option<String> {
@@ -121,7 +144,8 @@ impl OAuthState {
             .map(|auth| auth.access_token.clone())
     }
 
-    async fn store(&self, auth: StoredAuth) {
+    async fn store(&self, mut auth: StoredAuth) {
+        auth.resource_url = Some(self.resource_url.clone());
         if let Err(err) = save_stored(&self.name, &auth) {
             eprintln!(
                 "[mcp] failed to store OAuth token for `{}`: {err:#}",
@@ -162,6 +186,7 @@ impl OAuthState {
             ("grant_type", "refresh_token".to_string()),
             ("refresh_token", refresh_token.clone()),
             ("client_id", client_id.clone()),
+            ("resource", self.resource_url.clone()),
         ];
         if let Some(secret) = &self.config.client_secret {
             form.push(("client_secret", secret.clone()));
@@ -209,7 +234,12 @@ impl OAuthState {
         };
 
         let scopes = if self.config.scopes.is_empty() {
-            metadata.scopes_supported.clone()
+            let challenge_scopes = self.challenge_scopes.lock().await.clone();
+            if challenge_scopes.is_empty() {
+                metadata.scopes_supported.clone()
+            } else {
+                challenge_scopes
+            }
         } else {
             self.config.scopes.clone()
         };
@@ -217,7 +247,7 @@ impl OAuthState {
             .config
             .scope_param
             .clone()
-            .unwrap_or_else(|| default_scope_param(&metadata.authorization_endpoint));
+            .unwrap_or_else(|| "scope".to_string());
 
         let verifier = pkce_verifier();
         let challenge = pkce_challenge(&verifier);
@@ -230,6 +260,7 @@ impl OAuthState {
             &scope_param,
             &challenge,
             &state,
+            &self.resource_url,
         )?;
 
         eprintln!("[mcp] authorizing `{}` — opening browser", self.name);
@@ -243,6 +274,7 @@ impl OAuthState {
             ("redirect_uri", redirect_uri.clone()),
             ("client_id", client_id.clone()),
             ("code_verifier", verifier),
+            ("resource", self.resource_url.clone()),
         ];
         if let Some(secret) = &self.config.client_secret {
             form.push(("client_secret", secret.clone()));
@@ -275,6 +307,7 @@ impl OAuthState {
             "grant_types": ["authorization_code", "refresh_token"],
             "response_types": ["code"],
             "token_endpoint_auth_method": "none",
+            "application_type": "native",
         });
         let response = self
             .client
@@ -299,7 +332,13 @@ impl OAuthState {
         if let Some(metadata) = self.metadata.lock().await.clone() {
             return Ok(metadata);
         }
-        let metadata = discover(&self.client, &self.resource_url).await?;
+        let resource_metadata_url = self.resource_metadata_url.lock().await.clone();
+        let metadata = discover(
+            &self.client,
+            &self.resource_url,
+            resource_metadata_url.as_deref(),
+        )
+        .await?;
         *self.metadata.lock().await = Some(metadata.clone());
         Ok(metadata)
     }
@@ -319,12 +358,29 @@ fn now() -> u64 {
         .unwrap_or(0)
 }
 
-fn default_scope_param(authorization_endpoint: &str) -> String {
-    if authorization_endpoint.contains("v2_user") {
-        "user_scope".to_string()
-    } else {
-        "scope".to_string()
+fn challenge_parameter(challenge: &str, name: &str) -> Option<String> {
+    let lower = challenge.to_ascii_lowercase();
+    let needle = format!("{}=", name.to_ascii_lowercase());
+    for (index, _) in lower.match_indices(&needle) {
+        if index > 0 {
+            let previous = lower[..index].chars().next_back()?;
+            if previous != ',' && !previous.is_ascii_whitespace() {
+                continue;
+            }
+        }
+        let rest = challenge[index + needle.len()..].trim_start();
+        if let Some(quoted) = rest.strip_prefix('"') {
+            let end = quoted.find('"')?;
+            return Some(quoted[..end].to_string());
+        }
+        let end = rest
+            .find(|character: char| character == ',' || character.is_ascii_whitespace())
+            .unwrap_or(rest.len());
+        if end > 0 {
+            return Some(rest[..end].to_string());
+        }
     }
+    None
 }
 
 fn authorize_url(
@@ -335,6 +391,7 @@ fn authorize_url(
     scope_param: &str,
     challenge: &str,
     state: &str,
+    resource: &str,
 ) -> Result<String> {
     let mut url = reqwest::Url::parse(endpoint)
         .with_context(|| format!("invalid authorization endpoint `{endpoint}`"))?;
@@ -346,6 +403,7 @@ fn authorize_url(
         query.append_pair("code_challenge", challenge);
         query.append_pair("code_challenge_method", "S256");
         query.append_pair("state", state);
+        query.append_pair("resource", resource);
         if !scopes.is_empty() {
             query.append_pair(scope_param, &scopes.join(" "));
         }
@@ -353,17 +411,25 @@ fn authorize_url(
     Ok(url.to_string())
 }
 
-async fn discover(client: &reqwest::Client, resource_url: &str) -> Result<Metadata> {
+async fn discover(
+    client: &reqwest::Client,
+    resource_url: &str,
+    resource_metadata_url: Option<&str>,
+) -> Result<Metadata> {
     let resource = reqwest::Url::parse(resource_url)
         .with_context(|| format!("invalid MCP url `{resource_url}`"))?;
     let origin = resource.origin().ascii_serialization();
-    let mut resource_candidates = vec![format!("{origin}/.well-known/oauth-protected-resource")];
+    let mut resource_candidates = Vec::new();
+    if let Some(url) = resource_metadata_url {
+        resource_candidates.push(url.to_string());
+    }
     let path = resource.path();
     if !path.is_empty() && path != "/" {
         resource_candidates.push(format!(
             "{origin}/.well-known/oauth-protected-resource{path}"
         ));
     }
+    resource_candidates.push(format!("{origin}/.well-known/oauth-protected-resource"));
 
     let mut authorization_servers = Vec::new();
     for candidate in &resource_candidates {
@@ -500,23 +566,10 @@ async fn wait_for_code(listener: TcpListener, expected_state: &str) -> Result<St
         .context("authorization response missing code")
 }
 
-/// Parses a token response, accepting both standard OAuth fields and Slack's
-/// nested `authed_user` object.
+/// Parses a standard OAuth token response.
 fn parse_token(value: &Value, status: reqwest::StatusCode) -> Result<StoredAuth> {
-    if value.get("ok").and_then(Value::as_bool) == Some(false) {
-        let error = value
-            .get("error")
-            .and_then(Value::as_str)
-            .unwrap_or("unknown error");
-        bail!("token endpoint returned error: {error}");
-    }
-    let source = value
-        .get("authed_user")
-        .filter(|v| v.is_object())
-        .unwrap_or(value);
-    let access_token = source
+    let access_token = value
         .get("access_token")
-        .or_else(|| value.get("access_token"))
         .and_then(Value::as_str)
         .map(str::to_string);
     let Some(access_token) = access_token else {
@@ -527,30 +580,25 @@ fn parse_token(value: &Value, status: reqwest::StatusCode) -> Result<StoredAuth>
             .unwrap_or_else(|| value.to_string());
         bail!("token endpoint returned no access_token ({status}): {error}");
     };
-    let expires_in = source
-        .get("expires_in")
-        .or_else(|| value.get("expires_in"))
-        .and_then(Value::as_u64);
+    let expires_in = value.get("expires_in").and_then(Value::as_u64);
     Ok(StoredAuth {
         access_token,
-        refresh_token: source
+        refresh_token: value
             .get("refresh_token")
-            .or_else(|| value.get("refresh_token"))
             .and_then(Value::as_str)
             .map(str::to_string),
-        token_type: source
+        token_type: value
             .get("token_type")
-            .or_else(|| value.get("token_type"))
             .and_then(Value::as_str)
             .map(str::to_string),
-        scope: source
+        scope: value
             .get("scope")
-            .or_else(|| value.get("scope"))
             .and_then(Value::as_str)
             .map(str::to_string),
         expires_at: expires_in.map(|seconds| now() + seconds),
         client_id: None,
         token_endpoint: None,
+        resource_url: None,
     })
 }
 
@@ -656,7 +704,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn base64url_matches_slack_pkce_vector() {
+    fn base64url_encodes_without_padding() {
         assert_eq!(base64url(b""), "");
         assert_eq!(base64url(b"f"), "Zg");
         assert_eq!(base64url(b"fo"), "Zm8");
@@ -665,7 +713,7 @@ mod tests {
     }
 
     #[test]
-    fn pkce_challenge_matches_slack_example() {
+    fn pkce_challenge_matches_known_vector() {
         assert_eq!(
             pkce_challenge("secretpassword"),
             "ldMBaaWcQYtSATMV_IG8mf3wp7A6EW80arYoSW80ntU"
@@ -675,37 +723,43 @@ mod tests {
     #[test]
     fn builds_authorize_url_with_pkce_and_state() {
         let url = authorize_url(
-            "https://slack.com/oauth/v2_user/authorize",
-            "123.456",
-            "http://localhost:3118/callback",
-            &["chat:write".to_string(), "search:read.public".to_string()],
-            "user_scope",
+            "https://auth.example.com/oauth/authorize",
+            "client-123",
+            "http://localhost:3000/callback",
+            &["files:read".to_string(), "files:write".to_string()],
+            "scope",
             "challenge",
             "state123",
+            "https://mcp.example.com/mcp",
         )
         .unwrap();
-        assert!(url.starts_with("https://slack.com/oauth/v2_user/authorize?"));
-        assert!(url.contains("client_id=123.456"));
+        assert!(url.starts_with("https://auth.example.com/oauth/authorize?"));
+        assert!(url.contains("client_id=client-123"));
         assert!(url.contains("code_challenge=challenge"));
         assert!(url.contains("code_challenge_method=S256"));
         assert!(url.contains("state=state123"));
-        assert!(url.contains("user_scope=chat%3Awrite+search%3Aread.public"));
+        assert!(url.contains("resource=https%3A%2F%2Fmcp.example.com%2Fmcp"));
+        assert!(url.contains("scope=files%3Aread+files%3Awrite"));
     }
 
     #[test]
-    fn detects_slack_user_scope_parameter() {
-        assert_eq!(
-            default_scope_param("https://slack.com/oauth/v2_user/authorize"),
-            "user_scope"
+    fn parses_oauth_challenge_parameters() {
+        let challenge = concat!(
+            "Bearer resource_metadata=\"https://mcp.example.com/auth?scope=ignored\", ",
+            "scope=\"files:read files:write\""
         );
         assert_eq!(
-            default_scope_param("https://example.com/oauth/authorize"),
-            "scope"
+            challenge_parameter(challenge, "resource_metadata").as_deref(),
+            Some("https://mcp.example.com/auth?scope=ignored")
+        );
+        assert_eq!(
+            challenge_parameter(challenge, "scope").as_deref(),
+            Some("files:read files:write")
         );
     }
 
     #[test]
-    fn parses_standard_and_slack_token_responses() {
+    fn parses_standard_token_response() {
         let standard = json!({
             "access_token": "abc",
             "refresh_token": "def",
@@ -717,21 +771,6 @@ mod tests {
         assert_eq!(parsed.access_token, "abc");
         assert_eq!(parsed.refresh_token.as_deref(), Some("def"));
         assert!(parsed.expires_at.unwrap() > now());
-
-        let slack = json!({
-            "ok": true,
-            "access_token": "xoxb-bot",
-            "authed_user": {
-                "access_token": "xoxp-user",
-                "refresh_token": "xoxe-refresh",
-                "expires_in": 43200,
-                "scope": "chat:write"
-            }
-        });
-        let parsed = parse_token(&slack, reqwest::StatusCode::OK).unwrap();
-        assert_eq!(parsed.access_token, "xoxp-user");
-        assert_eq!(parsed.refresh_token.as_deref(), Some("xoxe-refresh"));
-        assert_eq!(parsed.scope.as_deref(), Some("chat:write"));
     }
 
     #[test]
@@ -757,7 +796,7 @@ mod tests {
 
     #[test]
     fn sanitizes_server_names_for_token_files() {
-        assert_eq!(sanitize("slack"), "slack");
+        assert_eq!(sanitize("atlassian"), "atlassian");
         assert_eq!(sanitize("my/server name"), "my_server_name");
     }
 }
