@@ -319,9 +319,10 @@ fn draw_suggestions(frame: &mut Frame, app: &App, area: Rect) {
     let items: Vec<ListItem> = app.suggestions[offset..offset + count]
         .iter()
         .map(|hint| {
+            let prefix = if app.input.starts_with('/') { "/" } else { "@" };
             ListItem::new(Line::from(vec![
                 Span::styled(
-                    format!("/{}", hint.name),
+                    format!("{prefix}{}", hint.name),
                     Style::default().fg(app.theme.accent),
                 ),
                 Span::styled(
@@ -331,7 +332,12 @@ fn draw_suggestions(frame: &mut Frame, app: &App, area: Rect) {
             ]))
         })
         .collect();
-    let block = panel("commands", app.theme.border);
+    let title = if app.input.starts_with('/') {
+        "commands"
+    } else {
+        "files"
+    };
+    let block = panel(title, app.theme.border);
     let list = List::new(items)
         .block(block)
         .highlight_style(
@@ -870,16 +876,16 @@ fn draw_input(frame: &mut Frame, app: &App, area: Rect) {
     };
     let paragraph = Paragraph::new(input)
         .wrap(Wrap { trim: false })
-        .scroll((input_scroll(&app.input, width), 0));
+        .scroll((input_scroll(&app.input, app.input_cursor, width), 0));
     frame.render_widget(paragraph, text_area);
 
     if !app.busy && app.connect.is_none() && app.models.is_none() {
-        let lines = wrap(&app.input, width);
-        let last = lines.last().map(|line| line.chars().count()).unwrap_or(0);
-        let x = text_area.x + last as u16;
+        let (cursor_row, cursor_column) =
+            input_cursor_position(&app.input, app.input_cursor.min(app.input.len()), width);
+        let scroll = input_scroll(&app.input, app.input_cursor, width) as usize;
+        let x = text_area.x + cursor_column as u16;
         let x = x.min(text_area.x + text_area.width.saturating_sub(1));
-        let cursor_line = lines.len().clamp(1, MAX_INPUT_ROWS) - 1;
-        let y = text_area.y + cursor_line as u16;
+        let y = text_area.y + cursor_row.saturating_sub(scroll) as u16;
         frame.set_cursor_position((x, y));
     }
 }
@@ -890,8 +896,30 @@ fn input_rows(input: &str, width: usize) -> usize {
         .clamp(MIN_INPUT_ROWS, MAX_INPUT_ROWS)
 }
 
-fn input_scroll(input: &str, width: usize) -> u16 {
-    wrap(input, width).len().saturating_sub(MAX_INPUT_ROWS) as u16
+fn input_scroll(input: &str, cursor: usize, width: usize) -> u16 {
+    let (row, _) = input_cursor_position(input, cursor.min(input.len()), width);
+    row.saturating_sub(MAX_INPUT_ROWS - 1) as u16
+}
+
+fn input_cursor_position(input: &str, cursor: usize, width: usize) -> (usize, usize) {
+    let target = input[..cursor].chars().count();
+    let mut consumed = 0usize;
+    let mut row = 0usize;
+    let raw_lines: Vec<&str> = input.split('\n').collect();
+    for (raw_index, raw) in raw_lines.iter().enumerate() {
+        for line in wrap(raw, width) {
+            let len = line.chars().count();
+            if target <= consumed + len {
+                return (row, target - consumed);
+            }
+            consumed += len;
+            row += 1;
+        }
+        if raw_index + 1 < raw_lines.len() {
+            consumed += 1;
+        }
+    }
+    (row.saturating_sub(1), 0)
 }
 
 /// Path argument for a `read_file`/`write_file` call, when present.
@@ -1127,12 +1155,20 @@ mod tests {
     }
 
     #[test]
-    fn input_scroll_follows_tail() {
-        assert_eq!(input_scroll("hi", 10), 0);
+    fn input_scroll_follows_cursor() {
+        assert_eq!(input_scroll("hi", 2, 10), 0);
         assert_eq!(
-            input_scroll(&"a".repeat(200), 10),
+            input_scroll(&"a".repeat(200), 200, 10),
             (20 - MAX_INPUT_ROWS) as u16
         );
+        assert_eq!(input_scroll(&"a".repeat(200), 5, 10), 0);
+    }
+
+    #[test]
+    fn input_cursor_position_handles_wrapping_and_newlines() {
+        assert_eq!(input_cursor_position("hello", 2, 10), (0, 2));
+        assert_eq!(input_cursor_position("hello\nworld", 8, 10), (1, 2));
+        assert_eq!(input_cursor_position("abcdefghijk", 11, 5), (2, 1));
     }
 
     #[test]

@@ -132,6 +132,7 @@ impl TrustState {
 
 pub struct App {
     pub input: String,
+    pub input_cursor: usize,
     pub input_history: Vec<String>,
     pub history_index: Option<usize>,
     pub items: Vec<ChatItem>,
@@ -154,6 +155,7 @@ pub struct App {
     pub trust: Option<TrustState>,
     pub suggestions: Vec<CommandHint>,
     pub suggestion_index: usize,
+    pub workspace_paths: Option<Vec<String>>,
     pub mode: Mode,
     pub reasoning: Reasoning,
     pub tokens_in: u64,
@@ -176,6 +178,7 @@ impl App {
         let git_branch = current_git_branch(&cwd);
         Self {
             input: String::new(),
+            input_cursor: 0,
             input_history: Vec::new(),
             history_index: None,
             items: Vec::new(),
@@ -198,6 +201,7 @@ impl App {
             trust: None,
             suggestions: Vec::new(),
             suggestion_index: 0,
+            workspace_paths: None,
             mode,
             reasoning,
             tokens_in: 0,
@@ -236,6 +240,44 @@ impl App {
         self.history_index = None;
     }
 
+    pub fn clear_input(&mut self) {
+        self.input.clear();
+        self.input_cursor = 0;
+    }
+
+    pub fn set_input(&mut self, input: String) {
+        self.input = input;
+        self.input_cursor = self.input.len();
+    }
+
+    pub fn insert_input(&mut self, text: &str) {
+        self.input.insert_str(self.input_cursor, text);
+        self.input_cursor += text.len();
+    }
+
+    pub fn input_cursor_left(&mut self) {
+        if let Some((index, _)) = self.input[..self.input_cursor].char_indices().next_back() {
+            self.input_cursor = index;
+        }
+    }
+
+    pub fn input_cursor_right(&mut self) {
+        if let Some(ch) = self.input[self.input_cursor..].chars().next() {
+            self.input_cursor += ch.len_utf8();
+        }
+    }
+
+    pub fn input_backspace(&mut self) {
+        let previous = self.input[..self.input_cursor]
+            .char_indices()
+            .next_back()
+            .map(|(index, _)| index);
+        if let Some(previous) = previous {
+            self.input.drain(previous..self.input_cursor);
+            self.input_cursor = previous;
+        }
+    }
+
     /// Recalls the previous input, walking backwards through history.
     pub fn history_prev(&mut self) {
         if self.input_history.is_empty() {
@@ -247,7 +289,8 @@ impl App {
             None => self.input_history.len() - 1,
         };
         self.history_index = Some(index);
-        self.input = self.input_history[index].clone();
+        let input = self.input_history[index].clone();
+        self.set_input(input);
     }
 
     /// Recalls the next input, clearing the box past the newest entry.
@@ -255,11 +298,12 @@ impl App {
         match self.history_index {
             Some(index) if index + 1 < self.input_history.len() => {
                 self.history_index = Some(index + 1);
-                self.input = self.input_history[index + 1].clone();
+                let input = self.input_history[index + 1].clone();
+                self.set_input(input);
             }
             Some(_) => {
                 self.history_index = None;
-                self.input.clear();
+                self.clear_input();
             }
             None => {}
         }
