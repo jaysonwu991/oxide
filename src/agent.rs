@@ -244,29 +244,6 @@ async fn run_loop(
     } else {
         DcpState::default()
     };
-    let mut tool_specs = tools::specs(&runtime.mcp);
-    if depth < MAX_TASK_DEPTH
-        && config
-            .ecosystem
-            .agents
-            .iter()
-            .any(|agent| agent.mode != AgentMode::Primary)
-    {
-        tool_specs.push(task_spec(&config));
-    }
-    if !config.ecosystem.skills.is_empty() {
-        tool_specs.push(skill_spec(&config));
-    }
-    tool_specs.push(memory_spec());
-    tool_specs.push(lsp_spec());
-    if dcp_enabled {
-        if let Some(spec) = dcp::compress_spec(&config.dcp) {
-            tool_specs.push(spec);
-        }
-    }
-    if config.tool_filter.is_restrictive() {
-        tool_specs.retain(|spec| config.tool_filter.permits(&spec.function.name));
-    }
     let mut messages = history;
 
     for _ in 0..MAX_STEPS {
@@ -295,6 +272,7 @@ async fn run_loop(
         } else {
             request.extend(messages.iter().cloned());
         }
+        let tool_specs = build_tool_specs(&config, &runtime, depth, dcp_enabled);
 
         let started = std::time::Instant::now();
         let mut thought_sent = false;
@@ -590,6 +568,38 @@ async fn run_loop(
         "reached the maximum of {MAX_STEPS} steps without finishing"
     )));
     let _ = tx.send(AgentEvent::Finished(messages));
+}
+
+fn build_tool_specs(
+    config: &Config,
+    runtime: &Runtime,
+    depth: usize,
+    dcp_enabled: bool,
+) -> Vec<ToolSpec> {
+    let mut specs = tools::specs(&runtime.mcp);
+    if depth < MAX_TASK_DEPTH
+        && config
+            .ecosystem
+            .agents
+            .iter()
+            .any(|agent| agent.mode != AgentMode::Primary)
+    {
+        specs.push(task_spec(config));
+    }
+    if !config.ecosystem.skills.is_empty() {
+        specs.push(skill_spec(config));
+    }
+    specs.push(memory_spec());
+    specs.push(lsp_spec());
+    if dcp_enabled {
+        if let Some(spec) = dcp::compress_spec(&config.dcp) {
+            specs.push(spec);
+        }
+    }
+    if config.tool_filter.is_restrictive() {
+        specs.retain(|spec| config.tool_filter.permits(&spec.function.name));
+    }
+    specs
 }
 
 /// A batch ends the turn when every tool result in it requested termination.

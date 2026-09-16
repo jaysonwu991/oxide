@@ -4,10 +4,9 @@ use crate::mcp_oauth::OAuthState;
 use anyhow::{bail, Context, Result};
 use reqwest::header::{HeaderMap, HeaderName, HeaderValue, ACCEPT, AUTHORIZATION, CONTENT_TYPE};
 use serde_json::{json, Value};
-use std::collections::HashMap;
 use std::io::IsTerminal;
 use std::process::Stdio;
-use std::sync::Arc;
+use std::sync::{Arc, RwLock};
 use std::time::Duration;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::process::{Child, ChildStdin, ChildStdout};
@@ -15,6 +14,7 @@ use tokio::sync::Mutex;
 
 const PROTOCOL_VERSION: &str = "2024-11-05";
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(60);
+const MCP_SESSION_ID: &str = "mcp-session-id";
 
 struct RawTool {
     name: String,
@@ -31,73 +31,100 @@ struct McpTool {
 
 struct McpServerHandle {
     name: String,
+    source: String,
     connection: Mutex<McpConnection>,
     tools: Vec<McpTool>,
 }
 
 #[derive(Default)]
 pub struct McpRegistry {
-    servers: Vec<McpServerHandle>,
-    index: HashMap<String, (usize, usize)>,
+    configured: Vec<McpServer>,
+    servers: RwLock<Vec<Arc<McpServerHandle>>>,
+    load_guard: Mutex<()>,
 }
 
 impl McpRegistry {
-    pub async fn connect(servers: &[McpServer]) -> Self {
-        let mut handles = Vec::new();
-        for server in servers {
-            if !server.enabled {
-                continue;
-            }
-            match McpConnection::connect(server).await {
-                Ok(mut connection) => match connection.list_tools().await {
-                    Ok(raw) => {
-                        let tools = raw
-                            .into_iter()
-                            .map(|tool| McpTool {
-                                exposed: expose(&server.name, &tool.name),
-                                original: tool.name,
-                                description: tool.description,
-                                schema: tool.schema,
-                            })
-                            .collect();
-                        handles.push(McpServerHandle {
-                            name: server.name.clone(),
-                            connection: Mutex::new(connection),
-                            tools,
-                        });
-                    }
-                    Err(err) => {
-                        eprintln!("[mcp] `{}` tools/list failed: {err:#}", server.name);
-                    }
-                },
-                Err(err) => {
-                    eprintln!("[mcp] `{}` failed to start: {err:#}", server.name);
-                }
-            }
-        }
-
-        let mut index = HashMap::new();
-        for (server_idx, handle) in handles.iter().enumerate() {
-            for (tool_idx, tool) in handle.tools.iter().enumerate() {
-                index.insert(tool.exposed.clone(), (server_idx, tool_idx));
-            }
-        }
-
+    /// Creates a registry without starting any configured servers. Servers are
+    /// connected only when the model selects them through `mcp_load`.
+    pub fn new(servers: &[McpServer]) -> Self {
         Self {
-            servers: handles,
-            index,
+            configured: servers
+                .iter()
+                .filter(|server| server.enabled)
+                .cloned()
+                .collect(),
+            servers: RwLock::new(Vec::new()),
+            load_guard: Mutex::new(()),
         }
+    }
+
+    pub fn configured_servers(&self) -> Vec<(String, String)> {
+        self.configured
+            .iter()
+            .map(|server| (server.name.clone(), server_source(server)))
+            .collect()
+    }
+
+    pub async fn load(&self, name: &str) -> Result<String> {
+        let _guard = self.load_guard.lock().await;
+        if self
+            .servers
+            .read()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .iter()
+            .any(|server| server.name == name)
+        {
+            return Ok(format!("MCP server `{name}` is already loaded"));
+        }
+
+        let server = self
+            .configured
+            .iter()
+            .find(|server| server.name == name)
+            .with_context(|| format!("no enabled MCP server named `{name}`"))?;
+        let mut connection = McpConnection::connect(server).await?;
+        let raw = connection
+            .list_tools()
+            .await
+            .with_context(|| format!("listing tools from MCP server `{name}`"))?;
+        let tools: Vec<McpTool> = raw
+            .into_iter()
+            .map(|tool| McpTool {
+                exposed: expose(&server.name, &tool.name),
+                original: tool.name,
+                description: tool.description,
+                schema: tool.schema,
+            })
+            .collect();
+        let count = tools.len();
+        self.servers
+            .write()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .push(Arc::new(McpServerHandle {
+                name: server.name.clone(),
+                source: server_source(server),
+                connection: Mutex::new(connection),
+                tools,
+            }));
+        Ok(format!(
+            "loaded MCP server `{name}` with {count} tool(s); use its `{name}__*` tools now"
+        ))
     }
 
     pub fn tool_specs(&self) -> Vec<ToolSpec> {
         self.servers
+            .read()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
             .iter()
             .flat_map(|server| {
                 server.tools.iter().map(|tool| ToolSpec {
                     kind: "function",
                     function: FunctionSpec {
                         name: tool.exposed.clone(),
-                        description: format!("[mcp:{}] {}", server.name, tool.description),
+                        description: format!(
+                            "[mcp:{}; {}] {}",
+                            server.name, server.source, tool.description
+                        ),
                         parameters: tool.schema.clone(),
                     },
                 })
@@ -106,29 +133,59 @@ impl McpRegistry {
     }
 
     pub fn is_tool(&self, name: &str) -> bool {
-        self.index.contains_key(name)
+        self.servers
+            .read()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .iter()
+            .any(|server| server.tools.iter().any(|tool| tool.exposed == name))
     }
 
     pub fn server_count(&self) -> usize {
-        self.servers.len()
+        self.servers
+            .read()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .len()
+    }
+
+    pub fn configured_count(&self) -> usize {
+        self.configured.len()
     }
 
     pub fn tool_count(&self) -> usize {
-        self.index.len()
+        self.servers
+            .read()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .iter()
+            .map(|server| server.tools.len())
+            .sum()
     }
 
     pub async fn call(&self, name: &str, arguments: Value) -> Result<String> {
-        let (server_idx, tool_idx) = *self
-            .index
-            .get(name)
+        let (handle, original) = self
+            .servers
+            .read()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .iter()
+            .find_map(|server| {
+                server
+                    .tools
+                    .iter()
+                    .find(|tool| tool.exposed == name)
+                    .map(|tool| (Arc::clone(server), tool.original.clone()))
+            })
             .with_context(|| format!("unknown MCP tool `{name}`"))?;
-        let handle = &self.servers[server_idx];
-        let tool = &handle.tools[tool_idx];
         let mut connection = handle.connection.lock().await;
         connection
-            .call_tool(&tool.original, arguments)
+            .call_tool(&original, arguments)
             .await
-            .with_context(|| format!("MCP tool `{}` on `{}`", tool.original, handle.name))
+            .with_context(|| format!("MCP tool `{original}` on `{}`", handle.name))
+    }
+}
+
+fn server_source(server: &McpServer) -> String {
+    match &server.kind {
+        McpKind::Local { command, .. } => format!("local: {}", command.join(" ")),
+        McpKind::Remote { url, .. } => format!("remote: {url}"),
     }
 }
 
@@ -149,6 +206,7 @@ enum Transport {
         url: String,
         headers: HeaderMap,
         oauth: Option<Arc<OAuthState>>,
+        session_id: Option<HeaderValue>,
     },
 }
 
@@ -200,22 +258,23 @@ impl McpConnection {
                         .with_context(|| format!("invalid MCP header value for `{key}`"))?;
                     map.insert(name, value);
                 }
-                let oauth = match oauth {
-                    Some(config) => {
-                        let state = Arc::new(OAuthState::new(&server.name, config, url));
+                let oauth = {
+                    let config = oauth.clone().unwrap_or_default();
+                    let state = Arc::new(OAuthState::new(&server.name, &config, url));
+                    if oauth.is_some() {
                         state
                             .ensure_authorized(std::io::stdin().is_terminal())
                             .await
                             .with_context(|| format!("authorizing MCP server `{}`", server.name))?;
-                        Some(state)
                     }
-                    None => None,
+                    Some(state)
                 };
                 Transport::Remote {
                     client: reqwest::Client::new(),
                     url: url.clone(),
                     headers: map,
                     oauth,
+                    session_id: None,
                 }
             }
         };
@@ -298,12 +357,30 @@ impl McpConnection {
                 url,
                 headers,
                 oauth,
+                session_id,
             } => {
-                let headers = remote_headers(oauth, headers).await?;
-                post_json(client, url, &headers, &payload)
+                let headers = remote_headers(oauth, headers, session_id.as_ref()).await?;
+                let mut response = post_json(client, url, &headers, &payload)
                     .send()
                     .await
                     .context("sending MCP notification")?;
+                if response.status() == reqwest::StatusCode::UNAUTHORIZED {
+                    if let Some(state) = oauth {
+                        state.note_unauthorized(response.headers()).await;
+                        state
+                            .ensure_authorized(std::io::stdin().is_terminal())
+                            .await
+                            .with_context(|| format!("authorizing MCP server `{}`", self.name))?;
+                        let headers = remote_headers(oauth, &headers, session_id.as_ref()).await?;
+                        response = post_json(client, url, &headers, &payload)
+                            .send()
+                            .await
+                            .context("retrying MCP notification after authorization")?;
+                    }
+                }
+                if !response.status().is_success() {
+                    bail!("MCP server `{}` returned {}", self.name, response.status());
+                }
                 Ok(())
             }
         }
@@ -344,13 +421,34 @@ impl McpConnection {
                 url,
                 headers,
                 oauth,
+                session_id,
             } => {
-                let headers = remote_headers(oauth, headers).await?;
+                let headers = remote_headers(oauth, headers, session_id.as_ref()).await?;
                 let request = post_json(client, url, &headers, &payload);
-                let response = tokio::time::timeout(REQUEST_TIMEOUT, request.send())
+                let mut response = tokio::time::timeout(REQUEST_TIMEOUT, request.send())
                     .await
                     .map_err(|_| anyhow::anyhow!("MCP server `{}` timed out", self.name))?
                     .with_context(|| format!("calling MCP server `{}`", self.name))?;
+                if response.status() == reqwest::StatusCode::UNAUTHORIZED {
+                    if let Some(state) = oauth {
+                        state.note_unauthorized(response.headers()).await;
+                        state
+                            .ensure_authorized(std::io::stdin().is_terminal())
+                            .await
+                            .with_context(|| format!("authorizing MCP server `{}`", self.name))?;
+                        let headers = remote_headers(oauth, &headers, session_id.as_ref()).await?;
+                        let request = post_json(client, url, &headers, &payload);
+                        response = tokio::time::timeout(REQUEST_TIMEOUT, request.send())
+                            .await
+                            .map_err(|_| anyhow::anyhow!("MCP server `{}` timed out", self.name))?
+                            .with_context(|| {
+                                format!("calling MCP server `{}` after authorization", self.name)
+                            })?;
+                    }
+                }
+                if method == "initialize" && response.status().is_success() {
+                    *session_id = response.headers().get(MCP_SESSION_ID).cloned();
+                }
                 let status = response.status();
                 let body = response.text().await.context("reading MCP response")?;
                 if !status.is_success() {
@@ -375,13 +473,21 @@ impl McpConnection {
     }
 }
 
-async fn remote_headers(oauth: &Option<Arc<OAuthState>>, base: &HeaderMap) -> Result<HeaderMap> {
+async fn remote_headers(
+    oauth: &Option<Arc<OAuthState>>,
+    base: &HeaderMap,
+    session_id: Option<&HeaderValue>,
+) -> Result<HeaderMap> {
     let mut map = base.clone();
     if let Some(state) = oauth {
-        let token = state.access_token().await?;
-        let value = HeaderValue::from_str(&format!("Bearer {token}"))
-            .context("building MCP authorization header")?;
-        map.insert(AUTHORIZATION, value);
+        if let Some(token) = state.access_token_if_available().await {
+            let value = HeaderValue::from_str(&format!("Bearer {token}"))
+                .context("building MCP authorization header")?;
+            map.insert(AUTHORIZATION, value);
+        }
+    }
+    if let Some(session_id) = session_id {
+        map.insert(HeaderName::from_static(MCP_SESSION_ID), session_id.clone());
     }
     Ok(map)
 }
@@ -482,6 +588,53 @@ fn interpolate(value: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    async fn read_http_request(socket: &mut tokio::net::TcpStream) -> (String, Value) {
+        let mut bytes = Vec::new();
+        let header_end = loop {
+            let mut chunk = [0_u8; 1024];
+            let count = socket.read(&mut chunk).await.unwrap();
+            assert!(count > 0, "client closed before sending HTTP headers");
+            bytes.extend_from_slice(&chunk[..count]);
+            if let Some(index) = bytes.windows(4).position(|window| window == b"\r\n\r\n") {
+                break index + 4;
+            }
+        };
+        let headers = String::from_utf8(bytes[..header_end].to_vec()).unwrap();
+        let content_length = headers
+            .lines()
+            .find_map(|line| {
+                let (name, value) = line.split_once(':')?;
+                name.eq_ignore_ascii_case("content-length")
+                    .then(|| value.trim().parse::<usize>().unwrap())
+            })
+            .unwrap_or(0);
+        while bytes.len() < header_end + content_length {
+            let mut chunk = [0_u8; 1024];
+            let count = socket.read(&mut chunk).await.unwrap();
+            assert!(count > 0, "client closed before sending the HTTP body");
+            bytes.extend_from_slice(&chunk[..count]);
+        }
+        let body = serde_json::from_slice(&bytes[header_end..header_end + content_length]).unwrap();
+        (headers, body)
+    }
+
+    async fn send_http_response(
+        socket: &mut tokio::net::TcpStream,
+        status: &str,
+        body: &str,
+        session_id: Option<&str>,
+    ) {
+        let session_header = session_id
+            .map(|id| format!("Mcp-Session-Id: {id}\r\n"))
+            .unwrap_or_default();
+        let response = format!(
+            "HTTP/1.1 {status}\r\nContent-Type: application/json\r\nContent-Length: {}\r\n{session_header}Connection: close\r\n\r\n{body}",
+            body.len()
+        );
+        socket.write_all(response.as_bytes()).await.unwrap();
+    }
 
     #[test]
     fn exposes_namespaced_tool_names() {
@@ -562,7 +715,11 @@ for line in sys.stdin:
             },
         };
 
-        let registry = McpRegistry::connect(&[server]).await;
+        let registry = McpRegistry::new(&[server]);
+        assert_eq!(registry.configured_count(), 1);
+        assert_eq!(registry.server_count(), 0);
+        assert_eq!(registry.tool_count(), 0);
+        registry.load("mock").await.unwrap();
         assert_eq!(registry.server_count(), 1);
         assert_eq!(registry.tool_count(), 1);
         assert!(registry.is_tool("mock__echo"));
@@ -575,5 +732,96 @@ for line in sys.stdin:
         assert_eq!(output, "echo:hi");
 
         std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[tokio::test]
+    async fn remote_server_reuses_session_and_exposes_tools() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server_task = tokio::spawn(async move {
+            for expected_method in [
+                "initialize",
+                "notifications/initialized",
+                "tools/list",
+                "tools/call",
+            ] {
+                let (mut socket, _) = listener.accept().await.unwrap();
+                let (headers, body) = read_http_request(&mut socket).await;
+                assert_eq!(body["method"], expected_method);
+                if expected_method == "initialize" {
+                    assert!(!headers.to_ascii_lowercase().contains(MCP_SESSION_ID));
+                    let body = json!({
+                        "jsonrpc": "2.0",
+                        "id": body["id"],
+                        "result": {
+                            "protocolVersion": PROTOCOL_VERSION,
+                            "capabilities": {},
+                            "serverInfo": { "name": "remote-mock", "version": "0" }
+                        }
+                    })
+                    .to_string();
+                    send_http_response(&mut socket, "200 OK", &body, Some("session-123")).await;
+                } else {
+                    assert!(headers
+                        .to_ascii_lowercase()
+                        .contains("mcp-session-id: session-123"));
+                    let response = match expected_method {
+                        "notifications/initialized" => String::new(),
+                        "tools/list" => json!({
+                            "jsonrpc": "2.0",
+                            "id": body["id"],
+                            "result": {
+                                "tools": [{
+                                    "name": "lookup_document",
+                                    "description": "Read a document by URL",
+                                    "inputSchema": { "type": "object" }
+                                }]
+                            }
+                        })
+                        .to_string(),
+                        "tools/call" => json!({
+                            "jsonrpc": "2.0",
+                            "id": body["id"],
+                            "result": {
+                                "content": [{ "type": "text", "text": "document content" }]
+                            }
+                        })
+                        .to_string(),
+                        _ => unreachable!(),
+                    };
+                    let status = if expected_method == "notifications/initialized" {
+                        "202 Accepted"
+                    } else {
+                        "200 OK"
+                    };
+                    send_http_response(&mut socket, status, &response, None).await;
+                }
+            }
+        });
+
+        let url = format!("http://{address}/mcp");
+        let server = McpServer {
+            name: "documents".to_string(),
+            enabled: true,
+            kind: McpKind::Remote {
+                url: url.clone(),
+                headers: Default::default(),
+                oauth: None,
+            },
+        };
+        let registry = McpRegistry::new(&[server]);
+        registry.load("documents").await.unwrap();
+        assert_eq!(registry.server_count(), 1);
+        assert!(registry.is_tool("documents__lookup_document"));
+        assert!(registry.tool_specs()[0].function.description.contains(&url));
+        let output = registry
+            .call(
+                "documents__lookup_document",
+                json!({ "url": "https://example.com/doc" }),
+            )
+            .await
+            .unwrap();
+        assert_eq!(output, "document content");
+        server_task.await.unwrap();
     }
 }

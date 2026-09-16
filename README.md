@@ -18,8 +18,9 @@ box, with Claude Code configuration support for compatibility.
 - Agent-level tools: `task` (subagents), `skill` (on-demand skill loading),
   `memory` (cross-session notes), `diagnostics` (LSP diagnostics), and
   `compress` (when context pruning is enabled).
-- MCP servers over stdio or HTTP (including OAuth-protected remote servers),
-  exposed as `<server>__<tool>`.
+- MCP servers over stdio or Streamable HTTP, loaded on demand with automatic
+  tool selection, OAuth discovery, and session handling, exposed as
+  `<server>__<tool>`.
 - Multimodal prompts: attach images/PDFs with `--image` or `@path` references,
   and pass prompt files as `oxide @file "message"`.
 - Project + global ecosystem discovery: instructions, commands, prompt
@@ -226,7 +227,7 @@ Manage MCP servers:
 
 ```sh
 oxide mcp add filesystem npx -y @modelcontextprotocol/server-filesystem .
-oxide mcp add --transport http slack https://mcp.slack.com/mcp
+oxide mcp add --transport http atlassian https://mcp.atlassian.com/v1/mcp
 oxide mcp list
 ```
 
@@ -301,12 +302,17 @@ oxide mcp auth [--scope project|global] <name>
 writes `~/.oxide/mcp.json`. See
 [docs/configuration.md](docs/configuration.md#mcp-servers) for examples.
 
-Remote servers can require OAuth. Slack's MCP server works with the URL alone
-(its public client is built in); for other servers add an `oauth` block and
-authorize with `oxide mcp auth <name>`. oxide runs the authorization-code flow
-with PKCE and refreshes the token automatically. See
-[Connecting to the Slack MCP server](docs/configuration.md#connect-to-the-slack-mcp-server)
+Remote servers can require OAuth. Add the server by URL; oxide detects a `401`
+authentication challenge, discovers the authorization server, runs the
+authorization-code flow with PKCE, and refreshes the token automatically. You
+can also authorize up front with `oxide mcp auth <name>`. See
+[Connecting to the Atlassian Rovo MCP server](docs/configuration.md#connect-to-the-atlassian-rovo-mcp-server)
 for a worked example.
+
+Configured servers are connected lazily. The model sees a compact `mcp_load`
+discovery tool at startup and loads the matching server automatically when a
+prompt names its service or contains one of its URLs. OAuth and full tool-schema
+discovery therefore happen only when that server is first needed.
 
 ## Configuration
 
@@ -475,8 +481,9 @@ Built-in file and shell tools use Pi-style names: `read`, `write`, `edit`,
 `bash`, `grep`, `find`, `ls`, and `webfetch`. Compatibility names
 `read_file`, `write_file`, `list_dir`, and `glob` remain accepted; `patch` is
 the unified-diff editing tool. Agent-level tools: `task`, `skill`, `memory`,
-`diagnostics`, and `compress` (when context pruning is enabled). Connected MCP
-tools appear as `<server>__<tool>`.
+`diagnostics`, and `compress` (when context pruning is enabled). `mcp_load`
+reveals a configured server on demand; its tools then appear as
+`<server>__<tool>`.
 
 | Tool | Parameters |
 | --- | --- |
@@ -626,6 +633,7 @@ Runtime state lives under the platform oxide config directory:
 
 - Main configuration: `config.json`
 - Credentials: `auth.json`
+- Cached provider model lists: `model-cache.json` (refreshed after 24 hours)
 - MCP OAuth tokens: `mcp-oauth/<server>.json` (mode `0600`)
 - Sessions: `sessions/<project>/*.jsonl`
 - Session names: `sessions/<project>/<id>.name`

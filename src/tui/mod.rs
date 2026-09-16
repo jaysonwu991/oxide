@@ -33,7 +33,7 @@ use tokio::sync::mpsc::{unbounded_channel, UnboundedReceiver, UnboundedSender};
 const MAX_TOOL_PROGRESS_BYTES: usize = 6_000;
 
 pub async fn run(config: Config, cwd: PathBuf, session: Option<SessionLog>) -> Result<()> {
-    let mcp = Arc::new(McpRegistry::connect(&config.ecosystem.mcp).await);
+    let mcp = Arc::new(McpRegistry::new(&config.ecosystem.mcp));
     let plugins = Arc::new(PluginHost::spawn(&config.ecosystem.plugins, &cwd).await);
     let snapshots = Snapshots::open(&cwd).ok().map(Arc::new);
     let lsp = Arc::new(LspManager::new());
@@ -119,8 +119,9 @@ async fn event_loop(
         "Build, refactor, debug, and understand your code.".to_string(),
     ));
     app.items.push(ChatItem::Info(format!(
-        "ecosystem: {} · mcp: {} server(s), {} tool(s) · plugins: {}{} · memory: {} entr{}",
+        "ecosystem: {} · mcp: {} configured, {} loaded, {} tool(s) · plugins: {}{} · memory: {} entr{}",
         config.ecosystem.summary(),
+        mcp.configured_count(),
         mcp.server_count(),
         mcp.tool_count(),
         plugins.plugin_count(),
@@ -196,6 +197,12 @@ async fn event_loop(
     let mut reader = EventStream::new();
     let mut rx: Option<UnboundedReceiver<AgentEvent>> = None;
     let (models_tx, mut models_rx) = unbounded_channel::<Result<Vec<String>, String>>();
+    if !config.api_key.trim().is_empty() && config.model_catalog.is_empty() {
+        let warm_config = config.clone();
+        tokio::spawn(async move {
+            let _ = LlmClient::new(warm_config).list_models().await;
+        });
+    }
     let mut tick = tokio::time::interval(std::time::Duration::from_millis(500));
 
     let (approval_tx, mut approval_rx) = unbounded_channel::<ApprovalRequest>();

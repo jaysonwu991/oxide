@@ -583,7 +583,7 @@ async fn spawn_agent(request: RunRequest<'_>, tx: tokio::sync::mpsc::UnboundedSe
         command_agent,
         log,
     } = request;
-    let mcp = Arc::new(McpRegistry::connect(&config.ecosystem.mcp).await);
+    let mcp = Arc::new(McpRegistry::new(&config.ecosystem.mcp));
     let plugins = Arc::new(PluginHost::spawn(&config.ecosystem.plugins, cwd).await);
     let auto_approve = config.auto_approve;
     let approve: Approver = Arc::new(move |tool, detail| {
