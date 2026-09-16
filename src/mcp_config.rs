@@ -79,6 +79,24 @@ fn sources(cwd: &Path) -> Vec<Source> {
     list
 }
 
+fn list_sources(cwd: &Path) -> Vec<Source> {
+    let mut list = sources(cwd);
+    if let Some(config) = dirs::config_dir() {
+        let project_index = list
+            .iter()
+            .position(|source| source.label == "claude (project)")
+            .unwrap_or(list.len());
+        list.insert(
+            project_index,
+            Source {
+                label: "platform global".to_string(),
+                path: config.join("oxide").join("mcp.json"),
+            },
+        );
+    }
+    list
+}
+
 fn read_file(path: &Path) -> Result<Value> {
     if !path.exists() {
         return Ok(json!({}));
@@ -390,9 +408,9 @@ pub fn add_json(cwd: &Path, scope: Option<String>, name: String, raw: &str) -> R
     Ok(())
 }
 
-pub fn list(cwd: &Path) -> Result<()> {
+pub async fn list(cwd: &Path) -> Result<()> {
     let mut merged: BTreeMap<String, (String, Value)> = BTreeMap::new();
-    for source in sources(cwd) {
+    for source in list_sources(cwd) {
         let Ok(root) = read_file(&source.path) else {
             continue;
         };
@@ -407,10 +425,49 @@ pub fn list(cwd: &Path) -> Result<()> {
         println!("no MCP servers configured");
         return Ok(());
     }
+
+    let mut statuses = BTreeMap::new();
+    let mut probes = tokio::task::JoinSet::new();
+    let project_trusted = crate::trust::resolve(
+        &crate::trust::TrustStore::load().unwrap_or_default(),
+        cwd,
+        None,
+        crate::config::load_default_project_trust(),
+    )
+    .is_trusted();
+    for (name, (source, config)) in &merged {
+        if source.contains("project") && !project_trusted {
+            statuses.insert(name.clone(), crate::mcp::McpStatus::NeedsTrust);
+            continue;
+        }
+        match crate::ecosystem::mcp_from_claude(name, config) {
+            Some(server) => {
+                let name = name.clone();
+                probes.spawn(async move { (name, crate::mcp::probe(&server).await) });
+            }
+            None => {
+                statuses.insert(
+                    name.clone(),
+                    crate::mcp::McpStatus::Error("invalid configuration".to_string()),
+                );
+            }
+        }
+    }
+    while let Some(result) = probes.join_next().await {
+        if let Ok((name, status)) = result {
+            statuses.insert(name, status);
+        }
+    }
+
     println!("MCP servers ({}):", merged.len());
     for (name, (source, config)) in &merged {
         let (transport, detail) = describe(config);
-        println!("  {name} [{transport}] {detail}");
+        let status = statuses
+            .get(name)
+            .cloned()
+            .unwrap_or_else(|| crate::mcp::McpStatus::Error("status check failed".to_string()));
+        println!("  {name} [{transport}] {status}");
+        println!("      {detail}");
         println!("      source: {source}");
     }
     Ok(())

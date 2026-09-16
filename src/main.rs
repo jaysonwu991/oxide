@@ -235,7 +235,7 @@ async fn main() -> Result<()> {
             Command::Mcp { action } => {
                 let current_dir = std::env::current_dir().context("resolving current directory")?;
                 match action {
-                    McpAction::List => mcp_config::list(&current_dir),
+                    McpAction::List => mcp_config::list(&current_dir).await,
                     McpAction::Get { name } => mcp_config::get(&current_dir, &name),
                     McpAction::Add {
                         name,

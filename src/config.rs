@@ -355,7 +355,7 @@ fn default_true() -> bool {
 
 /// Reads `defaultProjectTrust` from the global `settings.json` in the oxide
 /// config directory (Pi keeps the same key in `~/.pi/agent/settings.json`).
-fn load_default_project_trust() -> crate::trust::DefaultTrust {
+pub(crate) fn load_default_project_trust() -> crate::trust::DefaultTrust {
     let path = dirs::config_dir()
         .unwrap_or_else(|| PathBuf::from("."))
         .join("oxide")
