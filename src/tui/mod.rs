@@ -17,7 +17,7 @@ use crate::tui::app::{
 use anyhow::{Context, Result};
 use crossterm::event::{
     DisableBracketedPaste, DisableMouseCapture, EnableBracketedPaste, EnableMouseCapture, Event,
-    EventStream, KeyCode, KeyEvent, KeyModifiers, MouseEvent, MouseEventKind,
+    EventStream, KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind,
 };
 use crossterm::execute;
 use crossterm::terminal::{
@@ -25,6 +25,7 @@ use crossterm::terminal::{
 };
 use futures::StreamExt;
 use ratatui::backend::CrosstermBackend;
+use ratatui::layout::Rect;
 use ratatui::Terminal;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -226,7 +227,7 @@ async fn event_loop(
     });
 
     loop {
-        terminal.draw(|frame| ui::draw(frame, &mut app))?;
+        let terminal_area = terminal.draw(|frame| ui::draw(frame, &mut app))?.area;
 
         let mut got_agent_event = false;
         tokio::select! {
@@ -237,7 +238,7 @@ async fn event_loop(
                         snapshots.as_ref(), &lsp, &mut session, &approve, &models_tx, &mcps_tx,
                     ),
                     Some(Ok(Event::Paste(text))) => handle_paste(text, &mut app),
-                    Some(Ok(Event::Mouse(mouse))) => handle_mouse(mouse, &mut app),
+                    Some(Ok(Event::Mouse(mouse))) => handle_mouse(mouse, &mut app, terminal_area),
                     _ => {}
                 }
             }
@@ -1560,12 +1561,42 @@ fn handle_paste(text: String, app: &mut App) {
     }
 }
 
-/// Scrolls the conversation with the mouse wheel without stealing keys from
-/// the input box.
-fn handle_mouse(mouse: MouseEvent, app: &mut App) {
+/// Routes pointer interaction to suggestions, otherwise scrolling the chat.
+fn handle_mouse(mouse: MouseEvent, app: &mut App, terminal_area: Rect) {
     match mouse.kind {
-        MouseEventKind::ScrollUp => app.scroll_up(3),
-        MouseEventKind::ScrollDown => app.scroll_down(3),
+        MouseEventKind::ScrollUp => {
+            if ui::suggestion_index_at(app, terminal_area, mouse.column, mouse.row).is_some() {
+                app.suggestion_index = app.suggestion_index.saturating_sub(1);
+            } else {
+                app.scroll_up(3);
+            }
+        }
+        MouseEventKind::ScrollDown => {
+            if ui::suggestion_index_at(app, terminal_area, mouse.column, mouse.row).is_some() {
+                app.suggestion_index =
+                    (app.suggestion_index + 1).min(app.suggestions.len().saturating_sub(1));
+            } else {
+                app.scroll_down(3);
+            }
+        }
+        MouseEventKind::Moved => {
+            if let Some(index) =
+                ui::suggestion_index_at(app, terminal_area, mouse.column, mouse.row)
+            {
+                app.suggestion_index = index;
+            }
+        }
+        MouseEventKind::Down(MouseButton::Left) => {
+            if let Some(index) =
+                ui::suggestion_index_at(app, terminal_area, mouse.column, mouse.row)
+            {
+                app.suggestion_index = index;
+                if complete_suggestion(app) {
+                    app.suggestions.clear();
+                    app.suggestion_index = 0;
+                }
+            }
+        }
         _ => {}
     }
 }
@@ -2166,10 +2197,54 @@ mod tests {
                 modifiers: KeyModifiers::NONE,
             },
             &mut app,
+            Rect::new(0, 0, 80, 24),
         );
         assert_eq!(app.scroll, 27);
         assert_eq!(app.input_history, vec!["prompt".to_string()]);
         assert!(app.input.is_empty());
+    }
+
+    #[test]
+    fn mouse_hover_and_click_complete_a_suggestion() {
+        let mut app = test_app();
+        app.set_input("/s".to_string());
+        app.suggestions = vec![
+            CommandHint {
+                name: "session".to_string(),
+                description: "show session info".to_string(),
+            },
+            CommandHint {
+                name: "share".to_string(),
+                description: "share this session".to_string(),
+            },
+        ];
+        let area = Rect::new(0, 0, 80, 24);
+
+        handle_mouse(
+            MouseEvent {
+                kind: MouseEventKind::Moved,
+                column: 4,
+                row: 15,
+                modifiers: KeyModifiers::NONE,
+            },
+            &mut app,
+            area,
+        );
+        assert_eq!(app.suggestion_index, 1);
+
+        handle_mouse(
+            MouseEvent {
+                kind: MouseEventKind::Down(MouseButton::Left),
+                column: 4,
+                row: 15,
+                modifiers: KeyModifiers::NONE,
+            },
+            &mut app,
+            area,
+        );
+        assert_eq!(app.input, "/share");
+        assert_eq!(app.input_cursor, app.input.len());
+        assert!(app.suggestions.is_empty());
     }
 
     #[test]
