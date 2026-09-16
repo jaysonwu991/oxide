@@ -4,7 +4,7 @@ use crate::mcp::McpRegistry;
 use crate::media;
 use anyhow::{Context, Result};
 use serde_json::{json, Value};
-use std::collections::VecDeque;
+use std::collections::{BTreeSet, VecDeque};
 use std::io::{BufWriter, Write};
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
@@ -888,6 +888,25 @@ fn walk(root: &Path, visit: &mut impl FnMut(&Path) -> bool) {
             }
         }
     }
+}
+
+/// Returns project-relative files and folders for interactive path completion.
+///
+/// This shares the tool walker's ignore behavior so the TUI does not suggest
+/// build output, dependencies, or files excluded by project `.gitignore`s.
+pub(crate) fn workspace_paths(root: &Path) -> Vec<String> {
+    let mut paths = BTreeSet::new();
+    walk(root, &mut |path| {
+        let rel = path.strip_prefix(root).unwrap_or(path);
+        paths.insert(rel.to_string_lossy().replace('\\', "/"));
+        let mut parent = rel.parent();
+        while let Some(dir) = parent.filter(|dir| !dir.as_os_str().is_empty()) {
+            paths.insert(format!("{}/", dir.to_string_lossy().replace('\\', "/")));
+            parent = dir.parent();
+        }
+        true
+    });
+    paths.into_iter().collect()
 }
 
 /// Reads the `.gitignore` rules introduced by one directory. The walker carries

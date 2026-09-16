@@ -375,7 +375,7 @@ fn handle_key(
             };
         }
         KeyCode::Enter if is_newline_shortcut(&key) => {
-            app.input.push('\n');
+            app.insert_input("\n");
             app.auto_scroll = true;
             refresh_suggestions(app, config);
         }
@@ -386,7 +386,7 @@ fn handle_key(
                     return;
                 }
                 app.remember_input(&raw);
-                app.input.clear();
+                app.clear_input();
                 app.items.push(ChatItem::User(raw.clone()));
                 app.auto_scroll = true;
                 if key.modifiers.contains(KeyModifiers::ALT) {
@@ -402,17 +402,13 @@ fn handle_key(
             if raw.is_empty() && app.attachments.is_empty() {
                 return;
             }
-            if let Some(hint) = app.suggestions.get(app.suggestion_index) {
-                let completed = format!("/{}", hint.name);
-                if raw != completed {
-                    app.input = completed;
-                    refresh_suggestions(app, config);
-                    return;
-                }
+            if complete_suggestion(app) {
+                refresh_suggestions(app, config);
+                return;
             }
             app.remember_input(&raw);
             if raw == "/undo" || raw == "/redo" {
-                app.input.clear();
+                app.clear_input();
                 refresh_suggestions(app, config);
                 let result = match snapshots {
                     Some(snapshots) => {
@@ -439,7 +435,7 @@ fn handle_key(
                 return;
             }
             if raw == "/compact" {
-                app.input.clear();
+                app.clear_input();
                 refresh_suggestions(app, config);
                 if app.busy {
                     return;
@@ -470,7 +466,7 @@ fn handle_key(
                 || raw == "/login"
                 || raw.starts_with("/login ")
             {
-                app.input.clear();
+                app.clear_input();
                 refresh_suggestions(app, config);
                 let rest = raw
                     .strip_prefix("/connect")
@@ -488,7 +484,7 @@ fn handle_key(
                 return;
             }
             if raw == "/logout" || raw.starts_with("/logout ") {
-                app.input.clear();
+                app.clear_input();
                 refresh_suggestions(app, config);
                 let requested = raw.strip_prefix("/logout").unwrap_or_default().trim();
                 let provider = if requested.is_empty() {
@@ -511,7 +507,7 @@ fn handle_key(
                 return;
             }
             if raw == "/mcps" {
-                app.input.clear();
+                app.clear_input();
                 refresh_suggestions(app, config);
                 app.status = "checking MCP servers...".to_string();
                 let mcp = Arc::clone(mcp);
@@ -522,7 +518,7 @@ fn handle_key(
                 return;
             }
             if raw == "/models" || raw.starts_with("/models ") {
-                app.input.clear();
+                app.clear_input();
                 refresh_suggestions(app, config);
                 if config.api_key.trim().is_empty() {
                     app.items.push(ChatItem::Error(
@@ -551,13 +547,13 @@ fn handle_key(
                 return;
             }
             if raw == "/help" || raw == "/?" {
-                app.input.clear();
+                app.clear_input();
                 refresh_suggestions(app, config);
                 app.items.push(ChatItem::Info(help_text(config)));
                 return;
             }
             if raw == "/clone" {
-                app.input.clear();
+                app.clear_input();
                 refresh_suggestions(app, config);
                 if app.busy {
                     return;
@@ -576,7 +572,7 @@ fn handle_key(
                 return;
             }
             if raw == "/fork" || raw.starts_with("/fork ") {
-                app.input.clear();
+                app.clear_input();
                 refresh_suggestions(app, config);
                 if app.busy {
                     return;
@@ -593,7 +589,7 @@ fn handle_key(
                             Ok(log) => {
                                 app.history.truncate(cut);
                                 *session = Some(log);
-                                app.input = prompt;
+                                app.set_input(prompt);
                                 app.items.push(ChatItem::Info(format!(
                                     "forked at message {index} — edit and resend"
                                 )));
@@ -618,7 +614,7 @@ fn handle_key(
                 return;
             }
             if raw == "/tree" {
-                app.input.clear();
+                app.clear_input();
                 refresh_suggestions(app, config);
                 for (position, message) in user_messages(&app.history) {
                     let preview: String = message.chars().take(72).collect();
@@ -631,7 +627,7 @@ fn handle_key(
                 return;
             }
             if raw == "/new" {
-                app.input.clear();
+                app.clear_input();
                 refresh_suggestions(app, config);
                 if app.busy {
                     return;
@@ -652,14 +648,14 @@ fn handle_key(
                 return;
             }
             if raw == "/session" {
-                app.input.clear();
+                app.clear_input();
                 refresh_suggestions(app, config);
                 app.items
                     .push(ChatItem::Info(session_info(session, &app.history)));
                 return;
             }
             if raw == "/name" || raw.starts_with("/name ") {
-                app.input.clear();
+                app.clear_input();
                 refresh_suggestions(app, config);
                 let name = raw.strip_prefix("/name").unwrap_or_default().trim();
                 if name.is_empty() {
@@ -683,7 +679,7 @@ fn handle_key(
                 return;
             }
             if raw == "/model" || raw.starts_with("/model ") {
-                app.input.clear();
+                app.clear_input();
                 refresh_suggestions(app, config);
                 let requested = raw.strip_prefix("/model").unwrap_or_default().trim();
                 if requested.is_empty() {
@@ -702,7 +698,7 @@ fn handle_key(
                 return;
             }
             if raw == "/thinking" || raw.starts_with("/thinking ") {
-                app.input.clear();
+                app.clear_input();
                 refresh_suggestions(app, config);
                 let requested = raw.strip_prefix("/thinking").unwrap_or_default().trim();
                 if requested.is_empty() {
@@ -725,7 +721,7 @@ fn handle_key(
                 return;
             }
             if raw == "/theme" || raw.starts_with("/theme ") {
-                app.input.clear();
+                app.clear_input();
                 refresh_suggestions(app, config);
                 let requested = raw.strip_prefix("/theme").unwrap_or_default().trim();
                 if requested.is_empty() {
@@ -751,7 +747,7 @@ fn handle_key(
                 return;
             }
             if raw == "/trust" || raw.starts_with("/trust ") {
-                app.input.clear();
+                app.clear_input();
                 refresh_suggestions(app, config);
                 let requested = raw.strip_prefix("/trust").unwrap_or_default().trim();
                 let mut store = crate::trust::TrustStore::load().unwrap_or_default();
@@ -785,7 +781,7 @@ fn handle_key(
                 return;
             }
             if raw == "/reload" {
-                app.input.clear();
+                app.clear_input();
                 match Config::load(
                     cwd,
                     None,
@@ -810,13 +806,13 @@ fn handle_key(
                 return;
             }
             if raw == "/hotkeys" {
-                app.input.clear();
+                app.clear_input();
                 refresh_suggestions(app, config);
                 app.items.push(ChatItem::Info(hotkeys_text()));
                 return;
             }
             if raw == "/export" || raw.starts_with("/export ") {
-                app.input.clear();
+                app.clear_input();
                 refresh_suggestions(app, config);
                 let target = raw.strip_prefix("/export").unwrap_or_default().trim();
                 match export_session(session, &app.history, cwd, target) {
@@ -828,7 +824,7 @@ fn handle_key(
                 return;
             }
             let init = raw == "/init";
-            app.input.clear();
+            app.clear_input();
             refresh_suggestions(app, config);
             if config.api_key.trim().is_empty() {
                 app.items.push(ChatItem::Error(
@@ -967,19 +963,26 @@ fn handle_key(
         KeyCode::Char('e') if key.modifiers.contains(KeyModifiers::CONTROL) => app.scroll_down(1),
         KeyCode::Char('g') if key.modifiers.contains(KeyModifiers::CONTROL) => app.scroll_to_top(),
         KeyCode::Char(ch) => {
-            app.input.push(ch);
+            app.insert_input(&ch.to_string());
             app.history_index = None;
             app.auto_scroll = true;
             refresh_suggestions(app, config);
         }
         KeyCode::Backspace => {
-            app.input.pop();
+            app.input_backspace();
             app.history_index = None;
             refresh_suggestions(app, config);
         }
+        KeyCode::Left => {
+            app.input_cursor_left();
+            refresh_suggestions(app, config);
+        }
+        KeyCode::Right => {
+            app.input_cursor_right();
+            refresh_suggestions(app, config);
+        }
         KeyCode::Tab if !app.suggestions.is_empty() => {
-            if let Some(hint) = app.suggestions.get(app.suggestion_index) {
-                app.input = format!("/{}", hint.name);
+            if complete_suggestion(app) {
                 refresh_suggestions(app, config);
             }
         }
@@ -1012,7 +1015,7 @@ fn escape_action(app: &mut App) {
     if app.input.is_empty() {
         app.should_quit = true;
     } else {
-        app.input.clear();
+        app.clear_input();
     }
 }
 
@@ -1345,14 +1348,30 @@ fn builtin_commands() -> Vec<CommandHint> {
     ]
 }
 
-/// Recomputes the slash-command suggestions for the current input.
+/// Recomputes slash-command or `@path` suggestions for the current input.
 fn refresh_suggestions(app: &mut App, config: &Config) {
     app.suggestions.clear();
     app.suggestion_index = 0;
     if app.connect.is_some() || app.models.is_some() || app.trust.is_some() || app.busy {
         return;
     }
-    let Some(query) = app.input.strip_prefix('/') else {
+    if let Some((_, _, query)) = active_file_query(&app.input, app.input_cursor) {
+        let query = query.to_ascii_lowercase();
+        let paths = app
+            .workspace_paths
+            .get_or_insert_with(|| crate::tools::workspace_paths(Path::new(&app.cwd)));
+        app.suggestions = paths
+            .iter()
+            .filter(|path| path.to_ascii_lowercase().contains(&query))
+            .take(200)
+            .map(|path| CommandHint {
+                name: path.clone(),
+                description: String::new(),
+            })
+            .collect();
+        return;
+    }
+    let Some(query) = app.input[..app.input_cursor].strip_prefix('/') else {
         return;
     };
     if query.contains(char::is_whitespace) {
@@ -1387,6 +1406,58 @@ fn refresh_suggestions(app: &mut App, config: &Config) {
         .into_iter()
         .filter(|hint| hint.name.to_ascii_lowercase().starts_with(&query))
         .collect();
+}
+
+/// Returns the byte range and query for the `@path` token at the cursor.
+fn active_file_query(input: &str, cursor: usize) -> Option<(usize, usize, &str)> {
+    let before = input.get(..cursor)?;
+    let start = before
+        .char_indices()
+        .rev()
+        .find_map(|(index, ch)| ch.is_whitespace().then_some(index + ch.len_utf8()))
+        .unwrap_or(0);
+    let query = before.get(start..)?.strip_prefix('@')?;
+    let tail = input.get(cursor..)?;
+    let end = tail
+        .char_indices()
+        .find_map(|(index, ch)| ch.is_whitespace().then_some(cursor + index))
+        .unwrap_or(input.len());
+    Some((start, end, query))
+}
+
+/// Applies the selected command or file suggestion to the input.
+fn complete_suggestion(app: &mut App) -> bool {
+    let Some(name) = app
+        .suggestions
+        .get(app.suggestion_index)
+        .map(|hint| hint.name.clone())
+    else {
+        return false;
+    };
+    if app.input.starts_with('/') {
+        let completed = format!("/{name}");
+        let end = app
+            .input
+            .find(char::is_whitespace)
+            .unwrap_or(app.input.len());
+        if app.input.get(..end) == Some(completed.as_str()) {
+            return false;
+        }
+        app.input.replace_range(..end, &completed);
+        app.input_cursor = completed.len();
+    } else if let Some((start, end, _)) = active_file_query(&app.input, app.input_cursor) {
+        let replace_end = if app.input[end..].starts_with(' ') {
+            end + 1
+        } else {
+            end
+        };
+        let completed = format!("@{name} ");
+        app.input.replace_range(start..replace_end, &completed);
+        app.input_cursor = start + completed.len();
+    } else {
+        return false;
+    }
+    true
 }
 
 fn handle_models_key(key: KeyEvent, app: &mut App, config: &mut Config) {
@@ -1484,7 +1555,7 @@ fn handle_paste(text: String, app: &mut App) {
         state.filter.push_str(&text);
         state.selected = 0;
     } else {
-        app.input.push_str(&text);
+        app.insert_input(&text);
         app.auto_scroll = true;
     }
 }
@@ -1680,6 +1751,7 @@ fn handle_agent_event(event: AgentEvent, app: &mut App) {
         }
         AgentEvent::Finished(history) => {
             app.history = history;
+            app.workspace_paths = None;
             app.busy = false;
             app.busy_since = None;
             app.assistant_open = false;
@@ -1868,7 +1940,7 @@ mod tests {
     #[test]
     fn escape_clears_input_then_quits() {
         let mut app = test_app();
-        app.input = "draft".to_string();
+        app.set_input("draft".to_string());
 
         escape_action(&mut app);
         assert!(app.input.is_empty());
@@ -1904,20 +1976,20 @@ mod tests {
         let config = Config::default();
         let mut app = test_app();
 
-        app.input = "/".to_string();
+        app.set_input("/".to_string());
         refresh_suggestions(&mut app, &config);
         assert!(app.suggestions.iter().any(|hint| hint.name == "models"));
         assert!(app.suggestions.iter().any(|hint| hint.name == "mcps"));
 
-        app.input = "/models".to_string();
+        app.set_input("/models".to_string());
         refresh_suggestions(&mut app, &config);
         assert!(app.suggestions.iter().any(|hint| hint.name == "models"));
 
-        app.input = "hello".to_string();
+        app.set_input("hello".to_string());
         refresh_suggestions(&mut app, &config);
         assert!(app.suggestions.is_empty());
 
-        app.input = "/models foo".to_string();
+        app.set_input("/models foo".to_string());
         refresh_suggestions(&mut app, &config);
         assert!(app.suggestions.is_empty());
     }
@@ -1936,10 +2008,44 @@ mod tests {
                 subtask: false,
             });
         let mut app = test_app();
-        app.input = "/rev".to_string();
+        app.set_input("/rev".to_string());
         refresh_suggestions(&mut app, &config);
         assert_eq!(app.suggestions.len(), 1);
         assert_eq!(app.suggestions[0].name, "review");
+    }
+
+    #[test]
+    fn suggestions_show_project_files_for_at_path() {
+        let dir =
+            std::env::temp_dir().join(format!("oxide_file_suggestions_{}", std::process::id()));
+        std::fs::create_dir_all(dir.join("src")).unwrap();
+        std::fs::write(dir.join("src/main.rs"), "fn main() {}").unwrap();
+        std::fs::write(dir.join("README.md"), "oxide").unwrap();
+
+        let config = Config::default();
+        let mut app = App::new(
+            "test-model".to_string(),
+            dir.display().to_string(),
+            crate::config::Mode::Build,
+            crate::config::Reasoning::Auto,
+        );
+        app.set_input("review @main".to_string());
+        refresh_suggestions(&mut app, &config);
+
+        assert_eq!(app.suggestions.len(), 1);
+        assert_eq!(app.suggestions[0].name, "src/main.rs");
+        assert!(complete_suggestion(&mut app));
+        assert_eq!(app.input, "review @src/main.rs ");
+        assert_eq!(active_file_query(&app.input, app.input_cursor), None);
+
+        app.set_input("review @sr".to_string());
+        refresh_suggestions(&mut app, &config);
+        assert_eq!(app.suggestions[0].name, "src/");
+        assert!(complete_suggestion(&mut app));
+        assert_eq!(app.input, "review @src/ ");
+        assert_eq!(app.input_cursor, app.input.len());
+
+        std::fs::remove_dir_all(&dir).ok();
     }
 
     #[test]
@@ -1961,6 +2067,22 @@ mod tests {
 
         state.filter = "missing".to_string();
         assert!(state.selected_model().is_none());
+    }
+
+    #[test]
+    fn input_cursor_edits_unicode_text() {
+        let mut app = test_app();
+        app.set_input("a界c".to_string());
+
+        app.input_cursor_left();
+        app.input_cursor_left();
+        app.insert_input("b");
+        assert_eq!(app.input, "ab界c");
+
+        app.input_cursor_right();
+        app.input_backspace();
+        assert_eq!(app.input, "abc");
+        assert!(app.input.is_char_boundary(app.input_cursor));
     }
 
     #[test]
@@ -2063,7 +2185,7 @@ mod tests {
     fn init_is_a_builtin_command() {
         let config = Config::default();
         let mut app = test_app();
-        app.input = "/ini".to_string();
+        app.set_input("/ini".to_string());
         refresh_suggestions(&mut app, &config);
         assert_eq!(app.suggestions.len(), 1);
         assert_eq!(app.suggestions[0].name, "init");
