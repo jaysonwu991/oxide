@@ -159,6 +159,39 @@ The equivalent `.mcp.json` / `.oxide/mcp.json` entry is:
 
 Once authorized, the tools appear as `atlassian__<tool>`.
 
+#### Connect to the Context7 MCP server
+
+Context7's own setup command (`npx ctx7 setup --oxide` or `npx @upstash/context7-mcp@latest --setup --oxide`) does not
+recognize oxide, since it only writes config files for editors it knows about.
+Add the server directly with the CLI instead:
+
+```sh
+oxide mcp add --transport http context7 https://mcp.context7.com/mcp/oauth
+```
+
+Or add the equivalent entry to `.mcp.json` / `.oxide/mcp.json` by hand:
+
+```json
+{
+  "mcpServers": {
+    "context7": {
+      "type": "http",
+      "url": "https://mcp.context7.com/mcp/oauth"
+    }
+  }
+}
+```
+
+On the first prompt that needs Context7, oxide loads the server, follows its
+OAuth discovery metadata, and opens the consent screen. To authorize before
+starting oxide, run:
+
+```sh
+oxide mcp auth context7
+```
+
+Once authorized, the tools appear as `context7__<tool>`.
+
 ### File schema
 
 You can also edit the files directly. The schema is the same in every file.
@@ -507,22 +540,23 @@ See [Configuration](../README.md#configuration) and
 
 ### Portkey
 
-Portkey uses the OpenAI-compatible Chat Completions API. Select the `portkey`
-provider and connect a Portkey API key from the TUI:
+Portkey uses the OpenAI-compatible Chat Completions API. In both setups below,
+keep the API key out of `config.json`: `/login portkey` stores it in
+`auth.json` with mode `0600` and selects Portkey as the active provider.
+
+#### Login without a custom gateway
+
+Start Oxide and run:
 
 ```text
 /login portkey
 ```
 
-Alternatively, set `PORTKEY_API_KEY`; `OXIDE_API_KEY` has higher precedence.
-If neither is set and no stored or configured Portkey key exists, Oxide also
-accepts `OPENAI_API_KEY` as the generic OpenAI-compatible fallback. Oxide sends
-the selected key as `x-portkey-api-key`, not as a bearer token. Keep API keys
-out of `config.json` when possible.
-
-The built-in preset uses `https://api.portkey.ai/v1` and
-`claude-sonnet-5`. A direct setup can use a Portkey Model Catalog identifier as
-the model:
+Paste your Portkey API key when prompted. For a new setup, no other
+configuration is required: Oxide uses `https://api.portkey.ai/v1` and
+`claude-sonnet-5` by default. If you previously configured a custom gateway,
+remove its `base_url` before using the default endpoint. To use a model from
+the Portkey Model Catalog, set its identifier in `config.json`:
 
 ```json
 {
@@ -531,28 +565,61 @@ the model:
 }
 ```
 
-For routing, fallbacks, retries, or other gateway behavior, set a saved Portkey
-Config ID. Oxide sends it as `x-portkey-config` on model-list and chat requests:
+The global file is `~/Library/Application Support/oxide/config.json` on macOS,
+`~/.config/oxide/config.json` on Linux, and `%APPDATA%\oxide\config.json` on
+Windows.
+
+#### Login with a custom gateway
+
+First add the gateway and routing settings to the global `config.json`:
+
+```json
+{
+  "provider": "portkey",
+  "model": "account-model",
+  "base_url": "https://gateway.example.com/v1",
+  "portkey_config": "pc-example",
+  "model_catalog": ["account-model", "fallback-model"]
+}
+```
+
+After saving the file, start Oxide and run `/login portkey`. If Oxide is already
+running, save the file, run `/login portkey`, then run `/reload`. Paste the API
+key for that gateway when prompted. Oxide sends the key as
+`x-portkey-api-key` and the Config ID as `x-portkey-config`; it does not send
+the key as a bearer token.
+
+`portkey_config` is optional when the gateway does not require a saved Portkey
+Config. `model_catalog` is also optional, but is useful when the gateway blocks
+`GET <base_url>/models` or exposes account-specific model names. The active
+`model` is always included in the model picker.
+
+The same setup can be supplied with environment variables instead of storing
+the gateway settings in the file:
+
+```sh
+PORTKEY_API_KEY=... \
+PORTKEY_BASE_URL=https://gateway.example.com/v1 \
+PORTKEY_CONFIG=pc-example \
+PORTKEY_MODELS=account-model,fallback-model \
+oxide --provider portkey --model account-model
+```
+
+`PORTKEY_API_KEY` can also be used for the default setup. `OXIDE_API_KEY` has
+higher precedence; if neither is set and no stored or configured Portkey key
+exists, Oxide accepts `OPENAI_API_KEY` as the generic OpenAI-compatible
+fallback. `PORTKEY_BASE_URL` overrides `base_url`, `OXIDE_BASE_URL` overrides
+both, `PORTKEY_CONFIG` overrides `portkey_config`, and `PORTKEY_MODELS`
+overrides `model_catalog` with a comma-separated list.
+
+For routing, fallbacks, retries, or other behavior through Portkey's standard
+endpoint, set a saved Config ID without changing `base_url`:
 
 ```json
 {
   "provider": "portkey",
   "model": "claude-sonnet-5",
   "portkey_config": "pc-example"
-}
-```
-
-`PORTKEY_CONFIG` overrides `portkey_config`. For a self-hosted or custom
-gateway, set `base_url`; `PORTKEY_BASE_URL` overrides the file and
-`OXIDE_BASE_URL` overrides both:
-
-```json
-{
-  "provider": "portkey",
-  "base_url": "https://gateway.example.com/v1",
-  "portkey_config": "pc-example",
-  "model": "account-model",
-  "model_catalog": ["account-model", "fallback-model"]
 }
 ```
 
