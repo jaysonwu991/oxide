@@ -474,12 +474,11 @@ fn try_remove(path: &Path, name: &str) -> Result<bool> {
 
 fn describe(config: &Value) -> (&'static str, String) {
     if let Some(url) = config.get("url").and_then(Value::as_str) {
-        let suffix =
-            if config.get("oauth").is_some() || crate::ecosystem::known_oauth(url).is_some() {
-                " (oauth)"
-            } else {
-                ""
-            };
+        let suffix = if config.get("oauth").is_some() {
+            " (oauth)"
+        } else {
+            ""
+        };
         return ("http", format!("{url}{suffix}"));
     }
     if let Some(command) = config.get("command").and_then(Value::as_str) {
