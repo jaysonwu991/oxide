@@ -473,7 +473,8 @@ oxide also reads the Claude Code layout, so existing configurations work as-is:
 Slash commands are expanded from the ecosystem and also include built-ins:
 `/help`, `/hotkeys`, `/new`, `/session`, `/tree`, `/fork`, `/clone`, `/name`,
 `/model`, `/thinking`, `/theme`, `/trust`, `/export`, `/reload`, `/init`,
-`/login`, `/logout`, `/models`, `/connect`, `/undo`, `/redo`, and `/compact`.
+`/login`, `/logout`, `/models`, `/mcps`, `/connect`, `/undo`, `/redo`, and
+`/compact`.
 
 ## Tools
 

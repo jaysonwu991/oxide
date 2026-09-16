@@ -47,7 +47,7 @@ struct Metadata {
     authorization_endpoint: String,
     token_endpoint: String,
     registration_endpoint: Option<String>,
-    scopes_supported: Vec<String>,
+    resource_scopes_supported: Vec<String>,
 }
 
 /// Shared OAuth state for one remote server. Cheap to clone via `Arc`.
@@ -236,7 +236,7 @@ impl OAuthState {
         let scopes = if self.config.scopes.is_empty() {
             let challenge_scopes = self.challenge_scopes.lock().await.clone();
             if challenge_scopes.is_empty() {
-                metadata.scopes_supported.clone()
+                metadata.resource_scopes_supported.clone()
             } else {
                 challenge_scopes
             }
@@ -434,10 +434,18 @@ async fn discover(
     resource_candidates.push(format!("{origin}/.well-known/oauth-protected-resource"));
 
     let mut authorization_servers = Vec::new();
+    let mut resource_scopes_supported = Vec::new();
     for candidate in &resource_candidates {
         let Ok(value) = get_json(client, candidate).await else {
             continue;
         };
+        if let Some(scopes) = value.get("scopes_supported").and_then(Value::as_array) {
+            resource_scopes_supported = scopes
+                .iter()
+                .filter_map(Value::as_str)
+                .map(str::to_string)
+                .collect();
+        }
         if let Some(servers) = value.get("authorization_servers").and_then(Value::as_array) {
             authorization_servers = servers
                 .iter()
@@ -478,17 +486,7 @@ async fn discover(
                     .get("registration_endpoint")
                     .and_then(Value::as_str)
                     .map(str::to_string),
-                scopes_supported: value
-                    .get("scopes_supported")
-                    .and_then(Value::as_array)
-                    .map(|scopes| {
-                        scopes
-                            .iter()
-                            .filter_map(Value::as_str)
-                            .map(str::to_string)
-                            .collect()
-                    })
-                    .unwrap_or_default(),
+                resource_scopes_supported,
             });
         }
     }
@@ -757,6 +755,54 @@ mod tests {
         assert_eq!(
             challenge_parameter(challenge, "scope").as_deref(),
             Some("files:read files:write")
+        );
+    }
+
+    #[tokio::test]
+    async fn discovery_uses_protected_resource_scopes() {
+        let listener = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+        let origin = format!("http://{}", listener.local_addr().unwrap());
+        let server_origin = origin.clone();
+        let server = tokio::spawn(async move {
+            for _ in 0..2 {
+                let (mut socket, _) = listener.accept().await.unwrap();
+                let mut buffer = vec![0; 4096];
+                let read = socket.read(&mut buffer).await.unwrap();
+                let request = String::from_utf8_lossy(&buffer[..read]);
+                let path = request
+                    .lines()
+                    .next()
+                    .and_then(|line| line.split_whitespace().nth(1))
+                    .unwrap();
+                let body = if path == "/.well-known/oauth-protected-resource/mcp" {
+                    json!({
+                        "authorization_servers": [server_origin],
+                        "scopes_supported": ["resource:read", "offline_access"]
+                    })
+                } else {
+                    json!({
+                        "authorization_endpoint": format!("{server_origin}/authorize"),
+                        "token_endpoint": format!("{server_origin}/token"),
+                        "scopes_supported": ["openid", "resource:read", "offline_access"]
+                    })
+                }
+                .to_string();
+                let response = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                    body.len()
+                );
+                socket.write_all(response.as_bytes()).await.unwrap();
+            }
+        });
+
+        let metadata = discover(&reqwest::Client::new(), &format!("{origin}/mcp"), None)
+            .await
+            .unwrap();
+        server.await.unwrap();
+
+        assert_eq!(
+            metadata.resource_scopes_supported,
+            ["resource:read", "offline_access"]
         );
     }
 

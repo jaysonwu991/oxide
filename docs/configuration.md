@@ -74,6 +74,12 @@ oxide mcp add-json extra '{"command":"uvx","args":["mcp-server"]}'
 oxide mcp remove extra
 ```
 
+`oxide mcp list` checks every configured server in parallel and reports
+`Connected`, `Needs Auth`, `Needs Trust`, `Disabled`, or the connection error.
+Status checks never open a browser or execute untrusted project servers; use
+`oxide mcp auth <name>` for a server that needs OAuth. The TUI `/mcps` command
+performs the same check.
+
 Options may appear before or after the server name. `oxide mcp remove` falls
 back to every configured source when the server is not in the requested native
 file.

@@ -4,6 +4,7 @@ use crate::mcp_oauth::OAuthState;
 use anyhow::{bail, Context, Result};
 use reqwest::header::{HeaderMap, HeaderName, HeaderValue, ACCEPT, AUTHORIZATION, CONTENT_TYPE};
 use serde_json::{json, Value};
+use std::fmt;
 use std::io::IsTerminal;
 use std::process::Stdio;
 use std::sync::{Arc, RwLock};
@@ -14,7 +15,54 @@ use tokio::sync::Mutex;
 
 const PROTOCOL_VERSION: &str = "2024-11-05";
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(60);
+const STATUS_TIMEOUT: Duration = Duration::from_secs(10);
 const MCP_SESSION_ID: &str = "mcp-session-id";
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum McpStatus {
+    Connected,
+    NeedsAuth,
+    NeedsTrust,
+    Disabled,
+    Error(String),
+}
+
+impl fmt::Display for McpStatus {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Connected => formatter.write_str("Connected"),
+            Self::NeedsAuth => formatter.write_str("Needs Auth"),
+            Self::NeedsTrust => formatter.write_str("Needs Trust"),
+            Self::Disabled => formatter.write_str("Disabled"),
+            Self::Error(error) => write!(formatter, "Error: {error}"),
+        }
+    }
+}
+
+#[derive(Debug)]
+struct AuthorizationRequired;
+
+impl fmt::Display for AuthorizationRequired {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("OAuth authorization required")
+    }
+}
+
+impl std::error::Error for AuthorizationRequired {}
+
+pub async fn probe(server: &McpServer) -> McpStatus {
+    if !server.enabled {
+        return McpStatus::Disabled;
+    }
+    match tokio::time::timeout(STATUS_TIMEOUT, McpConnection::connect(server, false)).await {
+        Ok(Ok(_)) => McpStatus::Connected,
+        Ok(Err(error)) if error.downcast_ref::<AuthorizationRequired>().is_some() => {
+            McpStatus::NeedsAuth
+        }
+        Ok(Err(error)) => McpStatus::Error(format!("{error:#}")),
+        Err(_) => McpStatus::Error("connection timed out".to_string()),
+    }
+}
 
 struct RawTool {
     name: String,
@@ -48,11 +96,7 @@ impl McpRegistry {
     /// connected only when the model selects them through `mcp_load`.
     pub fn new(servers: &[McpServer]) -> Self {
         Self {
-            configured: servers
-                .iter()
-                .filter(|server| server.enabled)
-                .cloned()
-                .collect(),
+            configured: servers.to_vec(),
             servers: RwLock::new(Vec::new()),
             load_guard: Mutex::new(()),
         }
@@ -61,8 +105,28 @@ impl McpRegistry {
     pub fn configured_servers(&self) -> Vec<(String, String)> {
         self.configured
             .iter()
+            .filter(|server| server.enabled)
             .map(|server| (server.name.clone(), server_source(server)))
             .collect()
+    }
+
+    pub async fn statuses(&self) -> Vec<(String, String, McpStatus)> {
+        let mut checks = tokio::task::JoinSet::new();
+        for server in self.configured.clone() {
+            checks.spawn(async move {
+                let source = server_source(&server);
+                let status = probe(&server).await;
+                (server.name, source, status)
+            });
+        }
+        let mut statuses = Vec::new();
+        while let Some(result) = checks.join_next().await {
+            if let Ok(status) = result {
+                statuses.push(status);
+            }
+        }
+        statuses.sort_by(|left, right| left.0.cmp(&right.0));
+        statuses
     }
 
     pub async fn load(&self, name: &str) -> Result<String> {
@@ -80,9 +144,9 @@ impl McpRegistry {
         let server = self
             .configured
             .iter()
-            .find(|server| server.name == name)
+            .find(|server| server.name == name && server.enabled)
             .with_context(|| format!("no enabled MCP server named `{name}`"))?;
-        let mut connection = McpConnection::connect(server).await?;
+        let mut connection = McpConnection::connect(server, std::io::stdin().is_terminal()).await?;
         let raw = connection
             .list_tools()
             .await
@@ -193,6 +257,7 @@ struct McpConnection {
     name: String,
     transport: Transport,
     next_id: u64,
+    interactive: bool,
 }
 
 enum Transport {
@@ -211,7 +276,7 @@ enum Transport {
 }
 
 impl McpConnection {
-    async fn connect(server: &McpServer) -> Result<Self> {
+    async fn connect(server: &McpServer, interactive: bool) -> Result<Self> {
         let transport = match &server.kind {
             McpKind::Local {
                 command,
@@ -262,10 +327,13 @@ impl McpConnection {
                     let config = oauth.clone().unwrap_or_default();
                     let state = Arc::new(OAuthState::new(&server.name, &config, url));
                     if oauth.is_some() {
-                        state
-                            .ensure_authorized(std::io::stdin().is_terminal())
-                            .await
-                            .with_context(|| format!("authorizing MCP server `{}`", server.name))?;
+                        if interactive {
+                            state.ensure_authorized(true).await.with_context(|| {
+                                format!("authorizing MCP server `{}`", server.name)
+                            })?;
+                        } else if state.access_token_if_available().await.is_none() {
+                            return Err(AuthorizationRequired.into());
+                        }
                     }
                     Some(state)
                 };
@@ -283,6 +351,7 @@ impl McpConnection {
             name: server.name.clone(),
             transport,
             next_id: 1,
+            interactive,
         };
         connection.initialize().await?;
         Ok(connection)
@@ -367,8 +436,11 @@ impl McpConnection {
                 if response.status() == reqwest::StatusCode::UNAUTHORIZED {
                     if let Some(state) = oauth {
                         state.note_unauthorized(response.headers()).await;
+                        if !self.interactive {
+                            return Err(AuthorizationRequired.into());
+                        }
                         state
-                            .ensure_authorized(std::io::stdin().is_terminal())
+                            .ensure_authorized(true)
                             .await
                             .with_context(|| format!("authorizing MCP server `{}`", self.name))?;
                         let headers = remote_headers(oauth, &headers, session_id.as_ref()).await?;
@@ -432,8 +504,11 @@ impl McpConnection {
                 if response.status() == reqwest::StatusCode::UNAUTHORIZED {
                     if let Some(state) = oauth {
                         state.note_unauthorized(response.headers()).await;
+                        if !self.interactive {
+                            return Err(AuthorizationRequired.into());
+                        }
                         state
-                            .ensure_authorized(std::io::stdin().is_terminal())
+                            .ensure_authorized(true)
                             .await
                             .with_context(|| format!("authorizing MCP server `{}`", self.name))?;
                         let headers = remote_headers(oauth, &headers, session_id.as_ref()).await?;
@@ -667,6 +742,87 @@ mod tests {
         std::env::set_var("OXIDE_MCP_TEST", "secret");
         assert_eq!(interpolate("Bearer {env:OXIDE_MCP_TEST}"), "Bearer secret");
         assert_eq!(interpolate("plain"), "plain");
+    }
+
+    #[tokio::test]
+    async fn probe_reports_connected_remote_server() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server_task = tokio::spawn(async move {
+            for expected_method in ["initialize", "notifications/initialized"] {
+                let (mut socket, _) = listener.accept().await.unwrap();
+                let (_, request) = read_http_request(&mut socket).await;
+                assert_eq!(request["method"], expected_method);
+                let (status, body) = if expected_method == "initialize" {
+                    (
+                        "200 OK",
+                        json!({
+                            "jsonrpc": "2.0",
+                            "id": request["id"],
+                            "result": {
+                                "protocolVersion": PROTOCOL_VERSION,
+                                "capabilities": {},
+                                "serverInfo": { "name": "probe", "version": "0" }
+                            }
+                        })
+                        .to_string(),
+                    )
+                } else {
+                    ("202 Accepted", String::new())
+                };
+                send_http_response(&mut socket, status, &body, None).await;
+            }
+        });
+        let server = McpServer {
+            name: "probe".to_string(),
+            enabled: true,
+            kind: McpKind::Remote {
+                url: format!("http://{address}/mcp"),
+                headers: Default::default(),
+                oauth: None,
+            },
+        };
+
+        assert_eq!(probe(&server).await, McpStatus::Connected);
+        server_task.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn probe_reports_auth_without_opening_login() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server_task = tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.unwrap();
+            let _ = read_http_request(&mut socket).await;
+            send_http_response(&mut socket, "401 Unauthorized", "", None).await;
+        });
+        let server = McpServer {
+            name: "private".to_string(),
+            enabled: true,
+            kind: McpKind::Remote {
+                url: format!("http://{address}/mcp"),
+                headers: Default::default(),
+                oauth: None,
+            },
+        };
+
+        assert_eq!(probe(&server).await, McpStatus::NeedsAuth);
+        server_task.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn probe_reports_disabled_without_connecting() {
+        let server = McpServer {
+            name: "disabled".to_string(),
+            enabled: false,
+            kind: McpKind::Remote {
+                url: "http://127.0.0.1:1/mcp".to_string(),
+                headers: Default::default(),
+                oauth: None,
+            },
+        };
+
+        assert_eq!(probe(&server).await, McpStatus::Disabled);
     }
 
     const MOCK_SERVER: &str = r#"

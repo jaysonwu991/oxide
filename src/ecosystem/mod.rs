@@ -371,11 +371,20 @@ fn load_mcp(ecosystem: &mut Ecosystem, path: &Path) {
     }
 }
 
-fn mcp_from_claude(name: &str, config: &Json) -> Option<McpServer> {
+pub(crate) fn mcp_from_claude(name: &str, config: &Json) -> Option<McpServer> {
+    let enabled = config
+        .get("enabled")
+        .and_then(Json::as_bool)
+        .unwrap_or_else(|| {
+            !config
+                .get("disabled")
+                .and_then(Json::as_bool)
+                .unwrap_or(false)
+        });
     if let Some(url) = config.get("url").and_then(Json::as_str) {
         return Some(McpServer {
             name: name.to_string(),
-            enabled: true,
+            enabled,
             kind: McpKind::Remote {
                 url: url.to_string(),
                 headers: string_map(config.get("headers")),
@@ -388,7 +397,7 @@ fn mcp_from_claude(name: &str, config: &Json) -> Option<McpServer> {
     command.extend(json_string_list(config.get("args")).unwrap_or_default());
     Some(McpServer {
         name: name.to_string(),
-        enabled: true,
+        enabled,
         kind: McpKind::Local {
             command,
             environment: string_map(config.get("env")),

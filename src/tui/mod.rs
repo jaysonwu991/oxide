@@ -6,7 +6,7 @@ use crate::config::{Config, Reasoning};
 use crate::ecosystem::AgentMode;
 use crate::llm::{LlmClient, Message};
 use crate::lsp::LspManager;
-use crate::mcp::McpRegistry;
+use crate::mcp::{McpRegistry, McpStatus};
 use crate::media;
 use crate::plugin::PluginHost;
 use crate::session::SessionLog;
@@ -134,7 +134,7 @@ async fn event_loop(
         if config.memory.len() == 1 { "y" } else { "ies" }
     )));
     app.items.push(ChatItem::Info(
-        "tips: Enter send or guide · Alt+Enter follow-up · Shift+Enter newline · / commands · Ctrl+O tool details · /models switch model · /init create AGENTS.md · @path or Ctrl+V attach images · ↑/↓ history · Ctrl+C quit"
+        "tips: Enter send or guide · Alt+Enter follow-up · Shift+Enter newline · / commands · Ctrl+O tool details · /models switch model · /mcps check MCP servers · /init create AGENTS.md · @path or Ctrl+V attach images · ↑/↓ history · Ctrl+C quit"
             .to_string(),
     ));
     if !config.ecosystem.context_files.is_empty() {
@@ -197,6 +197,7 @@ async fn event_loop(
     let mut reader = EventStream::new();
     let mut rx: Option<UnboundedReceiver<AgentEvent>> = None;
     let (models_tx, mut models_rx) = unbounded_channel::<Result<Vec<String>, String>>();
+    let (mcps_tx, mut mcps_rx) = unbounded_channel::<Vec<(String, String, McpStatus)>>();
     if !config.api_key.trim().is_empty() && config.model_catalog.is_empty() {
         let warm_config = config.clone();
         tokio::spawn(async move {
@@ -233,7 +234,7 @@ async fn event_loop(
                 match maybe_event {
                     Some(Ok(Event::Key(key))) => handle_key(
                         key, &mut app, &mut config, &cwd, &mut rx, &mcp, &plugins,
-                        snapshots.as_ref(), &lsp, &mut session, &approve, &models_tx,
+                        snapshots.as_ref(), &lsp, &mut session, &approve, &models_tx, &mcps_tx,
                     ),
                     Some(Ok(Event::Paste(text))) => handle_paste(text, &mut app),
                     Some(Ok(Event::Mouse(mouse))) => handle_mouse(mouse, &mut app),
@@ -249,6 +250,13 @@ async fn event_loop(
             result = models_rx.recv() => {
                 if let Some(result) = result {
                     handle_model_result(result, &mut app);
+                }
+            }
+            statuses = mcps_rx.recv() => {
+                if let Some(statuses) = statuses {
+                    app.items.push(ChatItem::Info(mcp_status_text(&statuses)));
+                    app.auto_scroll = true;
+                    app.status = "ready".to_string();
                 }
             }
             approval = approval_rx.recv() => {
@@ -301,6 +309,7 @@ fn handle_key(
     session: &mut Option<SessionLog>,
     approve: &Approver,
     models_tx: &UnboundedSender<Result<Vec<String>, String>>,
+    mcps_tx: &UnboundedSender<Vec<(String, String, McpStatus)>>,
 ) {
     // Ctrl+C always quits, even while a dialog or the trust prompt is open.
     if is_quit_shortcut(&key) {
@@ -499,6 +508,17 @@ fn handle_key(
                     ))),
                     Err(err) => app.items.push(ChatItem::Error(format!("{err:#}"))),
                 }
+                return;
+            }
+            if raw == "/mcps" {
+                app.input.clear();
+                refresh_suggestions(app, config);
+                app.status = "checking MCP servers...".to_string();
+                let mcp = Arc::clone(mcp);
+                let tx = mcps_tx.clone();
+                tokio::spawn(async move {
+                    let _ = tx.send(mcp.statuses().await);
+                });
                 return;
             }
             if raw == "/models" || raw.starts_with("/models ") {
@@ -1045,6 +1065,7 @@ fn help_text(config: &Config) -> String {
         "  /login                 alias of /connect (Pi-style)".to_string(),
         "  /logout [provider]     remove stored credentials".to_string(),
         "  /models [filter]      list and switch the active model".to_string(),
+        "  /mcps                 list MCP servers and connection status".to_string(),
         "  /undo, /redo          revert or reapply the agent's file changes".to_string(),
         "  /compact              summarize the conversation to free context".to_string(),
         "keys: Enter send/guide · Shift+Enter newline · Alt+Enter follow-up while busy · Shift+Tab mode · Ctrl+R reasoning · Ctrl+O tool details · Ctrl+V image · ↑/↓ history · PgUp/PgDn/wheel scroll · Ctrl+U/D half page · Ctrl+C quit"
@@ -1302,6 +1323,10 @@ fn builtin_commands() -> Vec<CommandHint> {
             description: "choose a model".to_string(),
         },
         CommandHint {
+            name: "mcps".to_string(),
+            description: "check MCP server status".to_string(),
+        },
+        CommandHint {
             name: "connect".to_string(),
             description: "connect a provider".to_string(),
         },
@@ -1413,6 +1438,18 @@ fn handle_models_key(key: KeyEvent, app: &mut App, config: &mut Config) {
     if keep {
         app.models = Some(state);
     }
+}
+
+fn mcp_status_text(statuses: &[(String, String, McpStatus)]) -> String {
+    if statuses.is_empty() {
+        return "no MCP servers configured".to_string();
+    }
+    let mut lines = vec![format!("MCP servers ({}):", statuses.len())];
+    for (name, source, status) in statuses {
+        lines.push(format!("  {name} — {status}"));
+        lines.push(format!("      {source}"));
+    }
+    lines.join("\n")
 }
 
 fn handle_model_result(result: Result<Vec<String>, String>, app: &mut App) {
@@ -1858,6 +1895,7 @@ mod tests {
         let help = help_text(&config);
         assert!(help.contains("built-in commands"));
         assert!(help.contains("/connect"));
+        assert!(help.contains("/mcps"));
         assert!(help.contains("/review"));
     }
 
@@ -1869,6 +1907,7 @@ mod tests {
         app.input = "/".to_string();
         refresh_suggestions(&mut app, &config);
         assert!(app.suggestions.iter().any(|hint| hint.name == "models"));
+        assert!(app.suggestions.iter().any(|hint| hint.name == "mcps"));
 
         app.input = "/models".to_string();
         refresh_suggestions(&mut app, &config);
@@ -1922,6 +1961,25 @@ mod tests {
 
         state.filter = "missing".to_string();
         assert!(state.selected_model().is_none());
+    }
+
+    #[test]
+    fn formats_mcp_statuses() {
+        let text = mcp_status_text(&[
+            (
+                "context7".to_string(),
+                "remote: https://mcp.context7.com/mcp/oauth".to_string(),
+                McpStatus::Connected,
+            ),
+            (
+                "newrelic".to_string(),
+                "remote: https://mcp.newrelic.com/mcp/".to_string(),
+                McpStatus::NeedsAuth,
+            ),
+        ]);
+        assert!(text.contains("context7 — Connected"));
+        assert!(text.contains("newrelic — Needs Auth"));
+        assert_eq!(mcp_status_text(&[]), "no MCP servers configured");
     }
 
     #[test]
