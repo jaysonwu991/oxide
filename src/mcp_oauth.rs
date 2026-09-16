@@ -252,16 +252,16 @@ impl OAuthState {
         let verifier = pkce_verifier();
         let challenge = pkce_challenge(&verifier);
         let state = base64url(&random_bytes(16));
-        let url = authorize_url(
-            &metadata.authorization_endpoint,
-            &client_id,
-            &redirect_uri,
-            &scopes,
-            &scope_param,
-            &challenge,
-            &state,
-            &self.resource_url,
-        )?;
+        let url = authorize_url(AuthorizationRequest {
+            endpoint: &metadata.authorization_endpoint,
+            client_id: &client_id,
+            redirect_uri: &redirect_uri,
+            scopes: &scopes,
+            scope_param: &scope_param,
+            challenge: &challenge,
+            state: &state,
+            resource: &self.resource_url,
+        })?;
 
         eprintln!("[mcp] authorizing `{}` — opening browser", self.name);
         eprintln!("[mcp] if it does not open, visit:\n{url}");
@@ -383,29 +383,31 @@ fn challenge_parameter(challenge: &str, name: &str) -> Option<String> {
     None
 }
 
-fn authorize_url(
-    endpoint: &str,
-    client_id: &str,
-    redirect_uri: &str,
-    scopes: &[String],
-    scope_param: &str,
-    challenge: &str,
-    state: &str,
-    resource: &str,
-) -> Result<String> {
-    let mut url = reqwest::Url::parse(endpoint)
-        .with_context(|| format!("invalid authorization endpoint `{endpoint}`"))?;
+struct AuthorizationRequest<'a> {
+    endpoint: &'a str,
+    client_id: &'a str,
+    redirect_uri: &'a str,
+    scopes: &'a [String],
+    scope_param: &'a str,
+    challenge: &'a str,
+    state: &'a str,
+    resource: &'a str,
+}
+
+fn authorize_url(request: AuthorizationRequest<'_>) -> Result<String> {
+    let mut url = reqwest::Url::parse(request.endpoint)
+        .with_context(|| format!("invalid authorization endpoint `{}`", request.endpoint))?;
     {
         let mut query = url.query_pairs_mut();
         query.append_pair("response_type", "code");
-        query.append_pair("client_id", client_id);
-        query.append_pair("redirect_uri", redirect_uri);
-        query.append_pair("code_challenge", challenge);
+        query.append_pair("client_id", request.client_id);
+        query.append_pair("redirect_uri", request.redirect_uri);
+        query.append_pair("code_challenge", request.challenge);
         query.append_pair("code_challenge_method", "S256");
-        query.append_pair("state", state);
-        query.append_pair("resource", resource);
-        if !scopes.is_empty() {
-            query.append_pair(scope_param, &scopes.join(" "));
+        query.append_pair("state", request.state);
+        query.append_pair("resource", request.resource);
+        if !request.scopes.is_empty() {
+            query.append_pair(request.scope_param, &request.scopes.join(" "));
         }
     }
     Ok(url.to_string())
@@ -722,16 +724,16 @@ mod tests {
 
     #[test]
     fn builds_authorize_url_with_pkce_and_state() {
-        let url = authorize_url(
-            "https://auth.example.com/oauth/authorize",
-            "client-123",
-            "http://localhost:3000/callback",
-            &["files:read".to_string(), "files:write".to_string()],
-            "scope",
-            "challenge",
-            "state123",
-            "https://mcp.example.com/mcp",
-        )
+        let url = authorize_url(AuthorizationRequest {
+            endpoint: "https://auth.example.com/oauth/authorize",
+            client_id: "client-123",
+            redirect_uri: "http://localhost:3000/callback",
+            scopes: &["files:read".to_string(), "files:write".to_string()],
+            scope_param: "scope",
+            challenge: "challenge",
+            state: "state123",
+            resource: "https://mcp.example.com/mcp",
+        })
         .unwrap();
         assert!(url.starts_with("https://auth.example.com/oauth/authorize?"));
         assert!(url.contains("client_id=client-123"));

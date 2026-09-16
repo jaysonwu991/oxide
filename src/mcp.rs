@@ -58,18 +58,6 @@ impl McpRegistry {
         }
     }
 
-    /// Eager connection helper retained for focused tests and callers that
-    /// explicitly need every server available immediately.
-    pub async fn connect(servers: &[McpServer]) -> Self {
-        let registry = Self::new(servers);
-        for server in registry.configured.clone() {
-            if let Err(err) = registry.load(&server.name).await {
-                eprintln!("[mcp] `{}` failed to load: {err:#}", server.name);
-            }
-        }
-        registry
-    }
-
     pub fn configured_servers(&self) -> Vec<(String, String)> {
         self.configured
             .iter()
@@ -821,7 +809,8 @@ for line in sys.stdin:
                 oauth: None,
             },
         };
-        let registry = McpRegistry::connect(&[server]).await;
+        let registry = McpRegistry::new(&[server]);
+        registry.load("documents").await.unwrap();
         assert_eq!(registry.server_count(), 1);
         assert!(registry.is_tool("documents__lookup_document"));
         assert!(registry.tool_specs()[0].function.description.contains(&url));
