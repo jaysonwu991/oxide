@@ -236,6 +236,7 @@ oxide mcp list
 ```
 oxide [OPTIONS] [@files...] [PROMPT...]
 oxide mcp <COMMAND>
+oxide uninstall [--keep-config] [--keep-data] [--dry-run] [--force]
 ```
 
 | Flag | Description |
@@ -274,6 +275,19 @@ oxide --mode rpc                         # JSONL prompts over stdin
 oxide -t read,grep,find -p "review"      # read-only tool allowlist
 oxide --session <id> -p "continue"       # reuse a specific session
 ```
+
+Uninstall Oxide and its related files:
+
+```sh
+oxide uninstall --dry-run                 # preview removals
+oxide uninstall                           # preview, confirm, and uninstall
+oxide uninstall --keep-config --keep-data # retain configuration and user data
+oxide uninstall --force                   # skip confirmation
+```
+
+Package-manager installations are removed through Cargo or Homebrew when
+detected. Prebuilt installations print the final command needed to remove the
+currently running executable after cleanup completes.
 
 Credential management happens inside the TUI with the Pi-style commands:
 
