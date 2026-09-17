@@ -206,6 +206,7 @@ async fn event_loop(
         });
     }
     let mut tick = tokio::time::interval(std::time::Duration::from_millis(500));
+    let mut branch_tick = tokio::time::interval(std::time::Duration::from_secs(2));
 
     let (approval_tx, mut approval_rx) = unbounded_channel::<ApprovalRequest>();
     let approve: Approver = Arc::new(move |tool, detail| {
@@ -267,6 +268,9 @@ async fn event_loop(
                 }
             }
             _ = tick.tick(), if app.busy => {}
+            _ = branch_tick.tick(), if !app.busy => {
+                app.refresh_git_branch();
+            }
         }
 
         if got_agent_event && !app.busy {

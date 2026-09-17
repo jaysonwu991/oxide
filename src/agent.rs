@@ -18,7 +18,6 @@ use std::pin::Pin;
 use std::sync::{Arc, Mutex};
 use tokio::sync::mpsc::UnboundedSender;
 
-const MAX_STEPS: usize = 25;
 const MAX_TASK_DEPTH: usize = 2;
 
 pub type RunFuture = Pin<Box<dyn Future<Output = ()> + Send>>;
@@ -102,7 +101,7 @@ pub enum AgentEvent {
 
 /// Drive one conversation turn to completion: stream assistant output, execute
 /// any requested tools, feed the results back, and repeat until the model stops
-/// asking for tools (or the step budget is exhausted).
+/// asking for tools.
 pub fn run(
     config: Config,
     cwd: PathBuf,
@@ -246,7 +245,7 @@ async fn run_loop(
     };
     let mut messages = history;
 
-    for _ in 0..MAX_STEPS {
+    loop {
         for steered in runtime.steering.drain() {
             record(&runtime.session, depth, &steered);
             messages.push(steered);
@@ -563,11 +562,6 @@ async fn run_loop(
             return;
         }
     }
-
-    let _ = tx.send(AgentEvent::Error(format!(
-        "reached the maximum of {MAX_STEPS} steps without finishing"
-    )));
-    let _ = tx.send(AgentEvent::Finished(messages));
 }
 
 fn build_tool_specs(

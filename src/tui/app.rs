@@ -174,6 +174,10 @@ pub struct App {
 }
 
 impl App {
+    pub fn refresh_git_branch(&mut self) {
+        self.git_branch = current_git_branch(&self.cwd);
+    }
+
     pub fn new(model: String, cwd: String, mode: Mode, reasoning: Reasoning) -> Self {
         let git_branch = current_git_branch(&cwd);
         Self {
