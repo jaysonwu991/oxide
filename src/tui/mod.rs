@@ -203,6 +203,7 @@ async fn event_loop(
     let mut rx: Option<UnboundedReceiver<AgentEvent>> = None;
     let (models_tx, mut models_rx) = unbounded_channel::<Result<Vec<String>, String>>();
     let (mcps_tx, mut mcps_rx) = unbounded_channel::<Vec<(String, String, McpStatus)>>();
+    let (plugins_tx, mut plugins_rx) = unbounded_channel::<String>();
     if !config.api_key.trim().is_empty() && config.model_catalog.is_empty() {
         let warm_config = config.clone();
         tokio::spawn(async move {
@@ -241,6 +242,7 @@ async fn event_loop(
                     Some(Ok(Event::Key(key))) => handle_key(
                         key, &mut app, &mut config, &cwd, &mut rx, &mcp, &plugins,
                         snapshots.as_ref(), &lsp, &mut session, &approve, &models_tx, &mcps_tx,
+                        &plugins_tx,
                     ),
                     Some(Ok(Event::Paste(text))) => handle_paste(text, &mut app),
                     Some(Ok(Event::Mouse(mouse))) => handle_mouse(mouse, &mut app, terminal_area),
@@ -261,6 +263,13 @@ async fn event_loop(
             statuses = mcps_rx.recv() => {
                 if let Some(statuses) = statuses {
                     app.items.push(ChatItem::Info(mcp_status_text(&statuses)));
+                    app.auto_scroll = true;
+                    app.status = "ready".to_string();
+                }
+            }
+            plugin_result = plugins_rx.recv() => {
+                if let Some(text) = plugin_result {
+                    app.items.push(ChatItem::Info(text));
                     app.auto_scroll = true;
                     app.status = "ready".to_string();
                 }
@@ -319,6 +328,7 @@ fn handle_key(
     approve: &Approver,
     models_tx: &UnboundedSender<Result<Vec<String>, String>>,
     mcps_tx: &UnboundedSender<Vec<(String, String, McpStatus)>>,
+    plugins_tx: &UnboundedSender<String>,
 ) {
     // Ctrl+C always quits, even while a dialog or the trust prompt is open.
     if is_quit_shortcut(&key) {
@@ -529,6 +539,124 @@ fn handle_key(
                 tokio::spawn(async move {
                     let _ = tx.send(mcp.statuses().await);
                 });
+                return;
+            }
+            if raw == "/plugin" || raw.starts_with("/plugin ") {
+                app.clear_input();
+                refresh_suggestions(app, config);
+                let args = raw.strip_prefix("/plugin").unwrap_or_default().trim();
+                let (verb, rest) = match args.split_once(char::is_whitespace) {
+                    Some((verb, rest)) => (verb, rest.trim()),
+                    None => (args, ""),
+                };
+                match verb {
+                    "" | "list" => match crate::plugin_registry::list() {
+                        Ok(text) => app.items.push(ChatItem::Info(text)),
+                        Err(err) => app.items.push(ChatItem::Error(format!("plugin: {err:#}"))),
+                    },
+                    "install" => {
+                        if rest.is_empty() {
+                            app.items.push(ChatItem::Error(
+                                "usage: /plugin install <name>[@marketplace]".to_string(),
+                            ));
+                            return;
+                        }
+                        let (name, marketplace) = crate::plugin_registry::split_ref(rest);
+                        app.status = format!("installing plugin `{name}`...");
+                        let tx = plugins_tx.clone();
+                        tokio::spawn(async move {
+                            let result = crate::plugin_registry::install(
+                                &name,
+                                marketplace.as_deref(),
+                            )
+                            .await
+                            .map_err(|err| format!("{err:#}"));
+                            let _ = tx.send(match result {
+                                Ok(text) => text,
+                                Err(err) => format!("plugin install failed: {err}"),
+                            });
+                        });
+                    }
+                    "uninstall" => {
+                        if rest.is_empty() {
+                            app.items.push(ChatItem::Error(
+                                "usage: /plugin uninstall <name>".to_string(),
+                            ));
+                            return;
+                        }
+                        match crate::plugin_registry::uninstall(rest) {
+                            Ok(text) => app.items.push(ChatItem::Info(text)),
+                            Err(err) => app.items.push(ChatItem::Error(format!("plugin: {err:#}"))),
+                        }
+                    }
+                    "enable" | "disable" => {
+                        if rest.is_empty() {
+                            app.items
+                                .push(ChatItem::Error(format!("usage: /plugin {verb} <name>")));
+                            return;
+                        }
+                        match crate::plugin_registry::set_enabled(rest, verb == "enable") {
+                            Ok(text) => app.items.push(ChatItem::Info(text)),
+                            Err(err) => app.items.push(ChatItem::Error(format!("plugin: {err:#}"))),
+                        }
+                    }
+                    "marketplace" => {
+                        let (sub, sub_rest) = match rest.split_once(char::is_whitespace) {
+                            Some((sub, rest)) => (sub, rest.trim()),
+                            None => (rest, ""),
+                        };
+                        match sub {
+                            "list" => match crate::plugin_registry::list_marketplaces() {
+                                Ok(text) => app.items.push(ChatItem::Info(text)),
+                                Err(err) => {
+                                    app.items.push(ChatItem::Error(format!("plugin: {err:#}")))
+                                }
+                            },
+                            "add" => {
+                                if sub_rest.is_empty() {
+                                    app.items.push(ChatItem::Error(
+                                        "usage: /plugin marketplace add <url|path>".to_string(),
+                                    ));
+                                    return;
+                                }
+                                app.status = format!("adding marketplace `{sub_rest}`...");
+                                let source = sub_rest.to_string();
+                                let tx = plugins_tx.clone();
+                                tokio::spawn(async move {
+                                    let result = crate::plugin_registry::add_marketplace(&source)
+                                        .await
+                                        .map_err(|err| format!("{err:#}"));
+                                    let _ = tx.send(match result {
+                                        Ok(text) => text,
+                                        Err(err) => format!("marketplace add failed: {err}"),
+                                    });
+                                });
+                            }
+                            "remove" => {
+                                if sub_rest.is_empty() {
+                                    app.items.push(ChatItem::Error(
+                                        "usage: /plugin marketplace remove <name>".to_string(),
+                                    ));
+                                    return;
+                                }
+                                match crate::plugin_registry::remove_marketplace(sub_rest) {
+                                    Ok(text) => app.items.push(ChatItem::Info(text)),
+                                    Err(err) => {
+                                        app.items.push(ChatItem::Error(format!("plugin: {err:#}")))
+                                    }
+                                }
+                            }
+                            _ => app.items.push(ChatItem::Error(
+                                "usage: /plugin marketplace <list|add <url|path>|remove <name>>"
+                                    .to_string(),
+                            )),
+                        }
+                    }
+                    _ => app.items.push(ChatItem::Error(
+                        "usage: /plugin [list] · install <name>[@mp] · uninstall <name> · enable|disable <name> · marketplace <list|add|remove>"
+                            .to_string(),
+                    )),
+                }
                 return;
             }
             if raw == "/models" || raw.starts_with("/models ") {
@@ -1118,6 +1246,7 @@ fn help_text(config: &Config) -> String {
         "  /logout [provider]     remove stored credentials".to_string(),
         "  /models [filter]      list and switch the active model".to_string(),
         "  /mcps                 list MCP servers and connection status".to_string(),
+        "  /plugin               manage plugins and marketplaces".to_string(),
         "  /undo, /redo          revert or reapply the agent's file changes".to_string(),
         "  /compact              summarize the conversation to free context".to_string(),
         "keys: Enter send/guide · Shift+Enter newline · Alt+Enter follow-up while busy · Shift+Tab mode · Ctrl+R reasoning · Ctrl+O tool details · Ctrl+V image · Ctrl+A/E message start/end · ↑/↓ history · PgUp/PgDn/wheel scroll · Ctrl+U/D half page · Ctrl+C quit"
@@ -1382,6 +1511,10 @@ fn builtin_commands() -> Vec<CommandHint> {
         CommandHint {
             name: "mcps".to_string(),
             description: "check MCP server status".to_string(),
+        },
+        CommandHint {
+            name: "plugin".to_string(),
+            description: "manage plugins and marketplaces".to_string(),
         },
         CommandHint {
             name: "connect".to_string(),

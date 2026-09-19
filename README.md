@@ -34,6 +34,12 @@ box, with Claude Code configuration support for compatibility.
 - LSP diagnostics via rust-analyzer, typescript-language-server, pyright, gopls.
 - Plugin hooks (`tool.execute.before` / `tool.execute.after`) run under bun/node,
   and a hook can end the turn by setting `output.terminate = true`.
+- Claude Code-style plugin packages and marketplaces: install plugins that
+  bundle commands, agents, skills, MCP servers, and command hooks behind a
+  `.oxide/plugin.json` (or `.claude-plugin/plugin.json`) manifest, from a
+  marketplace declared by `.oxide/marketplace.json` (or
+  `.claude-plugin/marketplace.json`). Manage them with `oxide plugin` and
+  `/plugin`.
 - Agent-harness niceties: read-only tool calls in a batch run in parallel while
   preserving model order, `bash` output streams into the UI as it arrives, and
   typing while the agent works steers it between steps. Enter queues a steering
@@ -81,36 +87,38 @@ box, with Claude Code configuration support for compatibility.
 
 oxide is a small, native terminal agent that deliberately borrows the Claude
 Code configuration layout so existing `.claude/` setups keep working. The table
-below compares the high-level shape of the three tools; feature sets move fast,
+below compares the high-level shape of the four tools; feature sets move fast,
 so check each project's documentation for the current details.
 
-| Capability | oxide | [OpenCode](https://opencode.ai) | [Claude Code](https://docs.claude.com/en/docs/claude-code/overview) |
-| --- | --- | --- | --- |
-| Distribution | Native Rust binary | Open-source CLI (Node/Bun) | Proprietary CLI + apps |
-| License | MIT | Open source | Proprietary |
-| Model providers | OpenAI-compatible + Anthropic (OpenAI, DeepSeek, Portkey, custom) | Any provider (bring your own keys) | Claude (Anthropic API, Bedrock, Vertex, third-party) |
-| Interfaces | Terminal TUI, `-p` print, JSON/RPC modes | Terminal, desktop, IDE, web | Terminal, IDE, desktop, web |
-| Project config | `.oxide/` + `AGENTS.md` (also reads `.claude/`) | `opencode.json` + `AGENTS.md` | `CLAUDE.md` + `.claude/` |
-| Subagents | `--agent`, `task`, command routing | Agents | Subagents, background agents |
-| Permission modes | `build` / `plan` / `auto-edit` (Shift+Tab, `--mode`) | Build / plan agents | default / accept-edits / plan / bypass |
-| Reasoning effort | `auto` / `off` / `low` / `medium` / `high` (Ctrl+R, `--reasoning`) | Model-dependent | Extended thinking |
-| Slash commands | `.oxide/commands` + `.oxide/prompts`, `agent`/`subtask` routing | Commands | Commands |
-| Skills | `SKILL.md` | Agent Skills | Skills |
-| MCP servers | stdio + HTTP + OAuth, managed with `oxide mcp` | MCP servers | MCP servers |
-| Plugins / hooks | JS/TS hooks (bun/node) | Plugins | Hooks, plugins, Agent SDK |
-| LSP diagnostics | Built in (rust-analyzer, TS, pyright, gopls) | Built in (LSP servers) | — |
-| Undo file changes | Shadow-git `/undo`, `/redo` | `/undo`, `/redo` | Git / checkpoints |
-| Sessions | Durable JSONL, `-c` / `-r`, `/resume` / `/tree` / `/fork` / `/clone` | Sessions, share links | Sessions across surfaces |
-| Project trust | `trust.json`, `--approve` / `/trust` | — | — |
-| Themes | Built-in `dark` / `light`, custom `.oxide/themes` | Themes | — |
-| Context management | Built-in pruning (`compress` tool, dedup, error purge) | Auto-compaction + DCP plugin | Auto-compaction |
-| Multimodal input | Images and PDFs (`--image`, `@path`) | Images | Images |
+| Capability | oxide | [Codex](https://github.com/openai/codex) | [OpenCode](https://opencode.ai) | [Claude Code](https://docs.claude.com/en/docs/claude-code/overview) |
+| --- | --- | --- | --- | --- |
+| Distribution | Native Rust binary | Open-source CLI (Rust) + IDE extension | Open-source CLI (Node/Bun) | Proprietary CLI + apps |
+| License | MIT | Apache-2.0 | Open source | Proprietary |
+| Model providers | OpenAI-compatible + Anthropic (OpenAI, DeepSeek, Portkey, custom) | OpenAI models (GPT-5-Codex family) + custom providers | Any provider (bring your own keys) | Claude (Anthropic API, Bedrock, Vertex, third-party) |
+| Interfaces | Terminal TUI, `-p` print, JSON/RPC modes | Terminal CLI, IDE (VS Code, Cursor) | Terminal, desktop, IDE, web | Terminal, IDE, desktop, web |
+| Project config | `.oxide/` + `AGENTS.md` (also reads `.claude/`) | `AGENTS.md` + `~/.codex/config.toml` | `opencode.json` + `AGENTS.md` | `CLAUDE.md` + `.claude/` |
+| Subagents | `--agent`, `task`, command routing | Subagents | Agents | Subagents, background agents |
+| Permission modes | `build` / `plan` / `auto-edit` (Shift+Tab, `--mode`) | `default` / `accept-edits` / `plan` / `full-auto` | Build / plan agents | default / accept-edits / plan / bypass |
+| Reasoning effort | `auto` / `off` / `low` / `medium` / `high` (Ctrl+R, `--reasoning`) | `--reasoning-effort` (model-dependent) | Model-dependent | Extended thinking |
+| Slash commands | `.oxide/commands` + `.oxide/prompts`, `agent`/`subtask` routing | Commands (`~/.codex/prompts`, `prompts/`) | Commands | Commands |
+| Skills | `SKILL.md` | `SKILL.md` | Agent Skills | Skills |
+| MCP servers | stdio + HTTP + OAuth, managed with `oxide mcp` | MCP servers (`codex mcp`, config.toml) | MCP servers | MCP servers |
+| Plugins / hooks | Hooks + plugin packages & marketplaces | — | Plugins | Hooks, plugins, Agent SDK |
+| LSP diagnostics | Built in (rust-analyzer, TS, pyright, gopls) | — | Built in (LSP servers) | — |
+| Undo file changes | Shadow-git `/undo`, `/redo` | Git checkpoints (`codex checkpoint`) | `/undo`, `/redo` | Git / checkpoints |
+| Sessions | Durable JSONL, `-c` / `-r`, `/resume` / `/tree` / `/fork` / `/clone` | Sessions (`codex --resume`) | Sessions, share links | Sessions across surfaces |
+| Project trust | `trust.json`, `--approve` / `/trust` | Sandbox + approval modes | — | — |
+| Themes | Built-in `dark` / `light`, custom `.oxide/themes` | Built-in themes (`codex themes`) | Themes | — |
+| Context management | Built-in pruning (`compress` tool, dedup, error purge) | Auto-compaction | Auto-compaction + DCP plugin | Auto-compaction |
+| Multimodal input | Images and PDFs (`--image`, `@path`) | Images | Images | Images |
 
 A dash indicates no first-class built-in equivalent. Where oxide differs most:
 it is a single dependency-light Rust binary, it speaks both the
 OpenAI-compatible and Anthropic APIs directly, it builds dynamic context
-pruning into the agent loop instead of requiring a plugin, and it is compatible
-with the Claude Code on-disk layout while using its own `.oxide/` format.
+pruning into the agent loop instead of requiring a plugin, its plugin packages
+reuse the same on-disk commands, agents, skills, and MCP servers the ecosystem
+already reads, and it is compatible with the Claude Code on-disk layout while
+using its own `.oxide/` format.
 
 ## Installation
 
@@ -233,11 +241,19 @@ oxide mcp add --transport http atlassian https://mcp.atlassian.com/v1/mcp
 oxide mcp list
 ```
 
+Install plugins from a marketplace:
+
+```sh
+oxide plugin marketplace add <url|path>
+oxide plugin install <name>
+```
+
 ## CLI
 
 ```
 oxide [OPTIONS] [@files...] [PROMPT...]
 oxide mcp <COMMAND>
+oxide plugin <COMMAND>
 oxide sessions <COMMAND>
 oxide uninstall [--keep-config] [--keep-data] [--dry-run] [--force]
 ```
@@ -350,6 +366,27 @@ Configured servers are connected lazily. The model sees a compact `mcp_load`
 discovery tool at startup and loads the matching server automatically when a
 prompt names its service or contains one of its URLs. OAuth and full tool-schema
 discovery therefore happen only when that server is first needed.
+
+Plugin management (Claude Code-style packages and marketplaces):
+
+```sh
+oxide plugin marketplace add <url|path>
+oxide plugin install <name>[@marketplace]
+oxide plugin list
+oxide plugin enable <name>
+oxide plugin disable <name>
+oxide plugin uninstall <name>
+oxide plugin marketplace list | remove <name>
+```
+
+Plugins are packages that bundle slash commands, subagents, skills, MCP servers,
+and command hooks behind a `.oxide/plugin.json` or `.claude-plugin/plugin.json`
+manifest; a marketplace is a repo or directory with a `.oxide/marketplace.json`
+or `.claude-plugin/marketplace.json` manifest. Installed plugins live under the
+oxide config directory and load at startup before project resources, so
+project-local entries still override plugins with the same name. Hooks and MCP
+servers take effect on restart. See
+[docs/configuration.md](docs/configuration.md#plugin-packages-and-marketplaces).
 
 ## Configuration
 
@@ -510,8 +547,15 @@ oxide also reads the Claude Code layout, so existing configurations work as-is:
 Slash commands are expanded from the ecosystem and also include built-ins:
 `/help`, `/hotkeys`, `/new`, `/session`, `/resume`, `/tree`, `/fork`, `/clone`, `/name`,
 `/model`, `/thinking`, `/theme`, `/trust`, `/export`, `/reload`, `/init`,
-`/login`, `/logout`, `/models`, `/mcps`, `/connect`, `/undo`, `/redo`, and
+`/login`, `/logout`, `/models`, `/mcps`, `/plugin`, `/connect`, `/undo`, `/redo`, and
 `/compact`.
+
+**Plugin packages** — installed via `oxide plugin` (or `/plugin`), plugin
+packages bundle commands, agents, skills, MCP servers, and command hooks behind
+a `.oxide/plugin.json` or `.claude-plugin/plugin.json` manifest, discovered from
+marketplaces declared by `.oxide/marketplace.json` or
+`.claude-plugin/marketplace.json`. They load at startup before project
+resources, so project entries still override plugins with the same name.
 
 ## Tools
 
@@ -678,6 +722,7 @@ Runtime state lives under the platform oxide config directory:
 - Snapshots: `snapshots/<project>/` (bare git repo)
 - Memory: `memory/`
 - Project trust: `trust.json`
+- Plugins: `plugins/` (installed plugin packages, marketplaces, and state)
 - Settings: `settings.json` (e.g. `defaultProjectTrust`)
 - Themes: `themes/<name>.json`
 - Truncated tool output: `truncated/` (retained 7 days; see `OXIDE_TRUNCATION_DIR`)

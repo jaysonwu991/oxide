@@ -265,6 +265,8 @@ pub fn load_opts(cwd: &Path, options: LoadOptions) -> Ecosystem {
         load_oxide_dir(&mut ecosystem, &config.join("oxide"));
     }
 
+    load_enabled_plugins(&mut ecosystem);
+
     if options.project_resources {
         if let Some(root) = project_root(cwd) {
             load_claude_dir(&mut ecosystem, &root.join(".claude"));
@@ -343,6 +345,55 @@ fn load_oxide_dir(ecosystem: &mut Ecosystem, dir: &Path) {
 
 fn load_claude_dir(ecosystem: &mut Ecosystem, dir: &Path) {
     load_layout(ecosystem, dir, "CLAUDE.md");
+}
+
+/// Loads Claude Code-style plugin packages installed under the oxide config
+/// directory. Each enabled plugin bundles commands, agents, skills, MCP servers
+/// and manifest-declared hooks, and is loaded before project resources so
+/// project-local entries still override plugins with the same name.
+fn load_enabled_plugins(ecosystem: &mut Ecosystem) {
+    for plugin in crate::plugin_registry::enabled_plugins() {
+        load_plugin_dir(ecosystem, &plugin.name, &plugin.path, &plugin.manifest);
+    }
+}
+
+fn load_plugin_dir(
+    ecosystem: &mut Ecosystem,
+    name: &str,
+    dir: &Path,
+    manifest: &crate::plugin_registry::PluginManifest,
+) {
+    for file in markdown_files(&dir.join("commands")) {
+        if let Some(command) = command_from_markdown(&file) {
+            upsert_command(ecosystem, command);
+        }
+    }
+    for file in markdown_files(&dir.join("agents")) {
+        if let Some(agent) = agent_from_markdown(&file) {
+            upsert_agent(ecosystem, agent);
+        }
+    }
+    scan_skills(ecosystem, &dir.join("skills"));
+
+    if let Some(servers) = manifest.mcp_servers.as_ref().and_then(Json::as_object) {
+        for (server_name, config) in servers {
+            if let Some(server) = mcp_from_claude(server_name, config) {
+                upsert_mcp(ecosystem, server);
+            }
+        }
+    }
+
+    // JS/TS hook files shipped inside the plugin package.
+    if let Ok(entries) = std::fs::read_dir(dir.join("plugins")) {
+        for entry in entries.flatten() {
+            ecosystem.plugins.push(entry.path());
+        }
+    }
+    // Claude Code command hooks declared in the plugin manifest are translated
+    // into a generated JS shim run by the existing hook host.
+    if let Some(path) = crate::plugin_registry::hook_shim_path(name, manifest) {
+        ecosystem.plugins.push(path);
+    }
 }
 
 fn load_layout(ecosystem: &mut Ecosystem, dir: &Path, memory_file: &str) {
@@ -1127,6 +1178,47 @@ mod tests {
         let resolved = ecosystem.resolve_command("/review security").unwrap();
         assert_eq!(resolved.prompt, "Review security focus: all");
         assert!(resolved.agent.is_none());
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn loads_plugin_package_resources() {
+        let dir = temp_dir("plugin_pkg");
+        let pkg = dir.join("pkg");
+        std::fs::create_dir_all(pkg.join("commands")).unwrap();
+        std::fs::create_dir_all(pkg.join("agents")).unwrap();
+        std::fs::create_dir_all(pkg.join("skills/audit")).unwrap();
+        std::fs::create_dir_all(pkg.join(".claude-plugin")).unwrap();
+        std::fs::write(
+            pkg.join("commands/build.md"),
+            "---\ndescription: build it\n---\nRun cargo build",
+        )
+        .unwrap();
+        std::fs::write(
+            pkg.join("agents/planner.md"),
+            "---\nname: planner\n---\nPlan.",
+        )
+        .unwrap();
+        std::fs::write(
+            pkg.join("skills/audit/SKILL.md"),
+            "---\nname: audit\n---\nAudit.",
+        )
+        .unwrap();
+        std::fs::write(
+            pkg.join(".claude-plugin/plugin.json"),
+            r#"{"name":"pkg","mcpServers":{"fs":{"command":"npx"}}}"#,
+        )
+        .unwrap();
+
+        let manifest = crate::plugin_registry::plugin_manifest(&pkg).unwrap();
+        let mut ecosystem = Ecosystem::default();
+        load_plugin_dir(&mut ecosystem, "pkg", &pkg, &manifest);
+
+        assert!(ecosystem.command("build").is_some());
+        assert!(ecosystem.agent("planner").is_some());
+        assert!(ecosystem.skills.iter().any(|skill| skill.name == "audit"));
+        assert!(ecosystem.mcp.iter().any(|server| server.name == "fs"));
 
         std::fs::remove_dir_all(&dir).ok();
     }
