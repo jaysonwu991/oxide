@@ -53,15 +53,17 @@ box, with Claude Code configuration support for compatibility.
   uses the provider/model's native behavior; explicit levels map to
   OpenAI-compatible effort, Anthropic adaptive thinking, or legacy extended
   thinking as appropriate.
-- Compact, bounded output: tool bodies are shown in the TUI by default (Ctrl+O
-  collapses them), long action lines wrap to the terminal width so their full
-  text stays visible, and tool results are capped by lines and bytes before they
-  enter the model's context. Capped output is saved to disk with a pointer so it
-  stays recoverable.
+- Compact, bounded output: tool bodies are shown by default as
+  background-filled panels (Ctrl+O collapses them), colored by state (pending,
+  success, or error), with long action lines and wrapped output continuations
+  aligned so the full text stays readable, and tool results are capped by lines
+  and bytes before they enter the model's context. Capped output is saved to
+  disk with a pointer so it stays recoverable.
 - Compact agent transcript: shell calls render as `→ Run <command>` and finish
   as `→ Ran <command> · exit <code>`, with a `(timeout Ns)` hint when the call
   sets one, a live `Elapsed Ns` while it runs, and a `Took Nms` duration
-  afterwards. Collapsed output uses a
+  afterwards (any other tool that runs for at least 500 ms is timed too).
+  Collapsed output uses a
   `⋯ <lines> lines · Ctrl+O to expand` affordance, file edits show a colored
   line-numbered diff, each model turn is timed with `+ Thought: Nms` (the total
   step time, updated once the stream finishes), and the system prompt nudges the
@@ -595,7 +597,12 @@ reveals a configured server on demand; its tools then appear as
 original file (never incrementally) and must be unique, so a non-unique or
 missing match is rejected rather than silently corrupting a file. Line endings
 and a leading BOM are preserved. `write` and `edit` append LSP diagnostics for
-the edited file. `find` and `grep` respect `.gitignore`. `webfetch` converts
+the edited file. `read`, `ls`, `find`, and `grep` accept absolute paths, so they
+can inspect files outside the project without a shell; `ls` marks directories
+with a trailing `/` and renders symlink targets as `name -> target`. `find` and
+`grep` respect `.gitignore`, and `grep` matches a literal substring and prefers
+`ripgrep` (`rg`) when it is on `PATH`, falling back to a dependency-free
+parallel walker that skips binary files. `webfetch` converts
 HTML to Markdown (`format: "markdown"`, the default), readable plain text
 (`format: "text"`), or returns the raw body (`format: "html"`); the converter
 is dependency-free and handles headings, paragraphs, lists, tables, links,
@@ -662,12 +669,14 @@ the built-in `dark` theme:
 ```
 
 Available slots: `accent`, `user`, `assistant`, `success`, `tool`, `error`,
-`info`, `dim`, `border`, `thinking_off`, `thinking_low`, `thinking_medium`,
-`thinking_high`.
+`info`, `dim`, `border`, `tool_pending_bg`, `tool_success_bg`, `tool_error_bg`,
+`thinking_off`, `thinking_low`, `thinking_medium`, `thinking_high`.
 
 Theme slots are semantic: `accent` marks focus and selections, `user` and
 `assistant` label speakers, `success` and `error` communicate outcomes, `tool`
-marks active tool work, and `info`/`dim` render supporting text. Selection rows
+marks active tool work, and `info`/`dim` render supporting text. The `tool_*_bg`
+slots fill the background behind a tool's header, output, and `Took`/`Elapsed`
+footer (pending while running, success or error once it settles). Selection rows
 also use reverse video and outcomes include text or symbols, so meaning does not
 depend on color alone. For accessible custom themes, keep every foreground
 readable against the terminal background and avoid assigning the same color to

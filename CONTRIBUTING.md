@@ -10,6 +10,8 @@ workflow, project layout, and conventions. For a user-facing overview see
 - `git`.
 - Optional, only for the features that use them:
   - `bun` or `node` for plugin development.
+  - `ripgrep` (`rg`) to accelerate `grep`; without it oxide uses its built-in
+    parallel walker.
   - Language servers for the `diagnostics` tool: `rust-analyzer`,
     `typescript-language-server`, `pyright`, or `gopls`.
 
@@ -51,10 +53,10 @@ macOS, and Windows.
 | `src/config.rs` | Config loading, provider presets, agent `Mode` and `Reasoning`, system prompt composition, and `defaultProjectTrust`. |
 | `src/auth.rs` | Credential store backing the TUI `/login` and `/logout` commands. |
 | `src/trust.rs` | Project trust: per-directory decisions and gating of project-local resources. |
-| `src/theme.rs` | Semantic TUI color themes (built-in and custom JSON), including focus, speaker, success, tool, error, and supporting-text roles. |
+| `src/theme.rs` | Semantic TUI color themes (built-in and custom JSON), including focus, speaker, success, tool, error, supporting-text, border, and tool background roles. |
 | `src/agent.rs` | Agent loop, parallel/sequential tool execution, steering and follow-up queues, terminate hint, and the agent-level tools. |
 | `src/llm/` | Model clients: OpenAI-compatible and Anthropic, including reasoning effort and Anthropic adaptive/extended thinking. |
-| `src/tools.rs` | Built-in tool specs and execution; `ToolOutput` (text/media/diff/terminate), streaming `Progress`, and output truncation (line/byte caps, bash tail, saved full output). |
+| `src/tools.rs` | Built-in tool specs and execution; `ToolOutput` (text/media/diff/terminate), streaming `Progress`, output truncation (line/byte caps, bash tail, saved full output), and `grep` (prefers `ripgrep`, with a parallel built-in fallback). |
 | `src/mcp.rs` | MCP runtime and remote tool exposure. |
 | `src/mcp_config.rs` | `oxide mcp` CLI: read/write MCP servers in `.oxide/mcp.json`, including OAuth fields and `oxide mcp auth`. |
 | `src/mcp_oauth.rs` | OAuth authorization-code + PKCE flow for remote MCP servers. |
@@ -72,7 +74,7 @@ macOS, and Windows.
 | `src/memory.rs` | Cross-session memory store. |
 | `src/media.rs` | Image/PDF attachments and `@path` references. |
 | `src/uninstall.rs` | `oxide uninstall` install detection and cleanup. |
-| `src/tui/` | ratatui + crossterm interface with incremental rendering, a two-column welcome banner, a live state row and metadata footer, a growing labeled editor, shown-by-default tool output (Ctrl+O collapses), concise shell actions, colored edit diffs, per-turn thought timing, Shift+Tab mode and Ctrl+R reasoning cycling, theme-aware project-trust/provider dialogs, and mid-run steering. |
+| `src/tui/` | ratatui + crossterm interface with incremental rendering, a two-column welcome banner, a live state row and metadata footer, a growing labeled editor, background-filled tool panels (Ctrl+O collapses; state-colored with hanging-indented wrapped output), concise shell actions, per-tool `Took` timing, colored edit diffs, per-turn thought timing, Shift+Tab mode and Ctrl+R reasoning cycling, theme-aware project-trust/provider dialogs, and mid-run steering. |
 | `.oxide/` | Project agents, commands, prompts, skills, and plugins (Oxide layout). |
 
 ## Conventions

@@ -42,8 +42,9 @@ description: Use when navigating or modifying the oxide internals — the agent 
 - `src/llm/mod.rs` — module re-exports (`LlmClient`, `Message`, `ToolSpec`, ...).
 - `src/agent.rs` — the agent loop (`run`, `run_loop`, `dispatch`) and
   `run_subagent` for `subtask` commands.
-- `src/tools.rs` — built-in/MCP `specs()` and `execute()`; agent-level tools are
-  wired in `src/agent.rs`.
+- `src/tools.rs` — built-in/MCP `specs()` and `execute()`; `grep` prefers
+  `ripgrep` (`rg`) when present and otherwise uses a parallel built-in walker
+  that sniffs binary files; agent-level tools are wired in `src/agent.rs`.
 - `src/ecosystem/mod.rs` — Oxide (`.oxide/`, `AGENTS.md`) and Claude Code
   (`.claude/`, `CLAUDE.md`, `.mcp.json`) layout discovery; `frontmatter.rs`
   parses Markdown frontmatter; `resolve_command` returns command prompt +
@@ -60,9 +61,12 @@ description: Use when navigating or modifying the oxide internals — the agent 
   (`McpRegistry`, stdio/HTTP), the `oxide mcp` CLI that reads/writes
   `.oxide/mcp.json`, and the OAuth authorization-code + PKCE flow for remote
   servers.
-- `src/tui/` — `run` entry plus `app`/`ui` for rendering and input; shows tool
-  bodies by default (Ctrl+O collapses), renders concise `Run`/`Ran` shell
-  actions, shows colored edit diffs and per-turn thought timing.
+- `src/tui/` — `run` entry plus `app`/`ui` for rendering and input; renders each
+  tool call as one background-filled panel (header, body and `Took` footer) that
+  is colored by state, shows bodies by default (Ctrl+O collapses), wraps long
+  actions and tool output with a hanging indent, times slow non-shell tools,
+  renders concise `Run`/`Ran` shell actions, and shows colored edit diffs and
+  per-turn thought timing.
 
 ## Adding a model provider
 
