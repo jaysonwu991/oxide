@@ -821,6 +821,15 @@ impl Config {
             sections.push(list);
         }
 
+        sections.push(
+            "# Tool use\nWork in larger batches to avoid extra round trips. Read a whole file (or a \
+             wide `offset`/`limit`) once instead of re-reading the same path in small slices, and \
+             issue several independent `read`, `grep`, `find`, or `ls` calls in the same step. Use \
+             `grep` to locate a symbol or string, then read the surrounding lines. Only re-read a \
+             file after you edit it."
+                .to_string(),
+        );
+
         if self.dcp.enabled {
             sections.push(
                 "# Context pruning\nUse the `compress` tool to replace closed, stale spans of the \
@@ -843,6 +852,14 @@ impl Config {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn system_prompt_encourages_batched_tool_use() {
+        let config = Config::default();
+        let prompt = config.compose_system_prompt();
+        assert!(prompt.contains("# Tool use"));
+        assert!(prompt.contains("batches"));
+    }
 
     #[test]
     fn presets_cover_built_in_providers() {
