@@ -168,27 +168,24 @@ impl DcpState {
             .iter()
             .find(|compression| compression.seq == seq)
     }
+}
 
-    /// The highest-sequence compression covering `index`, if any.
-    fn active_seq(&self, index: usize) -> Option<u64> {
-        self.compressions
-            .iter()
-            .filter(|compression| {
-                compression
-                    .ranges
-                    .iter()
-                    .any(|range| index >= range.start && index <= range.end)
-            })
-            .map(|compression| compression.seq)
-            .max()
+/// For each message index, the highest-sequence compression covering it.
+/// Ranges are re-expanded against `messages` so a persisted compression that
+/// ended mid tool-batch cannot orphan a tool result on replay.
+fn active_seqs(messages: &[Message], state: &DcpState) -> Vec<Option<u64>> {
+    let mut active: Vec<Option<u64>> = vec![None; messages.len()];
+    for compression in &state.compressions {
+        for range in normalize_ranges(messages, &compression.ranges) {
+            for slot in active.iter_mut().take(range.end + 1).skip(range.start) {
+                *slot = Some(match *slot {
+                    Some(seq) => seq.max(compression.seq),
+                    None => compression.seq,
+                });
+            }
+        }
     }
-
-    fn span(&self, seq: u64) -> Option<(usize, usize)> {
-        let compression = self.compression(seq)?;
-        let start = compression.ranges.iter().map(|range| range.start).min()?;
-        let end = compression.ranges.iter().map(|range| range.end).max()?;
-        Some((start, end))
-    }
+    active
 }
 
 /// Loads DCP configuration for `cwd`, overlaying the project file on the
@@ -311,11 +308,11 @@ fn file_protected(
 /// Builds the pruned view sent to the model: compressions, then deduplication,
 /// then errored-output purging.
 pub fn prune(messages: &[Message], state: &DcpState, cfg: &DcpConfig) -> Vec<Message> {
+    let active = active_seqs(messages, state);
     let mut out = Vec::with_capacity(messages.len());
     let mut previous: Option<u64> = None;
     for (index, message) in messages.iter().enumerate() {
-        let active = state.active_seq(index);
-        match active {
+        match active[index] {
             Some(seq) => {
                 if previous != Some(seq) {
                     if let Some(compression) = state.compression(seq) {
@@ -328,7 +325,7 @@ pub fn prune(messages: &[Message], state: &DcpState, cfg: &DcpConfig) -> Vec<Mes
             }
             None => out.push(message.clone()),
         }
-        previous = active;
+        previous = active[index];
     }
 
     if cfg.strategies.deduplication.enabled {
@@ -440,30 +437,30 @@ fn is_placeholder(message: &Message) -> bool {
 /// A compact numbered listing of the raw history, including which spans are
 /// already compressed. Injected as a nudge so the model can choose ranges.
 pub fn context_index(messages: &[Message], state: &DcpState) -> String {
+    let active = active_seqs(messages, state);
     let mut out = String::from("Conversation index (message numbers for the `compress` tool):\n");
-    let mut previous: Option<u64> = None;
-    for (index, message) in messages.iter().enumerate() {
-        let active = state.active_seq(index);
-        match active {
+    let mut index = 0;
+    while index < messages.len() {
+        match active[index] {
             Some(seq) => {
-                if previous != Some(seq) {
-                    if let Some((start, end)) = state.span(seq) {
-                        out.push_str(&format!("#{start}-{end} [compressed]\n"));
-                    }
+                let start = index;
+                while index < messages.len() && active[index] == Some(seq) {
+                    index += 1;
                 }
+                out.push_str(&format!("#{start}-{} [compressed]\n", index - 1));
             }
             None => {
-                let preview: String = message
+                let preview: String = messages[index]
                     .display()
                     .unwrap_or_default()
                     .replace('\n', " ")
                     .chars()
                     .take(80)
                     .collect();
-                out.push_str(&format!("#{index} {}: {preview}\n", message.role));
+                out.push_str(&format!("#{index} {}: {preview}\n", messages[index].role));
+                index += 1;
             }
         }
-        previous = active;
     }
     out
 }
@@ -679,14 +676,18 @@ fn expand_pair(messages: &[Message], range: Range) -> Range {
         start -= 1;
     }
     let mut end = range.end;
-    if let Some(calls) = messages[start].tool_calls.as_ref() {
-        let ids: HashSet<&str> = calls.iter().map(|call| call.id.as_str()).collect();
-        while end + 1 < messages.len() && messages[end + 1].role == "tool" {
-            match messages[end + 1].tool_call_id.as_deref() {
-                Some(id) if ids.contains(id) => end += 1,
-                _ => break,
+    let mut index = start;
+    while index <= end && index < messages.len() {
+        if let Some(calls) = messages[index].tool_calls.as_ref() {
+            let ids: HashSet<&str> = calls.iter().map(|call| call.id.as_str()).collect();
+            while end + 1 < messages.len() && messages[end + 1].role == "tool" {
+                match messages[end + 1].tool_call_id.as_deref() {
+                    Some(id) if ids.contains(id) => end += 1,
+                    _ => break,
+                }
             }
         }
+        index += 1;
     }
     Range { start, end }
 }
@@ -809,6 +810,69 @@ mod tests {
         ];
         let normalized = normalize_ranges(&messages, &[Range { start: 2, end: 2 }]);
         assert_eq!(normalized, vec![Range { start: 1, end: 2 }]);
+    }
+
+    #[test]
+    fn normalize_ranges_covers_tool_results_after_an_intermediate_batch() {
+        let messages = vec![
+            Message::user("q"),
+            tool_call("a", "read_file", r#"{"path":"x"}"#),
+            Message::tool("a", "a-result"),
+            tool_call("b", "grep", r#"{"pattern":"y"}"#),
+            Message::tool("b", "b-result"),
+            tool_call("c", "read_file", r#"{"path":"y"}"#),
+            Message::tool("c", "c-result"),
+        ];
+        let normalized = normalize_ranges(&messages, &[Range { start: 2, end: 5 }]);
+        assert_eq!(normalized, vec![Range { start: 1, end: 6 }]);
+    }
+
+    fn tool_pairs_are_consistent(messages: &[Message]) -> bool {
+        let mut pending: HashSet<String> = HashSet::new();
+        for message in messages {
+            match message.role.as_str() {
+                "assistant" => {
+                    pending.clear();
+                    if let Some(calls) = &message.tool_calls {
+                        for call in calls {
+                            pending.insert(call.id.clone());
+                        }
+                    }
+                }
+                "tool" => {
+                    let Some(id) = message.tool_call_id.as_ref() else {
+                        return false;
+                    };
+                    if !pending.remove(id) {
+                        return false;
+                    }
+                }
+                _ => pending.clear(),
+            }
+        }
+        true
+    }
+
+    #[test]
+    fn prune_never_orphans_tool_results() {
+        let messages = vec![
+            Message::user("q"),
+            tool_call("a", "read_file", r#"{"path":"x"}"#),
+            Message::tool("a", "a-result"),
+            tool_call("b", "grep", r#"{"pattern":"y"}"#),
+            Message::tool("b", "b-result"),
+            tool_call("c", "read_file", r#"{"path":"y"}"#),
+            Message::tool("c", "c-result"),
+        ];
+        let state = DcpState {
+            compressions: vec![Compression {
+                seq: 0,
+                ranges: vec![Range { start: 2, end: 5 }],
+                summary: "compressed".into(),
+            }],
+        };
+        let pruned = prune(&messages, &state, &DcpConfig::default());
+        assert!(tool_pairs_are_consistent(&pruned));
     }
 
     #[test]
