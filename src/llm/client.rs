@@ -165,10 +165,13 @@ impl LlmClient {
         let mut turn = AssistantTurn::default();
         let mut partials: Vec<PartialToolCall> = Vec::new();
 
-        read_sse(response, |data| {
+        let completed = read_sse(response, |data| {
             let Ok(parsed) = serde_json::from_str::<StreamChunk>(data) else {
                 return Ok(());
             };
+            if let Some(error) = parsed.error {
+                anyhow::bail!("provider error: {}", error.describe());
+            }
             if let Some(usage) = &parsed.usage {
                 turn.usage = Usage {
                     input: usage.prompt_tokens,
@@ -231,6 +234,10 @@ impl LlmClient {
             })
             .collect();
 
+        if !completed && turn.content.is_empty() && turn.tool_calls.is_empty() {
+            anyhow::bail!("provider stream ended before completing the response");
+        }
+
         Ok(turn)
     }
 
@@ -282,7 +289,7 @@ impl LlmClient {
         let mut turn = AssistantTurn::default();
         let mut partials = BTreeMap::new();
 
-        read_sse(response, |data| {
+        let _ = read_sse(response, |data| {
             anthropic::apply_event(data, &mut turn, &mut partials, &mut on_text)
         })
         .await?;
@@ -418,12 +425,13 @@ fn openai_reasoning(
     }
 }
 
-async fn read_sse<F>(response: reqwest::Response, mut on_data: F) -> Result<()>
+async fn read_sse<F>(response: reqwest::Response, mut on_data: F) -> Result<bool>
 where
     F: FnMut(&str) -> Result<()>,
 {
     let mut buffer = String::new();
     let mut stream = response.bytes_stream();
+    let mut completed = false;
 
     while let Some(chunk) = stream.next().await {
         let chunk = chunk.context("reading response stream")?;
@@ -436,14 +444,18 @@ where
                 continue;
             };
             let data = data.trim();
-            if data.is_empty() || data == "[DONE]" {
+            if data.is_empty() {
+                continue;
+            }
+            if data == "[DONE]" {
+                completed = true;
                 continue;
             }
             on_data(data)?;
         }
     }
 
-    Ok(())
+    Ok(completed)
 }
 
 #[cfg(test)]

@@ -91,6 +91,7 @@ pub enum ChatItem {
         args: String,
         output: String,
         diff: Option<DiffPreview>,
+        millis: u64,
     },
     Thought(u64),
     Error(String),
@@ -299,6 +300,8 @@ pub struct App {
     pub render_dirty_from: Option<usize>,
     pub render_width: usize,
     pub selection: Option<Selection>,
+    /// Name and start time of the tool currently running, for a live `Elapsed`.
+    pub running_tool: Option<(String, Instant)>,
 }
 
 impl App {
@@ -351,6 +354,7 @@ impl App {
             render_dirty_from: Some(0),
             render_width: 0,
             selection: None,
+            running_tool: None,
         }
     }
 
@@ -510,6 +514,21 @@ impl App {
         );
     }
 
+    /// Marks the item rendering the running tool dirty so a live `Elapsed`
+    /// updates on each tick without rebuilding the whole transcript.
+    pub fn mark_running_tool_dirty(&mut self) {
+        if self.running_tool.is_none() {
+            return;
+        }
+        if let Some(index) = self
+            .items
+            .iter()
+            .rposition(|item| matches!(item, ChatItem::Tool { .. } | ChatItem::ToolProgress { .. }))
+        {
+            self.mark_render_dirty(index);
+        }
+    }
+
     /// Fold a tool result into the pending call it belongs to, so the
     /// conversation shows one entry per call (like the opencode reference)
     /// rather than a call line followed by a separate result line. Falls back
@@ -520,6 +539,7 @@ impl App {
         args: String,
         output: String,
         diff: Option<DiffPreview>,
+        millis: u64,
     ) {
         let mut progress = Vec::new();
         let mut index = self.items.len();
@@ -547,6 +567,7 @@ impl App {
                     args,
                     output,
                     diff,
+                    millis,
                 };
                 self.mark_render_dirty(tool);
             }
@@ -555,6 +576,7 @@ impl App {
                 args,
                 output,
                 diff,
+                millis,
             }),
         }
     }

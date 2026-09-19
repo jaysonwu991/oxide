@@ -257,6 +257,30 @@ pub struct StreamChunk {
     pub choices: Vec<StreamChoice>,
     #[serde(default)]
     pub usage: Option<StreamUsage>,
+    /// Some OpenAI-compatible providers deliver errors mid-stream as
+    /// `{"error": {...}}` with HTTP 200; surface them instead of ignoring.
+    #[serde(default)]
+    pub error: Option<StreamError>,
+}
+
+/// An in-band error payload from an OpenAI-compatible stream.
+#[derive(Debug, Deserialize)]
+pub struct StreamError {
+    #[serde(default)]
+    pub message: Option<String>,
+    #[serde(default, rename = "type")]
+    pub kind: Option<String>,
+}
+
+impl StreamError {
+    pub fn describe(&self) -> String {
+        match (&self.kind, &self.message) {
+            (Some(kind), Some(message)) => format!("{kind}: {message}"),
+            (None, Some(message)) => message.clone(),
+            (Some(kind), None) => kind.clone(),
+            (None, None) => "unknown provider error".to_string(),
+        }
+    }
 }
 
 /// Token counts as reported by OpenAI-compatible providers.
@@ -351,5 +375,20 @@ mod tests {
             back.display().as_deref(),
             Some("attached pdf\n[file: spec.pdf]")
         );
+    }
+
+    #[test]
+    fn stream_chunk_surfaces_in_band_errors() {
+        let chunk: StreamChunk =
+            serde_json::from_str(r#"{"error":{"type":"server_error","message":"overloaded"}}"#)
+                .unwrap();
+        assert!(chunk.choices.is_empty());
+        assert_eq!(
+            chunk.error.unwrap().describe(),
+            "server_error: overloaded".to_string()
+        );
+
+        let chunk: StreamChunk = serde_json::from_str(r#"{"error":{}}"#).unwrap();
+        assert_eq!(chunk.error.unwrap().describe(), "unknown provider error");
     }
 }

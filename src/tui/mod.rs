@@ -273,7 +273,9 @@ async fn event_loop(
                     app.pending_approval = Some(request);
                 }
             }
-            _ = tick.tick(), if app.busy => {}
+            _ = tick.tick(), if app.busy => {
+                app.mark_running_tool_dirty();
+            }
             _ = branch_tick.tick(), if !app.busy => {
                 app.refresh_git_branch();
             }
@@ -2230,6 +2232,7 @@ fn handle_agent_event(event: AgentEvent, app: &mut App) {
         AgentEvent::ToolCall { name, args } => {
             app.assistant_open = false;
             app.auto_scroll = true;
+            app.running_tool = Some((name.clone(), std::time::Instant::now()));
             app.items.push(ChatItem::Tool { name, args });
             app.status = "running tool...".to_string();
         }
@@ -2257,9 +2260,11 @@ fn handle_agent_event(event: AgentEvent, app: &mut App) {
             args,
             output,
             diff,
+            millis,
         } => {
             app.auto_scroll = true;
-            app.resolve_tool(name, args, output, diff);
+            app.running_tool = None;
+            app.resolve_tool(name, args, output, diff, millis);
             app.status = "thinking...".to_string();
         }
         AgentEvent::Usage { input, output } => {
@@ -2273,6 +2278,7 @@ fn handle_agent_event(event: AgentEvent, app: &mut App) {
         AgentEvent::Finished(history) => {
             app.history = history;
             app.workspace_paths = None;
+            app.running_tool = None;
             app.busy = false;
             app.busy_since = None;
             app.assistant_open = false;

@@ -972,6 +972,10 @@ fn sync_lines(app: &mut App, width: usize) {
     app.lines.truncate(cut);
     app.line_offsets.truncate(start);
 
+    let running = app
+        .running_tool
+        .as_ref()
+        .map(|(name, started)| (name.clone(), started.elapsed()));
     for index in start..count {
         let offset = app.lines.len();
         app.line_offsets.push(offset);
@@ -980,6 +984,9 @@ fn sync_lines(app: &mut App, width: usize) {
             width,
             app.expand_tools,
             &app.theme,
+            running
+                .as_ref()
+                .map(|(name, elapsed)| (name.as_str(), *elapsed)),
             &mut app.lines,
         );
         if app.lines.len() > offset {
@@ -994,6 +1001,7 @@ fn render_item_themed(
     width: usize,
     expand_tools: bool,
     theme: &crate::theme::Theme,
+    running: Option<(&str, std::time::Duration)>,
     lines: &mut Vec<Line<'static>>,
 ) {
     let bold = Modifier::BOLD;
@@ -1031,7 +1039,16 @@ fn render_item_themed(
                 };
                 lines.extend(action_lines(verb, &path, color, bold, width));
             } else if let Some(command) = bash_command(name, args) {
-                lines.extend(action_lines("Run", &command, theme.tool, bold, width));
+                let mut subject = format!("{command}{}", bash_timeout_suffix(name, args));
+                if let Some((running_name, elapsed)) = running {
+                    if running_name == name {
+                        subject.push_str(&format!(
+                            " · Elapsed {}",
+                            format_duration(elapsed.as_millis() as u64)
+                        ));
+                    }
+                }
+                lines.extend(action_lines("Run", &subject, theme.tool, bold, width));
             } else {
                 lines.extend(wrapped_with_prefix(
                     vec![
@@ -1054,39 +1071,40 @@ fn render_item_themed(
                     Span::styled(name.clone(), Style::default().fg(theme.info)),
                 ]));
             }
-            push_tool_body(lines, output, width, expand_tools, theme.info);
+            push_tool_body(lines, output, width, expand_tools, theme.info, theme.border);
         }
         ChatItem::ToolResult {
             name,
             args,
             output,
             diff,
+            millis,
         } => {
             if let Some(diff) = diff {
                 render_diff(diff, width, expand_tools, theme, lines);
                 if output.starts_with("error:") {
-                    push_wrapped(lines, output, width, Style::default().fg(theme.error));
+                    push_tool_body(lines, output, width, true, theme.error, theme.border);
                 } else if let Some((_, rest)) = output.split_once("\n\n") {
                     if !rest.trim().is_empty() {
-                        push_wrapped(lines, rest, width, Style::default().fg(theme.info));
+                        push_tool_body(lines, rest, width, true, theme.info, theme.border);
                     }
                 }
             } else if let Some(path) = file_tool_path(name, args) {
                 if crate::tools::canonical_tool_name(name) == "read_file" {
                     if output.starts_with("error:") {
                         lines.extend(action_lines("Read failed", &path, theme.error, bold, width));
-                        push_wrapped(lines, output, width, Style::default().fg(theme.error));
+                        push_tool_body(lines, output, width, true, theme.error, theme.border);
                     } else {
                         lines.extend(action_lines("Read", &path, theme.success, bold, width));
                     }
                 } else if output.starts_with("error:") {
                     lines.extend(action_lines("Edit failed", &path, theme.error, bold, width));
-                    push_wrapped(lines, output, width, Style::default().fg(theme.error));
+                    push_tool_body(lines, output, width, true, theme.error, theme.border);
                 } else {
                     lines.extend(action_lines("Edited", &path, theme.success, bold, width));
                     if let Some((_, rest)) = output.split_once("\n\n") {
                         if !rest.trim().is_empty() {
-                            push_wrapped(lines, rest, width, Style::default().fg(theme.info));
+                            push_tool_body(lines, rest, width, true, theme.info, theme.border);
                         }
                     }
                 }
@@ -1096,33 +1114,45 @@ fn render_item_themed(
                     .map(|code| code != 0)
                     .unwrap_or_else(|| output.starts_with("error:"));
                 let color = if failed { theme.error } else { theme.success };
+                let timeout = bash_timeout_suffix(name, args);
                 let subject = match exit {
-                    Some(code) => format!("{command} · exit {code}"),
-                    None => command,
+                    Some(code) => format!("{command}{timeout} · exit {code}"),
+                    None => format!("{command}{timeout}"),
                 };
                 let verb = if failed { "Run failed" } else { "Ran" };
                 lines.extend(action_lines(verb, &subject, color, bold, width));
                 if exit.is_none() && !output.trim().is_empty() {
-                    push_wrapped(lines, output, width, Style::default().fg(theme.error));
-                } else if expand_tools {
-                    push_tool_body(lines, output, width, true, theme.info);
+                    push_tool_body(lines, output, width, true, theme.error, theme.border);
                 } else if bash_has_body(output) {
-                    push_collapsed_hint(
-                        lines,
-                        width,
-                        output.lines().count().saturating_sub(1),
-                        theme.info,
-                    );
+                    if expand_tools {
+                        let body = bash_body(output);
+                        push_tool_body(lines, &body, width, true, theme.info, theme.border);
+                    } else {
+                        push_collapsed_hint(
+                            lines,
+                            width,
+                            output.lines().count().saturating_sub(1),
+                            theme.info,
+                        );
+                    }
+                }
+                if *millis > 0 {
+                    lines.push(Line::from(Span::styled(
+                        format!("  Took {}", format_duration(*millis)),
+                        Style::default().fg(theme.dim),
+                    )));
                 }
             } else {
                 lines.push(Line::from(vec![
                     Span::styled("↳ ", Style::default().fg(theme.info)),
                     Span::styled(name.clone(), Style::default().fg(theme.info)),
                 ]));
-                if expand_tools {
-                    push_tool_body(lines, output, width, true, theme.info);
-                } else if !output.trim().is_empty() {
-                    push_collapsed_hint(lines, width, output.lines().count(), theme.info);
+                if !output.trim().is_empty() {
+                    if expand_tools {
+                        push_tool_body(lines, output, width, true, theme.info, theme.border);
+                    } else {
+                        push_collapsed_hint(lines, width, output.lines().count(), theme.info);
+                    }
                 }
             }
         }
@@ -1254,6 +1284,7 @@ fn render_item(item: &ChatItem, width: usize, expand_tools: bool, lines: &mut Ve
         width,
         expand_tools,
         &crate::theme::Theme::dark(),
+        None,
         lines,
     );
 }
@@ -1535,6 +1566,33 @@ fn bash_exit_code(output: &str) -> Option<i32> {
         .and_then(|code| code.trim().parse().ok())
 }
 
+/// A ` (timeout Ns)` suffix for a `bash` call whose args set a timeout.
+fn bash_timeout_suffix(name: &str, args: &str) -> String {
+    if crate::tools::canonical_tool_name(name) != "bash" {
+        return String::new();
+    }
+    let Ok(value) = serde_json::from_str::<serde_json::Value>(args) else {
+        return String::new();
+    };
+    match value.get("timeout").and_then(|v| v.as_u64()) {
+        Some(millis) if millis > 0 => format!(" (timeout {})", format_duration(millis)),
+        _ => String::new(),
+    }
+}
+
+/// Human-readable duration for tool timing: `420ms`, `1.2s`, `12s`.
+fn format_duration(millis: u64) -> String {
+    if millis < 1000 {
+        return format!("{millis}ms");
+    }
+    let secs = millis as f64 / 1000.0;
+    if secs.fract() == 0.0 {
+        format!("{}s", secs as u64)
+    } else {
+        format!("{secs:.1}s")
+    }
+}
+
 /// Summarize a tool call's arguments for display. File tools otherwise dump
 /// their entire payload (e.g. `write_file` carries the full file content), so
 /// show just the path and a compact size hint instead.
@@ -1569,19 +1627,75 @@ fn tool_arg_summary(name: &str, args: &str) -> String {
     }
 }
 
-/// Render a tool's output. Output is shown by default (like Pi); Ctrl+O
-/// collapses it back into a compact action list.
+/// Columns budgeted for a box's borders and inner padding (`│ ` + ` │`).
+const BOX_PAD: usize = 4;
+/// Narrowest box we will draw before letting content spill to the edges.
+const BOX_MIN_WIDTH: usize = 8;
+
+/// Width available for content inside a box of the given outer `width`.
+fn box_inner_width(width: usize) -> usize {
+    width.max(BOX_MIN_WIDTH).saturating_sub(BOX_PAD).max(1)
+}
+
+/// Render `body` inside a rounded border so tool output is visually contained
+/// and clearly separate from the action header above it.
+fn push_box(lines: &mut Vec<Line<'static>>, body: Vec<Line<'static>>, width: usize, border: Color) {
+    let inner = box_inner_width(width);
+    let border_style = Style::default().fg(border);
+    lines.push(Line::from(Span::styled(
+        format!("╭{}╮", "─".repeat(inner + 2)),
+        border_style,
+    )));
+    for line in body {
+        let used: usize = line
+            .spans
+            .iter()
+            .map(|span| span.content.chars().count())
+            .sum();
+        let pad = inner.saturating_sub(used);
+        let mut spans = Vec::with_capacity(line.spans.len() + 3);
+        spans.push(Span::styled("│ ", border_style));
+        spans.extend(line.spans);
+        spans.push(Span::styled(format!("{} │", " ".repeat(pad)), border_style));
+        lines.push(Line::from(spans));
+    }
+    lines.push(Line::from(Span::styled(
+        format!("╰{}╯", "─".repeat(inner + 2)),
+        border_style,
+    )));
+}
+
+/// Render a tool's output inside a box. Output is shown by default (like Pi);
+/// Ctrl+O collapses it back into a compact action list.
 fn push_tool_body(
     lines: &mut Vec<Line<'static>>,
     output: &str,
     width: usize,
     expand_tools: bool,
-    color: Color,
+    text: Color,
+    border: Color,
 ) {
-    if !expand_tools {
+    if !expand_tools || output.trim().is_empty() {
         return;
     }
-    push_wrapped(lines, output, width, Style::default().fg(color));
+    let mut body = Vec::new();
+    push_wrapped(
+        &mut body,
+        output,
+        box_inner_width(width),
+        Style::default().fg(text),
+    );
+    push_box(lines, body, width, border);
+}
+
+/// A `bash` result's output with the trailing exit-code line stripped, so the
+/// box holds only the command's own output.
+fn bash_body(output: &str) -> String {
+    output
+        .lines()
+        .filter(|line| !line.starts_with("[exit: ") && !line.starts_with("[exit code: "))
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 /// A one-line affordance shown when a tool body is hidden, mirroring the
@@ -1626,18 +1740,26 @@ fn render_diff(
         Modifier::BOLD,
         width,
     ));
+    if diff.text.trim().is_empty() {
+        return;
+    }
+    let inner = box_inner_width(width);
     let all: Vec<&str> = diff.text.lines().collect();
     let limit = if expand_tools {
         all.len()
     } else {
         DIFF_PREVIEW_LINES.min(all.len())
     };
-    for line in &all[..limit] {
-        lines.push(Line::from(Span::styled(
-            truncate(line, width),
-            diff_line_style(line, theme),
-        )));
-    }
+    let body: Vec<Line<'static>> = all[..limit]
+        .iter()
+        .map(|line| {
+            Line::from(Span::styled(
+                truncate(line, inner),
+                diff_line_style(line, theme),
+            ))
+        })
+        .collect();
+    push_box(lines, body, width, theme.border);
     if limit < all.len() {
         push_collapsed_hint(lines, width, all.len() - limit, theme.info);
     }
@@ -1760,13 +1882,6 @@ fn wrap_segment(raw: &str, width: usize, base: usize) -> Vec<WrapLine> {
         non_ws_prev = !is_ws;
     }
 
-    if pending_line.is_empty() && pending_word.is_empty() && !pending_ws.is_empty() {
-        lines.push(WrapLine {
-            text: String::new(),
-            start: base,
-            end: base,
-        });
-    }
     pending_line.append(&mut pending_ws);
     pending_line.append(&mut pending_word);
     flush(&mut pending_line, &mut lines, base);
@@ -1815,6 +1930,15 @@ mod tests {
         assert_eq!(input_cursor_position("hello", 2, 10), (0, 2));
         assert_eq!(input_cursor_position("hello\nworld", 8, 10), (1, 2));
         assert_eq!(input_cursor_position("abcdefghijk", 11, 5), (2, 1));
+    }
+
+    #[test]
+    fn whitespace_only_input_stays_on_one_line() {
+        assert_eq!(wrap(" ", 10), vec![" "]);
+        assert_eq!(wrap("   ", 10), vec!["   "]);
+        assert_eq!(input_rows(" ", 10), MIN_INPUT_ROWS);
+        assert_eq!(input_cursor_position(" ", 1, 10), (0, 1));
+        assert_eq!(input_cursor_position("  ", 2, 10), (0, 2));
     }
 
     #[test]
@@ -2029,6 +2153,7 @@ mod tests {
                 args: args.into(),
                 output: "     1\tfn main() {}".into(),
                 diff: None,
+                millis: 0,
             },
             80,
             false,
@@ -2043,6 +2168,7 @@ mod tests {
                 args: args.into(),
                 output: "wrote 12 bytes to /x".into(),
                 diff: None,
+                millis: 0,
             },
             80,
             false,
@@ -2074,6 +2200,7 @@ mod tests {
                 args: args.into(),
                 output: "ok\n[exit: 0]".into(),
                 diff: None,
+                millis: 0,
             },
             80,
             false,
@@ -2090,6 +2217,7 @@ mod tests {
                 args: args.into(),
                 output: "boom\n[exit: 1]".into(),
                 diff: None,
+                millis: 0,
             },
             80,
             false,
@@ -2177,7 +2305,9 @@ mod tests {
             true,
             &mut expanded,
         );
-        assert_eq!(expanded.len(), 10);
+        assert_eq!(expanded.len(), 12);
+        assert!(line_text(&expanded[0]).starts_with('╭'));
+        assert!(line_text(&expanded[11]).starts_with('╰'));
     }
 
     #[test]
@@ -2193,15 +2323,161 @@ mod tests {
                 args: r#"{"path":"src/main.rs"}"#.into(),
                 output: "wrote 12 bytes to /x".into(),
                 diff: Some(diff),
+                millis: 0,
             },
             80,
             false,
             &mut lines,
         );
         assert_eq!(line_text(&lines[0]), "→ Edited src/main.rs");
-        assert_eq!(lines[1].spans[0].style.fg, Some(Color::Gray));
-        assert_eq!(lines[2].spans[0].style.fg, Some(Color::LightRed));
-        assert_eq!(lines[3].spans[0].style.fg, Some(Color::LightGreen));
+        assert!(
+            line_text(&lines[1]).starts_with('╭'),
+            "{:?}",
+            line_text(&lines[1])
+        );
+        assert_eq!(lines[2].spans[1].style.fg, Some(Color::Gray));
+        assert_eq!(lines[3].spans[1].style.fg, Some(Color::LightRed));
+        assert_eq!(lines[4].spans[1].style.fg, Some(Color::LightGreen));
+        assert!(
+            line_text(&lines[5]).starts_with('╰'),
+            "{:?}",
+            line_text(&lines[5])
+        );
+    }
+
+    #[test]
+    fn tool_body_is_contained_in_a_box() {
+        let mut lines = Vec::new();
+        render_item(
+            &ChatItem::ToolResult {
+                name: "bash".into(),
+                args: r#"{"command":"echo hi"}"#.into(),
+                output: "hi\n[exit: 0]".into(),
+                diff: None,
+                millis: 0,
+            },
+            80,
+            true,
+            &mut lines,
+        );
+        assert_eq!(line_text(&lines[0]), "→ Ran echo hi · exit 0");
+        assert!(
+            line_text(&lines[1]).starts_with('╭'),
+            "{:?}",
+            line_text(&lines[1])
+        );
+        assert_eq!(lines[2].spans[1].content.as_ref(), "hi");
+        assert!(
+            line_text(&lines[3]).starts_with('╰'),
+            "{:?}",
+            line_text(&lines[3])
+        );
+        for line in &lines {
+            assert!(
+                line_text(line).chars().count() <= 80,
+                "{:?}",
+                line_text(line)
+            );
+        }
+
+        let mut lines = Vec::new();
+        render_item(
+            &ChatItem::ToolResult {
+                name: "grep".into(),
+                args: r#"{"pattern":"x"}"#.into(),
+                output: "match".into(),
+                diff: None,
+                millis: 0,
+            },
+            80,
+            true,
+            &mut lines,
+        );
+        assert_eq!(line_text(&lines[0]), "↳ grep");
+        assert!(line_text(&lines[1]).starts_with('╭'));
+        assert_eq!(lines[2].spans[1].content.as_ref(), "match");
+        assert!(line_text(&lines[3]).starts_with('╰'));
+    }
+
+    #[test]
+    fn bash_call_and_result_show_timeout_and_duration() {
+        let args = r#"{"command":"cargo test","timeout":420000}"#;
+        let mut call = Vec::new();
+        render_item(
+            &ChatItem::Tool {
+                name: "bash".into(),
+                args: args.into(),
+            },
+            80,
+            false,
+            &mut call,
+        );
+        assert_eq!(line_text(&call[0]), "→ Run cargo test (timeout 420s)");
+
+        let mut result = Vec::new();
+        render_item(
+            &ChatItem::ToolResult {
+                name: "bash".into(),
+                args: args.into(),
+                output: "ok\n[exit: 0]".into(),
+                diff: None,
+                millis: 1234,
+            },
+            80,
+            true,
+            &mut result,
+        );
+        assert_eq!(
+            line_text(&result[0]),
+            "→ Ran cargo test (timeout 420s) · exit 0"
+        );
+        assert!(
+            result
+                .iter()
+                .any(|line| line_text(line).contains("Took 1.2s")),
+            "{:?}",
+            result.iter().map(line_text).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn formats_tool_durations() {
+        assert_eq!(format_duration(0), "0ms");
+        assert_eq!(format_duration(420), "420ms");
+        assert_eq!(format_duration(1200), "1.2s");
+        assert_eq!(format_duration(12000), "12s");
+    }
+
+    #[test]
+    fn running_bash_shows_live_elapsed() {
+        let mut lines = Vec::new();
+        render_item_themed(
+            &ChatItem::Tool {
+                name: "bash".into(),
+                args: r#"{"command":"sleep 30"}"#.into(),
+            },
+            80,
+            false,
+            &crate::theme::Theme::dark(),
+            Some(("bash", std::time::Duration::from_millis(2400))),
+            &mut lines,
+        );
+        assert_eq!(line_text(&lines[0]), "→ Run sleep 30 · Elapsed 2.4s");
+
+        // A different tool's elapsed must not leak onto this call.
+        let mut lines = Vec::new();
+        render_item_themed(
+            &ChatItem::Tool {
+                name: "bash".into(),
+                args: r#"{"command":"ls"}"#.into(),
+            },
+            80,
+            false,
+            &crate::theme::Theme::dark(),
+            Some(("grep", std::time::Duration::from_millis(2400))),
+            &mut lines,
+        );
+        assert_eq!(line_text(&lines[0]), "→ Run ls");
     }
 
     fn row_of(buffer: &ratatui::buffer::Buffer, needle: &str) -> Option<u16> {
