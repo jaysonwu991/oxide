@@ -1,6 +1,7 @@
 mod agent;
 mod auth;
 mod cli;
+mod clipboard;
 mod compact;
 mod config;
 mod dcp;

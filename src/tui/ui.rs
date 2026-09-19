@@ -1,6 +1,6 @@
 use crate::config::Reasoning;
 use crate::tools::DiffPreview;
-use crate::tui::app::{App, ChatItem, ConnectStep};
+use crate::tui::app::{App, ChatItem, ConnectStep, Selection};
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span, Text};
@@ -11,6 +11,9 @@ use ratatui::Frame;
 
 const MIN_INPUT_ROWS: usize = 3;
 const MAX_INPUT_ROWS: usize = 12;
+/// Blank rows kept above the conversation so the first line (banner or chat)
+/// is not flush with the terminal's top edge.
+const MESSAGE_TOP_PAD: u16 = 1;
 const MAX_MODEL_ROWS: usize = 12;
 const MAX_SESSION_ROWS: usize = 12;
 const MAX_SUGGESTION_ROWS: usize = 8;
@@ -819,10 +822,12 @@ fn reasoning_color(reasoning: Reasoning, theme: &crate::theme::Theme) -> Color {
 }
 
 fn draw_messages(frame: &mut Frame, app: &mut App, area: Rect) {
+    let top_pad = MESSAGE_TOP_PAD.min(area.height);
     let inner = Rect {
         x: area.x + 1,
+        y: area.y + top_pad,
         width: area.width.saturating_sub(2),
-        ..area
+        height: area.height.saturating_sub(top_pad),
     };
 
     let width = inner.width as usize;
@@ -839,8 +844,99 @@ fn draw_messages(frame: &mut Frame, app: &mut App, area: Rect) {
 
     let start = app.scroll as usize;
     let end = (start + view as usize).min(app.lines.len());
-    let paragraph = Paragraph::new(app.lines[start..end].to_vec()).wrap(Wrap { trim: false });
+    let content = selection_lines(app, start, end);
+    let paragraph = Paragraph::new(content).wrap(Wrap { trim: false });
     frame.render_widget(paragraph, inner);
+}
+
+/// The visible conversation lines with the active selection background applied.
+/// Only the rendered window is cloned, and only while a selection exists.
+fn selection_lines(app: &App, start: usize, end: usize) -> Vec<Line<'static>> {
+    let Some(selection) = app.selection else {
+        return app.lines[start..end].to_vec();
+    };
+    let highlight = Style::default()
+        .bg(app.theme.accent)
+        .fg(Color::Black)
+        .add_modifier(Modifier::BOLD);
+    app.lines[start..end]
+        .iter()
+        .enumerate()
+        .map(|(offset, line)| highlight_line(line, start + offset, &selection, highlight))
+        .collect()
+}
+
+/// Splits a line's spans so the selected cells carry the highlight style.
+fn highlight_line(
+    line: &Line<'static>,
+    line_index: usize,
+    selection: &Selection,
+    highlight: Style,
+) -> Line<'static> {
+    let mut spans: Vec<Span<'static>> = Vec::with_capacity(line.spans.len());
+    let mut column = 0usize;
+    for span in &line.spans {
+        let mut run: Option<(String, bool)> = None;
+        for (offset, ch) in span.content.chars().enumerate() {
+            let selected = selection.contains(line_index, column + offset);
+            match &mut run {
+                Some((text, current)) if *current == selected => text.push(ch),
+                Some((text, current)) => {
+                    spans.push(Span::styled(
+                        std::mem::take(text),
+                        if *current {
+                            span.style.patch(highlight)
+                        } else {
+                            span.style
+                        },
+                    ));
+                    run = Some((ch.to_string(), selected));
+                }
+                None => run = Some((ch.to_string(), selected)),
+            }
+        }
+        if let Some((text, selected)) = run {
+            spans.push(Span::styled(
+                text,
+                if selected {
+                    span.style.patch(highlight)
+                } else {
+                    span.style
+                },
+            ));
+        }
+        column += span.content.chars().count();
+    }
+    Line::from(spans).style(line.style)
+}
+
+/// Maps a terminal cell to an absolute conversation line and column, for mouse
+/// selection. Returns `None` when the cell is outside the message viewport.
+/// Columns are clamped to the viewport so drags past an edge still select.
+pub(crate) fn message_position_at(
+    app: &App,
+    terminal_area: Rect,
+    column: u16,
+    row: u16,
+) -> Option<(usize, usize)> {
+    let [message_area, _, _] = main_areas(terminal_area, app);
+    let top_pad = MESSAGE_TOP_PAD.min(message_area.height);
+    if message_area.width <= 2 || message_area.height <= top_pad {
+        return None;
+    }
+    let inner = Rect {
+        x: message_area.x + 1,
+        y: message_area.y + top_pad,
+        width: message_area.width.saturating_sub(2),
+        height: message_area.height.saturating_sub(top_pad),
+    };
+    if row < inner.y || row >= inner.y.saturating_add(inner.height) {
+        return None;
+    }
+    let max_column = inner.x.saturating_add(inner.width).saturating_sub(1);
+    let column = column.clamp(inner.x, max_column) - inner.x;
+    let line = app.scroll as usize + usize::from(row - inner.y);
+    Some((line, usize::from(column)))
 }
 
 /// Incrementally rebuild rendered lines from the first item explicitly marked
@@ -1739,6 +1835,30 @@ mod tests {
             .iter()
             .any(|line| line_text(line).contains("updated")));
         assert_eq!(app.render_dirty_from, None);
+    }
+
+    #[test]
+    fn message_position_at_maps_cells_to_absolute_lines() {
+        let mut app = App::new("model".into(), "/tmp".into(), Mode::Build, Reasoning::Auto);
+        app.scroll = 4;
+        let area = Rect {
+            x: 0,
+            y: 0,
+            width: 40,
+            height: 24,
+        };
+        let [message_area, _, _] = main_areas(area, &app);
+        let inner_y = message_area.y + MESSAGE_TOP_PAD;
+        assert_eq!(message_position_at(&app, area, 0, inner_y), Some((4, 0)));
+        assert_eq!(
+            message_position_at(&app, area, 3, inner_y + 2),
+            Some((6, 2))
+        );
+        assert_eq!(message_position_at(&app, area, 0, message_area.y), None);
+        assert_eq!(
+            message_position_at(&app, area, 999, inner_y),
+            Some((4, usize::from(message_area.width - 2 - 1)))
+        );
     }
 
     #[test]

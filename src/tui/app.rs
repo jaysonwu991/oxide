@@ -7,6 +7,70 @@ use ratatui::text::Line;
 use std::process::Command;
 use std::time::Instant;
 
+/// A mouse text selection over the rendered conversation, in absolute line and
+/// column coordinates. Display columns index characters because the renderer
+/// wraps by character width.
+#[derive(Debug, Clone, Copy)]
+pub struct Selection {
+    pub anchor: (usize, usize),
+    pub cursor: (usize, usize),
+}
+
+impl Selection {
+    pub fn new(line: usize, column: usize) -> Self {
+        Self {
+            anchor: (line, column),
+            cursor: (line, column),
+        }
+    }
+
+    /// The selection endpoints ordered so the start precedes the end. Both are
+    /// inclusive.
+    pub fn range(&self) -> ((usize, usize), (usize, usize)) {
+        if self.anchor <= self.cursor {
+            (self.anchor, self.cursor)
+        } else {
+            (self.cursor, self.anchor)
+        }
+    }
+
+    /// Whether the cell at `line`/`column` falls inside the selection.
+    pub fn contains(&self, line: usize, column: usize) -> bool {
+        let (start, end) = self.range();
+        let position = (line, column);
+        position >= start && position <= end
+    }
+
+    /// The selected text extracted from the rendered lines, with trailing
+    /// whitespace trimmed from each line.
+    pub fn text(&self, lines: &[Line<'static>]) -> String {
+        if lines.is_empty() {
+            return String::new();
+        }
+        let last = lines.len() - 1;
+        let (start, end) = self.range();
+        let stop = end.0.min(last);
+        let mut out: Vec<String> = Vec::new();
+        for (index, line) in lines.iter().enumerate().take(stop + 1).skip(start.0) {
+            let chars: Vec<char> = line
+                .spans
+                .iter()
+                .flat_map(|span| span.content.chars())
+                .collect();
+            let from = if index == start.0 { start.1 } else { 0 }.min(chars.len());
+            let to = if index == end.0 {
+                end.1.saturating_add(1)
+            } else {
+                chars.len()
+            }
+            .clamp(from, chars.len());
+            let text: String = chars[from..to].iter().collect();
+            out.push(text.trim_end().to_string());
+        }
+        out.join("\n")
+    }
+}
+
 #[derive(Debug, Clone)]
 pub enum ChatItem {
     Banner {
@@ -234,6 +298,7 @@ pub struct App {
     pub line_offsets: Vec<usize>,
     pub render_dirty_from: Option<usize>,
     pub render_width: usize,
+    pub selection: Option<Selection>,
 }
 
 impl App {
@@ -285,6 +350,7 @@ impl App {
             line_offsets: Vec::new(),
             render_dirty_from: Some(0),
             render_width: 0,
+            selection: None,
         }
     }
 
@@ -515,5 +581,38 @@ mod tests {
     fn tool_output_is_expanded_by_default() {
         let app = App::new("gpt-4o".into(), ".".into(), Mode::Build, Reasoning::Auto);
         assert!(app.expand_tools);
+    }
+
+    fn lines(texts: &[&str]) -> Vec<Line<'static>> {
+        texts
+            .iter()
+            .map(|text| Line::from(text.to_string()))
+            .collect()
+    }
+
+    #[test]
+    fn selection_text_extracts_inclusive_character_range() {
+        let lines = lines(&["hello world", "second line"]);
+        let mut selection = Selection::new(0, 6);
+        selection.cursor = (1, 5);
+        assert_eq!(selection.text(&lines), "world\nsecond");
+    }
+
+    #[test]
+    fn selection_text_orders_reversed_drag_and_trims_trailing_space() {
+        let lines = lines(&["alpha  ", "beta"]);
+        let mut selection = Selection::new(1, 3);
+        selection.cursor = (0, 0);
+        assert_eq!(selection.text(&lines), "alpha\nbeta");
+    }
+
+    #[test]
+    fn selection_contains_uses_ordered_range() {
+        let mut selection = Selection::new(2, 4);
+        selection.cursor = (1, 1);
+        assert!(selection.contains(1, 5));
+        assert!(selection.contains(2, 4));
+        assert!(!selection.contains(0, 9));
+        assert!(!selection.contains(3, 0));
     }
 }
