@@ -312,10 +312,10 @@ Focus: $ARGUMENTS
 - `agent: <name>` runs the command as that agent. `subtask: true` runs it in an
   isolated subagent context whose result is reported back to the main
   conversation.
-- Built-in commands: `/help`, `/hotkeys`, `/new`, `/session`, `/tree`, `/fork`,
-  `/clone`, `/name`, `/model`, `/thinking`, `/theme`, `/trust`, `/export`,
-  `/reload`, `/init`, `/login`, `/logout`, `/models`, `/connect`, `/undo`,
-  `/redo`, and `/compact`.
+- Built-in commands: `/help`, `/hotkeys`, `/new`, `/session`, `/resume`,
+  `/tree`, `/fork`, `/clone`, `/name`, `/model`, `/thinking`, `/theme`,
+  `/trust`, `/export`, `/reload`, `/init`, `/login`, `/logout`, `/models`,
+  `/connect`, `/undo`, `/redo`, and `/compact`.
 - **Remove** a command by deleting its file.
 
 ## Prompt templates
@@ -684,5 +684,10 @@ Global ecosystem resources can additionally live under `~/.oxide/` and
 `~/.claude/`; global Claude-compatible MCP configuration is read from
 `~/.claude.json`.
 
-Deleting a session file removes that conversation; deleting `snapshots/`
-removes undo history; deleting `auth.json` logs you out.
+Deleting a session file removes that conversation; `/resume` can also delete
+(Ctrl+D) or rename (Ctrl+R) sessions from the picker. `oxide sessions` offers
+non-interactive management: `list` (with `--all` or `--older-than`), `delete`
+(id, `--all`, or `--older-than`), `compact` (summarize older history and keep
+the recent tail), and `merge` (concatenate two sessions, optionally summarizing
+the second first). Deleting `snapshots/` removes undo history; deleting
+`auth.json` logs you out.

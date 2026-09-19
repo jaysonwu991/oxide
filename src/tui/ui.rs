@@ -12,6 +12,7 @@ use ratatui::Frame;
 const MIN_INPUT_ROWS: usize = 3;
 const MAX_INPUT_ROWS: usize = 12;
 const MAX_MODEL_ROWS: usize = 12;
+const MAX_SESSION_ROWS: usize = 12;
 const MAX_SUGGESTION_ROWS: usize = 8;
 
 const FILE_TOOLS: [&str; 4] = ["read_file", "write_file", "patch", "edit"];
@@ -63,6 +64,8 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         draw_trust(frame, app);
     } else if app.models.is_some() {
         draw_models(frame, app);
+    } else if app.sessions.is_some() {
+        draw_sessions(frame, app);
     } else if !app.suggestions.is_empty() {
         draw_suggestions(frame, app, messages);
     }
@@ -303,6 +306,181 @@ fn draw_models(frame: &mut Frame, app: &App) {
     let mut list_state = ListState::default();
     list_state.select(Some(state.selected.saturating_sub(offset)));
     frame.render_stateful_widget(list, inner, &mut list_state);
+}
+
+fn draw_sessions(frame: &mut Frame, app: &App) {
+    let Some(state) = &app.sessions else {
+        return;
+    };
+    let area = centered_rect(78, 66, frame.area());
+    frame.render_widget(Clear, area);
+
+    let title = if state.renaming {
+        " rename session ".to_string()
+    } else if state.confirm_delete {
+        " delete session? ".to_string()
+    } else if state.filter.is_empty() {
+        " sessions ".to_string()
+    } else {
+        format!(" sessions · {} ", state.filter)
+    };
+    let block = panel(&title, app.theme.accent);
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+
+    if state.renaming {
+        let mut lines = vec![Line::from(Span::styled(
+            "Rename the selected session",
+            Style::default().fg(app.theme.info),
+        ))];
+        if let Some(summary) = state.selected_session() {
+            let label = summary
+                .name
+                .clone()
+                .unwrap_or_else(|| summary.preview.clone());
+            lines.push(Line::from(Span::styled(
+                format!("session: {label}"),
+                Style::default().fg(app.theme.assistant),
+            )));
+        }
+        lines.push(Line::from(""));
+        lines.push(Line::from(vec![
+            Span::styled("> ", Style::default().fg(app.theme.accent)),
+            Span::styled(
+                state.rename_input.clone(),
+                Style::default().fg(app.theme.assistant),
+            ),
+        ]));
+        lines.push(Line::from(""));
+        lines.push(Line::from(Span::styled(
+            "Enter save · Esc cancel",
+            Style::default().fg(app.theme.info),
+        )));
+        frame.render_widget(Paragraph::new(lines).wrap(Wrap { trim: false }), inner);
+        return;
+    }
+
+    if state.confirm_delete {
+        let label = state
+            .selected_session()
+            .map(|summary| {
+                summary
+                    .name
+                    .clone()
+                    .unwrap_or_else(|| summary.preview.clone())
+            })
+            .unwrap_or_default();
+        let lines = vec![
+            Line::from(Span::styled(
+                format!("Delete session `{label}`?"),
+                Style::default()
+                    .fg(app.theme.error)
+                    .add_modifier(Modifier::BOLD),
+            )),
+            Line::from(""),
+            Line::from(Span::styled(
+                "The session file will be moved to trash when available.",
+                Style::default().fg(app.theme.info),
+            )),
+            Line::from(""),
+            Line::from(Span::styled(
+                "Enter/y confirm · Esc/n cancel",
+                Style::default().fg(app.theme.info),
+            )),
+        ];
+        frame.render_widget(Paragraph::new(lines).wrap(Wrap { trim: false }), inner);
+        return;
+    }
+
+    if let Some(error) = &state.error {
+        frame.render_widget(
+            Paragraph::new(Span::styled(
+                format!("error: {error}"),
+                Style::default().fg(app.theme.error),
+            )),
+            inner,
+        );
+        return;
+    }
+
+    let sessions = state.filtered();
+    if sessions.is_empty() {
+        let message = if state.all.is_empty() {
+            "no sessions for this project yet"
+        } else {
+            "no matching sessions"
+        };
+        frame.render_widget(
+            Paragraph::new(Span::styled(message, Style::default().fg(app.theme.info))),
+            inner,
+        );
+        return;
+    }
+
+    let rows = inner.height.saturating_sub(1) as usize;
+    let visible = sessions.len().min(MAX_SESSION_ROWS).min(rows.max(1));
+    let offset = state
+        .selected
+        .saturating_sub(visible.saturating_sub(1))
+        .min(sessions.len().saturating_sub(visible));
+    let now = now_secs();
+    let items: Vec<ListItem> = sessions[offset..offset + visible]
+        .iter()
+        .map(|summary| {
+            let name = summary
+                .name
+                .clone()
+                .unwrap_or_else(|| summary.preview.clone());
+            let mut meta = format!(
+                "{} msg{} · {}",
+                summary.message_count,
+                if summary.message_count == 1 { "" } else { "s" },
+                relative_time(now, summary.modified_at)
+            );
+            if state.show_paths {
+                meta.push_str(&format!(" · {}", summary.cwd));
+            } else {
+                meta.push_str(&format!(" · {}", &summary.id[..summary.id.len().min(8)]));
+            }
+            ListItem::new(Line::from(vec![
+                Span::styled(
+                    format!(" {name} "),
+                    Style::default().fg(app.theme.assistant),
+                ),
+                Span::styled(meta, Style::default().fg(app.theme.info)),
+            ]))
+        })
+        .collect();
+    let list = List::new(items)
+        .highlight_style(
+            Style::default()
+                .fg(app.theme.accent)
+                .add_modifier(Modifier::BOLD | Modifier::REVERSED),
+        )
+        .highlight_symbol("> ");
+    let mut list_state = ListState::default();
+    list_state.select(Some(state.selected.saturating_sub(offset)));
+    frame.render_stateful_widget(list, inner, &mut list_state);
+}
+
+fn now_secs() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|duration| duration.as_secs())
+        .unwrap_or(0)
+}
+
+fn relative_time(now: u64, then: u64) -> String {
+    let secs = now.saturating_sub(then);
+    if secs < 60 {
+        "just now".to_string()
+    } else if secs < 3600 {
+        format!("{}m ago", secs / 60)
+    } else if secs < 86400 {
+        format!("{}h ago", secs / 3600)
+    } else {
+        format!("{}d ago", secs / 86400)
+    }
 }
 
 #[derive(Clone, Copy)]
