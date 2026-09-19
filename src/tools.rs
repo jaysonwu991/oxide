@@ -116,7 +116,7 @@ pub fn specs(mcp: &McpRegistry) -> Vec<ToolSpec> {
     let mut specs = vec![
         spec(
             "read",
-            "Read a file from the project. Text files are returned with line numbers; image (png/jpg/gif/webp) and PDF files are returned as viewable attachments.",
+            "Read a file from the project. Text files are returned with line numbers; image (png/jpg/gif/webp) and PDF files are returned as viewable attachments. If `path` is a directory, its entries are listed instead.",
             json!({
                 "type": "object",
                 "properties": {
@@ -357,6 +357,17 @@ fn read_file(cwd: &Path, args: &Value) -> Result<ToolOutput> {
         .context("missing `path`")?;
 
     let full = resolve(cwd, path);
+    if full.is_dir() {
+        let mut entries = dir_entries(&full)?;
+        let truncated = entries.len() > MAX_MATCHES;
+        entries.truncate(MAX_MATCHES);
+        let mut out = format!("{} is a directory. Entries:\n", full.display());
+        out.push_str(&entries.join("\n"));
+        if truncated {
+            out.push_str("\n... [truncated]");
+        }
+        return Ok(ToolOutput::text(out));
+    }
     if media::is_attachment_path(&full) {
         let part = media::load_attachment(&full)?;
         let kind = if media::is_pdf_path(&full) {
@@ -380,8 +391,17 @@ fn read_file(cwd: &Path, args: &Value) -> Result<ToolOutput> {
         .and_then(Value::as_u64)
         .unwrap_or(DEFAULT_READ_LINES as u64) as usize;
 
-    let content =
-        std::fs::read_to_string(&full).with_context(|| format!("reading {}", full.display()))?;
+    let bytes = std::fs::read(&full).with_context(|| format!("reading {}", full.display()))?;
+    let content = match String::from_utf8(bytes) {
+        Ok(content) => content,
+        Err(err) => {
+            return Ok(ToolOutput::text(format!(
+                "binary file {} ({} bytes) — not shown",
+                full.display(),
+                err.as_bytes().len()
+            )));
+        }
+    };
 
     let total = content.lines().count();
     let budget = MAX_OUTPUT_BYTES.saturating_sub(128);
@@ -562,12 +582,8 @@ fn split_bom(text: &str) -> (&str, &str) {
     }
 }
 
-fn list_dir(cwd: &Path, args: &Value) -> Result<String> {
-    let path = args.get("path").and_then(Value::as_str).unwrap_or(".");
-    let limit = int_arg(args, "limit").unwrap_or(MAX_MATCHES);
-    let full = resolve(cwd, path);
-
-    let mut entries: Vec<String> = std::fs::read_dir(&full)
+fn dir_entries(full: &Path) -> Result<Vec<String>> {
+    let mut entries: Vec<String> = std::fs::read_dir(full)
         .with_context(|| format!("listing {}", full.display()))?
         .filter_map(|entry| entry.ok())
         .map(|entry| {
@@ -581,6 +597,15 @@ fn list_dir(cwd: &Path, args: &Value) -> Result<String> {
         })
         .collect();
     entries.sort();
+    Ok(entries)
+}
+
+fn list_dir(cwd: &Path, args: &Value) -> Result<String> {
+    let path = args.get("path").and_then(Value::as_str).unwrap_or(".");
+    let limit = int_arg(args, "limit").unwrap_or(MAX_MATCHES);
+    let full = resolve(cwd, path);
+
+    let mut entries = dir_entries(&full)?;
     let truncated = entries.len() > limit;
     entries.truncate(limit);
     let mut out = entries.join("\n");
@@ -1954,6 +1979,35 @@ mod tests {
         let out = read_file(&dir, &json!({ "path": "long.txt" })).unwrap();
         assert!(out.text.contains('…'), "{}", out.text);
         assert!(out.text.len() < MAX_LINE_LEN + 100, "{}", out.text.len());
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn read_file_lists_directories_instead_of_erroring() {
+        let dir = std::env::temp_dir().join(format!("oxide_read_dir_{}", std::process::id()));
+        std::fs::remove_dir_all(&dir).ok();
+        std::fs::create_dir_all(dir.join("components/nested")).unwrap();
+        std::fs::write(dir.join("components/index.tsx"), "export {}").unwrap();
+
+        let out = read_file(&dir, &json!({ "path": "components" })).unwrap();
+        assert!(out.text.contains("is a directory"), "{}", out.text);
+        assert!(out.text.contains("index.tsx"), "{}", out.text);
+        assert!(out.text.contains("nested/"), "{}", out.text);
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn read_file_reports_binary_files_without_erroring() {
+        let dir = std::env::temp_dir().join(format!("oxide_read_bin_{}", std::process::id()));
+        std::fs::remove_dir_all(&dir).ok();
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("blob.bin"), [0xff, 0xfe, 0x00, 0x01]).unwrap();
+
+        let out = read_file(&dir, &json!({ "path": "blob.bin" })).unwrap();
+        assert!(out.text.contains("binary file"), "{}", out.text);
+        assert!(out.text.contains("4 bytes"), "{}", out.text);
 
         std::fs::remove_dir_all(&dir).ok();
     }
