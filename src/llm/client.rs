@@ -14,6 +14,8 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 const MODEL_CACHE_TTL_SECS: u64 = 24 * 60 * 60;
 const MODEL_CACHE_FILE: &str = "model-cache.json";
+/// How many times a transient stream failure is retried before giving up.
+const MAX_STREAM_ATTEMPTS: u32 = 3;
 /// Cap how long a connect or a single streamed read may stall before the
 /// request fails. Without this a dead proxy or dropped connection leaves the
 /// agent waiting forever with no output.
@@ -122,18 +124,48 @@ impl LlmClient {
 
     /// Stream a chat completion. `on_text` is invoked synchronously for every
     /// content delta. Returns the assembled assistant turn (text + tool calls).
+    ///
+    /// Transient failures (network errors, truncated streams, rate limits and
+    /// 5xx responses) are retried with backoff, but only while the attempt has
+    /// not emitted any text yet, so a partial response is never duplicated.
     pub async fn stream_chat<F>(
         &self,
         messages: &[Message],
         tools: &[ToolSpec],
-        on_text: F,
+        mut on_text: F,
     ) -> Result<AssistantTurn>
     where
         F: FnMut(String),
     {
-        match self.config.provider_kind() {
-            ProviderKind::Anthropic => self.stream_anthropic(messages, tools, on_text).await,
-            ProviderKind::OpenAi => self.stream_openai(messages, tools, on_text).await,
+        let mut attempt = 0u32;
+        loop {
+            attempt += 1;
+            let mut emitted = false;
+            let result = {
+                let mut attempt_text = |delta: String| {
+                    emitted = true;
+                    on_text(delta);
+                };
+                match self.config.provider_kind() {
+                    ProviderKind::Anthropic => {
+                        self.stream_anthropic(messages, tools, &mut attempt_text)
+                            .await
+                    }
+                    ProviderKind::OpenAi => {
+                        self.stream_openai(messages, tools, &mut attempt_text).await
+                    }
+                }
+            };
+            match result {
+                Ok(turn) => return Ok(turn),
+                Err(err) => {
+                    if emitted || attempt >= MAX_STREAM_ATTEMPTS || !is_retryable(&err) {
+                        return Err(err);
+                    }
+                    let backoff = Duration::from_millis(500 * 2u64.pow(attempt - 1));
+                    tokio::time::sleep(backoff).await;
+                }
+            }
         }
     }
 
@@ -458,9 +490,48 @@ where
     Ok(completed)
 }
 
+/// Whether a failed model request is worth retrying. Network failures, stream
+/// truncation, rate limits, and 5xx responses are retryable; other 4xx provider
+/// errors (bad request, auth, not found) are not.
+fn is_retryable(err: &anyhow::Error) -> bool {
+    let text = format!("{err:#}");
+    if let Some(rest) = text.split("provider returned ").nth(1) {
+        if let Some(code) = rest
+            .split_whitespace()
+            .next()
+            .and_then(|code| code.parse::<u16>().ok())
+        {
+            return code == 429 || code >= 500;
+        }
+    }
+    true
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn retries_transient_errors_but_not_client_errors() {
+        assert!(is_retryable(&anyhow::anyhow!(
+            "provider stream ended before completing the response"
+        )));
+        assert!(is_retryable(&anyhow::anyhow!(
+            "requesting https://example.test: connection reset"
+        )));
+        assert!(is_retryable(&anyhow::anyhow!(
+            "provider returned 429 Too Many Requests: slow down"
+        )));
+        assert!(is_retryable(&anyhow::anyhow!(
+            "provider returned 503 Service Unavailable: overloaded"
+        )));
+        assert!(!is_retryable(&anyhow::anyhow!(
+            "provider returned 400 Bad Request: bad messages"
+        )));
+        assert!(!is_retryable(&anyhow::anyhow!(
+            "provider returned 401 Unauthorized: bad key"
+        )));
+    }
 
     #[test]
     fn portkey_uses_native_api_key_header() {
