@@ -243,13 +243,24 @@ pub fn specs(mcp: &McpRegistry) -> Vec<ToolSpec> {
         let names: Vec<String> = configured.iter().map(|(name, _)| name.clone()).collect();
         let sources = configured
             .iter()
-            .map(|(name, source)| format!("`{name}` ({source})"))
+            .map(|(name, source)| {
+                let domains = mcp
+                    .server_domains(name)
+                    .map(|d| d.join(", "))
+                    .unwrap_or_default();
+                let domain_hint = if domains.is_empty() {
+                    String::new()
+                } else {
+                    format!(" (domains: {domains})")
+                };
+                format!("`{name}`{domain_hint} ({source})")
+            })
             .collect::<Vec<_>>()
             .join(", ");
         specs.push(spec(
             "mcp_load",
             &format!(
-                "Load one configured MCP server on demand and reveal its tools. Use this before answering requests that belong to a configured service, including when a document, ticket, or other service URL identifies the server. Configured servers: {sources}"
+                "Load one configured MCP server on demand and reveal its tools. Use this before answering requests that belong to a configured service, including when a document, ticket, or other service URL identifies the server. Route by URL host first: if a pasted link's domain matches a server's listed domains, call mcp_load for that server instead of webfetch. Configured servers: {sources}"
             ),
             json!({
                 "type": "object",
@@ -301,7 +312,7 @@ pub async fn execute(
                 None => Err(anyhow::anyhow!("missing `server`")),
             },
             "bash" => bash(cwd, &args, progress).await.map(ToolOutput::text),
-            "webfetch" => webfetch(&args).await.map(ToolOutput::text),
+            "webfetch" => webfetch_guarded(&args, mcp).await.map(ToolOutput::text),
             "read_file" | "write_file" | "edit" | "list_dir" | "glob" | "grep" | "patch" => {
                 let cwd = cwd.to_path_buf();
                 let args = args.clone();
@@ -850,6 +861,26 @@ fn patch(cwd: &Path, args: &Value) -> Result<ToolOutput> {
         .collect::<Vec<_>>()
         .join("\n");
     Ok(output.with_diff(path, text))
+}
+
+/// Fetches a URL unless a configured MCP server owns it, in which case the
+/// server is loaded on demand and the model is pointed at its tools instead of
+/// an unauthenticated fetch.
+async fn webfetch_guarded(args: &Value, mcp: &McpRegistry) -> Result<String> {
+    let url = args
+        .get("url")
+        .and_then(Value::as_str)
+        .context("missing `url`")?;
+    if let Some(server) = mcp.url_owned(url) {
+        let loaded = mcp.load(&server).await.with_context(|| {
+            format!("loading MCP server `{server}` for URL owned by that service")
+        })?;
+        let hint = format!(
+            "This URL belongs to the `{server}` MCP server. Prefer its tools over webfetch. {loaded}"
+        );
+        return Ok(hint);
+    }
+    webfetch(args).await
 }
 
 async fn webfetch(args: &Value) -> Result<String> {
@@ -1438,6 +1469,7 @@ mod tests {
                 headers: Default::default(),
                 oauth: None,
             },
+            domains: vec![],
         };
         let mcp = McpRegistry::new(&[server]);
         let loader = specs(&mcp)

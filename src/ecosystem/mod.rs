@@ -112,6 +112,21 @@ pub struct McpServer {
     pub name: String,
     pub enabled: bool,
     pub kind: McpKind,
+    /// Hostnames (optionally `*.`-prefixed) this server owns. Used to route
+    /// pasted URLs to the right MCP server before falling back to webfetch.
+    pub domains: Vec<String>,
+}
+
+impl McpServer {
+    /// Effective routing domains: the explicit `domains` config when present,
+    /// otherwise a best-effort guess from well-known server names.
+    pub fn domains(&self) -> Vec<String> {
+        if self.domains.is_empty() {
+            default_domains(&self.name)
+        } else {
+            self.domains.clone()
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -381,6 +396,9 @@ pub(crate) fn mcp_from_claude(name: &str, config: &Json) -> Option<McpServer> {
                 .and_then(Json::as_bool)
                 .unwrap_or(false)
         });
+    let domains = json_string_list(config.get("domains"))
+        .map(|domains| domains.into_iter().map(|d| normalize_domain(&d)).collect())
+        .unwrap_or_default();
     if let Some(url) = config.get("url").and_then(Json::as_str) {
         return Some(McpServer {
             name: name.to_string(),
@@ -390,6 +408,7 @@ pub(crate) fn mcp_from_claude(name: &str, config: &Json) -> Option<McpServer> {
                 headers: string_map(config.get("headers")),
                 oauth: parse_oauth(config.get("oauth")),
             },
+            domains,
         });
     }
 
@@ -403,7 +422,74 @@ pub(crate) fn mcp_from_claude(name: &str, config: &Json) -> Option<McpServer> {
             environment: string_map(config.get("env")),
             cwd: None,
         },
+        domains,
     })
+}
+
+/// Lowercases a domain and strips any scheme/path so only the host (or a
+/// `*.`-prefixed wildcard) remains.
+fn normalize_domain(domain: &str) -> String {
+    let mut host = domain.trim().to_ascii_lowercase();
+    if let Some(rest) = host.strip_prefix("http://") {
+        host = rest.to_string();
+    } else if let Some(rest) = host.strip_prefix("https://") {
+        host = rest.to_string();
+    }
+    let host = host
+        .split(['/', ':', '?', '#'])
+        .next()
+        .unwrap_or("")
+        .to_string();
+    host
+}
+
+/// Well-known routing domains for popular MCP servers. Users can override these
+/// with the `domains` key in their server config; this map only fills the gap so
+/// pasted URLs (Slack messages, Confluence pages, ...) route without setup.
+pub fn default_domains(name: &str) -> Vec<String> {
+    let key = name
+        .chars()
+        .filter(|ch| ch.is_ascii_alphanumeric())
+        .collect::<String>()
+        .to_ascii_lowercase();
+    let domains: &[&str] = match key.as_str() {
+        "atlassian" | "confluence" | "jira" => &[
+            "atlassian.net",
+            "*.atlassian.net",
+            "jira.com",
+            "*.jira.com",
+            "atlassian.com",
+            "*.atlassian.com",
+        ],
+        "slack" => &["slack.com", "*.slack.com"],
+        "newrelic" | "newrelicone" | "nr" => &[
+            "newrelic.com",
+            "*.newrelic.com",
+            "one.newrelic.com",
+            "nr-assets.net",
+            "*.nr-assets.net",
+        ],
+        "context7" => &["context7.com", "*.context7.com"],
+        "contentful" => &[
+            "contentful.com",
+            "*.contentful.com",
+            "ctfassets.net",
+            "*.ctfassets.net",
+        ],
+        "figma" => &["figma.com", "*.figma.com"],
+        "github" => &[
+            "github.com",
+            "*.github.com",
+            "githubusercontent.com",
+            "*.githubusercontent.com",
+        ],
+        "gitlab" => &["gitlab.com", "*.gitlab.com"],
+        "notion" => &["notion.so", "*.notion.so"],
+        "linear" => &["linear.app", "*.linear.app"],
+        "sentry" => &["sentry.io", "*.sentry.io"],
+        _ => &[],
+    };
+    domains.iter().map(|domain| (*domain).to_string()).collect()
 }
 
 pub(crate) fn parse_oauth(value: Option<&Json>) -> Option<McpOAuth> {
@@ -754,6 +840,29 @@ mod tests {
         std::fs::remove_dir_all(&dir).ok();
         std::fs::create_dir_all(&dir).unwrap();
         dir
+    }
+
+    #[test]
+    fn normalizes_and_defaults_domains() {
+        assert_eq!(
+            normalize_domain("https://Acme.Atlassian.Net/wiki"),
+            "acme.atlassian.net"
+        );
+        assert_eq!(normalize_domain("*.Slack.com"), "*.slack.com");
+        assert!(default_domains("slack").contains(&"slack.com".to_string()));
+        assert!(default_domains("Atlassian").contains(&"*.atlassian.net".to_string()));
+        assert!(default_domains("unknown-service").is_empty());
+    }
+
+    #[test]
+    fn parses_explicit_mcp_domains() {
+        let json: Json = serde_json::from_str(
+            r#"{"url":"https://mcp.example.com","domains":["docs.example.com","*.example.com"]}"#,
+        )
+        .unwrap();
+        let server = mcp_from_claude("docs", &json).unwrap();
+        assert_eq!(server.domains, vec!["docs.example.com", "*.example.com"]);
+        assert_eq!(server.domains(), vec!["docs.example.com", "*.example.com"]);
     }
 
     #[test]

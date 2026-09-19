@@ -66,6 +66,10 @@ oxide mcp add --env SOME_TOKEN=secret filesystem npx -y server-filesystem /tmp
 oxide mcp add --transport http remote https://example.com/mcp \
   --header "Authorization=Bearer TOKEN"
 
+# with explicit routing domains (repeatable or comma-separated)
+oxide mcp add --transport http docs https://mcp.example.com \
+  --domains docs.example.com --domains '*.example.com'
+
 # store in the global file instead of the project
 oxide mcp add --scope global --transport http remote https://example.com/mcp
 
@@ -86,16 +90,40 @@ file.
 
 At startup, oxide adds only the enabled server names and configured URLs or
 commands to the model context. It does not start a local process, make a remote
-request, or check OAuth until the model selects a matching server through the
-built-in `mcp_load` tool. The server's tools are then discovered and become
-available on the next agent step for the rest of the session.
+request, or check OAuth until a matching server is needed. A server is selected
+two ways:
 
-The model is instructed to select a matching server automatically when a
-request mentions content owned by that service or includes one of its URLs,
-preferring authenticated MCP tools over `webfetch` for documents, tickets, and
-similar resources. This behavior applies to every configured MCP server, not a
-hard-coded list of services. Remote servers that establish a Streamable HTTP
-session have their `Mcp-Session-Id` preserved across subsequent requests.
+- **URL routing** — when a user message contains a URL whose host matches a
+  server's routing domains, oxide loads that server before the next model call
+  so its tools are ready on the first turn. `webfetch` also redirects to the
+  matching server instead of making an unauthenticated request.
+- **`mcp_load`** — the model loads a server on demand through the built-in
+  `mcp_load` tool, whose description lists each server's domains.
+
+The server's tools are discovered when loaded and become available on the next
+agent step for the rest of the session.
+
+Routing domains come from the optional `domains` array in a server's config,
+falling back to built-in presets for well-known servers (Atlassian/Jira/Confluence,
+Slack, New Relic, Context7, Contentful, Figma, GitHub, GitLab, Notion, Linear, and
+Sentry). Exact hosts match exactly; a `*.` prefix (or leading `.`) matches the
+host and its subdomains. For example:
+
+```json
+{
+  "mcpServers": {
+    "docs": {
+      "type": "http",
+      "url": "https://mcp.example.com",
+      "domains": ["docs.example.com", "*.example.com"]
+    }
+  }
+}
+```
+
+This behavior applies to every configured MCP server, not a hard-coded list of
+services. Remote servers that establish a Streamable HTTP session have their
+`Mcp-Session-Id` preserved across subsequent requests.
 
 ### OAuth for remote servers
 

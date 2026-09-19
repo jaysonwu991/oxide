@@ -185,6 +185,7 @@ fn build_entry(
     command: &[String],
     env: &[String],
     header: &[String],
+    domains: &[String],
     server_cwd: Option<String>,
     oauth: OAuthArgs,
 ) -> Result<Value> {
@@ -204,6 +205,9 @@ fn build_entry(
             if !environment.is_empty() {
                 entry.insert("env".to_string(), Value::Object(environment));
             }
+            if !domains.is_empty() {
+                entry.insert("domains".to_string(), json!(domains));
+            }
             if let Some(dir) = server_cwd {
                 entry.insert("cwd".to_string(), json!(dir));
             }
@@ -219,6 +223,9 @@ fn build_entry(
             let headers = parse_pairs(header, "--header")?;
             if !headers.is_empty() {
                 entry.insert("headers".to_string(), Value::Object(headers));
+            }
+            if !domains.is_empty() {
+                entry.insert("domains".to_string(), json!(domains));
             }
             if let Some(oauth) = build_oauth(oauth) {
                 entry.insert("oauth".to_string(), oauth);
@@ -256,6 +263,7 @@ pub struct AddRequest {
     pub command: Vec<String>,
     pub env: Vec<String>,
     pub header: Vec<String>,
+    pub domains: Vec<String>,
     pub cwd: Option<String>,
     pub oauth_client_id: Option<String>,
     pub oauth_client_secret: Option<String>,
@@ -292,6 +300,17 @@ impl AddRequest {
                 "--cwd" => {
                     if let Some(value) = iter.next() {
                         self.cwd = Some(value);
+                    }
+                }
+                "--domains" => {
+                    if let Some(value) = iter.next() {
+                        self.domains.extend(
+                            value
+                                .split(',')
+                                .map(str::trim)
+                                .filter(|d| !d.is_empty())
+                                .map(str::to_string),
+                        );
                     }
                 }
                 "--scope" | "-s" => {
@@ -341,6 +360,7 @@ pub fn add(cwd: &Path, request: AddRequest) -> Result<()> {
         &request.command,
         &request.env,
         &request.header,
+        &request.domains,
         request.cwd,
         OAuthArgs {
             client_id: request.oauth_client_id,
@@ -585,6 +605,7 @@ mod tests {
             ],
             env: Vec::new(),
             header: Vec::new(),
+            domains: Vec::new(),
             cwd: None,
             oauth_client_id: None,
             oauth_client_secret: None,
@@ -619,6 +640,7 @@ mod tests {
             ],
             env: Vec::new(),
             header: Vec::new(),
+            domains: Vec::new(),
             cwd: None,
             oauth_client_id: None,
             oauth_client_secret: None,
@@ -641,6 +663,7 @@ mod tests {
             &["npx".to_string(), "-y".to_string(), "server-fs".to_string()],
             &["TOKEN=abc".to_string()],
             &[],
+            &["docs.example.com".to_string()],
             None,
             OAuthArgs::default(),
         )
@@ -648,12 +671,14 @@ mod tests {
         assert_eq!(stdio["command"], "npx");
         assert_eq!(stdio["args"], json!(["-y", "server-fs"]));
         assert_eq!(stdio["env"]["TOKEN"], "abc");
+        assert_eq!(stdio["domains"], json!(["docs.example.com"]));
 
         let http = build_entry(
             "http",
             &["https://example.com/mcp".to_string()],
             &[],
             &["Authorization=Bearer x".to_string()],
+            &[],
             None,
             OAuthArgs::default(),
         )
@@ -662,9 +687,18 @@ mod tests {
         assert_eq!(http["headers"]["Authorization"], "Bearer x");
         assert!(http.get("oauth").is_none());
 
-        assert!(build_entry("stdio", &[], &[], &[], None, OAuthArgs::default()).is_err());
-        assert!(build_entry("http", &[], &[], &[], None, OAuthArgs::default()).is_err());
-        assert!(build_entry("carrier-pigeon", &[], &[], &[], None, OAuthArgs::default()).is_err());
+        assert!(build_entry("stdio", &[], &[], &[], &[], None, OAuthArgs::default()).is_err());
+        assert!(build_entry("http", &[], &[], &[], &[], None, OAuthArgs::default()).is_err());
+        assert!(build_entry(
+            "carrier-pigeon",
+            &[],
+            &[],
+            &[],
+            &[],
+            None,
+            OAuthArgs::default()
+        )
+        .is_err());
     }
 
     #[test]
@@ -672,6 +706,7 @@ mod tests {
         let entry = build_entry(
             "http",
             &["https://example.com/mcp".to_string()],
+            &[],
             &[],
             &[],
             None,
@@ -705,6 +740,7 @@ mod tests {
                 command: vec!["npx".to_string(), "-y".to_string(), "server-fs".to_string()],
                 env: Vec::new(),
                 header: Vec::new(),
+                domains: Vec::new(),
                 cwd: None,
                 oauth_client_id: None,
                 oauth_client_secret: None,
