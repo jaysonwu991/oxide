@@ -17,6 +17,7 @@ mod memory;
 mod permission;
 mod plugin;
 mod session;
+mod sessions;
 mod snapshots;
 mod theme;
 mod tools;
@@ -130,9 +131,13 @@ struct Cli {
     #[arg(short = 'c', long = "continue")]
     continue_session: bool,
 
-    /// Resume a specific session by id
-    #[arg(long)]
-    resume: Option<String>,
+    /// Browse and select a past session to resume (Pi-style `-r`)
+    #[arg(short = 'r', long = "resume")]
+    resume: bool,
+
+    /// Fork a session file or id into a new session
+    #[arg(long, value_name = "PATH|ID")]
+    fork: Option<String>,
 
     /// Attach an image or PDF file to the prompt (repeatable)
     #[arg(long = "image", value_name = "PATH")]
@@ -165,6 +170,56 @@ enum Command {
         /// Skip the confirmation prompt
         #[arg(short = 'f', long)]
         force: bool,
+    },
+    /// Manage saved sessions
+    Sessions {
+        #[command(subcommand)]
+        action: SessionsAction,
+    },
+}
+
+#[derive(Subcommand, Debug)]
+enum SessionsAction {
+    /// List saved sessions
+    List {
+        /// Include sessions from every project
+        #[arg(long)]
+        all: bool,
+        /// Only show sessions older than this many days
+        #[arg(long)]
+        older_than: Option<u64>,
+    },
+    /// Delete saved sessions
+    Delete {
+        /// Session id to delete
+        id: Option<String>,
+        /// Delete every session for this project
+        #[arg(long)]
+        all: bool,
+        /// Delete sessions older than this many days
+        #[arg(long)]
+        older_than: Option<u64>,
+        /// Skip the confirmation prompt
+        #[arg(short = 'f', long)]
+        force: bool,
+    },
+    /// Compact a saved session into a summary plus its most recent messages
+    Compact {
+        /// Session id, or omit with --all
+        id: Option<String>,
+        /// Compact every session for this project
+        #[arg(long)]
+        all: bool,
+    },
+    /// Merge two saved sessions into a new session
+    Merge {
+        /// First session id or path
+        a: String,
+        /// Second session id or path
+        b: String,
+        /// Summarize the second session instead of concatenating it verbatim
+        #[arg(long)]
+        summarize: bool,
     },
 }
 
@@ -311,6 +366,35 @@ async fn main() -> Result<()> {
                 dry_run,
                 force,
             }),
+            Command::Sessions { action } => {
+                let current_dir = std::env::current_dir().context("resolving current directory")?;
+                match action {
+                    SessionsAction::List { all, older_than } => {
+                        sessions::list(&current_dir, all, older_than)
+                    }
+                    SessionsAction::Delete {
+                        id,
+                        all,
+                        older_than,
+                        force,
+                    } => sessions::delete(&current_dir, id, all, older_than, force),
+                    SessionsAction::Compact { id, all } => {
+                        let config = Config::load(&current_dir, None, None, None, None, None)?;
+                        config.require_api_key()?;
+                        sessions::compact_sessions(&current_dir, &config, id, all).await
+                    }
+                    SessionsAction::Merge { a, b, summarize } => {
+                        let config = if summarize {
+                            let config = Config::load(&current_dir, None, None, None, None, None)?;
+                            config.require_api_key()?;
+                            Some(config)
+                        } else {
+                            None
+                        };
+                        sessions::merge(&current_dir, config.as_ref(), &a, &b, summarize).await
+                    }
+                }
+            }
         };
     }
     let cwd = match &cli.cwd {
@@ -382,13 +466,12 @@ async fn main() -> Result<()> {
         None
     } else if let Some(reference) = &cli.session {
         Some(SessionLog::open_ref(&cwd, reference)?)
-    } else if cli.continue_session || cli.resume.is_some() {
-        Some(match &cli.resume {
-            Some(id) => SessionLog::open_id(&cwd, id)?,
-            None => {
-                SessionLog::latest(&cwd).context("no previous session found for this project")?
-            }
-        })
+    } else if let Some(reference) = &cli.fork {
+        let source = SessionLog::open_ref(&cwd, reference)?;
+        let messages = source.messages()?;
+        Some(SessionLog::fork(&cwd, &messages)?)
+    } else if cli.continue_session {
+        Some(SessionLog::latest(&cwd).context("no previous session found for this project")?)
     } else {
         None
     };
@@ -410,6 +493,19 @@ async fn main() -> Result<()> {
     let mode = mode.as_str();
     let positional = cli.messages;
     let explicit_prompt = cli.print || !positional.is_empty();
+
+    if cli.resume {
+        if mode == "rpc" {
+            anyhow::bail!(
+                "-r/--resume opens the interactive session picker and cannot be used with --mode rpc"
+            );
+        }
+        if explicit_prompt {
+            anyhow::bail!(
+                "-r/--resume opens the interactive session picker; to resume a specific session with a prompt use --session <id>"
+            );
+        }
+    }
 
     if mode == "rpc" {
         return run_rpc_mode(config, cwd, session).await;
@@ -455,7 +551,7 @@ async fn main() -> Result<()> {
         if mode != "print" {
             anyhow::bail!("--mode {mode} requires an initial prompt");
         }
-        tui::run(config, cwd, session).await
+        tui::run(config, cwd, session, cli.resume && !cli.no_session).await
     }
 }
 

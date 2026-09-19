@@ -1,6 +1,7 @@
 use crate::agent::{ApprovalRequest, Steering};
 use crate::config::{Mode, Reasoning};
 use crate::llm::{ContentPart, Message};
+use crate::session::SessionSummary;
 use crate::tools::DiffPreview;
 use ratatui::text::Line;
 use std::process::Command;
@@ -113,6 +114,65 @@ pub struct CommandHint {
     pub description: String,
 }
 
+/// Interactive session picker shown by `/resume` and `oxide -r`.
+#[derive(Debug, Clone, Default)]
+pub struct SessionsState {
+    pub all: Vec<SessionSummary>,
+    pub filter: String,
+    pub selected: usize,
+    pub show_paths: bool,
+    pub newest_first: bool,
+    pub named_only: bool,
+    pub confirm_delete: bool,
+    pub renaming: bool,
+    pub rename_input: String,
+    pub error: Option<String>,
+}
+
+impl SessionsState {
+    pub fn ready(sessions: Vec<SessionSummary>) -> Self {
+        Self {
+            all: sessions,
+            newest_first: true,
+            ..Self::default()
+        }
+    }
+
+    /// Sessions matching the current filter and sort, in display order.
+    pub fn filtered(&self) -> Vec<SessionSummary> {
+        let filter = self.filter.to_ascii_lowercase();
+        let mut sessions: Vec<SessionSummary> = self
+            .all
+            .iter()
+            .filter(|session| {
+                (!self.named_only || session.name.is_some())
+                    && (filter.is_empty()
+                        || session
+                            .name
+                            .as_deref()
+                            .unwrap_or_default()
+                            .to_ascii_lowercase()
+                            .contains(&filter)
+                        || session.id.to_ascii_lowercase().starts_with(&filter)
+                        || session.cwd.to_ascii_lowercase().contains(&filter))
+            })
+            .cloned()
+            .collect();
+        sessions.sort_by(|a, b| {
+            if self.newest_first {
+                b.modified_at.cmp(&a.modified_at)
+            } else {
+                a.modified_at.cmp(&b.modified_at)
+            }
+        });
+        sessions
+    }
+
+    pub fn selected_session(&self) -> Option<SessionSummary> {
+        self.filtered().get(self.selected).cloned()
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct TrustState {
     pub dir: String,
@@ -152,6 +212,7 @@ pub struct App {
     pub pending_approval: Option<ApprovalRequest>,
     pub connect: Option<ConnectState>,
     pub models: Option<ModelsState>,
+    pub sessions: Option<SessionsState>,
     pub trust: Option<TrustState>,
     pub suggestions: Vec<CommandHint>,
     pub suggestion_index: usize,
@@ -202,6 +263,7 @@ impl App {
             pending_approval: None,
             connect: None,
             models: None,
+            sessions: None,
             trust: None,
             suggestions: Vec::new(),
             suggestion_index: 0,

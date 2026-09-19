@@ -58,9 +58,10 @@ box, with Claude Code configuration support for compatibility.
 - Tool selection: `--tools`/`-t` allowlists and `--exclude-tools`/`-x`
   disables tools (accepting both Pi and legacy names); disabled tools are hidden
   from the model and refused if requested.
-- Pi-style session flags: `--session <path|id>`, `--no-session`, `--name`, plus
-  TUI commands `/new`, `/session`, `/name`, `/model`, `/thinking`, `/export`,
-  `/reload`, and `/hotkeys`.
+- Pi-style session flags: `--session <path|id>`, `--no-session`, `--name`,
+  `-c`/`--continue`, `-r`/`--resume` (browse past sessions), and
+  `--fork <path|id>`, plus TUI commands `/new`, `/session`, `/resume`, `/name`,
+  `/model`, `/thinking`, `/export`, `/reload`, and `/hotkeys`.
 - Session branching: `/tree` lists user messages, `/fork <n>` branches a new
   session from one, and `/clone` duplicates the current session.
 - Project trust: project-local resources (agents, commands, prompts, skills,
@@ -99,7 +100,7 @@ so check each project's documentation for the current details.
 | Plugins / hooks | JS/TS hooks (bun/node) | Plugins | Hooks, plugins, Agent SDK |
 | LSP diagnostics | Built in (rust-analyzer, TS, pyright, gopls) | Built in (LSP servers) | — |
 | Undo file changes | Shadow-git `/undo`, `/redo` | `/undo`, `/redo` | Git / checkpoints |
-| Sessions | Durable JSONL, `-c` / `--resume`, `/tree` / `/fork` / `/clone` | Sessions, share links | Sessions across surfaces |
+| Sessions | Durable JSONL, `-c` / `-r`, `/resume` / `/tree` / `/fork` / `/clone` | Sessions, share links | Sessions across surfaces |
 | Project trust | `trust.json`, `--approve` / `/trust` | — | — |
 | Themes | Built-in `dark` / `light`, custom `.oxide/themes` | Themes | — |
 | Context management | Built-in pruning (`compress` tool, dedup, error purge) | Auto-compaction + DCP plugin | Auto-compaction |
@@ -236,6 +237,7 @@ oxide mcp list
 ```
 oxide [OPTIONS] [@files...] [PROMPT...]
 oxide mcp <COMMAND>
+oxide sessions <COMMAND>
 oxide uninstall [--keep-config] [--keep-data] [--dry-run] [--force]
 ```
 
@@ -260,7 +262,8 @@ oxide uninstall [--keep-config] [--keep-data] [--dry-run] [--force]
 | `--no-session` | Ephemeral mode: do not save the session. |
 | `-p, --print` | Print the response and exit instead of launching the TUI. |
 | `-c, --continue` | Resume the most recent session for this project. |
-| `--resume <ID>` | Resume a specific session by id. |
+| `-r, --resume` | Browse and select a past session to resume. |
+| `--fork <PATH\|ID>` | Fork a session file or id into a new session. |
 | `--image <PATH>` | Attach an image or PDF (repeatable). |
 | `-C, --cwd <DIR>` | Working directory for the agent. |
 
@@ -274,7 +277,26 @@ oxide --mode json "list files"           # JSONL events on stdout
 oxide --mode rpc                         # JSONL prompts over stdin
 oxide -t read,grep,find -p "review"      # read-only tool allowlist
 oxide --session <id> -p "continue"       # reuse a specific session
+oxide --fork <id> -p "try another path"  # branch a saved session
 ```
+
+Manage saved sessions (list, clean up stale ones, compact, and merge):
+
+```sh
+oxide sessions list                        # current project
+oxide sessions list --all                  # every project
+oxide sessions list --older-than 30        # stale sessions only
+oxide sessions delete <id>                 # delete one (prompts)
+oxide sessions delete --older-than 30 --force
+oxide sessions compact <id>                # summarize older history, keep recent tail
+oxide sessions compact --all               # refresh every session in this project
+oxide sessions merge <a> <b>               # concatenate two sessions into a new one
+oxide sessions merge <a> <b> --summarize   # summarize the second session first
+```
+
+`delete` is token-free. `compact` and `merge --summarize` make one LLM
+summarization pass per session so a stale session resumes from a small summary
+plus its most recent messages instead of replaying the full transcript.
 
 Uninstall Oxide and its related files:
 
@@ -485,7 +507,7 @@ oxide also reads the Claude Code layout, so existing configurations work as-is:
 - Global scope: `~/.claude/`, `~/.claude.json`
 
 Slash commands are expanded from the ecosystem and also include built-ins:
-`/help`, `/hotkeys`, `/new`, `/session`, `/tree`, `/fork`, `/clone`, `/name`,
+`/help`, `/hotkeys`, `/new`, `/session`, `/resume`, `/tree`, `/fork`, `/clone`, `/name`,
 `/model`, `/thinking`, `/theme`, `/trust`, `/export`, `/reload`, `/init`,
 `/login`, `/logout`, `/models`, `/mcps`, `/connect`, `/undo`, `/redo`, and
 `/compact`.

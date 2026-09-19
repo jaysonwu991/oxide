@@ -12,7 +12,7 @@ use crate::plugin::PluginHost;
 use crate::session::SessionLog;
 use crate::snapshots::Snapshots;
 use crate::tui::app::{
-    App, ChatItem, CommandHint, ConnectState, ConnectStep, ModelsState, TrustState,
+    App, ChatItem, CommandHint, ConnectState, ConnectStep, ModelsState, SessionsState, TrustState,
 };
 use anyhow::{Context, Result};
 use crossterm::event::{
@@ -33,7 +33,12 @@ use tokio::sync::mpsc::{unbounded_channel, UnboundedReceiver, UnboundedSender};
 
 const MAX_TOOL_PROGRESS_BYTES: usize = 6_000;
 
-pub async fn run(config: Config, cwd: PathBuf, session: Option<SessionLog>) -> Result<()> {
+pub async fn run(
+    config: Config,
+    cwd: PathBuf,
+    session: Option<SessionLog>,
+    open_sessions_picker: bool,
+) -> Result<()> {
     let mcp = Arc::new(McpRegistry::new(&config.ecosystem.mcp));
     let plugins = Arc::new(PluginHost::spawn(&config.ecosystem.plugins, &cwd).await);
     let snapshots = Snapshots::open(&cwd).ok().map(Arc::new);
@@ -58,6 +63,7 @@ pub async fn run(config: Config, cwd: PathBuf, session: Option<SessionLog>) -> R
         snapshots,
         lsp,
         session,
+        open_sessions_picker,
     )
     .await;
 
@@ -82,6 +88,7 @@ async fn event_loop(
     snapshots: Option<Arc<Snapshots>>,
     lsp: Arc<LspManager>,
     mut session: Option<SessionLog>,
+    open_sessions_picker: bool,
 ) -> Result<()> {
     let mut app = App::new(
         config.model.clone(),
@@ -135,7 +142,7 @@ async fn event_loop(
         if config.memory.len() == 1 { "y" } else { "ies" }
     )));
     app.items.push(ChatItem::Info(
-        "tips: Enter send or guide · Alt+Enter follow-up · Shift+Enter newline · / commands · Ctrl+O tool details · /models switch model · /mcps check MCP servers · /init create AGENTS.md · @path or Ctrl+V attach images · ↑/↓ history · Ctrl+C quit"
+        "tips: Enter send or guide · Alt+Enter follow-up · Shift+Enter newline · / commands · Ctrl+O tool details · /models switch model · /mcps check MCP servers · /init create AGENTS.md · /resume pick a session · @path or Ctrl+V attach images · ↑/↓ history · Ctrl+C quit"
             .to_string(),
     ));
     if !config.ecosystem.context_files.is_empty() {
@@ -165,31 +172,28 @@ async fn event_loop(
     if let Some(log) = &session {
         match log.messages() {
             Ok(messages) => {
-                for message in &messages {
-                    match message.role.as_str() {
-                        "user" => {
-                            if let Some(content) = message.display() {
-                                if !content.trim().is_empty() {
-                                    app.input_history.push(content.clone());
-                                }
-                                app.items.push(ChatItem::User(content));
-                            }
-                        }
-                        "assistant" => {
-                            if let Some(content) = message.display() {
-                                app.items.push(ChatItem::Assistant(content));
-                            }
-                        }
-                        _ => {}
-                    }
-                }
-                app.history = messages;
-                app.items.push(ChatItem::Info(format!(
-                    "resumed session {} ({} message{})",
-                    log.id(),
-                    app.history.len(),
-                    if app.history.len() == 1 { "" } else { "s" }
-                )));
+                let count = messages.len();
+                restore_history(
+                    &mut app,
+                    messages,
+                    format!(
+                        "resumed session {} ({} message{})",
+                        log.id(),
+                        count,
+                        if count == 1 { "" } else { "s" }
+                    ),
+                );
+            }
+            Err(err) => app.items.push(ChatItem::Error(format!("session: {err:#}"))),
+        }
+    }
+
+    if open_sessions_picker {
+        match SessionLog::list(&cwd) {
+            Ok(sessions) => {
+                let count = sessions.len();
+                app.sessions = Some(SessionsState::ready(sessions));
+                app.status = format!("{count} session(s) — pick one");
             }
             Err(err) => app.items.push(ChatItem::Error(format!("session: {err:#}"))),
         }
@@ -334,6 +338,11 @@ fn handle_key(
 
     if app.models.is_some() {
         handle_models_key(key, app, config);
+        return;
+    }
+
+    if app.sessions.is_some() {
+        handle_sessions_key(key, app, cwd, session);
         return;
     }
 
@@ -657,6 +666,27 @@ fn handle_key(
                 refresh_suggestions(app, config);
                 app.items
                     .push(ChatItem::Info(session_info(session, &app.history)));
+                return;
+            }
+            if raw == "/resume" {
+                app.clear_input();
+                refresh_suggestions(app, config);
+                if app.busy {
+                    return;
+                }
+                match SessionLog::list(cwd) {
+                    Ok(sessions) if sessions.is_empty() => {
+                        app.items.push(ChatItem::Info(
+                            "no sessions for this project yet".to_string(),
+                        ));
+                    }
+                    Ok(sessions) => {
+                        let count = sessions.len();
+                        app.sessions = Some(SessionsState::ready(sessions));
+                        app.status = format!("{count} session(s) — pick one");
+                    }
+                    Err(err) => app.items.push(ChatItem::Error(format!("session: {err:#}"))),
+                }
                 return;
             }
             if raw == "/name" || raw.starts_with("/name ") {
@@ -1058,6 +1088,7 @@ fn help_text(config: &Config) -> String {
         "  /hotkeys              show the keyboard shortcuts".to_string(),
         "  /new                  start a new session".to_string(),
         "  /session              show session file, id, name, and stats".to_string(),
+        "  /resume               browse and resume a past session".to_string(),
         "  /name <name>          name the current session".to_string(),
         "  /model [id]           show or switch the active model".to_string(),
         "  /thinking [level]     show or set the thinking level".to_string(),
@@ -1275,6 +1306,10 @@ fn builtin_commands() -> Vec<CommandHint> {
             description: "show session info".to_string(),
         },
         CommandHint {
+            name: "resume".to_string(),
+            description: "browse and resume a past session".to_string(),
+        },
+        CommandHint {
             name: "tree".to_string(),
             description: "list user messages for branching".to_string(),
         },
@@ -1357,7 +1392,12 @@ fn builtin_commands() -> Vec<CommandHint> {
 fn refresh_suggestions(app: &mut App, config: &Config) {
     app.suggestions.clear();
     app.suggestion_index = 0;
-    if app.connect.is_some() || app.models.is_some() || app.trust.is_some() || app.busy {
+    if app.connect.is_some()
+        || app.models.is_some()
+        || app.sessions.is_some()
+        || app.trust.is_some()
+        || app.busy
+    {
         return;
     }
     if let Some((_, _, query)) = active_file_query(&app.input, app.input_cursor) {
@@ -1516,6 +1556,207 @@ fn handle_models_key(key: KeyEvent, app: &mut App, config: &mut Config) {
     }
 }
 
+fn handle_sessions_key(key: KeyEvent, app: &mut App, cwd: &Path, session: &mut Option<SessionLog>) {
+    let Some(mut state) = app.sessions.take() else {
+        return;
+    };
+    let mut keep = true;
+
+    if state.confirm_delete {
+        match key.code {
+            KeyCode::Char('y') | KeyCode::Char('Y') | KeyCode::Enter => {
+                if let Some(summary) = state.selected_session() {
+                    match SessionLog::delete(cwd, &summary.id) {
+                        Ok(()) => {
+                            app.items
+                                .push(ChatItem::Info(format!("deleted session {}", summary.id)));
+                            match SessionLog::list(cwd) {
+                                Ok(sessions) => state = SessionsState::ready(sessions),
+                                Err(err) => state.error = Some(format!("{err:#}")),
+                            }
+                            state.selected = 0;
+                        }
+                        Err(err) => state.error = Some(format!("{err:#}")),
+                    }
+                }
+                state.confirm_delete = false;
+            }
+            KeyCode::Esc | KeyCode::Char('n') | KeyCode::Char('N') => {
+                state.confirm_delete = false;
+            }
+            _ => {}
+        }
+        if keep {
+            app.sessions = Some(state);
+        }
+        return;
+    }
+
+    if state.renaming {
+        match key.code {
+            KeyCode::Esc => {
+                state.renaming = false;
+                state.rename_input.clear();
+            }
+            KeyCode::Enter => {
+                let name = state.rename_input.trim().to_string();
+                if !name.is_empty() {
+                    if let Some(summary) = state.selected_session() {
+                        match SessionLog::rename(cwd, &summary.id, &name) {
+                            Ok(()) => {
+                                app.items.push(ChatItem::Info(format!(
+                                    "renamed session {} to `{name}`",
+                                    summary.id
+                                )));
+                                match SessionLog::list(cwd) {
+                                    Ok(sessions) => state = SessionsState::ready(sessions),
+                                    Err(err) => state.error = Some(format!("{err:#}")),
+                                }
+                            }
+                            Err(err) => state.error = Some(format!("{err:#}")),
+                        }
+                    }
+                }
+                state.renaming = false;
+                state.rename_input.clear();
+            }
+            KeyCode::Backspace => {
+                state.rename_input.pop();
+            }
+            KeyCode::Char(c)
+                if !key
+                    .modifiers
+                    .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT) =>
+            {
+                state.rename_input.push(c);
+            }
+            _ => {}
+        }
+        if keep {
+            app.sessions = Some(state);
+        }
+        return;
+    }
+
+    match key.code {
+        KeyCode::Esc => {
+            keep = false;
+            app.status = "session unchanged".to_string();
+        }
+        KeyCode::Up => {
+            state.selected = state.selected.saturating_sub(1);
+        }
+        KeyCode::Down => {
+            let last = state.filtered().len().saturating_sub(1);
+            state.selected = (state.selected + 1).min(last);
+        }
+        KeyCode::Backspace => {
+            state.filter.pop();
+            state.selected = 0;
+        }
+        KeyCode::Char('p') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+            state.show_paths = !state.show_paths;
+        }
+        KeyCode::Char('s') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+            state.newest_first = !state.newest_first;
+        }
+        KeyCode::Char('n') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+            state.named_only = !state.named_only;
+            state.selected = 0;
+        }
+        KeyCode::Char('r') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+            if let Some(summary) = state.selected_session() {
+                state.renaming = true;
+                state.rename_input = summary.name.clone().unwrap_or_default();
+            }
+        }
+        KeyCode::Char('d') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+            if state.selected_session().is_some() {
+                state.confirm_delete = true;
+            }
+        }
+        KeyCode::Enter => {
+            if let Some(summary) = state.selected_session() {
+                match SessionLog::open(summary.path.clone()) {
+                    Ok(log) => switch_session(app, session, log),
+                    Err(err) => {
+                        app.items.push(ChatItem::Error(format!("session: {err:#}")));
+                        app.status = "ready".to_string();
+                    }
+                }
+                keep = false;
+            }
+        }
+        KeyCode::Char(c)
+            if !key
+                .modifiers
+                .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT) =>
+        {
+            state.filter.push(c);
+            state.selected = 0;
+        }
+        _ => {}
+    }
+    if keep {
+        app.sessions = Some(state);
+    }
+}
+
+fn switch_session(app: &mut App, session: &mut Option<SessionLog>, log: SessionLog) {
+    match log.messages() {
+        Ok(messages) => {
+            let id = log.id().to_string();
+            app.items.clear();
+            app.input_history.clear();
+            app.attachments.clear();
+            app.steering = crate::agent::Steering::new();
+            app.follow_ups = crate::agent::Steering::new();
+            app.assistant_open = false;
+            let count = messages.len();
+            restore_history(
+                app,
+                messages,
+                format!(
+                    "resumed session {id} ({count} message{})",
+                    if count == 1 { "" } else { "s" }
+                ),
+            );
+            app.session_name = log.name();
+            app.invalidate_render_cache();
+            app.auto_scroll = true;
+            *session = Some(log);
+            app.status = format!("resumed {id}");
+        }
+        Err(err) => {
+            app.items.push(ChatItem::Error(format!("session: {err:#}")));
+            app.status = "ready".to_string();
+        }
+    }
+}
+
+fn restore_history(app: &mut App, messages: Vec<Message>, resumed: String) {
+    for message in &messages {
+        match message.role.as_str() {
+            "user" => {
+                if let Some(content) = message.display() {
+                    if !content.trim().is_empty() {
+                        app.input_history.push(content.clone());
+                    }
+                    app.items.push(ChatItem::User(content));
+                }
+            }
+            "assistant" => {
+                if let Some(content) = message.display() {
+                    app.items.push(ChatItem::Assistant(content));
+                }
+            }
+            _ => {}
+        }
+    }
+    app.history = messages;
+    app.items.push(ChatItem::Info(resumed));
+}
+
 fn mcp_status_text(statuses: &[(String, String, McpStatus)]) -> String {
     if statuses.is_empty() {
         return "no MCP servers configured".to_string();
@@ -1559,6 +1800,13 @@ fn handle_paste(text: String, app: &mut App) {
     } else if let Some(state) = app.models.as_mut() {
         state.filter.push_str(&text);
         state.selected = 0;
+    } else if let Some(state) = app.sessions.as_mut() {
+        if state.renaming {
+            state.rename_input.push_str(&text);
+        } else {
+            state.filter.push_str(&text);
+            state.selected = 0;
+        }
     } else {
         app.insert_input(&text);
         app.auto_scroll = true;
@@ -2270,5 +2518,34 @@ mod tests {
         assert_eq!(app.suggestions[0].name, "init");
         assert!(help_text(&config).contains("/init"));
         assert!(init_prompt().contains("AGENTS.md"));
+    }
+
+    #[test]
+    fn sessions_state_filters_sorts_and_selects() {
+        use crate::session::SessionSummary;
+
+        let summary = |id: &str, name: Option<&str>, modified: u64| SessionSummary {
+            id: id.to_string(),
+            name: name.map(str::to_string),
+            cwd: "/tmp/proj".to_string(),
+            created_at: 0,
+            modified_at: modified,
+            message_count: 1,
+            preview: format!("preview {id}"),
+            path: std::path::PathBuf::from(id),
+        };
+        let mut state = SessionsState::ready(vec![
+            summary("aaa", Some("alpha"), 100),
+            summary("bbb", None, 200),
+            summary("ccc", Some("gamma"), 300),
+        ]);
+
+        assert_eq!(state.filtered()[0].id, "ccc");
+
+        state.named_only = true;
+        assert_eq!(state.filtered().len(), 2);
+
+        state.filter = "alpha".to_string();
+        assert_eq!(state.selected_session().unwrap().id, "aaa");
     }
 }
