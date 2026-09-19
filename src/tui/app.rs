@@ -333,6 +333,16 @@ impl App {
         }
     }
 
+    /// Moves the composer cursor to the start of the input.
+    pub fn input_home(&mut self) {
+        self.input_cursor = 0;
+    }
+
+    /// Moves the composer cursor to the end of the input.
+    pub fn input_end(&mut self) {
+        self.input_cursor = self.input.len();
+    }
+
     pub fn input_backspace(&mut self) {
         let previous = self.input[..self.input_cursor]
             .char_indices()

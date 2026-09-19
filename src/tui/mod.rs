@@ -994,8 +994,21 @@ fn handle_key(
             let half = (app.view_height / 2).max(1);
             app.scroll_down(half);
         }
+        KeyCode::Char('a') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+            if !app.input.is_empty() {
+                app.input_home();
+                refresh_suggestions(app, config);
+            }
+        }
         KeyCode::Char('y') if key.modifiers.contains(KeyModifiers::CONTROL) => app.scroll_up(1),
-        KeyCode::Char('e') if key.modifiers.contains(KeyModifiers::CONTROL) => app.scroll_down(1),
+        KeyCode::Char('e') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+            if app.input.is_empty() {
+                app.scroll_down(1);
+            } else {
+                app.input_end();
+                refresh_suggestions(app, config);
+            }
+        }
         KeyCode::Char('g') if key.modifiers.contains(KeyModifiers::CONTROL) => app.scroll_to_top(),
         KeyCode::Char(ch) => {
             app.insert_input(&ch.to_string());
@@ -1107,7 +1120,7 @@ fn help_text(config: &Config) -> String {
         "  /mcps                 list MCP servers and connection status".to_string(),
         "  /undo, /redo          revert or reapply the agent's file changes".to_string(),
         "  /compact              summarize the conversation to free context".to_string(),
-        "keys: Enter send/guide · Shift+Enter newline · Alt+Enter follow-up while busy · Shift+Tab mode · Ctrl+R reasoning · Ctrl+O tool details · Ctrl+V image · ↑/↓ history · PgUp/PgDn/wheel scroll · Ctrl+U/D half page · Ctrl+C quit"
+        "keys: Enter send/guide · Shift+Enter newline · Alt+Enter follow-up while busy · Shift+Tab mode · Ctrl+R reasoning · Ctrl+O tool details · Ctrl+V image · Ctrl+A/E message start/end · ↑/↓ history · PgUp/PgDn/wheel scroll · Ctrl+U/D half page · Ctrl+C quit"
             .to_string(),
     ];
     if !config.ecosystem.commands.is_empty() {
@@ -1164,7 +1177,8 @@ fn hotkeys_text() -> String {
         "  Ctrl+O                toggle tool output",
         "  Ctrl+V                attach a clipboard image",
         "  Tab                   complete the selected slash command",
-        "  Ctrl+Y / Ctrl+E       scroll one line",
+        "  Ctrl+A / Ctrl+E       jump to the start/end of the message",
+        "  Ctrl+Y / Ctrl+E       scroll one line (when the message is empty)",
         "  Ctrl+U / Ctrl+D       scroll half a page",
         "  PgUp / PgDn / wheel   scroll the transcript",
         "  Ctrl+G / Home         scroll to the top",
@@ -2366,6 +2380,19 @@ mod tests {
         app.input_backspace();
         assert_eq!(app.input, "abc");
         assert!(app.input.is_char_boundary(app.input_cursor));
+    }
+
+    #[test]
+    fn input_home_and_end_jump_to_the_edges() {
+        let mut app = test_app();
+        app.set_input("hello world".to_string());
+        app.input_cursor = 5;
+
+        app.input_home();
+        assert_eq!(app.input_cursor, 0);
+
+        app.input_end();
+        assert_eq!(app.input_cursor, app.input.len());
     }
 
     #[test]
