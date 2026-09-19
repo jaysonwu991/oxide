@@ -426,34 +426,97 @@ fn draw_suggestions(frame: &mut Frame, app: &App, area: Rect) {
     frame.render_stateful_widget(list, window.popup, &mut list_state);
 }
 
-/// Two-row, left-aligned footer: model controls above project context.
+/// Two-row footer: project context above, runtime usage and model controls
+/// below. The stats read left-to-right while the active model stays
+/// right-aligned, echoing Pi's layout with Oxide's semantic colors.
 fn draw_footer(frame: &mut Frame, app: &App, area: Rect) {
-    let dim = Style::default().fg(app.theme.info);
     let rows = Layout::default()
         .direction(Direction::Vertical)
         .constraints([Constraint::Length(1), Constraint::Length(1)])
         .split(area);
-    let model = vec![
-        Span::styled(
-            format!(" ● {}", crate::config::model_label(&app.model)),
-            Style::default()
-                .fg(app.theme.accent)
-                .add_modifier(Modifier::BOLD),
-        ),
-        Span::styled(format!(" ● {}", app.mode.label()), dim),
-        Span::styled(format!(" ● reasoning: {}", app.reasoning.label()), dim),
+    let width = area.width as usize;
+    let info = Style::default().fg(app.theme.info);
+    let accent = Style::default()
+        .fg(app.theme.accent)
+        .add_modifier(Modifier::BOLD);
+
+    // Row one: where we are, and the branch we are on.
+    let mut project = vec![
+        Span::styled(" ", info),
+        Span::styled(display_path(&app.cwd), info),
     ];
+    if let Some(branch) = &app.git_branch {
+        project.push(Span::styled("  ", info));
+        project.push(Span::styled(
+            format!("🌿 {branch}"),
+            Style::default().fg(app.theme.success),
+        ));
+    }
+    let mut session = Vec::new();
+    if let Some(name) = &app.session_name {
+        session.push(Span::styled(
+            format!("{name} "),
+            Style::default().fg(app.theme.dim),
+        ));
+    }
     frame.render_widget(
-        Paragraph::new(Line::from(truncate_spans(model, area.width as usize))),
+        Paragraph::new(aligned_row(project, session, width)),
         rows[0],
     );
 
-    let mut project = vec![Span::styled(format!(" ● {}", display_path(&app.cwd)), dim)];
-    if let Some(branch) = &app.git_branch {
-        project.push(Span::styled(format!(" ● 🌿 {branch}"), dim));
+    // Row two: usage on the left, the model and thinking level on the right.
+    let mut stats = vec![Span::styled(" ", info)];
+    if app.tokens_in > 0 || app.tokens_out > 0 {
+        stats.push(Span::styled(
+            format!(
+                "↑ {}  ↓ {}  ",
+                compact_tokens(app.tokens_in),
+                compact_tokens(app.tokens_out)
+            ),
+            Style::default().fg(app.theme.tool),
+        ));
     }
-    project.push(Span::styled(" ●", dim));
-    frame.render_widget(Paragraph::new(Line::from(project)), rows[1]);
+    if app.context_limit > 0 && app.context_used > 0 {
+        let pct = context_percent(app.context_used, app.context_limit);
+        stats.push(Span::styled("⧉ ", info));
+        stats.push(Span::styled(
+            format!("{pct}%  "),
+            Style::default().fg(context_color(pct, &app.theme)),
+        ));
+    }
+    stats.push(Span::styled("·  ", info));
+    stats.push(Span::styled(app.mode.label().to_string(), accent));
+
+    let controls = vec![
+        Span::styled(crate::config::model_label(&app.model).to_string(), accent),
+        Span::styled(" · ", info),
+        Span::styled(
+            app.reasoning.label().to_string(),
+            Style::default().fg(reasoning_color(app.reasoning, &app.theme)),
+        ),
+        Span::styled(" ", info),
+    ];
+    frame.render_widget(Paragraph::new(aligned_row(stats, controls, width)), rows[1]);
+}
+
+/// Joins left- and right-aligned span groups on a single row, padding with a
+/// gap so the right group ends at `width`. Falls back to a truncated single
+/// line when there is not enough room for both.
+fn aligned_row(left: Vec<Span<'static>>, right: Vec<Span<'static>>, width: usize) -> Line<'static> {
+    let measure = |spans: &[Span<'static>]| -> usize {
+        spans.iter().map(|span| span.content.chars().count()).sum()
+    };
+    let left_width = measure(&left);
+    let right_width = measure(&right);
+    if left_width + right_width + 1 > width {
+        let mut spans = left;
+        spans.extend(right);
+        return Line::from(truncate_spans(spans, width));
+    }
+    let mut spans = left;
+    spans.push(Span::raw(" ".repeat(width - left_width - right_width)));
+    spans.extend(right);
+    Line::from(spans)
 }
 
 /// The spinner glyph rotates once per tick, so the editor border animates
@@ -549,6 +612,21 @@ fn display_path(path: &str) -> String {
         }
     }
     path.to_string()
+}
+
+fn context_percent(used: u64, limit: u64) -> u64 {
+    (used as f64 / limit as f64 * 100.0).round() as u64
+}
+
+/// Context usage color escalates from muted to warning to error.
+fn context_color(pct: u64, theme: &crate::theme::Theme) -> Color {
+    if pct >= 85 {
+        theme.error
+    } else if pct >= 60 {
+        theme.tool
+    } else {
+        theme.info
+    }
 }
 
 /// The editor border color reflects the active thinking level (Pi behavior).
@@ -977,41 +1055,17 @@ fn input_title(app: &App, label: String, border_color: Color) -> Vec<Span<'stati
             .unwrap_or(0);
         title.push(Span::styled(
             format!(
-                "● {} {} · {secs}s · Esc clear/quit ",
+                "· {} {} · {secs}s · Esc clear/quit ",
                 spinner(app.busy_since),
                 app.status
             ),
             Style::default().fg(app.theme.tool),
         ));
     } else {
-        title.push(Span::styled("● ", Style::default().fg(app.theme.accent)));
+        title.push(Span::styled("· ", Style::default().fg(app.theme.accent)));
         title.push(Span::styled(
             format!("{} ", app.status),
             Style::default().fg(app.theme.info),
-        ));
-    }
-    if app.tokens_in > 0 || app.tokens_out > 0 {
-        title.push(Span::styled(
-            format!(
-                "● ↑{} ↓{} ",
-                compact_tokens(app.tokens_in),
-                compact_tokens(app.tokens_out)
-            ),
-            Style::default().fg(app.theme.info),
-        ));
-    }
-    if app.context_limit > 0 && app.context_used > 0 {
-        let pct = (app.context_used as f64 / app.context_limit as f64 * 100.0).round() as u64;
-        let color = if pct >= 85 {
-            app.theme.error
-        } else if pct >= 60 {
-            app.theme.tool
-        } else {
-            app.theme.info
-        };
-        title.push(Span::styled(
-            format!("● {pct}% "),
-            Style::default().fg(color),
         ));
     }
     title
@@ -1722,7 +1776,7 @@ mod tests {
     }
 
     #[test]
-    fn footer_keeps_model_and_project_rows_left_aligned_below_input() {
+    fn footer_stacks_project_above_stats_and_right_aligned_model() {
         use crate::config::{Mode, Reasoning};
         use ratatui::backend::TestBackend;
         use ratatui::Terminal;
@@ -1742,22 +1796,26 @@ mod tests {
         let input_top = row_of(&buffer, "message").expect("input title");
         assert_eq!(row_of(&buffer, "ready"), Some(input_top));
         let input_bottom = row_of(&buffer, "╰").expect("input box bottom border");
-        let model_row = input_bottom + 1;
-        assert_eq!(row_of(&buffer, "gpt-4o"), Some(model_row));
-        assert_eq!(row_of(&buffer, "/tmp/project"), Some(model_row + 1));
-        assert_eq!(row_of(&buffer, "🌿"), Some(model_row + 1));
-        assert_eq!(row_of(&buffer, "main"), Some(model_row + 1));
+        let project_row = input_bottom + 1;
+        let controls_row = input_bottom + 2;
+        assert_eq!(row_of(&buffer, "/tmp/project"), Some(project_row));
+        assert_eq!(row_of(&buffer, "🌿"), Some(project_row));
+        assert_eq!(row_of(&buffer, "main"), Some(project_row));
+        assert_eq!(row_of(&buffer, "gpt-4o"), Some(controls_row));
+        assert_eq!(row_of(&buffer, "build"), Some(controls_row));
+        assert_eq!(row_of(&buffer, "auto"), Some(controls_row));
 
-        let model_text: String = (0..buffer.area.width)
-            .map(|x| buffer[(x, model_row)].symbol())
+        let text: String = (0..buffer.area.width)
+            .map(|x| buffer[(x, controls_row)].symbol())
             .collect();
-        assert!(model_text.starts_with(" ● gpt-4o ● build"));
-        assert!(!model_text.contains("Enter send"));
-        assert!(!model_text.contains("Ctrl+O"));
+        assert!(text.starts_with(" ·  build"));
+        assert!(text.trim_end().ends_with("gpt-4o · auto"));
+        assert!(!text.contains("Enter send"));
+        assert!(!text.contains("Ctrl+O"));
     }
 
     #[test]
-    fn input_title_places_runtime_usage_beside_message() {
+    fn input_title_shows_status_without_duplicating_footer_usage() {
         use crate::config::{Mode, Reasoning};
         use ratatui::backend::TestBackend;
         use ratatui::Terminal;
@@ -1781,8 +1839,17 @@ mod tests {
         let row: String = (0..buffer.area.width)
             .map(|x| buffer[(x, input_row)].symbol())
             .collect();
-        assert!(row.contains("message ● ready ● ↑107.8k ↓4.8k ● 20%"));
+        assert!(row.contains("message · ready"));
+        assert!(!row.contains("107.8k"));
+        assert!(!row.contains("20%"));
         assert_ne!(row_of(buffer, "Ask Oxide"), Some(input_row));
+
+        let footer_row = row_of(buffer, "107.8k").expect("usage moves to the footer");
+        let footer: String = (0..buffer.area.width)
+            .map(|x| buffer[(x, footer_row)].symbol())
+            .collect();
+        assert!(footer.contains("↓ 4.8k"));
+        assert!(footer.contains("20%"));
     }
 
     #[test]
