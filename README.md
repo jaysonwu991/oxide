@@ -63,7 +63,13 @@ box, with Claude Code configuration support for compatibility.
   sets one, a live `Elapsed Ns` while it runs, and a `Took Nms` duration
   afterwards. Collapsed output uses a
   `⋯ <lines> lines · Ctrl+O to expand` affordance, file edits show a colored
-  line-numbered diff, and each model turn is timed with `+ Thought: Nms`.
+  line-numbered diff, each model turn is timed with `+ Thought: Nms` (the total
+  step time, updated once the stream finishes), and the system prompt nudges the
+  model to batch reads instead of re-reading the same paths.
+- Resilient streaming: transient failures (network errors, truncated streams,
+  429, and 5xx responses) are retried with backoff while no text has been
+  emitted; empty or truncated responses and in-band stream errors surface as
+  errors instead of silently ending the turn.
 - Tool selection: `--tools`/`-t` allowlists and `--exclude-tools`/`-x`
   disables tools (accepting both Pi and legacy names); disabled tools are hidden
   from the model and refused if requested.
@@ -683,7 +689,11 @@ overriding the global one.
 - **Purge errors** — errored tool outputs are replaced with a short marker after
   a configurable number of turns.
 - **Nudges** — when the estimated context grows large, a reminder with the
-  conversation index is injected so the model can compress.
+  conversation index is injected so the model can compress. A cooldown
+  (`compress.cooldownMessages`) keeps the reminder from firing again until
+  enough new messages have accumulated, and the most recent messages
+  (`compress.protectedRecentMessages`) are never compressed so recently-read
+  files stay in context instead of being re-read.
 
 Compression records are stored in the session log, so a resumed session rebuilds
 the same pruned view. When pruning is enabled it replaces the legacy automatic
@@ -698,6 +708,8 @@ the same pruned view. When pruning is enabled it replaces the legacy automatic
     "maxContextLimit": 32000,
     "nudgeFrequency": 5,
     "iterationNudgeThreshold": 15,
+    "cooldownMessages": 20,
+    "protectedRecentMessages": 8,
     "protectedTools": ["task", "skill", "memory", "diagnostics"]
   },
   "strategies": {

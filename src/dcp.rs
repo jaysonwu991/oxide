@@ -67,6 +67,12 @@ pub struct CompressConfig {
     pub nudge_frequency: usize,
     /// Always nudge once this many iterations have passed since a user message.
     pub iteration_nudge_threshold: usize,
+    /// Suppress compression nudges until this many messages have been added
+    /// since the end of the last compression, so compression does not run away.
+    pub cooldown_messages: usize,
+    /// Never compress the most recent N messages, keeping recent file reads in
+    /// context so the model does not have to re-read them.
+    pub protected_recent_messages: usize,
     /// Tool outputs appended to compression summaries instead of discarded.
     pub protected_tools: Vec<String>,
     pub protect_user_messages: bool,
@@ -81,6 +87,8 @@ impl Default for CompressConfig {
             min_context_limit: 16_000,
             nudge_frequency: 5,
             iteration_nudge_threshold: 15,
+            cooldown_messages: 20,
+            protected_recent_messages: 8,
             protected_tools: DEFAULT_COMPRESS_PROTECTED_TOOLS
                 .iter()
                 .map(|name| name.to_string())
@@ -161,6 +169,14 @@ impl DcpState {
             .map(|compression| compression.seq + 1)
             .max()
             .unwrap_or(0)
+    }
+
+    /// The highest message index covered by any recorded compression.
+    fn last_compression_end(&self) -> Option<usize> {
+        self.compressions
+            .iter()
+            .flat_map(|compression| compression.ranges.iter().map(|range| range.end))
+            .max()
     }
 
     fn compression(&self, seq: u64) -> Option<&Compression> {
@@ -477,6 +493,11 @@ pub fn nudge(
     if !cfg.enabled {
         return None;
     }
+    if let Some(last_end) = state.last_compression_end() {
+        if messages.len().saturating_sub(last_end + 1) < cfg.compress.cooldown_messages {
+            return None;
+        }
+    }
     let tokens = estimate_tokens(messages);
     let over_max = tokens >= cfg.compress.max_context_limit;
     let over_min = tokens >= cfg.compress.min_context_limit;
@@ -585,7 +606,9 @@ pub fn apply_compress(
         ranges.push(Range { start, end });
     }
 
-    let limit = messages.len().saturating_sub(1);
+    let limit = messages
+        .len()
+        .saturating_sub(cfg.compress.protected_recent_messages.max(1));
     let mut normalized = normalize_ranges(messages, &ranges);
     for range in &mut normalized {
         if range.end >= limit {
@@ -594,7 +617,10 @@ pub fn apply_compress(
     }
     normalized.retain(|range| range.start < limit && range.start <= range.end);
     if normalized.is_empty() {
-        bail!("no compressible ranges; leave the most recent message intact");
+        bail!(
+            "no compressible ranges; leave the most recent {} messages intact",
+            cfg.compress.protected_recent_messages
+        );
     }
 
     let mut summary = summary;
@@ -889,17 +915,47 @@ mod tests {
 
     #[test]
     fn apply_compress_records_range() {
-        let messages = vec![
-            Message::user("a"),
-            Message::assistant("b", vec![]),
-            Message::user("c"),
-        ];
+        let mut messages = vec![Message::user("a"), Message::assistant("b", vec![])];
+        for index in 0..10 {
+            messages.push(Message::user(format!("m{index}")));
+        }
         let mut state = DcpState::default();
         let cfg = DcpConfig::default();
         let args = json!({"ranges":[{"start":0,"end":1}],"summary":"summary"});
         let text = apply_compress(&mut state, &messages, &cfg, &args).unwrap();
         assert!(text.starts_with("compressed 2 messages"));
         assert_eq!(state.compressions.len(), 1);
+    }
+
+    #[test]
+    fn apply_compress_protects_recent_messages() {
+        let messages: Vec<Message> = (0..12).map(|i| Message::user(format!("m{i}"))).collect();
+        let mut state = DcpState::default();
+        let cfg = DcpConfig::default();
+        let args = json!({"ranges":[{"start":0,"end":11}],"summary":"s"});
+        apply_compress(&mut state, &messages, &cfg, &args).unwrap();
+        let stored = state.compressions[0].ranges[0];
+        assert!(stored.end < messages.len() - cfg.compress.protected_recent_messages);
+    }
+
+    #[test]
+    fn nudge_respects_compression_cooldown() {
+        let mut messages = vec![Message::user("x".repeat(200_000))];
+        let cfg = DcpConfig::default();
+        let mut state = DcpState::default();
+        assert!(nudge(&messages, &state, &cfg, 0).is_some());
+
+        state.compressions.push(Compression {
+            seq: 0,
+            ranges: vec![Range { start: 0, end: 0 }],
+            summary: "s".into(),
+        });
+        assert!(nudge(&messages, &state, &cfg, 0).is_none());
+
+        for index in 0..cfg.compress.cooldown_messages {
+            messages.push(Message::user(format!("m{index}")));
+        }
+        assert!(nudge(&messages, &state, &cfg, 0).is_some());
     }
 
     #[test]

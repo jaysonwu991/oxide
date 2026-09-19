@@ -2229,6 +2229,16 @@ fn handle_agent_event(event: AgentEvent, app: &mut App) {
             app.auto_scroll = true;
             app.items.push(ChatItem::Thought(millis));
         }
+        AgentEvent::ThoughtDone { millis } => {
+            if let Some(index) = app
+                .items
+                .iter()
+                .rposition(|item| matches!(item, ChatItem::Thought(_)))
+            {
+                app.items[index] = ChatItem::Thought(millis);
+                app.mark_render_dirty(index);
+            }
+        }
         AgentEvent::ToolCall { name, args } => {
             app.assistant_open = false;
             app.auto_scroll = true;
@@ -2334,6 +2344,23 @@ mod tests {
         assert!(output.len() <= MAX_TOOL_PROGRESS_BYTES);
         assert!(output.starts_with("…\n"));
         assert!(output.ends_with("latest 🚀"));
+    }
+
+    #[test]
+    fn thought_done_updates_only_the_latest_thought() {
+        let mut app = test_app();
+        handle_agent_event(AgentEvent::Thought { millis: 100 }, &mut app);
+        handle_agent_event(AgentEvent::Thought { millis: 200 }, &mut app);
+        handle_agent_event(AgentEvent::ThoughtDone { millis: 5000 }, &mut app);
+        let thoughts: Vec<u64> = app
+            .items
+            .iter()
+            .filter_map(|item| match item {
+                ChatItem::Thought(millis) => Some(*millis),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(thoughts, vec![100, 5000]);
     }
 
     fn key(code: KeyCode) -> KeyEvent {

@@ -125,6 +125,7 @@ pub fn session_header(log: &SessionLog) -> Value {
 pub fn event_json(event: &AgentEvent) -> Option<Value> {
     let value = match event {
         AgentEvent::Thought { .. } => json!({ "type": "thinking" }),
+        AgentEvent::ThoughtDone { .. } => return None,
         AgentEvent::Text(delta) => json!({
             "type": "message_update",
             "assistantMessageEvent": { "type": "text_delta", "delta": delta }
