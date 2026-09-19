@@ -46,7 +46,7 @@ macOS, and Windows.
 
 | Path | Responsibility |
 | --- | --- |
-| `src/main.rs` | CLI entry (clap), non-interactive `-p/--print`, `--mode json`, and `--mode rpc` modes, TUI dispatch, and the `mcp`, `sessions`, and `plugin` subcommands. |
+| `src/main.rs` | CLI entry (clap), non-interactive `-p/--print`, `--mode json`, and `--mode rpc` modes, TUI dispatch, and the `mcp`, `sessions`, `plugin`, and `uninstall` subcommands. |
 | `src/cli.rs` | Non-interactive surface: `@file` expansion, tool filtering, JSON/RPC event framing. |
 | `src/config.rs` | Config loading, provider presets, agent `Mode` and `Reasoning`, system prompt composition, and `defaultProjectTrust`. |
 | `src/auth.rs` | Credential store backing the TUI `/login` and `/logout` commands. |
@@ -71,7 +71,8 @@ macOS, and Windows.
 | `src/plugin_registry.rs` | Claude Code-style plugin packages and marketplaces: `oxide plugin`/`/plugin` install lifecycle, manifests (`.oxide/*.json` preferred, `.claude-plugin/*.json` compatible), and hook-shim generation. |
 | `src/memory.rs` | Cross-session memory store. |
 | `src/media.rs` | Image/PDF attachments and `@path` references. |
-| `src/tui/` | ratatui + crossterm interface with incremental rendering, welcome tips, a live state row and metadata footer, a growing labeled editor, hidden-by-default tool output (Ctrl+O), concise shell actions, colored edit diffs, per-turn thought timing, Shift+Tab mode and Ctrl+R reasoning cycling, theme-aware project-trust/provider dialogs, and mid-run steering. |
+| `src/uninstall.rs` | `oxide uninstall` install detection and cleanup. |
+| `src/tui/` | ratatui + crossterm interface with incremental rendering, a two-column welcome banner, a live state row and metadata footer, a growing labeled editor, shown-by-default tool output (Ctrl+O collapses), concise shell actions, colored edit diffs, per-turn thought timing, Shift+Tab mode and Ctrl+R reasoning cycling, theme-aware project-trust/provider dialogs, and mid-run steering. |
 | `.oxide/` | Project agents, commands, prompts, skills, and plugins (Oxide layout). |
 
 ## Conventions

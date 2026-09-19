@@ -48,9 +48,9 @@ increasing precedence:
 4. Project `<root>/.mcp.json`
 5. Project `<root>/.oxide/mcp.json`
 
-The `oxide mcp` management commands read the two home-directory files and the
-two project files; they do not manage the platform-config copy. `--scope
-global` writes `~/.oxide/mcp.json`.
+The `oxide mcp` management commands write the two home-directory files and the
+two project files; `list` also includes the platform-config copy, but no command
+writes it. `--scope global` writes `~/.oxide/mcp.json`.
 
 ### Manage from the CLI
 
@@ -256,12 +256,14 @@ Add a remote (HTTP) server:
 
 - `env` and `headers` values support `{env:VAR}` interpolation from the
   environment.
+- Set `"enabled": false` (or `"disabled": true`) to keep a server in the file
+  without loading it. Disabled servers are omitted from the model context.
 - Tools are exposed to the model as `<server>__<tool>`; characters outside
   `A-Za-z0-9_-` are replaced with `_`.
 - **Remove** a server with `oxide mcp remove <name>`, or by deleting its entry
-  (or the file). There is no per-server enable flag.
-- Servers start when a session begins. A server that fails to start or list
-  tools is logged to stderr and skipped.
+  (or the file).
+- Enabled servers start lazily when first needed (URL routing or `mcp_load`). A
+  server that fails to start or list tools is logged to stderr and skipped.
 - Restart oxide after editing.
 
 ## Subagents
