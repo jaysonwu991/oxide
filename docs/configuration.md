@@ -33,6 +33,10 @@ variable, which overrides the file. Behavior settings live in `config.json`
 (global); the global-only `settings.json` currently supplies
 `defaultProjectTrust`.
 
+Installed plugin packages (see [Plugins and hooks](#plugins-and-hooks)) load
+after global resources and before project resources, so project entries still
+override plugins with the same name.
+
 ## MCP servers
 
 MCP servers are declared under `mcpServers` in a JSON file. oxide reads, in
@@ -315,7 +319,7 @@ Focus: $ARGUMENTS
 - Built-in commands: `/help`, `/hotkeys`, `/new`, `/session`, `/resume`,
   `/tree`, `/fork`, `/clone`, `/name`, `/model`, `/thinking`, `/theme`,
   `/trust`, `/export`, `/reload`, `/init`, `/login`, `/logout`, `/models`,
-  `/connect`, `/undo`, `/redo`, and `/compact`.
+  `/mcps`, `/plugin`, `/connect`, `/undo`, `/redo`, and `/compact`.
 - **Remove** a command by deleting its file.
 
 ## Prompt templates
@@ -359,6 +363,8 @@ Detailed instructions loaded on demand.
 
 ## Plugins and hooks
 
+### Hook plugins (single files)
+
 Place a `.ts` or `.js` file in `.oxide/plugins/` (or `.claude/plugins/`). oxide
 runs it under `bun` or `node`, whichever is found first. Export a function
 (default or named) that returns hook handlers:
@@ -385,6 +391,75 @@ export const RustFmt = async ({ $, directory }) => {
   model call. The turn ends only when every tool result in the batch terminates.
 - The `$` helper runs shell commands (`await $\`cmd\`.cwd(dir).quiet().nothrow()`).
 - **Remove** a plugin by deleting its file.
+
+### Plugin packages and marketplaces
+
+oxide also supports Claude Code-style plugin packages: directories with a
+`.claude-plugin/plugin.json` manifest that bundle slash commands, subagents,
+skills, MCP servers, and command hooks. The manifest may also live at
+`.oxide/plugin.json` (preferred when both are present).
+
+```jsonc
+// .claude-plugin/plugin.json
+{
+  "name": "my-plugin",
+  "version": "1.0.0",
+  "description": "What it does",
+  "mcpServers": { "fs": { "command": "npx", "args": ["-y", "server-fs"] } },
+  "hooks": {
+    "PostToolUse": [
+      { "matcher": "Write|Edit", "hooks": [{ "type": "command", "command": "fmt" }] }
+    ]
+  }
+}
+```
+
+Layout inside a plugin package:
+
+- `commands/*.md` — slash commands
+- `agents/*.md` — subagents
+- `skills/<name>/SKILL.md` — skills
+- `plugins/*.js|ts` — JS/TS hook plugins
+- `mcpServers` in the manifest — MCP servers
+- `hooks` in the manifest — Claude Code command hooks (`PreToolUse`/
+  `PostToolUse`, with `matcher` regexes). They run through the hook host, which
+  pipes tool info as JSON on stdin and reads a Claude Code-style JSON response:
+  `PreToolUse` applies `updatedInput`; `PostToolUse` appends
+  `additionalContext` and honors `decision: "block"`.
+
+A *marketplace* is a directory or git repository with a
+`.claude-plugin/marketplace.json` (or `.oxide/marketplace.json`, preferred)
+manifest:
+
+```jsonc
+{
+  "name": "my-marketplace",
+  "plugins": [
+    { "name": "my-plugin", "source": "https://github.com/you/my-plugin.git" }
+  ]
+}
+```
+
+Install and manage plugins from the CLI or the TUI:
+
+```
+oxide plugin marketplace add <url|path>
+oxide plugin install <name>[@marketplace]
+oxide plugin list
+oxide plugin enable|disable <name>
+oxide plugin uninstall <name>
+```
+
+In the TUI, `/plugin` lists installed plugins, and accepts
+`/plugin install <name>[@marketplace]`, `/plugin uninstall <name>`,
+`/plugin enable|disable <name>`, and `/plugin marketplace
+<list|add <url|path>|remove <name>>`.
+
+Installed plugins live under `<config>/oxide/plugins/` (next to `auth.json` and
+`trust.json`), and their commands, agents, skills, and MCP servers load at
+startup before project resources, so project-local entries still override
+plugins with the same name. Hooks and MCP servers require a restart after
+install.
 
 ## Permissions
 
@@ -677,6 +752,7 @@ Runtime state lives under the platform oxide config directory:
 - `trust.json` — saved project trust decisions
 - `settings.json` — global settings such as `defaultProjectTrust`
 - `themes/<name>.json` — custom TUI themes
+- `plugins/` — installed plugin packages, marketplaces, and plugin state
 - `truncated/` — full text of tool outputs that exceeded the line/byte cap, retained 7 days (override with `OXIDE_TRUNCATION_DIR`)
 - `dcp.json` — global context-pruning config
 

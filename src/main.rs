@@ -16,6 +16,7 @@ mod media;
 mod memory;
 mod permission;
 mod plugin;
+mod plugin_registry;
 mod session;
 mod sessions;
 mod snapshots;
@@ -176,6 +177,11 @@ enum Command {
         #[command(subcommand)]
         action: SessionsAction,
     },
+    /// Manage Claude Code-style plugins and marketplaces
+    Plugin {
+        #[command(subcommand)]
+        action: PluginAction,
+    },
 }
 
 #[derive(Subcommand, Debug)]
@@ -220,6 +226,53 @@ enum SessionsAction {
         /// Summarize the second session instead of concatenating it verbatim
         #[arg(long)]
         summarize: bool,
+    },
+}
+
+#[derive(Subcommand, Debug)]
+enum PluginAction {
+    /// List installed plugins
+    List,
+    /// Install a plugin from a configured marketplace
+    Install {
+        /// Plugin name, optionally `name@marketplace`
+        name: String,
+    },
+    /// Uninstall a plugin
+    Uninstall {
+        /// Plugin name
+        name: String,
+    },
+    /// Enable a disabled plugin
+    Enable {
+        /// Plugin name
+        name: String,
+    },
+    /// Disable a plugin
+    Disable {
+        /// Plugin name
+        name: String,
+    },
+    /// Manage plugin marketplaces
+    Marketplace {
+        #[command(subcommand)]
+        action: MarketplaceAction,
+    },
+}
+
+#[derive(Subcommand, Debug)]
+enum MarketplaceAction {
+    /// Add a marketplace from a git URL or local path
+    Add {
+        /// Git URL or local path containing .claude-plugin/marketplace.json
+        source: String,
+    },
+    /// List configured marketplaces
+    List,
+    /// Remove a marketplace
+    Remove {
+        /// Marketplace name
+        name: String,
     },
 }
 
@@ -394,6 +447,39 @@ async fn main() -> Result<()> {
                         sessions::merge(&current_dir, config.as_ref(), &a, &b, summarize).await
                     }
                 }
+            }
+            Command::Plugin { action } => {
+                match action {
+                    PluginAction::List => println!("{}", plugin_registry::list()?),
+                    PluginAction::Install { name } => {
+                        let (name, marketplace) = plugin_registry::split_ref(&name);
+                        println!(
+                            "{}",
+                            plugin_registry::install(&name, marketplace.as_deref()).await?
+                        );
+                    }
+                    PluginAction::Uninstall { name } => {
+                        println!("{}", plugin_registry::uninstall(&name)?);
+                    }
+                    PluginAction::Enable { name } => {
+                        println!("{}", plugin_registry::set_enabled(&name, true)?);
+                    }
+                    PluginAction::Disable { name } => {
+                        println!("{}", plugin_registry::set_enabled(&name, false)?);
+                    }
+                    PluginAction::Marketplace { action } => match action {
+                        MarketplaceAction::Add { source } => {
+                            println!("{}", plugin_registry::add_marketplace(&source).await?);
+                        }
+                        MarketplaceAction::List => {
+                            println!("{}", plugin_registry::list_marketplaces()?);
+                        }
+                        MarketplaceAction::Remove { name } => {
+                            println!("{}", plugin_registry::remove_marketplace(&name)?);
+                        }
+                    },
+                }
+                Ok(())
             }
         };
     }
