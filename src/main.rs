@@ -708,6 +708,7 @@ async fn run_print_text(mut rx: tokio::sync::mpsc::UnboundedReceiver<AgentEvent>
                 stdout.flush()?;
             }
             AgentEvent::Thought { .. } => {}
+            AgentEvent::ThoughtDone { .. } => {}
             AgentEvent::ToolCall { name, args } => {
                 eprintln!("\n[tool] {name} {args}");
             }

@@ -76,6 +76,11 @@ pub enum AgentEvent {
     Thought {
         millis: u64,
     },
+    /// The total wall-clock time the current model step took, sent once the
+    /// stream finishes so the `Thought` line can be updated.
+    ThoughtDone {
+        millis: u64,
+    },
     ToolCall {
         name: String,
         args: String,
@@ -171,6 +176,9 @@ pub fn run_subagent(
                 }
                 AgentEvent::Thought { millis } => {
                     let _ = tx.send(AgentEvent::Thought { millis });
+                }
+                AgentEvent::ThoughtDone { millis } => {
+                    let _ = tx.send(AgentEvent::ThoughtDone { millis });
                 }
                 AgentEvent::ToolCall { name, args } => {
                     let _ = tx.send(AgentEvent::ToolCall { name, args });
@@ -305,6 +313,9 @@ async fn run_loop(
                 millis: started.elapsed().as_millis() as u64,
             });
         }
+        let _ = tx.send(AgentEvent::ThoughtDone {
+            millis: started.elapsed().as_millis() as u64,
+        });
 
         if turn.content.trim().is_empty() && turn.tool_calls.is_empty() {
             let _ = tx.send(AgentEvent::Error(
@@ -811,7 +822,8 @@ async fn task_inner(
             | AgentEvent::ToolProgress { .. }
             | AgentEvent::ToolResult { .. }
             | AgentEvent::Usage { .. }
-            | AgentEvent::Thought { .. } => {}
+            | AgentEvent::Thought { .. }
+            | AgentEvent::ThoughtDone { .. } => {}
         }
     }
     let _ = handle.await;
