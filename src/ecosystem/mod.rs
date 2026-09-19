@@ -158,14 +158,11 @@ pub struct McpOAuth {
 impl Ecosystem {
     pub fn summary(&self) -> String {
         format!(
-            "{} agents, {} commands, {} prompts, {} skills, {} MCP servers, {} rules, {} memory files, {} plugins",
+            "{} agents · {} commands · {} skills · {} MCP servers · {} plugins",
             self.agents.len(),
             self.commands.len(),
-            self.prompt_templates.len(),
             self.skills.len(),
             self.mcp.len(),
-            self.rules.len(),
-            self.memory.len(),
             self.plugins.len(),
         )
     }
