@@ -3,7 +3,7 @@ use crate::tools::DiffPreview;
 use crate::tui::app::{App, ChatItem, ConnectStep};
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
-use ratatui::text::{Line, Span};
+use ratatui::text::{Line, Span, Text};
 use ratatui::widgets::{
     Block, BorderType, Borders, Clear, List, ListItem, ListState, Paragraph, Wrap,
 };
@@ -372,17 +372,27 @@ fn draw_suggestions(frame: &mut Frame, app: &App, area: Rect) {
     };
     frame.render_widget(Clear, window.popup);
 
+    let is_command = app.input.starts_with('/');
+    let name_cap = if is_command {
+        24
+    } else {
+        (window.popup.width.saturating_sub(5) as usize).max(8)
+    };
     let name_width = app.suggestions[window.offset..window.offset + window.count]
         .iter()
         .map(|hint| hint.name.chars().count())
         .max()
         .unwrap_or(0)
-        .min(24);
+        .min(name_cap);
     let items: Vec<ListItem> = app.suggestions[window.offset..window.offset + window.count]
         .iter()
         .map(|hint| {
-            let prefix = if app.input.starts_with('/') { "/" } else { "@" };
-            let name = truncate(&hint.name, name_width);
+            let prefix = if is_command { "/" } else { "@" };
+            let name = if is_command {
+                truncate(&hint.name, name_width)
+            } else {
+                truncate_path(&hint.name, name_width)
+            };
             ListItem::new(Line::from(vec![
                 Span::styled(
                     format!("{prefix}{name:<name_width$}"),
@@ -397,7 +407,7 @@ fn draw_suggestions(frame: &mut Frame, app: &App, area: Rect) {
             ]))
         })
         .collect();
-    let title = if app.input.starts_with('/') {
+    let title = if is_command {
         "commands · click or Tab to complete"
     } else {
         "files · click or Tab to complete"
@@ -501,6 +511,26 @@ fn truncate(text: &str, width: usize) -> String {
     }
     let mut out: String = text.chars().take(width - 1).collect();
     out.push('…');
+    out
+}
+
+/// Truncates a path from the left so the filename (the distinguishing part)
+/// stays visible, snapping to a path separator when one is available.
+fn truncate_path(text: &str, width: usize) -> String {
+    let count = text.chars().count();
+    if count <= width {
+        return text.to_string();
+    }
+    if width <= 1 {
+        return "…".chars().take(width).collect();
+    }
+    let tail: String = text.chars().skip(count - (width - 1)).collect();
+    let tail = match tail.split_once('/') {
+        Some((_, rest)) if !rest.is_empty() => format!("/{rest}"),
+        _ => tail,
+    };
+    let mut out = String::from("…");
+    out.push_str(&tail);
     out
 }
 
@@ -864,13 +894,13 @@ fn draw_input(frame: &mut Frame, app: &App, area: Rect) {
     );
 
     let width = text_area.width as usize;
-    let input = if app.input.is_empty() && !app.busy {
-        Span::styled(
+    let input: Text = if app.input.is_empty() && !app.busy {
+        Text::from(Line::from(Span::styled(
             "Ask Oxide anything about your code…",
             Style::default().fg(app.theme.info),
-        )
+        )))
     } else {
-        Span::raw(app.input.as_str())
+        composer_text(&app.input, &app.theme)
     };
     let paragraph = Paragraph::new(input)
         .wrap(Wrap { trim: false })
@@ -885,6 +915,51 @@ fn draw_input(frame: &mut Frame, app: &App, area: Rect) {
         let x = x.min(text_area.x + text_area.width.saturating_sub(1));
         let y = text_area.y + cursor_row.saturating_sub(scroll) as u16;
         frame.set_cursor_position((x, y));
+    }
+}
+
+/// Builds the composer text, keeping explicit newlines as visual lines and
+/// highlighting `@path` mentions so the referenced token stands out from the
+/// surrounding prose.
+fn composer_text<'a>(input: &'a str, theme: &crate::theme::Theme) -> Text<'a> {
+    Text::from(
+        input
+            .split('\n')
+            .map(|line| Line::from(mention_spans(line, theme)))
+            .collect::<Vec<_>>(),
+    )
+}
+
+fn mention_spans<'a>(input: &'a str, theme: &crate::theme::Theme) -> Vec<Span<'a>> {
+    let mention = Style::default()
+        .fg(theme.accent)
+        .add_modifier(Modifier::BOLD | Modifier::UNDERLINED);
+    let mut spans = Vec::new();
+    let mut token_start: Option<usize> = None;
+    for (index, ch) in input.char_indices() {
+        if ch.is_whitespace() {
+            if let Some(start) = token_start.take() {
+                push_composer_token(&mut spans, &input[start..index], mention);
+            }
+            spans.push(Span::raw(&input[index..index + ch.len_utf8()]));
+        } else if token_start.is_none() {
+            token_start = Some(index);
+        }
+    }
+    if let Some(start) = token_start {
+        push_composer_token(&mut spans, &input[start..], mention);
+    }
+    if spans.is_empty() {
+        spans.push(Span::raw(input));
+    }
+    spans
+}
+
+fn push_composer_token<'a>(spans: &mut Vec<Span<'a>>, token: &'a str, mention: Style) {
+    if token.starts_with('@') && token.len() > 1 {
+        spans.push(Span::styled(token, mention));
+    } else {
+        spans.push(Span::raw(token));
     }
 }
 
@@ -954,24 +1029,23 @@ fn input_scroll(input: &str, cursor: usize, width: usize) -> u16 {
 }
 
 fn input_cursor_position(input: &str, cursor: usize, width: usize) -> (usize, usize) {
-    let target = input[..cursor].chars().count();
-    let mut consumed = 0usize;
+    let target = input[..cursor.min(input.len())].chars().count();
+    let lines = wrap_layout(input, width);
     let mut row = 0usize;
-    let raw_lines: Vec<&str> = input.split('\n').collect();
-    for (raw_index, raw) in raw_lines.iter().enumerate() {
-        for line in wrap(raw, width) {
-            let len = line.chars().count();
-            if target <= consumed + len {
-                return (row, target - consumed);
-            }
-            consumed += len;
-            row += 1;
+    for (index, line) in lines.iter().enumerate() {
+        let next = lines
+            .get(index + 1)
+            .map(|next| next.start)
+            .unwrap_or(usize::MAX);
+        if target < next {
+            let column = target
+                .saturating_sub(line.start)
+                .min(line.end.saturating_sub(line.start));
+            return (index, column);
         }
-        if raw_index + 1 < raw_lines.len() {
-            consumed += 1;
-        }
+        row = index;
     }
-    (row.saturating_sub(1), 0)
+    (row, 0)
 }
 
 /// Path argument for a `read_file`/`write_file` call, when present.
@@ -1158,39 +1232,134 @@ fn push_wrapped<'a>(lines: &mut Vec<Line<'a>>, text: &str, width: usize, style: 
     }
 }
 
-fn wrap(text: &str, width: usize) -> Vec<String> {
+/// A visually wrapped composer line: its rendered text plus the character
+/// range of the source it covers.
+struct WrapLine {
+    text: String,
+    start: usize,
+    end: usize,
+}
+
+/// Wraps text the same way ratatui's `Paragraph` does, reporting the source
+/// character range for every visual line so cursor placement stays in sync.
+fn wrap_layout(text: &str, width: usize) -> Vec<WrapLine> {
     let width = width.max(1);
     let mut out = Vec::new();
-    for raw in text.split('\n') {
-        if raw.is_empty() {
-            out.push(String::new());
-            continue;
+    let segments: Vec<&str> = text.split('\n').collect();
+    let last = segments.len().saturating_sub(1);
+    let mut base = 0usize;
+    for (index, raw) in segments.into_iter().enumerate() {
+        out.extend(wrap_segment(raw, width, base));
+        base += raw.chars().count();
+        if index != last {
+            base += 1;
         }
-        let mut line = String::new();
-        let mut count = 0usize;
-        for word in raw.split_inclusive(' ') {
-            let len = word.chars().count();
-            if count > 0 && count + len > width {
-                out.push(std::mem::take(&mut line));
-                count = 0;
-            }
-            if len > width {
-                for ch in word.chars() {
-                    if count >= width {
-                        out.push(std::mem::take(&mut line));
-                        count = 0;
-                    }
-                    line.push(ch);
-                    count += 1;
-                }
-            } else {
-                line.push_str(word);
-                count += len;
-            }
-        }
-        out.push(line);
     }
     out
+}
+
+fn wrap_segment(raw: &str, width: usize, base: usize) -> Vec<WrapLine> {
+    if raw.is_empty() {
+        return vec![WrapLine {
+            text: String::new(),
+            start: base,
+            end: base,
+        }];
+    }
+    let chars: Vec<(char, usize)> = raw
+        .chars()
+        .enumerate()
+        .map(|(offset, ch)| (ch, base + offset))
+        .collect();
+    let mut lines: Vec<WrapLine> = Vec::new();
+    let mut pending_line: Vec<(char, usize)> = Vec::new();
+    let mut line_width = 0usize;
+    let mut pending_word: Vec<(char, usize)> = Vec::new();
+    let mut word_width = 0usize;
+    let mut pending_ws: Vec<(char, usize)> = Vec::new();
+    let mut ws_width = 0usize;
+    let mut non_ws_prev = false;
+
+    fn flush(line: &mut Vec<(char, usize)>, lines: &mut Vec<WrapLine>, base: usize) {
+        if line.is_empty() {
+            return;
+        }
+        let start = line.first().map(|&(_, index)| index).unwrap_or(base);
+        let end = line.last().map(|&(_, index)| index + 1).unwrap_or(start);
+        lines.push(WrapLine {
+            text: line.iter().map(|&(ch, _)| ch).collect(),
+            start,
+            end,
+        });
+        line.clear();
+    }
+
+    for &(ch, index) in &chars {
+        let is_ws = ch.is_whitespace();
+        let word_found = non_ws_prev && is_ws;
+        let untrimmed_overflow = pending_line.is_empty() && word_width + ws_width + 1 > width;
+
+        if word_found || untrimmed_overflow {
+            pending_line.append(&mut pending_ws);
+            line_width += ws_width;
+            ws_width = 0;
+            pending_line.append(&mut pending_word);
+            line_width += word_width;
+            word_width = 0;
+        }
+
+        let line_full = line_width >= width;
+        let pending_word_overflow = line_width + ws_width + word_width >= width;
+
+        if line_full || pending_word_overflow {
+            let mut remaining = width.saturating_sub(line_width);
+            flush(&mut pending_line, &mut lines, base);
+            line_width = 0;
+            while !pending_ws.is_empty() && remaining > 0 {
+                ws_width = ws_width.saturating_sub(1);
+                remaining -= 1;
+                pending_ws.remove(0);
+            }
+            if is_ws && pending_ws.is_empty() {
+                continue;
+            }
+        }
+
+        if is_ws {
+            ws_width += 1;
+            pending_ws.push((ch, index));
+        } else {
+            word_width += 1;
+            pending_word.push((ch, index));
+        }
+        non_ws_prev = !is_ws;
+    }
+
+    if pending_line.is_empty() && pending_word.is_empty() && !pending_ws.is_empty() {
+        lines.push(WrapLine {
+            text: String::new(),
+            start: base,
+            end: base,
+        });
+    }
+    pending_line.append(&mut pending_ws);
+    pending_line.append(&mut pending_word);
+    flush(&mut pending_line, &mut lines, base);
+    if lines.is_empty() {
+        lines.push(WrapLine {
+            text: String::new(),
+            start: base,
+            end: base,
+        });
+    }
+    lines
+}
+
+fn wrap(text: &str, width: usize) -> Vec<String> {
+    wrap_layout(text, width)
+        .into_iter()
+        .map(|line| line.text)
+        .collect()
 }
 
 #[cfg(test)]
@@ -1260,6 +1429,47 @@ mod tests {
     }
 
     #[test]
+    fn path_truncation_keeps_the_distinguishing_tail() {
+        assert_eq!(truncate_path("src/main.rs", 20), "src/main.rs");
+        let a = truncate_path(
+            "libs/shared/landing-page/src/features/topDestinations/index.tsx",
+            24,
+        );
+        let b = truncate_path("libs/shared/landing-page/src/features/hero/index.tsx", 24);
+        assert!(a.starts_with('…'), "{a:?}");
+        assert!(a.ends_with("index.tsx"), "{a:?}");
+        assert_ne!(a, b);
+        assert!(a.chars().count() <= 24);
+    }
+
+    #[test]
+    fn composer_highlights_only_mentions() {
+        let theme = crate::theme::Theme::dark();
+        let spans = mention_spans("read @src/main.rs and @x", &theme);
+        let mentions: Vec<&str> = spans
+            .iter()
+            .filter(|span| span.style.add_modifier.contains(Modifier::UNDERLINED))
+            .map(|span| span.content.as_ref())
+            .collect();
+        assert_eq!(mentions, vec!["@src/main.rs", "@x"]);
+    }
+
+    #[test]
+    fn composer_text_keeps_newlines_and_mentions() {
+        let theme = crate::theme::Theme::dark();
+        let text = composer_text("read @a\n@b", &theme);
+        assert_eq!(text.lines.len(), 2);
+        let mentions: Vec<&str> = text
+            .lines
+            .iter()
+            .flat_map(|line| line.spans.iter())
+            .filter(|span| span.style.add_modifier.contains(Modifier::UNDERLINED))
+            .map(|span| span.content.as_ref())
+            .collect();
+        assert_eq!(mentions, vec!["@a", "@b"]);
+    }
+
+    #[test]
     fn banner_centers_or_falls_back_when_narrow() {
         let mut wide = Vec::new();
         render_banner(80, &mut wide);
@@ -1297,11 +1507,17 @@ mod tests {
 
     #[test]
     fn wrap_prefers_word_boundaries() {
-        assert_eq!(
-            wrap("the quick brown fox", 9),
-            ["the ", "quick ", "brown fox"]
-        );
+        assert_eq!(wrap("the quick brown fox", 9), ["the quick", "brown fox"]);
         assert_eq!(wrap("a".repeat(25).as_str(), 10).len(), 3);
+    }
+
+    #[test]
+    fn cursor_matches_wrapped_line_breaks() {
+        let text = "Replace TopDestinations component with PackagesCards component and move data \
+                    fetching inside topDestinations into packagesCards so that PackagesCards can \
+                    display the same data for packageHolidaysInCountry/Region page type @topDestinations";
+        let (row, column) = input_cursor_position(text, text.len(), 153);
+        assert_eq!((row, column), (1, 84));
     }
 
     fn line_text(line: &Line) -> String {
@@ -1610,5 +1826,61 @@ mod tests {
         terminal.draw(|frame| draw(frame, &mut app)).unwrap();
         let buffer = terminal.backend().buffer();
         assert_eq!(row_of(buffer, "🌿"), None);
+    }
+}
+
+#[cfg(test)]
+mod wrap_parity_tests {
+    use super::*;
+    use ratatui::backend::TestBackend;
+    use ratatui::Terminal;
+
+    fn ratatui_lines(text: &str, width: u16, height: u16) -> Vec<String> {
+        let backend = TestBackend::new(width, height);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal
+            .draw(|frame| {
+                let paragraph = Paragraph::new(text).wrap(Wrap { trim: false });
+                frame.render_widget(paragraph, frame.area());
+            })
+            .unwrap();
+        let buffer = terminal.backend().buffer().clone();
+        let mut out = Vec::new();
+        for y in 0..height {
+            let mut line = String::new();
+            for x in 0..width {
+                line.push_str(buffer[(x, y)].symbol());
+            }
+            out.push(line.trim_end().to_string());
+        }
+        out
+    }
+
+    #[test]
+    fn wrap_matches_ratatui_line_breaks() {
+        let texts = [
+            "the quick brown fox",
+            "aaaaaaaaaaaaaaaaaaaaaaaaa",
+            "foo  bar  baz",
+            "hello world ",
+            "12 34 56 78 9 10 11 12 13",
+            "a bb ccc dddd eeeee ffffff ggggggg",
+            "word ",
+            " supercalifragilisticexpialidocious tail",
+        ];
+        for text in texts {
+            for width in 4u16..30 {
+                let ours: Vec<String> = wrap(text, width as usize)
+                    .into_iter()
+                    .map(|line| line.trim_end().to_string())
+                    .filter(|line| !line.is_empty())
+                    .collect();
+                let theirs: Vec<String> = ratatui_lines(text, width, 20)
+                    .into_iter()
+                    .filter(|line| !line.is_empty())
+                    .collect();
+                assert_eq!(ours, theirs, "text={text:?} width={width}");
+            }
+        }
     }
 }
