@@ -7,7 +7,8 @@ use std::path::{Path, PathBuf};
 
 pub const DEFAULT_SYSTEM_PROMPT: &str = "\
 You are Oxide, an AI coding agent running in the user's terminal. \
-You help with software engineering tasks: writing, editing, debugging and explaining code. \
+You help with software engineering tasks — writing, editing, debugging and explaining code — \
+and with the work around them: research, automation, and answering questions. \
 Use the provided tools to inspect and modify the user's project. \
 You can see images and PDFs attached to user messages, and read returns image/PDF files as viewable attachments. \
 Prefer small, focused changes and verify your work. \
@@ -26,6 +27,12 @@ const PORTKEY_FALLBACK_MODELS: &[&str] = &[
     "gpt-5.6-terra",
 ];
 
+const DEEPSEEK_MODELS: &[&str] = &[
+    "deepseek-v4-flash",
+    "deepseek-v4-flash-vision-exp",
+    "deepseek-v4-pro",
+];
+
 pub fn model_label(model: &str) -> &str {
     match model {
         "claude-haiku-4-5" => "Claude Haiku 4.5",
@@ -33,6 +40,10 @@ pub fn model_label(model: &str) -> &str {
         "claude-opus-5" => "Claude Opus 5",
         "claude-sonnet-4-6" => "Claude Sonnet 4.6",
         "claude-sonnet-5" => "Claude Sonnet 5",
+        "deepseek-flash" => "DeepSeek V4.1 Flash",
+        "deepseek-v4-flash" => "DeepSeek V4 Flash",
+        "deepseek-v4-flash-vision-exp" => "DeepSeek V4 Flash Vision Exp",
+        "deepseek-v4-pro" => "DeepSeek V4 Pro",
         "glm-5.2" => "GLM-5.2",
         "gpt-5.4" => "GPT-5.4",
         "gpt-5.6-luna" => "GPT-5.6 Luna",
@@ -59,6 +70,9 @@ pub struct ProviderPreset {
     pub base_url_env: &'static str,
     pub model: &'static str,
     pub key_env: &'static str,
+    /// Model ids bundled with Oxide for this provider, merged into the model
+    /// picker alongside whatever the provider reports.
+    pub catalog: &'static [&'static str],
 }
 
 impl ProviderPreset {
@@ -71,6 +85,7 @@ impl ProviderPreset {
                 base_url_env: "OPENAI_BASE_URL",
                 model: "gpt-4o-mini",
                 key_env: "OPENAI_API_KEY",
+                catalog: &[],
             },
             "deepseek" => Self {
                 kind: ProviderKind::OpenAi,
@@ -78,6 +93,7 @@ impl ProviderPreset {
                 base_url_env: "DEEPSEEK_BASE_URL",
                 model: "deepseek-chat",
                 key_env: "DEEPSEEK_API_KEY",
+                catalog: DEEPSEEK_MODELS,
             },
             "portkey" => Self {
                 kind: ProviderKind::OpenAi,
@@ -85,6 +101,7 @@ impl ProviderPreset {
                 base_url_env: "PORTKEY_BASE_URL",
                 model: "claude-sonnet-5",
                 key_env: "PORTKEY_API_KEY",
+                catalog: &[],
             },
             "anthropic" => Self {
                 kind: ProviderKind::Anthropic,
@@ -92,6 +109,7 @@ impl ProviderPreset {
                 base_url_env: "ANTHROPIC_BASE_URL",
                 model: "claude-3-5-sonnet-latest",
                 key_env: "ANTHROPIC_API_KEY",
+                catalog: &[],
             },
             _ => return None,
         };
@@ -691,6 +709,21 @@ impl Config {
         models
     }
 
+    /// Merges the provider's built-in catalog into a list of models reported by
+    /// the provider, always keeping the active model. This lets the picker show
+    /// ids the provider endpoint omits (as Pi does with its bundled catalog).
+    pub fn merge_model_catalog(&self, mut models: Vec<String>) -> Vec<String> {
+        if let Some(preset) = ProviderPreset::for_name(&self.provider) {
+            models.extend(preset.catalog.iter().map(|model| (*model).to_string()));
+        }
+        if !self.model.trim().is_empty() {
+            models.push(self.model.clone());
+        }
+        models.sort();
+        models.dedup();
+        models
+    }
+
     /// Builds the effective system prompt from the base prompt plus the active
     /// agent, loaded memory, instructions, and an index of available
     /// skills/commands/subagents.
@@ -826,7 +859,12 @@ impl Config {
              wide `offset`/`limit`) once instead of re-reading the same path in small slices, and \
              issue several independent `read`, `grep`, `find`, or `ls` calls in the same step. Use \
              `grep` to locate a symbol or string, then read the surrounding lines. Only re-read a \
-             file after you edit it."
+             file after you edit it. Prefer the dedicated tools over shell equivalents: `read` to \
+             inspect a file, `grep` to find text, `find` to locate files, and `ls` to list a \
+             directory. Keep each `bash` command focused on one task instead of chaining unrelated \
+             commands with `;` or `&&`, and scope searches to the project or a specific directory \
+             — never sweep the whole filesystem with `find /`. `read`, `ls`, `find`, and `grep` \
+             accept absolute paths, so you do not need a shell to inspect files outside the project."
                 .to_string(),
         );
 
@@ -1051,7 +1089,41 @@ mod tests {
     fn portkey_model_labels_are_friendly() {
         assert_eq!(model_label("claude-sonnet-5"), "Claude Sonnet 5");
         assert_eq!(model_label("gpt-5.6-terra"), "GPT-5.6 Terra");
+        assert_eq!(model_label("deepseek-v4-flash"), "DeepSeek V4 Flash");
         assert_eq!(model_label("custom-model"), "custom-model");
+    }
+
+    #[test]
+    fn deepseek_catalog_merges_builtin_and_reported_models() {
+        let config = Config {
+            provider: "deepseek".into(),
+            model: "deepseek-flash".into(),
+            ..Config::default()
+        };
+        let merged =
+            config.merge_model_catalog(vec!["deepseek-v4-pro".into(), "deepseek-flash".into()]);
+        assert_eq!(
+            merged,
+            vec![
+                "deepseek-flash",
+                "deepseek-v4-flash",
+                "deepseek-v4-flash-vision-exp",
+                "deepseek-v4-pro",
+            ]
+        );
+    }
+
+    #[test]
+    fn merge_model_catalog_adds_active_model_for_unknown_providers() {
+        let config = Config {
+            provider: "my-endpoint".into(),
+            model: "custom-model".into(),
+            ..Config::default()
+        };
+        assert_eq!(
+            config.merge_model_catalog(vec!["custom-model".into()]),
+            vec!["custom-model"]
+        );
     }
 
     #[test]

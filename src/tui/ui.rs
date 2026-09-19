@@ -1028,6 +1028,8 @@ fn render_item_themed(
             push_wrapped(lines, text, width, Style::default());
         }
         ChatItem::Tool { name, args } => {
+            let inner = box_inner_width(width);
+            let mut panel: Vec<Line<'static>> = Vec::new();
             if let Some(path) = file_tool_path(name, args) {
                 let (verb, color) = if matches!(
                     crate::tools::canonical_tool_name(name),
@@ -1037,7 +1039,7 @@ fn render_item_themed(
                 } else {
                     ("Read", theme.accent)
                 };
-                lines.extend(action_lines(verb, &path, color, bold, width));
+                panel.extend(action_lines(verb, &path, color, bold, inner));
             } else if let Some(command) = bash_command(name, args) {
                 let mut subject = format!("{command}{}", bash_timeout_suffix(name, args));
                 if let Some((running_name, elapsed)) = running {
@@ -1048,9 +1050,9 @@ fn render_item_themed(
                         ));
                     }
                 }
-                lines.extend(action_lines("Run", &subject, theme.tool, bold, width));
+                panel.extend(action_lines("Run", &subject, theme.tool, bold, inner));
             } else {
-                lines.extend(wrapped_with_prefix(
+                panel.extend(wrapped_with_prefix(
                     vec![
                         Span::styled("⚙ ", Style::default().fg(theme.tool)),
                         Span::styled(
@@ -1059,19 +1061,31 @@ fn render_item_themed(
                         ),
                     ],
                     &format!(" {}", tool_arg_summary(name, args)),
-                    width,
+                    inner,
                     Style::default().fg(theme.info),
                 ));
             }
+            push_bg_panel(lines, panel, width, theme.tool_pending_bg);
         }
         ChatItem::ToolProgress { name, output } => {
+            let mut panel: Vec<Line<'static>> = Vec::new();
             if crate::tools::canonical_tool_name(name) != "bash" {
-                lines.push(Line::from(vec![
+                panel.push(Line::from(vec![
                     Span::styled("⋯ ", Style::default().fg(theme.info)),
                     Span::styled(name.clone(), Style::default().fg(theme.info)),
                 ]));
             }
-            push_tool_body(lines, output, width, expand_tools, theme.info, theme.border);
+            if expand_tools && !output.trim().is_empty() {
+                push_wrapped(
+                    &mut panel,
+                    output,
+                    box_inner_width(width),
+                    Style::default().fg(theme.info),
+                );
+            }
+            if !panel.is_empty() {
+                push_bg_panel(lines, panel, width, theme.tool_pending_bg);
+            }
         }
         ChatItem::ToolResult {
             name,
@@ -1080,81 +1094,129 @@ fn render_item_themed(
             diff,
             millis,
         } => {
+            let inner = box_inner_width(width);
+            let mut panel: Vec<Line<'static>> = Vec::new();
+            let mut bg = theme.tool_success_bg;
+            let command = bash_command(name, args);
             if let Some(diff) = diff {
-                render_diff(diff, width, expand_tools, theme, lines);
-                if output.starts_with("error:") {
-                    push_tool_body(lines, output, width, true, theme.error, theme.border);
+                let failed = output.starts_with("error:");
+                if failed {
+                    bg = theme.tool_error_bg;
+                }
+                let (verb, color) = if failed {
+                    ("Edit failed", theme.error)
+                } else {
+                    ("Edited", theme.success)
+                };
+                panel.extend(action_lines(verb, &diff.path, color, bold, inner));
+                let (mut body, hidden) = diff_body(diff, expand_tools, inner, theme);
+                panel.append(&mut body);
+                if let Some(hidden) = hidden {
+                    panel.push(collapsed_hint(hidden, theme.info, inner));
+                }
+                if failed {
+                    push_tool_output(&mut panel, output, inner, Style::default().fg(theme.error));
                 } else if let Some((_, rest)) = output.split_once("\n\n") {
                     if !rest.trim().is_empty() {
-                        push_tool_body(lines, rest, width, true, theme.info, theme.border);
+                        push_tool_output(&mut panel, rest, inner, Style::default().fg(theme.info));
                     }
                 }
             } else if let Some(path) = file_tool_path(name, args) {
                 if crate::tools::canonical_tool_name(name) == "read_file" {
                     if output.starts_with("error:") {
-                        lines.extend(action_lines("Read failed", &path, theme.error, bold, width));
-                        push_tool_body(lines, output, width, true, theme.error, theme.border);
+                        bg = theme.tool_error_bg;
+                        panel.extend(action_lines("Read failed", &path, theme.error, bold, inner));
+                        push_tool_output(
+                            &mut panel,
+                            output,
+                            inner,
+                            Style::default().fg(theme.error),
+                        );
                     } else {
-                        lines.extend(action_lines("Read", &path, theme.success, bold, width));
+                        panel.extend(action_lines("Read", &path, theme.success, bold, inner));
                     }
                 } else if output.starts_with("error:") {
-                    lines.extend(action_lines("Edit failed", &path, theme.error, bold, width));
-                    push_tool_body(lines, output, width, true, theme.error, theme.border);
+                    bg = theme.tool_error_bg;
+                    panel.extend(action_lines("Edit failed", &path, theme.error, bold, inner));
+                    push_tool_output(&mut panel, output, inner, Style::default().fg(theme.error));
                 } else {
-                    lines.extend(action_lines("Edited", &path, theme.success, bold, width));
+                    panel.extend(action_lines("Edited", &path, theme.success, bold, inner));
                     if let Some((_, rest)) = output.split_once("\n\n") {
                         if !rest.trim().is_empty() {
-                            push_tool_body(lines, rest, width, true, theme.info, theme.border);
+                            push_tool_output(
+                                &mut panel,
+                                rest,
+                                inner,
+                                Style::default().fg(theme.info),
+                            );
                         }
                     }
                 }
-            } else if let Some(command) = bash_command(name, args) {
+            } else if let Some(command) = &command {
                 let exit = bash_exit_code(output);
                 let failed = exit
                     .map(|code| code != 0)
                     .unwrap_or_else(|| output.starts_with("error:"));
                 let color = if failed { theme.error } else { theme.success };
+                if failed {
+                    bg = theme.tool_error_bg;
+                }
                 let timeout = bash_timeout_suffix(name, args);
                 let subject = match exit {
                     Some(code) => format!("{command}{timeout} · exit {code}"),
                     None => format!("{command}{timeout}"),
                 };
                 let verb = if failed { "Run failed" } else { "Ran" };
-                lines.extend(action_lines(verb, &subject, color, bold, width));
+                panel.extend(action_lines(verb, &subject, color, bold, inner));
                 if exit.is_none() && !output.trim().is_empty() {
-                    push_tool_body(lines, output, width, true, theme.error, theme.border);
+                    push_tool_output(&mut panel, output, inner, Style::default().fg(theme.error));
                 } else if bash_has_body(output) {
                     if expand_tools {
-                        let body = bash_body(output);
-                        push_tool_body(lines, &body, width, true, theme.info, theme.border);
+                        push_tool_output(
+                            &mut panel,
+                            &bash_body(output),
+                            inner,
+                            Style::default().fg(theme.info),
+                        );
                     } else {
-                        push_collapsed_hint(
-                            lines,
-                            width,
+                        panel.push(collapsed_hint(
                             output.lines().count().saturating_sub(1),
                             theme.info,
-                        );
+                            inner,
+                        ));
                     }
                 }
-                if *millis > 0 {
-                    lines.push(Line::from(Span::styled(
-                        format!("  Took {}", format_duration(*millis)),
-                        Style::default().fg(theme.dim),
-                    )));
-                }
             } else {
-                lines.push(Line::from(vec![
+                let failed = output.starts_with("error:");
+                if failed {
+                    bg = theme.tool_error_bg;
+                }
+                panel.push(Line::from(vec![
                     Span::styled("↳ ", Style::default().fg(theme.info)),
                     Span::styled(name.clone(), Style::default().fg(theme.info)),
                 ]));
                 if !output.trim().is_empty() {
                     if expand_tools {
-                        push_tool_body(lines, output, width, true, theme.info, theme.border);
+                        push_tool_output(
+                            &mut panel,
+                            output,
+                            inner,
+                            Style::default().fg(theme.info),
+                        );
                     } else {
-                        push_collapsed_hint(lines, width, output.lines().count(), theme.info);
+                        panel.push(collapsed_hint(output.lines().count(), theme.info, inner));
                     }
                 }
             }
+            // Shell timings always show (Pi behavior); other tools only report
+            // when they were slow enough to be worth calling out.
+            if *millis > 0 && (command.is_some() || *millis >= TOOL_TIME_THRESHOLD_MS) {
+                panel.push(Line::from(Span::styled(
+                    format!("Took {}", format_duration(*millis)),
+                    Style::default().fg(theme.dim),
+                )));
+            }
+            push_bg_panel(lines, panel, width, bg);
         }
         ChatItem::Thought(millis) => {
             lines.push(Line::from(Span::styled(
@@ -1627,25 +1689,28 @@ fn tool_arg_summary(name: &str, args: &str) -> String {
     }
 }
 
-/// Columns budgeted for a box's borders and inner padding (`│ ` + ` │`).
-const BOX_PAD: usize = 4;
-/// Narrowest box we will draw before letting content spill to the edges.
-const BOX_MIN_WIDTH: usize = 8;
+/// Columns budgeted for a panel's horizontal padding (` ` + ` `).
+const BOX_PAD: usize = 2;
+/// Narrowest panel we will draw before letting content spill to the edges.
+const BOX_MIN_WIDTH: usize = 4;
 
-/// Width available for content inside a box of the given outer `width`.
+/// Width available for content inside a panel of the given outer `width`.
 fn box_inner_width(width: usize) -> usize {
     width.max(BOX_MIN_WIDTH).saturating_sub(BOX_PAD).max(1)
 }
 
-/// Render `body` inside a rounded border so tool output is visually contained
-/// and clearly separate from the action header above it.
-fn push_box(lines: &mut Vec<Line<'static>>, body: Vec<Line<'static>>, width: usize, border: Color) {
+/// Render `body` as a background-filled panel, matching Pi's tool renderer.
+/// Every row is padded to the full width so the fill reads as a solid block.
+fn push_bg_panel(
+    lines: &mut Vec<Line<'static>>,
+    body: Vec<Line<'static>>,
+    width: usize,
+    bg: Color,
+) {
+    let outer = width.max(BOX_MIN_WIDTH);
     let inner = box_inner_width(width);
-    let border_style = Style::default().fg(border);
-    lines.push(Line::from(Span::styled(
-        format!("╭{}╮", "─".repeat(inner + 2)),
-        border_style,
-    )));
+    let fill = Style::default().bg(bg);
+    lines.push(Line::from(Span::styled(" ".repeat(outer), fill)));
     for line in body {
         let used: usize = line
             .spans
@@ -1654,42 +1719,20 @@ fn push_box(lines: &mut Vec<Line<'static>>, body: Vec<Line<'static>>, width: usi
             .sum();
         let pad = inner.saturating_sub(used);
         let mut spans = Vec::with_capacity(line.spans.len() + 3);
-        spans.push(Span::styled("│ ", border_style));
-        spans.extend(line.spans);
-        spans.push(Span::styled(format!("{} │", " ".repeat(pad)), border_style));
+        spans.push(Span::styled(" ", fill));
+        spans.extend(
+            line.spans
+                .into_iter()
+                .map(|span| Span::styled(span.content, span.style.bg(bg))),
+        );
+        spans.push(Span::styled(format!("{} ", " ".repeat(pad)), fill));
         lines.push(Line::from(spans));
     }
-    lines.push(Line::from(Span::styled(
-        format!("╰{}╯", "─".repeat(inner + 2)),
-        border_style,
-    )));
-}
-
-/// Render a tool's output inside a box. Output is shown by default (like Pi);
-/// Ctrl+O collapses it back into a compact action list.
-fn push_tool_body(
-    lines: &mut Vec<Line<'static>>,
-    output: &str,
-    width: usize,
-    expand_tools: bool,
-    text: Color,
-    border: Color,
-) {
-    if !expand_tools || output.trim().is_empty() {
-        return;
-    }
-    let mut body = Vec::new();
-    push_wrapped(
-        &mut body,
-        output,
-        box_inner_width(width),
-        Style::default().fg(text),
-    );
-    push_box(lines, body, width, border);
+    lines.push(Line::from(Span::styled(" ".repeat(outer), fill)));
 }
 
 /// A `bash` result's output with the trailing exit-code line stripped, so the
-/// box holds only the command's own output.
+/// panel holds only the command's own output.
 fn bash_body(output: &str) -> String {
     output
         .lines()
@@ -1700,17 +1743,12 @@ fn bash_body(output: &str) -> String {
 
 /// A one-line affordance shown when a tool body is hidden, mirroring the
 /// opencode "click to expand" hint.
-fn push_collapsed_hint(
-    lines: &mut Vec<Line<'static>>,
-    width: usize,
-    hidden_lines: usize,
-    color: Color,
-) {
-    let hint = format!("  ⋯ {hidden_lines} lines · Ctrl+O to expand");
-    lines.push(Line::from(Span::styled(
+fn collapsed_hint(hidden_lines: usize, color: Color, width: usize) -> Line<'static> {
+    let hint = format!("⋯ {hidden_lines} lines · Ctrl+O to expand");
+    Line::from(Span::styled(
         truncate(&hint, width),
         Style::default().fg(color),
-    )));
+    ))
 }
 
 /// Whether a `bash` result has output beyond the trailing exit-code line.
@@ -1724,26 +1762,21 @@ fn bash_has_body(output: &str) -> bool {
 /// How many diff lines to show while the view is collapsed with Ctrl+O.
 const DIFF_PREVIEW_LINES: usize = 12;
 
-/// Render a file edit as a colored, line-numbered diff, mirroring the opencode
-/// edit view.
-fn render_diff(
+/// Non-shell tools only report a duration once they take at least this long,
+/// so a `grep`/`read` that stalls is visible without cluttering every call.
+const TOOL_TIME_THRESHOLD_MS: u64 = 500;
+
+/// Build the colored, line-numbered diff body for a file edit. Returns the
+/// visible lines and, when collapsed, how many were hidden.
+fn diff_body(
     diff: &DiffPreview,
-    width: usize,
     expand_tools: bool,
+    width: usize,
     theme: &crate::theme::Theme,
-    lines: &mut Vec<Line<'static>>,
-) {
-    lines.extend(action_lines(
-        "Edited",
-        &diff.path,
-        theme.success,
-        Modifier::BOLD,
-        width,
-    ));
+) -> (Vec<Line<'static>>, Option<usize>) {
     if diff.text.trim().is_empty() {
-        return;
+        return (Vec::new(), None);
     }
-    let inner = box_inner_width(width);
     let all: Vec<&str> = diff.text.lines().collect();
     let limit = if expand_tools {
         all.len()
@@ -1754,15 +1787,13 @@ fn render_diff(
         .iter()
         .map(|line| {
             Line::from(Span::styled(
-                truncate(line, inner),
+                truncate(line, width),
                 diff_line_style(line, theme),
             ))
         })
         .collect();
-    push_box(lines, body, width, theme.border);
-    if limit < all.len() {
-        push_collapsed_hint(lines, width, all.len() - limit, theme.info);
-    }
+    let hidden = (limit < all.len()).then_some(all.len() - limit);
+    (body, hidden)
 }
 
 fn diff_line_style(line: &str, theme: &crate::theme::Theme) -> Style {
@@ -1776,6 +1807,38 @@ fn diff_line_style(line: &str, theme: &crate::theme::Theme) -> Style {
 fn push_wrapped<'a>(lines: &mut Vec<Line<'a>>, text: &str, width: usize, style: Style) {
     for wrapped in wrap(text, width.max(1)) {
         lines.push(Line::from(Span::styled(wrapped, style)));
+    }
+}
+
+/// Spaces added to wrapped tool-output continuations so a long line stays
+/// visually attached to its own prefix (e.g. a `file:line:` match header)
+/// instead of reading as a new entry.
+const TOOL_WRAP_INDENT: usize = 2;
+
+/// Wrap a tool output body for display in a panel. Lines that fit are emitted
+/// unchanged; wrapped continuations are indented so `grep`/`bash` output keeps
+/// its `file:line:` structure readable.
+fn push_tool_output(lines: &mut Vec<Line<'static>>, text: &str, width: usize, style: Style) {
+    let width = width.max(1);
+    let indent = TOOL_WRAP_INDENT.min(width.saturating_sub(1));
+    for raw in text.split('\n') {
+        if raw.chars().count() <= width {
+            lines.push(Line::from(Span::styled(raw.to_string(), style)));
+            continue;
+        }
+        for (index, segment) in wrap(raw, width.saturating_sub(indent).max(1))
+            .into_iter()
+            .enumerate()
+        {
+            if index == 0 {
+                lines.push(Line::from(Span::styled(segment, style)));
+            } else {
+                lines.push(Line::from(Span::styled(
+                    format!("{}{segment}", " ".repeat(indent)),
+                    style,
+                )));
+            }
+        }
     }
 }
 
@@ -2111,11 +2174,68 @@ mod tests {
         assert_eq!((row, column), (1, 84));
     }
 
+    #[test]
+    fn wrapped_tool_output_is_hanging_indented() {
+        let output = "src/main.rs:42: let value = some_long_function_name(argument_one, argument_two, argument_three);";
+        let mut lines = Vec::new();
+        render_item(
+            &ChatItem::ToolResult {
+                name: "grep".into(),
+                args: r#"{"pattern":"value"}"#.into(),
+                output: output.into(),
+                diff: None,
+                millis: 0,
+            },
+            60,
+            true,
+            &mut lines,
+        );
+        for line in &lines {
+            assert!(
+                line_text(line).chars().count() <= 60,
+                "{:?}",
+                line_text(line)
+            );
+        }
+        let continuations = lines
+            .iter()
+            .map(line_text)
+            .filter(|text| text.starts_with("   ") && !text.trim().is_empty())
+            .count();
+        assert!(
+            continuations >= 1,
+            "expected a hanging-indented continuation"
+        );
+    }
+
     fn line_text(line: &Line) -> String {
         line.spans
             .iter()
             .map(|span| span.content.as_ref())
             .collect()
+    }
+
+    /// The first non-empty row of a tool panel, stripped of background-fill
+    /// padding. Tool headers now live inside the panel, not above it.
+    fn panel_line(lines: &[Line]) -> String {
+        lines
+            .iter()
+            .map(line_text)
+            .find(|text| !text.trim().is_empty())
+            .unwrap_or_default()
+            .trim()
+            .to_string()
+    }
+
+    /// A panel's visible rows joined, ignoring background-fill padding rows.
+    fn panel_text(lines: &[Line]) -> String {
+        lines
+            .iter()
+            .map(line_text)
+            .filter(|text| !text.trim().is_empty())
+            .map(|text| text.trim().to_string())
+            .collect::<Vec<_>>()
+            .join("")
     }
 
     #[test]
@@ -2132,7 +2252,7 @@ mod tests {
             false,
             &mut lines,
         );
-        assert_eq!(line_text(&lines[0]), "→ Read src/main.rs");
+        assert_eq!(panel_line(&lines), "→ Read src/main.rs");
 
         let mut lines = Vec::new();
         render_item(
@@ -2144,7 +2264,7 @@ mod tests {
             false,
             &mut lines,
         );
-        assert_eq!(line_text(&lines[0]), "→ Edit src/main.rs");
+        assert_eq!(panel_line(&lines), "→ Edit src/main.rs");
 
         let mut lines = Vec::new();
         render_item(
@@ -2159,7 +2279,7 @@ mod tests {
             false,
             &mut lines,
         );
-        assert_eq!(line_text(&lines[0]), "→ Read src/main.rs");
+        assert_eq!(panel_line(&lines), "→ Read src/main.rs");
 
         let mut lines = Vec::new();
         render_item(
@@ -2174,7 +2294,7 @@ mod tests {
             false,
             &mut lines,
         );
-        assert_eq!(line_text(&lines[0]), "→ Edited src/main.rs");
+        assert_eq!(panel_line(&lines), "→ Edited src/main.rs");
     }
 
     #[test]
@@ -2191,7 +2311,7 @@ mod tests {
             false,
             &mut lines,
         );
-        assert_eq!(line_text(&lines[0]), "→ Run cargo test --all");
+        assert_eq!(panel_line(&lines), "→ Run cargo test --all");
 
         let mut lines = Vec::new();
         render_item(
@@ -2206,9 +2326,9 @@ mod tests {
             false,
             &mut lines,
         );
-        assert_eq!(line_text(&lines[0]), "→ Ran cargo test --all · exit 0");
-        assert_eq!(lines.len(), 2);
-        assert_eq!(lines[0].spans[1].style.fg, Some(Color::LightGreen));
+        assert_eq!(panel_line(&lines), "→ Ran cargo test --all · exit 0");
+        assert_eq!(lines.len(), 4);
+        assert_eq!(lines[1].spans[1].style.fg, Some(Color::LightGreen));
 
         let mut lines = Vec::new();
         render_item(
@@ -2223,11 +2343,8 @@ mod tests {
             false,
             &mut lines,
         );
-        assert_eq!(
-            line_text(&lines[0]),
-            "→ Run failed cargo test --all · exit 1"
-        );
-        assert_eq!(lines[0].spans[1].style.fg, Some(Color::LightRed));
+        assert_eq!(panel_line(&lines), "→ Run failed cargo test --all · exit 1");
+        assert_eq!(lines[1].spans[1].style.fg, Some(Color::LightRed));
     }
 
     #[test]
@@ -2249,7 +2366,7 @@ mod tests {
         for line in &lines {
             assert!(line_text(line).chars().count() <= 40, "{line:?}");
         }
-        let text = lines.iter().map(line_text).collect::<Vec<_>>().join("");
+        let text = panel_text(&lines);
         assert!(text.starts_with("→ Run echo"));
         assert_eq!(text.matches('a').count(), 80);
     }
@@ -2271,7 +2388,7 @@ mod tests {
         for line in &lines {
             assert!(line_text(line).chars().count() <= 30, "{line:?}");
         }
-        let text = lines.iter().map(line_text).collect::<Vec<_>>().join("");
+        let text = panel_text(&lines);
         assert!(text.starts_with("⚙ grep"));
         assert_eq!(text.matches('x').count(), 60);
     }
@@ -2306,8 +2423,14 @@ mod tests {
             &mut expanded,
         );
         assert_eq!(expanded.len(), 12);
-        assert!(line_text(&expanded[0]).starts_with('╭'));
-        assert!(line_text(&expanded[11]).starts_with('╰'));
+        assert_eq!(
+            expanded[0].spans[0].style.bg,
+            Some(Color::Rgb(0x28, 0x28, 0x32))
+        );
+        assert_eq!(
+            expanded[11].spans[0].style.bg,
+            Some(Color::Rgb(0x28, 0x28, 0x32))
+        );
     }
 
     #[test]
@@ -2329,24 +2452,22 @@ mod tests {
             false,
             &mut lines,
         );
-        assert_eq!(line_text(&lines[0]), "→ Edited src/main.rs");
-        assert!(
-            line_text(&lines[1]).starts_with('╭'),
-            "{:?}",
-            line_text(&lines[1])
+        assert_eq!(panel_line(&lines), "→ Edited src/main.rs");
+        assert_eq!(
+            lines[1].spans[0].style.bg,
+            Some(Color::Rgb(0x28, 0x32, 0x28))
         );
         assert_eq!(lines[2].spans[1].style.fg, Some(Color::Gray));
         assert_eq!(lines[3].spans[1].style.fg, Some(Color::LightRed));
         assert_eq!(lines[4].spans[1].style.fg, Some(Color::LightGreen));
-        assert!(
-            line_text(&lines[5]).starts_with('╰'),
-            "{:?}",
-            line_text(&lines[5])
+        assert_eq!(
+            lines[5].spans[0].style.bg,
+            Some(Color::Rgb(0x28, 0x32, 0x28))
         );
     }
 
     #[test]
-    fn tool_body_is_contained_in_a_box() {
+    fn tool_body_renders_as_a_background_panel() {
         let mut lines = Vec::new();
         render_item(
             &ChatItem::ToolResult {
@@ -2360,17 +2481,15 @@ mod tests {
             true,
             &mut lines,
         );
-        assert_eq!(line_text(&lines[0]), "→ Ran echo hi · exit 0");
-        assert!(
-            line_text(&lines[1]).starts_with('╭'),
-            "{:?}",
-            line_text(&lines[1])
+        assert_eq!(panel_line(&lines), "→ Ran echo hi · exit 0");
+        assert_eq!(
+            lines[1].spans[0].style.bg,
+            Some(Color::Rgb(0x28, 0x32, 0x28))
         );
         assert_eq!(lines[2].spans[1].content.as_ref(), "hi");
-        assert!(
-            line_text(&lines[3]).starts_with('╰'),
-            "{:?}",
-            line_text(&lines[3])
+        assert_eq!(
+            lines[3].spans[0].style.bg,
+            Some(Color::Rgb(0x28, 0x32, 0x28))
         );
         for line in &lines {
             assert!(
@@ -2393,10 +2512,16 @@ mod tests {
             true,
             &mut lines,
         );
-        assert_eq!(line_text(&lines[0]), "↳ grep");
-        assert!(line_text(&lines[1]).starts_with('╭'));
+        assert_eq!(panel_line(&lines), "↳ grep");
+        assert_eq!(
+            lines[1].spans[0].style.bg,
+            Some(Color::Rgb(0x28, 0x32, 0x28))
+        );
         assert_eq!(lines[2].spans[1].content.as_ref(), "match");
-        assert!(line_text(&lines[3]).starts_with('╰'));
+        assert_eq!(
+            lines[3].spans[0].style.bg,
+            Some(Color::Rgb(0x28, 0x32, 0x28))
+        );
     }
 
     #[test]
@@ -2412,7 +2537,7 @@ mod tests {
             false,
             &mut call,
         );
-        assert_eq!(line_text(&call[0]), "→ Run cargo test (timeout 420s)");
+        assert_eq!(panel_line(&call), "→ Run cargo test (timeout 420s)");
 
         let mut result = Vec::new();
         render_item(
@@ -2428,7 +2553,7 @@ mod tests {
             &mut result,
         );
         assert_eq!(
-            line_text(&result[0]),
+            panel_line(&result),
             "→ Ran cargo test (timeout 420s) · exit 0"
         );
         assert!(
@@ -2437,6 +2562,53 @@ mod tests {
                 .any(|line| line_text(line).contains("Took 1.2s")),
             "{:?}",
             result.iter().map(line_text).collect::<Vec<_>>()
+        );
+        let took = result
+            .iter()
+            .find(|line| line_text(line).contains("Took 1.2s"))
+            .expect("Took line");
+        assert_eq!(took.spans[1].style.bg, Some(Color::Rgb(0x28, 0x32, 0x28)));
+    }
+
+    #[test]
+    fn slow_non_shell_tools_report_a_duration() {
+        let mut slow = Vec::new();
+        render_item(
+            &ChatItem::ToolResult {
+                name: "grep".into(),
+                args: r#"{"pattern":"x"}"#.into(),
+                output: "no matches".into(),
+                diff: None,
+                millis: 900,
+            },
+            80,
+            true,
+            &mut slow,
+        );
+        assert!(
+            slow.iter()
+                .any(|line| line_text(line).contains("Took 900ms")),
+            "{:?}",
+            slow.iter().map(line_text).collect::<Vec<_>>()
+        );
+
+        let mut fast = Vec::new();
+        render_item(
+            &ChatItem::ToolResult {
+                name: "grep".into(),
+                args: r#"{"pattern":"x"}"#.into(),
+                output: "no matches".into(),
+                diff: None,
+                millis: 40,
+            },
+            80,
+            true,
+            &mut fast,
+        );
+        assert!(
+            !fast.iter().any(|line| line_text(line).contains("Took")),
+            "{:?}",
+            fast.iter().map(line_text).collect::<Vec<_>>()
         );
     }
 
@@ -2462,7 +2634,7 @@ mod tests {
             Some(("bash", std::time::Duration::from_millis(2400))),
             &mut lines,
         );
-        assert_eq!(line_text(&lines[0]), "→ Run sleep 30 · Elapsed 2.4s");
+        assert_eq!(panel_line(&lines), "→ Run sleep 30 · Elapsed 2.4s");
 
         // A different tool's elapsed must not leak onto this call.
         let mut lines = Vec::new();
@@ -2477,7 +2649,7 @@ mod tests {
             Some(("grep", std::time::Duration::from_millis(2400))),
             &mut lines,
         );
-        assert_eq!(line_text(&lines[0]), "→ Run ls");
+        assert_eq!(panel_line(&lines), "→ Run ls");
     }
 
     fn row_of(buffer: &ratatui::buffer::Buffer, needle: &str) -> Option<u16> {

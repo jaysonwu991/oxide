@@ -595,10 +595,13 @@ one with `--use-theme <name>` or `/theme <name>`. Colors accept names or
 ```
 
 Available slots are `accent`, `user`, `assistant`, `success`, `tool`, `error`,
-`info`, `dim`, `border`, `thinking_off`, `thinking_low`, `thinking_medium`, and
-`thinking_high`. The transcript, dialogs, autocomplete, status row, input, and
-footer use these semantic roles. `/theme` lists available themes; after a
-switch, oxide immediately rebuilds the styled transcript.
+`info`, `dim`, `border`, `tool_pending_bg`, `tool_success_bg`, `tool_error_bg`,
+`thinking_off`, `thinking_low`, `thinking_medium`, and `thinking_high`. The
+transcript, dialogs, autocomplete, status row, input, and footer use these
+semantic roles. `tool_*_bg` fill the background behind a tool's header, body,
+and `Took`/`Elapsed` footer (pending while running, success or error once it
+settles). `/theme` lists available themes; after a switch, oxide immediately
+rebuilds the styled transcript.
 
 Selections use reverse video and outcome rows retain words or symbols, so color
 is not the only state cue. When authoring a custom theme, choose foregrounds
@@ -728,12 +731,16 @@ endpoint, set a saved Config ID without changing `base_url`:
 }
 ```
 
-`/models` normally requests `<base_url>/models`. If `model_catalog` is nonempty,
-Oxide uses it without making that request and includes the active model. When a
-Portkey `/models` request returns HTTP 403, Oxide falls back to its built-in
-list, again including the active model. Set `model_catalog`, or a
-comma-separated `PORTKEY_MODELS` override, for restricted or account-specific
-catalogs. Unknown model IDs are passed through unchanged.
+`/models` normally requests `<base_url>/models` and merges the response with
+Oxide's built-in catalog for the provider, always including the active model.
+The built-in catalog surfaces ids the provider endpoint omits: DeepSeek's
+`/v1/models` lists only a subset, so Oxide adds the `deepseek-v4-flash` variants
+to match the picker people know from Pi. If `model_catalog` is nonempty, Oxide
+uses it verbatim without making that request. When a Portkey `/models` request
+returns HTTP 403, Oxide falls back to its built-in list, again including the
+active model. Set `model_catalog`, or a comma-separated `PORTKEY_MODELS`
+override, for restricted or account-specific catalogs. Unknown model IDs are
+passed through unchanged.
 
 Refreshing the credential with `/login portkey` preserves an existing Portkey
 model, custom base URL, and Config ID when Portkey is already active. See

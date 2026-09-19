@@ -8,7 +8,7 @@ use std::collections::{BTreeSet, VecDeque};
 use std::io::{BufWriter, Write};
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::Arc;
 use tokio::io::AsyncReadExt;
 use tokio::time::{timeout, Duration};
@@ -116,11 +116,11 @@ pub fn specs(mcp: &McpRegistry) -> Vec<ToolSpec> {
     let mut specs = vec![
         spec(
             "read",
-            "Read a file from the project. Text files are returned with line numbers; image (png/jpg/gif/webp) and PDF files are returned as viewable attachments. If `path` is a directory, its entries are listed instead.",
+            "Read a file. Text files are returned with line numbers; image (png/jpg/gif/webp) and PDF files are returned as viewable attachments. If `path` is a directory, its entries are listed instead. Absolute paths and paths outside the project are allowed.",
             json!({
                 "type": "object",
                 "properties": {
-                    "path": { "type": "string", "description": "File path relative to the project root" },
+                    "path": { "type": "string", "description": "File path; absolute paths are allowed" },
                     "offset": { "type": "integer", "description": "1-based line number to start from (text only)" },
                     "limit": { "type": "integer", "description": "Maximum number of lines to return (text only, default 250)" }
                 },
@@ -164,18 +164,18 @@ pub fn specs(mcp: &McpRegistry) -> Vec<ToolSpec> {
         ),
         spec(
             "ls",
-            "List the entries of a directory in the project.",
+            "List the entries of a directory. Absolute paths and paths outside the project are allowed.",
             json!({
                 "type": "object",
                 "properties": {
-                    "path": { "type": "string", "description": "Directory path relative to the project root (default: .)" },
+                    "path": { "type": "string", "description": "Directory path (default: .); absolute paths are allowed" },
                     "limit": { "type": "integer", "description": "Maximum number of entries to return" }
                 }
             }),
         ),
         spec(
             "bash",
-            "Run a shell command from the project root and return its combined output.",
+            "Run one focused shell command from the project root and return its combined output. Use it for programs, not for inspecting files: prefer `read`, `grep`, `find`, and `ls`, and never chain unrelated commands with `;`/`&&` or sweep the whole filesystem with `find /`.",
             json!({
                 "type": "object",
                 "properties": {
@@ -187,12 +187,12 @@ pub fn specs(mcp: &McpRegistry) -> Vec<ToolSpec> {
         ),
         spec(
             "find",
-            "Find files by glob pattern (e.g. `**/*.rs`, `src/*.md`). Patterns match paths relative to the search directory; use `**` for recursive matching.",
+            "Find files by glob pattern (e.g. `**/*.rs`, `src/*.md`). Patterns match paths relative to the search directory; use `**` for recursive matching. Absolute paths are allowed.",
             json!({
                 "type": "object",
                 "properties": {
                     "pattern": { "type": "string", "description": "Glob pattern to match" },
-                    "path": { "type": "string", "description": "Directory to search in (default: .)" },
+                    "path": { "type": "string", "description": "Directory to search in (default: .); absolute paths are allowed" },
                     "limit": { "type": "integer", "description": "Maximum number of results to return" }
                 },
                 "required": ["pattern"]
@@ -200,7 +200,7 @@ pub fn specs(mcp: &McpRegistry) -> Vec<ToolSpec> {
         ),
         spec(
             "grep",
-            "Search file contents for a substring and return matching `path:line: text` entries.",
+            "Search file contents for a substring and return matching `path:line: text` entries. Absolute paths are allowed.",
             json!({
                 "type": "object",
                 "properties": {
@@ -599,8 +599,15 @@ fn dir_entries(full: &Path) -> Result<Vec<String>> {
         .filter_map(|entry| entry.ok())
         .map(|entry| {
             let name = entry.file_name().to_string_lossy().to_string();
-            let is_dir = entry.file_type().map(|t| t.is_dir()).unwrap_or(false);
-            if is_dir {
+            let file_type = entry.file_type();
+            let is_symlink = file_type.as_ref().map(|t| t.is_symlink()).unwrap_or(false);
+            if is_symlink {
+                return match std::fs::read_link(entry.path()) {
+                    Ok(target) => format!("{name} -> {}", target.display()),
+                    Err(_) => name,
+                };
+            }
+            if file_type.map(|t| t.is_dir()).unwrap_or(false) {
                 format!("{name}/")
             } else {
                 name
@@ -678,60 +685,136 @@ fn grep(cwd: &Path, args: &Value) -> Result<String> {
     let limit = int_arg(args, "limit").unwrap_or(MAX_MATCHES);
     let root = resolve(cwd, base);
 
+    // `rg` applies the same literal search with far less I/O, so prefer it and
+    // fall back to the dependency-free walker when it is unavailable.
+    if let Some(output) = rg_grep(&root, pattern, include, ignore_case, context, limit) {
+        return Ok(output);
+    }
     let needle = if ignore_case {
         pattern.to_lowercase()
     } else {
         pattern.to_string()
     };
+    rust_grep(&root, &needle, include, ignore_case, context, limit)
+}
 
+/// Runs `grep` through `ripgrep` when it is on `PATH`, returning `None` so the
+/// caller can fall back to the built-in walker.
+fn rg_grep(
+    root: &Path,
+    pattern: &str,
+    include: Option<&str>,
+    ignore_case: bool,
+    context: usize,
+    limit: usize,
+) -> Option<String> {
+    if !command_exists("rg") {
+        return None;
+    }
+    let (dir, target) = if root.is_dir() {
+        (root.to_path_buf(), ".".to_string())
+    } else {
+        let parent = root.parent().unwrap_or(root).to_path_buf();
+        let name = root.file_name()?.to_string_lossy().to_string();
+        (parent, name)
+    };
+    let mut command = std::process::Command::new("rg");
+    command.current_dir(&dir).args([
+        "--no-require-git",
+        "--hidden",
+        "--json",
+        "--fixed-strings",
+        "--no-messages",
+        "--glob",
+        "!.git",
+        "--glob",
+        "!node_modules",
+        "--glob",
+        "!target",
+        "--glob",
+        "!.venv",
+    ]);
+    if ignore_case {
+        command.arg("--ignore-case");
+    }
+    if context > 0 {
+        command.arg("--context").arg(context.to_string());
+    }
+    if let Some(include) = include {
+        command.arg("--glob").arg(include);
+    }
+    command.arg("--").arg(pattern).arg(&target);
+    let output = command.output().ok()?;
+    // rg exits 0 on matches, 1 on none, and 2 on errors we should fall back on.
+    match output.status.code() {
+        Some(0) | Some(1) => {}
+        _ => return None,
+    }
+    let stdout = String::from_utf8(output.stdout).ok()?;
     let mut hits: Vec<String> = Vec::new();
-    walk(&root, &mut |path| {
+    for line in stdout.lines() {
         if hits.len() > limit {
-            return false;
+            break;
         }
-        let name = path.file_name().map(|n| n.to_string_lossy().to_string());
-        if let (Some(include), Some(name)) = (include, name.as_deref()) {
-            if !glob_match(include, name) {
-                return true;
-            }
-        }
-        let Ok(content) = std::fs::read_to_string(path) else {
-            return true;
+        let Ok(event) = serde_json::from_str::<Value>(line) else {
+            continue;
         };
-        let rel = path.strip_prefix(&root).unwrap_or(path);
-        let rel = rel.to_string_lossy().replace('\\', "/");
-        let lines: Vec<&str> = content.lines().collect();
-        for (index, line) in lines.iter().enumerate() {
-            let matched = if ignore_case {
-                line.to_lowercase().contains(&needle)
-            } else {
-                line.contains(&needle)
-            };
-            if matched {
-                if context > 0 {
-                    let start = index.saturating_sub(context);
-                    let end = (index + context + 1).min(lines.len());
-                    for (ctx_index, ctx_line) in lines.iter().enumerate().take(end).skip(start) {
-                        let marker = if ctx_index == index { ':' } else { '-' };
-                        hits.push(format!(
-                            "{rel}{marker}{}{marker} {}",
-                            ctx_index + 1,
-                            ctx_line.trim_end()
-                        ));
-                    }
-                } else {
-                    hits.push(format!("{rel}:{}: {}", index + 1, line.trim_end()));
-                }
-                if hits.len() > limit {
-                    return false;
+        let kind = match event.get("type").and_then(Value::as_str) {
+            Some(kind @ ("match" | "context")) => kind,
+            _ => continue,
+        };
+        let data = &event["data"];
+        let Some(path) = data.pointer("/path/text").and_then(Value::as_str) else {
+            continue;
+        };
+        let Some(line_number) = data.get("line_number").and_then(Value::as_u64) else {
+            continue;
+        };
+        let Some(text) = data.pointer("/lines/text").and_then(Value::as_str) else {
+            continue;
+        };
+        let path = path
+            .strip_prefix("./")
+            .or_else(|| path.strip_prefix(".\\"))
+            .unwrap_or(path);
+        let text = text.trim_end_matches(['\n', '\r']);
+        let marker = if kind == "match" { ':' } else { '-' };
+        hits.push(format!("{path}{marker}{line_number}{marker} {text}"));
+    }
+    Some(finish_hits(hits, limit))
+}
+
+/// Greps the tree with the built-in parallel walker.
+fn rust_grep(
+    root: &Path,
+    needle: &str,
+    include: Option<&str>,
+    ignore_case: bool,
+    context: usize,
+    limit: usize,
+) -> Result<String> {
+    // Walking is cheap compared to reading and scanning file contents, so
+    // gather the candidates first and fan the reads across the available cores.
+    let mut candidates: Vec<PathBuf> = Vec::new();
+    walk(root, &mut |path| {
+        if let Some(include) = include {
+            if let Some(name) = path.file_name().and_then(|name| name.to_str()) {
+                if !glob_match(include, name) {
+                    return true;
                 }
             }
         }
+        candidates.push(path.to_path_buf());
         true
     });
+    let hits = scan_files(root, &candidates, needle, ignore_case, context, limit);
+    Ok(finish_hits(hits, limit))
+}
 
+/// Truncates to `limit` hits and joins them, reporting truncation.
+fn finish_hits(mut hits: Vec<String>, limit: usize) -> String {
     if hits.is_empty() {
-        return Ok("no matches".to_string());
+        return "no matches".to_string();
     }
     let truncated = hits.len() > limit;
     hits.truncate(limit);
@@ -739,7 +822,143 @@ fn grep(cwd: &Path, args: &Value) -> Result<String> {
     if truncated {
         out.push_str("\n... [truncated]");
     }
-    Ok(out)
+    out
+}
+
+/// Whether a binary is resolvable on `PATH`.
+fn command_exists(name: &str) -> bool {
+    let Some(path) = std::env::var_os("PATH") else {
+        return false;
+    };
+    std::env::split_paths(&path)
+        .any(|dir| dir.join(name).is_file() || dir.join(format!("{name}.exe")).is_file())
+}
+
+/// Scans the candidate files for `needle` across the available cores,
+/// stopping once one more than `limit` matches have been collected so the
+/// caller can report truncation.
+fn scan_files(
+    root: &Path,
+    candidates: &[PathBuf],
+    needle: &str,
+    ignore_case: bool,
+    context: usize,
+    limit: usize,
+) -> Vec<String> {
+    if candidates.is_empty() {
+        return Vec::new();
+    }
+    let stop_at = limit.saturating_add(1).max(1);
+    let threads = std::thread::available_parallelism()
+        .map(|count| count.get())
+        .unwrap_or(1)
+        .min(candidates.len());
+    let next = AtomicUsize::new(0);
+    let found = AtomicUsize::new(0);
+
+    let mut results: Vec<(usize, Vec<String>)> = std::thread::scope(|scope| {
+        let handles: Vec<_> = (0..threads)
+            .map(|_| {
+                scope.spawn(|| {
+                    let mut local: Vec<(usize, Vec<String>)> = Vec::new();
+                    loop {
+                        if found.load(Ordering::Relaxed) >= stop_at {
+                            break;
+                        }
+                        let index = next.fetch_add(1, Ordering::Relaxed);
+                        let Some(path) = candidates.get(index) else {
+                            break;
+                        };
+                        let file_hits =
+                            scan_file(root, path, needle, ignore_case, context, stop_at);
+                        if file_hits.is_empty() {
+                            continue;
+                        }
+                        found.fetch_add(file_hits.len(), Ordering::Relaxed);
+                        local.push((index, file_hits));
+                    }
+                    local
+                })
+            })
+            .collect();
+        handles
+            .into_iter()
+            .flat_map(|handle| handle.join().unwrap_or_default())
+            .collect()
+    });
+    results.sort_by_key(|(index, _)| *index);
+    results.into_iter().flat_map(|(_, hits)| hits).collect()
+}
+
+/// Reads a single file and returns its formatted matches, stopping at `max`.
+fn scan_file(
+    root: &Path,
+    path: &Path,
+    needle: &str,
+    ignore_case: bool,
+    context: usize,
+    max: usize,
+) -> Vec<String> {
+    let Some(content) = read_text_file(path) else {
+        return Vec::new();
+    };
+    let rel = path
+        .strip_prefix(root)
+        .unwrap_or(path)
+        .to_string_lossy()
+        .replace('\\', "/");
+    let lines: Vec<&str> = content.lines().collect();
+    let mut hits = Vec::new();
+    for (index, line) in lines.iter().enumerate() {
+        let matched = if ignore_case {
+            line.to_lowercase().contains(needle)
+        } else {
+            line.contains(needle)
+        };
+        if !matched {
+            continue;
+        }
+        if context > 0 {
+            let start = index.saturating_sub(context);
+            let end = (index + context + 1).min(lines.len());
+            for (ctx_index, ctx_line) in lines.iter().enumerate().take(end).skip(start) {
+                let marker = if ctx_index == index { ':' } else { '-' };
+                hits.push(format!(
+                    "{rel}{marker}{}{marker} {}",
+                    ctx_index + 1,
+                    ctx_line.trim_end()
+                ));
+            }
+        } else {
+            hits.push(format!("{rel}:{}: {}", index + 1, line.trim_end()));
+        }
+        if hits.len() >= max {
+            break;
+        }
+    }
+    hits
+}
+
+/// Sniffed bytes inspected before committing to a full file read.
+const BINARY_SNIFF_BYTES: usize = 8 * 1024;
+
+/// Reads a file as UTF-8 text, skipping binaries. Only a prefix is inspected
+/// first, so a large binary is abandoned without reading it all.
+fn read_text_file(path: &Path) -> Option<String> {
+    use std::io::Read;
+    let mut file = std::fs::File::open(path).ok()?;
+    let mut prefix = [0u8; BINARY_SNIFF_BYTES];
+    let read = file.read(&mut prefix).ok()?;
+    if read == 0 {
+        return Some(String::new());
+    }
+    if prefix[..read].contains(&0) {
+        return None;
+    }
+    let mut bytes = Vec::with_capacity(read + 1024);
+    bytes.extend_from_slice(&prefix[..read]);
+    file.read_to_end(&mut bytes).ok()?;
+    String::from_utf8(bytes).ok()
 }
 
 /// Reads an integer argument, accepting both a JSON number and a numeric
@@ -1675,6 +1894,68 @@ mod tests {
         )
         .await;
         assert!(out.text.contains("a.rs:1: let Foo"), "{}", out.text);
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[tokio::test]
+    async fn grep_truncates_and_skips_binary_files() {
+        let dir = std::env::temp_dir().join(format!("oxide_grep_binary_{}", std::process::id()));
+        std::fs::remove_dir_all(&dir).ok();
+        std::fs::create_dir_all(&dir).unwrap();
+        for name in ["a.txt", "b.txt", "c.txt"] {
+            std::fs::write(dir.join(name), "needle here\n").unwrap();
+        }
+        std::fs::write(dir.join("bin.dat"), b"\0needle in a binary\n").unwrap();
+        let mcp = McpRegistry::default();
+        let progress = Progress::default();
+
+        let out = execute(
+            &call("grep", json!({ "pattern": "needle", "limit": 2 })),
+            &dir,
+            &mcp,
+            &progress,
+        )
+        .await;
+        assert!(out.text.contains("... [truncated]"), "{}", out.text);
+        assert!(!out.text.contains("bin.dat"), "{}", out.text);
+        assert_eq!(out.text.matches("needle").count(), 2, "{}", out.text);
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn list_dir_shows_symlink_targets() {
+        let dir = std::env::temp_dir().join(format!("oxide_ls_symlink_{}", std::process::id()));
+        std::fs::remove_dir_all(&dir).ok();
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("target.txt"), "hi").unwrap();
+        #[cfg(unix)]
+        std::os::unix::fs::symlink("target.txt", dir.join("link.txt")).unwrap();
+
+        let out = list_dir(&dir, &json!({})).unwrap();
+        assert!(out.contains("target.txt"), "{out}");
+        #[cfg(unix)]
+        assert!(out.contains("link.txt -> target.txt"), "{out}");
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn rust_grep_fallback_scans_and_truncates() {
+        let dir = std::env::temp_dir().join(format!("oxide_rust_grep_{}", std::process::id()));
+        std::fs::remove_dir_all(&dir).ok();
+        std::fs::create_dir_all(dir.join("nested")).unwrap();
+        std::fs::write(dir.join("a.txt"), "needle one\n").unwrap();
+        std::fs::write(dir.join("b.txt"), "needle two\n").unwrap();
+        std::fs::write(dir.join("nested/c.txt"), "needle three\n").unwrap();
+
+        let out = rust_grep(&dir, "needle", None, false, 0, 1).unwrap();
+        assert!(out.contains("... [truncated]"), "{out}");
+        assert_eq!(out.matches("needle").count(), 1, "{out}");
+
+        let out = rust_grep(&dir, "needle", Some("*.txt"), false, 0, 10).unwrap();
+        assert_eq!(out.matches("needle").count(), 3, "{out}");
 
         std::fs::remove_dir_all(&dir).ok();
     }

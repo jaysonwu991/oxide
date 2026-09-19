@@ -74,7 +74,7 @@ impl LlmClient {
         let cache_key = model_cache_key(&self.config);
         let cached = cached_models(&cache_key);
         if let Some(entry) = cached.as_ref().filter(|entry| entry.is_fresh()) {
-            return Ok(entry.models.clone());
+            return Ok(self.config.merge_model_catalog(entry.models.clone()));
         }
 
         match self.fetch_models().await {
@@ -82,10 +82,10 @@ impl LlmClient {
                 if !models.is_empty() {
                     store_cached_models(&cache_key, &models);
                 }
-                Ok(models)
+                Ok(self.config.merge_model_catalog(models))
             }
             Err(err) => match cached {
-                Some(entry) => Ok(entry.models),
+                Some(entry) => Ok(self.config.merge_model_catalog(entry.models)),
                 None => Err(err),
             },
         }

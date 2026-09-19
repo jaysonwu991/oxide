@@ -124,7 +124,7 @@ async fn event_loop(
     }
 
     let mut banner = vec![
-        "Build, refactor, debug, and understand your code.".to_string(),
+        "Code, research, automate, and more.".to_string(),
         config.ecosystem.summary(),
         format!(
             "mcp: {} configured · {} loaded · {} tools · plugins: {}{} · memory: {} entries",
