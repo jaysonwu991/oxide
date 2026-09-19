@@ -672,7 +672,7 @@ Runtime state lives under the platform oxide config directory:
 - `model-cache.json` — provider model lists (refreshed after 24 hours)
 - `mcp-oauth/<server>.json` — OAuth tokens for remote MCP servers (mode `0600`)
 - `sessions/<project>/*.jsonl` — session history and pruning records
-- `snapshots/<project>/` — shadow-git snapshots for `/undo` and `/redo`
+- `snapshots/<project>/` — shadow-git snapshots for `/undo` and `/redo`; only created when the working directory is inside a git work tree (never the home directory, which would index the whole folder)
 - `memory/` — persistent memory entries
 - `trust.json` — saved project trust decisions
 - `settings.json` — global settings such as `defaultProjectTrust`

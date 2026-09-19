@@ -555,7 +555,10 @@ async fn run_loop(
 
         if snapshot_needed {
             if let Some(snapshots) = &runtime.snapshots {
-                let _ = snapshots.commit("turn");
+                // `git add -A` is synchronous and can take a while on a large
+                // tree; keep it off the async worker so the TUI stays live.
+                let snapshots = Arc::clone(snapshots);
+                let _ = tokio::task::spawn_blocking(move || snapshots.commit("turn")).await;
             }
         }
 
