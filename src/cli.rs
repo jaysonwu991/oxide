@@ -275,6 +275,7 @@ mod tests {
             args: "{}".into(),
             output: "error: nope".into(),
             diff: None,
+            millis: 0,
         })
         .unwrap();
         assert_eq!(result["isError"], true);

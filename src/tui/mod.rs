@@ -12,7 +12,8 @@ use crate::plugin::PluginHost;
 use crate::session::SessionLog;
 use crate::snapshots::Snapshots;
 use crate::tui::app::{
-    App, ChatItem, CommandHint, ConnectState, ConnectStep, ModelsState, SessionsState, TrustState,
+    App, ChatItem, CommandHint, ConnectState, ConnectStep, ModelsState, Selection, SessionsState,
+    TrustState,
 };
 use anyhow::{Context, Result};
 use crossterm::event::{
@@ -272,7 +273,9 @@ async fn event_loop(
                     app.pending_approval = Some(request);
                 }
             }
-            _ = tick.tick(), if app.busy => {}
+            _ = tick.tick(), if app.busy => {
+                app.mark_running_tool_dirty();
+            }
             _ = branch_tick.tick(), if !app.busy => {
                 app.refresh_git_branch();
             }
@@ -322,9 +325,12 @@ fn handle_key(
     mcps_tx: &UnboundedSender<Vec<(String, String, McpStatus)>>,
     plugins_tx: &UnboundedSender<String>,
 ) {
-    // Ctrl+C always quits, even while a dialog or the trust prompt is open.
+    // Ctrl+C copies an active mouse selection, otherwise quits. It still quits
+    // while a dialog or the trust prompt is open (those never hold a selection).
     if is_quit_shortcut(&key) {
-        app.should_quit = true;
+        if !copy_selection(app) {
+            app.should_quit = true;
+        }
         return;
     }
 
@@ -448,6 +454,12 @@ fn handle_key(
                         .push(ChatItem::Info(format!("{raw}: nothing to restore"))),
                     Err(err) => app.items.push(ChatItem::Error(format!("{raw}: {err:#}"))),
                 }
+                return;
+            }
+            if raw == "/copy" || raw == "/copy all" {
+                app.clear_input();
+                refresh_suggestions(app, config);
+                copy_command(app, raw.ends_with(" all"));
                 return;
             }
             if raw == "/compact" {
@@ -1241,7 +1253,9 @@ fn help_text(config: &Config) -> String {
         "  /plugin               manage plugins and marketplaces".to_string(),
         "  /undo, /redo          revert or reapply the agent's file changes".to_string(),
         "  /compact              summarize the conversation to free context".to_string(),
-        "keys: Enter send/guide · Shift+Enter newline · Alt+Enter follow-up while busy · Shift+Tab mode · Ctrl+R reasoning · Ctrl+O tool details · Ctrl+V image · Ctrl+A/E message start/end · ↑/↓ history · PgUp/PgDn/wheel scroll · Ctrl+U/D half page · Ctrl+C quit"
+        "  /copy                 copy the last assistant message".to_string(),
+        "  /copy all             copy the whole transcript".to_string(),
+        "keys: Enter send/guide · Shift+Enter newline · Alt+Enter follow-up while busy · Shift+Tab mode · Ctrl+R reasoning · Ctrl+O tool details · Ctrl+V image · Ctrl+A/E message start/end · ↑/↓ history · PgUp/PgDn/wheel scroll · Ctrl+U/D half page · drag to select and copy · Ctrl+C copy selection/quit"
             .to_string(),
     ];
     if !config.ecosystem.commands.is_empty() {
@@ -1305,7 +1319,10 @@ fn hotkeys_text() -> String {
         "  Ctrl+G / Home         scroll to the top",
         "  End                   return to the latest message",
         "  Up / Down             input history",
-        "  Ctrl+C                quit",
+        "  drag (mouse)          select text; copies on release",
+        "  Ctrl+C                copy the selection, or quit",
+        "  /copy                 copy the last assistant message",
+        "  /copy all             copy the whole transcript",
     ]
     .join("\n")
 }
@@ -1952,7 +1969,8 @@ fn handle_paste(text: String, app: &mut App) {
     }
 }
 
-/// Routes pointer interaction to suggestions, otherwise scrolling the chat.
+/// Routes pointer interaction to suggestions, otherwise scrolling the chat or
+/// starting a text selection.
 fn handle_mouse(mouse: MouseEvent, app: &mut App, terminal_area: Rect) {
     match mouse.kind {
         MouseEventKind::ScrollUp => {
@@ -1978,6 +1996,7 @@ fn handle_mouse(mouse: MouseEvent, app: &mut App, terminal_area: Rect) {
             }
         }
         MouseEventKind::Down(MouseButton::Left) => {
+            app.selection = None;
             if let Some(index) =
                 ui::suggestion_index_at(app, terminal_area, mouse.column, mouse.row)
             {
@@ -1986,9 +2005,91 @@ fn handle_mouse(mouse: MouseEvent, app: &mut App, terminal_area: Rect) {
                     app.suggestions.clear();
                     app.suggestion_index = 0;
                 }
+            } else if let Some((line, column)) =
+                ui::message_position_at(app, terminal_area, mouse.column, mouse.row)
+            {
+                app.selection = Some(Selection::new(line, column));
+            }
+        }
+        MouseEventKind::Drag(MouseButton::Left) => {
+            if app.selection.is_some() {
+                if let Some((line, column)) =
+                    ui::message_position_at(app, terminal_area, mouse.column, mouse.row)
+                {
+                    if let Some(selection) = app.selection.as_mut() {
+                        selection.cursor = (line, column);
+                    }
+                }
+            }
+        }
+        MouseEventKind::Up(MouseButton::Left) => {
+            // Copy-on-select: a drag copies the text and clears the highlight; a
+            // plain click just drops the (empty) selection.
+            if let Some(selection) = app.selection {
+                if selection.anchor == selection.cursor {
+                    app.selection = None;
+                } else {
+                    copy_selection(app);
+                }
             }
         }
         _ => {}
+    }
+}
+
+/// Copies the active mouse selection, if any, reporting the result. Returns
+/// whether a selection was present.
+fn copy_selection(app: &mut App) -> bool {
+    let Some(selection) = app.selection.take() else {
+        return false;
+    };
+    let text = selection.text(&app.lines);
+    if text.trim().is_empty() {
+        app.status = "nothing to copy".to_string();
+        return true;
+    }
+    match crate::clipboard::copy(&text) {
+        Ok(()) => app.status = format!("copied {} chars", text.chars().count()),
+        Err(err) => app.items.push(ChatItem::Error(format!("copy: {err:#}"))),
+    }
+    true
+}
+
+/// `/copy` copies the last assistant message; `/copy all` copies the whole
+/// visible transcript.
+fn copy_command(app: &mut App, all: bool) {
+    let text = if all {
+        app.lines
+            .iter()
+            .map(|line| {
+                line.spans
+                    .iter()
+                    .map(|span| span.content.as_ref())
+                    .collect::<String>()
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+            .trim_matches('\n')
+            .to_string()
+    } else {
+        match app.items.iter().rev().find_map(|item| match item {
+            ChatItem::Assistant(text) if !text.trim().is_empty() => Some(text.clone()),
+            _ => None,
+        }) {
+            Some(text) => text,
+            None => {
+                app.status = "nothing to copy".to_string();
+                return;
+            }
+        }
+    };
+    if text.trim().is_empty() {
+        app.status = "nothing to copy".to_string();
+        return;
+    }
+    match crate::clipboard::copy(&text) {
+        Ok(()) => app.status = format!("copied {} chars", text.chars().count()),
+        Err(err) => app.items.push(ChatItem::Error(format!("copy: {err:#}"))),
     }
 }
 
@@ -2131,6 +2232,7 @@ fn handle_agent_event(event: AgentEvent, app: &mut App) {
         AgentEvent::ToolCall { name, args } => {
             app.assistant_open = false;
             app.auto_scroll = true;
+            app.running_tool = Some((name.clone(), std::time::Instant::now()));
             app.items.push(ChatItem::Tool { name, args });
             app.status = "running tool...".to_string();
         }
@@ -2158,9 +2260,11 @@ fn handle_agent_event(event: AgentEvent, app: &mut App) {
             args,
             output,
             diff,
+            millis,
         } => {
             app.auto_scroll = true;
-            app.resolve_tool(name, args, output, diff);
+            app.running_tool = None;
+            app.resolve_tool(name, args, output, diff, millis);
             app.status = "thinking...".to_string();
         }
         AgentEvent::Usage { input, output } => {
@@ -2174,6 +2278,7 @@ fn handle_agent_event(event: AgentEvent, app: &mut App) {
         AgentEvent::Finished(history) => {
             app.history = history;
             app.workspace_paths = None;
+            app.running_tool = None;
             app.busy = false;
             app.busy_since = None;
             app.assistant_open = false;

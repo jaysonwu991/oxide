@@ -59,7 +59,9 @@ box, with Claude Code configuration support for compatibility.
   enter the model's context. Capped output is saved to disk with a pointer so it
   stays recoverable.
 - Compact agent transcript: shell calls render as `→ Run <command>` and finish
-  as `→ Ran <command> · exit <code>`. Collapsed output uses a
+  as `→ Ran <command> · exit <code>`, with a `(timeout Ns)` hint when the call
+  sets one, a live `Elapsed Ns` while it runs, and a `Took Nms` duration
+  afterwards. Collapsed output uses a
   `⋯ <lines> lines · Ctrl+O to expand` affordance, file edits show a colored
   line-numbered diff, and each model turn is timed with `+ Thought: Nms`.
 - Tool selection: `--tools`/`-t` allowlists and `--exclude-tools`/`-x`

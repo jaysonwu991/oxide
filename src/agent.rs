@@ -89,6 +89,8 @@ pub enum AgentEvent {
         args: String,
         output: String,
         diff: Option<tools::DiffPreview>,
+        /// Wall-clock time the tool spent running, in milliseconds.
+        millis: u64,
     },
     /// Token usage reported by the provider for the turn just completed.
     Usage {
@@ -181,12 +183,14 @@ pub fn run_subagent(
                     args,
                     output,
                     diff,
+                    millis,
                 } => {
                     let _ = tx.send(AgentEvent::ToolResult {
                         name,
                         args,
                         output,
                         diff,
+                        millis,
                     });
                 }
                 AgentEvent::Usage { input, output } => {
@@ -302,6 +306,14 @@ async fn run_loop(
             });
         }
 
+        if turn.content.trim().is_empty() && turn.tool_calls.is_empty() {
+            let _ = tx.send(AgentEvent::Error(
+                "the model returned an empty response".to_string(),
+            ));
+            let _ = tx.send(AgentEvent::Finished(messages));
+            return;
+        }
+
         let tool_calls = turn.tool_calls.clone();
         let assistant = Message::assistant(turn.content, tool_calls.clone())
             .with_thinking(turn.thinking.clone());
@@ -401,7 +413,7 @@ async fn run_loop(
                 let tx = tx.clone();
                 handles.push(tokio::spawn(async move {
                     match item {
-                        Prepared::Immediate(output) => output,
+                        Prepared::Immediate(output) => (output, 0),
                         Prepared::Run { call, args } => {
                             let name = call.function.name.clone();
                             let progress = tools::Progress::new(Arc::new({
@@ -414,6 +426,7 @@ async fn run_loop(
                                     });
                                 }
                             }));
+                            let started = std::time::Instant::now();
                             let mut output =
                                 dispatch(&config, &cwd, &runtime, &call, depth, &progress).await;
                             if let Some(result) =
@@ -422,16 +435,19 @@ async fn run_loop(
                                 output.text = result.output;
                                 output.terminate |= result.terminate;
                             }
-                            output
+                            (output, started.elapsed().as_millis() as u64)
                         }
                     }
                 }));
             }
 
             for (handle, original) in handles.into_iter().zip(&tool_calls) {
-                let output = match handle.await {
-                    Ok(output) => output,
-                    Err(err) => tools::ToolOutput::text(format!("error: tool task failed: {err}")),
+                let (output, millis) = match handle.await {
+                    Ok(result) => result,
+                    Err(err) => (
+                        tools::ToolOutput::text(format!("error: tool task failed: {err}")),
+                        0,
+                    ),
                 };
                 terminated.push(output.terminate);
                 let _ = tx.send(AgentEvent::ToolResult {
@@ -439,6 +455,7 @@ async fn run_loop(
                     args: original.function.arguments.clone(),
                     output: output.text.clone(),
                     diff: output.diff.clone(),
+                    millis,
                 });
                 let tool_message = if output.media.is_empty() {
                     Message::tool(original.id.clone(), output.text)
@@ -480,6 +497,7 @@ async fn run_loop(
                         });
                     }
                 }));
+                let started = std::time::Instant::now();
                 let mut output = if name == "compress" && dcp_enabled {
                     match dcp::apply_compress(
                         &mut dcp_state,
@@ -534,6 +552,7 @@ async fn run_loop(
                     output.text = result.output;
                     output.terminate |= result.terminate;
                 }
+                let millis = started.elapsed().as_millis() as u64;
                 terminated.push(output.terminate);
                 let text = output.text.clone();
 
@@ -542,6 +561,7 @@ async fn run_loop(
                     args: serde_json::to_string(&effective_args).unwrap_or_default(),
                     output: text.clone(),
                     diff: output.diff.clone(),
+                    millis,
                 });
                 let tool_message = if output.media.is_empty() {
                     Message::tool(call.id.clone(), text)
