@@ -201,7 +201,8 @@ Git branch, model, mode, and thinking level.
 | Ctrl+O | Expand or collapse tool-output details. |
 | Ctrl+V | Attach an image from the clipboard when the platform helper is available. |
 | PgUp / PgDn / mouse wheel | Scroll the transcript. |
-| Ctrl+Y / Ctrl+E | Scroll one line. |
+| Ctrl+A / Ctrl+E | Jump to the start or end of the message box. |
+| Ctrl+Y / Ctrl+E | Scroll one line (Ctrl+E only when the message box is empty). |
 | Ctrl+U / Ctrl+D | Scroll half a page. |
 | Ctrl+G / Home | Scroll to the top. |
 | End | Return to the latest message and resume automatic scrolling. |

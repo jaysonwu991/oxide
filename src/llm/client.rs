@@ -10,10 +10,15 @@ use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, OnceLock};
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 const MODEL_CACHE_TTL_SECS: u64 = 24 * 60 * 60;
 const MODEL_CACHE_FILE: &str = "model-cache.json";
+/// Cap how long a connect or a single streamed read may stall before the
+/// request fails. Without this a dead proxy or dropped connection leaves the
+/// agent waiting forever with no output.
+const CONNECT_TIMEOUT: Duration = Duration::from_secs(15);
+const READ_TIMEOUT: Duration = Duration::from_secs(120);
 static MODEL_CACHE_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
 
 pub struct LlmClient {
@@ -51,10 +56,12 @@ struct CachedModels {
 
 impl LlmClient {
     pub fn new(config: Config) -> Self {
-        Self {
-            http: reqwest::Client::new(),
-            config,
-        }
+        let http = reqwest::Client::builder()
+            .connect_timeout(CONNECT_TIMEOUT)
+            .read_timeout(READ_TIMEOUT)
+            .build()
+            .unwrap_or_else(|_| reqwest::Client::new());
+        Self { http, config }
     }
 
     /// Lists the model ids the provider exposes, sorted and de-duplicated.
