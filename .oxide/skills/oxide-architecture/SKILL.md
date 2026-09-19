@@ -28,7 +28,8 @@ description: Use when navigating or modifying the oxide internals — the agent 
      and loops. A `compress` call updates the pruning state:
      `dcp::apply_compress` updates the in-memory state and appends a record to
      the session log.
-   - Stops after `MAX_STEPS = 25` iterations with an error event.
+   - Loops until the model stops calling tools; a batch whose results all set
+     `output.terminate` ends the turn. There is no fixed step cap.
 4. A leading `/command` is resolved by `Config::resolve_command` into an expanded
    prompt plus optional `agent`/`subtask` routing. Commands with `subtask: true`
    run through `agent::run_subagent` in an isolated context and report their
@@ -59,9 +60,9 @@ description: Use when navigating or modifying the oxide internals — the agent 
   (`McpRegistry`, stdio/HTTP), the `oxide mcp` CLI that reads/writes
   `.oxide/mcp.json`, and the OAuth authorization-code + PKCE flow for remote
   servers.
-- `src/tui/` — `run` entry plus `app`/`ui` for rendering and input; hides tool
-  bodies by default (Ctrl+O), renders concise `Run`/`Ran` shell actions, shows
-  colored edit diffs and per-turn thought timing.
+- `src/tui/` — `run` entry plus `app`/`ui` for rendering and input; shows tool
+  bodies by default (Ctrl+O collapses), renders concise `Run`/`Ran` shell
+  actions, shows colored edit diffs and per-turn thought timing.
 
 ## Adding a model provider
 

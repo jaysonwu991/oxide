@@ -53,12 +53,13 @@ box, with Claude Code configuration support for compatibility.
   uses the provider/model's native behavior; explicit levels map to
   OpenAI-compatible effort, Anthropic adaptive thinking, or legacy extended
   thinking as appropriate.
-- Compact, bounded output: tool bodies are hidden in the TUI by default (Ctrl+O
-  toggles them), long action lines are truncated to the terminal width, and tool
-  results are capped by lines and bytes before they enter the model's context.
-  Capped output is saved to disk with a pointer so it stays recoverable.
+- Compact, bounded output: tool bodies are shown in the TUI by default (Ctrl+O
+  collapses them), long action lines wrap to the terminal width so their full
+  text stays visible, and tool results are capped by lines and bytes before they
+  enter the model's context. Capped output is saved to disk with a pointer so it
+  stays recoverable.
 - Compact agent transcript: shell calls render as `→ Run <command>` and finish
-  as `→ Ran <command> · exit <code>`. Hidden output uses a
+  as `→ Ran <command> · exit <code>`. Collapsed output uses a
   `⋯ <lines> lines · Ctrl+O to expand` affordance, file edits show a colored
   line-numbered diff, and each model turn is timed with `+ Thought: Nms`.
 - Tool selection: `--tools`/`-t` allowlists and `--exclude-tools`/`-x`
@@ -77,11 +78,12 @@ box, with Claude Code configuration support for compatibility.
   decision.
 - Themes: built-in `dark` and `light` plus custom `.oxide/themes/<name>.json`,
   selected with `--use-theme` or `/theme`.
-- Focused terminal layout: onboarding shortcuts live in the welcome tips,
-  current activity and elapsed time live in the status row, and the footer
-  shows the working directory, session name, token totals (`↑`/`↓`), context
-  usage, model, mode, and thinking level. The labeled editor grows to 12 rows,
-  and semantic colors keep dark, light, and custom themes consistent.
+- Focused terminal layout: the welcome banner shows the `OXIDE` wordmark beside
+  a short summary of the loaded ecosystem, context files, and MCP/plugin/memory
+  state; current activity and elapsed time live in the status row, and the
+  footer shows the working directory, session name, token totals (`↑`/`↓`),
+  context usage, model, mode, and thinking level. The labeled editor grows to
+  12 rows, and semantic colors keep dark, light, and custom themes consistent.
 
 ## Comparison
 
@@ -190,8 +192,9 @@ oxide
 
 ### Keyboard shortcuts
 
-The welcome area summarizes the loaded ecosystem and shows the most commonly
-used shortcuts above the editor. The two-row footer combines live state such as
+The welcome area pairs the `OXIDE` wordmark with a short summary of the loaded
+ecosystem, context files, and MCP/plugin/memory state. Run `/hotkeys` for the
+full shortcut list. The two-row footer combines live state such as
 `ready`, `thinking`, tool activity, and elapsed time with the current project,
 Git branch, model, mode, and thinking level.
 
@@ -202,8 +205,9 @@ Git branch, model, mode, and thinking level.
 | Alt+Enter | While busy, queue a follow-up to run after the current work finishes. |
 | Esc | Clear the input; with empty input, quit. In dialogs, cancel or close. |
 | `/` | Open slash-command autocomplete. |
-| Tab | Complete the selected slash command. |
-| Up / Down | Recall input history or move through a picker. |
+| `@` | Open file/folder path autocomplete to add a file to the prompt. |
+| Tab | Complete the selected slash-command or `@path` suggestion. |
+| Up / Down | Move through the suggestion list, or recall input history when it is closed. |
 | Shift+Tab | Cycle `build` → `auto-edit` → `plan`. |
 | Ctrl+R | Cycle the thinking level: `auto` → `off` → `low` → `medium` → `high`. |
 | Ctrl+O | Expand or collapse tool-output details. |
@@ -442,7 +446,7 @@ the starting level.
 | `OXIDE_API_KEY` | API key. |
 | `OXIDE_MODE` | Permission mode (`build`, `plan`, `auto-edit`). |
 | `OXIDE_REASONING` | Reasoning effort (`auto`, `off`, `low`, `medium`, `high`). |
-| `OXIDE_CONTEXT_LIMIT` | Model context window in tokens, used for the footer's context percentage (default 128000). |
+| `OXIDE_CONTEXT_LIMIT` | Model context window in tokens, used for the footer's context percentage (default: the larger of `max_tokens` and 128000). |
 | `OXIDE_TRUNCATION_DIR` | Directory for saved truncated tool output (default `truncated/` in the config dir). |
 | `OPENAI_API_KEY` / `OPENAI_BASE_URL` | OpenAI credentials. |
 | `DEEPSEEK_API_KEY` / `DEEPSEEK_BASE_URL` | DeepSeek credentials. |

@@ -626,7 +626,7 @@ fn draw_footer(frame: &mut Frame, app: &App, area: Rect) {
     if let Some(branch) = &app.git_branch {
         project.push(Span::styled("  ", info));
         project.push(Span::styled(
-            format!("🌿 {branch}"),
+            format!("⑂ {branch}"),
             Style::default().fg(app.theme.success),
         ));
     }
@@ -902,7 +902,7 @@ fn render_item_themed(
 ) {
     let bold = Modifier::BOLD;
     match item {
-        ChatItem::Banner => render_banner_themed(width, theme, lines),
+        ChatItem::Banner { info } => render_banner_themed(width, theme, info, lines),
         ChatItem::User(text) => {
             lines.push(Line::from(vec![
                 Span::styled("❯ ", Style::default().fg(theme.user).add_modifier(bold)),
@@ -933,21 +933,22 @@ fn render_item_themed(
                 } else {
                     ("Read", theme.accent)
                 };
-                lines.push(action_line(verb, &path, color, bold, width));
+                lines.extend(action_lines(verb, &path, color, bold, width));
             } else if let Some(command) = bash_command(name, args) {
-                lines.push(action_line("Run", &command, theme.tool, bold, width));
+                lines.extend(action_lines("Run", &command, theme.tool, bold, width));
             } else {
-                lines.push(Line::from(vec![
-                    Span::styled("⚙ ", Style::default().fg(theme.tool)),
-                    Span::styled(
-                        name.clone(),
-                        Style::default().fg(theme.tool).add_modifier(bold),
-                    ),
-                    Span::styled(
-                        format!(" {}", tool_arg_summary(name, args)),
-                        Style::default().fg(theme.info),
-                    ),
-                ]));
+                lines.extend(wrapped_with_prefix(
+                    vec![
+                        Span::styled("⚙ ", Style::default().fg(theme.tool)),
+                        Span::styled(
+                            name.clone(),
+                            Style::default().fg(theme.tool).add_modifier(bold),
+                        ),
+                    ],
+                    &format!(" {}", tool_arg_summary(name, args)),
+                    width,
+                    Style::default().fg(theme.info),
+                ));
             }
         }
         ChatItem::ToolProgress { name, output } => {
@@ -977,16 +978,16 @@ fn render_item_themed(
             } else if let Some(path) = file_tool_path(name, args) {
                 if crate::tools::canonical_tool_name(name) == "read_file" {
                     if output.starts_with("error:") {
-                        lines.push(action_line("Read failed", &path, theme.error, bold, width));
+                        lines.extend(action_lines("Read failed", &path, theme.error, bold, width));
                         push_wrapped(lines, output, width, Style::default().fg(theme.error));
                     } else {
-                        lines.push(action_line("Read", &path, theme.success, bold, width));
+                        lines.extend(action_lines("Read", &path, theme.success, bold, width));
                     }
                 } else if output.starts_with("error:") {
-                    lines.push(action_line("Edit failed", &path, theme.error, bold, width));
+                    lines.extend(action_lines("Edit failed", &path, theme.error, bold, width));
                     push_wrapped(lines, output, width, Style::default().fg(theme.error));
                 } else {
-                    lines.push(action_line("Edited", &path, theme.success, bold, width));
+                    lines.extend(action_lines("Edited", &path, theme.success, bold, width));
                     if let Some((_, rest)) = output.split_once("\n\n") {
                         if !rest.trim().is_empty() {
                             push_wrapped(lines, rest, width, Style::default().fg(theme.info));
@@ -1004,7 +1005,7 @@ fn render_item_themed(
                     None => command,
                 };
                 let verb = if failed { "Run failed" } else { "Ran" };
-                lines.push(action_line(verb, &subject, color, bold, width));
+                lines.extend(action_lines(verb, &subject, color, bold, width));
                 if exit.is_none() && !output.trim().is_empty() {
                     push_wrapped(lines, output, width, Style::default().fg(theme.error));
                 } else if expand_tools {
@@ -1054,9 +1055,20 @@ fn render_item_themed(
     }
 }
 
-/// Centers the block-letter wordmark, falling back to plain text when the
-/// terminal is too narrow for the art.
-fn render_banner_themed(width: usize, theme: &crate::theme::Theme, lines: &mut Vec<Line<'static>>) {
+/// Gap between the wordmark and the info column.
+const BANNER_COLUMN_GAP: usize = 3;
+/// Minimum width kept for the right-hand banner column before the layout
+/// falls back to stacking the wordmark above the info text.
+const BANNER_MIN_RIGHT: usize = 24;
+
+/// Renders the banner as the wordmark beside the welcome info when there is
+/// room, falling back to stacked (or plain-text) layouts on narrow terminals.
+fn render_banner_themed(
+    width: usize,
+    theme: &crate::theme::Theme,
+    info: &[String],
+    lines: &mut Vec<Line<'static>>,
+) {
     let art_width = BANNER
         .iter()
         .map(|line| line.chars().count())
@@ -1069,23 +1081,73 @@ fn render_banner_themed(width: usize, theme: &crate::theme::Theme, lines: &mut V
                 .fg(theme.accent)
                 .add_modifier(Modifier::BOLD),
         )));
+        for entry in info {
+            push_wrapped(lines, entry, width.max(1), Style::default().fg(theme.info));
+        }
         return;
     }
+
+    let right_width = width.saturating_sub(art_width + BANNER_COLUMN_GAP);
+    if right_width >= BANNER_MIN_RIGHT {
+        render_banner_columns(art_width, right_width, theme, info, lines);
+        return;
+    }
+
     for (index, art) in BANNER.iter().enumerate() {
         let pad = (width - art.chars().count()) / 2;
         lines.push(Line::from(vec![
             Span::raw(" ".repeat(pad)),
-            Span::styled(
-                (*art).to_string(),
-                Style::default()
-                    .fg(if index + 1 == BANNER.len() {
-                        theme.dim
-                    } else {
-                        theme.accent
-                    })
-                    .add_modifier(Modifier::BOLD),
-            ),
+            Span::styled((*art).to_string(), art_style(index, theme)),
         ]));
+    }
+    for entry in info {
+        push_wrapped(lines, entry, width.max(1), Style::default().fg(theme.info));
+    }
+}
+
+fn art_style(index: usize, theme: &crate::theme::Theme) -> Style {
+    Style::default()
+        .fg(if index + 1 == BANNER.len() {
+            theme.dim
+        } else {
+            theme.accent
+        })
+        .add_modifier(Modifier::BOLD)
+}
+
+/// Render the wordmark and the welcome info side by side, wrapping the info to
+/// the right-hand column width.
+fn render_banner_columns(
+    art_width: usize,
+    right_width: usize,
+    theme: &crate::theme::Theme,
+    info: &[String],
+    lines: &mut Vec<Line<'static>>,
+) {
+    let mut right: Vec<String> = Vec::new();
+    for (index, entry) in info.iter().enumerate() {
+        if index > 0 {
+            right.push(String::new());
+        }
+        right.extend(wrap(entry, right_width.max(1)));
+    }
+    for row in 0..BANNER.len().max(right.len()) {
+        let mut spans = Vec::with_capacity(3);
+        match BANNER.get(row) {
+            Some(art) => {
+                let pad = art_width - art.chars().count();
+                spans.push(Span::styled(
+                    format!("{art}{}", " ".repeat(pad)),
+                    art_style(row, theme),
+                ));
+            }
+            None => spans.push(Span::raw(" ".repeat(art_width))),
+        }
+        spans.push(Span::raw(" ".repeat(BANNER_COLUMN_GAP)));
+        if let Some(text) = right.get(row) {
+            spans.push(Span::styled(text.clone(), Style::default().fg(theme.info)));
+        }
+        lines.push(Line::from(spans));
     }
 }
 
@@ -1101,8 +1163,8 @@ fn render_item(item: &ChatItem, width: usize, expand_tools: bool, lines: &mut Ve
 }
 
 #[cfg(test)]
-fn render_banner(width: usize, lines: &mut Vec<Line<'static>>) {
-    render_banner_themed(width, &crate::theme::Theme::dark(), lines);
+fn render_banner(width: usize, info: &[String], lines: &mut Vec<Line<'static>>) {
+    render_banner_themed(width, &crate::theme::Theme::dark(), info, lines);
 }
 
 fn draw_input(frame: &mut Frame, app: &App, area: Rect) {
@@ -1294,26 +1356,62 @@ fn file_tool_path(name: &str, args: &str) -> Option<String> {
         .map(str::to_string)
 }
 
-fn action_line(
+/// Render a tool action as `→ Verb <subject>`, wrapping the subject across
+/// lines so its full text stays visible instead of being truncated. Every
+/// rendered line is capped at `width` characters, mirroring Pi's wrapped
+/// tool-call text.
+fn action_lines(
     verb: &str,
     subject: &str,
     color: Color,
     bold: Modifier,
     width: usize,
-) -> Line<'static> {
-    let prefix = 2 + verb.chars().count() + 1;
-    let subject = truncate(subject, width.saturating_sub(prefix));
-    Line::from(vec![
-        Span::styled("→ ", Style::default().fg(color)),
-        Span::styled(
-            verb.to_string(),
-            Style::default().fg(color).add_modifier(bold),
-        ),
-        Span::styled(format!(" {subject}"), Style::default().fg(color)),
-    ])
+) -> Vec<Line<'static>> {
+    wrapped_with_prefix(
+        vec![
+            Span::styled("→ ", Style::default().fg(color)),
+            Span::styled(
+                verb.to_string(),
+                Style::default().fg(color).add_modifier(bold),
+            ),
+            Span::styled(" ", Style::default().fg(color)),
+        ],
+        subject,
+        width,
+        Style::default().fg(color),
+    )
 }
 
-/// Render a shell command as `$ <command>`, truncating to a single line.
+/// Render styled `prefix` spans followed by `subject`, wrapping so every line
+/// is at most `width` characters. The prefix keeps its styling on the first
+/// line and continuation lines use `continuation`.
+fn wrapped_with_prefix(
+    prefix: Vec<Span<'static>>,
+    subject: &str,
+    width: usize,
+    continuation: Style,
+) -> Vec<Line<'static>> {
+    let head: String = prefix.iter().map(|span| span.content.as_ref()).collect();
+    let wrapped = wrap(&format!("{head}{subject}"), width.max(1));
+    let mut out = Vec::with_capacity(wrapped.len());
+    for (index, line) in wrapped.into_iter().enumerate() {
+        if index == 0 && line.starts_with(&head) {
+            let rest = line[head.len()..].to_string();
+            let mut spans = prefix.clone();
+            if !rest.is_empty() {
+                spans.push(Span::styled(rest, continuation));
+            }
+            out.push(Line::from(spans));
+        } else {
+            out.push(Line::from(Span::styled(line, continuation)));
+        }
+    }
+    if out.is_empty() {
+        out.push(Line::from(prefix));
+    }
+    out
+}
+
 /// Shell command for a `bash` call, flattened to a single line for display.
 fn bash_command(name: &str, args: &str) -> Option<String> {
     if crate::tools::canonical_tool_name(name) != "bash" {
@@ -1375,9 +1473,8 @@ fn tool_arg_summary(name: &str, args: &str) -> String {
     }
 }
 
-/// Render a tool's output. Output is hidden by default so the conversation
-/// stays a compact action list (like the opencode reference); Ctrl+O reveals
-/// the full body.
+/// Render a tool's output. Output is shown by default (like Pi); Ctrl+O
+/// collapses it back into a compact action list.
 fn push_tool_body(
     lines: &mut Vec<Line<'static>>,
     output: &str,
@@ -1414,7 +1511,7 @@ fn bash_has_body(output: &str) -> bool {
         .any(|line| !line.trim().is_empty())
 }
 
-/// How many diff lines to show before the user expands the view with Ctrl+O.
+/// How many diff lines to show while the view is collapsed with Ctrl+O.
 const DIFF_PREVIEW_LINES: usize = 12;
 
 /// Render a file edit as a colored, line-numbered diff, mirroring the opencode
@@ -1426,7 +1523,7 @@ fn render_diff(
     theme: &crate::theme::Theme,
     lines: &mut Vec<Line<'static>>,
 ) {
-    lines.push(action_line(
+    lines.extend(action_lines(
         "Edited",
         &diff.path,
         theme.success,
@@ -1702,14 +1799,32 @@ mod tests {
     }
 
     #[test]
-    fn banner_centers_or_falls_back_when_narrow() {
+    fn banner_columns_or_falls_back_when_narrow() {
+        let info = vec![
+            "Build things.".to_string(),
+            "1 agent · 0 plugins".to_string(),
+        ];
         let mut wide = Vec::new();
-        render_banner(80, &mut wide);
+        render_banner(80, &info, &mut wide);
         assert_eq!(wide.len(), BANNER.len());
+        let first = line_text(&wide[0]);
+        assert!(first.starts_with(BANNER[0]));
+        assert!(first.contains("Build things."));
+        for line in &wide {
+            assert!(line_text(line).chars().count() <= 80);
+        }
+
+        let mut medium = Vec::new();
+        render_banner(60, &info, &mut medium);
+        assert!(medium.len() > BANNER.len());
+        for line in &medium {
+            assert!(line_text(line).chars().count() <= 60);
+        }
 
         let mut narrow = Vec::new();
-        render_banner(10, &mut narrow);
-        assert_eq!(narrow.len(), 1);
+        render_banner(10, &info, &mut narrow);
+        assert_eq!(line_text(&narrow[0]), "oxide");
+        assert!(narrow.len() > 1);
     }
 
     #[test]
@@ -1868,7 +1983,7 @@ mod tests {
     }
 
     #[test]
-    fn long_bash_command_truncates_to_one_line() {
+    fn long_bash_command_wraps_to_show_full_text() {
         let command = format!("echo {}", "a".repeat(80));
         let args = format!(r#"{{"command":"{command}"}}"#);
 
@@ -1882,14 +1997,39 @@ mod tests {
             false,
             &mut lines,
         );
-        assert_eq!(lines.len(), 1);
-        let text = line_text(&lines[0]);
-        assert_eq!(text.chars().count(), 40);
-        assert!(text.ends_with('…'));
+        assert!(lines.len() > 1);
+        for line in &lines {
+            assert!(line_text(line).chars().count() <= 40, "{line:?}");
+        }
+        let text = lines.iter().map(line_text).collect::<Vec<_>>().join("");
+        assert!(text.starts_with("→ Run echo"));
+        assert_eq!(text.matches('a').count(), 80);
     }
 
     #[test]
-    fn tool_output_is_hidden_until_expanded() {
+    fn generic_tool_wraps_arguments() {
+        let args = format!(r#"{{"pattern":"{}"}}"#, "x".repeat(60));
+        let mut lines = Vec::new();
+        render_item(
+            &ChatItem::Tool {
+                name: "grep".into(),
+                args,
+            },
+            30,
+            false,
+            &mut lines,
+        );
+        assert!(lines.len() > 1);
+        for line in &lines {
+            assert!(line_text(line).chars().count() <= 30, "{line:?}");
+        }
+        let text = lines.iter().map(line_text).collect::<Vec<_>>().join("");
+        assert!(text.starts_with("⚙ grep"));
+        assert_eq!(text.matches('x').count(), 60);
+    }
+
+    #[test]
+    fn tool_output_is_hidden_only_when_collapsed() {
         let output = (0..10)
             .map(|index| format!("line {index}"))
             .collect::<Vec<_>>()
@@ -1977,7 +2117,7 @@ mod tests {
         let project_row = input_bottom + 1;
         let controls_row = input_bottom + 2;
         assert_eq!(row_of(&buffer, "/tmp/project"), Some(project_row));
-        assert_eq!(row_of(&buffer, "🌿"), Some(project_row));
+        assert_eq!(row_of(&buffer, "⑂"), Some(project_row));
         assert_eq!(row_of(&buffer, "main"), Some(project_row));
         assert_eq!(row_of(&buffer, "gpt-4o"), Some(controls_row));
         assert_eq!(row_of(&buffer, "build"), Some(controls_row));
@@ -2070,7 +2210,7 @@ mod tests {
         let mut terminal = Terminal::new(TestBackend::new(80, 24)).unwrap();
         terminal.draw(|frame| draw(frame, &mut app)).unwrap();
         let buffer = terminal.backend().buffer();
-        assert_eq!(row_of(buffer, "🌿"), None);
+        assert_eq!(row_of(buffer, "⑂"), None);
     }
 }
 

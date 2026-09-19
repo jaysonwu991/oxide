@@ -122,29 +122,23 @@ async fn event_loop(
         config.reload_ecosystem(&cwd);
     }
 
-    app.items.push(ChatItem::Banner);
-    app.items.push(ChatItem::Info(
+    let mut banner = vec![
         "Build, refactor, debug, and understand your code.".to_string(),
-    ));
-    app.items.push(ChatItem::Info(format!(
-        "ecosystem: {} · mcp: {} configured, {} loaded, {} tool(s) · plugins: {}{} · memory: {} entr{}",
         config.ecosystem.summary(),
-        mcp.configured_count(),
-        mcp.server_count(),
-        mcp.tool_count(),
-        plugins.plugin_count(),
-        if plugins.is_active() {
-            ""
-        } else {
-            " (runtime unavailable)"
-        },
-        config.memory.len(),
-        if config.memory.len() == 1 { "y" } else { "ies" }
-    )));
-    app.items.push(ChatItem::Info(
-        "tips: Enter send or guide · Alt+Enter follow-up · Shift+Enter newline · / commands · Ctrl+O tool details · /models switch model · /mcps check MCP servers · /init create AGENTS.md · /resume pick a session · @path or Ctrl+V attach images · ↑/↓ history · Ctrl+C quit"
-            .to_string(),
-    ));
+        format!(
+            "mcp: {} configured · {} loaded · {} tools · plugins: {}{} · memory: {} entries",
+            mcp.configured_count(),
+            mcp.server_count(),
+            mcp.tool_count(),
+            plugins.plugin_count(),
+            if plugins.is_active() {
+                ""
+            } else {
+                " (unavailable)"
+            },
+            config.memory.len(),
+        ),
+    ];
     if !config.ecosystem.context_files.is_empty() {
         let files: Vec<String> = config
             .ecosystem
@@ -156,11 +150,9 @@ async fn event_loop(
                     .unwrap_or_else(|| path.display().to_string())
             })
             .collect();
-        app.items.push(ChatItem::Info(format!(
-            "context files: {}",
-            files.join(", ")
-        )));
+        banner.push(format!("context files: {}", files.join(", ")));
     }
+    app.items.push(ChatItem::Banner { info: banner });
     if config.api_key.trim().is_empty() {
         app.items.push(ChatItem::Info(
             "Welcome! Connect a model provider to send your first message.".to_string(),
@@ -1305,7 +1297,7 @@ fn hotkeys_text() -> String {
         "  Ctrl+R                cycle reasoning/thinking level",
         "  Ctrl+O                toggle tool output",
         "  Ctrl+V                attach a clipboard image",
-        "  Tab                   complete the selected slash command",
+        "  Tab                   complete the selected command or @path",
         "  Ctrl+A / Ctrl+E       jump to the start/end of the message",
         "  Ctrl+Y / Ctrl+E       scroll one line (when the message is empty)",
         "  Ctrl+U / Ctrl+D       scroll half a page",

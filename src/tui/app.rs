@@ -9,7 +9,9 @@ use std::time::Instant;
 
 #[derive(Debug, Clone)]
 pub enum ChatItem {
-    Banner,
+    Banner {
+        info: Vec<String>,
+    },
     User(String),
     Assistant(String),
     Tool {
@@ -278,7 +280,7 @@ impl App {
             theme: crate::theme::Theme::default(),
             steering: Steering::new(),
             follow_ups: Steering::new(),
-            expand_tools: false,
+            expand_tools: true,
             lines: Vec::new(),
             line_offsets: Vec::new(),
             render_dirty_from: Some(0),
@@ -503,4 +505,15 @@ fn current_git_branch(cwd: &str) -> Option<String> {
     let branch = String::from_utf8(output.stdout).ok()?;
     let branch = branch.trim();
     (!branch.is_empty()).then(|| branch.to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn tool_output_is_expanded_by_default() {
+        let app = App::new("gpt-4o".into(), ".".into(), Mode::Build, Reasoning::Auto);
+        assert!(app.expand_tools);
+    }
 }
