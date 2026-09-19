@@ -168,6 +168,7 @@ enum Command {
     },
 }
 
+#[allow(clippy::large_enum_variant)]
 #[derive(Subcommand, Debug)]
 enum McpAction {
     /// List configured MCP servers
@@ -193,6 +194,9 @@ enum McpAction {
         /// HTTP header KEY=VALUE (repeatable, http)
         #[arg(long = "header", value_name = "KEY=VALUE")]
         header: Vec<String>,
+        /// Routing domains owned by the server (repeatable or comma-separated)
+        #[arg(long = "domains", value_name = "DOMAIN")]
+        domains: Vec<String>,
         /// Working directory for a stdio server
         #[arg(long)]
         cwd: Option<String>,
@@ -259,6 +263,7 @@ async fn main() -> Result<()> {
                         transport,
                         env,
                         header,
+                        domains,
                         cwd,
                         oauth_client_id,
                         oauth_client_secret,
@@ -275,6 +280,7 @@ async fn main() -> Result<()> {
                             command,
                             env,
                             header,
+                            domains,
                             cwd,
                             oauth_client_id,
                             oauth_client_secret,

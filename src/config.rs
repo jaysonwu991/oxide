@@ -800,12 +800,25 @@ impl Config {
         }
 
         if !self.ecosystem.mcp.is_empty() {
-            sections.push(String::from(
-                "# MCP servers\nUse a matching MCP server automatically when the user asks about \
-                 content owned by that service or provides one of its URLs. Prefer its MCP tools \
-                 over webfetch so authenticated documents, tickets, and other resources remain \
-                 accessible. Call mcp_load for the matching server before using its tools.",
-            ));
+            let mut list = String::from(
+                "# MCP servers\nRoute requests to the matching MCP server: if a pasted URL's domain \
+                 matches one of the domains below (or the service is named), call mcp_load for that \
+                 server first and use its tools instead of webfetch, so authenticated documents, \
+                 tickets, and other resources stay accessible.",
+            );
+            for server in &self.ecosystem.mcp {
+                if !server.enabled {
+                    continue;
+                }
+                let domains = server.domains();
+                let domains = if domains.is_empty() {
+                    String::new()
+                } else {
+                    format!(" — {}", domains.join(", "))
+                };
+                list.push_str(&format!("\n- {}{}", server.name, domains));
+            }
+            sections.push(list);
         }
 
         if self.dcp.enabled {
@@ -941,12 +954,14 @@ mod tests {
                 headers: Default::default(),
                 oauth: None,
             },
+            domains: vec!["docs.example.com".to_string()],
         });
 
         let prompt = config.compose_system_prompt();
-        assert!(prompt.contains("Use a matching MCP server automatically"));
-        assert!(prompt.contains("Call mcp_load for the matching server"));
-        assert!(prompt.contains("Prefer its MCP tools over webfetch"));
+        assert!(prompt.contains("Route requests to the matching MCP server"));
+        assert!(prompt.contains("call mcp_load for that"));
+        assert!(prompt.contains("instead of webfetch"));
+        assert!(prompt.contains("documents — docs.example.com"));
     }
 
     #[test]

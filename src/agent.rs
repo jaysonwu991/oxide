@@ -244,9 +244,11 @@ async fn run_loop(
         DcpState::default()
     };
     let mut messages = history;
+    auto_load_mcp_for_user_text(&runtime, messages.iter().filter(|m| m.role == "user")).await;
 
     loop {
         for steered in runtime.steering.drain() {
+            auto_load_mcp_for_user_text(&runtime, std::iter::once(&steered)).await;
             record(&runtime.session, depth, &steered);
             messages.push(steered);
         }
@@ -562,6 +564,37 @@ async fn run_loop(
             return;
         }
     }
+}
+
+/// Loads any configured MCP servers whose routing domains appear in a user
+/// message before the next model call, so URL-driven requests hit the right
+/// tools on the first turn instead of burning a round trip on `mcp_load`.
+async fn auto_load_mcp_for_user_text<'a>(
+    runtime: &Runtime,
+    messages: impl IntoIterator<Item = &'a Message>,
+) {
+    let mut names = Vec::new();
+    for message in messages {
+        let text = message
+            .content
+            .as_ref()
+            .map(|content| content.display())
+            .unwrap_or_default();
+        for name in runtime.mcp.servers_for_text(&text) {
+            if !names.contains(&name) {
+                names.push(name);
+            }
+        }
+    }
+    if names.is_empty() {
+        return;
+    }
+    let mut loads = tokio::task::JoinSet::new();
+    for name in names {
+        let mcp = Arc::clone(&runtime.mcp);
+        loads.spawn(async move { mcp.load(&name).await });
+    }
+    while loads.join_next().await.is_some() {}
 }
 
 fn build_tool_specs(

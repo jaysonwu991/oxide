@@ -215,6 +215,47 @@ impl McpRegistry {
         self.configured.len()
     }
 
+    /// Server names whose routing domains match the given URL host. Both
+    /// explicit `domains` config and the built-in well-known presets are
+    /// consulted via `McpServer::domains()`.
+    pub fn servers_for_host(&self, host: &str) -> Vec<String> {
+        self.configured
+            .iter()
+            .filter(|server| server.enabled)
+            .filter(|server| server.domains().iter().any(|d| domain_match(d, host)))
+            .map(|server| server.name.clone())
+            .collect()
+    }
+
+    /// Effective routing domains for a configured server, if it is enabled.
+    pub fn server_domains(&self, name: &str) -> Option<Vec<String>> {
+        self.configured
+            .iter()
+            .find(|server| server.name == name && server.enabled)
+            .map(|server| server.domains())
+    }
+
+    /// The first configured server that owns this URL, if any.
+    pub fn url_owned(&self, url: &str) -> Option<String> {
+        let host = host_from_url(url)?;
+        self.servers_for_host(&host).into_iter().next()
+    }
+
+    /// Unique server names that own any URL found in free-form text.
+    pub fn servers_for_text(&self, text: &str) -> Vec<String> {
+        let mut names = Vec::new();
+        for url in urls_in_text(text) {
+            if let Some(host) = host_from_url(&url) {
+                for name in self.servers_for_host(&host) {
+                    if !names.contains(&name) {
+                        names.push(name);
+                    }
+                }
+            }
+        }
+        names
+    }
+
     pub fn tool_count(&self) -> usize {
         self.servers
             .read()
@@ -244,6 +285,56 @@ impl McpRegistry {
             .await
             .with_context(|| format!("MCP tool `{original}` on `{}`", handle.name))
     }
+}
+
+/// Extracts a lowercased host from `scheme://host[:port][/...]` URLs. Returns
+/// `None` when the input has no recognizable `http(s)` scheme.
+fn host_from_url(url: &str) -> Option<String> {
+    let rest = url.trim();
+    let rest = rest
+        .strip_prefix("http://")
+        .or_else(|| rest.strip_prefix("https://"))?;
+    let host = rest.split(['/', ':', '?', '#']).next().unwrap_or("").trim();
+    if host.is_empty() {
+        None
+    } else {
+        Some(host.to_ascii_lowercase())
+    }
+}
+
+/// Collects `http(s)://` URL tokens from arbitrary text, tolerating wrapping
+/// punctuation such as parentheses or quotes around pasted links.
+fn urls_in_text(text: &str) -> Vec<String> {
+    let mut urls = Vec::new();
+    for token in text.split_whitespace() {
+        let lower = token.to_ascii_lowercase();
+        let start = ["http://", "https://"]
+            .into_iter()
+            .filter_map(|scheme| lower.find(scheme))
+            .min();
+        let Some(start) = start else { continue };
+        let url = token[start..]
+            .trim_end_matches(['.', ',', ';', '!', '?', '"', '\'', ')', ']', '>', '}']);
+        if !url.is_empty() {
+            urls.push(url.to_string());
+        }
+    }
+    urls
+}
+
+/// Matches a routing domain against a concrete host. Exact domains match
+/// exactly; `*.`/`.`-prefixed domains match the host or any subdomain.
+fn domain_match(domain: &str, host: &str) -> bool {
+    let domain = domain.trim().trim_start_matches('.').to_ascii_lowercase();
+    let host = host.trim().to_ascii_lowercase();
+    if domain.is_empty() || host.is_empty() {
+        return false;
+    }
+    if domain.starts_with('*') {
+        let suffix = domain.trim_start_matches('*').trim_start_matches('.');
+        return !suffix.is_empty() && (host == suffix || host.ends_with(&format!(".{suffix}")));
+    }
+    host == domain
 }
 
 fn server_source(server: &McpServer) -> String {
@@ -717,6 +808,78 @@ mod tests {
     }
 
     #[test]
+    fn extracts_host_from_urls() {
+        assert_eq!(
+            host_from_url("https://acme.atlassian.net/wiki/spaces/EN/pages/42"),
+            Some("acme.atlassian.net".to_string())
+        );
+        assert_eq!(
+            host_from_url("https://slack.com/archives/C01/T123"),
+            Some("slack.com".to_string())
+        );
+        assert_eq!(host_from_url("not a url"), None);
+        assert_eq!(host_from_url(""), None);
+    }
+
+    #[test]
+    fn matches_domains_exact_and_wildcard() {
+        assert!(domain_match("slack.com", "slack.com"));
+        assert!(domain_match("*.slack.com", "acme.slack.com"));
+        assert!(domain_match(".slack.com", "slack.com"));
+        assert!(domain_match("*.atlassian.net", "acme.atlassian.net"));
+        assert!(!domain_match("*.atlassian.net", "atlassian.net.evil.com"));
+        assert!(!domain_match("slack.com", "evil-slack.com"));
+    }
+
+    #[test]
+    fn collects_urls_from_free_text() {
+        let text = "check https://acme.atlassian.net/browse/PROJ-1 and https://slack.com/x";
+        assert_eq!(
+            urls_in_text(text),
+            vec![
+                "https://acme.atlassian.net/browse/PROJ-1".to_string(),
+                "https://slack.com/x".to_string()
+            ]
+        );
+    }
+
+    #[test]
+    fn routes_urls_to_configured_servers() {
+        let servers = vec![
+            McpServer {
+                name: "slack".to_string(),
+                enabled: true,
+                kind: McpKind::Remote {
+                    url: "https://mcp.slack.com".to_string(),
+                    headers: Default::default(),
+                    oauth: None,
+                },
+                domains: vec![],
+            },
+            McpServer {
+                name: "atlassian".to_string(),
+                enabled: true,
+                kind: McpKind::Remote {
+                    url: "https://mcp.atlassian.com/v1/mcp".to_string(),
+                    headers: Default::default(),
+                    oauth: None,
+                },
+                domains: vec![],
+            },
+        ];
+        let registry = McpRegistry::new(&servers);
+        assert_eq!(
+            registry.servers_for_text("see https://acme.slack.com/archives/C01"),
+            vec!["slack".to_string()]
+        );
+        assert_eq!(
+            registry.url_owned("https://acme.atlassian.net/wiki/spaces/EN"),
+            Some("atlassian".to_string())
+        );
+        assert_eq!(registry.url_owned("https://unknown.example.com"), None);
+    }
+
+    #[test]
     fn parses_matching_json_rpc_response() {
         let raw = r#"{"jsonrpc":"2.0","id":3,"result":{"ok":true}}"#;
         let result = parse_response(raw, 3, "test").unwrap().unwrap();
@@ -781,6 +944,7 @@ mod tests {
                 headers: Default::default(),
                 oauth: None,
             },
+            domains: vec![],
         };
 
         assert_eq!(probe(&server).await, McpStatus::Connected);
@@ -804,6 +968,7 @@ mod tests {
                 headers: Default::default(),
                 oauth: None,
             },
+            domains: vec![],
         };
 
         assert_eq!(probe(&server).await, McpStatus::NeedsAuth);
@@ -820,6 +985,7 @@ mod tests {
                 headers: Default::default(),
                 oauth: None,
             },
+            domains: vec![],
         };
 
         assert_eq!(probe(&server).await, McpStatus::Disabled);
@@ -869,6 +1035,7 @@ for line in sys.stdin:
                 environment: Default::default(),
                 cwd: None,
             },
+            domains: vec![],
         };
 
         let registry = McpRegistry::new(&[server]);
@@ -964,6 +1131,7 @@ for line in sys.stdin:
                 headers: Default::default(),
                 oauth: None,
             },
+            domains: vec!["example.com".to_string()],
         };
         let registry = McpRegistry::new(&[server]);
         registry.load("documents").await.unwrap();
