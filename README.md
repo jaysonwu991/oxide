@@ -98,6 +98,10 @@ box, with Claude Code configuration support for compatibility.
   decision.
 - Themes: built-in `dark` and `light` plus custom `.oxide/themes/<name>.json`,
   selected with `--use-theme` or `/theme`.
+- Portkey spend bar: with a Portkey login, `/usage` adds a full-width bar at
+  the bottom of the screen showing the user, this session's cost, and today's
+  and the month's spend from the Portkey analytics API against an optional
+  monthly budget in `$` or `¥`.
 - Focused terminal layout: the welcome banner stacks the block-letter `OXIDE`
   wordmark above a short summary of the loaded ecosystem, context files, and
   MCP/plugin/memory state; current activity and elapsed time live in the status
@@ -106,9 +110,10 @@ box, with Claude Code configuration support for compatibility.
   `CH` hit rate when reported, `$cost` from the model price table, including
   summary generation), context usage as `%`/window with an `(auto)` marker, and
   the right-aligned model and thinking level; plugins can add a third status
-  row. The editor matches Pi: full-width top and bottom rules colored by the
-  thinking level that grow to 12 rows, and semantic colors keep dark, light, and
-  custom themes consistent.
+  row, and the Portkey spend bar adds a final one when it is enabled. The editor
+  matches Pi: full-width top and bottom rules colored by the thinking level that
+  grow to 12 rows, and semantic colors keep dark, light, and custom themes
+  consistent.
 
 ## Comparison
 
@@ -501,11 +506,14 @@ Any OpenAI-compatible endpoint can be used by setting `provider`, `base_url`,
 Run `/login portkey` in the TUI, or set `PORTKEY_API_KEY`, then select a model
 with `/models` or `"model"` in `config.json`. The preset uses
 `https://api.portkey.ai/v1`, sends the key as `x-portkey-api-key`, and defaults
-to `claude-sonnet-5`.
+to `claude-sonnet-5`. Use `/usage` to add a Portkey spend bar (session, today,
+and month cost against an optional monthly budget in `$` or `¥`) to the TUI.
 
 For custom gateways, Config IDs, environment precedence, and model-catalog
 fallbacks, see the full [Portkey configuration](docs/configuration.md#portkey)
-section.
+section. The [Portkey usage
+bar](docs/configuration.md#portkey-usage-bar) documents the `/usage` command and
+the `portkey-usage.json` file.
 
 ## Context files and system prompt
 
@@ -580,7 +588,7 @@ oxide also reads the Claude Code layout, so existing configurations work as-is:
 Slash commands are expanded from the ecosystem and also include built-ins:
 `/help`, `/hotkeys`, `/new`, `/session`, `/resume`, `/tree`, `/fork`, `/clone`, `/name`,
 `/model`, `/thinking`, `/theme`, `/trust`, `/export`, `/reload`, `/init`,
-`/login`, `/logout`, `/models`, `/mcps`, `/plugin`, `/connect`, `/undo`, `/redo`, and
+`/login`, `/logout`, `/models`, `/mcps`, `/plugin`, `/usage`, `/connect`, `/undo`, `/redo`, and
 `/compact`.
 
 **Plugin packages** — installed via `oxide plugin` (or `/plugin`), plugin
@@ -688,7 +696,8 @@ the built-in `dark` theme:
 
 Available slots: `accent`, `user`, `assistant`, `success`, `tool`, `error`,
 `info`, `dim`, `border`, `tool_pending_bg`, `tool_success_bg`, `tool_error_bg`,
-`thinking_off`, `thinking_low`, `thinking_medium`, `thinking_high`.
+`usage_bar_bg`, `usage_bar_fg`, `usage_bar_label`, `thinking_off`,
+`thinking_low`, `thinking_medium`, `thinking_high`.
 
 Theme slots are semantic: `accent` marks focus and selections, `user` and
 `assistant` label speakers, `success` and `error` communicate outcomes, `tool`
@@ -757,6 +766,7 @@ Runtime state lives under the platform oxide config directory:
 - Memory: `memory/`
 - Project trust: `trust.json`
 - Plugins: `plugins/` (installed plugin packages, marketplaces, and state)
+- Portkey usage bar: `portkey-usage.json` (mode `0600`; see `OXIDE_USAGE_FILE`)
 - Settings: `settings.json` (e.g. `defaultProjectTrust`, `compaction`, `modelPrices`)
 - Themes: `themes/<name>.json`
 - Truncated tool output: `truncated/` (retained 7 days; see `OXIDE_TRUNCATION_DIR`)

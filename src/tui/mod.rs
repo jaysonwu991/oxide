@@ -41,7 +41,7 @@ pub async fn run(
     open_sessions_picker: bool,
 ) -> Result<()> {
     let mcp = Arc::new(McpRegistry::new(&config.ecosystem.mcp));
-    let plugins = Arc::new(PluginHost::spawn(&config.ecosystem.plugins, &cwd).await);
+    let plugins = Arc::new(PluginHost::spawn(&config.ecosystem.hooks, &cwd).await);
     let snapshots = Snapshots::open(&cwd).ok().map(Arc::new);
     let lsp = Arc::new(LspManager::new());
 
@@ -113,6 +113,10 @@ async fn event_loop(
     }
     app.show_thinking = config.supports_reasoning();
     app.theme = config.theme.clone();
+    app.usage_settings = crate::portkey_usage::UsageSettings::load().unwrap_or_default();
+    if app.usage_settings.enabled && app.usage_settings.available(&config) {
+        app.usage = Some(crate::portkey_usage::UsageBar::new(&app.usage_settings));
+    }
 
     // Project trust: prompt once for projects with resources that can execute
     // or reshape the agent, unless a decision was saved or the default applies.
@@ -140,11 +144,11 @@ async fn event_loop(
         "Code, research, automate, and more.".to_string(),
         config.ecosystem.summary(),
         format!(
-            "mcp: {} configured · {} loaded · {} tools · plugins: {}{} · memory: {} entries",
+            "mcp: {} configured · {} loaded · {} tools · hooks: {}{} · memory: {} entries",
             mcp.configured_count(),
             mcp.server_count(),
             mcp.tool_count(),
-            plugins.plugin_count(),
+            plugins.hook_count(),
             if plugins.is_active() {
                 ""
             } else {
@@ -210,6 +214,8 @@ async fn event_loop(
     let (models_tx, mut models_rx) = unbounded_channel::<Result<Vec<String>, String>>();
     let (mcps_tx, mut mcps_rx) = unbounded_channel::<Vec<(String, String, McpStatus)>>();
     let (plugins_tx, mut plugins_rx) = unbounded_channel::<String>();
+    let (usage_tx, mut usage_rx) =
+        unbounded_channel::<Result<crate::portkey_usage::Snapshot, String>>();
     if !config.api_key.trim().is_empty() && config.model_catalog.is_empty() {
         let warm_config = config.clone();
         tokio::spawn(async move {
@@ -218,6 +224,8 @@ async fn event_loop(
     }
     let mut tick = tokio::time::interval(std::time::Duration::from_millis(500));
     let mut branch_tick = tokio::time::interval(std::time::Duration::from_secs(2));
+    let mut usage_tick = tokio::time::interval(std::time::Duration::from_secs(60));
+    let mut usage_inflight = false;
 
     let (approval_tx, mut approval_rx) = unbounded_channel::<ApprovalRequest>();
     let approve: Approver = Arc::new(move |tool, detail| {
@@ -248,7 +256,7 @@ async fn event_loop(
                     Some(Ok(Event::Key(key))) => handle_key(
                         key, &mut app, &mut config, &cwd, &mut rx, &mcp, &plugins,
                         snapshots.as_ref(), &lsp, &mut session, &approve, &models_tx, &mcps_tx,
-                        &plugins_tx,
+                        &plugins_tx, &usage_tx,
                     ),
                     Some(Ok(Event::Paste(text))) => handle_paste(text, &mut app),
                     Some(Ok(Event::Mouse(mouse))) => handle_mouse(mouse, &mut app, terminal_area),
@@ -261,6 +269,9 @@ async fn event_loop(
                     handle_agent_event(event, &mut app);
                     if finished && plugins.is_active() {
                         app.extension_statuses = plugins.statuses().await;
+                    }
+                    if finished && app.usage.is_some() && !usage_inflight {
+                        usage_inflight = spawn_usage_refresh(&config, &app.usage_settings, &usage_tx);
                     }
                     got_agent_event = true;
                 }
@@ -284,6 +295,14 @@ async fn event_loop(
                     app.status = "ready".to_string();
                 }
             }
+            usage_result = usage_rx.recv() => {
+                if let Some(result) = usage_result {
+                    usage_inflight = false;
+                    if let Some(bar) = app.usage.as_mut() {
+                        bar.apply(result);
+                    }
+                }
+            }
             approval = approval_rx.recv() => {
                 if let Some(request) = approval {
                     app.status = format!("approve `{}`? y/n — {}", request.tool, request.detail);
@@ -295,6 +314,9 @@ async fn event_loop(
             }
             _ = branch_tick.tick(), if !app.busy => {
                 app.refresh_git_branch();
+            }
+            _ = usage_tick.tick(), if app.usage.is_some() && !usage_inflight => {
+                usage_inflight = spawn_usage_refresh(&config, &app.usage_settings, &usage_tx);
             }
         }
 
@@ -341,6 +363,7 @@ fn handle_key(
     models_tx: &UnboundedSender<Result<Vec<String>, String>>,
     mcps_tx: &UnboundedSender<Vec<(String, String, McpStatus)>>,
     plugins_tx: &UnboundedSender<String>,
+    usage_tx: &UnboundedSender<Result<crate::portkey_usage::Snapshot, String>>,
 ) {
     // Ctrl+C copies an active mouse selection, otherwise quits. It still quits
     // while a dialog or the trust prompt is open (those never hold a selection).
@@ -353,6 +376,7 @@ fn handle_key(
 
     if app.connect.is_some() {
         handle_connect_key(key, app, config);
+        sync_usage_bar(app, config, usage_tx);
         return;
     }
 
@@ -613,6 +637,7 @@ fn handle_key(
                 match logout_provider(&provider) {
                     Ok(true) => {
                         config.api_key.clear();
+                        sync_usage_bar(app, config, usage_tx);
                         app.items.push(ChatItem::Info(format!(
                             "logged out of {provider} — run /login to reconnect"
                         )));
@@ -751,6 +776,12 @@ fn handle_key(
                             .to_string(),
                     )),
                 }
+                return;
+            }
+            if raw == "/usage" || raw.starts_with("/usage ") {
+                app.clear_input();
+                refresh_suggestions(app, config);
+                handle_usage_command(app, config, &raw, usage_tx);
                 return;
             }
             if raw == "/models" || raw.starts_with("/models ") {
@@ -1368,6 +1399,8 @@ fn help_text(config: &Config) -> String {
         "  /models [filter]      list and switch the active model".to_string(),
         "  /mcps                 list MCP servers and connection status".to_string(),
         "  /plugin               manage plugins and marketplaces".to_string(),
+        "  /usage [on|off|...]   Portkey spend bar (user, budget, currency, key)"
+            .to_string(),
         "  /undo, /redo          revert or reapply the agent's file changes".to_string(),
         "  /compact [focus]      summarize older context, optionally with a focus".to_string(),
         "  /copy                 copy the last assistant message".to_string(),
@@ -1414,6 +1447,235 @@ fn logout_provider(provider: &str) -> Result<bool> {
     } else {
         Ok(false)
     }
+}
+
+/// Starts a background fetch of today's and the month's Portkey spend for the
+/// configured user. Returns whether a request was started.
+fn spawn_usage_refresh(
+    config: &Config,
+    settings: &crate::portkey_usage::UsageSettings,
+    usage_tx: &UnboundedSender<Result<crate::portkey_usage::Snapshot, String>>,
+) -> bool {
+    let Some(key) = settings.effective_key(config) else {
+        return false;
+    };
+    let settings = settings.clone();
+    let key = key.to_string();
+    let tx = usage_tx.clone();
+    tokio::spawn(async move {
+        let result = crate::portkey_usage::spend(&settings, &key)
+            .await
+            .map_err(|err| format!("{err:#}"));
+        let _ = tx.send(result);
+    });
+    true
+}
+
+/// Shows or hides the bar to match the settings and the logged-in provider, and
+/// starts a fetch when it first appears. A login (or a provider change) can make
+/// an already-enabled bar usable, so this runs after the connect dialog too.
+fn sync_usage_bar(
+    app: &mut App,
+    config: &Config,
+    usage_tx: &UnboundedSender<Result<crate::portkey_usage::Snapshot, String>>,
+) {
+    let wanted = app.usage_settings.enabled && app.usage_settings.available(config);
+    match (wanted, app.usage.is_some()) {
+        (true, false) => {
+            app.usage = Some(crate::portkey_usage::UsageBar::new(&app.usage_settings));
+            spawn_usage_refresh(config, &app.usage_settings, usage_tx);
+        }
+        (false, true) => app.usage = None,
+        _ => {}
+    }
+}
+
+/// `/usage`: configure and toggle the Portkey spend bar.
+fn handle_usage_command(
+    app: &mut App,
+    config: &Config,
+    raw: &str,
+    usage_tx: &UnboundedSender<Result<crate::portkey_usage::Snapshot, String>>,
+) {
+    const HINT: &str = "usage: /usage on|off · /usage user <firstname.lastname> · /usage budget <amount|off> · /usage currency <usd|cny> · /usage key <pk-...> · /usage metadata <key>";
+    let args = raw.strip_prefix("/usage").unwrap_or_default().trim();
+    let (verb, rest) = match args.split_once(char::is_whitespace) {
+        Some((verb, rest)) => (verb, rest.trim()),
+        None => (args, ""),
+    };
+    let mut settings = app.usage_settings.clone();
+
+    let (changed, note, refresh) = match verb {
+        "" | "status" => {
+            app.items
+                .push(ChatItem::Info(crate::portkey_usage::status_text(
+                    &settings, config,
+                )));
+            if settings.available(config) {
+                spawn_usage_refresh(config, &settings, usage_tx);
+            }
+            return;
+        }
+        "on" => {
+            if !config.is_portkey() {
+                app.items.push(ChatItem::Error(
+                    "the Portkey spend bar needs a Portkey login — run /login portkey".to_string(),
+                ));
+                return;
+            }
+            if settings.user.trim().is_empty() {
+                app.items.push(ChatItem::Error(
+                    "set the Portkey username first: /usage user <firstname.lastname>".to_string(),
+                ));
+                return;
+            }
+            if settings.effective_key(config).is_none() {
+                app.items.push(ChatItem::Error(
+                    "no Portkey API key — run /login portkey or set one with /usage key <pk-...>"
+                        .to_string(),
+                ));
+                return;
+            }
+            settings.enabled = true;
+            (
+                true,
+                Some(format!("portkey usage bar on ({})", settings.user.trim())),
+                true,
+            )
+        }
+        "off" => {
+            settings.enabled = false;
+            (true, Some("portkey usage bar off".to_string()), false)
+        }
+        "user" => {
+            if rest.is_empty() || rest.split_whitespace().count() > 1 {
+                app.items.push(ChatItem::Error(
+                    "usage: /usage user <firstname.lastname> (one word)".to_string(),
+                ));
+                return;
+            }
+            settings.user = rest.to_string();
+            let enabled = settings.enabled && settings.available(config);
+            if settings.enabled && !enabled {
+                app.items.push(ChatItem::Error(
+                    "the Portkey spend bar needs a Portkey login — run /login portkey".to_string(),
+                ));
+            }
+            (true, Some(format!("portkey user set to {rest}")), enabled)
+        }
+        "key" => {
+            if rest.is_empty() {
+                app.items.push(ChatItem::Error(
+                    "usage: /usage key <pk-...> (or `off` to use the provider key)".to_string(),
+                ));
+                return;
+            }
+            settings.api_key = if matches!(rest, "off" | "none" | "default") {
+                String::new()
+            } else {
+                rest.to_string()
+            };
+            let note = if settings.api_key.is_empty() {
+                "portkey usage key cleared; using the provider credential".to_string()
+            } else {
+                format!("portkey usage key set ({})", mask(&settings.api_key))
+            };
+            (true, Some(note), settings.enabled)
+        }
+        "budget" => {
+            let amount = rest.trim();
+            match amount.chars().next() {
+                Some('$') => settings.currency = crate::portkey_usage::Currency::Usd,
+                Some('¥' | '￥') => settings.currency = crate::portkey_usage::Currency::Cny,
+                _ => {}
+            }
+            settings.budget = amount
+                .trim_start_matches(['$', '¥', '￥'])
+                .parse::<f64>()
+                .ok()
+                .filter(|value| *value > 0.0 && value.is_finite());
+            let note = match settings.budget {
+                Some(budget) => format!(
+                    "portkey month budget set to {}",
+                    settings.currency.format(budget)
+                ),
+                None => "portkey month budget cleared".to_string(),
+            };
+            (true, Some(note), false)
+        }
+        "currency" => {
+            let Some(currency) = crate::portkey_usage::Currency::parse(rest) else {
+                app.items.push(ChatItem::Error(
+                    "usage: /usage currency <usd|cny> (also `$` or `¥`)".to_string(),
+                ));
+                return;
+            };
+            settings.currency = currency;
+            let note = match settings.budget {
+                Some(budget) => format!(
+                    "portkey budget currency set to {} ({})",
+                    currency.name(),
+                    currency.format(budget)
+                ),
+                None => format!("portkey budget currency set to {}", currency.name()),
+            };
+            (true, Some(note), false)
+        }
+        "metadata" => {
+            if rest.is_empty() {
+                app.items.push(ChatItem::Error(
+                    "usage: /usage metadata <key> (e.g. `_user` or `email`)".to_string(),
+                ));
+                return;
+            }
+            settings.metadata_key = rest.to_string();
+            (
+                true,
+                Some(format!("portkey user metadata key set to {rest}")),
+                settings.enabled,
+            )
+        }
+        other => {
+            app.items.push(ChatItem::Error(format!(
+                "unknown /usage option `{other}`\n{HINT}"
+            )));
+            return;
+        }
+    };
+
+    if changed {
+        if let Err(err) = settings.save() {
+            app.items.push(ChatItem::Error(format!("usage: {err:#}")));
+            return;
+        }
+    }
+    app.usage_settings = settings.clone();
+    if !settings.enabled || !settings.available(config) {
+        app.usage = None;
+    } else if let Some(bar) = app.usage.as_mut() {
+        bar.update(&settings);
+    } else {
+        app.usage = Some(crate::portkey_usage::UsageBar::new(&settings));
+    }
+    if refresh {
+        spawn_usage_refresh(config, &settings, usage_tx);
+    }
+    if let Some(note) = note {
+        app.items.push(ChatItem::Info(note));
+    }
+}
+
+/// Masks a credential for display (`pk-test-1234` -> `pk-te...1234`).
+fn mask(key: &str) -> String {
+    let chars: Vec<char> = key.chars().collect();
+    if chars.len() <= 8 {
+        return "…".to_string();
+    }
+    format!(
+        "{}...{}",
+        chars[..4].iter().collect::<String>(),
+        chars[chars.len() - 4..].iter().collect::<String>()
+    )
 }
 
 /// Keyboard shortcuts shown by `/hotkeys`.
@@ -1802,6 +2064,10 @@ fn builtin_commands() -> Vec<CommandHint> {
         CommandHint {
             name: "plugin".to_string(),
             description: "manage plugins and marketplaces".to_string(),
+        },
+        CommandHint {
+            name: "usage".to_string(),
+            description: "Portkey spend bar".to_string(),
         },
         CommandHint {
             name: "connect".to_string(),
@@ -3178,5 +3444,134 @@ mod tests {
 
         state.filter = "alpha".to_string();
         assert_eq!(state.selected_session().unwrap().id, "aaa");
+    }
+
+    #[tokio::test]
+    async fn usage_command_configures_and_toggles_the_bar() {
+        let dir = std::env::temp_dir().join(format!("oxide_usage_cmd_{}", std::process::id()));
+        std::fs::remove_dir_all(&dir).ok();
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("portkey-usage.json");
+        std::env::set_var("OXIDE_USAGE_FILE", &path);
+
+        let mut app = test_app();
+        // Point the bar at a closed port so a refresh cannot reach the network.
+        app.usage_settings.base_url = "http://127.0.0.1:9".to_string();
+        let mut config = Config::default();
+        let (tx, _rx) = unbounded_channel();
+
+        handle_usage_command(&mut app, &config, "/usage", &tx);
+        assert!(matches!(
+            app.items.last(),
+            Some(ChatItem::Info(text)) if text.contains("bar: off")
+        ));
+
+        handle_usage_command(&mut app, &config, "/usage on", &tx);
+        assert!(matches!(
+            app.items.last(),
+            Some(ChatItem::Error(text)) if text.contains("needs a Portkey login")
+        ));
+        assert!(app.usage.is_none());
+
+        handle_usage_command(&mut app, &config, "/usage user firstname.lastname", &tx);
+        handle_usage_command(&mut app, &config, "/usage budget 600", &tx);
+        assert!(matches!(
+            app.items.last(),
+            Some(ChatItem::Info(text)) if text.contains("budget set to $600.00")
+        ));
+        handle_usage_command(&mut app, &config, "/usage currency ¥", &tx);
+        assert!(matches!(
+            app.items.last(),
+            Some(ChatItem::Info(text)) if text.contains("currency set to cny (¥600.00)")
+        ));
+        handle_usage_command(&mut app, &config, "/usage budget ¥601", &tx);
+        assert!(matches!(
+            app.items.last(),
+            Some(ChatItem::Info(text)) if text.contains("budget set to ¥601.00")
+        ));
+        handle_usage_command(&mut app, &config, "/usage budget 600", &tx);
+        handle_usage_command(&mut app, &config, "/usage currency eur", &tx);
+        assert!(matches!(
+            app.items.last(),
+            Some(ChatItem::Error(text)) if text.contains("currency <usd|cny>")
+        ));
+
+        handle_usage_command(&mut app, &config, "/usage on", &tx);
+        assert!(app.usage.is_none(), "a Portkey login is still missing");
+
+        config.apply_provider("portkey", "pk-test");
+        handle_usage_command(&mut app, &config, "/usage on", &tx);
+        assert!(app.usage.is_some());
+        assert!(matches!(
+            app.items.last(),
+            Some(ChatItem::Info(text)) if text.contains("bar on")
+        ));
+        assert_eq!(
+            app.usage.as_ref().unwrap().columns(0.0),
+            "Session: $0.00 | Today: … | Month: … / ¥600.00"
+        );
+
+        let saved = crate::portkey_usage::UsageSettings::load_from(&path).unwrap();
+        assert!(saved.enabled);
+        assert_eq!(saved.user, "firstname.lastname");
+        assert_eq!(saved.budget, Some(600.0));
+        assert_eq!(saved.currency, crate::portkey_usage::Currency::Cny);
+        handle_usage_command(&mut app, &config, "/usage budget $600", &tx);
+        assert_eq!(
+            crate::portkey_usage::UsageSettings::load_from(&path)
+                .unwrap()
+                .currency,
+            crate::portkey_usage::Currency::Usd,
+            "a `$` amount switches the currency back"
+        );
+
+        handle_usage_command(&mut app, &config, "/usage key pk-usage-key", &tx);
+        assert!(matches!(
+            app.items.last(),
+            Some(ChatItem::Info(text)) if text.contains("pk-u...-key")
+        ));
+
+        handle_usage_command(&mut app, &config, "/usage off", &tx);
+        assert!(app.usage.is_none());
+        sync_usage_bar(&mut app, &config, &tx);
+        assert!(app.usage.is_none(), "off stays off");
+        assert!(
+            !crate::portkey_usage::UsageSettings::load_from(&path)
+                .unwrap()
+                .enabled
+        );
+
+        handle_usage_command(&mut app, &config, "/usage bogus", &tx);
+        assert!(matches!(
+            app.items.last(),
+            Some(ChatItem::Error(text)) if text.contains("unknown /usage option")
+        ));
+
+        std::env::remove_var("OXIDE_USAGE_FILE");
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[tokio::test]
+    async fn a_portkey_login_shows_an_enabled_bar() {
+        let mut app = test_app();
+        app.usage_settings = crate::portkey_usage::UsageSettings {
+            enabled: true,
+            user: "firstname.lastname".to_string(),
+            base_url: "http://127.0.0.1:9".to_string(),
+            ..Default::default()
+        };
+        let mut config = Config::default();
+        let (tx, _rx) = unbounded_channel();
+
+        sync_usage_bar(&mut app, &config, &tx);
+        assert!(app.usage.is_none(), "no Portkey login yet");
+
+        config.apply_provider("portkey", "pk-test");
+        sync_usage_bar(&mut app, &config, &tx);
+        assert!(app.usage.is_some(), "the login makes the bar usable");
+
+        config.apply_provider("openai", "sk-test");
+        sync_usage_bar(&mut app, &config, &tx);
+        assert!(app.usage.is_none(), "another provider hides it again");
     }
 }

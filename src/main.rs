@@ -17,6 +17,7 @@ mod memory;
 mod permission;
 mod plugin;
 mod plugin_registry;
+mod portkey_usage;
 mod pricing;
 mod session;
 mod sessions;
@@ -811,7 +812,7 @@ async fn spawn_agent(request: RunRequest<'_>, tx: tokio::sync::mpsc::UnboundedSe
         log,
     } = request;
     let mcp = Arc::new(McpRegistry::new(&config.ecosystem.mcp));
-    let plugins = Arc::new(PluginHost::spawn(&config.ecosystem.plugins, cwd).await);
+    let plugins = Arc::new(PluginHost::spawn(&config.ecosystem.hooks, cwd).await);
     let auto_approve = config.auto_approve;
     let approve: Approver = Arc::new(move |tool, detail| {
         if !auto_approve {
