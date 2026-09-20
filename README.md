@@ -1,3 +1,12 @@
+```text
+ ██████╗  ██╗  ██╗ ██╗ ██████╗  ███████╗
+██╔═══██╗ ╚██╗██╔╝ ██║ ██╔══██╗ ██╔════╝
+██║   ██║  ╚███╔╝  ██║ ██║  ██║ █████╗
+██║   ██║  ██╔██╗  ██║ ██║  ██║ ██╔══╝
+╚██████╔╝ ██╔╝ ██╗ ██║ ██████╔╝ ███████╗
+ ╚═════╝  ╚═╝  ╚═╝ ╚═╝ ╚═════╝  ╚══════╝
+```
+
 # oxide
 
 A native Rust AI coding agent CLI for the terminal. oxide streams from
@@ -89,17 +98,17 @@ box, with Claude Code configuration support for compatibility.
   decision.
 - Themes: built-in `dark` and `light` plus custom `.oxide/themes/<name>.json`,
   selected with `--use-theme` or `/theme`.
-- Focused terminal layout: the welcome banner shows the `OXIDE` wordmark beside
-  a short summary of the loaded ecosystem, context files, and MCP/plugin/memory
-  state; current activity and elapsed time live in the status row, and the
-  footer shows the abbreviated working directory with the git branch and session
-  name, cumulative usage (`↑`/`↓`, `R`/`W` cache tokens and `CH` hit rate when
-  reported, `$cost` from the model price table, including summary generation),
-  context usage as `%`/window with an `(auto)` marker, and the right-aligned
-  model and thinking level; plugins can add a third status row. The editor
-  matches Pi: full-width top and bottom rules colored by the thinking level that
-  grow to 12 rows, and semantic colors keep dark, light, and custom themes
-  consistent.
+- Focused terminal layout: the welcome banner stacks the block-letter `OXIDE`
+  wordmark above a short summary of the loaded ecosystem, context files, and
+  MCP/plugin/memory state; current activity and elapsed time live in the status
+  row, and the footer shows the abbreviated working directory with the git
+  branch and session name, cumulative usage (`↑`/`↓`, `R`/`W` cache tokens and
+  `CH` hit rate when reported, `$cost` from the model price table, including
+  summary generation), context usage as `%`/window with an `(auto)` marker, and
+  the right-aligned model and thinking level; plugins can add a third status
+  row. The editor matches Pi: full-width top and bottom rules colored by the
+  thinking level that grow to 12 rows, and semantic colors keep dark, light, and
+  custom themes consistent.
 
 ## Comparison
 
@@ -207,12 +216,13 @@ oxide
 
 ### Keyboard shortcuts
 
-The welcome area pairs the `OXIDE` wordmark with a short summary of the loaded
-ecosystem, context files, and MCP/plugin/memory state. Run `/hotkeys` for the
-full shortcut list. The status row above the editor shows the current activity
-and elapsed time, and the footer shows the project path with the Git branch and
-session name, cumulative usage (including cache and cost), context usage, and
-the current model and thinking level (plus a plugin status row when present).
+The welcome area stacks the `OXIDE` wordmark above a short summary of the
+loaded ecosystem, context files, and MCP/plugin/memory state. Run `/hotkeys`
+for the full shortcut list. The status row above the editor shows the current
+activity and elapsed time, and the footer shows the project path with the Git
+branch and session name, cumulative usage (including cache and cost), context
+usage, and the current model and thinking level (plus a plugin status row when
+present).
 
 | Key | Action |
 | --- | --- |

@@ -64,14 +64,16 @@ description: Use when navigating or modifying the oxide internals — the agent 
   (`McpRegistry`, stdio/HTTP), the `oxide mcp` CLI that reads/writes
   `.oxide/mcp.json`, and the OAuth authorization-code + PKCE flow for remote
   servers.
-- `src/tui/` — `run` entry plus `app`/`ui` for rendering and input; renders each
-  tool call as one background-filled panel (header, blank line, body, and `Took`
-  footer) colored by state, shows bodies by default and `read` file contents
-  (Ctrl+O collapses), wraps long actions and tool output with a hanging indent,
-  times slow non-shell tools, renders concise `Run`/`Ran` shell actions, shows
-  inline user/assistant labels and colored edit diffs, and draws the Pi-style
-  footer (path/branch/session, cumulative tokens with cache and cost, context
-  `%`/window, model/thinking, and plugin statuses).
+- `src/tui/` — `run` entry plus `app`/`ui` for rendering and input; renders the
+  welcome banner as the block-letter `OXIDE` wordmark stacked above the
+  ecosystem summary (falling back to plain `oxide` text on narrow terminals),
+  renders each tool call as one background-filled panel (header, blank line,
+  body, and `Took` footer) colored by state, shows bodies by default and `read`
+  file contents (Ctrl+O collapses), wraps long actions and tool output with a
+  hanging indent, times slow non-shell tools, renders concise `Run`/`Ran` shell
+  actions, shows inline user/assistant labels and colored edit diffs, and draws
+  the Pi-style footer (path/branch/session, cumulative tokens with cache and
+  cost, context `%`/window, model/thinking, and plugin statuses).
 
 ## Adding a model provider
 
