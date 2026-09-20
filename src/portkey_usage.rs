@@ -291,6 +291,18 @@ pub fn status_text(settings: &UsageSettings, config: &Config) -> String {
     )
 }
 
+/// A shared client so refreshes reuse connections instead of rebuilding the
+/// pool (and re-doing TLS setup) on every tick.
+fn usage_client() -> &'static reqwest::Client {
+    static CLIENT: OnceLock<reqwest::Client> = OnceLock::new();
+    CLIENT.get_or_init(|| {
+        reqwest::Client::builder()
+            .timeout(REQUEST_TIMEOUT)
+            .build()
+            .unwrap_or_else(|_| reqwest::Client::new())
+    })
+}
+
 /// Queries today's and the current month's spend for the configured user.
 pub async fn spend(settings: &UsageSettings, key: &str) -> Result<Snapshot> {
     let now = SystemTime::now()
@@ -300,13 +312,16 @@ pub async fn spend(settings: &UsageSettings, key: &str) -> Result<Snapshot> {
     let offset = local_offset_seconds();
     let (today_start, month_start) = windows(now, offset);
     let max = iso8601(now, offset);
-    let client = reqwest::Client::builder()
-        .timeout(REQUEST_TIMEOUT)
-        .build()
-        .context("building the Portkey usage client")?;
-    let today = window_cost(&client, settings, key, today_start, &max, offset).await?;
-    let month = window_cost(&client, settings, key, month_start, &max, offset).await?;
-    Ok(Snapshot { today, month })
+    // The two windows are independent, so query them together: a refresh then
+    // costs one round trip instead of two.
+    let (today, month) = tokio::join!(
+        window_cost(usage_client(), settings, key, today_start, &max, offset),
+        window_cost(usage_client(), settings, key, month_start, &max, offset),
+    );
+    Ok(Snapshot {
+        today: today?,
+        month: month?,
+    })
 }
 
 /// The epoch-second starts of the local day and local month containing `now`.
@@ -775,11 +790,11 @@ mod tests {
 
     #[tokio::test]
     async fn spend_queries_the_cost_graph_and_reads_cents() {
-        const TODAY: &str =
+        const COST: &str =
             r#"{"summary":{"total":2061,"avg":10},"data_points":[],"object":"analytics-graph"}"#;
-        const MONTH: &str =
-            r#"{"summary":{"total":22069,"avg":10},"data_points":[],"object":"analytics-graph"}"#;
-        let (addr, server) = serve(vec![(200, TODAY), (200, MONTH)]).await;
+        // Both windows return the same body: the two requests are concurrent,
+        // so the server cannot depend on their order.
+        let (addr, server) = serve(vec![(200, COST), (200, COST)]).await;
         let settings = UsageSettings {
             user: "firstname.lastname".to_string(),
             base_url: format!("http://{addr}"),
@@ -788,7 +803,7 @@ mod tests {
 
         let snapshot = spend(&settings, "pk-test").await.unwrap();
         assert_eq!(snapshot.today, 20.61);
-        assert_eq!(snapshot.month, 220.69);
+        assert_eq!(snapshot.month, 20.61);
 
         let requests = server.await.unwrap();
         assert_eq!(requests.len(), 2);
@@ -820,9 +835,16 @@ mod tests {
                 .map(|(key, value)| (key.to_string(), value.to_string()))
                 .collect()
         };
-        let today = query(&requests[0]);
-        let month = query(&requests[1]);
-        assert!(today["time_of_generation_min"] > month["time_of_generation_min"]);
+        let first = query(&requests[0]);
+        let second = query(&requests[1]);
+        let (month, today) = if first["time_of_generation_min"] <= second["time_of_generation_min"]
+        {
+            (first, second)
+        } else {
+            (second, first)
+        };
+        // Equal on the first of the month, otherwise the day window is later.
+        assert!(today["time_of_generation_min"] >= month["time_of_generation_min"]);
         assert_eq!(
             today["time_of_generation_max"],
             month["time_of_generation_max"]
@@ -832,7 +854,8 @@ mod tests {
     #[tokio::test]
     async fn spend_surfaces_api_errors() {
         let body = r#"{"success":false,"data":{"message":"Invalid API key","errorCode":"AB05"}}"#;
-        let (addr, _server) = serve(vec![(401, body)]).await;
+        // The two windows are fetched concurrently, so serve both connections.
+        let (addr, _server) = serve(vec![(401, body), (401, body)]).await;
         let settings = UsageSettings {
             user: "firstname.lastname".to_string(),
             base_url: format!("http://{addr}"),
@@ -842,5 +865,47 @@ mod tests {
         let error = spend(&settings, "pk-bad").await.unwrap_err().to_string();
         assert!(error.contains("401"), "{error}");
         assert!(error.contains("Invalid API key"), "{error}");
+    }
+
+    #[tokio::test]
+    async fn spend_queries_both_windows_concurrently() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+        // Two connections, each answered after a delay. Sequentially the two
+        // windows cost two delays; concurrently they cost one.
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            for _ in 0..2 {
+                let (mut socket, _) = listener.accept().await.unwrap();
+                tokio::spawn(async move {
+                    let mut buffer = vec![0u8; 4096];
+                    let _ = socket.read(&mut buffer).await;
+                    tokio::time::sleep(std::time::Duration::from_millis(600)).await;
+                    let body = r#"{"summary":{"total":100}}"#;
+                    let response = format!(
+                        "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",
+                        body.len()
+                    );
+                    let _ = socket.write_all(response.as_bytes()).await;
+                });
+            }
+        });
+
+        let settings = UsageSettings {
+            user: "firstname.lastname".to_string(),
+            base_url: format!("http://{addr}"),
+            ..UsageSettings::default()
+        };
+        let start = std::time::Instant::now();
+        let snapshot = spend(&settings, "pk-test").await.unwrap();
+        let elapsed = start.elapsed();
+        assert_eq!(snapshot.today, 1.0);
+        assert_eq!(snapshot.month, 1.0);
+        assert!(
+            elapsed < std::time::Duration::from_millis(1000),
+            "spend took {elapsed:?}; the windows were not queried concurrently"
+        );
+        server.await.unwrap();
     }
 }
