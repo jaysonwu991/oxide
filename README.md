@@ -96,9 +96,10 @@ box, with Claude Code configuration support for compatibility.
   name, cumulative usage (`↑`/`↓`, `R`/`W` cache tokens and `CH` hit rate when
   reported, `$cost` from the model price table, including summary generation),
   context usage as `%`/window with an `(auto)` marker, and the right-aligned
-  model and thinking level; plugins can add a third status row. The labeled
-  editor grows to 12 rows, and semantic colors keep dark, light, and custom
-  themes consistent.
+  model and thinking level; plugins can add a third status row. The editor
+  matches Pi: full-width top and bottom rules colored by the thinking level that
+  grow to 12 rows, and semantic colors keep dark, light, and custom themes
+  consistent.
 
 ## Comparison
 
