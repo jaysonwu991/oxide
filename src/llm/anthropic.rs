@@ -105,19 +105,33 @@ pub fn apply_event(
 
     match value["type"].as_str() {
         Some("message_start") => {
-            if let Some(tokens) = value["message"]["usage"]["input_tokens"].as_u64() {
+            let usage = &value["message"]["usage"];
+            if let Some(tokens) = usage["input_tokens"].as_u64() {
                 turn.usage.input = tokens;
             }
-            if let Some(tokens) = value["message"]["usage"]["output_tokens"].as_u64() {
+            if let Some(tokens) = usage["output_tokens"].as_u64() {
                 turn.usage.output = tokens;
+            }
+            if let Some(tokens) = usage["cache_read_input_tokens"].as_u64() {
+                turn.usage.cache_read = tokens;
+            }
+            if let Some(tokens) = usage["cache_creation_input_tokens"].as_u64() {
+                turn.usage.cache_write = tokens;
             }
         }
         Some("message_delta") => {
-            if let Some(tokens) = value["usage"]["output_tokens"].as_u64() {
+            let usage = &value["usage"];
+            if let Some(tokens) = usage["output_tokens"].as_u64() {
                 turn.usage.output = tokens;
             }
-            if let Some(tokens) = value["usage"]["input_tokens"].as_u64() {
+            if let Some(tokens) = usage["input_tokens"].as_u64() {
                 turn.usage.input = tokens;
+            }
+            if let Some(tokens) = usage["cache_read_input_tokens"].as_u64() {
+                turn.usage.cache_read = tokens;
+            }
+            if let Some(tokens) = usage["cache_creation_input_tokens"].as_u64() {
+                turn.usage.cache_write = tokens;
             }
         }
         Some("content_block_start") => {

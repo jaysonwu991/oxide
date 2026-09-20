@@ -98,7 +98,20 @@ async fn event_loop(
         config.reasoning,
     );
     app.context_limit = context_limit(&config);
+    app.provider = config.provider.clone();
+    app.auto_compact = config.compaction.enabled;
+    app.available_providers = available_providers(&config);
     app.session_name = session.as_ref().and_then(|log| log.name());
+    if let Some(log) = &session {
+        let totals = log.usage_totals();
+        app.tokens_in = totals.input;
+        app.tokens_out = totals.output;
+        app.tokens_cache_read = totals.cache_read;
+        app.tokens_cache_write = totals.cache_write;
+        app.cost = totals.cost;
+        app.cache_hit_rate = totals.cache_hit_rate;
+    }
+    app.show_thinking = config.supports_reasoning();
     app.theme = config.theme.clone();
 
     // Project trust: prompt once for projects with resources that can execute
@@ -244,7 +257,11 @@ async fn event_loop(
             }
             agent_event = recv_opt(&mut rx) => {
                 if let Some(event) = agent_event {
+                    let finished = matches!(event, AgentEvent::Finished(_));
                     handle_agent_event(event, &mut app);
+                    if finished && plugins.is_active() {
+                        app.extension_statuses = plugins.statuses().await;
+                    }
                     got_agent_event = true;
                 }
             }
@@ -382,6 +399,9 @@ fn handle_key(
         KeyCode::Char('r') if key.modifiers.contains(KeyModifiers::CONTROL) => {
             config.reasoning = config.reasoning.next();
             app.reasoning = config.reasoning;
+            if let Some(log) = session.as_ref() {
+                let _ = log.append_thinking_level(config.reasoning.label());
+            }
             app.status = if app.reasoning == Reasoning::Auto {
                 "reasoning: auto (provider native)".to_string()
             } else {
@@ -462,28 +482,98 @@ fn handle_key(
                 copy_command(app, raw.ends_with(" all"));
                 return;
             }
-            if raw == "/compact" {
+            if raw == "/compact" || raw.starts_with("/compact ") {
                 app.clear_input();
                 refresh_suggestions(app, config);
                 if app.busy {
                     return;
                 }
+                let instructions = raw
+                    .strip_prefix("/compact")
+                    .unwrap_or_default()
+                    .trim()
+                    .to_string();
                 let config = config.clone();
                 let history = app.history.clone();
-                let fallback = history.clone();
+                let log = session.clone();
                 let (tx, new_rx) = unbounded_channel();
                 *rx = Some(new_rx);
                 app.busy = true;
                 app.busy_since = Some(std::time::Instant::now());
                 app.status = "compacting...".to_string();
                 tokio::spawn(async move {
-                    match crate::compact::compact(&config, history).await {
-                        Ok(messages) => {
-                            let _ = tx.send(AgentEvent::Finished(messages));
+                    let Some(log) = log else {
+                        let fallback = history.clone();
+                        match crate::compact::compact_messages(
+                            &config,
+                            history,
+                            Some(&instructions),
+                        )
+                        .await
+                        {
+                            Ok(messages) => {
+                                let _ = tx.send(AgentEvent::Finished(messages));
+                            }
+                            Err(err) => {
+                                let _ = tx.send(AgentEvent::Error(format!("compact: {err:#}")));
+                                let _ = tx.send(AgentEvent::Finished(fallback));
+                            }
+                        }
+                        return;
+                    };
+                    let budget = config.compaction.resolve(&config.provider, &config.model);
+                    let tokens = crate::compact::estimate_tokens(&history) as u64;
+                    match crate::compact::generate(
+                        &config,
+                        &history,
+                        &[],
+                        budget,
+                        tokens,
+                        Some(&instructions),
+                    )
+                    .await
+                    {
+                        Ok(Some(compaction)) => {
+                            let first_kept = log
+                                .context_ids()
+                                .get(compaction.first_kept)
+                                .cloned()
+                                .unwrap_or_else(|| compaction.first_kept.to_string());
+                            let _ = log.append_compaction(
+                                compaction.summary.clone(),
+                                first_kept,
+                                compaction.tokens_before,
+                                Some(compaction.details.clone()),
+                                compaction.usage,
+                            );
+                            let refreshed = log.messages().unwrap_or(history);
+                            if let Some(usage) = compaction.usage {
+                                let _ = tx.send(AgentEvent::Usage {
+                                    input: usage.input,
+                                    output: usage.output,
+                                    cache_read: usage.cache_read,
+                                    cache_write: usage.cache_write,
+                                    cost: usage.cost,
+                                });
+                            }
+                            let _ = tx.send(AgentEvent::Compaction {
+                                summary: compaction.summary.clone(),
+                                summarized: compaction.summarized,
+                                tokens_before: compaction.tokens_before,
+                                read_files: compaction.details.read_files.clone(),
+                                modified_files: compaction.details.modified_files.clone(),
+                            });
+                            let _ = tx.send(AgentEvent::Finished(refreshed));
+                        }
+                        Ok(None) => {
+                            let _ = tx.send(AgentEvent::Error(
+                                "compact: nothing to compact yet".to_string(),
+                            ));
+                            let _ = tx.send(AgentEvent::Finished(history));
                         }
                         Err(err) => {
                             let _ = tx.send(AgentEvent::Error(format!("compact: {err:#}")));
-                            let _ = tx.send(AgentEvent::Finished(fallback));
+                            let _ = tx.send(AgentEvent::Finished(history));
                         }
                     }
                 });
@@ -735,22 +825,7 @@ fn handle_key(
                     .parse::<usize>()
                     .ok();
                 match requested {
-                    Some(index) => match fork_point(&app.history, index) {
-                        Some((cut, prompt)) => match SessionLog::fork(cwd, &app.history[..cut]) {
-                            Ok(log) => {
-                                app.history.truncate(cut);
-                                *session = Some(log);
-                                app.set_input(prompt);
-                                app.items.push(ChatItem::Info(format!(
-                                    "forked at message {index} — edit and resend"
-                                )));
-                            }
-                            Err(err) => app.items.push(ChatItem::Error(format!("{err:#}"))),
-                        },
-                        None => app.items.push(ChatItem::Error(format!(
-                            "no user message at index {index} (1-based)"
-                        ))),
-                    },
+                    Some(index) => fork_session(app, config, cwd, session, rx, index),
                     None => {
                         for (position, message) in user_messages(&app.history) {
                             let preview: String = message.chars().take(72).collect();
@@ -764,17 +839,33 @@ fn handle_key(
                 }
                 return;
             }
-            if raw == "/tree" {
+            if raw == "/tree" || raw.starts_with("/tree ") {
                 app.clear_input();
                 refresh_suggestions(app, config);
-                for (position, message) in user_messages(&app.history) {
-                    let preview: String = message.chars().take(72).collect();
-                    app.items
-                        .push(ChatItem::Info(format!("{position}. {preview}")));
+                if app.busy {
+                    return;
                 }
-                app.items.push(ChatItem::Info(
-                    "branch with /fork <n> or duplicate with /clone".to_string(),
-                ));
+                let requested = raw
+                    .strip_prefix("/tree")
+                    .unwrap_or_default()
+                    .trim()
+                    .parse::<usize>()
+                    .ok();
+                match requested {
+                    Some(index) => branch_in_place(app, config, session, rx, index),
+                    None => {
+                        for (position, message) in user_messages(&app.history) {
+                            let preview: String = message.chars().take(72).collect();
+                            app.items
+                                .push(ChatItem::Info(format!("{position}. {preview}")));
+                        }
+                        app.items.push(ChatItem::Info(
+                            "use /tree <n> to branch there (the abandoned path is summarized) \
+                             or /clone to duplicate"
+                                .to_string(),
+                        ));
+                    }
+                }
                 return;
             }
             if raw == "/new" {
@@ -785,6 +876,13 @@ fn handle_key(
                 }
                 app.history.clear();
                 app.items.clear();
+                app.tokens_in = 0;
+                app.tokens_out = 0;
+                app.tokens_cache_read = 0;
+                app.tokens_cache_write = 0;
+                app.cost = 0.0;
+                app.cache_hit_rate = None;
+                app.context_used = 0;
                 app.invalidate_render_cache();
                 app.steering = crate::agent::Steering::new();
                 app.follow_ups = crate::agent::Steering::new();
@@ -865,6 +963,9 @@ fn handle_key(
                 if let Err(err) = Config::set_active_model_at(&Config::config_path(), requested) {
                     app.items.push(ChatItem::Error(format!("{err:#}")));
                 }
+                if let Some(log) = session.as_ref() {
+                    let _ = log.append_model_change(&config.provider, &config.model);
+                }
                 app.items
                     .push(ChatItem::Info(format!("model set to {requested}")));
                 return;
@@ -883,6 +984,9 @@ fn handle_key(
                 match crate::config::Reasoning::parse(requested) {
                     Some(level) => {
                         config.reasoning = level;
+                        if let Some(log) = session.as_ref() {
+                            let _ = log.append_thinking_level(level.label());
+                        }
                         app.items
                             .push(ChatItem::Info(format!("thinking set to {}", level.label())));
                     }
@@ -1222,13 +1326,21 @@ fn init_prompt() -> String {
 }
 
 /// The model's context window, used to show a Pi-style context percentage.
-/// Configurable with `OXIDE_CONTEXT_LIMIT`; falls back to a 128k default.
 fn context_limit(config: &Config) -> u64 {
-    std::env::var("OXIDE_CONTEXT_LIMIT")
-        .ok()
-        .and_then(|value| value.trim().parse::<u64>().ok())
-        .filter(|value| *value > 0)
-        .unwrap_or_else(|| (config.max_tokens as u64).max(128_000))
+    config.context_window()
+}
+
+/// Providers with a stored credential plus the active one. Pi shows the provider
+/// in the footer only when more than one is available.
+fn available_providers(config: &Config) -> usize {
+    let mut names: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+    if let Ok(store) = crate::auth::AuthStore::load() {
+        names.extend(store.entries.keys().cloned());
+    }
+    if !config.api_key.trim().is_empty() {
+        names.insert(config.provider.clone());
+    }
+    names.len().max(1)
 }
 
 fn help_text(config: &Config) -> String {
@@ -1243,7 +1355,7 @@ fn help_text(config: &Config) -> String {
         "  /model [id]           show or switch the active model".to_string(),
         "  /thinking [level]     show or set the thinking level".to_string(),
         "  /export [file]        export the session to HTML".to_string(),
-        "  /tree                 list user messages for branching".to_string(),
+        "  /tree [n]             list branch points, or branch at message n".to_string(),
         "  /fork [n]             branch a new session from message n".to_string(),
         "  /clone                duplicate the current session".to_string(),
         "  /reload               reload config, commands, and skills".to_string(),
@@ -1257,7 +1369,7 @@ fn help_text(config: &Config) -> String {
         "  /mcps                 list MCP servers and connection status".to_string(),
         "  /plugin               manage plugins and marketplaces".to_string(),
         "  /undo, /redo          revert or reapply the agent's file changes".to_string(),
-        "  /compact              summarize the conversation to free context".to_string(),
+        "  /compact [focus]      summarize older context, optionally with a focus".to_string(),
         "  /copy                 copy the last assistant message".to_string(),
         "  /copy all             copy the whole transcript".to_string(),
         "keys: Enter send/guide · Shift+Enter newline · Alt+Enter follow-up while busy · Shift+Tab mode · Ctrl+R reasoning · Ctrl+O tool details · Ctrl+V image · Ctrl+A/E message start/end · ↑/↓ history · PgUp/PgDn/wheel scroll · Ctrl+U/D half page · drag to select and copy · Ctrl+C copy selection/quit"
@@ -1363,6 +1475,166 @@ fn fork_point(history: &[Message], index: usize) -> Option<(usize, String)> {
     None
 }
 
+/// Branches the conversation at the `index`-th user message (1-based). When the
+/// abandoned tail is non-empty it is summarized into the new branch (Pi-style
+/// branch summarization), which runs asynchronously while the TUI stays busy.
+fn fork_session(
+    app: &mut App,
+    config: &Config,
+    cwd: &Path,
+    session: &mut Option<SessionLog>,
+    rx: &mut Option<UnboundedReceiver<AgentEvent>>,
+    index: usize,
+) {
+    let Some((cut, prompt)) = fork_point(&app.history, index) else {
+        app.items.push(ChatItem::Error(format!(
+            "no user message at index {index} (1-based)"
+        )));
+        return;
+    };
+    let abandoned = app.history[cut..].to_vec();
+    match SessionLog::fork(cwd, &app.history[..cut]) {
+        Ok(log) => {
+            app.history.truncate(cut);
+            *session = Some(log);
+            app.set_input(prompt);
+            app.items.push(ChatItem::Info(format!(
+                "forked at message {index} — edit and resend"
+            )));
+            if abandoned.is_empty() {
+                return;
+            }
+            let config = config.clone();
+            let log = session.clone();
+            let base = app.history.clone();
+            let (tx, new_rx) = unbounded_channel();
+            *rx = Some(new_rx);
+            app.busy = true;
+            app.busy_since = Some(std::time::Instant::now());
+            app.status = "summarizing branch...".to_string();
+            tokio::spawn(async move {
+                match crate::compact::summarize_branch(&config, &abandoned, None).await {
+                    Ok((summary, usage)) => {
+                        let history = if let Some(log) = &log {
+                            let leaf = log.leaf_id();
+                            let _ = log.branch_with_summary(
+                                leaf.as_deref(),
+                                summary,
+                                None,
+                                Some(usage.into()),
+                            );
+                            log.messages().unwrap_or(base)
+                        } else {
+                            let mut history = base;
+                            history.push(Message::user(format!("[branch summary]\n{summary}")));
+                            history
+                        };
+                        let _ = tx.send(AgentEvent::Usage {
+                            input: usage.input,
+                            output: usage.output,
+                            cache_read: usage.cache_read,
+                            cache_write: usage.cache_write,
+                            cost: usage.cost,
+                        });
+                        let _ = tx.send(AgentEvent::Finished(history));
+                    }
+                    Err(err) => {
+                        let _ = tx.send(AgentEvent::Error(format!("branch summary: {err:#}")));
+                        let _ = tx.send(AgentEvent::Finished(base));
+                    }
+                }
+            });
+        }
+        Err(err) => app.items.push(ChatItem::Error(format!("{err:#}"))),
+    }
+}
+
+/// Navigates the current session tree to the `index`-th user message and
+/// continues there, summarizing the abandoned path as a Pi-style
+/// `branch_summary` entry.
+fn branch_in_place(
+    app: &mut App,
+    config: &Config,
+    session: &mut Option<SessionLog>,
+    rx: &mut Option<UnboundedReceiver<AgentEvent>>,
+    index: usize,
+) {
+    let Some(log) = session.as_ref() else {
+        app.items.push(ChatItem::Error(
+            "no session to branch — send a message first".to_string(),
+        ));
+        return;
+    };
+    let entries = log.context();
+    let mut seen = 0usize;
+    let mut found = false;
+    let mut branch_from: Option<String> = None;
+    let mut prompt = String::new();
+    let mut abandoned: Vec<Message> = Vec::new();
+    for entry in &entries {
+        if let crate::session::Entry::Message(message) = entry {
+            if message.message.role == "user" {
+                seen += 1;
+                if seen == index {
+                    found = true;
+                    branch_from = entry.parent_id().map(str::to_string);
+                    prompt = message.message.display().unwrap_or_default();
+                }
+            }
+        }
+        if found {
+            abandoned.extend(entry.context_messages());
+        }
+    }
+    if !found {
+        app.items.push(ChatItem::Error(format!(
+            "no user message at index {index} (1-based)"
+        )));
+        return;
+    }
+    let log = log.clone();
+    let config = config.clone();
+    let (tx, new_rx) = unbounded_channel();
+    *rx = Some(new_rx);
+    app.busy = true;
+    app.busy_since = Some(std::time::Instant::now());
+    app.status = "summarizing branch...".to_string();
+    tokio::spawn(async move {
+        match crate::compact::summarize_branch(&config, &abandoned, None).await {
+            Ok((summary, usage)) => {
+                let _ = log.branch_with_summary(
+                    branch_from.as_deref(),
+                    summary,
+                    None,
+                    Some(usage.into()),
+                );
+                let history = log.messages().unwrap_or_default();
+                let _ = tx.send(AgentEvent::Usage {
+                    input: usage.input,
+                    output: usage.output,
+                    cache_read: usage.cache_read,
+                    cache_write: usage.cache_write,
+                    cost: usage.cost,
+                });
+                let _ = tx.send(AgentEvent::Branch {
+                    history,
+                    prompt,
+                    message: format!("branched at message {index} — edit and resend"),
+                });
+            }
+            Err(err) => {
+                let _ = tx.send(AgentEvent::Error(format!("branch summary: {err:#}")));
+                let history = log.messages().unwrap_or_default();
+                let _ = tx.send(AgentEvent::Branch {
+                    history,
+                    prompt,
+                    message: "branch summary failed".to_string(),
+                });
+            }
+        }
+    });
+}
+
 /// Human-readable session summary shown by `/session`.
 fn session_info(session: &Option<SessionLog>, history: &[Message]) -> String {
     match session {
@@ -1372,10 +1644,11 @@ fn session_info(session: &Option<SessionLog>, history: &[Message]) -> String {
             let assistant = history.iter().filter(|m| m.role == "assistant").count();
             let tools = history.iter().filter(|m| m.role == "tool").count();
             format!(
-                "session {}\nname: {}\nfile: {}\nmessages: {} user · {} assistant · {} tool",
+                "session {}\nname: {}\nfile: {}\nentries: {}\nmessages: {} user · {} assistant · {} tool",
                 log.id(),
                 name,
                 log.cwd(),
+                log.entries().len(),
                 user,
                 assistant,
                 tools
@@ -1917,6 +2190,14 @@ fn switch_session(app: &mut App, session: &mut Option<SessionLog>, log: SessionL
                 ),
             );
             app.session_name = log.name();
+            let totals = log.usage_totals();
+            app.tokens_in = totals.input;
+            app.tokens_out = totals.output;
+            app.tokens_cache_read = totals.cache_read;
+            app.tokens_cache_write = totals.cache_write;
+            app.cost = totals.cost;
+            app.cache_hit_rate = totals.cache_hit_rate;
+            app.context_used = 0;
             app.invalidate_render_cache();
             app.auto_scroll = true;
             *session = Some(log);
@@ -2267,20 +2548,7 @@ fn handle_agent_event(event: AgentEvent, app: &mut App) {
             app.auto_scroll = true;
             app.push_assistant_delta(delta);
         }
-        AgentEvent::Thought { millis } => {
-            app.auto_scroll = true;
-            app.items.push(ChatItem::Thought(millis));
-        }
-        AgentEvent::ThoughtDone { millis } => {
-            if let Some(index) = app
-                .items
-                .iter()
-                .rposition(|item| matches!(item, ChatItem::Thought(_)))
-            {
-                app.items[index] = ChatItem::Thought(millis);
-                app.mark_render_dirty(index);
-            }
-        }
+        AgentEvent::Thought { .. } | AgentEvent::ThoughtDone { .. } => {}
         AgentEvent::ToolCall { name, args } => {
             app.assistant_open = false;
             app.auto_scroll = true;
@@ -2319,10 +2587,56 @@ fn handle_agent_event(event: AgentEvent, app: &mut App) {
             app.resolve_tool(name, args, output, diff, millis);
             app.status = "thinking...".to_string();
         }
-        AgentEvent::Usage { input, output } => {
+        AgentEvent::Usage {
+            input,
+            output,
+            cache_read,
+            cache_write,
+            cost,
+        } => {
             app.tokens_in = app.tokens_in.saturating_add(input);
             app.tokens_out = app.tokens_out.saturating_add(output);
+            app.tokens_cache_read = app.tokens_cache_read.saturating_add(cache_read);
+            app.tokens_cache_write = app.tokens_cache_write.saturating_add(cache_write);
+            app.cost += cost;
             app.context_used = input;
+            if cache_read + cache_write > 0 {
+                let prompt = input + cache_read + cache_write;
+                if prompt > 0 {
+                    app.cache_hit_rate = Some(cache_read as f64 / prompt as f64 * 100.0);
+                }
+            }
+        }
+        AgentEvent::Compaction {
+            summary,
+            summarized,
+            tokens_before,
+            read_files,
+            modified_files,
+        } => {
+            app.auto_scroll = true;
+            app.items.push(ChatItem::Compaction {
+                summary,
+                summarized,
+                tokens_before,
+                read_files,
+                modified_files,
+            });
+        }
+        AgentEvent::Branch {
+            history,
+            prompt,
+            message,
+        } => {
+            app.running_tool = None;
+            app.busy = false;
+            app.busy_since = None;
+            app.assistant_open = false;
+            app.status = "ready".to_string();
+            app.reset_history(history);
+            app.set_input(prompt);
+            app.items.push(ChatItem::Info(message));
+            app.auto_scroll = true;
         }
         AgentEvent::Error(message) => {
             app.items.push(ChatItem::Error(message));
@@ -2386,23 +2700,6 @@ mod tests {
         assert!(output.len() <= MAX_TOOL_PROGRESS_BYTES);
         assert!(output.starts_with("…\n"));
         assert!(output.ends_with("latest 🚀"));
-    }
-
-    #[test]
-    fn thought_done_updates_only_the_latest_thought() {
-        let mut app = test_app();
-        handle_agent_event(AgentEvent::Thought { millis: 100 }, &mut app);
-        handle_agent_event(AgentEvent::Thought { millis: 200 }, &mut app);
-        handle_agent_event(AgentEvent::ThoughtDone { millis: 5000 }, &mut app);
-        let thoughts: Vec<u64> = app
-            .items
-            .iter()
-            .filter_map(|item| match item {
-                ChatItem::Thought(millis) => Some(*millis),
-                _ => None,
-            })
-            .collect();
-        assert_eq!(thoughts, vec![100, 5000]);
     }
 
     fn key(code: KeyCode) -> KeyEvent {

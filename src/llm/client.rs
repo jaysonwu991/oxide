@@ -157,7 +157,10 @@ impl LlmClient {
                 }
             };
             match result {
-                Ok(turn) => return Ok(turn),
+                Ok(mut turn) => {
+                    turn.usage.cost = self.config.usage_cost(&turn.usage);
+                    return Ok(turn);
+                }
                 Err(err) => {
                     if emitted || attempt >= MAX_STREAM_ATTEMPTS || !is_retryable(&err) {
                         return Err(err);
@@ -205,9 +208,17 @@ impl LlmClient {
                 anyhow::bail!("provider error: {}", error.describe());
             }
             if let Some(usage) = &parsed.usage {
+                let cached = usage
+                    .prompt_tokens_details
+                    .as_ref()
+                    .map(|details| details.cached_tokens)
+                    .unwrap_or(0);
                 turn.usage = Usage {
-                    input: usage.prompt_tokens,
+                    input: usage.prompt_tokens.saturating_sub(cached),
                     output: usage.completion_tokens,
+                    cache_read: cached,
+                    cache_write: 0,
+                    cost: 0.0,
                 };
             }
             let Some(choice) = parsed.choices.into_iter().next() else {

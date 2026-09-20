@@ -148,7 +148,7 @@ pub async fn merge(
 
     let mut merged = if summarize {
         let config = config.context("summarization requires a configured provider")?;
-        compact::compact(config, b_messages).await?
+        compact::compact_messages(config, b_messages, None).await?
     } else {
         b_messages
     };
@@ -163,7 +163,7 @@ async fn compact_one(cwd: &Path, config: &Config, id: &str) -> Result<bool> {
     let log = SessionLog::open_id(cwd, id)?;
     let messages = log.messages()?;
     let before = messages.len();
-    let compacted = compact::compact(config, messages).await?;
+    let compacted = compact::compact_messages(config, messages, None).await?;
     if compacted.len() == before {
         return Ok(false);
     }

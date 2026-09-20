@@ -1,5 +1,4 @@
 use crate::config::Config;
-use crate::dcp::{self, DcpState};
 use crate::ecosystem::AgentMode;
 use crate::llm::{FunctionSpec, LlmClient, Message, ToolCall, ToolSpec};
 use crate::lsp::LspManager;
@@ -101,6 +100,23 @@ pub enum AgentEvent {
     Usage {
         input: u64,
         output: u64,
+        cache_read: u64,
+        cache_write: u64,
+        cost: f64,
+    },
+    /// Older turns were replaced with a summary to free context.
+    Compaction {
+        summary: String,
+        summarized: usize,
+        tokens_before: u64,
+        read_files: Vec<String>,
+        modified_files: Vec<String>,
+    },
+    /// The TUI navigated the session tree and continued from another entry.
+    Branch {
+        history: Vec<Message>,
+        prompt: String,
+        message: String,
     },
     Error(String),
     Finished(Vec<Message>),
@@ -201,8 +217,46 @@ pub fn run_subagent(
                         millis,
                     });
                 }
-                AgentEvent::Usage { input, output } => {
-                    let _ = tx.send(AgentEvent::Usage { input, output });
+                AgentEvent::Usage {
+                    input,
+                    output,
+                    cache_read,
+                    cache_write,
+                    cost,
+                } => {
+                    let _ = tx.send(AgentEvent::Usage {
+                        input,
+                        output,
+                        cache_read,
+                        cache_write,
+                        cost,
+                    });
+                }
+                AgentEvent::Compaction {
+                    summary,
+                    summarized,
+                    tokens_before,
+                    read_files,
+                    modified_files,
+                } => {
+                    let _ = tx.send(AgentEvent::Compaction {
+                        summary,
+                        summarized,
+                        tokens_before,
+                        read_files,
+                        modified_files,
+                    });
+                }
+                AgentEvent::Branch {
+                    history,
+                    prompt,
+                    message,
+                } => {
+                    let _ = tx.send(AgentEvent::Branch {
+                        history,
+                        prompt,
+                        message,
+                    });
                 }
                 AgentEvent::Error(message) => {
                     let _ = tx.send(AgentEvent::Error(message));
@@ -245,17 +299,10 @@ async fn run_loop(
 ) {
     let client = LlmClient::new(config.clone());
     let permissions = Permissions::from_config(&config);
-    let dcp_enabled = depth == 0 && config.dcp.enabled;
-    let mut dcp_state = if dcp_enabled {
-        runtime
-            .session
-            .as_ref()
-            .map(|log| log.dcp_state())
-            .unwrap_or_default()
-    } else {
-        DcpState::default()
-    };
     let mut messages = history;
+    let context_window = config.context_window();
+    let compaction_budget = config.compaction.resolve(&config.provider, &config.model);
+    let mut context_tokens: u64 = 0;
     auto_load_mcp_for_user_text(&runtime, messages.iter().filter(|m| m.role == "user")).await;
 
     loop {
@@ -264,28 +311,71 @@ async fn run_loop(
             record(&runtime.session, depth, &steered);
             messages.push(steered);
         }
-        if depth == 0 && !config.dcp.enabled && crate::compact::needs_compaction(&messages) {
-            if let Ok(compacted) = crate::compact::compact(&config, messages.clone()).await {
-                messages = compacted;
+
+        // Pi-style auto-compaction: once the outgoing context approaches the
+        // model window, replace older turns with a summary and keep the recent
+        // tokens verbatim. The record is stored on the session branch.
+        if depth == 0 && compaction_budget.enabled {
+            let current = context_tokens.max(crate::compact::estimate_tokens(&messages) as u64);
+            if crate::compact::needs_compaction(current, context_window, compaction_budget) {
+                if let Some(log) = &runtime.session {
+                    match crate::compact::generate(
+                        &config,
+                        &messages,
+                        &[],
+                        compaction_budget,
+                        current,
+                        None,
+                    )
+                    .await
+                    {
+                        Ok(Some(compaction)) => {
+                            let first_kept = log
+                                .context_ids()
+                                .get(compaction.first_kept)
+                                .cloned()
+                                .unwrap_or_else(|| compaction.first_kept.to_string());
+                            let _ = log.append_compaction(
+                                compaction.summary.clone(),
+                                first_kept,
+                                compaction.tokens_before,
+                                Some(compaction.details.clone()),
+                                compaction.usage,
+                            );
+                            let _ = tx.send(AgentEvent::Compaction {
+                                summary: compaction.summary.clone(),
+                                summarized: compaction.summarized,
+                                tokens_before: compaction.tokens_before,
+                                read_files: compaction.details.read_files.clone(),
+                                modified_files: compaction.details.modified_files.clone(),
+                            });
+                            if let Some(usage) = compaction.usage {
+                                let _ = tx.send(AgentEvent::Usage {
+                                    input: usage.input,
+                                    output: usage.output,
+                                    cache_read: usage.cache_read,
+                                    cache_write: usage.cache_write,
+                                    cost: usage.cost,
+                                });
+                            }
+                            if let Ok(refreshed) = log.messages() {
+                                messages = refreshed;
+                            }
+                            context_tokens = 0;
+                        }
+                        Ok(None) => {}
+                        Err(err) => {
+                            let _ = tx.send(AgentEvent::Error(format!("compaction: {err:#}")));
+                        }
+                    }
+                }
             }
         }
+
         let mut request = Vec::with_capacity(messages.len() + 2);
         request.push(Message::system(config.compose_system_prompt()));
-        if dcp_enabled {
-            request.extend(dcp::prune(&messages, &dcp_state, &config.dcp));
-            let iterations = messages
-                .iter()
-                .rev()
-                .take_while(|message| message.role != "user")
-                .filter(|message| message.role == "assistant")
-                .count();
-            if let Some(nudge) = dcp::nudge(&messages, &dcp_state, &config.dcp, iterations) {
-                request.push(Message::system(nudge));
-            }
-        } else {
-            request.extend(messages.iter().cloned());
-        }
-        let tool_specs = build_tool_specs(&config, &runtime, depth, dcp_enabled);
+        request.extend(messages.iter().cloned());
+        let tool_specs = build_tool_specs(&config, &runtime, depth);
 
         let started = std::time::Instant::now();
         let mut thought_sent = false;
@@ -328,12 +418,16 @@ async fn run_loop(
         let tool_calls = turn.tool_calls.clone();
         let assistant = Message::assistant(turn.content, tool_calls.clone())
             .with_thinking(turn.thinking.clone());
-        record(&runtime.session, depth, &assistant);
+        record_usage(&runtime.session, depth, &assistant, Some(turn.usage.into()));
         messages.push(assistant);
         if turn.usage.total() > 0 {
+            context_tokens = turn.usage.input + turn.usage.output;
             let _ = tx.send(AgentEvent::Usage {
                 input: turn.usage.input,
                 output: turn.usage.output,
+                cache_read: turn.usage.cache_read,
+                cache_write: turn.usage.cache_write,
+                cost: turn.usage.cost,
             });
         }
 
@@ -509,38 +603,19 @@ async fn run_loop(
                     }
                 }));
                 let started = std::time::Instant::now();
-                let mut output = if name == "compress" && dcp_enabled {
-                    match dcp::apply_compress(
-                        &mut dcp_state,
-                        &messages,
-                        &config.dcp,
-                        &effective_args,
-                    ) {
-                        Ok(text) => {
-                            if let Some(log) = &runtime.session {
-                                if let Some(compression) = dcp_state.compressions.last() {
-                                    let _ = log.append_dcp(compression);
-                                }
-                            }
-                            tools::ToolOutput::text(text)
-                        }
-                        Err(err) => tools::ToolOutput::text(format!("error: {err:#}")),
-                    }
+                let mut output = if permission_granted(
+                    permissions.decide(&name, &subject),
+                    config.auto_approve,
+                    &runtime.approve,
+                    &name,
+                    &subject,
+                )
+                .await
+                {
+                    snapshot_needed |= tool_may_mutate_workspace(&name);
+                    dispatch(&config, &cwd, &runtime, &call, depth, &progress).await
                 } else {
-                    if permission_granted(
-                        permissions.decide(&name, &subject),
-                        config.auto_approve,
-                        &runtime.approve,
-                        &name,
-                        &subject,
-                    )
-                    .await
-                    {
-                        snapshot_needed |= tool_may_mutate_workspace(&name);
-                        dispatch(&config, &cwd, &runtime, &call, depth, &progress).await
-                    } else {
-                        tools::ToolOutput::text(format!("error: permission denied for `{name}`"))
-                    }
+                    tools::ToolOutput::text(format!("error: permission denied for `{name}`"))
                 };
                 let canonical_name = crate::tools::canonical_tool_name(&name);
                 if matches!(canonical_name, "write_file" | "edit")
@@ -631,12 +706,7 @@ async fn auto_load_mcp_for_user_text<'a>(
     while loads.join_next().await.is_some() {}
 }
 
-fn build_tool_specs(
-    config: &Config,
-    runtime: &Runtime,
-    depth: usize,
-    dcp_enabled: bool,
-) -> Vec<ToolSpec> {
+fn build_tool_specs(config: &Config, runtime: &Runtime, depth: usize) -> Vec<ToolSpec> {
     let mut specs = tools::specs(&runtime.mcp);
     if depth < MAX_TASK_DEPTH
         && config
@@ -652,11 +722,6 @@ fn build_tool_specs(
     }
     specs.push(memory_spec());
     specs.push(lsp_spec());
-    if dcp_enabled {
-        if let Some(spec) = dcp::compress_spec(&config.dcp) {
-            specs.push(spec);
-        }
-    }
     if config.tool_filter.is_restrictive() {
         specs.retain(|spec| config.tool_filter.permits(&spec.function.name));
     }
@@ -739,9 +804,18 @@ async fn lsp_diagnostics(runtime: &Runtime, cwd: &Path, arguments: &str) -> tool
 }
 
 fn record(session: &Option<Arc<SessionLog>>, depth: usize, message: &Message) {
+    record_usage(session, depth, message, None);
+}
+
+fn record_usage(
+    session: &Option<Arc<SessionLog>>,
+    depth: usize,
+    message: &Message,
+    usage: Option<crate::compact::UsageRecord>,
+) {
     if depth == 0 {
         if let Some(log) = session {
-            let _ = log.append(message);
+            let _ = log.append_with_usage(message, usage);
         }
     }
 }
@@ -822,6 +896,8 @@ async fn task_inner(
             | AgentEvent::ToolProgress { .. }
             | AgentEvent::ToolResult { .. }
             | AgentEvent::Usage { .. }
+            | AgentEvent::Compaction { .. }
+            | AgentEvent::Branch { .. }
             | AgentEvent::Thought { .. }
             | AgentEvent::ThoughtDone { .. } => {}
         }
@@ -1167,14 +1243,7 @@ mod tests {
         ] {
             assert!(concurrency_safe(name), "{name} should be concurrency-safe");
         }
-        for name in [
-            "write",
-            "edit",
-            "bash",
-            "task",
-            "compress",
-            "mcp__server__tool",
-        ] {
+        for name in ["write", "edit", "bash", "task", "mcp__server__tool"] {
             assert!(!concurrency_safe(name), "{name} must stay sequential");
         }
     }

@@ -93,7 +93,13 @@ pub enum ChatItem {
         diff: Option<DiffPreview>,
         millis: u64,
     },
-    Thought(u64),
+    Compaction {
+        summary: String,
+        summarized: usize,
+        tokens_before: u64,
+        read_files: Vec<String>,
+        modified_files: Vec<String>,
+    },
     Error(String),
     Info(String),
 }
@@ -303,6 +309,9 @@ pub struct App {
     pub status: String,
     pub should_quit: bool,
     pub model: String,
+    pub provider: String,
+    pub available_providers: usize,
+    pub auto_compact: bool,
     pub cwd: String,
     pub git_branch: Option<String>,
     pub assistant_open: bool,
@@ -318,8 +327,14 @@ pub struct App {
     pub reasoning: Reasoning,
     pub tokens_in: u64,
     pub tokens_out: u64,
+    pub tokens_cache_read: u64,
+    pub tokens_cache_write: u64,
+    pub cost: f64,
+    pub cache_hit_rate: Option<f64>,
     pub context_used: u64,
     pub context_limit: u64,
+    pub show_thinking: bool,
+    pub extension_statuses: std::collections::BTreeMap<String, String>,
     pub session_name: Option<String>,
     pub theme: crate::theme::Theme,
     pub steering: Steering,
@@ -357,6 +372,9 @@ impl App {
             status: "ready".to_string(),
             should_quit: false,
             model,
+            provider: String::new(),
+            available_providers: 0,
+            auto_compact: true,
             cwd,
             git_branch,
             assistant_open: false,
@@ -372,8 +390,14 @@ impl App {
             reasoning,
             tokens_in: 0,
             tokens_out: 0,
+            tokens_cache_read: 0,
+            tokens_cache_write: 0,
+            cost: 0.0,
+            cache_hit_rate: None,
             context_used: 0,
             context_limit: 0,
+            show_thinking: true,
+            extension_statuses: std::collections::BTreeMap::new(),
             session_name: None,
             theme: crate::theme::Theme::default(),
             steering: Steering::new(),
@@ -386,6 +410,46 @@ impl App {
             selection: None,
             running_tool: None,
         }
+    }
+
+    /// Replaces the conversation with new context (used after in-file branch
+    /// navigation) and rebuilds the transcript from the messages.
+    pub fn reset_history(&mut self, messages: Vec<Message>) {
+        self.history = messages;
+        let banner = self
+            .items
+            .first()
+            .filter(|item| matches!(item, ChatItem::Banner { .. }))
+            .cloned();
+        self.items.clear();
+        if let Some(banner) = banner {
+            self.items.push(banner);
+        }
+        for message in &self.history {
+            match message.role.as_str() {
+                "user" => {
+                    if let Some(text) = message.display() {
+                        self.items.push(ChatItem::User(text));
+                    }
+                }
+                "assistant" => {
+                    if let Some(text) = message.display() {
+                        if !text.trim().is_empty() {
+                            self.items.push(ChatItem::Assistant(text));
+                        }
+                    }
+                }
+                "tool" => self.items.push(ChatItem::ToolResult {
+                    name: "tool".to_string(),
+                    args: "{}".to_string(),
+                    output: message.display().unwrap_or_default(),
+                    diff: None,
+                    millis: 0,
+                }),
+                _ => {}
+            }
+        }
+        self.invalidate_render_cache();
     }
 
     /// Rebuild styled conversation lines after a visual setting changes.

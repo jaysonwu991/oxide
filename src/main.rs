@@ -4,7 +4,6 @@ mod cli;
 mod clipboard;
 mod compact;
 mod config;
-mod dcp;
 mod diff;
 mod ecosystem;
 mod html;
@@ -18,6 +17,7 @@ mod memory;
 mod permission;
 mod plugin;
 mod plugin_registry;
+mod pricing;
 mod session;
 mod sessions;
 mod snapshots;
@@ -719,6 +719,16 @@ async fn run_print_text(mut rx: tokio::sync::mpsc::UnboundedReceiver<AgentEvent>
                 eprintln!("[result: {name}] {} bytes", output.len());
             }
             AgentEvent::Usage { .. } => {}
+            AgentEvent::Compaction {
+                summarized,
+                tokens_before,
+                ..
+            } => {
+                eprintln!(
+                    "[compaction] summarized {summarized} messages (~{tokens_before} tokens)"
+                );
+            }
+            AgentEvent::Branch { .. } => {}
             AgentEvent::Error(message) => {
                 eprintln!("\nerror: {message}");
             }

@@ -235,6 +235,10 @@ pub struct StreamOptions {
 pub struct Usage {
     pub input: u64,
     pub output: u64,
+    pub cache_read: u64,
+    pub cache_write: u64,
+    /// Cost in USD, computed from the model's price table after the turn.
+    pub cost: f64,
 }
 
 impl Usage {
@@ -290,6 +294,14 @@ pub struct StreamUsage {
     pub prompt_tokens: u64,
     #[serde(default)]
     pub completion_tokens: u64,
+    #[serde(default)]
+    pub prompt_tokens_details: Option<PromptTokensDetails>,
+}
+
+#[derive(Debug, Default, Deserialize)]
+pub struct PromptTokensDetails {
+    #[serde(default)]
+    pub cached_tokens: u64,
 }
 
 #[derive(Debug, Deserialize)]

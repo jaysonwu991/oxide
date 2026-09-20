@@ -233,6 +233,32 @@ impl PluginHost {
             terminate,
         })
     }
+
+    /// Runs the plugin `status` hook, if any, and returns the keyed footer
+    /// statuses it contributes (Pi's extension statuses).
+    pub async fn statuses(&self) -> std::collections::BTreeMap<String, String> {
+        let Some(host) = self.inner.as_ref() else {
+            return Default::default();
+        };
+        let mut host = host.lock().await;
+        let Ok(response) = host
+            .call("status", json!({}), json!({ "statuses": {} }))
+            .await
+        else {
+            return Default::default();
+        };
+        response
+            .get("statuses")
+            .and_then(Value::as_object)
+            .map(|map| {
+                map.iter()
+                    .filter_map(|(key, value)| {
+                        value.as_str().map(|text| (key.clone(), text.to_string()))
+                    })
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
 }
 
 /// The result of a `tool.execute.after` hook: possibly-rewritten output text
@@ -374,6 +400,34 @@ export default async () => ({
             .await
             .unwrap();
         assert!(terminating.terminate);
+
+        drop(host);
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[tokio::test]
+    async fn runs_status_hook() {
+        if !command_exists("node") {
+            return;
+        }
+        let dir = temp_dir("status");
+        let plugin = dir.join("status.mjs");
+        std::fs::write(
+            &plugin,
+            r#"
+export default async () => ({
+  status: async (input, output) => {
+    output.statuses = { build: "ready", lint: "clean" };
+  },
+});
+"#,
+        )
+        .unwrap();
+
+        let host = PluginHost::spawn(&[plugin], &dir).await;
+        let statuses = host.statuses().await;
+        assert_eq!(statuses.get("build").map(String::as_str), Some("ready"));
+        assert_eq!(statuses.get("lint").map(String::as_str), Some("clean"));
 
         drop(host);
         std::fs::remove_dir_all(&dir).ok();
