@@ -1444,14 +1444,8 @@ fn render_item_themed(
     }
 }
 
-/// Gap between the wordmark and the info column.
-const BANNER_COLUMN_GAP: usize = 3;
-/// Minimum width kept for the right-hand banner column before the layout
-/// falls back to stacking the wordmark above the info text.
-const BANNER_MIN_RIGHT: usize = 24;
-
-/// Renders the banner as the wordmark beside the welcome info when there is
-/// room, falling back to stacked (or plain-text) layouts on narrow terminals.
+/// Renders the banner as the wordmark on top with the welcome info stacked
+/// underneath, falling back to plain text on narrow terminals.
 fn render_banner_themed(
     width: usize,
     theme: &crate::theme::Theme,
@@ -1470,15 +1464,12 @@ fn render_banner_themed(
                 .fg(theme.accent)
                 .add_modifier(Modifier::BOLD),
         )));
-        for entry in info {
+        for (index, entry) in info.iter().enumerate() {
+            if index > 0 {
+                lines.push(Line::default());
+            }
             push_wrapped(lines, entry, width.max(1), Style::default().fg(theme.info));
         }
-        return;
-    }
-
-    let right_width = width.saturating_sub(art_width + BANNER_COLUMN_GAP);
-    if right_width >= BANNER_MIN_RIGHT {
-        render_banner_columns(art_width, right_width, theme, info, lines);
         return;
     }
 
@@ -1489,7 +1480,11 @@ fn render_banner_themed(
             Span::styled((*art).to_string(), art_style(index, theme)),
         ]));
     }
-    for entry in info {
+    lines.push(Line::default());
+    for (index, entry) in info.iter().enumerate() {
+        if index > 0 {
+            lines.push(Line::default());
+        }
         push_wrapped(lines, entry, width.max(1), Style::default().fg(theme.info));
     }
 }
@@ -1502,42 +1497,6 @@ fn art_style(index: usize, theme: &crate::theme::Theme) -> Style {
             theme.accent
         })
         .add_modifier(Modifier::BOLD)
-}
-
-/// Render the wordmark and the welcome info side by side, wrapping the info to
-/// the right-hand column width.
-fn render_banner_columns(
-    art_width: usize,
-    right_width: usize,
-    theme: &crate::theme::Theme,
-    info: &[String],
-    lines: &mut Vec<Line<'static>>,
-) {
-    let mut right: Vec<String> = Vec::new();
-    for (index, entry) in info.iter().enumerate() {
-        if index > 0 {
-            right.push(String::new());
-        }
-        right.extend(wrap(entry, right_width.max(1)));
-    }
-    for row in 0..BANNER.len().max(right.len()) {
-        let mut spans = Vec::with_capacity(3);
-        match BANNER.get(row) {
-            Some(art) => {
-                let pad = art_width - art.chars().count();
-                spans.push(Span::styled(
-                    format!("{art}{}", " ".repeat(pad)),
-                    art_style(row, theme),
-                ));
-            }
-            None => spans.push(Span::raw(" ".repeat(art_width))),
-        }
-        spans.push(Span::raw(" ".repeat(BANNER_COLUMN_GAP)));
-        if let Some(text) = right.get(row) {
-            spans.push(Span::styled(text.clone(), Style::default().fg(theme.info)));
-        }
-        lines.push(Line::from(spans));
-    }
 }
 
 #[cfg(test)]
@@ -2266,17 +2225,22 @@ mod tests {
     }
 
     #[test]
-    fn banner_columns_or_falls_back_when_narrow() {
+    fn banner_stacks_wordmark_above_info() {
         let info = vec![
             "Build things.".to_string(),
             "1 agent · 0 plugins".to_string(),
         ];
         let mut wide = Vec::new();
         render_banner(80, &info, &mut wide);
-        assert_eq!(wide.len(), BANNER.len());
-        let first = line_text(&wide[0]);
-        assert!(first.starts_with(BANNER[0]));
-        assert!(first.contains("Build things."));
+        let head: Vec<String> = wide
+            .iter()
+            .take(BANNER.len())
+            .map(|line| line_text(line).trim().to_string())
+            .collect();
+        let art: Vec<String> = BANNER.iter().map(|art| art.trim().to_string()).collect();
+        assert_eq!(head, art);
+        let info_text: Vec<String> = wide.iter().skip(BANNER.len() + 1).map(line_text).collect();
+        assert_eq!(info_text, vec!["Build things.", "", "1 agent · 0 plugins"]);
         for line in &wide {
             assert!(line_text(line).chars().count() <= 80);
         }

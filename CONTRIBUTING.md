@@ -74,7 +74,7 @@ macOS, and Windows.
 | `src/memory.rs` | Cross-session memory store. |
 | `src/media.rs` | Image/PDF attachments and `@path` references. |
 | `src/uninstall.rs` | `oxide uninstall` install detection and cleanup. |
-| `src/tui/` | ratatui + crossterm interface with incremental rendering, a two-column welcome banner, a live state row, a Pi-style footer (path/branch/session, cumulative tokens with cache and cost, context `%`/window, model/thinking, and plugin statuses), a growing labeled editor, background-filled tool panels (Ctrl+O collapses; state-colored with hanging-indented wrapped output, blank line before the body and `Took`), inline user/assistant labels, `read` bodies, colored edit diffs, Shift+Tab mode and Ctrl+R reasoning cycling, theme-aware project-trust/provider dialogs, and mid-run steering. |
+| `src/tui/` | ratatui + crossterm interface with incremental rendering, a stacked welcome banner (block-letter `OXIDE` wordmark above the ecosystem summary), a live state row, a Pi-style footer (path/branch/session, cumulative tokens with cache and cost, context `%`/window, model/thinking, and plugin statuses), a growing labeled editor, background-filled tool panels (Ctrl+O collapses; state-colored with hanging-indented wrapped output, blank line before the body and `Took`), inline user/assistant labels, `read` bodies, colored edit diffs, Shift+Tab mode and Ctrl+R reasoning cycling, theme-aware project-trust/provider dialogs, and mid-run steering. |
 | `.oxide/` | Project agents, commands, prompts, skills, and plugins (Oxide layout). |
 
 ## Conventions
