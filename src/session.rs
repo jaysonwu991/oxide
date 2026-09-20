@@ -1,25 +1,50 @@
-//! Durable session log. Every model-visible message is appended to an
-//! append-only JSONL file under `~/.config/oxide/sessions/<project>/`,
-//! so a conversation can be resumed and its model history reconstructed from
-//! the log alone.
+//! Pi-compatible session storage.
+//!
+//! A session is an append-only JSONL file whose first line is a `session`
+//! header and whose remaining lines are typed entries linked by
+//! `id`/`parentId`. The entries form a tree: the last entry is the active leaf,
+//! appending a message adds a child of the leaf, and branching moves the leaf
+//! back to an earlier entry so the next append starts a new branch. Compaction
+//! and branch-summary entries summarize older or abandoned context, and the
+//! model sees the branch from the leaf to the root with the latest compaction
+//! applied.
+
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 use std::io::{BufRead, BufReader, Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use crate::dcp::{Compression, DcpState};
+use crate::compact::{CompactionDetails, UsageRecord};
 use crate::llm::Message;
+
+pub const SESSION_VERSION: u32 = 3;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SessionHeader {
+    pub version: u32,
     pub id: String,
-    pub project: String,
+    pub timestamp: String,
     pub cwd: String,
-    pub created_at: u64,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub name: Option<String>,
+    #[serde(
+        default,
+        rename = "parentSession",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub parent_session: Option<String>,
+}
+
+/// Cumulative token and cost totals for the footer, matching Pi's aggregation.
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+pub struct UsageTotals {
+    pub input: u64,
+    pub output: u64,
+    pub cache_read: u64,
+    pub cache_write: u64,
+    pub cost: f64,
+    pub cache_hit_rate: Option<f64>,
 }
 
 /// Lightweight metadata for one persisted session, used by the session picker.
@@ -35,18 +60,152 @@ pub struct SessionSummary {
     pub path: PathBuf,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
-#[serde(tag = "kind", rename_all = "snake_case")]
-enum Record {
-    Header(SessionHeader),
-    Message(Box<Message>),
-    Dcp(Compression),
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum Entry {
+    Session(SessionHeader),
+    Message(MessageEntry),
+    Compaction(CompactionEntry),
+    BranchSummary(BranchSummaryEntry),
+    SessionInfo(SessionInfoEntry),
+    ModelChange(ModelChangeEntry),
+    ThinkingLevelChange(ThinkingLevelEntry),
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MessageEntry {
+    pub id: String,
+    #[serde(rename = "parentId")]
+    pub parent_id: Option<String>,
+    pub timestamp: String,
+    pub message: Box<Message>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub usage: Option<UsageRecord>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CompactionEntry {
+    pub id: String,
+    #[serde(rename = "parentId")]
+    pub parent_id: Option<String>,
+    pub timestamp: String,
+    pub summary: String,
+    #[serde(rename = "firstKeptEntryId")]
+    pub first_kept_entry_id: String,
+    #[serde(rename = "tokensBefore")]
+    pub tokens_before: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub usage: Option<UsageRecord>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub details: Option<CompactionDetails>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BranchSummaryEntry {
+    pub id: String,
+    #[serde(rename = "parentId")]
+    pub parent_id: Option<String>,
+    pub timestamp: String,
+    #[serde(rename = "fromId", default, skip_serializing_if = "Option::is_none")]
+    pub from_id: Option<String>,
+    pub summary: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub usage: Option<UsageRecord>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub details: Option<CompactionDetails>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SessionInfoEntry {
+    pub id: String,
+    #[serde(rename = "parentId")]
+    pub parent_id: Option<String>,
+    pub timestamp: String,
+    pub name: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ModelChangeEntry {
+    pub id: String,
+    #[serde(rename = "parentId")]
+    pub parent_id: Option<String>,
+    pub timestamp: String,
+    pub provider: String,
+    #[serde(rename = "modelId")]
+    pub model_id: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ThinkingLevelEntry {
+    pub id: String,
+    #[serde(rename = "parentId")]
+    pub parent_id: Option<String>,
+    pub timestamp: String,
+    #[serde(rename = "thinkingLevel")]
+    pub thinking_level: String,
+}
+
+impl Entry {
+    pub fn id(&self) -> &str {
+        match self {
+            Entry::Session(header) => &header.id,
+            Entry::Message(entry) => &entry.id,
+            Entry::Compaction(entry) => &entry.id,
+            Entry::BranchSummary(entry) => &entry.id,
+            Entry::SessionInfo(entry) => &entry.id,
+            Entry::ModelChange(entry) => &entry.id,
+            Entry::ThinkingLevelChange(entry) => &entry.id,
+        }
+    }
+
+    pub fn parent_id(&self) -> Option<&str> {
+        match self {
+            Entry::Session(_) => None,
+            Entry::Message(entry) => entry.parent_id.as_deref(),
+            Entry::Compaction(entry) => entry.parent_id.as_deref(),
+            Entry::BranchSummary(entry) => entry.parent_id.as_deref(),
+            Entry::SessionInfo(entry) => entry.parent_id.as_deref(),
+            Entry::ModelChange(entry) => entry.parent_id.as_deref(),
+            Entry::ThinkingLevelChange(entry) => entry.parent_id.as_deref(),
+        }
+    }
+
+    /// Messages this entry contributes to the model context, in Pi's shape:
+    /// stored messages pass through, compactions and branch summaries become
+    /// prefixed user messages, and bookkeeping entries contribute nothing.
+    pub fn context_messages(&self) -> Vec<Message> {
+        match self {
+            Entry::Message(entry) => vec![(*entry.message).clone()],
+            Entry::Compaction(entry) => vec![Message::user(format!(
+                "[conversation summary]\n{}",
+                entry.summary
+            ))],
+            Entry::BranchSummary(entry) => vec![Message::user(format!(
+                "[branch summary]\n{}",
+                entry.summary
+            ))],
+            _ => Vec::new(),
+        }
+    }
+
+    fn is_system_message(&self) -> bool {
+        matches!(self, Entry::Message(entry) if entry.message.role == "system")
+    }
+}
+
+#[derive(Debug, Default)]
+struct SessionState {
+    entries: Vec<Entry>,
+    by_id: HashMap<String, usize>,
+    leaf_id: Option<String>,
+}
+
+/// An append-only session tree.
 #[derive(Debug, Clone)]
 pub struct SessionLog {
     path: PathBuf,
     header: SessionHeader,
+    state: Arc<Mutex<SessionState>>,
 }
 
 impl SessionLog {
@@ -58,13 +217,13 @@ impl SessionLog {
         let id = new_id();
         std::fs::create_dir_all(dir)
             .with_context(|| format!("creating session directory {}", dir.display()))?;
-        let path = dir.join(format!("{id}.jsonl"));
+        let path = dir.join(format!("{}.jsonl", session_file_stem(&id)));
         let header = SessionHeader {
+            version: SESSION_VERSION,
             id,
-            project: crate::memory::project_id(cwd),
+            timestamp: now_iso(),
             cwd: cwd.display().to_string(),
-            created_at: now_secs(),
-            name: None,
+            parent_session: None,
         };
         let mut file = std::fs::OpenOptions::new()
             .create_new(true)
@@ -74,20 +233,28 @@ impl SessionLog {
         writeln!(
             file,
             "{}",
-            serde_json::to_string(&Record::Header(header.clone()))?
+            serde_json::to_string(&Entry::Session(header.clone()))?
         )?;
         file.sync_data()
             .with_context(|| format!("syncing session log {}", path.display()))?;
-        Ok(Self { path, header })
+        Ok(Self {
+            path,
+            header,
+            state: Arc::new(Mutex::new(SessionState::default())),
+        })
     }
 
     pub fn open(path: PathBuf) -> Result<Self> {
-        let header = read_header(&path)?;
-        Ok(Self { path, header })
+        let (header, state) = read_session(&path)?;
+        Ok(Self {
+            path,
+            header,
+            state: Arc::new(Mutex::new(state)),
+        })
     }
 
-    /// Creates a new session seeded with `messages` (used by `/fork` and
-    /// `/clone`). Returns the new log so the caller can continue in it.
+    /// Creates a new session seeded with a linear chain of `messages`. Used by
+    /// `/fork` and `/clone` (Pi forks into a new session file).
     pub fn fork(cwd: &Path, messages: &[Message]) -> Result<Self> {
         let log = Self::create(cwd)?;
         for message in messages {
@@ -97,11 +264,23 @@ impl SessionLog {
     }
 
     pub fn open_id(cwd: &Path, id: &str) -> Result<Self> {
-        let path = project_dir(cwd).join(format!("{id}.jsonl"));
-        if !path.exists() {
-            anyhow::bail!("no session `{id}` for this project");
+        let dir = project_dir(cwd);
+        let direct = dir.join(format!("{id}.jsonl"));
+        if direct.exists() {
+            return Self::open(direct);
         }
-        Self::open(path)
+        for entry in std::fs::read_dir(&dir).into_iter().flatten().flatten() {
+            let path = entry.path();
+            if path.extension().is_none_or(|ext| ext != "jsonl") {
+                continue;
+            }
+            if let Ok((header, _)) = read_session(&path) {
+                if header.id == id || path.file_stem().is_some_and(|stem| stem == id) {
+                    return Self::open(path);
+                }
+            }
+        }
+        anyhow::bail!("no session `{id}` for this project")
     }
 
     pub fn latest(cwd: &Path) -> Option<Self> {
@@ -158,7 +337,7 @@ impl SessionLog {
             if path.extension().is_none_or(|ext| ext != "jsonl") {
                 continue;
             }
-            let Ok(header) = read_header(&path) else {
+            let Ok((header, state)) = read_session(&path) else {
                 continue;
             };
             let modified_at = entry
@@ -166,16 +345,30 @@ impl SessionLog {
                 .ok()
                 .and_then(|metadata| metadata.modified().ok())
                 .map(system_time_secs)
-                .unwrap_or(header.created_at);
-            let scan = scan_messages(&path);
+                .unwrap_or_else(|| parse_iso(&header.timestamp).unwrap_or(0));
+            let name = latest_name(&state.entries);
+            let path_desc = leaf_path(&state);
+            let message_count = path_desc
+                .iter()
+                .filter(|entry| matches!(entry, Entry::Message(_)))
+                .count();
+            let preview = path_desc
+                .iter()
+                .find_map(|entry| match entry {
+                    Entry::Message(message) if message.message.role == "user" => {
+                        message.message.display().map(|text| preview_text(&text))
+                    }
+                    _ => None,
+                })
+                .unwrap_or_default();
             out.push(SessionSummary {
                 id: header.id,
-                name: read_name(&path),
+                name,
                 cwd: header.cwd,
-                created_at: header.created_at,
+                created_at: parse_iso(&header.timestamp).unwrap_or(0),
                 modified_at,
-                message_count: scan.message_count,
-                preview: scan.preview.unwrap_or_default(),
+                message_count,
+                preview,
                 path,
             });
         }
@@ -183,18 +376,13 @@ impl SessionLog {
         Ok(out)
     }
 
-    /// Deletes a session file (and its name sidecar) for a project.
+    /// Deletes a session file for a project.
     pub fn delete(cwd: &Path, id: &str) -> Result<()> {
-        let path = project_dir(cwd).join(format!("{id}.jsonl"));
-        if !path.exists() {
-            anyhow::bail!("no session `{id}` for this project");
-        }
-        remove_file(&path)?;
-        let _ = remove_file(&path.with_extension("name"));
-        Ok(())
+        let log = Self::open_id(cwd, id)?;
+        remove_file(&log.path)
     }
 
-    /// Renames a session by id, writing the display-name sidecar.
+    /// Renames a session by appending a `session_info` entry.
     pub fn rename(cwd: &Path, id: &str, name: &str) -> Result<()> {
         Self::open_id(cwd, id)?.set_name(name)
     }
@@ -208,36 +396,53 @@ impl SessionLog {
         &self.header.cwd
     }
 
-    /// Sets a human-readable display name for the session and persists it in a
-    /// sidecar file (the append-only log header is never rewritten).
+    /// Sets a human-readable display name via a `session_info` entry.
     pub fn set_name(&self, name: &str) -> Result<()> {
-        let path = self.path.with_extension("name");
-        std::fs::write(&path, name)
-            .with_context(|| format!("writing session name {}", path.display()))?;
+        let entry = Entry::SessionInfo(SessionInfoEntry {
+            id: new_id(),
+            parent_id: self.leaf_id(),
+            timestamp: now_iso(),
+            name: name.to_string(),
+        });
+        self.append_entry(entry)?;
         Ok(())
     }
 
-    /// The session display name, when one was set with `--name` or `/name`.
+    /// The session display name from the latest `session_info` entry.
     pub fn name(&self) -> Option<String> {
-        read_name(&self.path)
+        latest_name(&self.state().entries)
     }
 
     /// Lightweight picker metadata for this session.
     pub fn summary(&self) -> Result<SessionSummary> {
-        let scan = scan_messages(&self.path);
+        let state = self.state();
         let modified_at = std::fs::metadata(&self.path)
             .ok()
             .and_then(|metadata| metadata.modified().ok())
             .map(system_time_secs)
-            .unwrap_or(self.header.created_at);
+            .unwrap_or_else(|| parse_iso(&self.header.timestamp).unwrap_or(0));
+        let path_desc = leaf_path(&state);
+        let message_count = path_desc
+            .iter()
+            .filter(|entry| matches!(entry, Entry::Message(_)))
+            .count();
+        let preview = path_desc
+            .iter()
+            .find_map(|entry| match entry {
+                Entry::Message(message) if message.message.role == "user" => {
+                    message.message.display().map(|text| preview_text(&text))
+                }
+                _ => None,
+            })
+            .unwrap_or_default();
         Ok(SessionSummary {
             id: self.header.id.clone(),
-            name: self.name(),
+            name: latest_name(&state.entries),
             cwd: self.header.cwd.clone(),
-            created_at: self.header.created_at,
+            created_at: parse_iso(&self.header.timestamp).unwrap_or(0),
             modified_at,
-            message_count: scan.message_count,
-            preview: scan.preview.unwrap_or_default(),
+            message_count,
+            preview,
             path: self.path.clone(),
         })
     }
@@ -257,23 +462,165 @@ impl SessionLog {
         &self.path
     }
 
-    pub fn append(&self, message: &Message) -> Result<()> {
-        let line = serde_json::to_string(&Record::Message(Box::new(message.clone())))?;
-        append_line(&self.path, &line)
+    /// Appends a message as a child of the current leaf and returns its entry id.
+    pub fn append(&self, message: &Message) -> Result<String> {
+        self.append_with_usage(message, None)
     }
 
+    /// Appends a message with the provider usage that produced it, so token
+    /// totals survive a resume like Pi's per-message usage.
+    pub fn append_with_usage(
+        &self,
+        message: &Message,
+        usage: Option<UsageRecord>,
+    ) -> Result<String> {
+        let entry = Entry::Message(MessageEntry {
+            id: new_id(),
+            parent_id: self.leaf_id(),
+            timestamp: now_iso(),
+            message: Box::new(message.clone()),
+            usage,
+        });
+        self.append_entry(entry)
+    }
+
+    /// Cumulative usage across the whole session, including assistant turns and
+    /// summary generation (Pi's footer totals), plus the latest request's cache
+    /// hit rate.
+    pub fn usage_totals(&self) -> UsageTotals {
+        let mut totals = UsageTotals::default();
+        let state = self.state();
+        for entry in &state.entries {
+            let usage = match entry {
+                Entry::Message(entry) => entry.usage,
+                Entry::Compaction(entry) => entry.usage,
+                Entry::BranchSummary(entry) => entry.usage,
+                _ => None,
+            };
+            if let Some(usage) = usage {
+                totals.input += usage.input;
+                totals.output += usage.output;
+                totals.cache_read += usage.cache_read;
+                totals.cache_write += usage.cache_write;
+                totals.cost += usage.cost;
+                let prompt = usage.input + usage.cache_read + usage.cache_write;
+                if prompt > 0 && usage.cache_read + usage.cache_write > 0 {
+                    totals.cache_hit_rate = Some(usage.cache_read as f64 / prompt as f64 * 100.0);
+                }
+            }
+        }
+        totals
+    }
+
+    /// Appends a compaction entry and returns its id.
+    #[allow(clippy::too_many_arguments)]
+    pub fn append_compaction(
+        &self,
+        summary: impl Into<String>,
+        first_kept_entry_id: impl Into<String>,
+        tokens_before: u64,
+        details: Option<CompactionDetails>,
+        usage: Option<UsageRecord>,
+    ) -> Result<String> {
+        let entry = Entry::Compaction(CompactionEntry {
+            id: new_id(),
+            parent_id: self.leaf_id(),
+            timestamp: now_iso(),
+            summary: summary.into(),
+            first_kept_entry_id: first_kept_entry_id.into(),
+            tokens_before,
+            usage,
+            details,
+        });
+        self.append_entry(entry)
+    }
+
+    /// Appends a branch-summary entry after moving the leaf, capturing context
+    /// from the abandoned path. Returns the new branch-summary entry id.
+    pub fn branch_with_summary(
+        &self,
+        branch_from: Option<&str>,
+        summary: impl Into<String>,
+        details: Option<CompactionDetails>,
+        usage: Option<UsageRecord>,
+    ) -> Result<String> {
+        let from_id = self.leaf_id();
+        let entry = Entry::BranchSummary(BranchSummaryEntry {
+            id: new_id(),
+            parent_id: branch_from.map(str::to_string),
+            timestamp: now_iso(),
+            from_id,
+            summary: summary.into(),
+            usage,
+            details,
+        });
+        self.append_entry(entry)
+    }
+
+    /// Records a model switch on the active path.
+    pub fn append_model_change(&self, provider: &str, model_id: &str) -> Result<String> {
+        let entry = Entry::ModelChange(ModelChangeEntry {
+            id: new_id(),
+            parent_id: self.leaf_id(),
+            timestamp: now_iso(),
+            provider: provider.to_string(),
+            model_id: model_id.to_string(),
+        });
+        self.append_entry(entry)
+    }
+
+    /// Records a thinking-level change on the active path.
+    pub fn append_thinking_level(&self, level: &str) -> Result<String> {
+        let entry = Entry::ThinkingLevelChange(ThinkingLevelEntry {
+            id: new_id(),
+            parent_id: self.leaf_id(),
+            timestamp: now_iso(),
+            thinking_level: level.to_string(),
+        });
+        self.append_entry(entry)
+    }
+
+    /// The messages the model sees: the leaf path with the latest compaction
+    /// applied.
     pub fn messages(&self) -> Result<Vec<Message>> {
-        read_messages(&self.path)
+        Ok(self
+            .context()
+            .iter()
+            .flat_map(Entry::context_messages)
+            .collect())
     }
 
-    /// Appends a dynamic-context-pruning compression record.
-    pub fn append_dcp(&self, compression: &Compression) -> Result<()> {
-        let line = serde_json::to_string(&Record::Dcp(compression.clone()))?;
-        append_line(&self.path, &line)
+    /// Context entries (the leaf path with compaction applied).
+    pub fn context(&self) -> Vec<Entry> {
+        let state = self.state();
+        context_entries(&state.entries, state.leaf_id.as_deref(), &state.by_id)
     }
 
-    /// Rewrites the session file with a compacted message history, preserving
-    /// the header and id. Used by `oxide sessions compact`.
+    /// Entry ids aligned with [`Self::messages`], used to anchor compaction.
+    pub fn context_ids(&self) -> Vec<String> {
+        self.context()
+            .iter()
+            .map(|entry| entry.id().to_string())
+            .collect()
+    }
+
+    /// Every entry in append order (excluding the header).
+    pub fn entries(&self) -> Vec<Entry> {
+        self.state()
+            .entries
+            .iter()
+            .filter(|entry| !matches!(entry, Entry::Session(_)))
+            .cloned()
+            .collect()
+    }
+
+    /// The current leaf entry id.
+    pub fn leaf_id(&self) -> Option<String> {
+        self.state().leaf_id.clone()
+    }
+
+    /// Replaces the on-disk entry list with a linear sequence of messages. Used
+    /// by `oxide sessions compact` after summarizing a session in place.
     pub fn rewrite(&self, messages: &[Message]) -> Result<()> {
         let dir = self.path.parent().unwrap_or_else(|| Path::new("."));
         let tmp = dir.join(format!(".{}.tmp", self.header.id));
@@ -286,39 +633,121 @@ impl SessionLog {
         writeln!(
             file,
             "{}",
-            serde_json::to_string(&Record::Header(self.header.clone()))?
+            serde_json::to_string(&Entry::Session(self.header.clone()))?
         )?;
+        let mut parent: Option<String> = None;
+        let mut entries = Vec::new();
         for message in messages {
-            writeln!(
-                file,
-                "{}",
-                serde_json::to_string(&Record::Message(Box::new(message.clone())))?
-            )?;
+            let id = new_id();
+            let entry = Entry::Message(MessageEntry {
+                id: id.clone(),
+                parent_id: parent.clone(),
+                timestamp: now_iso(),
+                message: Box::new(message.clone()),
+                usage: None,
+            });
+            writeln!(file, "{}", serde_json::to_string(&entry)?)?;
+            parent = Some(id);
+            entries.push(entry);
         }
         file.sync_data()
             .with_context(|| format!("syncing session log {}", tmp.display()))?;
         drop(file);
         std::fs::rename(&tmp, &self.path)
             .with_context(|| format!("replacing {}", self.path.display()))?;
+
+        let mut state = self.state();
+        state.by_id.clear();
+        state.leaf_id = parent;
+        for (index, entry) in entries.iter().enumerate() {
+            state.by_id.insert(entry.id().to_string(), index);
+        }
+        state.entries = entries;
         Ok(())
     }
 
-    /// Reconstructs pruning state by replaying compression records.
-    pub fn dcp_state(&self) -> DcpState {
-        let mut state = DcpState::default();
-        let Ok(raw) = std::fs::read_to_string(&self.path) else {
-            return state;
-        };
-        for line in raw.lines() {
-            if line.trim().is_empty() {
-                continue;
-            }
-            if let Ok(Record::Dcp(compression)) = serde_json::from_str::<Record>(line) {
-                state.compressions.push(compression);
-            }
-        }
-        state
+    fn append_entry(&self, entry: Entry) -> Result<String> {
+        let id = entry.id().to_string();
+        let line = serde_json::to_string(&entry)?;
+        append_line(&self.path, &line)?;
+        let mut state = self.state();
+        let index = state.entries.len();
+        state.by_id.insert(id.clone(), index);
+        state.leaf_id = Some(id.clone());
+        state.entries.push(entry);
+        Ok(id)
     }
+
+    fn state(&self) -> MutexGuard<'_, SessionState> {
+        self.state.lock().unwrap_or_else(|err| err.into_inner())
+    }
+}
+
+/// The leaf path (last entry is the leaf) with the latest compaction applied.
+fn context_entries(
+    entries: &[Entry],
+    leaf_id: Option<&str>,
+    by_id: &HashMap<String, usize>,
+) -> Vec<Entry> {
+    let path = leaf_path_with(entries, leaf_id, by_id);
+    let Some(compaction_pos) = path
+        .iter()
+        .rposition(|entry| matches!(entry, Entry::Compaction(_)))
+    else {
+        return path;
+    };
+    let Some(Entry::Compaction(compaction)) = path.get(compaction_pos) else {
+        return path;
+    };
+    let mut out = vec![path[compaction_pos].clone()];
+    let mut found_first_kept = false;
+    for entry in &path[..compaction_pos] {
+        if entry.id() == compaction.first_kept_entry_id {
+            found_first_kept = true;
+        }
+        if found_first_kept && !entry.is_system_message() {
+            out.push(entry.clone());
+        }
+    }
+    out.extend_from_slice(&path[compaction_pos + 1..]);
+    out
+}
+
+fn leaf_path(state: &SessionState) -> Vec<Entry> {
+    leaf_path_with(&state.entries, state.leaf_id.as_deref(), &state.by_id)
+}
+
+fn leaf_path_with(
+    entries: &[Entry],
+    leaf_id: Option<&str>,
+    by_id: &HashMap<String, usize>,
+) -> Vec<Entry> {
+    let leaf = leaf_id
+        .and_then(|id| by_id.get(id).copied())
+        .or_else(|| entries.len().checked_sub(1));
+    let Some(mut current) = leaf else {
+        return Vec::new();
+    };
+    let mut path = Vec::new();
+    loop {
+        path.push(entries[current].clone());
+        let Some(parent) = entries[current]
+            .parent_id()
+            .and_then(|id| by_id.get(id).copied())
+        else {
+            break;
+        };
+        current = parent;
+    }
+    path.reverse();
+    path
+}
+
+fn latest_name(entries: &[Entry]) -> Option<String> {
+    entries.iter().rev().find_map(|entry| match entry {
+        Entry::SessionInfo(info) => Some(info.name.clone()),
+        _ => None,
+    })
 }
 
 fn sessions_root() -> PathBuf {
@@ -332,74 +761,32 @@ fn project_dir(cwd: &Path) -> PathBuf {
     sessions_root().join(crate::memory::project_id(cwd))
 }
 
-fn read_name(path: &Path) -> Option<String> {
-    std::fs::read_to_string(path.with_extension("name"))
-        .ok()
-        .map(|value| value.trim().to_string())
-        .filter(|value| !value.is_empty())
-}
-
-fn read_header(path: &Path) -> Result<SessionHeader> {
+fn read_session(path: &Path) -> Result<(SessionHeader, SessionState)> {
     let file = std::fs::File::open(path)
         .with_context(|| format!("reading session log {}", path.display()))?;
+    let mut header = None;
+    let mut state = SessionState::default();
     for line in BufReader::new(file).lines() {
         let line = line.with_context(|| format!("reading session log {}", path.display()))?;
         if line.trim().is_empty() {
             continue;
         }
-        if let Ok(Record::Header(header)) = serde_json::from_str::<Record>(&line) {
-            return Ok(header);
-        }
-    }
-    anyhow::bail!("session log {} has no header", path.display())
-}
-
-fn read_messages(path: &Path) -> Result<Vec<Message>> {
-    let raw = std::fs::read_to_string(path)
-        .with_context(|| format!("reading session log {}", path.display()))?;
-    let mut messages = Vec::new();
-    for line in raw.lines() {
-        if line.trim().is_empty() {
+        let Ok(entry) = serde_json::from_str::<Entry>(&line) else {
             continue;
-        }
-        if let Ok(Record::Message(message)) = serde_json::from_str::<Record>(line) {
-            messages.push(*message);
-        }
-    }
-    Ok(messages)
-}
-
-struct MessageScan {
-    message_count: usize,
-    preview: Option<String>,
-}
-
-/// Scans a session log for its message count and first user-message preview
-/// without deserializing every message body.
-fn scan_messages(path: &Path) -> MessageScan {
-    let mut scan = MessageScan {
-        message_count: 0,
-        preview: None,
-    };
-    let Ok(file) = std::fs::File::open(path) else {
-        return scan;
-    };
-    for line in BufReader::new(file).lines().map_while(Result::ok) {
-        if !line.contains("\"kind\":\"message\"") {
-            continue;
-        }
-        scan.message_count += 1;
-        if scan.preview.is_none() {
-            if let Ok(Record::Message(message)) = serde_json::from_str::<Record>(&line) {
-                if message.role == "user" {
-                    if let Some(text) = message.display() {
-                        scan.preview = Some(preview_text(&text));
-                    }
-                }
+        };
+        match entry {
+            Entry::Session(value) => header = Some(value),
+            other => {
+                state
+                    .by_id
+                    .insert(other.id().to_string(), state.entries.len());
+                state.leaf_id = Some(other.id().to_string());
+                state.entries.push(other);
             }
         }
     }
-    scan
+    let header = header.with_context(|| format!("session log {} has no header", path.display()))?;
+    Ok((header, state))
 }
 
 fn preview_text(text: &str) -> String {
@@ -421,10 +808,6 @@ fn system_time_secs(time: SystemTime) -> u64 {
         .unwrap_or(0)
 }
 
-fn now_secs() -> u64 {
-    system_time_secs(SystemTime::now())
-}
-
 fn remove_file(path: &Path) -> Result<()> {
     if !path.exists() {
         return Ok(());
@@ -437,9 +820,8 @@ fn remove_file(path: &Path) -> Result<()> {
     std::fs::remove_file(path).with_context(|| format!("deleting {}", path.display()))
 }
 
-/// Appends one JSONL record and flushes it to disk. If a previous write was
-/// interrupted mid-record, the trailing partial line is terminated first so the
-/// new record starts on a fresh line instead of being concatenated into it.
+/// Appends one JSONL record and flushes it to disk. A partial trailing line
+/// from an interrupted write is terminated first so the record starts fresh.
 fn append_line(path: &Path, line: &str) -> Result<()> {
     let mut file = std::fs::OpenOptions::new()
         .read(true)
@@ -469,13 +851,86 @@ fn ensure_terminated_line(file: &mut std::fs::File) -> Result<()> {
     Ok(())
 }
 
+/// Pi-style short entry id: six hex characters derived from time and a counter.
 fn new_id() -> String {
-    static COUNTER: AtomicU64 = AtomicU64::new(0);
+    static COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
     let nanos = SystemTime::now()
         .duration_since(UNIX_EPOCH)
-        .map(|duration| duration.as_nanos())
+        .map(|duration| duration.as_nanos() as u64)
         .unwrap_or(0);
-    format!("{:x}{:04x}", nanos, COUNTER.fetch_add(1, Ordering::Relaxed))
+    let value = nanos
+        .rotate_left(17)
+        .wrapping_add(COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed));
+    format!("{:08x}", value & 0xffff_ffff)
+}
+
+fn session_file_stem(id: &str) -> String {
+    let millis = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_millis())
+        .unwrap_or(0);
+    format!("{millis}_{id}")
+}
+
+fn now_iso() -> String {
+    let millis = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_millis() as u64)
+        .unwrap_or(0);
+    format_iso(millis)
+}
+
+fn format_iso(millis: u64) -> String {
+    let secs = (millis / 1000) as i64;
+    let ms = (millis % 1000) as u32;
+    let days = secs.div_euclid(86_400);
+    let rem = secs.rem_euclid(86_400);
+    let (year, month, day) = civil_from_days(days);
+    let hour = rem / 3600;
+    let minute = (rem % 3600) / 60;
+    let second = rem % 60;
+    format!("{year:04}-{month:02}-{day:02}T{hour:02}:{minute:02}:{second:02}.{ms:03}Z")
+}
+
+/// Howard Hinnant's `civil_from_days`, for a dependency-free UTC timestamp.
+fn civil_from_days(z: i64) -> (i64, u32, u32) {
+    let z = z + 719_468;
+    let era = if z >= 0 { z } else { z - 146_096 } / 146_097;
+    let doe = (z - era * 146_097) as u64;
+    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
+    let year = yoe as i64 + era * 400;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let day = (doy - (153 * mp + 2) / 5 + 1) as u32;
+    let month = if mp < 10 { mp + 3 } else { mp - 9 } as u32;
+    (if month <= 2 { year + 1 } else { year }, month, day)
+}
+
+/// Parses our own ISO-8601 output back to Unix seconds (used for sorting).
+fn parse_iso(text: &str) -> Option<u64> {
+    let (date, rest) = text.split_once('T')?;
+    let mut date_parts = date.split('-');
+    let year: i64 = date_parts.next()?.parse().ok()?;
+    let month: i64 = date_parts.next()?.parse().ok()?;
+    let day: i64 = date_parts.next()?.parse().ok()?;
+    let time = rest.trim_end_matches('Z');
+    let (clock, _frac) = time.split_once('.').unwrap_or((time, ""));
+    let mut clock_parts = clock.split(':');
+    let hour: i64 = clock_parts.next()?.parse().ok()?;
+    let minute: i64 = clock_parts.next()?.parse().ok()?;
+    let second: i64 = clock_parts.next()?.parse().ok()?;
+    let days = days_from_civil(year, month, day);
+    Some((days * 86_400 + hour * 3600 + minute * 60 + second) as u64)
+}
+
+fn days_from_civil(year: i64, month: i64, day: i64) -> i64 {
+    let year = if month <= 2 { year - 1 } else { year };
+    let era = if year >= 0 { year } else { year - 399 } / 400;
+    let yoe = year - era * 400;
+    let mp = if month > 2 { month - 3 } else { month + 9 };
+    let doy = (153 * mp + 2) / 5 + day - 1;
+    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+    era * 146_097 + doe - 719_468
 }
 
 #[cfg(test)]
@@ -510,6 +965,142 @@ mod tests {
     }
 
     #[test]
+    fn entries_form_a_tree_with_parent_links() {
+        let dir = temp_dir("tree");
+        let cwd = temp_dir("tree_proj");
+        let log = SessionLog::create_in(&dir, &cwd).unwrap();
+        let first = log.append(&Message::user("one")).unwrap();
+        let second = log.append(&Message::assistant("two", vec![])).unwrap();
+        let entries = log.entries();
+        assert_eq!(entries.len(), 2);
+        assert_eq!(entries[0].parent_id(), None);
+        assert_eq!(entries[1].parent_id(), Some(first.as_str()));
+        assert_eq!(log.leaf_id().as_deref(), Some(second.as_str()));
+        std::fs::remove_dir_all(&dir).ok();
+        std::fs::remove_dir_all(&cwd).ok();
+    }
+
+    #[test]
+    fn compaction_replaces_older_entries() {
+        let dir = temp_dir("compact");
+        let cwd = temp_dir("compact_proj");
+        let log = SessionLog::create_in(&dir, &cwd).unwrap();
+        log.append(&Message::user("one")).unwrap();
+        log.append(&Message::assistant("two", vec![])).unwrap();
+        let kept = log.append(&Message::user("three")).unwrap();
+        log.append_compaction("summary", kept.clone(), 10, None, None)
+            .unwrap();
+        log.append(&Message::user("four")).unwrap();
+
+        let messages = log.messages().unwrap();
+        let texts: Vec<String> = messages.iter().filter_map(Message::display).collect();
+        assert_eq!(texts[0], "[conversation summary]\nsummary");
+        assert!(texts.contains(&"three".to_string()));
+        assert!(texts.contains(&"four".to_string()));
+        assert!(!texts.contains(&"one".to_string()));
+
+        std::fs::remove_dir_all(&dir).ok();
+        std::fs::remove_dir_all(&cwd).ok();
+    }
+
+    #[test]
+    fn branch_with_summary_starts_a_new_branch() {
+        let dir = temp_dir("branch");
+        let cwd = temp_dir("branch_proj");
+        let log = SessionLog::create_in(&dir, &cwd).unwrap();
+        let first = log.append(&Message::user("one")).unwrap();
+        log.append(&Message::assistant("two", vec![])).unwrap();
+        log.branch_with_summary(Some(&first), "abandoned", None, None)
+            .unwrap();
+        log.append(&Message::user("redo")).unwrap();
+
+        let messages = log.messages().unwrap();
+        let texts: Vec<String> = messages.iter().filter_map(Message::display).collect();
+        assert_eq!(
+            texts,
+            vec![
+                "one".to_string(),
+                "[branch summary]\nabandoned".to_string(),
+                "redo".to_string()
+            ]
+        );
+
+        std::fs::remove_dir_all(&dir).ok();
+        std::fs::remove_dir_all(&cwd).ok();
+    }
+
+    #[test]
+    fn usage_totals_sum_assistant_and_summary_usage() {
+        let dir = temp_dir("usage");
+        let cwd = temp_dir("usage_proj");
+        let log = SessionLog::create_in(&dir, &cwd).unwrap();
+        log.append_with_usage(
+            &Message::assistant("hi", vec![]),
+            Some(UsageRecord {
+                input: 100,
+                output: 20,
+                cache_read: 40,
+                cache_write: 10,
+                cost: 0.5,
+            }),
+        )
+        .unwrap();
+        let kept = log.leaf_id().unwrap();
+        log.append_compaction(
+            "summary",
+            kept,
+            10,
+            None,
+            Some(UsageRecord {
+                input: 30,
+                output: 5,
+                ..Default::default()
+            }),
+        )
+        .unwrap();
+        log.branch_with_summary(
+            None,
+            "branch",
+            None,
+            Some(UsageRecord {
+                input: 7,
+                output: 3,
+                ..Default::default()
+            }),
+        )
+        .unwrap();
+        let totals = log.usage_totals();
+        assert_eq!((totals.input, totals.output), (137, 28));
+        assert_eq!(totals.cache_read, 40);
+        assert_eq!(totals.cache_write, 10);
+        assert!((totals.cost - 0.5).abs() < 1e-9);
+        let hit = totals.cache_hit_rate.unwrap();
+        assert!((hit - 40.0 / 150.0 * 100.0).abs() < 1e-9);
+
+        let reopened = SessionLog::open(log.path().to_path_buf()).unwrap();
+        let totals = reopened.usage_totals();
+        assert_eq!((totals.input, totals.output), (137, 28));
+        assert_eq!(totals.cache_read, 40);
+
+        std::fs::remove_dir_all(&dir).ok();
+        std::fs::remove_dir_all(&cwd).ok();
+    }
+
+    #[test]
+    fn session_name_round_trips_as_entry() {
+        let dir = temp_dir("name");
+        let cwd = temp_dir("name_proj");
+        let log = SessionLog::create_in(&dir, &cwd).unwrap();
+        log.append(&Message::user("hi")).unwrap();
+        log.set_name("my task").unwrap();
+        assert_eq!(log.name().as_deref(), Some("my task"));
+        let reopened = SessionLog::open(log.path().to_path_buf()).unwrap();
+        assert_eq!(reopened.name().as_deref(), Some("my task"));
+        std::fs::remove_dir_all(&dir).ok();
+        std::fs::remove_dir_all(&cwd).ok();
+    }
+
+    #[test]
     fn latest_picks_most_recent() {
         let dir = temp_dir("latest");
         let cwd = temp_dir("latest_proj");
@@ -520,31 +1111,6 @@ mod tests {
         let latest = SessionLog::latest_in(&dir).unwrap();
         assert_eq!(latest.id(), second.id());
         assert_ne!(first.id(), second.id());
-
-        std::fs::remove_dir_all(&dir).ok();
-        std::fs::remove_dir_all(&cwd).ok();
-    }
-
-    #[test]
-    fn dcp_records_round_trip() {
-        use crate::dcp::{Compression, Range};
-
-        let dir = temp_dir("dcp");
-        let cwd = temp_dir("dcp_proj");
-        let log = SessionLog::create_in(&dir, &cwd).unwrap();
-        log.append_dcp(&Compression {
-            seq: 0,
-            ranges: vec![Range { start: 0, end: 1 }],
-            summary: "did the first thing".into(),
-        })
-        .unwrap();
-        log.append(&Message::user("still here")).unwrap();
-
-        let reopened = SessionLog::open(log.path().to_path_buf()).unwrap();
-        let state = reopened.dcp_state();
-        assert_eq!(state.compressions.len(), 1);
-        assert_eq!(state.compressions[0].summary, "did the first thing");
-        assert_eq!(reopened.messages().unwrap().len(), 1);
 
         std::fs::remove_dir_all(&dir).ok();
         std::fs::remove_dir_all(&cwd).ok();
@@ -590,29 +1156,19 @@ mod tests {
     }
 
     #[test]
-    fn preview_truncates_long_first_lines() {
-        let long = "x".repeat(100);
-        let preview = preview_text(&format!("  {long}\nsecond line"));
-        assert_eq!(preview.chars().count(), 81);
-        assert!(preview.ends_with('…'));
-        assert!(preview.starts_with('x'));
-    }
-
-    #[test]
     fn append_recovers_from_partial_trailing_line() {
         let dir = temp_dir("partial");
         let cwd = temp_dir("partial_proj");
         let log = SessionLog::create_in(&dir, &cwd).unwrap();
         log.append(&Message::user("one")).unwrap();
 
-        // Simulate a crash that left a partial record with no trailing newline.
         let mut file = std::fs::OpenOptions::new()
             .append(true)
             .open(log.path())
             .unwrap();
         write!(
             file,
-            "{{\"kind\":\"message\",\"role\":\"user\",\"content\":\"bro"
+            "{{\"type\":\"message\",\"id\":\"deadbeef\",\"parentId\":null,\"timestamp\":\"x\",\"message\":"
         )
         .unwrap();
 
@@ -625,5 +1181,12 @@ mod tests {
 
         std::fs::remove_dir_all(&dir).ok();
         std::fs::remove_dir_all(&cwd).ok();
+    }
+
+    #[test]
+    fn iso_round_trips_through_parse() {
+        let iso = format_iso(1_733_234_400_000);
+        assert_eq!(iso, "2024-12-03T14:00:00.000Z");
+        assert_eq!(parse_iso(&iso), Some(1_733_234_400));
     }
 }

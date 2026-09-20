@@ -3,6 +3,7 @@ use crate::ecosystem::{self, AgentDef, Ecosystem};
 use crate::memory::{MemoryStore, Scope};
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 pub const DEFAULT_SYSTEM_PROMPT: &str = "\
@@ -342,7 +343,9 @@ pub struct Config {
     #[serde(skip)]
     pub memory: MemoryStore,
     #[serde(skip)]
-    pub dcp: crate::dcp::DcpConfig,
+    pub compaction: crate::compact::CompactionConfig,
+    #[serde(skip)]
+    pub prices: BTreeMap<String, crate::pricing::ModelPrice>,
     #[serde(skip)]
     pub tool_filter: crate::cli::ToolFilter,
     #[serde(skip)]
@@ -411,7 +414,8 @@ impl Default for Config {
             ecosystem: Ecosystem::default(),
             active_agent: None,
             memory: MemoryStore::default(),
-            dcp: crate::dcp::DcpConfig::default(),
+            compaction: crate::compact::CompactionConfig::default(),
+            prices: crate::pricing::defaults(),
             tool_filter: crate::cli::ToolFilter::default(),
             ephemeral: false,
             load_context_files: true,
@@ -423,6 +427,44 @@ impl Default for Config {
 }
 
 impl Config {
+    /// Cost of one usage in USD, or 0 when the model has no known price.
+    pub fn usage_cost(&self, usage: &crate::llm::Usage) -> f64 {
+        crate::pricing::lookup(&self.prices, &self.model)
+            .map(|price| price.cost(usage))
+            .unwrap_or(0.0)
+    }
+
+    /// Whether the active model is known to support a thinking/reasoning level.
+    /// The footer appends ` • <level>` only for these, like Pi's `model.reasoning`.
+    pub fn supports_reasoning(&self) -> bool {
+        let model = self.model.to_ascii_lowercase();
+        const REASONING: [&str; 12] = [
+            "o1",
+            "o3",
+            "o4",
+            "gpt-5",
+            "claude",
+            "deepseek-reasoner",
+            "deepseek-v4",
+            "deepseek-flash",
+            "glm",
+            "gemini-2.5",
+            "qwen3",
+            "sonnet",
+        ];
+        REASONING.iter().any(|prefix| model.starts_with(prefix))
+    }
+
+    /// The model's context window, used for the Pi-style context percentage
+    /// and compaction threshold. `OXIDE_CONTEXT_LIMIT` overrides it.
+    pub fn context_window(&self) -> u64 {
+        std::env::var("OXIDE_CONTEXT_LIMIT")
+            .ok()
+            .and_then(|value| value.trim().parse::<u64>().ok())
+            .filter(|value| *value > 0)
+            .unwrap_or_else(|| (self.max_tokens as u64).max(128_000))
+    }
+
     pub fn config_path() -> PathBuf {
         dirs::config_dir()
             .unwrap_or_else(|| PathBuf::from("."))
@@ -553,7 +595,8 @@ impl Config {
         config.default_project_trust = load_default_project_trust();
         config.ecosystem = ecosystem::load(cwd);
         config.memory = MemoryStore::load(cwd);
-        config.dcp = crate::dcp::load_config(cwd);
+        config.compaction = crate::compact::load_config(cwd);
+        config.prices = crate::pricing::load(cwd);
         if let Some(name) = agent {
             config.activate_agent(&name)?;
         }
@@ -876,11 +919,11 @@ impl Config {
                 .to_string(),
         );
 
-        if self.dcp.enabled {
+        if self.compaction.enabled {
             sections.push(
-                "# Context pruning\nUse the `compress` tool to replace closed, stale spans of the \
-                 conversation with concise summaries and keep the context small. Message numbers \
-                 are listed in periodic context reminders. Session history is never modified."
+                "# Context management\nOlder turns are summarized automatically as the context \
+                 fills up; the most recent work is kept verbatim. Keep summaries of your own work \
+                 close to the end of a task so nothing important is lost."
                     .to_string(),
             );
         }

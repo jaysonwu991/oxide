@@ -3,7 +3,7 @@
 This guide covers day-to-day configuration: where files live, and how to add or
 remove MCP servers, subagents, slash commands, prompt templates, skills, plugins,
 permissions, modes, reasoning, memory, project trust, themes, and context
-pruning.
+compaction.
 
 ## Scopes and precedence
 
@@ -30,8 +30,8 @@ variables, then `config.json` and provider presets. For API keys, the order is
 `config.json`; OpenAI-compatible providers also accept `OPENAI_API_KEY` as a
 last fallback. `OXIDE_BASE_URL` overrides the selected provider's base-URL
 variable, which overrides the file. Behavior settings live in `config.json`
-(global); the global-only `settings.json` currently supplies
-`defaultProjectTrust`.
+(global); the global `settings.json` (and the project `.oxide/settings.json`)
+supply `defaultProjectTrust`, `compaction`, and `modelPrices`.
 
 Installed plugin packages (see [Plugins and hooks](#plugins-and-hooks)) load
 after global resources and before project resources, so project entries still
@@ -391,6 +391,8 @@ export const RustFmt = async ({ $, directory }) => {
   result text.
 - Set `output.terminate = true` in `tool.execute.after` to skip the follow-up
   model call. The turn ends only when every tool result in the batch terminates.
+- `status` runs after each completed turn; write strings into
+  `output.statuses` (a keyed object) to show them on the footer's third row.
 - The `$` helper runs shell commands (`await $\`cmd\`.cwd(dir).quiet().nothrow()`).
 - **Remove** a plugin by deleting its file.
 
@@ -511,9 +513,9 @@ The agent runs in one of three permission modes, modelled on Claude Code:
 
 Set the starting mode with `--mode build|plan|auto-edit`, the `OXIDE_MODE`
 environment variable, or `"mode": "..."` in `config.json`. In the TUI, press
-Shift+Tab to cycle build → auto-edit → plan; the current mode is shown in the
-footer. Plan mode keeps read-only tools available and is useful for review and
-planning before switching back to build.
+Shift+Tab to cycle build → auto-edit → plan; cycling shows the current mode in
+the editor status row. Plan mode keeps read-only tools available and is useful
+for review and planning before switching back to build.
 
 ## Reasoning
 
@@ -535,7 +537,8 @@ tool use keeps its reasoning context.
 Set the starting level with `--reasoning auto|off|low|medium|high`, the
 `OXIDE_REASONING` environment variable, or `"reasoning": "..."` in `config.json`.
 In the TUI, press Ctrl+R to cycle auto → off → low → medium → high; the current
-level is shown in the footer and changes the editor-border color.
+level is shown in the footer (for models that support reasoning) and changes the
+editor-border color.
 
 ## Memory and instructions
 
@@ -611,12 +614,69 @@ with strong contrast against the terminal background and keep `success`,
 For the complete keyboard guide, see
 [Keyboard shortcuts](../README.md#keyboard-shortcuts).
 
-## Context pruning
+## Sessions and context
 
-Context pruning is configured by `.oxide/dcp.json` (project) and `dcp.json` in
-the oxide config dir (global), with the project file overriding the global one.
-See [Context pruning](../README.md#context-pruning) in the README for the
-options and an example.
+Sessions use Pi's on-disk format: an append-only JSONL tree whose first line is
+a `session` header and whose remaining lines are `message`, `compaction`,
+`branch_summary`, `session_info`, `model_change`, and `thinking_level_change`
+entries linked by `id`/`parentId`. The last entry is the active leaf, and the
+model sees the leaf path with the latest compaction applied.
+
+## Context compaction
+
+Oxide compacts the conversation Pi-style: once the outgoing context approaches
+the model window, older turns are replaced with a structured summary while the
+most recent tokens stay verbatim. A `compaction` entry anchored at
+`firstKeptEntryId` is stored on the session branch, so resuming a session
+rebuilds the same compacted view.
+
+Configure it under `compaction` in `settings.json` (global) or
+`.oxide/settings.json` (project), which override each other:
+
+```json
+{
+  "compaction": {
+    "enabled": true,
+    "reserveTokens": 16384,
+    "keepRecentTokens": 20000,
+    "modelOverrides": {
+      "openai/gpt-4o": { "reserveTokens": 400000 }
+    }
+  }
+}
+```
+
+- `reserveTokens` — tokens reserved for the model response; compaction triggers
+  above `contextWindow - reserveTokens`.
+- `keepRecentTokens` — recent tokens kept verbatim.
+- `modelOverrides` — per `provider/model` budget overrides; omitted fields fall
+  back to the ordinary settings.
+
+`OXIDE_COMPACTION_ENABLED`, `OXIDE_COMPACTION_RESERVE_TOKENS`, and
+`OXIDE_COMPACTION_KEEP_RECENT_TOKENS` override the file settings, and
+`OXIDE_CONTEXT_LIMIT` sets the model window. Manual compaction is available with
+`/compact [focus]` in the TUI or `oxide sessions compact`.
+
+Branching with `/tree <n>` or `/fork <n>` summarizes the abandoned branch with
+the same structured format and appends it as a `branch_summary` entry.
+`/tree <n>` branches the current session in place, keeping alternatives in the
+same file; `/fork <n>` creates a new session seeded with the summary.
+
+## Model prices
+
+The footer's `$cost` segment uses a built-in price table (USD per million
+tokens) overlaid by a `modelPrices` map in `settings.json` (global) or
+`.oxide/settings.json` (project):
+
+```json
+{
+  "modelPrices": {
+    "my-model": { "input": 1.0, "output": 4.0, "cacheRead": 0.1, "cacheWrite": 1.25 }
+  }
+}
+```
+
+Models without a price cost 0 and the segment is omitted.
 
 ## Providers and credentials
 
@@ -755,15 +815,14 @@ Runtime state lives under the platform oxide config directory:
 - `auth.json` — stored API keys (mode `0600`)
 - `model-cache.json` — provider model lists (refreshed after 24 hours)
 - `mcp-oauth/<server>.json` — OAuth tokens for remote MCP servers (mode `0600`)
-- `sessions/<project>/*.jsonl` — session history and pruning records
+- `sessions/<project>/<timestamp>_<id>.jsonl` — Pi-style session entry trees
 - `snapshots/<project>/` — shadow-git snapshots for `/undo` and `/redo`; only created when the working directory is inside a git work tree (never the home directory, which would index the whole folder)
 - `memory/` — persistent memory entries
 - `trust.json` — saved project trust decisions
-- `settings.json` — global settings such as `defaultProjectTrust`
+- `settings.json` — global settings such as `defaultProjectTrust`, `compaction`, and `modelPrices`
 - `themes/<name>.json` — custom TUI themes
 - `plugins/` — installed plugin packages, marketplaces, and plugin state
 - `truncated/` — full text of tool outputs that exceeded the line/byte cap, retained 7 days (override with `OXIDE_TRUNCATION_DIR`)
-- `dcp.json` — global context-pruning config
 
 Global ecosystem resources can additionally live under `~/.oxide/` and
 `~/.claude/`; global Claude-compatible MCP configuration is read from

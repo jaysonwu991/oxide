@@ -50,7 +50,7 @@ macOS, and Windows.
 | --- | --- |
 | `src/main.rs` | CLI entry (clap), non-interactive `-p/--print`, `--mode json`, and `--mode rpc` modes, TUI dispatch, and the `mcp`, `sessions`, `plugin`, and `uninstall` subcommands. |
 | `src/cli.rs` | Non-interactive surface: `@file` expansion, tool filtering, JSON/RPC event framing. |
-| `src/config.rs` | Config loading, provider presets, agent `Mode` and `Reasoning`, system prompt composition, and `defaultProjectTrust`. |
+| `src/config.rs` | Config loading, provider presets, agent `Mode` and `Reasoning`, system prompt composition, `defaultProjectTrust`, context-compaction settings, and the context window. |
 | `src/auth.rs` | Credential store backing the TUI `/login` and `/logout` commands. |
 | `src/trust.rs` | Project trust: per-directory decisions and gating of project-local resources. |
 | `src/theme.rs` | Semantic TUI color themes (built-in and custom JSON), including focus, speaker, success, tool, error, supporting-text, border, and tool background roles. |
@@ -62,19 +62,19 @@ macOS, and Windows.
 | `src/mcp_oauth.rs` | OAuth authorization-code + PKCE flow for remote MCP servers. |
 | `src/ecosystem/` | Discovery of the Oxide and Claude Code config ecosystems, including context files, prompt templates, and trust-gated project resources. |
 | `src/permission.rs` | Permission rule parsing and decisions, including `build`/`plan`/`auto-edit` mode overrides. |
-| `src/session.rs` | Durable JSONL session log and forking (`/fork`, `/clone`). |
+| `src/session.rs` | Pi-compatible JSONL session trees (`id`/`parentId` entries, compaction, branch summaries) and forking (`/fork`, `/clone`). |
 | `src/snapshots.rs` | Shadow-git snapshots backing `/undo` and `/redo`. |
-| `src/compact.rs` | Conversation summarization. |
-| `src/dcp.rs` | Dynamic context pruning: config, pruned view, nudges, compression records. |
+| `src/compact.rs` | Pi-style context compaction and branch summarization. |
+| `src/pricing.rs` | Model price table for the footer's `$cost` segment, overlaid by `modelPrices` in `settings.json`. |
 | `src/diff.rs` | Dependency-free LCS line diff for edit previews (context windows and gap markers). |
 | `src/html.rs` | Dependency-free HTML to Markdown/plain-text conversion for `webfetch`. |
 | `src/lsp.rs` | Minimal LSP client and diagnostics. |
-| `src/plugin.rs` | Plugin host and tool hooks, including output rewriting and the terminate hint. |
+| `src/plugin.rs` | Plugin host and hooks: `tool.execute.before`/`after` (output rewriting, terminate hint) and `status` for footer statuses. |
 | `src/plugin_registry.rs` | Claude Code-style plugin packages and marketplaces: `oxide plugin`/`/plugin` install lifecycle, manifests (`.oxide/*.json` preferred, `.claude-plugin/*.json` compatible), and hook-shim generation. |
 | `src/memory.rs` | Cross-session memory store. |
 | `src/media.rs` | Image/PDF attachments and `@path` references. |
 | `src/uninstall.rs` | `oxide uninstall` install detection and cleanup. |
-| `src/tui/` | ratatui + crossterm interface with incremental rendering, a two-column welcome banner, a live state row and metadata footer, a growing labeled editor, background-filled tool panels (Ctrl+O collapses; state-colored with hanging-indented wrapped output), concise shell actions, per-tool `Took` timing, colored edit diffs, per-turn thought timing, Shift+Tab mode and Ctrl+R reasoning cycling, theme-aware project-trust/provider dialogs, and mid-run steering. |
+| `src/tui/` | ratatui + crossterm interface with incremental rendering, a two-column welcome banner, a live state row, a Pi-style footer (path/branch/session, cumulative tokens with cache and cost, context `%`/window, model/thinking, and plugin statuses), a growing labeled editor, background-filled tool panels (Ctrl+O collapses; state-colored with hanging-indented wrapped output, blank line before the body and `Took`), inline user/assistant labels, `read` bodies, colored edit diffs, Shift+Tab mode and Ctrl+R reasoning cycling, theme-aware project-trust/provider dialogs, and mid-run steering. |
 | `.oxide/` | Project agents, commands, prompts, skills, and plugins (Oxide layout). |
 
 ## Conventions
@@ -96,13 +96,12 @@ macOS, and Windows.
   (`read_file`, `write_file`, `patch`, `list_dir`, `glob`); permission rules,
   concurrency checks, and TUI rendering must go through it. Read-only tools are
   listed in the `concurrency_safe` classifier in `src/agent.rs` to run in
-  parallel. Agent-level tools (`task`, `skill`, `memory`, `diagnostics`,
-  `compress`) are defined and dispatched in `src/agent.rs`; `compress` and the
-  pruned request view live in `src/dcp.rs`.
-- **Context pruning.** Configuration, deduplication, error purging, and nudges
-  live in `src/dcp.rs`; compression records are persisted through
-  `SessionLog::append_dcp` / `dcp_state`. The raw history is never modified, only
-  the outgoing request.
+  parallel. Agent-level tools (`task`, `skill`, `memory`, `diagnostics`) are
+  defined and dispatched in `src/agent.rs`.
+- **Sessions and context.** Session trees, entry appends, leaf-path context
+  building, and compaction/branch-summary entries live in `src/session.rs`;
+  summarization lives in `src/compact.rs`. The model sees `SessionLog::messages`
+  (the leaf path with the latest compaction applied).
 - **Providers.** Add a preset in `ProviderPreset::for_name` in `src/config.rs`
   and, if the API is not OpenAI-compatible, extend the dispatch in
   `src/llm/client.rs` (see `src/llm/anthropic.rs`). OpenAI-compatible providers
@@ -119,6 +118,13 @@ macOS, and Windows.
   controls whether project resources load.
 - **Project trust.** `src/trust.rs` owns the decision store and resource
   detection; untrusted runs reload via `Config::reload_ecosystem`.
+- **Footer and usage.** `App` accumulates cumulative usage from
+  `AgentEvent::Usage` and reloads it from `SessionLog::usage_totals` on resume;
+  `src/tui/ui.rs::draw_footer` renders it. Model prices live in `src/pricing.rs`
+  (built-in table plus `modelPrices` in settings).
+- **Plugin hooks.** Handlers are dispatched by name in the embedded harness in
+  `src/plugin.rs`; add one by exposing it on the plugin object and calling
+  `Host::call` from a `PluginHost` method (see `status`).
 - **Themes.** Add a slot in `Theme`/`ThemeFile` in `src/theme.rs` and use it from
   `src/tui/ui.rs` via `app.theme`. Keep state understandable without color,
   preserve readable dark/light defaults, document the slot in the README and

@@ -126,6 +126,7 @@ pub fn event_json(event: &AgentEvent) -> Option<Value> {
     let value = match event {
         AgentEvent::Thought { .. } => json!({ "type": "thinking" }),
         AgentEvent::ThoughtDone { .. } => return None,
+        AgentEvent::Branch { .. } => return None,
         AgentEvent::Text(delta) => json!({
             "type": "message_update",
             "assistantMessageEvent": { "type": "text_delta", "delta": delta }
@@ -146,9 +147,35 @@ pub fn event_json(event: &AgentEvent) -> Option<Value> {
             "result": output,
             "isError": output.starts_with("error:"),
         }),
-        AgentEvent::Usage { input, output } => json!({
+        AgentEvent::Usage {
+            input,
+            output,
+            cache_read,
+            cache_write,
+            cost,
+        } => json!({
             "type": "usage",
-            "usage": { "input": input, "output": output }
+            "usage": {
+                "input": input,
+                "output": output,
+                "cacheRead": cache_read,
+                "cacheWrite": cache_write,
+                "cost": cost,
+            }
+        }),
+        AgentEvent::Compaction {
+            summary,
+            summarized,
+            tokens_before,
+            read_files,
+            modified_files,
+        } => json!({
+            "type": "compaction",
+            "summary": summary,
+            "summarized": summarized,
+            "tokensBefore": tokens_before,
+            "readFiles": read_files,
+            "modifiedFiles": modified_files,
         }),
         AgentEvent::Error(message) => json!({ "type": "error", "message": message }),
         AgentEvent::Finished(messages) => json!({
@@ -270,6 +297,17 @@ mod tests {
         .unwrap();
         assert_eq!(call["type"], "tool_call");
         assert_eq!(call["toolName"], "read");
+
+        let usage = event_json(&AgentEvent::Usage {
+            input: 1,
+            output: 2,
+            cache_read: 3,
+            cache_write: 4,
+            cost: 0.5,
+        })
+        .unwrap();
+        assert_eq!(usage["usage"]["cacheRead"], 3);
+        assert_eq!(usage["usage"]["cost"], 0.5);
 
         let result = event_json(&AgentEvent::ToolResult {
             name: "bash".into(),

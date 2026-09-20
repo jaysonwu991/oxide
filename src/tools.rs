@@ -26,7 +26,7 @@ static TRUNCATION_ID: AtomicU64 = AtomicU64::new(0);
 /// Maps a tool name to its internal canonical form, accepting both the Pi-style
 /// names (`read`, `write`, `edit`, `ls`, `find`, `grep`, `bash`) and the legacy
 /// oxide names (`read_file`, `write_file`, `patch`, `list_dir`, `glob`). The
-/// agent-level tools (`task`, `skill`, `memory`, `diagnostics`, `compress`) and
+/// agent-level tools (`task`, `skill`, `memory`, `diagnostics`) and
 /// MCP names (`server__tool`) pass through unchanged.
 pub fn canonical_tool_name(name: &str) -> &str {
     match name {

@@ -84,7 +84,11 @@ fn main_areas(area: Rect, app: &App) -> [Rect; 3] {
             // One gap row above the composer, two border rows, then the
             // wrapped input rows.
             Constraint::Length(input_rows + 3),
-            Constraint::Length(2),
+            Constraint::Length(if app.extension_statuses.is_empty() {
+                2
+            } else {
+                3
+            }),
         ])
         .split(area);
     [chunks[0], chunks[1], chunks[2]]
@@ -660,73 +664,142 @@ fn draw_suggestions(frame: &mut Frame, app: &App, area: Rect) {
 /// below. The stats read left-to-right while the active model stays
 /// right-aligned, echoing Pi's layout with Oxide's semantic colors.
 fn draw_footer(frame: &mut Frame, app: &App, area: Rect) {
+    let has_statuses = !app.extension_statuses.is_empty();
     let rows = Layout::default()
         .direction(Direction::Vertical)
-        .constraints([Constraint::Length(1), Constraint::Length(1)])
+        .constraints(if has_statuses {
+            vec![
+                Constraint::Length(1),
+                Constraint::Length(1),
+                Constraint::Length(1),
+            ]
+        } else {
+            vec![Constraint::Length(1), Constraint::Length(1)]
+        })
         .split(area);
     let width = area.width as usize;
-    let info = Style::default().fg(app.theme.info);
-    let accent = Style::default()
-        .fg(app.theme.accent)
-        .add_modifier(Modifier::BOLD);
+    let dim = Style::default().fg(app.theme.dim);
 
-    // Row one: where we are, and the branch we are on.
-    let mut project = vec![
-        Span::styled(" ", info),
-        Span::styled(display_path(&app.cwd), info),
-    ];
+    // Row one: where we are, the branch we are on, and the session name.
+    let mut location = display_path(&app.cwd);
     if let Some(branch) = &app.git_branch {
-        project.push(Span::styled("  ", info));
-        project.push(Span::styled(
-            format!("⑂ {branch}"),
-            Style::default().fg(app.theme.success),
-        ));
+        location.push_str(&format!(" ({branch})"));
     }
-    let mut session = Vec::new();
     if let Some(name) = &app.session_name {
-        session.push(Span::styled(
-            format!("{name} "),
-            Style::default().fg(app.theme.dim),
-        ));
+        location.push_str(&format!(" • {name}"));
     }
     frame.render_widget(
-        Paragraph::new(aligned_row(project, session, width)),
+        Paragraph::new(Line::from(Span::styled(
+            truncate_dots(&location, width),
+            dim,
+        ))),
         rows[0],
     );
 
     // Row two: usage on the left, the model and thinking level on the right.
-    let mut stats = vec![Span::styled(" ", info)];
-    if app.tokens_in > 0 || app.tokens_out > 0 {
-        stats.push(Span::styled(
-            format!(
-                "↑ {}  ↓ {}  ",
-                compact_tokens(app.tokens_in),
-                compact_tokens(app.tokens_out)
-            ),
-            Style::default().fg(app.theme.tool),
-        ));
+    let mut parts: Vec<String> = Vec::new();
+    if app.tokens_in > 0 {
+        parts.push(format!("↑{}", format_tokens(app.tokens_in)));
     }
-    if app.context_limit > 0 && app.context_used > 0 {
-        let pct = context_percent(app.context_used, app.context_limit);
-        stats.push(Span::styled("⧉ ", info));
-        stats.push(Span::styled(
-            format!("{pct}%  "),
-            Style::default().fg(context_color(pct, &app.theme)),
-        ));
+    if app.tokens_out > 0 {
+        parts.push(format!("↓{}", format_tokens(app.tokens_out)));
     }
-    stats.push(Span::styled("·  ", info));
-    stats.push(Span::styled(app.mode.label().to_string(), accent));
+    if app.tokens_cache_read > 0 {
+        parts.push(format!("R{}", format_tokens(app.tokens_cache_read)));
+    }
+    if app.tokens_cache_write > 0 {
+        parts.push(format!("W{}", format_tokens(app.tokens_cache_write)));
+    }
+    if app.tokens_cache_read + app.tokens_cache_write > 0 {
+        if let Some(hit) = app.cache_hit_rate {
+            parts.push(format!("CH{hit:.1}%"));
+        }
+    }
+    if app.cost > 0.0 {
+        parts.push(format!("${:.3}", app.cost));
+    }
 
-    let controls = vec![
-        Span::styled(crate::config::model_label(&app.model).to_string(), accent),
-        Span::styled(" · ", info),
-        Span::styled(
-            app.reasoning.label().to_string(),
-            Style::default().fg(reasoning_color(app.reasoning, &app.theme)),
-        ),
-        Span::styled(" ", info),
-    ];
-    frame.render_widget(Paragraph::new(aligned_row(stats, controls, width)), rows[1]);
+    let mut left: Vec<Span<'static>> = Vec::new();
+    for part in &parts {
+        if !left.is_empty() {
+            left.push(Span::styled(" ", dim));
+        }
+        left.push(Span::styled(part.clone(), dim));
+    }
+    if app.context_limit > 0 {
+        if !left.is_empty() {
+            left.push(Span::styled(" ", dim));
+        }
+        let auto = if app.auto_compact { " (auto)" } else { "" };
+        let (text, color) = if app.context_used > 0 {
+            let pct = context_percent(app.context_used, app.context_limit);
+            (
+                format!("{pct}%/{}{auto}", format_tokens(app.context_limit)),
+                context_color(pct, &app.theme),
+            )
+        } else {
+            (
+                format!("?/{}{auto}", format_tokens(app.context_limit)),
+                app.theme.dim,
+            )
+        };
+        left.push(Span::styled(text, Style::default().fg(color)));
+    }
+
+    let model = if app.model.is_empty() {
+        "no-model".to_string()
+    } else {
+        app.model.clone()
+    };
+    let mut right = model;
+    if app.show_thinking {
+        if app.reasoning == Reasoning::Off {
+            right.push_str(" • thinking off");
+        } else {
+            right.push_str(&format!(" • {}", app.reasoning.label()));
+        }
+    }
+    if app.available_providers > 1 && !app.provider.is_empty() {
+        right = format!("({}) {right}", app.provider);
+    }
+    frame.render_widget(
+        Paragraph::new(aligned_row(left, vec![Span::styled(right, dim)], width)),
+        rows[1],
+    );
+
+    if has_statuses {
+        let statuses = app
+            .extension_statuses
+            .values()
+            .map(|text| sanitize_status(text))
+            .collect::<Vec<_>>()
+            .join(" ");
+        frame.render_widget(
+            Paragraph::new(Line::from(Span::styled(
+                truncate_dots(&statuses, width),
+                dim,
+            ))),
+            rows[2],
+        );
+    }
+}
+
+/// Truncates to `width` with a three-dot ellipsis, matching Pi's footer.
+fn truncate_dots(text: &str, width: usize) -> String {
+    if text.chars().count() <= width {
+        return text.to_string();
+    }
+    if width <= 3 {
+        return text.chars().take(width).collect();
+    }
+    let mut out: String = text.chars().take(width - 3).collect();
+    out.push_str("...");
+    out
+}
+
+/// Collapses control characters so an extension status stays on one line.
+fn sanitize_status(text: &str) -> String {
+    text.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
 /// Joins left- and right-aligned span groups on a single row, padding with a
@@ -848,14 +921,31 @@ fn context_percent(used: u64, limit: u64) -> u64 {
     (used as f64 / limit as f64 * 100.0).round() as u64
 }
 
-/// Context usage color escalates from muted to warning to error.
+/// Context usage color escalates from muted to warning to error, matching Pi's
+/// `>90` / `>70` thresholds.
 fn context_color(pct: u64, theme: &crate::theme::Theme) -> Color {
-    if pct >= 85 {
+    if pct > 90 {
         theme.error
-    } else if pct >= 60 {
+    } else if pct > 70 {
         theme.tool
     } else {
-        theme.info
+        theme.dim
+    }
+}
+
+/// Formats token counts the way Pi's footer does: `999`, `1.2k`, `12k`,
+/// `1.2M`, `12M`.
+fn format_tokens(value: u64) -> String {
+    if value < 1_000 {
+        value.to_string()
+    } else if value < 10_000 {
+        format!("{:.1}k", value as f64 / 1_000.0)
+    } else if value < 1_000_000 {
+        format!("{}k", (value as f64 / 1_000.0).round() as u64)
+    } else if value < 10_000_000 {
+        format!("{:.1}M", value as f64 / 1_000_000.0)
+    } else {
+        format!("{}M", (value as f64 / 1_000_000.0).round() as u64)
     }
 }
 
@@ -1057,14 +1147,15 @@ fn render_item_themed(
     match item {
         ChatItem::Banner { info } => render_banner_themed(width, theme, info, lines),
         ChatItem::User(text) => {
-            lines.push(Line::from(vec![
+            let prefix = vec![
                 Span::styled("❯ ", Style::default().fg(theme.user).add_modifier(bold)),
                 Span::styled("you", Style::default().fg(theme.user).add_modifier(bold)),
-            ]));
-            push_wrapped(lines, text, width, Style::default());
+                Span::styled(" ", Style::default()),
+            ];
+            lines.extend(wrapped_with_prefix(prefix, text, width, Style::default()));
         }
         ChatItem::Assistant(text) => {
-            lines.push(Line::from(vec![
+            let prefix = vec![
                 Span::styled(
                     "◆ ",
                     Style::default().fg(theme.assistant).add_modifier(bold),
@@ -1073,8 +1164,9 @@ fn render_item_themed(
                     "oxide",
                     Style::default().fg(theme.assistant).add_modifier(bold),
                 ),
-            ]));
-            push_wrapped(lines, text, width, Style::default());
+                Span::styled(" ", Style::default()),
+            ];
+            lines.extend(wrapped_with_prefix(prefix, text, width, Style::default()));
         }
         ChatItem::Tool { name, args } => {
             let inner = box_inner_width(width);
@@ -1159,6 +1251,9 @@ fn render_item_themed(
                 };
                 panel.extend(action_lines(verb, &diff.path, color, bold, inner));
                 let (mut body, hidden) = diff_body(diff, expand_tools, inner, theme);
+                if !body.is_empty() {
+                    panel.push(Line::from(""));
+                }
                 panel.append(&mut body);
                 if let Some(hidden) = hidden {
                     panel.push(collapsed_hint(hidden, theme.info, inner));
@@ -1175,6 +1270,7 @@ fn render_item_themed(
                     if output.starts_with("error:") {
                         bg = theme.tool_error_bg;
                         panel.extend(action_lines("Read failed", &path, theme.error, bold, inner));
+                        panel.push(Line::from(""));
                         push_tool_output(
                             &mut panel,
                             output,
@@ -1183,15 +1279,34 @@ fn render_item_themed(
                         );
                     } else {
                         panel.extend(action_lines("Read", &path, theme.success, bold, inner));
+                        if !output.trim().is_empty() {
+                            panel.push(Line::from(""));
+                            if expand_tools {
+                                push_tool_output(
+                                    &mut panel,
+                                    output,
+                                    inner,
+                                    Style::default().fg(theme.info),
+                                );
+                            } else {
+                                panel.push(collapsed_hint(
+                                    output.lines().count(),
+                                    theme.info,
+                                    inner,
+                                ));
+                            }
+                        }
                     }
                 } else if output.starts_with("error:") {
                     bg = theme.tool_error_bg;
                     panel.extend(action_lines("Edit failed", &path, theme.error, bold, inner));
+                    panel.push(Line::from(""));
                     push_tool_output(&mut panel, output, inner, Style::default().fg(theme.error));
                 } else {
                     panel.extend(action_lines("Edited", &path, theme.success, bold, inner));
                     if let Some((_, rest)) = output.split_once("\n\n") {
                         if !rest.trim().is_empty() {
+                            panel.push(Line::from(""));
                             push_tool_output(
                                 &mut panel,
                                 rest,
@@ -1218,8 +1333,10 @@ fn render_item_themed(
                 let verb = if failed { "Run failed" } else { "Ran" };
                 panel.extend(action_lines(verb, &subject, color, bold, inner));
                 if exit.is_none() && !output.trim().is_empty() {
+                    panel.push(Line::from(""));
                     push_tool_output(&mut panel, output, inner, Style::default().fg(theme.error));
                 } else if bash_has_body(output) {
+                    panel.push(Line::from(""));
                     if expand_tools {
                         push_tool_output(
                             &mut panel,
@@ -1245,6 +1362,7 @@ fn render_item_themed(
                     Span::styled(name.clone(), Style::default().fg(theme.info)),
                 ]));
                 if !output.trim().is_empty() {
+                    panel.push(Line::from(""));
                     if expand_tools {
                         push_tool_output(
                             &mut panel,
@@ -1260,6 +1378,7 @@ fn render_item_themed(
             // Shell timings always show (Pi behavior); other tools only report
             // when they were slow enough to be worth calling out.
             if *millis > 0 && (command.is_some() || *millis >= TOOL_TIME_THRESHOLD_MS) {
+                panel.push(Line::from(""));
                 panel.push(Line::from(Span::styled(
                     format!("Took {}", format_duration(*millis)),
                     Style::default().fg(theme.dim),
@@ -1267,11 +1386,40 @@ fn render_item_themed(
             }
             push_bg_panel(lines, panel, width, bg);
         }
-        ChatItem::Thought(millis) => {
-            lines.push(Line::from(Span::styled(
-                format!("+ Thought: {millis}ms"),
-                Style::default().fg(theme.info),
-            )));
+        ChatItem::Compaction {
+            summary,
+            summarized,
+            tokens_before,
+            read_files,
+            modified_files,
+        } => {
+            lines.push(Line::from(vec![
+                Span::styled("✻ ", Style::default().fg(theme.accent).add_modifier(bold)),
+                Span::styled(
+                    format!(
+                        "Compacted {summarized} messages (~{} tokens)",
+                        compact_tokens(*tokens_before)
+                    ),
+                    Style::default().fg(theme.accent).add_modifier(bold),
+                ),
+            ]));
+            push_wrapped(lines, summary, width, Style::default().fg(theme.dim));
+            if !read_files.is_empty() {
+                push_wrapped(
+                    lines,
+                    &format!("read: {}", read_files.join(", ")),
+                    width,
+                    Style::default().fg(theme.info),
+                );
+            }
+            if !modified_files.is_empty() {
+                push_wrapped(
+                    lines,
+                    &format!("modified: {}", modified_files.join(", ")),
+                    width,
+                    Style::default().fg(theme.info),
+                );
+            }
         }
         ChatItem::Error(text) => {
             push_wrapped(
@@ -2332,7 +2480,24 @@ mod tests {
             false,
             &mut lines,
         );
-        assert_eq!(panel_line(&lines), "→ Read src/main.rs");
+        assert!(panel_text(&lines).starts_with("→ Read src/main.rs"));
+        assert!(panel_text(&lines).contains("Ctrl+O to expand"));
+
+        let mut lines = Vec::new();
+        render_item(
+            &ChatItem::ToolResult {
+                name: "read_file".into(),
+                args: args.into(),
+                output: "     1\tfn main() {}".into(),
+                diff: None,
+                millis: 0,
+            },
+            80,
+            true,
+            &mut lines,
+        );
+        assert!(panel_text(&lines).starts_with("→ Read src/main.rs"));
+        assert!(panel_text(&lines).contains("fn main() {}"));
 
         let mut lines = Vec::new();
         render_item(
@@ -2348,6 +2513,45 @@ mod tests {
             &mut lines,
         );
         assert_eq!(panel_line(&lines), "→ Edited src/main.rs");
+    }
+
+    #[test]
+    fn speaker_labels_render_inline_with_message_text() {
+        let mut lines = Vec::new();
+        render_item(&ChatItem::User("hello there".into()), 80, false, &mut lines);
+        assert_eq!(line_text(&lines[0]), "❯ you hello there");
+
+        let mut lines = Vec::new();
+        render_item(
+            &ChatItem::Assistant("here is the answer".into()),
+            80,
+            false,
+            &mut lines,
+        );
+        assert_eq!(line_text(&lines[0]), "◆ oxide here is the answer");
+    }
+
+    #[test]
+    fn compaction_renders_summary_and_files() {
+        let mut lines = Vec::new();
+        render_item(
+            &ChatItem::Compaction {
+                summary: "Ship the release".into(),
+                summarized: 12,
+                tokens_before: 48_000,
+                read_files: vec!["src/a.rs".into()],
+                modified_files: vec!["src/b.rs".into()],
+            },
+            80,
+            true,
+            &mut lines,
+        );
+        let text: String = lines.iter().map(line_text).collect::<Vec<_>>().join("\n");
+        assert!(text.contains("Compacted 12 messages"));
+        assert!(text.contains("48.0k"));
+        assert!(text.contains("Ship the release"));
+        assert!(text.contains("read: src/a.rs"));
+        assert!(text.contains("modified: src/b.rs"));
     }
 
     #[test]
@@ -2380,7 +2584,7 @@ mod tests {
             &mut lines,
         );
         assert_eq!(panel_line(&lines), "→ Ran cargo test --all · exit 0");
-        assert_eq!(lines.len(), 4);
+        assert_eq!(lines.len(), 5);
         assert_eq!(lines[1].spans[1].style.fg, Some(Color::LightGreen));
 
         let mut lines = Vec::new();
@@ -2510,11 +2714,11 @@ mod tests {
             lines[1].spans[0].style.bg,
             Some(Color::Rgb(0x28, 0x32, 0x28))
         );
-        assert_eq!(lines[2].spans[1].style.fg, Some(Color::Gray));
-        assert_eq!(lines[3].spans[1].style.fg, Some(Color::LightRed));
-        assert_eq!(lines[4].spans[1].style.fg, Some(Color::LightGreen));
+        assert_eq!(lines[3].spans[1].style.fg, Some(Color::Gray));
+        assert_eq!(lines[4].spans[1].style.fg, Some(Color::LightRed));
+        assert_eq!(lines[5].spans[1].style.fg, Some(Color::LightGreen));
         assert_eq!(
-            lines[5].spans[0].style.bg,
+            lines[6].spans[0].style.bg,
             Some(Color::Rgb(0x28, 0x32, 0x28))
         );
     }
@@ -2539,9 +2743,9 @@ mod tests {
             lines[1].spans[0].style.bg,
             Some(Color::Rgb(0x28, 0x32, 0x28))
         );
-        assert_eq!(lines[2].spans[1].content.as_ref(), "hi");
+        assert_eq!(lines[3].spans[1].content.as_ref(), "hi");
         assert_eq!(
-            lines[3].spans[0].style.bg,
+            lines[4].spans[0].style.bg,
             Some(Color::Rgb(0x28, 0x32, 0x28))
         );
         for line in &lines {
@@ -2570,9 +2774,10 @@ mod tests {
             lines[1].spans[0].style.bg,
             Some(Color::Rgb(0x28, 0x32, 0x28))
         );
-        assert_eq!(lines[2].spans[1].content.as_ref(), "match");
+        assert!(line_text(&lines[2]).trim().is_empty());
+        assert_eq!(lines[3].spans[1].content.as_ref(), "match");
         assert_eq!(
-            lines[3].spans[0].style.bg,
+            lines[4].spans[0].style.bg,
             Some(Color::Rgb(0x28, 0x32, 0x28))
         );
     }
@@ -2758,6 +2963,57 @@ mod tests {
     }
 
     #[test]
+    fn footer_token_format_matches_pi() {
+        assert_eq!(format_tokens(999), "999");
+        assert_eq!(format_tokens(1_200), "1.2k");
+        assert_eq!(format_tokens(12_000), "12k");
+        assert_eq!(format_tokens(107_800), "108k");
+        assert_eq!(format_tokens(1_200_000), "1.2M");
+        assert_eq!(format_tokens(12_000_000), "12M");
+    }
+
+    #[test]
+    fn footer_truncates_with_three_dots() {
+        assert_eq!(truncate_dots("abcdefgh", 5), "ab...");
+        assert_eq!(truncate_dots("abc", 5), "abc");
+    }
+
+    #[test]
+    fn footer_shows_cache_cost_and_extension_statuses() {
+        use crate::config::{Mode, Reasoning};
+        use ratatui::backend::TestBackend;
+        use ratatui::Terminal;
+
+        let mut app = App::new(
+            "gpt-4o".into(),
+            "/tmp/project".into(),
+            Mode::Build,
+            Reasoning::Auto,
+        );
+        app.tokens_in = 1_000;
+        app.tokens_out = 500;
+        app.tokens_cache_read = 800;
+        app.tokens_cache_write = 200;
+        app.cache_hit_rate = Some(80.0);
+        app.cost = 0.1234;
+        app.context_used = 20;
+        app.context_limit = 100;
+        app.extension_statuses.insert("a".into(), "first".into());
+        app.extension_statuses.insert("b".into(), "second".into());
+        let mut terminal = Terminal::new(TestBackend::new(80, 24)).unwrap();
+        terminal.draw(|frame| draw(frame, &mut app)).unwrap();
+        let buffer = terminal.backend().buffer();
+        let row = row_of(buffer, "CH80.0%").expect("cache hit rate");
+        let footer: String = (0..buffer.area.width)
+            .map(|x| buffer[(x, row)].symbol())
+            .collect();
+        assert!(footer.contains("R800"));
+        assert!(footer.contains("W200"));
+        assert!(footer.contains("$0.123"));
+        assert!(row_of(buffer, "first second").is_some());
+    }
+
+    #[test]
     fn footer_stacks_project_above_stats_and_right_aligned_model() {
         use crate::config::{Mode, Reasoning};
         use ratatui::backend::TestBackend;
@@ -2781,17 +3037,14 @@ mod tests {
         let project_row = input_bottom + 1;
         let controls_row = input_bottom + 2;
         assert_eq!(row_of(&buffer, "/tmp/project"), Some(project_row));
-        assert_eq!(row_of(&buffer, "⑂"), Some(project_row));
-        assert_eq!(row_of(&buffer, "main"), Some(project_row));
+        assert_eq!(row_of(&buffer, "(main)"), Some(project_row));
         assert_eq!(row_of(&buffer, "gpt-4o"), Some(controls_row));
-        assert_eq!(row_of(&buffer, "build"), Some(controls_row));
         assert_eq!(row_of(&buffer, "auto"), Some(controls_row));
 
         let text: String = (0..buffer.area.width)
             .map(|x| buffer[(x, controls_row)].symbol())
             .collect();
-        assert!(text.starts_with(" ·  build"));
-        assert!(text.trim_end().ends_with("gpt-4o · auto"));
+        assert!(text.trim_end().ends_with("gpt-4o • auto"));
         assert!(!text.contains("Enter send"));
         assert!(!text.contains("Ctrl+O"));
     }
@@ -2822,16 +3075,18 @@ mod tests {
             .map(|x| buffer[(x, input_row)].symbol())
             .collect();
         assert!(row.contains("message · ready"));
-        assert!(!row.contains("107.8k"));
+        assert!(!row.contains("108k"));
         assert!(!row.contains("20%"));
         assert_ne!(row_of(buffer, "Ask Oxide"), Some(input_row));
 
-        let footer_row = row_of(buffer, "107.8k").expect("usage moves to the footer");
+        let footer_row = row_of(buffer, "108k").expect("usage moves to the footer");
         let footer: String = (0..buffer.area.width)
             .map(|x| buffer[(x, footer_row)].symbol())
             .collect();
-        assert!(footer.contains("↓ 4.8k"));
-        assert!(footer.contains("20%"));
+        assert!(footer.contains("↑108k"));
+        assert!(footer.contains("↓4.8k"));
+        assert!(footer.contains("20%/100"));
+        assert!(footer.contains("(auto)"));
     }
 
     #[test]
@@ -2874,7 +3129,7 @@ mod tests {
         let mut terminal = Terminal::new(TestBackend::new(80, 24)).unwrap();
         terminal.draw(|frame| draw(frame, &mut app)).unwrap();
         let buffer = terminal.backend().buffer();
-        assert_eq!(row_of(buffer, "⑂"), None);
+        assert_eq!(row_of(buffer, "(main)"), None);
     }
 }
 
