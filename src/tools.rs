@@ -5,7 +5,7 @@ use crate::media;
 use anyhow::{Context, Result};
 use serde_json::{json, Value};
 use std::collections::{BTreeSet, VecDeque};
-use std::io::{BufWriter, Write};
+use std::io::{BufReader, BufWriter, Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
@@ -20,6 +20,10 @@ const DEFAULT_READ_LINES: usize = 250;
 const TRUNCATION_RETENTION_SECS: u64 = 7 * 24 * 60 * 60;
 const PROGRESS_BATCH_BYTES: usize = 4_096;
 const PROGRESS_INTERVAL: Duration = Duration::from_millis(50);
+/// How long to wait for the output readers to drain after the shell exits. A
+/// background descendant can keep the stdout/stderr pipe open indefinitely, so
+/// this must be bounded or the tool hangs even though the shell is gone.
+const STREAM_DRAIN_GRACE: Duration = Duration::from_secs(1);
 
 static TRUNCATION_ID: AtomicU64 = AtomicU64::new(0);
 
@@ -1341,8 +1345,10 @@ async fn bash(cwd: &Path, args: &Value, progress: &Progress) -> Result<String> {
 
     let stdout = child.stdout.take().context("capturing stdout")?;
     let stderr = child.stderr.take().context("capturing stderr")?;
-    let stdout_task = tokio::spawn(read_stream(stdout, progress.clone(), "stdout"));
-    let stderr_task = tokio::spawn(read_stream(stderr, progress.clone(), "stderr"));
+    let stdout_path = stream_temp_path("stdout");
+    let stderr_path = stream_temp_path("stderr");
+    let stdout_task = tokio::spawn(read_stream(stdout, progress.clone(), stdout_path.clone()));
+    let stderr_task = tokio::spawn(read_stream(stderr, progress.clone(), stderr_path.clone()));
 
     let status = match timeout(Duration::from_secs(secs), child.wait()).await {
         Ok(status) => Some(status.context("waiting for shell")?),
@@ -1351,8 +1357,8 @@ async fn bash(cwd: &Path, args: &Value, progress: &Progress) -> Result<String> {
             None
         }
     };
-    let stdout = stdout_task.await.context("joining stdout reader")??;
-    let stderr = stderr_task.await.context("joining stderr reader")??;
+    let stdout = join_stream(stdout_task, stdout_path).await?;
+    let stderr = join_stream(stderr_task, stderr_path).await?;
     let Some(status) = status else {
         remove_stream_files(&[&stdout, &stderr]);
         anyhow::bail!("command timed out after {secs}s");
@@ -1371,13 +1377,64 @@ impl StreamCapture {
     fn tail_text(&self) -> String {
         String::from_utf8_lossy(&self.tail.iter().copied().collect::<Vec<_>>()).into_owned()
     }
+
+    /// Rebuild a capture from whatever the reader managed to spool before it
+    /// was aborted, so a pipe held open by a background process cannot stall
+    /// the tool.
+    fn from_spool(path: PathBuf) -> Self {
+        let (max_bytes, _) = output_limits("bash");
+        let mut bytes = 0usize;
+        let mut lines = 0usize;
+        let mut tail = VecDeque::new();
+        let mut last_byte = None;
+        if let Ok(file) = std::fs::File::open(&path) {
+            let mut reader = BufReader::new(file);
+            let mut buffer = [0u8; 8_192];
+            while let Ok(read) = reader.read(&mut buffer) {
+                if read == 0 {
+                    break;
+                }
+                let chunk = &buffer[..read];
+                bytes = bytes.saturating_add(read);
+                lines = lines.saturating_add(chunk.iter().filter(|byte| **byte == b'\n').count());
+                last_byte = chunk.last().copied();
+                tail.extend(chunk);
+                let excess = tail.len().saturating_sub(max_bytes);
+                tail.drain(..excess);
+            }
+        }
+        if bytes > 0 && last_byte != Some(b'\n') {
+            lines = lines.saturating_add(1);
+        }
+        StreamCapture {
+            path,
+            tail,
+            bytes,
+            lines,
+        }
+    }
 }
 
-async fn read_stream<R>(mut reader: R, progress: Progress, label: &str) -> Result<StreamCapture>
+/// Wait for a command-output reader to finish, but never block forever: a
+/// background process can hold the pipe open after the shell exits. On timeout
+/// the reader is aborted and whatever it spooled so far is salvaged.
+async fn join_stream(
+    mut handle: tokio::task::JoinHandle<Result<StreamCapture>>,
+    path: PathBuf,
+) -> Result<StreamCapture> {
+    match timeout(STREAM_DRAIN_GRACE, &mut handle).await {
+        Ok(result) => result.context("joining command output reader")?,
+        Err(_) => {
+            handle.abort();
+            Ok(StreamCapture::from_spool(path))
+        }
+    }
+}
+
+async fn read_stream<R>(mut reader: R, progress: Progress, path: PathBuf) -> Result<StreamCapture>
 where
     R: tokio::io::AsyncRead + Unpin,
 {
-    let path = stream_temp_path(label);
     let file = std::fs::File::create(&path)
         .with_context(|| format!("creating command output spool {}", path.display()))?;
     let mut spool = BufWriter::new(file);
@@ -2122,6 +2179,59 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn bash_does_not_wait_for_a_background_output_holder() {
+        let dir = std::env::temp_dir().join(format!("oxide_bash_bg_{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let mcp = McpRegistry::default();
+        let progress = Progress::new(Arc::new(|_: &str| {}));
+
+        let start = std::time::Instant::now();
+        let out = execute(
+            &call("bash", json!({ "command": "echo started; sleep 10 &" })),
+            &dir,
+            &mcp,
+            &progress,
+        )
+        .await;
+        assert!(out.text.contains("started"), "{}", out.text);
+        assert!(
+            start.elapsed() < Duration::from_secs(5),
+            "bash waited {:?} for a background process",
+            start.elapsed()
+        );
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[tokio::test]
+    async fn bash_timeout_returns_despite_a_background_output_holder() {
+        let dir = std::env::temp_dir().join(format!("oxide_bash_timeout_{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let mcp = McpRegistry::default();
+        let progress = Progress::new(Arc::new(|_: &str| {}));
+
+        let start = std::time::Instant::now();
+        let out = execute(
+            &call(
+                "bash",
+                json!({ "command": "sleep 10 & wait", "timeout": 500 }),
+            ),
+            &dir,
+            &mcp,
+            &progress,
+        )
+        .await;
+        assert!(out.text.contains("timed out"), "{}", out.text);
+        assert!(
+            start.elapsed() < Duration::from_secs(6),
+            "bash hung for {:?} after timing out",
+            start.elapsed()
+        );
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[tokio::test]
     async fn stream_capture_spools_full_output_and_bounds_memory() {
         use tokio::io::AsyncWriteExt;
 
@@ -2135,7 +2245,9 @@ mod tests {
         let progress = Progress::new(Arc::new(move |chunk: &str| {
             sink.lock().unwrap().push(chunk.to_string());
         }));
-        let capture = read_stream(reader, progress, "test").await.unwrap();
+        let capture = read_stream(reader, progress, stream_temp_path("test"))
+            .await
+            .unwrap();
 
         assert_eq!(capture.bytes, payload.len());
         assert!(capture.tail.len() <= output_limits("bash").0);
