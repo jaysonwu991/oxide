@@ -1565,7 +1565,7 @@ fn draw_input(frame: &mut Frame, app: &App, area: Rect) {
             .unwrap_or(0);
         vec![Span::styled(
             format!(
-                " {} {} · {secs}s · Esc clear/quit ",
+                " {} {} · {secs}s · Esc clear · /exit quit ",
                 spinner(app.busy_since),
                 app.status
             ),
@@ -3062,7 +3062,7 @@ mod tests {
             .map(|x| buffer[(x, input_row)].symbol())
             .collect();
         assert!(row.contains("ready"));
-        assert!(row.contains("Esc clear/quit"));
+        assert!(row.contains("Esc clear · /exit quit"));
         assert!(!row.contains("108k"));
         assert!(!row.contains("20%"));
 

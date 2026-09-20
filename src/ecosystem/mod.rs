@@ -203,6 +203,19 @@ impl Ecosystem {
                 subtask: command.subtask,
             });
         }
+        if let Some(skill_name) = name.strip_prefix("skill:") {
+            let skill = self.skills.iter().find(|skill| skill.name == skill_name)?;
+            let mut prompt = skill.content.clone();
+            if !arguments.is_empty() {
+                prompt.push_str("\n\nUser: ");
+                prompt.push_str(arguments);
+            }
+            return Some(ResolvedCommand {
+                prompt,
+                agent: None,
+                subtask: false,
+            });
+        }
         let template = self.prompt_template(name)?;
         Some(ResolvedCommand {
             prompt: template.expand(arguments),
@@ -1209,6 +1222,24 @@ mod tests {
         assert!(resolved.agent.is_none());
 
         std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn skill_commands_load_skill_content_with_arguments() {
+        let mut ecosystem = Ecosystem::default();
+        ecosystem.skills.push(Skill {
+            name: "audit".into(),
+            description: Some("audits deps".into()),
+            content: "Audit the deps.".into(),
+        });
+
+        let resolved = ecosystem
+            .resolve_command("/skill:audit the lockfile")
+            .unwrap();
+        assert_eq!(resolved.prompt, "Audit the deps.\n\nUser: the lockfile");
+        assert!(resolved.agent.is_none());
+        assert!(!resolved.subtask);
+        assert!(ecosystem.resolve_command("/skill:missing").is_none());
     }
 
     #[test]

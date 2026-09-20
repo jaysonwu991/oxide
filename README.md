@@ -25,7 +25,8 @@ box, with Claude Code configuration support for compatibility.
   `list_dir`, `glob`) and the unified-diff `patch` tool are accepted everywhere,
   including in permission rules.
 - Agent-level tools: `task` (subagents), `skill` (on-demand skill loading),
-  `memory` (cross-session notes), and `diagnostics` (LSP diagnostics).
+  `command` (model-invoked commands), `memory` (cross-session notes), and
+  `diagnostics` (LSP diagnostics).
 - MCP servers over stdio or Streamable HTTP, loaded on demand with automatic
   tool selection, OAuth discovery, and session handling, exposed as
   `<server>__<tool>`.
@@ -234,7 +235,7 @@ present).
 | Enter | Send a message; while the agent is busy, queue guidance for its next step. |
 | Shift+Enter | Insert a newline without sending. |
 | Alt+Enter | While busy, queue a follow-up to run after the current work finishes. |
-| Esc | Clear the input; with empty input, quit. In dialogs, cancel or close. |
+| Esc | Clear the input. In dialogs, cancel or close. |
 | `/` | Open slash-command autocomplete. |
 | `@` | Open file/folder path autocomplete to add a file to the prompt. |
 | Tab | Complete the selected slash-command or `@path` suggestion. |
@@ -586,10 +587,12 @@ oxide also reads the Claude Code layout, so existing configurations work as-is:
 - Global scope: `~/.claude/`, `~/.claude.json`
 
 Slash commands are expanded from the ecosystem and also include built-ins:
-`/help`, `/hotkeys`, `/new`, `/session`, `/resume`, `/tree`, `/fork`, `/clone`, `/name`,
+`/help`, `/hotkeys`, `/exit`, `/new`, `/session`, `/resume`, `/tree`, `/fork`, `/clone`, `/name`,
 `/model`, `/thinking`, `/theme`, `/trust`, `/export`, `/reload`, `/init`,
 `/login`, `/logout`, `/models`, `/mcps`, `/plugin`, `/usage`, `/connect`, `/undo`, `/redo`, and
-`/compact`.
+`/compact`. Discovered commands and prompt templates can also be invoked by the
+agent through the `command` tool, and skills load on demand with `skill` or via
+`/skill:<name>`.
 
 **Plugin packages** — installed via `oxide plugin` (or `/plugin`), plugin
 packages bundle commands, agents, skills, MCP servers, and command hooks behind

@@ -313,6 +313,9 @@ Focus: $ARGUMENTS
 ```
 
 - Invoke with `/<name> [args]` in the TUI.
+- The agent can also invoke a command on its own with the `command` tool when
+  your request matches the command's description; commands whose frontmatter
+  sets `subtask: true` run in an isolated subagent.
 - `$ARGUMENTS` expands to the full argument string; `$1`, `$2`, … expand per
   word.
 - `agent: <name>` runs the command as that agent. `subtask: true` runs it in an
@@ -361,6 +364,8 @@ Detailed instructions loaded on demand.
 
 - The `description` is listed in the system prompt; the model loads the full
   skill with the `skill` tool when the task matches.
+- Force-load a skill with `/skill:<name> [args]`; extra arguments are appended
+  as `User: <args>`. Skills appear in the `/` autocomplete.
 - **Remove** a skill by deleting its directory.
 
 ## Plugins and hooks
