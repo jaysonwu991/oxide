@@ -315,6 +315,8 @@ pub struct Config {
     pub provider: String,
     #[serde(default)]
     pub model: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub default_model: Option<String>,
     #[serde(default)]
     pub base_url: String,
     #[serde(default)]
@@ -396,6 +398,7 @@ impl Default for Config {
         Self {
             provider: "openai".to_string(),
             model: "gpt-4o-mini".to_string(),
+            default_model: None,
             base_url: "https://api.openai.com/v1".to_string(),
             api_key: String::new(),
             portkey_config: String::new(),
@@ -645,6 +648,11 @@ impl Config {
     /// Persists the selected model in `config.json`, preserving other settings.
     pub fn set_active_model_at(path: &Path, model: &str) -> Result<()> {
         Self::set_active_field_at(path, "model", model)
+    }
+
+    /// Persists the model used by default for new sessions (`/models` Ctrl+S).
+    pub fn set_default_model_at(path: &Path, model: &str) -> Result<()> {
+        Self::set_active_field_at(path, "default_model", model)
     }
 
     fn set_active_field_at(path: &Path, key: &str, value: &str) -> Result<()> {
@@ -1229,6 +1237,22 @@ mod tests {
         let value: serde_json::Value =
             serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
         assert_eq!(value["model"], "deepseek-reasoner");
+        assert_eq!(value["provider"], "deepseek");
+        assert_eq!(value["mode"], "plan");
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn set_default_model_writes_and_preserves_settings() {
+        let dir = temp_dir("default-model");
+        let path = dir.join("config.json");
+        std::fs::write(&path, r#"{"provider":"deepseek","mode":"plan"}"#).unwrap();
+
+        Config::set_default_model_at(&path, "deepseek-reasoner").unwrap();
+
+        let value: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        assert_eq!(value["default_model"], "deepseek-reasoner");
         assert_eq!(value["provider"], "deepseek");
         assert_eq!(value["mode"], "plan");
         std::fs::remove_dir_all(&dir).ok();

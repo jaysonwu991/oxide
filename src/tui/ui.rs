@@ -14,7 +14,7 @@ const MAX_INPUT_ROWS: usize = 12;
 /// Blank rows kept above the conversation so the first line (banner or chat)
 /// is not flush with the terminal's top edge.
 const MESSAGE_TOP_PAD: u16 = 1;
-const MAX_MODEL_ROWS: usize = 12;
+const MAX_MODEL_ROWS: usize = 10;
 const MAX_SESSION_ROWS: usize = 12;
 const MAX_SUGGESTION_ROWS: usize = 8;
 
@@ -81,7 +81,9 @@ fn main_areas(area: Rect, app: &App) -> [Rect; 3] {
         .direction(Direction::Vertical)
         .constraints([
             Constraint::Min(3),
-            Constraint::Length(input_rows + 2),
+            // One gap row above the composer, two border rows, then the
+            // wrapped input rows.
+            Constraint::Length(input_rows + 3),
             Constraint::Length(2),
         ])
         .split(area);
@@ -240,75 +242,122 @@ fn draw_connect(frame: &mut Frame, app: &App) {
     );
 }
 
+/// Pi-style model picker: a provider hint, a search input, the model list with
+/// current/default markers, the selected model's name, and key hints.
 fn draw_models(frame: &mut Frame, app: &App) {
+    const POST_LIST_ROWS: usize = 7;
+
     let Some(state) = &app.models else {
         return;
     };
-    let area = centered_rect(70, 60, frame.area());
+    let area = centered_rect(82, 84, frame.area());
     frame.render_widget(Clear, area);
 
-    let title = if state.filter.is_empty() {
-        " models ".to_string()
-    } else {
-        format!(" models · {} ", state.filter)
-    };
-    let block = panel(&title, app.theme.accent);
+    let block = panel("", app.theme.accent);
     let inner = block.inner(area);
     frame.render_widget(block, area);
+    if inner.height == 0 || inner.width == 0 {
+        return;
+    }
 
-    if state.loading {
-        frame.render_widget(
-            Paragraph::new(Span::styled(
-                "loading models…",
-                Style::default().fg(app.theme.info),
-            )),
-            inner,
-        );
-        return;
-    }
-    if let Some(error) = &state.error {
-        frame.render_widget(
-            Paragraph::new(Span::styled(
-                format!("error: {error}"),
-                Style::default().fg(app.theme.error),
-            )),
-            inner,
-        );
-        return;
-    }
+    let accent = Style::default().fg(app.theme.accent);
+    let dim = Style::default().fg(app.theme.dim);
+    let error = Style::default().fg(app.theme.error);
+    let mut lines: Vec<Line> = vec![
+        Line::from(""),
+        Line::from(Span::styled(
+            "Only showing models from configured providers. Use /login to add providers.",
+            Style::default().fg(app.theme.tool),
+        )),
+        Line::from(""),
+        Line::from(vec![
+            Span::styled("> ", accent),
+            Span::raw(state.filter.clone()),
+        ]),
+        Line::from(""),
+    ];
+
+    let cursor_x = inner.x + 2 + state.filter.chars().count() as u16;
+    frame.set_cursor_position((
+        cursor_x.min(inner.x + inner.width.saturating_sub(1)),
+        inner.y + 3,
+    ));
 
     let models = state.filtered();
-    if models.is_empty() {
-        frame.render_widget(
-            Paragraph::new(Span::styled(
-                "no matching models",
-                Style::default().fg(app.theme.info),
-            )),
-            inner,
-        );
-        return;
+    let selected = state.selected.min(models.len().saturating_sub(1));
+    let capacity = (inner.height as usize)
+        .saturating_sub(lines.len() + POST_LIST_ROWS)
+        .max(1);
+
+    if let Some(message) = &state.error {
+        lines.push(Line::from(Span::styled(format!("  {message}"), error)));
+    } else if !state.loading && models.is_empty() {
+        lines.push(Line::from(Span::styled("  No matching models", dim)));
+    } else if !models.is_empty() {
+        let visible = models.len().min(MAX_MODEL_ROWS).min(capacity);
+        let start = selected
+            .saturating_sub(visible / 2)
+            .min(models.len().saturating_sub(visible));
+        let end = start + visible;
+        for (index, model) in models[start..end].iter().enumerate() {
+            let absolute = start + index;
+            let is_selected = absolute == selected;
+            let is_current = *model == state.current.as_str();
+            let is_default = state.default.as_deref() == Some(*model);
+            let mut spans = vec![
+                Span::styled(if is_selected { "→ " } else { "  " }, accent),
+                Span::styled(if is_current { "✓ " } else { "  " }, accent),
+                Span::styled(
+                    (*model).to_string(),
+                    if is_selected {
+                        accent
+                    } else {
+                        Style::default().fg(app.theme.assistant)
+                    },
+                ),
+                Span::styled(format!(" [{}]", state.provider), dim),
+            ];
+            if is_default {
+                spans.push(Span::styled(" · default", dim));
+            }
+            lines.push(Line::from(spans));
+        }
+        if start > 0 || end < models.len() {
+            lines.push(Line::from(Span::styled(
+                format!("  ({}/{})", selected + 1, models.len()),
+                dim,
+            )));
+        }
+        lines.push(Line::from(""));
+        lines.push(Line::from(Span::styled(
+            format!(
+                "  Model Name: {}",
+                crate::config::model_label(models[selected])
+            ),
+            dim,
+        )));
     }
 
-    let rows = inner.height.saturating_sub(1) as usize;
-    let visible = models.len().min(MAX_MODEL_ROWS).min(rows.max(1));
-    let offset = state
-        .selected
-        .saturating_sub(visible.saturating_sub(1))
-        .min(models.len().saturating_sub(visible));
-    let items: Vec<ListItem> = models[offset..offset + visible]
-        .iter()
-        .map(|model| ListItem::new(Line::from(crate::config::model_label(model))))
-        .collect();
-    let list = List::new(items)
-        .highlight_style(
-            Style::default()
-                .fg(app.theme.accent)
-                .add_modifier(Modifier::BOLD | Modifier::REVERSED),
-        )
-        .highlight_symbol("> ");
-    let mut list_state = ListState::default();
-    list_state.select(Some(state.selected.saturating_sub(offset)));
-    frame.render_stateful_widget(list, inner, &mut list_state);
+    lines.push(Line::from(""));
+    if state.loading {
+        lines.push(Line::from(Span::styled(
+            "  Refreshing model catalogs…",
+            dim,
+        )));
+    } else if state.refreshed {
+        lines.push(Line::from(Span::styled(
+            "  Model catalogs refreshed.",
+            Style::default().fg(app.theme.success),
+        )));
+    }
+    lines.push(Line::from(""));
+    lines.push(Line::from(Span::styled(
+        "  Enter to select · Ctrl+S to set as default · Escape/Ctrl+C to cancel",
+        dim,
+    )));
+    lines.push(Line::from(""));
+
+    frame.render_widget(Paragraph::new(Text::from(lines)), inner);
 }
 
 fn draw_sessions(frame: &mut Frame, app: &App) {
@@ -1423,8 +1472,7 @@ fn draw_input(frame: &mut Frame, app: &App, area: Rect) {
         let (cursor_row, cursor_column) =
             input_cursor_position(&app.input, app.input_cursor.min(app.input.len()), width);
         let scroll = input_scroll(&app.input, app.input_cursor, width) as usize;
-        let x = text_area.x + cursor_column as u16;
-        let x = x.min(text_area.x + text_area.width.saturating_sub(1));
+        let x = text_area.x + cursor_column.min(width.saturating_sub(1)) as u16;
         let y = text_area.y + cursor_row.saturating_sub(scroll) as u16;
         frame.set_cursor_position((x, y));
     }
@@ -2667,6 +2715,49 @@ mod tests {
     }
 
     #[test]
+    fn model_picker_matches_pi_layout() {
+        use crate::config::{Mode, Reasoning};
+        use crate::tui::app::ModelsState;
+        use ratatui::backend::TestBackend;
+        use ratatui::Terminal;
+
+        let mut app = App::new(
+            "deepseek-flash".into(),
+            "/tmp/project".into(),
+            Mode::Build,
+            Reasoning::Auto,
+        );
+        app.models = Some(ModelsState::ready(
+            vec!["deepseek-flash".to_string(), "deepseek-v4-pro".to_string()],
+            "deepseek".to_string(),
+            "deepseek-flash".to_string(),
+            Some("deepseek-v4-pro".to_string()),
+        ));
+        let mut terminal = Terminal::new(TestBackend::new(100, 30)).unwrap();
+        terminal.draw(|frame| draw(frame, &mut app)).unwrap();
+        let buffer = terminal.backend().buffer().clone();
+        let text: String = (0..buffer.area.height)
+            .map(|y| {
+                let row: String = (0..buffer.area.width)
+                    .map(|x| buffer[(x, y)].symbol())
+                    .collect();
+                format!("{row}\n")
+            })
+            .collect();
+
+        assert!(text.contains(
+            "Only showing models from configured providers. Use /login to add providers."
+        ));
+        assert!(text.contains("deepseek-flash [deepseek]"));
+        assert!(text.contains("deepseek-v4-pro [deepseek] · default"));
+        assert!(text.contains("Model Name: DeepSeek V4.1 Flash"));
+        assert!(text.contains("Model catalogs refreshed."));
+        assert!(
+            text.contains("Enter to select · Ctrl+S to set as default · Escape/Ctrl+C to cancel")
+        );
+    }
+
+    #[test]
     fn footer_stacks_project_above_stats_and_right_aligned_model() {
         use crate::config::{Mode, Reasoning};
         use ratatui::backend::TestBackend;
@@ -2763,9 +2854,9 @@ mod tests {
         app.suggestion_index = 9;
         let area = Rect::new(0, 0, 80, 24);
 
-        assert_eq!(suggestion_index_at(&app, area, 3, 8), Some(2));
-        assert_eq!(suggestion_index_at(&app, area, 3, 15), Some(9));
-        assert_eq!(suggestion_index_at(&app, area, 0, 8), None);
+        assert_eq!(suggestion_index_at(&app, area, 3, 7), Some(2));
+        assert_eq!(suggestion_index_at(&app, area, 3, 14), Some(9));
+        assert_eq!(suggestion_index_at(&app, area, 0, 7), None);
     }
 
     #[test]

@@ -6,3 +6,16 @@
 
 .idea/
 .vscode/
+
+# Root-level temporary analysis files
+/OPTIMIZATIONS.md
+/OPTIMIZATION_*.md
+/PR_*.md
+/CODE_REVIEW.md
+/FUTURE_OPTIMIZATIONS.md
+/IMAGE_OPTIMIZATIONS.md
+/README_OPTIMIZATIONS.md
+/UI_PADDING_*.md
+
+# Stray build output
+*.rlib

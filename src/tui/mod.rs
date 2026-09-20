@@ -677,7 +677,12 @@ fn handle_key(
                     .unwrap_or_default()
                     .trim()
                     .to_string();
-                let mut state = ModelsState::loading();
+                let provider = crate::auth::canonical_provider(&config.provider);
+                let mut state = ModelsState::loading(
+                    provider,
+                    config.model.clone(),
+                    config.default_model.clone(),
+                );
                 state.filter = filter;
                 app.models = Some(state);
                 app.status = "loading models...".to_string();
@@ -1671,12 +1676,46 @@ fn handle_models_key(key: KeyEvent, app: &mut App, config: &mut Config) {
             keep = false;
             app.status = "model unchanged".to_string();
         }
+        KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+            keep = false;
+            app.status = "model unchanged".to_string();
+        }
+        KeyCode::Char('s') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+            if let Some(model) = state.selected_model().map(str::to_string) {
+                match Config::set_default_model_at(&Config::config_path(), &model) {
+                    Ok(()) => {
+                        let _ = Config::set_active_model_at(&Config::config_path(), &model);
+                        config.default_model = Some(model.clone());
+                        config.model = model.clone();
+                        app.model = model.clone();
+                        app.items
+                            .push(ChatItem::Info(format!("default model: {model}")));
+                        app.status = "ready".to_string();
+                    }
+                    Err(err) => state.error = Some(format!("{err:#}")),
+                }
+                keep = false;
+            }
+        }
         KeyCode::Up => {
-            state.selected = state.selected.saturating_sub(1);
+            let len = state.filtered().len();
+            if len > 0 {
+                state.selected = if state.selected == 0 {
+                    len - 1
+                } else {
+                    state.selected - 1
+                };
+            }
         }
         KeyCode::Down => {
-            let last = state.filtered().len().saturating_sub(1);
-            state.selected = (state.selected + 1).min(last);
+            let len = state.filtered().len();
+            if len > 0 {
+                state.selected = if state.selected + 1 >= len {
+                    0
+                } else {
+                    state.selected + 1
+                };
+            }
         }
         KeyCode::Backspace => {
             state.filter.pop();
@@ -1926,9 +1965,12 @@ fn mcp_status_text(statuses: &[(String, String, McpStatus)]) -> String {
 }
 
 fn handle_model_result(result: Result<Vec<String>, String>, app: &mut App) {
-    if app.models.is_none() {
+    let Some(state) = app.models.as_ref() else {
         return;
-    }
+    };
+    let provider = state.provider.clone();
+    let current = state.current.clone();
+    let default = state.default.clone();
     match result {
         Ok(models) if models.is_empty() => {
             app.models = None;
@@ -1938,7 +1980,7 @@ fn handle_model_result(result: Result<Vec<String>, String>, app: &mut App) {
         }
         Ok(models) => {
             app.status = format!("{} model(s) — pick one", models.len());
-            app.models = Some(ModelsState::ready(models));
+            app.models = Some(ModelsState::ready(models, provider, current, default));
         }
         Err(err) => {
             app.models = None;
@@ -2604,18 +2646,26 @@ mod tests {
 
     #[test]
     fn models_state_filters_and_selects() {
-        let mut state = ModelsState::ready(vec![
+        let mut state = ModelsState::ready(
+            vec!["deepseek-chat".to_string(), "deepseek-reasoner".to_string()],
+            "deepseek".to_string(),
             "deepseek-chat".to_string(),
-            "deepseek-reasoner".to_string(),
-        ]);
+            Some("deepseek-reasoner".to_string()),
+        );
         assert_eq!(state.filtered().len(), 2);
+        assert_eq!(state.filtered(), vec!["deepseek-chat", "deepseek-reasoner"]);
         assert_eq!(state.selected_model(), Some("deepseek-chat"));
 
         state.filter = "reason".to_string();
         assert_eq!(state.filtered(), vec!["deepseek-reasoner"]);
         assert_eq!(state.selected_model(), Some("deepseek-reasoner"));
 
-        state = ModelsState::ready(vec!["claude-sonnet-5".to_string()]);
+        state = ModelsState::ready(
+            vec!["claude-sonnet-5".to_string()],
+            "anthropic".to_string(),
+            "claude-sonnet-5".to_string(),
+            None,
+        );
         state.filter = "Claude Sonnet 5".to_string();
         assert_eq!(state.selected_model(), Some("claude-sonnet-5"));
 
@@ -2760,7 +2810,7 @@ mod tests {
             MouseEvent {
                 kind: MouseEventKind::Moved,
                 column: 4,
-                row: 15,
+                row: 14,
                 modifiers: KeyModifiers::NONE,
             },
             &mut app,
@@ -2772,7 +2822,7 @@ mod tests {
             MouseEvent {
                 kind: MouseEventKind::Down(MouseButton::Left),
                 column: 4,
-                row: 15,
+                row: 14,
                 modifiers: KeyModifiers::NONE,
             },
             &mut app,

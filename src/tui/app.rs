@@ -136,27 +136,45 @@ pub struct ModelsState {
     pub filter: String,
     pub selected: usize,
     pub error: Option<String>,
+    pub provider: String,
+    pub current: String,
+    pub default: Option<String>,
+    pub refreshed: bool,
 }
 
 impl ModelsState {
-    pub fn loading() -> Self {
+    pub fn loading(provider: String, current: String, default: Option<String>) -> Self {
         Self {
             loading: true,
+            provider,
+            current,
+            default,
             ..Self::default()
         }
     }
 
-    pub fn ready(models: Vec<String>) -> Self {
+    pub fn ready(
+        models: Vec<String>,
+        provider: String,
+        current: String,
+        default: Option<String>,
+    ) -> Self {
         Self {
             all: models,
+            provider,
+            current,
+            default,
+            refreshed: true,
             ..Self::default()
         }
     }
 
-    /// Models matching the current filter, in display order.
+    /// Models matching the current filter, ordered current first, then the
+    /// persisted default, then the provider's natural order.
     pub fn filtered(&self) -> Vec<&str> {
         let filter = self.filter.to_ascii_lowercase();
-        self.all
+        let mut models: Vec<&str> = self
+            .all
             .iter()
             .map(String::as_str)
             .filter(|model| {
@@ -166,7 +184,19 @@ impl ModelsState {
                         .to_ascii_lowercase()
                         .contains(&filter)
             })
-            .collect()
+            .collect();
+        let current = self.current.as_str();
+        let default = self.default.as_deref();
+        models.sort_by_key(|model| {
+            if *model == current {
+                0
+            } else if Some(*model) == default {
+                1
+            } else {
+                2
+            }
+        });
+        models
     }
 
     pub fn selected_model(&self) -> Option<&str> {
