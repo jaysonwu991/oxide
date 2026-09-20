@@ -20,7 +20,12 @@ pub struct Ecosystem {
     pub agents: Vec<AgentDef>,
     pub skills: Vec<Skill>,
     pub mcp: Vec<McpServer>,
-    pub plugins: Vec<PathBuf>,
+    /// Single-file JS/TS hook plugins (`.oxide/plugins/*.ts`) and generated
+    /// hook shims, run by the hook host.
+    pub hooks: Vec<PathBuf>,
+    /// Names of the enabled Claude Code-style plugin packages loaded into the
+    /// ecosystem (see `plugin_registry`).
+    pub plugins: Vec<String>,
     /// Context files that were loaded (`AGENTS.md`/`CLAUDE.md`/overrides),
     /// kept so the TUI can show them in the startup welcome area.
     pub context_files: Vec<PathBuf>,
@@ -157,14 +162,15 @@ pub struct McpOAuth {
 
 impl Ecosystem {
     pub fn summary(&self) -> String {
-        format!(
-            "{} agents · {} commands · {} skills · {} MCP servers · {} plugins",
-            self.agents.len(),
-            self.commands.len(),
-            self.skills.len(),
-            self.mcp.len(),
-            self.plugins.len(),
-        )
+        [
+            counted(self.agents.len(), "agent"),
+            counted(self.commands.len(), "command"),
+            counted(self.skills.len(), "skill"),
+            counted(self.mcp.len(), "MCP server"),
+            counted(self.hooks.len(), "hook"),
+            counted(self.plugins.len(), "plugin"),
+        ]
+        .join(" · ")
     }
 
     pub fn agent(&self, name: &str) -> Option<&AgentDef> {
@@ -350,8 +356,42 @@ fn load_claude_dir(ecosystem: &mut Ecosystem, dir: &Path) {
 /// project-local entries still override plugins with the same name.
 fn load_enabled_plugins(ecosystem: &mut Ecosystem) {
     for plugin in crate::plugin_registry::enabled_plugins() {
+        ecosystem.plugins.push(plugin.name.clone());
         load_plugin_dir(ecosystem, &plugin.name, &plugin.path, &plugin.manifest);
     }
+}
+
+/// Formats a count with its noun, singular for one entry (`1 agent`) and
+/// plural otherwise (`2 agents`).
+fn counted(count: usize, noun: &str) -> String {
+    if count == 1 {
+        format!("{count} {noun}")
+    } else {
+        format!("{count} {noun}s")
+    }
+}
+
+/// The single-file hook plugins in a `plugins` directory. The global
+/// `<config>/oxide/plugins` directory doubles as the install root for plugin
+/// packages, so directories and the plugin state file are skipped; only JS/TS
+/// modules are run by the hook host.
+fn hook_files(dir: &Path) -> Vec<PathBuf> {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return Vec::new();
+    };
+    let mut files: Vec<PathBuf> = entries
+        .flatten()
+        .map(|entry| entry.path())
+        .filter(|path| {
+            path.is_file()
+                && matches!(
+                    path.extension().and_then(|ext| ext.to_str()),
+                    Some("js" | "ts" | "mjs" | "cjs" | "mts" | "cts")
+                )
+        })
+        .collect();
+    files.sort();
+    files
 }
 
 fn load_plugin_dir(
@@ -381,15 +421,11 @@ fn load_plugin_dir(
     }
 
     // JS/TS hook files shipped inside the plugin package.
-    if let Ok(entries) = std::fs::read_dir(dir.join("plugins")) {
-        for entry in entries.flatten() {
-            ecosystem.plugins.push(entry.path());
-        }
-    }
+    ecosystem.hooks.extend(hook_files(&dir.join("plugins")));
     // Claude Code command hooks declared in the plugin manifest are translated
     // into a generated JS shim run by the existing hook host.
     if let Some(path) = crate::plugin_registry::hook_shim_path(name, manifest) {
-        ecosystem.plugins.push(path);
+        ecosystem.hooks.push(path);
     }
 }
 
@@ -416,11 +452,7 @@ fn load_layout(ecosystem: &mut Ecosystem, dir: &Path, memory_file: &str) {
         }
     }
 
-    if let Ok(entries) = std::fs::read_dir(dir.join("plugins")) {
-        for entry in entries.flatten() {
-            ecosystem.plugins.push(entry.path());
-        }
-    }
+    ecosystem.hooks.extend(hook_files(&dir.join("plugins")));
 }
 
 fn load_mcp(ecosystem: &mut Ecosystem, path: &Path) {
@@ -1216,6 +1248,39 @@ mod tests {
         assert!(ecosystem.agent("planner").is_some());
         assert!(ecosystem.skills.iter().any(|skill| skill.name == "audit"));
         assert!(ecosystem.mcp.iter().any(|server| server.name == "fs"));
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn summary_pluralizes_counts() {
+        let mut ecosystem = Ecosystem::default();
+        assert_eq!(
+            ecosystem.summary(),
+            "0 agents · 0 commands · 0 skills · 0 MCP servers · 0 hooks · 0 plugins"
+        );
+
+        ecosystem.hooks.push(PathBuf::from("hook.ts"));
+        ecosystem.plugins.push("demo".to_string());
+        assert_eq!(
+            ecosystem.summary(),
+            "0 agents · 0 commands · 0 skills · 0 MCP servers · 1 hook · 1 plugin"
+        );
+    }
+
+    #[test]
+    fn hook_files_skip_plugin_packages_and_state() {
+        let dir = temp_dir("hook_files");
+        std::fs::create_dir_all(dir.join("demo")).unwrap();
+        std::fs::write(dir.join("hook.ts"), "export default 1").unwrap();
+        std::fs::write(dir.join("extra.js"), "export default 1").unwrap();
+        std::fs::write(dir.join("config.json"), "{}").unwrap();
+        std::fs::write(dir.join("notes.md"), "not a hook").unwrap();
+
+        assert_eq!(
+            hook_files(&dir),
+            vec![dir.join("extra.js"), dir.join("hook.ts")]
+        );
 
         std::fs::remove_dir_all(&dir).ok();
     }

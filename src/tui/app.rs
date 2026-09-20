@@ -335,6 +335,9 @@ pub struct App {
     pub context_limit: u64,
     pub show_thinking: bool,
     pub extension_statuses: std::collections::BTreeMap<String, String>,
+    /// Settings for the Portkey spend bar, and the bar itself when enabled.
+    pub usage_settings: crate::portkey_usage::UsageSettings,
+    pub usage: Option<crate::portkey_usage::UsageBar>,
     pub session_name: Option<String>,
     pub theme: crate::theme::Theme,
     pub steering: Steering,
@@ -398,6 +401,8 @@ impl App {
             context_limit: 0,
             show_thinking: true,
             extension_statuses: std::collections::BTreeMap::new(),
+            usage_settings: crate::portkey_usage::UsageSettings::default(),
+            usage: None,
             session_name: None,
             theme: crate::theme::Theme::default(),
             steering: Steering::new(),

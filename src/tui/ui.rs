@@ -55,11 +55,14 @@ fn panel(title: &str, color: Color) -> Block<'static> {
 }
 
 pub fn draw(frame: &mut Frame, app: &mut App) {
-    let [messages, input, footer] = main_areas(frame.area(), app);
+    let areas = main_areas(frame.area(), app);
 
-    draw_messages(frame, app, messages);
-    draw_input(frame, app, input);
-    draw_footer(frame, app, footer);
+    draw_messages(frame, app, areas[0]);
+    draw_input(frame, app, areas[1]);
+    draw_footer(frame, app, areas[2]);
+    if let Some(area) = areas.get(3) {
+        draw_usage_bar(frame, app, *area);
+    }
 
     if app.connect.is_some() {
         draw_connect(frame, app);
@@ -70,28 +73,34 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
     } else if app.sessions.is_some() {
         draw_sessions(frame, app);
     } else if !app.suggestions.is_empty() {
-        draw_suggestions(frame, app, messages);
+        draw_suggestions(frame, app, areas[0]);
     }
 }
 
-fn main_areas(area: Rect, app: &App) -> [Rect; 3] {
+/// Messages, the composer, the footer, and - when the Portkey spend bar is
+/// enabled - one full-width row for it at the bottom of the screen.
+fn main_areas(area: Rect, app: &App) -> Vec<Rect> {
     let input_width = area.width as usize;
     let input_rows = input_rows(&app.input, input_width) as u16;
-    let chunks = Layout::default()
+    let mut constraints = vec![
+        Constraint::Min(3),
+        // One gap row above the composer, the top and bottom rules, then
+        // the wrapped input rows.
+        Constraint::Length(input_rows + 3),
+        Constraint::Length(if app.extension_statuses.is_empty() {
+            2
+        } else {
+            3
+        }),
+    ];
+    if app.usage.is_some() {
+        constraints.push(Constraint::Length(1));
+    }
+    Layout::default()
         .direction(Direction::Vertical)
-        .constraints([
-            Constraint::Min(3),
-            // One gap row above the composer, the top and bottom rules, then
-            // the wrapped input rows.
-            Constraint::Length(input_rows + 3),
-            Constraint::Length(if app.extension_statuses.is_empty() {
-                2
-            } else {
-                3
-            }),
-        ])
-        .split(area);
-    [chunks[0], chunks[1], chunks[2]]
+        .constraints(constraints)
+        .split(area)
+        .to_vec()
 }
 
 fn draw_trust(frame: &mut Frame, app: &App) {
@@ -582,8 +591,8 @@ pub(crate) fn suggestion_index_at(
     column: u16,
     row: u16,
 ) -> Option<usize> {
-    let [message_area, _, _] = main_areas(terminal_area, app);
-    let window = suggestion_window(app, message_area)?;
+    let areas = main_areas(terminal_area, app);
+    let window = suggestion_window(app, areas[0])?;
     let inner = Rect {
         x: window.popup.x.saturating_add(1),
         y: window.popup.y.saturating_add(1),
@@ -782,6 +791,28 @@ fn draw_footer(frame: &mut Frame, app: &App, area: Rect) {
             rows[2],
         );
     }
+}
+
+/// The Portkey spend bar: one full-width row with the user label and the
+/// session, today, and month columns, painted with the theme's bar colors.
+fn draw_usage_bar(frame: &mut Frame, app: &App, area: Rect) {
+    let Some(bar) = &app.usage else {
+        return;
+    };
+    let base = Style::default()
+        .bg(app.theme.usage_bar_bg)
+        .fg(app.theme.usage_bar_fg);
+    let label = Style::default()
+        .bg(app.theme.usage_bar_bg)
+        .fg(app.theme.usage_bar_label)
+        .add_modifier(Modifier::BOLD);
+    let lead = format!("→ {} · ", bar.user);
+    let columns = truncate_dots(
+        &bar.columns(app.cost),
+        (area.width as usize).saturating_sub(lead.chars().count()),
+    );
+    let spans = vec![Span::styled(lead, label), Span::styled(columns, base)];
+    frame.render_widget(Paragraph::new(Line::from(spans)).style(base), area);
 }
 
 /// Truncates to `width` with a three-dot ellipsis, matching Pi's footer.
@@ -1062,7 +1093,8 @@ pub(crate) fn message_position_at(
     column: u16,
     row: u16,
 ) -> Option<(usize, usize)> {
-    let [message_area, _, _] = main_areas(terminal_area, app);
+    let areas = main_areas(terminal_area, app);
+    let message_area = areas[0];
     let top_pad = MESSAGE_TOP_PAD.min(message_area.height);
     if message_area.width <= 2 || message_area.height <= top_pad {
         return None;
@@ -2153,7 +2185,8 @@ mod tests {
             width: 40,
             height: 24,
         };
-        let [message_area, _, _] = main_areas(area, &app);
+        let areas = main_areas(area, &app);
+        let message_area = areas[0];
         let inner_y = message_area.y + MESSAGE_TOP_PAD;
         assert_eq!(message_position_at(&app, area, 0, inner_y), Some((4, 0)));
         assert_eq!(
@@ -3066,6 +3099,69 @@ mod tests {
         assert_eq!(suggestion_index_at(&app, area, 3, 9), Some(2));
         assert_eq!(suggestion_index_at(&app, area, 3, 16), Some(9));
         assert_eq!(suggestion_index_at(&app, area, 0, 9), None);
+    }
+
+    #[test]
+    fn usage_bar_takes_the_bottom_row_when_enabled() {
+        use crate::config::{Mode, Reasoning};
+        use ratatui::backend::TestBackend;
+        use ratatui::Terminal;
+
+        let mut app = App::new(
+            "gpt-4o".into(),
+            "/tmp/project".into(),
+            Mode::Build,
+            Reasoning::Auto,
+        );
+        app.cost = 0.0;
+        let settings = crate::portkey_usage::UsageSettings {
+            enabled: true,
+            user: "firstname.lastname".into(),
+            budget: Some(600.0),
+            ..Default::default()
+        };
+        let mut bar = crate::portkey_usage::UsageBar::new(&settings);
+        bar.apply(Ok(crate::portkey_usage::Snapshot {
+            today: 20.61,
+            month: 220.69,
+        }));
+        app.usage = Some(bar);
+
+        let mut terminal = Terminal::new(TestBackend::new(80, 24)).unwrap();
+        terminal.draw(|frame| draw(frame, &mut app)).unwrap();
+        let buffer = terminal.backend().buffer();
+
+        let row = row_of(buffer, "Today: $20.61").expect("usage bar row");
+        assert_eq!(row, buffer.area.height - 1);
+        let text: String = (0..buffer.area.width)
+            .map(|x| buffer[(x, row)].symbol())
+            .collect();
+        assert!(text.starts_with("→ firstname.lastname"));
+        assert!(text.contains("Session: $0.00"));
+        assert!(text.contains("Month: $220.69 / $600.00"));
+
+        let theme = crate::theme::Theme::dark();
+        for x in 0..buffer.area.width {
+            assert_eq!(buffer[(x, row)].bg, theme.usage_bar_bg);
+        }
+    }
+
+    #[test]
+    fn usage_bar_is_absent_by_default() {
+        use crate::config::{Mode, Reasoning};
+        use ratatui::backend::TestBackend;
+        use ratatui::Terminal;
+
+        let mut app = App::new(
+            "gpt-4o".into(),
+            "/tmp/project".into(),
+            Mode::Build,
+            Reasoning::Auto,
+        );
+        assert!(app.usage.is_none());
+        let mut terminal = Terminal::new(TestBackend::new(80, 24)).unwrap();
+        terminal.draw(|frame| draw(frame, &mut app)).unwrap();
+        assert_eq!(row_of(terminal.backend().buffer(), "Session:"), None);
     }
 
     #[test]

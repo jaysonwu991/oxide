@@ -116,7 +116,7 @@ rl.on("line", async (line) => {
 
 pub struct PluginHost {
     inner: Option<Mutex<Host>>,
-    count: usize,
+    hooks: usize,
     harness: Option<PathBuf>,
 }
 
@@ -167,7 +167,7 @@ impl PluginHost {
                         _child: child,
                         next_id: 0,
                     })),
-                    count: plugins.len(),
+                    hooks: plugins.len(),
                     harness: Some(harness),
                 }
             }
@@ -182,7 +182,7 @@ impl PluginHost {
     fn inactive() -> Self {
         Self {
             inner: None,
-            count: 0,
+            hooks: 0,
             harness: None,
         }
     }
@@ -191,8 +191,8 @@ impl PluginHost {
         self.inner.is_some()
     }
 
-    pub fn plugin_count(&self) -> usize {
-        self.count
+    pub fn hook_count(&self) -> usize {
+        self.hooks
     }
 
     pub async fn tool_before(&self, tool: &str, args: &Value) -> Option<Value> {
@@ -437,7 +437,7 @@ export default async () => ({
     async fn inactive_without_plugins() {
         let host = PluginHost::spawn(&[], Path::new(".")).await;
         assert!(!host.is_active());
-        assert_eq!(host.plugin_count(), 0);
+        assert_eq!(host.hook_count(), 0);
         assert!(host.tool_before("write_file", &json!({})).await.is_none());
     }
 }

@@ -321,7 +321,7 @@ Focus: $ARGUMENTS
 - Built-in commands: `/help`, `/hotkeys`, `/new`, `/session`, `/resume`,
   `/tree`, `/fork`, `/clone`, `/name`, `/model`, `/thinking`, `/theme`,
   `/trust`, `/export`, `/reload`, `/init`, `/login`, `/logout`, `/models`,
-  `/mcps`, `/plugin`, `/connect`, `/undo`, `/redo`, and `/compact`.
+  `/mcps`, `/plugin`, `/usage`, `/connect`, `/undo`, `/redo`, and `/compact`.
 - **Remove** a command by deleting its file.
 
 ## Prompt templates
@@ -599,12 +599,14 @@ one with `--use-theme <name>` or `/theme <name>`. Colors accept names or
 
 Available slots are `accent`, `user`, `assistant`, `success`, `tool`, `error`,
 `info`, `dim`, `border`, `tool_pending_bg`, `tool_success_bg`, `tool_error_bg`,
-`thinking_off`, `thinking_low`, `thinking_medium`, and `thinking_high`. The
-transcript, dialogs, autocomplete, status row, input, and footer use these
-semantic roles. `tool_*_bg` fill the background behind a tool's header, body,
-and `Took`/`Elapsed` footer (pending while running, success or error once it
-settles). `/theme` lists available themes; after a switch, oxide immediately
-rebuilds the styled transcript.
+`usage_bar_bg`, `usage_bar_fg`, `usage_bar_label`, `thinking_off`,
+`thinking_low`, `thinking_medium`, and `thinking_high`. The transcript, dialogs,
+autocomplete, status row, input, and footer use these semantic roles.
+`tool_*_bg` fill the background behind a tool's header, body, and
+`Took`/`Elapsed` footer (pending while running, success or error once it
+settles), and `usage_bar_*` paint the [Portkey spend bar](#portkey-usage-bar).
+`/theme` lists available themes; after a switch, oxide immediately rebuilds the
+styled transcript.
 
 Selections use reverse video and outcome rows retain words or symbols, so color
 is not the only state cue. When authoring a custom theme, choose foregrounds
@@ -806,6 +808,63 @@ model, custom base URL, and Config ID when Portkey is already active. See
 Portkey's documentation for the current [gateway headers](https://portkey.ai/docs/api-reference/inference-api/headers)
 and [OpenAI-compatible setup](https://portkey.ai/docs/integrations/libraries/openai-compatible).
 
+## Portkey usage bar
+
+When your models are routed through Portkey, oxide can show a spend bar on the
+last line of the TUI:
+
+```text
+→ firstname.lastname | Session: $0.00 | Today: $20.61 | Month: $220.69 / $600.00
+```
+
+`Session` is the cumulative cost of the current session (the same figure as the
+footer's `$cost`). `Today` and `Month` come from the Portkey analytics API, so
+they cover every request your workspace attributed to that user from any
+client, not just this session, and they are the USD amounts Portkey reports. The
+optional ` / $600.00` after `Month` is the budget configured with
+`/usage budget`, formatted in the currency set with `/usage currency`.
+
+The bar only runs while a Portkey provider is logged in, because the spend it
+shows belongs to that account: `/login portkey` (or `PORTKEY_API_KEY`) has to be
+in place before `/usage on` and before the bar appears again at startup.
+
+### Configure and toggle
+
+Run `/usage` with no arguments to see the current configuration and syntax. The
+commands are:
+
+```text
+/usage                        show the status and syntax
+/usage on                     show the bar
+/usage off                    hide the bar
+/usage user <firstname.lastname>   the user whose spend to show
+/usage key <pk-...>           usage API key (or `off` to use the provider key)
+/usage budget <amount|off>    monthly budget shown after the month spend
+/usage currency <usd|cny>     budget currency (`$`/`¥` are accepted too)
+/usage metadata <key>         metadata key holding the user (default `_user`)
+```
+
+`on` requires a Portkey login, a username, and an API key. The key comes from
+`/usage key` when set, and otherwise from the active Portkey credential, so
+`/login portkey` followed by `/usage user firstname.lastname` and `/usage on` is
+enough. Use `/usage key` when usage has to be queried with a different (for
+example, organization-scoped) key than the one that serves models.
+
+`/usage budget 600` sets a monthly budget of `$600.00`; set the currency first
+or afterwards with `/usage currency cny` to show it as `¥600.00`. Both the
+amount and the symbol are accepted, so `/usage budget ¥600` works too. The spend
+columns stay in USD either way.
+
+By default the bar filters on the `_user` metadata field. If your gateway
+attributes users with a different key (`email`, `user_id`, ...), set it with
+`/usage metadata <key>` so the query matches your traffic.
+
+The bar refreshes every 60 seconds and once after each turn. Its settings and
+key live in `portkey-usage.json` in the oxide config directory (mode `0600`,
+override the path with `OXIDE_USAGE_FILE`); they are never written to a project
+scope. When a request fails, the bar keeps the last known amounts and appends
+the error message after a `|`.
+
 ## Data locations and reset
 
 Runtime state lives under the platform oxide config directory:
@@ -821,6 +880,7 @@ Runtime state lives under the platform oxide config directory:
 - `settings.json` — global settings such as `defaultProjectTrust`, `compaction`, and `modelPrices`
 - `themes/<name>.json` — custom TUI themes
 - `plugins/` — installed plugin packages, marketplaces, and plugin state
+- `portkey-usage.json` — Portkey spend bar settings and API key (mode `0600`, override the path with `OXIDE_USAGE_FILE`)
 - `truncated/` — full text of tool outputs that exceeded the line/byte cap, retained 7 days (override with `OXIDE_TRUNCATION_DIR`)
 
 Global ecosystem resources can additionally live under `~/.oxide/` and
