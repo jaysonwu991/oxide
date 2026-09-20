@@ -1423,8 +1423,7 @@ fn draw_input(frame: &mut Frame, app: &App, area: Rect) {
         let (cursor_row, cursor_column) =
             input_cursor_position(&app.input, app.input_cursor.min(app.input.len()), width);
         let scroll = input_scroll(&app.input, app.input_cursor, width) as usize;
-        let x = text_area.x + cursor_column as u16;
-        let x = x.min(text_area.x + text_area.width.saturating_sub(1));
+        let x = text_area.x + cursor_column.min(width - 1) as u16;
         let y = text_area.y + cursor_row.saturating_sub(scroll) as u16;
         frame.set_cursor_position((x, y));
     }
