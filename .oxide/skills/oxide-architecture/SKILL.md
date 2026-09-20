@@ -14,20 +14,18 @@ description: Use when navigating or modifying the oxide internals — the agent 
    and calls `run_print`; otherwise the TUI starts via `tui::run`.
 3. `agent::run(config, cwd, history, tx, runtime)` drives a turn:
    - Prepends `Message::system(config.compose_system_prompt())`.
-   - At depth 0 with pruning enabled, builds the outgoing request from
-     `dcp::prune(history, state, config.dcp)` and appends a `dcp::nudge` when the
-     estimated context is large. History itself is never modified.
+   - `history` is the session context (`SessionLog::messages`, the leaf path
+     with the latest compaction applied). Auto-compaction runs when the context
+     approaches the model window, appending a `compaction` entry to the session
+     branch and refreshing `history`.
    - Calls `LlmClient::stream_chat`, forwarding text deltas as
      `AgentEvent::Text` through an unbounded mpsc channel.
    - Pushes the assistant message (with any tool calls) onto history.
    - If there are no tool calls, emits `AgentEvent::Finished(messages)`.
    - Otherwise checks permissions, executes each call (`dispatch` routes the
-     agent-level `task`/`skill`/`memory`/`diagnostics` tools, while `compress`
-     is handled directly by the loop and built-in/MCP tools go through
-     `tools::execute`), emits `ToolCall`/`ToolResult`, appends a `Message::tool`,
-     and loops. A `compress` call updates the pruning state:
-     `dcp::apply_compress` updates the in-memory state and appends a record to
-     the session log.
+     agent-level `task`/`skill`/`memory`/`diagnostics` tools, built-in/MCP tools
+     go through `tools::execute`), emits `ToolCall`/`ToolResult`, appends a
+     `Message::tool` to the session, and loops.
    - Loops until the model stops calling tools; a batch whose results all set
      `output.terminate` ends the turn. There is no fixed step cap.
 4. A leading `/command` is resolved by `Config::resolve_command` into an expanded
@@ -38,7 +36,8 @@ description: Use when navigating or modifying the oxide internals — the agent 
 ## Modules
 
 - `src/llm/client.rs` — `LlmClient::stream_chat`; SSE parsing and turn assembly.
-- `src/llm/types.rs` — OpenAI-compatible request/response and `Message` types.
+- `src/llm/types.rs` — OpenAI-compatible request/response, `Message`, and
+  `Usage` (input/output plus cache tokens and cost).
 - `src/llm/mod.rs` — module re-exports (`LlmClient`, `Message`, `ToolSpec`, ...).
 - `src/agent.rs` — the agent loop (`run`, `run_loop`, `dispatch`) and
   `run_subagent` for `subtask` commands.
@@ -50,23 +49,29 @@ description: Use when navigating or modifying the oxide internals — the agent 
   parses Markdown frontmatter; `resolve_command` returns command prompt +
   `agent`/`subtask` routing.
 - `src/config.rs` — `Config`, `load`, `activate_agent`, `resolve_command`,
-  `config_path`, `require_api_key`.
-- `src/dcp.rs` — dynamic context pruning: `DcpConfig` (`.oxide/dcp.json`),
-  `DcpState`, `prune`, `nudge`, `apply_compress`, `compress_spec`.
+  `config_path`, `require_api_key`, `context_window`, `supports_reasoning`, and
+  the `compaction`/`prices` settings.
 - `src/diff.rs` — `preview(old, new)` LCS line diff with context windows and gap
   markers, used for the TUI's colored edit previews.
-- `src/session.rs` — durable JSONL session log; also stores DCP compression
-  records (`append_dcp`, `dcp_state`).
+- `src/session.rs` — Pi-compatible JSONL session trees: typed entries with
+  `id`/`parentId`, compaction and branch-summary entries, leaf-path context
+  building (`messages`, `context_ids`), per-entry usage, forking, and picker
+  metadata.
+- `src/pricing.rs` — `modelPrices` lookup for the footer's `$cost` segment.
+- `src/compact.rs` — Pi-style compaction: `prepare`, `generate`,
+  `summarize_branch`, `needs_compaction`, and token estimation.
 - `src/mcp.rs` / `src/mcp_config.rs` / `src/mcp_oauth.rs` — MCP runtime
   (`McpRegistry`, stdio/HTTP), the `oxide mcp` CLI that reads/writes
   `.oxide/mcp.json`, and the OAuth authorization-code + PKCE flow for remote
   servers.
 - `src/tui/` — `run` entry plus `app`/`ui` for rendering and input; renders each
-  tool call as one background-filled panel (header, body and `Took` footer) that
-  is colored by state, shows bodies by default (Ctrl+O collapses), wraps long
-  actions and tool output with a hanging indent, times slow non-shell tools,
-  renders concise `Run`/`Ran` shell actions, and shows colored edit diffs and
-  per-turn thought timing.
+  tool call as one background-filled panel (header, blank line, body, and `Took`
+  footer) colored by state, shows bodies by default and `read` file contents
+  (Ctrl+O collapses), wraps long actions and tool output with a hanging indent,
+  times slow non-shell tools, renders concise `Run`/`Ran` shell actions, shows
+  inline user/assistant labels and colored edit diffs, and draws the Pi-style
+  footer (path/branch/session, cumulative tokens with cache and cost, context
+  `%`/window, model/thinking, and plugin statuses).
 
 ## Adding a model provider
 
@@ -85,8 +90,8 @@ OpenAI-compatible and Anthropic APIs are dispatched in `src/llm/client.rs` (see
 
 - The system prompt is always index 0 of the request, never stored in history.
 - History is the single source of truth passed to `Finished`.
-- Context pruning only changes the outgoing request; history and the session log
-  keep every original message.
+- Sessions are append-only trees; `messages` returns the leaf path with the
+  latest compaction applied, and appending always adds a child of the leaf.
 - Tool output is capped before entering history. The general limit is
   `MAX_OUTPUT_LINES` (250) lines and `MAX_OUTPUT_BYTES` (6,000) bytes, with
   smaller per-tool limits for shell, search, listing, fetch, and edit results.

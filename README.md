@@ -16,8 +16,7 @@ box, with Claude Code configuration support for compatibility.
   `list_dir`, `glob`) and the unified-diff `patch` tool are accepted everywhere,
   including in permission rules.
 - Agent-level tools: `task` (subagents), `skill` (on-demand skill loading),
-  `memory` (cross-session notes), `diagnostics` (LSP diagnostics), and
-  `compress` (when context pruning is enabled).
+  `memory` (cross-session notes), and `diagnostics` (LSP diagnostics).
 - MCP servers over stdio or Streamable HTTP, loaded on demand with automatic
   tool selection, OAuth discovery, and session handling, exposed as
   `<server>__<tool>`.
@@ -26,14 +25,15 @@ box, with Claude Code configuration support for compatibility.
 - Project + global ecosystem discovery: instructions, commands, prompt
   templates, agents, skills, MCP servers, and plugins from `.oxide/` (plus the
   Claude Code layout).
-- Durable sessions, shadow-git snapshots (`/undo`, `/redo`), and context
-  compaction (`/compact`).
-- Dynamic context pruning: a `compress` tool plus automatic tool-output
-  deduplication and error purging that shrink outgoing context without altering
-  session history.
+- Pi-compatible sessions stored as JSONL trees (`id`/`parentId` entries with
+  in-file compaction and branch summaries), shadow-git snapshots (`/undo`,
+  `/redo`), Pi-style context compaction that runs automatically near the model
+  window (`/compact`), and branch summarization when branching (`/tree <n>`,
+  `/fork <n>`).
 - LSP diagnostics via rust-analyzer, typescript-language-server, pyright, gopls.
-- Plugin hooks (`tool.execute.before` / `tool.execute.after`) run under bun/node,
-  and a hook can end the turn by setting `output.terminate = true`.
+- Plugin hooks (`tool.execute.before` / `tool.execute.after`, plus `status` for
+  a footer status row) run under bun/node, and an `after` hook can end the turn
+  by setting `output.terminate = true`.
 - Claude Code-style plugin packages and marketplaces: install plugins that
   bundle commands, agents, skills, MCP servers, and command hooks behind a
   `.oxide/plugin.json` (or `.claude-plugin/plugin.json`) manifest, from a
@@ -64,10 +64,10 @@ box, with Claude Code configuration support for compatibility.
   sets one, a live `Elapsed Ns` while it runs, and a `Took Nms` duration
   afterwards (any other tool that runs for at least 500 ms is timed too).
   Collapsed output uses a
-  `⋯ <lines> lines · Ctrl+O to expand` affordance, file edits show a colored
-  line-numbered diff, each model turn is timed with `+ Thought: Nms` (the total
-  step time, updated once the stream finishes), and the system prompt nudges the
-  model to batch reads instead of re-reading the same paths.
+  `⋯ <lines> lines · Ctrl+O to expand` affordance, `read` results show the file
+  contents, file edits show a colored line-numbered diff, user and assistant
+  turns render their label inline with the message text, and the system prompt
+  nudges the model to batch reads instead of re-reading the same paths.
 - Resilient streaming: transient failures (network errors, truncated streams,
   429, and 5xx responses) are retried with backoff while no text has been
   emitted; empty or truncated responses and in-band stream errors surface as
@@ -79,8 +79,9 @@ box, with Claude Code configuration support for compatibility.
   `-c`/`--continue`, `-r`/`--resume` (browse past sessions), and
   `--fork <path|id>`, plus TUI commands `/new`, `/session`, `/resume`, `/name`,
   `/model`, `/thinking`, `/export`, `/reload`, and `/hotkeys`.
-- Session branching: `/tree` lists user messages, `/fork <n>` branches a new
-  session from one, and `/clone` duplicates the current session.
+- Session branching: `/tree` lists user messages and `/tree <n>` branches the
+  current session in place (summarizing the abandoned path), `/fork <n>`
+  branches a new session from one, and `/clone` duplicates the current session.
 - Project trust: project-local resources (agents, commands, prompts, skills,
   plugins, `SYSTEM.md`) load only after the project is trusted; decisions are
   saved per directory in `trust.json`, `defaultProjectTrust` sets the fallback,
@@ -91,9 +92,13 @@ box, with Claude Code configuration support for compatibility.
 - Focused terminal layout: the welcome banner shows the `OXIDE` wordmark beside
   a short summary of the loaded ecosystem, context files, and MCP/plugin/memory
   state; current activity and elapsed time live in the status row, and the
-  footer shows the working directory, session name, token totals (`↑`/`↓`),
-  context usage, model, mode, and thinking level. The labeled editor grows to
-  12 rows, and semantic colors keep dark, light, and custom themes consistent.
+  footer shows the abbreviated working directory with the git branch and session
+  name, cumulative usage (`↑`/`↓`, `R`/`W` cache tokens and `CH` hit rate when
+  reported, `$cost` from the model price table, including summary generation),
+  context usage as `%`/window with an `(auto)` marker, and the right-aligned
+  model and thinking level; plugins can add a third status row. The labeled
+  editor grows to 12 rows, and semantic colors keep dark, light, and custom
+  themes consistent.
 
 ## Comparison
 
@@ -118,16 +123,15 @@ so check each project's documentation for the current details.
 | Plugins / hooks | Hooks + plugin packages & marketplaces | — | Plugins | Hooks, plugins, Agent SDK |
 | LSP diagnostics | Built in (rust-analyzer, TS, pyright, gopls) | — | Built in (LSP servers) | — |
 | Undo file changes | Shadow-git `/undo`, `/redo` | Git checkpoints (`codex checkpoint`) | `/undo`, `/redo` | Git / checkpoints |
-| Sessions | Durable JSONL, `-c` / `-r`, `/resume` / `/tree` / `/fork` / `/clone` | Sessions (`codex --resume`) | Sessions, share links | Sessions across surfaces |
+| Sessions | Pi-style JSONL trees, `-c` / `-r`, `/resume` / `/tree` / `/fork` / `/clone` | Sessions (`codex --resume`) | Sessions, share links | Sessions across surfaces |
 | Project trust | `trust.json`, `--approve` / `/trust` | Sandbox + approval modes | — | — |
 | Themes | Built-in `dark` / `light`, custom `.oxide/themes` | Built-in themes (`codex themes`) | Themes | — |
-| Context management | Built-in pruning (`compress` tool, dedup, error purge) | Auto-compaction | Auto-compaction + DCP plugin | Auto-compaction |
+| Context management | Auto-compaction + branch summarization | Auto-compaction | Auto-compaction + DCP plugin | Auto-compaction |
 | Multimodal input | Images and PDFs (`--image`, `@path`) | Images | Images | Images |
 
 A dash indicates no first-class built-in equivalent. Where oxide differs most:
 it is a single dependency-light Rust binary, it speaks both the
-OpenAI-compatible and Anthropic APIs directly, it builds dynamic context
-pruning into the agent loop instead of requiring a plugin, its plugin packages
+OpenAI-compatible and Anthropic APIs directly, its plugin packages
 reuse the same on-disk commands, agents, skills, and MCP servers the ecosystem
 already reads, and it is compatible with the Claude Code on-disk layout while
 using its own `.oxide/` format.
@@ -204,9 +208,10 @@ oxide
 
 The welcome area pairs the `OXIDE` wordmark with a short summary of the loaded
 ecosystem, context files, and MCP/plugin/memory state. Run `/hotkeys` for the
-full shortcut list. The two-row footer combines live state such as
-`ready`, `thinking`, tool activity, and elapsed time with the current project,
-Git branch, model, mode, and thinking level.
+full shortcut list. The status row above the editor shows the current activity
+and elapsed time, and the footer shows the project path with the Git branch and
+session name, cumulative usage (including cache and cost), context usage, and
+the current model and thinking level (plus a plugin status row when present).
 
 | Key | Action |
 | --- | --- |
@@ -456,7 +461,10 @@ the starting level.
 | `OXIDE_API_KEY` | API key. |
 | `OXIDE_MODE` | Permission mode (`build`, `plan`, `auto-edit`). |
 | `OXIDE_REASONING` | Reasoning effort (`auto`, `off`, `low`, `medium`, `high`). |
-| `OXIDE_CONTEXT_LIMIT` | Model context window in tokens, used for the footer's context percentage (default: the larger of `max_tokens` and 128000). |
+| `OXIDE_CONTEXT_LIMIT` | Model context window in tokens, used for the footer's context percentage and the compaction threshold (default: the larger of `max_tokens` and 128000). |
+| `OXIDE_COMPACTION_ENABLED` | Enable/disable automatic context compaction. |
+| `OXIDE_COMPACTION_RESERVE_TOKENS` | Tokens reserved for the response before compaction triggers. |
+| `OXIDE_COMPACTION_KEEP_RECENT_TOKENS` | Recent tokens kept verbatim when compacting. |
 | `OXIDE_TRUNCATION_DIR` | Directory for saved truncated tool output (default `truncated/` in the config dir). |
 | `OPENAI_API_KEY` / `OPENAI_BASE_URL` | OpenAI credentials. |
 | `DEEPSEEK_API_KEY` / `DEEPSEEK_BASE_URL` | DeepSeek credentials. |
@@ -577,9 +585,8 @@ Built-in file and shell tools use Pi-style names: `read`, `write`, `edit`,
 `bash`, `grep`, `find`, `ls`, and `webfetch`. Compatibility names
 `read_file`, `write_file`, `list_dir`, and `glob` remain accepted; `patch` is
 the unified-diff editing tool. Agent-level tools: `task`, `skill`, `memory`,
-`diagnostics`, and `compress` (when context pruning is enabled). `mcp_load`
-reveals a configured server on demand; its tools then appear as
-`<server>__<tool>`.
+and `diagnostics`. `mcp_load` reveals a configured server on demand; its tools
+then appear as `<server>__<tool>`.
 
 | Tool | Parameters |
 | --- | --- |
@@ -682,59 +689,49 @@ depend on color alone. For accessible custom themes, keep every foreground
 readable against the terminal background and avoid assigning the same color to
 `success`, `error`, and `tool`.
 
-## Context pruning
+## Sessions and context
 
-oxide prunes the context it sends to the model without ever modifying the
-session history. Pruning is controlled by `.oxide/dcp.json` (project) and
-`dcp.json` in the oxide config directory (global), with the project file
-overriding the global one.
+Sessions use Pi's on-disk format: an append-only JSONL tree whose first line is
+a `session` header and whose remaining lines are `message`, `compaction`,
+`branch_summary`, `session_info`, `model_change`, and `thinking_level_change`
+entries linked by `id`/`parentId`. The last entry is the active leaf; the model
+sees the leaf path with the latest compaction applied. Branching moves the leaf
+back and appends a `branch_summary`, so in-file alternatives are preserved.
 
-- **`compress` tool** — the model can replace closed, stale spans of the
-  conversation with a concise summary. It receives message numbers in periodic
-  context reminders and passes one or more `ranges` plus a `summary`. Overlapping
-  compressions keep the newest summary.
-- **Deduplication** — repeated tool calls with identical arguments keep only the
-  most recent output.
-- **Purge errors** — errored tool outputs are replaced with a short marker after
-  a configurable number of turns.
-- **Nudges** — when the estimated context grows large, a reminder with the
-  conversation index is injected so the model can compress. A cooldown
-  (`compress.cooldownMessages`) keeps the reminder from firing again until
-  enough new messages have accumulated, and the most recent messages
-  (`compress.protectedRecentMessages`) are never compressed so recently-read
-  files stay in context instead of being re-read.
+## Context compaction
 
-Compression records are stored in the session log, so a resumed session rebuilds
-the same pruned view. When pruning is enabled it replaces the legacy automatic
-`/compact` pass (the `/compact` command remains available).
+Oxide compacts Pi-style once the outgoing context approaches the model window. It walks back from the newest message until
+`keepRecentTokens` is reached and summarizes the older span into a structured
+handoff (goal, progress, decisions, next steps, critical context, plus
+cumulative read/modified file lists), keeping the most recent tokens verbatim.
+A cut never separates a tool call from its result.
+
+Settings live under `compaction` in `settings.json` (global) or
+`.oxide/settings.json` (project):
 
 ```json
 {
-  "enabled": true,
-  "compress": {
-    "permission": "allow",
-    "minContextLimit": 16000,
-    "maxContextLimit": 32000,
-    "nudgeFrequency": 5,
-    "iterationNudgeThreshold": 15,
-    "cooldownMessages": 20,
-    "protectedRecentMessages": 8,
-    "protectedTools": ["task", "skill", "memory", "diagnostics"]
-  },
-  "strategies": {
-    "deduplication": { "enabled": true },
-    "purgeErrors": { "enabled": true, "turns": 4 }
-  },
-  "protectedTools": [],
-  "protectedFilePatterns": []
+  "compaction": {
+    "enabled": true,
+    "reserveTokens": 16384,
+    "keepRecentTokens": 20000,
+    "modelOverrides": { "openai/gpt-4o": { "reserveTokens": 400000 } }
+  }
 }
 ```
 
-Set `"enabled": false` to disable pruning, or `"compress": {"permission":
-"deny"}` to disable only the `compress` tool. Top-level `protectedTools` and
-`protectedFilePatterns` protect matching results from deduplication and error
-purging. `compress.protectedTools` retains matching tool outputs alongside a
-model-written compression summary.
+Compaction triggers above `contextWindow - reserveTokens`, where the window is
+`OXIDE_CONTEXT_LIMIT` or the model default. `OXIDE_COMPACTION_ENABLED`,
+`OXIDE_COMPACTION_RESERVE_TOKENS`, and `OXIDE_COMPACTION_KEEP_RECENT_TOKENS`
+override the file settings. Each compaction is appended to the session log as a
+`compaction` entry anchored at `firstKeptEntryId` and replayed on resume, so the
+model sees the same compacted view. Manual compaction is `/compact [focus]` in the TUI or
+`oxide sessions compact`.
+
+Branching summarizes the path being abandoned with the same structured format
+and appends it as a `branch_summary` entry. `/tree <n>` branches the current
+session in place (alternatives stay in the file); `/fork <n>` creates a new
+session seeded with the summary.
 
 ## Data locations
 
@@ -744,16 +741,15 @@ Runtime state lives under the platform oxide config directory:
 - Credentials: `auth.json`
 - Cached provider model lists: `model-cache.json` (refreshed after 24 hours)
 - MCP OAuth tokens: `mcp-oauth/<server>.json` (mode `0600`)
-- Sessions: `sessions/<project>/*.jsonl`
-- Session names: `sessions/<project>/<id>.name`
+- Sessions: `sessions/<project>/<timestamp>_<id>.jsonl` (Pi-style entry trees)
 - Snapshots: `snapshots/<project>/` (bare git repo)
 - Memory: `memory/`
 - Project trust: `trust.json`
 - Plugins: `plugins/` (installed plugin packages, marketplaces, and state)
-- Settings: `settings.json` (e.g. `defaultProjectTrust`)
+- Settings: `settings.json` (e.g. `defaultProjectTrust`, `compaction`, `modelPrices`)
 - Themes: `themes/<name>.json`
 - Truncated tool output: `truncated/` (retained 7 days; see `OXIDE_TRUNCATION_DIR`)
-- Context pruning config: `dcp.json` (global) and `.oxide/dcp.json` (project)
+- Context compaction config: `compaction` in `settings.json` / `.oxide/settings.json`
 
 Global ecosystem resources such as agents, commands, prompts, skills, plugins,
 and MCP definitions may also live under `~/.oxide/`; compatibility resources
