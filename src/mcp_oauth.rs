@@ -266,7 +266,7 @@ impl OAuthState {
         eprintln!("[mcp] authorizing `{}` — opening browser", self.name);
         eprintln!("[mcp] if it does not open, visit:\n{url}");
         open_browser(&url);
-        let code = wait_for_code(listener, &state).await?;
+        let code = wait_for_code(listener, &state, &self.name).await?;
 
         let mut form = vec![
             ("grant_type", "authorization_code".to_string()),
@@ -509,7 +509,11 @@ async fn get_json(client: &reqwest::Client, url: &str) -> Result<Value> {
     serde_json::from_str(&text).with_context(|| format!("parsing JSON from {url}"))
 }
 
-async fn wait_for_code(listener: TcpListener, expected_state: &str) -> Result<String> {
+async fn wait_for_code(
+    listener: TcpListener,
+    expected_state: &str,
+    server: &str,
+) -> Result<String> {
     let (mut socket, _) = tokio::time::timeout(AUTHORIZE_TIMEOUT, listener.accept())
         .await
         .context("timed out waiting for the OAuth callback")?
@@ -529,41 +533,280 @@ async fn wait_for_code(listener: TcpListener, expected_state: &str) -> Result<St
             .map(|url| url.query_pairs().into_owned().collect())
             .unwrap_or_default();
 
-    let (status, message) = if let Some(error) = params.get("error") {
-        let description = params
+    let (status, page, failure) = if let Some(error) = params.get("error") {
+        let detail = params
             .get("error_description")
             .map(String::as_str)
             .unwrap_or(error);
-        (400, format!("Authorization failed: {description}"))
-    } else if params.get("state") != Some(&expected_state.to_string()) {
-        (400, "Authorization failed: state mismatch".to_string())
-    } else if params.contains_key("code") {
         (
-            200,
-            "Authorization complete. You can close this tab.".to_string(),
+            400,
+            callback_error(server, detail),
+            Some(format!("Authorization failed: {detail}")),
         )
+    } else if params.get("state").map(String::as_str) != Some(expected_state) {
+        (
+            400,
+            callback_error(
+                server,
+                "The response did not match this request (state mismatch).",
+            ),
+            Some("Authorization failed: state mismatch".to_string()),
+        )
+    } else if params.contains_key("code") {
+        (200, callback_success(server), None)
     } else {
-        (400, "Authorization failed: missing code".to_string())
+        (
+            400,
+            callback_error(server, "The authorization response did not include a code."),
+            Some("Authorization failed: missing code".to_string()),
+        )
     };
 
-    let body = format!(
-        "<!doctype html><html><body style=\"font-family:sans-serif;padding:2rem\"><p>{message}</p></body></html>"
-    );
     let response = format!(
-        "HTTP/1.1 {status} {}\r\nContent-Type: text/html; charset=utf-8\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+        "HTTP/1.1 {status} {}\r\nContent-Type: text/html; charset=utf-8\r\nContent-Length: {}\r\nCache-Control: no-store\r\nConnection: close\r\n\r\n{page}",
         if status == 200 { "OK" } else { "Bad Request" },
-        body.len()
+        page.len()
     );
     let _ = socket.write_all(response.as_bytes()).await;
     let _ = socket.shutdown().await;
 
-    if status != 200 {
-        bail!("{message}");
+    if let Some(failure) = failure {
+        bail!("{failure}");
     }
     params
         .get("code")
         .cloned()
         .context("authorization response missing code")
+}
+
+// Design tokens for the loopback callback page. The default scheme is light;
+// dark applies through `prefers-color-scheme`.
+const CALLBACK_STYLE: &str = r#":root {
+  color-scheme: light dark;
+  --ox-bg: #f6f7f9;
+  --ox-card: #fdfdfd;
+  --ox-text-strong: #16181d;
+  --ox-text-base: #5f6572;
+  --ox-text-weak: #878e9a;
+  --ox-border: #e4e7ec;
+  --ox-success: #1a9e4b;
+  --ox-error: #d3382c;
+  --ox-detail-bg: #fff7f5;
+  --ox-detail-border: #f6c4bc;
+  --ox-shadow: 0 16px 48px -6px rgb(15 23 42 / 10%), 0 6px 12px -2px rgb(15 23 42 / 5%), 0 1px 2px rgb(15 23 42 / 6%);
+  --ox-font-sans: ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  --ox-font-mono: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --ox-bg: #0d0f13;
+    --ox-card: #16181d;
+    --ox-text-strong: rgb(255 255 255 / 94%);
+    --ox-text-base: rgb(255 255 255 / 62%);
+    --ox-text-weak: rgb(255 255 255 / 42%);
+    --ox-border: #262a32;
+    --ox-success: #37c76a;
+    --ox-error: #ff6b5a;
+    --ox-detail-bg: #2a1410;
+    --ox-detail-border: #5c2118;
+    --ox-shadow: 0 16px 48px -6px rgb(0 0 0 / 55%), 0 6px 12px -2px rgb(0 0 0 / 35%), 0 1px 2px rgb(0 0 0 / 40%);
+  }
+}
+* { box-sizing: border-box; }
+html, body { margin: 0; height: 100%; }
+body {
+  display: grid;
+  place-items: center;
+  padding: 24px;
+  background: var(--ox-bg);
+  color: var(--ox-text-base);
+  font-family: var(--ox-font-sans);
+  font-size: 16px;
+  line-height: 1.5;
+  -webkit-font-smoothing: antialiased;
+}
+.card {
+  width: min(100%, 28rem);
+  padding: 2.25rem 2rem 1.75rem;
+  text-align: center;
+  background: var(--ox-card);
+  border: 1px solid var(--ox-border);
+  border-radius: 14px;
+  box-shadow: var(--ox-shadow);
+}
+.brand {
+  display: flex;
+  justify-content: center;
+  margin-bottom: 1.75rem;
+}
+.wordmark {
+  display: inline-block;
+  margin-right: -0.28em;
+  font-size: 0.8125rem;
+  font-weight: 600;
+  letter-spacing: 0.28em;
+  text-transform: uppercase;
+  color: var(--ox-text-strong);
+}
+.status {
+  display: flex;
+  justify-content: center;
+  margin-bottom: 1.125rem;
+  line-height: 0;
+}
+.status svg { display: block; }
+.card[data-status="success"] .icon-success { color: var(--ox-success); }
+.card[data-status="error"] .icon-error { color: var(--ox-error); }
+.headline {
+  margin: 0;
+  font-size: 1.1875rem;
+  font-weight: 600;
+  line-height: 1.3;
+  letter-spacing: -0.012em;
+  color: var(--ox-text-strong);
+}
+.message { margin: 0.5rem 0 0; font-size: 0.9375rem; }
+.detail {
+  margin: 1.25rem 0 0;
+  padding: 0.75rem 0.875rem;
+  overflow: auto;
+  max-height: 9.5rem;
+  font-family: var(--ox-font-mono);
+  font-size: 0.8125rem;
+  line-height: 1.55;
+  text-align: left;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  color: var(--ox-text-strong);
+  background: var(--ox-detail-bg);
+  border: 1px solid var(--ox-detail-border);
+  border-radius: 8px;
+}
+.footnote { margin: 1.5rem 0 0; font-size: 0.8125rem; color: var(--ox-text-weak); }
+"#;
+
+// The block-letter wordmark from the TUI banner is font-dependent, so the page
+// uses a letter-spaced text mark instead of an SVG.
+const WORDMARK: &str = r#"<span class="wordmark" role="img" aria-label="Oxide">Oxide</span>"#;
+
+const ICON_CHECK: &str = r#"<svg viewBox="0 0 24 24" width="30" height="30" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="m8.5 12.5 2.4 2.4 4.6-5.4"/></svg>"#;
+
+const ICON_CROSS: &str = r#"<svg viewBox="0 0 24 24" width="30" height="30" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="m9 9 6 6m0-6-6 6"/></svg>"#;
+
+// Best-effort close: browsers only honor it for script-opened windows.
+const AUTO_CLOSE_SCRIPT: &str = "setTimeout(function(){try{window.close()}catch(e){}},2500)";
+
+fn callback_success(server: &str) -> String {
+    render_document(
+        "Authorization successful",
+        &render_card(Card {
+            status: "success",
+            headline: "Authorization successful",
+            message: &format!("Oxide is now connected to {}.", escape_html(server)),
+            detail: None,
+            footnote: "You can close this window.",
+        }),
+        Some(AUTO_CLOSE_SCRIPT),
+    )
+}
+
+fn callback_error(server: &str, detail: &str) -> String {
+    render_document(
+        "Authorization failed",
+        &render_card(Card {
+            status: "error",
+            headline: "Authorization failed",
+            message: &format!(
+                "Oxide could not finish connecting to {}.",
+                escape_html(server)
+            ),
+            detail: Some(detail),
+            footnote: "Close this window and try again from Oxide.",
+        }),
+        None,
+    )
+}
+
+struct Card<'a> {
+    status: &'a str,
+    headline: &'a str,
+    message: &'a str,
+    detail: Option<&'a str>,
+    footnote: &'a str,
+}
+
+fn render_card(card: Card<'_>) -> String {
+    let icon = if card.status == "success" {
+        ICON_CHECK
+    } else {
+        ICON_CROSS
+    };
+    let detail = card.detail.map(str::trim).filter(|text| !text.is_empty());
+    let detail_block = match detail {
+        Some(text) => format!("<pre class=\"detail\">{}</pre>\n", escape_html(text)),
+        None => String::new(),
+    };
+    format!(
+        concat!(
+            "<main class=\"card\" data-status=\"{status}\" role=\"status\" aria-live=\"polite\">\n",
+            "<div class=\"brand\">{wordmark}</div>\n",
+            "<div class=\"status icon-{status}\">{icon}</div>\n",
+            "<h1 class=\"headline\">{headline}</h1>\n",
+            "<p class=\"message\">{message}</p>\n",
+            "{detail}",
+            "<p class=\"footnote\">{footnote}</p>\n",
+            "</main>",
+        ),
+        status = card.status,
+        wordmark = WORDMARK,
+        icon = icon,
+        headline = escape_html(card.headline),
+        message = card.message,
+        detail = detail_block,
+        footnote = escape_html(card.footnote),
+    )
+}
+
+fn render_document(title: &str, body: &str, script: Option<&str>) -> String {
+    let script = script
+        .map(|script| format!("\n  <script>{script}</script>"))
+        .unwrap_or_default();
+    format!(
+        concat!(
+            "<!doctype html>\n",
+            "<html lang=\"en\">\n",
+            "<head>\n",
+            "  <meta charset=\"utf-8\">\n",
+            "  <meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">\n",
+            "  <meta name=\"robots\" content=\"noindex\">\n",
+            "  <title>{title} · Oxide</title>\n",
+            "  <style>{style}</style>\n",
+            "</head>\n",
+            "<body>\n",
+            "  {body}{script}\n",
+            "</body>\n",
+            "</html>\n",
+        ),
+        title = escape_html(title),
+        style = CALLBACK_STYLE,
+        body = body,
+        script = script,
+    )
+}
+
+fn escape_html(value: &str) -> String {
+    let mut escaped = String::with_capacity(value.len());
+    for character in value.chars() {
+        match character {
+            '&' => escaped.push_str("&amp;"),
+            '<' => escaped.push_str("&lt;"),
+            '>' => escaped.push_str("&gt;"),
+            '"' => escaped.push_str("&quot;"),
+            '\'' => escaped.push_str("&#39;"),
+            _ => escaped.push(character),
+        }
+    }
+    escaped
 }
 
 /// Parses a standard OAuth token response.
@@ -756,6 +999,42 @@ mod tests {
             challenge_parameter(challenge, "scope").as_deref(),
             Some("files:read files:write")
         );
+    }
+
+    #[test]
+    fn callback_pages_brand_each_outcome() {
+        let success = callback_success("context7");
+        assert!(success.starts_with("<!doctype html>"));
+        assert!(success.contains("<title>Authorization successful · Oxide</title>"));
+        assert!(success.contains("data-status=\"success\""));
+        assert!(success.contains("Oxide is now connected to context7."));
+        assert!(success.contains("aria-label=\"Oxide\""));
+        assert!(success.contains("window.close"));
+
+        let failure = callback_error("context7", "invalid <client_id> & \"id\"");
+        assert!(failure.contains("<title>Authorization failed · Oxide</title>"));
+        assert!(failure.contains("data-status=\"error\""));
+        assert!(failure.contains("Oxide could not finish connecting to context7."));
+        assert!(failure.contains(
+            "<pre class=\"detail\">invalid &lt;client_id&gt; &amp; &quot;id&quot;</pre>"
+        ));
+        assert!(!failure.contains("window.close"));
+    }
+
+    #[test]
+    fn callback_error_omits_an_empty_detail_block() {
+        let page = callback_error("mcp", "   ");
+        assert!(!page.contains("class=\"detail\""));
+        assert!(page.contains("mcp"));
+    }
+
+    #[test]
+    fn callback_page_escapes_text() {
+        assert_eq!(
+            escape_html("a&b<c>d\"e'f"),
+            "a&amp;b&lt;c&gt;d&quot;e&#39;f"
+        );
+        assert!(callback_success("<script>").contains("&lt;script&gt;"));
     }
 
     #[tokio::test]

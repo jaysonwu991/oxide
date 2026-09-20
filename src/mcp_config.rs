@@ -53,48 +53,50 @@ fn path_for(scope: Scope, cwd: &Path) -> Result<PathBuf> {
 }
 
 /// Config files visible to the `oxide mcp` management commands, in ascending
-/// precedence order (later overrides earlier). The runtime additionally reads
-/// `<platform-config>/oxide/mcp.json` through `ecosystem::load`.
-fn sources(cwd: &Path) -> Vec<Source> {
+/// precedence order (later overrides earlier), matching `ecosystem::load`.
+fn sources_for(home: Option<&Path>, config: Option<&Path>, root: &Path) -> Vec<Source> {
     let mut list = Vec::new();
-    if let Some(home) = dirs::home_dir() {
+    let global = home.map(|home| home.join(".oxide").join("mcp.json"));
+    if let Some(home) = home {
         list.push(Source {
             label: "claude (global)".to_string(),
             path: home.join(".claude.json"),
         });
+    }
+    if let Some(path) = global.clone() {
         list.push(Source {
             label: "global".to_string(),
-            path: home.join(".oxide").join("mcp.json"),
+            path,
         });
     }
-    let root = project_root(cwd).unwrap_or_else(|| cwd.to_path_buf());
+    if let Some(config) = config {
+        list.push(Source {
+            label: "platform global".to_string(),
+            path: config.join("oxide").join("mcp.json"),
+        });
+    }
     list.push(Source {
         label: "claude (project)".to_string(),
         path: root.join(".mcp.json"),
     });
-    list.push(Source {
-        label: "project".to_string(),
-        path: root.join(".oxide").join("mcp.json"),
-    });
+    // Running from the home directory makes `~/.oxide` the project root as
+    // well; that file is already the global source, so reporting it twice would
+    // mislabel global servers as project-local (and trust-gated).
+    let project = root.join(".oxide").join("mcp.json");
+    if global.as_deref() != Some(project.as_path()) {
+        list.push(Source {
+            label: "project".to_string(),
+            path: project,
+        });
+    }
     list
 }
 
-fn list_sources(cwd: &Path) -> Vec<Source> {
-    let mut list = sources(cwd);
-    if let Some(config) = dirs::config_dir() {
-        let project_index = list
-            .iter()
-            .position(|source| source.label == "claude (project)")
-            .unwrap_or(list.len());
-        list.insert(
-            project_index,
-            Source {
-                label: "platform global".to_string(),
-                path: config.join("oxide").join("mcp.json"),
-            },
-        );
-    }
-    list
+fn sources(cwd: &Path) -> Vec<Source> {
+    let home = dirs::home_dir();
+    let config = dirs::config_dir();
+    let root = project_root(cwd).unwrap_or_else(|| cwd.to_path_buf());
+    sources_for(home.as_deref(), config.as_deref(), &root)
 }
 
 fn read_file(path: &Path) -> Result<Value> {
@@ -383,9 +385,21 @@ pub fn add(cwd: &Path, request: AddRequest) -> Result<()> {
 /// Run the OAuth authorization-code flow for a configured remote server,
 /// storing the resulting token under the oxide config directory.
 pub async fn auth(cwd: &Path, scope: Option<String>, name: String) -> Result<()> {
-    Scope::parse(scope.as_deref())?;
+    let explicit = scope
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(|value| Scope::parse(Some(value)))
+        .transpose()?;
+    let candidates = match explicit {
+        Some(scope) => vec![Source {
+            label: scope.label().to_string(),
+            path: path_for(scope, cwd)?,
+        }],
+        None => sources(cwd),
+    };
     let mut found = None;
-    for source in sources(cwd).into_iter().rev() {
+    for source in candidates.into_iter().rev() {
         let root = read_file(&source.path)?;
         if let Some(config) = root
             .get("mcpServers")
@@ -430,7 +444,7 @@ pub fn add_json(cwd: &Path, scope: Option<String>, name: String, raw: &str) -> R
 
 pub async fn list(cwd: &Path) -> Result<()> {
     let mut merged: BTreeMap<String, (String, Value)> = BTreeMap::new();
-    for source in list_sources(cwd) {
+    for source in sources(cwd) {
         let Ok(root) = read_file(&source.path) else {
             continue;
         };
@@ -577,6 +591,42 @@ mod tests {
         std::fs::remove_dir_all(&dir).ok();
         std::fs::create_dir_all(&dir).unwrap();
         dir
+    }
+
+    #[test]
+    fn home_directory_is_only_reported_as_global() {
+        let home = Path::new("/home/u");
+        let sources = sources_for(Some(home), None, home);
+        assert_eq!(
+            sources
+                .iter()
+                .map(|source| source.label.as_str())
+                .collect::<Vec<_>>(),
+            vec!["claude (global)", "global", "claude (project)"]
+        );
+        assert_eq!(sources[1].path, home.join(".oxide").join("mcp.json"));
+    }
+
+    #[test]
+    fn project_sources_layer_above_global() {
+        let home = Path::new("/home/u");
+        let root = Path::new("/work/repo");
+        let sources = sources_for(Some(home), Some(Path::new("/etc/xdg")), root);
+        assert_eq!(
+            sources
+                .iter()
+                .map(|source| source.label.as_str())
+                .collect::<Vec<_>>(),
+            vec![
+                "claude (global)",
+                "global",
+                "platform global",
+                "claude (project)",
+                "project"
+            ]
+        );
+        assert_eq!(sources[2].path, Path::new("/etc/xdg/oxide/mcp.json"));
+        assert_eq!(sources[4].path, root.join(".oxide").join("mcp.json"));
     }
 
     #[test]
