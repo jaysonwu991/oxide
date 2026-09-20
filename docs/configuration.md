@@ -791,16 +791,15 @@ endpoint, set a saved Config ID without changing `base_url`:
 }
 ```
 
-`/models` normally requests `<base_url>/models` and merges the response with
-Oxide's built-in catalog for the provider, always including the active model.
-The built-in catalog surfaces ids the provider endpoint omits: DeepSeek's
-`/v1/models` lists only a subset, so Oxide adds the `deepseek-v4-flash` variants
-to match the picker people know from Pi. If `model_catalog` is nonempty, Oxide
-uses it verbatim without making that request. When a Portkey `/models` request
-returns HTTP 403, Oxide falls back to its built-in list, again including the
-active model. Set `model_catalog`, or a comma-separated `PORTKEY_MODELS`
-override, for restricted or account-specific catalogs. Unknown model IDs are
-passed through unchanged.
+`/models` normally requests `<base_url>/models` and uses the ids the provider
+reports, so the picker never offers a model the provider does not expose. The
+active model is added only when the provider returns an empty list, or for an
+endpoint Oxide does not recognize, so a stale or hand-typed id does not linger
+in the picker. If `model_catalog` is nonempty, Oxide uses it verbatim without
+making that request. When a Portkey `/models` request returns HTTP 403, Oxide
+falls back to its bundled Portkey list, again including the active model. Set
+`model_catalog`, or a comma-separated `PORTKEY_MODELS` override, for restricted
+or account-specific catalogs. Unknown model IDs are passed through unchanged.
 
 Refreshing the credential with `/login portkey` preserves an existing Portkey
 model, custom base URL, and Config ID when Portkey is already active. See

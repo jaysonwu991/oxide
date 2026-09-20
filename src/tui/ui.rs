@@ -9,7 +9,7 @@ use ratatui::widgets::{
 };
 use ratatui::Frame;
 
-const MIN_INPUT_ROWS: usize = 3;
+const MIN_INPUT_ROWS: usize = 1;
 const MAX_INPUT_ROWS: usize = 12;
 /// Blank rows kept above the conversation so the first line (banner or chat)
 /// is not flush with the terminal's top edge.
@@ -75,14 +75,14 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
 }
 
 fn main_areas(area: Rect, app: &App) -> [Rect; 3] {
-    let input_width = area.width.saturating_sub(4) as usize;
+    let input_width = area.width as usize;
     let input_rows = input_rows(&app.input, input_width) as u16;
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
             Constraint::Min(3),
-            // One gap row above the composer, two border rows, then the
-            // wrapped input rows.
+            // One gap row above the composer, the top and bottom rules, then
+            // the wrapped input rows.
             Constraint::Length(input_rows + 3),
             Constraint::Length(if app.extension_statuses.is_empty() {
                 2
@@ -984,7 +984,11 @@ fn draw_messages(frame: &mut Frame, app: &mut App, area: Rect) {
     let start = app.scroll as usize;
     let end = (start + view as usize).min(app.lines.len());
     let content = selection_lines(app, start, end);
-    let paragraph = Paragraph::new(content).wrap(Wrap { trim: false });
+    // Every message line is already wrapped to the viewport width, so the
+    // paragraph must not wrap again: `Wrap` inserts a phantom empty row before
+    // any line that exactly fills the width, which desynchronises the tool
+    // panel backgrounds from their text.
+    let paragraph = Paragraph::new(content);
     frame.render_widget(paragraph, inner);
 }
 
@@ -1559,69 +1563,57 @@ fn draw_input(frame: &mut Frame, app: &App, area: Rect) {
     } else {
         reasoning_color(app.reasoning, &app.theme)
     };
+    // Pi renders the editor as two full-width rules with no side borders,
+    // corners or prompt, and embeds the working status in the top rule.
     let area = Rect {
         y: area.y.saturating_add(1),
         height: area.height.saturating_sub(1),
         ..area
     };
-    let label = if app.attachments.is_empty() {
-        "message".to_string()
+    let title = if app.busy {
+        let secs = app
+            .busy_since
+            .map(|start| start.elapsed().as_secs())
+            .unwrap_or(0);
+        vec![Span::styled(
+            format!(
+                " {} {} · {secs}s · Esc clear/quit ",
+                spinner(app.busy_since),
+                app.status
+            ),
+            Style::default().fg(app.theme.tool),
+        )]
+    } else if app.attachments.is_empty() {
+        Vec::new()
     } else {
-        format!("{} attachment(s)", app.attachments.len())
+        vec![Span::styled(
+            format!(" {} attachment(s) ", app.attachments.len()),
+            Style::default().fg(border_color),
+        )]
     };
-    let title = truncate_spans(
-        input_title(app, label, border_color),
-        area.width.saturating_sub(2) as usize,
-    );
-    let block = Block::default()
-        .borders(Borders::ALL)
-        .border_type(BorderType::Rounded)
-        .border_style(Style::default().fg(border_color))
-        .title(Line::from(title));
+    let title = truncate_spans(title, area.width.saturating_sub(2) as usize);
+    let mut block = Block::default()
+        .borders(Borders::TOP | Borders::BOTTOM)
+        .border_type(BorderType::Plain)
+        .border_style(Style::default().fg(border_color));
+    if !title.is_empty() {
+        block = block.title(Line::from(title));
+    }
     let inner = block.inner(area);
     frame.render_widget(block, area);
 
-    let text_area = Rect {
-        x: inner.x + 2,
-        width: inner.width.saturating_sub(2),
-        ..inner
-    };
-    let prompt = Rect {
-        x: inner.x,
-        y: inner.y,
-        width: inner.width.min(2),
-        height: 1,
-    };
-    frame.render_widget(
-        Paragraph::new(Span::styled(
-            "> ",
-            Style::default()
-                .fg(border_color)
-                .add_modifier(Modifier::BOLD),
-        )),
-        prompt,
-    );
-
-    let width = text_area.width as usize;
-    let input: Text = if app.input.is_empty() && !app.busy {
-        Text::from(Line::from(Span::styled(
-            "Ask Oxide anything about your code…",
-            Style::default().fg(app.theme.info),
-        )))
-    } else {
-        composer_text(&app.input, &app.theme)
-    };
-    let paragraph = Paragraph::new(input)
+    let width = inner.width as usize;
+    let paragraph = Paragraph::new(composer_text(&app.input, &app.theme))
         .wrap(Wrap { trim: false })
         .scroll((input_scroll(&app.input, app.input_cursor, width), 0));
-    frame.render_widget(paragraph, text_area);
+    frame.render_widget(paragraph, inner);
 
     if !app.busy && app.connect.is_none() && app.models.is_none() {
         let (cursor_row, cursor_column) =
             input_cursor_position(&app.input, app.input_cursor.min(app.input.len()), width);
         let scroll = input_scroll(&app.input, app.input_cursor, width) as usize;
-        let x = text_area.x + cursor_column.min(width.saturating_sub(1)) as u16;
-        let y = text_area.y + cursor_row.saturating_sub(scroll) as u16;
+        let x = inner.x + cursor_column.min(width.saturating_sub(1)) as u16;
+        let y = inner.y + cursor_row.saturating_sub(scroll) as u16;
         frame.set_cursor_position((x, y));
     }
 }
@@ -1669,36 +1661,6 @@ fn push_composer_token<'a>(spans: &mut Vec<Span<'a>>, token: &'a str, mention: S
     } else {
         spans.push(Span::raw(token));
     }
-}
-
-fn input_title(app: &App, label: String, border_color: Color) -> Vec<Span<'static>> {
-    let mut title = vec![Span::styled(
-        format!(" {label} "),
-        Style::default()
-            .fg(border_color)
-            .add_modifier(Modifier::BOLD),
-    )];
-    if app.busy {
-        let secs = app
-            .busy_since
-            .map(|start| start.elapsed().as_secs())
-            .unwrap_or(0);
-        title.push(Span::styled(
-            format!(
-                "· {} {} · {secs}s · Esc clear/quit ",
-                spinner(app.busy_since),
-                app.status
-            ),
-            Style::default().fg(app.theme.tool),
-        ));
-    } else {
-        title.push(Span::styled("· ", Style::default().fg(app.theme.accent)));
-        title.push(Span::styled(
-            format!("{} ", app.status),
-            Style::default().fg(app.theme.info),
-        ));
-    }
-    title
 }
 
 fn input_rows(input: &str, width: usize) -> usize {
@@ -2175,7 +2137,7 @@ mod tests {
     fn input_rows_grows_and_clamps() {
         assert_eq!(input_rows("", 10), MIN_INPUT_ROWS);
         assert_eq!(input_rows("hello", 10), MIN_INPUT_ROWS);
-        assert_eq!(input_rows("hello\nworld", 10), MIN_INPUT_ROWS);
+        assert_eq!(input_rows("hello\nworld", 10), 2);
         assert_eq!(input_rows(&"a".repeat(200), 10), MAX_INPUT_ROWS);
     }
 
@@ -2783,6 +2745,34 @@ mod tests {
     }
 
     #[test]
+    fn panel_backgrounds_stay_on_their_text_rows() {
+        use crate::config::{Mode, Reasoning};
+        use ratatui::backend::TestBackend;
+        use ratatui::Terminal;
+
+        let mut app = App::new("m".into(), "/tmp".into(), Mode::Build, Reasoning::Auto);
+        app.items.push(ChatItem::ToolResult {
+            name: "grep".into(),
+            args: r#"{"pattern":"x"}"#.into(),
+            output: "match".into(),
+            diff: None,
+            millis: 0,
+        });
+        let mut terminal = Terminal::new(TestBackend::new(60, 24)).unwrap();
+        terminal.draw(|frame| draw(frame, &mut app)).unwrap();
+        let buffer = terminal.backend().buffer();
+        let bg = Some(Color::Rgb(0x28, 0x32, 0x28));
+
+        // Without the phantom wrapping row, the header and body sit two rows
+        // apart and both carry the panel background on the same row.
+        let header = row_of(buffer, "↳ grep").expect("header row");
+        let body = row_of(buffer, "match").expect("body row");
+        assert_eq!(body, header + 2);
+        assert_eq!(buffer[(1, header)].style().bg, bg);
+        assert_eq!(buffer[(1, body)].style().bg, bg);
+    }
+
+    #[test]
     fn bash_call_and_result_show_timeout_and_duration() {
         let args = r#"{"command":"cargo test","timeout":420000}"#;
         let mut call = Vec::new();
@@ -3031,15 +3021,16 @@ mod tests {
         terminal.draw(|frame| draw(frame, &mut app)).unwrap();
         let buffer = terminal.backend().buffer().clone();
 
-        let input_top = row_of(&buffer, "message").expect("input title");
-        assert_eq!(row_of(&buffer, "ready"), Some(input_top));
-        let input_bottom = row_of(&buffer, "╰").expect("input box bottom border");
-        let project_row = input_bottom + 1;
-        let controls_row = input_bottom + 2;
-        assert_eq!(row_of(&buffer, "/tmp/project"), Some(project_row));
+        let project_row = row_of(&buffer, "/tmp/project").expect("project row");
+        let controls_row = project_row + 1;
         assert_eq!(row_of(&buffer, "(main)"), Some(project_row));
         assert_eq!(row_of(&buffer, "gpt-4o"), Some(controls_row));
         assert_eq!(row_of(&buffer, "auto"), Some(controls_row));
+        // The composer's bottom rule sits directly above the footer.
+        let border: String = (0..buffer.area.width)
+            .map(|x| buffer[(x, project_row - 1)].symbol())
+            .collect();
+        assert_eq!(border, "─".repeat(buffer.area.width as usize));
 
         let text: String = (0..buffer.area.width)
             .map(|x| buffer[(x, controls_row)].symbol())
@@ -3050,7 +3041,7 @@ mod tests {
     }
 
     #[test]
-    fn input_title_shows_status_without_duplicating_footer_usage() {
+    fn composer_rule_shows_working_status_without_duplicating_footer_usage() {
         use crate::config::{Mode, Reasoning};
         use ratatui::backend::TestBackend;
         use ratatui::Terminal;
@@ -3062,6 +3053,8 @@ mod tests {
             Reasoning::Auto,
         );
         app.status = "ready".into();
+        app.busy = true;
+        app.busy_since = Some(std::time::Instant::now());
         app.tokens_in = 107_800;
         app.tokens_out = 4_800;
         app.context_used = 20;
@@ -3070,14 +3063,14 @@ mod tests {
         terminal.draw(|frame| draw(frame, &mut app)).unwrap();
         let buffer = terminal.backend().buffer();
 
-        let input_row = row_of(buffer, "message").expect("input title");
+        let input_row = row_of(buffer, "ready").expect("working status on the top rule");
         let row: String = (0..buffer.area.width)
             .map(|x| buffer[(x, input_row)].symbol())
             .collect();
-        assert!(row.contains("message · ready"));
+        assert!(row.contains("ready"));
+        assert!(row.contains("Esc clear/quit"));
         assert!(!row.contains("108k"));
         assert!(!row.contains("20%"));
-        assert_ne!(row_of(buffer, "Ask Oxide"), Some(input_row));
 
         let footer_row = row_of(buffer, "108k").expect("usage moves to the footer");
         let footer: String = (0..buffer.area.width)
@@ -3109,9 +3102,9 @@ mod tests {
         app.suggestion_index = 9;
         let area = Rect::new(0, 0, 80, 24);
 
-        assert_eq!(suggestion_index_at(&app, area, 3, 7), Some(2));
-        assert_eq!(suggestion_index_at(&app, area, 3, 14), Some(9));
-        assert_eq!(suggestion_index_at(&app, area, 0, 7), None);
+        assert_eq!(suggestion_index_at(&app, area, 3, 9), Some(2));
+        assert_eq!(suggestion_index_at(&app, area, 3, 16), Some(9));
+        assert_eq!(suggestion_index_at(&app, area, 0, 9), None);
     }
 
     #[test]

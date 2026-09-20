@@ -28,12 +28,6 @@ const PORTKEY_FALLBACK_MODELS: &[&str] = &[
     "gpt-5.6-terra",
 ];
 
-const DEEPSEEK_MODELS: &[&str] = &[
-    "deepseek-v4-flash",
-    "deepseek-v4-flash-vision-exp",
-    "deepseek-v4-pro",
-];
-
 pub fn model_label(model: &str) -> &str {
     match model {
         "claude-haiku-4-5" => "Claude Haiku 4.5",
@@ -42,8 +36,6 @@ pub fn model_label(model: &str) -> &str {
         "claude-sonnet-4-6" => "Claude Sonnet 4.6",
         "claude-sonnet-5" => "Claude Sonnet 5",
         "deepseek-flash" => "DeepSeek V4.1 Flash",
-        "deepseek-v4-flash" => "DeepSeek V4 Flash",
-        "deepseek-v4-flash-vision-exp" => "DeepSeek V4 Flash Vision Exp",
         "deepseek-v4-pro" => "DeepSeek V4 Pro",
         "glm-5.2" => "GLM-5.2",
         "gpt-5.4" => "GPT-5.4",
@@ -71,9 +63,6 @@ pub struct ProviderPreset {
     pub base_url_env: &'static str,
     pub model: &'static str,
     pub key_env: &'static str,
-    /// Model ids bundled with Oxide for this provider, merged into the model
-    /// picker alongside whatever the provider reports.
-    pub catalog: &'static [&'static str],
 }
 
 impl ProviderPreset {
@@ -86,7 +75,6 @@ impl ProviderPreset {
                 base_url_env: "OPENAI_BASE_URL",
                 model: "gpt-4o-mini",
                 key_env: "OPENAI_API_KEY",
-                catalog: &[],
             },
             "deepseek" => Self {
                 kind: ProviderKind::OpenAi,
@@ -94,7 +82,6 @@ impl ProviderPreset {
                 base_url_env: "DEEPSEEK_BASE_URL",
                 model: "deepseek-chat",
                 key_env: "DEEPSEEK_API_KEY",
-                catalog: DEEPSEEK_MODELS,
             },
             "portkey" => Self {
                 kind: ProviderKind::OpenAi,
@@ -102,7 +89,6 @@ impl ProviderPreset {
                 base_url_env: "PORTKEY_BASE_URL",
                 model: "claude-sonnet-5",
                 key_env: "PORTKEY_API_KEY",
-                catalog: &[],
             },
             "anthropic" => Self {
                 kind: ProviderKind::Anthropic,
@@ -110,7 +96,6 @@ impl ProviderPreset {
                 base_url_env: "ANTHROPIC_BASE_URL",
                 model: "claude-3-5-sonnet-latest",
                 key_env: "ANTHROPIC_API_KEY",
-                catalog: &[],
             },
             _ => return None,
         };
@@ -760,14 +745,13 @@ impl Config {
         models
     }
 
-    /// Merges the provider's built-in catalog into a list of models reported by
-    /// the provider, always keeping the active model. This lets the picker show
-    /// ids the provider endpoint omits (as Pi does with its bundled catalog).
+    /// Normalizes the list of models reported by the provider. A known built-in
+    /// provider is authoritative, so the active model is only injected when the
+    /// provider reports nothing (or the endpoint is not recognized), keeping
+    /// stale or hand-typed ids out of the picker.
     pub fn merge_model_catalog(&self, mut models: Vec<String>) -> Vec<String> {
-        if let Some(preset) = ProviderPreset::for_name(&self.provider) {
-            models.extend(preset.catalog.iter().map(|model| (*model).to_string()));
-        }
-        if !self.model.trim().is_empty() {
+        let known = ProviderPreset::for_name(&self.provider).is_some();
+        if (!known || models.is_empty()) && !self.model.trim().is_empty() {
             models.push(self.model.clone());
         }
         models.sort();
@@ -1140,28 +1124,20 @@ mod tests {
     fn portkey_model_labels_are_friendly() {
         assert_eq!(model_label("claude-sonnet-5"), "Claude Sonnet 5");
         assert_eq!(model_label("gpt-5.6-terra"), "GPT-5.6 Terra");
-        assert_eq!(model_label("deepseek-v4-flash"), "DeepSeek V4 Flash");
+        assert_eq!(model_label("deepseek-v4-pro"), "DeepSeek V4 Pro");
         assert_eq!(model_label("custom-model"), "custom-model");
     }
 
     #[test]
-    fn deepseek_catalog_merges_builtin_and_reported_models() {
+    fn deepseek_uses_only_models_reported_by_the_provider() {
         let config = Config {
             provider: "deepseek".into(),
-            model: "deepseek-flash".into(),
+            model: "deepseek-v4-flash".into(),
             ..Config::default()
         };
         let merged =
             config.merge_model_catalog(vec!["deepseek-v4-pro".into(), "deepseek-flash".into()]);
-        assert_eq!(
-            merged,
-            vec![
-                "deepseek-flash",
-                "deepseek-v4-flash",
-                "deepseek-v4-flash-vision-exp",
-                "deepseek-v4-pro",
-            ]
-        );
+        assert_eq!(merged, vec!["deepseek-flash", "deepseek-v4-pro"]);
     }
 
     #[test]

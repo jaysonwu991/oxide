@@ -3107,7 +3107,7 @@ mod tests {
             MouseEvent {
                 kind: MouseEventKind::Moved,
                 column: 4,
-                row: 14,
+                row: 16,
                 modifiers: KeyModifiers::NONE,
             },
             &mut app,
@@ -3119,7 +3119,7 @@ mod tests {
             MouseEvent {
                 kind: MouseEventKind::Down(MouseButton::Left),
                 column: 4,
-                row: 14,
+                row: 16,
                 modifiers: KeyModifiers::NONE,
             },
             &mut app,
