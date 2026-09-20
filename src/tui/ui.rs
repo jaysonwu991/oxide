@@ -1558,13 +1558,10 @@ fn render_banner(width: usize, info: &[String], lines: &mut Vec<Line<'static>>) 
 }
 
 fn draw_input(frame: &mut Frame, app: &App, area: Rect) {
-    let border_color = if app.busy {
-        app.theme.info
-    } else {
-        reasoning_color(app.reasoning, &app.theme)
-    };
     // Pi renders the editor as two full-width rules with no side borders,
-    // corners or prompt, and embeds the working status in the top rule.
+    // corners or prompt, and embeds the working status in the top rule while
+    // keeping the thinking-level color on the rules.
+    let border_color = reasoning_color(app.reasoning, &app.theme);
     let area = Rect {
         y: area.y.saturating_add(1),
         height: area.height.saturating_sub(1),
