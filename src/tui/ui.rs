@@ -81,7 +81,9 @@ fn main_areas(area: Rect, app: &App) -> [Rect; 3] {
         .direction(Direction::Vertical)
         .constraints([
             Constraint::Min(3),
-            Constraint::Length(input_rows + 2),
+            // One gap row above the composer, two border rows, then the
+            // wrapped input rows.
+            Constraint::Length(input_rows + 3),
             Constraint::Length(2),
         ])
         .split(area);
@@ -1423,7 +1425,7 @@ fn draw_input(frame: &mut Frame, app: &App, area: Rect) {
         let (cursor_row, cursor_column) =
             input_cursor_position(&app.input, app.input_cursor.min(app.input.len()), width);
         let scroll = input_scroll(&app.input, app.input_cursor, width) as usize;
-        let x = text_area.x + cursor_column.min(width - 1) as u16;
+        let x = text_area.x + cursor_column.min(width.saturating_sub(1)) as u16;
         let y = text_area.y + cursor_row.saturating_sub(scroll) as u16;
         frame.set_cursor_position((x, y));
     }
@@ -2762,9 +2764,9 @@ mod tests {
         app.suggestion_index = 9;
         let area = Rect::new(0, 0, 80, 24);
 
-        assert_eq!(suggestion_index_at(&app, area, 3, 8), Some(2));
-        assert_eq!(suggestion_index_at(&app, area, 3, 15), Some(9));
-        assert_eq!(suggestion_index_at(&app, area, 0, 8), None);
+        assert_eq!(suggestion_index_at(&app, area, 3, 7), Some(2));
+        assert_eq!(suggestion_index_at(&app, area, 3, 14), Some(9));
+        assert_eq!(suggestion_index_at(&app, area, 0, 7), None);
     }
 
     #[test]

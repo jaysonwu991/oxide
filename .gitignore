@@ -1,4 +1,13 @@
-# Root-level temporary analysis files (ignore for clean repo)
+/target
+
+.DS_Store
+*.rs.bk
+*.pdb
+
+.idea/
+.vscode/
+
+# Root-level temporary analysis files
 /OPTIMIZATIONS.md
 /OPTIMIZATION_*.md
 /PR_*.md
@@ -8,5 +17,5 @@
 /README_OPTIMIZATIONS.md
 /UI_PADDING_*.md
 
-# Build artifacts
+# Stray build output
 *.rlib

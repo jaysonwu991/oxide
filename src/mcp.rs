@@ -54,8 +54,18 @@ pub async fn probe(server: &McpServer) -> McpStatus {
     if !server.enabled {
         return McpStatus::Disabled;
     }
-    if let McpKind::Remote { oauth: Some(_), .. } = &server.kind {
-        return McpStatus::NeedsAuth;
+    if let McpKind::Remote {
+        url,
+        oauth: Some(config),
+        ..
+    } = &server.kind
+    {
+        let state = OAuthState::new(&server.name, config, url);
+        return if state.access_token_if_available().await.is_some() {
+            McpStatus::Connected
+        } else {
+            McpStatus::NeedsAuth
+        };
     }
     match tokio::time::timeout(STATUS_TIMEOUT, McpConnection::connect(server, false)).await {
         Ok(Ok(_)) => McpStatus::Connected,
@@ -989,6 +999,22 @@ mod tests {
 
         assert_eq!(probe(&server).await, McpStatus::NeedsAuth);
         server_task.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn probe_oauth_without_stored_token_reports_needs_auth() {
+        let server = McpServer {
+            name: "oauth-probe-without-token".to_string(),
+            enabled: true,
+            kind: McpKind::Remote {
+                url: "http://127.0.0.1:1/mcp".to_string(),
+                headers: Default::default(),
+                oauth: Some(Default::default()),
+            },
+            domains: vec![],
+        };
+
+        assert_eq!(probe(&server).await, McpStatus::NeedsAuth);
     }
 
     #[tokio::test]
