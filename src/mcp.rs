@@ -54,6 +54,9 @@ pub async fn probe(server: &McpServer) -> McpStatus {
     if !server.enabled {
         return McpStatus::Disabled;
     }
+    if let McpKind::Remote { oauth: Some(_), .. } = &server.kind {
+        return McpStatus::NeedsAuth;
+    }
     match tokio::time::timeout(STATUS_TIMEOUT, McpConnection::connect(server, false)).await {
         Ok(Ok(_)) => McpStatus::Connected,
         Ok(Err(error)) if error.downcast_ref::<AuthorizationRequired>().is_some() => {
@@ -112,7 +115,8 @@ impl McpRegistry {
 
     pub async fn statuses(&self) -> Vec<(String, String, McpStatus)> {
         let mut checks = tokio::task::JoinSet::new();
-        for server in self.configured.clone() {
+        for server in &self.configured {
+            let server = server.clone();
             checks.spawn(async move {
                 let source = server_source(&server);
                 let status = probe(&server).await;
@@ -243,16 +247,16 @@ impl McpRegistry {
 
     /// Unique server names that own any URL found in free-form text.
     pub fn servers_for_text(&self, text: &str) -> Vec<String> {
-        let mut names = Vec::new();
+        let mut names_set = std::collections::HashSet::new();
         for url in urls_in_text(text) {
             if let Some(host) = host_from_url(&url) {
                 for name in self.servers_for_host(&host) {
-                    if !names.contains(&name) {
-                        names.push(name);
-                    }
+                    names_set.insert(name);
                 }
             }
         }
+        let mut names: Vec<String> = names_set.into_iter().collect();
+        names.sort();
         names
     }
 
@@ -332,7 +336,19 @@ fn domain_match(domain: &str, host: &str) -> bool {
     }
     if domain.starts_with('*') {
         let suffix = domain.trim_start_matches('*').trim_start_matches('.');
-        return !suffix.is_empty() && (host == suffix || host.ends_with(&format!(".{suffix}")));
+        if suffix.is_empty() {
+            return false;
+        }
+        if host == suffix {
+            return true;
+        }
+        if host.len() > suffix.len() + 1
+            && host.as_bytes()[host.len() - suffix.len() - 1] == b'.'
+            && host.ends_with(suffix)
+        {
+            return true;
+        }
+        return false;
     }
     host == domain
 }

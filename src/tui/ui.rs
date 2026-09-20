@@ -1362,6 +1362,11 @@ fn draw_input(frame: &mut Frame, app: &App, area: Rect) {
     } else {
         reasoning_color(app.reasoning, &app.theme)
     };
+    let area = Rect {
+        y: area.y.saturating_add(1),
+        height: area.height.saturating_sub(1),
+        ..area
+    };
     let label = if app.attachments.is_empty() {
         "message".to_string()
     } else {
