@@ -446,6 +446,12 @@ fn handle_key(
             refresh_suggestions(app, config);
         }
         KeyCode::Enter => {
+            if app.input.trim() == "/exit" {
+                app.clear_input();
+                refresh_suggestions(app, config);
+                app.should_quit = true;
+                return;
+            }
             if app.busy {
                 let raw = app.input.trim().to_string();
                 if raw.is_empty() {
@@ -1332,11 +1338,7 @@ fn handle_key(
 }
 
 fn escape_action(app: &mut App) {
-    if app.input.is_empty() {
-        app.should_quit = true;
-    } else {
-        app.clear_input();
-    }
+    app.clear_input();
 }
 
 /// The instruction sent to the agent by the `/init` command.
@@ -1379,6 +1381,8 @@ fn help_text(config: &Config) -> String {
         "built-in commands:".to_string(),
         "  /help                 show this help".to_string(),
         "  /hotkeys              show the keyboard shortcuts".to_string(),
+        "  /exit                 quit oxide".to_string(),
+        "  /skill:<name>         load a skill by name".to_string(),
         "  /new                  start a new session".to_string(),
         "  /session              show session file, id, name, and stats".to_string(),
         "  /resume               browse and resume a past session".to_string(),
@@ -1685,7 +1689,7 @@ fn hotkeys_text() -> String {
         "  Enter                 send (queues steering while busy)",
         "  Shift+Enter           insert a newline",
         "  Alt+Enter             queue a follow-up while busy",
-        "  Esc                   clear input; with empty input, quit",
+        "  Esc                   clear the input",
         "  Shift+Tab             cycle permission mode",
         "  Ctrl+R                cycle reasoning/thinking level",
         "  Ctrl+O                toggle tool output",
@@ -1700,6 +1704,7 @@ fn hotkeys_text() -> String {
         "  Up / Down             input history",
         "  drag (mouse)          select text; copies on release",
         "  Ctrl+C                copy the selection, or quit",
+        "  /exit                 quit oxide",
         "  /copy                 copy the last assistant message",
         "  /copy all             copy the whole transcript",
     ]
@@ -1990,6 +1995,10 @@ fn builtin_commands() -> Vec<CommandHint> {
             description: "show keyboard shortcuts".to_string(),
         },
         CommandHint {
+            name: "exit".to_string(),
+            description: "quit oxide".to_string(),
+        },
+        CommandHint {
             name: "new".to_string(),
             description: "start a new session".to_string(),
         },
@@ -2145,6 +2154,12 @@ fn refresh_suggestions(app: &mut App, config: &Config) {
         hints.push(CommandHint {
             name: template.name.clone(),
             description,
+        });
+    }
+    for skill in &config.ecosystem.skills {
+        hints.push(CommandHint {
+            name: format!("skill:{}", skill.name),
+            description: skill.description.clone().unwrap_or_default(),
         });
     }
     app.suggestions = hints
@@ -3097,7 +3112,7 @@ mod tests {
     }
 
     #[test]
-    fn escape_clears_input_then_quits() {
+    fn escape_clears_input_without_quitting() {
         let mut app = test_app();
         app.set_input("draft".to_string());
 
@@ -3106,7 +3121,7 @@ mod tests {
         assert!(!app.should_quit);
 
         escape_action(&mut app);
-        assert!(app.should_quit);
+        assert!(!app.should_quit);
     }
 
     #[test]
@@ -3171,6 +3186,26 @@ mod tests {
         refresh_suggestions(&mut app, &config);
         assert_eq!(app.suggestions.len(), 1);
         assert_eq!(app.suggestions[0].name, "review");
+    }
+
+    #[test]
+    fn suggestions_include_skills() {
+        let mut config = Config::default();
+        config.ecosystem.skills.push(crate::ecosystem::Skill {
+            name: "audit".to_string(),
+            description: Some("audit dependencies".to_string()),
+            content: String::new(),
+        });
+        let mut app = test_app();
+        app.set_input("/ski".to_string());
+        refresh_suggestions(&mut app, &config);
+        assert_eq!(app.suggestions.len(), 1);
+        assert_eq!(app.suggestions[0].name, "skill:audit");
+
+        app.set_input("/skill:".to_string());
+        refresh_suggestions(&mut app, &config);
+        assert_eq!(app.suggestions.len(), 1);
+        assert_eq!(app.suggestions[0].name, "skill:audit");
     }
 
     #[test]

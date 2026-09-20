@@ -827,7 +827,8 @@ impl Config {
 
         if !self.ecosystem.skills.is_empty() {
             let mut list = String::from(
-                "# Available skills\nLoad a skill when its description matches the task.",
+                "# Available skills\nLoad a skill with the `skill` tool when its description \
+                 matches the task; users can also force one with `/skill:<name>`.",
             );
             for skill in &self.ecosystem.skills {
                 let description = skill.description.clone().unwrap_or_default();
@@ -837,7 +838,10 @@ impl Config {
         }
 
         if !self.ecosystem.commands.is_empty() || !self.ecosystem.prompt_templates.is_empty() {
-            let mut list = String::from("# Available commands");
+            let mut list = String::from(
+                "# Available commands\nInvoke a command with the `command` tool when the user's \
+                 request matches its description; pass any focus or scope as `arguments`.",
+            );
             for command in &self.ecosystem.commands {
                 let description = command.description.clone().unwrap_or_default();
                 list.push_str(&format!("\n- /{}: {}", command.name, description));

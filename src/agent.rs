@@ -720,6 +720,9 @@ fn build_tool_specs(config: &Config, runtime: &Runtime, depth: usize) -> Vec<Too
     if !config.ecosystem.skills.is_empty() {
         specs.push(skill_spec(config));
     }
+    if !config.ecosystem.commands.is_empty() || !config.ecosystem.prompt_templates.is_empty() {
+        specs.push(command_spec(config));
+    }
     specs.push(memory_spec());
     specs.push(lsp_spec());
     if config.tool_filter.is_restrictive() {
@@ -786,6 +789,9 @@ async fn dispatch(
             task(config, cwd, runtime, &call.function.arguments, depth).await,
         ),
         "skill" => tools::ToolOutput::text(skill(config, &call.function.arguments)),
+        "command" => tools::ToolOutput::text(
+            command(config, cwd, runtime, &call.function.arguments, depth).await,
+        ),
         "memory" => tools::ToolOutput::text(memory(config, &call.function.arguments)),
         "diagnostics" => lsp_diagnostics(runtime, cwd, &call.function.arguments).await,
         _ => tools::execute(call, cwd, &runtime.mcp, progress).await,
@@ -993,6 +999,122 @@ fn task_spec(config: &Config) -> ToolSpec {
                     }
                 },
                 "required": ["description", "prompt", "subagent_type"]
+            }),
+        },
+    }
+}
+
+async fn command(
+    config: &Config,
+    cwd: &Path,
+    runtime: &Runtime,
+    arguments: &str,
+    depth: usize,
+) -> String {
+    match command_inner(config, cwd, runtime, arguments, depth).await {
+        Ok(output) => output,
+        Err(err) => format!("error: {err:#}"),
+    }
+}
+
+async fn command_inner(
+    config: &Config,
+    cwd: &Path,
+    runtime: &Runtime,
+    arguments: &str,
+    depth: usize,
+) -> Result<String> {
+    let args: Value = serde_json::from_str(arguments).context("invalid command arguments")?;
+    let name = args
+        .get("name")
+        .and_then(Value::as_str)
+        .context("missing `name` argument")?
+        .trim_start_matches('/');
+    let extra = args.get("arguments").and_then(Value::as_str).unwrap_or("");
+    let input = if extra.trim().is_empty() {
+        format!("/{name}")
+    } else {
+        format!("/{name} {extra}")
+    };
+    let Some(resolved) = config.ecosystem.resolve_command(&input) else {
+        let available: Vec<&str> = config
+            .ecosystem
+            .commands
+            .iter()
+            .map(|command| command.name.as_str())
+            .chain(
+                config
+                    .ecosystem
+                    .prompt_templates
+                    .iter()
+                    .filter(|template| config.ecosystem.command(&template.name).is_none())
+                    .map(|template| template.name.as_str()),
+            )
+            .collect();
+        anyhow::bail!(
+            "unknown command `{name}` (available: {})",
+            available.join(", ")
+        );
+    };
+
+    if resolved.subtask {
+        let agent = resolved
+            .agent
+            .clone()
+            .context("subtask command requires an `agent` in its frontmatter")?;
+        let task_args = json!({ "prompt": resolved.prompt, "subagent_type": agent }).to_string();
+        return task_inner(config, cwd, runtime, &task_args, depth).await;
+    }
+    if let Some(agent_name) = &resolved.agent {
+        if let Some(agent) = config.ecosystem.agent(agent_name) {
+            return Ok(format!(
+                "Operate as the `{agent_name}` agent while carrying out the `/{name}` command.\n\n\
+                 {}\n\n{}",
+                agent.prompt.trim(),
+                resolved.prompt
+            ));
+        }
+    }
+    Ok(resolved.prompt)
+}
+
+fn command_spec(config: &Config) -> ToolSpec {
+    let available: Vec<String> = config
+        .ecosystem
+        .commands
+        .iter()
+        .map(|command| command.name.clone())
+        .chain(
+            config
+                .ecosystem
+                .prompt_templates
+                .iter()
+                .filter(|template| config.ecosystem.command(&template.name).is_none())
+                .map(|template| template.name.clone()),
+        )
+        .collect();
+
+    ToolSpec {
+        kind: "function",
+        function: FunctionSpec {
+            name: "command".to_string(),
+            description: format!(
+                "Invoke a predefined command by name when the user's request matches its purpose. Subtask commands run in an isolated subagent and return their result; other commands return their expanded instructions for you to carry out. Available commands: {}.",
+                available.join(", ")
+            ),
+            parameters: json!({
+                "type": "object",
+                "properties": {
+                    "name": {
+                        "type": "string",
+                        "description": "Name of the command to invoke"
+                    },
+                    "arguments": {
+                        "type": "string",
+                        "description": "Arguments expanded into the command's $ARGUMENTS/$1 placeholders"
+                    }
+                },
+                "required": ["name"]
             }),
         },
     }
@@ -1229,6 +1351,83 @@ mod tests {
         assert!(task_spec(&config).function.description.contains("reviewer"));
     }
 
+    async fn test_runtime() -> Runtime {
+        Runtime {
+            mcp: Arc::new(McpRegistry::new(&[])),
+            plugins: Arc::new(PluginHost::spawn(&[], &std::env::temp_dir()).await),
+            session: None,
+            snapshots: None,
+            lsp: Arc::new(LspManager::new()),
+            approve: Arc::new(|_, _| Box::pin(async { false })),
+            steering: Steering::new(),
+            follow_ups: Steering::new(),
+        }
+    }
+
+    #[tokio::test]
+    async fn command_tool_expands_and_reports_unknown() {
+        let mut config = Config::default();
+        config
+            .ecosystem
+            .commands
+            .push(crate::ecosystem::CommandDef {
+                name: "lint".into(),
+                description: Some("lints the crate".into()),
+                template: "Lint $ARGUMENTS now".into(),
+                agent: None,
+                subtask: false,
+            });
+        let runtime = test_runtime().await;
+
+        let output = command(
+            &config,
+            Path::new("."),
+            &runtime,
+            r#"{"name":"/lint","arguments":"src"}"#,
+            0,
+        )
+        .await;
+        assert_eq!(output, "Lint src now");
+
+        let output = command(
+            &config,
+            Path::new("."),
+            &runtime,
+            r#"{"name":"missing"}"#,
+            0,
+        )
+        .await;
+        assert!(output.starts_with("error: unknown command"), "{output}");
+    }
+
+    #[test]
+    fn command_spec_lists_commands_and_templates() {
+        let mut config = Config::default();
+        config
+            .ecosystem
+            .commands
+            .push(crate::ecosystem::CommandDef {
+                name: "lint".into(),
+                description: Some("lints the crate".into()),
+                template: "Lint $ARGUMENTS".into(),
+                agent: None,
+                subtask: false,
+            });
+        config
+            .ecosystem
+            .prompt_templates
+            .push(crate::ecosystem::PromptTemplate {
+                name: "component".into(),
+                description: Some("creates a component".into()),
+                argument_hint: None,
+                body: "Create $1".into(),
+            });
+        let spec = command_spec(&config);
+        assert_eq!(spec.function.name, "command");
+        assert!(spec.function.description.contains("lint"));
+        assert!(spec.function.description.contains("component"));
+    }
+
     #[test]
     fn only_read_only_tools_are_concurrency_safe() {
         for name in [
@@ -1243,7 +1442,14 @@ mod tests {
         ] {
             assert!(concurrency_safe(name), "{name} should be concurrency-safe");
         }
-        for name in ["write", "edit", "bash", "task", "mcp__server__tool"] {
+        for name in [
+            "write",
+            "edit",
+            "bash",
+            "task",
+            "command",
+            "mcp__server__tool",
+        ] {
             assert!(!concurrency_safe(name), "{name} must stay sequential");
         }
     }
