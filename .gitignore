@@ -1,8 +1,13 @@
-/target
+# Analysis and optimization documentation (temporary)
+OPTIMIZATIONS.md
+OPTIMIZATION_*.md
+PR_*.md
+CODE_REVIEW.md
+FUTURE_OPTIMIZATIONS.md
+IMAGE_OPTIMIZATIONS.md
+README_OPTIMIZATIONS.md
+UI_PADDING_*.md
+IMAGE_OPTIMIZATIONS.md
 
-.DS_Store
-*.rs.bk
-*.pdb
-
-.idea/
-.vscode/
+# Build artifacts
+*.rlib
