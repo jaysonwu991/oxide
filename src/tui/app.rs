@@ -118,10 +118,68 @@ pub enum ChatItem {
     },
     Error(String),
     Info(String),
+    /// A titled list rendered as aligned rows with per-row status colors,
+    /// instead of one plain wrapped paragraph (`/mcps`, `/plugins`).
+    Listing {
+        title: String,
+        rows: Vec<ListRow>,
+    },
     /// A one-off tip about something that just happened (`/copy`, a toggle, a
     /// theme change). Only the newest one is kept so repeated actions do not
     /// stack up lines, matching Pi's `showStatus`.
     Status(String),
+}
+
+/// Semantic color for a [`ListRow`], resolved against the active theme so the
+/// data model stays independent of the theme.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Tone {
+    Plain,
+    Success,
+    Warning,
+    Error,
+    Dim,
+}
+
+/// One item in a [`ChatItem::Listing`]: a name, an optional status tag, an
+/// optional detail shown beside the status when it fits, and dim notes printed
+/// underneath. Details and notes wrap with a hanging indent so a long URL or
+/// path stays attached to its row.
+#[derive(Debug, Clone)]
+pub struct ListRow {
+    pub name: String,
+    pub status: Option<String>,
+    pub tone: Tone,
+    pub detail: Option<String>,
+    pub notes: Vec<String>,
+}
+
+impl ListRow {
+    pub fn new(name: impl Into<String>) -> Self {
+        Self {
+            name: name.into(),
+            status: None,
+            tone: Tone::Plain,
+            detail: None,
+            notes: Vec::new(),
+        }
+    }
+
+    pub fn status(mut self, status: impl Into<String>, tone: Tone) -> Self {
+        self.status = Some(status.into());
+        self.tone = tone;
+        self
+    }
+
+    pub fn detail(mut self, detail: impl Into<String>) -> Self {
+        self.detail = Some(detail.into());
+        self
+    }
+
+    pub fn note(mut self, note: impl Into<String>) -> Self {
+        self.notes.push(note.into());
+        self
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -162,6 +220,74 @@ impl ConnectState {
 impl Default for ConnectState {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+/// One editable row of the `/usage` dialog.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum UsageField {
+    Enabled,
+    User,
+    Metadata,
+    Budget,
+    Currency,
+    ApiKey,
+    Endpoint,
+}
+
+impl UsageField {
+    pub const ALL: [UsageField; 7] = [
+        UsageField::Enabled,
+        UsageField::User,
+        UsageField::Metadata,
+        UsageField::Budget,
+        UsageField::Currency,
+        UsageField::ApiKey,
+        UsageField::Endpoint,
+    ];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            UsageField::Enabled => "Enabled",
+            UsageField::User => "User",
+            UsageField::Metadata => "Metadata",
+            UsageField::Budget => "Budget",
+            UsageField::Currency => "Currency",
+            UsageField::ApiKey => "API key",
+            UsageField::Endpoint => "Endpoint",
+        }
+    }
+
+    /// Whether Enter flips the value instead of opening the text editor.
+    pub fn is_toggle(self) -> bool {
+        matches!(self, UsageField::Enabled | UsageField::Currency)
+    }
+}
+
+/// The `/usage` dialog: a form over a working copy of the Portkey spend-bar
+/// settings that is committed when the dialog closes.
+#[derive(Debug, Clone)]
+pub struct UsageState {
+    pub settings: crate::portkey_usage::UsageSettings,
+    pub selected: usize,
+    pub editing: bool,
+    pub input: String,
+    pub error: Option<String>,
+}
+
+impl UsageState {
+    pub fn new(settings: crate::portkey_usage::UsageSettings) -> Self {
+        Self {
+            settings,
+            selected: 0,
+            editing: false,
+            input: String::new(),
+            error: None,
+        }
+    }
+
+    pub fn field(&self) -> UsageField {
+        UsageField::ALL[self.selected.min(UsageField::ALL.len() - 1)]
     }
 }
 
@@ -394,7 +520,10 @@ impl MarketplacesState {
     }
 
     /// Plugins of the selected marketplace matching the filter while that pane
-    /// is active.
+    /// is active. A name match wins outright, so a query like `doc` stays on
+    /// `doc-mcp` instead of also surfacing every plugin whose description
+    /// happens to mention "documentation"; descriptions are only searched as a
+    /// fallback when no name matches.
     pub fn plugins(&self) -> Vec<&MarketplacePluginOverview> {
         let Some(marketplace) = self.selected_marketplace() else {
             return Vec::new();
@@ -404,18 +533,27 @@ impl MarketplacesState {
         } else {
             String::new()
         };
+        if filter.is_empty() {
+            return marketplace.plugins.iter().collect();
+        }
+        let by_name: Vec<&MarketplacePluginOverview> = marketplace
+            .plugins
+            .iter()
+            .filter(|plugin| plugin.name.to_ascii_lowercase().contains(&filter))
+            .collect();
+        if !by_name.is_empty() {
+            return by_name;
+        }
         marketplace
             .plugins
             .iter()
             .filter(|plugin| {
-                filter.is_empty()
-                    || plugin.name.to_ascii_lowercase().contains(&filter)
-                    || plugin
-                        .description
-                        .as_deref()
-                        .unwrap_or_default()
-                        .to_ascii_lowercase()
-                        .contains(&filter)
+                plugin
+                    .description
+                    .as_deref()
+                    .unwrap_or_default()
+                    .to_ascii_lowercase()
+                    .contains(&filter)
             })
             .collect()
     }
@@ -492,6 +630,8 @@ pub struct App {
     /// Settings for the Portkey spend bar, and the bar itself when enabled.
     pub usage_settings: crate::portkey_usage::UsageSettings,
     pub usage: Option<crate::portkey_usage::UsageBar>,
+    /// The `/usage` settings dialog, open while some field is being edited.
+    pub usage_modal: Option<UsageState>,
     pub session_name: Option<String>,
     pub theme: crate::theme::Theme,
     pub steering: Steering,
@@ -562,6 +702,7 @@ impl App {
             extension_statuses: std::collections::BTreeMap::new(),
             usage_settings: crate::portkey_usage::UsageSettings::default(),
             usage: None,
+            usage_modal: None,
             session_name: None,
             theme: crate::theme::Theme::default(),
             steering: Steering::new(),
@@ -1082,6 +1223,50 @@ mod tests {
         assert_eq!(state.plugins().len(), 1);
         assert_eq!(state.selected_plugin().unwrap().name, "two");
         assert_eq!(state.installed_count(), 1);
+    }
+
+    #[test]
+    fn marketplace_filter_prefers_plugin_names_over_descriptions() {
+        let mut state = MarketplacesState::ready(vec![MarketplaceOverview {
+            name: "shop".into(),
+            source: "https://example.com/shop".into(),
+            path: "/tmp/shop".into(),
+            owner: None,
+            plugins: vec![
+                MarketplacePluginOverview {
+                    name: "doc-mcp".into(),
+                    description: Some("Retrieve documentation".into()),
+                    version: None,
+                    installed: false,
+                    enabled: false,
+                },
+                MarketplacePluginOverview {
+                    name: "content-review".into(),
+                    description: Some("Review written documentation".into()),
+                    version: None,
+                    installed: false,
+                    enabled: false,
+                },
+                MarketplacePluginOverview {
+                    name: "onboarding".into(),
+                    description: Some("Generate onboarding guides".into()),
+                    version: None,
+                    installed: false,
+                    enabled: false,
+                },
+            ],
+            error: None,
+        }]);
+        state.pane = MarketplacePane::Plugins;
+
+        state.filter = "doc".into();
+        let names: Vec<&str> = state.plugins().iter().map(|p| p.name.as_str()).collect();
+        assert_eq!(names, vec!["doc-mcp"]);
+
+        // With no name match, the description is still searched.
+        state.filter = "written".into();
+        let names: Vec<&str> = state.plugins().iter().map(|p| p.name.as_str()).collect();
+        assert_eq!(names, vec!["content-review"]);
     }
 
     #[test]
