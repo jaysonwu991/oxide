@@ -231,7 +231,7 @@ pub fn specs(mcp: &McpRegistry) -> Vec<ToolSpec> {
         ),
         spec(
             "webfetch",
-            "Fetch a URL and return its contents as Markdown (default), readable plain text, or raw HTML.",
+            "Fetch a URL and return its contents as Markdown (default), readable plain text, or raw HTML. GitHub and GitLab pull requests, merge requests, and issues should be read with their `gh`/`glab` CLIs instead.",
             json!({
                 "type": "object",
                 "properties": {
@@ -1103,7 +1103,124 @@ async fn webfetch_guarded(args: &Value, mcp: &McpRegistry) -> Result<String> {
         );
         return Ok(hint);
     }
+    if let Some((route, item)) = forge_route(url) {
+        if command_exists(route.cli) {
+            return Ok(forge_hint(route, item, url));
+        }
+    }
     webfetch(args).await
+}
+
+/// A hosted forge whose pull/merge requests and issues are better read through
+/// its official CLI, which authenticates for private repositories and surfaces
+/// review threads, checks, and diffs that a plain page fetch cannot.
+struct ForgeRoute {
+    service: &'static str,
+    host: &'static str,
+    cli: &'static str,
+    items: &'static [ForgeItem],
+}
+
+/// One kind of forge work item (a request or an issue) and the CLI commands
+/// that read it, show its diff, and post a reply.
+struct ForgeItem {
+    /// URL path segment that starts the item, e.g. `pull`/`merge_requests`.
+    path: &'static str,
+    noun: &'static str,
+    /// `<cli>` subcommand plus flags that reads the item.
+    view: &'static str,
+    /// `<cli>` subcommand that shows the diff, for requests only.
+    diff: Option<&'static str>,
+    /// `<cli>` subcommand that posts a reply.
+    comment: &'static str,
+}
+
+const FORGE_ROUTES: &[ForgeRoute] = &[
+    ForgeRoute {
+        service: "GitHub",
+        host: "github.com",
+        cli: "gh",
+        items: &[
+            ForgeItem {
+                path: "pull",
+                noun: "pull request",
+                view: "pr view --comments",
+                diff: Some("pr diff"),
+                comment: "pr comment",
+            },
+            ForgeItem {
+                path: "issues",
+                noun: "issue",
+                view: "issue view --comments",
+                diff: None,
+                comment: "issue comment",
+            },
+        ],
+    },
+    ForgeRoute {
+        service: "GitLab",
+        host: "gitlab.com",
+        cli: "glab",
+        items: &[
+            ForgeItem {
+                path: "merge_requests",
+                noun: "merge request",
+                view: "mr view",
+                diff: Some("mr diff"),
+                comment: "mr note",
+            },
+            ForgeItem {
+                path: "issues",
+                noun: "issue",
+                view: "issue view",
+                diff: None,
+                comment: "issue note",
+            },
+        ],
+    },
+];
+
+/// Resolves a forge work-item URL (a pull/merge request or issue) to the route
+/// and item describing it, so the caller can steer the model at the forge CLI.
+fn forge_route(url: &str) -> Option<(&'static ForgeRoute, &'static ForgeItem)> {
+    let trimmed = url.trim_end_matches('/');
+    let rest = trimmed
+        .strip_prefix("https://")
+        .or_else(|| trimmed.strip_prefix("http://"))?;
+    let (host, path) = rest.split_once('/')?;
+    let route = FORGE_ROUTES.iter().find(|route| route.host == host)?;
+    let segments: Vec<&str> = path
+        .split('/')
+        .filter(|segment| !segment.is_empty())
+        .collect();
+    let item = route.items.iter().find(|item| {
+        segments
+            .iter()
+            .position(|segment| *segment == item.path)
+            .and_then(|start| segments.get(start + 1))
+            .is_some_and(|number| !number.trim_start_matches('#').is_empty())
+    })?;
+    Some((route, item))
+}
+
+/// Builds the hint that steers a forge work-item URL to its CLI.
+fn forge_hint(route: &ForgeRoute, item: &ForgeItem, url: &str) -> String {
+    let url = url.trim_end_matches('/');
+    let changes = item
+        .diff
+        .map(|diff| format!(" Inspect the changes with `{} {diff} {url}`.", route.cli))
+        .unwrap_or_default();
+    format!(
+        "This URL is a {service} {noun}. Use the `{cli}` CLI instead of webfetch — it \
+         authenticates for private repositories and exposes review threads, checks, and diffs. \
+         Read it with `{cli} {view} {url}`.{changes} Reply with \
+         `{cli} {comment} {url} --body \"...\"`.",
+        service = route.service,
+        noun = item.noun,
+        cli = route.cli,
+        view = item.view,
+        comment = item.comment,
+    )
 }
 
 async fn webfetch(args: &Value) -> Result<String> {
@@ -2015,6 +2132,56 @@ mod tests {
         assert_eq!(out.matches("needle").count(), 3, "{out}");
 
         std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn forge_hint_routes_work_items_to_their_cli() {
+        let (route, item) =
+            forge_route("https://github.com/Skyscanner/landing-pages-api/pull/848").unwrap();
+        let pr = forge_hint(
+            route,
+            item,
+            "https://github.com/Skyscanner/landing-pages-api/pull/848",
+        );
+        assert!(pr.contains("GitHub pull request"), "{pr}");
+        assert!(
+            pr.contains(
+                "gh pr view --comments https://github.com/Skyscanner/landing-pages-api/pull/848"
+            ),
+            "{pr}"
+        );
+        assert!(
+            pr.contains("gh pr diff https://github.com/Skyscanner/landing-pages-api/pull/848"),
+            "{pr}"
+        );
+        assert!(
+            pr.contains(
+                "gh pr comment https://github.com/Skyscanner/landing-pages-api/pull/848 --body"
+            ),
+            "{pr}"
+        );
+
+        let (route, item) = forge_route("http://github.com/owner/repo/issues/12/").unwrap();
+        let issue = forge_hint(route, item, "http://github.com/owner/repo/issues/12/");
+        assert!(issue.contains("GitHub issue"), "{issue}");
+        assert!(issue.contains("gh issue view --comments"), "{issue}");
+        assert!(!issue.contains("gh issue diff"), "{issue}");
+
+        let (route, item) =
+            forge_route("https://gitlab.com/group/sub/repo/-/merge_requests/7").unwrap();
+        let mr = forge_hint(
+            route,
+            item,
+            "https://gitlab.com/group/sub/repo/-/merge_requests/7",
+        );
+        assert!(mr.contains("GitLab merge request"), "{mr}");
+        assert!(mr.contains("glab mr view"), "{mr}");
+        assert!(mr.contains("glab mr diff"), "{mr}");
+        assert!(mr.contains("glab mr note"), "{mr}");
+
+        assert!(forge_route("https://github.com/owner/repo").is_none());
+        assert!(forge_route("https://github.com/owner/repo/issues").is_none());
+        assert!(forge_route("https://example.com/owner/repo/pull/1").is_none());
     }
 
     #[tokio::test]

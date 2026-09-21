@@ -457,7 +457,7 @@ impl App {
             theme: crate::theme::Theme::default(),
             steering: Steering::new(),
             follow_ups: Steering::new(),
-            expand_tools: true,
+            expand_tools: false,
             show_thinking_blocks: true,
             lines: Vec::new(),
             line_offsets: Vec::new(),
@@ -831,9 +831,9 @@ mod tests {
     use super::*;
 
     #[test]
-    fn tool_output_is_expanded_by_default() {
+    fn tool_output_is_previewed_by_default() {
         let app = App::new("gpt-4o".into(), ".".into(), Mode::Build, Reasoning::Auto);
-        assert!(app.expand_tools);
+        assert!(!app.expand_tools);
         assert!(app.show_thinking_blocks);
     }
 
