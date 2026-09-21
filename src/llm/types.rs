@@ -237,6 +237,10 @@ pub struct Usage {
     pub output: u64,
     pub cache_read: u64,
     pub cache_write: u64,
+    /// Output tokens the provider billed as hidden reasoning. OpenAI-family
+    /// models never stream the text, so this is the only signal that an empty
+    /// turn spent its budget thinking.
+    pub reasoning: u64,
     /// Cost in USD, computed from the model's price table after the turn.
     pub cost: f64,
 }
@@ -253,6 +257,12 @@ pub struct AssistantTurn {
     pub tool_calls: Vec<ToolCall>,
     pub thinking: Vec<Value>,
     pub usage: Usage,
+    /// Why the provider stopped the turn (`stop`, `length`, `tool_calls`, or
+    /// Anthropic's `max_tokens`/`end_turn`). A reasoning model can consume the
+    /// whole output budget on hidden reasoning and stop with `length` before
+    /// emitting any content, which is worth reporting differently from a
+    /// transient empty reply.
+    pub finish_reason: Option<String>,
 }
 
 /// Appends a streamed reasoning fragment to the turn's thinking block, creating
@@ -325,6 +335,14 @@ pub struct StreamUsage {
     pub completion_tokens: u64,
     #[serde(default)]
     pub prompt_tokens_details: Option<PromptTokensDetails>,
+    #[serde(default)]
+    pub completion_tokens_details: Option<CompletionTokensDetails>,
+}
+
+#[derive(Debug, Default, Deserialize)]
+pub struct CompletionTokensDetails {
+    #[serde(default)]
+    pub reasoning_tokens: u64,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -337,6 +355,8 @@ pub struct PromptTokensDetails {
 pub struct StreamChoice {
     #[serde(default)]
     pub delta: Delta,
+    #[serde(default)]
+    pub finish_reason: Option<String>,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -470,6 +490,31 @@ mod tests {
         assert_eq!(
             parse(r#"{"reasoning_content":"","reasoning":"b"}"#).reasoning(),
             Some("b")
+        );
+    }
+
+    #[test]
+    fn stream_chunk_carries_the_finish_reason() {
+        let chunk: StreamChunk =
+            serde_json::from_str(r#"{"choices":[{"delta":{},"finish_reason":"length"}]}"#).unwrap();
+        assert_eq!(chunk.choices[0].finish_reason.as_deref(), Some("length"));
+
+        let chunk: StreamChunk =
+            serde_json::from_str(r#"{"choices":[{"delta":{"content":"hi"}}]}"#).unwrap();
+        assert_eq!(chunk.choices[0].finish_reason, None);
+    }
+
+    #[test]
+    fn stream_chunk_reads_billed_reasoning_tokens() {
+        let chunk: StreamChunk = serde_json::from_str(
+            r#"{"usage":{"prompt_tokens":10,"completion_tokens":8192,"completion_tokens_details":{"reasoning_tokens":8192}}}"#,
+        )
+        .unwrap();
+        let usage = chunk.usage.unwrap();
+        assert_eq!(usage.completion_tokens, 8192);
+        assert_eq!(
+            usage.completion_tokens_details.map(|d| d.reasoning_tokens),
+            Some(8192)
         );
     }
 

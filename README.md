@@ -504,6 +504,11 @@ OpenAI-compatible `reasoning_effort`, Anthropic adaptive thinking with
 In the TUI press Ctrl+R to cycle levels; `--reasoning` and `OXIDE_REASONING` set
 the starting level.
 
+`max_tokens` caps the output of a single model turn, reasoning included. When a
+reasoning model exhausts that budget on hidden reasoning and returns nothing,
+oxide retries with a doubled budget (up to 32768) before reporting the failure,
+so a long-thinking turn recovers instead of ending in an empty response.
+
 ### Environment variables
 
 | Variable | Purpose |

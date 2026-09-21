@@ -18,6 +18,9 @@ const MODEL_CACHE_TTL_SECS: u64 = 24 * 60 * 60;
 const MODEL_CACHE_FILE: &str = "model-cache.json";
 /// How many times a transient stream failure is retried before giving up.
 const MAX_STREAM_ATTEMPTS: u32 = 3;
+/// Ceiling for escalating `max_tokens` when a reasoning model burns the whole
+/// output budget before emitting anything.
+const MAX_ESCALATED_TOKENS: u32 = 32_768;
 /// Cap how long a connect or a single streamed read may stall before the
 /// request fails. Without this a dead proxy or dropped connection leaves the
 /// agent waiting forever with no output.
@@ -169,6 +172,11 @@ impl LlmClient {
     /// Transient failures (network errors, truncated streams, rate limits and
     /// 5xx responses) are retried with backoff, but only while the attempt has
     /// not emitted any text yet, so a partial response is never duplicated.
+    ///
+    /// An empty turn whose provider stop reason is the output limit (a
+    /// reasoning model that spent the whole budget thinking) is retried with a
+    /// larger `max_tokens` instead, since replaying the same budget would just
+    /// truncate again.
     pub async fn stream_chat(
         &self,
         messages: &[Message],
@@ -176,6 +184,8 @@ impl LlmClient {
         hooks: &mut StreamHooks<'_>,
     ) -> Result<AssistantTurn> {
         let mut attempt = 0u32;
+        let mut max_tokens = self.config.max_tokens;
+        let mut escalated_from: Option<u32> = None;
         loop {
             attempt += 1;
             let mut emitted = false;
@@ -191,11 +201,11 @@ impl LlmClient {
                 };
                 match self.config.provider_kind() {
                     ProviderKind::Anthropic => {
-                        self.stream_anthropic(messages, tools, &mut attempt_hooks)
+                        self.stream_anthropic(messages, tools, max_tokens, &mut attempt_hooks)
                             .await
                     }
                     ProviderKind::OpenAi => {
-                        self.stream_openai(messages, tools, &mut attempt_hooks)
+                        self.stream_openai(messages, tools, max_tokens, &mut attempt_hooks)
                             .await
                     }
                 }
@@ -207,7 +217,28 @@ impl LlmClient {
                     // hiccup, so retry it like a dropped stream instead of
                     // failing the whole turn on the first empty response.
                     if assistant_turn_is_empty(&turn) {
-                        if attempt < MAX_STREAM_ATTEMPTS {
+                        // A reasoning model can spend the whole output budget on
+                        // hidden reasoning and stop before it writes anything
+                        // (`length` on OpenAI-compatible APIs, `max_tokens` on
+                        // Anthropic). That is deterministic, so retrying the
+                        // same budget just burns tokens again; raise it instead
+                        // and only report failure once the ceiling is reached.
+                        //
+                        // Some gateways end such a turn with a normal stop
+                        // reason, and OpenAI-family models never stream the
+                        // reasoning text at all. A turn that produced nothing
+                        // but reasoning - streamed or only billed in the usage -
+                        // is treated as truncated too: it was the reasoning
+                        // that consumed the budget.
+                        let truncated = turn.finish_reason.as_deref().is_some_and(is_output_limit)
+                            || !turn.thinking.is_empty()
+                            || turn.usage.reasoning > 0;
+                        if truncated
+                            && max_tokens < MAX_ESCALATED_TOKENS
+                            && attempt < MAX_STREAM_ATTEMPTS
+                        {
+                            escalated_from.get_or_insert(max_tokens);
+                            max_tokens = (max_tokens * 2).min(MAX_ESCALATED_TOKENS);
                             let delay = Duration::from_millis(500 * 2u64.pow(attempt - 1));
                             (hooks.retry)(Retry {
                                 attempt,
@@ -217,13 +248,40 @@ impl LlmClient {
                             tokio::time::sleep(delay).await;
                             continue;
                         }
+                        if attempt < MAX_STREAM_ATTEMPTS && !truncated {
+                            let delay = Duration::from_millis(500 * 2u64.pow(attempt - 1));
+                            (hooks.retry)(Retry {
+                                attempt,
+                                max: MAX_STREAM_ATTEMPTS,
+                                delay,
+                            });
+                            tokio::time::sleep(delay).await;
+                            continue;
+                        }
+                        if truncated {
+                            anyhow::bail!(
+                                "the model spent the entire output budget on reasoning and \
+                                 returned no answer (max_tokens = {max_tokens})"
+                            );
+                        }
                         anyhow::bail!("the model returned an empty response");
                     }
                     turn.usage.cost = self.config.usage_cost(&turn.usage);
                     return Ok(turn);
                 }
                 Err(err) => {
-                    if emitted || attempt >= MAX_STREAM_ATTEMPTS || !is_retryable(&err) {
+                    if !is_retryable(&err) {
+                        // An escalated budget some models reject should still
+                        // explain the truncation that triggered it.
+                        if let Some(original) = escalated_from {
+                            return Err(err.context(format!(
+                                "the model spent the original output budget (max_tokens = \
+                                 {original}) on reasoning"
+                            )));
+                        }
+                        return Err(err);
+                    }
+                    if emitted || attempt >= MAX_STREAM_ATTEMPTS {
                         return Err(err);
                     }
                     let delay = Duration::from_millis(500 * 2u64.pow(attempt - 1));
@@ -242,10 +300,13 @@ impl LlmClient {
         &self,
         messages: &[Message],
         tools: &[ToolSpec],
+        max_tokens: u32,
         hooks: &mut StreamHooks<'_>,
     ) -> Result<AssistantTurn> {
         let url = format!("{}/chat/completions", self.config.base_url);
-        let request = openai_request(&self.config, messages, tools);
+        let mut config = self.config.clone();
+        config.max_tokens = max_tokens;
+        let request = openai_request(&config, messages, tools);
 
         let response = self
             .authenticate_openai(self.http.post(&url))?
@@ -281,12 +342,22 @@ impl LlmClient {
                     output: usage.completion_tokens,
                     cache_read: cached,
                     cache_write: 0,
+                    reasoning: usage
+                        .completion_tokens_details
+                        .as_ref()
+                        .map(|details| details.reasoning_tokens)
+                        .unwrap_or(0),
                     cost: 0.0,
                 };
             }
             let Some(choice) = parsed.choices.into_iter().next() else {
                 return Ok(());
             };
+            if let Some(reason) = choice.finish_reason {
+                if !reason.is_empty() {
+                    turn.finish_reason = Some(reason);
+                }
+            }
 
             if let Some(text) = choice.delta.reasoning() {
                 (hooks.thinking)(text.to_string());
@@ -373,10 +444,13 @@ impl LlmClient {
         &self,
         messages: &[Message],
         tools: &[ToolSpec],
+        max_tokens: u32,
         hooks: &mut StreamHooks<'_>,
     ) -> Result<AssistantTurn> {
         let url = format!("{}/messages", self.config.base_url);
-        let body = anthropic::request_body(&self.config, messages, tools);
+        let mut config = self.config.clone();
+        config.max_tokens = max_tokens;
+        let body = anthropic::request_body(&config, messages, tools);
 
         let response = self
             .http
@@ -403,7 +477,10 @@ impl LlmClient {
         .await?;
 
         turn.tool_calls = anthropic::into_tool_calls(partials);
-        if !completed && assistant_turn_is_empty(&turn) {
+        // Anthropic ends on `message_stop` rather than a `[DONE]` sentinel, and
+        // its `message_delta` stop reason is what proves the turn finished. Only
+        // a stream that ended without one is a dropped connection.
+        if !completed && turn.finish_reason.is_none() && assistant_turn_is_empty(&turn) {
             anyhow::bail!("provider stream ended before completing the response");
         }
         Ok(turn)
@@ -619,6 +696,13 @@ fn assistant_turn_is_empty(turn: &AssistantTurn) -> bool {
     turn.content.trim().is_empty() && turn.tool_calls.is_empty()
 }
 
+/// Whether the provider stopped because the output token budget ran out
+/// (OpenAI's `length`, Anthropic's `max_tokens`) rather than reaching a
+/// natural stop.
+fn is_output_limit(reason: &str) -> bool {
+    matches!(reason, "length" | "max_tokens")
+}
+
 /// Whether a failed model request is worth retrying. Network failures, stream
 /// truncation, rate limits, and 5xx responses are retryable; other 4xx provider
 /// errors (bad request, auth, not found) are not.
@@ -661,6 +745,15 @@ mod tests {
             },
         }];
         assert!(!assistant_turn_is_empty(&turn));
+    }
+
+    #[test]
+    fn output_limit_stop_reasons_are_recognized() {
+        assert!(is_output_limit("length"));
+        assert!(is_output_limit("max_tokens"));
+        assert!(!is_output_limit("stop"));
+        assert!(!is_output_limit("tool_calls"));
+        assert!(!is_output_limit("end_turn"));
     }
 
     #[test]
@@ -936,5 +1029,360 @@ mod tests {
         })
         .unwrap_err();
         assert_eq!(err.to_string(), "boom");
+    }
+
+    /// Reads one complete HTTP request (headers and content-length body) from
+    /// `socket`, returning the raw text.
+    async fn read_request(socket: &mut tokio::net::TcpStream) -> String {
+        use tokio::io::AsyncReadExt;
+
+        let mut raw = Vec::new();
+        let mut expected: Option<usize> = None;
+        loop {
+            let mut chunk = [0u8; 8192];
+            let read = match socket.read(&mut chunk).await {
+                Ok(0) | Err(_) => break,
+                Ok(n) => n,
+            };
+            raw.extend_from_slice(&chunk[..read]);
+            let text = String::from_utf8_lossy(&raw);
+            let Some(head_end) = text.find("\r\n\r\n") else {
+                continue;
+            };
+            if expected.is_none() {
+                expected = text[..head_end].lines().find_map(|line| {
+                    let (name, value) = line.split_once(':')?;
+                    name.eq_ignore_ascii_case("content-length")
+                        .then(|| value.trim().parse::<usize>().ok())
+                        .flatten()
+                });
+            }
+            if let Some(len) = expected {
+                if raw.len() - (head_end + 4) >= len {
+                    break;
+                }
+            }
+        }
+        String::from_utf8_lossy(&raw).into_owned()
+    }
+
+    /// Serves one SSE response per request, in order, and returns the raw
+    /// request texts it saw so a test can assert on the request bodies.
+    async fn sse_server(
+        bodies: Vec<String>,
+    ) -> (std::net::SocketAddr, tokio::task::JoinHandle<Vec<String>>) {
+        use tokio::io::AsyncWriteExt;
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let handle = tokio::spawn(async move {
+            let mut seen = Vec::new();
+            for body in bodies {
+                let (mut socket, _) = listener.accept().await.unwrap();
+                seen.push(read_request(&mut socket).await);
+                let response = format!(
+                    "HTTP/1.1 200 OK\r\ncontent-type: text/event-stream\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",
+                    body.len()
+                );
+                let _ = socket.write_all(response.as_bytes()).await;
+                let _ = socket.shutdown().await;
+            }
+            seen
+        });
+        (addr, handle)
+    }
+
+    fn sse(events: &[serde_json::Value]) -> String {
+        let mut body = String::new();
+        for event in events {
+            body.push_str("data: ");
+            body.push_str(&event.to_string());
+            body.push_str("\n\n");
+        }
+        body.push_str("data: [DONE]\n\n");
+        body
+    }
+
+    /// An empty turn that stopped on the output limit, as a reasoning model
+    /// does when it spends the whole budget on hidden reasoning.
+    fn length_limited_turn() -> String {
+        sse(&[
+            serde_json::json!({"choices": [{"index": 0, "delta": {"content": "", "reasoning_content": "thinking"}, "logprobs": null, "finish_reason": null}]}),
+            serde_json::json!({"choices": [{"index": 0, "delta": {"content": "", "reasoning_content": null}, "logprobs": null, "finish_reason": "length"}], "usage": {"prompt_tokens": 10, "completion_tokens": 8192, "completion_tokens_details": {"reasoning_tokens": 8192}}}),
+        ])
+    }
+
+    /// An empty turn that reasoned but stopped without reporting the output
+    /// limit, as some gateways do when reasoning consumes the budget.
+    fn reasoning_only_turn(finish: &str) -> String {
+        sse(&[
+            serde_json::json!({"choices": [{"index": 0, "delta": {"content": "", "reasoning_content": "thinking"}, "logprobs": null, "finish_reason": null}]}),
+            serde_json::json!({"choices": [{"index": 0, "delta": {"content": "", "reasoning_content": null}, "logprobs": null, "finish_reason": finish}]}),
+        ])
+    }
+
+    /// An empty turn whose only output was hidden reasoning reported in the
+    /// usage, as OpenAI-family models do (they never stream the text).
+    fn billed_reasoning_turn() -> String {
+        sse(&[
+            serde_json::json!({"choices": [{"index": 0, "delta": {"content": "", "reasoning_content": null}, "logprobs": null, "finish_reason": null}]}),
+            serde_json::json!({"choices": [{"index": 0, "delta": {"content": "", "reasoning_content": null}, "logprobs": null, "finish_reason": "stop"}], "usage": {"prompt_tokens": 10, "completion_tokens": 8192, "completion_tokens_details": {"reasoning_tokens": 8192}}}),
+        ])
+    }
+
+    fn completed_turn(content: &str) -> String {
+        sse(&[
+            serde_json::json!({"choices": [{"index": 0, "delta": {"content": content, "reasoning_content": null}, "logprobs": null, "finish_reason": null}]}),
+            serde_json::json!({"choices": [{"index": 0, "delta": {"content": "", "reasoning_content": null}, "logprobs": null, "finish_reason": "stop"}]}),
+        ])
+    }
+
+    fn request_budget(request: &str) -> u64 {
+        let body = request.split_once("\r\n\r\n").map(|(_, b)| b).unwrap_or("");
+        serde_json::from_str::<serde_json::Value>(body).unwrap()["max_tokens"]
+            .as_u64()
+            .unwrap()
+    }
+
+    fn sse_test_config(addr: std::net::SocketAddr, max_tokens: u32) -> Config {
+        Config {
+            provider: "deepseek".into(),
+            model: "deepseek-flash".into(),
+            base_url: format!("http://{addr}"),
+            api_key: "sk-test".into(),
+            max_tokens,
+            ..Config::default()
+        }
+    }
+
+    fn portkey_test_config(addr: std::net::SocketAddr, max_tokens: u32) -> Config {
+        Config {
+            provider: "portkey".into(),
+            model: "gpt-5.6-sol".into(),
+            base_url: format!("http://{addr}"),
+            api_key: "pk-test".into(),
+            max_tokens,
+            ..Config::default()
+        }
+    }
+
+    fn anthropic_test_config(addr: std::net::SocketAddr, max_tokens: u32) -> Config {
+        Config {
+            provider: "anthropic".into(),
+            model: "claude-sonnet-4-5".into(),
+            base_url: format!("http://{addr}"),
+            api_key: "sk-ant-test".into(),
+            max_tokens,
+            ..Config::default()
+        }
+    }
+
+    /// Anthropic has no `[DONE]` sentinel, so this leaves it out to exercise
+    /// completion via the `message_delta` stop reason.
+    fn anthropic_sse(events: &[serde_json::Value]) -> String {
+        let mut body = String::new();
+        for event in events {
+            body.push_str("data: ");
+            body.push_str(&event.to_string());
+            body.push_str("\n\n");
+        }
+        body
+    }
+
+    #[tokio::test]
+    async fn an_output_limited_empty_turn_retries_with_a_larger_budget() {
+        let (addr, server) = sse_server(vec![length_limited_turn(), completed_turn("done")]).await;
+        let client = LlmClient::new(sse_test_config(addr, 8192));
+
+        let mut text = String::new();
+        let mut retries = Vec::new();
+        let turn = {
+            let mut on_text = |delta: String| text.push_str(&delta);
+            let mut on_retry = |retry: Retry| retries.push(retry);
+            let mut hooks = StreamHooks {
+                text: &mut on_text,
+                thinking: &mut |_| {},
+                retry: &mut on_retry,
+            };
+            client
+                .stream_chat(&[Message::user("hi")], &[], &mut hooks)
+                .await
+                .unwrap()
+        };
+
+        assert_eq!(turn.content, "done");
+        assert_eq!(text, "done");
+        assert_eq!(retries.len(), 1);
+        assert_eq!(retries[0].attempt, 1);
+        let requests = server.await.unwrap();
+        let budgets: Vec<u64> = requests.iter().map(|r| request_budget(r)).collect();
+        assert_eq!(budgets, vec![8192, 16384]);
+    }
+
+    #[tokio::test]
+    async fn a_portkey_gpt5_turn_escalates_like_any_openai_compatible_model() {
+        let (addr, server) = sse_server(vec![length_limited_turn(), completed_turn("done")]).await;
+        let client = LlmClient::new(portkey_test_config(addr, 8192));
+
+        let mut text = String::new();
+        let turn = {
+            let mut hooks = StreamHooks {
+                text: &mut |delta: String| text.push_str(&delta),
+                thinking: &mut |_| {},
+                retry: &mut |_| {},
+            };
+            client
+                .stream_chat(&[Message::user("hi")], &[], &mut hooks)
+                .await
+                .unwrap()
+        };
+
+        assert_eq!(turn.content, "done");
+        let requests = server.await.unwrap();
+        let budgets: Vec<u64> = requests.iter().map(|r| request_budget(r)).collect();
+        assert_eq!(budgets, vec![8192, 16384]);
+    }
+
+    #[tokio::test]
+    async fn a_reasoning_only_empty_turn_escalates_without_a_reported_limit() {
+        let (addr, server) =
+            sse_server(vec![reasoning_only_turn("stop"), completed_turn("done")]).await;
+        let client = LlmClient::new(portkey_test_config(addr, 8192));
+
+        let mut text = String::new();
+        let turn = {
+            let mut hooks = StreamHooks {
+                text: &mut |delta: String| text.push_str(&delta),
+                thinking: &mut |_| {},
+                retry: &mut |_| {},
+            };
+            client
+                .stream_chat(&[Message::user("hi")], &[], &mut hooks)
+                .await
+                .unwrap()
+        };
+
+        assert_eq!(turn.content, "done");
+        let requests = server.await.unwrap();
+        let budgets: Vec<u64> = requests.iter().map(|r| request_budget(r)).collect();
+        assert_eq!(budgets, vec![8192, 16384]);
+    }
+
+    #[tokio::test]
+    async fn a_billed_reasoning_turn_escalates_even_without_streamed_text() {
+        let (addr, server) =
+            sse_server(vec![billed_reasoning_turn(), completed_turn("done")]).await;
+        let client = LlmClient::new(portkey_test_config(addr, 8192));
+
+        let mut text = String::new();
+        let turn = {
+            let mut hooks = StreamHooks {
+                text: &mut |delta: String| text.push_str(&delta),
+                thinking: &mut |_| {},
+                retry: &mut |_| {},
+            };
+            client
+                .stream_chat(&[Message::user("hi")], &[], &mut hooks)
+                .await
+                .unwrap()
+        };
+
+        assert_eq!(turn.content, "done");
+        let requests = server.await.unwrap();
+        let budgets: Vec<u64> = requests.iter().map(|r| request_budget(r)).collect();
+        assert_eq!(budgets, vec![8192, 16384]);
+    }
+
+    #[tokio::test]
+    async fn an_empty_turn_without_an_output_limit_retries_the_same_budget() {
+        let empty =
+            sse(&[serde_json::json!({"choices": [{"delta": {}, "finish_reason": "stop"}]})]);
+        let (addr, server) = sse_server(vec![empty, completed_turn("recovered")]).await;
+        let client = LlmClient::new(sse_test_config(addr, 8192));
+
+        let mut text = String::new();
+        let turn = {
+            let mut hooks = StreamHooks {
+                text: &mut |delta: String| text.push_str(&delta),
+                thinking: &mut |_| {},
+                retry: &mut |_| {},
+            };
+            client
+                .stream_chat(&[Message::user("hi")], &[], &mut hooks)
+                .await
+                .unwrap()
+        };
+
+        assert_eq!(turn.content, "recovered");
+        let requests = server.await.unwrap();
+        let budgets: Vec<u64> = requests.iter().map(|r| request_budget(r)).collect();
+        assert_eq!(budgets, vec![8192, 8192]);
+    }
+
+    #[tokio::test]
+    async fn budget_exhaustion_reports_the_limit_instead_of_an_empty_response() {
+        let truncated = length_limited_turn();
+        let (addr, server) =
+            sse_server(vec![truncated.clone(), truncated.clone(), truncated]).await;
+        let client = LlmClient::new(sse_test_config(addr, 8192));
+
+        let err = {
+            let mut hooks = StreamHooks {
+                text: &mut |_| {},
+                thinking: &mut |_| {},
+                retry: &mut |_| {},
+            };
+            client
+                .stream_chat(&[Message::user("hi")], &[], &mut hooks)
+                .await
+                .unwrap_err()
+                .to_string()
+        };
+
+        assert!(err.contains("output budget"), "{err}");
+        assert!(err.contains("max_tokens = 32768"), "{err}");
+        assert!(!err.contains("empty response"), "{err}");
+        let requests = server.await.unwrap();
+        let budgets: Vec<u64> = requests.iter().map(|r| request_budget(r)).collect();
+        assert_eq!(budgets, vec![8192, 16384, 32768]);
+    }
+
+    #[tokio::test]
+    async fn an_anthropic_max_token_turn_escalates_like_openai() {
+        let truncated = anthropic_sse(&[
+            serde_json::json!({"type": "message_start", "message": {"usage": {"input_tokens": 10, "output_tokens": 1}}}),
+            serde_json::json!({"type": "content_block_start", "index": 0, "content_block": {"type": "thinking", "thinking": ""}}),
+            serde_json::json!({"type": "content_block_delta", "index": 0, "delta": {"type": "thinking_delta", "thinking": "thinking"}}),
+            serde_json::json!({"type": "message_delta", "delta": {"stop_reason": "max_tokens"}, "usage": {"output_tokens": 8192}}),
+            serde_json::json!({"type": "message_stop"}),
+        ]);
+        let answer = anthropic_sse(&[
+            serde_json::json!({"type": "message_start", "message": {"usage": {"input_tokens": 10, "output_tokens": 1}}}),
+            serde_json::json!({"type": "content_block_start", "index": 0, "content_block": {"type": "text", "text": ""}}),
+            serde_json::json!({"type": "content_block_delta", "index": 0, "delta": {"type": "text_delta", "text": "done"}}),
+            serde_json::json!({"type": "message_delta", "delta": {"stop_reason": "end_turn"}, "usage": {"output_tokens": 2}}),
+            serde_json::json!({"type": "message_stop"}),
+        ]);
+        let (addr, server) = sse_server(vec![truncated, answer]).await;
+        let client = LlmClient::new(anthropic_test_config(addr, 8192));
+
+        let mut text = String::new();
+        let turn = {
+            let mut hooks = StreamHooks {
+                text: &mut |delta: String| text.push_str(&delta),
+                thinking: &mut |_| {},
+                retry: &mut |_| {},
+            };
+            client
+                .stream_chat(&[Message::user("hi")], &[], &mut hooks)
+                .await
+                .unwrap()
+        };
+
+        assert_eq!(turn.content, "done");
+        assert_eq!(text, "done");
+        let requests = server.await.unwrap();
+        let budgets: Vec<u64> = requests.iter().map(|r| request_budget(r)).collect();
+        assert_eq!(budgets, vec![8192, 16384]);
     }
 }
