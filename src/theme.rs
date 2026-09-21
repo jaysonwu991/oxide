@@ -31,6 +31,8 @@ pub struct Theme {
     pub thinking_low: Color,
     pub thinking_medium: Color,
     pub thinking_high: Color,
+    /// Reasoning text and its `Thinking` label, Pi's `thinkingText`.
+    pub thinking_text: Color,
 }
 
 impl Theme {
@@ -56,6 +58,7 @@ impl Theme {
             thinking_low: Color::LightCyan,
             thinking_medium: Color::LightBlue,
             thinking_high: Color::LightMagenta,
+            thinking_text: Color::Gray,
         }
     }
 
@@ -81,6 +84,7 @@ impl Theme {
             thinking_low: Color::Cyan,
             thinking_medium: Color::Blue,
             thinking_high: Color::Magenta,
+            thinking_text: Color::DarkGray,
         }
     }
 
@@ -122,6 +126,7 @@ pub struct ThemeFile {
     pub thinking_low: Option<String>,
     pub thinking_medium: Option<String>,
     pub thinking_high: Option<String>,
+    pub thinking_text: Option<String>,
 }
 
 impl ThemeFile {
@@ -152,6 +157,7 @@ impl ThemeFile {
             thinking_medium: parse_color(self.thinking_medium.as_deref())
                 .unwrap_or(base.thinking_medium),
             thinking_high: parse_color(self.thinking_high.as_deref()).unwrap_or(base.thinking_high),
+            thinking_text: parse_color(self.thinking_text.as_deref()).unwrap_or(base.thinking_text),
         }
     }
 }

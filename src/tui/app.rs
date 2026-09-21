@@ -71,6 +71,15 @@ impl Selection {
     }
 }
 
+/// A running `task` subagent: what it is doing and how much it has done.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SubagentState {
+    pub agent: String,
+    pub tool: String,
+    pub args: String,
+    pub tools: usize,
+}
+
 #[derive(Debug, Clone)]
 pub enum ChatItem {
     Banner {
@@ -78,6 +87,12 @@ pub enum ChatItem {
     },
     User(String),
     Assistant(String),
+    /// The model's reasoning for one step. `millis` is set once the reasoning
+    /// ends, which turns the streaming label into a duration.
+    Thinking {
+        text: String,
+        millis: Option<u64>,
+    },
     Tool {
         name: String,
         args: String,
@@ -102,6 +117,10 @@ pub enum ChatItem {
     },
     Error(String),
     Info(String),
+    /// A one-off tip about something that just happened (`/copy`, a toggle, a
+    /// theme change). Only the newest one is kept so repeated actions do not
+    /// stack up lines, matching Pi's `showStatus`.
+    Status(String),
 }
 
 #[derive(Debug, Clone)]
@@ -116,6 +135,9 @@ pub struct ConnectState {
     pub input: String,
     pub selected: usize,
     pub error: Option<String>,
+    /// Providers that already have a stored credential, so the dialog can mark
+    /// them and switch to one without asking for the key again.
+    pub connected: Vec<String>,
 }
 
 impl ConnectState {
@@ -125,7 +147,14 @@ impl ConnectState {
             input: String::new(),
             selected: 0,
             error: None,
+            connected: crate::auth::stored_providers(),
         }
+    }
+
+    /// Whether a provider already has a credential to reuse.
+    pub fn is_connected(&self, provider: &str) -> bool {
+        let provider = crate::auth::canonical_provider(provider);
+        self.connected.iter().any(|name| name == &provider)
     }
 }
 
@@ -135,10 +164,27 @@ impl Default for ConnectState {
     }
 }
 
+/// One selectable model, tagged with the provider that exposes it. Several
+/// logged-in providers can offer the same model id, so the pair is the answer.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ModelChoice {
+    pub provider: String,
+    pub model: String,
+}
+
+impl ModelChoice {
+    pub fn new(provider: impl Into<String>, model: impl Into<String>) -> Self {
+        Self {
+            provider: provider.into(),
+            model: model.into(),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Default)]
 pub struct ModelsState {
     pub loading: bool,
-    pub all: Vec<String>,
+    pub all: Vec<ModelChoice>,
     pub filter: String,
     pub selected: usize,
     pub error: Option<String>,
@@ -160,7 +206,7 @@ impl ModelsState {
     }
 
     pub fn ready(
-        models: Vec<String>,
+        models: Vec<ModelChoice>,
         provider: String,
         current: String,
         default: Option<String>,
@@ -177,26 +223,26 @@ impl ModelsState {
 
     /// Models matching the current filter, ordered current first, then the
     /// persisted default, then the provider's natural order.
-    pub fn filtered(&self) -> Vec<&str> {
+    pub fn filtered(&self) -> Vec<&ModelChoice> {
         let filter = self.filter.to_ascii_lowercase();
-        let mut models: Vec<&str> = self
+        let mut models: Vec<&ModelChoice> = self
             .all
             .iter()
-            .map(String::as_str)
-            .filter(|model| {
+            .filter(|choice| {
                 filter.is_empty()
-                    || model.to_ascii_lowercase().contains(&filter)
-                    || crate::config::model_label(model)
+                    || choice.model.to_ascii_lowercase().contains(&filter)
+                    || crate::config::model_label(&choice.model)
                         .to_ascii_lowercase()
                         .contains(&filter)
             })
             .collect();
         let current = self.current.as_str();
+        let provider = self.provider.as_str();
         let default = self.default.as_deref();
-        models.sort_by_key(|model| {
-            if *model == current {
+        models.sort_by_key(|choice| {
+            if choice.model == current && choice.provider == provider {
                 0
-            } else if Some(*model) == default {
+            } else if Some(choice.model.as_str()) == default {
                 1
             } else {
                 2
@@ -205,7 +251,7 @@ impl ModelsState {
         models
     }
 
-    pub fn selected_model(&self) -> Option<&str> {
+    pub fn selected_model(&self) -> Option<&ModelChoice> {
         self.filtered().get(self.selected).copied()
     }
 }
@@ -343,6 +389,8 @@ pub struct App {
     pub steering: Steering,
     pub follow_ups: Steering,
     pub expand_tools: bool,
+    /// Whether reasoning blocks are shown in full or collapsed to a label.
+    pub show_thinking_blocks: bool,
     pub lines: Vec<Line<'static>>,
     pub line_offsets: Vec<usize>,
     pub render_dirty_from: Option<usize>,
@@ -350,6 +398,8 @@ pub struct App {
     pub selection: Option<Selection>,
     /// Name and start time of the tool currently running, for a live `Elapsed`.
     pub running_tool: Option<(String, Instant)>,
+    /// The subagent a running `task` call spawned, if any.
+    pub subagent: Option<SubagentState>,
 }
 
 impl App {
@@ -408,12 +458,14 @@ impl App {
             steering: Steering::new(),
             follow_ups: Steering::new(),
             expand_tools: true,
+            show_thinking_blocks: true,
             lines: Vec::new(),
             line_offsets: Vec::new(),
             render_dirty_from: Some(0),
             render_width: 0,
             selection: None,
             running_tool: None,
+            subagent: None,
         }
     }
 
@@ -605,12 +657,92 @@ impl App {
         self.render_dirty_from = Some(0);
     }
 
+    /// Toggle whether reasoning blocks are expanded or collapsed to a label,
+    /// like Pi's `app.thinking.toggle`.
+    pub fn toggle_thinking_blocks(&mut self) {
+        self.show_thinking_blocks = !self.show_thinking_blocks;
+        self.lines.clear();
+        self.line_offsets.clear();
+        self.render_dirty_from = Some(0);
+    }
+
+    /// Appends a streamed reasoning fragment to the block in progress, opening
+    /// a new one when the previous block already has a duration.
+    pub fn push_thinking_delta(&mut self, delta: String) {
+        if !matches!(
+            self.items.last(),
+            Some(ChatItem::Thinking { millis: None, .. })
+        ) {
+            self.items.push(ChatItem::Thinking {
+                text: String::new(),
+                millis: None,
+            });
+        }
+        let index = self.items.len() - 1;
+        if let Some(ChatItem::Thinking { text, .. }) = self.items.last_mut() {
+            text.push_str(&delta);
+        }
+        self.mark_render_dirty(index);
+    }
+
+    /// Closes the reasoning block in progress with the time it took.
+    pub fn finish_thinking(&mut self, millis: u64) {
+        let Some(index) = self.items.len().checked_sub(1) else {
+            return;
+        };
+        if let Some(ChatItem::Thinking { millis: taken, .. }) = self.items.last_mut() {
+            if taken.is_none() {
+                *taken = Some(millis);
+                self.mark_render_dirty(index);
+            }
+        }
+    }
+
+    /// Whether a reasoning block is currently streaming.
+    pub fn thinking_open(&self) -> bool {
+        matches!(
+            self.items.last(),
+            Some(ChatItem::Thinking { millis: None, .. })
+        )
+    }
+
+    /// Drops a reasoning block that is still streaming. A failed attempt is
+    /// retried from scratch, so its partial reasoning is discarded rather than
+    /// left to be extended by the new attempt.
+    pub fn discard_thinking(&mut self) {
+        if self.thinking_open() {
+            self.items.pop();
+            self.mark_render_dirty(self.items.len());
+        }
+    }
+
     pub fn mark_render_dirty(&mut self, index: usize) {
         self.render_dirty_from = Some(
             self.render_dirty_from
                 .map(|current| current.min(index))
                 .unwrap_or(index),
         );
+    }
+
+    /// Shows a one-off tip in the transcript, so feedback for an action taken
+    /// while idle (a copy, a toggle) is actually visible — the busy-phase
+    /// `status` only renders in the composer rule. Replaces the previous tip
+    /// when it is still the newest item, like Pi's `showStatus`.
+    pub fn show_status(&mut self, message: impl Into<String>) {
+        let message = message.into();
+        if let Some(ChatItem::Status(previous)) = self.items.last_mut() {
+            *previous = message;
+            let index = self.items.len() - 1;
+            self.mark_render_dirty(index);
+            return;
+        }
+        self.items.push(ChatItem::Status(message));
+        self.auto_scroll = true;
+    }
+
+    /// Messages queued for the running turn, steering plus follow-ups.
+    pub fn queued_count(&self) -> usize {
+        self.steering.len() + self.follow_ups.len()
     }
 
     /// Marks the item rendering the running tool dirty so a live `Elapsed`
@@ -702,6 +834,73 @@ mod tests {
     fn tool_output_is_expanded_by_default() {
         let app = App::new("gpt-4o".into(), ".".into(), Mode::Build, Reasoning::Auto);
         assert!(app.expand_tools);
+        assert!(app.show_thinking_blocks);
+    }
+
+    fn test_app() -> App {
+        App::new("gpt-4o".into(), ".".into(), Mode::Build, Reasoning::Auto)
+    }
+
+    #[test]
+    fn thinking_deltas_accumulate_into_one_block() {
+        let mut app = test_app();
+        app.push_thinking_delta("weighing ".into());
+        app.push_thinking_delta("options".into());
+        assert!(app.thinking_open());
+        assert_eq!(app.items.len(), 1);
+        match &app.items[0] {
+            ChatItem::Thinking { text, millis } => {
+                assert_eq!(text, "weighing options");
+                assert_eq!(*millis, None);
+            }
+            other => panic!("unexpected item: {other:?}"),
+        }
+        app.finish_thinking(1200);
+        assert!(!app.thinking_open());
+        assert!(matches!(
+            app.items[0],
+            ChatItem::Thinking {
+                millis: Some(1200),
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn a_finished_block_is_not_extended_by_later_fragments() {
+        let mut app = test_app();
+        app.push_thinking_delta("first".into());
+        app.finish_thinking(400);
+        app.push_thinking_delta("second".into());
+        assert_eq!(app.items.len(), 2);
+        assert!(app.thinking_open());
+    }
+
+    #[test]
+    fn discarding_thinking_drops_only_a_streaming_block() {
+        let mut app = test_app();
+        app.items.push(ChatItem::User("hi".into()));
+        app.push_thinking_delta("partial".into());
+        app.discard_thinking();
+        assert_eq!(app.items.len(), 1);
+        assert!(!app.thinking_open());
+
+        app.push_thinking_delta("kept".into());
+        app.finish_thinking(300);
+        app.discard_thinking();
+        assert_eq!(app.items.len(), 2);
+        assert!(matches!(app.items[1], ChatItem::Thinking { .. }));
+    }
+
+    #[test]
+    fn toggling_thinking_blocks_rerenders_the_transcript() {
+        let mut app = test_app();
+        app.lines = lines(&["stale"]);
+        app.render_dirty_from = None;
+        app.toggle_thinking_blocks();
+        assert!(!app.show_thinking_blocks);
+        assert!(app.lines.is_empty());
+        assert_eq!(app.render_dirty_from, Some(0));
     }
 
     fn lines(texts: &[&str]) -> Vec<Line<'static>> {

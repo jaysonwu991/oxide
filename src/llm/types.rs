@@ -1,5 +1,5 @@
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
+use serde_json::{json, Value};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Message {
@@ -255,6 +255,35 @@ pub struct AssistantTurn {
     pub usage: Usage,
 }
 
+/// Appends a streamed reasoning fragment to the turn's thinking block, creating
+/// the block on the first fragment.
+///
+/// Providers stream reasoning a fragment at a time, while the block is kept as a
+/// `Value` because it is replayed to Anthropic verbatim. Appending in place
+/// keeps that streaming linear: rebuilding the block per fragment copies the
+/// whole trace each time, which costs milliseconds on a long trace.
+pub fn push_thinking(blocks: &mut Vec<Value>, fragment: &str) {
+    match blocks.last_mut() {
+        Some(Value::Object(map)) => match map.get_mut("thinking") {
+            Some(Value::String(text)) => text.push_str(fragment),
+            _ => {
+                map.insert("thinking".to_string(), Value::String(fragment.to_string()));
+            }
+        },
+        _ => blocks.push(json!({ "type": "thinking", "thinking": fragment })),
+    }
+}
+
+/// Records the signature a provider attaches to the block currently streaming.
+pub fn set_thinking_signature(blocks: &mut [Value], signature: &str) {
+    if let Some(Value::Object(map)) = blocks.last_mut() {
+        map.insert(
+            "signature".to_string(),
+            Value::String(signature.to_string()),
+        );
+    }
+}
+
 #[derive(Debug, Deserialize)]
 pub struct StreamChunk {
     #[serde(default)]
@@ -316,6 +345,32 @@ pub struct Delta {
     pub content: Option<String>,
     #[serde(default)]
     pub tool_calls: Option<Vec<DeltaToolCall>>,
+    /// Reasoning text, which OpenAI-compatible providers name differently:
+    /// DeepSeek, GLM/Z.AI and llama.cpp use `reasoning_content`, some gateways
+    /// send `reasoning` or `reasoning_text` instead.
+    #[serde(default)]
+    pub reasoning_content: Option<String>,
+    #[serde(default)]
+    pub reasoning: Option<String>,
+    #[serde(default)]
+    pub reasoning_text: Option<String>,
+}
+
+impl Delta {
+    /// The reasoning fragment this delta carries, if any. A few gateways send
+    /// the same text under more than one name, so the first non-empty field
+    /// wins.
+    pub fn reasoning(&self) -> Option<&str> {
+        [
+            &self.reasoning_content,
+            &self.reasoning,
+            &self.reasoning_text,
+        ]
+        .into_iter()
+        .flatten()
+        .map(String::as_str)
+        .find(|text| !text.is_empty())
+    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -390,6 +445,35 @@ mod tests {
     }
 
     #[test]
+    fn delta_reads_reasoning_from_every_known_field() {
+        let parse = |json: &str| serde_json::from_str::<Delta>(json).unwrap();
+        assert_eq!(
+            parse(r#"{"reasoning_content":"thinking"}"#).reasoning(),
+            Some("thinking")
+        );
+        assert_eq!(
+            parse(r#"{"reasoning":"thinking"}"#).reasoning(),
+            Some("thinking")
+        );
+        assert_eq!(
+            parse(r#"{"reasoning_text":"thinking"}"#).reasoning(),
+            Some("thinking")
+        );
+        assert_eq!(parse(r#"{"content":"hello"}"#).reasoning(), None);
+        assert_eq!(parse(r#"{"reasoning_content":""}"#).reasoning(), None);
+        // Gateways such as chutes.ai send the same text twice; the first
+        // non-empty field wins so the block is not duplicated.
+        assert_eq!(
+            parse(r#"{"reasoning_content":"a","reasoning":"a"}"#).reasoning(),
+            Some("a")
+        );
+        assert_eq!(
+            parse(r#"{"reasoning_content":"","reasoning":"b"}"#).reasoning(),
+            Some("b")
+        );
+    }
+
+    #[test]
     fn stream_chunk_surfaces_in_band_errors() {
         let chunk: StreamChunk =
             serde_json::from_str(r#"{"error":{"type":"server_error","message":"overloaded"}}"#)
@@ -402,5 +486,41 @@ mod tests {
 
         let chunk: StreamChunk = serde_json::from_str(r#"{"error":{}}"#).unwrap();
         assert_eq!(chunk.error.unwrap().describe(), "unknown provider error");
+    }
+
+    #[test]
+    fn reasoning_fragments_merge_into_one_block_created_on_demand() {
+        let mut blocks: Vec<Value> = Vec::new();
+        push_thinking(&mut blocks, "let me ");
+        push_thinking(&mut blocks, "check");
+        assert_eq!(blocks.len(), 1);
+        assert_eq!(blocks[0]["type"], "thinking");
+        assert_eq!(blocks[0]["thinking"], "let me check");
+    }
+
+    #[test]
+    fn reasoning_fragments_extend_the_existing_block_in_place() {
+        let mut blocks: Vec<Value> = vec![json!({
+            "type": "thinking",
+            "thinking": "",
+            "signature": ""
+        })];
+        push_thinking(&mut blocks, "first ");
+        push_thinking(&mut blocks, "second");
+        assert_eq!(blocks.len(), 1);
+        assert_eq!(blocks[0]["thinking"], "first second");
+        assert_eq!(blocks[0]["signature"], "");
+    }
+
+    #[test]
+    fn a_signature_is_recorded_on_the_current_block() {
+        let mut blocks: Vec<Value> = vec![json!({ "type": "thinking", "thinking": "hmm" })];
+        set_thinking_signature(&mut blocks, "sig");
+        assert_eq!(blocks[0]["signature"], "sig");
+        assert_eq!(blocks[0]["thinking"], "hmm");
+
+        let mut empty: Vec<Value> = Vec::new();
+        set_thinking_signature(&mut empty, "ignored");
+        assert!(empty.is_empty());
     }
 }

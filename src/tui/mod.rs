@@ -12,8 +12,8 @@ use crate::plugin::PluginHost;
 use crate::session::SessionLog;
 use crate::snapshots::Snapshots;
 use crate::tui::app::{
-    App, ChatItem, CommandHint, ConnectState, ConnectStep, ModelsState, Selection, SessionsState,
-    TrustState,
+    App, ChatItem, CommandHint, ConnectState, ConnectStep, ModelChoice, ModelsState, Selection,
+    SessionsState, SubagentState, TrustState,
 };
 use anyhow::{Context, Result};
 use crossterm::event::{
@@ -112,6 +112,7 @@ async fn event_loop(
         app.cache_hit_rate = totals.cache_hit_rate;
     }
     app.show_thinking = config.supports_reasoning();
+    app.show_thinking_blocks = !crate::config::load_hide_thinking_block();
     app.theme = config.theme.clone();
     app.usage_settings = crate::portkey_usage::UsageSettings::load().unwrap_or_default();
     if app.usage_settings.enabled && app.usage_settings.available(&config) {
@@ -211,16 +212,23 @@ async fn event_loop(
 
     let mut reader = EventStream::new();
     let mut rx: Option<UnboundedReceiver<AgentEvent>> = None;
-    let (models_tx, mut models_rx) = unbounded_channel::<Result<Vec<String>, String>>();
+    let (models_tx, mut models_rx) = unbounded_channel::<ModelCatalogs>();
     let (mcps_tx, mut mcps_rx) = unbounded_channel::<Vec<(String, String, McpStatus)>>();
     let (plugins_tx, mut plugins_rx) = unbounded_channel::<String>();
     let (usage_tx, mut usage_rx) =
         unbounded_channel::<Result<crate::portkey_usage::Snapshot, String>>();
-    if !config.api_key.trim().is_empty() && config.model_catalog.is_empty() {
-        let warm_config = config.clone();
-        tokio::spawn(async move {
-            let _ = LlmClient::new(warm_config).list_models().await;
-        });
+    if config.model_catalog.is_empty() {
+        let warmups: Vec<Config> = model_providers(&config)
+            .into_iter()
+            .map(|(_, provider_config)| provider_config)
+            .collect();
+        if !warmups.is_empty() {
+            tokio::spawn(async move {
+                for provider_config in warmups {
+                    let _ = LlmClient::new(provider_config).list_models().await;
+                }
+            });
+        }
     }
     let mut tick = tokio::time::interval(std::time::Duration::from_millis(500));
     let mut branch_tick = tokio::time::interval(std::time::Duration::from_secs(2));
@@ -347,6 +355,46 @@ fn is_newline_shortcut(key: &KeyEvent) -> bool {
     key.code == KeyCode::Enter && key.modifiers.contains(KeyModifiers::SHIFT)
 }
 
+/// Pi's `useWindowsKeybindings`: Windows itself, or Linux under WSL, where the
+/// terminal claims `Alt+Up` for its own scrollback.
+fn use_windows_keybindings() -> bool {
+    use_windows_keybindings_for(
+        cfg!(windows),
+        cfg!(target_os = "linux"),
+        std::env::var_os("WSL_DISTRO_NAME").is_some() || std::env::var_os("WSL_INTEROP").is_some(),
+    )
+}
+
+fn use_windows_keybindings_for(windows: bool, linux: bool, wsl: bool) -> bool {
+    windows || (linux && wsl)
+}
+
+/// The dequeue shortcut as Pi spells it: `Alt+Up`, `Alt+Q` where the terminal
+/// owns `Alt+Up`, and `Option+Up` on macOS, where `Alt` is the Option key.
+fn dequeue_key_label() -> &'static str {
+    dequeue_key_label_for(use_windows_keybindings(), cfg!(target_os = "macos"))
+}
+
+fn dequeue_key_label_for(windows: bool, macos: bool) -> &'static str {
+    match (windows, macos) {
+        (true, _) => "Alt+Q",
+        (false, true) => "Option+Up",
+        (false, false) => "Alt+Up",
+    }
+}
+
+/// `Alt+Up`, plus `Alt+Q` where the terminal owns `Alt+Up`.
+fn is_dequeue_shortcut(key: &KeyEvent) -> bool {
+    if !key.modifiers.contains(KeyModifiers::ALT) {
+        return false;
+    }
+    match key.code {
+        KeyCode::Up => true,
+        KeyCode::Char('q') | KeyCode::Char('Q') => use_windows_keybindings(),
+        _ => false,
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 fn handle_key(
     key: KeyEvent,
@@ -360,7 +408,7 @@ fn handle_key(
     lsp: &Arc<LspManager>,
     session: &mut Option<SessionLog>,
     approve: &Approver,
-    models_tx: &UnboundedSender<Result<Vec<String>, String>>,
+    models_tx: &UnboundedSender<ModelCatalogs>,
     mcps_tx: &UnboundedSender<Vec<(String, String, McpStatus)>>,
     plugins_tx: &UnboundedSender<String>,
     usage_tx: &UnboundedSender<Result<crate::portkey_usage::Snapshot, String>>,
@@ -371,6 +419,12 @@ fn handle_key(
         if !copy_selection(app) {
             app.should_quit = true;
         }
+        return;
+    }
+
+    if is_dequeue_shortcut(&key) {
+        dequeue_messages(app);
+        refresh_suggestions(app, config);
         return;
     }
 
@@ -387,6 +441,7 @@ fn handle_key(
 
     if app.models.is_some() {
         handle_models_key(key, app, config);
+        sync_usage_bar(app, config, usage_tx);
         return;
     }
 
@@ -418,7 +473,7 @@ fn handle_key(
         KeyCode::BackTab => {
             config.mode = config.mode.next();
             app.mode = config.mode;
-            app.status = format!("mode: {}", app.mode.label());
+            app.show_status(format!("mode: {}", app.mode.label()));
         }
         KeyCode::Char('r') if key.modifiers.contains(KeyModifiers::CONTROL) => {
             config.reasoning = config.reasoning.next();
@@ -426,19 +481,27 @@ fn handle_key(
             if let Some(log) = session.as_ref() {
                 let _ = log.append_thinking_level(config.reasoning.label());
             }
-            app.status = if app.reasoning == Reasoning::Auto {
+            app.show_status(if app.reasoning == Reasoning::Auto {
                 "reasoning: auto (provider native)".to_string()
             } else {
                 format!("reasoning: {}", app.reasoning.label())
-            };
+            });
         }
         KeyCode::Char('o') if key.modifiers.contains(KeyModifiers::CONTROL) => {
             app.toggle_tool_output();
-            app.status = if app.expand_tools {
+            app.show_status(if app.expand_tools {
                 "tool output expanded".to_string()
             } else {
                 "tool output collapsed".to_string()
-            };
+            });
+        }
+        KeyCode::Char('t') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+            app.toggle_thinking_blocks();
+            app.show_status(if app.show_thinking_blocks {
+                "thinking blocks: visible".to_string()
+            } else {
+                "thinking blocks: hidden".to_string()
+            });
         }
         KeyCode::Enter if is_newline_shortcut(&key) => {
             app.insert_input("\n");
@@ -623,9 +686,26 @@ fn handle_key(
                 let provider = rest.trim().to_string();
                 let mut state = ConnectState::new();
                 if !provider.is_empty() {
-                    state.step = ConnectStep::Key {
-                        provider: resolve_provider_choice(&provider),
-                    };
+                    let name = resolve_provider_choice(&provider);
+                    // A stored credential turns a login into a switch, so
+                    // moving between logged-in providers never asks for the
+                    // key again.
+                    if state.is_connected(&name) {
+                        match switch_provider(app, config, &name) {
+                            Ok(name) => {
+                                sync_usage_bar(app, config, usage_tx);
+                                app.items.push(ChatItem::Info(format!(
+                                    "logged in to {} · model {}",
+                                    crate::auth::provider_label(&name),
+                                    config.model
+                                )));
+                                app.status = "ready".to_string();
+                            }
+                            Err(err) => app.items.push(ChatItem::Error(format!("{err:#}"))),
+                        }
+                        return;
+                    }
+                    state.step = ConnectStep::Key { provider: name };
                 }
                 app.connect = Some(state);
                 app.status = "connecting...".to_string();
@@ -640,13 +720,27 @@ fn handle_key(
                 } else {
                     crate::auth::canonical_provider(requested)
                 };
+                if provider.is_empty() {
+                    app.items.push(ChatItem::Info(
+                        "no provider connected — run /login to add one".to_string(),
+                    ));
+                    return;
+                }
+                let active = crate::auth::canonical_provider(&config.provider) == provider;
                 match logout_provider(&provider) {
                     Ok(true) => {
-                        config.api_key.clear();
+                        if active {
+                            let message = logout_active_provider(app, config, &provider);
+                            app.items.push(ChatItem::Info(message));
+                        } else {
+                            app.items.push(ChatItem::Info(format!(
+                                "logged out of {provider} — still using {}",
+                                config.provider
+                            )));
+                        }
+                        app.available_providers = available_providers(config);
+                        app.status = "ready".to_string();
                         sync_usage_bar(app, config, usage_tx);
-                        app.items.push(ChatItem::Info(format!(
-                            "logged out of {provider} — run /login to reconnect"
-                        )));
                     }
                     Ok(false) => app.items.push(ChatItem::Info(format!(
                         "no stored credentials for {provider}"
@@ -793,7 +887,8 @@ fn handle_key(
             if raw == "/models" || raw.starts_with("/models ") {
                 app.clear_input();
                 refresh_suggestions(app, config);
-                if config.api_key.trim().is_empty() {
+                let providers = model_providers(config);
+                if providers.is_empty() {
                     app.items.push(ChatItem::Error(
                         "no provider connected — run /connect to add an API key".to_string(),
                     ));
@@ -813,14 +908,30 @@ fn handle_key(
                 state.filter = filter;
                 app.models = Some(state);
                 app.status = "loading models...".to_string();
-                let config = config.clone();
                 let tx = models_tx.clone();
                 tokio::spawn(async move {
-                    let result = LlmClient::new(config)
-                        .list_models()
-                        .await
-                        .map_err(|err| format!("{err:#}"));
-                    let _ = tx.send(result);
+                    let fetched = futures::future::join_all(providers.into_iter().map(
+                        |(name, provider_config)| async move {
+                            let models = LlmClient::new(provider_config)
+                                .list_models()
+                                .await
+                                .map_err(|err| format!("{err:#}"));
+                            (name, models)
+                        },
+                    ))
+                    .await;
+                    let mut catalogs = ModelCatalogs::default();
+                    for (name, models) in fetched {
+                        match models {
+                            Ok(models) => catalogs.choices.extend(
+                                models
+                                    .into_iter()
+                                    .map(|model| ModelChoice::new(name.clone(), model)),
+                            ),
+                            Err(err) => catalogs.errors.push(format!("{name}: {err}")),
+                        }
+                    }
+                    let _ = tx.send(catalogs);
                 });
                 return;
             }
@@ -1257,10 +1368,11 @@ fn handle_key(
             match media::clipboard_image() {
                 Some(part) => {
                     app.attachments.push(part);
-                    app.status = format!("{} attachment(s) pending", app.attachments.len());
+                    let count = app.attachments.len();
+                    app.show_status(format!("{count} attachment(s) pending"));
                 }
                 None => {
-                    app.status = "no image found on clipboard".to_string();
+                    app.show_status("no image found on clipboard");
                 }
             }
         }
@@ -1398,9 +1510,9 @@ fn help_text(config: &Config) -> String {
         "  /theme [name]         show or switch the color theme".to_string(),
         "  /init                 create or update AGENTS.md for this project".to_string(),
         "  /connect [provider]   connect a provider and save its API key".to_string(),
-        "  /login                 alias of /connect (Pi-style)".to_string(),
-        "  /logout [provider]     remove stored credentials".to_string(),
-        "  /models [filter]      list and switch the active model".to_string(),
+        "  /login [provider]     alias of /connect; switches when already stored".to_string(),
+        "  /logout [provider]    remove stored credentials (switches providers)".to_string(),
+        "  /models [filter]      list models from every logged-in provider".to_string(),
         "  /mcps                 list MCP servers and connection status".to_string(),
         "  /plugin               manage plugins and marketplaces".to_string(),
         "  /usage [on|off|...]   Portkey spend bar (user, budget, currency, key)"
@@ -1409,8 +1521,10 @@ fn help_text(config: &Config) -> String {
         "  /compact [focus]      summarize older context, optionally with a focus".to_string(),
         "  /copy                 copy the last assistant message".to_string(),
         "  /copy all             copy the whole transcript".to_string(),
-        "keys: Enter send/guide · Shift+Enter newline · Alt+Enter follow-up while busy · Shift+Tab mode · Ctrl+R reasoning · Ctrl+O tool details · Ctrl+V image · Ctrl+A/E message start/end · ↑/↓ history · PgUp/PgDn/wheel scroll · Ctrl+U/D half page · drag to select and copy · Ctrl+C copy selection/quit"
-            .to_string(),
+        format!(
+            "keys: Enter send/guide · Shift+Enter newline · Alt+Enter follow-up while busy · {} edit queued · Shift+Tab mode · Ctrl+R reasoning · Ctrl+O tool details · Ctrl+T thinking · Ctrl+V image · Ctrl+A/E message start/end · ↑/↓ history · PgUp/PgDn/wheel scroll · Ctrl+U/D half page · drag to select and copy · Ctrl+C copy selection/quit",
+            dequeue_key_label()
+        ),
     ];
     if !config.ecosystem.commands.is_empty() {
         let names: Vec<String> = config
@@ -1685,28 +1799,35 @@ fn mask(key: &str) -> String {
 /// Keyboard shortcuts shown by `/hotkeys`.
 fn hotkeys_text() -> String {
     [
-        "keyboard shortcuts:",
-        "  Enter                 send (queues steering while busy)",
-        "  Shift+Enter           insert a newline",
-        "  Alt+Enter             queue a follow-up while busy",
-        "  Esc                   clear the input",
-        "  Shift+Tab             cycle permission mode",
-        "  Ctrl+R                cycle reasoning/thinking level",
-        "  Ctrl+O                toggle tool output",
-        "  Ctrl+V                attach a clipboard image",
-        "  Tab                   complete the selected command or @path",
-        "  Ctrl+A / Ctrl+E       jump to the start/end of the message",
-        "  Ctrl+Y / Ctrl+E       scroll one line (when the message is empty)",
-        "  Ctrl+U / Ctrl+D       scroll half a page",
-        "  PgUp / PgDn / wheel   scroll the transcript",
-        "  Ctrl+G / Home         scroll to the top",
-        "  End                   return to the latest message",
-        "  Up / Down             input history",
-        "  drag (mouse)          select text; copies on release",
-        "  Ctrl+C                copy the selection, or quit",
-        "  /exit                 quit oxide",
-        "  /copy                 copy the last assistant message",
-        "  /copy all             copy the whole transcript",
+        "keyboard shortcuts:".to_string(),
+        "  Enter                 send (queues steering while busy)".to_string(),
+        "  Shift+Enter           insert a newline".to_string(),
+        "  Alt+Enter             queue a follow-up while busy".to_string(),
+        format!(
+            "  {:<22}pull queued messages back into the editor",
+            dequeue_key_label()
+        ),
+        "  Esc                   clear the input".to_string(),
+        "  Shift+Tab             cycle permission mode".to_string(),
+        "  Ctrl+R                cycle reasoning/thinking level".to_string(),
+        "  Ctrl+O                toggle tool output".to_string(),
+        "  Ctrl+T                show or hide thinking blocks".to_string(),
+        "  Ctrl+V                attach a clipboard image".to_string(),
+        "  Tab                   complete the selected command or @path".to_string(),
+        "  Ctrl+A / Ctrl+E       jump to the start/end of the message (when it is not empty)"
+            .to_string(),
+        "  Ctrl+Y                scroll up one line".to_string(),
+        "  Ctrl+E                scroll down one line (when the message is empty)".to_string(),
+        "  Ctrl+U / Ctrl+D       scroll half a page".to_string(),
+        "  PgUp / PgDn / wheel   scroll the transcript".to_string(),
+        "  Ctrl+G / Home         scroll to the top".to_string(),
+        "  End                   return to the latest message".to_string(),
+        "  Up / Down             input history".to_string(),
+        "  drag (mouse)          select text; copies on release".to_string(),
+        "  Ctrl+C                copy the selection, or quit".to_string(),
+        "  /exit                 quit oxide".to_string(),
+        "  /copy                 copy the last assistant message".to_string(),
+        "  /copy all             copy the whole transcript".to_string(),
     ]
     .join("\n")
 }
@@ -1974,13 +2095,16 @@ fn html_escape(text: &str) -> String {
 }
 
 fn resolve_provider_choice(value: &str) -> String {
-    match value.trim() {
-        "1" => "openai".to_string(),
-        "2" => "deepseek".to_string(),
-        "3" => "anthropic".to_string(),
-        "4" => "portkey".to_string(),
-        other => crate::auth::canonical_provider(other),
+    let value = value.trim();
+    if let Ok(index) = value.parse::<usize>() {
+        if let Some(option) = index
+            .checked_sub(1)
+            .and_then(|index| crate::auth::KNOWN_PROVIDERS.get(index))
+        {
+            return option.name.to_string();
+        }
     }
+    crate::auth::canonical_provider(value)
 }
 
 /// The built-in slash commands surfaced in the input autocomplete.
@@ -2228,27 +2352,30 @@ fn handle_models_key(key: KeyEvent, app: &mut App, config: &mut Config) {
     match key.code {
         KeyCode::Esc => {
             keep = false;
-            app.status = "model unchanged".to_string();
+            app.show_status("model unchanged");
         }
         KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
             keep = false;
-            app.status = "model unchanged".to_string();
+            app.show_status("model unchanged");
         }
         KeyCode::Char('s') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-            if let Some(model) = state.selected_model().map(str::to_string) {
-                match Config::set_default_model_at(&Config::config_path(), &model) {
+            if let Some(choice) = state.selected_model().cloned() {
+                match select_model(app, config, &choice) {
                     Ok(()) => {
-                        let _ = Config::set_active_model_at(&Config::config_path(), &model);
-                        config.default_model = Some(model.clone());
-                        config.model = model.clone();
-                        app.model = model.clone();
-                        app.items
-                            .push(ChatItem::Info(format!("default model: {model}")));
-                        app.status = "ready".to_string();
+                        if let Err(err) =
+                            Config::set_default_model_at(&Config::config_path(), &choice.model)
+                        {
+                            state.error = Some(format!("{err:#}"));
+                        } else {
+                            config.default_model = Some(choice.model.clone());
+                            app.items
+                                .push(ChatItem::Info(format!("default model: {}", choice.model)));
+                            app.status = "ready".to_string();
+                            keep = false;
+                        }
                     }
                     Err(err) => state.error = Some(format!("{err:#}")),
                 }
-                keep = false;
             }
         }
         KeyCode::Up => {
@@ -2276,18 +2403,18 @@ fn handle_models_key(key: KeyEvent, app: &mut App, config: &mut Config) {
             state.selected = 0;
         }
         KeyCode::Enter => {
-            if let Some(model) = state.selected_model().map(str::to_string) {
-                match Config::set_active_model_at(&Config::config_path(), &model) {
+            if let Some(choice) = state.selected_model().cloned() {
+                match select_model(app, config, &choice) {
                     Ok(()) => {
-                        config.model = model.clone();
-                        app.model = model.clone();
-                        app.items
-                            .push(ChatItem::Info(format!("model set to {model}")));
+                        app.items.push(ChatItem::Info(format!(
+                            "model set to {} [{}]",
+                            choice.model, choice.provider
+                        )));
                         app.status = "ready".to_string();
+                        keep = false;
                     }
                     Err(err) => state.error = Some(format!("{err:#}")),
                 }
-                keep = false;
             }
         }
         KeyCode::Char(c)
@@ -2390,7 +2517,7 @@ fn handle_sessions_key(key: KeyEvent, app: &mut App, cwd: &Path, session: &mut O
     match key.code {
         KeyCode::Esc => {
             keep = false;
-            app.status = "session unchanged".to_string();
+            app.show_status("session unchanged");
         }
         KeyCode::Up => {
             state.selected = state.selected.saturating_sub(1);
@@ -2482,7 +2609,7 @@ fn switch_session(app: &mut App, session: &mut Option<SessionLog>, log: SessionL
             app.invalidate_render_cache();
             app.auto_scroll = true;
             *session = Some(log);
-            app.status = format!("resumed {id}");
+            app.show_status(format!("resumed {id}"));
         }
         Err(err) => {
             app.items.push(ChatItem::Error(format!("session: {err:#}")));
@@ -2503,6 +2630,9 @@ fn restore_history(app: &mut App, messages: Vec<Message>, resumed: String) {
                 }
             }
             "assistant" => {
+                if let Some(text) = thinking_text(message) {
+                    app.items.push(ChatItem::Thinking { text, millis: None });
+                }
                 if let Some(content) = message.display() {
                     app.items.push(ChatItem::Assistant(content));
                 }
@@ -2512,6 +2642,23 @@ fn restore_history(app: &mut App, messages: Vec<Message>, resumed: String) {
     }
     app.history = messages;
     app.items.push(ChatItem::Info(resumed));
+}
+
+/// Reasoning text a stored assistant message carries, if any. Redacted
+/// thinking blocks hold no text and are skipped.
+fn thinking_text(message: &Message) -> Option<String> {
+    let text = message
+        .thinking
+        .as_ref()?
+        .iter()
+        .filter_map(|block| block["thinking"].as_str())
+        .collect::<Vec<_>>()
+        .join("\n");
+    if text.trim().is_empty() {
+        None
+    } else {
+        Some(text)
+    }
 }
 
 fn mcp_status_text(statuses: &[(String, String, McpStatus)]) -> String {
@@ -2526,30 +2673,39 @@ fn mcp_status_text(statuses: &[(String, String, McpStatus)]) -> String {
     lines.join("\n")
 }
 
-fn handle_model_result(result: Result<Vec<String>, String>, app: &mut App) {
+fn handle_model_result(catalogs: ModelCatalogs, app: &mut App) {
     let Some(state) = app.models.as_ref() else {
         return;
     };
     let provider = state.provider.clone();
     let current = state.current.clone();
     let default = state.default.clone();
-    match result {
-        Ok(models) if models.is_empty() => {
-            app.models = None;
-            app.items
-                .push(ChatItem::Error("provider returned no models".to_string()));
-            app.status = "ready".to_string();
-        }
-        Ok(models) => {
-            app.status = format!("{} model(s) — pick one", models.len());
-            app.models = Some(ModelsState::ready(models, provider, current, default));
-        }
-        Err(err) => {
-            app.models = None;
-            app.items.push(ChatItem::Error(format!("models: {err}")));
-            app.status = "ready".to_string();
-        }
+    if catalogs.choices.is_empty() {
+        app.models = None;
+        let message = if catalogs.errors.is_empty() {
+            "provider returned no models".to_string()
+        } else {
+            format!("models: {}", catalogs.errors.join("; "))
+        };
+        app.items.push(ChatItem::Error(message));
+        app.status = "ready".to_string();
+        return;
     }
+    if !catalogs.errors.is_empty() {
+        app.items.push(ChatItem::Info(format!(
+            "some providers returned no models — {}",
+            catalogs.errors.join("; ")
+        )));
+        app.auto_scroll = true;
+    }
+    let count = catalogs.choices.len();
+    app.status = format!("{count} model(s) — pick one");
+    app.models = Some(ModelsState::ready(
+        catalogs.choices,
+        provider,
+        current,
+        default,
+    ));
 }
 
 fn handle_paste(text: String, app: &mut App) {
@@ -2641,6 +2797,51 @@ fn handle_mouse(mouse: MouseEvent, app: &mut App, terminal_area: Rect) {
     }
 }
 
+/// Pulls every queued message back into the editor so it can be edited or
+/// extended before it is sent, like Pi's `app.message.dequeue`. The queued text
+/// leads and whatever is already in the editor follows, so typing while busy
+/// then dequeuing reads as one message with the new text appended.
+fn dequeue_messages(app: &mut App) {
+    let mut queued = app.steering.drain();
+    queued.extend(app.follow_ups.drain());
+    if queued.is_empty() {
+        app.show_status("no queued messages to restore");
+        return;
+    }
+
+    let texts: Vec<String> = queued
+        .iter()
+        .map(|message| message.display().unwrap_or_default())
+        .collect();
+    let current = app.input.trim_matches('\n');
+    let combined = if current.trim().is_empty() {
+        texts.join("\n\n")
+    } else {
+        format!("{}\n\n{current}", texts.join("\n\n"))
+    };
+    app.input = combined;
+    app.input_cursor = app.input.len();
+
+    // Queued messages are shown in the transcript as they are typed, so drop
+    // those entries: they were never sent and are editable again.
+    for text in texts.iter().rev() {
+        if let Some(index) = app
+            .items
+            .iter()
+            .rposition(|item| matches!(item, ChatItem::User(shown) if shown == text))
+        {
+            app.items.remove(index);
+            app.mark_render_dirty(index);
+        }
+    }
+
+    let count = texts.len();
+    app.show_status(format!(
+        "restored {count} queued message{} to the editor",
+        if count == 1 { "" } else { "s" }
+    ));
+}
+
 /// Copies the active mouse selection, if any, reporting the result. Returns
 /// whether a selection was present.
 fn copy_selection(app: &mut App) -> bool {
@@ -2649,11 +2850,11 @@ fn copy_selection(app: &mut App) -> bool {
     };
     let text = selection.text(&app.lines);
     if text.trim().is_empty() {
-        app.status = "nothing to copy".to_string();
+        app.show_status("nothing to copy");
         return true;
     }
     match crate::clipboard::copy(&text) {
-        Ok(()) => app.status = format!("copied {} chars", text.chars().count()),
+        Ok(()) => app.show_status(format!("copied {} chars", text.chars().count())),
         Err(err) => app.items.push(ChatItem::Error(format!("copy: {err:#}"))),
     }
     true
@@ -2682,17 +2883,17 @@ fn copy_command(app: &mut App, all: bool) {
         }) {
             Some(text) => text,
             None => {
-                app.status = "nothing to copy".to_string();
+                app.show_status("nothing to copy");
                 return;
             }
         }
     };
     if text.trim().is_empty() {
-        app.status = "nothing to copy".to_string();
+        app.show_status("nothing to copy");
         return;
     }
     match crate::clipboard::copy(&text) {
-        Ok(()) => app.status = format!("copied {} chars", text.chars().count()),
+        Ok(()) => app.show_status(format!("copied {} chars", text.chars().count())),
         Err(err) => app.items.push(ChatItem::Error(format!("copy: {err:#}"))),
     }
 }
@@ -2739,6 +2940,90 @@ fn handle_trust_key(key: KeyEvent, app: &mut App, config: &mut Config, cwd: &Pat
     }
 }
 
+/// The model catalogs fetched from every logged-in provider, plus the providers
+/// that failed so one stale credential cannot hide the others.
+#[derive(Debug, Default)]
+struct ModelCatalogs {
+    choices: Vec<ModelChoice>,
+    errors: Vec<String>,
+}
+
+/// The providers to list models for: the active one first, then every other
+/// provider with a stored credential, each with a config pointed at it. Custom
+/// providers are skipped because the base URL is a single global setting, so
+/// their catalog cannot be queried without hijacking the active provider's.
+fn model_providers(config: &Config) -> Vec<(String, Config)> {
+    let active = crate::auth::canonical_provider(&config.provider);
+    let mut providers: Vec<(String, Config)> = Vec::new();
+    if !config.api_key.trim().is_empty() {
+        providers.push((active.clone(), config.clone()));
+    }
+    let store = crate::auth::AuthStore::load().unwrap_or_default();
+    for name in store.providers() {
+        if providers.iter().any(|(known, _)| known == &name)
+            || crate::config::ProviderPreset::for_name(&name).is_none()
+        {
+            continue;
+        }
+        let key = store.key(&name).unwrap_or_default().to_string();
+        providers.push((name.clone(), config.for_provider(&name, &key)));
+    }
+    providers
+}
+
+/// Switches the running session to a provider that already has a stored
+/// credential: its key, model, and endpoint are applied, the choice is saved
+/// for the next launch, and the footer follows.
+fn switch_provider(app: &mut App, config: &mut Config, provider: &str) -> Result<String> {
+    let (name, key) = crate::auth::select_stored(provider)?;
+    config.apply_provider(&name, &key);
+    config.persist_selection_at(&Config::config_path())?;
+    apply_model_state(app, config);
+    Ok(name)
+}
+
+/// Refreshes the footer and picker state after the active provider or model
+/// changed.
+fn apply_model_state(app: &mut App, config: &Config) {
+    app.model = config.model.clone();
+    app.provider = config.provider.clone();
+    app.show_thinking = config.supports_reasoning();
+    app.available_providers = available_providers(config);
+}
+
+/// Selects a model from the picker, switching providers first when the chosen
+/// model belongs to another logged-in one, and remembers it for that provider.
+fn select_model(app: &mut App, config: &mut Config, choice: &ModelChoice) -> Result<()> {
+    if crate::auth::canonical_provider(&config.provider)
+        != crate::auth::canonical_provider(&choice.provider)
+    {
+        switch_provider(app, config, &choice.provider)?;
+    }
+    config.model = choice.model.clone();
+    config.persist_selection_at(&Config::config_path())?;
+    apply_model_state(app, config);
+    Ok(())
+}
+
+/// Adopts another logged-in provider after the active one was logged out, or
+/// clears the credential when none is left.
+fn logout_active_provider(app: &mut App, config: &mut Config, provider: &str) -> String {
+    let Some(next) = crate::auth::stored_providers().into_iter().next() else {
+        config.api_key.clear();
+        config.provider.clear();
+        apply_model_state(app, config);
+        return format!("logged out of {provider} — run /login to reconnect");
+    };
+    match switch_provider(app, config, &next) {
+        Ok(name) => format!(
+            "logged out of {provider} — switched to {} · model {}",
+            crate::auth::provider_label(&name),
+            config.model
+        ),
+        Err(err) => format!("logged out of {provider}; {err:#}"),
+    }
+}
+
 fn handle_connect_key(key: KeyEvent, app: &mut App, config: &mut Config) {
     let Some(mut state) = app.connect.take() else {
         return;
@@ -2747,7 +3032,7 @@ fn handle_connect_key(key: KeyEvent, app: &mut App, config: &mut Config) {
     match key.code {
         KeyCode::Esc => {
             keep = false;
-            app.status = "connect cancelled".to_string();
+            app.show_status("connect cancelled");
         }
         KeyCode::Enter => {
             let value = state.input.trim().to_string();
@@ -2765,13 +3050,28 @@ fn handle_connect_key(key: KeyEvent, app: &mut App, config: &mut Config) {
                     state.error = None;
                 }
                 ConnectStep::Key { provider } => {
-                    if value.is_empty() {
+                    if value.is_empty() && state.is_connected(&provider) {
+                        // A stored key makes a login a switch.
+                        match switch_provider(app, config, &provider) {
+                            Ok(name) => {
+                                app.items.push(ChatItem::Info(format!(
+                                    "logged in to {} · model {} (stored key)",
+                                    crate::auth::provider_label(&name),
+                                    config.model
+                                )));
+                                app.status = "ready".to_string();
+                                keep = false;
+                            }
+                            Err(err) => state.error = Some(format!("{err:#}")),
+                        }
+                    } else if value.is_empty() {
                         state.error = Some("enter an API key".to_string());
                     } else {
                         match crate::auth::connect(&provider, &value) {
                             Ok(name) => {
                                 config.apply_provider(&name, &value);
-                                app.model = config.model.clone();
+                                apply_model_state(app, config);
+                                let _ = config.persist_selection_at(&Config::config_path());
                                 app.items.push(ChatItem::Info(format!(
                                     "logged in to {} · model {}",
                                     crate::auth::provider_label(&name),
@@ -2827,9 +3127,41 @@ fn handle_agent_event(event: AgentEvent, app: &mut App) {
     match event {
         AgentEvent::Text(delta) => {
             app.auto_scroll = true;
+            // Clear any `retrying...` notice now that output is flowing again.
+            app.status = "thinking...".to_string();
             app.push_assistant_delta(delta);
         }
-        AgentEvent::Thought { .. } | AgentEvent::ThoughtDone { .. } => {}
+        AgentEvent::ThinkingDelta(delta) => {
+            app.auto_scroll = true;
+            app.assistant_open = false;
+            app.push_thinking_delta(delta);
+            app.status = "thinking...".to_string();
+        }
+        AgentEvent::Thought { millis } => app.finish_thinking(millis),
+        AgentEvent::ThoughtDone { .. } => {}
+        AgentEvent::Retrying {
+            attempt,
+            max,
+            delay_ms,
+        } => {
+            app.discard_thinking();
+            app.status = format!(
+                "retrying ({attempt}/{max}) in {}s...",
+                delay_ms.div_ceil(1000).max(1)
+            );
+        }
+        AgentEvent::SubagentActivity { agent, tool, args } => {
+            // A `task` call is opaque until it returns, so the subagent's latest
+            // activity stands in for the result it has not produced yet.
+            let tools = app.subagent.as_ref().map_or(0, |state| state.tools) + 1;
+            app.status = format!("{agent} · {tool}");
+            app.subagent = Some(SubagentState {
+                agent,
+                tool,
+                args,
+                tools,
+            });
+        }
         AgentEvent::ToolCall { name, args } => {
             app.assistant_open = false;
             app.auto_scroll = true;
@@ -2865,6 +3197,7 @@ fn handle_agent_event(event: AgentEvent, app: &mut App) {
         } => {
             app.auto_scroll = true;
             app.running_tool = None;
+            app.subagent = None;
             app.resolve_tool(name, args, output, diff, millis);
             app.status = "thinking...".to_string();
         }
@@ -2920,12 +3253,15 @@ fn handle_agent_event(event: AgentEvent, app: &mut App) {
             app.auto_scroll = true;
         }
         AgentEvent::Error(message) => {
+            // The turn produced nothing, so its partial reasoning goes with it.
+            app.discard_thinking();
             app.items.push(ChatItem::Error(message));
         }
         AgentEvent::Finished(history) => {
             app.history = history;
             app.workspace_paths = None;
             app.running_tool = None;
+            app.subagent = None;
             app.busy = false;
             app.busy_since = None;
             app.assistant_open = false;
@@ -2975,6 +3311,193 @@ mod tests {
     }
 
     #[test]
+    fn subagent_activity_reports_progress_and_clears_on_result() {
+        let mut app = test_app();
+        handle_agent_event(
+            AgentEvent::ToolCall {
+                name: "task".into(),
+                args: r#"{"prompt":"review","subagent_type":"rust-reviewer"}"#.into(),
+            },
+            &mut app,
+        );
+        assert_eq!(app.status, "running tool...");
+        assert!(app.subagent.is_none());
+
+        for (tool, args) in [
+            ("grep", r#"{"pattern":"resolve_tool"}"#),
+            ("read", r#"{"path":"src/tui/ui.rs"}"#),
+        ] {
+            handle_agent_event(
+                AgentEvent::SubagentActivity {
+                    agent: "rust-reviewer".into(),
+                    tool: tool.into(),
+                    args: args.into(),
+                },
+                &mut app,
+            );
+        }
+        let state = app.subagent.as_ref().expect("activity tracked");
+        assert_eq!(state.agent, "rust-reviewer");
+        assert_eq!(state.tool, "read");
+        assert_eq!(state.tools, 2);
+        assert_eq!(app.status, "rust-reviewer · read");
+
+        handle_agent_event(
+            AgentEvent::ToolResult {
+                name: "task".into(),
+                args: "{}".into(),
+                output: "the report".into(),
+                diff: None,
+                millis: 500,
+            },
+            &mut app,
+        );
+        assert!(app.subagent.is_none());
+        assert!(app.running_tool.is_none());
+
+        handle_agent_event(
+            AgentEvent::SubagentActivity {
+                agent: "rust-reviewer".into(),
+                tool: "grep".into(),
+                args: "{}".into(),
+            },
+            &mut app,
+        );
+        handle_agent_event(AgentEvent::Finished(vec![]), &mut app);
+        assert!(app.subagent.is_none());
+    }
+
+    #[test]
+    fn dequeue_returns_queued_messages_to_the_editor() {
+        let mut app = test_app();
+        app.busy = true;
+        app.items.push(ChatItem::User("first".into()));
+        app.items.push(ChatItem::User("second".into()));
+        app.steering.push(Message::user("first"));
+        app.follow_ups.push(Message::user("second"));
+        app.input = "my extra context".into();
+        assert_eq!(app.queued_count(), 2);
+
+        dequeue_messages(&mut app);
+
+        assert_eq!(app.queued_count(), 0);
+        // Queued text leads so the typed text reads as appended context.
+        assert_eq!(
+            app.input, "first\n\nsecond\n\nmy extra context",
+            "queued text should precede what was already typed"
+        );
+        assert_eq!(app.input_cursor, app.input.len());
+        // The transcript entries were never sent, so they are gone.
+        assert!(
+            !app.items
+                .iter()
+                .any(|item| matches!(item, ChatItem::User(_))),
+            "queued turns should be removed from the transcript"
+        );
+        assert!(matches!(
+            app.items.last(),
+            Some(ChatItem::Status(text)) if text == "restored 2 queued messages to the editor"
+        ));
+    }
+
+    #[test]
+    fn dequeue_with_nothing_queued_keeps_the_editor_and_says_so() {
+        let mut app = test_app();
+        app.input = "half a thought".into();
+        dequeue_messages(&mut app);
+        assert_eq!(app.input, "half a thought");
+        assert!(matches!(
+            app.items.last(),
+            Some(ChatItem::Status(text)) if text == "no queued messages to restore"
+        ));
+    }
+
+    #[test]
+    fn dequeue_leaves_already_consumed_messages_alone() {
+        let mut app = test_app();
+        app.items.push(ChatItem::User("sent already".into()));
+        app.follow_ups.push(Message::user("still waiting"));
+        dequeue_messages(&mut app);
+        assert_eq!(app.input, "still waiting");
+        let users: Vec<&String> = app
+            .items
+            .iter()
+            .filter_map(|item| match item {
+                ChatItem::User(text) => Some(text),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            users,
+            ["sent already"],
+            "the sent turn stays in the transcript"
+        );
+    }
+
+    #[test]
+    fn dequeue_shortcut_matches_pi() {
+        let alt_up = KeyEvent::new(KeyCode::Up, KeyModifiers::ALT);
+        assert!(is_dequeue_shortcut(&alt_up));
+        assert!(!is_dequeue_shortcut(&KeyEvent::new(
+            KeyCode::Up,
+            KeyModifiers::NONE
+        )));
+        assert!(!use_windows_keybindings_for(false, false, false));
+        assert!(use_windows_keybindings_for(true, false, false));
+        assert!(use_windows_keybindings_for(false, true, true));
+        assert!(!use_windows_keybindings_for(false, true, false));
+        assert_eq!(dequeue_key_label_for(false, true), "Option+Up");
+        assert_eq!(dequeue_key_label_for(false, false), "Alt+Up");
+        assert_eq!(dequeue_key_label_for(true, false), "Alt+Q");
+    }
+
+    #[test]
+    fn idle_tips_are_visible_in_the_transcript() {
+        let mut app = test_app();
+        // The busy-phase label is invisible when idle, so a tip must become a
+        // transcript item for the user to see it.
+        app.show_status("copied 12 chars");
+        assert!(matches!(
+            app.items.last(),
+            Some(ChatItem::Status(text)) if text == "copied 12 chars"
+        ));
+        app.show_status("copied 34 chars");
+        assert_eq!(
+            app.items
+                .iter()
+                .filter(|item| matches!(item, ChatItem::Status(_)))
+                .count(),
+            1,
+            "a repeated tip replaces the previous line"
+        );
+        app.items.push(ChatItem::Assistant("an answer".into()));
+        app.show_status("copied 56 chars");
+        assert_eq!(
+            app.items
+                .iter()
+                .filter(|item| matches!(item, ChatItem::Status(_)))
+                .count(),
+            2,
+            "a tip after other output starts a new line"
+        );
+    }
+
+    #[test]
+    fn restored_sessions_show_their_reasoning() {
+        let mut app = test_app();
+        let message = Message::assistant("the fix is in the loader", vec![]).with_thinking(vec![
+            serde_json::json!({"type": "thinking", "thinking": "the test moved"}),
+            serde_json::json!({"type": "redacted_thinking", "data": "x"}),
+        ]);
+        restore_history(&mut app, vec![message], "resumed".to_string());
+        assert!(matches!(
+            &app.items[0],
+            ChatItem::Thinking { text, .. } if text == "the test moved"
+        ));
+        assert!(matches!(&app.items[1], ChatItem::Assistant(_)));
+    }
+
+    #[test]
     fn tool_progress_keeps_a_bounded_utf8_tail() {
         let mut output = "old".repeat(MAX_TOOL_PROGRESS_BYTES);
         append_tool_progress(&mut output, "latest 🚀");
@@ -3012,10 +3535,13 @@ mod tests {
         assert_eq!(resolve_provider_choice("2"), "deepseek");
         assert_eq!(resolve_provider_choice("3"), "anthropic");
         assert_eq!(resolve_provider_choice("4"), "portkey");
+        assert_eq!(resolve_provider_choice("5"), "zai");
         assert_eq!(resolve_provider_choice("DeepSeek"), "deepseek");
         assert_eq!(resolve_provider_choice("Port-Key"), "portkey");
+        assert_eq!(resolve_provider_choice("glm"), "zai");
         assert_eq!(resolve_provider_choice("gpt-4o"), "openai");
         assert_eq!(resolve_provider_choice("my-endpoint"), "my-endpoint");
+        assert_eq!(resolve_provider_choice("9"), "9");
     }
 
     #[test]
@@ -3027,6 +3553,22 @@ mod tests {
         app.connect = Some(ConnectState::new());
         handle_paste("deepseek".to_string(), &mut app);
         assert_eq!(app.connect.as_ref().unwrap().input, "deepseek");
+    }
+
+    #[test]
+    fn connect_state_tracks_providers_that_are_already_logged_in() {
+        let state = ConnectState {
+            connected: vec!["openai".to_string(), "anthropic".to_string()],
+            ..ConnectState::new()
+        };
+
+        assert!(state.is_connected("openai"));
+        assert!(state.is_connected("OpenAI"));
+        assert!(
+            state.is_connected("gpt-4o"),
+            "aliases resolve to their provider"
+        );
+        assert!(!state.is_connected("portkey"));
     }
 
     #[test]
@@ -3245,30 +3787,71 @@ mod tests {
     #[test]
     fn models_state_filters_and_selects() {
         let mut state = ModelsState::ready(
-            vec!["deepseek-chat".to_string(), "deepseek-reasoner".to_string()],
+            vec![
+                ModelChoice::new("deepseek", "deepseek-chat"),
+                ModelChoice::new("deepseek", "deepseek-reasoner"),
+            ],
             "deepseek".to_string(),
             "deepseek-chat".to_string(),
             Some("deepseek-reasoner".to_string()),
         );
         assert_eq!(state.filtered().len(), 2);
-        assert_eq!(state.filtered(), vec!["deepseek-chat", "deepseek-reasoner"]);
-        assert_eq!(state.selected_model(), Some("deepseek-chat"));
+        assert_eq!(
+            state.filtered(),
+            vec![
+                &ModelChoice::new("deepseek", "deepseek-chat"),
+                &ModelChoice::new("deepseek", "deepseek-reasoner"),
+            ]
+        );
+        assert_eq!(
+            state.selected_model(),
+            Some(&ModelChoice::new("deepseek", "deepseek-chat"))
+        );
 
         state.filter = "reason".to_string();
-        assert_eq!(state.filtered(), vec!["deepseek-reasoner"]);
-        assert_eq!(state.selected_model(), Some("deepseek-reasoner"));
+        assert_eq!(
+            state.filtered(),
+            vec![&ModelChoice::new("deepseek", "deepseek-reasoner")]
+        );
 
         state = ModelsState::ready(
-            vec!["claude-sonnet-5".to_string()],
+            vec![ModelChoice::new("anthropic", "claude-sonnet-5")],
             "anthropic".to_string(),
             "claude-sonnet-5".to_string(),
             None,
         );
         state.filter = "Claude Sonnet 5".to_string();
-        assert_eq!(state.selected_model(), Some("claude-sonnet-5"));
+        assert_eq!(
+            state.selected_model(),
+            Some(&ModelChoice::new("anthropic", "claude-sonnet-5"))
+        );
 
         state.filter = "missing".to_string();
         assert!(state.selected_model().is_none());
+    }
+
+    #[test]
+    fn models_state_lists_the_same_model_from_every_provider() {
+        let mut state = ModelsState::ready(
+            vec![
+                ModelChoice::new("openai", "gpt-5.4"),
+                ModelChoice::new("portkey", "gpt-5.4"),
+                ModelChoice::new("openai", "gpt-5.6-sol"),
+            ],
+            "portkey".to_string(),
+            "gpt-5.4".to_string(),
+            None,
+        );
+
+        // The active provider's copy of the current model sorts first, and both
+        // providers stay visible.
+        assert_eq!(
+            state.filtered()[0],
+            &ModelChoice::new("portkey", "gpt-5.4"),
+            "the active provider's model comes first"
+        );
+        state.filter = "gpt-5.4".to_string();
+        assert_eq!(state.filtered().len(), 2);
     }
 
     #[test]

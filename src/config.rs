@@ -28,6 +28,19 @@ const PORTKEY_FALLBACK_MODELS: &[&str] = &[
     "gpt-5.6-terra",
 ];
 
+/// The GLM models offered in the picker for Z.AI, whose API has no documented
+/// model listing endpoint.
+const GLM_FALLBACK_MODELS: &[&str] = &[
+    "glm-4.5-air",
+    "glm-4.6",
+    "glm-4.7",
+    "glm-4.7-flash",
+    "glm-5.1",
+    "glm-5.2",
+    "glm-5.3",
+    "glm-5.3-flash",
+];
+
 pub fn model_label(model: &str) -> &str {
     match model {
         "claude-haiku-4-5" => "Claude Haiku 4.5",
@@ -37,7 +50,15 @@ pub fn model_label(model: &str) -> &str {
         "claude-sonnet-5" => "Claude Sonnet 5",
         "deepseek-flash" => "DeepSeek V4.1 Flash",
         "deepseek-v4-pro" => "DeepSeek V4 Pro",
+        "glm-4.5-air" => "GLM-4.5 Air",
+        "glm-4.6" => "GLM-4.6",
+        "glm-4.7" => "GLM-4.7",
+        "glm-4.7-flash" => "GLM-4.7 Flash",
+        "glm-5.1" => "GLM-5.1",
         "glm-5.2" => "GLM-5.2",
+        "glm-5.3" => "GLM-5.3",
+        "glm-5.3-flash" => "GLM-5.3 Flash",
+        "glm-5.3-flashx" => "GLM-5.3 FlashX",
         "gpt-5.4" => "GPT-5.4",
         "gpt-5.6-luna" => "GPT-5.6 Luna",
         "gpt-5.6-sol" => "GPT-5.6 Sol",
@@ -96,6 +117,13 @@ impl ProviderPreset {
                 base_url_env: "ANTHROPIC_BASE_URL",
                 model: "claude-3-5-sonnet-latest",
                 key_env: "ANTHROPIC_API_KEY",
+            },
+            "zai" => Self {
+                kind: ProviderKind::OpenAi,
+                base_url: "https://api.z.ai/api/paas/v4",
+                base_url_env: "ZAI_BASE_URL",
+                model: "glm-5.3",
+                key_env: "ZAI_API_KEY",
             },
             _ => return None,
         };
@@ -250,6 +278,27 @@ pub fn supports_adaptive_thinking(model: &str) -> bool {
     major > 4 || (major == 4 && minor >= 6)
 }
 
+/// Whether a GLM model always thinks. The GLM-5.3 series rejects
+/// `thinking.type = "disabled"`, so the lowest effort is the closest oxide can
+/// get to turning reasoning off there.
+pub fn glm_forces_thinking(model: &str) -> bool {
+    let model = model.to_ascii_lowercase();
+    let Some(version) = model.strip_prefix("glm-") else {
+        return false;
+    };
+    let version = version.split(['-', '/']).next().unwrap_or_default();
+    let mut parts = version.split('.');
+    let major = parts
+        .next()
+        .filter(|part| part.len() <= 2 && part.chars().all(|ch| ch.is_ascii_digit()))
+        .and_then(|part| part.parse::<u32>().ok());
+    let minor = parts
+        .next()
+        .and_then(|part| part.parse::<u32>().ok())
+        .unwrap_or(0);
+    matches!(major, Some(major) if major > 5 || (major == 5 && minor >= 3))
+}
+
 fn env_nonempty(name: &str) -> Option<String> {
     std::env::var(name)
         .ok()
@@ -287,7 +336,8 @@ fn apply_stored_provider_fallback(
     config.api_key = entry.key.clone();
     if let Some(preset) = ProviderPreset::for_name(name) {
         if !explicit(raw, "model") {
-            config.model = preset.model.to_string();
+            // A model remembered for this provider wins over its preset.
+            config.model = config.model_for_provider(name);
         }
         if !explicit(raw, "base_url") {
             config.base_url = preset.base_url.to_string();
@@ -309,6 +359,11 @@ pub struct Config {
     pub api_key: String,
     #[serde(default)]
     pub portkey_config: String,
+    /// The model last used with each provider, so switching between logged-in
+    /// providers restores that provider's model instead of leaving the other
+    /// provider's model id behind.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub provider_models: BTreeMap<String, String>,
     #[serde(default)]
     pub model_catalog: Vec<String>,
     #[serde(default = "default_system_prompt")]
@@ -361,6 +416,22 @@ fn default_true() -> bool {
     true
 }
 
+/// Reads `hideThinkingBlock` from the global `settings.json`, Pi's key for
+/// whether reasoning blocks start collapsed.
+pub(crate) fn load_hide_thinking_block() -> bool {
+    let path = dirs::config_dir()
+        .unwrap_or_else(|| PathBuf::from("."))
+        .join("oxide")
+        .join("settings.json");
+    let Ok(text) = std::fs::read_to_string(path) else {
+        return false;
+    };
+    serde_json::from_str::<serde_json::Value>(&text)
+        .ok()
+        .and_then(|value| value.get("hideThinkingBlock")?.as_bool())
+        .unwrap_or(false)
+}
+
 /// Reads `defaultProjectTrust` from the global `settings.json` in the oxide
 /// config directory (Pi keeps the same key in `~/.pi/agent/settings.json`).
 pub(crate) fn load_default_project_trust() -> crate::trust::DefaultTrust {
@@ -390,6 +461,7 @@ impl Default for Config {
             base_url: "https://api.openai.com/v1".to_string(),
             api_key: String::new(),
             portkey_config: String::new(),
+            provider_models: BTreeMap::new(),
             model_catalog: Vec::new(),
             system_prompt: default_system_prompt(),
             max_tokens: default_max_tokens(),
@@ -653,18 +725,74 @@ impl Config {
         Ok(&self.api_key)
     }
 
-    /// Applies a provider credential to the running config.
+    /// Applies a provider credential to the running config. Switching providers
+    /// remembers the outgoing provider's model and restores the incoming one's,
+    /// so several stored logins keep separate model choices.
     pub fn apply_provider(&mut self, provider: &str, key: &str) {
-        let provider_changed = canonical_provider(&self.provider) != canonical_provider(provider);
+        let current = canonical_provider(&self.provider);
+        let target = canonical_provider(provider);
+        let provider_changed = current != target;
+        if provider_changed && !current.is_empty() && !self.model.trim().is_empty() {
+            self.provider_models.insert(current, self.model.clone());
+        }
         self.provider = provider.to_string();
         self.api_key = key.to_string();
         if provider_changed {
             let Some(preset) = ProviderPreset::for_name(provider) else {
                 return;
             };
-            self.model = preset.model.to_string();
+            self.model = self.model_for_provider(provider);
             self.base_url = preset.base_url.to_string();
         }
+    }
+
+    /// The model to use with a provider: the one remembered for it, otherwise
+    /// the provider preset's, otherwise the model in use.
+    pub fn model_for_provider(&self, provider: &str) -> String {
+        let name = canonical_provider(provider);
+        self.provider_models
+            .get(&name)
+            .cloned()
+            .or_else(|| ProviderPreset::for_name(&name).map(|preset| preset.model.to_string()))
+            .unwrap_or_else(|| self.model.clone())
+    }
+
+    /// A copy of this config pointed at another provider, for querying that
+    /// provider's catalog without touching the running session. The Portkey
+    /// model catalog only carries over to Portkey itself.
+    pub fn for_provider(&self, provider: &str, key: &str) -> Self {
+        let mut config = self.clone();
+        config.apply_provider(provider, key);
+        if !config.is_portkey() {
+            config.model_catalog.clear();
+        }
+        config
+    }
+
+    /// Persists the active provider, its model, and the per-provider model
+    /// memory so the next launch resumes this selection.
+    pub fn persist_selection_at(&self, path: &Path) -> Result<()> {
+        let provider = canonical_provider(&self.provider);
+        let model = self.model.clone();
+        let memory = self.provider_models.clone();
+        Self::update_at(path, move |object| {
+            object.insert("provider".to_string(), serde_json::Value::String(provider));
+            object.insert("model".to_string(), serde_json::Value::String(model));
+            if memory.is_empty() {
+                return;
+            }
+            let memory_entry = object
+                .entry("provider_models")
+                .or_insert_with(|| serde_json::json!({}));
+            if !memory_entry.is_object() {
+                *memory_entry = serde_json::json!({});
+            }
+            if let Some(object) = memory_entry.as_object_mut() {
+                for (name, model) in memory {
+                    object.insert(name, serde_json::Value::String(model));
+                }
+            }
+        })
     }
 
     /// Persists the active provider in `config.json` so the next launch uses it,
@@ -684,6 +812,19 @@ impl Config {
     }
 
     fn set_active_field_at(path: &Path, key: &str, value: &str) -> Result<()> {
+        let key = key.to_string();
+        let value = value.to_string();
+        Self::update_at(path, move |object| {
+            object.insert(key, serde_json::Value::String(value));
+        })
+    }
+
+    /// Reads, edits, and writes `config.json`, preserving every other setting
+    /// and recovering from a missing or malformed file.
+    fn update_at(
+        path: &Path,
+        update: impl FnOnce(&mut serde_json::Map<String, serde_json::Value>),
+    ) -> Result<()> {
         let mut root: serde_json::Value = if path.exists() {
             let text = std::fs::read_to_string(path)
                 .with_context(|| format!("reading config at {}", path.display()))?;
@@ -695,10 +836,7 @@ impl Config {
             root = serde_json::json!({});
         }
         if let Some(object) = root.as_object_mut() {
-            object.insert(
-                key.to_string(),
-                serde_json::Value::String(value.to_string()),
-            );
+            update(object);
         }
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent)
@@ -728,16 +866,37 @@ impl Config {
         canonical_provider(&self.provider) == "portkey"
     }
 
-    pub fn model_catalog(&self) -> Vec<String> {
-        let mut models = if self.model_catalog.is_empty() && self.is_portkey() {
+    /// Whether the active provider is Z.AI's GLM API, which selects thinking
+    /// with `thinking.type` instead of `reasoning_effort`. A custom provider
+    /// pointed at either Z.AI host is detected the same way Pi does.
+    pub fn is_zai(&self) -> bool {
+        if canonical_provider(&self.provider) == "zai" {
+            return true;
+        }
+        let base_url = self.base_url.to_ascii_lowercase();
+        base_url.contains("api.z.ai") || base_url.contains("open.bigmodel.cn")
+    }
+
+    /// The models bundled with a provider whose catalog cannot be listed.
+    fn bundled_models(&self) -> Vec<String> {
+        let models: &[&str] = if self.is_portkey() {
             PORTKEY_FALLBACK_MODELS
-                .iter()
-                .map(|model| (*model).to_string())
-                .collect()
+        } else if self.is_zai() {
+            GLM_FALLBACK_MODELS
+        } else {
+            &[]
+        };
+        models.iter().map(|model| (*model).to_string()).collect()
+    }
+
+    pub fn model_catalog(&self) -> Vec<String> {
+        let bundled = self.bundled_models();
+        let mut models = if self.model_catalog.is_empty() {
+            bundled.clone()
         } else {
             self.model_catalog.clone()
         };
-        if self.is_portkey() && !self.model.trim().is_empty() {
+        if !bundled.is_empty() && !self.model.trim().is_empty() {
             models.push(self.model.clone());
         }
         models.sort();
@@ -969,7 +1128,75 @@ mod tests {
         assert_eq!(portkey.base_url, "https://api.portkey.ai/v1");
         assert_eq!(portkey.model, "claude-sonnet-5");
         assert_eq!(portkey.key_env, "PORTKEY_API_KEY");
+        let zai = ProviderPreset::for_name("zai").unwrap();
+        assert_eq!(zai.kind, ProviderKind::OpenAi);
+        assert_eq!(zai.base_url, "https://api.z.ai/api/paas/v4");
+        assert_eq!(zai.model, "glm-5.3");
+        assert_eq!(zai.key_env, "ZAI_API_KEY");
+        assert_eq!(ProviderPreset::for_name("glm").unwrap().model, "glm-5.3");
         assert!(ProviderPreset::for_name("custom-endpoint").is_none());
+    }
+
+    #[test]
+    fn zai_runtime_fields_and_fallback_catalog() {
+        let mut config = Config {
+            provider: "openai".into(),
+            model: "gpt-4o-mini".into(),
+            base_url: "https://api.openai.com/v1".into(),
+            ..Config::default()
+        };
+        config.apply_provider("glm", "zai-key");
+        assert_eq!(config.model, "glm-5.3");
+        assert_eq!(config.base_url, "https://api.z.ai/api/paas/v4");
+        assert!(config.is_zai());
+        assert!(config.supports_reasoning());
+
+        let catalog = config.model_catalog();
+        assert!(catalog.contains(&"glm-5.3-flash".to_string()));
+        assert!(catalog.contains(&"glm-5.3".to_string()));
+        assert!(catalog.windows(2).all(|pair| pair[0] <= pair[1]));
+
+        let explicit = Config {
+            model: "glm-custom".into(),
+            model_catalog: vec!["glm-custom".into()],
+            ..config.clone()
+        };
+        assert_eq!(explicit.model_catalog(), vec!["glm-custom"]);
+    }
+
+    #[test]
+    fn glm_forced_thinking_versions() {
+        assert!(glm_forces_thinking("glm-5.3"));
+        assert!(glm_forces_thinking("glm-5.3-flash"));
+        assert!(glm_forces_thinking("GLM-5.4"));
+        assert!(!glm_forces_thinking("glm-5.2"));
+        assert!(!glm_forces_thinking("glm-4.6"));
+        assert!(!glm_forces_thinking("glm-5v-turbo"));
+        assert!(!glm_forces_thinking("gpt-5.4"));
+    }
+
+    #[test]
+    fn custom_providers_pointed_at_zai_behave_like_zai() {
+        let by_url = Config {
+            provider: "my-endpoint".into(),
+            base_url: "https://api.z.ai/api/paas/v4".into(),
+            ..Config::default()
+        };
+        assert!(by_url.is_zai());
+        assert!(!by_url.model_catalog().is_empty());
+
+        let by_cn_url = Config {
+            base_url: "https://open.bigmodel.cn/api/paas/v4".into(),
+            ..by_url
+        };
+        assert!(by_cn_url.is_zai());
+
+        let other = Config {
+            base_url: "https://api.deepseek.com/v1".into(),
+            ..Config::default()
+        };
+        assert!(!other.is_zai());
+        assert!(other.model_catalog().is_empty());
     }
 
     #[test]
@@ -1086,6 +1313,75 @@ mod tests {
     }
 
     #[test]
+    fn apply_provider_remembers_a_model_per_provider() {
+        let mut config = Config::default();
+        config.apply_provider("deepseek", "sk-deepseek");
+        assert_eq!(config.model, "deepseek-chat");
+
+        config.model = "deepseek-v4-pro".to_string();
+        config.apply_provider("anthropic", "sk-ant");
+        assert_eq!(config.model, "claude-3-5-sonnet-latest");
+        assert_eq!(config.provider, "anthropic");
+
+        // Switching back restores the model chosen for DeepSeek instead of
+        // leaving the Anthropic model id behind.
+        config.apply_provider("deepseek", "sk-deepseek");
+        assert_eq!(config.model, "deepseek-v4-pro");
+        assert_eq!(config.base_url, "https://api.deepseek.com/v1");
+        assert_eq!(config.model_for_provider("openai"), "gpt-4o-mini");
+    }
+
+    #[test]
+    fn for_provider_points_a_copy_at_another_provider() {
+        let config = Config {
+            provider: "portkey".into(),
+            model: "claude-sonnet-5".into(),
+            model_catalog: vec!["catalog-model".into()],
+            base_url: "https://api.portkey.ai/v1".into(),
+            ..Config::default()
+        };
+
+        let deepseek = config.for_provider("deepseek", "sk-deepseek");
+        assert_eq!(deepseek.provider, "deepseek");
+        assert_eq!(deepseek.api_key, "sk-deepseek");
+        assert_eq!(deepseek.model, "deepseek-chat");
+        assert_eq!(deepseek.base_url, "https://api.deepseek.com/v1");
+        assert!(deepseek.model_catalog.is_empty());
+
+        // The active config is untouched.
+        assert_eq!(config.provider, "portkey");
+        assert_eq!(config.model, "claude-sonnet-5");
+        assert_eq!(config.model_catalog, vec!["catalog-model"]);
+
+        let portkey = config.for_provider("portkey", "pk-test");
+        assert_eq!(portkey.model_catalog, vec!["catalog-model"]);
+    }
+
+    #[test]
+    fn persist_selection_records_the_provider_and_its_models() {
+        let dir = temp_dir("persist-selection");
+        let path = dir.join("config.json");
+        std::fs::write(&path, r#"{"auto_approve":false}"#).unwrap();
+
+        let mut config = Config::default();
+        config.apply_provider("anthropic", "sk-ant");
+        config.model = "claude-opus-5".to_string();
+        config.persist_selection_at(&path).unwrap();
+
+        let stored: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        assert_eq!(stored["provider"], "anthropic");
+        assert_eq!(stored["model"], "claude-opus-5");
+        assert_eq!(stored["provider_models"]["openai"], "gpt-4o-mini");
+        assert_eq!(stored["auto_approve"], false);
+
+        let reloaded: Config = serde_json::from_value(stored).unwrap();
+        assert_eq!(reloaded.provider_models["openai"], "gpt-4o-mini");
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
     fn apply_provider_updates_runtime_fields() {
         let mut config = Config::default();
         config.apply_provider("deepseek", "sk-test");
@@ -1129,6 +1425,7 @@ mod tests {
         assert_eq!(model_label("claude-sonnet-5"), "Claude Sonnet 5");
         assert_eq!(model_label("gpt-5.6-terra"), "GPT-5.6 Terra");
         assert_eq!(model_label("deepseek-v4-pro"), "DeepSeek V4 Pro");
+        assert_eq!(model_label("glm-5.3-flash"), "GLM-5.3 Flash");
         assert_eq!(model_label("custom-model"), "custom-model");
     }
 
@@ -1179,6 +1476,23 @@ mod tests {
         assert_eq!(config.api_key, "sk-deepseek");
         assert_eq!(config.model, "deepseek-chat");
         assert_eq!(config.base_url, "https://api.deepseek.com/v1");
+    }
+
+    #[test]
+    fn fallback_uses_the_model_remembered_for_the_stored_provider() {
+        let mut config = Config {
+            provider_models: [("deepseek".to_string(), "deepseek-v4-pro".to_string())]
+                .into_iter()
+                .collect(),
+            ..Config::default()
+        };
+        let mut store = AuthStore::default();
+        store.set("deepseek", "sk-deepseek");
+
+        apply_stored_provider_fallback(&mut config, &store, &None);
+
+        assert_eq!(config.provider, "deepseek");
+        assert_eq!(config.model, "deepseek-v4-pro");
     }
 
     #[test]

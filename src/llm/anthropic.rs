@@ -1,6 +1,7 @@
 use crate::config::{supports_adaptive_thinking, Config, Reasoning};
 use crate::llm::types::{
-    AssistantTurn, ContentPart, FunctionCall, Message, MessageContent, ToolCall, ToolSpec,
+    push_thinking, set_thinking_signature, AssistantTurn, ContentPart, FunctionCall, Message,
+    MessageContent, ToolCall, ToolSpec,
 };
 use anyhow::{bail, Result};
 use serde_json::{json, Value};
@@ -98,6 +99,7 @@ pub fn apply_event(
     turn: &mut AssistantTurn,
     partials: &mut BTreeMap<usize, PartialToolCall>,
     on_text: &mut dyn FnMut(String),
+    on_thinking: &mut dyn FnMut(String),
 ) -> Result<()> {
     let Ok(value) = serde_json::from_str::<Value>(data) else {
         return Ok(());
@@ -180,19 +182,15 @@ pub fn apply_event(
                 }
                 Some("thinking_delta") => {
                     if let Some(fragment) = delta["thinking"].as_str() {
-                        if let Some(block) = turn.thinking.last_mut() {
-                            let mut text =
-                                block["thinking"].as_str().unwrap_or_default().to_string();
-                            text.push_str(fragment);
-                            block["thinking"] = json!(text);
+                        push_thinking(&mut turn.thinking, fragment);
+                        if !fragment.is_empty() {
+                            on_thinking(fragment.to_string());
                         }
                     }
                 }
                 Some("signature_delta") => {
                     if let Some(signature) = delta["signature"].as_str() {
-                        if let Some(block) = turn.thinking.last_mut() {
-                            block["signature"] = json!(signature);
-                        }
+                        set_thinking_signature(&mut turn.thinking, signature);
                     }
                 }
                 _ => {}
@@ -267,7 +265,10 @@ fn split_data_url(url: &str) -> (String, String) {
 fn assistant_blocks(message: &Message) -> Vec<Value> {
     let mut blocks = Vec::new();
     if let Some(thinking) = &message.thinking {
-        blocks.extend(thinking.iter().cloned());
+        // Anthropic rejects replayed thinking blocks without a signature, which
+        // is how reasoning captured from OpenAI-compatible providers (GLM,
+        // DeepSeek) arrives, so those are dropped rather than sent.
+        blocks.extend(thinking.iter().filter(|block| signed(block)).cloned());
     }
     if let Some(content) = &message.content {
         let text = content.display();
@@ -288,6 +289,13 @@ fn assistant_blocks(message: &Message) -> Vec<Value> {
         }
     }
     blocks
+}
+
+fn signed(block: &Value) -> bool {
+    block["type"] == "redacted_thinking"
+        || block["signature"]
+            .as_str()
+            .is_some_and(|signature| !signature.is_empty())
 }
 
 fn tool_result_block(message: &Message) -> Value {
@@ -490,17 +498,40 @@ mod tests {
     fn parses_thinking_stream_events() {
         let mut turn = AssistantTurn::default();
         let mut partials = BTreeMap::new();
+        let mut streamed = String::new();
         let events = [
             r#"{"type":"content_block_start","index":0,"content_block":{"type":"thinking","thinking":""}}"#,
             r#"{"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":"step"}}"#,
+            r#"{"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":" two"}}"#,
             r#"{"type":"content_block_delta","index":0,"delta":{"type":"signature_delta","signature":"abc"}}"#,
         ];
         for event in events {
-            apply_event(event, &mut turn, &mut partials, &mut |_| {}).unwrap();
+            apply_event(event, &mut turn, &mut partials, &mut |_| {}, &mut |delta| {
+                streamed.push_str(&delta)
+            })
+            .unwrap();
         }
         assert_eq!(turn.thinking.len(), 1);
-        assert_eq!(turn.thinking[0]["thinking"], "step");
+        assert_eq!(turn.thinking[0]["thinking"], "step two");
         assert_eq!(turn.thinking[0]["signature"], "abc");
+        assert_eq!(streamed, "step two");
+    }
+
+    #[test]
+    fn unsigned_thinking_blocks_are_not_replayed() {
+        let signed = json!({
+            "type": "thinking",
+            "thinking": "native reasoning",
+            "signature": "sig"
+        });
+        let unsigned = json!({"type": "thinking", "thinking": "glm reasoning"});
+        let message = Message::assistant("answer", vec![call("toolu_1", "bash", "{}")])
+            .with_thinking(vec![signed, unsigned]);
+        let body = request_body(&config(), &[message], &[spec("bash")]);
+        let content = body["messages"][0]["content"].as_array().unwrap();
+        assert_eq!(content.len(), 3);
+        assert_eq!(content[0]["thinking"], "native reasoning");
+        assert_eq!(content[1]["type"], "text");
     }
 
     #[test]
@@ -519,6 +550,16 @@ mod tests {
     }
 
     #[test]
+    fn thinking_deltas_accumulate_without_a_start_event() {
+        let mut turn = AssistantTurn::default();
+        let mut partials = BTreeMap::new();
+        let event = r#"{"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":"orphan"}}"#;
+        apply_event(event, &mut turn, &mut partials, &mut |_| {}, &mut |_| {}).unwrap();
+        assert_eq!(turn.thinking.len(), 1);
+        assert_eq!(turn.thinking[0]["thinking"], "orphan");
+    }
+
+    #[test]
     fn parses_text_and_tool_stream_events() {
         let mut turn = AssistantTurn::default();
         let mut partials = BTreeMap::new();
@@ -531,9 +572,13 @@ mod tests {
             r#"{"type":"content_block_delta","index":1,"delta":{"type":"input_json_delta","partial_json":"\"ls\"}"}}"#,
         ];
         for event in events {
-            apply_event(event, &mut turn, &mut partials, &mut |delta| {
-                text.push_str(&delta)
-            })
+            apply_event(
+                event,
+                &mut turn,
+                &mut partials,
+                &mut |delta| text.push_str(&delta),
+                &mut |_| {},
+            )
             .unwrap();
         }
         assert_eq!(turn.content, "Hello");
@@ -553,6 +598,7 @@ mod tests {
             r#"{"type":"error","error":{"type":"overloaded_error","message":"busy"}}"#,
             &mut turn,
             &mut partials,
+            &mut |_| {},
             &mut |_| {},
         )
         .unwrap_err();

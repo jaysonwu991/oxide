@@ -710,6 +710,17 @@ async fn run_print_text(mut rx: tokio::sync::mpsc::UnboundedReceiver<AgentEvent>
             }
             AgentEvent::Thought { .. } => {}
             AgentEvent::ThoughtDone { .. } => {}
+            AgentEvent::ThinkingDelta(_) => {}
+            AgentEvent::SubagentActivity { agent, tool, args } => {
+                eprintln!("[{agent}] {tool} {args}");
+            }
+            AgentEvent::Retrying {
+                attempt,
+                max,
+                delay_ms,
+            } => {
+                eprintln!("[retry {attempt}/{max} in {delay_ms}ms]");
+            }
             AgentEvent::ToolCall { name, args } => {
                 eprintln!("\n[tool] {name} {args}");
             }

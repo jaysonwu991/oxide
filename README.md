@@ -19,7 +19,8 @@ box, with Claude Code configuration support for compatibility.
 - Interactive TUI (ratatui) plus non-interactive `-p/--print`, `--mode json`
   (JSONL event stream), and `--mode rpc` (JSONL over stdin/stdout) modes. In the
   TUI, `/login` (`/connect`) and `/logout` manage provider credentials.
-- OpenAI-compatible (OpenAI, DeepSeek, Portkey, custom) and Anthropic Messages API clients.
+- OpenAI-compatible (OpenAI, DeepSeek, Portkey, Z.AI/GLM, custom) and
+  Anthropic Messages API clients.
 - Built-in tools under Pi-style names: `read`, `write`, `edit`, `bash`, `grep`,
   `find`, `ls`, `webfetch`. Compatibility names (`read_file`, `write_file`,
   `list_dir`, `glob`) and the unified-diff `patch` tool are accepted everywhere,
@@ -40,7 +41,9 @@ box, with Claude Code configuration support for compatibility.
   `/redo`), Pi-style context compaction that runs automatically near the model
   window (`/compact`), and branch summarization when branching (`/tree <n>`,
   `/fork <n>`).
-- LSP diagnostics via rust-analyzer, typescript-language-server, pyright, gopls.
+- LSP diagnostics via rust-analyzer, typescript-language-server, pyright, gopls;
+  a language server that crashes or closes its pipe is evicted and respawned on
+  the next edit instead of poisoning every later call with a broken pipe.
 - Plugin hooks (`tool.execute.before` / `tool.execute.after`, plus `status` for
   a footer status row) run under bun/node, and an `after` hook can end the turn
   by setting `output.terminate = true`.
@@ -70,7 +73,8 @@ box, with Claude Code configuration support for compatibility.
   and bytes before they enter the model's context. Capped output is saved to
   disk with a pointer so it stays recoverable.
 - Compact agent transcript: shell calls render as `→ Run <command>` and finish
-  as `→ Ran <command> · exit <code>`, with a `(timeout Ns)` hint when the call
+  as `→ Ran <command> · exit <code>` (`→ Run failed …` on a non-zero exit),
+  with a `(timeout Ns)` hint when the call
   sets one, a live `Elapsed Ns` while it runs, and a `Took Nms` duration
   afterwards (any other tool that runs for at least 500 ms is timed too).
   Collapsed output uses a
@@ -78,10 +82,22 @@ box, with Claude Code configuration support for compatibility.
   contents, file edits show a colored line-numbered diff, user and assistant
   turns render their label inline with the message text, and the system prompt
   nudges the model to batch reads instead of re-reading the same paths.
+- Visible work in progress: reasoning streams into the transcript as a muted
+  italic `✦ Thinking` block that closes with `✦ Thought for 1.4s`, so work done
+  before the answer is no longer invisible. Ctrl+T collapses reasoning blocks to
+  their label (`· Ctrl+T to expand`); set `hideThinkingBlock` in `settings.json`
+  to start collapsed, as in Pi. A running `task` subagent reports its own
+  progress — a live `Elapsed` on any tool panel, a
+  `↳ <agent> · <activity> · <n> call(s)` line, and a status row naming the
+  subagent and its current tool. The status row also reports the phase of the
+  current step (`thinking...`, `running tool...`, `compacting...`, `summarizing
+  branch...`) and surfaces stream retries as `retrying (n/3) in Ns...`.
 - Resilient streaming: transient failures (network errors, truncated streams,
   429, and 5xx responses) are retried with backoff while no text has been
-  emitted; empty or truncated responses and in-band stream errors surface as
-  errors instead of silently ending the turn.
+  emitted, and a turn that comes back with neither text nor tool calls is
+  retried on the same schedule; only after that budget is exhausted do empty or
+  truncated responses and in-band stream errors surface as errors instead of
+  silently ending the turn.
 - Tool selection: `--tools`/`-t` allowlists and `--exclude-tools`/`-x`
   disables tools (accepting both Pi and legacy names); disabled tools are hidden
   from the model and refused if requested.
@@ -127,7 +143,7 @@ so check each project's documentation for the current details.
 | --- | --- | --- | --- | --- |
 | Distribution | Native Rust binary | Open-source CLI (Rust) + IDE extension | Open-source CLI (Node/Bun) | Proprietary CLI + apps |
 | License | MIT | Apache-2.0 | Open source | Proprietary |
-| Model providers | OpenAI-compatible + Anthropic (OpenAI, DeepSeek, Portkey, custom) | OpenAI models (GPT-5-Codex family) + custom providers | Any provider (bring your own keys) | Claude (Anthropic API, Bedrock, Vertex, third-party) |
+| Model providers | OpenAI-compatible + Anthropic (OpenAI, DeepSeek, Portkey, Z.AI/GLM, custom) | OpenAI models (GPT-5-Codex family) + custom providers | Any provider (bring your own keys) | Claude (Anthropic API, Bedrock, Vertex, third-party) |
 | Interfaces | Terminal TUI, `-p` print, JSON/RPC modes | Terminal CLI, IDE (VS Code, Cursor) | Terminal, desktop, IDE, web | Terminal, IDE, desktop, web |
 | Project config | `.oxide/` + `AGENTS.md` (also reads `.claude/`) | `AGENTS.md` + `~/.codex/config.toml` | `opencode.json` + `AGENTS.md` | `CLAUDE.md` + `.claude/` |
 | Subagents | `--agent`, `task`, command routing | Subagents | Agents | Subagents, background agents |
@@ -235,6 +251,7 @@ present).
 | Enter | Send a message; while the agent is busy, queue guidance for its next step. |
 | Shift+Enter | Insert a newline without sending. |
 | Alt+Enter | While busy, queue a follow-up to run after the current work finishes. |
+| Alt+Up / Option+Up | Pull every queued message back into the message box to edit or extend it (`Alt+Q` on Windows and WSL, where the terminal owns `Alt+Up`). |
 | Esc | Clear the input. In dialogs, cancel or close. |
 | `/` | Open slash-command autocomplete. |
 | `@` | Open file/folder path autocomplete to add a file to the prompt. |
@@ -243,14 +260,27 @@ present).
 | Shift+Tab | Cycle `build` → `auto-edit` → `plan`. |
 | Ctrl+R | Cycle the thinking level: `auto` → `off` → `low` → `medium` → `high`. |
 | Ctrl+O | Expand or collapse tool-output details. |
+| Ctrl+T | Show or hide reasoning (`✦ Thinking`) blocks. |
 | Ctrl+V | Attach an image from the clipboard when the platform helper is available. |
 | PgUp / PgDn / mouse wheel | Scroll the transcript. |
-| Ctrl+A / Ctrl+E | Jump to the start or end of the message box. |
-| Ctrl+Y / Ctrl+E | Scroll one line (Ctrl+E only when the message box is empty). |
-| Ctrl+U / Ctrl+D | Scroll half a page. |
+| Ctrl+A | Jump to the start of the message box (when it is not empty). |
+| Ctrl+E | Jump to the end of the message box; when it is empty, scroll down one line. |
+| Ctrl+Y | Scroll up one line. |
+| Ctrl+U / Ctrl+D | Scroll half a page up / down. |
 | Ctrl+G / Home | Scroll to the top. |
 | End | Return to the latest message and resume automatic scrolling. |
-| Ctrl+C | Quit. |
+| Ctrl+C | Copy the current mouse selection, or quit when there is none. |
+
+Dragging over the transcript copies the selected text on release and confirms it
+with a dim `copied 243 chars` line; `/copy` and `/copy all` report the same way,
+and repeated copies update that one line instead of stacking up. Copying writes
+an OSC 52 sequence, so it reaches the clipboard even over SSH or inside tmux or
+screen, and also tries the native helper (`pbcopy`/`osascript` on macOS,
+`wl-copy`/`xclip`/`xsel` on Linux) when one is available.
+
+A few keys act twice depending on the message box: Ctrl+E moves to the end of a
+non-empty message and otherwise scrolls the transcript, and Ctrl+C copies an
+active mouse selection instead of quitting.
 
 Run `/hotkeys` for the in-app list and `/help` for commands, agents, and skills.
 
@@ -371,10 +401,16 @@ Credential management happens inside the TUI with the Pi-style commands:
 /logout [provider]   remove stored credentials
 ```
 
-`/login` opens a provider picker (`/login <provider>` skips straight to the key).
-Keys are stored in `auth.json` in the oxide config directory (mode `0600`) and
-resolved after environment variables and before the config file. The active
-provider is written to `config.json` so the next launch uses it.
+`/login` opens a provider picker (`/login <provider>` skips straight to the key;
+for a provider that is already connected it switches to it instead of asking for
+the key again, and pressing Enter on the key step reuses the stored key). Keys are
+stored in `auth.json` in the oxide config directory
+(mode `0600`) and resolved after environment variables and before the config
+file. Any number of providers can be stored at once, and the active provider is
+written to `config.json` so the next launch uses it. `/models` lists the catalogs
+of every logged-in provider, and picking a model from another one switches to
+it. Each provider remembers the model it was last used with in the
+`provider_models` map of `config.json`.
 
 MCP server management:
 
@@ -489,6 +525,7 @@ the starting level.
 | `PORTKEY_API_KEY` / `PORTKEY_BASE_URL` | Portkey AI Gateway credentials. |
 | `PORTKEY_CONFIG` | Optional Portkey config ID sent as `x-portkey-config`. |
 | `PORTKEY_MODELS` | Optional comma-separated model catalog for keys that cannot call `/models`. |
+| `ZAI_API_KEY` / `ZAI_BASE_URL` | Z.AI (GLM) credentials. |
 
 ### Providers
 
@@ -498,6 +535,7 @@ the starting level.
 | `deepseek` | OpenAI-compatible | `deepseek-chat` | `https://api.deepseek.com/v1` | `DEEPSEEK_API_KEY` |
 | `anthropic` | Anthropic Messages | `claude-3-5-sonnet-latest` | `https://api.anthropic.com/v1` | `ANTHROPIC_API_KEY` |
 | `portkey`, `port-key` | OpenAI-compatible gateway | `claude-sonnet-5` | `https://api.portkey.ai/v1` | `PORTKEY_API_KEY` |
+| `zai`, `glm`, `z.ai`, `z-ai`, `zhipu`, `bigmodel` | OpenAI-compatible | `glm-5.3` | `https://api.z.ai/api/paas/v4` | `ZAI_API_KEY` |
 
 Any OpenAI-compatible endpoint can be used by setting `provider`, `base_url`,
 `model`, and a key.
@@ -515,6 +553,24 @@ fallbacks, see the full [Portkey configuration](docs/configuration.md#portkey)
 section. The [Portkey usage
 bar](docs/configuration.md#portkey-usage-bar) documents the `/usage` command and
 the `portkey-usage.json` file.
+
+### Z.AI (GLM)
+
+Run `/login glm` in the TUI (or `/login zai`), or set `ZAI_API_KEY`, then pick a
+model with `/models`. The preset talks to Z.AI's OpenAI-compatible endpoint
+`https://api.z.ai/api/paas/v4` and defaults to `glm-5.3`; `glm-5.3-flash` is the
+cheaper, faster option. Z.AI documents no model listing endpoint, so the picker
+falls back to a bundled list of current GLM models.
+
+GLM selects thinking with `thinking.type` rather than `reasoning_effort`, and the
+GLM-5.3 series only accepts `low`, `high`, or `max`. `/thinking` therefore maps
+`low` to `low`, `medium` to `high`, and `high` to `max`; `off` disables thinking
+where the model allows it and asks for the lowest effort on GLM-5.3, which always
+thinks. GLM prices ship in the built-in table, so the footer's `$cost` works out
+of the box.
+
+For the mainland-China BigModel endpoint
+(`https://open.bigmodel.cn/api/paas/v4`), set `ZAI_BASE_URL` or `base_url`.
 
 ## Context files and system prompt
 
@@ -544,9 +600,12 @@ overrides the Claude Code layout.
 
 - `AGENTS.md` — project memory and instructions
 - `.oxide/AGENTS.md` — additional layout-scoped instructions
-- `.oxide/agents/*.md` — subagents (frontmatter: `name`, `description`, `mode`, `permission`)
-- `.oxide/commands/*.md` — slash commands (`$ARGUMENTS`, `$1`, `$2`, …; optional `agent` and `subtask` frontmatter)
-- `.oxide/prompts/*.md` — prompt templates (Pi-style; frontmatter `description` and `argument-hint`, arguments `$1`, `$@`, `${1:-default}`, `${@:2:3}`)
+- `.oxide/agents/*.md` — subagents (frontmatter: `name`, `description`, `mode`,
+  `permission`); subagents may spawn subagents one level deep
+- `.oxide/commands/*.md` — slash commands (`$ARGUMENTS`, `$1`, `$2`, …; optional
+  `agent` and `subtask` frontmatter)
+- `.oxide/prompts/*.md` — prompt templates (Pi-style; frontmatter `description`
+  and `argument-hint`, arguments `$1`, `$@`, `${1:-default}`, `${@:2:3}`)
 - `.oxide/skills/*/SKILL.md` — on-demand skills
 - `.oxide/themes/*.json` — TUI color themes (built-in `dark`/`light` plus custom)
 - `.oxide/plugins/` — JS/TS plugin hooks
@@ -587,12 +646,13 @@ oxide also reads the Claude Code layout, so existing configurations work as-is:
 - Global scope: `~/.claude/`, `~/.claude.json`
 
 Slash commands are expanded from the ecosystem and also include built-ins:
-`/help`, `/hotkeys`, `/exit`, `/new`, `/session`, `/resume`, `/tree`, `/fork`, `/clone`, `/name`,
-`/model`, `/thinking`, `/theme`, `/trust`, `/export`, `/reload`, `/init`,
-`/login`, `/logout`, `/models`, `/mcps`, `/plugin`, `/usage`, `/connect`, `/undo`, `/redo`, and
-`/compact`. Discovered commands and prompt templates can also be invoked by the
-agent through the `command` tool, and skills load on demand with `skill` or via
-`/skill:<name>`.
+`/help`, `/hotkeys`, `/exit`, `/new`, `/session`, `/resume`, `/tree`, `/fork`,
+`/clone`, `/name`, `/model`, `/thinking`, `/theme`, `/trust`, `/export`,
+`/reload`, `/init`, `/login`, `/logout`, `/models`, `/mcps`, `/plugin`, `/usage`,
+`/connect`, `/undo`, `/redo`, `/compact`, `/copy`, `/copy all`, and
+`/skill:<name>`. Discovered commands and prompt templates can also be invoked by
+the agent through the `command` tool, and skills load on demand with `skill` or
+via `/skill:<name>`.
 
 **Plugin packages** — installed via `oxide plugin` (or `/plugin`), plugin
 packages bundle commands, agents, skills, MCP servers, and command hooks behind
@@ -700,7 +760,7 @@ the built-in `dark` theme:
 Available slots: `accent`, `user`, `assistant`, `success`, `tool`, `error`,
 `info`, `dim`, `border`, `tool_pending_bg`, `tool_success_bg`, `tool_error_bg`,
 `usage_bar_bg`, `usage_bar_fg`, `usage_bar_label`, `thinking_off`,
-`thinking_low`, `thinking_medium`, `thinking_high`.
+`thinking_low`, `thinking_medium`, `thinking_high`, `thinking_text`.
 
 Theme slots are semantic: `accent` marks focus and selections, `user` and
 `assistant` label speakers, `success` and `error` communicate outcomes, `tool`
@@ -723,8 +783,9 @@ back and appends a `branch_summary`, so in-file alternatives are preserved.
 
 ## Context compaction
 
-Oxide compacts Pi-style once the outgoing context approaches the model window. It walks back from the newest message until
-`keepRecentTokens` is reached and summarizes the older span into a structured
+Oxide compacts Pi-style once the outgoing context approaches the model window.
+It walks back from the newest message until `keepRecentTokens` is reached and
+summarizes the older span into a structured
 handoff (goal, progress, decisions, next steps, critical context, plus
 cumulative read/modified file lists), keeping the most recent tokens verbatim.
 A cut never separates a tool call from its result.
@@ -770,7 +831,8 @@ Runtime state lives under the platform oxide config directory:
 - Project trust: `trust.json`
 - Plugins: `plugins/` (installed plugin packages, marketplaces, and state)
 - Portkey usage bar: `portkey-usage.json` (mode `0600`; see `OXIDE_USAGE_FILE`)
-- Settings: `settings.json` (e.g. `defaultProjectTrust`, `compaction`, `modelPrices`)
+- Settings: `settings.json` (e.g. `defaultProjectTrust`, `compaction`,
+  `modelPrices`, `hideThinkingBlock`)
 - Themes: `themes/<name>.json`
 - Truncated tool output: `truncated/` (retained 7 days; see `OXIDE_TRUNCATION_DIR`)
 - Context compaction config: `compaction` in `settings.json` / `.oxide/settings.json`

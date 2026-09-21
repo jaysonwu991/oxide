@@ -1,6 +1,6 @@
 use crate::config::Config;
 use crate::ecosystem::AgentMode;
-use crate::llm::{FunctionSpec, LlmClient, Message, ToolCall, ToolSpec};
+use crate::llm::{FunctionSpec, LlmClient, Message, Retry, StreamHooks, ToolCall, ToolSpec};
 use crate::lsp::LspManager;
 use crate::mcp::McpRegistry;
 use crate::memory::QueryScope;
@@ -55,6 +55,10 @@ impl Steering {
             .map(|mut queue| std::mem::take(&mut *queue))
             .unwrap_or_default()
     }
+
+    pub fn len(&self) -> usize {
+        self.queue.lock().map(|queue| queue.len()).unwrap_or(0)
+    }
 }
 
 #[derive(Clone)]
@@ -72,6 +76,8 @@ pub struct Runtime {
 #[derive(Debug, Clone)]
 pub enum AgentEvent {
     Text(String),
+    /// A fragment of the model's reasoning, streamed before its answer.
+    ThinkingDelta(String),
     Thought {
         millis: u64,
     },
@@ -80,8 +86,21 @@ pub enum AgentEvent {
     ThoughtDone {
         millis: u64,
     },
+    /// A transient provider failure that is about to be retried.
+    Retrying {
+        attempt: u32,
+        max: u32,
+        delay_ms: u64,
+    },
     ToolCall {
         name: String,
+        args: String,
+    },
+    /// A nested subagent's current tool call. A `task` run otherwise emits
+    /// nothing until it returns, which is indistinguishable from a hang.
+    SubagentActivity {
+        agent: String,
+        tool: String,
         args: String,
     },
     ToolProgress {
@@ -190,14 +209,31 @@ pub fn run_subagent(
                     report.push_str(&delta);
                     let _ = tx.send(AgentEvent::Text(delta));
                 }
+                AgentEvent::ThinkingDelta(delta) => {
+                    let _ = tx.send(AgentEvent::ThinkingDelta(delta));
+                }
                 AgentEvent::Thought { millis } => {
                     let _ = tx.send(AgentEvent::Thought { millis });
                 }
                 AgentEvent::ThoughtDone { millis } => {
                     let _ = tx.send(AgentEvent::ThoughtDone { millis });
                 }
+                AgentEvent::Retrying {
+                    attempt,
+                    max,
+                    delay_ms,
+                } => {
+                    let _ = tx.send(AgentEvent::Retrying {
+                        attempt,
+                        max,
+                        delay_ms,
+                    });
+                }
                 AgentEvent::ToolCall { name, args } => {
                     let _ = tx.send(AgentEvent::ToolCall { name, args });
+                }
+                AgentEvent::SubagentActivity { agent, tool, args } => {
+                    let _ = tx.send(AgentEvent::SubagentActivity { agent, tool, args });
                 }
                 AgentEvent::ToolProgress { name, chunk } => {
                     let _ = tx.send(AgentEvent::ToolProgress { name, chunk });
@@ -379,23 +415,38 @@ async fn run_loop(
 
         let started = std::time::Instant::now();
         let mut thought_sent = false;
-        let turn = match client
-            .stream_chat(&request, &tool_specs, |delta| {
-                if !thought_sent {
-                    thought_sent = true;
-                    let _ = tx.send(AgentEvent::Thought {
-                        millis: started.elapsed().as_millis() as u64,
-                    });
+        let mut on_text = |delta: String| {
+            if !thought_sent {
+                thought_sent = true;
+                let _ = tx.send(AgentEvent::Thought {
+                    millis: started.elapsed().as_millis() as u64,
+                });
+            }
+            let _ = tx.send(AgentEvent::Text(delta));
+        };
+        let mut on_thinking = |delta: String| {
+            let _ = tx.send(AgentEvent::ThinkingDelta(delta));
+        };
+        let mut on_retry = |retry: Retry| {
+            let _ = tx.send(AgentEvent::Retrying {
+                attempt: retry.attempt,
+                max: retry.max,
+                delay_ms: retry.delay.as_millis() as u64,
+            });
+        };
+        let turn = {
+            let mut hooks = StreamHooks {
+                text: &mut on_text,
+                thinking: &mut on_thinking,
+                retry: &mut on_retry,
+            };
+            match client.stream_chat(&request, &tool_specs, &mut hooks).await {
+                Ok(turn) => turn,
+                Err(err) => {
+                    let _ = tx.send(AgentEvent::Error(format!("{err:#}")));
+                    let _ = tx.send(AgentEvent::Finished(messages));
+                    return;
                 }
-                let _ = tx.send(AgentEvent::Text(delta));
-            })
-            .await
-        {
-            Ok(turn) => turn,
-            Err(err) => {
-                let _ = tx.send(AgentEvent::Error(format!("{err:#}")));
-                let _ = tx.send(AgentEvent::Finished(messages));
-                return;
             }
         };
         if !thought_sent {
@@ -533,7 +584,8 @@ async fn run_loop(
                             }));
                             let started = std::time::Instant::now();
                             let mut output =
-                                dispatch(&config, &cwd, &runtime, &call, depth, &progress).await;
+                                dispatch(&config, &cwd, &runtime, &tx, &call, depth, &progress)
+                                    .await;
                             if let Some(result) =
                                 runtime.plugins.tool_after(&name, &args, &output.text).await
                             {
@@ -613,7 +665,7 @@ async fn run_loop(
                 .await
                 {
                     snapshot_needed |= tool_may_mutate_workspace(&name);
-                    dispatch(&config, &cwd, &runtime, &call, depth, &progress).await
+                    dispatch(&config, &cwd, &runtime, &tx, &call, depth, &progress).await
                 } else {
                     tools::ToolOutput::text(format!("error: permission denied for `{name}`"))
                 };
@@ -774,6 +826,7 @@ async fn dispatch(
     config: &Config,
     cwd: &Path,
     runtime: &Runtime,
+    events: &UnboundedSender<AgentEvent>,
     call: &crate::llm::ToolCall,
     depth: usize,
     progress: &tools::Progress,
@@ -786,11 +839,27 @@ async fn dispatch(
     }
     match call.function.name.as_str() {
         "task" => tools::ToolOutput::text(
-            task(config, cwd, runtime, &call.function.arguments, depth).await,
+            task(
+                config,
+                cwd,
+                runtime,
+                events,
+                &call.function.arguments,
+                depth,
+            )
+            .await,
         ),
         "skill" => tools::ToolOutput::text(skill(config, &call.function.arguments)),
         "command" => tools::ToolOutput::text(
-            command(config, cwd, runtime, &call.function.arguments, depth).await,
+            command(
+                config,
+                cwd,
+                runtime,
+                events,
+                &call.function.arguments,
+                depth,
+            )
+            .await,
         ),
         "memory" => tools::ToolOutput::text(memory(config, &call.function.arguments)),
         "diagnostics" => lsp_diagnostics(runtime, cwd, &call.function.arguments).await,
@@ -830,10 +899,11 @@ async fn task(
     config: &Config,
     cwd: &Path,
     runtime: &Runtime,
+    events: &UnboundedSender<AgentEvent>,
     arguments: &str,
     depth: usize,
 ) -> String {
-    match task_inner(config, cwd, runtime, arguments, depth).await {
+    match task_inner(config, cwd, runtime, events, arguments, depth).await {
         Ok(output) => output,
         Err(err) => format!("error: {err:#}"),
     }
@@ -843,6 +913,7 @@ async fn task_inner(
     config: &Config,
     cwd: &Path,
     runtime: &Runtime,
+    events: &UnboundedSender<AgentEvent>,
     arguments: &str,
     depth: usize,
 ) -> Result<String> {
@@ -873,6 +944,7 @@ async fn task_inner(
         anyhow::bail!("agent `{name}` is primary and cannot be used as a subagent");
     }
 
+    let agent_name = agent.name.clone();
     let mut sub = config.clone();
     sub.active_agent = Some(agent);
 
@@ -898,12 +970,23 @@ async fn task_inner(
             AgentEvent::Text(delta) => output.push_str(&delta),
             AgentEvent::Error(message) => error = Some(message),
             AgentEvent::Finished(_) => break,
-            AgentEvent::ToolCall { .. }
-            | AgentEvent::ToolProgress { .. }
+            // The subagent's own tool traffic feeds the caller's progress view;
+            // only its final report becomes the tool result.
+            AgentEvent::ToolCall { name, args } => {
+                let _ = events.send(AgentEvent::SubagentActivity {
+                    agent: agent_name.clone(),
+                    tool: name,
+                    args,
+                });
+            }
+            AgentEvent::ToolProgress { .. }
             | AgentEvent::ToolResult { .. }
             | AgentEvent::Usage { .. }
             | AgentEvent::Compaction { .. }
             | AgentEvent::Branch { .. }
+            | AgentEvent::SubagentActivity { .. }
+            | AgentEvent::ThinkingDelta(_)
+            | AgentEvent::Retrying { .. }
             | AgentEvent::Thought { .. }
             | AgentEvent::ThoughtDone { .. } => {}
         }
@@ -1008,10 +1091,11 @@ async fn command(
     config: &Config,
     cwd: &Path,
     runtime: &Runtime,
+    events: &UnboundedSender<AgentEvent>,
     arguments: &str,
     depth: usize,
 ) -> String {
-    match command_inner(config, cwd, runtime, arguments, depth).await {
+    match command_inner(config, cwd, runtime, events, arguments, depth).await {
         Ok(output) => output,
         Err(err) => format!("error: {err:#}"),
     }
@@ -1021,6 +1105,7 @@ async fn command_inner(
     config: &Config,
     cwd: &Path,
     runtime: &Runtime,
+    events: &UnboundedSender<AgentEvent>,
     arguments: &str,
     depth: usize,
 ) -> Result<String> {
@@ -1063,7 +1148,7 @@ async fn command_inner(
             .clone()
             .context("subtask command requires an `agent` in its frontmatter")?;
         let task_args = json!({ "prompt": resolved.prompt, "subagent_type": agent }).to_string();
-        return task_inner(config, cwd, runtime, &task_args, depth).await;
+        return task_inner(config, cwd, runtime, events, &task_args, depth).await;
     }
     if let Some(agent_name) = &resolved.agent {
         if let Some(agent) = config.ecosystem.agent(agent_name) {
@@ -1378,11 +1463,13 @@ mod tests {
                 subtask: false,
             });
         let runtime = test_runtime().await;
+        let (events, _rx) = tokio::sync::mpsc::unbounded_channel();
 
         let output = command(
             &config,
             Path::new("."),
             &runtime,
+            &events,
             r#"{"name":"/lint","arguments":"src"}"#,
             0,
         )
@@ -1393,6 +1480,7 @@ mod tests {
             &config,
             Path::new("."),
             &runtime,
+            &events,
             r#"{"name":"missing"}"#,
             0,
         )

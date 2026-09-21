@@ -126,7 +126,24 @@ pub fn event_json(event: &AgentEvent) -> Option<Value> {
     let value = match event {
         AgentEvent::Thought { .. } => json!({ "type": "thinking" }),
         AgentEvent::ThoughtDone { .. } => return None,
+        AgentEvent::ThinkingDelta(delta) => json!({
+            "type": "message_update",
+            "assistantMessageEvent": { "type": "thinking_delta", "delta": delta }
+        }),
+        AgentEvent::Retrying {
+            attempt,
+            max,
+            delay_ms,
+        } => json!({
+            "type": "auto_retry_start",
+            "attempt": attempt,
+            "maxAttempts": max,
+            "delayMs": delay_ms,
+        }),
         AgentEvent::Branch { .. } => return None,
+        // Nested `task` activity is progress for the interactive view; the
+        // task's own result already carries everything a script needs.
+        AgentEvent::SubagentActivity { .. } => return None,
         AgentEvent::Text(delta) => json!({
             "type": "message_update",
             "assistantMessageEvent": { "type": "text_delta", "delta": delta }
@@ -318,6 +335,19 @@ mod tests {
         })
         .unwrap();
         assert_eq!(result["isError"], true);
+
+        let thinking = event_json(&AgentEvent::ThinkingDelta("weighing".into())).unwrap();
+        assert_eq!(thinking["assistantMessageEvent"]["type"], "thinking_delta");
+        assert_eq!(thinking["assistantMessageEvent"]["delta"], "weighing");
+
+        let retry = event_json(&AgentEvent::Retrying {
+            attempt: 1,
+            max: 3,
+            delay_ms: 500,
+        })
+        .unwrap();
+        assert_eq!(retry["type"], "auto_retry_start");
+        assert_eq!(retry["maxAttempts"], 3);
     }
 
     #[test]

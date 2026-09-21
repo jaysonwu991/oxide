@@ -12,7 +12,7 @@
 //! call/result pair.
 
 use crate::config::Config;
-use crate::llm::{LlmClient, Message, Usage};
+use crate::llm::{LlmClient, Message, Retry, StreamHooks, Usage};
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -422,10 +422,19 @@ async fn generate_summary(
     let messages = vec![Message::system(SUMMARY_SYSTEM_PROMPT), Message::user(user)];
     let client = LlmClient::new(config.clone());
     let mut summary = String::new();
-    let turn = client
-        .stream_chat(&messages, &[], |delta| summary.push_str(&delta))
-        .await
-        .context("summarizing conversation")?;
+    let turn = {
+        let mut ignore_thinking = |_: String| {};
+        let mut ignore_retry = |_: Retry| {};
+        let mut hooks = StreamHooks {
+            text: &mut |delta: String| summary.push_str(&delta),
+            thinking: &mut ignore_thinking,
+            retry: &mut ignore_retry,
+        };
+        client
+            .stream_chat(&messages, &[], &mut hooks)
+            .await
+            .context("summarizing conversation")?
+    };
     Ok((summary.trim().to_string(), turn.usage))
 }
 

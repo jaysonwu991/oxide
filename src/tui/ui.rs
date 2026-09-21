@@ -1,6 +1,6 @@
 use crate::config::Reasoning;
 use crate::tools::DiffPreview;
-use crate::tui::app::{App, ChatItem, ConnectStep, Selection};
+use crate::tui::app::{App, ChatItem, ConnectStep, Selection, SubagentState};
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span, Text};
@@ -202,6 +202,10 @@ fn draw_connect(frame: &mut Frame, app: &App) {
         ConnectStep::Provider => " connect ",
         ConnectStep::Key { provider } => provider.as_str(),
     };
+    let connected = match &state.step {
+        ConnectStep::Provider => false,
+        ConnectStep::Key { provider } => state.is_connected(provider),
+    };
 
     let mut lines = vec![Line::from(Span::styled(
         prompt,
@@ -219,13 +223,27 @@ fn draw_connect(frame: &mut Frame, app: &App) {
             } else {
                 Style::default().fg(app.theme.assistant)
             };
-            lines.push(Line::from(vec![
+            let mut spans = vec![
                 Span::styled(format!(" {marker} {:<10}", option.label), style),
                 Span::styled(option.description, Style::default().fg(app.theme.info)),
-            ]));
+            ];
+            if state.is_connected(option.name) {
+                spans.push(Span::styled(
+                    " · connected",
+                    Style::default().fg(app.theme.success),
+                ));
+            }
+            lines.push(Line::from(spans));
         }
     }
     lines.push(Line::from(""));
+    if connected {
+        lines.push(Line::from(Span::styled(
+            "This provider is connected — Enter reuses the stored key.",
+            Style::default().fg(app.theme.success),
+        )));
+        lines.push(Line::from(""));
+    }
     if let Some(error) = &state.error {
         lines.push(Line::from(Span::styled(
             format!("error: {error}"),
@@ -239,9 +257,12 @@ fn draw_connect(frame: &mut Frame, app: &App) {
     ]));
     lines.push(Line::from(""));
     lines.push(Line::from(Span::styled(
-        match state.step {
-            ConnectStep::Provider => "↑/↓ choose · Enter continue · Esc cancel",
-            ConnectStep::Key { .. } => "Enter connect · Backspace back · Esc cancel",
+        match (state.step.clone(), connected) {
+            (ConnectStep::Provider, _) => "↑/↓ choose · Enter continue · Esc cancel",
+            (ConnectStep::Key { .. }, true) => {
+                "Enter use stored key · type to replace it · Backspace back · Esc cancel"
+            }
+            (ConnectStep::Key { .. }, false) => "Enter connect · Backspace back · Esc cancel",
         },
         Style::default().fg(app.theme.info),
     )));
@@ -279,7 +300,7 @@ fn draw_models(frame: &mut Frame, app: &App) {
     let mut lines: Vec<Line> = vec![
         Line::from(""),
         Line::from(Span::styled(
-            "Only showing models from configured providers. Use /login to add providers.",
+            "Models from every logged-in provider. Use /login to add more.",
             Style::default().fg(app.theme.tool),
         )),
         Line::from(""),
@@ -312,23 +333,23 @@ fn draw_models(frame: &mut Frame, app: &App) {
             .saturating_sub(visible / 2)
             .min(models.len().saturating_sub(visible));
         let end = start + visible;
-        for (index, model) in models[start..end].iter().enumerate() {
+        for (index, choice) in models[start..end].iter().enumerate() {
             let absolute = start + index;
             let is_selected = absolute == selected;
-            let is_current = *model == state.current.as_str();
-            let is_default = state.default.as_deref() == Some(*model);
+            let is_current = choice.model == state.current && choice.provider == state.provider;
+            let is_default = state.default.as_deref() == Some(choice.model.as_str());
             let mut spans = vec![
                 Span::styled(if is_selected { "→ " } else { "  " }, accent),
                 Span::styled(if is_current { "✓ " } else { "  " }, accent),
                 Span::styled(
-                    (*model).to_string(),
+                    choice.model.clone(),
                     if is_selected {
                         accent
                     } else {
                         Style::default().fg(app.theme.assistant)
                     },
                 ),
-                Span::styled(format!(" [{}]", state.provider), dim),
+                Span::styled(format!(" [{}]", choice.provider), dim),
             ];
             if is_default {
                 spans.push(Span::styled(" · default", dim));
@@ -345,7 +366,7 @@ fn draw_models(frame: &mut Frame, app: &App) {
         lines.push(Line::from(Span::styled(
             format!(
                 "  Model Name: {}",
-                crate::config::model_label(models[selected])
+                crate::config::model_label(&models[selected].model)
             ),
             dim,
         )));
@@ -1147,10 +1168,11 @@ fn sync_lines(app: &mut App, width: usize) {
     app.lines.truncate(cut);
     app.line_offsets.truncate(start);
 
-    let running = app
-        .running_tool
-        .as_ref()
-        .map(|(name, started)| (name.clone(), started.elapsed()));
+    let running = app.running_tool.as_ref().map(|(name, started)| Running {
+        name: name.as_str(),
+        elapsed: started.elapsed(),
+        subagent: app.subagent.as_ref(),
+    });
     for index in start..count {
         let offset = app.lines.len();
         app.line_offsets.push(offset);
@@ -1158,10 +1180,9 @@ fn sync_lines(app: &mut App, width: usize) {
             &app.items[index],
             width,
             app.expand_tools,
+            app.show_thinking_blocks,
             &app.theme,
-            running
-                .as_ref()
-                .map(|(name, elapsed)| (name.as_str(), *elapsed)),
+            running,
             &mut app.lines,
         );
         if app.lines.len() > offset {
@@ -1171,12 +1192,22 @@ fn sync_lines(app: &mut App, width: usize) {
     app.render_dirty_from = None;
 }
 
+/// The tool call currently running: its name, elapsed time, and the subagent it
+/// spawned, if it is a `task` call.
+#[derive(Clone, Copy)]
+struct Running<'a> {
+    name: &'a str,
+    elapsed: std::time::Duration,
+    subagent: Option<&'a SubagentState>,
+}
+
 fn render_item_themed(
     item: &ChatItem,
     width: usize,
     expand_tools: bool,
+    expand_thinking: bool,
     theme: &crate::theme::Theme,
-    running: Option<(&str, std::time::Duration)>,
+    running: Option<Running<'_>>,
     lines: &mut Vec<Line<'static>>,
 ) {
     let bold = Modifier::BOLD;
@@ -1189,6 +1220,38 @@ fn render_item_themed(
                 Span::styled(" ", Style::default()),
             ];
             lines.extend(wrapped_with_prefix(prefix, text, width, Style::default()));
+        }
+        ChatItem::Thinking { text, millis } => {
+            // Pi renders reasoning as italic, muted text with no panel or
+            // background, and collapses it to a bare label once hidden.
+            let header_style = Style::default().fg(theme.thinking_text);
+            let body_style = header_style.add_modifier(Modifier::ITALIC);
+            let label = match millis {
+                Some(millis) => format!("Thought for {}", format_duration(*millis)),
+                None => "Thinking".to_string(),
+            };
+            let mut header = vec![
+                Span::styled("✦ ", header_style),
+                Span::styled(label, header_style.add_modifier(bold)),
+            ];
+            let empty = text.trim().is_empty();
+            if !expand_thinking && !empty {
+                header.push(Span::styled(" · ", Style::default().fg(theme.dim)));
+                header.push(Span::styled(
+                    "Ctrl+T to expand",
+                    Style::default().fg(theme.dim),
+                ));
+            }
+            lines.extend(wrapped_with_prefix(header, "", width, Style::default()));
+            if empty || !expand_thinking {
+                return;
+            }
+            for line in wrap(text.trim(), width.saturating_sub(2).max(1)) {
+                lines.push(Line::from(vec![
+                    Span::raw("  "),
+                    Span::styled(line, body_style),
+                ]));
+            }
         }
         ChatItem::Assistant(text) => {
             let prefix = vec![
@@ -1219,16 +1282,22 @@ fn render_item_themed(
                 panel.extend(action_lines(verb, &path, color, bold, inner));
             } else if let Some(command) = bash_command(name, args) {
                 let mut subject = format!("{command}{}", bash_timeout_suffix(name, args));
-                if let Some((running_name, elapsed)) = running {
-                    if running_name == name {
-                        subject.push_str(&format!(
-                            " · Elapsed {}",
-                            format_duration(elapsed.as_millis() as u64)
-                        ));
-                    }
+                if let Some(elapsed) = running.as_ref().filter(|active| active.name == name) {
+                    subject.push_str(&format!(
+                        " · Elapsed {}",
+                        format_duration(elapsed.elapsed.as_millis() as u64)
+                    ));
                 }
                 panel.extend(action_lines("Run", &subject, theme.tool, bold, inner));
             } else {
+                let mut subject = format!(" {}", tool_arg_summary(name, args));
+                let active = running.as_ref().filter(|active| active.name == name);
+                if let Some(active) = active {
+                    subject.push_str(&format!(
+                        " · Elapsed {}",
+                        format_duration(active.elapsed.as_millis() as u64)
+                    ));
+                }
                 panel.extend(wrapped_with_prefix(
                     vec![
                         Span::styled("⚙ ", Style::default().fg(theme.tool)),
@@ -1237,10 +1306,28 @@ fn render_item_themed(
                             Style::default().fg(theme.tool).add_modifier(bold),
                         ),
                     ],
-                    &format!(" {}", tool_arg_summary(name, args)),
+                    &subject,
                     inner,
                     Style::default().fg(theme.info),
                 ));
+                if let Some(state) = active.and_then(|active| active.subagent) {
+                    panel.extend(wrapped_with_prefix(
+                        vec![
+                            Span::styled("↳ ", Style::default().fg(theme.info)),
+                            Span::styled(
+                                state.agent.clone(),
+                                Style::default().fg(theme.info).add_modifier(bold),
+                            ),
+                        ],
+                        &format!(
+                            " · {} · {} call(s)",
+                            activity_summary(&state.tool, &state.args),
+                            state.tools
+                        ),
+                        inner,
+                        Style::default().fg(theme.info),
+                    ));
+                }
             }
             push_bg_panel(lines, panel, width, theme.tool_pending_bg);
         }
@@ -1473,6 +1560,14 @@ fn render_item_themed(
                 Style::default().fg(theme.info),
             );
         }
+        ChatItem::Status(text) => {
+            push_wrapped(
+                lines,
+                text,
+                width,
+                Style::default().fg(theme.info).add_modifier(Modifier::DIM),
+            );
+        }
     }
 }
 
@@ -1537,6 +1632,7 @@ fn render_item(item: &ChatItem, width: usize, expand_tools: bool, lines: &mut Ve
         item,
         width,
         expand_tools,
+        true,
         &crate::theme::Theme::dark(),
         None,
         lines,
@@ -1563,14 +1659,18 @@ fn draw_input(frame: &mut Frame, app: &App, area: Rect) {
             .busy_since
             .map(|start| start.elapsed().as_secs())
             .unwrap_or(0);
-        vec![Span::styled(
-            format!(
-                " {} {} · {secs}s · Esc clear · /exit quit ",
-                spinner(app.busy_since),
-                app.status
-            ),
-            Style::default().fg(app.theme.tool),
-        )]
+        let mut text = format!(" {} {} · {secs}s", spinner(app.busy_since), app.status);
+        // Pi advertises how to pull queued messages back into the editor
+        // (`app.message.dequeue`) while they are still waiting.
+        let queued = app.queued_count();
+        if queued > 0 {
+            text.push_str(&format!(
+                " · {queued} queued · {} to edit",
+                crate::tui::dequeue_key_label()
+            ));
+        }
+        text.push_str(" · Esc clear · /exit quit ");
+        vec![Span::styled(text, Style::default().fg(app.theme.tool))]
     } else if app.attachments.is_empty() {
         Vec::new()
     } else {
@@ -1809,6 +1909,24 @@ fn format_duration(millis: u64) -> String {
 /// Summarize a tool call's arguments for display. File tools otherwise dump
 /// their entire payload (e.g. `write_file` carries the full file content), so
 /// show just the path and a compact size hint instead.
+/// A compact one-line description of what a subagent is doing, for the `task`
+/// panel under the call that spawned it.
+fn activity_summary(tool: &str, args: &str) -> String {
+    if let Some(command) = bash_command(tool, args) {
+        return truncate(&command, 60);
+    }
+    if !is_file_tool(tool) {
+        if let Ok(value) = serde_json::from_str::<serde_json::Value>(args) {
+            for key in ["pattern", "path", "url", "query", "prompt"] {
+                if let Some(text) = value.get(key).and_then(|value| value.as_str()) {
+                    return truncate(text, 60);
+                }
+            }
+        }
+    }
+    truncate(tool_arg_summary(tool, args).trim(), 60)
+}
+
 fn tool_arg_summary(name: &str, args: &str) -> String {
     if !is_file_tool(name) {
         return args.to_string();
@@ -2365,6 +2483,111 @@ mod tests {
         );
     }
 
+    #[test]
+    fn streaming_thinking_block_shows_its_body_italic() {
+        let theme = crate::theme::Theme::dark();
+        let mut lines = Vec::new();
+        render_item_themed(
+            &ChatItem::Thinking {
+                text: "because the file moved".into(),
+                millis: None,
+            },
+            80,
+            true,
+            true,
+            &theme,
+            None,
+            &mut lines,
+        );
+        assert_eq!(line_text(&lines[0]), "✦ Thinking");
+        assert_eq!(line_text(&lines[1]), "  because the file moved");
+        assert_eq!(lines[0].spans[1].style.fg, Some(theme.thinking_text));
+        assert!(lines[1]
+            .spans
+            .iter()
+            .any(|span| span.style.add_modifier.contains(Modifier::ITALIC)));
+    }
+
+    #[test]
+    fn finished_thinking_block_shows_a_duration() {
+        let mut lines = Vec::new();
+        render_item(
+            &ChatItem::Thinking {
+                text: "reasoning".into(),
+                millis: Some(2400),
+            },
+            80,
+            true,
+            &mut lines,
+        );
+        assert_eq!(line_text(&lines[0]), "✦ Thought for 2.4s");
+    }
+
+    #[test]
+    fn hidden_thinking_block_collapses_to_a_hint() {
+        let theme = crate::theme::Theme::dark();
+        let mut lines = Vec::new();
+        render_item_themed(
+            &ChatItem::Thinking {
+                text: "because the file moved".into(),
+                millis: Some(1500),
+            },
+            80,
+            true,
+            false,
+            &theme,
+            None,
+            &mut lines,
+        );
+        assert_eq!(lines.len(), 1);
+        assert_eq!(
+            line_text(&lines[0]),
+            "✦ Thought for 1.5s · Ctrl+T to expand"
+        );
+    }
+
+    #[test]
+    fn empty_thinking_block_renders_only_its_label() {
+        let theme = crate::theme::Theme::dark();
+        let mut lines = Vec::new();
+        render_item_themed(
+            &ChatItem::Thinking {
+                text: "  ".into(),
+                millis: None,
+            },
+            80,
+            true,
+            true,
+            &theme,
+            None,
+            &mut lines,
+        );
+        assert_eq!(lines.len(), 1);
+        assert_eq!(line_text(&lines[0]), "✦ Thinking");
+    }
+
+    #[test]
+    fn thinking_body_wraps_within_the_width() {
+        let mut lines = Vec::new();
+        render_item(
+            &ChatItem::Thinking {
+                text: "a long stretch of reasoning that must wrap onto several narrow lines".into(),
+                millis: None,
+            },
+            30,
+            true,
+            &mut lines,
+        );
+        for line in &lines {
+            assert!(
+                line_text(line).chars().count() <= 30,
+                "{:?}",
+                line_text(line)
+            );
+        }
+        assert!(lines.len() > 2);
+    }
+
     fn line_text(line: &Line) -> String {
         line.spans
             .iter()
@@ -2862,6 +3085,149 @@ mod tests {
         assert_eq!(format_duration(12000), "12s");
     }
 
+    fn running<'a>(name: &'a str, millis: u64) -> Running<'a> {
+        Running {
+            name,
+            elapsed: std::time::Duration::from_millis(millis),
+            subagent: None,
+        }
+    }
+
+    #[test]
+    fn running_task_shows_elapsed_and_the_subagent_activity() {
+        let theme = crate::theme::Theme::dark();
+        let state = SubagentState {
+            agent: "rust-reviewer".into(),
+            tool: "grep".into(),
+            args: r#"{"pattern":"fn resolve_tool"}"#.into(),
+            tools: 7,
+        };
+        let mut lines = Vec::new();
+        render_item_themed(
+            &ChatItem::Tool {
+                name: "task".into(),
+                args: r#"{"prompt":"review the diff","subagent_type":"rust-reviewer"}"#.into(),
+            },
+            100,
+            false,
+            true,
+            &theme,
+            Some(Running {
+                name: "task",
+                elapsed: std::time::Duration::from_millis(42_000),
+                subagent: Some(&state),
+            }),
+            &mut lines,
+        );
+        let text: Vec<String> = lines.iter().map(line_text).collect();
+        assert!(
+            text.iter().any(|line| line.contains("Elapsed 42s")),
+            "{text:?}"
+        );
+        let activity = text
+            .iter()
+            .find(|line| line.contains('↳'))
+            .unwrap_or_else(|| panic!("no activity line in {text:?}"));
+        assert!(activity.contains("rust-reviewer"), "{activity}");
+        assert!(activity.contains("fn resolve_tool"), "{activity}");
+        assert!(activity.contains("7 call(s)"), "{activity}");
+    }
+
+    #[test]
+    fn the_running_tool_panel_ticks_its_elapsed() {
+        let mut app = App::new("m".into(), "/tmp".into(), Mode::Build, Reasoning::Auto);
+        app.items.push(ChatItem::Tool {
+            name: "task".into(),
+            args: r#"{"prompt":"review","subagent_type":"rust-reviewer"}"#.into(),
+        });
+        app.running_tool = Some(("task".into(), std::time::Instant::now()));
+        sync_lines(&mut app, 100);
+        assert!(
+            panel_line(&app.lines).contains("Elapsed 0ms"),
+            "{:?}",
+            panel_line(&app.lines)
+        );
+
+        // What the 500ms ticker does: age the start time, mark the panel dirty,
+        // and re-render it.
+        let started = std::time::Instant::now() - std::time::Duration::from_secs(3);
+        app.running_tool = Some(("task".into(), started));
+        app.mark_running_tool_dirty();
+        sync_lines(&mut app, 100);
+        assert!(
+            panel_line(&app.lines).contains("Elapsed 3s"),
+            "{:?}",
+            panel_line(&app.lines)
+        );
+    }
+
+    #[test]
+    fn a_status_tip_renders_dim_without_a_bullet() {
+        let mut lines = Vec::new();
+        render_item_themed(
+            &ChatItem::Status("copied 12 chars".into()),
+            80,
+            false,
+            true,
+            &crate::theme::Theme::dark(),
+            None,
+            &mut lines,
+        );
+        assert_eq!(lines.len(), 1);
+        assert_eq!(line_text(&lines[0]), "copied 12 chars");
+        let style = lines[0].spans[0].style;
+        assert!(style.add_modifier.contains(Modifier::DIM));
+    }
+
+    #[test]
+    fn a_running_tool_with_queued_messages_advertises_the_dequeue_key() {
+        let mut app = App::new("m".into(), "/tmp".into(), Mode::Build, Reasoning::Auto);
+        app.busy = true;
+        app.busy_since = Some(std::time::Instant::now());
+        app.status = "thinking...".into();
+        app.follow_ups
+            .push(crate::llm::Message::user("one more thing"));
+
+        let mut terminal =
+            ratatui::Terminal::new(ratatui::backend::TestBackend::new(120, 12)).unwrap();
+        terminal.draw(|frame| draw(frame, &mut app)).unwrap();
+        let buffer = terminal.backend().buffer();
+        let row: String = buffer
+            .content()
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect::<Vec<_>>()
+            .chunks(120)
+            .map(|row| row.concat())
+            .find(|row| row.contains("queued"))
+            .expect("a queued hint row");
+        assert!(row.contains("1 queued"), "{row}");
+        assert!(row.contains(crate::tui::dequeue_key_label()), "{row}");
+    }
+
+    #[test]
+    fn a_finished_tool_has_no_elapsed_or_activity() {
+        let mut lines = Vec::new();
+        render_item_themed(
+            &ChatItem::Tool {
+                name: "task".into(),
+                args: r#"{"prompt":"x","subagent_type":"rust-reviewer"}"#.into(),
+            },
+            100,
+            false,
+            true,
+            &crate::theme::Theme::dark(),
+            None,
+            &mut lines,
+        );
+        let text: Vec<String> = lines.iter().map(line_text).collect();
+        assert!(
+            !text.iter().any(|line| line.contains("Elapsed")),
+            "{text:?}"
+        );
+        assert!(!text.iter().any(|line| line.contains('↳')), "{text:?}");
+    }
+
     #[test]
     fn running_bash_shows_live_elapsed() {
         let mut lines = Vec::new();
@@ -2872,8 +3238,9 @@ mod tests {
             },
             80,
             false,
+            true,
             &crate::theme::Theme::dark(),
-            Some(("bash", std::time::Duration::from_millis(2400))),
+            Some(running("bash", 2400)),
             &mut lines,
         );
         assert_eq!(panel_line(&lines), "→ Run sleep 30 · Elapsed 2.4s");
@@ -2887,8 +3254,9 @@ mod tests {
             },
             80,
             false,
+            true,
             &crate::theme::Theme::dark(),
-            Some(("grep", std::time::Duration::from_millis(2400))),
+            Some(running("grep", 2400)),
             &mut lines,
         );
         assert_eq!(panel_line(&lines), "→ Run ls");
@@ -2906,7 +3274,7 @@ mod tests {
     #[test]
     fn model_picker_matches_pi_layout() {
         use crate::config::{Mode, Reasoning};
-        use crate::tui::app::ModelsState;
+        use crate::tui::app::{ModelChoice, ModelsState};
         use ratatui::backend::TestBackend;
         use ratatui::Terminal;
 
@@ -2917,7 +3285,11 @@ mod tests {
             Reasoning::Auto,
         );
         app.models = Some(ModelsState::ready(
-            vec!["deepseek-flash".to_string(), "deepseek-v4-pro".to_string()],
+            vec![
+                ModelChoice::new("deepseek", "deepseek-flash"),
+                ModelChoice::new("deepseek", "deepseek-v4-pro"),
+                ModelChoice::new("portkey", "deepseek-flash"),
+            ],
             "deepseek".to_string(),
             "deepseek-flash".to_string(),
             Some("deepseek-v4-pro".to_string()),
@@ -2934,10 +3306,9 @@ mod tests {
             })
             .collect();
 
-        assert!(text.contains(
-            "Only showing models from configured providers. Use /login to add providers."
-        ));
+        assert!(text.contains("Models from every logged-in provider. Use /login to add more."));
         assert!(text.contains("deepseek-flash [deepseek]"));
+        assert!(text.contains("deepseek-flash [portkey]"));
         assert!(text.contains("deepseek-v4-pro [deepseek] · default"));
         assert!(text.contains("Model Name: DeepSeek V4.1 Flash"));
         assert!(text.contains("Model catalogs refreshed."));
