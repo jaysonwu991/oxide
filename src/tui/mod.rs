@@ -13,8 +13,8 @@ use crate::plugin::PluginHost;
 use crate::session::SessionLog;
 use crate::snapshots::Snapshots;
 use crate::tui::app::{
-    App, ChatItem, CommandHint, ConnectState, ConnectStep, ModelChoice, ModelsState, Selection,
-    SessionsState, SubagentState, TrustState,
+    App, ChatItem, CommandHint, ConnectState, ConnectStep, MarketplacePane, MarketplacesState,
+    ModelChoice, ModelsState, Selection, SessionsState, SubagentState, TrustState,
 };
 use anyhow::{Context, Result};
 use crossterm::event::{
@@ -34,6 +34,13 @@ use std::sync::Arc;
 use tokio::sync::mpsc::{unbounded_channel, UnboundedReceiver, UnboundedSender};
 
 const MAX_TOOL_PROGRESS_BYTES: usize = 6_000;
+
+/// The result of an async marketplace action (add or install), delivered back
+/// to the event loop so the overlay can refresh and show the outcome.
+enum MarketplaceOutcome {
+    Message(String),
+    Error(String),
+}
 
 pub async fn run(
     config: Config,
@@ -216,6 +223,7 @@ async fn event_loop(
     let (models_tx, mut models_rx) = unbounded_channel::<ModelCatalogs>();
     let (mcps_tx, mut mcps_rx) = unbounded_channel::<Vec<(String, String, McpStatus)>>();
     let (plugins_tx, mut plugins_rx) = unbounded_channel::<String>();
+    let (marketplaces_tx, mut marketplaces_rx) = unbounded_channel::<MarketplaceOutcome>();
     let (usage_tx, mut usage_rx) =
         unbounded_channel::<Result<crate::portkey_usage::Snapshot, String>>();
     if config.model_catalog.is_empty() {
@@ -265,7 +273,7 @@ async fn event_loop(
                     Some(Ok(Event::Key(key))) => handle_key(
                         key, &mut app, &mut config, &cwd, &mut rx, &mcp, &plugins,
                         snapshots.as_ref(), &lsp, &mut session, &approve, &models_tx, &mcps_tx,
-                        &plugins_tx, &usage_tx,
+                        &plugins_tx, &marketplaces_tx, &usage_tx,
                     ),
                     Some(Ok(Event::Paste(text))) => handle_paste(text, &mut app),
                     Some(Ok(Event::Mouse(mouse))) => handle_mouse(mouse, &mut app, terminal_area),
@@ -302,6 +310,11 @@ async fn event_loop(
                     app.items.push(ChatItem::Info(text));
                     app.auto_scroll = true;
                     app.status = "ready".to_string();
+                }
+            }
+            marketplace_result = marketplaces_rx.recv() => {
+                if let Some(outcome) = marketplace_result {
+                    handle_marketplace_outcome(outcome, &mut app);
                 }
             }
             usage_result = usage_rx.recv() => {
@@ -412,6 +425,7 @@ fn handle_key(
     models_tx: &UnboundedSender<ModelCatalogs>,
     mcps_tx: &UnboundedSender<Vec<(String, String, McpStatus)>>,
     plugins_tx: &UnboundedSender<String>,
+    marketplaces_tx: &UnboundedSender<MarketplaceOutcome>,
     usage_tx: &UnboundedSender<Result<crate::portkey_usage::Snapshot, String>>,
 ) {
     // Ctrl+C copies an active mouse selection, otherwise quits. It still quits
@@ -448,6 +462,11 @@ fn handle_key(
 
     if app.sessions.is_some() {
         handle_sessions_key(key, app, cwd, session);
+        return;
+    }
+
+    if app.marketplaces.is_some() {
+        handle_marketplaces_key(key, app, marketplaces_tx);
         return;
     }
 
@@ -761,6 +780,20 @@ fn handle_key(
                 });
                 return;
             }
+            if raw == "/marketplaces" || raw == "/marketplace" {
+                app.clear_input();
+                refresh_suggestions(app, config);
+                match crate::plugin_registry::marketplace_overview() {
+                    Ok(all) => {
+                        app.marketplaces = Some(MarketplacesState::ready(all));
+                        app.status = "marketplaces".to_string();
+                    }
+                    Err(err) => app
+                        .items
+                        .push(ChatItem::Error(format!("marketplaces: {err:#}"))),
+                }
+                return;
+            }
             if raw == "/plugin" || raw.starts_with("/plugin ") {
                 app.clear_input();
                 refresh_suggestions(app, config);
@@ -852,6 +885,26 @@ fn handle_key(
                                     });
                                 });
                             }
+                            "update" => {
+                                if sub_rest.is_empty() {
+                                    app.items.push(ChatItem::Error(
+                                        "usage: /plugin marketplace update <name>".to_string(),
+                                    ));
+                                    return;
+                                }
+                                app.status = format!("updating marketplace `{sub_rest}`...");
+                                let name = sub_rest.to_string();
+                                let tx = plugins_tx.clone();
+                                tokio::spawn(async move {
+                                    let result = crate::plugin_registry::update_marketplace(&name)
+                                        .await
+                                        .map_err(|err| format!("{err:#}"));
+                                    let _ = tx.send(match result {
+                                        Ok(text) => text,
+                                        Err(err) => format!("marketplace update failed: {err}"),
+                                    });
+                                });
+                            }
                             "remove" => {
                                 if sub_rest.is_empty() {
                                     app.items.push(ChatItem::Error(
@@ -867,13 +920,13 @@ fn handle_key(
                                 }
                             }
                             _ => app.items.push(ChatItem::Error(
-                                "usage: /plugin marketplace <list|add <url|path>|remove <name>>"
+                                "usage: /plugin marketplace <list|add <url|path>|update <name>|remove <name>>"
                                     .to_string(),
                             )),
                         }
                     }
                     _ => app.items.push(ChatItem::Error(
-                        "usage: /plugin [list] · install <name>[@mp] · uninstall <name> · enable|disable <name> · marketplace <list|add|remove>"
+                        "usage: /plugin [list] · install <name>[@mp] · uninstall <name> · enable|disable <name> · marketplace <list|add|update|remove>"
                             .to_string(),
                     )),
                 }
@@ -1516,6 +1569,7 @@ fn help_text(config: &Config) -> String {
         "  /models [filter]      list models from every logged-in provider".to_string(),
         "  /mcps                 list MCP servers and connection status".to_string(),
         "  /plugin               manage plugins and marketplaces".to_string(),
+        "  /marketplaces         browse, add, and remove plugin marketplaces".to_string(),
         "  /usage [on|off|...]   Portkey spend bar (user, budget, currency, key)"
             .to_string(),
         "  /undo, /redo          revert or reapply the agent's file changes".to_string(),
@@ -2200,6 +2254,10 @@ fn builtin_commands() -> Vec<CommandHint> {
             description: "manage plugins and marketplaces".to_string(),
         },
         CommandHint {
+            name: "marketplaces".to_string(),
+            description: "browse and manage plugin marketplaces".to_string(),
+        },
+        CommandHint {
             name: "usage".to_string(),
             description: "Portkey spend bar".to_string(),
         },
@@ -2229,6 +2287,7 @@ fn refresh_suggestions(app: &mut App, config: &Config) {
     if app.connect.is_some()
         || app.models.is_some()
         || app.sessions.is_some()
+        || app.marketplaces.is_some()
         || app.trust.is_some()
         || app.busy
     {
@@ -2576,6 +2635,260 @@ fn handle_sessions_key(key: KeyEvent, app: &mut App, cwd: &Path, session: &mut O
     }
     if keep {
         app.sessions = Some(state);
+    }
+}
+
+/// Reloads the marketplace list in place after an action changes the state on
+/// disk, keeping the current selection where possible.
+fn refresh_marketplace_state(state: &mut MarketplacesState) {
+    match crate::plugin_registry::marketplace_overview() {
+        Ok(all) => {
+            state.all = all;
+            state.clamp_selection();
+        }
+        Err(err) => state.error = Some(format!("{err:#}")),
+    }
+}
+
+fn handle_marketplace_outcome(outcome: MarketplaceOutcome, app: &mut App) {
+    let (text, is_error) = match outcome {
+        MarketplaceOutcome::Message(text) => (text, false),
+        MarketplaceOutcome::Error(text) => (text, true),
+    };
+    if let Some(state) = app.marketplaces.as_mut() {
+        state.busy = false;
+        if is_error {
+            state.error = Some(text);
+        } else {
+            state.message = Some(text);
+            state.error = None;
+        }
+        refresh_marketplace_state(state);
+    } else if is_error {
+        app.items.push(ChatItem::Error(text));
+    } else {
+        app.items.push(ChatItem::Info(text));
+        app.auto_scroll = true;
+    }
+    app.status = "ready".to_string();
+}
+
+type MarketplacesTx = UnboundedSender<MarketplaceOutcome>;
+
+fn handle_marketplaces_key(key: KeyEvent, app: &mut App, marketplaces_tx: &MarketplacesTx) {
+    let Some(mut state) = app.marketplaces.take() else {
+        return;
+    };
+    let mut keep = true;
+
+    if state.adding {
+        match key.code {
+            KeyCode::Esc => {
+                state.adding = false;
+                state.add_input.clear();
+            }
+            KeyCode::Enter => {
+                let source = state.add_input.trim().to_string();
+                state.adding = false;
+                state.add_input.clear();
+                if !source.is_empty() {
+                    state.busy = true;
+                    state.message = None;
+                    state.error = None;
+                    let tx = marketplaces_tx.clone();
+                    tokio::spawn(async move {
+                        let result = crate::plugin_registry::add_marketplace(&source).await;
+                        let _ = tx.send(match result {
+                            Ok(text) => MarketplaceOutcome::Message(text),
+                            Err(err) => MarketplaceOutcome::Error(format!("{err:#}")),
+                        });
+                    });
+                }
+            }
+            KeyCode::Backspace => {
+                state.add_input.pop();
+            }
+            KeyCode::Char(c)
+                if !key
+                    .modifiers
+                    .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT) =>
+            {
+                state.add_input.push(c);
+            }
+            _ => {}
+        }
+        app.marketplaces = Some(state);
+        return;
+    }
+
+    if state.confirm_remove {
+        match key.code {
+            KeyCode::Char('y') | KeyCode::Char('Y') | KeyCode::Enter => {
+                if let Some(marketplace) = state.selected_marketplace().cloned() {
+                    match crate::plugin_registry::remove_marketplace(&marketplace.name) {
+                        Ok(text) => {
+                            state.message = Some(text);
+                            state.error = None;
+                            state.busy = false;
+                            refresh_marketplace_state(&mut state);
+                        }
+                        Err(err) => state.error = Some(format!("{err:#}")),
+                    }
+                }
+                state.confirm_remove = false;
+            }
+            KeyCode::Esc | KeyCode::Char('n') | KeyCode::Char('N') => {
+                state.confirm_remove = false;
+            }
+            _ => {}
+        }
+        app.marketplaces = Some(state);
+        return;
+    }
+
+    match key.code {
+        KeyCode::Esc => {
+            keep = false;
+            app.show_status("marketplaces closed");
+        }
+        KeyCode::Up => match state.pane {
+            MarketplacePane::Marketplaces => {
+                let len = state.marketplaces().len();
+                if len > 0 {
+                    state.selected = if state.selected == 0 {
+                        len - 1
+                    } else {
+                        state.selected - 1
+                    };
+                }
+            }
+            MarketplacePane::Plugins => {
+                let len = state.plugins().len();
+                if len > 0 {
+                    state.plugin_selected = if state.plugin_selected == 0 {
+                        len - 1
+                    } else {
+                        state.plugin_selected - 1
+                    };
+                }
+            }
+        },
+        KeyCode::Down => match state.pane {
+            MarketplacePane::Marketplaces => {
+                let len = state.marketplaces().len();
+                if len > 0 {
+                    state.selected = (state.selected + 1) % len;
+                }
+            }
+            MarketplacePane::Plugins => {
+                let len = state.plugins().len();
+                if len > 0 {
+                    state.plugin_selected = (state.plugin_selected + 1) % len;
+                }
+            }
+        },
+        KeyCode::Tab | KeyCode::BackTab => {
+            // The filter targets the active pane, so switching panes drops it.
+            // Keep the selected marketplace stable across that reset.
+            let selected = state.selected_marketplace().map(|mp| mp.name.clone());
+            state.pane = match state.pane {
+                MarketplacePane::Marketplaces => MarketplacePane::Plugins,
+                MarketplacePane::Plugins => MarketplacePane::Marketplaces,
+            };
+            state.filter.clear();
+            if let Some(name) = selected {
+                if let Some(index) = state.all.iter().position(|mp| mp.name == name) {
+                    state.selected = index;
+                }
+            }
+            state.clamp_selection();
+        }
+        KeyCode::Backspace => {
+            state.filter.pop();
+            state.clamp_selection();
+        }
+        KeyCode::Char('a') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+            state.adding = true;
+            state.add_input.clear();
+        }
+        KeyCode::Char('x') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+            if state.selected_marketplace().is_some() {
+                state.confirm_remove = true;
+            }
+        }
+        KeyCode::Char('r') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+            state.busy = false;
+            state.message = None;
+            state.error = None;
+            refresh_marketplace_state(&mut state);
+        }
+        KeyCode::Char('u') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+            if let Some(marketplace) = state.selected_marketplace() {
+                let name = marketplace.name.clone();
+                state.busy = true;
+                state.message = None;
+                state.error = None;
+                let tx = marketplaces_tx.clone();
+                tokio::spawn(async move {
+                    let result = crate::plugin_registry::update_marketplace(&name).await;
+                    let _ = tx.send(match result {
+                        Ok(text) => MarketplaceOutcome::Message(text),
+                        Err(err) => MarketplaceOutcome::Error(format!("{err:#}")),
+                    });
+                });
+            }
+        }
+        KeyCode::Enter => match state.pane {
+            MarketplacePane::Marketplaces => {
+                if !state.plugins().is_empty() {
+                    state.pane = MarketplacePane::Plugins;
+                    state.plugin_selected = 0;
+                    state.filter.clear();
+                }
+            }
+            MarketplacePane::Plugins => {
+                if let Some(plugin) = state.selected_plugin() {
+                    let marketplace = state.selected_marketplace().map(|mp| mp.name.clone());
+                    if plugin.installed {
+                        match crate::plugin_registry::set_enabled(&plugin.name, !plugin.enabled) {
+                            Ok(text) => {
+                                state.message = Some(text);
+                                state.error = None;
+                                state.busy = false;
+                                refresh_marketplace_state(&mut state);
+                            }
+                            Err(err) => state.error = Some(format!("{err:#}")),
+                        }
+                    } else if let Some(marketplace) = marketplace {
+                        state.busy = true;
+                        state.message = None;
+                        state.error = None;
+                        let tx = marketplaces_tx.clone();
+                        let name = plugin.name.clone();
+                        tokio::spawn(async move {
+                            let result =
+                                crate::plugin_registry::install(&name, Some(&marketplace)).await;
+                            let _ = tx.send(match result {
+                                Ok(text) => MarketplaceOutcome::Message(text),
+                                Err(err) => MarketplaceOutcome::Error(format!("{err:#}")),
+                            });
+                        });
+                    }
+                }
+            }
+        },
+        KeyCode::Char(c)
+            if !key
+                .modifiers
+                .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT) =>
+        {
+            state.filter.push(c);
+            state.clamp_selection();
+        }
+        _ => {}
+    }
+    if keep {
+        app.marketplaces = Some(state);
     }
 }
 

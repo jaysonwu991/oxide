@@ -2,6 +2,7 @@ use anyhow::{bail, Context, Result};
 use serde_json::{json, Value};
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::process::{Child, ChildStdin, ChildStdout};
@@ -333,8 +334,17 @@ fn command_exists(name: &str) -> bool {
     })
 }
 
+/// Each host gets its own script file: `Drop` deletes it, so two hosts in the
+/// same process must never share a path or one would unlink the other's
+/// harness while its runtime is still starting.
+static HARNESS_SEQ: AtomicU64 = AtomicU64::new(0);
+
 fn write_harness() -> Result<PathBuf> {
-    let path = std::env::temp_dir().join(format!("oxide-plugin-host-{}.mjs", std::process::id()));
+    let seq = HARNESS_SEQ.fetch_add(1, Ordering::Relaxed);
+    let path = std::env::temp_dir().join(format!(
+        "oxide-plugin-host-{}-{seq}.mjs",
+        std::process::id()
+    ));
     std::fs::write(&path, HARNESS).context("writing plugin host script")?;
     Ok(path)
 }

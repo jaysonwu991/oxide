@@ -332,8 +332,8 @@ Focus: $ARGUMENTS
 - Built-in commands: `/help`, `/hotkeys`, `/exit`, `/new`, `/session`, `/resume`,
   `/tree`, `/fork`, `/clone`, `/name`, `/model`, `/thinking`, `/theme`,
   `/trust`, `/export`, `/reload`, `/init`, `/login`, `/logout`, `/models`,
-  `/mcps`, `/plugin`, `/usage`, `/connect`, `/undo`, `/redo`, `/compact`,
-  `/copy`, `/copy all`, and `/skill:<name>`.
+  `/mcps`, `/plugin`, `/marketplaces`, `/usage`, `/connect`, `/undo`, `/redo`,
+  `/compact`, `/copy`, `/copy all`, and `/skill:<name>`.
 - **Remove** a command by deleting its file.
 
 ## Prompt templates
@@ -461,17 +461,27 @@ manifest:
 Install and manage plugins from the CLI or the TUI:
 
 ```
-oxide plugin marketplace add <url|path>
+oxide plugin marketplace add <url|path|owner/repo>
+oxide plugin marketplace update <name>
 oxide plugin install <name>[@marketplace]
 oxide plugin list
 oxide plugin enable|disable <name>
 oxide plugin uninstall <name>
 ```
 
+The `owner/repo` shorthand expands to a GitHub clone URL. `update` fetches the
+latest manifest from a git-backed marketplace's remote; local-path marketplaces
+are already live and need no update.
+
 In the TUI, `/plugin` lists installed plugins, and accepts
 `/plugin install <name>[@marketplace]`, `/plugin uninstall <name>`,
 `/plugin enable|disable <name>`, and `/plugin marketplace
-<list|add <url|path>|remove <name>>`.
+<list|add <url|path|owner/repo>|update <name>|remove <name>>`. `/marketplaces`
+opens an interactive browser: the left pane lists marketplaces, the right pane
+shows the selected marketplace's plugins and their install state, `Enter`
+installs or enables/disables a plugin, `Ctrl+U` fetches the selected
+marketplace's latest manifest, `Ctrl+A` adds a marketplace, `Ctrl+X` removes
+one, and `Ctrl+R` reloads the local view.
 
 Installed plugins live under `<config>/oxide/plugins/` (next to `auth.json` and
 `trust.json`), and their commands, agents, skills, and MCP servers load at

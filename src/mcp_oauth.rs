@@ -155,6 +155,16 @@ impl OAuthState {
         *self.auth.lock().await = Some(auth);
     }
 
+    /// Drops the stored credentials after the provider permanently rejects
+    /// them, so later status checks report `Needs Auth` instead of retrying a
+    /// refresh token that can never work again.
+    async fn clear(&self) {
+        if let Some(path) = token_path(&self.name) {
+            let _ = std::fs::remove_file(path);
+        }
+        *self.auth.lock().await = None;
+    }
+
     async fn try_refresh(&self) -> bool {
         let (refresh_token, stored_client, stored_endpoint) = {
             let guard = self.auth.lock().await;
@@ -193,17 +203,16 @@ impl OAuthState {
         }
         let response = match self.client.post(&token_endpoint).form(&form).send().await {
             Ok(response) => response,
-            Err(err) => {
-                eprintln!("[mcp] OAuth refresh for `{}` failed: {err}", self.name);
-                return false;
-            }
+            Err(_) => return false,
         };
         let status = response.status();
         let value = response.json::<Value>().await.unwrap_or(Value::Null);
         let mut auth = match parse_token(&value, status) {
             Ok(auth) => auth,
-            Err(err) => {
-                eprintln!("[mcp] OAuth refresh for `{}` failed: {err:#}", self.name);
+            Err(_) => {
+                if refresh_token_rejected(&value) {
+                    self.clear().await;
+                }
                 return false;
             }
         };
@@ -342,6 +351,15 @@ impl OAuthState {
         *self.metadata.lock().await = Some(metadata.clone());
         Ok(metadata)
     }
+}
+
+/// Whether a token-endpoint error payload means the stored refresh token can
+/// never be used again (for example `invalid_grant` or `access_denied`).
+fn refresh_token_rejected(value: &Value) -> bool {
+    matches!(
+        value.get("error").and_then(Value::as_str),
+        Some("invalid_grant" | "invalid_token" | "expired_token" | "access_denied")
+    )
 }
 
 fn is_expired(auth: &StoredAuth) -> bool {
@@ -1105,6 +1123,14 @@ mod tests {
         let error = json!({ "ok": false, "error": "invalid_code" });
         let err = parse_token(&error, reqwest::StatusCode::OK).unwrap_err();
         assert!(err.to_string().contains("invalid_code"));
+    }
+
+    #[test]
+    fn detects_rejected_refresh_tokens() {
+        assert!(refresh_token_rejected(&json!({ "error": "invalid_grant" })));
+        assert!(refresh_token_rejected(&json!({ "error": "access_denied" })));
+        assert!(!refresh_token_rejected(&json!({ "error": "server_error" })));
+        assert!(!refresh_token_rejected(&json!({})));
     }
 
     #[test]

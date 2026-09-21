@@ -267,6 +267,27 @@ fn is_git_source(source: &str) -> bool {
         || source.ends_with(".git")
 }
 
+/// Expands GitHub's `owner/repo` shorthand into a clone URL, matching the
+/// syntax Claude Code accepts for marketplaces. Anything that already looks
+/// like a URL or a local path is returned unchanged.
+fn expand_source(source: &str) -> String {
+    let trimmed = source.trim();
+    if is_git_source(trimmed) {
+        return trimmed.to_string();
+    }
+    if trimmed.starts_with(['.', '/', '~']) || Path::new(trimmed).exists() {
+        return trimmed.to_string();
+    }
+    let mut parts = trimmed.split('/');
+    let (Some(owner), Some(repo), None) = (parts.next(), parts.next(), parts.next()) else {
+        return trimmed.to_string();
+    };
+    if owner.is_empty() || repo.is_empty() || owner.contains(':') || repo.contains(':') {
+        return trimmed.to_string();
+    }
+    format!("https://github.com/{owner}/{repo}.git")
+}
+
 fn git_name(source: &str) -> String {
     let trimmed = source.trim_end_matches('/').trim_end_matches(".git");
     Path::new(trimmed)
@@ -313,6 +334,29 @@ async fn git_clone(source: &str, dest: &Path) -> Result<()> {
     Ok(())
 }
 
+async fn run_git(dir: &Path, args: &[&str]) -> Result<()> {
+    let output = tokio::process::Command::new("git")
+        .arg("-C")
+        .arg(dir)
+        .args(args)
+        .output()
+        .await
+        .with_context(|| {
+            format!(
+                "running git {} (is git installed?)",
+                args.first().unwrap_or(&"")
+            )
+        })?;
+    if !output.status.success() {
+        bail!(
+            "git {} failed: {}",
+            args.first().unwrap_or(&""),
+            String::from_utf8_lossy(&output.stderr).trim()
+        );
+    }
+    Ok(())
+}
+
 fn copy_dir(src: &Path, dest: &Path) -> Result<()> {
     if dest.exists() {
         std::fs::remove_dir_all(dest).with_context(|| format!("removing {}", dest.display()))?;
@@ -343,13 +387,14 @@ pub async fn add_marketplace(source: &str) -> Result<String> {
 }
 
 async fn add_marketplace_in(root: &Path, source: &str) -> Result<String> {
-    let dir = if is_git_source(source) {
-        let name = git_name(source);
+    let source = expand_source(source);
+    let dir = if is_git_source(&source) {
+        let name = git_name(&source);
         let dir = root.join("marketplaces").join(sanitize(&name));
-        git_clone(source, &dir).await?;
+        git_clone(&source, &dir).await?;
         dir
     } else {
-        PathBuf::from(source)
+        PathBuf::from(&source)
     };
     if !manifest_candidates(&dir, "marketplace.json")
         .iter()
@@ -415,6 +460,38 @@ fn remove_marketplace_in(root: &Path, name: &str) -> Result<String> {
     Ok(format!("removed marketplace `{name}`"))
 }
 
+/// Fetches the latest marketplace manifest from its git remote. Git-backed
+/// marketplaces are fast-forwarded to the remote head; local marketplaces are
+/// live directories, so there is nothing to fetch. Returns a summary.
+pub async fn update_marketplace(name: &str) -> Result<String> {
+    update_marketplace_in(&install_root(), name).await
+}
+
+async fn update_marketplace_in(root: &Path, name: &str) -> Result<String> {
+    let state = load_state_in(root)?;
+    let Some(record) = state.marketplaces.get(name) else {
+        bail!("no marketplace named `{name}`");
+    };
+    if !is_git_source(&record.source) {
+        let count = marketplace_manifest(&record.path)
+            .map(|manifest| manifest.plugins.len())
+            .unwrap_or(0);
+        return Ok(format!(
+            "marketplace `{name}` is a local directory — nothing to fetch ({count} plugin{})",
+            if count == 1 { "" } else { "s" }
+        ));
+    }
+    run_git(&record.path, &["fetch", "--depth", "1", "origin"]).await?;
+    run_git(&record.path, &["reset", "--hard", "FETCH_HEAD"]).await?;
+    let count = marketplace_manifest(&record.path)
+        .map(|manifest| manifest.plugins.len())
+        .unwrap_or(0);
+    Ok(format!(
+        "updated marketplace `{name}` ({count} plugin{})",
+        if count == 1 { "" } else { "s" }
+    ))
+}
+
 pub fn list_marketplaces() -> Result<String> {
     list_marketplaces_in(&install_root())
 }
@@ -441,6 +518,78 @@ fn list_marketplaces_in(root: &Path) -> Result<String> {
         ));
     }
     Ok(lines.join("\n"))
+}
+
+/// A marketplace and its plugins, shaped for the interactive `/marketplaces`
+/// browser. Manifests are read best-effort, so a broken checkout still shows a
+/// row with an error instead of hiding the marketplace entirely.
+#[derive(Debug, Clone)]
+pub struct MarketplaceOverview {
+    pub name: String,
+    pub source: String,
+    pub path: PathBuf,
+    pub owner: Option<String>,
+    pub plugins: Vec<MarketplacePluginOverview>,
+    pub error: Option<String>,
+}
+
+/// One plugin a marketplace offers, with its local install state.
+#[derive(Debug, Clone)]
+pub struct MarketplacePluginOverview {
+    pub name: String,
+    pub description: Option<String>,
+    pub version: Option<String>,
+    pub installed: bool,
+    pub enabled: bool,
+}
+
+/// Loads every configured marketplace with its available plugins and their
+/// install state, for the `/marketplaces` overlay.
+pub fn marketplace_overview() -> Result<Vec<MarketplaceOverview>> {
+    marketplace_overview_in(&install_root())
+}
+
+fn marketplace_overview_in(root: &Path) -> Result<Vec<MarketplaceOverview>> {
+    let state = load_state_in(root)?;
+    let marketplaces = state
+        .marketplaces
+        .values()
+        .map(|record| {
+            let (manifest, error) = match marketplace_manifest(&record.path) {
+                Ok(manifest) => (manifest, None),
+                Err(err) => (MarketplaceManifest::default(), Some(format!("{err:#}"))),
+            };
+            let plugins = manifest
+                .plugins
+                .iter()
+                .map(|entry| {
+                    let installed = state.plugins.get(&entry.name);
+                    MarketplacePluginOverview {
+                        name: entry.name.clone(),
+                        description: entry
+                            .description
+                            .clone()
+                            .or_else(|| installed.and_then(|plugin| plugin.description.clone())),
+                        version: entry
+                            .version
+                            .clone()
+                            .or_else(|| installed.and_then(|plugin| plugin.version.clone())),
+                        installed: installed.is_some(),
+                        enabled: installed.map(|plugin| plugin.enabled).unwrap_or(false),
+                    }
+                })
+                .collect();
+            MarketplaceOverview {
+                name: record.name.clone(),
+                source: record.source.clone(),
+                path: record.path.clone(),
+                owner: manifest.owner.as_ref().and_then(|owner| owner.name.clone()),
+                plugins,
+                error,
+            }
+        })
+        .collect();
+    Ok(marketplaces)
 }
 
 // ---------------------------------------------------------------------------
@@ -480,12 +629,19 @@ pub async fn install(name: &str, marketplace: Option<&str>) -> Result<String> {
 async fn install_in(root: &Path, name: &str, marketplace: Option<&str>) -> Result<String> {
     let state = load_state_in(root)?;
     let Some((record, entry)) = find_marketplace_plugin(&state, name, marketplace) else {
-        let hint = if marketplace.is_some() {
-            String::new()
-        } else {
-            " (is the marketplace added?)".to_string()
-        };
-        bail!("no plugin named `{name}` in the configured marketplaces{hint}");
+        if let Some(marketplace) = marketplace {
+            if !state.marketplaces.contains_key(marketplace) {
+                bail!(
+                    "marketplace `{marketplace}` is not configured — add it with \
+                     `oxide plugin marketplace add <url|owner/repo>`"
+                );
+            }
+            bail!("no plugin named `{name}` in marketplace `{marketplace}`");
+        }
+        bail!(
+            "no plugin named `{name}` in the configured marketplaces — add one with \
+             `oxide plugin marketplace add <url|owner/repo>`"
+        );
     };
     let source = source_string(&entry.source)
         .with_context(|| format!("plugin `{name}` has no `source` in its marketplace entry"))?;
@@ -785,6 +941,119 @@ mod tests {
     }
 
     #[test]
+    fn expands_github_shorthand_and_leaves_paths_alone() {
+        assert_eq!(
+            expand_source("Skyscanner/skyscanner-claude-plugins"),
+            "https://github.com/Skyscanner/skyscanner-claude-plugins.git"
+        );
+        assert_eq!(
+            expand_source("https://github.com/a/b.git"),
+            "https://github.com/a/b.git"
+        );
+        assert_eq!(expand_source("./local"), "./local");
+        assert_eq!(expand_source("../local"), "../local");
+        assert_eq!(expand_source("/abs/path"), "/abs/path");
+        assert_eq!(expand_source("~/mp"), "~/mp");
+        assert_eq!(expand_source("plain"), "plain");
+        assert_eq!(expand_source("a/b/c"), "a/b/c");
+    }
+
+    #[tokio::test]
+    async fn install_names_an_unconfigured_marketplace() {
+        let root = temp_dir("missing-mp");
+        let err = install_in(&root, "hello", Some("skyscanner-claude-plugins"))
+            .await
+            .unwrap_err();
+        let text = format!("{err:#}");
+        assert!(text.contains("not configured"), "{text}");
+        assert!(text.contains("oxide plugin marketplace add"), "{text}");
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[tokio::test]
+    async fn update_flags_unknown_and_local_marketplaces() {
+        let root = temp_dir("update-local");
+        let err = update_marketplace_in(&root, "nope").await.unwrap_err();
+        assert!(format!("{err:#}").contains("no marketplace named"));
+
+        let dir = root.join("local-mp");
+        write_marketplace(&dir, "local-mp", &[("hello", "../plugin-src")]);
+        add_marketplace_in(&root, dir.to_str().unwrap())
+            .await
+            .unwrap();
+        let summary = update_marketplace_in(&root, "local-mp").await.unwrap();
+        assert!(summary.contains("local directory"), "{summary}");
+
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    fn git_available() -> bool {
+        std::process::Command::new("git")
+            .arg("--version")
+            .output()
+            .map(|output| output.status.success())
+            .unwrap_or(false)
+    }
+
+    fn git(dir: &Path, args: &[&str]) {
+        let status = std::process::Command::new("git")
+            .args(args)
+            .current_dir(dir)
+            .status()
+            .expect("running git");
+        assert!(status.success(), "git {args:?} failed");
+    }
+
+    #[tokio::test]
+    async fn updates_a_git_marketplace_from_its_remote() {
+        if !git_available() {
+            return;
+        }
+        let root = temp_dir("update-git");
+        let work = root.join("work");
+        std::fs::create_dir_all(&work).unwrap();
+        git(&work, &["init", "-q", "-b", "main", "."]);
+        git(&work, &["config", "user.email", "t@example.com"]);
+        git(&work, &["config", "user.name", "tester"]);
+        write_marketplace(&work, "test-mp", &[("hello", "../plugin-src")]);
+        git(&work, &["add", "-A"]);
+        git(&work, &["commit", "-qm", "first"]);
+
+        let remote = root.join("remote.git");
+        let status = std::process::Command::new("git")
+            .args(["clone", "--bare", "-q"])
+            .arg(&work)
+            .arg(&remote)
+            .status()
+            .unwrap();
+        assert!(status.success());
+
+        // Clone once at the first commit, then push a second plugin upstream.
+        let source = remote.to_string_lossy().to_string();
+        add_marketplace_in(&root, &source).await.unwrap();
+        assert_eq!(marketplace_overview_in(&root).unwrap()[0].plugins.len(), 1);
+
+        write_marketplace(
+            &work,
+            "test-mp",
+            &[("hello", "../plugin-src"), ("world", "../plugin-src")],
+        );
+        git(&work, &["add", "-A"]);
+        git(&work, &["commit", "-qm", "second"]);
+        git(&work, &["remote", "add", "origin", &source]);
+        git(&work, &["push", "-q", "origin", "main"]);
+
+        let summary = update_marketplace_in(&root, "test-mp").await.unwrap();
+        assert!(
+            summary.contains("updated marketplace `test-mp`"),
+            "{summary}"
+        );
+        assert_eq!(marketplace_overview_in(&root).unwrap()[0].plugins.len(), 2);
+
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
     fn sanitizes_directory_names() {
         assert_eq!(sanitize("owner/my-plugin"), "owner_my-plugin");
         assert_eq!(sanitize("plain"), "plain");
@@ -934,6 +1203,50 @@ mod tests {
         assert!(uninstall_in(&root, "hello").is_ok());
         assert!(load_state_in(&root).unwrap().plugins.is_empty());
         assert!(!state.plugins["hello"].path.exists());
+
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[tokio::test]
+    async fn marketplace_overview_reports_plugins_and_install_state() {
+        let root = temp_dir("overview");
+        let marketplace_dir = root.join("marketplace-src");
+        let plugin_dir = root.join("plugin-src");
+        write_marketplace(
+            &marketplace_dir,
+            "test-mp",
+            &[("hello", "../plugin-src"), ("other", "../plugin-src")],
+        );
+        write_plugin(&plugin_dir, "hello", serde_json::json!({}));
+
+        add_marketplace_in(&root, marketplace_dir.to_str().unwrap())
+            .await
+            .unwrap();
+        install_in(&root, "hello", None).await.unwrap();
+
+        let overview = marketplace_overview_in(&root).unwrap();
+        assert_eq!(overview.len(), 1);
+        let marketplace = &overview[0];
+        assert_eq!(marketplace.name, "test-mp");
+        assert_eq!(marketplace.plugins.len(), 2);
+
+        let hello = marketplace
+            .plugins
+            .iter()
+            .find(|plugin| plugin.name == "hello")
+            .expect("hello plugin");
+        assert!(hello.installed);
+        assert!(hello.enabled);
+        assert_eq!(hello.version.as_deref(), Some("1.2.3"));
+        assert_eq!(hello.description.as_deref(), Some("a test plugin"));
+
+        let other = marketplace
+            .plugins
+            .iter()
+            .find(|plugin| plugin.name == "other")
+            .expect("other plugin");
+        assert!(!other.installed);
+        assert!(!other.enabled);
 
         std::fs::remove_dir_all(&root).ok();
     }
