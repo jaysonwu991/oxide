@@ -332,7 +332,7 @@ Focus: $ARGUMENTS
 - Built-in commands: `/help`, `/hotkeys`, `/exit`, `/new`, `/session`, `/resume`,
   `/tree`, `/fork`, `/clone`, `/name`, `/model`, `/thinking`, `/theme`,
   `/trust`, `/export`, `/reload`, `/init`, `/login`, `/logout`, `/models`,
-  `/mcps`, `/plugin`, `/marketplaces`, `/usage`, `/connect`, `/undo`, `/redo`,
+  `/mcps`, `/plugins`, `/marketplaces`, `/usage`, `/connect`, `/undo`, `/redo`,
   `/compact`, `/copy`, `/copy all`, and `/skill:<name>`.
 - **Remove** a command by deleting its file.
 
@@ -439,6 +439,8 @@ Layout inside a plugin package:
 - `skills/<name>/SKILL.md` — skills
 - `plugins/*.js|ts` — JS/TS hook plugins
 - `mcpServers` in the manifest — MCP servers
+- `.mcp.json` — MCP servers as a top-level `mcpServers` map, or the server
+  entries directly (the map form Claude Code plugins commonly use)
 - `hooks` in the manifest — Claude Code command hooks (`PreToolUse`/
   `PostToolUse`, with `matcher` regexes). They run through the hook host, which
   pipes tool info as JSON on stdin and reads a Claude Code-style JSON response:
@@ -458,36 +460,63 @@ manifest:
 }
 ```
 
+#### Installing and managing plugins
+
 Install and manage plugins from the CLI or the TUI:
 
 ```
 oxide plugin marketplace add <url|path|owner/repo>
+oxide plugin marketplace list
 oxide plugin marketplace update <name>
+oxide plugin marketplace remove <name>
 oxide plugin install <name>[@marketplace]
 oxide plugin list
 oxide plugin enable|disable <name>
 oxide plugin uninstall <name>
 ```
 
-The `owner/repo` shorthand expands to a GitHub clone URL. `update` fetches the
-latest manifest from a git-backed marketplace's remote; local-path marketplaces
-are already live and need no update.
+`add` accepts a git URL, a local directory, or GitHub's `owner/repo` shorthand
+(expanded to `https://github.com/owner/repo.git`). Git marketplaces are cloned
+under `<config>/oxide/plugins/marketplaces/<name>/`; a local directory is
+recorded in place, so edits to it are live. `update` fast-forwards a git
+marketplace to its remote head and reports the plugin count (local directories
+report that there is nothing to fetch).
 
-In the TUI, `/plugin` lists installed plugins, and accepts
-`/plugin install <name>[@marketplace]`, `/plugin uninstall <name>`,
-`/plugin enable|disable <name>`, and `/plugin marketplace
+Each `plugins` entry names a plugin and points at its source. Three forms are
+accepted:
+
+```jsonc
+{ "name": "git-plugin", "source": "https://github.com/you/plugin.git" }
+{ "name": "local-plugin", "source": "./plugin" }   // relative to the marketplace
+{ "name": "object-plugin", "source": { "source": "github", "repo": "you/plugin" } }
+```
+
+`install <name>@<marketplace>` disambiguates when several marketplaces offer the
+same name; a bare `<name>` searches every configured marketplace. Installed
+plugins are copied under `<config>/oxide/plugins/<marketplace>/<plugin>/`, so
+uninstalling a plugin or removing its marketplace never touches the upstream
+source.
+
+In the TUI, `/plugins` lists installed plugins — marketplace, version,
+description, and path per entry — and accepts
+`/plugins install <name>[@marketplace]`, `/plugins uninstall <name>`,
+`/plugins enable|disable <name>`, and `/plugins marketplace
 <list|add <url|path|owner/repo>|update <name>|remove <name>>`. `/marketplaces`
 opens an interactive browser: the left pane lists marketplaces, the right pane
 shows the selected marketplace's plugins and their install state, `Enter`
 installs or enables/disables a plugin, `Ctrl+U` fetches the selected
 marketplace's latest manifest, `Ctrl+A` adds a marketplace, `Ctrl+X` removes
-one, and `Ctrl+R` reloads the local view.
+one, and `Ctrl+R` reloads the local view. Typing filters the focused pane:
+plugin names match first, and a plugin's description is only searched when no
+name matches, so a query like `doc` stays on `doc-mcp` rather than listing
+every plugin that mentions "documentation".
 
 Installed plugins live under `<config>/oxide/plugins/` (next to `auth.json` and
-`trust.json`), and their commands, agents, skills, and MCP servers load at
-startup before project resources, so project-local entries still override
-plugins with the same name. Hooks and MCP servers require a restart after
-install.
+`trust.json`), with their state in `plugins/config.json`. Their commands,
+agents, skills, and MCP servers load at startup before project resources, so
+project-local entries still override plugins with the same name. After
+installing, `/reload` picks up new commands, agents, and skills; hooks and MCP
+servers require a restart.
 
 ## Permissions
 
@@ -985,13 +1014,26 @@ in place before `/usage on` and before the bar appears again at startup.
 
 ### Configure and toggle
 
-Run `/usage` with no arguments to see the current configuration and syntax. The
-commands are:
+Run `/usage` to open the Portkey spend-bar dialog. It is a small form over the
+bar's settings: move with `↑`/`↓`, press `Enter` to toggle `Enabled` and
+`Currency` or to edit a text field in place (the cursor sits at the end of the
+value; an API key is masked), and `Esc` to save and close. The rows are:
 
 ```text
-/usage                        show the status and syntax
-/usage on                     show the bar
-/usage off                    hide the bar
+Enabled    show or hide the bar
+User       the user whose spend to show (firstname.lastname)
+Metadata   metadata key holding the user (default `_user`)
+Budget     monthly budget shown after the month spend
+Currency   budget currency (`usd`/`cny`)
+API key    usage API key (empty uses the provider key)
+Endpoint   analytics base URL (default https://api.portkey.ai/v1)
+```
+
+The same settings can still be changed one at a time from the command line:
+
+```text
+/usage status                 show the status and syntax
+/usage on | off               show or hide the bar
 /usage user <firstname.lastname>   the user whose spend to show
 /usage key <pk-...>           usage API key (or `off` to use the provider key)
 /usage budget <amount|off>    monthly budget shown after the month spend

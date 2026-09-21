@@ -60,7 +60,7 @@ macOS, and Windows.
 | `src/mcp.rs` | MCP runtime and remote tool exposure. |
 | `src/mcp_config.rs` | `oxide mcp` CLI: read/write MCP servers in `.oxide/mcp.json`, including OAuth fields and `oxide mcp auth`. |
 | `src/mcp_oauth.rs` | OAuth authorization-code + PKCE flow for remote MCP servers. |
-| `src/ecosystem/` | Discovery of the Oxide and Claude Code config ecosystems, including context files, prompt templates, and trust-gated project resources. |
+| `src/ecosystem/` | Discovery of the Oxide and Claude Code config ecosystems, including context files, prompt templates, trust-gated project resources, and plugin-packaged MCP servers (manifest `mcpServers` or a plugin-root `.mcp.json`). |
 | `src/permission.rs` | Permission rule parsing and decisions, including `build`/`plan`/`auto-edit` mode overrides. |
 | `src/session.rs` | Pi-compatible JSONL session trees (`id`/`parentId` entries, compaction, branch summaries) and forking (`/fork`, `/clone`). |
 | `src/sessions.rs` | Non-interactive session management behind `oxide sessions list/delete/compact/merge`. |
@@ -71,13 +71,13 @@ macOS, and Windows.
 | `src/html.rs` | Dependency-free HTML to Markdown/plain-text conversion for `webfetch`. |
 | `src/lsp.rs` | Minimal LSP client and diagnostics, including eviction and reconnection of a crashed server instead of reusing its broken pipe. |
 | `src/plugin.rs` | Plugin host and hooks: `tool.execute.before`/`after` (output rewriting, terminate hint) and `status` for footer statuses. |
-| `src/plugin_registry.rs` | Claude Code-style plugin packages and marketplaces: `oxide plugin`/`/plugin` install lifecycle, manifests (`.oxide/*.json` preferred, `.claude-plugin/*.json` compatible), and hook-shim generation. |
+| `src/plugin_registry.rs` | Claude Code-style plugin packages and marketplaces: the `oxide plugin` CLI and TUI `/plugins` install lifecycle, manifests (`.oxide/*.json` preferred, `.claude-plugin/*.json` compatible), and hook-shim generation. |
 | `src/clipboard.rs` | System clipboard writes for the TUI: an OSC 52 sequence (tmux/screen-aware, so it survives SSH) plus a best-effort native helper. |
 | `src/memory.rs` | Cross-session memory store. |
 | `src/media.rs` | Image/PDF attachments and `@path` references. |
 | `src/uninstall.rs` | `oxide uninstall` install detection and cleanup. |
-| `src/portkey_usage.rs` | Portkey spend status bar behind `/usage`: settings in `portkey-usage.json`, spend from the Portkey analytics API. |
-| `src/tui/` | ratatui + crossterm interface with incremental rendering, a stacked welcome banner (block-letter `OXIDE` wordmark above the ecosystem summary), a live state row, a Pi-style footer (path/branch/session, cumulative tokens with cache and cost, context `%`/window, model/thinking, and plugin statuses), a growing editor, background-filled tool panels (Ctrl+O collapses; state-colored with hanging-indented wrapped output, blank line before the body and `Took`), reasoning blocks (Ctrl+T collapses them to `✦ Thought for 1.4s`), inline user/assistant labels, `read` bodies, colored edit diffs, a dim `ChatItem::Status` tip line for idle feedback (copies, toggles), Shift+Tab mode and Ctrl+R reasoning cycling, Alt+Enter follow-ups with `Alt+Up` to pull queued messages back into the editor, theme-aware project-trust/provider dialogs, and mid-run steering. |
+| `src/portkey_usage.rs` | Portkey spend status bar behind `/usage`: settings in `portkey-usage.json`, spend from the Portkey analytics API. The TUI `/usage` dialog edits these settings in place. |
+| `src/tui/` | ratatui + crossterm interface with incremental rendering, a stacked welcome banner (block-letter `OXIDE` wordmark above the ecosystem summary), a live state row, a Pi-style footer (path/branch/session, cumulative tokens with cache and cost, context `%`/window, model/thinking, and plugin statuses), a growing editor, background-filled tool panels (Ctrl+O collapses; state-colored with hanging-indented wrapped output, blank line before the body and `Took`), reasoning blocks (Ctrl+T collapses them to `✦ Thought for 1.4s`), inline user/assistant labels, `read` bodies, colored edit diffs, a dim `ChatItem::Status` tip line for idle feedback (copies, toggles), structured `ChatItem::Listing` blocks for `/mcps` and `/plugins`, modal dialogs (provider login, `/usage`, model/session pickers, marketplaces) that place a terminal cursor at the end of each input, Shift+Tab mode and Ctrl+R reasoning cycling, Alt+Enter follow-ups with `Alt+Up` to pull queued messages back into the editor, theme-aware project-trust/provider dialogs, and mid-run steering. |
 | `.oxide/` | Project agents, commands, prompts, skills, and plugins (Oxide layout). |
 
 ## Conventions

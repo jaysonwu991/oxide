@@ -53,8 +53,9 @@ box, with Claude Code configuration support for compatibility.
   bundle commands, agents, skills, MCP servers, and command hooks behind a
   `.oxide/plugin.json` (or `.claude-plugin/plugin.json`) manifest, from a
   marketplace declared by `.oxide/marketplace.json` (or
-  `.claude-plugin/marketplace.json`). Manage them with `oxide plugin` and
-  `/plugin`, or browse marketplaces and their plugins interactively with
+  `.claude-plugin/marketplace.json`). MCP servers can come from the manifest's
+  `mcpServers` or a plugin-root `.mcp.json`. Manage them with `oxide plugin`
+  and `/plugins`, or browse marketplaces and their plugins interactively with
   `/marketplaces`.
 - Agent-harness niceties: read-only tool calls in a batch run in parallel while
   preserving model order, `bash` output streams into the UI as it arrives, and
@@ -130,10 +131,10 @@ box, with Claude Code configuration support for compatibility.
   decision.
 - Themes: built-in `dark` and `light` plus custom `.oxide/themes/<name>.json`,
   selected with `--use-theme` or `/theme`.
-- Portkey spend bar: with a Portkey login, `/usage` adds a full-width bar at
-  the bottom of the screen showing the user, this session's cost, and today's
-  and the month's spend from the Portkey analytics API against an optional
-  monthly budget in `$` or `¥`.
+- Portkey spend bar: with a Portkey login, `/usage` opens a settings dialog
+  that adds a full-width bar at the bottom of the screen showing the user, this
+  session's cost, and today's and the month's spend from the Portkey analytics
+  API against an optional monthly budget in `$` or `¥`.
 - Focused terminal layout: the welcome banner stacks the block-letter `OXIDE`
   wordmark above a short summary of the loaded ecosystem, context files, and
   MCP/plugin/memory state; current activity and elapsed time live in the status
@@ -473,10 +474,14 @@ including `Ctrl+U` to fetch a marketplace's latest manifest.
 Plugins are packages that bundle slash commands, subagents, skills, MCP servers,
 and command hooks behind a `.oxide/plugin.json` or `.claude-plugin/plugin.json`
 manifest; a marketplace is a repo or directory with a `.oxide/marketplace.json`
-or `.claude-plugin/marketplace.json` manifest. Installed plugins live under the
-oxide config directory and load at startup before project resources, so
-project-local entries still override plugins with the same name. Hooks and MCP
-servers take effect on restart. See
+or `.claude-plugin/marketplace.json` manifest. MCP servers can come from the
+manifest's `mcpServers` or a plugin-root `.mcp.json` (either a `mcpServers` map
+or the server entries directly). Installed plugins live under the oxide config
+directory and load at startup before project resources, so project-local
+entries still override plugins with the same name. After installing, `/reload`
+picks up new commands, agents, and skills; hooks and MCP servers need a restart.
+The `/marketplaces` browser filters the focused pane, matching plugin names
+before descriptions. See
 [docs/configuration.md](docs/configuration.md#plugin-packages-and-marketplaces).
 
 ## Configuration
@@ -569,13 +574,14 @@ Any OpenAI-compatible endpoint can be used by setting `provider`, `base_url`,
 Run `/login portkey` in the TUI, or set `PORTKEY_API_KEY`, then select a model
 with `/models` or `"model"` in `config.json`. The preset uses
 `https://api.portkey.ai/v1`, sends the key as `x-portkey-api-key`, and defaults
-to `claude-sonnet-5`. Use `/usage` to add a Portkey spend bar (session, today,
-and month cost against an optional monthly budget in `$` or `¥`) to the TUI.
+to `claude-sonnet-5`. Run `/usage` to open the spend-bar dialog and enable a
+full-width bar (session, today, and month cost against an optional monthly
+budget in `$` or `¥`) in the TUI.
 
 For custom gateways, Config IDs, environment precedence, and model-catalog
 fallbacks, see the full [Portkey configuration](docs/configuration.md#portkey)
 section. The [Portkey usage
-bar](docs/configuration.md#portkey-usage-bar) documents the `/usage` command and
+bar](docs/configuration.md#portkey-usage-bar) documents the `/usage` dialog and
 the `portkey-usage.json` file.
 
 ### Z.AI (GLM)
@@ -672,13 +678,13 @@ oxide also reads the Claude Code layout, so existing configurations work as-is:
 Slash commands are expanded from the ecosystem and also include built-ins:
 `/help`, `/hotkeys`, `/exit`, `/new`, `/session`, `/resume`, `/tree`, `/fork`,
 `/clone`, `/name`, `/model`, `/thinking`, `/theme`, `/trust`, `/export`,
-`/reload`, `/init`, `/login`, `/logout`, `/models`, `/mcps`, `/plugin`,
+`/reload`, `/init`, `/login`, `/logout`, `/models`, `/mcps`, `/plugins`,
 `/marketplaces`, `/usage`, `/connect`, `/undo`, `/redo`, `/compact`, `/copy`,
 `/copy all`, and `/skill:<name>`. Discovered commands and prompt templates can
 also be invoked by the agent through the `command` tool, and skills load on
 demand with `skill` or via `/skill:<name>`.
 
-**Plugin packages** — installed via `oxide plugin` (or `/plugin`), plugin
+**Plugin packages** — installed via `oxide plugin` (or `/plugins`), plugin
 packages bundle commands, agents, skills, MCP servers, and command hooks behind
 a `.oxide/plugin.json` or `.claude-plugin/plugin.json` manifest, discovered from
 marketplaces declared by `.oxide/marketplace.json` or
