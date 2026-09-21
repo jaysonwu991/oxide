@@ -224,6 +224,7 @@ async fn event_loop(
     let (models_tx, mut models_rx) = unbounded_channel::<ModelCatalogs>();
     let (mcps_tx, mut mcps_rx) = unbounded_channel::<Vec<(String, String, McpStatus)>>();
     let (plugins_tx, mut plugins_rx) = unbounded_channel::<String>();
+    let (listings_tx, mut listings_rx) = unbounded_channel::<Result<ChatItem, String>>();
     let (marketplaces_tx, mut marketplaces_rx) = unbounded_channel::<MarketplaceOutcome>();
     let (usage_tx, mut usage_rx) =
         unbounded_channel::<Result<crate::portkey_usage::Snapshot, String>>();
@@ -241,6 +242,7 @@ async fn event_loop(
         }
     }
     let mut tick = tokio::time::interval(std::time::Duration::from_millis(500));
+    let mut progress_tick = tokio::time::interval(std::time::Duration::from_millis(120));
     let mut branch_tick = tokio::time::interval(std::time::Duration::from_secs(2));
     let mut usage_tick = tokio::time::interval(std::time::Duration::from_secs(60));
     let mut usage_inflight = false;
@@ -274,7 +276,7 @@ async fn event_loop(
                     Some(Ok(Event::Key(key))) => handle_key(
                         key, &mut app, &mut config, &cwd, &mut rx, &mcp, &plugins,
                         snapshots.as_ref(), &lsp, &mut session, &approve, &models_tx, &mcps_tx,
-                        &plugins_tx, &marketplaces_tx, &usage_tx,
+                        &plugins_tx, &listings_tx, &marketplaces_tx, &usage_tx,
                     ),
                     Some(Ok(Event::Paste(text))) => handle_paste(text, &mut app),
                     Some(Ok(Event::Mouse(mouse))) => handle_mouse(mouse, &mut app, terminal_area),
@@ -301,8 +303,22 @@ async fn event_loop(
             }
             statuses = mcps_rx.recv() => {
                 if let Some(statuses) = statuses {
+                    app.clear_progress();
                     app.items.push(mcp_listing(&statuses));
                     app.auto_scroll = true;
+                    app.status = "ready".to_string();
+                }
+            }
+            listing = listings_rx.recv() => {
+                if let Some(result) = listing {
+                    app.clear_progress();
+                    match result {
+                        Ok(item) => {
+                            app.items.push(item);
+                            app.auto_scroll = true;
+                        }
+                        Err(err) => app.items.push(ChatItem::Error(format!("plugins: {err}"))),
+                    }
                     app.status = "ready".to_string();
                 }
             }
@@ -334,6 +350,9 @@ async fn event_loop(
             }
             _ = tick.tick(), if app.busy => {
                 app.mark_running_tool_dirty();
+            }
+            _ = progress_tick.tick(), if app.has_progress() => {
+                app.mark_progress_dirty();
             }
             _ = branch_tick.tick(), if !app.busy => {
                 app.refresh_git_branch();
@@ -426,6 +445,7 @@ fn handle_key(
     models_tx: &UnboundedSender<ModelCatalogs>,
     mcps_tx: &UnboundedSender<Vec<(String, String, McpStatus)>>,
     plugins_tx: &UnboundedSender<String>,
+    listings_tx: &UnboundedSender<Result<ChatItem, String>>,
     marketplaces_tx: &UnboundedSender<MarketplaceOutcome>,
     usage_tx: &UnboundedSender<Result<crate::portkey_usage::Snapshot, String>>,
 ) {
@@ -779,6 +799,7 @@ fn handle_key(
                 app.clear_input();
                 refresh_suggestions(app, config);
                 app.status = "checking MCP servers...".to_string();
+                app.show_progress("Checking MCP servers");
                 let mcp = Arc::clone(mcp);
                 let tx = mcps_tx.clone();
                 tokio::spawn(async move {
@@ -817,10 +838,15 @@ fn handle_key(
                     None => (args, ""),
                 };
                 match verb {
-                    "" | "list" => match plugins_listing() {
-                        Ok(item) => app.items.push(item),
-                        Err(err) => app.items.push(ChatItem::Error(format!("plugins: {err:#}"))),
-                    },
+                    "" | "list" => {
+                        app.status = "loading plugins...".to_string();
+                        app.show_progress("Loading plugins");
+                        let tx = listings_tx.clone();
+                        tokio::task::spawn_blocking(move || {
+                            let result = plugins_listing().map_err(|err| format!("{err:#}"));
+                            let _ = tx.send(result);
+                        });
+                    }
                     "install" => {
                         if rest.is_empty() {
                             app.items.push(ChatItem::Error(

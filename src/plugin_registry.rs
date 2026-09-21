@@ -691,15 +691,35 @@ async fn install_in(root: &Path, name: &str, marketplace: Option<&str>) -> Resul
     Ok(summary)
 }
 
-pub fn uninstall(name: &str) -> Result<String> {
-    uninstall_in(&install_root(), name)
+/// Resolves an installed plugin by `name` or `name@marketplace`, verifying the
+/// marketplace when the reference names one. Installed plugins are keyed by
+/// name alone, so the bare form always matches.
+fn find_installed<'a>(
+    state: &'a PluginState,
+    reference: &str,
+) -> Option<(&'a String, &'a InstalledPlugin)> {
+    let (name, marketplace) = split_ref(reference);
+    let (key, installed) = state.plugins.get_key_value(&name)?;
+    if let Some(marketplace) = marketplace {
+        if installed.marketplace.as_deref() != Some(marketplace.as_str()) {
+            return None;
+        }
+    }
+    Some((key, installed))
 }
 
-fn uninstall_in(root: &Path, name: &str) -> Result<String> {
+pub fn uninstall(reference: &str) -> Result<String> {
+    uninstall_in(&install_root(), reference)
+}
+
+fn uninstall_in(root: &Path, reference: &str) -> Result<String> {
     let mut state = load_state_in(root)?;
-    let Some(installed) = state.plugins.remove(name) else {
-        bail!("no installed plugin named `{name}`");
+    let Some((name, installed)) = find_installed(&state, reference)
+        .map(|(name, installed)| (name.clone(), installed.clone()))
+    else {
+        bail!("no installed plugin named `{reference}`");
     };
+    state.plugins.remove(&name);
     save_state_in(root, &state)?;
     if installed.path.starts_with(root) {
         std::fs::remove_dir_all(&installed.path).ok();
@@ -712,14 +732,17 @@ fn uninstall_in(root: &Path, name: &str) -> Result<String> {
     Ok(format!("uninstalled plugin `{name}`"))
 }
 
-pub fn set_enabled(name: &str, enabled: bool) -> Result<String> {
-    set_enabled_in(&install_root(), name, enabled)
+pub fn set_enabled(reference: &str, enabled: bool) -> Result<String> {
+    set_enabled_in(&install_root(), reference, enabled)
 }
 
-fn set_enabled_in(root: &Path, name: &str, enabled: bool) -> Result<String> {
+fn set_enabled_in(root: &Path, reference: &str, enabled: bool) -> Result<String> {
     let mut state = load_state_in(root)?;
-    let Some(installed) = state.plugins.get_mut(name) else {
-        bail!("no installed plugin named `{name}`");
+    let Some(name) = find_installed(&state, reference).map(|(name, _)| name.clone()) else {
+        bail!("no installed plugin named `{reference}`");
+    };
+    let Some(installed) = state.plugins.get_mut(&name) else {
+        bail!("no installed plugin named `{reference}`");
     };
     installed.enabled = enabled;
     save_state_in(root, &state)?;
@@ -1197,10 +1220,12 @@ mod tests {
         assert!(text.contains("enabled"));
         assert!(text.contains("@test-mp"));
 
-        assert!(set_enabled_in(&root, "hello", false).is_ok());
+        assert!(set_enabled_in(&root, "hello@test-mp", false).is_ok());
         assert!(!load_state_in(&root).unwrap().plugins["hello"].enabled);
+        assert!(set_enabled_in(&root, "hello@other-mp", true).is_err());
 
-        assert!(uninstall_in(&root, "hello").is_ok());
+        assert!(uninstall_in(&root, "hello@other-mp").is_err());
+        assert!(uninstall_in(&root, "hello@test-mp").is_ok());
         assert!(load_state_in(&root).unwrap().plugins.is_empty());
         assert!(!state.plugins["hello"].path.exists());
 

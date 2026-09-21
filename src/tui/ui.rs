@@ -2211,7 +2211,37 @@ fn render_item_themed(
                 Style::default().fg(theme.info).add_modifier(Modifier::DIM),
             );
         }
+        ChatItem::Progress { label, since } => {
+            let elapsed = since.elapsed();
+            lines.push(Line::from(vec![
+                Span::styled(progress_bar(elapsed), Style::default().fg(theme.tool)),
+                Span::styled(
+                    format!("  {label}… "),
+                    Style::default().fg(theme.info).add_modifier(Modifier::DIM),
+                ),
+                Span::styled(
+                    format!("{}s", elapsed.as_secs()),
+                    Style::default().fg(theme.dim),
+                ),
+            ]));
+        }
     }
+}
+
+/// A fixed-width indeterminate progress bar for a command whose completion is
+/// unknown: the filled segment sweeps across the track so the transcript shows
+/// movement while the result is being prepared.
+fn progress_bar(elapsed: std::time::Duration) -> String {
+    const WIDTH: usize = 12;
+    const SEGMENT: usize = 3;
+    let cycle = WIDTH + SEGMENT;
+    let position = (elapsed.as_millis() / 100) as usize % cycle;
+    let mut bar = String::with_capacity(WIDTH);
+    for index in 0..WIDTH {
+        let filled = index <= position && index + SEGMENT > position;
+        bar.push(if filled { '█' } else { '░' });
+    }
+    bar
 }
 
 /// Renders the banner as the wordmark on top with the welcome info stacked
@@ -3122,6 +3152,36 @@ mod tests {
         assert_eq!(input_rows("hello", 10), MIN_INPUT_ROWS);
         assert_eq!(input_rows("hello\nworld", 10), 2);
         assert_eq!(input_rows(&"a".repeat(200), 10), MAX_INPUT_ROWS);
+    }
+
+    #[test]
+    fn progress_bar_keeps_its_width_as_it_sweeps() {
+        let start = progress_bar(std::time::Duration::ZERO);
+        let later = progress_bar(std::time::Duration::from_millis(500));
+        assert_eq!(start.chars().count(), later.chars().count());
+        assert!(start.chars().all(|ch| ch == '█' || ch == '░'));
+        assert_ne!(start, later);
+    }
+
+    #[test]
+    fn progress_item_renders_a_bar_and_label() {
+        let mut lines = Vec::new();
+        render_item(
+            &ChatItem::Progress {
+                label: "Loading plugins".into(),
+                since: std::time::Instant::now(),
+            },
+            80,
+            false,
+            &mut lines,
+        );
+        let text: String = lines
+            .iter()
+            .flat_map(|line| line.spans.iter())
+            .map(|span| span.content.as_ref())
+            .collect();
+        assert!(text.contains("Loading plugins"));
+        assert!(text.contains('█') || text.contains('░'));
     }
 
     #[test]

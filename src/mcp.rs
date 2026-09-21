@@ -840,8 +840,8 @@ mod tests {
             Some("acme.atlassian.net".to_string())
         );
         assert_eq!(
-            host_from_url("https://slack.com/archives/C01/T123"),
-            Some("slack.com".to_string())
+            host_from_url("https://docs.example.com/page/1"),
+            Some("docs.example.com".to_string())
         );
         assert_eq!(host_from_url("not a url"), None);
         assert_eq!(host_from_url(""), None);
@@ -849,22 +849,22 @@ mod tests {
 
     #[test]
     fn matches_domains_exact_and_wildcard() {
-        assert!(domain_match("slack.com", "slack.com"));
-        assert!(domain_match("*.slack.com", "acme.slack.com"));
-        assert!(domain_match(".slack.com", "slack.com"));
+        assert!(domain_match("example.com", "example.com"));
+        assert!(domain_match("*.example.com", "acme.example.com"));
+        assert!(domain_match(".example.com", "example.com"));
         assert!(domain_match("*.atlassian.net", "acme.atlassian.net"));
         assert!(!domain_match("*.atlassian.net", "atlassian.net.evil.com"));
-        assert!(!domain_match("slack.com", "evil-slack.com"));
+        assert!(!domain_match("example.com", "evil-example.com"));
     }
 
     #[test]
     fn collects_urls_from_free_text() {
-        let text = "check https://acme.atlassian.net/browse/PROJ-1 and https://slack.com/x";
+        let text = "check https://acme.atlassian.net/browse/PROJ-1 and https://docs.example.com/x";
         assert_eq!(
             urls_in_text(text),
             vec![
                 "https://acme.atlassian.net/browse/PROJ-1".to_string(),
-                "https://slack.com/x".to_string()
+                "https://docs.example.com/x".to_string()
             ]
         );
     }
@@ -873,14 +873,14 @@ mod tests {
     fn routes_urls_to_configured_servers() {
         let servers = vec![
             McpServer {
-                name: "slack".to_string(),
+                name: "docs".to_string(),
                 enabled: true,
                 kind: McpKind::Remote {
-                    url: "https://mcp.slack.com".to_string(),
+                    url: "https://mcp.docs.example.com".to_string(),
                     headers: Default::default(),
                     oauth: None,
                 },
-                domains: vec![],
+                domains: vec!["docs.example.com".to_string()],
             },
             McpServer {
                 name: "atlassian".to_string(),
@@ -895,8 +895,8 @@ mod tests {
         ];
         let registry = McpRegistry::new(&servers);
         assert_eq!(
-            registry.servers_for_text("see https://acme.slack.com/archives/C01"),
-            vec!["slack".to_string()]
+            registry.servers_for_text("see https://docs.example.com/page"),
+            vec!["docs".to_string()]
         );
         assert_eq!(
             registry.url_owned("https://acme.atlassian.net/wiki/spaces/EN"),

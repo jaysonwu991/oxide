@@ -241,18 +241,19 @@ enum PluginAction {
         name: String,
     },
     /// Uninstall a plugin
+    #[command(visible_alias = "remove")]
     Uninstall {
-        /// Plugin name
+        /// Plugin name, optionally `name@marketplace`
         name: String,
     },
     /// Enable a disabled plugin
     Enable {
-        /// Plugin name
+        /// Plugin name, optionally `name@marketplace`
         name: String,
     },
     /// Disable a plugin
     Disable {
-        /// Plugin name
+        /// Plugin name, optionally `name@marketplace`
         name: String,
     },
     /// Manage plugin marketplaces

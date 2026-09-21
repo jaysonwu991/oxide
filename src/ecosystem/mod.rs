@@ -566,7 +566,7 @@ fn normalize_domain(domain: &str) -> String {
 
 /// Well-known routing domains for popular MCP servers. Users can override these
 /// with the `domains` key in their server config; this map only fills the gap so
-/// pasted URLs (Slack messages, Confluence pages, ...) route without setup.
+/// pasted URLs (Confluence pages, tickets, ...) route without setup.
 pub fn default_domains(name: &str) -> Vec<String> {
     let key = name
         .chars()
@@ -582,7 +582,6 @@ pub fn default_domains(name: &str) -> Vec<String> {
             "atlassian.com",
             "*.atlassian.com",
         ],
-        "slack" => &["slack.com", "*.slack.com"],
         "newrelic" | "newrelicone" | "nr" => &[
             "newrelic.com",
             "*.newrelic.com",
@@ -969,9 +968,8 @@ mod tests {
             normalize_domain("https://Acme.Atlassian.Net/wiki"),
             "acme.atlassian.net"
         );
-        assert_eq!(normalize_domain("*.Slack.com"), "*.slack.com");
-        assert!(default_domains("slack").contains(&"slack.com".to_string()));
-        assert!(default_domains("Atlassian").contains(&"*.atlassian.net".to_string()));
+        assert_eq!(normalize_domain("*.Example.com"), "*.example.com");
+        assert!(default_domains("atlassian").contains(&"*.atlassian.net".to_string()));
         assert!(default_domains("unknown-service").is_empty());
     }
 

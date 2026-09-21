@@ -128,6 +128,12 @@ pub enum ChatItem {
     /// theme change). Only the newest one is kept so repeated actions do not
     /// stack up lines, matching Pi's `showStatus`.
     Status(String),
+    /// A background command still running, rendered as an animated progress bar
+    /// until its result replaces it (`/mcps`, `/plugins list`).
+    Progress {
+        label: String,
+        since: Instant,
+    },
 }
 
 /// Semantic color for a [`ListRow`], resolved against the active theme so the
@@ -990,6 +996,47 @@ impl App {
         self.auto_scroll = true;
     }
 
+    /// Shows an animated progress bar for a background command, replacing any
+    /// previous one. The transcript redraws on the tick while it is present.
+    pub fn show_progress(&mut self, label: impl Into<String>) {
+        self.clear_progress();
+        self.items.push(ChatItem::Progress {
+            label: label.into(),
+            since: Instant::now(),
+        });
+        self.auto_scroll = true;
+    }
+
+    /// Removes the progress bar once the command's result is available.
+    pub fn clear_progress(&mut self) {
+        if let Some(index) = self
+            .items
+            .iter()
+            .position(|item| matches!(item, ChatItem::Progress { .. }))
+        {
+            self.items.remove(index);
+            self.mark_render_dirty(index);
+        }
+    }
+
+    /// Whether a background command is still running.
+    pub fn has_progress(&self) -> bool {
+        self.items
+            .iter()
+            .any(|item| matches!(item, ChatItem::Progress { .. }))
+    }
+
+    /// Marks the progress bar dirty so it advances on each tick.
+    pub fn mark_progress_dirty(&mut self) {
+        if let Some(index) = self
+            .items
+            .iter()
+            .rposition(|item| matches!(item, ChatItem::Progress { .. }))
+        {
+            self.mark_render_dirty(index);
+        }
+    }
+
     /// Messages queued for the running turn, steering plus follow-ups.
     pub fn queued_count(&self) -> usize {
         self.steering.len() + self.follow_ups.len()
@@ -1089,6 +1136,26 @@ mod tests {
 
     fn test_app() -> App {
         App::new("gpt-4o".into(), ".".into(), Mode::Build, Reasoning::Auto)
+    }
+
+    #[test]
+    fn progress_replaces_itself_and_clears() {
+        let mut app = test_app();
+        app.show_progress("Loading plugins");
+        assert!(app.has_progress());
+        assert_eq!(app.items.len(), 1);
+
+        app.show_progress("Checking MCP servers");
+        assert_eq!(app.items.len(), 1);
+        if let ChatItem::Progress { label, .. } = &app.items[0] {
+            assert_eq!(label, "Checking MCP servers");
+        } else {
+            panic!("expected a progress item");
+        }
+
+        app.clear_progress();
+        assert!(!app.has_progress());
+        assert!(app.items.is_empty());
     }
 
     #[test]
