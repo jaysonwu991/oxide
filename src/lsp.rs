@@ -76,6 +76,15 @@ impl LspManager {
             Some(config) => config,
             None => return Ok(None),
         };
+        self.diagnostics_for(config, cwd, path).await
+    }
+
+    async fn diagnostics_for(
+        &self,
+        config: ServerConfig,
+        cwd: &Path,
+        path: &Path,
+    ) -> Result<Option<String>> {
         if !command_exists(config.command) {
             return Ok(None);
         }
@@ -89,41 +98,30 @@ impl LspManager {
         let uri = file_uri(&full);
 
         let mut servers = self.servers.lock().await;
-        if !servers.contains_key(config.language_id) {
-            let server = Server::connect(config, cwd).await?;
-            servers.insert(config.language_id.to_string(), server);
+        let mut last_error = None;
+        for _ in 0..2 {
+            if !servers.contains_key(config.language_id) {
+                let server = Server::connect(config, cwd).await?;
+                servers.insert(config.language_id.to_string(), server);
+            }
+            let server = servers
+                .get_mut(config.language_id)
+                .expect("server was just inserted");
+            match server
+                .diagnose(config.language_id, &full, &uri, &text)
+                .await
+            {
+                Ok(report) => return Ok(Some(report)),
+                Err(err) => {
+                    // A cached process is unusable once it exits or its pipe
+                    // breaks. Drop it so the retry starts a fresh one instead
+                    // of failing forever against a dead server.
+                    servers.remove(config.language_id);
+                    last_error = Some(err);
+                }
+            }
         }
-        let server = servers
-            .get_mut(config.language_id)
-            .expect("server was just inserted");
-        server.ensure_initialized().await?;
-        if server.opened.insert(full.clone()) {
-            server
-                .notify(
-                    "textDocument/didOpen",
-                    json!({
-                        "textDocument": {
-                            "uri": uri,
-                            "languageId": config.language_id,
-                            "version": 1,
-                            "text": text,
-                        }
-                    }),
-                )
-                .await?;
-        } else {
-            server
-                .notify(
-                    "textDocument/didChange",
-                    json!({
-                        "textDocument": { "uri": uri, "version": 2 },
-                        "contentChanges": [ { "text": text } ],
-                    }),
-                )
-                .await?;
-        }
-        let diagnostics = server.collect_diagnostics(&uri).await?;
-        Ok(Some(format_diagnostics(&full, &diagnostics)))
+        Err(last_error.expect("the loop records the last failure"))
     }
 }
 
@@ -189,6 +187,41 @@ impl Server {
         }
     }
 
+    async fn diagnose(
+        &mut self,
+        language_id: &str,
+        full: &Path,
+        uri: &str,
+        text: &str,
+    ) -> Result<String> {
+        self.ensure_initialized().await?;
+        if self.opened.insert(full.to_path_buf()) {
+            self.notify(
+                "textDocument/didOpen",
+                json!({
+                    "textDocument": {
+                        "uri": uri,
+                        "languageId": language_id,
+                        "version": 1,
+                        "text": text,
+                    }
+                }),
+            )
+            .await?;
+        } else {
+            self.notify(
+                "textDocument/didChange",
+                json!({
+                    "textDocument": { "uri": uri, "version": 2 },
+                    "contentChanges": [ { "text": text } ],
+                }),
+            )
+            .await?;
+        }
+        let diagnostics = self.collect_diagnostics(uri).await?;
+        Ok(format_diagnostics(full, &diagnostics))
+    }
+
     async fn collect_diagnostics(&mut self, uri: &str) -> Result<Vec<Value>> {
         let deadline = tokio::time::Instant::now() + DIAGNOSTIC_TIMEOUT;
         loop {
@@ -198,7 +231,8 @@ impl Server {
             }
             let message = match tokio::time::timeout(remaining, self.read_message()).await {
                 Ok(Ok(Some(message))) => message,
-                Ok(Ok(None)) | Err(_) => return Ok(Vec::new()),
+                Ok(Ok(None)) => bail!("lsp server closed the connection"),
+                Err(_) => return Ok(Vec::new()),
                 Ok(Err(err)) => return Err(err),
             };
             if message.get("method").and_then(Value::as_str)
@@ -320,6 +354,70 @@ fn command_exists(name: &str) -> bool {
 mod tests {
     use super::*;
 
+    /// A tiny stdio LSP server: it answers `initialize`, sends a diagnostic on
+    /// the first `didOpen` and, on its very first run, exits right after so the
+    /// cached process dies; later runs stay alive and publish the diagnostic.
+    const MOCK_SERVER: &str = r#"
+import json
+import sys
+
+counter = sys.argv[1]
+
+
+def send(obj):
+    body = json.dumps(obj)
+    sys.stdout.write("Content-Length: %d\r\n\r\n%s" % (len(body), body))
+    sys.stdout.flush()
+
+
+def read():
+    length = None
+    while True:
+        line = sys.stdin.buffer.readline()
+        if not line:
+            return None
+        line = line.strip()
+        if not line:
+            break
+        if line.lower().startswith(b"content-length:"):
+            length = int(line.split(b":", 1)[1].strip())
+    if length is None:
+        return None
+    body = sys.stdin.buffer.read(length)
+    if len(body) < length:
+        return None
+    return json.loads(body)
+
+
+try:
+    with open(counter, "r") as handle:
+        runs = int(handle.read().strip() or "0")
+except OSError:
+    runs = 0
+with open(counter, "w") as handle:
+    handle.write(str(runs + 1))
+
+while True:
+    message = read()
+    if message is None:
+        break
+    method = message.get("method")
+    if method == "initialize":
+        send({"jsonrpc": "2.0", "id": message["id"], "result": {"capabilities": {}}})
+    elif method in ("textDocument/didOpen", "textDocument/didChange"):
+        if runs == 0:
+            sys.exit(0)
+        uri = message["params"]["textDocument"]["uri"]
+        diagnostics = (
+            [{"severity": 1, "message": "mock diagnostic", "range": {"start": {"line": 0}}}]
+            if method == "textDocument/didOpen"
+            else []
+        )
+        send({"jsonrpc": "2.0", "method": "textDocument/publishDiagnostics", "params": {"uri": uri, "diagnostics": diagnostics}})
+    elif "id" in message:
+        send({"jsonrpc": "2.0", "id": message["id"], "result": None})
+"#;
+
     #[test]
     fn maps_extensions_to_servers() {
         assert_eq!(server_for(Path::new("a.rs")).unwrap().language_id, "rust");
@@ -343,5 +441,42 @@ mod tests {
 
         let clean = format_diagnostics(Path::new("src/lib.rs"), &[]);
         assert!(clean.contains("no diagnostics"));
+    }
+
+    #[tokio::test]
+    async fn reconnects_after_the_cached_server_dies() {
+        if !command_exists("python3") {
+            return;
+        }
+        let dir = std::env::temp_dir().join(format!("oxide_lsp_{}", std::process::id()));
+        std::fs::remove_dir_all(&dir).ok();
+        std::fs::create_dir_all(&dir).unwrap();
+        let script = dir.join("mock_lsp.py");
+        std::fs::write(&script, MOCK_SERVER).unwrap();
+        let counter = dir.join("count");
+        let source = dir.join("a.rs");
+        std::fs::write(&source, "fn main() {}\n").unwrap();
+
+        let script_arg: &'static str =
+            Box::leak(script.to_string_lossy().into_owned().into_boxed_str());
+        let counter_arg: &'static str =
+            Box::leak(counter.to_string_lossy().into_owned().into_boxed_str());
+        let config = ServerConfig {
+            language_id: "rust",
+            command: "python3",
+            args: Box::leak(vec![script_arg, counter_arg].into_boxed_slice()),
+        };
+
+        let manager = LspManager::new();
+        let report = manager
+            .diagnostics_for(config, &dir, &source)
+            .await
+            .expect("diagnostics should recover from a dead server")
+            .expect("a report");
+        assert!(report.contains("mock diagnostic"), "{report}");
+        // The dead first process was evicted and replaced by the live one.
+        assert_eq!(manager.servers.lock().await.len(), 1);
+
+        std::fs::remove_dir_all(&dir).ok();
     }
 }

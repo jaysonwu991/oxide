@@ -57,6 +57,16 @@ pub fn defaults() -> BTreeMap<String, ModelPrice> {
         ("claude-3-5-haiku", price(0.8, 4.0, 0.08, 1.0)),
         ("deepseek-chat", price(0.27, 1.1, 0.07, 0.0)),
         ("deepseek-reasoner", price(0.55, 2.19, 0.14, 0.0)),
+        ("glm-5.3-flashx", price(0.37, 1.25, 0.075, 0.0)),
+        ("glm-5.3-flash", price(0.15, 0.5, 0.03, 0.0)),
+        ("glm-5.3", price(1.4, 4.4, 0.26, 0.0)),
+        ("glm-5.2", price(1.4, 4.4, 0.26, 0.0)),
+        ("glm-5.1", price(1.4, 4.4, 0.26, 0.0)),
+        ("glm-5", price(1.0, 3.2, 0.2, 0.0)),
+        ("glm-4.7-flashx", price(0.07, 0.4, 0.01, 0.0)),
+        ("glm-4.7", price(0.6, 2.2, 0.11, 0.0)),
+        ("glm-4.6", price(0.6, 2.2, 0.11, 0.0)),
+        ("glm-4.5-air", price(0.2, 1.1, 0.03, 0.0)),
     ] {
         prices.insert(model.to_string(), value);
     }
@@ -119,6 +129,15 @@ mod tests {
         let prices = defaults();
         assert!(prices.contains_key("gpt-4o"));
         assert!(prices.contains_key("deepseek-chat"));
+        assert!(prices.contains_key("glm-5.3"));
+    }
+
+    #[test]
+    fn glm_flash_models_are_not_priced_as_the_flagship() {
+        let prices = defaults();
+        assert_eq!(lookup(&prices, "glm-5.3").unwrap().input, 1.4);
+        assert_eq!(lookup(&prices, "glm-5.3-flash").unwrap().input, 0.15);
+        assert_eq!(lookup(&prices, "glm-4.7-flashx").unwrap().input, 0.07);
     }
 
     #[test]

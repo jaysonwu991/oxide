@@ -1,8 +1,10 @@
-use crate::config::{supports_adaptive_thinking, Config, ProviderKind, Reasoning};
+use crate::config::{
+    glm_forces_thinking, supports_adaptive_thinking, Config, ProviderKind, Reasoning,
+};
 use crate::llm::anthropic;
 use crate::llm::types::{
-    AssistantTurn, ChatRequest, FunctionCall, Message, StreamChunk, StreamOptions, ToolCall,
-    ToolSpec, Usage,
+    push_thinking, AssistantTurn, ChatRequest, FunctionCall, Message, StreamChunk, StreamOptions,
+    ToolCall, ToolSpec, Usage,
 };
 use anyhow::{Context, Result};
 use futures::StreamExt;
@@ -54,6 +56,28 @@ struct ModelCache {
 struct CachedModels {
     updated_at: u64,
     models: Vec<String>,
+}
+
+/// Callbacks the client invokes while a turn streams, so the caller can show
+/// the work in progress: reasoning text as the model emits it, and transient
+/// failures that are about to be retried.
+///
+/// A retried attempt re-sends its reasoning from the start, so `thinking` may
+/// repeat fragments it already delivered; consumers reset their view when
+/// `retry` fires. Text is never repeated, because an attempt that emitted any
+/// is not retried.
+pub struct StreamHooks<'a> {
+    pub text: &'a mut (dyn FnMut(String) + Send),
+    pub thinking: &'a mut (dyn FnMut(String) + Send),
+    pub retry: &'a mut (dyn FnMut(Retry) + Send),
+}
+
+/// A transient provider failure the client is about to retry.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Retry {
+    pub attempt: u32,
+    pub max: u32,
+    pub delay: Duration,
 }
 
 impl LlmClient {
@@ -112,31 +136,45 @@ impl LlmClient {
             if self.config.is_portkey() && status == reqwest::StatusCode::FORBIDDEN {
                 return Ok(self.config.model_catalog());
             }
+            // Z.AI does not document a model listing endpoint, so a missing or
+            // restricted one falls back to the bundled catalog.
+            if self.config.is_zai()
+                && matches!(
+                    status,
+                    reqwest::StatusCode::FORBIDDEN | reqwest::StatusCode::NOT_FOUND
+                )
+            {
+                return Ok(self.config.model_catalog());
+            }
             anyhow::bail!("provider returned {status}: {}", body.trim());
         }
 
-        let list: ModelList = response.json().await.context("parsing model list")?;
+        let list: ModelList = match response.json().await {
+            Ok(list) => list,
+            // The listing endpoint is undocumented at Z.AI, so an unexpected
+            // shape falls back to the bundled catalog like a missing one.
+            Err(_) if self.config.is_zai() => return Ok(self.config.model_catalog()),
+            Err(err) => return Err(err).context("parsing model list"),
+        };
         let mut models: Vec<String> = list.data.into_iter().map(|model| model.id).collect();
         models.sort();
         models.dedup();
         Ok(models)
     }
 
-    /// Stream a chat completion. `on_text` is invoked synchronously for every
-    /// content delta. Returns the assembled assistant turn (text + tool calls).
+    /// Stream a chat completion, reporting text, reasoning, and retries through
+    /// `hooks`. Returns the assembled assistant turn (text, thinking, and tool
+    /// calls).
     ///
     /// Transient failures (network errors, truncated streams, rate limits and
     /// 5xx responses) are retried with backoff, but only while the attempt has
     /// not emitted any text yet, so a partial response is never duplicated.
-    pub async fn stream_chat<F>(
+    pub async fn stream_chat(
         &self,
         messages: &[Message],
         tools: &[ToolSpec],
-        mut on_text: F,
-    ) -> Result<AssistantTurn>
-    where
-        F: FnMut(String),
-    {
+        hooks: &mut StreamHooks<'_>,
+    ) -> Result<AssistantTurn> {
         let mut attempt = 0u32;
         loop {
             attempt += 1;
@@ -144,20 +182,43 @@ impl LlmClient {
             let result = {
                 let mut attempt_text = |delta: String| {
                     emitted = true;
-                    on_text(delta);
+                    (hooks.text)(delta);
+                };
+                let mut attempt_hooks = StreamHooks {
+                    text: &mut attempt_text,
+                    thinking: &mut *hooks.thinking,
+                    retry: &mut *hooks.retry,
                 };
                 match self.config.provider_kind() {
                     ProviderKind::Anthropic => {
-                        self.stream_anthropic(messages, tools, &mut attempt_text)
+                        self.stream_anthropic(messages, tools, &mut attempt_hooks)
                             .await
                     }
                     ProviderKind::OpenAi => {
-                        self.stream_openai(messages, tools, &mut attempt_text).await
+                        self.stream_openai(messages, tools, &mut attempt_hooks)
+                            .await
                     }
                 }
             };
             match result {
                 Ok(mut turn) => {
+                    // A turn with neither text nor tool calls carries nothing
+                    // the agent can act on. It is usually a transient provider
+                    // hiccup, so retry it like a dropped stream instead of
+                    // failing the whole turn on the first empty response.
+                    if assistant_turn_is_empty(&turn) {
+                        if attempt < MAX_STREAM_ATTEMPTS {
+                            let delay = Duration::from_millis(500 * 2u64.pow(attempt - 1));
+                            (hooks.retry)(Retry {
+                                attempt,
+                                max: MAX_STREAM_ATTEMPTS,
+                                delay,
+                            });
+                            tokio::time::sleep(delay).await;
+                            continue;
+                        }
+                        anyhow::bail!("the model returned an empty response");
+                    }
                     turn.usage.cost = self.config.usage_cost(&turn.usage);
                     return Ok(turn);
                 }
@@ -165,22 +226,24 @@ impl LlmClient {
                     if emitted || attempt >= MAX_STREAM_ATTEMPTS || !is_retryable(&err) {
                         return Err(err);
                     }
-                    let backoff = Duration::from_millis(500 * 2u64.pow(attempt - 1));
-                    tokio::time::sleep(backoff).await;
+                    let delay = Duration::from_millis(500 * 2u64.pow(attempt - 1));
+                    (hooks.retry)(Retry {
+                        attempt,
+                        max: MAX_STREAM_ATTEMPTS,
+                        delay,
+                    });
+                    tokio::time::sleep(delay).await;
                 }
             }
         }
     }
 
-    async fn stream_openai<F>(
+    async fn stream_openai(
         &self,
         messages: &[Message],
         tools: &[ToolSpec],
-        mut on_text: F,
-    ) -> Result<AssistantTurn>
-    where
-        F: FnMut(String),
-    {
+        hooks: &mut StreamHooks<'_>,
+    ) -> Result<AssistantTurn> {
         let url = format!("{}/chat/completions", self.config.base_url);
         let request = openai_request(&self.config, messages, tools);
 
@@ -225,9 +288,14 @@ impl LlmClient {
                 return Ok(());
             };
 
+            if let Some(text) = choice.delta.reasoning() {
+                (hooks.thinking)(text.to_string());
+                push_thinking(&mut turn.thinking, text);
+            }
+
             if let Some(text) = choice.delta.content {
                 if !text.is_empty() {
-                    on_text(text.clone());
+                    (hooks.text)(text.clone());
                     turn.content.push_str(&text);
                 }
             }
@@ -301,15 +369,12 @@ impl LlmClient {
         }
     }
 
-    async fn stream_anthropic<F>(
+    async fn stream_anthropic(
         &self,
         messages: &[Message],
         tools: &[ToolSpec],
-        mut on_text: F,
-    ) -> Result<AssistantTurn>
-    where
-        F: FnMut(String),
-    {
+        hooks: &mut StreamHooks<'_>,
+    ) -> Result<AssistantTurn> {
         let url = format!("{}/messages", self.config.base_url);
         let body = anthropic::request_body(&self.config, messages, tools);
 
@@ -332,12 +397,15 @@ impl LlmClient {
         let mut turn = AssistantTurn::default();
         let mut partials = BTreeMap::new();
 
-        let _ = read_sse(response, |data| {
-            anthropic::apply_event(data, &mut turn, &mut partials, &mut on_text)
+        let completed = read_sse(response, |data| {
+            anthropic::apply_event(data, &mut turn, &mut partials, hooks.text, hooks.thinking)
         })
         .await?;
 
         turn.tool_calls = anthropic::into_tool_calls(partials);
+        if !completed && assistant_turn_is_empty(&turn) {
+            anyhow::bail!("provider stream ended before completing the response");
+        }
         Ok(turn)
     }
 }
@@ -452,6 +520,9 @@ fn openai_reasoning(
     Option<serde_json::Value>,
     Option<serde_json::Value>,
 ) {
+    if config.is_zai() {
+        return glm_reasoning(config);
+    }
     let adaptive = config.is_portkey() && supports_adaptive_thinking(&config.model);
     match config.reasoning {
         Reasoning::Off => (None, None, None),
@@ -468,6 +539,29 @@ fn openai_reasoning(
     }
 }
 
+/// GLM enables or disables thinking with `thinking.type`, and its
+/// `reasoning_effort` scale is `low`/`high`/`max` on the current flagship, so
+/// oxide's medium and high map onto high and max. Models that always think get
+/// the lowest effort instead of an unsupported `disabled`.
+fn glm_reasoning(
+    config: &Config,
+) -> (
+    Option<String>,
+    Option<serde_json::Value>,
+    Option<serde_json::Value>,
+) {
+    let effort = |level: &str| Some(level.to_string());
+    let enabled = || Some(serde_json::json!({ "type": "enabled" }));
+    match config.reasoning {
+        Reasoning::Auto => (None, None, None),
+        Reasoning::Off if glm_forces_thinking(&config.model) => (effort("low"), enabled(), None),
+        Reasoning::Off => (None, Some(serde_json::json!({ "type": "disabled" })), None),
+        Reasoning::Low => (effort("low"), enabled(), None),
+        Reasoning::Medium => (effort("high"), enabled(), None),
+        Reasoning::High => (effort("max"), enabled(), None),
+    }
+}
+
 async fn read_sse<F>(response: reqwest::Response, mut on_data: F) -> Result<bool>
 where
     F: FnMut(&str) -> Result<()>,
@@ -480,25 +574,49 @@ where
         let chunk = chunk.context("reading response stream")?;
         buffer.push_str(&String::from_utf8_lossy(&chunk));
 
-        while let Some(pos) = buffer.find('\n') {
-            let line: String = buffer.drain(..=pos).collect();
+        drain_lines(&mut buffer, |line| {
             let line = line.trim();
             let Some(data) = line.strip_prefix("data:") else {
-                continue;
+                return Ok(());
             };
             let data = data.trim();
             if data.is_empty() {
-                continue;
+                return Ok(());
             }
             if data == "[DONE]" {
                 completed = true;
-                continue;
+                return Ok(());
             }
-            on_data(data)?;
-        }
+            on_data(data)
+        })?;
     }
 
     Ok(completed)
+}
+
+/// Hands every complete line in `buffer` to `on_line`, keeping the trailing
+/// partial line for the next chunk.
+///
+/// The consumed prefix is removed once per chunk rather than once per line:
+/// draining after every line shifts the whole remainder down, which makes a
+/// chunk carrying many events quadratic in the number of events it holds.
+fn drain_lines<F>(buffer: &mut String, mut on_line: F) -> Result<()>
+where
+    F: FnMut(&str) -> Result<()>,
+{
+    let mut consumed = 0;
+    while let Some(offset) = buffer[consumed..].find('\n') {
+        let end = consumed + offset;
+        on_line(&buffer[consumed..end])?;
+        consumed = end + 1;
+    }
+    buffer.drain(..consumed);
+    Ok(())
+}
+
+/// Whether a completed turn carries nothing the agent can act on.
+fn assistant_turn_is_empty(turn: &AssistantTurn) -> bool {
+    turn.content.trim().is_empty() && turn.tool_calls.is_empty()
 }
 
 /// Whether a failed model request is worth retrying. Network failures, stream
@@ -521,6 +639,29 @@ fn is_retryable(err: &anyhow::Error) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn empty_turns_are_detected_for_retry() {
+        let mut turn = AssistantTurn::default();
+        assert!(assistant_turn_is_empty(&turn));
+
+        turn.content = "   ".into();
+        assert!(assistant_turn_is_empty(&turn));
+
+        turn.content = "hello".into();
+        assert!(!assistant_turn_is_empty(&turn));
+
+        turn.content.clear();
+        turn.tool_calls = vec![ToolCall {
+            id: "call_0".into(),
+            kind: "function".into(),
+            function: FunctionCall {
+                name: "read".into(),
+                arguments: "{}".into(),
+            },
+        }];
+        assert!(!assistant_turn_is_empty(&turn));
+    }
 
     #[test]
     fn retries_transient_errors_but_not_client_errors() {
@@ -646,6 +787,58 @@ mod tests {
     }
 
     #[test]
+    fn glm_uses_thinking_type_and_its_own_effort_levels() {
+        let config = |model: &str, reasoning: Reasoning| Config {
+            provider: "zai".into(),
+            model: model.into(),
+            reasoning,
+            ..Config::default()
+        };
+        assert_eq!(
+            openai_reasoning(&config("glm-5.3", Reasoning::Auto)),
+            (None, None, None)
+        );
+        assert_eq!(
+            openai_reasoning(&config("glm-5.3", Reasoning::Medium)),
+            (
+                Some("high".into()),
+                Some(serde_json::json!({ "type": "enabled" })),
+                None
+            )
+        );
+        assert_eq!(
+            openai_reasoning(&config("glm-5.3", Reasoning::High)),
+            (
+                Some("max".into()),
+                Some(serde_json::json!({ "type": "enabled" })),
+                None
+            )
+        );
+        assert_eq!(
+            openai_reasoning(&config("glm-5.2", Reasoning::Off)),
+            (None, Some(serde_json::json!({ "type": "disabled" })), None)
+        );
+        assert_eq!(
+            openai_reasoning(&config("glm-5.3", Reasoning::Off)),
+            (
+                Some("low".into()),
+                Some(serde_json::json!({ "type": "enabled" })),
+                None
+            )
+        );
+
+        let body = serde_json::to_value(openai_request(
+            &config("glm-5.3", Reasoning::Low),
+            &[Message::user("hi")],
+            &[],
+        ))
+        .unwrap();
+        assert_eq!(body["thinking"]["type"], "enabled");
+        assert_eq!(body["reasoning_effort"], "low");
+        assert!(body.get("output_config").is_none());
+    }
+
+    #[test]
     fn openai_keeps_bearer_authentication() {
         let config = Config {
             api_key: "sk-test".into(),
@@ -688,5 +881,60 @@ mod tests {
             models: vec!["model".into()]
         }
         .is_fresh());
+    }
+
+    #[test]
+    fn backoff_grows_with_each_attempt() {
+        assert_eq!(MAX_STREAM_ATTEMPTS, 3);
+    }
+
+    fn drained(chunks: &[&str]) -> (Vec<String>, String) {
+        let mut buffer = String::new();
+        let mut lines = Vec::new();
+        for chunk in chunks {
+            buffer.push_str(chunk);
+            drain_lines(&mut buffer, |line| {
+                lines.push(line.to_string());
+                Ok(())
+            })
+            .unwrap();
+        }
+        (lines, buffer)
+    }
+
+    #[test]
+    fn sse_lines_are_emitted_whole_whatever_the_chunk_boundaries() {
+        let whole = "data: one\ndata: two\n\ndata: three\n";
+        let (lines, tail) = drained(&[whole]);
+        assert_eq!(lines, ["data: one", "data: two", "", "data: three"]);
+        assert!(tail.is_empty());
+
+        let split = drained(&["data: on", "e\ndata:", " two\n\ndata: th", "ree\n"]);
+        assert_eq!(split.0, lines);
+        assert!(split.1.is_empty());
+    }
+
+    #[test]
+    fn an_incomplete_line_stays_buffered_without_shifting_the_rest() {
+        let (lines, tail) = drained(&["data: complete\ndata: incomp"]);
+        assert_eq!(lines, ["data: complete"]);
+        assert_eq!(tail, "data: incomp");
+
+        let (lines, tail) = drained(&["a\nb\nc\n"]);
+        assert_eq!(lines, ["a", "b", "c"]);
+        assert!(tail.is_empty());
+    }
+
+    #[test]
+    fn a_failing_handler_stops_the_drain() {
+        let mut buffer = String::from("a\nb\nc\n");
+        let err = drain_lines(&mut buffer, |line| {
+            if line == "b" {
+                anyhow::bail!("boom")
+            }
+            Ok(())
+        })
+        .unwrap_err();
+        assert_eq!(err.to_string(), "boom");
     }
 }

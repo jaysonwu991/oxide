@@ -12,7 +12,7 @@ pub(crate) struct ProviderOption {
     pub key_url: &'static str,
 }
 
-pub(crate) const KNOWN_PROVIDERS: [ProviderOption; 4] = [
+pub(crate) const KNOWN_PROVIDERS: [ProviderOption; 5] = [
     ProviderOption {
         name: "openai",
         label: "OpenAI",
@@ -36,6 +36,12 @@ pub(crate) const KNOWN_PROVIDERS: [ProviderOption; 4] = [
         label: "Portkey",
         description: "AI gateway and model routing",
         key_url: "https://app.portkey.ai/api-keys",
+    },
+    ProviderOption {
+        name: "zai",
+        label: "Z.AI",
+        description: "GLM models",
+        key_url: "https://z.ai/manage-apikey/apikey-list",
     },
 ];
 
@@ -100,6 +106,11 @@ impl AuthStore {
             .map(|entry| entry.key.as_str())
     }
 
+    /// Every provider with a stored credential, sorted by name.
+    pub fn providers(&self) -> Vec<String> {
+        self.entries.keys().cloned().collect()
+    }
+
     pub fn set(&mut self, provider: &str, key: &str) {
         self.entries.insert(
             canonical_provider(provider),
@@ -133,10 +144,44 @@ fn connect_with(auth_path: &Path, config_path: &Path, provider: &str, key: &str)
     Ok(name)
 }
 
+/// The providers with a stored credential, or an empty list when `auth.json`
+/// is missing or unreadable.
+pub fn stored_providers() -> Vec<String> {
+    AuthStore::load()
+        .map(|store| store.providers())
+        .unwrap_or_default()
+}
+
+/// Switches to a provider that already has a stored credential, so logging in
+/// to a second provider never asks for the key again. Returns the canonical
+/// provider name and its key.
+pub fn select_stored(provider: &str) -> Result<(String, String)> {
+    select_stored_with(
+        &AuthStore::path(),
+        &crate::config::Config::config_path(),
+        provider,
+    )
+}
+
+fn select_stored_with(
+    auth_path: &Path,
+    config_path: &Path,
+    provider: &str,
+) -> Result<(String, String)> {
+    let name = canonical_provider(provider);
+    let store = AuthStore::load_from(auth_path)?;
+    let Some(key) = store.key(&name).map(str::to_string) else {
+        anyhow::bail!("no stored credentials for `{name}` — run `/login {name}` to add one");
+    };
+    crate::config::Config::set_active_provider_at(config_path, &name)?;
+    Ok((name, key))
+}
+
 pub fn canonical_provider(name: &str) -> String {
     match name.trim().to_ascii_lowercase().as_str() {
         "gpt" | "gpt-4" | "gpt-4o" => "openai".to_string(),
         "port-key" => "portkey".to_string(),
+        "glm" | "z.ai" | "z-ai" | "zhipu" | "bigmodel" => "zai".to_string(),
         other => other.to_string(),
     }
 }
@@ -175,6 +220,59 @@ mod tests {
         assert_eq!(canonical_provider("Anthropic"), "anthropic");
         assert_eq!(canonical_provider(" deepseek "), "deepseek");
         assert_eq!(canonical_provider("Port-Key"), "portkey");
+        assert_eq!(canonical_provider("GLM"), "zai");
+        assert_eq!(canonical_provider(" z.ai "), "zai");
+        assert_eq!(canonical_provider("Zhipu"), "zai");
+    }
+
+    #[test]
+    fn known_providers_include_zai() {
+        let names: Vec<&str> = KNOWN_PROVIDERS.iter().map(|option| option.name).collect();
+        assert_eq!(
+            names,
+            vec!["openai", "deepseek", "anthropic", "portkey", "zai"]
+        );
+        let zai = provider_option("glm").expect("glm resolves to the Z.AI preset");
+        assert_eq!(zai.label, "Z.AI");
+        assert!(zai.key_url.contains("z.ai"));
+    }
+
+    #[test]
+    fn stores_several_providers_at_once() {
+        let mut store = AuthStore::default();
+        store.set("openai", "sk-openai");
+        store.set("Anthropic", "sk-ant-test");
+        store.set("deepseek", "sk-deepseek");
+
+        assert_eq!(store.providers(), vec!["anthropic", "deepseek", "openai"]);
+        assert_eq!(store.key("openai"), Some("sk-openai"));
+        assert_eq!(store.key("anthropic"), Some("sk-ant-test"));
+        assert_eq!(store.key("deepseek"), Some("sk-deepseek"));
+    }
+
+    #[test]
+    fn select_stored_reuses_a_saved_key() {
+        let dir = temp_dir("select");
+        let auth_path = dir.join("auth.json");
+        let config_path = dir.join("config.json");
+
+        connect_with(&auth_path, &config_path, "openai", "sk-openai").unwrap();
+        connect_with(&auth_path, &config_path, "DeepSeek", "sk-deepseek").unwrap();
+
+        let (name, key) = select_stored_with(&auth_path, &config_path, "OPENAI").unwrap();
+        assert_eq!(name, "openai");
+        assert_eq!(key, "sk-openai");
+
+        let config: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&config_path).unwrap()).unwrap();
+        assert_eq!(config["provider"], "openai");
+
+        let error = select_stored_with(&auth_path, &config_path, "portkey").unwrap_err();
+        assert!(error
+            .to_string()
+            .contains("no stored credentials for `portkey`"));
+
+        std::fs::remove_dir_all(&dir).ok();
     }
 
     #[test]

@@ -31,7 +31,7 @@ variables, then `config.json` and provider presets. For API keys, the order is
 last fallback. `OXIDE_BASE_URL` overrides the selected provider's base-URL
 variable, which overrides the file. Behavior settings live in `config.json`
 (global); the global `settings.json` (and the project `.oxide/settings.json`)
-supply `defaultProjectTrust`, `compaction`, and `modelPrices`.
+supply `defaultProjectTrust`, `compaction`, `modelPrices`, and `hideThinkingBlock`.
 
 Installed plugin packages (see [Plugins and hooks](#plugins-and-hooks)) load
 after global resources and before project resources, so project entries still
@@ -48,9 +48,10 @@ increasing precedence:
 4. Project `<root>/.mcp.json`
 5. Project `<root>/.oxide/mcp.json`
 
-The `oxide mcp` management commands write the two home-directory files and the
-two project files; `list` also includes the platform-config copy, but no command
-writes it. `--scope global` writes `~/.oxide/mcp.json`.
+The `oxide mcp` management commands only write the native files:
+`<root>/.oxide/mcp.json` for `--scope project` and `~/.oxide/mcp.json` for
+`--scope global`. The Claude Code and platform-config files listed above are read
+(for `list`, `get`, and `remove`), never written.
 
 ### Manage from the CLI
 
@@ -289,11 +290,18 @@ You review Rust changes. Report findings by severity.
 - `name` defaults to the file stem; `description` is shown to the model.
 - `mode` is `subagent` (default), `primary`, or `all`. Only `subagent` and `all`
   agents can be spawned through `task`; `--agent` can select any discovered
-  agent.
+  agent. The `task` tool is only offered when at least one such agent exists.
+- Subagents can spawn subagents one level deep: `task` is available at depths 0
+  and 1 and omitted afterwards (`MAX_TASK_DEPTH`), which bounds a runaway tree.
 - `permission` (optional) overrides the default tool permissions (see
   [Permissions](#permissions)).
 - Run an agent with `oxide --agent <name>`, through the `task` tool, or via a
   command's `agent:` frontmatter.
+- A running `task` call reports what the subagent is doing: its panel gains a
+  live `Elapsed` timer and a `↳ <agent> · <activity> · <n> call(s)` line that
+  follows each tool call the subagent makes, and the status row names the
+  subagent and its current tool. Without it a long review is indistinguishable
+  from a hang.
 - **Remove** an agent by deleting its file.
 
 ## Slash commands
@@ -321,10 +329,11 @@ Focus: $ARGUMENTS
 - `agent: <name>` runs the command as that agent. `subtask: true` runs it in an
   isolated subagent context whose result is reported back to the main
   conversation.
-- Built-in commands: `/help`, `/hotkeys`, `/new`, `/session`, `/resume`,
+- Built-in commands: `/help`, `/hotkeys`, `/exit`, `/new`, `/session`, `/resume`,
   `/tree`, `/fork`, `/clone`, `/name`, `/model`, `/thinking`, `/theme`,
   `/trust`, `/export`, `/reload`, `/init`, `/login`, `/logout`, `/models`,
-  `/mcps`, `/plugin`, `/usage`, `/connect`, `/undo`, `/redo`, and `/compact`.
+  `/mcps`, `/plugin`, `/usage`, `/connect`, `/undo`, `/redo`, `/compact`,
+  `/copy`, `/copy all`, and `/skill:<name>`.
 - **Remove** a command by deleting its file.
 
 ## Prompt templates
@@ -539,11 +548,60 @@ extended-thinking `budget_tokens` (scaled by level and kept below `max_tokens`).
 Thinking blocks returned by Anthropic are replayed on later turns so multi-step
 tool use keeps its reasoning context.
 
+GLM is the exception: Z.AI selects thinking with `thinking.type` and accepts only
+its own `reasoning_effort` levels (`low`, `high`, and `max` on the GLM-5.3
+series). `auto` leaves the provider default, `off` sends
+`thinking.type = "disabled"`, `low` → `low`, `medium` → `high`, and `high` →
+`max`. GLM-5.3 always thinks, so `off` there asks for the lowest effort instead
+of an unsupported `disabled`.
+
 Set the starting level with `--reasoning auto|off|low|medium|high`, the
 `OXIDE_REASONING` environment variable, or `"reasoning": "..."` in `config.json`.
 In the TUI, press Ctrl+R to cycle auto → off → low → medium → high; the current
-level is shown in the footer (for models that support reasoning) and changes the
-editor-border color.
+level is shown in the footer (for models that support reasoning) and colors the
+composer rules.
+
+### Reasoning in the transcript
+
+Reasoning that a provider streams (`reasoning_content`, `reasoning`, or
+`reasoning_text` on OpenAI-compatible APIs, `thinking` blocks on Anthropic) is
+shown in place, before the answer it produced:
+
+```
+✦ Thought for 1.4s
+  The failing test reads a file that moved, so the fix belongs in the loader.
+```
+
+The block streams as `✦ Thinking` and picks up its duration once the model moves
+on. Press Ctrl+T to collapse reasoning to its label
+(`✦ Thought for 1.4s · Ctrl+T to expand`) and again to expand it;
+`hideThinkingBlock` in the global `settings.json` makes oxide start collapsed,
+matching Pi. Reasoning is stored in the session as thinking blocks and, for
+Anthropic, replayed on later turns; OpenAI-compatible requests strip it. While a
+turn is in flight the status row names the phase (`thinking...`,
+`running tool...`, `compacting...`, `summarizing branch...`) and reports
+transient stream failures as `retrying (1/3) in 1s...` before the client backs
+off and tries again. A response that arrives with neither text nor tool calls is
+retried on the same schedule, so an occasional empty reply does not end the
+turn; only after the retries are exhausted is it reported as an error.
+
+### Status tips and queued messages
+
+That status row only exists while the agent is busy, so anything you do at rest
+reports itself as a dim line in the transcript instead — `copied 243 chars` after
+you drag over text, `tool output collapsed` after Ctrl+O, `restored 2 queued
+messages to the editor` after a dequeue. Only the newest tip is kept, so repeated
+actions update one line rather than growing the transcript, matching Pi's
+`showStatus`.
+
+While the agent is busy, Enter queues guidance for its next step and Alt+Enter
+queues a follow-up to run once the work finishes. Both show up as your turns, and
+the status row adds `2 queued · Option+Up to edit`. Pressing that key empties the
+queues back into the message box — queued text first, whatever you were already
+typing after it — so you can extend a message before it is sent. Their entries are
+also removed from the transcript, since they were never sent. The key is `Alt+Up`
+(`Option+Up` on macOS, where `Alt` is the Option key) and `Alt+Q` on Windows and
+WSL, where the terminal claims `Alt+Up` for scrollback.
 
 ## Memory and instructions
 
@@ -565,8 +623,9 @@ configured base for one run, but a loaded `SYSTEM.md` remains the
 higher-precedence replacement.
 
 Persistent cross-session memory is managed by the `memory` tool and stored under
-`memory/` in the oxide config dir; recent entries are injected automatically.
-Use the `memory` tool to add, search, or forget entries.
+`memory/` in the oxide config dir; the 8 most recent entries are injected into
+the system prompt automatically. Use the `memory` tool to add, search, or forget
+entries.
 
 ## Project trust
 
@@ -605,7 +664,9 @@ one with `--use-theme <name>` or `/theme <name>`. Colors accept names or
 Available slots are `accent`, `user`, `assistant`, `success`, `tool`, `error`,
 `info`, `dim`, `border`, `tool_pending_bg`, `tool_success_bg`, `tool_error_bg`,
 `usage_bar_bg`, `usage_bar_fg`, `usage_bar_label`, `thinking_off`,
-`thinking_low`, `thinking_medium`, and `thinking_high`. The transcript, dialogs,
+`thinking_low`, `thinking_medium`, `thinking_high`, and `thinking_text`. The
+`thinking_text` slot colors the `✦ Thinking` label and the reasoning body.
+The transcript, dialogs,
 autocomplete, status row, input, and footer use these semantic roles.
 `tool_*_bg` fill the background behind a tool's header, body, and
 `Took`/`Elapsed` footer (pending while running, success or error once it
@@ -695,23 +756,94 @@ inside the TUI, like Pi.
 
 Start `oxide` even without a key, then run `/login`:
 
-- `/login` lists the providers — enter a number or name, then paste the API key.
-- `/login deepseek` or `/login portkey` skips the picker and asks for the key directly.
-- `/logout` removes the active provider's stored credential; `/logout <provider>`
-  removes a specific one.
+- `/login` lists the providers — enter a number or name, then paste the API key
+  (Enter with the field empty reuses the stored key when there is one). Providers
+  with a stored key are marked `connected`.
+- `/login deepseek` or `/login portkey` skips the picker. When that provider is
+  already connected the command switches to it; otherwise it asks for the key.
+- `/logout` removes the active provider's stored credential and switches to
+  another logged-in provider when one is left; `/logout <provider>` removes a
+  specific one without disturbing the active session.
 
 Press Enter to confirm and Esc to cancel. The key is stored in `auth.json`
 (mode `0600`) and the active provider is written to `config.json`, so it applies
 to the running session and the next launch. `/connect` remains an alias of
 `/login`.
 
+### Several providers at once
+
+Credentials for different providers live side by side in `auth.json`, so you can
+log in to OpenAI, Anthropic, and Portkey and move between them without re-entering
+a key. Switching happens by:
+
+- `/login <provider>` for a provider that is already connected.
+- Enter in the login dialog's key step, which reuses the stored key — type a key
+  first to replace it instead.
+- Picking a model of another provider in `/models` (see below).
+- `--provider <name>` on the command line, for one run.
+
+Each provider keeps the model it was last used with in the `provider_models` map
+in `config.json`, so switching back restores that choice instead of carrying the
+other provider's model id:
+
+```json
+{
+  "provider": "anthropic",
+  "model": "claude-sonnet-5",
+  "provider_models": { "openai": "gpt-4o-mini", "anthropic": "claude-sonnet-5" }
+}
+```
+
+A custom (non-preset) provider has no remembered endpoint: the `base_url` in
+`config.json` is global, so switching away from a custom endpoint and back keeps
+the preset's URL. Provide the endpoint again, or run with `OXIDE_BASE_URL`.
+
 You can also provide a key without the login flow via the `OPENAI_API_KEY` /
-`DEEPSEEK_API_KEY` / `ANTHROPIC_API_KEY` / `PORTKEY_API_KEY` environment
-variables or an `api_key` entry in `config.json`; environment variables take
-precedence over `auth.json`.
+`DEEPSEEK_API_KEY` / `ANTHROPIC_API_KEY` / `PORTKEY_API_KEY` / `ZAI_API_KEY`
+environment variables or an `api_key` entry in `config.json`; environment
+variables take precedence over `auth.json`.
 
 See [Configuration](../README.md#configuration) and
 [Providers](../README.md#providers) in the README for the full list.
+
+### Z.AI (GLM)
+
+Z.AI serves the GLM models over the OpenAI-compatible Chat Completions API, so
+the provider only differs in its endpoint and defaults:
+
+| Setting | Value |
+| --- | --- |
+| Names | `zai`, `glm`, `z.ai`, `z-ai`, `zhipu`, `bigmodel` |
+| Base URL | `https://api.z.ai/api/paas/v4` (`ZAI_BASE_URL`) |
+| Default model | `glm-5.3` (`glm-5.3-flash` is cheaper and faster) |
+| Key | `ZAI_API_KEY`, or `/login glm` |
+
+```text
+/login glm
+```
+
+Keys are created at <https://z.ai/manage-apikey/apikey-list>. The preset is
+international; for the mainland-China BigModel endpoint, set `ZAI_BASE_URL` or
+`base_url` to `https://open.bigmodel.cn/api/paas/v4` (a `zhipu` key does not work
+against the international host, and vice versa). A custom provider whose
+`base_url` points at either Z.AI host is treated as Z.AI too, so the GLM request
+shape and bundled catalog still apply.
+
+Z.AI documents no model listing endpoint, so `/models` falls back to a bundled
+list of current GLM models when the request is refused or not found, and always
+includes the active model. Prices for the GLM models ship in the built-in price
+table, so the footer's `$cost` works without extra configuration. Choose a model
+with `/models` or a `"model"` entry:
+
+```json
+{
+  "provider": "zai",
+  "model": "glm-5.3-flash"
+}
+```
+
+Thinking is controlled by `thinking.type` rather than `reasoning_effort`; see
+[Reasoning](#reasoning) for how `/thinking` maps onto GLM's levels.
 
 ### Portkey
 
@@ -808,6 +940,14 @@ falls back to its bundled Portkey list, again including the active model. Set
 `model_catalog`, or a comma-separated `PORTKEY_MODELS` override, for restricted
 or account-specific catalogs. Unknown model IDs are passed through unchanged.
 
+With several providers logged in, the picker lists the catalogs of all of them
+at once, each row tagged with its provider (`gpt-4o-mini [openai]`), and the same
+model id can appear once per provider. Selecting a model from another provider
+switches to it and remembers the choice for that provider. Providers whose
+catalog cannot be fetched are reported in the transcript while the others stay
+usable; custom endpoints are skipped because their base URL is not stored per
+provider.
+
 Refreshing the credential with `/login portkey` preserves an existing Portkey
 model, custom base URL, and Config ID when Portkey is already active. See
 Portkey's documentation for the current [gateway headers](https://portkey.ai/docs/api-reference/inference-api/headers)
@@ -882,7 +1022,7 @@ Runtime state lives under the platform oxide config directory:
 - `snapshots/<project>/` — shadow-git snapshots for `/undo` and `/redo`; only created when the working directory is inside a git work tree (never the home directory, which would index the whole folder)
 - `memory/` — persistent memory entries
 - `trust.json` — saved project trust decisions
-- `settings.json` — global settings such as `defaultProjectTrust`, `compaction`, and `modelPrices`
+- `settings.json` — global settings such as `defaultProjectTrust`, `compaction`, `modelPrices`, and `hideThinkingBlock`
 - `themes/<name>.json` — custom TUI themes
 - `plugins/` — installed plugin packages, marketplaces, and plugin state
 - `portkey-usage.json` — Portkey spend bar settings and API key (mode `0600`, override the path with `OXIDE_USAGE_FILE`)

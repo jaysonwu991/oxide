@@ -18,14 +18,22 @@ description: Use when navigating or modifying the oxide internals — the agent 
      with the latest compaction applied). Auto-compaction runs when the context
      approaches the model window, appending a `compaction` entry to the session
      branch and refreshing `history`.
-   - Calls `LlmClient::stream_chat`, forwarding text deltas as
-     `AgentEvent::Text` through an unbounded mpsc channel.
-   - Pushes the assistant message (with any tool calls) onto history.
-   - If there are no tool calls, emits `AgentEvent::Finished(messages)`.
+   - Calls `LlmClient::stream_chat` with `StreamHooks`, forwarding text as
+     `AgentEvent::Text`, reasoning as `ThinkingDelta`, and retry notices as
+     `Retrying` through an unbounded mpsc channel. The client retries transient
+     failures and turns with neither text nor tool calls with backoff while no
+     text has been emitted.
+   - Pushes the assistant message (with any tool calls and thinking blocks) onto
+     history.
+   - If there are no tool calls, drains the steering and follow-up queues and
+     continues if either produced a message; otherwise emits
+     `AgentEvent::Finished(messages)`.
    - Otherwise checks permissions, executes each call (`dispatch` routes the
-     agent-level `task`/`skill`/`memory`/`diagnostics` tools, built-in/MCP tools
-     go through `tools::execute`), emits `ToolCall`/`ToolResult`, appends a
-     `Message::tool` to the session, and loops.
+     agent-level `task`/`skill`/`command`/`memory`/`diagnostics` tools,
+     built-in/MCP tools go through `tools::execute`), emits
+     `ToolCall`/`ToolResult`, appends a `Message::tool` to the session, and
+     loops. A nested `task` forwards its own `SubagentActivity` so the parent
+     view is not silent.
    - Loops until the model stops calling tools; a batch whose results all set
      `output.terminate` ends the turn. There is no fixed step cap.
 4. A leading `/command` is resolved by `Config::resolve_command` into an expanded
@@ -35,10 +43,16 @@ description: Use when navigating or modifying the oxide internals — the agent 
 
 ## Modules
 
-- `src/llm/client.rs` — `LlmClient::stream_chat`; SSE parsing and turn assembly.
+- `src/llm/client.rs` — `LlmClient::stream_chat` and the OpenAI-compatible /
+  Anthropic stream paths; `StreamHooks` (text/thinking/retry), the retry budget
+  (transient failures plus empty turns), and `read_sse`/`drain_lines` live here.
 - `src/llm/types.rs` — OpenAI-compatible request/response, `Message`, and
   `Usage` (input/output plus cache tokens and cost).
 - `src/llm/mod.rs` — module re-exports (`LlmClient`, `Message`, `ToolSpec`, ...).
+- `src/auth.rs` — multi-provider credential store in `auth.json`, behind the
+  TUI `/login`, `/logout`, and `/connect` commands.
+- `src/lsp.rs` — `LspManager`/`Server`: a cached language server that exits or
+  whose pipe breaks is evicted and reconnected before the call is retried.
 - `src/agent.rs` — the agent loop (`run`, `run_loop`, `dispatch`) and
   `run_subagent` for `subtask` commands.
 - `src/tools.rs` — built-in/MCP `specs()` and `execute()`; `grep` prefers
@@ -90,6 +104,9 @@ OpenAI-compatible and Anthropic APIs are dispatched in `src/llm/client.rs` (see
 
 ## Invariants
 
+- Streaming stays linear: accumulated text is appended to a `String` (or mutated
+  in place when it lives in a `serde_json::Value`), and `read_sse` drains whole
+  lines once per network chunk instead of after every line.
 - The system prompt is always index 0 of the request, never stored in history.
 - History is the single source of truth passed to `Finished`.
 - Sessions are append-only trees; `messages` returns the leaf path with the
