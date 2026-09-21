@@ -17,6 +17,9 @@ const MESSAGE_TOP_PAD: u16 = 1;
 const MAX_MODEL_ROWS: usize = 10;
 const MAX_SESSION_ROWS: usize = 12;
 const MAX_SUGGESTION_ROWS: usize = 8;
+/// Description columns kept next to a command name so a long name never eats
+/// the whole suggestion line.
+const MIN_SUGGESTION_DESCRIPTION: usize = 12;
 
 const FILE_TOOLS: [&str; 4] = ["read_file", "write_file", "patch", "edit"];
 
@@ -592,7 +595,9 @@ fn suggestion_window(app: &App, area: Rect) -> Option<SuggestionWindow> {
     let popup = Rect {
         x: area.x.saturating_add(1),
         y: area.y + area.height.saturating_sub(height),
-        width: area.width.saturating_sub(2).min(72),
+        // Match Pi's editor width instead of a fixed cap, so a long command
+        // name and its description are not clipped on a wide terminal.
+        width: area.width.saturating_sub(2),
         height,
     };
     let offset = app
@@ -637,18 +642,27 @@ fn draw_suggestions(frame: &mut Frame, app: &App, area: Rect) {
     frame.render_widget(Clear, window.popup);
 
     let is_command = app.input.starts_with('/');
-    let name_cap = if is_command {
-        24
-    } else {
-        (window.popup.width.saturating_sub(5) as usize).max(8)
-    };
-    let name_width = app.suggestions[window.offset..window.offset + window.count]
+    // The border and the highlight symbol sit outside the item text.
+    let content_width = window.popup.width.saturating_sub(4) as usize;
+    let hints = &app.suggestions[window.offset..window.offset + window.count];
+    let widest = hints
         .iter()
         .map(|hint| hint.name.chars().count())
         .max()
-        .unwrap_or(0)
-        .min(name_cap);
-    let items: Vec<ListItem> = app.suggestions[window.offset..window.offset + window.count]
+        .unwrap_or(0);
+    // Size the name column to the widest entry so a long command name is not
+    // cut off; a fixed cap hid the tail that distinguishes sibling commands.
+    // Only the description is sacrificed, and only when space runs out.
+    let reserved = if is_command {
+        3 + MIN_SUGGESTION_DESCRIPTION
+    } else {
+        0
+    };
+    let name_width = widest
+        .min(content_width.saturating_sub(1 + reserved))
+        .max(1);
+    let description_width = content_width.saturating_sub(1 + name_width + 3);
+    let items: Vec<ListItem> = hints
         .iter()
         .map(|hint| {
             let prefix = if is_command { "/" } else { "@" };
@@ -657,18 +671,19 @@ fn draw_suggestions(frame: &mut Frame, app: &App, area: Rect) {
             } else {
                 truncate_path(&hint.name, name_width)
             };
-            ListItem::new(Line::from(vec![
-                Span::styled(
-                    format!("{prefix}{name:<name_width$}"),
-                    Style::default()
-                        .fg(app.theme.accent)
-                        .add_modifier(Modifier::BOLD),
-                ),
-                Span::styled(
-                    format!("   {}", hint.description),
+            let mut spans = vec![Span::styled(
+                format!("{prefix}{name:<name_width$}"),
+                Style::default()
+                    .fg(app.theme.accent)
+                    .add_modifier(Modifier::BOLD),
+            )];
+            if is_command && !hint.description.is_empty() {
+                spans.push(Span::styled(
+                    format!("   {}", truncate(&hint.description, description_width)),
                     Style::default().fg(app.theme.info),
-                ),
-            ]))
+                ));
+            }
+            ListItem::new(Line::from(spans))
         })
         .collect();
     let title = if is_command {
@@ -3506,6 +3521,42 @@ mod tests {
         assert_eq!(suggestion_index_at(&app, area, 3, 9), Some(2));
         assert_eq!(suggestion_index_at(&app, area, 3, 16), Some(9));
         assert_eq!(suggestion_index_at(&app, area, 0, 9), None);
+    }
+
+    #[test]
+    fn suggestion_keeps_a_long_command_name_and_ellipsizes_its_description() {
+        use crate::config::{Mode, Reasoning};
+        use ratatui::backend::TestBackend;
+        use ratatui::Terminal;
+
+        let mut app = App::new(
+            "gpt-4o".into(),
+            "/tmp/project".into(),
+            Mode::Build,
+            Reasoning::Auto,
+        );
+        app.set_input("/add".to_string());
+        app.suggestions = vec![crate::tui::app::CommandHint {
+            name: "add-editorial-cross-links-page-type".to_string(),
+            description: "Add a new page type to the editorial cross-links feature. Use when the \
+                          user wants to add a new page type for a specific vertical."
+                .to_string(),
+        }];
+        let mut terminal = Terminal::new(TestBackend::new(120, 24)).unwrap();
+        terminal.draw(|frame| draw(frame, &mut app)).unwrap();
+        let buffer = terminal.backend().buffer();
+        let title_row = row_of(buffer, "click or Tab to complete").expect("suggestion title");
+        let item_row: String = (0..buffer.area.width)
+            .map(|x| buffer[(x, title_row + 1)].symbol())
+            .collect();
+        // The command name is shown in full; only the description is clipped,
+        // and it ends with an ellipsis rather than mid-word.
+        assert!(
+            item_row.contains("/add-editorial-cross-links-page-type"),
+            "{item_row}"
+        );
+        assert!(item_row.contains("Add a new page type"), "{item_row}");
+        assert!(item_row.contains('…'), "{item_row}");
     }
 
     #[test]
