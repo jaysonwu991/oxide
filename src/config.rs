@@ -1066,6 +1066,54 @@ impl Config {
                 .to_string(),
         );
 
+        sections.push(
+            "# Definition of Done\nA task is not done until you have verified the outcome, and \
+             tool output is the only evidence — a command that failed, printed nothing, or was never \
+             run is not proof. After each state-changing action, confirm the result before \
+             reporting success, and re-read what you changed. This applies to every kind of work, \
+             not just code: an edit is on disk and the build/tests/lint pass; a pull request's CI \
+             and mergeability are checked (`gh pr checks <url>`, `gh pr view <url> --json \
+             state,mergeable,mergeStateStatus,reviewDecision,statusCheckRollup`) and pending checks \
+             are waited for; a comment, review, or ticket reply is read back to confirm it landed \
+             in the right place; a release, deployment, migration, or published artifact is \
+             queried for its status; and any task with a known verifier is run through it. \
+             Separate what you verified (\"ran ./gradlew test — passed\", \"`grep` found the \
+             annotation\") from what you assume, and say plainly when you could not confirm \
+             something. Do not claim a change is applied, a fix works, a PR is ready, a reply is \
+             posted, or a release is out without the output that shows it."
+                .to_string(),
+        );
+
+        sections.push(
+            "# Scope\nKeep every change scoped to what was asked. Before you commit, run \
+             `git status` and `git diff --staged` and stage only the paths your work touched with \
+             explicit `git add <path>` — never blanket-stage with `git add -A`, `git add --all`, \
+             `git add .`, or `git commit -a`/`-am` in a tree that may hold unrelated edits. Leave \
+             local-only and generated files out of commits and pull requests: \
+             `.claude/settings.local.json`, `.idea/`, `.vscode/`, `.DS_Store`, editor state, build \
+             output, and unrelated lockfile churn. Do not revert someone else's unrelated changes \
+             without asking, but exclude them. Before you open or update a pull request, review its \
+             file list (`git diff --name-only <base>...HEAD`, `gh pr diff --name-only`, or \
+             `gh pr view <url> --json files`) and drop anything unrelated it picked up."
+                .to_string(),
+        );
+
+        sections.push(
+            "# GitHub and GitLab\nWork with GitHub and GitLab pull/merge requests and issues through \
+             their CLIs (`gh` and `glab`) rather than `webfetch`: they authenticate, so private \
+             repositories and review threads are reachable, and return structured data. Use \
+             `gh pr view <url-or-number> --comments` / `glab mr view` to read an item, `gh pr diff` / \
+             `glab mr diff` for its changes, `gh pr checks` for CI, and `gh pr comment` / \
+             `glab mr note` to reply. Reserve `webfetch` for public pages that have no CLI \
+             equivalent.\nReply to code review comments inside their existing threads instead of \
+             posting one general comment: list them with `gh api repos/{owner}/{repo}/pulls/<n>/comments` \
+             and answer one with \
+             `gh api -X POST repos/{owner}/{repo}/pulls/<n>/comments/<comment_id>/replies -f body=<text>` \
+             (`gh pr comment` is only for a new top-level comment). Select just the fields you need \
+             and format API output for a person to read — one line per item, not minified JSON."
+                .to_string(),
+        );
+
         if self.compaction.enabled {
             sections.push(
                 "# Context management\nOlder turns are summarized automatically as the context \
@@ -1090,11 +1138,40 @@ mod tests {
     use super::*;
 
     #[test]
+    fn system_prompt_enforces_scope() {
+        let config = Config::default();
+        let prompt = config.compose_system_prompt();
+        assert!(prompt.contains("# Scope"), "{prompt}");
+        assert!(prompt.contains("never blanket-stage"), "{prompt}");
+        assert!(prompt.contains(".claude/settings.local.json"), "{prompt}");
+    }
+
+    #[test]
+    fn system_prompt_defines_done() {
+        let config = Config::default();
+        let prompt = config.compose_system_prompt();
+        assert!(prompt.contains("# Definition of Done"), "{prompt}");
+        assert!(prompt.contains("not just code"), "{prompt}");
+        assert!(prompt.contains("gh pr checks"), "{prompt}");
+        assert!(prompt.contains("deployment"), "{prompt}");
+    }
+
+    #[test]
     fn system_prompt_encourages_batched_tool_use() {
         let config = Config::default();
         let prompt = config.compose_system_prompt();
         assert!(prompt.contains("# Tool use"));
         assert!(prompt.contains("batches"));
+    }
+
+    #[test]
+    fn system_prompt_prefers_forge_clis() {
+        let config = Config::default();
+        let prompt = config.compose_system_prompt();
+        assert!(prompt.contains("# GitHub and GitLab"), "{prompt}");
+        assert!(prompt.contains("`gh` and `glab`"), "{prompt}");
+        assert!(prompt.contains("inside their existing threads"), "{prompt}");
+        assert!(prompt.contains("/replies"), "{prompt}");
     }
 
     #[test]

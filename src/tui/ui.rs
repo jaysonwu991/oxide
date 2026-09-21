@@ -1356,12 +1356,14 @@ fn render_item_themed(
                     Span::styled(name.clone(), Style::default().fg(theme.info)),
                 ]));
             }
-            if expand_tools && !output.trim().is_empty() {
-                push_wrapped(
+            if !output.trim().is_empty() {
+                push_tool_body(
                     &mut panel,
                     output,
                     box_inner_width(width),
                     Style::default().fg(theme.info),
+                    expand_tools,
+                    tool_preview(name),
                 );
             }
             if !panel.is_empty() {
@@ -1399,10 +1401,24 @@ fn render_item_themed(
                     panel.push(collapsed_hint(hidden, theme.info, inner));
                 }
                 if failed {
-                    push_tool_output(&mut panel, output, inner, Style::default().fg(theme.error));
+                    push_tool_body(
+                        &mut panel,
+                        output,
+                        inner,
+                        Style::default().fg(theme.error),
+                        expand_tools,
+                        tool_preview(name),
+                    );
                 } else if let Some((_, rest)) = output.split_once("\n\n") {
                     if !rest.trim().is_empty() {
-                        push_tool_output(&mut panel, rest, inner, Style::default().fg(theme.info));
+                        push_tool_body(
+                            &mut panel,
+                            rest,
+                            inner,
+                            Style::default().fg(theme.info),
+                            expand_tools,
+                            tool_preview(name),
+                        );
                     }
                 }
             } else if let Some(path) = file_tool_path(name, args) {
@@ -1411,47 +1427,52 @@ fn render_item_themed(
                         bg = theme.tool_error_bg;
                         panel.extend(action_lines("Read failed", &path, theme.error, bold, inner));
                         panel.push(Line::from(""));
-                        push_tool_output(
+                        push_tool_body(
                             &mut panel,
                             output,
                             inner,
                             Style::default().fg(theme.error),
+                            expand_tools,
+                            tool_preview(name),
                         );
                     } else {
                         panel.extend(action_lines("Read", &path, theme.success, bold, inner));
                         if !output.trim().is_empty() {
                             panel.push(Line::from(""));
-                            if expand_tools {
-                                push_tool_output(
-                                    &mut panel,
-                                    output,
-                                    inner,
-                                    Style::default().fg(theme.info),
-                                );
-                            } else {
-                                panel.push(collapsed_hint(
-                                    output.lines().count(),
-                                    theme.info,
-                                    inner,
-                                ));
-                            }
+                            push_tool_body(
+                                &mut panel,
+                                output,
+                                inner,
+                                Style::default().fg(theme.info),
+                                expand_tools,
+                                tool_preview(name),
+                            );
                         }
                     }
                 } else if output.starts_with("error:") {
                     bg = theme.tool_error_bg;
                     panel.extend(action_lines("Edit failed", &path, theme.error, bold, inner));
                     panel.push(Line::from(""));
-                    push_tool_output(&mut panel, output, inner, Style::default().fg(theme.error));
+                    push_tool_body(
+                        &mut panel,
+                        output,
+                        inner,
+                        Style::default().fg(theme.error),
+                        expand_tools,
+                        tool_preview(name),
+                    );
                 } else {
                     panel.extend(action_lines("Edited", &path, theme.success, bold, inner));
                     if let Some((_, rest)) = output.split_once("\n\n") {
                         if !rest.trim().is_empty() {
                             panel.push(Line::from(""));
-                            push_tool_output(
+                            push_tool_body(
                                 &mut panel,
                                 rest,
                                 inner,
                                 Style::default().fg(theme.info),
+                                expand_tools,
+                                tool_preview(name),
                             );
                         }
                     }
@@ -1474,23 +1495,24 @@ fn render_item_themed(
                 panel.extend(action_lines(verb, &subject, color, bold, inner));
                 if exit.is_none() && !output.trim().is_empty() {
                     panel.push(Line::from(""));
-                    push_tool_output(&mut panel, output, inner, Style::default().fg(theme.error));
+                    push_tool_body(
+                        &mut panel,
+                        output,
+                        inner,
+                        Style::default().fg(theme.error),
+                        expand_tools,
+                        tool_preview(name),
+                    );
                 } else if bash_has_body(output) {
                     panel.push(Line::from(""));
-                    if expand_tools {
-                        push_tool_output(
-                            &mut panel,
-                            &bash_body(output),
-                            inner,
-                            Style::default().fg(theme.info),
-                        );
-                    } else {
-                        panel.push(collapsed_hint(
-                            output.lines().count().saturating_sub(1),
-                            theme.info,
-                            inner,
-                        ));
-                    }
+                    push_tool_body(
+                        &mut panel,
+                        &bash_body(output),
+                        inner,
+                        Style::default().fg(theme.info),
+                        expand_tools,
+                        tool_preview(name),
+                    );
                 }
             } else {
                 let failed = output.starts_with("error:");
@@ -1503,16 +1525,14 @@ fn render_item_themed(
                 ]));
                 if !output.trim().is_empty() {
                     panel.push(Line::from(""));
-                    if expand_tools {
-                        push_tool_output(
-                            &mut panel,
-                            output,
-                            inner,
-                            Style::default().fg(theme.info),
-                        );
-                    } else {
-                        panel.push(collapsed_hint(output.lines().count(), theme.info, inner));
-                    }
+                    push_tool_body(
+                        &mut panel,
+                        output,
+                        inner,
+                        Style::default().fg(theme.info),
+                        expand_tools,
+                        tool_preview(name),
+                    );
                 }
             }
             // Shell timings always show (Pi behavior); other tools only report
@@ -1819,6 +1839,8 @@ fn file_tool_path(name: &str, args: &str) -> Option<String> {
 /// lines so its full text stays visible instead of being truncated. Every
 /// rendered line is capped at `width` characters, mirroring Pi's wrapped
 /// tool-call text.
+/// Render a tool action header, hanging-indenting continuations under the
+/// subject so a long command stays attached to its `Run`/`Ran` verb.
 fn action_lines(
     verb: &str,
     subject: &str,
@@ -1826,19 +1848,33 @@ fn action_lines(
     bold: Modifier,
     width: usize,
 ) -> Vec<Line<'static>> {
-    wrapped_with_prefix(
-        vec![
-            Span::styled("→ ", Style::default().fg(color)),
-            Span::styled(
-                verb.to_string(),
-                Style::default().fg(color).add_modifier(bold),
-            ),
-            Span::styled(" ", Style::default().fg(color)),
-        ],
-        subject,
-        width,
-        Style::default().fg(color),
-    )
+    let prefix = vec![
+        Span::styled("→ ", Style::default().fg(color)),
+        Span::styled(
+            verb.to_string(),
+            Style::default().fg(color).add_modifier(bold),
+        ),
+        Span::styled(" ", Style::default().fg(color)),
+    ];
+    let indent = prefix
+        .iter()
+        .map(|span| span.content.chars().count())
+        .sum::<usize>();
+    let wrap_width = width.saturating_sub(indent).max(1);
+    let mut segments = wrap(subject, wrap_width).into_iter();
+    let first = segments.next().unwrap_or_default();
+    let mut spans = prefix;
+    if !first.is_empty() {
+        spans.push(Span::styled(first, Style::default().fg(color)));
+    }
+    let mut out = vec![Line::from(spans)];
+    for segment in segments {
+        out.push(Line::from(Span::styled(
+            format!("{}{segment}", " ".repeat(indent)),
+            Style::default().fg(color),
+        )));
+    }
+    out
 }
 
 /// Render styled `prefix` spans followed by `subject`, wrapping so every line
@@ -2029,10 +2065,42 @@ fn bash_body(output: &str) -> String {
         .join("\n")
 }
 
-/// A one-line affordance shown when a tool body is hidden, mirroring the
-/// opencode "click to expand" hint.
+/// Rewrites compact JSON lines in tool output as indented blocks so `gh api`,
+/// `curl`, and MCP results read like data instead of one unbroken line. Lines
+/// that are not JSON are left untouched.
+fn readable_output(text: &str) -> String {
+    text.lines()
+        .map(|line| {
+            let trimmed = line.trim();
+            if trimmed.len() < 2 || !(trimmed.starts_with('{') || trimmed.starts_with('[')) {
+                return line.to_string();
+            }
+            match serde_json::from_str::<serde_json::Value>(trimmed) {
+                Ok(value) => {
+                    serde_json::to_string_pretty(&value).unwrap_or_else(|_| line.to_string())
+                }
+                Err(_) => line.to_string(),
+            }
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+/// A one-line affordance shown when a tool body is shortened, mirroring Pi's
+/// `... (N more lines, Ctrl+O to expand)` hint.
 fn collapsed_hint(hidden_lines: usize, color: Color, width: usize) -> Line<'static> {
-    let hint = format!("⋯ {hidden_lines} lines · Ctrl+O to expand");
+    collapsed_hint_with(hidden_lines, "more", color, width)
+}
+
+/// Like [`collapsed_hint`], but names which end of the output was dropped so a
+/// tail preview can say `earlier`.
+fn collapsed_hint_with(
+    hidden_lines: usize,
+    direction: &str,
+    color: Color,
+    width: usize,
+) -> Line<'static> {
+    let hint = format!("⋯ {hidden_lines} {direction} lines · Ctrl+O to expand");
     Line::from(Span::styled(
         truncate(&hint, width),
         Style::default().fg(color),
@@ -2126,6 +2194,75 @@ fn push_tool_output(lines: &mut Vec<Line<'static>>, text: &str, width: usize, st
                     style,
                 )));
             }
+        }
+    }
+}
+
+/// Default lines of a tool body shown before the `Ctrl+O` expand hint, so
+/// every panel stays short enough to scan.
+const TOOL_PREVIEW_LINES: usize = 10;
+/// Shell output is previewed from the tail, where errors and results land.
+const BASH_PREVIEW_LINES: usize = 5;
+/// Code search results benefit from more context than a shell tail.
+const GREP_PREVIEW_LINES: usize = 15;
+/// File and directory listings show the most entries before collapsing.
+const LIST_PREVIEW_LINES: usize = 20;
+
+/// Which end of a long tool body to keep in the collapsed preview.
+#[derive(Clone, Copy)]
+enum Preview {
+    Head(usize),
+    Tail(usize),
+}
+
+/// Per-tool preview budgets, mirroring Pi's renderers: a shell command keeps
+/// its tail, searches keep more lines, and everything else uses the default.
+fn tool_preview(name: &str) -> Preview {
+    match crate::tools::canonical_tool_name(name) {
+        "bash" => Preview::Tail(BASH_PREVIEW_LINES),
+        "grep" => Preview::Head(GREP_PREVIEW_LINES),
+        "find" | "ls" => Preview::Head(LIST_PREVIEW_LINES),
+        _ => Preview::Head(TOOL_PREVIEW_LINES),
+    }
+}
+
+/// Render a tool body readably and keep it short: compact JSON lines are
+/// expanded, and output longer than the tool's preview budget is cut with a
+/// hint to expand. A tail preview puts the hint first so the newest lines read
+/// last, like Pi's shell renderer.
+fn push_tool_body(
+    lines: &mut Vec<Line<'static>>,
+    text: &str,
+    width: usize,
+    style: Style,
+    expand_tools: bool,
+    preview: Preview,
+) {
+    let readable = readable_output(text);
+    let all: Vec<&str> = readable.lines().collect();
+    let limit = match preview {
+        Preview::Head(limit) | Preview::Tail(limit) => limit,
+    };
+    if expand_tools || all.len() <= limit {
+        push_tool_output(lines, &readable, width, style);
+        return;
+    }
+    let color = style.fg.unwrap_or(Color::Reset);
+    match preview {
+        Preview::Head(_) => {
+            push_tool_output(lines, &all[..limit].join("\n"), width, style);
+            lines.push(Line::from(""));
+            lines.push(collapsed_hint(all.len() - limit, color, width));
+        }
+        Preview::Tail(_) => {
+            lines.push(collapsed_hint_with(
+                all.len() - limit,
+                "earlier",
+                color,
+                width,
+            ));
+            lines.push(Line::from(""));
+            push_tool_output(lines, &all[all.len() - limit..].join("\n"), width, style);
         }
     }
 }
@@ -2503,6 +2640,17 @@ mod tests {
     }
 
     #[test]
+    fn compact_json_tool_output_is_pretty_printed() {
+        let json = r#"{"id":4056548378,"path":"a/b.java","position":38}"#;
+        let pretty = readable_output(json);
+        assert!(pretty.contains("{\n  \"id\": 4056548378,"), "{pretty}");
+        assert!(pretty.contains("\n  \"path\": \"a/b.java\","), "{pretty}");
+
+        assert_eq!(readable_output("plain text"), "plain text");
+        assert_eq!(readable_output("{not json}"), "{not json}");
+    }
+
+    #[test]
     fn streaming_thinking_block_shows_its_body_italic() {
         let theme = crate::theme::Theme::dark();
         let mut lines = Vec::new();
@@ -2665,12 +2813,16 @@ mod tests {
         );
         assert_eq!(panel_line(&lines), "→ Edit src/main.rs");
 
+        let long_read = (1..=20)
+            .map(|index| format!("{index:>6}\tline {index}"))
+            .collect::<Vec<_>>()
+            .join("\n");
         let mut lines = Vec::new();
         render_item(
             &ChatItem::ToolResult {
                 name: "read_file".into(),
                 args: args.into(),
-                output: "     1\tfn main() {}".into(),
+                output: long_read,
                 diff: None,
                 millis: 0,
             },
@@ -2678,8 +2830,11 @@ mod tests {
             false,
             &mut lines,
         );
-        assert!(panel_text(&lines).starts_with("→ Read src/main.rs"));
-        assert!(panel_text(&lines).contains("Ctrl+O to expand"));
+        let text = panel_text(&lines);
+        assert!(text.starts_with("→ Read src/main.rs"));
+        assert!(text.contains("line 1"), "{text}");
+        assert!(!text.contains("line 11"), "{text}");
+        assert!(text.contains("Ctrl+O to expand"), "{text}");
 
         let mut lines = Vec::new();
         render_item(
@@ -2845,6 +3000,31 @@ mod tests {
     }
 
     #[test]
+    fn long_bash_action_hangs_indented() {
+        let command = format!("echo {}", "a".repeat(80));
+        let args = format!(r#"{{"command":"{command}"}}"#);
+        let mut lines = Vec::new();
+        render_item(
+            &ChatItem::Tool {
+                name: "bash".into(),
+                args,
+            },
+            40,
+            false,
+            &mut lines,
+        );
+        let rows: Vec<String> = lines.iter().map(line_text).collect();
+        for row in &rows {
+            assert!(row.chars().count() <= 40, "{row:?}");
+        }
+        // One panel leading space plus the six-column `→ Run ` prefix.
+        assert!(
+            rows.iter().any(|row| row.starts_with("       a")),
+            "expected a hanging-indented continuation: {rows:?}"
+        );
+    }
+
+    #[test]
     fn generic_tool_wraps_arguments() {
         let args = format!(r#"{{"pattern":"{}"}}"#, "x".repeat(60));
         let mut lines = Vec::new();
@@ -2867,13 +3047,14 @@ mod tests {
     }
 
     #[test]
-    fn tool_output_is_hidden_only_when_collapsed() {
-        let output = (0..10)
-            .map(|index| format!("line {index}"))
+    fn tool_output_preview_budget_depends_on_the_tool() {
+        let output = (0..25)
+            .map(|index| format!("row-{index:02}"))
             .collect::<Vec<_>>()
             .join("\n");
 
-        let mut collapsed = Vec::new();
+        // Shell output previews its tail so the newest lines and errors show.
+        let mut bash = Vec::new();
         render_item(
             &ChatItem::ToolProgress {
                 name: "bash".into(),
@@ -2881,9 +3062,31 @@ mod tests {
             },
             80,
             false,
-            &mut collapsed,
+            &mut bash,
         );
-        assert!(collapsed.is_empty());
+        let text = panel_text(&bash);
+        assert!(text.contains("row-24"), "{text}");
+        assert!(text.contains("row-20"), "{text}");
+        assert!(!text.contains("row-19"), "{text}");
+        assert!(text.contains("earlier lines"), "{text}");
+        assert!(text.contains("Ctrl+O to expand"), "{text}");
+
+        // Searches preview the first lines, with a larger budget than a shell.
+        let mut grep = Vec::new();
+        render_item(
+            &ChatItem::ToolProgress {
+                name: "grep".into(),
+                output: output.clone(),
+            },
+            80,
+            false,
+            &mut grep,
+        );
+        let text = panel_text(&grep);
+        assert!(text.contains("row-00"), "{text}");
+        assert!(text.contains("row-14"), "{text}");
+        assert!(!text.contains("row-15"), "{text}");
+        assert!(text.contains("Ctrl+O to expand"), "{text}");
 
         let mut expanded = Vec::new();
         render_item(
@@ -2895,15 +3098,10 @@ mod tests {
             true,
             &mut expanded,
         );
-        assert_eq!(expanded.len(), 12);
-        assert_eq!(
-            expanded[0].spans[0].style.bg,
-            Some(Color::Rgb(0x28, 0x28, 0x32))
-        );
-        assert_eq!(
-            expanded[11].spans[0].style.bg,
-            Some(Color::Rgb(0x28, 0x28, 0x32))
-        );
+        let text = panel_text(&expanded);
+        assert!(text.contains("row-00"), "{text}");
+        assert!(text.contains("row-24"), "{text}");
+        assert!(!text.contains("Ctrl+O to expand"), "{text}");
     }
 
     #[test]

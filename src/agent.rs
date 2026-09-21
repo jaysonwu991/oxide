@@ -11,6 +11,7 @@ use crate::snapshots::Snapshots;
 use crate::tools;
 use anyhow::{Context, Result};
 use serde_json::{json, Value};
+use std::collections::BTreeSet;
 use std::future::Future;
 use std::path::{Path, PathBuf};
 use std::pin::Pin;
@@ -341,6 +342,12 @@ async fn run_loop(
     let mut context_tokens: u64 = 0;
     auto_load_mcp_for_user_text(&runtime, messages.iter().filter(|m| m.role == "user")).await;
 
+    // Set once a file edit succeeds and cleared when a later tool call could
+    // confirm it. If a run tries to finish while an edit is unconfirmed, the
+    // model gets one hidden reminder to verify before its summary.
+    let mut verification = VerificationState::default();
+    let mut verification_reminder: Option<String> = None;
+
     loop {
         for steered in runtime.steering.drain() {
             auto_load_mcp_for_user_text(&runtime, std::iter::once(&steered)).await;
@@ -408,9 +415,12 @@ async fn run_loop(
             }
         }
 
-        let mut request = Vec::with_capacity(messages.len() + 2);
+        let mut request = Vec::with_capacity(messages.len() + 3);
         request.push(Message::system(config.compose_system_prompt()));
         request.extend(messages.iter().cloned());
+        if let Some(reminder) = verification_reminder.take() {
+            request.push(Message::system(reminder));
+        }
         let tool_specs = build_tool_specs(&config, &runtime, depth);
 
         let started = std::time::Instant::now();
@@ -489,6 +499,10 @@ async fn run_loop(
                 // so they are drained here, just before finishing.
                 let follow_ups = runtime.follow_ups.drain();
                 if follow_ups.is_empty() {
+                    if let Some(reminder) = verification.reminder() {
+                        verification_reminder = Some(reminder);
+                        continue;
+                    }
                     let _ = tx.send(AgentEvent::Finished(messages));
                     return;
                 }
@@ -606,6 +620,9 @@ async fn run_loop(
                         0,
                     ),
                 };
+                let args = serde_json::from_str::<Value>(&original.function.arguments)
+                    .unwrap_or(Value::Null);
+                verification.record(&original.function.name, &args, &output.text);
                 terminated.push(output.terminate);
                 let _ = tx.send(AgentEvent::ToolResult {
                     name: original.function.name.clone(),
@@ -691,6 +708,7 @@ async fn run_loop(
                     output.terminate |= result.terminate;
                 }
                 let millis = started.elapsed().as_millis() as u64;
+                verification.record(&name, &effective_args, &output.text);
                 terminated.push(output.terminate);
                 let text = output.text.clone();
 
@@ -820,6 +838,284 @@ fn tool_may_mutate_workspace(name: &str) -> bool {
     let canonical = crate::tools::canonical_tool_name(name);
     matches!(canonical, "write_file" | "patch" | "edit" | "bash" | "task")
         || canonical.contains("__")
+}
+
+/// A state-changing action that should be confirmed before a run reports
+/// success, with the commands that count as confirming it.
+struct DoneRule {
+    key: &'static str,
+    /// Substrings that mark a command as performing the action.
+    actions: &'static [&'static str],
+    /// Substrings that mark a command as confirming the outcome.
+    checks: &'static [&'static str],
+    /// What the model is told to run when the action is unconfirmed.
+    reminder: &'static str,
+}
+
+/// Outcomes that outlive the workspace — beyond files and builds — which the
+/// Definition of Done requires confirming. A rule is a no-op until its action
+/// (and, after that, a check) appears in a shell command.
+const DONE_RULES: &[DoneRule] = &[
+    DoneRule {
+        key: "pull request",
+        actions: &[
+            "gh pr create",
+            "gh pr edit",
+            "gh pr ready",
+            "glab mr create",
+        ],
+        checks: &[
+            "gh pr checks",
+            "gh pr view",
+            "gh pr status",
+            "gh pr list",
+            "gh run list",
+            "gh run watch",
+            "gh run view",
+            "glab mr view",
+            "glab ci status",
+            "pulls",
+        ],
+        reminder: "You opened or updated a pull request but have not checked it. Run \
+                   `gh pr checks <url>` and `gh pr view <url> --json \
+                   state,mergeable,mergeStateStatus,reviewDecision,statusCheckRollup` (or the \
+                   `glab` equivalents), fix and push again if a check failed, and report the URL \
+                   with its final state.",
+    },
+    DoneRule {
+        key: "comment",
+        actions: &[
+            "gh pr comment",
+            "gh pr review",
+            "gh issue comment",
+            "glab mr note",
+            "glab issue note",
+        ],
+        checks: &[
+            "gh pr view",
+            "gh issue view",
+            "glab mr view",
+            "glab issue view",
+            "comments",
+        ],
+        reminder: "You posted a comment or review but have not confirmed it appears. Read the \
+                   thread back (`gh pr view <url> --comments` or `gh issue view <url> --comments`) \
+                   and confirm the reply landed in the right place.",
+    },
+    DoneRule {
+        key: "release",
+        actions: &["gh release create", "gh release edit"],
+        checks: &["gh release view", "gh release list"],
+        reminder: "You created or edited a release but have not checked it. Confirm with \
+                   `gh release view <tag>` and report the result.",
+    },
+    DoneRule {
+        key: "deployment",
+        actions: &[
+            "terraform apply",
+            "kubectl apply",
+            "kubectl rollout restart",
+            "helm upgrade",
+            "npm publish",
+            "cargo publish",
+            "docker push",
+            "fly deploy",
+            "vercel deploy",
+            "wrangler deploy",
+            "serverless deploy",
+            "sam deploy",
+            "gcloud run deploy",
+        ],
+        checks: &[
+            "terraform plan",
+            "kubectl get",
+            "kubectl rollout status",
+            "kubectl describe",
+            "helm status",
+            "npm view",
+            "cargo search",
+            "docker inspect",
+            "fly status",
+            "vercel inspect",
+            "wrangler deployments",
+            "gcloud run services describe",
+        ],
+        reminder: "You changed deployed or published state but have not confirmed it. Query the \
+                   resulting status (for example `kubectl rollout status`, `terraform plan`, \
+                   `npm view <pkg> version`, `helm status`) and report it.",
+    },
+    DoneRule {
+        key: "scope",
+        actions: &[
+            "git add -a",
+            "git add --all",
+            "git add .",
+            "git add :/",
+            "git stage -a",
+            "git commit -a",
+            "git commit --all",
+        ],
+        checks: &[
+            "git status",
+            "git diff --staged",
+            "git diff --cached",
+            "git diff --stat",
+            "git diff --name-only",
+            "git show",
+            "git log --stat",
+        ],
+        reminder: "You staged or committed with a blanket flag. Review exactly what is included \
+                   (`git status`, `git diff --staged`) and drop unrelated or local-only files — for \
+                   example `.claude/settings.local.json`, `.idea/`, editor state, or build output \
+                   — before you push or open a pull request.",
+    },
+];
+
+/// Tracks work that must be confirmed before a run can report success: files
+/// edited but not confirmed on disk, and side effects (pull requests, comments,
+/// releases, deployments) performed but not checked. A model that tries to
+/// finish anyway is asked to verify first.
+#[derive(Default)]
+struct VerificationState {
+    edited: BTreeSet<String>,
+    pending: BTreeSet<&'static str>,
+    nudged: bool,
+}
+
+impl VerificationState {
+    /// Records one tool result. A successful edit adds its path; reading or
+    /// type-checking that path confirms it, and a build/test/lint command
+    /// confirms everything at once. Side-effecting shell commands add a pending
+    /// check that the matching rule's status command clears.
+    fn record(&mut self, name: &str, args: &Value, output: &str) {
+        let canonical = crate::tools::canonical_tool_name(name);
+        let path = args.get("path").and_then(Value::as_str);
+        match canonical {
+            "write_file" | "edit" | "patch" => {
+                if !output_failed(output) {
+                    if let Some(path) = path.filter(|path| !path.is_empty()) {
+                        self.edited.insert(path.to_string());
+                    }
+                }
+            }
+            "read_file" | "diagnostics" => {
+                if let Some(path) = path.filter(|path| !path.is_empty()) {
+                    self.edited.retain(|edited| !same_path(edited, path));
+                }
+            }
+            "bash" => {
+                let raw = args.get("command").and_then(Value::as_str).unwrap_or("");
+                if looks_like_verification_command(raw) {
+                    self.edited.clear();
+                }
+                let command = raw.to_ascii_lowercase();
+                let failed = output_failed(output);
+                for rule in DONE_RULES {
+                    if !failed && rule.actions.iter().any(|action| command.contains(action)) {
+                        self.pending.insert(rule.key);
+                    }
+                    if rule.checks.iter().any(|check| command.contains(check)) {
+                        self.pending.remove(rule.key);
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+
+    /// The reminder to send once when work is unconfirmed, or `None` when there
+    /// is nothing to verify or it has already been sent.
+    fn reminder(&mut self) -> Option<String> {
+        if self.nudged {
+            return None;
+        }
+        let mut parts = Vec::new();
+        if !self.edited.is_empty() {
+            let files = self.edited.iter().cloned().collect::<Vec<_>>().join(", ");
+            parts.push(format!(
+                "You edited {files} but have not confirmed the change is on disk. Re-read the \
+                 changed region (or `grep` for the new symbol) or run the build/tests."
+            ));
+        }
+        for key in &self.pending {
+            if let Some(rule) = DONE_RULES.iter().find(|rule| rule.key == *key) {
+                parts.push(rule.reminder.to_string());
+            }
+        }
+        if parts.is_empty() {
+            return None;
+        }
+        self.nudged = true;
+        Some(format!(
+            "# Definition of Done\nBefore you finish: {}",
+            parts.join(" ")
+        ))
+    }
+}
+
+/// Whether two tool paths refer to the same file, tolerating one side being
+/// absolute and the other relative.
+fn same_path(a: &str, b: &str) -> bool {
+    let a = a.trim_end_matches('/');
+    let b = b.trim_end_matches('/');
+    a == b || a.ends_with(&format!("/{b}")) || b.ends_with(&format!("/{a}"))
+}
+
+/// Whether a tool result reports failure, either as an `error:` text result or
+/// a non-zero shell exit code.
+fn output_failed(output: &str) -> bool {
+    output.starts_with("error:")
+        || output
+            .lines()
+            .rev()
+            .find_map(|line| {
+                line.strip_prefix("[exit: ")
+                    .or_else(|| line.strip_prefix("[exit code: "))
+            })
+            .and_then(|rest| rest.strip_suffix(']'))
+            .and_then(|code| code.trim().parse::<i32>().ok())
+            .is_some_and(|code| code != 0)
+}
+
+/// Whether a shell command is the kind that checks work (`cargo test`,
+/// `./gradlew build`, `npm run lint`, …) rather than formatting or something
+/// unrelated like posting a comment. Tokens are matched exactly (plus
+/// camel-case task names like `spotlessCheck`), so the runner (`gradle`, `npm`)
+/// alone or a flag word like `latest` does not count.
+fn looks_like_verification_command(command: &str) -> bool {
+    const EXACT: &[&str] = &[
+        "test",
+        "tests",
+        "check",
+        "lint",
+        "build",
+        "compile",
+        "clippy",
+        "typecheck",
+        "pytest",
+        "verify",
+        "vet",
+        "tsc",
+        "spec",
+        "specs",
+    ];
+    const SUFFIXES: &[&str] = &[
+        "Check",
+        "Test",
+        "Tests",
+        "Build",
+        "Lint",
+        "Compile",
+        "Verify",
+        "Typecheck",
+    ];
+    command
+        .split(|ch: char| !ch.is_ascii_alphanumeric())
+        .any(|token| {
+            !token.is_empty()
+                && (EXACT.iter().any(|word| token.eq_ignore_ascii_case(word))
+                    || SUFFIXES.iter().any(|suffix| token.ends_with(suffix)))
+        })
 }
 
 async fn dispatch(
@@ -1588,6 +1884,164 @@ mod tests {
         assert!(permission_granted(Action::Allow, false, &approve, "read", "a.rs").await);
         assert!(permission_granted(Action::Deny, true, &approve, "bash", "ls").await);
         assert_eq!(calls.load(Ordering::SeqCst), 0);
+    }
+
+    #[test]
+    fn edits_stay_unverified_until_read_back_or_built() {
+        let mut state = VerificationState::default();
+        state.record("edit", &json!({"path": "src/main.rs"}), "ok");
+        state.record("write", &json!({"path": "src/lib.rs"}), "ok");
+        assert_eq!(state.edited.len(), 2);
+        assert!(state.reminder().is_some());
+        // The reminder is sent only once.
+        assert!(state.reminder().is_none());
+
+        let mut state = VerificationState::default();
+        state.record("edit", &json!({"path": "src/main.rs"}), "ok");
+        state.record("read", &json!({"path": "src/main.rs"}), "ok");
+        assert!(state.edited.is_empty());
+        assert!(state.reminder().is_none());
+
+        let mut state = VerificationState::default();
+        state.record("edit", &json!({"path": "src/main.rs"}), "ok");
+        state.record("bash", &json!({"command": "./gradlew test"}), "[exit: 0]");
+        assert!(state.edited.is_empty());
+        assert!(state.reminder().is_none());
+
+        let mut state = VerificationState::default();
+        state.record("edit", &json!({"path": "src/main.rs"}), "ok");
+        state.record("read", &json!({"path": "/repo/src/main.rs"}), "ok");
+        assert!(state.edited.is_empty());
+        assert!(state.reminder().is_none());
+
+        // A failed edit is not something to verify.
+        let mut state = VerificationState::default();
+        state.record("edit", &json!({"path": "src/main.rs"}), "error: no match");
+        assert!(state.edited.is_empty());
+    }
+
+    #[test]
+    fn side_effects_are_confirmed_before_done() {
+        // A pull request is unconfirmed until its checks or state are read.
+        let mut state = VerificationState::default();
+        state.record(
+            "bash",
+            &json!({"command": "gh pr create --fill"}),
+            "[exit: 0]",
+        );
+        assert!(state.pending.contains("pull request"));
+        let reminder = state.reminder().unwrap();
+        assert!(reminder.contains("gh pr checks"), "{reminder}");
+        assert!(state.reminder().is_none());
+
+        let mut state = VerificationState::default();
+        state.record(
+            "bash",
+            &json!({"command": "gh pr create --fill"}),
+            "[exit: 0]",
+        );
+        state.record(
+            "bash",
+            &json!({"command": "gh pr view 42 --json state"}),
+            "OPEN",
+        );
+        assert!(state.pending.is_empty());
+        assert!(state.reminder().is_none());
+
+        // A failed command is not an outcome that needs checking.
+        let mut state = VerificationState::default();
+        state.record("bash", &json!({"command": "gh pr create"}), "[exit: 1]");
+        assert!(state.pending.is_empty());
+        assert!(state.reminder().is_none());
+
+        assert!(output_failed("error: nope"));
+        assert!(output_failed("[exit: 1]"));
+        assert!(!output_failed("[exit: 0]"));
+    }
+
+    #[test]
+    fn done_rules_cover_more_than_pull_requests() {
+        let mut state = VerificationState::default();
+        state.record(
+            "bash",
+            &json!({"command": "kubectl apply -f k8s.yaml"}),
+            "[exit: 0]",
+        );
+        assert!(state.pending.contains("deployment"));
+        state.record(
+            "bash",
+            &json!({"command": "kubectl rollout status deploy/api"}),
+            "ok",
+        );
+        assert!(state.pending.is_empty());
+
+        let mut state = VerificationState::default();
+        state.record(
+            "bash",
+            &json!({"command": "gh pr comment 5 --body hi"}),
+            "[exit: 0]",
+        );
+        assert!(state.pending.contains("comment"));
+        let reminder = state.reminder().unwrap();
+        assert!(reminder.contains("Read the thread back"), "{reminder}");
+
+        let mut state = VerificationState::default();
+        state.record(
+            "bash",
+            &json!({"command": "gh release create v1.0"}),
+            "[exit: 0]",
+        );
+        assert!(state.pending.contains("release"));
+
+        // Ordinary git commands are not side effects needing a separate check.
+        let mut state = VerificationState::default();
+        state.record("bash", &json!({"command": "git commit -m x"}), "[exit: 0]");
+        assert!(state.pending.is_empty());
+    }
+
+    #[test]
+    fn blanket_staging_requires_a_scope_review() {
+        let mut state = VerificationState::default();
+        state.record(
+            "bash",
+            &json!({"command": "git add -A && git commit -m x"}),
+            "[exit: 0]",
+        );
+        assert!(state.pending.contains("scope"));
+        let reminder = state.reminder().unwrap();
+        assert!(reminder.contains("blanket flag"), "{reminder}");
+
+        let mut state = VerificationState::default();
+        state.record("bash", &json!({"command": "git add -A"}), "[exit: 0]");
+        state.record("bash", &json!({"command": "git diff --staged"}), "...");
+        assert!(state.pending.is_empty());
+
+        // Staging explicit paths is scoped and needs no review.
+        let mut state = VerificationState::default();
+        state.record(
+            "bash",
+            &json!({"command": "git add src/main.rs"}),
+            "[exit: 0]",
+        );
+        assert!(state.pending.is_empty());
+    }
+
+    #[test]
+    fn commands_that_verify_are_recognized() {
+        assert!(looks_like_verification_command("./gradlew test"));
+        assert!(looks_like_verification_command("cargo build"));
+        assert!(looks_like_verification_command("npm run lint"));
+        assert!(looks_like_verification_command("mvn verify"));
+        assert!(looks_like_verification_command("./gradlew spotlessCheck"));
+        assert!(looks_like_verification_command(
+            "./gradlew testDebugUnitTest"
+        ));
+        assert!(!looks_like_verification_command("./gradlew spotlessApply"));
+        assert!(!looks_like_verification_command(
+            "gh api repos/o/r/pulls/1/comments"
+        ));
+        assert!(!looks_like_verification_command("git status"));
+        assert!(!looks_like_verification_command("git log --grep latest"));
     }
 
     #[test]

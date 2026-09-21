@@ -58,6 +58,15 @@ box, with Claude Code configuration support for compatibility.
   typing while the agent works steers it between steps. Enter queues a steering
   message while busy; Alt+Enter queues a follow-up delivered after all work
   finishes.
+- Evidence-based completion: the system prompt's Definition of Done requires the
+  model to confirm the outcome of any state-changing action before claiming
+  success — edits on disk and builds/tests, a pull request's CI and
+  mergeability, posted comments and reviews, releases, and deployments. A run
+  that tries to finish with unconfirmed edits or unchecked side effects gets one
+  hidden reminder to verify before it can summarize. A separate Scope rule keeps
+  commits limited to the task: blanket staging (`git add -A`, `git commit -a`)
+  is held until the model reviews the staged files, so local-only files like
+  `.claude/settings.local.json` stay out of the PR.
 - Agent modes: `build` (default), `plan` (read-only planning), and `auto-edit`
   (auto-approve file edits), cycled in the TUI with Shift+Tab or set with
   `--mode` / `OXIDE_MODE`.
@@ -66,22 +75,25 @@ box, with Claude Code configuration support for compatibility.
   uses the provider/model's native behavior; explicit levels map to
   OpenAI-compatible effort, Anthropic adaptive thinking, or legacy extended
   thinking as appropriate.
-- Compact, bounded output: tool bodies are shown by default as
-  background-filled panels (Ctrl+O collapses them), colored by state (pending,
-  success, or error), with long action lines and wrapped output continuations
-  aligned so the full text stays readable, and tool results are capped by lines
-  and bytes before they enter the model's context. Capped output is saved to
-  disk with a pointer so it stays recoverable.
+- Compact, bounded output: tool bodies render as background-filled panels with
+  a short, readable preview by default (compact JSON is expanded, and long output
+  is cut to a per-tool budget: shell tail 5 lines, `read` 10, `grep` 15,
+  `find`/`ls` 20), colored by state (pending, success, or error), with long
+  action lines and wrapped output continuations aligned so the full text stays
+  readable, and tool results are capped by lines and bytes before they enter the
+  model's context. Capped output is saved to disk with a pointer so it stays
+  recoverable.
 - Compact agent transcript: shell calls render as `→ Run <command>` and finish
   as `→ Ran <command> · exit <code>` (`→ Run failed …` on a non-zero exit),
   with a `(timeout Ns)` hint when the call
   sets one, a live `Elapsed Ns` while it runs, and a `Took Nms` duration
   afterwards (any other tool that runs for at least 500 ms is timed too).
-  Collapsed output uses a
-  `⋯ <lines> lines · Ctrl+O to expand` affordance, `read` results show the file
-  contents, file edits show a colored line-numbered diff, user and assistant
-  turns render their label inline with the message text, and the system prompt
-  nudges the model to batch reads instead of re-reading the same paths.
+  Long output is previewed with a
+  `⋯ <lines> more/earlier lines · Ctrl+O to expand` affordance, `read` results
+  preview the file contents, file edits show a colored line-numbered diff, user
+  and assistant turns render their label inline with the message text, and the
+  system prompt nudges the model to batch reads instead of re-reading the same
+  paths.
 - Visible work in progress: reasoning streams into the transcript as a muted
   italic `✦ Thinking` block that closes with `✦ Thought for 1.4s`, so work done
   before the answer is no longer invisible. Ctrl+T collapses reasoning blocks to
