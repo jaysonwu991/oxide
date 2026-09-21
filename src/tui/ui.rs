@@ -1280,7 +1280,9 @@ fn render_item_themed(
                 ),
                 Span::styled(" ", Style::default()),
             ];
-            lines.extend(wrapped_with_prefix(prefix, text, width, Style::default()));
+            lines.extend(crate::tui::markdown::render_with_prefix(
+                text, width, prefix, theme,
+            ));
         }
         ChatItem::Tool { name, args } => {
             let inner = box_inner_width(width);
@@ -2725,6 +2727,24 @@ mod tests {
             &mut lines,
         );
         assert_eq!(line_text(&lines[0]), "◆ oxide here is the answer");
+    }
+
+    #[test]
+    fn assistant_messages_render_markdown_blocks() {
+        let mut lines = Vec::new();
+        render_item(
+            &ChatItem::Assistant("## Summary\n\n- **bold** item\n\n```\nsome code\n```".into()),
+            60,
+            false,
+            &mut lines,
+        );
+        let text: Vec<String> = lines.iter().map(line_text).collect();
+        assert_eq!(text[0], "◆ oxide Summary");
+        assert!(text.iter().any(|line| line.contains("• bold item")));
+        assert!(text.iter().any(|line| line.contains("some code")));
+        for line in &text {
+            assert!(line.chars().count() <= 60, "{line:?}");
+        }
     }
 
     #[test]

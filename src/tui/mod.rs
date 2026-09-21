@@ -1,4 +1,5 @@
 pub mod app;
+mod markdown;
 pub mod ui;
 
 use crate::agent::{self, AgentEvent, ApprovalRequest, Approver, Runtime};
