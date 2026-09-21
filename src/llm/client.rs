@@ -225,11 +225,14 @@ impl LlmClient {
                         // and only report failure once the ceiling is reached.
                         //
                         // Some gateways end such a turn with a normal stop
-                        // reason, so a turn that reasoned but produced nothing
+                        // reason, and OpenAI-family models never stream the
+                        // reasoning text at all. A turn that produced nothing
+                        // but reasoning - streamed or only billed in the usage -
                         // is treated as truncated too: it was the reasoning
                         // that consumed the budget.
                         let truncated = turn.finish_reason.as_deref().is_some_and(is_output_limit)
-                            || !turn.thinking.is_empty();
+                            || !turn.thinking.is_empty()
+                            || turn.usage.reasoning > 0;
                         if truncated
                             && max_tokens < MAX_ESCALATED_TOKENS
                             && attempt < MAX_STREAM_ATTEMPTS
@@ -339,6 +342,11 @@ impl LlmClient {
                     output: usage.completion_tokens,
                     cache_read: cached,
                     cache_write: 0,
+                    reasoning: usage
+                        .completion_tokens_details
+                        .as_ref()
+                        .map(|details| details.reasoning_tokens)
+                        .unwrap_or(0),
                     cost: 0.0,
                 };
             }
@@ -1113,6 +1121,15 @@ mod tests {
         ])
     }
 
+    /// An empty turn whose only output was hidden reasoning reported in the
+    /// usage, as OpenAI-family models do (they never stream the text).
+    fn billed_reasoning_turn() -> String {
+        sse(&[
+            serde_json::json!({"choices": [{"index": 0, "delta": {"content": "", "reasoning_content": null}, "logprobs": null, "finish_reason": null}]}),
+            serde_json::json!({"choices": [{"index": 0, "delta": {"content": "", "reasoning_content": null}, "logprobs": null, "finish_reason": "stop"}], "usage": {"prompt_tokens": 10, "completion_tokens": 8192, "completion_tokens_details": {"reasoning_tokens": 8192}}}),
+        ])
+    }
+
     fn completed_turn(content: &str) -> String {
         sse(&[
             serde_json::json!({"choices": [{"index": 0, "delta": {"content": content, "reasoning_content": null}, "logprobs": null, "finish_reason": null}]}),
@@ -1230,6 +1247,31 @@ mod tests {
     async fn a_reasoning_only_empty_turn_escalates_without_a_reported_limit() {
         let (addr, server) =
             sse_server(vec![reasoning_only_turn("stop"), completed_turn("done")]).await;
+        let client = LlmClient::new(portkey_test_config(addr, 8192));
+
+        let mut text = String::new();
+        let turn = {
+            let mut hooks = StreamHooks {
+                text: &mut |delta: String| text.push_str(&delta),
+                thinking: &mut |_| {},
+                retry: &mut |_| {},
+            };
+            client
+                .stream_chat(&[Message::user("hi")], &[], &mut hooks)
+                .await
+                .unwrap()
+        };
+
+        assert_eq!(turn.content, "done");
+        let requests = server.await.unwrap();
+        let budgets: Vec<u64> = requests.iter().map(|r| request_budget(r)).collect();
+        assert_eq!(budgets, vec![8192, 16384]);
+    }
+
+    #[tokio::test]
+    async fn a_billed_reasoning_turn_escalates_even_without_streamed_text() {
+        let (addr, server) =
+            sse_server(vec![billed_reasoning_turn(), completed_turn("done")]).await;
         let client = LlmClient::new(portkey_test_config(addr, 8192));
 
         let mut text = String::new();

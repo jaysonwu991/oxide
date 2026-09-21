@@ -237,6 +237,10 @@ pub struct Usage {
     pub output: u64,
     pub cache_read: u64,
     pub cache_write: u64,
+    /// Output tokens the provider billed as hidden reasoning. OpenAI-family
+    /// models never stream the text, so this is the only signal that an empty
+    /// turn spent its budget thinking.
+    pub reasoning: u64,
     /// Cost in USD, computed from the model's price table after the turn.
     pub cost: f64,
 }
@@ -331,6 +335,14 @@ pub struct StreamUsage {
     pub completion_tokens: u64,
     #[serde(default)]
     pub prompt_tokens_details: Option<PromptTokensDetails>,
+    #[serde(default)]
+    pub completion_tokens_details: Option<CompletionTokensDetails>,
+}
+
+#[derive(Debug, Default, Deserialize)]
+pub struct CompletionTokensDetails {
+    #[serde(default)]
+    pub reasoning_tokens: u64,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -490,6 +502,20 @@ mod tests {
         let chunk: StreamChunk =
             serde_json::from_str(r#"{"choices":[{"delta":{"content":"hi"}}]}"#).unwrap();
         assert_eq!(chunk.choices[0].finish_reason, None);
+    }
+
+    #[test]
+    fn stream_chunk_reads_billed_reasoning_tokens() {
+        let chunk: StreamChunk = serde_json::from_str(
+            r#"{"usage":{"prompt_tokens":10,"completion_tokens":8192,"completion_tokens_details":{"reasoning_tokens":8192}}}"#,
+        )
+        .unwrap();
+        let usage = chunk.usage.unwrap();
+        assert_eq!(usage.completion_tokens, 8192);
+        assert_eq!(
+            usage.completion_tokens_details.map(|d| d.reasoning_tokens),
+            Some(8192)
+        );
     }
 
     #[test]

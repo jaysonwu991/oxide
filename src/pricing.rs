@@ -148,6 +148,7 @@ mod tests {
             output: 0,
             cache_read: 0,
             cache_write: 0,
+            reasoning: 0,
             cost: 0.0,
         };
         let price = lookup(&prices, "gpt-4o").unwrap();
