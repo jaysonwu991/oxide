@@ -253,6 +253,12 @@ pub struct AssistantTurn {
     pub tool_calls: Vec<ToolCall>,
     pub thinking: Vec<Value>,
     pub usage: Usage,
+    /// Why the provider stopped the turn (`stop`, `length`, `tool_calls`, or
+    /// Anthropic's `max_tokens`/`end_turn`). A reasoning model can consume the
+    /// whole output budget on hidden reasoning and stop with `length` before
+    /// emitting any content, which is worth reporting differently from a
+    /// transient empty reply.
+    pub finish_reason: Option<String>,
 }
 
 /// Appends a streamed reasoning fragment to the turn's thinking block, creating
@@ -337,6 +343,8 @@ pub struct PromptTokensDetails {
 pub struct StreamChoice {
     #[serde(default)]
     pub delta: Delta,
+    #[serde(default)]
+    pub finish_reason: Option<String>,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -471,6 +479,17 @@ mod tests {
             parse(r#"{"reasoning_content":"","reasoning":"b"}"#).reasoning(),
             Some("b")
         );
+    }
+
+    #[test]
+    fn stream_chunk_carries_the_finish_reason() {
+        let chunk: StreamChunk =
+            serde_json::from_str(r#"{"choices":[{"delta":{},"finish_reason":"length"}]}"#).unwrap();
+        assert_eq!(chunk.choices[0].finish_reason.as_deref(), Some("length"));
+
+        let chunk: StreamChunk =
+            serde_json::from_str(r#"{"choices":[{"delta":{"content":"hi"}}]}"#).unwrap();
+        assert_eq!(chunk.choices[0].finish_reason, None);
     }
 
     #[test]

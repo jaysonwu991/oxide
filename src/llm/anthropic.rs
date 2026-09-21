@@ -122,6 +122,11 @@ pub fn apply_event(
             }
         }
         Some("message_delta") => {
+            if let Some(reason) = value["delta"]["stop_reason"].as_str() {
+                if !reason.is_empty() {
+                    turn.finish_reason = Some(reason.to_string());
+                }
+            }
             let usage = &value["usage"];
             if let Some(tokens) = usage["output_tokens"].as_u64() {
                 turn.usage.output = tokens;
@@ -557,6 +562,22 @@ mod tests {
         apply_event(event, &mut turn, &mut partials, &mut |_| {}, &mut |_| {}).unwrap();
         assert_eq!(turn.thinking.len(), 1);
         assert_eq!(turn.thinking[0]["thinking"], "orphan");
+    }
+
+    #[test]
+    fn records_the_stop_reason_from_message_delta() {
+        let mut turn = AssistantTurn::default();
+        let mut partials = BTreeMap::new();
+        apply_event(
+            r#"{"type":"message_delta","delta":{"stop_reason":"max_tokens"},"usage":{"output_tokens":8192}}"#,
+            &mut turn,
+            &mut partials,
+            &mut |_| {},
+            &mut |_| {},
+        )
+        .unwrap();
+        assert_eq!(turn.finish_reason.as_deref(), Some("max_tokens"));
+        assert_eq!(turn.usage.output, 8192);
     }
 
     #[test]

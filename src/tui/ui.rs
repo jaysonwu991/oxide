@@ -1696,7 +1696,9 @@ fn draw_input(frame: &mut Frame, app: &App, area: Rect) {
         .scroll((input_scroll(&app.input, app.input_cursor, width), 0));
     frame.render_widget(paragraph, inner);
 
-    if !app.busy && app.connect.is_none() && app.models.is_none() {
+    // The composer stays editable while the agent runs so a message can be
+    // typed and queued as steering, so keep its caret visible then too.
+    if app.connect.is_none() && app.models.is_none() {
         let (cursor_row, cursor_column) =
             input_cursor_position(&app.input, app.input_cursor.min(app.input.len()), width);
         let scroll = input_scroll(&app.input, app.input_cursor, width) as usize;
@@ -3445,6 +3447,40 @@ mod tests {
         assert!(footer.contains("↓4.8k"));
         assert!(footer.contains("20%/100"));
         assert!(footer.contains("(auto)"));
+    }
+
+    #[test]
+    fn composer_keeps_its_caret_while_the_agent_is_busy() {
+        use crate::config::{Mode, Reasoning};
+        use ratatui::backend::{Backend, TestBackend};
+        use ratatui::layout::Position;
+        use ratatui::Terminal;
+
+        // A multiline message long enough to scroll the composer, so the caret
+        // checks follow the wrapped, scrolled position and not just column 0.
+        let input = "first line\nsecond line\nthird line\nfourth line\nqueued steering";
+        let caret = |busy: bool| {
+            let mut app = App::new(
+                "gpt-4o".into(),
+                "/tmp/project".into(),
+                Mode::Build,
+                Reasoning::Auto,
+            );
+            app.input = input.into();
+            app.input_cursor = app.input.len();
+            app.busy = busy;
+            app.busy_since = busy.then(std::time::Instant::now);
+            // Each render gets a fresh backend, whose cursor starts at the
+            // origin; a busy frame that places no caret would leave it there.
+            let mut terminal = Terminal::new(TestBackend::new(60, 24)).unwrap();
+            terminal.draw(|frame| draw(frame, &mut app)).unwrap();
+            terminal.backend_mut().get_cursor_position().unwrap()
+        };
+
+        let idle = caret(false);
+        let busy = caret(true);
+        assert_ne!(busy, Position::ORIGIN);
+        assert_eq!(busy, idle);
     }
 
     #[test]
