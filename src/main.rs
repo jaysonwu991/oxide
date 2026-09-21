@@ -271,6 +271,11 @@ enum MarketplaceAction {
     },
     /// List configured marketplaces
     List,
+    /// Fetch the latest manifest from a marketplace's git remote
+    Update {
+        /// Marketplace name
+        name: String,
+    },
     /// Remove a marketplace
     Remove {
         /// Marketplace name
@@ -475,6 +480,9 @@ async fn main() -> Result<()> {
                         }
                         MarketplaceAction::List => {
                             println!("{}", plugin_registry::list_marketplaces()?);
+                        }
+                        MarketplaceAction::Update { name } => {
+                            println!("{}", plugin_registry::update_marketplace(&name).await?);
                         }
                         MarketplaceAction::Remove { name } => {
                             println!("{}", plugin_registry::remove_marketplace(&name)?);
@@ -934,7 +942,7 @@ async fn run_rpc_mode(config: Config, cwd: PathBuf, session: Option<SessionLog>)
 
 #[cfg(test)]
 mod tests {
-    use super::{split_mode, Cli, Command};
+    use super::{split_mode, Cli, Command, MarketplaceAction, PluginAction};
     use clap::Parser;
 
     #[test]
@@ -951,6 +959,36 @@ mod tests {
             split_mode(Some("auto-edit")),
             (Some("auto-edit".to_string()), "print".to_string())
         );
+    }
+
+    #[test]
+    fn marketplaces_are_nested_under_plugin() {
+        let cli = Cli::try_parse_from([
+            "oxide",
+            "plugin",
+            "marketplace",
+            "add",
+            "Skyscanner/skyscanner-claude-plugins",
+        ])
+        .unwrap();
+        assert!(matches!(
+            cli.command,
+            Some(Command::Plugin {
+                action: PluginAction::Marketplace {
+                    action: MarketplaceAction::Add { .. }
+                }
+            })
+        ));
+
+        let cli = Cli::try_parse_from(["oxide", "plugin", "marketplace", "list"]).unwrap();
+        assert!(matches!(
+            cli.command,
+            Some(Command::Plugin {
+                action: PluginAction::Marketplace {
+                    action: MarketplaceAction::List
+                }
+            })
+        ));
     }
 
     #[test]

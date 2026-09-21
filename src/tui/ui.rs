@@ -1,6 +1,6 @@
 use crate::config::Reasoning;
 use crate::tools::DiffPreview;
-use crate::tui::app::{App, ChatItem, ConnectStep, Selection, SubagentState};
+use crate::tui::app::{App, ChatItem, ConnectStep, MarketplacePane, Selection, SubagentState};
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span, Text};
@@ -75,6 +75,8 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         draw_models(frame, app);
     } else if app.sessions.is_some() {
         draw_sessions(frame, app);
+    } else if app.marketplaces.is_some() {
+        draw_marketplaces(frame, app);
     } else if !app.suggestions.is_empty() {
         draw_suggestions(frame, app, areas[0]);
     }
@@ -570,6 +572,466 @@ fn relative_time(now: u64, then: u64) -> String {
     } else {
         format!("{}d ago", secs / 86400)
     }
+}
+
+/// Pads `spans` to `width` and paints the whole row with `bg`, so a selected
+/// list row reads as one solid band instead of stopping at its last glyph.
+fn filled_line(spans: Vec<Span<'static>>, width: usize, bg: Option<Color>) -> Line<'static> {
+    let Some(bg) = bg else {
+        return Line::from(spans);
+    };
+    let used: usize = spans.iter().map(|span| span.content.chars().count()).sum();
+    let pad = width.saturating_sub(used);
+    let mut spans = spans;
+    if pad > 0 {
+        spans.push(Span::styled(" ".repeat(pad), Style::default().bg(bg)));
+    }
+    Line::from(spans).style(Style::default().bg(bg))
+}
+
+/// The interactive marketplace browser behind `/marketplaces`.
+fn draw_marketplaces(frame: &mut Frame, app: &App) {
+    let Some(state) = &app.marketplaces else {
+        return;
+    };
+    let theme = &app.theme;
+    let area = centered_rect(90, 88, frame.area());
+    frame.render_widget(Clear, area);
+
+    let title = if state.adding {
+        " add marketplace ".to_string()
+    } else if state.confirm_remove {
+        " remove marketplace? ".to_string()
+    } else {
+        let installed = state.installed_count();
+        if installed > 0 {
+            format!(
+                " marketplaces · {} · {installed} installed ",
+                state.all.len()
+            )
+        } else {
+            format!(" marketplaces · {} ", state.all.len())
+        }
+    };
+    let block = panel(&title, theme.accent);
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+    if inner.height == 0 || inner.width == 0 {
+        return;
+    }
+
+    if state.adding {
+        draw_marketplace_add(frame, state, inner, theme);
+        return;
+    }
+    if state.confirm_remove {
+        draw_marketplace_remove(frame, state, inner, theme);
+        return;
+    }
+
+    let rows = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Length(5),
+            Constraint::Min(3),
+            Constraint::Length(3),
+        ])
+        .split(inner);
+
+    draw_marketplace_header(frame, state, rows[0], theme);
+
+    let columns = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([
+            Constraint::Percentage(38),
+            Constraint::Length(1),
+            Constraint::Min(24),
+        ])
+        .split(rows[1]);
+
+    frame.render_widget(
+        Block::default()
+            .borders(Borders::LEFT)
+            .border_style(Style::default().fg(theme.border)),
+        columns[1],
+    );
+
+    let detail = Rect {
+        x: columns[2].x.saturating_add(1),
+        width: columns[2].width.saturating_sub(1),
+        ..columns[2]
+    };
+    draw_marketplace_list(frame, state, columns[0], theme);
+    draw_marketplace_detail(frame, state, detail, theme);
+    draw_marketplace_footer(frame, state, rows[2], theme);
+}
+
+fn draw_marketplace_header(
+    frame: &mut Frame,
+    state: &crate::tui::app::MarketplacesState,
+    area: Rect,
+    theme: &crate::theme::Theme,
+) {
+    let dim = Style::default().fg(theme.dim);
+    let lines = vec![
+        Line::from(""),
+        Line::from(Span::styled(
+            "Marketplaces publish plugins from a git repository or local path.",
+            Style::default().fg(theme.info),
+        )),
+        Line::from(""),
+        Line::from(vec![
+            Span::styled("> ", Style::default().fg(theme.accent)),
+            Span::styled(state.filter.clone(), Style::default().fg(theme.assistant)),
+            if state.filter.is_empty() {
+                Span::styled("filter marketplaces or plugins…", dim)
+            } else {
+                Span::raw("")
+            },
+        ]),
+        Line::from(""),
+    ];
+    frame.render_widget(Paragraph::new(lines), area);
+    let x = area.x + 2 + state.filter.chars().count() as u16;
+    frame.set_cursor_position((x.min(area.x + area.width.saturating_sub(1)), area.y + 3));
+}
+
+fn draw_marketplace_list(
+    frame: &mut Frame,
+    state: &crate::tui::app::MarketplacesState,
+    area: Rect,
+    theme: &crate::theme::Theme,
+) {
+    let marketplaces = state.marketplaces();
+    if marketplaces.is_empty() {
+        let message = if state.all.is_empty() {
+            "No marketplaces yet.\n\nPress Ctrl+A to add one."
+        } else {
+            "No matching marketplaces."
+        };
+        frame.render_widget(
+            Paragraph::new(Span::styled(message, Style::default().fg(theme.dim)))
+                .wrap(Wrap { trim: true }),
+            area,
+        );
+        return;
+    }
+
+    let focused = state.pane == MarketplacePane::Marketplaces;
+    let selected = state.selected.min(marketplaces.len() - 1);
+    let capacity = area.height.max(1) as usize;
+    let start = selected
+        .saturating_sub(capacity / 2)
+        .min(marketplaces.len().saturating_sub(capacity));
+    let end = (start + capacity).min(marketplaces.len());
+
+    let mut lines: Vec<Line> = Vec::new();
+    for (offset, marketplace) in marketplaces[start..end].iter().enumerate() {
+        let absolute = start + offset;
+        let is_selected = absolute == selected;
+        let marker = if is_selected {
+            if focused {
+                "→ "
+            } else {
+                "· "
+            }
+        } else {
+            "  "
+        };
+        let name_style = if is_selected && focused {
+            Style::default()
+                .fg(theme.accent)
+                .add_modifier(Modifier::BOLD)
+        } else {
+            Style::default().fg(theme.assistant)
+        };
+        let installed = marketplace
+            .plugins
+            .iter()
+            .filter(|plugin| plugin.installed)
+            .count();
+        let mut spans = vec![
+            Span::styled(marker, Style::default().fg(theme.accent)),
+            Span::styled(truncate(&marketplace.name, 22), name_style),
+            Span::styled(
+                format!("  {}", marketplace.plugins.len()),
+                Style::default().fg(theme.dim),
+            ),
+        ];
+        if installed > 0 {
+            spans.push(Span::styled(
+                format!("  ✓{installed}"),
+                Style::default().fg(theme.success),
+            ));
+        }
+        let bg = (is_selected && focused).then_some(theme.tool_pending_bg);
+        lines.push(filled_line(spans, area.width as usize, bg));
+    }
+    frame.render_widget(Paragraph::new(lines), area);
+}
+
+fn draw_marketplace_detail(
+    frame: &mut Frame,
+    state: &crate::tui::app::MarketplacesState,
+    area: Rect,
+    theme: &crate::theme::Theme,
+) {
+    let Some(marketplace) = state.selected_marketplace() else {
+        frame.render_widget(
+            Paragraph::new(Span::styled(
+                "Select a marketplace to see its plugins.",
+                Style::default().fg(theme.dim),
+            )),
+            area,
+        );
+        return;
+    };
+
+    let bold = Modifier::BOLD;
+    let installed = marketplace
+        .plugins
+        .iter()
+        .filter(|plugin| plugin.installed)
+        .count();
+    let mut lines: Vec<Line> = vec![Line::from(Span::styled(
+        marketplace.name.clone(),
+        Style::default().fg(theme.accent).add_modifier(bold),
+    ))];
+    if let Some(owner) = &marketplace.owner {
+        lines.push(Line::from(Span::styled(
+            format!("by {owner}"),
+            Style::default().fg(theme.dim),
+        )));
+    }
+    lines.push(Line::from(Span::styled(
+        truncate(&marketplace.source, area.width as usize),
+        Style::default().fg(theme.info),
+    )));
+    lines.push(Line::from(Span::styled(
+        truncate_path(&marketplace.path.display().to_string(), area.width as usize),
+        Style::default().fg(theme.dim),
+    )));
+    lines.push(Line::from(Span::styled(
+        format!(
+            "{} plugins · {} installed",
+            marketplace.plugins.len(),
+            installed
+        ),
+        Style::default().fg(theme.dim),
+    )));
+    if let Some(error) = &marketplace.error {
+        lines.push(Line::from(Span::styled(
+            format!("⚠ {error}"),
+            Style::default().fg(theme.error),
+        )));
+    }
+    lines.push(Line::from(""));
+    lines.push(Line::from(Span::styled(
+        "Plugins",
+        Style::default().fg(theme.tool).add_modifier(bold),
+    )));
+
+    let focused = state.pane == MarketplacePane::Plugins;
+    let plugins = state.plugins();
+    let available = (area.height as usize).saturating_sub(lines.len());
+    if plugins.is_empty() {
+        let message = if marketplace.plugins.is_empty() {
+            "  this marketplace lists no plugins"
+        } else {
+            "  no matching plugins"
+        };
+        lines.push(Line::from(Span::styled(
+            message.to_string(),
+            Style::default().fg(theme.dim),
+        )));
+    } else if available > 0 {
+        let selected = state.plugin_selected.min(plugins.len() - 1);
+        let start = selected
+            .saturating_sub(available / 2)
+            .min(plugins.len().saturating_sub(available.min(plugins.len())));
+        let end = (start + available).min(plugins.len());
+        for (offset, plugin) in plugins[start..end].iter().enumerate() {
+            let absolute = start + offset;
+            let is_selected = absolute == selected;
+            let marker = if is_selected {
+                if focused {
+                    "→ "
+                } else {
+                    "· "
+                }
+            } else {
+                "  "
+            };
+            let (icon, icon_style) = match (plugin.installed, plugin.enabled) {
+                (true, true) => ("✓ ", Style::default().fg(theme.success)),
+                (true, false) => ("○ ", Style::default().fg(theme.dim)),
+                (false, _) => ("+ ", Style::default().fg(theme.accent)),
+            };
+            let name_style = if is_selected && focused {
+                Style::default().fg(theme.accent).add_modifier(bold)
+            } else {
+                Style::default().fg(theme.assistant)
+            };
+            let mut spans = vec![
+                Span::styled(marker, Style::default().fg(theme.accent)),
+                Span::styled(icon, icon_style),
+                Span::styled(plugin.name.clone(), name_style),
+            ];
+            if let Some(version) = &plugin.version {
+                spans.push(Span::styled(
+                    format!(" v{version}"),
+                    Style::default().fg(theme.dim),
+                ));
+            }
+            if plugin.installed {
+                spans.push(Span::styled(
+                    if plugin.enabled {
+                        "  enabled"
+                    } else {
+                        "  disabled"
+                    },
+                    Style::default().fg(theme.dim),
+                ));
+            }
+            if let Some(description) = &plugin.description {
+                let used: usize = spans.iter().map(|span| span.content.chars().count()).sum();
+                let room = (area.width as usize).saturating_sub(used + 4);
+                if room > 8 {
+                    spans.push(Span::styled(
+                        format!("  — {}", truncate(description, room)),
+                        Style::default().fg(theme.dim),
+                    ));
+                }
+            }
+            let bg = (is_selected && focused).then_some(theme.tool_pending_bg);
+            lines.push(filled_line(spans, area.width as usize, bg));
+        }
+        if start > 0 || end < plugins.len() {
+            lines.push(Line::from(Span::styled(
+                format!("  ({}/{})", selected + 1, plugins.len()),
+                Style::default().fg(theme.dim),
+            )));
+        }
+    }
+
+    frame.render_widget(Paragraph::new(lines), area);
+}
+
+fn draw_marketplace_footer(
+    frame: &mut Frame,
+    state: &crate::tui::app::MarketplacesState,
+    area: Rect,
+    theme: &crate::theme::Theme,
+) {
+    let mut lines: Vec<Line> = Vec::new();
+    if state.busy {
+        lines.push(Line::from(Span::styled(
+            "  working…",
+            Style::default().fg(theme.tool),
+        )));
+    } else if let Some(error) = &state.error {
+        lines.push(Line::from(Span::styled(
+            format!("  {error}"),
+            Style::default().fg(theme.error),
+        )));
+    } else if let Some(message) = &state.message {
+        lines.push(Line::from(Span::styled(
+            format!("  {message}"),
+            Style::default().fg(theme.success),
+        )));
+    } else {
+        lines.push(Line::from(""));
+    }
+    lines.push(Line::from(Span::styled(
+        "  ↑/↓ move · Tab pane · Enter install/disable · Ctrl+U update · Ctrl+A add · Ctrl+X remove · Ctrl+R reload · Esc close",
+        Style::default().fg(theme.dim),
+    )));
+    frame.render_widget(Paragraph::new(lines).wrap(Wrap { trim: false }), area);
+}
+
+fn draw_marketplace_add(
+    frame: &mut Frame,
+    state: &crate::tui::app::MarketplacesState,
+    area: Rect,
+    theme: &crate::theme::Theme,
+) {
+    let bold = Modifier::BOLD;
+    let lines = vec![
+        Line::from(Span::styled(
+            "Add a marketplace",
+            Style::default().fg(theme.accent).add_modifier(bold),
+        )),
+        Line::from(""),
+        Line::from(Span::styled(
+            "Git URL, owner/repo shorthand, or local path with a",
+            Style::default().fg(theme.info),
+        )),
+        Line::from(Span::styled(
+            ".oxide/marketplace.json or .claude-plugin/marketplace.json.",
+            Style::default().fg(theme.info),
+        )),
+        Line::from(""),
+        Line::from(vec![
+            Span::styled("> ", Style::default().fg(theme.accent)),
+            Span::styled(
+                state.add_input.clone(),
+                Style::default().fg(theme.assistant),
+            ),
+        ]),
+        Line::from(""),
+        Line::from(Span::styled(
+            "Enter add · Esc cancel",
+            Style::default().fg(theme.dim),
+        )),
+    ];
+    frame.render_widget(Paragraph::new(lines).wrap(Wrap { trim: false }), area);
+    let x = area.x + 2 + state.add_input.chars().count() as u16;
+    frame.set_cursor_position((x.min(area.x + area.width.saturating_sub(1)), area.y + 5));
+}
+
+fn draw_marketplace_remove(
+    frame: &mut Frame,
+    state: &crate::tui::app::MarketplacesState,
+    area: Rect,
+    theme: &crate::theme::Theme,
+) {
+    let Some(marketplace) = state.selected_marketplace() else {
+        return;
+    };
+    let installed = marketplace
+        .plugins
+        .iter()
+        .filter(|plugin| plugin.installed)
+        .count();
+    let mut lines = vec![
+        Line::from(Span::styled(
+            format!("Remove marketplace `{}`?", marketplace.name),
+            Style::default()
+                .fg(theme.error)
+                .add_modifier(Modifier::BOLD),
+        )),
+        Line::from(""),
+        Line::from(Span::styled(
+            marketplace.source.clone(),
+            Style::default().fg(theme.info),
+        )),
+        Line::from(""),
+    ];
+    if installed > 0 {
+        lines.push(Line::from(Span::styled(
+            format!(
+                "This also uninstalls {installed} installed plugin{}.",
+                if installed == 1 { "" } else { "s" }
+            ),
+            Style::default().fg(theme.info),
+        )));
+        lines.push(Line::from(""));
+    }
+    lines.push(Line::from(Span::styled(
+        "Enter/y confirm · Esc/n cancel",
+        Style::default().fg(theme.dim),
+    )));
+    frame.render_widget(Paragraph::new(lines).wrap(Wrap { trim: false }), area);
 }
 
 #[derive(Clone, Copy)]
@@ -1261,6 +1723,7 @@ fn render_item_themed(
             if empty || !expand_thinking {
                 return;
             }
+            let text = crate::tools::sanitize_terminal_output(text);
             for line in wrap(text.trim(), width.saturating_sub(2).max(1)) {
                 lines.push(Line::from(vec![
                     Span::raw("  "),
@@ -1887,6 +2350,7 @@ fn wrapped_with_prefix(
     continuation: Style,
 ) -> Vec<Line<'static>> {
     let head: String = prefix.iter().map(|span| span.content.as_ref()).collect();
+    let subject = crate::tools::sanitize_terminal_output(subject);
     let wrapped = wrap(&format!("{head}{subject}"), width.max(1));
     let mut out = Vec::with_capacity(wrapped.len());
     for (index, line) in wrapped.into_iter().enumerate() {
@@ -2130,10 +2594,11 @@ fn diff_body(
     width: usize,
     theme: &crate::theme::Theme,
 ) -> (Vec<Line<'static>>, Option<usize>) {
-    if diff.text.trim().is_empty() {
+    let text = crate::tools::sanitize_terminal_output(&diff.text);
+    if text.trim().is_empty() {
         return (Vec::new(), None);
     }
-    let all: Vec<&str> = diff.text.lines().collect();
+    let all: Vec<&str> = text.lines().collect();
     let limit = if expand_tools {
         all.len()
     } else {
@@ -2161,7 +2626,8 @@ fn diff_line_style(line: &str, theme: &crate::theme::Theme) -> Style {
 }
 
 fn push_wrapped<'a>(lines: &mut Vec<Line<'a>>, text: &str, width: usize, style: Style) {
-    for wrapped in wrap(text, width.max(1)) {
+    let text = crate::tools::sanitize_terminal_output(text);
+    for wrapped in wrap(&text, width.max(1)) {
         lines.push(Line::from(Span::styled(wrapped, style)));
     }
 }
@@ -2238,7 +2704,7 @@ fn push_tool_body(
     expand_tools: bool,
     preview: Preview,
 ) {
-    let readable = readable_output(text);
+    let readable = readable_output(&crate::tools::sanitize_terminal_output(text));
     let all: Vec<&str> = readable.lines().collect();
     let limit = match preview {
         Preview::Head(limit) | Preview::Tail(limit) => limit,
@@ -3857,6 +4323,62 @@ mod tests {
         let buffer = terminal.backend().buffer();
         assert_eq!(row_of(buffer, "(main)"), None);
     }
+
+    #[test]
+    fn marketplaces_overlay_renders_marketplace_and_plugins() {
+        use crate::config::{Mode, Reasoning};
+        use crate::plugin_registry::{MarketplaceOverview, MarketplacePluginOverview};
+        use crate::tui::app::MarketplacesState;
+        use ratatui::backend::TestBackend;
+        use ratatui::Terminal;
+
+        let mut app = App::new(
+            "gpt-4o".into(),
+            "/tmp/project".into(),
+            Mode::Build,
+            Reasoning::Auto,
+        );
+        app.marketplaces = Some(MarketplacesState::ready(vec![MarketplaceOverview {
+            name: "skyscanner".into(),
+            source: "https://github.com/Skyscanner/plugins".into(),
+            path: "/tmp/marketplaces/skyscanner".into(),
+            owner: Some("Skyscanner".into()),
+            plugins: vec![
+                MarketplacePluginOverview {
+                    name: "onboarding-guide".into(),
+                    description: Some("a guide".into()),
+                    version: Some("1.0.0".into()),
+                    installed: true,
+                    enabled: true,
+                },
+                MarketplacePluginOverview {
+                    name: "android-core".into(),
+                    description: None,
+                    version: None,
+                    installed: false,
+                    enabled: false,
+                },
+            ],
+            error: None,
+        }]));
+
+        let mut terminal = Terminal::new(TestBackend::new(100, 30)).unwrap();
+        terminal.draw(|frame| draw(frame, &mut app)).unwrap();
+        let buffer = terminal.backend().buffer();
+        assert!(row_of(buffer, "marketplaces").is_some(), "title");
+        assert!(row_of(buffer, "skyscanner").is_some(), "marketplace row");
+        assert!(row_of(buffer, "Plugins").is_some(), "plugins header");
+        assert!(
+            row_of(buffer, "onboarding-guide").is_some(),
+            "installed plugin"
+        );
+        assert!(row_of(buffer, "android-core").is_some(), "available plugin");
+        assert!(row_of(buffer, "Ctrl+A add").is_some(), "footer hint");
+
+        // A cramped terminal must not panic in any of the sub-layouts.
+        let mut small = Terminal::new(TestBackend::new(40, 12)).unwrap();
+        small.draw(|frame| draw(frame, &mut app)).unwrap();
+    }
 }
 
 #[cfg(test)]
@@ -3884,6 +4406,36 @@ mod wrap_parity_tests {
             out.push(line.trim_end().to_string());
         }
         out
+    }
+
+    #[test]
+    fn carriage_returns_never_reach_the_buffer() {
+        use crate::config::{Mode, Reasoning};
+        use ratatui::backend::TestBackend;
+        use ratatui::Terminal;
+
+        let output = "Cloning into 'x'...\nUpdating files:  74% (1879/2512)\rUpdating files:  75% (1884/2512)\rUpdating files: 100% (2512/2512), done.\n[exit: 0]";
+        let mut app = App::new("m".into(), "/tmp".into(), Mode::Build, Reasoning::Auto);
+        app.items.push(ChatItem::ToolResult {
+            name: "bash".into(),
+            args: "{\"command\":\"git clone x\"}".into(),
+            output: output.into(),
+            diff: None,
+            millis: 0,
+        });
+        let mut terminal = Terminal::new(TestBackend::new(80, 28)).unwrap();
+        terminal.draw(|frame| draw(frame, &mut app)).unwrap();
+        let buffer = terminal.backend().buffer();
+        let mut screen = String::new();
+        for y in 0..28 {
+            for x in 0..80 {
+                screen.push_str(buffer[(x, y)].symbol());
+            }
+            screen.push('\n');
+        }
+        assert!(!screen.contains('\r'), "carriage return leaked: {screen:?}");
+        assert!(screen.contains("Updating files: 100% (2512/2512), done."));
+        assert!(!screen.contains("74%"));
     }
 
     #[test]

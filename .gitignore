@@ -19,3 +19,6 @@
 
 # Stray build output
 *.rlib
+
+# Session dumps captured into the repo root
+/*.jsonl

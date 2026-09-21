@@ -52,7 +52,8 @@ box, with Claude Code configuration support for compatibility.
   `.oxide/plugin.json` (or `.claude-plugin/plugin.json`) manifest, from a
   marketplace declared by `.oxide/marketplace.json` (or
   `.claude-plugin/marketplace.json`). Manage them with `oxide plugin` and
-  `/plugin`.
+  `/plugin`, or browse marketplaces and their plugins interactively with
+  `/marketplaces`.
 - Agent-harness niceties: read-only tool calls in a batch run in parallel while
   preserving model order, `bash` output streams into the UI as it arrives, and
   typing while the agent works steers it between steps. Enter queues a steering
@@ -322,8 +323,8 @@ oxide mcp list
 Install plugins from a marketplace:
 
 ```sh
-oxide plugin marketplace add <url|path>
-oxide plugin install <name>
+oxide plugin marketplace add <url|path|owner/repo>
+oxide plugin install <name>[@marketplace]
 ```
 
 ## CLI
@@ -454,14 +455,18 @@ discovery therefore happen only when that server is first needed.
 Plugin management (Claude Code-style packages and marketplaces):
 
 ```sh
-oxide plugin marketplace add <url|path>
+oxide plugin marketplace add <url|path|owner/repo>
 oxide plugin install <name>[@marketplace]
 oxide plugin list
 oxide plugin enable <name>
 oxide plugin disable <name>
 oxide plugin uninstall <name>
-oxide plugin marketplace list | remove <name>
+oxide plugin marketplace list | update <name> | remove <name>
 ```
+
+The `owner/repo` shorthand expands to a GitHub clone URL. The TUI
+`/marketplaces` command opens an interactive browser for the same operations,
+including `Ctrl+U` to fetch a marketplace's latest manifest.
 
 Plugins are packages that bundle slash commands, subagents, skills, MCP servers,
 and command hooks behind a `.oxide/plugin.json` or `.claude-plugin/plugin.json`
@@ -665,18 +670,20 @@ oxide also reads the Claude Code layout, so existing configurations work as-is:
 Slash commands are expanded from the ecosystem and also include built-ins:
 `/help`, `/hotkeys`, `/exit`, `/new`, `/session`, `/resume`, `/tree`, `/fork`,
 `/clone`, `/name`, `/model`, `/thinking`, `/theme`, `/trust`, `/export`,
-`/reload`, `/init`, `/login`, `/logout`, `/models`, `/mcps`, `/plugin`, `/usage`,
-`/connect`, `/undo`, `/redo`, `/compact`, `/copy`, `/copy all`, and
-`/skill:<name>`. Discovered commands and prompt templates can also be invoked by
-the agent through the `command` tool, and skills load on demand with `skill` or
-via `/skill:<name>`.
+`/reload`, `/init`, `/login`, `/logout`, `/models`, `/mcps`, `/plugin`,
+`/marketplaces`, `/usage`, `/connect`, `/undo`, `/redo`, `/compact`, `/copy`,
+`/copy all`, and `/skill:<name>`. Discovered commands and prompt templates can
+also be invoked by the agent through the `command` tool, and skills load on
+demand with `skill` or via `/skill:<name>`.
 
 **Plugin packages** — installed via `oxide plugin` (or `/plugin`), plugin
 packages bundle commands, agents, skills, MCP servers, and command hooks behind
 a `.oxide/plugin.json` or `.claude-plugin/plugin.json` manifest, discovered from
 marketplaces declared by `.oxide/marketplace.json` or
 `.claude-plugin/marketplace.json`. They load at startup before project
-resources, so project entries still override plugins with the same name.
+resources, so project entries still override plugins with the same name. Use
+`/marketplaces` to browse marketplaces and install, enable, or remove their
+plugins interactively.
 
 ## Tools
 

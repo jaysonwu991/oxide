@@ -1,6 +1,7 @@
 use crate::agent::{ApprovalRequest, Steering};
 use crate::config::{Mode, Reasoning};
 use crate::llm::{ContentPart, Message};
+use crate::plugin_registry::{MarketplaceOverview, MarketplacePluginOverview};
 use crate::session::SessionSummary;
 use crate::tools::DiffPreview;
 use ratatui::text::Line;
@@ -339,6 +340,112 @@ impl TrustState {
     }
 }
 
+/// Which list the `/marketplaces` overlay is driving.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum MarketplacePane {
+    #[default]
+    Marketplaces,
+    Plugins,
+}
+
+/// Interactive marketplace browser shown by `/marketplaces`.
+#[derive(Debug, Clone, Default)]
+pub struct MarketplacesState {
+    pub all: Vec<MarketplaceOverview>,
+    pub filter: String,
+    pub selected: usize,
+    pub plugin_selected: usize,
+    pub pane: MarketplacePane,
+    pub adding: bool,
+    pub add_input: String,
+    pub confirm_remove: bool,
+    pub busy: bool,
+    pub message: Option<String>,
+    pub error: Option<String>,
+}
+
+impl MarketplacesState {
+    pub fn ready(all: Vec<MarketplaceOverview>) -> Self {
+        Self {
+            all,
+            ..Self::default()
+        }
+    }
+
+    /// Marketplaces matching the filter while that pane is active.
+    pub fn marketplaces(&self) -> Vec<&MarketplaceOverview> {
+        let filter = if self.pane == MarketplacePane::Marketplaces {
+            self.filter.to_ascii_lowercase()
+        } else {
+            String::new()
+        };
+        self.all
+            .iter()
+            .filter(|marketplace| {
+                filter.is_empty()
+                    || marketplace.name.to_ascii_lowercase().contains(&filter)
+                    || marketplace.source.to_ascii_lowercase().contains(&filter)
+            })
+            .collect()
+    }
+
+    pub fn selected_marketplace(&self) -> Option<&MarketplaceOverview> {
+        self.marketplaces().get(self.selected).copied()
+    }
+
+    /// Plugins of the selected marketplace matching the filter while that pane
+    /// is active.
+    pub fn plugins(&self) -> Vec<&MarketplacePluginOverview> {
+        let Some(marketplace) = self.selected_marketplace() else {
+            return Vec::new();
+        };
+        let filter = if self.pane == MarketplacePane::Plugins {
+            self.filter.to_ascii_lowercase()
+        } else {
+            String::new()
+        };
+        marketplace
+            .plugins
+            .iter()
+            .filter(|plugin| {
+                filter.is_empty()
+                    || plugin.name.to_ascii_lowercase().contains(&filter)
+                    || plugin
+                        .description
+                        .as_deref()
+                        .unwrap_or_default()
+                        .to_ascii_lowercase()
+                        .contains(&filter)
+            })
+            .collect()
+    }
+
+    pub fn selected_plugin(&self) -> Option<MarketplacePluginOverview> {
+        self.plugins().get(self.plugin_selected).copied().cloned()
+    }
+
+    /// Number of distinct installed plugins across every marketplace. Plugins
+    /// are keyed globally by name, so a name listed by several marketplaces is
+    /// counted once.
+    pub fn installed_count(&self) -> usize {
+        self.all
+            .iter()
+            .flat_map(|marketplace| &marketplace.plugins)
+            .filter(|plugin| plugin.installed)
+            .map(|plugin| plugin.name.as_str())
+            .collect::<std::collections::BTreeSet<_>>()
+            .len()
+    }
+
+    /// Clamps the selection indices after a reload or a filter change.
+    pub fn clamp_selection(&mut self) {
+        let marketplaces = self.marketplaces().len();
+        self.selected = self.selected.min(marketplaces.saturating_sub(1));
+        let plugins = self.plugins().len();
+        self.plugin_selected = self.plugin_selected.min(plugins.saturating_sub(1));
+    }
+}
+
 pub struct App {
     pub input: String,
     pub input_cursor: usize,
@@ -365,6 +472,7 @@ pub struct App {
     pub connect: Option<ConnectState>,
     pub models: Option<ModelsState>,
     pub sessions: Option<SessionsState>,
+    pub marketplaces: Option<MarketplacesState>,
     pub trust: Option<TrustState>,
     pub suggestions: Vec<CommandHint>,
     pub suggestion_index: usize,
@@ -435,6 +543,7 @@ impl App {
             connect: None,
             models: None,
             sessions: None,
+            marketplaces: None,
             trust: None,
             suggestions: Vec::new(),
             suggestion_index: 0,
@@ -934,5 +1043,57 @@ mod tests {
         assert!(selection.contains(2, 4));
         assert!(!selection.contains(0, 9));
         assert!(!selection.contains(3, 0));
+    }
+
+    fn marketplace(name: &str, plugins: &[(&str, bool)]) -> MarketplaceOverview {
+        MarketplaceOverview {
+            name: name.into(),
+            source: format!("https://example.com/{name}"),
+            path: format!("/tmp/{name}").into(),
+            owner: None,
+            plugins: plugins
+                .iter()
+                .map(|(plugin, installed)| MarketplacePluginOverview {
+                    name: (*plugin).into(),
+                    description: None,
+                    version: None,
+                    installed: *installed,
+                    enabled: *installed,
+                })
+                .collect(),
+            error: None,
+        }
+    }
+
+    #[test]
+    fn marketplace_filter_applies_to_the_active_pane_only() {
+        let mut state = MarketplacesState::ready(vec![
+            marketplace("alpha", &[("one", true), ("two", false)]),
+            marketplace("beta", &[("three", false)]),
+        ]);
+
+        state.filter = "alp".into();
+        assert_eq!(state.marketplaces().len(), 1);
+        assert_eq!(state.plugins().len(), 2);
+
+        state.pane = MarketplacePane::Plugins;
+        state.filter = "tw".into();
+        assert_eq!(state.marketplaces().len(), 2);
+        assert_eq!(state.plugins().len(), 1);
+        assert_eq!(state.selected_plugin().unwrap().name, "two");
+        assert_eq!(state.installed_count(), 1);
+    }
+
+    #[test]
+    fn marketplace_selection_clamps_after_filtering() {
+        let mut state = MarketplacesState::ready(vec![
+            marketplace("alpha", &[("one", true)]),
+            marketplace("beta", &[]),
+        ]);
+        state.selected = 1;
+        state.filter = "alpha".into();
+        state.clamp_selection();
+        assert_eq!(state.selected, 0);
+        assert_eq!(state.selected_marketplace().unwrap().name, "alpha");
     }
 }

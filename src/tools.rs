@@ -1589,7 +1589,7 @@ where
         if last_progress.elapsed() >= PROGRESS_INTERVAL {
             let bytes: Vec<u8> = progress_batch.iter().copied().collect();
             let text = String::from_utf8_lossy(&bytes);
-            progress.report(text.trim_end());
+            progress.report(sanitize_terminal_output(text.trim_end()));
             progress_batch.clear();
             last_progress = std::time::Instant::now();
         }
@@ -1597,7 +1597,7 @@ where
     if !progress_batch.is_empty() {
         let bytes: Vec<u8> = progress_batch.iter().copied().collect();
         let text = String::from_utf8_lossy(&bytes);
-        progress.report(text.trim_end());
+        progress.report(sanitize_terminal_output(text.trim_end()));
     }
     if total_bytes > 0 && last_byte != Some(b'\n') {
         total_lines = total_lines.saturating_add(1);
@@ -1619,6 +1619,45 @@ fn stream_temp_path(label: &str) -> PathBuf {
     ))
 }
 
+/// Removes terminal control sequences from captured command output so it can be
+/// rendered or replayed without corrupting the screen. A carriage return
+/// overwrites the current line, so only the text after the last one is kept,
+/// which also collapses `\r`-based progress output to its final state.
+pub(crate) fn sanitize_terminal_output(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    for (index, line) in text.split('\n').enumerate() {
+        if index > 0 {
+            out.push('\n');
+        }
+        // A carriage return overwrites the line, so the visible text is the
+        // first non-empty segment counting back from the last one. A trailing
+        // return (CRLF) leaves the preceding text untouched.
+        let line = line
+            .rsplit('\r')
+            .find(|segment| !segment.is_empty())
+            .unwrap_or("");
+        let mut chars = line.chars().peekable();
+        while let Some(ch) = chars.next() {
+            match ch {
+                '\t' => out.push('\t'),
+                '\u{1b}' => {
+                    if chars.peek() == Some(&'[') {
+                        chars.next();
+                        for c in chars.by_ref() {
+                            if ('\u{40}'..='\u{7e}').contains(&c) {
+                                break;
+                            }
+                        }
+                    }
+                }
+                c if c.is_control() => {}
+                c => out.push(c),
+            }
+        }
+    }
+    out
+}
+
 fn finish_bash_output(stdout: StreamCapture, stderr: StreamCapture, exit: i32) -> Result<String> {
     let suffix = format!("[exit: {exit}]");
     let marker_bytes = usize::from(stderr.lines > 0) * "[stderr]\n".len();
@@ -1637,7 +1676,7 @@ fn finish_bash_output(stdout: StreamCapture, stderr: StreamCapture, exit: i32) -
         }
         output.push_str(&suffix);
         remove_stream_files(&[&stdout, &stderr]);
-        return Ok(output);
+        return Ok(sanitize_terminal_output(&output));
     }
 
     let mut preview = stdout.tail_text();
@@ -1660,7 +1699,7 @@ fn finish_bash_output(stdout: StreamCapture, stderr: StreamCapture, exit: i32) -
     }
     output.push_str("]\n");
     output.push_str(&preview);
-    Ok(output)
+    Ok(sanitize_terminal_output(&output))
 }
 
 fn tail_preview(text: &str, max_bytes: usize, max_lines: usize) -> String {
@@ -1824,6 +1863,23 @@ mod tests {
                 arguments: args.to_string(),
             },
         }
+    }
+
+    #[test]
+    fn sanitize_terminal_output_collapses_progress_and_drops_escapes() {
+        assert_eq!(
+            sanitize_terminal_output("a\rbb\rccc"),
+            "ccc",
+            "a carriage return overwrites earlier text on the line"
+        );
+        assert_eq!(
+            sanitize_terminal_output("one\ntwo\rthree\n"),
+            "one\nthree\n"
+        );
+        assert_eq!(sanitize_terminal_output("value\r"), "value");
+        assert_eq!(sanitize_terminal_output("a\r\nb\r\n"), "a\nb\n");
+        assert_eq!(sanitize_terminal_output("\u{1b}[31mred\u{1b}[0m"), "red");
+        assert_eq!(sanitize_terminal_output("keep\ttabs\n"), "keep\ttabs\n");
     }
 
     #[test]

@@ -14,7 +14,8 @@ use crate::theme::Theme;
 /// Renders `text` as styled lines that fit `width` columns.
 pub(crate) fn render(text: &str, width: usize, theme: &Theme) -> Vec<Line<'static>> {
     let palette = Palette::new(theme);
-    let blocks = parse_blocks(text, &palette);
+    let text = crate::tools::sanitize_terminal_output(text);
+    let blocks = parse_blocks(&text, &palette);
     let mut renderer = Renderer::new(width, &palette);
     renderer.render_blocks(&blocks, &[], true);
     renderer.finish()
