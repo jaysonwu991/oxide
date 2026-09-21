@@ -432,6 +432,9 @@ fn load_plugin_dir(
             }
         }
     }
+    // Claude Code plugins may also ship MCP servers as a `.mcp.json` at the
+    // plugin root instead of listing them in the manifest.
+    load_mcp(ecosystem, &dir.join(".mcp.json"));
 
     // JS/TS hook files shipped inside the plugin package.
     ecosystem.hooks.extend(hook_files(&dir.join("plugins")));
@@ -470,12 +473,37 @@ fn load_layout(ecosystem: &mut Ecosystem, dir: &Path, memory_file: &str) {
 
 fn load_mcp(ecosystem: &mut Ecosystem, path: &Path) {
     let Some(json) = read_json(path) else { return };
-    if let Some(servers) = json.get("mcpServers").and_then(Json::as_object) {
-        for (name, config) in servers {
-            if let Some(server) = mcp_from_claude(name, config) {
-                upsert_mcp(ecosystem, server);
-            }
+    let servers = json
+        .get("mcpServers")
+        .and_then(Json::as_object)
+        .or_else(|| bare_mcp_servers(&json));
+    let Some(servers) = servers else { return };
+    for (name, config) in servers {
+        if let Some(server) = mcp_from_claude(name, config) {
+            upsert_mcp(ecosystem, server);
         }
+    }
+}
+
+/// A plugin `.mcp.json` may list servers directly at the root
+/// (`{"server": {...}}`) rather than under an `mcpServers` key. Treat the root
+/// as a server map only when every value looks like a server config, so an
+/// unrelated or malformed file is ignored instead of parsed as servers.
+fn bare_mcp_servers(json: &Json) -> Option<&serde_json::Map<String, Json>> {
+    let object = json.as_object()?;
+    if object.is_empty() {
+        return None;
+    }
+    let looks_like_server = |value: &Json| {
+        value
+            .as_object()
+            .map(|config| config.contains_key("url") || config.contains_key("command"))
+            .unwrap_or(false)
+    };
+    if object.values().all(looks_like_server) {
+        Some(object)
+    } else {
+        None
     }
 }
 
@@ -999,6 +1027,37 @@ mod tests {
         assert!(ecosystem.mcp.iter().any(|server| server.name == "fs"));
         assert!(ecosystem.mcp.iter().any(|server| server.name == "remote"));
         assert!(!ecosystem.memory.is_empty());
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn plugin_ships_mcp_servers_via_mcp_json() {
+        let dir = temp_dir("plugin_mcp");
+        std::fs::create_dir_all(dir.join(".claude-plugin")).unwrap();
+        // A plugin `.mcp.json` lists servers at the root instead of wrapping
+        // them in `mcpServers`, unlike a project `.mcp.json`.
+        std::fs::write(
+            dir.join(".mcp.json"),
+            r#"{"doc-mcp":{"url":"https://doc-mcp.example.com/mcp","type":"http"}}"#,
+        )
+        .unwrap();
+        let manifest = crate::plugin_registry::PluginManifest {
+            mcp_servers: Some(serde_json::json!({
+                "manifest-server": { "command": "npx", "args": ["-y", "server-fs"] }
+            })),
+            ..Default::default()
+        };
+
+        let mut ecosystem = Ecosystem::default();
+        load_plugin_dir(&mut ecosystem, "doc-mcp", &dir, &manifest);
+
+        let server = ecosystem.mcp.iter().find(|s| s.name == "doc-mcp").unwrap();
+        match &server.kind {
+            McpKind::Remote { url, .. } => assert_eq!(url, "https://doc-mcp.example.com/mcp"),
+            other => panic!("expected a remote server, got {other:?}"),
+        }
+        assert!(ecosystem.mcp.iter().any(|s| s.name == "manifest-server"));
 
         std::fs::remove_dir_all(&dir).ok();
     }

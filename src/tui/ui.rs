@@ -1,6 +1,9 @@
 use crate::config::Reasoning;
 use crate::tools::DiffPreview;
-use crate::tui::app::{App, ChatItem, ConnectStep, MarketplacePane, Selection, SubagentState};
+use crate::tui::app::{
+    App, ChatItem, ConnectStep, ListRow, MarketplacePane, Selection, SubagentState, Tone,
+    UsageField,
+};
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span, Text};
@@ -77,6 +80,8 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         draw_sessions(frame, app);
     } else if app.marketplaces.is_some() {
         draw_marketplaces(frame, app);
+    } else if app.usage_modal.is_some() {
+        draw_usage(frame, app);
     } else if !app.suggestions.is_empty() {
         draw_suggestions(frame, app, areas[0]);
     }
@@ -212,6 +217,12 @@ fn draw_connect(frame: &mut Frame, app: &App) {
         ConnectStep::Key { provider } => state.is_connected(provider),
     };
 
+    // Build the panel up front so the input can be truncated to one line and
+    // the cursor placed at its end without wrapping off the panel.
+    let block = panel(title, app.theme.accent);
+    let inner = block.inner(area);
+    let shown = truncate(&value, inner.width.saturating_sub(2) as usize);
+
     let mut lines = vec![Line::from(Span::styled(
         prompt,
         Style::default().fg(app.theme.info),
@@ -256,9 +267,10 @@ fn draw_connect(frame: &mut Frame, app: &App) {
         )));
         lines.push(Line::from(""));
     }
+    let input_line = lines.len();
     lines.push(Line::from(vec![
         Span::styled("> ", Style::default().fg(app.theme.accent)),
-        Span::styled(value, Style::default().fg(app.theme.assistant)),
+        Span::styled(shown.clone(), Style::default().fg(app.theme.assistant)),
     ]));
     lines.push(Line::from(""));
     lines.push(Line::from(Span::styled(
@@ -272,13 +284,141 @@ fn draw_connect(frame: &mut Frame, app: &App) {
         Style::default().fg(app.theme.info),
     )));
 
-    let block = panel(title, app.theme.accent);
     frame.render_widget(
         Paragraph::new(lines)
             .block(block)
             .wrap(Wrap { trim: false }),
         area,
     );
+    if inner.width > 0 && inner.height > input_line as u16 {
+        let column = 2 + shown.chars().count() as u16;
+        frame.set_cursor_position((
+            (inner.x + column).min(inner.x + inner.width.saturating_sub(1)),
+            inner.y + input_line as u16,
+        ));
+    }
+}
+
+/// The `/usage` settings dialog: a labeled form over the Portkey spend-bar
+/// settings. The selected row is edited in place and the terminal cursor is
+/// placed at the end of its value, including the masked API key.
+fn draw_usage(frame: &mut Frame, app: &App) {
+    let Some(state) = &app.usage_modal else {
+        return;
+    };
+    let area = centered_rect(72, 56, frame.area());
+    frame.render_widget(Clear, area);
+
+    let block = panel(" portkey usage ", app.theme.accent);
+    let inner = block.inner(area);
+    let value_width = inner.width.saturating_sub(13) as usize;
+
+    let mut lines = vec![
+        Line::from(Span::styled(
+            "Portkey spend bar",
+            Style::default().fg(app.theme.info),
+        )),
+        Line::from(""),
+    ];
+    for (index, field) in UsageField::ALL.iter().enumerate() {
+        let selected = index == state.selected;
+        let marker = if selected { "›" } else { " " };
+        let style = if selected {
+            Style::default()
+                .fg(app.theme.accent)
+                .add_modifier(Modifier::BOLD)
+        } else {
+            Style::default().fg(app.theme.assistant)
+        };
+        let value = if selected && state.editing {
+            usage_edit_value(&state.input, *field)
+        } else {
+            usage_display(&state.settings, *field)
+        };
+        let value_style = if selected {
+            Style::default().fg(app.theme.assistant)
+        } else {
+            Style::default().fg(app.theme.info)
+        };
+        lines.push(Line::from(vec![
+            Span::styled(format!(" {marker} {:<10}", field.label()), style),
+            Span::styled(truncate(&value, value_width), value_style),
+        ]));
+    }
+    lines.push(Line::from(""));
+    if let Some(error) = &state.error {
+        lines.push(Line::from(Span::styled(
+            format!("error: {error}"),
+            Style::default().fg(app.theme.error),
+        )));
+        lines.push(Line::from(""));
+    }
+    let hint = if state.editing {
+        if state.field() == UsageField::ApiKey {
+            "Enter apply · Esc cancel · empty uses the provider key"
+        } else {
+            "Enter apply · Esc cancel"
+        }
+    } else if state.field().is_toggle() {
+        "↑/↓ move · Enter toggle · Esc save & close"
+    } else {
+        "↑/↓ move · Enter edit · Esc save & close"
+    };
+    lines.push(Line::from(Span::styled(
+        hint,
+        Style::default().fg(app.theme.info),
+    )));
+
+    frame.render_widget(
+        Paragraph::new(lines)
+            .block(block)
+            .wrap(Wrap { trim: false }),
+        area,
+    );
+    if state.editing && inner.width > 0 {
+        let value = truncate(&usage_edit_value(&state.input, state.field()), value_width);
+        let column = 13 + value.chars().count() as u16;
+        frame.set_cursor_position((
+            (inner.x + column).min(inner.x + inner.width.saturating_sub(1)),
+            inner.y + 2 + state.selected as u16,
+        ));
+    }
+}
+
+/// The value an editing row shows: the API key is masked like a password.
+fn usage_edit_value(input: &str, field: UsageField) -> String {
+    match field {
+        UsageField::ApiKey => "*".repeat(input.chars().count()),
+        _ => input.to_string(),
+    }
+}
+
+/// The current value shown for a usage row when it is not being edited.
+fn usage_display(settings: &crate::portkey_usage::UsageSettings, field: UsageField) -> String {
+    match field {
+        UsageField::Enabled => if settings.enabled { "on" } else { "off" }.to_string(),
+        UsageField::User => {
+            if settings.user.trim().is_empty() {
+                "(unset — firstname.lastname)".to_string()
+            } else {
+                settings.user.clone()
+            }
+        }
+        UsageField::Metadata => settings.metadata_key.clone(),
+        UsageField::Budget => settings
+            .budget
+            .map(|budget| settings.currency.format(budget))
+            .unwrap_or_else(|| "none".to_string()),
+        UsageField::Currency => settings.currency.name().to_string(),
+        UsageField::ApiKey => {
+            if settings.api_key.trim().is_empty() {
+                "(provider key)".to_string()
+            } else {
+                super::mask(&settings.api_key)
+            }
+        }
+        UsageField::Endpoint => settings.base_url.clone(),
+    }
 }
 
 /// Pi-style model picker: a provider hint, a search input, the model list with
@@ -2060,6 +2200,9 @@ fn render_item_themed(
                 Style::default().fg(theme.info),
             );
         }
+        ChatItem::Listing { title, rows } => {
+            render_listing(title, rows, width, theme, lines);
+        }
         ChatItem::Status(text) => {
             push_wrapped(
                 lines,
@@ -2632,6 +2775,118 @@ fn push_wrapped<'a>(lines: &mut Vec<Line<'a>>, text: &str, width: usize, style: 
     }
 }
 
+/// Wrap one paragraph with a leading indent, so the continuations of a detail
+/// or note stay visually attached to the row they belong to.
+fn push_indented_wrapped<'a>(
+    lines: &mut Vec<Line<'a>>,
+    text: &str,
+    indent: usize,
+    width: usize,
+    style: Style,
+) {
+    let text = crate::tools::sanitize_terminal_output(text);
+    let width = width.max(1);
+    let indent = indent.min(width.saturating_sub(1));
+    for segment in wrap(&text, width.saturating_sub(indent).max(1)) {
+        lines.push(Line::from(vec![
+            Span::raw(" ".repeat(indent)),
+            Span::styled(segment, style),
+        ]));
+    }
+}
+
+/// Color a [`Tone`] against the active theme. There is no dedicated warning
+/// slot, so `tool` (yellow) carries caution states like `Needs Auth`.
+fn tone_style(tone: Tone, theme: &crate::theme::Theme) -> Style {
+    match tone {
+        Tone::Plain => Style::default().fg(theme.info),
+        Tone::Success => Style::default().fg(theme.success),
+        Tone::Warning => Style::default().fg(theme.tool),
+        Tone::Error => Style::default().fg(theme.error),
+        Tone::Dim => Style::default().fg(theme.dim),
+    }
+}
+
+/// Render a [`ChatItem::Listing`]: a titled block whose rows align their name
+/// and status columns, color the status by tone, and hang-wrap long details
+/// and notes under their row.
+fn render_listing(
+    title: &str,
+    rows: &[ListRow],
+    width: usize,
+    theme: &crate::theme::Theme,
+    lines: &mut Vec<Line<'static>>,
+) {
+    let width = width.max(1);
+    push_wrapped(
+        lines,
+        &format!("· {title}"),
+        width,
+        Style::default().fg(theme.info).add_modifier(Modifier::BOLD),
+    );
+    if rows.is_empty() {
+        push_indented_wrapped(lines, "(none)", 2, width, Style::default().fg(theme.dim));
+        return;
+    }
+    let name_width = rows
+        .iter()
+        .map(|row| row.name.chars().count())
+        .max()
+        .unwrap_or(0);
+    let status_width = rows
+        .iter()
+        .filter_map(|row| row.status.as_deref().map(|status| status.chars().count()))
+        .max()
+        .unwrap_or(0);
+    let name_style = Style::default()
+        .fg(theme.assistant)
+        .add_modifier(Modifier::BOLD);
+    let detail_style = Style::default().fg(theme.dim);
+    for row in rows {
+        let pad_name = row.status.is_some() || row.detail.is_some();
+        let mut header_width = 2 + if pad_name {
+            name_width
+        } else {
+            row.name.chars().count()
+        };
+        let mut spans = vec![Span::raw("  ")];
+        spans.push(Span::styled(
+            if pad_name {
+                format!("{:<name_width$}", row.name)
+            } else {
+                row.name.clone()
+            },
+            name_style,
+        ));
+        if let Some(status) = &row.status {
+            spans.push(Span::raw("  "));
+            header_width += 2;
+            let (text, len) = if row.detail.is_some() {
+                (format!("{status:<status_width$}"), status_width)
+            } else {
+                (status.clone(), status.chars().count())
+            };
+            header_width += len;
+            spans.push(Span::styled(text, tone_style(row.tone, theme)));
+        }
+        match &row.detail {
+            Some(detail) if header_width + 2 + detail.chars().count() <= width => {
+                spans.push(Span::raw("  "));
+                spans.push(Span::styled(detail.clone(), detail_style));
+                lines.push(Line::from(spans));
+            }
+            Some(detail) => {
+                lines.push(Line::from(spans));
+                push_indented_wrapped(lines, detail, 4, width, detail_style);
+            }
+            None => lines.push(Line::from(spans)),
+        }
+        for note in &row.notes {
+            push_indented_wrapped(lines, note, 4, width, detail_style);
+        }
+    }
+}
+
 /// Spaces added to wrapped tool-output continuations so a long line stays
 /// visually attached to its own prefix (e.g. a `file:line:` match header)
 /// instead of reading as a new entry.
@@ -3102,6 +3357,66 @@ mod tests {
         assert!(
             continuations >= 1,
             "expected a hanging-indented continuation"
+        );
+    }
+
+    #[test]
+    fn listing_aligns_status_columns_and_wraps_details() {
+        let theme = crate::theme::Theme::dark();
+        let rows = vec![
+            ListRow::new("atlassian")
+                .status("Connected", Tone::Success)
+                .detail("remote: https://mcp.atlassian.com/v1/mcp"),
+            ListRow::new("a-very-long-server-name")
+                .status("Needs Auth", Tone::Warning)
+                .detail("remote: https://mcp.example.com/mcp"),
+            ListRow::new("local")
+                .status("Disabled", Tone::Dim)
+                .note("local: npx some-server --with-a-fairly-long-argument-list"),
+        ];
+
+        let mut wide = Vec::new();
+        render_listing("MCP servers (3)", &rows, 120, &theme, &mut wide);
+        assert_eq!(line_text(&wide[0]), "· MCP servers (3)");
+        assert_eq!(wide[0].spans.last().unwrap().style.fg, Some(theme.info));
+        let connected = wide
+            .iter()
+            .find(|line| line_text(line).contains("Connected"))
+            .expect("connected row");
+        let needs_auth = wide
+            .iter()
+            .find(|line| line_text(line).contains("Needs Auth"))
+            .expect("needs-auth row");
+        assert_eq!(
+            line_text(connected).find("Connected"),
+            line_text(needs_auth).find("Needs Auth")
+        );
+        let tone_of = |needle: &str| {
+            wide.iter()
+                .flat_map(|line| line.spans.iter())
+                .find(|span| span.content.trim() == needle)
+                .map(|span| span.style.fg)
+                .unwrap()
+        };
+        assert_eq!(tone_of("Connected"), Some(theme.success));
+        assert_eq!(tone_of("Needs Auth"), Some(theme.tool));
+        assert_eq!(tone_of("Disabled"), Some(theme.dim));
+
+        let mut narrow = Vec::new();
+        render_listing("MCP servers (3)", &rows, 48, &theme, &mut narrow);
+        for line in &narrow {
+            assert!(
+                line_text(line).chars().count() <= 48,
+                "{:?}",
+                line_text(line)
+            );
+        }
+        assert!(
+            narrow.iter().any(|line| {
+                let text = line_text(line);
+                text.starts_with("    ") && !text.trim().is_empty()
+            }),
+            "expected a hanging-indented note"
         );
     }
 
@@ -4378,6 +4693,64 @@ mod tests {
         // A cramped terminal must not panic in any of the sub-layouts.
         let mut small = Terminal::new(TestBackend::new(40, 12)).unwrap();
         small.draw(|frame| draw(frame, &mut app)).unwrap();
+    }
+
+    #[test]
+    fn dialog_inputs_place_a_cursor_at_the_end_of_the_value() {
+        use crate::config::{Mode, Reasoning};
+        use crate::tui::app::{ConnectState, UsageState};
+        use ratatui::backend::{Backend, TestBackend};
+        use ratatui::Terminal;
+
+        let new_app = || {
+            App::new(
+                "gpt-4o".into(),
+                "/tmp/project".into(),
+                Mode::Build,
+                Reasoning::Auto,
+            )
+        };
+
+        let connect_caret = |input: &str| {
+            let mut app = new_app();
+            app.connect = Some(ConnectState {
+                step: ConnectStep::Key {
+                    provider: "openai".into(),
+                },
+                input: input.into(),
+                selected: 0,
+                error: None,
+                connected: Vec::new(),
+            });
+            let mut terminal = Terminal::new(TestBackend::new(80, 28)).unwrap();
+            terminal.draw(|frame| draw(frame, &mut app)).unwrap();
+            terminal.backend_mut().get_cursor_position().unwrap()
+        };
+        let bare = connect_caret("");
+        let typed = connect_caret("abcd");
+        assert!(typed.y > 0, "the key input has a cursor");
+        assert_eq!(typed.x - bare.x, 4, "cursor follows the masked key");
+        assert_eq!(typed.y, bare.y);
+
+        let usage_caret = |input: &str| {
+            let mut app = new_app();
+            let mut state = UsageState::new(crate::portkey_usage::UsageSettings::default());
+            state.selected = UsageField::ALL
+                .iter()
+                .position(|field| *field == UsageField::ApiKey)
+                .unwrap();
+            state.editing = true;
+            state.input = input.into();
+            app.usage_modal = Some(state);
+            let mut terminal = Terminal::new(TestBackend::new(80, 28)).unwrap();
+            terminal.draw(|frame| draw(frame, &mut app)).unwrap();
+            terminal.backend_mut().get_cursor_position().unwrap()
+        };
+        let bare = usage_caret("");
+        let typed = usage_caret("abcd");
+        assert!(typed.y > 0, "the usage input has a cursor");
+        assert_eq!(typed.x - bare.x, 4, "cursor follows the masked API key");
+        assert_eq!(typed.y, bare.y);
     }
 }
 

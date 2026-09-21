@@ -13,8 +13,9 @@ use crate::plugin::PluginHost;
 use crate::session::SessionLog;
 use crate::snapshots::Snapshots;
 use crate::tui::app::{
-    App, ChatItem, CommandHint, ConnectState, ConnectStep, MarketplacePane, MarketplacesState,
-    ModelChoice, ModelsState, Selection, SessionsState, SubagentState, TrustState,
+    App, ChatItem, CommandHint, ConnectState, ConnectStep, ListRow, MarketplacePane,
+    MarketplacesState, ModelChoice, ModelsState, Selection, SessionsState, SubagentState, Tone,
+    TrustState, UsageField, UsageState,
 };
 use anyhow::{Context, Result};
 use crossterm::event::{
@@ -300,7 +301,7 @@ async fn event_loop(
             }
             statuses = mcps_rx.recv() => {
                 if let Some(statuses) = statuses {
-                    app.items.push(ChatItem::Info(mcp_status_text(&statuses)));
+                    app.items.push(mcp_listing(&statuses));
                     app.auto_scroll = true;
                     app.status = "ready".to_string();
                 }
@@ -446,6 +447,11 @@ fn handle_key(
     if app.connect.is_some() {
         handle_connect_key(key, app, config);
         sync_usage_bar(app, config, usage_tx);
+        return;
+    }
+
+    if app.usage_modal.is_some() {
+        handle_usage_key(key, app, config, usage_tx);
         return;
     }
 
@@ -794,23 +800,31 @@ fn handle_key(
                 }
                 return;
             }
-            if raw == "/plugin" || raw.starts_with("/plugin ") {
+            if raw == "/plugins"
+                || raw.starts_with("/plugins ")
+                || raw == "/plugin"
+                || raw.starts_with("/plugin ")
+            {
                 app.clear_input();
                 refresh_suggestions(app, config);
-                let args = raw.strip_prefix("/plugin").unwrap_or_default().trim();
+                let args = raw
+                    .strip_prefix("/plugins")
+                    .or_else(|| raw.strip_prefix("/plugin"))
+                    .unwrap_or_default()
+                    .trim();
                 let (verb, rest) = match args.split_once(char::is_whitespace) {
                     Some((verb, rest)) => (verb, rest.trim()),
                     None => (args, ""),
                 };
                 match verb {
-                    "" | "list" => match crate::plugin_registry::list() {
-                        Ok(text) => app.items.push(ChatItem::Info(text)),
-                        Err(err) => app.items.push(ChatItem::Error(format!("plugin: {err:#}"))),
+                    "" | "list" => match plugins_listing() {
+                        Ok(item) => app.items.push(item),
+                        Err(err) => app.items.push(ChatItem::Error(format!("plugins: {err:#}"))),
                     },
                     "install" => {
                         if rest.is_empty() {
                             app.items.push(ChatItem::Error(
-                                "usage: /plugin install <name>[@marketplace]".to_string(),
+                                "usage: /plugins install <name>[@marketplace]".to_string(),
                             ));
                             return;
                         }
@@ -833,7 +847,7 @@ fn handle_key(
                     "uninstall" => {
                         if rest.is_empty() {
                             app.items.push(ChatItem::Error(
-                                "usage: /plugin uninstall <name>".to_string(),
+                                "usage: /plugins uninstall <name>".to_string(),
                             ));
                             return;
                         }
@@ -845,7 +859,7 @@ fn handle_key(
                     "enable" | "disable" => {
                         if rest.is_empty() {
                             app.items
-                                .push(ChatItem::Error(format!("usage: /plugin {verb} <name>")));
+                                .push(ChatItem::Error(format!("usage: /plugins {verb} <name>")));
                             return;
                         }
                         match crate::plugin_registry::set_enabled(rest, verb == "enable") {
@@ -868,7 +882,7 @@ fn handle_key(
                             "add" => {
                                 if sub_rest.is_empty() {
                                     app.items.push(ChatItem::Error(
-                                        "usage: /plugin marketplace add <url|path>".to_string(),
+                                        "usage: /plugins marketplace add <url|path>".to_string(),
                                     ));
                                     return;
                                 }
@@ -888,7 +902,7 @@ fn handle_key(
                             "update" => {
                                 if sub_rest.is_empty() {
                                     app.items.push(ChatItem::Error(
-                                        "usage: /plugin marketplace update <name>".to_string(),
+                                        "usage: /plugins marketplace update <name>".to_string(),
                                     ));
                                     return;
                                 }
@@ -908,7 +922,7 @@ fn handle_key(
                             "remove" => {
                                 if sub_rest.is_empty() {
                                     app.items.push(ChatItem::Error(
-                                        "usage: /plugin marketplace remove <name>".to_string(),
+                                        "usage: /plugins marketplace remove <name>".to_string(),
                                     ));
                                     return;
                                 }
@@ -920,19 +934,25 @@ fn handle_key(
                                 }
                             }
                             _ => app.items.push(ChatItem::Error(
-                                "usage: /plugin marketplace <list|add <url|path>|update <name>|remove <name>>"
+                                "usage: /plugins marketplace <list|add <url|path>|update <name>|remove <name>>"
                                     .to_string(),
                             )),
                         }
                     }
                     _ => app.items.push(ChatItem::Error(
-                        "usage: /plugin [list] · install <name>[@mp] · uninstall <name> · enable|disable <name> · marketplace <list|add|update|remove>"
+                        "usage: /plugins [list] · install <name>[@mp] · uninstall <name> · enable|disable <name> · marketplace <list|add|update|remove>"
                             .to_string(),
                     )),
                 }
                 return;
             }
-            if raw == "/usage" || raw.starts_with("/usage ") {
+            if raw == "/usage" {
+                app.clear_input();
+                refresh_suggestions(app, config);
+                app.usage_modal = Some(UsageState::new(app.usage_settings.clone()));
+                return;
+            }
+            if raw.starts_with("/usage ") {
                 app.clear_input();
                 refresh_suggestions(app, config);
                 handle_usage_command(app, config, &raw, usage_tx);
@@ -1568,10 +1588,9 @@ fn help_text(config: &Config) -> String {
         "  /logout [provider]    remove stored credentials (switches providers)".to_string(),
         "  /models [filter]      list models from every logged-in provider".to_string(),
         "  /mcps                 list MCP servers and connection status".to_string(),
-        "  /plugin               manage plugins and marketplaces".to_string(),
+        "  /plugins              manage plugins and marketplaces".to_string(),
         "  /marketplaces         browse, add, and remove plugin marketplaces".to_string(),
-        "  /usage [on|off|...]   Portkey spend bar (user, budget, currency, key)"
-            .to_string(),
+        "  /usage                 configure the Portkey spend bar (dialog)".to_string(),
         "  /undo, /redo          revert or reapply the agent's file changes".to_string(),
         "  /compact [focus]      summarize older context, optionally with a focus".to_string(),
         "  /copy                 copy the last assistant message".to_string(),
@@ -1822,6 +1841,21 @@ fn handle_usage_command(
             return;
         }
     }
+    apply_usage_settings(app, config, settings, refresh, usage_tx);
+    if let Some(note) = note {
+        app.items.push(ChatItem::Info(note));
+    }
+}
+
+/// Applies Portkey usage settings to the running app: stores them, shows or
+/// hides the bar, and starts a fetch when it first appears.
+fn apply_usage_settings(
+    app: &mut App,
+    config: &Config,
+    settings: crate::portkey_usage::UsageSettings,
+    refresh: bool,
+    usage_tx: &UnboundedSender<Result<crate::portkey_usage::Snapshot, String>>,
+) {
     app.usage_settings = settings.clone();
     if !settings.enabled || !settings.available(config) {
         app.usage = None;
@@ -1833,9 +1867,185 @@ fn handle_usage_command(
     if refresh {
         spawn_usage_refresh(config, &settings, usage_tx);
     }
-    if let Some(note) = note {
-        app.items.push(ChatItem::Info(note));
+}
+
+/// Routes keys while the `/usage` settings dialog is open. Text fields are
+/// edited in place; `Esc` commits and closes the dialog.
+fn handle_usage_key(
+    key: KeyEvent,
+    app: &mut App,
+    config: &Config,
+    usage_tx: &UnboundedSender<Result<crate::portkey_usage::Snapshot, String>>,
+) {
+    let Some(mut state) = app.usage_modal.take() else {
+        return;
+    };
+    if state.editing {
+        match key.code {
+            KeyCode::Esc => {
+                state.editing = false;
+                state.input.clear();
+                state.error = None;
+            }
+            KeyCode::Enter => {
+                if commit_usage_field(&mut state) {
+                    state.editing = false;
+                    state.input.clear();
+                    state.error = None;
+                }
+            }
+            KeyCode::Backspace => {
+                state.input.pop();
+                state.error = None;
+            }
+            KeyCode::Char(c)
+                if !key
+                    .modifiers
+                    .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT) =>
+            {
+                state.input.push(c);
+                state.error = None;
+            }
+            _ => {}
+        }
+        app.usage_modal = Some(state);
+        return;
     }
+
+    match key.code {
+        KeyCode::Esc => {
+            let settings = state.settings.clone();
+            if let Err(err) = settings.save() {
+                app.items.push(ChatItem::Error(format!("usage: {err:#}")));
+            } else {
+                app.show_status("portkey usage settings saved");
+            }
+            if settings.enabled && !settings.available(config) {
+                app.items.push(ChatItem::Error(
+                    "the Portkey spend bar needs a Portkey login — run /login portkey".to_string(),
+                ));
+            }
+            apply_usage_settings(app, config, settings, true, usage_tx);
+        }
+        KeyCode::Up => {
+            state.selected = state.selected.saturating_sub(1);
+            state.error = None;
+            app.usage_modal = Some(state);
+        }
+        KeyCode::Down => {
+            state.selected = (state.selected + 1).min(UsageField::ALL.len() - 1);
+            state.error = None;
+            app.usage_modal = Some(state);
+        }
+        KeyCode::Enter | KeyCode::Char(' ') => {
+            match state.field() {
+                UsageField::Enabled => {
+                    state.settings.enabled = !state.settings.enabled;
+                    state.error = if state.settings.enabled && !state.settings.available(config) {
+                        Some("needs a Portkey login — run /login portkey".to_string())
+                    } else {
+                        None
+                    };
+                }
+                UsageField::Currency => {
+                    state.settings.currency = match state.settings.currency {
+                        crate::portkey_usage::Currency::Usd => crate::portkey_usage::Currency::Cny,
+                        crate::portkey_usage::Currency::Cny => crate::portkey_usage::Currency::Usd,
+                    };
+                    state.error = None;
+                }
+                field => {
+                    state.editing = true;
+                    // A stored key is masked, so editing starts from a blank
+                    // field instead of an unreadable prefilled value.
+                    state.input = if field == UsageField::ApiKey {
+                        String::new()
+                    } else {
+                        usage_field_value(&state.settings, field)
+                    };
+                    state.error = None;
+                }
+            }
+            app.usage_modal = Some(state);
+        }
+        _ => {
+            app.usage_modal = Some(state);
+        }
+    }
+}
+
+/// The current text of an editable usage field, used to seed the editor.
+fn usage_field_value(settings: &crate::portkey_usage::UsageSettings, field: UsageField) -> String {
+    match field {
+        UsageField::User => settings.user.clone(),
+        UsageField::Metadata => settings.metadata_key.clone(),
+        UsageField::Budget => settings
+            .budget
+            .map(|budget| format!("{budget:.2}"))
+            .unwrap_or_default(),
+        UsageField::ApiKey => settings.api_key.clone(),
+        UsageField::Endpoint => settings.base_url.clone(),
+        UsageField::Enabled | UsageField::Currency => String::new(),
+    }
+}
+
+/// Applies the dialog's edited text to the selected field. Returns `false` and
+/// records an error when the value does not parse, so the editor stays open.
+fn commit_usage_field(state: &mut UsageState) -> bool {
+    let raw = state.input.trim().to_string();
+    match state.field() {
+        UsageField::User => {
+            if raw.contains(char::is_whitespace) {
+                state.error = Some("enter one word, e.g. firstname.lastname".to_string());
+                return false;
+            }
+            state.settings.user = raw;
+        }
+        UsageField::Metadata => {
+            state.settings.metadata_key = if raw.is_empty() {
+                "_user".to_string()
+            } else {
+                raw
+            };
+        }
+        UsageField::Budget => {
+            match raw.chars().next() {
+                Some('$') => state.settings.currency = crate::portkey_usage::Currency::Usd,
+                Some('¥' | '￥') => state.settings.currency = crate::portkey_usage::Currency::Cny,
+                _ => {}
+            }
+            let amount = raw.trim_start_matches(['$', '¥', '￥']).trim();
+            if amount.is_empty() || matches!(amount, "off" | "none") {
+                state.settings.budget = None;
+            } else {
+                match amount.parse::<f64>() {
+                    Ok(value) if value > 0.0 && value.is_finite() => {
+                        state.settings.budget = Some(value);
+                    }
+                    _ => {
+                        state.error = Some("budget must be a positive number".to_string());
+                        return false;
+                    }
+                }
+            }
+        }
+        UsageField::ApiKey => {
+            state.settings.api_key = if matches!(raw.as_str(), "off" | "none" | "default") {
+                String::new()
+            } else {
+                raw
+            };
+        }
+        UsageField::Endpoint => {
+            state.settings.base_url = if raw.is_empty() {
+                "https://api.portkey.ai/v1".to_string()
+            } else {
+                raw
+            };
+        }
+        UsageField::Enabled | UsageField::Currency => {}
+    }
+    true
 }
 
 /// Masks a credential for display (`pk-test-1234` -> `pk-te...1234`).
@@ -2250,7 +2460,7 @@ fn builtin_commands() -> Vec<CommandHint> {
             description: "check MCP server status".to_string(),
         },
         CommandHint {
-            name: "plugin".to_string(),
+            name: "plugins".to_string(),
             description: "manage plugins and marketplaces".to_string(),
         },
         CommandHint {
@@ -2975,16 +3185,74 @@ fn thinking_text(message: &Message) -> Option<String> {
     }
 }
 
-fn mcp_status_text(statuses: &[(String, String, McpStatus)]) -> String {
+/// Tone for an MCP connection state, so the listing colors healthy servers,
+/// caution states, and failures differently.
+fn mcp_tone(status: &McpStatus) -> Tone {
+    match status {
+        McpStatus::Connected => Tone::Success,
+        McpStatus::NeedsAuth | McpStatus::NeedsTrust => Tone::Warning,
+        McpStatus::Disabled => Tone::Dim,
+        McpStatus::Error(_) => Tone::Error,
+    }
+}
+
+fn mcp_listing(statuses: &[(String, String, McpStatus)]) -> ChatItem {
     if statuses.is_empty() {
-        return "no MCP servers configured".to_string();
+        return ChatItem::Info("no MCP servers configured".to_string());
     }
-    let mut lines = vec![format!("MCP servers ({}):", statuses.len())];
-    for (name, source, status) in statuses {
-        lines.push(format!("  {name} — {status}"));
-        lines.push(format!("      {source}"));
+    let rows = statuses
+        .iter()
+        .map(|(name, source, status)| {
+            ListRow::new(name.clone())
+                .status(status.to_string(), mcp_tone(status))
+                .detail(source.clone())
+        })
+        .collect();
+    ChatItem::Listing {
+        title: format!("MCP servers ({})", statuses.len()),
+        rows,
     }
-    lines.join("\n")
+}
+
+/// Installed plugins as a structured listing for `/plugins`, including the
+/// marketplace, version, description, and on-disk path of each entry.
+fn plugins_listing() -> Result<ChatItem> {
+    let state = crate::plugin_registry::load_state()?;
+    if state.plugins.is_empty() {
+        return Ok(ChatItem::Info(
+            "no plugins installed — use /plugins install <name>@<marketplace>".to_string(),
+        ));
+    }
+    let rows = state
+        .plugins
+        .values()
+        .map(|plugin| {
+            let marketplace = plugin
+                .marketplace
+                .as_deref()
+                .map(|marketplace| format!("@{marketplace}"))
+                .unwrap_or_default();
+            let version = plugin
+                .version
+                .as_deref()
+                .map(|version| format!(" v{version}"))
+                .unwrap_or_default();
+            let (label, tone) = if plugin.enabled {
+                (format!("enabled{version}"), Tone::Success)
+            } else {
+                (format!("disabled{version}"), Tone::Dim)
+            };
+            let mut row = ListRow::new(format!("{}{marketplace}", plugin.name)).status(label, tone);
+            if let Some(description) = &plugin.description {
+                row = row.note(description.clone());
+            }
+            row.note(format!("path: {}", plugin.path.display()))
+        })
+        .collect();
+    Ok(ChatItem::Listing {
+        title: format!("Plugins ({})", state.plugins.len()),
+        rows,
+    })
 }
 
 fn handle_model_result(catalogs: ModelCatalogs, app: &mut App) {
@@ -3998,6 +4266,7 @@ mod tests {
         assert!(help.contains("built-in commands"));
         assert!(help.contains("/connect"));
         assert!(help.contains("/mcps"));
+        assert!(help.contains("/plugins"));
         assert!(help.contains("/review"));
     }
 
@@ -4010,6 +4279,7 @@ mod tests {
         refresh_suggestions(&mut app, &config);
         assert!(app.suggestions.iter().any(|hint| hint.name == "models"));
         assert!(app.suggestions.iter().any(|hint| hint.name == "mcps"));
+        assert!(app.suggestions.iter().any(|hint| hint.name == "plugins"));
 
         app.set_input("/models".to_string());
         refresh_suggestions(&mut app, &config);
@@ -4199,7 +4469,7 @@ mod tests {
 
     #[test]
     fn formats_mcp_statuses() {
-        let text = mcp_status_text(&[
+        let ChatItem::Listing { title, rows } = mcp_listing(&[
             (
                 "context7".to_string(),
                 "remote: https://mcp.context7.com/mcp/oauth".to_string(),
@@ -4210,10 +4480,19 @@ mod tests {
                 "remote: https://mcp.newrelic.com/mcp/".to_string(),
                 McpStatus::NeedsAuth,
             ),
-        ]);
-        assert!(text.contains("context7 — Connected"));
-        assert!(text.contains("newrelic — Needs Auth"));
-        assert_eq!(mcp_status_text(&[]), "no MCP servers configured");
+        ]) else {
+            panic!("expected a listing");
+        };
+        assert_eq!(title, "MCP servers (2)");
+        assert_eq!(rows[0].name, "context7");
+        assert_eq!(rows[0].status.as_deref(), Some("Connected"));
+        assert_eq!(rows[0].tone, Tone::Success);
+        assert_eq!(rows[1].status.as_deref(), Some("Needs Auth"));
+        assert_eq!(rows[1].tone, Tone::Warning);
+        assert!(matches!(
+            mcp_listing(&[]),
+            ChatItem::Info(ref text) if text == "no MCP servers configured"
+        ));
     }
 
     #[test]
@@ -4481,6 +4760,51 @@ mod tests {
 
         std::env::remove_var("OXIDE_USAGE_FILE");
         std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn usage_dialog_edits_fields_in_place() {
+        let mut app = test_app();
+        let config = Config::default();
+        let (tx, _rx) = unbounded_channel();
+        app.usage_modal = Some(UsageState::new(app.usage_settings.clone()));
+
+        // Move to User, open the editor, type, and apply.
+        handle_usage_key(key(KeyCode::Down), &mut app, &config, &tx);
+        assert_eq!(app.usage_modal.as_ref().unwrap().field(), UsageField::User);
+        handle_usage_key(key(KeyCode::Enter), &mut app, &config, &tx);
+        assert!(app.usage_modal.as_ref().unwrap().editing);
+        for ch in "firstname.lastname".chars() {
+            handle_usage_key(key(KeyCode::Char(ch)), &mut app, &config, &tx);
+        }
+        handle_usage_key(key(KeyCode::Enter), &mut app, &config, &tx);
+        let state = app.usage_modal.as_ref().unwrap();
+        assert!(!state.editing);
+        assert_eq!(state.settings.user, "firstname.lastname");
+
+        // Budget accepts a currency prefix and parses it.
+        handle_usage_key(key(KeyCode::Down), &mut app, &config, &tx);
+        handle_usage_key(key(KeyCode::Down), &mut app, &config, &tx);
+        assert_eq!(
+            app.usage_modal.as_ref().unwrap().field(),
+            UsageField::Budget
+        );
+        handle_usage_key(key(KeyCode::Enter), &mut app, &config, &tx);
+        for ch in "¥600".chars() {
+            handle_usage_key(key(KeyCode::Char(ch)), &mut app, &config, &tx);
+        }
+        handle_usage_key(key(KeyCode::Enter), &mut app, &config, &tx);
+        let state = app.usage_modal.as_ref().unwrap();
+        assert_eq!(state.settings.budget, Some(600.0));
+        assert_eq!(state.settings.currency, crate::portkey_usage::Currency::Cny);
+
+        // A bad value keeps the editor open with an error.
+        handle_usage_key(key(KeyCode::Enter), &mut app, &config, &tx);
+        handle_usage_key(key(KeyCode::Char('x')), &mut app, &config, &tx);
+        handle_usage_key(key(KeyCode::Enter), &mut app, &config, &tx);
+        let state = app.usage_modal.as_ref().unwrap();
+        assert!(state.editing);
+        assert!(state.error.is_some());
     }
 
     #[tokio::test]
