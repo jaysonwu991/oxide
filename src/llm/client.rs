@@ -218,12 +218,18 @@ impl LlmClient {
                     // failing the whole turn on the first empty response.
                     if assistant_turn_is_empty(&turn) {
                         // A reasoning model can spend the whole output budget on
-                        // hidden reasoning and stop with `length` before it
-                        // writes anything. That is deterministic, so retrying
-                        // the same budget just burns tokens again; raise it
-                        // instead and only report failure once the ceiling is
-                        // reached.
-                        let truncated = turn.finish_reason.as_deref().is_some_and(is_output_limit);
+                        // hidden reasoning and stop before it writes anything
+                        // (`length` on OpenAI-compatible APIs, `max_tokens` on
+                        // Anthropic). That is deterministic, so retrying the
+                        // same budget just burns tokens again; raise it instead
+                        // and only report failure once the ceiling is reached.
+                        //
+                        // Some gateways end such a turn with a normal stop
+                        // reason, so a turn that reasoned but produced nothing
+                        // is treated as truncated too: it was the reasoning
+                        // that consumed the budget.
+                        let truncated = turn.finish_reason.as_deref().is_some_and(is_output_limit)
+                            || !turn.thinking.is_empty();
                         if truncated
                             && max_tokens < MAX_ESCALATED_TOKENS
                             && attempt < MAX_STREAM_ATTEMPTS
@@ -1098,6 +1104,15 @@ mod tests {
         ])
     }
 
+    /// An empty turn that reasoned but stopped without reporting the output
+    /// limit, as some gateways do when reasoning consumes the budget.
+    fn reasoning_only_turn(finish: &str) -> String {
+        sse(&[
+            serde_json::json!({"choices": [{"index": 0, "delta": {"content": "", "reasoning_content": "thinking"}, "logprobs": null, "finish_reason": null}]}),
+            serde_json::json!({"choices": [{"index": 0, "delta": {"content": "", "reasoning_content": null}, "logprobs": null, "finish_reason": finish}]}),
+        ])
+    }
+
     fn completed_turn(content: &str) -> String {
         sse(&[
             serde_json::json!({"choices": [{"index": 0, "delta": {"content": content, "reasoning_content": null}, "logprobs": null, "finish_reason": null}]}),
@@ -1118,6 +1133,17 @@ mod tests {
             model: "deepseek-flash".into(),
             base_url: format!("http://{addr}"),
             api_key: "sk-test".into(),
+            max_tokens,
+            ..Config::default()
+        }
+    }
+
+    fn portkey_test_config(addr: std::net::SocketAddr, max_tokens: u32) -> Config {
+        Config {
+            provider: "portkey".into(),
+            model: "gpt-5.6-sol".into(),
+            base_url: format!("http://{addr}"),
+            api_key: "pk-test".into(),
             max_tokens,
             ..Config::default()
         }
@@ -1171,6 +1197,55 @@ mod tests {
         assert_eq!(text, "done");
         assert_eq!(retries.len(), 1);
         assert_eq!(retries[0].attempt, 1);
+        let requests = server.await.unwrap();
+        let budgets: Vec<u64> = requests.iter().map(|r| request_budget(r)).collect();
+        assert_eq!(budgets, vec![8192, 16384]);
+    }
+
+    #[tokio::test]
+    async fn a_portkey_gpt5_turn_escalates_like_any_openai_compatible_model() {
+        let (addr, server) = sse_server(vec![length_limited_turn(), completed_turn("done")]).await;
+        let client = LlmClient::new(portkey_test_config(addr, 8192));
+
+        let mut text = String::new();
+        let turn = {
+            let mut hooks = StreamHooks {
+                text: &mut |delta: String| text.push_str(&delta),
+                thinking: &mut |_| {},
+                retry: &mut |_| {},
+            };
+            client
+                .stream_chat(&[Message::user("hi")], &[], &mut hooks)
+                .await
+                .unwrap()
+        };
+
+        assert_eq!(turn.content, "done");
+        let requests = server.await.unwrap();
+        let budgets: Vec<u64> = requests.iter().map(|r| request_budget(r)).collect();
+        assert_eq!(budgets, vec![8192, 16384]);
+    }
+
+    #[tokio::test]
+    async fn a_reasoning_only_empty_turn_escalates_without_a_reported_limit() {
+        let (addr, server) =
+            sse_server(vec![reasoning_only_turn("stop"), completed_turn("done")]).await;
+        let client = LlmClient::new(portkey_test_config(addr, 8192));
+
+        let mut text = String::new();
+        let turn = {
+            let mut hooks = StreamHooks {
+                text: &mut |delta: String| text.push_str(&delta),
+                thinking: &mut |_| {},
+                retry: &mut |_| {},
+            };
+            client
+                .stream_chat(&[Message::user("hi")], &[], &mut hooks)
+                .await
+                .unwrap()
+        };
+
+        assert_eq!(turn.content, "done");
         let requests = server.await.unwrap();
         let budgets: Vec<u64> = requests.iter().map(|r| request_budget(r)).collect();
         assert_eq!(budgets, vec![8192, 16384]);
