@@ -110,7 +110,7 @@ agent step for the rest of the session.
 
 Routing domains come from the optional `domains` array in a server's config,
 falling back to built-in presets for well-known servers (Atlassian/Jira/Confluence,
-Slack, New Relic, Context7, Contentful, Figma, GitHub, GitLab, Notion, Linear, and
+New Relic, Context7, Contentful, Figma, GitHub, GitLab, Notion, Linear, and
 Sentry). Exact hosts match exactly; a `*.` prefix (or leading `.`) matches the
 host and its subdomains. For example:
 
