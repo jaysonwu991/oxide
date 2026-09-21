@@ -471,8 +471,8 @@ oxide plugin marketplace update <name>
 oxide plugin marketplace remove <name>
 oxide plugin install <name>[@marketplace]
 oxide plugin list
-oxide plugin enable|disable <name>
-oxide plugin uninstall <name>
+oxide plugin enable|disable <name>[@marketplace]
+oxide plugin uninstall <name>[@marketplace]
 ```
 
 `add` accepts a git URL, a local directory, or GitHub's `owner/repo` shorthand
@@ -492,10 +492,15 @@ accepted:
 ```
 
 `install <name>@<marketplace>` disambiguates when several marketplaces offer the
-same name; a bare `<name>` searches every configured marketplace. Installed
-plugins are copied under `<config>/oxide/plugins/<marketplace>/<plugin>/`, so
-uninstalling a plugin or removing its marketplace never touches the upstream
-source.
+same name; a bare `<name>` searches every configured marketplace. `uninstall`,
+`enable` and `disable` accept the same `[@marketplace]` suffix (and `remove` is
+an alias for `uninstall`), so names can be copy-pasted from `plugin list`
+output. A `@marketplace` that does not match the installed plugin's marketplace
+is rejected.
+
+Installed plugins are copied under
+`<config>/oxide/plugins/<marketplace>/<plugin>/`, so uninstalling a plugin or
+removing its marketplace never touches the upstream source.
 
 In the TUI, `/plugins` lists installed plugins — marketplace, version,
 description, and path per entry — and accepts
