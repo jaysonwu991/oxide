@@ -166,7 +166,7 @@ so check each project's documentation for the current details.
 | --- | --- | --- | --- | --- |
 | Distribution | Native Rust binary | Open-source CLI (Rust) + IDE extension | Open-source CLI (Node/Bun) | Proprietary CLI + apps |
 | License | MIT | Apache-2.0 | Open source | Proprietary |
-| Model providers | OpenAI-compatible + Anthropic (OpenAI, DeepSeek, Portkey, Z.AI/GLM, custom) | OpenAI models (GPT-5-Codex family) + custom providers | Any provider (bring your own keys) | Claude (Anthropic API, Bedrock, Vertex, third-party) |
+| Model providers | OpenAI-compatible (OpenAI, DeepSeek, Portkey, Z.AI/GLM, custom) + Anthropic Messages API | OpenAI models (GPT-5-Codex family) + custom providers | Any provider (bring your own keys) | Claude (Anthropic API, Bedrock, Vertex, third-party) |
 | Interfaces | Terminal TUI, `-p` print, JSON/RPC modes | Terminal CLI, IDE (VS Code, Cursor) | Terminal, desktop, IDE, web | Terminal, IDE, desktop, web |
 | Project config | `.oxide/` + `AGENTS.md` (also reads `.claude/`) | `AGENTS.md` + `~/.codex/config.toml` | `opencode.json` + `AGENTS.md` | `CLAUDE.md` + `.claude/` |
 | Subagents | `--agent`, `task`, command routing | Subagents | Agents | Subagents, background agents |
@@ -705,9 +705,9 @@ plugins interactively.
 Built-in file and shell tools use Pi-style names: `read`, `write`, `edit`,
 `bash`, `grep`, `find`, `ls`, and `webfetch`. Compatibility names
 `read_file`, `write_file`, `list_dir`, and `glob` remain accepted; `patch` is
-the unified-diff editing tool. Agent-level tools: `task`, `skill`, `memory`,
-and `diagnostics`. `mcp_load` reveals a configured server on demand; its tools
-then appear as `<server>__<tool>`.
+the unified-diff editing tool. Agent-level tools: `task`, `skill`, `command`,
+`memory`, and `diagnostics`. `mcp_load` reveals a configured server on demand;
+its tools then appear as `<server>__<tool>`.
 
 | Tool | Parameters |
 | --- | --- |
@@ -715,7 +715,7 @@ then appear as `<server>__<tool>`.
 | `write` | `path`, `content` |
 | `edit` | `path`, `edits: [{ oldText, newText }]` |
 | `bash` | `command`, `timeout?` in milliseconds (default 120000) |
-| `grep` | `pattern`, `path?`, `glob?`, `ignoreCase?`, `context?`, `limit?` |
+| `grep` | `pattern`, `path?`, `glob?`, `ignoreCase?`, `regex?`, `context?`, `limit?` |
 | `find` | `pattern`, `path?`, `limit?` |
 | `ls` | `path?`, `limit?` |
 | `patch` | `diff` (unified diff) |
@@ -728,7 +728,8 @@ and a leading BOM are preserved. `write` and `edit` append LSP diagnostics for
 the edited file. `read`, `ls`, `find`, and `grep` accept absolute paths, so they
 can inspect files outside the project without a shell; `ls` marks directories
 with a trailing `/` and renders symlink targets as `name -> target`. `find` and
-`grep` respect `.gitignore`, and `grep` matches a literal substring and prefers
+`grep` respect `.gitignore`, and `grep` matches a literal substring by default
+(set `regex: true` to treat `pattern` as a regular expression) and prefers
 `ripgrep` (`rg`) when it is on `PATH`, falling back to a dependency-free
 parallel walker that skips binary files. `webfetch` converts
 HTML to Markdown (`format: "markdown"`, the default), readable plain text
@@ -739,7 +740,9 @@ images, inline and fenced code, blockquotes, and HTML entities.
 Tool results are capped before they enter the model's context. The default cap
 is 250 lines and 6 KB (per-tool overrides: `bash` 160 lines / 5 KB, `grep`,
 `find`, and `ls` 160 / 4 KB, `webfetch` 200 / 6 KB, and `write`, `edit`, and
-`patch` 120 / 3 KB), with individual `read` lines trimmed at 1 000 characters.
+`patch` 120 / 3 KB); `read` splits a line longer than 1 000 characters into
+continuation chunks (`offset`/`limit` count those display lines), so an
+over-long line can be paged through instead of being cut off.
 `bash` keeps the **tail** so the exit code and recent errors survive; other
 tools keep the head. When output is dropped, the full text is written under
 `truncated/` in the oxide config directory and the result includes the path plus
