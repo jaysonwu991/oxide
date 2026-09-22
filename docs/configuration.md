@@ -832,7 +832,11 @@ Start `oxide` even without a key, then run `/login`:
 
 - `/login` lists the providers — enter a number or name, then paste the API key
   (Enter with the field empty reuses the stored key when there is one). Providers
-  with a stored key are marked `connected`.
+  with a stored key are marked `connected`. After the key, an optional settings
+  step pre-fills the model and endpoint (and, for Portkey, the Config ID) so a
+  custom gateway can be configured without editing `config.json` by hand; press
+  Enter through the rows to keep the pre-filled values, or replace one before
+  saving — a row left blank keeps the provider's default.
 - `/login deepseek` or `/login portkey` skips the picker. When that provider is
   already connected the command switches to it; otherwise it asks for the key.
 - `/logout` removes the active provider's stored credential and switches to
@@ -857,20 +861,25 @@ a key. Switching happens by:
 - `--provider <name>` on the command line, for one run.
 
 Each provider keeps the model it was last used with in the `provider_models` map
-in `config.json`, so switching back restores that choice instead of carrying the
-other provider's model id:
+in `config.json`, and a custom endpoint it was last used with in the
+`provider_base_urls` map, so switching back restores that provider's model and
+gateway instead of carrying the other provider's values:
 
 ```json
 {
   "provider": "anthropic",
   "model": "claude-sonnet-5",
-  "provider_models": { "openai": "gpt-4o-mini", "anthropic": "claude-sonnet-5" }
+  "provider_models": { "openai": "gpt-4o-mini", "anthropic": "claude-sonnet-5" },
+  "provider_base_urls": { "portkey": "https://gateway.example.com/v1" }
 }
 ```
 
-A custom (non-preset) provider has no remembered endpoint: the `base_url` in
-`config.json` is global, so switching away from a custom endpoint and back keeps
-the preset's URL. Provide the endpoint again, or run with `OXIDE_BASE_URL`.
+The active provider's endpoint is also written to `base_url` for convenience and
+hand editing; it is removed when it matches the preset default. A custom
+(non-preset) provider keeps the last endpoint it was given, so switching away
+and back restores it instead of the previous provider's URL. A custom provider
+with no remembered endpoint uses the previous provider's URL, or the endpoint
+from `OXIDE_BASE_URL`.
 
 You can also provide a key without the login flow via the `OPENAI_API_KEY` /
 `DEEPSEEK_API_KEY` / `ANTHROPIC_API_KEY` / `PORTKEY_API_KEY` / `ZAI_API_KEY`
@@ -936,8 +945,10 @@ Start Oxide and run:
 Paste your Portkey API key when prompted. For a new setup, no other
 configuration is required: Oxide uses `https://api.portkey.ai/v1` and
 `claude-sonnet-5` by default. If you previously configured a custom gateway,
-remove its `base_url` before using the default endpoint. To use a model from
-the Portkey Model Catalog, set its identifier in `config.json`:
+remove its `base_url` and its `provider_base_urls.portkey` entry before using
+the default endpoint (switching away from a custom gateway remembers it so that
+logging in to another provider does not leak the gateway URL). To use a model
+from the Portkey Model Catalog, set its identifier in `config.json`:
 
 ```json
 {

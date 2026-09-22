@@ -1,8 +1,8 @@
 use crate::config::Reasoning;
 use crate::tools::DiffPreview;
 use crate::tui::app::{
-    App, ChatItem, ConnectStep, ListRow, MarketplacePane, Selection, SubagentState, Tone,
-    UsageField,
+    App, ChatItem, ConnectState, ConnectStep, ListRow, MarketplacePane, Selection, SubagentState,
+    Tone, UsageField,
 };
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
@@ -207,14 +207,18 @@ fn draw_connect(frame: &mut Frame, app: &App) {
                 .unwrap_or("Paste the API key for this provider"),
             "*".repeat(state.input.chars().count()),
         ),
+        ConnectStep::Options { .. } => (
+            "Optional settings — blank keeps the provider default",
+            state.input.clone(),
+        ),
     };
     let title = match &state.step {
         ConnectStep::Provider => " connect ",
-        ConnectStep::Key { provider } => provider.as_str(),
+        ConnectStep::Key { provider } | ConnectStep::Options { provider } => provider.as_str(),
     };
     let connected = match &state.step {
-        ConnectStep::Provider => false,
         ConnectStep::Key { provider } => state.is_connected(provider),
+        _ => false,
     };
 
     // Build the panel up front so the input can be truncated to one line and
@@ -227,52 +231,112 @@ fn draw_connect(frame: &mut Frame, app: &App) {
         prompt,
         Style::default().fg(app.theme.info),
     ))];
-    if matches!(state.step, ConnectStep::Provider) {
-        lines.push(Line::from(""));
-        for (index, option) in crate::auth::KNOWN_PROVIDERS.iter().enumerate() {
-            let selected = state.input.is_empty() && state.selected == index;
-            let marker = if selected { "›" } else { " " };
-            let style = if selected {
-                Style::default()
-                    .fg(app.theme.accent)
-                    .add_modifier(Modifier::BOLD)
-            } else {
-                Style::default().fg(app.theme.assistant)
-            };
-            let mut spans = vec![
-                Span::styled(format!(" {marker} {:<10}", option.label), style),
-                Span::styled(option.description, Style::default().fg(app.theme.info)),
-            ];
-            if state.is_connected(option.name) {
-                spans.push(Span::styled(
-                    " · connected",
-                    Style::default().fg(app.theme.success),
-                ));
+    let mut cursor: Option<(usize, u16)> = None;
+    match &state.step {
+        ConnectStep::Provider => {
+            lines.push(Line::from(""));
+            for (index, option) in crate::auth::KNOWN_PROVIDERS.iter().enumerate() {
+                let selected = state.input.is_empty() && state.selected == index;
+                let marker = if selected { "›" } else { " " };
+                let style = if selected {
+                    Style::default()
+                        .fg(app.theme.accent)
+                        .add_modifier(Modifier::BOLD)
+                } else {
+                    Style::default().fg(app.theme.assistant)
+                };
+                let mut spans = vec![
+                    Span::styled(format!(" {marker} {:<10}", option.label), style),
+                    Span::styled(option.description, Style::default().fg(app.theme.info)),
+                ];
+                if state.is_connected(option.name) {
+                    spans.push(Span::styled(
+                        " · connected",
+                        Style::default().fg(app.theme.success),
+                    ));
+                }
+                lines.push(Line::from(spans));
             }
-            lines.push(Line::from(spans));
+            lines.push(Line::from(""));
+            if let Some(error) = &state.error {
+                lines.push(Line::from(Span::styled(
+                    format!("error: {error}"),
+                    Style::default().fg(app.theme.error),
+                )));
+                lines.push(Line::from(""));
+            }
+            let input_line = lines.len();
+            lines.push(Line::from(vec![
+                Span::styled("> ", Style::default().fg(app.theme.accent)),
+                Span::styled(shown.clone(), Style::default().fg(app.theme.assistant)),
+            ]));
+            cursor = Some((input_line, 2 + shown.chars().count() as u16));
+        }
+        ConnectStep::Key { .. } => {
+            lines.push(Line::from(""));
+            if connected {
+                lines.push(Line::from(Span::styled(
+                    "This provider is connected — Enter reuses the stored key.",
+                    Style::default().fg(app.theme.success),
+                )));
+                lines.push(Line::from(""));
+            }
+            if let Some(error) = &state.error {
+                lines.push(Line::from(Span::styled(
+                    format!("error: {error}"),
+                    Style::default().fg(app.theme.error),
+                )));
+                lines.push(Line::from(""));
+            }
+            let input_line = lines.len();
+            lines.push(Line::from(vec![
+                Span::styled("> ", Style::default().fg(app.theme.accent)),
+                Span::styled(shown.clone(), Style::default().fg(app.theme.assistant)),
+            ]));
+            cursor = Some((input_line, 2 + shown.chars().count() as u16));
+        }
+        ConnectStep::Options { provider } => {
+            lines.push(Line::from(""));
+            let value_width = inner.width.saturating_sub(18) as usize;
+            for field in ConnectState::option_fields(provider) {
+                let focused = field == state.focus;
+                let marker = if focused { "›" } else { " " };
+                let style = if focused {
+                    Style::default()
+                        .fg(app.theme.accent)
+                        .add_modifier(Modifier::BOLD)
+                } else {
+                    Style::default().fg(app.theme.assistant)
+                };
+                let row_value = if focused {
+                    state.input.clone()
+                } else {
+                    state.value_for(field)
+                };
+                let display = if row_value.is_empty() {
+                    "—".to_string()
+                } else {
+                    truncate(&row_value, value_width)
+                };
+                lines.push(Line::from(vec![
+                    Span::styled(format!(" {marker} {:<14}", field.label()), style),
+                    Span::styled(display, Style::default().fg(app.theme.info)),
+                ]));
+                if focused {
+                    let column = 17 + state.input.chars().count().min(value_width) as u16;
+                    cursor = Some((lines.len() - 1, column));
+                }
+            }
+            lines.push(Line::from(""));
+            if let Some(error) = &state.error {
+                lines.push(Line::from(Span::styled(
+                    format!("error: {error}"),
+                    Style::default().fg(app.theme.error),
+                )));
+                lines.push(Line::from(""));
+            }
         }
     }
-    lines.push(Line::from(""));
-    if connected {
-        lines.push(Line::from(Span::styled(
-            "This provider is connected — Enter reuses the stored key.",
-            Style::default().fg(app.theme.success),
-        )));
-        lines.push(Line::from(""));
-    }
-    if let Some(error) = &state.error {
-        lines.push(Line::from(Span::styled(
-            format!("error: {error}"),
-            Style::default().fg(app.theme.error),
-        )));
-        lines.push(Line::from(""));
-    }
-    let input_line = lines.len();
-    lines.push(Line::from(vec![
-        Span::styled("> ", Style::default().fg(app.theme.accent)),
-        Span::styled(shown.clone(), Style::default().fg(app.theme.assistant)),
-    ]));
-    lines.push(Line::from(""));
     lines.push(Line::from(Span::styled(
         match (state.step.clone(), connected) {
             (ConnectStep::Provider, _) => "↑/↓ choose · Enter continue · Esc cancel",
@@ -280,6 +344,9 @@ fn draw_connect(frame: &mut Frame, app: &App) {
                 "Enter use stored key · type to replace it · Backspace back · Esc cancel"
             }
             (ConnectStep::Key { .. }, false) => "Enter connect · Backspace back · Esc cancel",
+            (ConnectStep::Options { .. }, _) => {
+                "↑/↓ field · Enter next/save · Backspace back · Esc cancel"
+            }
         },
         Style::default().fg(app.theme.info),
     )));
@@ -290,12 +357,13 @@ fn draw_connect(frame: &mut Frame, app: &App) {
             .wrap(Wrap { trim: false }),
         area,
     );
-    if inner.width > 0 && inner.height > input_line as u16 {
-        let column = 2 + shown.chars().count() as u16;
-        frame.set_cursor_position((
-            (inner.x + column).min(inner.x + inner.width.saturating_sub(1)),
-            inner.y + input_line as u16,
-        ));
+    if let Some((line, column)) = cursor {
+        if inner.width > 0 && inner.height > line as u16 {
+            frame.set_cursor_position((
+                (inner.x + column).min(inner.x + inner.width.saturating_sub(1)),
+                inner.y + line as u16,
+            ));
+        }
     }
 }
 
@@ -4778,9 +4846,8 @@ mod tests {
                     provider: "openai".into(),
                 },
                 input: input.into(),
-                selected: 0,
-                error: None,
                 connected: Vec::new(),
+                ..ConnectState::new()
             });
             let mut terminal = Terminal::new(TestBackend::new(80, 28)).unwrap();
             terminal.draw(|frame| draw(frame, &mut app)).unwrap();
@@ -4810,6 +4877,26 @@ mod tests {
         let typed = usage_caret("abcd");
         assert!(typed.y > 0, "the usage input has a cursor");
         assert_eq!(typed.x - bare.x, 4, "cursor follows the masked API key");
+        assert_eq!(typed.y, bare.y);
+
+        let options_caret = |input: &str| {
+            let mut app = new_app();
+            app.connect = Some(ConnectState {
+                step: ConnectStep::Options {
+                    provider: "portkey".into(),
+                },
+                input: input.into(),
+                focus: crate::tui::app::ConnectField::Model,
+                ..ConnectState::new()
+            });
+            let mut terminal = Terminal::new(TestBackend::new(80, 28)).unwrap();
+            terminal.draw(|frame| draw(frame, &mut app)).unwrap();
+            terminal.backend_mut().get_cursor_position().unwrap()
+        };
+        let bare = options_caret("");
+        let typed = options_caret("abcd");
+        assert!(typed.y > 0, "the options row has a cursor");
+        assert_eq!(typed.x - bare.x, 4, "cursor follows the option value");
         assert_eq!(typed.y, bare.y);
     }
 }
