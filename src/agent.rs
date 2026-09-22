@@ -1131,8 +1131,11 @@ impl VerificationState {
 }
 
 /// Whether two tool paths refer to the same file, tolerating one side being
-/// absolute and the other relative.
+/// absolute and the other relative. Commands and arguments use whichever
+/// separator the platform (or the user) chose, so compare on `/` regardless.
 fn same_path(a: &str, b: &str) -> bool {
+    let a = a.replace('\\', "/");
+    let b = b.replace('\\', "/");
     let a = a.trim_end_matches('/');
     let b = b.trim_end_matches('/');
     a == b || a.ends_with(&format!("/{b}")) || b.ends_with(&format!("/{a}"))
@@ -2669,6 +2672,14 @@ mod tests {
         );
 
         std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn same_path_ignores_the_separator_style() {
+        assert!(same_path(r"C:\repo\src\main.rs", "src/main.rs"));
+        assert!(same_path(r"C:\repo\src\main.rs", r"src\main.rs"));
+        assert!(same_path("/repo/a.rs", "/repo/a.rs"));
+        assert!(!same_path(r"C:\repo\a.rs", "b.rs"));
     }
 
     #[test]
