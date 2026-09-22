@@ -13,7 +13,7 @@ use crate::plugin::PluginHost;
 use crate::session::SessionLog;
 use crate::snapshots::Snapshots;
 use crate::tui::app::{
-    App, ChatItem, CommandHint, ConnectState, ConnectStep, ListRow, MarketplacePane,
+    App, ChatItem, CommandHint, ConnectField, ConnectState, ConnectStep, ListRow, MarketplacePane,
     MarketplacesState, ModelChoice, ModelsState, Selection, SessionsState, SubagentState, Tone,
     TrustState, UsageField, UsageState,
 };
@@ -4071,28 +4071,38 @@ fn handle_connect_key(key: KeyEvent, app: &mut App, config: &mut Config) {
                     state.error = None;
                 }
                 ConnectStep::Key { provider } => {
-                    if value.is_empty() && state.is_connected(&provider) {
-                        // A stored key makes a login a switch.
-                        match switch_provider(app, config, &provider) {
-                            Ok(name) => {
-                                app.items.push(ChatItem::Info(format!(
-                                    "logged in to {} · model {} (stored key)",
-                                    crate::auth::provider_label(&name),
-                                    config.model
-                                )));
-                                app.status = "ready".to_string();
-                                keep = false;
-                            }
-                            Err(err) => state.error = Some(format!("{err:#}")),
-                        }
-                    } else if value.is_empty() {
+                    if value.is_empty() && !state.is_connected(&provider) {
                         state.error = Some("enter an API key".to_string());
                     } else {
-                        match crate::auth::connect(&provider, &value) {
+                        let canonical = crate::auth::canonical_provider(&provider);
+                        state.key = value;
+                        state.model = config.model_for_provider(&canonical);
+                        state.base_url = config.base_url_for_provider(&canonical);
+                        state.portkey_config = if canonical == "portkey" {
+                            config.portkey_config.clone()
+                        } else {
+                            String::new()
+                        };
+                        state.step = ConnectStep::Options {
+                            provider: provider.clone(),
+                        };
+                        state.focus = ConnectField::Model;
+                        state.input = state.model.clone();
+                        state.error = None;
+                    }
+                }
+                ConnectStep::Options { provider } => {
+                    state.commit_focus();
+                    let fields = ConnectState::option_fields(&provider);
+                    let current = fields
+                        .iter()
+                        .position(|field| *field == state.focus)
+                        .unwrap_or(0);
+                    if current + 1 < fields.len() {
+                        state.focus_field(fields[current + 1]);
+                    } else {
+                        match save_connect(app, config, &state, &provider) {
                             Ok(name) => {
-                                config.apply_provider(&name, &value);
-                                apply_model_state(app, config);
-                                let _ = config.persist_selection_at(&Config::config_path());
                                 app.items.push(ChatItem::Info(format!(
                                     "logged in to {} · model {}",
                                     crate::auth::provider_label(&name),
@@ -4107,21 +4117,72 @@ fn handle_connect_key(key: KeyEvent, app: &mut App, config: &mut Config) {
                 }
             }
         }
-        KeyCode::Backspace => {
-            if state.input.is_empty() && matches!(state.step, ConnectStep::Key { .. }) {
-                state.step = ConnectStep::Provider;
-                state.error = None;
-            } else {
+        KeyCode::Backspace => match state.step.clone() {
+            ConnectStep::Provider => {
                 state.input.pop();
                 state.error = None;
             }
-        }
-        KeyCode::Up if matches!(state.step, ConnectStep::Provider) && state.input.is_empty() => {
-            state.selected = state.selected.saturating_sub(1);
-        }
-        KeyCode::Down if matches!(state.step, ConnectStep::Provider) && state.input.is_empty() => {
-            state.selected = (state.selected + 1).min(crate::auth::KNOWN_PROVIDERS.len() - 1);
-        }
+            ConnectStep::Key { .. } => {
+                if state.input.is_empty() {
+                    state.step = ConnectStep::Provider;
+                    state.error = None;
+                } else {
+                    state.input.pop();
+                    state.error = None;
+                }
+            }
+            ConnectStep::Options { provider } => {
+                if state.input.is_empty() {
+                    let fields = ConnectState::option_fields(&provider);
+                    let current = fields
+                        .iter()
+                        .position(|field| *field == state.focus)
+                        .unwrap_or(0);
+                    if current == 0 {
+                        state.step = ConnectStep::Key { provider };
+                        state.input = state.key.clone();
+                        state.error = None;
+                    } else {
+                        state.focus_field(fields[current - 1]);
+                    }
+                } else {
+                    state.input.pop();
+                    state.error = None;
+                }
+            }
+        },
+        KeyCode::Up => match state.step.clone() {
+            ConnectStep::Provider if state.input.is_empty() => {
+                state.selected = state.selected.saturating_sub(1);
+            }
+            ConnectStep::Options { provider } => {
+                let fields = ConnectState::option_fields(&provider);
+                let current = fields
+                    .iter()
+                    .position(|field| *field == state.focus)
+                    .unwrap_or(0);
+                if current > 0 {
+                    state.focus_field(fields[current - 1]);
+                }
+            }
+            _ => {}
+        },
+        KeyCode::Down => match state.step.clone() {
+            ConnectStep::Provider if state.input.is_empty() => {
+                state.selected = (state.selected + 1).min(crate::auth::KNOWN_PROVIDERS.len() - 1);
+            }
+            ConnectStep::Options { provider } => {
+                let fields = ConnectState::option_fields(&provider);
+                let current = fields
+                    .iter()
+                    .position(|field| *field == state.focus)
+                    .unwrap_or(0);
+                if current + 1 < fields.len() {
+                    state.focus_field(fields[current + 1]);
+                }
+            }
+            _ => {}
+        },
         KeyCode::Char(c)
             if !key
                 .modifiers
@@ -4135,6 +4196,27 @@ fn handle_connect_key(key: KeyEvent, app: &mut App, config: &mut Config) {
     if keep {
         app.connect = Some(state);
     }
+}
+
+/// Saves a login from the dialog: stores a new key (or reuses the stored one),
+/// applies the optional model/endpoint/Config ID, and persists the selection.
+fn save_connect(
+    app: &mut App,
+    config: &mut Config,
+    state: &ConnectState,
+    provider: &str,
+) -> Result<String> {
+    let (name, key) = if state.key.trim().is_empty() {
+        crate::auth::select_stored(provider)?
+    } else {
+        let name = crate::auth::connect(provider, &state.key)?;
+        (name, state.key.clone())
+    };
+    config.apply_provider(&name, &key);
+    config.apply_login_options(&state.model, &state.base_url, &state.portkey_config);
+    config.persist_selection_at(&Config::config_path())?;
+    apply_model_state(app, config);
+    Ok(name)
 }
 
 fn ensure_session<'a>(session: &'a mut Option<SessionLog>, cwd: &Path) -> Result<&'a SessionLog> {
@@ -4642,6 +4724,44 @@ mod tests {
             app.connect.as_ref().unwrap().step,
             ConnectStep::Provider
         ));
+    }
+
+    #[test]
+    fn connect_key_step_opens_optional_settings() {
+        let mut app = test_app();
+        let mut config = Config::default();
+        app.connect = Some(ConnectState::new());
+
+        // Pick Portkey so the Config ID row is offered.
+        handle_connect_key(key(KeyCode::Char('4')), &mut app, &mut config);
+        handle_connect_key(key(KeyCode::Enter), &mut app, &mut config);
+        handle_connect_key(key(KeyCode::Char('k')), &mut app, &mut config);
+        handle_connect_key(key(KeyCode::Enter), &mut app, &mut config);
+
+        let state = app.connect.as_ref().unwrap();
+        assert!(matches!(&state.step, ConnectStep::Options { provider } if provider == "portkey"));
+        assert_eq!(state.focus, ConnectField::Model);
+        assert_eq!(state.key, "k");
+        assert_eq!(state.model, config.model_for_provider("portkey"));
+        assert_eq!(state.base_url, "https://api.portkey.ai/v1");
+        assert!(ConnectState::option_fields("portkey").contains(&ConnectField::PortkeyConfig));
+        assert!(!ConnectState::option_fields("openai").contains(&ConnectField::PortkeyConfig));
+
+        handle_connect_key(key(KeyCode::Down), &mut app, &mut config);
+        assert_eq!(app.connect.as_ref().unwrap().focus, ConnectField::BaseUrl);
+        handle_connect_key(key(KeyCode::Down), &mut app, &mut config);
+        assert_eq!(
+            app.connect.as_ref().unwrap().focus,
+            ConnectField::PortkeyConfig
+        );
+        handle_connect_key(key(KeyCode::Down), &mut app, &mut config);
+        assert_eq!(
+            app.connect.as_ref().unwrap().focus,
+            ConnectField::PortkeyConfig,
+            "the last row is a boundary"
+        );
+        handle_connect_key(key(KeyCode::Up), &mut app, &mut config);
+        assert_eq!(app.connect.as_ref().unwrap().focus, ConnectField::BaseUrl);
     }
 
     #[test]

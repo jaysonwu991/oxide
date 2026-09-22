@@ -192,6 +192,25 @@ impl ListRow {
 pub enum ConnectStep {
     Provider,
     Key { provider: String },
+    Options { provider: String },
+}
+
+/// One editable row of the login dialog's optional settings.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ConnectField {
+    Model,
+    BaseUrl,
+    PortkeyConfig,
+}
+
+impl ConnectField {
+    pub fn label(self) -> &'static str {
+        match self {
+            ConnectField::Model => "Model",
+            ConnectField::BaseUrl => "Base URL",
+            ConnectField::PortkeyConfig => "Portkey Config",
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -203,6 +222,14 @@ pub struct ConnectState {
     /// Providers that already have a stored credential, so the dialog can mark
     /// them and switch to one without asking for the key again.
     pub connected: Vec<String>,
+    /// The API key entered in the key step, kept until the settings are saved.
+    /// Empty means the stored credential is reused.
+    pub key: String,
+    /// Optional settings edited after the key; blank keeps the provider default.
+    pub model: String,
+    pub base_url: String,
+    pub portkey_config: String,
+    pub focus: ConnectField,
 }
 
 impl ConnectState {
@@ -213,6 +240,11 @@ impl ConnectState {
             selected: 0,
             error: None,
             connected: crate::auth::stored_providers(),
+            key: String::new(),
+            model: String::new(),
+            base_url: String::new(),
+            portkey_config: String::new(),
+            focus: ConnectField::Model,
         }
     }
 
@@ -220,6 +252,42 @@ impl ConnectState {
     pub fn is_connected(&self, provider: &str) -> bool {
         let provider = crate::auth::canonical_provider(provider);
         self.connected.iter().any(|name| name == &provider)
+    }
+
+    /// The optional-setting rows for a provider. The Portkey Config ID only
+    /// applies to Portkey, so it is hidden elsewhere.
+    pub fn option_fields(provider: &str) -> Vec<ConnectField> {
+        let mut fields = vec![ConnectField::Model, ConnectField::BaseUrl];
+        if crate::auth::canonical_provider(provider) == "portkey" {
+            fields.push(ConnectField::PortkeyConfig);
+        }
+        fields
+    }
+
+    /// The stored value of a row, used to render the rows that are not focused.
+    pub fn value_for(&self, field: ConnectField) -> String {
+        match field {
+            ConnectField::Model => self.model.clone(),
+            ConnectField::BaseUrl => self.base_url.clone(),
+            ConnectField::PortkeyConfig => self.portkey_config.clone(),
+        }
+    }
+
+    /// Stores the focused row's edit buffer into its value.
+    pub fn commit_focus(&mut self) {
+        match self.focus {
+            ConnectField::Model => self.model = self.input.clone(),
+            ConnectField::BaseUrl => self.base_url = self.input.clone(),
+            ConnectField::PortkeyConfig => self.portkey_config = self.input.clone(),
+        }
+    }
+
+    /// Commits the current row and starts editing another one.
+    pub fn focus_field(&mut self, field: ConnectField) {
+        self.commit_focus();
+        self.focus = field;
+        self.input = self.value_for(field);
+        self.error = None;
     }
 }
 

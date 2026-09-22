@@ -434,14 +434,18 @@ Credential management happens inside the TUI with the Pi-style commands:
 
 `/login` opens a provider picker (`/login <provider>` skips straight to the key;
 for a provider that is already connected it switches to it instead of asking for
-the key again, and pressing Enter on the key step reuses the stored key). Keys are
+the key again, and pressing Enter on the key step reuses the stored key). After
+the key, an optional settings step lets you set the model, base URL, and (for
+Portkey) Config ID, pre-filled with the provider's defaults so Enter keeps them.
+Keys are
 stored in `auth.json` in the oxide config directory
 (mode `0600`) and resolved after environment variables and before the config
 file. Any number of providers can be stored at once, and the active provider is
 written to `config.json` so the next launch uses it. `/models` lists the catalogs
 of every logged-in provider, and picking a model from another one switches to
-it. Each provider remembers the model it was last used with in the
-`provider_models` map of `config.json`.
+it. Each provider remembers the model and custom endpoint it was last used with
+in the `provider_models` and `provider_base_urls` maps of `config.json`, so a
+gateway configured for one provider does not leak into the others.
 
 MCP server management:
 

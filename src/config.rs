@@ -340,7 +340,9 @@ fn apply_stored_provider_fallback(
             config.model = config.model_for_provider(name);
         }
         if !explicit(raw, "base_url") {
-            config.base_url = preset.base_url.to_string();
+            config.base_url = config
+                .remembered_base_url(name)
+                .unwrap_or_else(|| preset.base_url.to_string());
         }
     }
 }
@@ -364,6 +366,11 @@ pub struct Config {
     /// provider's model id behind.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub provider_models: BTreeMap<String, String>,
+    /// A custom endpoint last used with each provider, so switching between
+    /// providers keeps each one's gateway instead of leaking the active
+    /// `base_url` into the others.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub provider_base_urls: BTreeMap<String, String>,
     #[serde(default)]
     pub model_catalog: Vec<String>,
     #[serde(default = "default_system_prompt")]
@@ -466,6 +473,7 @@ impl Default for Config {
             api_key: String::new(),
             portkey_config: String::new(),
             provider_models: BTreeMap::new(),
+            provider_base_urls: BTreeMap::new(),
             model_catalog: Vec::new(),
             system_prompt: default_system_prompt(),
             max_tokens: default_max_tokens(),
@@ -585,7 +593,9 @@ impl Config {
             if let Some(url) = env_nonempty(preset.base_url_env) {
                 config.base_url = url;
             } else if provider_overridden || !explicit(&raw, "base_url") {
-                config.base_url = preset.base_url.to_string();
+                config.base_url = config
+                    .remembered_base_url(&config.provider)
+                    .unwrap_or_else(|| preset.base_url.to_string());
             }
         } else if let Some(url) = env_nonempty("OPENAI_BASE_URL") {
             config.base_url = url;
@@ -739,16 +749,80 @@ impl Config {
         let target = canonical_provider(provider);
         let provider_changed = current != target;
         if provider_changed && !current.is_empty() && !self.model.trim().is_empty() {
-            self.provider_models.insert(current, self.model.clone());
+            self.provider_models
+                .insert(current.clone(), self.model.clone());
+        }
+        if provider_changed && !current.is_empty() {
+            self.remember_base_url(&current);
         }
         self.provider = provider.to_string();
         self.api_key = key.to_string();
         if provider_changed {
-            let Some(preset) = ProviderPreset::for_name(provider) else {
-                return;
-            };
             self.model = self.model_for_provider(provider);
-            self.base_url = preset.base_url.to_string();
+            match ProviderPreset::for_name(provider) {
+                Some(preset) => {
+                    self.base_url = self
+                        .provider_base_urls
+                        .get(&target)
+                        .cloned()
+                        .unwrap_or_else(|| preset.base_url.to_string());
+                }
+                // A custom provider keeps whatever endpoint it was last given;
+                // the previous provider's URL is used when none is remembered.
+                None => {
+                    if let Some(url) = self.provider_base_urls.get(&target).cloned() {
+                        self.base_url = url;
+                    }
+                }
+            }
+        }
+    }
+
+    /// Records the outgoing provider's endpoint when it was customized, or
+    /// clears it when it matches the preset default, so each provider only
+    /// carries a `base_url` it actually needs.
+    fn remember_base_url(&mut self, provider: &str) {
+        let name = canonical_provider(provider);
+        let default = ProviderPreset::for_name(&name).map(|preset| preset.base_url.to_string());
+        if self.base_url.trim().is_empty() || default.as_deref() == Some(self.base_url.as_str()) {
+            self.provider_base_urls.remove(&name);
+        } else {
+            self.provider_base_urls.insert(name, self.base_url.clone());
+        }
+    }
+
+    /// The custom endpoint remembered for a provider, if one was saved.
+    fn remembered_base_url(&self, provider: &str) -> Option<String> {
+        self.provider_base_urls
+            .get(&canonical_provider(provider))
+            .cloned()
+    }
+
+    /// The endpoint to use with a provider: the custom one remembered for it,
+    /// otherwise the provider preset's, otherwise the current URL.
+    pub fn base_url_for_provider(&self, provider: &str) -> String {
+        let name = canonical_provider(provider);
+        self.remembered_base_url(&name)
+            .or_else(|| ProviderPreset::for_name(&name).map(|preset| preset.base_url.to_string()))
+            .unwrap_or_else(|| self.base_url.clone())
+    }
+
+    /// Applies the optional settings chosen in the login dialog. Blank values
+    /// keep the provider's current/default model, endpoint, or Config ID, and
+    /// a Portkey Config ID is ignored for other providers.
+    pub fn apply_login_options(&mut self, model: &str, base_url: &str, portkey_config: &str) {
+        let name = canonical_provider(&self.provider);
+        if !model.trim().is_empty() {
+            self.model = model.trim().to_string();
+            self.provider_models
+                .insert(name.clone(), self.model.clone());
+        }
+        if !base_url.trim().is_empty() {
+            self.base_url = base_url.trim().trim_end_matches('/').to_string();
+            self.remember_base_url(&name);
+        }
+        if name == "portkey" && !portkey_config.trim().is_empty() {
+            self.portkey_config = portkey_config.trim().to_string();
         }
     }
 
@@ -781,22 +855,44 @@ impl Config {
         let provider = canonical_provider(&self.provider);
         let model = self.model.clone();
         let memory = self.provider_models.clone();
+        let endpoints = self.provider_base_urls.clone();
+        let base_url = self.base_url.clone();
+        let default_url =
+            ProviderPreset::for_name(&provider).map(|preset| preset.base_url.to_string());
         Self::update_at(path, move |object| {
-            object.insert("provider".to_string(), serde_json::Value::String(provider));
+            object.insert(
+                "provider".to_string(),
+                serde_json::Value::String(provider.clone()),
+            );
             object.insert("model".to_string(), serde_json::Value::String(model));
-            if memory.is_empty() {
-                return;
+            // `base_url` describes the active provider only; clear it when it
+            // is the preset default so a switch cannot leave a custom gateway
+            // behind for the next provider.
+            if base_url.trim().is_empty() || default_url.as_deref() == Some(base_url.as_str()) {
+                object.remove("base_url");
+            } else {
+                object.insert("base_url".to_string(), serde_json::Value::String(base_url));
             }
-            let memory_entry = object
-                .entry("provider_models")
-                .or_insert_with(|| serde_json::json!({}));
-            if !memory_entry.is_object() {
-                *memory_entry = serde_json::json!({});
-            }
-            if let Some(object) = memory_entry.as_object_mut() {
-                for (name, model) in memory {
-                    object.insert(name, serde_json::Value::String(model));
+            if !memory.is_empty() {
+                let memory_entry = object
+                    .entry("provider_models")
+                    .or_insert_with(|| serde_json::json!({}));
+                if !memory_entry.is_object() {
+                    *memory_entry = serde_json::json!({});
                 }
+                if let Some(object) = memory_entry.as_object_mut() {
+                    for (name, model) in memory {
+                        object.insert(name, serde_json::Value::String(model));
+                    }
+                }
+            }
+            if endpoints.is_empty() {
+                object.remove("provider_base_urls");
+            } else {
+                object.insert(
+                    "provider_base_urls".to_string(),
+                    serde_json::to_value(&endpoints).unwrap_or_else(|_| serde_json::json!({})),
+                );
             }
         })
     }
@@ -1480,6 +1576,129 @@ mod tests {
     }
 
     #[test]
+    fn apply_provider_remembers_a_custom_endpoint_per_provider() {
+        let mut config = Config {
+            provider: "portkey".into(),
+            model: "gpt-5.6-sol".into(),
+            base_url: "https://gateway.example.com/v1".into(),
+            portkey_config: "pc-example".into(),
+            ..Config::default()
+        };
+
+        config.apply_provider("deepseek", "sk-deepseek");
+        assert_eq!(config.base_url, "https://api.deepseek.com/v1");
+        assert_eq!(
+            config.provider_base_urls["portkey"],
+            "https://gateway.example.com/v1"
+        );
+
+        config.apply_provider("portkey", "pk-test");
+        assert_eq!(config.base_url, "https://gateway.example.com/v1");
+        assert_eq!(config.portkey_config, "pc-example");
+        assert!(!config.provider_base_urls.contains_key("deepseek"));
+    }
+
+    #[test]
+    fn apply_provider_restores_a_custom_provider_endpoint() {
+        let mut config = Config {
+            provider: "my-endpoint".into(),
+            model: "custom-model".into(),
+            base_url: "https://custom.example/v1".into(),
+            ..Config::default()
+        };
+
+        config.apply_provider("deepseek", "sk-deepseek");
+        assert_eq!(config.base_url, "https://api.deepseek.com/v1");
+        assert_eq!(
+            config.provider_base_urls["my-endpoint"],
+            "https://custom.example/v1"
+        );
+
+        config.apply_provider("my-endpoint", "sk-custom");
+        assert_eq!(config.base_url, "https://custom.example/v1");
+    }
+
+    #[test]
+    fn login_options_apply_model_endpoint_and_portkey_config() {
+        let mut config = Config::default();
+        config.apply_provider("portkey", "pk-test");
+        config.apply_login_options(
+            "gpt-5.6-sol",
+            "https://gateway.example.com/v1/",
+            "pc-example",
+        );
+
+        assert_eq!(config.model, "gpt-5.6-sol");
+        assert_eq!(config.model_for_provider("portkey"), "gpt-5.6-sol");
+        assert_eq!(config.base_url, "https://gateway.example.com/v1");
+        assert_eq!(
+            config.base_url_for_provider("portkey"),
+            "https://gateway.example.com/v1"
+        );
+        assert_eq!(config.portkey_config, "pc-example");
+
+        // Blank values keep the current settings.
+        config.apply_login_options("", "", "");
+        assert_eq!(config.model, "gpt-5.6-sol");
+        assert_eq!(config.base_url, "https://gateway.example.com/v1");
+        assert_eq!(config.portkey_config, "pc-example");
+
+        // The Config ID is ignored for other providers, and a preset endpoint
+        // is not stored as a custom one.
+        config.apply_provider("openai", "sk-openai");
+        config.apply_login_options("gpt-4o", "https://api.openai.com/v1", "pc-ignored");
+        assert_eq!(config.model, "gpt-4o");
+        assert_eq!(config.portkey_config, "pc-example");
+        assert!(!config.provider_base_urls.contains_key("openai"));
+        assert_eq!(
+            config.provider_base_urls["portkey"],
+            "https://gateway.example.com/v1"
+        );
+    }
+
+    #[test]
+    fn persist_selection_rewrites_the_active_endpoint() {
+        let dir = temp_dir("persist-endpoint");
+        let path = dir.join("config.json");
+        std::fs::write(
+            &path,
+            r#"{"provider":"portkey","base_url":"https://old.example/v1"}"#,
+        )
+        .unwrap();
+
+        let mut config = Config {
+            provider: "deepseek".into(),
+            model: "deepseek-chat".into(),
+            base_url: "https://api.deepseek.com/v1".into(),
+            provider_base_urls: [(
+                "portkey".to_string(),
+                "https://gateway.example.com/v1".to_string(),
+            )]
+            .into_iter()
+            .collect(),
+            ..Config::default()
+        };
+        config.persist_selection_at(&path).unwrap();
+
+        let stored: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        assert_eq!(stored["provider"], "deepseek");
+        assert!(stored.get("base_url").is_none());
+        assert_eq!(
+            stored["provider_base_urls"]["portkey"],
+            "https://gateway.example.com/v1"
+        );
+
+        config.apply_provider("portkey", "pk-test");
+        config.persist_selection_at(&path).unwrap();
+        let stored: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        assert_eq!(stored["base_url"], "https://gateway.example.com/v1");
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
     fn apply_provider_updates_runtime_fields() {
         let mut config = Config::default();
         config.apply_provider("deepseek", "sk-test");
@@ -1591,6 +1810,26 @@ mod tests {
 
         assert_eq!(config.provider, "deepseek");
         assert_eq!(config.model, "deepseek-v4-pro");
+    }
+
+    #[test]
+    fn fallback_adopts_a_remembered_endpoint() {
+        let mut config = Config {
+            provider_base_urls: [(
+                "deepseek".to_string(),
+                "https://gateway.example/v1".to_string(),
+            )]
+            .into_iter()
+            .collect(),
+            ..Config::default()
+        };
+        let mut store = AuthStore::default();
+        store.set("deepseek", "sk-deepseek");
+
+        apply_stored_provider_fallback(&mut config, &store, &None);
+
+        assert_eq!(config.provider, "deepseek");
+        assert_eq!(config.base_url, "https://gateway.example/v1");
     }
 
     #[test]
