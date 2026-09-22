@@ -25,6 +25,8 @@ jobs:
           - platform: windows-latest
             args: "--features gui"
     runs-on: ${{ matrix.platform }}
+    permissions:
+      contents: write
     steps:
       - uses: actions/checkout@v4
 
@@ -60,20 +62,46 @@ jobs:
           ./scripts/set-version.sh "${GITHUB_REF_NAME}"
           cargo update --workspace
 
-      - name: Build and draft a release
-        uses: tauri-apps/tauri-action@v0
+      # Only export signing variables that actually have a value: an unset
+      # GitHub secret becomes an empty string, which Tauri treats as "set" and
+      # then fails to import an empty certificate/key.
+      - name: Export code signing secrets
+        shell: bash
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          # macOS signing + notarization (all optional; unsigned if unset).
           APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
           APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
           APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
           APPLE_ID: ${{ secrets.APPLE_ID }}
           APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
-          # Windows Authenticode signing (optional).
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        run: |
+          set -euo pipefail
+          for name in \
+            APPLE_CERTIFICATE \
+            APPLE_CERTIFICATE_PASSWORD \
+            APPLE_SIGNING_IDENTITY \
+            APPLE_ID \
+            APPLE_PASSWORD \
+            APPLE_TEAM_ID \
+            TAURI_SIGNING_PRIVATE_KEY \
+            TAURI_SIGNING_PRIVATE_KEY_PASSWORD; do
+            value="${!name:-}"
+            if [ -n "${value}" ]; then
+              delimiter="OXIDE_ENV_${RANDOM}${RANDOM}${RANDOM}"
+              {
+                printf '%s<<%s\n' "${name}" "${delimiter}"
+                printf '%s\n' "${value}"
+                printf '%s\n' "${delimiter}"
+              } >> "${GITHUB_ENV}"
+            fi
+          done
+
+      - name: Build and draft a release
+        uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
           projectPath: crates/desktop
           args: ${{ matrix.args }}
