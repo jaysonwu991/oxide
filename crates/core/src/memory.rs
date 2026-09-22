@@ -111,6 +111,10 @@ impl MemoryStore {
         self.entries.lock().map(|e| e.len()).unwrap_or(0)
     }
 
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+
     pub fn add(&self, content: &str, scope: Scope, tags: Vec<String>) -> Result<MemoryEntry> {
         let now = now_secs();
         let entry = MemoryEntry {

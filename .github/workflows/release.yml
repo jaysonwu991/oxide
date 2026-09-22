@@ -65,6 +65,12 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           key: ${{ matrix.target }}
+      - name: Set version from tag
+        shell: bash
+        run: |
+          set -euo pipefail
+          ./scripts/set-version.sh "${GITHUB_REF_NAME}"
+          cargo update --workspace
       - name: Install cross (Linux ARM)
         if: matrix.use_cross
         run: cargo install cross --git https://github.com/cross-rs/cross

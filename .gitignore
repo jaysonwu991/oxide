@@ -20,5 +20,8 @@
 # Stray build output
 *.rlib
 
+# Tauri generated schemas
+/crates/desktop/gen/
+
 # Session dumps captured into the repo root
 /*.jsonl

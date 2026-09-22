@@ -15,6 +15,7 @@ use std::collections::BTreeSet;
 use std::future::Future;
 use std::path::{Path, PathBuf};
 use std::pin::Pin;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use tokio::sync::mpsc::UnboundedSender;
 
@@ -60,6 +61,33 @@ impl Steering {
     pub fn len(&self) -> usize {
         self.queue.lock().map(|queue| queue.len()).unwrap_or(0)
     }
+
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+}
+
+/// A cooperative cancellation flag shared with a running turn. Setting it makes
+/// the loop stop at the next step boundary (finishing the in-flight model call
+/// and tool batch), so the session is left in a valid state rather than torn
+/// mid-entry.
+#[derive(Clone, Default)]
+pub struct Cancel {
+    flag: Arc<AtomicBool>,
+}
+
+impl Cancel {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn cancel(&self) {
+        self.flag.store(true, Ordering::SeqCst);
+    }
+
+    pub fn is_cancelled(&self) -> bool {
+        self.flag.load(Ordering::SeqCst)
+    }
 }
 
 #[derive(Clone)]
@@ -72,6 +100,7 @@ pub struct Runtime {
     pub approve: Approver,
     pub steering: Steering,
     pub follow_ups: Steering,
+    pub cancel: Cancel,
 }
 
 #[derive(Debug, Clone)]
@@ -352,6 +381,10 @@ async fn run_loop(
     let mut seen_verifications: BTreeSet<String> = BTreeSet::new();
 
     loop {
+        if runtime.cancel.is_cancelled() {
+            let _ = tx.send(AgentEvent::Finished(messages));
+            return;
+        }
         for steered in runtime.steering.drain() {
             auto_load_mcp_for_user_text(&runtime, std::iter::once(&steered)).await;
             record(&runtime.session, depth, &steered);
@@ -539,6 +572,27 @@ async fn run_loop(
                 messages.push(message);
             }
             continue;
+        }
+
+        // Cancelled after the model planned tools: record a result for each
+        // pending call so the session stays a valid call/result sequence, then
+        // stop without running them.
+        if runtime.cancel.is_cancelled() {
+            for call in &tool_calls {
+                let _ = tx.send(AgentEvent::ToolResult {
+                    name: call.function.name.clone(),
+                    args: call.function.arguments.clone(),
+                    output: "error: cancelled by the user".to_string(),
+                    diff: None,
+                    millis: 0,
+                });
+                let message =
+                    Message::tool(call.id.clone(), "error: cancelled by the user".to_string());
+                record(&runtime.session, depth, &message);
+                messages.push(message);
+            }
+            let _ = tx.send(AgentEvent::Finished(messages));
+            return;
         }
 
         let mut terminated: Vec<bool> = Vec::with_capacity(tool_calls.len());
@@ -2013,6 +2067,7 @@ mod tests {
             approve: Arc::new(|_, _| Box::pin(async { false })),
             steering: Steering::new(),
             follow_ups: Steering::new(),
+            cancel: Cancel::new(),
         }
     }
 
@@ -2407,6 +2462,16 @@ mod tests {
         assert!(!batch_terminates(&[]));
         assert!(!batch_terminates(&[true, false]));
         assert!(batch_terminates(&[true, true]));
+    }
+
+    #[test]
+    fn cancel_flag_is_shared_and_sticky() {
+        let cancel = Cancel::new();
+        assert!(!cancel.is_cancelled());
+        let shared = cancel.clone();
+        shared.cancel();
+        assert!(cancel.is_cancelled());
+        assert!(shared.is_cancelled());
     }
 
     #[tokio::test]

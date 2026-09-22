@@ -67,6 +67,30 @@ pub fn model_label(model: &str) -> &str {
     }
 }
 
+/// Every logged-in provider as its own `Config`, starting with the active one.
+/// Used by `/models` (CLI) and the desktop model picker to query each
+/// provider's catalog.
+pub fn provider_configs(config: &Config) -> Vec<(String, Config)> {
+    let active = canonical_provider(&config.provider);
+    let mut providers: Vec<(String, Config)> = Vec::new();
+    if !config.api_key.trim().is_empty() {
+        providers.push((active.clone(), config.clone()));
+    }
+    let store = crate::auth::AuthStore::load().unwrap_or_default();
+    for name in store.providers() {
+        if providers.iter().any(|(known, _)| known == &name) {
+            continue;
+        }
+        let is_preset = ProviderPreset::for_name(&name).is_some();
+        if !is_preset && !config.provider_base_urls.contains_key(&name) {
+            continue;
+        }
+        let key = store.key(&name).unwrap_or_default().to_string();
+        providers.push((name.clone(), config.for_provider(&name, &key)));
+    }
+    providers
+}
+
 /// The API dialect a provider speaks. OpenAI-compatible providers (OpenAI,
 /// DeepSeek, Portkey, and most others) share one client; Anthropic uses its own
 /// Messages API.
@@ -128,56 +152,6 @@ impl ProviderPreset {
             _ => return None,
         };
         Some(preset)
-    }
-}
-
-/// The agent's permission mode, modelled on Claude Code. `Build` is the normal
-/// mode and follows the active agent's permission rules; `Plan` is read-only and
-/// forbids workspace mutations; `AutoEdit` auto-approves file edits.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
-#[serde(rename_all = "kebab-case")]
-pub enum Mode {
-    #[default]
-    Build,
-    Plan,
-    #[serde(
-        alias = "auto_edit",
-        alias = "autoedit",
-        alias = "accept-edits",
-        alias = "acceptEdits"
-    )]
-    AutoEdit,
-}
-
-impl Mode {
-    /// Parses a user-supplied mode name, accepting common aliases.
-    pub fn parse(value: &str) -> Option<Self> {
-        match value.trim().to_ascii_lowercase().replace('_', "-").as_str() {
-            "build" | "default" | "normal" => Some(Mode::Build),
-            "plan" => Some(Mode::Plan),
-            "auto-edit" | "autoedit" | "accept-edits" | "acceptedits" | "edit" => {
-                Some(Mode::AutoEdit)
-            }
-            _ => None,
-        }
-    }
-
-    /// The next mode in the cycle used by the TUI (build → auto-edit → plan).
-    pub fn next(self) -> Self {
-        match self {
-            Mode::Build => Mode::AutoEdit,
-            Mode::AutoEdit => Mode::Plan,
-            Mode::Plan => Mode::Build,
-        }
-    }
-
-    /// A short lowercase label used in the UI and CLI.
-    pub fn label(self) -> &'static str {
-        match self {
-            Mode::Build => "build",
-            Mode::Plan => "plan",
-            Mode::AutoEdit => "auto-edit",
-        }
     }
 }
 
@@ -380,8 +354,6 @@ pub struct Config {
     #[serde(default = "default_true")]
     pub auto_approve: bool,
     #[serde(default)]
-    pub mode: Mode,
-    #[serde(default)]
     pub reasoning: Reasoning,
     #[serde(skip)]
     pub ecosystem: Ecosystem,
@@ -407,8 +379,6 @@ pub struct Config {
     pub default_project_trust: crate::trust::DefaultTrust,
     #[serde(skip)]
     pub trusted: bool,
-    #[serde(skip)]
-    pub theme: crate::theme::Theme,
 }
 
 fn default_provider() -> String {
@@ -429,7 +399,7 @@ fn default_true() -> bool {
 
 /// Reads `hideThinkingBlock` from the global `settings.json`, Pi's key for
 /// whether reasoning blocks start collapsed.
-pub(crate) fn load_hide_thinking_block() -> bool {
+pub fn load_hide_thinking_block() -> bool {
     let path = dirs::config_dir()
         .unwrap_or_else(|| PathBuf::from("."))
         .join("oxide")
@@ -478,7 +448,6 @@ impl Default for Config {
             system_prompt: default_system_prompt(),
             max_tokens: default_max_tokens(),
             auto_approve: true,
-            mode: Mode::default(),
             reasoning: Reasoning::default(),
             ecosystem: Ecosystem::default(),
             active_agent: None,
@@ -491,7 +460,6 @@ impl Default for Config {
             load_context_files: true,
             default_project_trust: crate::trust::DefaultTrust::default(),
             trusted: true,
-            theme: crate::theme::Theme::default(),
         }
     }
 }
@@ -549,7 +517,6 @@ impl Config {
         model: Option<String>,
         provider: Option<String>,
         agent: Option<String>,
-        mode: Option<String>,
         reasoning: Option<String>,
     ) -> Result<Self> {
         let path = Self::config_path();
@@ -654,12 +621,6 @@ impl Config {
         }
 
         config.base_url = config.base_url.trim_end_matches('/').to_string();
-
-        if let Some(value) = mode.or_else(|| env_nonempty("OXIDE_MODE")) {
-            config.mode = Mode::parse(&value).with_context(|| {
-                format!("unknown mode `{value}` (expected build, plan, or auto-edit)")
-            })?;
-        }
 
         if let Some(value) = reasoning.or_else(|| env_nonempty("OXIDE_REASONING")) {
             config.reasoning = Reasoning::parse(&value).with_context(|| {
@@ -924,6 +885,12 @@ impl Config {
         Self::set_active_field_at(path, "default_model", model)
     }
 
+    /// Persists the selected theme name in `config.json`, so the CLI and the
+    /// desktop both start with it (the CLI reads the same `theme` key).
+    pub fn set_theme_at(path: &Path, name: &str) -> Result<()> {
+        Self::set_active_field_at(path, "theme", name)
+    }
+
     fn set_active_field_at(path: &Path, key: &str, value: &str) -> Result<()> {
         let key = key.to_string();
         let value = value.to_string();
@@ -1049,16 +1016,6 @@ impl Config {
                 .map(|text| text.trim().to_string())
                 .filter(|text| !text.is_empty()),
         );
-
-        if self.mode == Mode::Plan {
-            sections.push(
-                "# Plan mode\nYou are in plan mode: do not modify files or run commands that \
-                 change the workspace. Investigate the codebase with read-only tools and produce \
-                 a clear, ordered implementation plan. Explain trade-offs and list the files you \
-                 would change. Wait for the user to switch to build mode before making any edits."
-                    .to_string(),
-            );
-        }
 
         if let Some(agent) = &self.active_agent {
             sections.push(format!(
@@ -1405,20 +1362,6 @@ mod tests {
     }
 
     #[test]
-    fn mode_parses_aliases_and_cycles() {
-        assert_eq!(Mode::parse("build"), Some(Mode::Build));
-        assert_eq!(Mode::parse("PLAN"), Some(Mode::Plan));
-        assert_eq!(Mode::parse("auto_edit"), Some(Mode::AutoEdit));
-        assert_eq!(Mode::parse("accept-edits"), Some(Mode::AutoEdit));
-        assert_eq!(Mode::parse("nonsense"), None);
-
-        assert_eq!(Mode::default(), Mode::Build);
-        assert_eq!(Mode::Build.next(), Mode::AutoEdit);
-        assert_eq!(Mode::AutoEdit.next(), Mode::Plan);
-        assert_eq!(Mode::Plan.next(), Mode::Build);
-    }
-
-    #[test]
     fn reasoning_parses_aliases_and_cycles() {
         assert_eq!(Reasoning::parse("auto"), Some(Reasoning::Auto));
         assert_eq!(Reasoning::parse("OFF"), Some(Reasoning::Off));
@@ -1455,18 +1398,6 @@ mod tests {
         assert_eq!(Reasoning::Low.budget_tokens(4096), Some(2048));
         assert_eq!(Reasoning::Off.budget_tokens(8192), None);
         assert_eq!(Reasoning::High.budget_tokens(1024), None);
-    }
-
-    #[test]
-    fn plan_mode_adds_prompt_instructions() {
-        let build = Config::default();
-        assert!(!build.compose_system_prompt().contains("# Plan mode"));
-
-        let plan = Config {
-            mode: Mode::Plan,
-            ..Config::default()
-        };
-        assert!(plan.compose_system_prompt().contains("# Plan mode"));
     }
 
     #[test]

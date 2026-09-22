@@ -1,0 +1,1226 @@
+// Oxide desktop front-end. Talks to the Rust core over Tauri commands; the
+// project/session/config data is the same store the CLI uses.
+
+const { invoke } = window.__TAURI__.core;
+const { listen } = window.__TAURI__.event;
+
+const el = (id) => document.getElementById(id);
+
+const REASONING = ["auto", "off", "low", "medium", "high"];
+
+const SUGGESTIONS = [
+  "Explain this codebase and its architecture.",
+  "Find and fix the highest-priority bug in this repository.",
+  "Add tests for the most important untested code path.",
+  "Review the working tree changes and summarize the risks.",
+];
+
+const state = {
+  projects: [],
+  project: null,
+  projectName: "",
+  session: null,
+  sessions: [],
+  allView: false,
+  busy: false,
+  runId: null,
+  reasoning: "auto",
+  contextWindow: 0,
+  providers: [],
+  providerIndex: 0,
+  models: null,
+  pendingApproval: null,
+  currentAssistant: null,
+  tools: [],
+  currentThinking: null,
+};
+
+// ---------- helpers ----------
+
+function escapeHtml(text) {
+  return String(text).replace(/[&<>"']/g, (c) => ({
+    "&": "&amp;",
+    "<": "&lt;",
+    ">": "&gt;",
+    '"': "&quot;",
+    "'": "&#39;",
+  })[c]);
+}
+
+function formatTime(secs) {
+  if (!secs) return "";
+  const date = new Date(secs * 1000);
+  const diff = Date.now() - date.getTime();
+  const mins = Math.round(diff / 60000);
+  if (mins < 1) return "just now";
+  if (mins < 60) return `${mins}m ago`;
+  const hours = Math.round(mins / 60);
+  if (hours < 24) return `${hours}h ago`;
+  const days = Math.round(hours / 24);
+  if (days < 30) return `${days}d ago`;
+  return date.toLocaleDateString(undefined, { month: "short", day: "numeric" });
+}
+
+function baseName(path) {
+  const trimmed = String(path).replace(/[\\/]+$/, "");
+  return trimmed.split(/[\\/]/).pop() || trimmed;
+}
+
+function setStatus(text) {
+  el("status-text").textContent = text;
+}
+
+function setUsage({ input = 0, output = 0, cost = 0, contextPct = null }) {
+  const bits = [`↑ ${input} ↓ ${output}`];
+  if (cost) bits.push(`$${Number(cost).toFixed(4)}`);
+  if (contextPct != null && state.contextWindow) bits.push(`ctx ${contextPct.toFixed(0)}%`);
+  el("usage").textContent = bits.join(" · ");
+}
+
+function setThreadTitle(text) {
+  el("thread-title").textContent = text || "New task";
+}
+
+// ---------- markdown ----------
+
+function inline(text) {
+  let s = escapeHtml(text);
+  s = s.replace(/`([^`]+)`/g, (_, code) => `<code>${code}</code>`);
+  s = s.replace(/\[([^\]]+)\]\(([^)\s]+)\)/g, '<a href="$2" target="_blank" rel="noreferrer">$1</a>');
+  s = s.replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>");
+  s = s.replace(/(^|[^*])\*([^*\n]+)\*/g, "$1<em>$2</em>");
+  s = s.replace(/~~([^~]+)~~/g, "<del>$1</del>");
+  return s;
+}
+
+const BLOCK_START = /^\s*(```|#{1,6}\s|[-*+]\s|\d+[.)]\s|>|\|)/;
+
+// Minimal syntax highlighter for common languages. It scans the raw code and
+// escapes as it emits, so it is safe to inject into the DOM.
+const LANGS = {
+  rust: {
+    keywords:
+      "as async await break const continue crate dyn else enum extern false fn for if impl in let loop match mod move mut pub ref return self Self static struct super trait true type unsafe use where while Box Option Result String Vec Some None Ok Err".split(
+        " ",
+      ),
+    line: ["//"],
+    block: ["/*", "*/"],
+  },
+  js: {
+    keywords:
+      "await async break case catch class const continue default delete do else export extends false finally for from function if import in instanceof let new null of return super switch this throw true try typeof undefined var void while yield".split(
+        " ",
+      ),
+    line: ["//"],
+    block: ["/*", "*/"],
+  },
+  python: {
+    keywords:
+      "and as assert async await break class continue def del elif else except False finally for from global if import in is lambda None nonlocal not or pass raise return True try while with yield".split(
+        " ",
+      ),
+    line: ["#"],
+    block: null,
+  },
+  go: {
+    keywords:
+      "break case chan const continue default defer else fallthrough for func go goto if import interface map package range return select struct switch type var nil true false".split(
+        " ",
+      ),
+    line: ["//"],
+    block: ["/*", "*/"],
+  },
+  bash: {
+    keywords:
+      "if then else elif fi for while do done case esac function in return local export echo cd set source".split(
+        " ",
+      ),
+    line: ["#"],
+    block: null,
+  },
+  json: { keywords: [], line: ["//"], block: null },
+};
+
+function langOf(lang) {
+  const value = String(lang || "").toLowerCase();
+  if (["rs", "rust"].includes(value)) return "rust";
+  if (["js", "jsx", "ts", "tsx", "javascript", "typescript", "mjs", "cjs"].includes(value)) return "js";
+  if (["py", "python"].includes(value)) return "python";
+  if (["go", "golang"].includes(value)) return "go";
+  if (["sh", "bash", "shell", "zsh", "console"].includes(value)) return "bash";
+  if (["json", "jsonc"].includes(value)) return "json";
+  return null;
+}
+
+const IDENT_START = /[A-Za-z_$]/;
+const IDENT = /[A-Za-z0-9_$]/;
+const DIGIT = /[0-9]/;
+
+function tok(cls, text) {
+  return `<span class="tok-${cls}">${escapeHtml(text)}</span>`;
+}
+
+function highlight(code, lang) {
+  const spec = LANGS[langOf(lang)];
+  if (!spec) return escapeHtml(code);
+  const keywords = new Set(spec.keywords);
+  const n = code.length;
+  let out = "";
+  let i = 0;
+  while (i < n) {
+    const c = code[i];
+    if (spec.block && code.startsWith(spec.block[0], i)) {
+      const end = code.indexOf(spec.block[1], i + spec.block[0].length);
+      const stop = end === -1 ? n : end + spec.block[1].length;
+      out += tok("comment", code.slice(i, stop));
+      i = stop;
+      continue;
+    }
+    const mark = spec.line.find((prefix) => code.startsWith(prefix, i));
+    if (mark) {
+      let end = code.indexOf("\n", i);
+      if (end === -1) end = n;
+      out += tok("comment", code.slice(i, end));
+      i = end;
+      continue;
+    }
+    if (c === '"' || c === "'" || c === "`") {
+      let j = i + 1;
+      while (j < n) {
+        if (code[j] === "\\") {
+          j += 2;
+          continue;
+        }
+        if (code[j] === c) {
+          j += 1;
+          break;
+        }
+        if (c !== "`" && code[j] === "\n") break;
+        j += 1;
+      }
+      const stop = Math.min(j, n);
+      out += tok("string", code.slice(i, stop));
+      i = stop;
+      continue;
+    }
+    if (DIGIT.test(c) && (i === 0 || !IDENT.test(code[i - 1]))) {
+      let j = i;
+      while (j < n && /[0-9a-fA-FxX._]/.test(code[j])) j += 1;
+      out += tok("number", code.slice(i, j));
+      i = j;
+      continue;
+    }
+    if (IDENT_START.test(c)) {
+      let j = i;
+      while (j < n && IDENT.test(code[j])) j += 1;
+      const word = code.slice(i, j);
+      out += keywords.has(word) ? tok("keyword", word) : escapeHtml(word);
+      i = j;
+      continue;
+    }
+    out += escapeHtml(c);
+    i += 1;
+  }
+  return out;
+}
+
+function splitRow(line) {
+  let row = line.trim();
+  if (row.startsWith("|")) row = row.slice(1);
+  if (row.endsWith("|")) row = row.slice(0, -1);
+  return row.split("|").map((cell) => cell.trim());
+}
+
+function isTableSeparator(line) {
+  return /^\s*\|?\s*:?-{1,}:?\s*(\|\s*:?-{1,}:?\s*)*\|?\s*$/.test(line) && line.includes("-");
+}
+
+function tableHtml(header, rows) {
+  const head = header.map((cell) => `<th>${inline(cell)}</th>`).join("");
+  const body = rows
+    .map((row) => `<tr>${row.map((cell) => `<td>${inline(cell)}</td>`).join("")}</tr>`)
+    .join("");
+  return `<table><thead><tr>${head}</tr></thead><tbody>${body}</tbody></table>`;
+}
+
+function renderMarkdown(text) {
+  const lines = String(text).split("\n");
+  const out = [];
+  let i = 0;
+  let list = null;
+
+  const closeList = () => {
+    if (list) {
+      out.push(`</${list}>`);
+      list = null;
+    }
+  };
+
+  while (i < lines.length) {
+    const line = lines[i];
+
+    const fence = line.match(/^\s*```([\w+-]*)\s*$/);
+    if (fence) {
+      closeList();
+      const code = [];
+      i += 1;
+      while (i < lines.length && !/^\s*```\s*$/.test(lines[i])) {
+        code.push(lines[i]);
+        i += 1;
+      }
+      i += 1;
+      const lang = fence[1] ? ` data-lang="${escapeHtml(fence[1])}"` : "";
+      out.push(`<pre${lang}><code>${highlight(code.join("\n"), fence[1])}</code></pre>`);
+      continue;
+    }
+
+    if (/^\s*(-{3,}|\*{3,}|_{3,})\s*$/.test(line)) {
+      closeList();
+      out.push("<hr />");
+      i += 1;
+      continue;
+    }
+
+    const heading = line.match(/^(#{1,6})\s+(.*)$/);
+    if (heading) {
+      closeList();
+      const level = heading[1].length;
+      out.push(`<h${level}>${inline(heading[2])}</h${level}>`);
+      i += 1;
+      continue;
+    }
+
+    if (/^\s*>\s?/.test(line)) {
+      closeList();
+      const quote = [];
+      while (i < lines.length && /^\s*>\s?/.test(lines[i])) {
+        quote.push(lines[i].replace(/^\s*>\s?/, ""));
+        i += 1;
+      }
+      out.push(`<blockquote>${renderMarkdown(quote.join("\n"))}</blockquote>`);
+      continue;
+    }
+
+    const task = line.match(/^\s*[-*+]\s+\[([ xX])\]\s+(.*)$/);
+    if (task) {
+      if (list !== "ul") {
+        closeList();
+        out.push('<ul class="tasks">');
+        list = "ul";
+      }
+      const mark = task[1].toLowerCase() === "x" ? "☑" : "☐";
+      out.push(`<li class="task">${mark} ${inline(task[2])}</li>`);
+      i += 1;
+      continue;
+    }
+
+    const bullet = line.match(/^\s*[-*+]\s+(.*)$/);
+    if (bullet) {
+      if (list !== "ul") {
+        closeList();
+        out.push("<ul>");
+        list = "ul";
+      }
+      out.push(`<li>${inline(bullet[1])}</li>`);
+      i += 1;
+      continue;
+    }
+
+    const ordered = line.match(/^\s*\d+[.)]\s+(.*)$/);
+    if (ordered) {
+      if (list !== "ol") {
+        closeList();
+        out.push("<ol>");
+        list = "ol";
+      }
+      out.push(`<li>${inline(ordered[1])}</li>`);
+      i += 1;
+      continue;
+    }
+
+    if (line.includes("|") && i + 1 < lines.length && isTableSeparator(lines[i + 1])) {
+      closeList();
+      const header = splitRow(line);
+      const rows = [];
+      i += 2;
+      while (i < lines.length && lines[i].includes("|") && lines[i].trim() !== "") {
+        rows.push(splitRow(lines[i]));
+        i += 1;
+      }
+      out.push(tableHtml(header, rows));
+      continue;
+    }
+
+    if (line.trim() === "") {
+      closeList();
+      i += 1;
+      continue;
+    }
+
+    closeList();
+    const para = [line];
+    i += 1;
+    while (i < lines.length && lines[i].trim() !== "" && !BLOCK_START.test(lines[i])) {
+      para.push(lines[i]);
+      i += 1;
+    }
+    out.push(`<p>${inline(para.join(" "))}</p>`);
+  }
+  closeList();
+  return out.join("");
+}
+
+function renderDiff(diff) {
+  const body = String(diff.text || "")
+    .split("\n")
+    .map((line) => {
+      let cls = "";
+      if (line.startsWith("@@")) cls = "hunk";
+      else if (line.startsWith("+")) cls = "add";
+      else if (line.startsWith("-")) cls = "del";
+      return `<span class="dline ${cls}">${escapeHtml(line)}</span>`;
+    })
+    .join("");
+  return `<div class="diff"><div class="diff-path">${escapeHtml(diff.path || "diff")}</div><pre>${body}</pre></div>`;
+}
+
+// ---------- welcome ----------
+
+function renderWelcome() {
+  const project = state.project;
+  const suggestions = project
+    ? `<div class="suggestions">${SUGGESTIONS.map(
+        (text) => `<button data-prompt="${escapeHtml(text)}">${escapeHtml(text)}</button>`,
+      ).join("")}</div>`
+    : "";
+  el("transcript").innerHTML = `
+    <div class="welcome">
+      <div class="welcome-mark">◆</div>
+      <h1>${project ? "What should we build?" : "Select a project"}</h1>
+      <p>${project ? escapeHtml(state.project) : "Add or pick a project on the left to get started."}</p>
+      ${suggestions}
+    </div>`;
+  el("transcript").querySelectorAll(".suggestions button").forEach((button) => {
+    button.onclick = () => {
+      el("prompt").value = button.dataset.prompt;
+      el("prompt").focus();
+      updateSendState();
+    };
+  });
+}
+
+function clearWelcome() {
+  const welcome = el("transcript").querySelector(".welcome");
+  if (welcome) welcome.remove();
+}
+
+// ---------- projects ----------
+
+async function loadProjects() {
+  try {
+    state.projects = await invoke("list_projects");
+    renderProjects();
+  } catch (error) {
+    setStatus(`Failed to load projects: ${error}`);
+  }
+}
+
+function renderProjects() {
+  const box = el("projects");
+  box.innerHTML = "";
+  if (!state.projects.length) {
+    box.innerHTML = '<div class="empty" style="margin:12px">No projects yet.</div>';
+    return;
+  }
+  for (const project of state.projects) {
+    const row = document.createElement("div");
+    row.className = "project" + (project.path === state.project ? " active" : "");
+
+    if (project.registered) {
+      const remove = document.createElement("button");
+      remove.className = "remove";
+      remove.textContent = "×";
+      remove.title = "Remove from list";
+      remove.onclick = async (event) => {
+        event.stopPropagation();
+        state.projects = await invoke("remove_project", { id: project.id });
+        renderProjects();
+      };
+      row.appendChild(remove);
+    }
+
+    const name = document.createElement("div");
+    name.className = "name";
+    name.innerHTML =
+      `<span>${escapeHtml(project.name)}</span>` +
+      (project.registered ? "" : '<span class="badge discovered">session</span>') +
+      (project.exists ? "" : '<span class="badge">missing</span>');
+    row.appendChild(name);
+
+    const path = document.createElement("div");
+    path.className = "path";
+    path.textContent = project.path;
+    row.appendChild(path);
+
+    const count = document.createElement("div");
+    count.className = "count";
+    count.textContent = `${project.session_count} thread${project.session_count === 1 ? "" : "s"}`;
+    row.appendChild(count);
+
+    row.onclick = () => {
+      toggleDropdown(false);
+      selectProject(project);
+    };
+    box.appendChild(row);
+  }
+}
+
+async function addProject() {
+  const input = el("project-path");
+  const path = input.value.trim();
+  if (!path) return;
+  try {
+    state.projects = await invoke("add_project", { path });
+    input.value = "";
+    renderProjects();
+    const added = state.projects.find((project) => project.path.endsWith(baseName(path)) && project.registered);
+    if (added) {
+      toggleDropdown(false);
+      selectProject(added);
+    }
+  } catch (error) {
+    setStatus(`Could not add project: ${error}`);
+  }
+}
+
+function toggleDropdown(show) {
+  const dropdown = el("project-dropdown");
+  const open = show === undefined ? dropdown.hidden : show;
+  dropdown.hidden = !open;
+  el("project-menu").classList.toggle("active", open);
+  if (open) {
+    el("project-path").focus();
+  }
+}
+
+async function selectProject(project) {
+  state.project = project.path;
+  state.projectName = project.name;
+  state.session = null;
+  el("project-current").textContent = project.name;
+  el("new-chat").disabled = false;
+  el("prompt").disabled = false;
+  renderProjects();
+  resetTranscript();
+  await Promise.all([loadInfo(), loadSessions(), loadTheme()]);
+}
+
+async function loadInfo() {
+  if (!state.project) return;
+  try {
+    const info = await invoke("project_info", { project: state.project });
+    state.reasoning = info.reasoning;
+    state.contextWindow = info.contextWindow || 0;
+    updateChips();
+    el("model").textContent = info.model;
+    el("project-meta").textContent = info.provider + (info.hasKey ? "" : " · no API key");
+  } catch (error) {
+    el("project-meta").textContent = String(error);
+  }
+}
+
+function updateChips() {
+  el("reasoning").textContent = state.reasoning;
+}
+
+// ---------- threads ----------
+
+async function loadSessions() {
+  try {
+    state.sessions = state.allView
+      ? await invoke("all_sessions")
+      : state.project
+        ? await invoke("list_sessions", { project: state.project })
+        : [];
+    renderSessions(state.sessions, state.allView);
+  } catch (error) {
+    setStatus(`Failed to load threads: ${error}`);
+  }
+}
+
+function renderSessions(sessions, crossRepo) {
+  const box = el("sessions");
+  box.innerHTML = "";
+  if (!sessions.length) {
+    const empty = document.createElement("div");
+    empty.className = "empty";
+    empty.style.margin = "14px 8px";
+    empty.textContent = "No threads yet.";
+    box.appendChild(empty);
+    return;
+  }
+  for (const session of sessions) {
+    const row = document.createElement("div");
+    row.className = "session" + (!crossRepo && session.id === state.session ? " active" : "");
+
+    const tools = document.createElement("div");
+    tools.className = "s-tools";
+    const rename = document.createElement("button");
+    rename.className = "ghost";
+    rename.textContent = "✎";
+    rename.title = "Rename";
+    rename.onclick = async (event) => {
+      event.stopPropagation();
+      const name = window.prompt("Rename thread", session.name || "");
+      if (name === null) return;
+      await invoke("rename_session", { project: session.cwd, id: session.id, name });
+      loadSessions();
+    };
+    const del = document.createElement("button");
+    del.className = "ghost danger";
+    del.textContent = "🗑";
+    del.title = "Delete";
+    del.onclick = async (event) => {
+      event.stopPropagation();
+      if (!window.confirm("Delete this thread?")) return;
+      await invoke("delete_session", { project: session.cwd, id: session.id });
+      if (state.session === session.id) resetTranscript();
+      loadSessions();
+    };
+    tools.append(rename, del);
+    row.appendChild(tools);
+
+    const sname = document.createElement("div");
+    sname.className = "sname";
+    sname.textContent = session.name || session.preview || session.id.slice(0, 8);
+    row.appendChild(sname);
+
+    if (crossRepo) {
+      const repo = document.createElement("div");
+      repo.className = "s-repo";
+      repo.textContent = baseName(session.cwd);
+      row.appendChild(repo);
+    } else {
+      const preview = document.createElement("div");
+      preview.className = "preview";
+      preview.textContent = session.preview || "—";
+      row.appendChild(preview);
+    }
+
+    const meta = document.createElement("div");
+    meta.className = "smeta";
+    meta.textContent = formatTime(session.modified_at);
+    row.appendChild(meta);
+
+    row.onclick = async () => {
+      if (session.cwd !== state.project) {
+        state.project = session.cwd;
+        state.projectName = baseName(session.cwd);
+        el("project-current").textContent = state.projectName;
+        el("new-chat").disabled = false;
+        renderProjects();
+        await loadInfo();
+      }
+      openSession(session);
+    };
+    box.appendChild(row);
+  }
+}
+
+async function openSession(session) {
+  state.session = session.id;
+  try {
+    const data = await invoke("session_messages", { project: state.project, id: session.id });
+    const transcript = el("transcript");
+    transcript.innerHTML = "";
+    for (const message of data.messages) {
+      if (!message.content) continue;
+      const kind = message.role === "user" ? "user" : "assistant";
+      transcript.appendChild(bubble(kind, message.content));
+    }
+    scrollDown();
+    setThreadTitle(session.name || session.preview || session.id.slice(0, 8));
+    if (data.usage) {
+      setUsage({ input: data.usage.input, output: data.usage.output, cost: data.usage.cost });
+    }
+  } catch (error) {
+    setStatus(`Failed to open thread: ${error}`);
+  }
+  loadSessions();
+}
+
+function resetTranscript() {
+  state.session = null;
+  el("transcript").innerHTML = "";
+  el("usage").textContent = "";
+  setThreadTitle("New task");
+  renderWelcome();
+}
+
+function newChat() {
+  resetTranscript();
+  loadSessions();
+  el("prompt").focus();
+}
+
+// ---------- chat ----------
+
+function bubble(kind, text) {
+  const wrap = document.createElement("div");
+  wrap.className = `msg ${kind}`;
+  const label = document.createElement("div");
+  label.className = "label";
+  label.textContent = kind === "user" ? "you" : "◆ oxide";
+  const body = document.createElement("div");
+  body.className = "body";
+  body.innerHTML = kind === "assistant" ? renderMarkdown(text) : escapeHtml(text);
+  wrap.append(label, body);
+  return wrap;
+}
+
+function scrollDown() {
+  const transcript = el("transcript");
+  transcript.scrollTop = transcript.scrollHeight;
+}
+
+function resetTurn() {
+  state.currentAssistant = null;
+  state.tools = [];
+  state.currentThinking = null;
+}
+
+function updateSendState() {
+  const hasText = el("prompt").value.trim().length > 0;
+  el("send").classList.toggle("enabled", hasText);
+  el("send").disabled = !hasText;
+}
+
+function setBusy() {
+  state.busy = true;
+  el("stop").hidden = false;
+  el("send").title = "Steer (Enter)";
+}
+
+function setIdle() {
+  state.busy = false;
+  state.runId = null;
+  el("stop").hidden = true;
+  el("send").title = "Send (Enter)";
+  updateSendState();
+}
+
+async function send(followUp = false) {
+  const textarea = el("prompt");
+  const prompt = textarea.value.trim();
+  if (!prompt) return;
+
+  if (state.busy) {
+    if (state.runId == null) return;
+    textarea.value = "";
+    updateSendState();
+    clearWelcome();
+    el("transcript").appendChild(bubble("user", prompt + (followUp ? "  (follow-up)" : "")));
+    scrollDown();
+    await invoke("steer_run", { runId: state.runId, message: prompt, followUp });
+    return;
+  }
+
+  if (!state.project) return;
+  textarea.value = "";
+  updateSendState();
+  clearWelcome();
+  el("transcript").appendChild(bubble("user", prompt));
+  scrollDown();
+  resetTurn();
+  setBusy();
+  setStatus("Working…");
+  try {
+    state.runId = await invoke("send_prompt", {
+      project: state.project,
+      prompt,
+      session: state.session || "latest",
+      reasoning: state.reasoning,
+    });
+  } catch (error) {
+    setStatus(`Error: ${error}`);
+    setIdle();
+  }
+}
+
+async function stop() {
+  if (state.runId == null) return;
+  await invoke("cancel_run", { runId: state.runId });
+  setStatus("Stopping…");
+}
+
+function ensureAssistant() {
+  if (state.currentAssistant) return state.currentAssistant;
+  const wrap = document.createElement("div");
+  wrap.className = "msg assistant";
+  const label = document.createElement("div");
+  label.className = "label";
+  label.textContent = "◆ oxide";
+  const body = document.createElement("div");
+  body.className = "body";
+  wrap.append(label, body);
+  el("transcript").appendChild(wrap);
+  state.currentAssistant = { wrap, body, text: "" };
+  return state.currentAssistant;
+}
+
+function appendText(delta) {
+  const assistant = ensureAssistant();
+  assistant.text += delta;
+  assistant.body.innerHTML = renderMarkdown(assistant.text);
+  scrollDown();
+}
+
+function appendThinking(delta) {
+  if (!state.currentThinking) {
+    const block = document.createElement("div");
+    block.className = "thinking";
+    block.textContent = "✦ ";
+    el("transcript").appendChild(block);
+    state.currentThinking = block;
+  }
+  state.currentThinking.textContent += delta;
+  scrollDown();
+}
+
+function toolArg(name, argsJson) {
+  let args = {};
+  try {
+    args = JSON.parse(argsJson || "{}");
+  } catch (error) {
+    args = {};
+  }
+  const value =
+    args.command || args.path || args.pattern || args.query || args.url || args.prompt || "";
+  const text = String(value).replace(/\s+/g, " ").trim();
+  if (!text) return "";
+  return text.length > 72 ? `${text.slice(0, 72)}…` : text;
+}
+
+function startTool(name, args) {
+  const block = document.createElement("div");
+  block.className = "tool running expanded";
+  const head = document.createElement("div");
+  head.className = "thead";
+  const tname = document.createElement("span");
+  tname.className = "tname";
+  tname.textContent = name;
+  const targ = document.createElement("span");
+  targ.className = "targ";
+  targ.textContent = toolArg(name, args);
+  head.append(tname, targ);
+  head.onclick = () => block.classList.toggle("expanded");
+  const pre = document.createElement("pre");
+  block.append(head, pre);
+  el("transcript").appendChild(block);
+  state.tools.push({ name, block, pre, done: false });
+  scrollDown();
+}
+
+/// The still-running card a tool event belongs to. Results are emitted in call
+/// order, so the oldest running card with a matching name is the right one.
+function activeTool(name) {
+  return (
+    state.tools.find((tool) => !tool.done && tool.name === name) ||
+    state.tools.find((tool) => !tool.done)
+  );
+}
+
+function handleEvent(event) {
+  if (event.runId != null) state.runId = event.runId;
+  switch (event.type) {
+    case "message_update": {
+      const inner = event.assistantMessageEvent || {};
+      if (inner.type === "text_delta") appendText(inner.delta || "");
+      else if (inner.type === "thinking_delta") appendThinking(inner.delta || "");
+      break;
+    }
+    case "tool_call":
+      startTool(event.toolName || "tool", event.arguments);
+      break;
+    case "tool_execution_update": {
+      const tool = activeTool(event.toolName);
+      if (tool) {
+        tool.pre.textContent += event.partialResult || "";
+        scrollDown();
+      }
+      break;
+    }
+    case "tool_execution_end": {
+      const tool = activeTool(event.toolName);
+      if (tool) {
+        tool.done = true;
+        tool.pre.textContent = event.result || "";
+        tool.block.classList.remove("running");
+        // Compact by default; expand when there is something to inspect.
+        tool.block.classList.toggle("expanded", Boolean(event.isError || event.diff));
+        if (event.isError) tool.block.classList.add("error");
+        if (event.diff) {
+          tool.block.insertAdjacentHTML("beforeend", renderDiff(event.diff));
+        }
+      }
+      break;
+    }
+    case "auto_retry_start":
+      setStatus(`Retrying (${event.attempt}/${event.maxAttempts})…`);
+      break;
+    case "usage": {
+      const usage = event.usage || {};
+      const pct = state.contextWindow ? (usage.input / state.contextWindow) * 100 : null;
+      setUsage({ input: usage.input, output: usage.output, cost: usage.cost, contextPct: pct });
+      break;
+    }
+    case "compaction":
+      setStatus(`Compacted ${event.summarized} earlier messages`);
+      break;
+    case "error":
+      setStatus(`Error: ${event.message}`);
+      break;
+    default:
+      break;
+  }
+}
+
+// ---------- approvals ----------
+
+function showApproval(request) {
+  state.pendingApproval = request.id;
+  el("approval-tool").textContent = request.tool;
+  el("approval-detail").textContent = request.detail || "";
+  closeOverlays("approval");
+  el("approval").hidden = false;
+}
+
+async function answerApproval(decision) {
+  if (state.pendingApproval == null) return;
+  const id = state.pendingApproval;
+  state.pendingApproval = null;
+  el("approval").hidden = true;
+  await invoke("resolve_approval", { id, decision });
+}
+
+// ---------- providers ----------
+
+const OVERLAYS = [
+  "approval",
+  "connect-modal",
+  "models-modal",
+  "themes-modal",
+  "permissions-modal",
+  "help-modal",
+];
+
+function closeOverlays(except) {
+  for (const id of OVERLAYS) {
+    if (id !== except) el(id).hidden = true;
+  }
+}
+
+async function openConnect() {
+  state.providers = await invoke("list_providers");
+  state.providerIndex = Math.max(
+    0,
+    state.providers.findIndex((provider) => provider.stored),
+  );
+  renderProviders();
+  closeOverlays("connect-modal");
+  el("connect-modal").hidden = false;
+}
+
+function renderProviders() {
+  const box = el("provider-list");
+  box.innerHTML = "";
+  state.providers.forEach((provider, index) => {
+    const row = document.createElement("button");
+    row.type = "button";
+    row.className = "provider" + (index === state.providerIndex ? " active" : "");
+    row.innerHTML =
+      `<span class="p-name">${escapeHtml(provider.label)}</span>` +
+      `<span class="p-desc">${escapeHtml(provider.description)}</span>` +
+      (provider.stored ? '<span class="badge">stored</span>' : "");
+    row.onclick = () => {
+      state.providerIndex = index;
+      renderProviders();
+    };
+    box.appendChild(row);
+  });
+}
+
+async function saveConnect() {
+  const provider = state.providers[state.providerIndex];
+  if (!provider) return;
+  try {
+    await invoke("login", {
+      provider: provider.name,
+      key: el("login-key").value || null,
+      model: el("login-model").value || null,
+      base_url: el("login-url").value || null,
+    });
+    el("connect-modal").hidden = true;
+    el("login-key").value = "";
+    await loadInfo();
+    setStatus(`Connected ${provider.label}`);
+  } catch (error) {
+    setStatus(`Login failed: ${error}`);
+  }
+}
+
+// ---------- models ----------
+
+async function openModels() {
+  if (!state.project) return;
+  closeOverlays("models-modal");
+  el("models-modal").hidden = false;
+  el("model-list").innerHTML = '<div class="empty" style="margin:14px">Loading…</div>';
+  el("model-filter").value = "";
+  try {
+    state.models = await invoke("list_models", { project: state.project });
+    renderModels();
+  } catch (error) {
+    el("model-list").innerHTML = `<div class="empty" style="margin:14px">${escapeHtml(String(error))}</div>`;
+  }
+}
+
+function renderModels() {
+  const box = el("model-list");
+  box.innerHTML = "";
+  if (!state.models) return;
+  const filter = el("model-filter").value.trim().toLowerCase();
+  for (const provider of state.models.providers) {
+    const models = provider.models.filter((model) => !filter || model.toLowerCase().includes(filter));
+    if (!models.length) continue;
+    const header = document.createElement("div");
+    header.className = "model-provider";
+    header.textContent = provider.provider + (provider.active ? " (active)" : "");
+    box.appendChild(header);
+    for (const model of models) {
+      const row = document.createElement("button");
+      row.className = "model" + (model === provider.current ? " active" : "");
+      row.textContent = model;
+      row.onclick = async () => {
+        await invoke("set_model", { provider: provider.provider, model });
+        el("models-modal").hidden = true;
+        await loadInfo();
+      };
+      box.appendChild(row);
+    }
+  }
+  if (!box.children.length) {
+    box.innerHTML = '<div class="empty" style="margin:14px">No models found.</div>';
+  }
+}
+
+// ---------- themes ----------
+
+async function openThemes() {
+  if (!state.project) return;
+  closeOverlays("themes-modal");
+  el("themes-modal").hidden = false;
+  try {
+    const themes = await invoke("list_themes", { project: state.project });
+    const box = el("theme-list");
+    box.innerHTML = "";
+    for (const name of themes.names) {
+      const row = document.createElement("button");
+      row.className = "theme" + (name === themes.current ? " active" : "");
+      row.textContent = name;
+      row.onclick = async () => {
+        const result = await invoke("set_theme", { project: state.project, name });
+        applyTheme(result.colors);
+        box.querySelectorAll(".theme").forEach((node) => node.classList.remove("active"));
+        row.classList.add("active");
+      };
+      box.appendChild(row);
+    }
+  } catch (error) {
+    setStatus(`Themes failed: ${error}`);
+  }
+}
+
+function applyTheme(colors) {
+  if (!colors) return;
+  const root = document.documentElement;
+  const map = {
+    background: "--bg",
+    sidebar: "--sidebar",
+    panel: "--panel",
+    panel_2: "--panel-2",
+    panel_3: "--panel-3",
+    text: "--text",
+    faint: "--faint",
+    border: "--border",
+    accent: "--accent",
+    user: "--user",
+    assistant: "--assistant",
+    success: "--success",
+    tool: "--tool",
+    error: "--error",
+    info: "--info",
+    dim: "--dim",
+    tool_pending_bg: "--tool-bg",
+  };
+  for (const [slot, variable] of Object.entries(map)) {
+    if (colors[slot]) root.style.setProperty(variable, colors[slot]);
+  }
+}
+
+async function loadTheme() {
+  if (!state.project) return;
+  try {
+    const themes = await invoke("list_themes", { project: state.project });
+    const name = themes.current || "dark";
+    const colors = await invoke("theme_colors", { project: state.project, name });
+    applyTheme(colors.colors);
+  } catch (error) {
+    // Keep the default palette.
+  }
+}
+
+// ---------- permissions ----------
+
+async function openPermissions() {
+  if (!state.project) return;
+  closeOverlays("permissions-modal");
+  el("permissions-modal").hidden = false;
+  const list = await invoke("list_approvals", { project: state.project });
+  const box = el("approval-list");
+  box.innerHTML = "";
+  if (!list.length) {
+    box.innerHTML = '<div class="empty" style="margin:6px">No saved approvals.</div>';
+  } else {
+    for (const tool of list) {
+      const row = document.createElement("div");
+      row.className = "theme";
+      row.textContent = tool;
+      box.appendChild(row);
+    }
+  }
+}
+
+async function clearApprovals() {
+  if (!state.project) return;
+  await invoke("clear_approvals", { project: state.project });
+  openPermissions();
+}
+
+// ---------- wiring ----------
+
+function toggleHelp() {
+  const hidden = el("help-modal").hidden;
+  closeOverlays("help-modal");
+  el("help-modal").hidden = !hidden;
+}
+
+function cycleReasoning() {
+  state.reasoning = REASONING[(REASONING.indexOf(state.reasoning) + 1) % REASONING.length];
+  updateChips();
+}
+
+async function initEvents() {
+  await listen("agent-start", (event) => {
+    const payload = event.payload || {};
+    if (payload.runId != null) state.runId = payload.runId;
+    if (payload.sessionId) state.session = payload.sessionId;
+    resetTurn();
+  });
+  await listen("agent-event", (event) => handleEvent(event.payload || {}));
+  await listen("agent-end", async () => {
+    setIdle();
+    setStatus("Ready");
+    resetTurn();
+    await loadSessions();
+  });
+  await listen("approval-request", (event) => showApproval(event.payload || {}));
+}
+
+function init() {
+  el("add-project").onclick = addProject;
+  el("project-path").addEventListener("keydown", (event) => {
+    if (event.key === "Enter") addProject();
+  });
+  el("project-menu").onclick = (event) => {
+    event.stopPropagation();
+    toggleDropdown();
+  };
+  document.addEventListener("click", (event) => {
+    if (!el("project-dropdown").hidden && !event.target.closest(".project-picker")) {
+      toggleDropdown(false);
+    }
+  });
+
+  el("new-chat").onclick = newChat;
+  el("reasoning").onclick = cycleReasoning;
+  el("model").onclick = openModels;
+  el("theme").onclick = openThemes;
+  el("permissions").onclick = openPermissions;
+  el("help").onclick = toggleHelp;
+  el("connect").onclick = openConnect;
+  el("toggle-all").onclick = () => {
+    state.allView = !state.allView;
+    el("toggle-all").classList.toggle("active", state.allView);
+    el("toggle-all").textContent = state.allView ? "This project" : "All projects";
+    loadSessions();
+  };
+
+  el("send").onclick = () => send(false);
+  el("stop").onclick = stop;
+  el("approval-once").onclick = () => answerApproval("once");
+  el("approval-always").onclick = () => answerApproval("always");
+  el("approval-deny").onclick = () => answerApproval("deny");
+  el("login-cancel").onclick = () => (el("connect-modal").hidden = true);
+  el("login-save").onclick = saveConnect;
+  el("models-close").onclick = () => (el("models-modal").hidden = true);
+  el("model-filter").addEventListener("input", renderModels);
+  el("themes-close").onclick = () => (el("themes-modal").hidden = true);
+  el("permissions-close").onclick = () => (el("permissions-modal").hidden = true);
+  el("permissions-clear").onclick = clearApprovals;
+  el("help-close").onclick = () => (el("help-modal").hidden = true);
+
+  el("prompt").addEventListener("input", () => {
+    el("prompt").style.height = "auto";
+    el("prompt").style.height = `${Math.min(el("prompt").scrollHeight, 220)}px`;
+    updateSendState();
+  });
+  el("prompt").addEventListener("keydown", (event) => {
+    if (event.key === "Enter" && !event.shiftKey) {
+      event.preventDefault();
+      send(event.altKey);
+    }
+  });
+
+  document.addEventListener("keydown", (event) => {
+    if (event.key === "Escape") {
+      closeOverlays();
+      toggleDropdown(false);
+      return;
+    }
+    if (event.key === "Tab" && event.shiftKey) {
+      event.preventDefault();
+      cycleReasoning();
+      return;
+    }
+    if (!event.ctrlKey && !event.metaKey) return;
+    if (event.key === "r") {
+      event.preventDefault();
+      cycleReasoning();
+    } else if (event.key === "k") {
+      event.preventDefault();
+      openModels();
+    } else if (event.key === "/") {
+      event.preventDefault();
+      toggleHelp();
+    }
+  });
+
+  updateChips();
+  updateSendState();
+  renderWelcome();
+  initEvents();
+  loadProjects();
+}
+
+init();

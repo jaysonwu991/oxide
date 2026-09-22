@@ -11,16 +11,19 @@
 
 # oxide
 
-A native Rust AI coding agent CLI for the terminal. oxide streams from
-OpenAI-compatible and Anthropic models, runs a tool-using agent loop against
-your project, and understands its own `.oxide/` configuration layout out of the
-box, with Claude Code configuration support for compatibility.
+A native Rust AI coding agent with a terminal UI and a Tauri desktop app.
+oxide streams from OpenAI-compatible and Anthropic models, runs a tool-using
+agent loop against your project, and understands its own `.oxide/` configuration
+layout out of the box, with Claude Code configuration support for compatibility.
 
 ## Features
 
 - Interactive TUI (ratatui) plus non-interactive `-p/--print`, `--mode json`
   (JSONL event stream), and `--mode rpc` (JSONL over stdin/stdout) modes. In the
   TUI, `/login` (`/connect`) and `/logout` manage provider credentials.
+- Desktop app (`oxide-desktop`, Tauri) that manages multiple projects and shows
+  the shared session store, using the same configuration as the CLI (see
+  [docs/desktop.md](docs/desktop.md)).
 - OpenAI-compatible (OpenAI, DeepSeek, Portkey, Z.AI/GLM, custom) and
   Anthropic Messages API clients.
 - Built-in tools under Pi-style names: `read`, `write`, `edit`, `bash`, `grep`,
@@ -78,11 +81,10 @@ box, with Claude Code configuration support for compatibility.
   commits limited to the task: blanket staging (`git add -A`, `git commit -a`)
   is held until the model reviews the staged files, so local-only files like
   `.claude/settings.local.json` stay out of the PR.
-- Agent modes: `build` (default), `plan` (read-only planning), and `auto-edit`
-  (auto-approve file edits), cycled in the TUI with Shift+Tab or set with
-  `--mode` / `OXIDE_MODE`.
+- Read-only runs via the tool allowlist, e.g.
+  `oxide -t read,grep,find,ls -p "review this"`.
 - Reasoning effort: `auto` (default), `off`, `low`, `medium`, or `high`, cycled
-  in the TUI with Ctrl+R or set with `--reasoning` / `OXIDE_REASONING`. `auto`
+  in the TUI with Shift+Tab or set with `--reasoning` / `OXIDE_REASONING`. `auto`
   uses the provider/model's native behavior; explicit levels map to
   OpenAI-compatible effort, Anthropic adaptive thinking, or legacy extended
   thinking as appropriate.
@@ -145,7 +147,8 @@ box, with Claude Code configuration support for compatibility.
   `--approve`/`-a` and `--no-approve` override for one run, and `/trust` saves a
   decision.
 - Themes: built-in `dark` and `light` plus custom `.oxide/themes/<name>.json`,
-  selected with `--use-theme` or `/theme`.
+  selected with `--use-theme` or `/theme`. The built-in palettes are shared with
+  the desktop app, so both front-ends render the same colors.
 - Portkey spend bar: with a Portkey login, `/usage` opens a settings dialog
   that adds a full-width bar at the bottom of the screen showing the user, this
   session's cost, and today's and the month's spend from the Portkey analytics
@@ -172,14 +175,13 @@ so check each project's documentation for the current details.
 
 | Capability | oxide | [Codex](https://github.com/openai/codex) | [OpenCode](https://opencode.ai) | [Claude Code](https://docs.claude.com/en/docs/claude-code/overview) |
 | --- | --- | --- | --- | --- |
-| Distribution | Native Rust binary | Open-source CLI (Rust) + IDE extension | Open-source CLI (Node/Bun) | Proprietary CLI + apps |
+| Distribution | Native Rust core + Tauri desktop app | Open-source CLI (Rust) + IDE extension | Open-source CLI (Node/Bun) | Proprietary CLI + apps |
 | License | MIT | Apache-2.0 | Open source | Proprietary |
 | Model providers | OpenAI-compatible (OpenAI, DeepSeek, Portkey, Z.AI/GLM, custom) + Anthropic Messages API | OpenAI models (GPT-5-Codex family) + custom providers | Any provider (bring your own keys) | Claude (Anthropic API, Bedrock, Vertex, third-party) |
-| Interfaces | Terminal TUI, `-p` print, JSON/RPC modes | Terminal CLI, IDE (VS Code, Cursor) | Terminal, desktop, IDE, web | Terminal, IDE, desktop, web |
+| Interfaces | Terminal TUI, `-p` print, JSON/RPC modes, desktop app | Terminal CLI, IDE (VS Code, Cursor) | Terminal, desktop, IDE, web | Terminal, IDE, desktop, web |
 | Project config | `.oxide/` + `AGENTS.md` (also reads `.claude/`) | `AGENTS.md` + `~/.codex/config.toml` | `opencode.json` + `AGENTS.md` | `CLAUDE.md` + `.claude/` |
 | Subagents | `--agent`, `task`, command routing | Subagents | Agents | Subagents, background agents |
-| Permission modes | `build` / `plan` / `auto-edit` (Shift+Tab, `--mode`) | `default` / `accept-edits` / `plan` / `full-auto` | Build / plan agents | default / accept-edits / plan / bypass |
-| Reasoning effort | `auto` / `off` / `low` / `medium` / `high` (Ctrl+R, `--reasoning`) | `--reasoning-effort` (model-dependent) | Model-dependent | Extended thinking |
+| Reasoning effort | `auto` / `off` / `low` / `medium` / `high` (Shift+Tab, `--reasoning`) | `--reasoning-effort` (model-dependent) | Model-dependent | Extended thinking |
 | Slash commands | `.oxide/commands` + `.oxide/prompts`, `agent`/`subtask` routing | Commands (`~/.codex/prompts`, `prompts/`) | Commands | Commands |
 | Skills | `SKILL.md` | `SKILL.md` | Agent Skills | Skills |
 | MCP servers | stdio + HTTP + OAuth, managed with `oxide mcp` | MCP servers (`codex mcp`, config.toml) | MCP servers | MCP servers |
@@ -193,11 +195,11 @@ so check each project's documentation for the current details.
 | Multimodal input | Images and PDFs (`--image`, `@path`) | Images | Images | Images |
 
 A dash indicates no first-class built-in equivalent. Where oxide differs most:
-it is a single dependency-light Rust binary, it speaks both the
-OpenAI-compatible and Anthropic APIs directly, its plugin packages
-reuse the same on-disk commands, agents, skills, and MCP servers the ecosystem
-already reads, and it is compatible with the Claude Code on-disk layout while
-using its own `.oxide/` format.
+it is a dependency-light Rust core with a terminal binary and a Tauri desktop
+app, it speaks both the OpenAI-compatible and Anthropic APIs directly, its plugin
+packages reuse the same on-disk commands, agents, skills, and MCP servers the
+ecosystem already reads, and it is compatible with the Claude Code on-disk layout
+while using its own `.oxide/` format.
 
 ## Installation
 
@@ -251,10 +253,12 @@ Overrides:
 
 ### From source
 
-Requires a stable Rust toolchain (edition 2021).
+Requires a stable Rust toolchain (edition 2021). The workspace splits the
+shared agent core (`crates/core`), the terminal CLI (`crates/cli`),
+and the desktop app (`crates/desktop`).
 
 ```sh
-cargo install --path .
+cargo install --path crates/cli
 ```
 
 ## Quick start
@@ -288,8 +292,7 @@ present).
 | `@` | Open file/folder path autocomplete to add a file to the prompt. |
 | Tab | Complete the selected slash-command (including fixed arguments such as `/notify sound on`) or `@path` suggestion. |
 | Up / Down | Move through the suggestion list, or recall input history when it is closed. |
-| Shift+Tab | Cycle `build` → `auto-edit` → `plan`. |
-| Ctrl+R | Cycle the thinking level: `auto` → `off` → `low` → `medium` → `high`. |
+| Shift+Tab | Cycle the thinking level: `auto` → `off` → `low` → `medium` → `high`. |
 | Ctrl+O | Expand or collapse tool-output details. |
 | Ctrl+T | Show or hide reasoning (`✦ Thinking`) blocks. |
 | Ctrl+V | Attach an image from the clipboard when the platform helper is available. |
@@ -326,7 +329,7 @@ Non-interactive use:
 
 ```sh
 oxide -p "summarize this repository"
-echo "explain src/agent.rs" | oxide -p
+echo "explain src/main.rs" | oxide -p
 oxide -p "review the diff" --image screenshot.png
 ```
 
@@ -345,6 +348,42 @@ oxide plugin marketplace add <url|path|owner/repo>
 oxide plugin install <name>[@marketplace]
 ```
 
+## Desktop app
+
+The `oxide-desktop` package (`crates/desktop`) is a Tauri v2 front-end for the
+same `oxide-core` agent. It shares the CLI's configuration (`config.json`,
+`auth.json`, `settings.json`) and its session store, and adds a multi-project
+sidebar:
+
+- **Projects** — add any folder to the sidebar; every project you have run the
+  CLI in is discovered automatically from its sessions.
+- **Sessions** — a per-project session list with previews, plus a cross-repo
+  view of recent sessions from every project.
+- **Chat** — runs the same agent loop through `oxide-core`, streaming text, tool
+  calls, and token usage over Tauri events.
+
+The project/session/turn logic lives in the `oxide_desktop` library and is unit
+tested without a webview. The Tauri shell is behind the `gui` feature so the
+default workspace build stays GUI-free:
+
+```sh
+cargo run -p oxide-desktop --features gui
+```
+
+It also has an interactive approval prompt for `ask` rules (with per-project
+"Always allow" memory), a **Connect** dialog that writes the same
+`auth.json`/`config.json` the CLI uses, a model picker and reasoning control,
+graceful cancel and mid-run steering, session rename/delete, colored
+diffs for `write`/`edit` results, Markdown with tables and syntax highlighting,
+token/cost usage in the footer, and built-in Dark/Light themes (default Dark)
+that read the same `.oxide/themes` files as the CLI. Bundle it with
+`npx @tauri-apps/cli@^2 build --features gui`; see
+[docs/desktop.md](docs/desktop.md) for the full layout, shortcuts, signing, and
+packaging details.
+
+The front-end (`crates/desktop/ui/`) is plain HTML/CSS/JS; the Rust
+commands in `crates/desktop/src/commands.rs` back it.
+
 ## CLI
 
 ```
@@ -361,7 +400,7 @@ oxide uninstall [--keep-config] [--keep-data] [--dry-run] [--force]
 | `-m, --model <MODEL>` | Model to use (overrides config). |
 | `--provider <PROVIDER>` | Provider name (overrides config). |
 | `--agent <AGENT>` | Agent to run, from `.oxide/agents` (or `.claude/agents`). |
-| `--mode <MODE>` | Permission mode `build` (default), `plan` (read-only), `auto-edit`, or output mode `print`, `json`, or `rpc`. |
+| `--mode <MODE>` | Output mode: `print`, `json`, or `rpc` (defaults to print for a prompt). |
 | `--reasoning <LEVEL>` | Reasoning effort: `auto` (default), `off`, `low`, `medium`, or `high`. |
 | `--system-prompt <TEXT>` | Replace the default system prompt for this run. |
 | `--append-system-prompt <TEXT>` | Append text to the system prompt (repeatable). |
@@ -460,13 +499,13 @@ oxide mcp auth [--scope project|global] <name>
 
 `--scope project` (the default) writes `<root>/.oxide/mcp.json`; `--scope global`
 writes `~/.oxide/mcp.json`. See
-[docs/configuration.md](docs/configuration.md#mcp-servers) for examples.
+[docs/cli.md](docs/cli.md#mcp-servers) for examples.
 
 Remote servers can require OAuth. Add the server by URL; oxide detects a `401`
 authentication challenge, discovers the authorization server, runs the
 authorization-code flow with PKCE, and refreshes the token automatically. You
 can also authorize up front with `oxide mcp auth <name>`. See
-[Connecting to the Atlassian Rovo MCP server](docs/configuration.md#connect-to-the-atlassian-rovo-mcp-server)
+[Connecting to the Atlassian Rovo MCP server](docs/cli.md#connect-to-the-atlassian-rovo-mcp-server)
 for a worked example.
 
 Configured servers are connected lazily. The model sees a compact `mcp_load`
@@ -501,7 +540,7 @@ entries still override plugins with the same name. After installing, `/reload`
 picks up new commands, agents, and skills; hooks and MCP servers need a restart.
 The `/marketplaces` browser filters the focused pane, matching plugin names
 before descriptions. See
-[docs/configuration.md](docs/configuration.md#plugin-packages-and-marketplaces).
+[docs/cli.md](docs/cli.md#plugin-packages-and-marketplaces).
 
 ## Configuration
 
@@ -520,7 +559,6 @@ oxide reads `config.json` from the platform config directory:
   "system_prompt": "You are Oxide...",
   "max_tokens": 8192,
   "auto_approve": true,
-  "mode": "build",
   "reasoning": "auto",
   "theme": "dark"
 }
@@ -531,20 +569,13 @@ environment. `auto_approve` controls whether tool calls run without prompting;
 when `false`, permission rules that resolve to `ask` are denied in
 non-interactive mode.
 
-`mode` selects the agent's permission mode. `build` follows the active agent's
-permission rules; `plan` is read-only (workspace mutations and all MCP tools
-are denied) and instructs the model to produce an implementation plan;
-`auto-edit` auto-approves `write`, `edit`, and `patch` while other rules still
-apply. In the TUI press Shift+Tab to cycle modes; `--mode` and `OXIDE_MODE` set
-the starting mode.
-
 `reasoning` controls how much reasoning effort oxide requests. `auto` (the
 default) leaves reasoning behavior and effort to the provider/model. Newer
 Claude models use adaptive thinking without a forced effort; other APIs receive
 no effort override. `off`, `low`, `medium`, and `high` force a level using
 OpenAI-compatible `reasoning_effort`, Anthropic adaptive thinking with
 `output_config.effort`, or a legacy Anthropic thinking budget as appropriate.
-In the TUI press Ctrl+R to cycle levels; `--reasoning` and `OXIDE_REASONING` set
+In the TUI press Shift+Tab to cycle levels; `--reasoning` and `OXIDE_REASONING` set
 the starting level.
 
 `max_tokens` caps the output of a single model turn, reasoning included. When a
@@ -560,7 +591,6 @@ so a long-thinking turn recovers instead of ending in an empty response.
 | `OXIDE_MODEL` | Model name. |
 | `OXIDE_BASE_URL` | API base URL. |
 | `OXIDE_API_KEY` | API key. |
-| `OXIDE_MODE` | Permission mode (`build`, `plan`, `auto-edit`). |
 | `OXIDE_REASONING` | Reasoning effort (`auto`, `off`, `low`, `medium`, `high`). |
 | `OXIDE_CONTEXT_LIMIT` | Model context window in tokens, used for the footer's context percentage and the compaction threshold (default: the larger of `max_tokens` and 128000). |
 | `OXIDE_COMPACTION_ENABLED` | Enable/disable automatic context compaction. |
@@ -598,9 +628,9 @@ full-width bar (session, today, and month cost against an optional monthly
 budget in `$` or `¥`) in the TUI.
 
 For custom gateways, Config IDs, environment precedence, and model-catalog
-fallbacks, see the full [Portkey configuration](docs/configuration.md#portkey)
+fallbacks, see the full [Portkey configuration](docs/cli.md#portkey)
 section. The [Portkey usage
-bar](docs/configuration.md#portkey-usage-bar) documents the `/usage` dialog and
+bar](docs/cli.md#portkey-usage-bar) documents the `/usage` dialog and
 the `portkey-usage.json` file.
 
 ### Z.AI (GLM)
@@ -668,7 +698,7 @@ This repository keeps its own agents, commands, prompts, skills, and plugins in
 
 For task-by-task instructions — adding and removing MCP servers, subagents,
 slash commands, skills, plugins, and permission rules — see
-[docs/configuration.md](docs/configuration.md).
+[docs/cli.md](docs/cli.md).
 
 A command's frontmatter can route it: `agent: <name>` runs the command with that
 agent's prompt and permissions, and `subtask: true` runs it in an isolated
@@ -796,9 +826,11 @@ the TUI asks before loading them.
 
 oxide ships `dark` and `light` themes. Add a custom theme as JSON under
 `.oxide/themes/<name>.json` (project) or `<config>/oxide/themes/<name>.json`
-(global), then select it with `--use-theme <name>` or `/theme <name>`. Colors
-accept names (`cyan`, `lightblue`) or `#rrggbb`; unspecified slots fall back to
-the built-in `dark` theme:
+(global), then select it with `--use-theme <name>` or `/theme <name>`. The
+built-in palettes come from `oxide_core::theme_view`, shared with the desktop
+app, so the CLI and desktop use identical colors; custom theme files are read by
+both. Colors accept names (`cyan`, `lightblue`) or `#rrggbb`; unspecified slots
+fall back to the built-in `dark` theme:
 
 ```json
 {
@@ -824,7 +856,8 @@ footer (pending while running, success or error once it settles). Selection rows
 also use reverse video and outcomes include text or symbols, so meaning does not
 depend on color alone. For accessible custom themes, keep every foreground
 readable against the terminal background and avoid assigning the same color to
-`success`, `error`, and `tool`.
+`success`, `error`, and `tool`. The built-in themes use fixed `#rrggbb` colors
+(not the terminal's own ANSI palette) so they match the desktop app exactly.
 
 ## Sessions and context
 
@@ -888,6 +921,8 @@ Runtime state lives under the platform oxide config directory:
 - Settings: `settings.json` (e.g. `defaultProjectTrust`, `compaction`,
   `modelPrices`, `hideThinkingBlock`)
 - Themes: `themes/<name>.json`
+- Desktop projects: `desktop/projects.json` (folders added to the desktop sidebar)
+- Desktop approvals: `desktop/approvals.json` (tools allowed without prompting, per project)
 - Truncated tool output: `truncated/` (retained 7 days; see `OXIDE_TRUNCATION_DIR`)
 - Context compaction config: `compaction` in `settings.json` / `.oxide/settings.json`
 
@@ -902,6 +937,14 @@ cargo build
 cargo test
 cargo clippy --all-targets -- -D warnings
 cargo fmt
+```
+
+The workspace members are `crates/core` (shared agent core),
+`crates/cli` (the `oxide` terminal binary), and `crates/desktop`.
+The desktop GUI is feature-gated, so build it explicitly:
+
+```sh
+cargo build -p oxide-desktop --features gui
 ```
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) for architecture notes and guidelines.

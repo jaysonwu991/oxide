@@ -1,44 +1,21 @@
-mod agent;
-mod auth;
-mod cli;
-mod clipboard;
-mod compact;
-mod config;
-mod diff;
-mod ecosystem;
-mod html;
-mod llm;
-mod lsp;
-mod mcp;
-mod mcp_config;
-mod mcp_oauth;
-mod media;
-mod memory;
-mod notify;
-mod permission;
-mod plugin;
-mod plugin_registry;
-mod portkey_usage;
-mod pricing;
-mod session;
-mod sessions;
-mod snapshots;
 mod theme;
-mod tools;
-mod trust;
 mod tui;
 mod uninstall;
 
-use agent::{AgentEvent, Approver, Runtime};
+// The shared agent core (config, providers, tools, MCP, sessions, snapshots,
+// plugins, agent loop) is re-exported at the crate root so existing `crate::`
+// paths keep resolving with the same names as before the workspace split.
+pub use oxide_core::{
+    agent, auth, cli, clipboard, compact, config, diff, ecosystem, html, llm, lsp, mcp, mcp_config,
+    mcp_oauth, media, memory, notify, permission, plugin, plugin_registry, portkey_usage, pricing,
+    runner, session, sessions, snapshots, tools, trust,
+};
+
+use agent::{AgentEvent, Approver, Cancel, Steering};
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
 use config::Config;
-use llm::Message;
-use lsp::LspManager;
-use mcp::McpRegistry;
-use plugin::PluginHost;
 use session::SessionLog;
-use snapshots::Snapshots;
 use std::io::{self, IsTerminal, Read, Write};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -75,7 +52,7 @@ struct Cli {
     #[arg(long)]
     agent: Option<String>,
 
-    /// Mode: build/plan/auto-edit (permissions) or print/json/rpc (output)
+    /// Output mode: `print`, `json`, or `rpc` (defaults to print for prompts)
     #[arg(long, value_name = "MODE")]
     mode: Option<String>,
 
@@ -441,13 +418,13 @@ async fn main() -> Result<()> {
                         force,
                     } => sessions::delete(&current_dir, id, all, older_than, force),
                     SessionsAction::Compact { id, all } => {
-                        let config = Config::load(&current_dir, None, None, None, None, None)?;
+                        let config = Config::load(&current_dir, None, None, None, None)?;
                         config.require_api_key()?;
                         sessions::compact_sessions(&current_dir, &config, id, all).await
                     }
                     SessionsAction::Merge { a, b, summarize } => {
                         let config = if summarize {
-                            let config = Config::load(&current_dir, None, None, None, None, None)?;
+                            let config = Config::load(&current_dir, None, None, None, None)?;
                             config.require_api_key()?;
                             Some(config)
                         } else {
@@ -499,18 +476,11 @@ async fn main() -> Result<()> {
         Some(path) => path.clone(),
         None => std::env::current_dir().context("resolving current directory")?,
     };
-    // `--mode` carries either a permission mode (build/plan/auto-edit) or an
-    // output mode (print/json/rpc). Pi names its output modes this way, so we
-    // disambiguate by value and forward each to the right place.
-    let (permission_mode, mode) = split_mode(cli.mode.as_deref());
-    let config = Config::load(
-        &cwd,
-        cli.model,
-        cli.provider,
-        cli.agent,
-        permission_mode,
-        cli.reasoning,
-    )?;
+    // `--mode` selects the output mode, like Pi: `json` or `rpc` (and `print`
+    // for compatibility; `-p`/`--print` also selects print mode). There is no
+    // permission mode; use `--tools`/`--exclude-tools` for a read-only run.
+    let mode = parse_mode(cli.mode.as_deref())?;
+    let config = Config::load(&cwd, cli.model, cli.provider, cli.agent, cli.reasoning)?;
     let mut config = config;
     config.ephemeral = cli.no_session;
     config.load_context_files = !cli.no_context_files;
@@ -526,7 +496,6 @@ async fn main() -> Result<()> {
             })
             .unwrap_or_else(|| "dark".to_string())
     });
-    config.theme = theme::load(&cwd, &theme_name);
     if cli.no_context_files {
         config.ecosystem = ecosystem::load_with(&cwd, false);
     }
@@ -649,7 +618,14 @@ async fn main() -> Result<()> {
         if mode != "print" {
             anyhow::bail!("--mode {mode} requires an initial prompt");
         }
-        tui::run(config, cwd, session, cli.resume && !cli.no_session).await
+        tui::run(
+            config,
+            cwd,
+            session,
+            cli.resume && !cli.no_session,
+            theme_name,
+        )
+        .await
     }
 }
 
@@ -683,23 +659,27 @@ async fn run_print(
         Some(log) => log.messages()?,
         None => Vec::new(),
     };
-    let user = build_user_message(&prompt, &cwd, &attachments)?;
+    let user = runner::build_user_message(&prompt, &cwd, &attachments)?;
     if let Some(log) = &log {
         log.append(&user)?;
     }
     history.push(user);
 
     let (tx, rx) = unbounded_channel();
-    let request = RunRequest {
-        config: &config,
-        cwd: &cwd,
+    let run = runner::AgentRun {
+        config: config.clone(),
+        cwd: cwd.clone(),
         history,
         prompt,
         subtask,
         command_agent,
-        log: log.clone(),
+        session: log.clone(),
+        approve: Some(cli_approver(config.auto_approve)),
+        steering: Steering::new(),
+        follow_ups: Steering::new(),
+        cancel: Cancel::new(),
     };
-    spawn_agent(request, tx).await;
+    runner::spawn_agent(run, tx).await;
 
     match output {
         cli::OutputMode::Print => run_print_text(rx).await,
@@ -761,34 +741,31 @@ async fn run_print_text(mut rx: tokio::sync::mpsc::UnboundedReceiver<AgentEvent>
     Ok(())
 }
 
-fn build_user_message(prompt: &str, cwd: &Path, attachments: &[PathBuf]) -> Result<Message> {
-    let mut parts = Vec::new();
-    for path in attachments {
-        parts.push(media::load_attachment(path)?);
-    }
-    for path in media::referenced_attachments(prompt, cwd) {
-        parts.push(media::load_attachment(&path)?);
-    }
-    if parts.is_empty() {
-        Ok(Message::user(prompt))
-    } else {
-        Ok(Message::user_parts(prompt, parts))
-    }
+/// The CLI's approval callback: allow when `auto_approve`, otherwise explain
+/// the denial on stderr.
+fn cli_approver(auto_approve: bool) -> Approver {
+    Arc::new(move |tool, detail| {
+        if !auto_approve {
+            eprintln!(
+                "permission required for `{tool}` ({detail}); denying (auto_approve is false)"
+            );
+        }
+        Box::pin(async move { auto_approve })
+    })
 }
 
 /// Builds the initial prompt from positional arguments, expanding `@file`
 /// references and returning any image/PDF attachments separately.
-/// Splits `--mode` into an optional permission mode and an output mode.
-/// Values that name an output mode (`print`, `text`, `json`, `rpc`) go to the
-/// output slot; everything else is treated as a permission mode.
-fn split_mode(value: Option<&str>) -> (Option<String>, String) {
+/// Parses `--mode`, which selects an output mode like Pi: `json` or `rpc`
+/// (plus `print`/`text` for compatibility; `-p` also selects print mode).
+fn parse_mode(value: Option<&str>) -> Result<String> {
     match value {
-        None => (None, "print".to_string()),
+        None => Ok("print".to_string()),
         Some(raw) => {
             let normalized = raw.trim().to_ascii_lowercase();
             match normalized.as_str() {
-                "print" | "text" | "json" | "rpc" => (None, normalized),
-                _ => (Some(raw.to_string()), "print".to_string()),
+                "print" | "text" | "json" | "rpc" => Ok(normalized),
+                other => anyhow::bail!("unknown --mode `{other}` (expected print, json, or rpc)"),
             }
         }
     }
@@ -808,72 +785,7 @@ fn build_prompt(
     Ok((expanded.text, attachments))
 }
 
-/// Everything needed to start one agent run, bundled so the print, JSON, and
-/// RPC entry points share a single spawn path.
-struct RunRequest<'a> {
-    config: &'a Config,
-    cwd: &'a Path,
-    history: Vec<Message>,
-    prompt: String,
-    subtask: bool,
-    command_agent: Option<String>,
-    log: Option<SessionLog>,
-}
-
-/// Wires the runtime (MCP, plugins, session, snapshots, LSP) and spawns the
-/// agent loop, streaming events to `tx`.
-async fn spawn_agent(request: RunRequest<'_>, tx: tokio::sync::mpsc::UnboundedSender<AgentEvent>) {
-    let RunRequest {
-        config,
-        cwd,
-        history,
-        prompt,
-        subtask,
-        command_agent,
-        log,
-    } = request;
-    let mcp = Arc::new(McpRegistry::new(&config.ecosystem.mcp));
-    let plugins = Arc::new(PluginHost::spawn(&config.ecosystem.hooks, cwd).await);
-    let auto_approve = config.auto_approve;
-    let approve: Approver = Arc::new(move |tool, detail| {
-        if !auto_approve {
-            eprintln!(
-                "permission required for `{tool}` ({detail}); denying (auto_approve is false)"
-            );
-        }
-        Box::pin(async move { auto_approve })
-    });
-    let runtime = Runtime {
-        mcp,
-        plugins,
-        session: log.map(Arc::new),
-        snapshots: Snapshots::open(cwd).ok().map(Arc::new),
-        lsp: Arc::new(LspManager::new()),
-        approve,
-        steering: crate::agent::Steering::new(),
-        follow_ups: crate::agent::Steering::new(),
-    };
-
-    if subtask {
-        let agent_name = command_agent.unwrap_or_default();
-        tokio::spawn(agent::run_subagent(
-            config.clone(),
-            cwd.to_path_buf(),
-            history,
-            agent_name,
-            prompt,
-            tx,
-            runtime,
-        ));
-    } else {
-        let mut config = config.clone();
-        if let Some(name) = command_agent {
-            config.active_agent = config.ecosystem.agent(&name).cloned();
-        }
-        tokio::spawn(agent::run(config, cwd.to_path_buf(), history, tx, runtime));
-    }
-}
-
+/// Everything needed to start one agent run is `runner::AgentRun`.
 /// RPC mode: reads JSONL prompts from stdin and streams JSONL events to stdout.
 /// Each `prompt` request starts a fresh agent run on the session history.
 async fn run_rpc_mode(config: Config, cwd: PathBuf, session: Option<SessionLog>) -> Result<()> {
@@ -904,22 +816,26 @@ async fn run_rpc_mode(config: Config, cwd: PathBuf, session: Option<SessionLog>)
                 .unwrap_or(prompt);
             let command_agent = resolved.as_ref().and_then(|command| command.agent.clone());
             let subtask = resolved.as_ref().is_some_and(|command| command.subtask);
-            let user = build_user_message(&text, &cwd, &[])?;
+            let user = runner::build_user_message(&text, &cwd, &[])?;
             if let Some(log) = &log {
                 log.append(&user)?;
             }
             history.push(user);
             let (run_tx, mut run_rx) = unbounded_channel();
-            let request = RunRequest {
-                config: &config,
-                cwd: &cwd,
+            let run = runner::AgentRun {
+                config: config.clone(),
+                cwd: cwd.clone(),
                 history: history.clone(),
                 prompt: text,
                 subtask,
                 command_agent,
-                log: log.clone(),
+                session: log.clone(),
+                approve: Some(cli_approver(config.auto_approve)),
+                steering: Steering::new(),
+                follow_ups: Steering::new(),
+                cancel: Cancel::new(),
             };
-            spawn_agent(request, run_tx).await;
+            runner::spawn_agent(run, run_tx).await;
             while let Some(event) = run_rx.recv().await {
                 let finished = matches!(event, AgentEvent::Finished(_));
                 if let AgentEvent::Finished(messages) = &event {
@@ -944,23 +860,17 @@ async fn run_rpc_mode(config: Config, cwd: PathBuf, session: Option<SessionLog>)
 
 #[cfg(test)]
 mod tests {
-    use super::{split_mode, Cli, Command, MarketplaceAction, PluginAction};
+    use super::{parse_mode, Cli, Command, MarketplaceAction, PluginAction};
     use clap::Parser;
 
     #[test]
-    fn mode_splits_permission_and_output() {
-        assert_eq!(split_mode(None), (None, "print".to_string()));
-        assert_eq!(split_mode(Some("json")), (None, "json".to_string()));
-        assert_eq!(split_mode(Some("RPC")), (None, "rpc".to_string()));
-        assert_eq!(split_mode(Some("print")), (None, "print".to_string()));
-        assert_eq!(
-            split_mode(Some("plan")),
-            (Some("plan".to_string()), "print".to_string())
-        );
-        assert_eq!(
-            split_mode(Some("auto-edit")),
-            (Some("auto-edit".to_string()), "print".to_string())
-        );
+    fn mode_parses_output_modes() {
+        assert_eq!(parse_mode(None).unwrap(), "print");
+        assert_eq!(parse_mode(Some("json")).unwrap(), "json");
+        assert_eq!(parse_mode(Some("RPC")).unwrap(), "rpc");
+        assert_eq!(parse_mode(Some("print")).unwrap(), "print");
+        assert!(parse_mode(Some("plan")).is_err());
+        assert!(parse_mode(Some("auto-edit")).is_err());
     }
 
     #[test]

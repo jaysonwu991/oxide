@@ -3212,7 +3212,6 @@ fn wrap(text: &str, width: usize) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::Mode;
 
     #[test]
     fn input_rows_grows_and_clamps() {
@@ -3280,7 +3279,7 @@ mod tests {
 
     #[test]
     fn render_cache_rebuilds_only_from_the_dirty_item() {
-        let mut app = App::new("model".into(), "/tmp".into(), Mode::Build, Reasoning::Auto);
+        let mut app = App::new("model".into(), "/tmp".into(), Reasoning::Auto);
         app.items.push(ChatItem::User("first".into()));
         app.push_assistant_delta("second".into());
         sync_lines(&mut app, 40);
@@ -3300,7 +3299,7 @@ mod tests {
 
     #[test]
     fn message_position_at_maps_cells_to_absolute_lines() {
-        let mut app = App::new("model".into(), "/tmp".into(), Mode::Build, Reasoning::Auto);
+        let mut app = App::new("model".into(), "/tmp".into(), Reasoning::Auto);
         app.scroll = 4;
         let area = Rect {
             x: 0,
@@ -3865,7 +3864,10 @@ mod tests {
         );
         assert_eq!(panel_line(&lines), "→ Ran cargo test --all · exit 0");
         assert_eq!(lines.len(), 5);
-        assert_eq!(lines[1].spans[1].style.fg, Some(Color::LightGreen));
+        assert_eq!(
+            lines[1].spans[1].style.fg,
+            Some(crate::theme::Theme::dark().success)
+        );
 
         let mut lines = Vec::new();
         render_item(
@@ -3881,7 +3883,10 @@ mod tests {
             &mut lines,
         );
         assert_eq!(panel_line(&lines), "→ Run failed cargo test --all · exit 1");
-        assert_eq!(lines[1].spans[1].style.fg, Some(Color::LightRed));
+        assert_eq!(
+            lines[1].spans[1].style.fg,
+            Some(crate::theme::Theme::dark().error)
+        );
     }
 
     #[test]
@@ -4035,14 +4040,23 @@ mod tests {
         assert_eq!(panel_line(&lines), "→ Edited src/main.rs");
         assert_eq!(
             lines[1].spans[0].style.bg,
-            Some(Color::Rgb(0x28, 0x32, 0x28))
+            Some(crate::theme::Theme::dark().tool_success_bg)
         );
-        assert_eq!(lines[3].spans[1].style.fg, Some(Color::Gray));
-        assert_eq!(lines[4].spans[1].style.fg, Some(Color::LightRed));
-        assert_eq!(lines[5].spans[1].style.fg, Some(Color::LightGreen));
+        assert_eq!(
+            lines[3].spans[1].style.fg,
+            Some(crate::theme::Theme::dark().dim)
+        );
+        assert_eq!(
+            lines[4].spans[1].style.fg,
+            Some(crate::theme::Theme::dark().error)
+        );
+        assert_eq!(
+            lines[5].spans[1].style.fg,
+            Some(crate::theme::Theme::dark().success)
+        );
         assert_eq!(
             lines[6].spans[0].style.bg,
-            Some(Color::Rgb(0x28, 0x32, 0x28))
+            Some(crate::theme::Theme::dark().tool_success_bg)
         );
     }
 
@@ -4064,12 +4078,12 @@ mod tests {
         assert_eq!(panel_line(&lines), "→ Ran echo hi · exit 0");
         assert_eq!(
             lines[1].spans[0].style.bg,
-            Some(Color::Rgb(0x28, 0x32, 0x28))
+            Some(crate::theme::Theme::dark().tool_success_bg)
         );
         assert_eq!(lines[3].spans[1].content.as_ref(), "hi");
         assert_eq!(
             lines[4].spans[0].style.bg,
-            Some(Color::Rgb(0x28, 0x32, 0x28))
+            Some(crate::theme::Theme::dark().tool_success_bg)
         );
         for line in &lines {
             assert!(
@@ -4095,23 +4109,23 @@ mod tests {
         assert_eq!(panel_line(&lines), "↳ grep");
         assert_eq!(
             lines[1].spans[0].style.bg,
-            Some(Color::Rgb(0x28, 0x32, 0x28))
+            Some(crate::theme::Theme::dark().tool_success_bg)
         );
         assert!(line_text(&lines[2]).trim().is_empty());
         assert_eq!(lines[3].spans[1].content.as_ref(), "match");
         assert_eq!(
             lines[4].spans[0].style.bg,
-            Some(Color::Rgb(0x28, 0x32, 0x28))
+            Some(crate::theme::Theme::dark().tool_success_bg)
         );
     }
 
     #[test]
     fn panel_backgrounds_stay_on_their_text_rows() {
-        use crate::config::{Mode, Reasoning};
+        use crate::config::Reasoning;
         use ratatui::backend::TestBackend;
         use ratatui::Terminal;
 
-        let mut app = App::new("m".into(), "/tmp".into(), Mode::Build, Reasoning::Auto);
+        let mut app = App::new("m".into(), "/tmp".into(), Reasoning::Auto);
         app.items.push(ChatItem::ToolResult {
             name: "grep".into(),
             args: r#"{"pattern":"x"}"#.into(),
@@ -4122,7 +4136,7 @@ mod tests {
         let mut terminal = Terminal::new(TestBackend::new(60, 24)).unwrap();
         terminal.draw(|frame| draw(frame, &mut app)).unwrap();
         let buffer = terminal.backend().buffer();
-        let bg = Some(Color::Rgb(0x28, 0x32, 0x28));
+        let bg = Some(crate::theme::Theme::dark().tool_success_bg);
 
         // Without the phantom wrapping row, the header and body sit two rows
         // apart and both carry the panel background on the same row.
@@ -4176,7 +4190,10 @@ mod tests {
             .iter()
             .find(|line| line_text(line).contains("Took 1.2s"))
             .expect("Took line");
-        assert_eq!(took.spans[1].style.bg, Some(Color::Rgb(0x28, 0x32, 0x28)));
+        assert_eq!(
+            took.spans[1].style.bg,
+            Some(crate::theme::Theme::dark().tool_success_bg)
+        );
     }
 
     #[test]
@@ -4279,7 +4296,7 @@ mod tests {
 
     #[test]
     fn the_running_tool_panel_ticks_its_elapsed() {
-        let mut app = App::new("m".into(), "/tmp".into(), Mode::Build, Reasoning::Auto);
+        let mut app = App::new("m".into(), "/tmp".into(), Reasoning::Auto);
         app.items.push(ChatItem::Tool {
             name: "task".into(),
             args: r#"{"prompt":"review","subagent_type":"rust-reviewer"}"#.into(),
@@ -4325,7 +4342,7 @@ mod tests {
 
     #[test]
     fn a_running_tool_with_queued_messages_advertises_the_dequeue_key() {
-        let mut app = App::new("m".into(), "/tmp".into(), Mode::Build, Reasoning::Auto);
+        let mut app = App::new("m".into(), "/tmp".into(), Reasoning::Auto);
         app.busy = true;
         app.busy_since = Some(std::time::Instant::now());
         app.status = "thinking...".into();
@@ -4417,7 +4434,7 @@ mod tests {
 
     #[test]
     fn model_picker_matches_pi_layout() {
-        use crate::config::{Mode, Reasoning};
+        use crate::config::Reasoning;
         use crate::tui::app::{ModelChoice, ModelsState};
         use ratatui::backend::TestBackend;
         use ratatui::Terminal;
@@ -4425,7 +4442,6 @@ mod tests {
         let mut app = App::new(
             "deepseek-flash".into(),
             "/tmp/project".into(),
-            Mode::Build,
             Reasoning::Auto,
         );
         app.models = Some(ModelsState::ready(
@@ -4479,16 +4495,11 @@ mod tests {
 
     #[test]
     fn footer_shows_cache_cost_and_extension_statuses() {
-        use crate::config::{Mode, Reasoning};
+        use crate::config::Reasoning;
         use ratatui::backend::TestBackend;
         use ratatui::Terminal;
 
-        let mut app = App::new(
-            "gpt-4o".into(),
-            "/tmp/project".into(),
-            Mode::Build,
-            Reasoning::Auto,
-        );
+        let mut app = App::new("gpt-4o".into(), "/tmp/project".into(), Reasoning::Auto);
         app.tokens_in = 1_000;
         app.tokens_out = 500;
         app.tokens_cache_read = 800;
@@ -4514,16 +4525,11 @@ mod tests {
 
     #[test]
     fn footer_stacks_project_above_stats_and_right_aligned_model() {
-        use crate::config::{Mode, Reasoning};
+        use crate::config::Reasoning;
         use ratatui::backend::TestBackend;
         use ratatui::Terminal;
 
-        let mut app = App::new(
-            "gpt-4o".into(),
-            "/tmp/project".into(),
-            Mode::Build,
-            Reasoning::Auto,
-        );
+        let mut app = App::new("gpt-4o".into(), "/tmp/project".into(), Reasoning::Auto);
         app.status = "ready".into();
         app.git_branch = Some("main".into());
         let mut terminal = Terminal::new(TestBackend::new(69, 24)).unwrap();
@@ -4551,16 +4557,11 @@ mod tests {
 
     #[test]
     fn composer_rule_shows_working_status_without_duplicating_footer_usage() {
-        use crate::config::{Mode, Reasoning};
+        use crate::config::Reasoning;
         use ratatui::backend::TestBackend;
         use ratatui::Terminal;
 
-        let mut app = App::new(
-            "gpt-4o".into(),
-            "/tmp/project".into(),
-            Mode::Build,
-            Reasoning::Auto,
-        );
+        let mut app = App::new("gpt-4o".into(), "/tmp/project".into(), Reasoning::Auto);
         app.status = "ready".into();
         app.busy = true;
         app.busy_since = Some(std::time::Instant::now());
@@ -4593,7 +4594,7 @@ mod tests {
 
     #[test]
     fn composer_keeps_its_caret_while_the_agent_is_busy() {
-        use crate::config::{Mode, Reasoning};
+        use crate::config::Reasoning;
         use ratatui::backend::{Backend, TestBackend};
         use ratatui::layout::Position;
         use ratatui::Terminal;
@@ -4602,12 +4603,7 @@ mod tests {
         // checks follow the wrapped, scrolled position and not just column 0.
         let input = "first line\nsecond line\nthird line\nfourth line\nqueued steering";
         let caret = |busy: bool| {
-            let mut app = App::new(
-                "gpt-4o".into(),
-                "/tmp/project".into(),
-                Mode::Build,
-                Reasoning::Auto,
-            );
+            let mut app = App::new("gpt-4o".into(), "/tmp/project".into(), Reasoning::Auto);
             app.input = input.into();
             app.input_cursor = app.input.len();
             app.busy = busy;
@@ -4627,14 +4623,9 @@ mod tests {
 
     #[test]
     fn suggestion_hit_testing_tracks_the_visible_window() {
-        use crate::config::{Mode, Reasoning};
+        use crate::config::Reasoning;
 
-        let mut app = App::new(
-            "gpt-4o".into(),
-            "/tmp/project".into(),
-            Mode::Build,
-            Reasoning::Auto,
-        );
+        let mut app = App::new("gpt-4o".into(), "/tmp/project".into(), Reasoning::Auto);
         app.set_input("/".to_string());
         app.suggestions = (0..10)
             .map(|index| crate::tui::app::CommandHint {
@@ -4652,16 +4643,11 @@ mod tests {
 
     #[test]
     fn suggestion_keeps_a_long_command_name_and_ellipsizes_its_description() {
-        use crate::config::{Mode, Reasoning};
+        use crate::config::Reasoning;
         use ratatui::backend::TestBackend;
         use ratatui::Terminal;
 
-        let mut app = App::new(
-            "gpt-4o".into(),
-            "/tmp/project".into(),
-            Mode::Build,
-            Reasoning::Auto,
-        );
+        let mut app = App::new("gpt-4o".into(), "/tmp/project".into(), Reasoning::Auto);
         app.set_input("/add".to_string());
         app.suggestions = vec![crate::tui::app::CommandHint {
             name: "add-editorial-cross-links-page-type".to_string(),
@@ -4688,16 +4674,11 @@ mod tests {
 
     #[test]
     fn usage_bar_takes_the_bottom_row_when_enabled() {
-        use crate::config::{Mode, Reasoning};
+        use crate::config::Reasoning;
         use ratatui::backend::TestBackend;
         use ratatui::Terminal;
 
-        let mut app = App::new(
-            "gpt-4o".into(),
-            "/tmp/project".into(),
-            Mode::Build,
-            Reasoning::Auto,
-        );
+        let mut app = App::new("gpt-4o".into(), "/tmp/project".into(), Reasoning::Auto);
         app.cost = 0.0;
         let settings = crate::portkey_usage::UsageSettings {
             enabled: true,
@@ -4733,16 +4714,11 @@ mod tests {
 
     #[test]
     fn usage_bar_is_absent_by_default() {
-        use crate::config::{Mode, Reasoning};
+        use crate::config::Reasoning;
         use ratatui::backend::TestBackend;
         use ratatui::Terminal;
 
-        let mut app = App::new(
-            "gpt-4o".into(),
-            "/tmp/project".into(),
-            Mode::Build,
-            Reasoning::Auto,
-        );
+        let mut app = App::new("gpt-4o".into(), "/tmp/project".into(), Reasoning::Auto);
         assert!(app.usage.is_none());
         let mut terminal = Terminal::new(TestBackend::new(80, 24)).unwrap();
         terminal.draw(|frame| draw(frame, &mut app)).unwrap();
@@ -4751,14 +4727,13 @@ mod tests {
 
     #[test]
     fn footer_omits_branch_outside_a_git_repo() {
-        use crate::config::{Mode, Reasoning};
+        use crate::config::Reasoning;
         use ratatui::backend::TestBackend;
         use ratatui::Terminal;
 
         let mut app = App::new(
             "gpt-4o".into(),
             "/path/that/is/not/a/repository".into(),
-            Mode::Build,
             Reasoning::Auto,
         );
         let mut terminal = Terminal::new(TestBackend::new(80, 24)).unwrap();
@@ -4769,18 +4744,13 @@ mod tests {
 
     #[test]
     fn marketplaces_overlay_renders_marketplace_and_plugins() {
-        use crate::config::{Mode, Reasoning};
+        use crate::config::Reasoning;
         use crate::plugin_registry::{MarketplaceOverview, MarketplacePluginOverview};
         use crate::tui::app::MarketplacesState;
         use ratatui::backend::TestBackend;
         use ratatui::Terminal;
 
-        let mut app = App::new(
-            "gpt-4o".into(),
-            "/tmp/project".into(),
-            Mode::Build,
-            Reasoning::Auto,
-        );
+        let mut app = App::new("gpt-4o".into(), "/tmp/project".into(), Reasoning::Auto);
         app.marketplaces = Some(MarketplacesState::ready(vec![MarketplaceOverview {
             name: "skyscanner".into(),
             source: "https://github.com/Skyscanner/plugins".into(),
@@ -4825,19 +4795,12 @@ mod tests {
 
     #[test]
     fn dialog_inputs_place_a_cursor_at_the_end_of_the_value() {
-        use crate::config::{Mode, Reasoning};
+        use crate::config::Reasoning;
         use crate::tui::app::{ConnectState, UsageState};
         use ratatui::backend::{Backend, TestBackend};
         use ratatui::Terminal;
 
-        let new_app = || {
-            App::new(
-                "gpt-4o".into(),
-                "/tmp/project".into(),
-                Mode::Build,
-                Reasoning::Auto,
-            )
-        };
+        let new_app = || App::new("gpt-4o".into(), "/tmp/project".into(), Reasoning::Auto);
 
         let connect_caret = |input: &str| {
             let mut app = new_app();
@@ -4930,12 +4893,12 @@ mod wrap_parity_tests {
 
     #[test]
     fn carriage_returns_never_reach_the_buffer() {
-        use crate::config::{Mode, Reasoning};
+        use crate::config::Reasoning;
         use ratatui::backend::TestBackend;
         use ratatui::Terminal;
 
         let output = "Cloning into 'x'...\nUpdating files:  74% (1879/2512)\rUpdating files:  75% (1884/2512)\rUpdating files: 100% (2512/2512), done.\n[exit: 0]";
-        let mut app = App::new("m".into(), "/tmp".into(), Mode::Build, Reasoning::Auto);
+        let mut app = App::new("m".into(), "/tmp".into(), Reasoning::Auto);
         app.items.push(ChatItem::ToolResult {
             name: "bash".into(),
             args: "{\"command\":\"git clone x\"}".into(),
