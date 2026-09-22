@@ -2,7 +2,8 @@ name: desktop
 
 # Builds the desktop app for macOS, Linux, and Windows. Signing and notarization
 # happen automatically when the corresponding secrets are configured; without
-# them the bundles are produced unsigned.
+# them the macOS bundle is ad-hoc signed (so it still launches after Gatekeeper
+# approval) and the other platforms are produced unsigned.
 
 on:
   workflow_dispatch:
