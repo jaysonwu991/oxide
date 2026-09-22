@@ -14,6 +14,7 @@ mod mcp_config;
 mod mcp_oauth;
 mod media;
 mod memory;
+mod notify;
 mod permission;
 mod plugin;
 mod plugin_registry;

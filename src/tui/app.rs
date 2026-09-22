@@ -654,6 +654,9 @@ pub struct App {
     pub running_tool: Option<(String, Instant)>,
     /// The subagent a running `task` call spawned, if any.
     pub subagent: Option<SubagentState>,
+    /// Whether the in-flight run is an agent turn whose completion should raise
+    /// a toast. Internal runs (`/compact`, branch summaries) leave it false.
+    pub notify_on_finish: bool,
 }
 
 impl App {
@@ -722,6 +725,24 @@ impl App {
             selection: None,
             running_tool: None,
             subagent: None,
+            notify_on_finish: false,
+        }
+    }
+
+    /// A short plain-text summary of the newest assistant reply, used as the
+    /// body of the completion toast.
+    pub fn completion_summary(&self) -> String {
+        let Some(message) = self.history.iter().rev().find(|m| m.role == "assistant") else {
+            return "Turn complete".to_string();
+        };
+        let Some(text) = message.display() else {
+            return "Turn complete".to_string();
+        };
+        let summary = bounded_summary(&text, COMPLETION_SUMMARY_LIMIT);
+        if summary.is_empty() {
+            "Turn complete".to_string()
+        } else {
+            summary
         }
     }
 
@@ -1123,6 +1144,46 @@ fn current_git_branch(cwd: &str) -> Option<String> {
     (!branch.is_empty()).then(|| branch.to_string())
 }
 
+/// The maximum length of the completion toast body, including the ellipsis.
+const COMPLETION_SUMMARY_LIMIT: usize = 160;
+
+/// Collapses whitespace and truncates to `max` characters, stopping as soon as
+/// the limit is reached so a very long final reply is not normalized in full on
+/// the event-loop thread.
+fn bounded_summary(text: &str, max: usize) -> String {
+    if max == 0 {
+        return String::new();
+    }
+    let keep = max - 1;
+    let mut out = String::new();
+    let mut used = 0usize;
+    let mut truncated = false;
+    for word in text.split_whitespace() {
+        let separator = usize::from(!out.is_empty());
+        let length = word.chars().count();
+        if used + separator + length > keep {
+            if separator == 1 && used < keep {
+                out.push(' ');
+                used += 1;
+            }
+            let take = keep.saturating_sub(used);
+            out.extend(word.chars().take(take));
+            truncated = true;
+            break;
+        }
+        if separator == 1 {
+            out.push(' ');
+            used += 1;
+        }
+        out.push_str(word);
+        used += length;
+    }
+    if truncated {
+        out.push('…');
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1136,6 +1197,37 @@ mod tests {
 
     fn test_app() -> App {
         App::new("gpt-4o".into(), ".".into(), Mode::Build, Reasoning::Auto)
+    }
+
+    #[test]
+    fn completion_summary_uses_the_last_assistant_reply() {
+        let mut app = test_app();
+        app.history = vec![
+            Message::user("do the thing"),
+            Message::assistant("first", vec![]),
+            Message::assistant("all  done\n\non two lines", vec![]),
+        ];
+        assert_eq!(app.completion_summary(), "all done on two lines");
+    }
+
+    #[test]
+    fn completion_summary_ignores_older_replies_after_a_tool_call_only_turn() {
+        let mut app = test_app();
+        app.history = vec![
+            Message::assistant("the earlier answer", vec![]),
+            Message::assistant("", vec![]),
+        ];
+        assert_eq!(app.completion_summary(), "Turn complete");
+    }
+
+    #[test]
+    fn completion_summary_truncates_and_falls_back() {
+        let mut app = test_app();
+        assert_eq!(app.completion_summary(), "Turn complete");
+        app.history = vec![Message::assistant("x".repeat(400), vec![])];
+        let summary = app.completion_summary();
+        assert_eq!(summary.chars().count(), 160);
+        assert!(summary.ends_with('…'));
     }
 
     #[test]
