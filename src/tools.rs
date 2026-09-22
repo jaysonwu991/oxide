@@ -126,13 +126,13 @@ pub fn specs(mcp: &McpRegistry) -> Vec<ToolSpec> {
     let mut specs = vec![
         spec(
             "read",
-            "Read a file. Text files are returned with line numbers; image (png/jpg/gif/webp) and PDF files are returned as viewable attachments. If `path` is a directory, its entries are listed instead. Absolute paths and paths outside the project are allowed.",
+            "Read a file. Text files are returned with line numbers; image (png/jpg/gif/webp) and PDF files are returned as viewable attachments. If `path` is a directory, its entries are listed instead. Absolute paths and paths outside the project are allowed. A line longer than 1000 characters is split into continuation chunks (`N|`, `N+|`, …), and `offset`/`limit` count those display lines, so an over-long line (a minified JSON value) can be paged through instead of being cut off.",
             json!({
                 "type": "object",
                 "properties": {
                     "path": { "type": "string", "description": "File path; absolute paths are allowed" },
-                    "offset": { "type": "integer", "description": "1-based line number to start from (text only)" },
-                    "limit": { "type": "integer", "description": "Maximum number of lines to return (text only, default 250)" }
+                    "offset": { "type": "integer", "description": "1-based display line to start from (text only; a long line counts once per chunk)" },
+                    "limit": { "type": "integer", "description": "Maximum number of display lines to return (text only, default 250)" }
                 },
                 "required": ["path"]
             }),
@@ -210,14 +210,15 @@ pub fn specs(mcp: &McpRegistry) -> Vec<ToolSpec> {
         ),
         spec(
             "grep",
-            "Search file contents for a substring and return matching `path:line: text` entries. Absolute paths are allowed.",
+            "Search file contents for a pattern and return matching `path:line: text` entries. The pattern matches a literal substring by default; set `regex` to treat it as a regular expression. Absolute paths are allowed.",
             json!({
                 "type": "object",
                 "properties": {
-                    "pattern": { "type": "string", "description": "Text to search for" },
+                    "pattern": { "type": "string", "description": "Text or regular expression to search for" },
                     "path": { "type": "string", "description": "Directory to search in (default: .)" },
                     "glob": { "type": "string", "description": "Glob pattern to restrict which file names are searched (e.g. `*.rs`)" },
                     "ignoreCase": { "type": "boolean", "description": "Case-insensitive search" },
+                    "regex": { "type": "boolean", "description": "Treat `pattern` as a regular expression (default: literal substring)" },
                     "context": { "type": "integer", "description": "Number of context lines to include around each match" },
                     "limit": { "type": "integer", "description": "Maximum number of matches to return" }
                 },
@@ -424,35 +425,74 @@ fn read_file(cwd: &Path, args: &Value) -> Result<ToolOutput> {
         }
     };
 
-    let total = content.lines().count();
+    let lines: Vec<&str> = content.lines().collect();
+    // A long line is served in chunks so it can still be paged through; each
+    // chunk is one display line, which is what `offset`/`limit` count.
+    let total: usize = lines
+        .iter()
+        .map(|line| line.chars().count().max(1).div_ceil(MAX_LINE_LEN))
+        .sum();
     let budget = MAX_OUTPUT_BYTES.saturating_sub(128);
     let mut numbered: Vec<String> = Vec::new();
     let mut used = 0usize;
-    for (i, line) in content.lines().enumerate().skip(offset - 1).take(limit) {
-        let shown = if line.chars().count() > MAX_LINE_LEN {
-            let prefix: String = line.chars().take(MAX_LINE_LEN).collect();
-            format!("{prefix} …")
-        } else {
-            line.to_string()
-        };
-        let entry = format!("{}|{shown}", i + 1);
-        if !numbered.is_empty() && used + entry.len() + 1 > budget {
-            break;
+    let mut display = 0usize;
+    let mut next_offset: Option<usize> = None;
+    'outer: for (file_index, line) in lines.iter().enumerate() {
+        for (chunk_index, chunk) in line_chunks(line).into_iter().enumerate() {
+            display += 1;
+            if display < offset {
+                continue;
+            }
+            if numbered.len() >= limit {
+                next_offset = Some(display);
+                break 'outer;
+            }
+            let prefix = if chunk_index == 0 {
+                format!("{}|", file_index + 1)
+            } else {
+                format!("{}+|", file_index + 1)
+            };
+            let entry = format!("{prefix}{chunk}");
+            if !numbered.is_empty() && used + entry.len() + 1 > budget {
+                next_offset = Some(display);
+                break 'outer;
+            }
+            used += entry.len() + 1;
+            numbered.push(entry);
         }
-        used += entry.len() + 1;
-        numbered.push(entry);
     }
 
     let mut out = numbered.join("\n");
-    let read_to = (offset - 1) + numbered.len();
-    if read_to < total {
+    if let Some(next) = next_offset {
         out.push_str(&format!(
             "\n... [{} more lines; use offset={}]",
-            total - read_to,
-            read_to + 1
+            total + 1 - next,
+            next
         ));
     }
     Ok(ToolOutput::text(out))
+}
+
+/// Splits a line into chunks of at most `MAX_LINE_LEN` characters so a very
+/// long line (a minified JSON value, a wide table row) can be paged through
+/// with `read`'s `offset`/`limit` instead of being cut off at the first chunk.
+fn line_chunks(line: &str) -> Vec<&str> {
+    if line.chars().count() <= MAX_LINE_LEN {
+        return vec![line];
+    }
+    let mut chunks = Vec::new();
+    let mut start = 0;
+    let mut count = 0;
+    for (index, _) in line.char_indices() {
+        if count == MAX_LINE_LEN {
+            chunks.push(&line[start..index]);
+            start = index;
+            count = 0;
+        }
+        count += 1;
+    }
+    chunks.push(&line[start..]);
+    chunks
 }
 
 fn write_file(cwd: &Path, args: &Value) -> Result<ToolOutput> {
@@ -691,21 +731,69 @@ fn grep(cwd: &Path, args: &Value) -> Result<String> {
         .and_then(Value::as_str)
         .or_else(|| args.get("include").and_then(Value::as_str));
     let ignore_case = bool_arg(args, "ignoreCase", "ignore_case");
+    let use_regex = bool_arg(args, "regex", "use_regex");
     let context = int_arg(args, "context").unwrap_or(0);
     let limit = int_arg(args, "limit").unwrap_or(MAX_MATCHES);
     let root = resolve(cwd, base);
 
-    // `rg` applies the same literal search with far less I/O, so prefer it and
-    // fall back to the dependency-free walker when it is unavailable.
-    if let Some(output) = rg_grep(&root, pattern, include, ignore_case, context, limit) {
+    // `rg` applies the same search with far less I/O, so prefer it and fall
+    // back to the dependency-free walker when it is unavailable.
+    if let Some(output) = rg_grep(
+        &root,
+        pattern,
+        include,
+        ignore_case,
+        context,
+        limit,
+        use_regex,
+    ) {
         return Ok(output);
     }
-    let needle = if ignore_case {
-        pattern.to_lowercase()
-    } else {
-        pattern.to_string()
-    };
-    rust_grep(&root, &needle, include, ignore_case, context, limit)
+    let matcher = GrepMatcher::new(pattern, use_regex, ignore_case)?;
+    rust_grep(&root, &matcher, include, context, limit)
+}
+
+/// How a `grep` line is matched: a literal substring or a compiled regex.
+enum GrepMatcher {
+    Literal { needle: String, ignore_case: bool },
+    Regex(regex::Regex),
+}
+
+impl GrepMatcher {
+    fn new(pattern: &str, use_regex: bool, ignore_case: bool) -> Result<Self> {
+        if use_regex {
+            let regex = regex::RegexBuilder::new(pattern)
+                .case_insensitive(ignore_case)
+                .build()
+                .map_err(|err| anyhow::anyhow!("invalid `pattern` regex: {err}"))?;
+            Ok(GrepMatcher::Regex(regex))
+        } else {
+            Ok(GrepMatcher::Literal {
+                needle: if ignore_case {
+                    pattern.to_lowercase()
+                } else {
+                    pattern.to_string()
+                },
+                ignore_case,
+            })
+        }
+    }
+
+    fn is_match(&self, line: &str) -> bool {
+        match self {
+            GrepMatcher::Literal {
+                needle,
+                ignore_case,
+            } => {
+                if *ignore_case {
+                    line.to_lowercase().contains(needle)
+                } else {
+                    line.contains(needle.as_str())
+                }
+            }
+            GrepMatcher::Regex(regex) => regex.is_match(line),
+        }
+    }
 }
 
 /// Runs `grep` through `ripgrep` when it is on `PATH`, returning `None` so the
@@ -717,6 +805,7 @@ fn rg_grep(
     ignore_case: bool,
     context: usize,
     limit: usize,
+    use_regex: bool,
 ) -> Option<String> {
     if !command_exists("rg") {
         return None;
@@ -733,7 +822,6 @@ fn rg_grep(
         "--no-require-git",
         "--hidden",
         "--json",
-        "--fixed-strings",
         "--no-messages",
         "--glob",
         "!.git",
@@ -744,6 +832,9 @@ fn rg_grep(
         "--glob",
         "!.venv",
     ]);
+    if !use_regex {
+        command.arg("--fixed-strings");
+    }
     if ignore_case {
         command.arg("--ignore-case");
     }
@@ -797,9 +888,8 @@ fn rg_grep(
 /// Greps the tree with the built-in parallel walker.
 fn rust_grep(
     root: &Path,
-    needle: &str,
+    matcher: &GrepMatcher,
     include: Option<&str>,
-    ignore_case: bool,
     context: usize,
     limit: usize,
 ) -> Result<String> {
@@ -817,7 +907,7 @@ fn rust_grep(
         candidates.push(path.to_path_buf());
         true
     });
-    let hits = scan_files(root, &candidates, needle, ignore_case, context, limit);
+    let hits = scan_files(root, &candidates, matcher, context, limit);
     Ok(finish_hits(hits, limit))
 }
 
@@ -844,14 +934,13 @@ fn command_exists(name: &str) -> bool {
         .any(|dir| dir.join(name).is_file() || dir.join(format!("{name}.exe")).is_file())
 }
 
-/// Scans the candidate files for `needle` across the available cores,
+/// Scans the candidate files for a matcher's hits across the available cores,
 /// stopping once one more than `limit` matches have been collected so the
 /// caller can report truncation.
 fn scan_files(
     root: &Path,
     candidates: &[PathBuf],
-    needle: &str,
-    ignore_case: bool,
+    matcher: &GrepMatcher,
     context: usize,
     limit: usize,
 ) -> Vec<String> {
@@ -879,8 +968,7 @@ fn scan_files(
                         let Some(path) = candidates.get(index) else {
                             break;
                         };
-                        let file_hits =
-                            scan_file(root, path, needle, ignore_case, context, stop_at);
+                        let file_hits = scan_file(root, path, matcher, context, stop_at);
                         if file_hits.is_empty() {
                             continue;
                         }
@@ -904,8 +992,7 @@ fn scan_files(
 fn scan_file(
     root: &Path,
     path: &Path,
-    needle: &str,
-    ignore_case: bool,
+    matcher: &GrepMatcher,
     context: usize,
     max: usize,
 ) -> Vec<String> {
@@ -920,12 +1007,7 @@ fn scan_file(
     let lines: Vec<&str> = content.lines().collect();
     let mut hits = Vec::new();
     for (index, line) in lines.iter().enumerate() {
-        let matched = if ignore_case {
-            line.to_lowercase().contains(needle)
-        } else {
-            line.contains(needle)
-        };
-        if !matched {
+        if !matcher.is_match(line) {
             continue;
         }
         if context > 0 {
@@ -2214,6 +2296,54 @@ mod tests {
         std::fs::remove_dir_all(&dir).ok();
     }
 
+    #[tokio::test]
+    async fn grep_supports_regex_patterns() {
+        let dir = std::env::temp_dir().join(format!("oxide_grep_regex_{}", std::process::id()));
+        std::fs::remove_dir_all(&dir).ok();
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(
+            dir.join("a.java"),
+            "class A {}\n@Placeholder(name = \"cheapest_boutique_hotel\")\n",
+        )
+        .unwrap();
+        let mcp = McpRegistry::default();
+        let progress = Progress::default();
+
+        // A literal search does not match the pattern as a whole...
+        let literal = execute(
+            &call("grep", json!({ "pattern": "@Placeholder.*hotel" })),
+            &dir,
+            &mcp,
+            &progress,
+        )
+        .await;
+        assert!(!literal.text.contains("a.java"), "{}", literal.text);
+
+        // ...but `regex: true` does.
+        let regex = execute(
+            &call(
+                "grep",
+                json!({ "pattern": "@Placeholder.*hotel", "regex": true }),
+            ),
+            &dir,
+            &mcp,
+            &progress,
+        )
+        .await;
+        assert!(regex.text.contains("a.java"), "{}", regex.text);
+
+        let bad = execute(
+            &call("grep", json!({ "pattern": "([", "regex": true })),
+            &dir,
+            &mcp,
+            &progress,
+        )
+        .await;
+        assert!(bad.text.contains("invalid"), "{}", bad.text);
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
     #[test]
     fn list_dir_shows_symlink_targets() {
         let dir = std::env::temp_dir().join(format!("oxide_ls_symlink_{}", std::process::id()));
@@ -2240,12 +2370,18 @@ mod tests {
         std::fs::write(dir.join("b.txt"), "needle two\n").unwrap();
         std::fs::write(dir.join("nested/c.txt"), "needle three\n").unwrap();
 
-        let out = rust_grep(&dir, "needle", None, false, 0, 1).unwrap();
+        let literal = GrepMatcher::new("needle", false, false).unwrap();
+        let out = rust_grep(&dir, &literal, None, 0, 1).unwrap();
         assert!(out.contains("... [truncated]"), "{out}");
         assert_eq!(out.matches("needle").count(), 1, "{out}");
 
-        let out = rust_grep(&dir, "needle", Some("*.txt"), false, 0, 10).unwrap();
+        let out = rust_grep(&dir, &literal, Some("*.txt"), 0, 10).unwrap();
         assert_eq!(out.matches("needle").count(), 3, "{out}");
+
+        // The built-in walker also does regex when `rg` is unavailable.
+        let regex = GrepMatcher::new("n[aeiou]+dle tw[o]", true, false).unwrap();
+        let out = rust_grep(&dir, &regex, Some("*.txt"), 0, 10).unwrap();
+        assert_eq!(out.matches("needle").count(), 1, "{out}");
 
         std::fs::remove_dir_all(&dir).ok();
     }
@@ -2718,15 +2854,44 @@ mod tests {
     }
 
     #[test]
-    fn read_file_caps_long_lines() {
+    fn read_file_pages_through_long_lines() {
         let dir = std::env::temp_dir().join(format!("oxide_read_cap_{}", std::process::id()));
         std::fs::remove_dir_all(&dir).ok();
         std::fs::create_dir_all(&dir).unwrap();
-        std::fs::write(dir.join("long.txt"), "a".repeat(MAX_LINE_LEN + 500)).unwrap();
+        let line = "a".repeat(MAX_LINE_LEN * 8);
+        std::fs::write(dir.join("long.txt"), &line).unwrap();
 
+        // The line is served in continuation chunks, not cut off, and the
+        // footer points at the next display line.
         let out = read_file(&dir, &json!({ "path": "long.txt" })).unwrap();
-        assert!(out.text.contains('…'), "{}", out.text);
-        assert!(out.text.len() < MAX_LINE_LEN + 100, "{}", out.text.len());
+        assert!(out.text.starts_with("1|"), "{}", out.text);
+        assert!(out.text.contains("1+|"), "{}", out.text);
+        assert!(out.text.contains("use offset="), "{}", out.text);
+
+        // Paging through the footer's offset recovers the whole line.
+        let mut offset = 1usize;
+        let mut assembled = String::new();
+        loop {
+            let page = read_file(&dir, &json!({ "path": "long.txt", "offset": offset })).unwrap();
+            for entry in page.text.lines() {
+                if entry.contains("more lines; use offset=") {
+                    break;
+                }
+                if let Some((_, rest)) = entry.split_once('|') {
+                    assembled.push_str(rest);
+                }
+            }
+            match page
+                .text
+                .split("use offset=")
+                .nth(1)
+                .and_then(|next| next.trim_end_matches(']').parse::<usize>().ok())
+            {
+                Some(next) => offset = next,
+                None => break,
+            }
+        }
+        assert_eq!(assembled, line);
 
         std::fs::remove_dir_all(&dir).ok();
     }

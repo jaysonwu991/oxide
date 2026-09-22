@@ -1118,7 +1118,14 @@ impl Config {
              and format API output for a person to read — one line per item, not minified JSON. Fix \
              and push the code before you reply: commit the change and `git push` it to the branch \
              under review first, so a reply never claims a comment is addressed while the branch \
-             still has the old code."
+             still has the old code.\nNever \
+             commit to or push the repository's default branch. Determine it first with \
+             `git symbolic-ref --short refs/remotes/origin/HEAD` or \
+             `gh repo view --json defaultBranchRef --jq .defaultBranchRef.name` (fall back to \
+             `main`/`master` only when neither is set): branch protection rejects a direct push \
+             and you would have to undo the commit. When you are asked to raise a pull request \
+             while on the default branch, create a feature branch first, commit there, push that \
+             branch, and open the PR from it."
                 .to_string(),
         );
 
