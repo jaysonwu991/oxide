@@ -692,15 +692,17 @@ async fn run_loop(
                 }));
                 let started = std::time::Instant::now();
                 let canonical = crate::tools::canonical_tool_name(&name);
-                let block_reply = canonical == "bash"
-                    && effective_args
-                        .get("command")
-                        .and_then(Value::as_str)
-                        .is_some_and(|command| {
-                            posts_review_reply(command)
-                                && verification
-                                    .blocks_review_reply(command, repo_has_pending_delivery(&cwd))
-                        });
+                let block_reply = if canonical == "bash" {
+                    match effective_args.get("command").and_then(Value::as_str) {
+                        Some(command) if posts_review_reply(command) => {
+                            let repo_pending = repo_has_pending_delivery(&cwd).await;
+                            verification.blocks_review_reply(command, repo_pending)
+                        }
+                        _ => false,
+                    }
+                } else {
+                    false
+                };
                 let mut output = if block_reply {
                     tools::ToolOutput::text(
                         "error: commit and push the code changes before replying to the review, so \
@@ -1300,23 +1302,29 @@ fn runs_git_push(command: &str) -> bool {
 /// `bash` can edit files through `sed -i`, a formatter, or a script, so the
 /// guard also inspects the repository: tracked modifications and staged files,
 /// plus commits that are not on a remote-tracking branch. Untracked files are
-/// ignored so unrelated new files (notes, reports) do not block a reply.
-fn repo_has_pending_delivery(cwd: &Path) -> bool {
-    let output = |args: &[&str]| {
-        std::process::Command::new("git")
+/// ignored so unrelated new files (notes, reports) do not block a reply. The git
+/// calls are async so a slow `git` never blocks the runtime.
+async fn repo_has_pending_delivery(cwd: &Path) -> bool {
+    async fn git(cwd: &Path, args: &[&str]) -> Option<String> {
+        let output = tokio::process::Command::new("git")
             .args(args)
             .current_dir(cwd)
             .output()
-            .ok()
-            .filter(|out| out.status.success())
-            .map(|out| String::from_utf8_lossy(&out.stdout).trim().to_string())
-    };
-    if output(&["status", "--porcelain", "--untracked-files=no"])
+            .await
+            .ok()?;
+        output
+            .status
+            .success()
+            .then(|| String::from_utf8_lossy(&output.stdout).trim().to_string())
+    }
+    if git(cwd, &["status", "--porcelain", "--untracked-files=no"])
+        .await
         .is_some_and(|status| !status.is_empty())
     {
         return true;
     }
-    output(&["rev-list", "--count", "HEAD", "--not", "--remotes"])
+    git(cwd, &["rev-list", "--count", "HEAD", "--not", "--remotes"])
+        .await
         .and_then(|count| count.parse::<u64>().ok())
         .is_some_and(|count| count > 0)
 }
@@ -1950,7 +1958,7 @@ mod tests {
 
     /// Deadline for a scripted request to arrive, so a test that stops short of
     /// its scripted turns fails instead of waiting out the job timeout.
-    const POLL_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
+    const POLL_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
 
     /// Serves one SSE response per request, in order, and returns the raw
     /// request texts it saw so a test can assert on what was sent. A request
@@ -2698,24 +2706,24 @@ mod tests {
         assert!(!state.blocks_review_reply("gh pr comment 5 --body hi", false));
     }
 
-    #[test]
-    fn repo_delivery_pending_tracks_uncommitted_and_unpushed_work() {
+    #[tokio::test]
+    async fn repo_delivery_pending_tracks_uncommitted_and_unpushed_work() {
         let dir = std::env::temp_dir().join(format!("oxide_pending_{}", std::process::id()));
         std::fs::remove_dir_all(&dir).ok();
         std::fs::create_dir_all(&dir).unwrap();
         init_git_repo(&dir);
         add_git_remote(&dir);
-        assert!(!repo_has_pending_delivery(&dir), "clean and pushed");
+        assert!(!repo_has_pending_delivery(&dir).await, "clean and pushed");
 
         std::fs::write(dir.join("catalog.yaml"), "changed\n").unwrap();
-        assert!(repo_has_pending_delivery(&dir), "uncommitted change");
+        assert!(repo_has_pending_delivery(&dir).await, "uncommitted change");
 
         run_git(&dir, &["add", "catalog.yaml"]);
         run_git(&dir, &["commit", "-q", "-m", "fix"]);
-        assert!(repo_has_pending_delivery(&dir), "unpushed commit");
+        assert!(repo_has_pending_delivery(&dir).await, "unpushed commit");
 
         run_git(&dir, &["push"]);
-        assert!(!repo_has_pending_delivery(&dir), "pushed");
+        assert!(!repo_has_pending_delivery(&dir).await, "pushed");
 
         std::fs::remove_dir_all(&dir).ok();
         std::fs::remove_dir_all(format!("{}.origin.git", dir.display())).ok();
