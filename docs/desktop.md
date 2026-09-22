@@ -226,7 +226,6 @@ leading `v`, e.g. `0.16.1`):
 | `oxide-<version>-1.x86_64.rpm` | Linux x64 (Fedora/RHEL) |
 | `oxide_<version>_x64-setup.exe` | Windows x64 (NSIS installer) |
 | `oxide_<version>_x64_en-US.msi` | Windows x64 (MSI) |
-| `oxide_aarch64.app.tar.gz`, `oxide_x64.app.tar.gz` | macOS auto-updater payloads, not for manual install |
 
 The same release also holds the CLI archives
 (`oxide-v<version>-<platform>.tar.gz` and `oxide-v<version>-win32-x64.zip`) plus
