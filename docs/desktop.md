@@ -193,15 +193,20 @@ npx @tauri-apps/cli@^2 build --features gui --debug  # faster, unsigned dev bund
 `bundle.targets` is `all`, so each platform gets its native formats (`.app` /
 `.dmg`, `.msi` / NSIS `.exe`, `.deb` / `.rpm` / AppImage). The macOS build uses
 `entitlements.plist` (JIT for the WebView, outbound network). Signing and
-notarization are automatic when the usual variables are set and are skipped
-otherwise (producing an ad-hoc-signed, unsigned-distribution bundle):
+notarization are automatic when the usual Developer ID variables are set:
 
 - **macOS**: `APPLE_CERTIFICATE`, `APPLE_CERTIFICATE_PASSWORD`,
   `APPLE_SIGNING_IDENTITY`, `APPLE_ID`, `APPLE_PASSWORD`, `APPLE_TEAM_ID`.
 - **Windows**: the Authenticode certificate variables for `tauri-action`.
 - **Linux**: no signing; `.deb`/`.rpm`/AppImage as-is.
 
-`.github/workflows/desktop.yml` builds macOS (arm64 + x64), Linux, and Windows
-and drafts a release, passing the signing secrets through; without the secrets
-it produces unsigned bundles. Auto-update artifacts are not enabled yet (they
-need a signing key).
+Without a Developer ID, `.github/workflows/desktop.yml` — which builds macOS
+(arm64 + x64), Linux, and Windows on a tag push and drafts a release — sets
+`APPLE_SIGNING_IDENTITY=-`, so Tauri **ad-hoc signs** the macOS bundle. The
+signature is valid, but the app is not notarized and macOS quarantines the
+download, so the first launch must be approved in **System Settings → Privacy &
+Security → Open Anyway**, or the app moved to `/Applications` and the quarantine
+cleared with `xattr -dr com.apple.quarantine /Applications/oxide.app`. An
+unsigned bundle is instead rejected outright as *damaged* on Apple Silicon, so
+the fallback matters. Auto-update artifacts are not enabled yet (they need a
+signing key).

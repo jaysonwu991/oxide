@@ -2,7 +2,8 @@ name: desktop
 
 # Builds the desktop app for macOS, Linux, and Windows. Signing and notarization
 # happen automatically when the corresponding secrets are configured; without
-# them the bundles are produced unsigned.
+# them the macOS bundle is ad-hoc signed (so it still launches after Gatekeeper
+# approval) and the other platforms are produced unsigned.
 
 on:
   workflow_dispatch:
@@ -97,6 +98,19 @@ jobs:
               } >> "${GITHUB_ENV}"
             fi
           done
+
+      # A macOS bundle with no signature at all is rejected by Gatekeeper as
+      # "damaged" on Apple Silicon. When no Developer ID is configured, sign
+      # ad-hoc so the app has a valid signature over its resources; the real
+      # identity, when present, takes precedence over this default.
+      - name: Ad-hoc sign macOS without a Developer ID
+        if: startsWith(matrix.platform, 'macos')
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ -z "${APPLE_SIGNING_IDENTITY:-}" ] && [ -z "${APPLE_CERTIFICATE:-}" ]; then
+            echo "APPLE_SIGNING_IDENTITY=-" >> "${GITHUB_ENV}"
+          fi
 
       - name: Build and draft a release
         uses: tauri-apps/tauri-action@v0
