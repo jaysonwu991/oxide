@@ -1116,7 +1116,11 @@ impl Config {
              and format API output for a person to read — one line per item, not minified JSON. Fix \
              and push the code before you reply: commit the change and `git push` it to the branch \
              under review first, so a reply never claims a comment is addressed while the branch \
-             still has the old code."
+             still has the old code.\nNever \
+             commit to or push the default branch (`main`/`master`): branch protection rejects it \
+             and you would have to undo the commit. When you are asked to raise a pull request and \
+             the current branch is the default one, create a feature branch first, commit there, \
+             push that branch, and open the PR from it."
                 .to_string(),
         );
 
