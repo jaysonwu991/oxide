@@ -210,3 +210,23 @@ cleared with `xattr -dr com.apple.quarantine /Applications/oxide.app`. An
 unsigned bundle is instead rejected outright as *damaged* on Apple Silicon, so
 the fallback matters. Auto-update artifacts are not enabled yet (they need a
 signing key).
+
+## Release assets
+
+Each `v*` release carries prebuilt bundles for every platform. Pick the asset
+whose platform matches the machine (`<version>` is the release tag without the
+leading `v`, e.g. `0.16.1`):
+
+| Asset | Platform |
+| --- | --- |
+| `oxide_<version>_aarch64.dmg` | macOS, Apple Silicon (`uname -m` → `arm64`) |
+| `oxide_<version>_x64.dmg` | macOS, Intel (`uname -m` → `x86_64`) |
+| `oxide_<version>_amd64.deb` | Linux x64 (Debian/Ubuntu) |
+| `oxide_<version>_amd64.AppImage` | Linux x64 (portable) |
+| `oxide-<version>-1.x86_64.rpm` | Linux x64 (Fedora/RHEL) |
+| `oxide_<version>_x64-setup.exe` | Windows x64 (NSIS installer) |
+| `oxide_<version>_x64_en-US.msi` | Windows x64 (MSI) |
+
+The same release also holds the CLI archives
+(`oxide-v<version>-<platform>.tar.gz` and `oxide-v<version>-win32-x64.zip`) plus
+`install.sh`/`install.ps1`; see the README's Installation section for the CLI.
