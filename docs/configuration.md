@@ -835,7 +835,8 @@ Start `oxide` even without a key, then run `/login`:
   with a stored key are marked `connected`. After the key, an optional settings
   step pre-fills the model and endpoint (and, for Portkey, the Config ID) so a
   custom gateway can be configured without editing `config.json` by hand; press
-  Enter through the rows to keep the defaults, or clear a row to leave it blank.
+  Enter through the rows to keep the pre-filled values, or replace one before
+  saving — a row left blank keeps the provider's default.
 - `/login deepseek` or `/login portkey` skips the picker. When that provider is
   already connected the command switches to it; otherwise it asks for the key.
 - `/logout` removes the active provider's stored credential and switches to

@@ -3970,9 +3970,10 @@ struct ModelCatalogs {
 }
 
 /// The providers to list models for: the active one first, then every other
-/// provider with a stored credential, each with a config pointed at it. Custom
-/// providers are skipped because the base URL is a single global setting, so
-/// their catalog cannot be queried without hijacking the active provider's.
+/// provider with a stored credential, each with a config pointed at it. A
+/// custom provider is only included when a remembered endpoint gives it a base
+/// URL of its own, since otherwise its catalog would be queried against the
+/// active provider's endpoint.
 fn model_providers(config: &Config) -> Vec<(String, Config)> {
     let active = crate::auth::canonical_provider(&config.provider);
     let mut providers: Vec<(String, Config)> = Vec::new();
@@ -3981,9 +3982,11 @@ fn model_providers(config: &Config) -> Vec<(String, Config)> {
     }
     let store = crate::auth::AuthStore::load().unwrap_or_default();
     for name in store.providers() {
-        if providers.iter().any(|(known, _)| known == &name)
-            || crate::config::ProviderPreset::for_name(&name).is_none()
-        {
+        if providers.iter().any(|(known, _)| known == &name) {
+            continue;
+        }
+        let is_preset = crate::config::ProviderPreset::for_name(&name).is_some();
+        if !is_preset && !config.provider_base_urls.contains_key(&name) {
             continue;
         }
         let key = store.key(&name).unwrap_or_default().to_string();
@@ -4076,8 +4079,15 @@ fn handle_connect_key(key: KeyEvent, app: &mut App, config: &mut Config) {
                     } else {
                         let canonical = crate::auth::canonical_provider(&provider);
                         state.key = value;
-                        state.model = config.model_for_provider(&canonical);
-                        state.base_url = config.base_url_for_provider(&canonical);
+                        // The active provider's live values win over its preset,
+                        // which matters for an endpoint set by hand in the file.
+                        if canonical == crate::auth::canonical_provider(&config.provider) {
+                            state.model = config.model.clone();
+                            state.base_url = config.base_url.clone();
+                        } else {
+                            state.model = config.model_for_provider(&canonical);
+                            state.base_url = config.base_url_for_provider(&canonical);
+                        }
                         state.portkey_config = if canonical == "portkey" {
                             config.portkey_config.clone()
                         } else {

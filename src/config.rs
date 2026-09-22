@@ -334,15 +334,15 @@ fn apply_stored_provider_fallback(
     };
     config.provider = name.clone();
     config.api_key = entry.key.clone();
-    if let Some(preset) = ProviderPreset::for_name(name) {
-        if !explicit(raw, "model") {
-            // A model remembered for this provider wins over its preset.
-            config.model = config.model_for_provider(name);
-        }
-        if !explicit(raw, "base_url") {
-            config.base_url = config
-                .remembered_base_url(name)
-                .unwrap_or_else(|| preset.base_url.to_string());
+    if ProviderPreset::for_name(name).is_some() && !explicit(raw, "model") {
+        // A model remembered for this provider wins over its preset.
+        config.model = config.model_for_provider(name);
+    }
+    if !explicit(raw, "base_url") {
+        if let Some(url) = config.remembered_base_url(name) {
+            config.base_url = url;
+        } else if let Some(preset) = ProviderPreset::for_name(name) {
+            config.base_url = preset.base_url.to_string();
         }
     }
 }
@@ -599,6 +599,11 @@ impl Config {
             }
         } else if let Some(url) = env_nonempty("OPENAI_BASE_URL") {
             config.base_url = url;
+        } else if provider_overridden || !explicit(&raw, "base_url") {
+            // A custom provider's remembered endpoint follows it on startup.
+            if let Some(url) = config.remembered_base_url(&config.provider) {
+                config.base_url = url;
+            }
         }
 
         let store = AuthStore::load().ok();
@@ -799,11 +804,17 @@ impl Config {
     }
 
     /// The endpoint to use with a provider: the custom one remembered for it,
-    /// otherwise the provider preset's, otherwise the current URL.
+    /// the active provider's current URL, otherwise the provider preset's.
     pub fn base_url_for_provider(&self, provider: &str) -> String {
         let name = canonical_provider(provider);
-        self.remembered_base_url(&name)
-            .or_else(|| ProviderPreset::for_name(&name).map(|preset| preset.base_url.to_string()))
+        if let Some(url) = self.remembered_base_url(&name) {
+            return url;
+        }
+        if name == canonical_provider(&self.provider) && !self.base_url.trim().is_empty() {
+            return self.base_url.clone();
+        }
+        ProviderPreset::for_name(&name)
+            .map(|preset| preset.base_url.to_string())
             .unwrap_or_else(|| self.base_url.clone())
     }
 
@@ -1830,6 +1841,49 @@ mod tests {
 
         assert_eq!(config.provider, "deepseek");
         assert_eq!(config.base_url, "https://gateway.example/v1");
+    }
+
+    #[test]
+    fn fallback_applies_a_custom_providers_remembered_endpoint() {
+        let mut config = Config {
+            provider_base_urls: [(
+                "my-endpoint".to_string(),
+                "https://custom.example/v1".to_string(),
+            )]
+            .into_iter()
+            .collect(),
+            ..Config::default()
+        };
+        let mut store = AuthStore::default();
+        store.set("my-endpoint", "sk-custom");
+
+        apply_stored_provider_fallback(&mut config, &store, &None);
+
+        assert_eq!(config.provider, "my-endpoint");
+        assert_eq!(config.base_url, "https://custom.example/v1");
+    }
+
+    #[test]
+    fn base_url_for_provider_keeps_the_active_url() {
+        let config = Config {
+            provider: "portkey".into(),
+            base_url: "https://gateway.example.com/v1".into(),
+            ..Config::default()
+        };
+
+        assert_eq!(
+            config.base_url_for_provider("portkey"),
+            "https://gateway.example.com/v1"
+        );
+        assert_eq!(
+            config.base_url_for_provider("deepseek"),
+            "https://api.deepseek.com/v1"
+        );
+        assert_eq!(
+            config.base_url_for_provider("my-endpoint"),
+            "https://gateway.example.com/v1",
+            "an unknown provider falls back to the active URL"
+        );
     }
 
     #[test]
