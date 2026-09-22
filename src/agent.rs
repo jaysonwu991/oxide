@@ -418,9 +418,16 @@ async fn run_loop(
         let mut request = Vec::with_capacity(messages.len() + 3);
         request.push(Message::system(config.compose_system_prompt()));
         request.extend(messages.iter().cloned());
-        if let Some(reminder) = verification_reminder.take() {
-            request.push(Message::system(reminder));
-        }
+        // A reminder makes this request the hidden nudge: it asks the model to
+        // confirm work it already summarized, so a provider that answers it
+        // with nothing must not fail the turn the user already saw complete.
+        let nudging = match verification_reminder.take() {
+            Some(reminder) => {
+                request.push(Message::system(reminder));
+                true
+            }
+            None => false,
+        };
         let tool_specs = build_tool_specs(&config, &runtime, depth);
 
         let started = std::time::Instant::now();
@@ -452,6 +459,18 @@ async fn run_loop(
             };
             match client.stream_chat(&request, &tool_specs, &mut hooks).await {
                 Ok(turn) => turn,
+                Err(err) if nudge_failed_quietly(nudging, &err) => {
+                    // The reminder is advisory: the model already summarized its
+                    // work and nothing more will arrive, so finish with the
+                    // answer in hand instead of reporting `err`. The thinking
+                    // block this attempt may have streamed is closed first, so
+                    // the transcript does not keep it open as still thinking.
+                    let _ = tx.send(AgentEvent::Thought {
+                        millis: started.elapsed().as_millis() as u64,
+                    });
+                    let _ = tx.send(AgentEvent::Finished(messages));
+                    return;
+                }
                 Err(err) => {
                     let _ = tx.send(AgentEvent::Error(format!("{err:#}")));
                     let _ = tx.send(AgentEvent::Finished(messages));
@@ -672,7 +691,19 @@ async fn run_loop(
                     }
                 }));
                 let started = std::time::Instant::now();
-                let mut output = if permission_granted(
+                let canonical = crate::tools::canonical_tool_name(&name);
+                let block_reply = canonical == "bash"
+                    && effective_args
+                        .get("command")
+                        .and_then(Value::as_str)
+                        .is_some_and(|command| verification.blocks_review_reply(command));
+                let mut output = if block_reply {
+                    tools::ToolOutput::text(
+                        "error: commit and push the code changes before replying to the review, so \
+                         the reply does not claim a fix that is not on the branch under review"
+                            .to_string(),
+                    )
+                } else if permission_granted(
                     permissions.decide(&name, &subject),
                     config.auto_approve,
                     &runtime.approve,
@@ -686,7 +717,7 @@ async fn run_loop(
                 } else {
                     tools::ToolOutput::text(format!("error: permission denied for `{name}`"))
                 };
-                let canonical_name = crate::tools::canonical_tool_name(&name);
+                let canonical_name = canonical;
                 if matches!(canonical_name, "write_file" | "edit")
                     && !output.text.starts_with("error:")
                 {
@@ -890,6 +921,7 @@ const DONE_RULES: &[DoneRule] = &[
             "gh issue comment",
             "glab mr note",
             "glab issue note",
+            "/replies",
         ],
         checks: &[
             "gh pr view",
@@ -980,13 +1012,19 @@ struct VerificationState {
     edited: BTreeSet<String>,
     pending: BTreeSet<&'static str>,
     nudged: bool,
+    /// A pull request or review was opened, replied to, or updated, so any edit
+    /// made afterwards is part of that external work and has to be delivered.
+    reviewed: bool,
+    /// Files were edited since the last successful `git push`. Reading the
+    /// change back proves it is on disk but does not put it in the pull request.
+    edited_since_push: bool,
 }
 
 impl VerificationState {
-    /// Records one tool result. A successful edit adds its path; reading or
-    /// type-checking that path confirms it, and a build/test/lint command
-    /// confirms everything at once. Side-effecting shell commands add a pending
-    /// check that the matching rule's status command clears.
+    /// Records one tool result. A successful edit adds its path; reading,
+    /// diffing or type-checking that path confirms it, and a build/test/lint
+    /// command confirms everything at once. Side-effecting shell commands add a
+    /// pending check that the matching rule's status command clears.
     fn record(&mut self, name: &str, args: &Value, output: &str) {
         let canonical = crate::tools::canonical_tool_name(name);
         let path = args.get("path").and_then(Value::as_str);
@@ -996,6 +1034,7 @@ impl VerificationState {
                     if let Some(path) = path.filter(|path| !path.is_empty()) {
                         self.edited.insert(path.to_string());
                     }
+                    self.edited_since_push = true;
                 }
             }
             "read_file" | "diagnostics" => {
@@ -1005,14 +1044,27 @@ impl VerificationState {
             }
             "bash" => {
                 let raw = args.get("command").and_then(Value::as_str).unwrap_or("");
+                // A build/test/lint run confirms every edit at once; a shell
+                // inspection that names one file confirms just that file, which
+                // is the same evidence the reminder asks for without spending
+                // another whole turn on it.
                 if looks_like_verification_command(raw) {
                     self.edited.clear();
+                } else if !output_failed(output) {
+                    self.edited
+                        .retain(|edited| !inspected_by_shell(raw, output, edited));
                 }
                 let command = raw.to_ascii_lowercase();
                 let failed = output_failed(output);
+                if !failed && command.contains("git push") {
+                    self.edited_since_push = false;
+                }
                 for rule in DONE_RULES {
                     if !failed && rule.actions.iter().any(|action| command.contains(action)) {
                         self.pending.insert(rule.key);
+                        if matches!(rule.key, "pull request" | "comment") {
+                            self.reviewed = true;
+                        }
                     }
                     if rule.checks.iter().any(|check| command.contains(check)) {
                         self.pending.remove(rule.key);
@@ -1021,6 +1073,19 @@ impl VerificationState {
             }
             _ => {}
         }
+    }
+
+    /// Whether a review reply must be held until the pending code changes are
+    /// pushed. Replying that a comment is fixed before the branch has the fix
+    /// is misleading, so the reply is refused with an instruction to push first.
+    fn blocks_review_reply(&mut self, command: &str) -> bool {
+        if self.edited_since_push && posts_review_reply(command) {
+            // The reply is part of a review delivery: if the run stops here, the
+            // finish reminder still has to ask for the push.
+            self.reviewed = true;
+            return true;
+        }
+        false
     }
 
     /// The reminder to send once when work is unconfirmed, or `None` when there
@@ -1041,6 +1106,18 @@ impl VerificationState {
             if let Some(rule) = DONE_RULES.iter().find(|rule| rule.key == *key) {
                 parts.push(rule.reminder.to_string());
             }
+        }
+        // A review reply that ships a code change is not delivered until the
+        // change is pushed: the pull request still shows the old code even
+        // though the working tree is correct.
+        if self.reviewed && self.edited_since_push {
+            parts.push(
+                "You addressed a pull request or review with code changes but have not pushed them, \
+                 so the branch under review still has the old code. Commit with an explicit path \
+                 list and `git push` (or the `glab` equivalent), then confirm the new commit is on \
+                 the branch before you call the review addressed."
+                    .to_string(),
+            );
         }
         if parts.is_empty() {
             return None;
@@ -1116,6 +1193,67 @@ fn looks_like_verification_command(command: &str) -> bool {
                 && (EXACT.iter().any(|word| token.eq_ignore_ascii_case(word))
                     || SUFFIXES.iter().any(|suffix| token.ends_with(suffix)))
         })
+}
+
+/// Whether a shell command inspected the edited file itself — a `git diff`,
+/// `git show`, or `grep`/`rg` naming that path as the file it reads — so the
+/// change is known to be on disk. Only the paths a command names are confirmed,
+/// unlike a build or test run, which confirms every edit at once.
+fn inspected_by_shell(command: &str, output: &str, path: &str) -> bool {
+    const SEARCHERS: &[&str] = &["grep", "rg"];
+    const GIT_VIEWERS: &[&str] = &["diff", "show"];
+    command.split(['\n', ';', '|', '&']).any(|segment| {
+        let mut words = segment.split_whitespace();
+        let Some(tool) = words
+            .next()
+            .map(|word| word.rsplit('/').next().unwrap_or(word))
+        else {
+            return false;
+        };
+        let arguments: Vec<&str> = words.map(|word| word.trim_matches(['\'', '"'])).collect();
+        if SEARCHERS.contains(&tool) {
+            // A searcher's first operand is the pattern, not a file: the path
+            // counts only as a later file operand, so `grep -rn "a.rs" .`
+            // matching a *mention* of the file does not confirm anything.
+            return arguments
+                .iter()
+                .filter(|argument| !argument.starts_with('-'))
+                .skip(1)
+                .any(|argument| same_path(path, argument));
+        }
+        if tool == "git" && GIT_VIEWERS.iter().any(|viewer| arguments.contains(viewer)) {
+            // An empty diff exits 0 while showing nothing, and `git show`
+            // without a `--` operand reads the committed blob rather than the
+            // working file, so require a hunk naming the path.
+            let shown = output
+                .lines()
+                .filter(|line| !line.starts_with("[exit"))
+                .collect::<Vec<_>>()
+                .join("\n");
+            return arguments.iter().any(|argument| same_path(path, argument))
+                && (shown.contains("@@") || shown.contains(path));
+        }
+        false
+    })
+}
+
+/// Whether a failed model call may end the run quietly. The Definition-of-Done
+/// reminder is advisory — it is sent after the model already summarized its
+/// work — so a provider that answers it with nothing leaves a complete answer
+/// rather than an error for the user to read.
+fn nudge_failed_quietly(nudging: bool, err: &anyhow::Error) -> bool {
+    nudging && err.downcast_ref::<crate::llm::NoAnswer>().is_some()
+}
+
+/// Whether a shell command posts a reply or review comment on a pull/merge
+/// request. Replying that a comment is fixed before the fix is on the branch is
+/// misleading, so these commands are held until the pending edits are pushed.
+fn posts_review_reply(command: &str) -> bool {
+    let command = command.to_ascii_lowercase();
+    DONE_RULES
+        .iter()
+        .find(|rule| rule.key == "comment")
+        .is_some_and(|rule| rule.actions.iter().any(|action| command.contains(action)))
 }
 
 async fn dispatch(
@@ -1745,6 +1883,269 @@ mod tests {
         }
     }
 
+    /// Deadline for a scripted request to arrive, so a test that stops short of
+    /// its scripted turns fails instead of waiting out the job timeout.
+    const POLL_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
+
+    /// Serves one SSE response per request, in order, and returns the raw
+    /// request texts it saw so a test can assert on what was sent. A request
+    /// that never arrives fails the test instead of hanging the runner.
+    /// Creates a repository with a committed `catalog.yaml`, so a later edit
+    /// produces a real `git diff` hunk.
+    fn init_git_repo(dir: &std::path::Path) {
+        let git = |args: &[&str]| {
+            let status = std::process::Command::new("git")
+                .args(args)
+                .current_dir(dir)
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null())
+                .status()
+                .expect("git is available for the test");
+            assert!(status.success(), "git {args:?} failed");
+        };
+        git(&["init", "-q"]);
+        git(&["config", "user.email", "oxide@example.com"]);
+        git(&["config", "user.name", "Oxide Test"]);
+        std::fs::write(dir.join("catalog.yaml"), "old\n").unwrap();
+        git(&["add", "catalog.yaml"]);
+        // A global `commit.gpgsign` would otherwise make the test commit fail.
+        git(&["-c", "commit.gpgsign=false", "commit", "-q", "-m", "init"]);
+    }
+
+    async fn sse_server(
+        bodies: Vec<String>,
+    ) -> (std::net::SocketAddr, tokio::task::JoinHandle<Vec<String>>) {
+        use tokio::io::AsyncWriteExt;
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let handle = tokio::spawn(async move {
+            let mut seen = Vec::new();
+            for body in bodies {
+                let (mut socket, _) = tokio::time::timeout(POLL_TIMEOUT, listener.accept())
+                    .await
+                    .expect("the agent stopped short of every scripted request")
+                    .unwrap();
+                seen.push(read_request(&mut socket).await);
+                let response = format!(
+                    "HTTP/1.1 200 OK\r\ncontent-type: text/event-stream\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",
+                    body.len()
+                );
+                let _ = socket.write_all(response.as_bytes()).await;
+                let _ = socket.shutdown().await;
+            }
+            seen
+        });
+        (addr, handle)
+    }
+
+    async fn read_request(socket: &mut tokio::net::TcpStream) -> String {
+        use tokio::io::AsyncReadExt;
+
+        let mut raw = Vec::new();
+        let mut expected: Option<usize> = None;
+        loop {
+            let mut chunk = [0u8; 8192];
+            let read = match socket.read(&mut chunk).await {
+                Ok(0) | Err(_) => break,
+                Ok(n) => n,
+            };
+            raw.extend_from_slice(&chunk[..read]);
+            let text = String::from_utf8_lossy(&raw);
+            let Some(head_end) = text.find("\r\n\r\n") else {
+                continue;
+            };
+            if expected.is_none() {
+                expected = text[..head_end].lines().find_map(|line| {
+                    let (name, value) = line.split_once(':')?;
+                    name.eq_ignore_ascii_case("content-length")
+                        .then(|| value.trim().parse::<usize>().ok())
+                        .flatten()
+                });
+            }
+            if expected.is_some_and(|len| raw.len() - (head_end + 4) >= len) {
+                break;
+            }
+        }
+        String::from_utf8_lossy(&raw).into_owned()
+    }
+
+    fn openai_sse(events: &[serde_json::Value]) -> String {
+        let mut body = String::new();
+        for event in events {
+            body.push_str("data: ");
+            body.push_str(&event.to_string());
+            body.push_str("\n\n");
+        }
+        body.push_str("data: [DONE]\n\n");
+        body
+    }
+
+    fn write_call_body(path: &str) -> String {
+        // The arguments are a JSON *string*, so the path must be escaped: a
+        // Windows temp path (backslashes) would otherwise be unparseable and
+        // the write would fail instead of recording an edit.
+        let arguments = json!({"path": path, "content": "x"}).to_string();
+        openai_sse(&[
+            json!({"choices": [{"delta": {"tool_calls": [{"index": 0, "id": "call_0", "function": {"name": "write", "arguments": arguments}}]}, "finish_reason": null}]}),
+            json!({"choices": [{"delta": {}, "finish_reason": "tool_calls"}]}),
+        ])
+    }
+
+    fn bash_call_body(command: &str) -> String {
+        let arguments = json!({"command": command}).to_string();
+        openai_sse(&[
+            json!({"choices": [{"delta": {"tool_calls": [{"index": 0, "id": "call_1", "function": {"name": "bash", "arguments": arguments}}]}, "finish_reason": null}]}),
+            json!({"choices": [{"delta": {}, "finish_reason": "tool_calls"}]}),
+        ])
+    }
+
+    fn answer_body(text: &str) -> String {
+        openai_sse(&[
+            serde_json::json!({"choices": [{"delta": {"content": text}, "finish_reason": null}]}),
+            serde_json::json!({"choices": [{"delta": {}, "finish_reason": "stop"}]}),
+        ])
+    }
+
+    fn empty_body() -> String {
+        openai_sse(&[serde_json::json!({"choices": [{"delta": {}, "finish_reason": "stop"}]})])
+    }
+
+    /// The regression from a real session: the model edited a file and
+    /// summarized its work, oxide sent the hidden Definition-of-Done reminder,
+    /// and the provider answered the reminder with an empty turn. The summary
+    /// must survive as the result instead of the user reading
+    /// `the model returned an empty response` after a complete answer.
+    #[tokio::test]
+    async fn an_empty_answer_to_the_verification_nudge_ends_the_run_quietly() {
+        let dir = std::env::temp_dir().join(format!("oxide_nudge_{}", std::process::id()));
+        std::fs::remove_dir_all(&dir).ok();
+        std::fs::create_dir_all(&dir).unwrap();
+        let edited = dir.join("catalog.yaml");
+        let edited = edited.to_str().unwrap().to_string();
+
+        let (addr, server) = sse_server(vec![
+            write_call_body(&edited),
+            answer_body("Upgrade complete."),
+            empty_body(),
+            empty_body(),
+            empty_body(),
+        ])
+        .await;
+        let config = Config {
+            provider: "deepseek".into(),
+            model: "deepseek-flash".into(),
+            base_url: format!("http://{addr}"),
+            api_key: "sk-test".into(),
+            auto_approve: true,
+            ..Config::default()
+        };
+        let runtime = test_runtime().await;
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+
+        run(
+            config,
+            dir.clone(),
+            vec![Message::user("upgrade the package")],
+            tx,
+            runtime,
+        )
+        .await;
+
+        let mut errors = Vec::new();
+        let mut finished = None;
+        while let Ok(event) = rx.try_recv() {
+            match event {
+                AgentEvent::Error(message) => errors.push(message),
+                AgentEvent::Finished(messages) => finished = Some(messages),
+                _ => {}
+            }
+        }
+        assert!(errors.is_empty(), "{errors:?}");
+        let finished = finished.expect("the run finished");
+        assert_eq!(
+            finished.last().and_then(|message| message.display()),
+            Some("Upgrade complete.".to_string())
+        );
+
+        // The reminder really was the request that produced the empty turn.
+        let requests = server.await.unwrap();
+        assert_eq!(requests.len(), 5);
+        assert!(requests[2].contains("Before you finish"), "{}", requests[2]);
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[tokio::test]
+    async fn a_diff_of_the_edited_file_skips_the_verification_nudge() {
+        let dir = std::env::temp_dir().join(format!("oxide_diff_{}", std::process::id()));
+        std::fs::remove_dir_all(&dir).ok();
+        std::fs::create_dir_all(&dir).unwrap();
+        // The reported session edited a catalog file and confirmed it with
+        // `git diff <file>`. A real repository makes the inspection succeed and
+        // show a hunk, which is the evidence the reminder asks for.
+        init_git_repo(&dir);
+        let edited = dir.join("catalog.yaml");
+        let edited = edited.to_str().unwrap().to_string();
+
+        // Write, inspect the result from the shell, summarize. The inspection is
+        // the evidence the reminder asks for, so no reminder is sent and the
+        // run needs one model call fewer than the version that nudged.
+        let (addr, server) = sse_server(vec![
+            write_call_body(&edited),
+            bash_call_body("git diff catalog.yaml"),
+            answer_body("Upgrade complete."),
+        ])
+        .await;
+        let config = Config {
+            provider: "deepseek".into(),
+            model: "deepseek-flash".into(),
+            base_url: format!("http://{addr}"),
+            api_key: "sk-test".into(),
+            auto_approve: true,
+            ..Config::default()
+        };
+        let runtime = test_runtime().await;
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+
+        run(
+            config,
+            dir.clone(),
+            vec![Message::user("upgrade the package")],
+            tx,
+            runtime,
+        )
+        .await;
+
+        let mut errors = Vec::new();
+        let mut finished = None;
+        while let Ok(event) = rx.try_recv() {
+            match event {
+                AgentEvent::Error(message) => errors.push(message),
+                AgentEvent::Finished(messages) => finished = Some(messages),
+                _ => {}
+            }
+        }
+        assert!(errors.is_empty(), "{errors:?}");
+        assert_eq!(
+            finished
+                .expect("the run finished")
+                .last()
+                .and_then(|m| m.display()),
+            Some("Upgrade complete.".to_string())
+        );
+
+        let requests = server.await.unwrap();
+        assert_eq!(requests.len(), 3);
+        assert!(
+            !requests[2].contains("Before you finish"),
+            "the shell inspection should have confirmed the edit: {}",
+            requests[2]
+        );
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
     #[tokio::test]
     async fn command_tool_expands_and_reports_unknown() {
         let mut config = Config::default();
@@ -1921,6 +2322,104 @@ mod tests {
     }
 
     #[test]
+    fn a_shell_inspection_of_the_edited_file_confirms_it() {
+        let diff = "diff --git a/pnpm-workspace.yaml b/pnpm-workspace.yaml\n\
+                    @@ -55,7 +55,7 @@\n[exit: 0]";
+        // `git diff <path>` shows the change is on disk, so it needs no nudge.
+        let mut state = VerificationState::default();
+        state.record("edit", &json!({"path": "/repo/pnpm-workspace.yaml"}), "ok");
+        state.record(
+            "bash",
+            &json!({"command": "cd /repo && git diff pnpm-workspace.yaml"}),
+            diff,
+        );
+        assert!(state.edited.is_empty());
+        assert!(state.reminder().is_none());
+
+        // So does grepping the file for the new content.
+        let mut state = VerificationState::default();
+        state.record("edit", &json!({"path": "/repo/src/main.rs"}), "ok");
+        state.record(
+            "bash",
+            &json!({"command": "grep -n \"fn main\" src/main.rs"}),
+            "12:fn main() {\n[exit: 0]",
+        );
+        assert!(state.edited.is_empty());
+
+        // Only the named file is confirmed, and only by a successful command.
+        let mut state = VerificationState::default();
+        state.record("edit", &json!({"path": "/repo/a.rs"}), "ok");
+        state.record("edit", &json!({"path": "/repo/b.rs"}), "ok");
+        state.record("bash", &json!({"command": "git diff a.rs"}), diff);
+        assert_eq!(state.edited.iter().collect::<Vec<_>>(), vec!["/repo/b.rs"]);
+
+        let mut state = VerificationState::default();
+        state.record("edit", &json!({"path": "/repo/a.rs"}), "ok");
+        state.record("bash", &json!({"command": "git diff a.rs"}), "[exit: 128]");
+        assert_eq!(state.edited.len(), 1);
+
+        // A diff of the whole tree does not show whether the hunk was included
+        // in the truncated output, and a plain read-only listing is not a look
+        // at the content, so neither counts.
+        assert!(!inspected_by_shell("git diff", diff, "/repo/a.rs"));
+        assert!(!inspected_by_shell(
+            "ls -la a.rs",
+            "/repo/a.rs\n[exit: 0]",
+            "/repo/a.rs"
+        ));
+        assert!(!inspected_by_shell("git diff a.rs", diff, "/repo/b.rs"));
+        assert!(inspected_by_shell("git diff a.rs", diff, "/repo/a.rs"));
+        assert!(inspected_by_shell(
+            "git show HEAD -- a.rs",
+            diff,
+            "/repo/a.rs"
+        ));
+
+        // A named path is not evidence when the command only mentions it — as
+        // the *pattern* a searcher matches, a glob it filters names by, or a
+        // diff that shows nothing — because none of those read the change.
+        let empty = "[exit: 0]";
+        assert!(!inspected_by_shell(
+            "grep -rn \"a.rs\" .",
+            empty,
+            "/repo/a.rs"
+        ));
+        assert!(!inspected_by_shell(
+            "rg --files -g a.rs",
+            empty,
+            "/repo/a.rs"
+        ));
+        assert!(!inspected_by_shell(
+            "git diff --staged a.rs",
+            empty,
+            "/repo/a.rs"
+        ));
+        // `git show HEAD:a.rs` reads the committed blob, not the working file,
+        // so it says nothing about an uncommitted edit.
+        assert!(!inspected_by_shell(
+            "git show HEAD:a.rs",
+            diff,
+            "/repo/a.rs"
+        ));
+    }
+
+    #[test]
+    fn a_nudge_that_produces_no_answer_ends_the_run_quietly() {
+        // The model already summarized its work, so a provider that answers the
+        // reminder with nothing must not fail the turn with an error the user
+        // reads after a complete answer (see the empty-response regression).
+        let empty = anyhow::Error::new(crate::llm::NoAnswer::empty());
+        assert!(nudge_failed_quietly(true, &empty));
+        // A real failure is still reported, and an ordinary turn never gets
+        // this leniency.
+        assert!(!nudge_failed_quietly(false, &empty));
+        assert!(!nudge_failed_quietly(
+            true,
+            &anyhow::anyhow!("provider returned 401")
+        ));
+    }
+
+    #[test]
     fn side_effects_are_confirmed_before_done() {
         // A pull request is unconfirmed until its checks or state are read.
         let mut state = VerificationState::default();
@@ -2024,6 +2523,152 @@ mod tests {
             "[exit: 0]",
         );
         assert!(state.pending.is_empty());
+    }
+
+    #[test]
+    fn review_edits_are_not_delivered_until_pushed() {
+        // A review reply after an edit must be followed by a push, or the
+        // branch under review still shows the old code.
+        let mut state = VerificationState::default();
+        state.record("edit", &json!({"path": "src/a.rs"}), "ok");
+        state.record(
+            "bash",
+            &json!({"command": "gh pr comment 5 --body 'fixed'"}),
+            "[exit: 0]",
+        );
+        let reminder = state.reminder().unwrap();
+        assert!(reminder.contains("git push"), "{reminder}");
+        assert!(state.reminder().is_none());
+
+        // A push before the reply already delivered the edit, so no nudge to
+        // push again.
+        let mut state = VerificationState::default();
+        state.record("edit", &json!({"path": "src/a.rs"}), "ok");
+        state.record("bash", &json!({"command": "git push"}), "[exit: 0]");
+        state.record(
+            "bash",
+            &json!({"command": "gh pr comment 5 --body hi"}),
+            "[exit: 0]",
+        );
+        let reminder = state.reminder().unwrap_or_default();
+        assert!(!reminder.contains("git push"), "{reminder}");
+
+        // An edit made after the reply needs its own push.
+        let mut state = VerificationState::default();
+        state.record(
+            "bash",
+            &json!({"command": "gh pr review 5 --comment"}),
+            "[exit: 0]",
+        );
+        state.record("edit", &json!({"path": "src/a.rs"}), "ok");
+        assert!(state.reminder().unwrap().contains("git push"));
+
+        // A review with no code change has nothing to push.
+        let mut state = VerificationState::default();
+        state.record(
+            "bash",
+            &json!({"command": "gh pr comment 5 --body hi"}),
+            "[exit: 0]",
+        );
+        let reminder = state.reminder().unwrap_or_default();
+        assert!(!reminder.contains("git push"), "{reminder}");
+    }
+
+    #[test]
+    fn review_replies_are_held_until_the_code_is_pushed() {
+        assert!(posts_review_reply("gh pr comment 5 --body fixed"));
+        assert!(posts_review_reply(
+            "gh api -X POST repos/o/r/pulls/5/comments/1/replies -f body=x"
+        ));
+        assert!(!posts_review_reply("gh pr view 5 --comments"));
+        assert!(!posts_review_reply("git push"));
+
+        // A reply while an edit is unpushed is held.
+        let mut state = VerificationState::default();
+        state.record("edit", &json!({"path": "src/a.rs"}), "ok");
+        assert!(state.blocks_review_reply("gh pr comment 5 --body fixed"));
+
+        // Pushing the edit unblocks it.
+        let mut state = VerificationState::default();
+        state.record("edit", &json!({"path": "src/a.rs"}), "ok");
+        state.record("bash", &json!({"command": "git push"}), "[exit: 0]");
+        assert!(!state.blocks_review_reply("gh pr comment 5 --body fixed"));
+
+        // A reply with no pending code change is allowed.
+        let mut state = VerificationState::default();
+        assert!(!state.blocks_review_reply("gh pr comment 5 --body hi"));
+    }
+
+    #[tokio::test]
+    async fn a_review_reply_before_the_push_is_held() {
+        let dir = std::env::temp_dir().join(format!("oxide_reply_{}", std::process::id()));
+        std::fs::remove_dir_all(&dir).ok();
+        std::fs::create_dir_all(&dir).unwrap();
+        init_git_repo(&dir);
+        let edited = dir.join("catalog.yaml");
+        let edited = edited.to_str().unwrap().to_string();
+
+        let (addr, server) = sse_server(vec![
+            write_call_body(&edited),
+            // The reply is refused until the edit is pushed.
+            bash_call_body("gh pr comment 5 --body 'fixed'"),
+            bash_call_body("git diff catalog.yaml"),
+            // `record` only needs the `git push` substring and a zero exit.
+            bash_call_body("echo git push"),
+            answer_body("Done."),
+        ])
+        .await;
+        let config = Config {
+            provider: "deepseek".into(),
+            model: "deepseek-flash".into(),
+            base_url: format!("http://{addr}"),
+            api_key: "sk-test".into(),
+            auto_approve: true,
+            ..Config::default()
+        };
+        let runtime = test_runtime().await;
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+
+        run(
+            config,
+            dir.clone(),
+            vec![Message::user("address the review")],
+            tx,
+            runtime,
+        )
+        .await;
+
+        let mut errors = Vec::new();
+        let mut finished = None;
+        while let Ok(event) = rx.try_recv() {
+            match event {
+                AgentEvent::Error(message) => errors.push(message),
+                AgentEvent::Finished(messages) => finished = Some(messages),
+                _ => {}
+            }
+        }
+        assert!(errors.is_empty(), "{errors:?}");
+        let requests = server.await.unwrap();
+        assert_eq!(requests.len(), 5);
+        assert!(
+            requests[2].contains("commit and push the code changes before replying"),
+            "{}",
+            requests[2]
+        );
+        assert!(
+            !requests[4].contains("Before you finish"),
+            "{}",
+            requests[4]
+        );
+        assert_eq!(
+            finished
+                .expect("the run finished")
+                .last()
+                .and_then(|m| m.display()),
+            Some("Done.".to_string())
+        );
+
+        std::fs::remove_dir_all(&dir).ok();
     }
 
     #[test]

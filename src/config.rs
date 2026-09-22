@@ -1080,7 +1080,10 @@ impl Config {
              Separate what you verified (\"ran ./gradlew test — passed\", \"`grep` found the \
              annotation\") from what you assume, and say plainly when you could not confirm \
              something. Do not claim a change is applied, a fix works, a PR is ready, a reply is \
-             posted, or a release is out without the output that shows it."
+             posted, or a release is out without the output that shows it. A code change made in \
+             response to a pull request or review is delivered only once it is committed and \
+             pushed to the branch under review — fix and push the code before you reply in the \
+             thread, and confirm the new commit before you summarize."
                 .to_string(),
         );
 
@@ -1110,7 +1113,10 @@ impl Config {
              and answer one with \
              `gh api -X POST repos/{owner}/{repo}/pulls/<n>/comments/<comment_id>/replies -f body=<text>` \
              (`gh pr comment` is only for a new top-level comment). Select just the fields you need \
-             and format API output for a person to read — one line per item, not minified JSON."
+             and format API output for a person to read — one line per item, not minified JSON. Fix \
+             and push the code before you reply: commit the change and `git push` it to the branch \
+             under review first, so a reply never claims a comment is addressed while the branch \
+             still has the old code."
                 .to_string(),
         );
 

@@ -33,6 +33,42 @@ pub struct LlmClient {
     config: Config,
 }
 
+/// The provider finished a turn without an answer: it either emitted nothing at
+/// all, or spent the whole output budget on reasoning. `stream_chat` retries
+/// before reporting this, so a caller that sent a best-effort request — the
+/// hidden Definition-of-Done nudge — can recognize it and finish with the
+/// answer the model already gave instead of failing the turn.
+#[derive(Debug)]
+pub struct NoAnswer {
+    /// The output budget in force when reasoning consumed it.
+    limit: Option<u32>,
+}
+
+impl NoAnswer {
+    pub(crate) fn empty() -> Self {
+        Self { limit: None }
+    }
+
+    pub(crate) fn reasoning(limit: u32) -> Self {
+        Self { limit: Some(limit) }
+    }
+}
+
+impl std::fmt::Display for NoAnswer {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self.limit {
+            Some(limit) => write!(
+                f,
+                "the model spent the entire output budget on reasoning and returned no answer \
+                 (max_tokens = {limit})"
+            ),
+            None => f.write_str("the model returned an empty response"),
+        }
+    }
+}
+
+impl std::error::Error for NoAnswer {}
+
 #[derive(Debug, Default)]
 struct PartialToolCall {
     id: String,
@@ -259,12 +295,9 @@ impl LlmClient {
                             continue;
                         }
                         if truncated {
-                            anyhow::bail!(
-                                "the model spent the entire output budget on reasoning and \
-                                 returned no answer (max_tokens = {max_tokens})"
-                            );
+                            return Err(NoAnswer::reasoning(max_tokens).into());
                         }
-                        anyhow::bail!("the model returned an empty response");
+                        return Err(NoAnswer::empty().into());
                     }
                     turn.usage.cost = self.config.usage_cost(&turn.usage);
                     return Ok(turn);
@@ -648,7 +681,22 @@ where
     let mut completed = false;
 
     while let Some(chunk) = stream.next().await {
-        let chunk = chunk.context("reading response stream")?;
+        let chunk = match chunk {
+            Ok(chunk) => chunk,
+            Err(err) => {
+                // A `[DONE]` sentinel proves the turn finished, so a connection
+                // dropped afterwards is not a failure. A TLS connection that
+                // ends without a `close_notify` (several providers and proxies
+                // close an SSE response this way) is reported by rustls as an
+                // unexpected EOF; the HTTP framing already ended the body, so
+                // treat it as the end of the stream and let the sentinel or
+                // stop reason decide whether the turn is complete.
+                if completed || is_abrupt_stream_close(&err) {
+                    break;
+                }
+                return Err(err).context("reading response stream");
+            }
+        };
         buffer.push_str(&String::from_utf8_lossy(&chunk));
 
         drain_lines(&mut buffer, |line| {
@@ -689,6 +737,24 @@ where
     }
     buffer.drain(..consumed);
     Ok(())
+}
+
+/// Whether a dropped response stream is a connection that ended without a TLS
+/// `close_notify` shutdown. Several providers and proxies close an SSE response
+/// this way; rustls reports the missing shutdown as an unexpected EOF. Only that
+/// TLS wording counts: a generic truncated body (`Content-Length` unmet, a
+/// missing chunk) is a real truncation and stays an error unless a `[DONE]`
+/// sentinel or stop reason already proved the turn finished.
+fn is_abrupt_stream_close(err: &(dyn std::error::Error + 'static)) -> bool {
+    let mut current: Option<&(dyn std::error::Error + 'static)> = Some(err);
+    while let Some(error) = current {
+        let message = error.to_string().to_ascii_lowercase();
+        if message.contains("close_notify") || message.contains("unexpected eof") {
+            return true;
+        }
+        current = error.source();
+    }
+    false
 }
 
 /// Whether a completed turn carries nothing the agent can act on.
@@ -1092,6 +1158,30 @@ mod tests {
         (addr, handle)
     }
 
+    /// Serves one response whose declared `content-length` is larger than the
+    /// body actually written, then drops the connection. That is how a stream
+    /// ends when the peer closes without a TLS `close_notify`: the bytes arrive
+    /// but the body never completes.
+    async fn truncated_sse_server(
+        body: String,
+    ) -> (std::net::SocketAddr, tokio::task::JoinHandle<()>) {
+        use tokio::io::AsyncWriteExt;
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let handle = tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.unwrap();
+            let _ = read_request(&mut socket).await;
+            let response = format!(
+                "HTTP/1.1 200 OK\r\ncontent-type: text/event-stream\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",
+                body.len() + 64
+            );
+            let _ = socket.write_all(response.as_bytes()).await;
+            let _ = socket.shutdown().await;
+        });
+        (addr, handle)
+    }
+
     fn sse(events: &[serde_json::Value]) -> String {
         let mut body = String::new();
         for event in events {
@@ -1187,6 +1277,97 @@ mod tests {
             body.push_str("\n\n");
         }
         body
+    }
+
+    #[test]
+    fn abrupt_stream_closes_are_recognized_from_the_error_chain() {
+        #[derive(Debug)]
+        struct Chain(&'static str, Option<Box<Chain>>);
+        impl std::fmt::Display for Chain {
+            fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                f.write_str(self.0)
+            }
+        }
+        impl std::error::Error for Chain {
+            fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+                self.1
+                    .as_deref()
+                    .map(|error| error as &(dyn std::error::Error + 'static))
+            }
+        }
+
+        let tls = Chain(
+            "error decoding response body",
+            Some(Box::new(Chain(
+                "request or response body error",
+                Some(Box::new(Chain(
+                    "error reading a body from connection: peer closed connection without \
+                     sending TLS close_notify: https://docs.rs/rustls/",
+                    None,
+                ))),
+            ))),
+        );
+        assert!(is_abrupt_stream_close(&tls));
+
+        // A generic HTTP truncation is a real truncation, not a clean TLS end.
+        assert!(!is_abrupt_stream_close(&Chain(
+            "end of file before message length reached",
+            None
+        )));
+
+        // A real provider error is not swallowed.
+        assert!(!is_abrupt_stream_close(&Chain(
+            "provider returned 500: server error",
+            None
+        )));
+    }
+
+    #[tokio::test]
+    async fn a_stream_that_drops_after_done_keeps_the_turn() {
+        // The provider sent its text and `[DONE]`, then the connection dropped
+        // mid-body: the sentinel proves the turn finished, so the missing
+        // shutdown must not replace it with a stream error.
+        let body = sse(&[serde_json::json!(
+            {"choices": [{"index": 0, "delta": {"content": "par"}}]}
+        )]);
+        let (addr, _server) = truncated_sse_server(body).await;
+        let client = LlmClient::new(sse_test_config(addr, 8192));
+
+        let mut retries = Vec::new();
+        let turn = {
+            let mut hooks = StreamHooks {
+                text: &mut |_| {},
+                thinking: &mut |_| {},
+                retry: &mut |r: Retry| retries.push(r),
+            };
+            client
+                .stream_chat(&[Message::user("hi")], &[], &mut hooks)
+                .await
+                .unwrap()
+        };
+
+        assert_eq!(turn.content, "par");
+        assert!(retries.is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_truncated_stream_without_a_sentinel_is_not_accepted() {
+        // No `[DONE]` and a truncated body: the turn is not known to be
+        // complete, so it stays an error instead of a partial answer.
+        let partial =
+            "data: {\"choices\":[{\"index\":0,\"delta\":{\"content\":\"par\"}}]}\n\n".to_string();
+        let (addr, _server) = truncated_sse_server(partial).await;
+        let client = LlmClient::new(sse_test_config(addr, 8192));
+
+        let mut hooks = StreamHooks {
+            text: &mut |_| {},
+            thinking: &mut |_| {},
+            retry: &mut |_| {},
+        };
+        client
+            .stream_chat(&[Message::user("hi")], &[], &mut hooks)
+            .await
+            .unwrap_err();
     }
 
     #[tokio::test]
@@ -1336,15 +1517,45 @@ mod tests {
                 .stream_chat(&[Message::user("hi")], &[], &mut hooks)
                 .await
                 .unwrap_err()
-                .to_string()
         };
 
-        assert!(err.contains("output budget"), "{err}");
-        assert!(err.contains("max_tokens = 32768"), "{err}");
-        assert!(!err.contains("empty response"), "{err}");
+        let message = err.to_string();
+        assert!(message.contains("output budget"), "{message}");
+        assert!(message.contains("max_tokens = 32768"), "{message}");
+        assert!(!message.contains("empty response"), "{message}");
+        // Both ways of returning no answer are recognizable, so a caller that
+        // sent a best-effort request can finish with what it already has.
+        assert!(err.downcast_ref::<NoAnswer>().is_some());
         let requests = server.await.unwrap();
         let budgets: Vec<u64> = requests.iter().map(|r| request_budget(r)).collect();
         assert_eq!(budgets, vec![8192, 16384, 32768]);
+    }
+
+    #[tokio::test]
+    async fn an_exhausted_empty_turn_is_recognizable_as_a_no_answer() {
+        let empty =
+            sse(&[serde_json::json!({"choices": [{"delta": {}, "finish_reason": "stop"}]})]);
+        let (addr, server) = sse_server(vec![empty.clone(), empty.clone(), empty]).await;
+        let client = LlmClient::new(sse_test_config(addr, 8192));
+
+        let err = {
+            let mut hooks = StreamHooks {
+                text: &mut |_| {},
+                thinking: &mut |_| {},
+                retry: &mut |_| {},
+            };
+            client
+                .stream_chat(&[Message::user("hi")], &[], &mut hooks)
+                .await
+                .unwrap_err()
+        };
+
+        assert_eq!(err.to_string(), "the model returned an empty response");
+        assert!(err.downcast_ref::<NoAnswer>().is_some());
+        // The retry budget is spent before giving up.
+        let seen = server.await.unwrap();
+        let budgets: Vec<u64> = seen.iter().map(|r| request_budget(r)).collect();
+        assert_eq!(budgets, vec![8192, 8192, 8192]);
     }
 
     #[tokio::test]

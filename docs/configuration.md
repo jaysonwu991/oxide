@@ -51,7 +51,7 @@ increasing precedence:
 The `oxide mcp` management commands only write the native files:
 `<root>/.oxide/mcp.json` for `--scope project` and `~/.oxide/mcp.json` for
 `--scope global`. The Claude Code and platform-config files listed above are read
-(for `list`, `get`, and `remove`), never written.
+(for `list`, `get`, `auth`, and `remove`), never written.
 
 ### Manage from the CLI
 
@@ -89,9 +89,14 @@ Status checks never open a browser or execute untrusted project servers; use
 `oxide mcp auth <name>` for a server that needs OAuth. The TUI `/mcps` command
 performs the same check.
 
-Options may appear before or after the server name. `oxide mcp remove` falls
-back to every configured source when the server is not in the requested native
-file.
+Options may appear before or after the server name. `oxide mcp auth` and
+`oxide mcp remove` treat `--scope` as a boundary rather than just a file: a
+pinned `--scope project` searches `<root>/.oxide/mcp.json` then
+`<root>/.mcp.json`, `--scope global` searches the three global files
+highest-precedence first, and neither touches the other scope — so a name
+defined in both project and global resolves to the requested one. Without
+`--scope`, both search every configured source in precedence order, so
+`oxide mcp remove <name>` still deletes the entry the runtime actually uses.
 
 At startup, oxide adds only the enabled server names and configured URLs or
 commands to the model context. It does not start a local process, make a remote
