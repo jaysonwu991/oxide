@@ -120,13 +120,13 @@ pub fn specs(mcp: &McpRegistry) -> Vec<ToolSpec> {
     let mut specs = vec![
         spec(
             "read",
-            "Read a file. Text files are returned with line numbers; image (png/jpg/gif/webp) and PDF files are returned as viewable attachments. If `path` is a directory, its entries are listed instead. Absolute paths and paths outside the project are allowed.",
+            "Read a file. Text files are returned with line numbers; image (png/jpg/gif/webp) and PDF files are returned as viewable attachments. If `path` is a directory, its entries are listed instead. Absolute paths and paths outside the project are allowed. A line longer than 1000 characters is split into continuation chunks (`N|`, `N+|`, …), and `offset`/`limit` count those display lines, so an over-long line (a minified JSON value) can be paged through instead of being cut off.",
             json!({
                 "type": "object",
                 "properties": {
                     "path": { "type": "string", "description": "File path; absolute paths are allowed" },
-                    "offset": { "type": "integer", "description": "1-based line number to start from (text only)" },
-                    "limit": { "type": "integer", "description": "Maximum number of lines to return (text only, default 250)" }
+                    "offset": { "type": "integer", "description": "1-based display line to start from (text only; a long line counts once per chunk)" },
+                    "limit": { "type": "integer", "description": "Maximum number of display lines to return (text only, default 250)" }
                 },
                 "required": ["path"]
             }),
