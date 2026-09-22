@@ -115,6 +115,14 @@ box, with Claude Code configuration support for compatibility.
   subagent and its current tool. The status row also reports the phase of the
   current step (`thinking...`, `running tool...`, `compacting...`, `summarizing
   branch...`) and surfaces stream retries as `retrying (n/3) in Ns...`.
+- Desktop notifications: a finished agent turn raises a system toast with a
+  short snippet of the reply and plays the platform alert sound (Notification
+  Center on macOS, `notify-send` plus the freedesktop `complete` sound on Linux,
+  a Windows toast), so long runs can finish while you are in another window;
+  internal work like `/compact` stays silent. Enabled by default and tuned with
+  `/notify [on|off]` and `/notify sound [on|off]` in the TUI, the
+  `notifyOnComplete` / `notifySound` keys in `settings.json`, or
+  `OXIDE_NOTIFY_ON_COMPLETE` / `OXIDE_NOTIFY_SOUND`.
 - Resilient streaming: transient failures (network errors, truncated streams,
   429, and 5xx responses) are retried with backoff while no text has been
   emitted, and a turn that comes back with neither text nor tool calls is
@@ -278,7 +286,7 @@ present).
 | Esc | Clear the input. In dialogs, cancel or close. |
 | `/` | Open slash-command autocomplete. |
 | `@` | Open file/folder path autocomplete to add a file to the prompt. |
-| Tab | Complete the selected slash-command or `@path` suggestion. |
+| Tab | Complete the selected slash-command (including fixed arguments such as `/notify sound on`) or `@path` suggestion. |
 | Up / Down | Move through the suggestion list, or recall input history when it is closed. |
 | Shift+Tab | Cycle `build` → `auto-edit` → `plan`. |
 | Ctrl+R | Cycle the thinking level: `auto` → `off` → `low` → `medium` → `high`. |
@@ -686,9 +694,9 @@ Slash commands are expanded from the ecosystem and also include built-ins:
 `/help`, `/hotkeys`, `/exit`, `/new`, `/session`, `/resume`, `/tree`, `/fork`,
 `/clone`, `/name`, `/model`, `/thinking`, `/theme`, `/trust`, `/export`,
 `/reload`, `/init`, `/login`, `/logout`, `/models`, `/mcps`, `/plugins`,
-`/marketplaces`, `/usage`, `/connect`, `/undo`, `/redo`, `/compact`, `/copy`,
-`/copy all`, and `/skill:<name>`. Discovered commands and prompt templates can
-also be invoked by the agent through the `command` tool, and skills load on
+`/marketplaces`, `/notify`, `/usage`, `/connect`, `/undo`, `/redo`, `/compact`,
+`/copy`, `/copy all`, and `/skill:<name>`. Discovered commands and prompt
+templates can also be invoked by the agent through the `command` tool, and skills load on
 demand with `skill` or via `/skill:<name>`.
 
 **Plugin packages** — installed via `oxide plugin` (or `/plugins`), plugin

@@ -386,6 +386,10 @@ pub struct Config {
     pub compaction: crate::compact::CompactionConfig,
     #[serde(skip)]
     pub prices: BTreeMap<String, crate::pricing::ModelPrice>,
+    /// Whether a finished agent turn raises a desktop toast, and whether it
+    /// plays the system alert sound.
+    #[serde(skip)]
+    pub notify: crate::notify::NotifyConfig,
     #[serde(skip)]
     pub tool_filter: crate::cli::ToolFilter,
     #[serde(skip)]
@@ -473,6 +477,7 @@ impl Default for Config {
             memory: MemoryStore::default(),
             compaction: crate::compact::CompactionConfig::default(),
             prices: crate::pricing::defaults(),
+            notify: crate::notify::NotifyConfig::default(),
             tool_filter: crate::cli::ToolFilter::default(),
             ephemeral: false,
             load_context_files: true,
@@ -654,6 +659,7 @@ impl Config {
         config.memory = MemoryStore::load(cwd);
         config.compaction = crate::compact::load_config(cwd);
         config.prices = crate::pricing::load(cwd);
+        config.notify = crate::notify::load_config(cwd);
         if let Some(name) = agent {
             config.activate_agent(&name)?;
         }

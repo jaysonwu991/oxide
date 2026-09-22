@@ -654,6 +654,9 @@ pub struct App {
     pub running_tool: Option<(String, Instant)>,
     /// The subagent a running `task` call spawned, if any.
     pub subagent: Option<SubagentState>,
+    /// Whether the in-flight run is an agent turn whose completion should raise
+    /// a toast. Internal runs (`/compact`, branch summaries) leave it false.
+    pub notify_on_finish: bool,
 }
 
 impl App {
@@ -722,7 +725,26 @@ impl App {
             selection: None,
             running_tool: None,
             subagent: None,
+            notify_on_finish: false,
         }
+    }
+
+    /// A short plain-text summary of the newest assistant reply, used as the
+    /// body of the completion toast.
+    pub fn completion_summary(&self) -> String {
+        for message in self.history.iter().rev() {
+            if message.role != "assistant" {
+                continue;
+            }
+            let Some(text) = message.display() else {
+                continue;
+            };
+            let text = text.split_whitespace().collect::<Vec<_>>().join(" ");
+            if !text.is_empty() {
+                return truncate_chars(&text, 160);
+            }
+        }
+        "Turn complete".to_string()
     }
 
     /// Replaces the conversation with new context (used after in-file branch
@@ -1123,6 +1145,16 @@ fn current_git_branch(cwd: &str) -> Option<String> {
     (!branch.is_empty()).then(|| branch.to_string())
 }
 
+/// Truncates on a character boundary, adding an ellipsis when shortened.
+fn truncate_chars(text: &str, max: usize) -> String {
+    if text.chars().count() <= max {
+        return text.to_string();
+    }
+    let mut out: String = text.chars().take(max.saturating_sub(1)).collect();
+    out.push('…');
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1136,6 +1168,27 @@ mod tests {
 
     fn test_app() -> App {
         App::new("gpt-4o".into(), ".".into(), Mode::Build, Reasoning::Auto)
+    }
+
+    #[test]
+    fn completion_summary_uses_the_last_assistant_reply() {
+        let mut app = test_app();
+        app.history = vec![
+            Message::user("do the thing"),
+            Message::assistant("first", vec![]),
+            Message::assistant("all  done\n\non two lines", vec![]),
+        ];
+        assert_eq!(app.completion_summary(), "all done on two lines");
+    }
+
+    #[test]
+    fn completion_summary_truncates_and_falls_back() {
+        let mut app = test_app();
+        assert_eq!(app.completion_summary(), "Turn complete");
+        app.history = vec![Message::assistant("x".repeat(400), vec![])];
+        let summary = app.completion_summary();
+        assert_eq!(summary.chars().count(), 160);
+        assert!(summary.ends_with('…'));
     }
 
     #[test]

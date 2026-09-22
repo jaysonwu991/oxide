@@ -286,7 +286,14 @@ async fn event_loop(
             agent_event = recv_opt(&mut rx) => {
                 if let Some(event) = agent_event {
                     let finished = matches!(event, AgentEvent::Finished(_));
+                    let notify = finished && app.notify_on_finish && config.notify.on_complete;
                     handle_agent_event(event, &mut app);
+                    if finished {
+                        app.notify_on_finish = false;
+                    }
+                    if notify {
+                        crate::notify::send("oxide", &app.completion_summary(), config.notify.sound);
+                    }
                     if finished && plugins.is_active() {
                         app.extension_statuses = plugins.statuses().await;
                     }
@@ -972,6 +979,12 @@ fn handle_key(
                 }
                 return;
             }
+            if raw == "/notify" || raw.starts_with("/notify ") {
+                app.clear_input();
+                refresh_suggestions(app, config);
+                handle_notify_command(app, config, &raw);
+                return;
+            }
             if raw == "/usage" {
                 app.clear_input();
                 refresh_suggestions(app, config);
@@ -1433,6 +1446,7 @@ fn handle_key(
             app.busy_since = Some(std::time::Instant::now());
             app.auto_scroll = true;
             app.assistant_open = false;
+            app.notify_on_finish = true;
             app.status = "thinking...".to_string();
 
             let (tx, new_rx) = unbounded_channel();
@@ -1616,6 +1630,7 @@ fn help_text(config: &Config) -> String {
         "  /mcps                 list MCP servers and connection status".to_string(),
         "  /plugins              manage plugins and marketplaces".to_string(),
         "  /marketplaces         browse, add, and remove plugin marketplaces".to_string(),
+        "  /notify [on|off]      show or set completion notifications (sound too)".to_string(),
         "  /usage                 configure the Portkey spend bar (dialog)".to_string(),
         "  /undo, /redo          revert or reapply the agent's file changes".to_string(),
         "  /compact [focus]      summarize older context, optionally with a focus".to_string(),
@@ -1709,6 +1724,93 @@ fn sync_usage_bar(
 }
 
 /// `/usage`: configure and toggle the Portkey spend bar.
+/// Handles `/notify [on|off]`, `/notify sound [on|off]`, and `/notify test`,
+/// persisting the two completion-notification flags to `settings.json`.
+fn handle_notify_command(app: &mut App, config: &mut Config, raw: &str) {
+    const HINT: &str = "usage: /notify [on|off] · /notify sound [on|off] · /notify test";
+    let args = raw.strip_prefix("/notify").unwrap_or_default().trim();
+    let mut settings = config.notify;
+
+    if args.is_empty() || args == "status" {
+        app.items.push(ChatItem::Info(format!(
+            "notifications: {}; sound: {}\n{HINT}",
+            on_off(settings.on_complete),
+            on_off(settings.sound),
+        )));
+        return;
+    }
+
+    let (verb, rest) = match args.split_once(char::is_whitespace) {
+        Some((verb, rest)) => (verb, rest.trim()),
+        None => (args, ""),
+    };
+
+    match verb {
+        "test" => {
+            crate::notify::send(
+                "oxide",
+                "Test notification — all tasks completed.",
+                settings.sound,
+            );
+            app.items
+                .push(ChatItem::Info("sent a test notification".to_string()));
+            return;
+        }
+        "sound" => {
+            if rest.is_empty() {
+                app.items.push(ChatItem::Info(format!(
+                    "notification sound: {}",
+                    on_off(settings.sound)
+                )));
+                return;
+            }
+            let Some(enabled) = parse_toggle(rest) else {
+                app.items.push(ChatItem::Error(format!(
+                    "usage: /notify sound <on|off>\n{HINT}"
+                )));
+                return;
+            };
+            settings.sound = enabled;
+        }
+        _ => {
+            let Some(enabled) = parse_toggle(verb) else {
+                app.items.push(ChatItem::Error(format!(
+                    "unknown /notify option `{verb}`\n{HINT}"
+                )));
+                return;
+            };
+            settings.on_complete = enabled;
+        }
+    }
+
+    config.notify = settings;
+    match crate::notify::save(settings) {
+        Ok(path) => app.items.push(ChatItem::Info(format!(
+            "notifications: {}; sound: {} ({})",
+            on_off(settings.on_complete),
+            on_off(settings.sound),
+            path.display()
+        ))),
+        Err(err) => app.items.push(ChatItem::Error(format!("notify: {err:#}"))),
+    }
+}
+
+fn on_off(value: bool) -> &'static str {
+    if value {
+        "on"
+    } else {
+        "off"
+    }
+}
+
+fn parse_toggle(value: &str) -> Option<bool> {
+    match value.to_ascii_lowercase().as_str() {
+        "on" | "true" | "yes" | "enable" | "enabled" | "1" => Some(true),
+        "off" | "false" | "no" | "disable" | "disabled" | "0" => Some(false),
+        _ => None,
+    }
+}
+
 fn handle_usage_command(
     app: &mut App,
     config: &Config,
@@ -2494,6 +2596,10 @@ fn builtin_commands() -> Vec<CommandHint> {
             description: "browse and manage plugin marketplaces".to_string(),
         },
         CommandHint {
+            name: "notify".to_string(),
+            description: "toggle completion notifications and sound".to_string(),
+        },
+        CommandHint {
             name: "usage".to_string(),
             description: "Portkey spend bar".to_string(),
         },
@@ -2514,6 +2620,295 @@ fn builtin_commands() -> Vec<CommandHint> {
             description: "reapply file changes".to_string(),
         },
     ]
+}
+
+/// One node in a built-in command's argument grammar, used for completion.
+struct ArgSpec {
+    value: &'static str,
+    description: &'static str,
+    children: &'static [ArgSpec],
+}
+
+const ON_OFF_ARGS: &[ArgSpec] = &[
+    ArgSpec {
+        value: "on",
+        description: "enable",
+        children: &[],
+    },
+    ArgSpec {
+        value: "off",
+        description: "disable",
+        children: &[],
+    },
+];
+
+const MARKETPLACE_ARGS: &[ArgSpec] = &[
+    ArgSpec {
+        value: "list",
+        description: "list marketplaces",
+        children: &[],
+    },
+    ArgSpec {
+        value: "add",
+        description: "add a marketplace",
+        children: &[],
+    },
+    ArgSpec {
+        value: "update",
+        description: "fetch a marketplace's latest manifest",
+        children: &[],
+    },
+    ArgSpec {
+        value: "remove",
+        description: "remove a marketplace",
+        children: &[],
+    },
+];
+
+const PLUGINS_ARGS: &[ArgSpec] = &[
+    ArgSpec {
+        value: "list",
+        description: "list installed plugins",
+        children: &[],
+    },
+    ArgSpec {
+        value: "install",
+        description: "install a plugin",
+        children: &[],
+    },
+    ArgSpec {
+        value: "uninstall",
+        description: "remove a plugin",
+        children: &[],
+    },
+    ArgSpec {
+        value: "enable",
+        description: "enable a plugin",
+        children: &[],
+    },
+    ArgSpec {
+        value: "disable",
+        description: "disable a plugin",
+        children: &[],
+    },
+    ArgSpec {
+        value: "marketplace",
+        description: "manage marketplaces",
+        children: MARKETPLACE_ARGS,
+    },
+];
+
+/// Argument completions for the built-in commands with a fixed grammar.
+const COMMAND_ARGS: &[(&str, &[ArgSpec])] = &[
+    (
+        "copy",
+        &[ArgSpec {
+            value: "all",
+            description: "copy the whole transcript",
+            children: &[],
+        }],
+    ),
+    (
+        "notify",
+        &[
+            ArgSpec {
+                value: "on",
+                description: "enable the completion toast",
+                children: &[],
+            },
+            ArgSpec {
+                value: "off",
+                description: "disable the completion toast",
+                children: &[],
+            },
+            ArgSpec {
+                value: "sound",
+                description: "toggle the alert sound",
+                children: ON_OFF_ARGS,
+            },
+            ArgSpec {
+                value: "test",
+                description: "send a sample notification",
+                children: &[],
+            },
+        ],
+    ),
+    (
+        "usage",
+        &[
+            ArgSpec {
+                value: "status",
+                description: "show the status and syntax",
+                children: &[],
+            },
+            ArgSpec {
+                value: "on",
+                description: "show the bar",
+                children: &[],
+            },
+            ArgSpec {
+                value: "off",
+                description: "hide the bar",
+                children: &[],
+            },
+            ArgSpec {
+                value: "user",
+                description: "user whose spend to show",
+                children: &[],
+            },
+            ArgSpec {
+                value: "key",
+                description: "usage API key",
+                children: &[],
+            },
+            ArgSpec {
+                value: "budget",
+                description: "monthly budget",
+                children: &[],
+            },
+            ArgSpec {
+                value: "currency",
+                description: "budget currency",
+                children: &[
+                    ArgSpec {
+                        value: "usd",
+                        description: "US dollars",
+                        children: &[],
+                    },
+                    ArgSpec {
+                        value: "cny",
+                        description: "Chinese yuan",
+                        children: &[],
+                    },
+                ],
+            },
+            ArgSpec {
+                value: "metadata",
+                description: "metadata key holding the user",
+                children: &[],
+            },
+        ],
+    ),
+    ("plugins", PLUGINS_ARGS),
+    ("plugin", PLUGINS_ARGS),
+    (
+        "thinking",
+        &[
+            ArgSpec {
+                value: "auto",
+                description: "let the model decide",
+                children: &[],
+            },
+            ArgSpec {
+                value: "off",
+                description: "disable reasoning",
+                children: &[],
+            },
+            ArgSpec {
+                value: "low",
+                description: "low effort",
+                children: &[],
+            },
+            ArgSpec {
+                value: "medium",
+                description: "medium effort",
+                children: &[],
+            },
+            ArgSpec {
+                value: "high",
+                description: "high effort",
+                children: &[],
+            },
+        ],
+    ),
+    (
+        "trust",
+        &[
+            ArgSpec {
+                value: "show",
+                description: "show the saved decision",
+                children: &[],
+            },
+            ArgSpec {
+                value: "on",
+                description: "trust this project",
+                children: &[],
+            },
+            ArgSpec {
+                value: "off",
+                description: "decline this project",
+                children: &[],
+            },
+        ],
+    ),
+];
+
+fn command_args(name: &str) -> &'static [ArgSpec] {
+    COMMAND_ARGS
+        .iter()
+        .find(|(command, _)| *command == name)
+        .map(|(_, args)| *args)
+        .unwrap_or(&[])
+}
+
+/// Candidates for the argument being typed after a slash command, walking the
+/// fixed grammar for builtins and offering provider names for the login
+/// commands. Empty when the command takes free text or has no completion.
+fn argument_suggestions(command: &str, rest: &str) -> Vec<CommandHint> {
+    let mut tokens: Vec<&str> = rest.split_whitespace().collect();
+    let starts_new_token = rest.chars().last().map(char::is_whitespace).unwrap_or(true);
+    let prefix = if starts_new_token {
+        ""
+    } else {
+        tokens.pop().unwrap_or("")
+    };
+    let prefix = prefix.to_ascii_lowercase();
+
+    if tokens.is_empty() && matches!(command, "connect" | "login" | "logout") {
+        return crate::auth::KNOWN_PROVIDERS
+            .iter()
+            .filter(|provider| provider.name.starts_with(&prefix))
+            .map(|provider| CommandHint {
+                name: provider.name.to_string(),
+                description: provider.label.to_string(),
+            })
+            .collect();
+    }
+
+    let mut node = command_args(command);
+    for token in &tokens {
+        let Some(child) = node
+            .iter()
+            .find(|spec| spec.value.eq_ignore_ascii_case(token))
+        else {
+            return Vec::new();
+        };
+        node = child.children;
+    }
+    node.iter()
+        .filter(|spec| spec.value.starts_with(&prefix))
+        .map(|spec| CommandHint {
+            name: spec.value.to_string(),
+            description: spec.description.to_string(),
+        })
+        .collect()
+}
+
+/// The `start..end` byte range of the whitespace-delimited token at the cursor,
+/// used to replace just that token when completing a command argument.
+fn slash_arg_token_bounds(input: &str, cursor: usize) -> (usize, usize) {
+    let before = &input[..cursor];
+    let start = before
+        .char_indices()
+        .rev()
+        .find_map(|(index, ch)| ch.is_whitespace().then_some(index + ch.len_utf8()))
+        .unwrap_or(0);
+    let tail = &input[cursor..];
+    let end = tail
+        .char_indices()
+        .find_map(|(index, ch)| ch.is_whitespace().then_some(cursor + index))
+        .unwrap_or(input.len());
+    (start, end)
 }
 
 /// Recomputes slash-command or `@path` suggestions for the current input.
@@ -2548,7 +2943,8 @@ fn refresh_suggestions(app: &mut App, config: &Config) {
     let Some(query) = app.input[..app.input_cursor].strip_prefix('/') else {
         return;
     };
-    if query.contains(char::is_whitespace) {
+    if let Some((command, rest)) = query.split_once(char::is_whitespace) {
+        app.suggestions = argument_suggestions(&command.to_ascii_lowercase(), rest);
         return;
     }
     let query = query.to_ascii_lowercase();
@@ -2615,6 +3011,17 @@ fn complete_suggestion(app: &mut App) -> bool {
         return false;
     };
     if app.input.starts_with('/') {
+        if app.input[..app.input_cursor].contains(char::is_whitespace) {
+            let (start, end) = slash_arg_token_bounds(&app.input, app.input_cursor);
+            let completed = format!("{name} ");
+            if app.input.get(start..end) == Some(name.as_str()) && app.input[end..].starts_with(' ')
+            {
+                return false;
+            }
+            app.input.replace_range(start..end, &completed);
+            app.input_cursor = start + completed.len();
+            return true;
+        }
         let completed = format!("/{name}");
         let end = app
             .input
@@ -4292,6 +4699,7 @@ mod tests {
         assert!(help.contains("built-in commands"));
         assert!(help.contains("/connect"));
         assert!(help.contains("/mcps"));
+        assert!(help.contains("/notify"));
         assert!(help.contains("/plugins"));
         assert!(help.contains("/review"));
     }
@@ -4358,6 +4766,62 @@ mod tests {
         refresh_suggestions(&mut app, &config);
         assert_eq!(app.suggestions.len(), 1);
         assert_eq!(app.suggestions[0].name, "skill:audit");
+    }
+
+    #[test]
+    fn suggestions_complete_command_arguments() {
+        let config = Config::default();
+        let mut app = test_app();
+
+        app.set_input("/notify ".to_string());
+        refresh_suggestions(&mut app, &config);
+        let names: Vec<&str> = app.suggestions.iter().map(|h| h.name.as_str()).collect();
+        assert_eq!(names, vec!["on", "off", "sound", "test"]);
+
+        app.set_input("/notify s".to_string());
+        refresh_suggestions(&mut app, &config);
+        assert_eq!(app.suggestions.len(), 1);
+        assert_eq!(app.suggestions[0].name, "sound");
+
+        app.set_input("/notify sound ".to_string());
+        refresh_suggestions(&mut app, &config);
+        let names: Vec<&str> = app.suggestions.iter().map(|h| h.name.as_str()).collect();
+        assert_eq!(names, vec!["on", "off"]);
+
+        app.set_input("/usage currency ".to_string());
+        refresh_suggestions(&mut app, &config);
+        let names: Vec<&str> = app.suggestions.iter().map(|h| h.name.as_str()).collect();
+        assert_eq!(names, vec!["usd", "cny"]);
+
+        // Provider names for the login commands.
+        app.set_input("/login d".to_string());
+        refresh_suggestions(&mut app, &config);
+        assert_eq!(app.suggestions.len(), 1);
+        assert_eq!(app.suggestions[0].name, "deepseek");
+
+        // Free-text commands and unknown arguments offer nothing.
+        app.set_input("/models foo".to_string());
+        refresh_suggestions(&mut app, &config);
+        assert!(app.suggestions.is_empty());
+        app.set_input("/notify bogus ".to_string());
+        refresh_suggestions(&mut app, &config);
+        assert!(app.suggestions.is_empty());
+    }
+
+    #[test]
+    fn completing_an_argument_replaces_only_that_token() {
+        let config = Config::default();
+        let mut app = test_app();
+        app.set_input("/notify s".to_string());
+        app.input_cursor = app.input.len();
+        refresh_suggestions(&mut app, &config);
+        assert!(complete_suggestion(&mut app));
+        assert_eq!(app.input, "/notify sound ");
+
+        refresh_suggestions(&mut app, &config);
+        assert!(complete_suggestion(&mut app));
+        assert_eq!(app.input, "/notify sound on ");
+        assert_eq!(app.input_cursor, app.input.len());
     }
 
     #[test]
@@ -4785,6 +5249,43 @@ mod tests {
         ));
 
         std::env::remove_var("OXIDE_USAGE_FILE");
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn notify_command_toggles_and_persists() {
+        let dir = std::env::temp_dir().join(format!("oxide_notify_cmd_{}", std::process::id()));
+        std::fs::remove_dir_all(&dir).ok();
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("settings.json");
+        std::env::set_var("OXIDE_SETTINGS_FILE", &path);
+
+        let mut app = test_app();
+        let mut config = Config::default();
+
+        handle_notify_command(&mut app, &mut config, "/notify");
+        assert!(matches!(
+            app.items.last(),
+            Some(ChatItem::Info(text))
+                if text.contains("notifications: on; sound: on")
+        ));
+
+        handle_notify_command(&mut app, &mut config, "/notify off");
+        assert!(!config.notify.on_complete);
+        handle_notify_command(&mut app, &mut config, "/notify sound off");
+        assert!(!config.notify.sound);
+        let saved: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        assert_eq!(saved["notifyOnComplete"], serde_json::json!(false));
+        assert_eq!(saved["notifySound"], serde_json::json!(false));
+
+        handle_notify_command(&mut app, &mut config, "/notify bogus");
+        assert!(matches!(
+            app.items.last(),
+            Some(ChatItem::Error(text)) if text.contains("unknown /notify option")
+        ));
+
+        std::env::remove_var("OXIDE_SETTINGS_FILE");
         std::fs::remove_dir_all(&dir).ok();
     }
 

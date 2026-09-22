@@ -31,7 +31,8 @@ variables, then `config.json` and provider presets. For API keys, the order is
 last fallback. `OXIDE_BASE_URL` overrides the selected provider's base-URL
 variable, which overrides the file. Behavior settings live in `config.json`
 (global); the global `settings.json` (and the project `.oxide/settings.json`)
-supply `defaultProjectTrust`, `compaction`, `modelPrices`, and `hideThinkingBlock`.
+supply `defaultProjectTrust`, `compaction`, `modelPrices`, `hideThinkingBlock`,
+`notifyOnComplete`, and `notifySound`.
 
 Installed plugin packages (see [Plugins and hooks](#plugins-and-hooks)) load
 after global resources and before project resources, so project entries still
@@ -337,8 +338,11 @@ Focus: $ARGUMENTS
 - Built-in commands: `/help`, `/hotkeys`, `/exit`, `/new`, `/session`, `/resume`,
   `/tree`, `/fork`, `/clone`, `/name`, `/model`, `/thinking`, `/theme`,
   `/trust`, `/export`, `/reload`, `/init`, `/login`, `/logout`, `/models`,
-  `/mcps`, `/plugins`, `/marketplaces`, `/usage`, `/connect`, `/undo`, `/redo`,
-  `/compact`, `/copy`, `/copy all`, and `/skill:<name>`.
+  `/mcps`, `/plugins`, `/marketplaces`, `/notify`, `/usage`, `/connect`, `/undo`,
+  `/redo`, `/compact`, `/copy`, `/copy all`, and `/skill:<name>`. After a space,
+  the built-in commands autocomplete their fixed arguments too (`/notify sound`,
+  `/usage currency usd`, `/plugins marketplace update`, and providers for
+  `/login`); Tab accepts the highlighted suggestion.
 - **Remove** a command by deleting its file.
 
 ## Prompt templates
@@ -651,6 +655,27 @@ typing after it — so you can extend a message before it is sent. Their entries
 also removed from the transcript, since they were never sent. The key is `Alt+Up`
 (`Option+Up` on macOS, where `Alt` is the Option key) and `Alt+Q` on Windows and
 WSL, where the terminal claims `Alt+Up` for scrollback.
+
+## Desktop notifications
+
+When an agent turn finishes, oxide raises a system toast (Notification Center on
+macOS, `notify-send` on Linux, a Windows toast) whose body is a short snippet of
+the reply, so you can switch windows while a long task runs. Only real agent
+turns notify — internal work such as `/compact` and branch summaries stays
+silent.
+
+Both the toast and its alert sound are on by default. In the TUI, `/notify`
+shows the current state, `/notify on|off` toggles the toast, `/notify sound
+on|off` toggles the alert sound, and `/notify test` sends a sample; the choice is
+saved to the global `settings.json`. The same keys (`notifyOnComplete` and
+`notifySound`) can be edited by hand in the global `settings.json` or the
+project `.oxide/settings.json`, with `OXIDE_NOTIFY_ON_COMPLETE` and
+`OXIDE_NOTIFY_SOUND` overriding them for one run. The sound uses the native
+alert — `Glass` on macOS, the freedesktop `complete` sound (via
+`canberra-gtk-play`, `paplay`, `aplay`, or `ffplay`) on Linux, and
+`Notification.Default` on Windows. Notification delivery is best-effort: if the
+platform helper or sound player is unavailable it is skipped without affecting
+the turn.
 
 ## Memory and instructions
 
@@ -1084,7 +1109,7 @@ Runtime state lives under the platform oxide config directory:
 - `snapshots/<project>/` — shadow-git snapshots for `/undo` and `/redo`; only created when the working directory is inside a git work tree (never the home directory, which would index the whole folder)
 - `memory/` — persistent memory entries
 - `trust.json` — saved project trust decisions
-- `settings.json` — global settings such as `defaultProjectTrust`, `compaction`, `modelPrices`, and `hideThinkingBlock`
+- `settings.json` — global settings such as `defaultProjectTrust`, `compaction`, `modelPrices`, `hideThinkingBlock`, `notifyOnComplete`, and `notifySound`
 - `themes/<name>.json` — custom TUI themes
 - `plugins/` — installed plugin packages, marketplaces, and plugin state
 - `portkey-usage.json` — Portkey spend bar settings and API key (mode `0600`, override the path with `OXIDE_USAGE_FILE`)
