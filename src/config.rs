@@ -1076,7 +1076,9 @@ impl Config {
              state,mergeable,mergeStateStatus,reviewDecision,statusCheckRollup`) and pending checks \
              are waited for; a comment, review, or ticket reply is read back to confirm it landed \
              in the right place; a release, deployment, migration, or published artifact is \
-             queried for its status; and any task with a known verifier is run through it. \
+             queried for its status; and any task with a known verifier is run through it. Run a \
+             verifier once and read its whole result — re-running the same build or test on \
+             unchanged files is slow and adds nothing. \
              Separate what you verified (\"ran ./gradlew test — passed\", \"`grep` found the \
              annotation\") from what you assume, and say plainly when you could not confirm \
              something. Do not claim a change is applied, a fix works, a PR is ready, a reply is \
