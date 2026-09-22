@@ -65,9 +65,16 @@ box, with Claude Code configuration support for compatibility.
 - Evidence-based completion: the system prompt's Definition of Done requires the
   model to confirm the outcome of any state-changing action before claiming
   success — edits on disk and builds/tests, a pull request's CI and
-  mergeability, posted comments and reviews, releases, and deployments. A run
+  mergeability, posted comments and reviews, releases, and deployments. A code
+  change made in response to a pull request or review is not delivered until it
+  is committed and pushed to the branch under review, so a review reply is held
+  until the fix is pushed and an uncommitted fix is
+  never reported as an addressed review. A run
   that tries to finish with unconfirmed edits or unchecked side effects gets one
-  hidden reminder to verify before it can summarize. A separate Scope rule keeps
+  hidden reminder to verify before it can summarize; a reminder the provider
+  answers with nothing ends the run with the summary the model already wrote,
+  rather than reporting an empty response on top of a finished answer. A
+  separate Scope rule keeps
   commits limited to the task: blanket staging (`git add -A`, `git commit -a`)
   is held until the model reviews the staged files, so local-only files like
   `.claude/settings.local.json` stay out of the PR.

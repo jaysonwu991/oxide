@@ -349,7 +349,7 @@ enum McpAction {
     Remove {
         /// Server name
         name: String,
-        /// Where to remove from: project (default) or global
+        /// Limit the removal to project or global (default: any source)
         #[arg(short, long)]
         scope: Option<String>,
     },
@@ -357,7 +357,7 @@ enum McpAction {
     Auth {
         /// Server name
         name: String,
-        /// Where to look for the server: project (default) or global
+        /// Limit the lookup to project or global (default: any source)
         #[arg(short, long)]
         scope: Option<String>,
     },

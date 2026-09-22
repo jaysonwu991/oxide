@@ -30,9 +30,11 @@ impl Scope {
 }
 
 /// A server definition discovered in one of the config files oxide reads.
+#[derive(Clone)]
 struct Source {
     label: String,
     path: PathBuf,
+    scope: Scope,
 }
 
 fn global_path() -> Result<PathBuf> {
@@ -61,23 +63,27 @@ fn sources_for(home: Option<&Path>, config: Option<&Path>, root: &Path) -> Vec<S
         list.push(Source {
             label: "claude (global)".to_string(),
             path: home.join(".claude.json"),
+            scope: Scope::Global,
         });
     }
     if let Some(path) = global.clone() {
         list.push(Source {
             label: "global".to_string(),
             path,
+            scope: Scope::Global,
         });
     }
     if let Some(config) = config {
         list.push(Source {
             label: "platform global".to_string(),
             path: config.join("oxide").join("mcp.json"),
+            scope: Scope::Global,
         });
     }
     list.push(Source {
         label: "claude (project)".to_string(),
         path: root.join(".mcp.json"),
+        scope: Scope::Project,
     });
     // Running from the home directory makes `~/.oxide` the project root as
     // well; that file is already the global source, so reporting it twice would
@@ -87,9 +93,51 @@ fn sources_for(home: Option<&Path>, config: Option<&Path>, root: &Path) -> Vec<S
         list.push(Source {
             label: "project".to_string(),
             path: project,
+            scope: Scope::Project,
         });
     }
     list
+}
+
+/// Parses an explicit `--scope` value; absent or blank means "search every
+/// source", which is different from the `Scope::Project` default used by the
+/// write commands.
+fn explicit_scope(value: Option<&str>) -> Result<Option<Scope>> {
+    value
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(|value| Scope::parse(Some(value)))
+        .transpose()
+}
+
+/// The sources a lookup or removal searches, highest precedence first. A pinned
+/// scope stays inside its own files, so `--scope project` covers the Claude
+/// Code `.mcp.json` as well as `.oxide/mcp.json` and never reaches a global
+/// server that happens to share the name.
+fn candidates(sources: Vec<Source>, scope: Option<Scope>) -> Vec<Source> {
+    let mut list: Vec<Source> = match scope {
+        Some(scope) => sources
+            .into_iter()
+            .filter(|source| source.scope == scope)
+            .collect(),
+        None => sources,
+    };
+    list.reverse();
+    list
+}
+
+fn find_server(sources: &[Source], name: &str) -> Result<Option<(String, Value)>> {
+    for source in sources {
+        let root = read_file(&source.path)?;
+        if let Some(config) = root
+            .get("mcpServers")
+            .and_then(Value::as_object)
+            .and_then(|servers| servers.get(name))
+        {
+            return Ok(Some((source.label.clone(), config.clone())));
+        }
+    }
+    Ok(None)
 }
 
 fn sources(cwd: &Path) -> Vec<Source> {
@@ -385,32 +433,8 @@ pub fn add(cwd: &Path, request: AddRequest) -> Result<()> {
 /// Run the OAuth authorization-code flow for a configured remote server,
 /// storing the resulting token under the oxide config directory.
 pub async fn auth(cwd: &Path, scope: Option<String>, name: String) -> Result<()> {
-    let explicit = scope
-        .as_deref()
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .map(|value| Scope::parse(Some(value)))
-        .transpose()?;
-    let candidates = match explicit {
-        Some(scope) => vec![Source {
-            label: scope.label().to_string(),
-            path: path_for(scope, cwd)?,
-        }],
-        None => sources(cwd),
-    };
-    let mut found = None;
-    for source in candidates.into_iter().rev() {
-        let root = read_file(&source.path)?;
-        if let Some(config) = root
-            .get("mcpServers")
-            .and_then(Value::as_object)
-            .and_then(|servers| servers.get(&name))
-        {
-            found = Some((source.label.clone(), config.clone()));
-            break;
-        }
-    }
-    let Some((label, config)) = found else {
+    let scope = explicit_scope(scope.as_deref())?;
+    let Some((label, config)) = find_server(&candidates(sources(cwd), scope), &name)? else {
         bail!("no MCP server named `{name}`");
     };
     let url = config
@@ -524,31 +548,28 @@ pub fn get(cwd: &Path, name: &str) -> Result<()> {
 }
 
 pub fn remove(cwd: &Path, scope: Option<String>, name: String) -> Result<()> {
-    let scope = Scope::parse(scope.as_deref())?;
-    let path = path_for(scope, cwd)?;
-    if try_remove(&path, &name)? {
-        println!(
-            "removed MCP server `{name}` from {} ({})",
-            path.display(),
-            scope.label()
-        );
-        return Ok(());
-    }
-    for source in sources(cwd).into_iter().rev() {
-        if source.path == path {
-            continue;
-        }
-        if try_remove(&source.path, &name)? {
+    let scope = explicit_scope(scope.as_deref())?;
+    match remove_first(&candidates(sources(cwd), scope), &name)? {
+        Some((path, label)) => {
             println!(
-                "removed MCP server `{name}` from {} ({})",
-                source.path.display(),
-                source.label
-            );
-            return Ok(());
+                "removed MCP server `{name}` from {} ({label})",
+                path.display()
+            )
+        }
+        None => println!("no MCP server named `{name}`"),
+    }
+    Ok(())
+}
+
+/// Removes `name` from the first source that defines it, returning where it
+/// came from so the caller can report the file that actually changed.
+fn remove_first(sources: &[Source], name: &str) -> Result<Option<(PathBuf, String)>> {
+    for source in sources {
+        if try_remove(&source.path, name)? {
+            return Ok(Some((source.path.clone(), source.label.clone())));
         }
     }
-    println!("no MCP server named `{name}`");
-    Ok(())
+    Ok(None)
 }
 
 fn try_remove(path: &Path, name: &str) -> Result<bool> {
@@ -630,12 +651,95 @@ mod tests {
     }
 
     #[test]
+    fn a_pinned_scope_covers_both_layouts() {
+        let home = Path::new("/home/u");
+        let root = Path::new("/work/repo");
+        let all = || sources_for(Some(home), Some(Path::new("/etc/xdg")), root);
+        let labels = |list: Vec<Source>| {
+            list.into_iter()
+                .map(|source| source.label)
+                .collect::<Vec<_>>()
+        };
+
+        assert_eq!(
+            labels(candidates(all(), Some(Scope::Project))),
+            vec!["project", "claude (project)"]
+        );
+        assert_eq!(
+            labels(candidates(all(), Some(Scope::Global))),
+            vec!["platform global", "global", "claude (global)"]
+        );
+        assert_eq!(
+            labels(candidates(all(), None)),
+            vec![
+                "project",
+                "claude (project)",
+                "platform global",
+                "global",
+                "claude (global)"
+            ]
+        );
+    }
+
+    #[test]
+    fn a_pinned_scope_resolves_a_name_shared_with_the_other_scope() {
+        let dir = temp_dir("scope_lookup");
+        let home = dir.join("home");
+        let root = dir.join("repo");
+        let server = r#"{"type":"http","url":"https://mcp.newrelic.com/mcp/"}"#;
+        std::fs::create_dir_all(home.join(".oxide")).unwrap();
+        std::fs::create_dir_all(root.join(".oxide")).unwrap();
+        std::fs::write(
+            root.join(".mcp.json"),
+            format!(r#"{{"mcpServers":{{"newrelic":{server}}}}}"#),
+        )
+        .unwrap();
+        std::fs::write(
+            home.join(".oxide").join("mcp.json"),
+            format!(r#"{{"mcpServers":{{"newrelic":{server}}}}}"#),
+        )
+        .unwrap();
+
+        let all = sources_for(Some(&home), None, &root);
+        let found = find_server(&candidates(all.clone(), Some(Scope::Project)), "newrelic")
+            .unwrap()
+            .unwrap();
+        assert_eq!(found.0, "claude (project)");
+        let found = find_server(&candidates(all.clone(), Some(Scope::Global)), "newrelic")
+            .unwrap()
+            .unwrap();
+        assert_eq!(found.0, "global");
+
+        let removed = remove_first(&candidates(all, Some(Scope::Project)), "newrelic").unwrap();
+        assert_eq!(removed.unwrap().1, "claude (project)");
+        let global: Value = serde_json::from_str(
+            &std::fs::read_to_string(home.join(".oxide").join("mcp.json")).unwrap(),
+        )
+        .unwrap();
+        assert!(global["mcpServers"].get("newrelic").is_some());
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
     fn parses_scope_aliases() {
         assert_eq!(Scope::parse(None).unwrap(), Scope::Project);
         assert_eq!(Scope::parse(Some("project")).unwrap(), Scope::Project);
         assert_eq!(Scope::parse(Some("user")).unwrap(), Scope::Global);
         assert_eq!(Scope::parse(Some("global")).unwrap(), Scope::Global);
         assert!(Scope::parse(Some("bogus")).is_err());
+    }
+
+    #[test]
+    fn explicit_scope_distinguishes_absent_from_project() {
+        assert_eq!(explicit_scope(None).unwrap(), None);
+        assert_eq!(explicit_scope(Some("  ")).unwrap(), None);
+        assert_eq!(
+            explicit_scope(Some("project")).unwrap(),
+            Some(Scope::Project)
+        );
+        assert_eq!(explicit_scope(Some("user")).unwrap(), Some(Scope::Global));
+        assert!(explicit_scope(Some("bogus")).is_err());
     }
 
     #[test]
