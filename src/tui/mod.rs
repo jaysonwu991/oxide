@@ -1745,7 +1745,7 @@ fn handle_notify_command(app: &mut App, config: &mut Config, raw: &str) {
         None => (args, ""),
     };
 
-    match verb {
+    let (key, enabled) = match verb {
         "test" => {
             crate::notify::send(
                 "oxide",
@@ -1771,6 +1771,7 @@ fn handle_notify_command(app: &mut App, config: &mut Config, raw: &str) {
                 return;
             };
             settings.sound = enabled;
+            (crate::notify::NotifyKey::Sound, enabled)
         }
         _ => {
             let Some(enabled) = parse_toggle(verb) else {
@@ -1780,11 +1781,12 @@ fn handle_notify_command(app: &mut App, config: &mut Config, raw: &str) {
                 return;
             };
             settings.on_complete = enabled;
+            (crate::notify::NotifyKey::OnComplete, enabled)
         }
-    }
+    };
 
     config.notify = settings;
-    match crate::notify::save(settings) {
+    match crate::notify::save(key, enabled) {
         Ok(path) => app.items.push(ChatItem::Info(format!(
             "notifications: {}; sound: {} ({})",
             on_off(settings.on_complete),
@@ -3014,11 +3016,15 @@ fn complete_suggestion(app: &mut App) -> bool {
         if app.input[..app.input_cursor].contains(char::is_whitespace) {
             let (start, end) = slash_arg_token_bounds(&app.input, app.input_cursor);
             let completed = format!("{name} ");
-            if app.input.get(start..end) == Some(name.as_str()) && app.input[end..].starts_with(' ')
-            {
+            let replace_end = if app.input[end..].starts_with(' ') {
+                end + 1
+            } else {
+                end
+            };
+            if app.input.get(start..replace_end) == Some(completed.as_str()) {
                 return false;
             }
-            app.input.replace_range(start..end, &completed);
+            app.input.replace_range(start..replace_end, &completed);
             app.input_cursor = start + completed.len();
             return true;
         }
@@ -4825,6 +4831,18 @@ mod tests {
     }
 
     #[test]
+    fn completing_an_argument_reuses_the_existing_separator() {
+        let config = Config::default();
+        let mut app = test_app();
+        app.set_input("/notify s foo".to_string());
+        app.input_cursor = "/notify s".len();
+        refresh_suggestions(&mut app, &config);
+        assert!(complete_suggestion(&mut app));
+        assert_eq!(app.input, "/notify sound foo");
+        assert_eq!(app.input_cursor, "/notify sound ".len());
+    }
+
+    #[test]
     fn suggestions_show_project_files_for_at_path() {
         let dir =
             std::env::temp_dir().join(format!("oxide_file_suggestions_{}", std::process::id()));
@@ -5270,10 +5288,21 @@ mod tests {
                 if text.contains("notifications: on; sound: on")
         ));
 
-        handle_notify_command(&mut app, &mut config, "/notify off");
-        assert!(!config.notify.on_complete);
+        // The toast is on through a project/env override while the global file
+        // is empty, so `/notify sound off` must persist only the sound key.
+        config.notify.on_complete = true;
         handle_notify_command(&mut app, &mut config, "/notify sound off");
         assert!(!config.notify.sound);
+        let saved: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        assert!(
+            saved.get("notifyOnComplete").is_none(),
+            "the untouched key is not persisted"
+        );
+        assert_eq!(saved["notifySound"], serde_json::json!(false));
+
+        handle_notify_command(&mut app, &mut config, "/notify off");
+        assert!(!config.notify.on_complete);
         let saved: serde_json::Value =
             serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
         assert_eq!(saved["notifyOnComplete"], serde_json::json!(false));

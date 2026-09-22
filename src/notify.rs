@@ -179,12 +179,30 @@ fn env_bool(name: &str) -> Option<bool> {
         .and_then(|value| value.trim().parse::<bool>().ok())
 }
 
-/// Persists the two flags into the global `settings.json`, preserving any other
-/// keys, and returns the file written. A project `.oxide/settings.json` can
-/// still override them.
-pub fn save(config: NotifyConfig) -> Result<PathBuf> {
+/// A single notification setting, so `/notify` persists only the key it changed
+/// and leaves the other key's stored value (and any project or env override)
+/// alone.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NotifyKey {
+    OnComplete,
+    Sound,
+}
+
+impl NotifyKey {
+    fn setting_name(self) -> &'static str {
+        match self {
+            NotifyKey::OnComplete => "notifyOnComplete",
+            NotifyKey::Sound => "notifySound",
+        }
+    }
+}
+
+/// Persists one flag into the global `settings.json`, preserving any other keys,
+/// and returns the file written. A project `.oxide/settings.json` can still
+/// override it.
+pub fn save(key: NotifyKey, enabled: bool) -> Result<PathBuf> {
     let path = settings_path();
-    save_to(&path, config)?;
+    save_to(&path, key, enabled)?;
     Ok(path)
 }
 
@@ -198,7 +216,7 @@ fn settings_path() -> PathBuf {
         .join("settings.json")
 }
 
-fn save_to(path: &Path, config: NotifyConfig) -> Result<()> {
+fn save_to(path: &Path, key: NotifyKey, enabled: bool) -> Result<()> {
     let mut value = std::fs::read_to_string(path)
         .ok()
         .and_then(|text| serde_json::from_str::<serde_json::Value>(&text).ok())
@@ -208,12 +226,8 @@ fn save_to(path: &Path, config: NotifyConfig) -> Result<()> {
     }
     let object = value.as_object_mut().expect("object");
     object.insert(
-        "notifyOnComplete".to_string(),
-        serde_json::Value::Bool(config.on_complete),
-    );
-    object.insert(
-        "notifySound".to_string(),
-        serde_json::Value::Bool(config.sound),
+        key.setting_name().to_string(),
+        serde_json::Value::Bool(enabled),
     );
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)
@@ -271,24 +285,25 @@ mod tests {
     }
 
     #[test]
-    fn save_preserves_other_settings() {
+    fn save_updates_only_the_changed_key() {
         let dir = std::env::temp_dir().join(format!("oxide-notify-save-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("settings.json");
-        std::fs::write(&path, r#"{"hideThinkingBlock": true}"#).unwrap();
-        save_to(
+        std::fs::write(
             &path,
-            NotifyConfig {
-                on_complete: false,
-                sound: true,
-            },
+            r#"{"hideThinkingBlock": true, "notifyOnComplete": true}"#,
         )
         .unwrap();
+        save_to(&path, NotifyKey::Sound, false).unwrap();
         let value: serde_json::Value =
             serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
         assert_eq!(value["hideThinkingBlock"], serde_json::json!(true));
-        assert_eq!(value["notifyOnComplete"], serde_json::json!(false));
-        assert_eq!(value["notifySound"], serde_json::json!(true));
+        assert_eq!(
+            value["notifyOnComplete"],
+            serde_json::json!(true),
+            "the untouched key keeps its stored value"
+        );
+        assert_eq!(value["notifySound"], serde_json::json!(false));
         std::fs::remove_dir_all(&dir).ok();
     }
 }

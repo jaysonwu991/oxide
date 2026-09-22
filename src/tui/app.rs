@@ -732,19 +732,18 @@ impl App {
     /// A short plain-text summary of the newest assistant reply, used as the
     /// body of the completion toast.
     pub fn completion_summary(&self) -> String {
-        for message in self.history.iter().rev() {
-            if message.role != "assistant" {
-                continue;
-            }
-            let Some(text) = message.display() else {
-                continue;
-            };
-            let text = text.split_whitespace().collect::<Vec<_>>().join(" ");
-            if !text.is_empty() {
-                return truncate_chars(&text, 160);
-            }
+        let Some(message) = self.history.iter().rev().find(|m| m.role == "assistant") else {
+            return "Turn complete".to_string();
+        };
+        let Some(text) = message.display() else {
+            return "Turn complete".to_string();
+        };
+        let summary = bounded_summary(&text, COMPLETION_SUMMARY_LIMIT);
+        if summary.is_empty() {
+            "Turn complete".to_string()
+        } else {
+            summary
         }
-        "Turn complete".to_string()
     }
 
     /// Replaces the conversation with new context (used after in-file branch
@@ -1145,13 +1144,43 @@ fn current_git_branch(cwd: &str) -> Option<String> {
     (!branch.is_empty()).then(|| branch.to_string())
 }
 
-/// Truncates on a character boundary, adding an ellipsis when shortened.
-fn truncate_chars(text: &str, max: usize) -> String {
-    if text.chars().count() <= max {
-        return text.to_string();
+/// The maximum length of the completion toast body, including the ellipsis.
+const COMPLETION_SUMMARY_LIMIT: usize = 160;
+
+/// Collapses whitespace and truncates to `max` characters, stopping as soon as
+/// the limit is reached so a very long final reply is not normalized in full on
+/// the event-loop thread.
+fn bounded_summary(text: &str, max: usize) -> String {
+    if max == 0 {
+        return String::new();
     }
-    let mut out: String = text.chars().take(max.saturating_sub(1)).collect();
-    out.push('…');
+    let keep = max - 1;
+    let mut out = String::new();
+    let mut used = 0usize;
+    let mut truncated = false;
+    for word in text.split_whitespace() {
+        let separator = usize::from(!out.is_empty());
+        let length = word.chars().count();
+        if used + separator + length > keep {
+            if separator == 1 && used < keep {
+                out.push(' ');
+                used += 1;
+            }
+            let take = keep.saturating_sub(used);
+            out.extend(word.chars().take(take));
+            truncated = true;
+            break;
+        }
+        if separator == 1 {
+            out.push(' ');
+            used += 1;
+        }
+        out.push_str(word);
+        used += length;
+    }
+    if truncated {
+        out.push('…');
+    }
     out
 }
 
@@ -1179,6 +1208,16 @@ mod tests {
             Message::assistant("all  done\n\non two lines", vec![]),
         ];
         assert_eq!(app.completion_summary(), "all done on two lines");
+    }
+
+    #[test]
+    fn completion_summary_ignores_older_replies_after_a_tool_call_only_turn() {
+        let mut app = test_app();
+        app.history = vec![
+            Message::assistant("the earlier answer", vec![]),
+            Message::assistant("", vec![]),
+        ];
+        assert_eq!(app.completion_summary(), "Turn complete");
     }
 
     #[test]
