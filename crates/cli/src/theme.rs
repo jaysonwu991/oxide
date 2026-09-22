@@ -1,8 +1,10 @@
 //! Named color themes for the TUI. `dark` and `light` are built in; custom
 //! themes are JSON files under `.oxide/themes/` (project) or the oxide config
-//! dir (global), matching Pi's theme locations.
+//! dir (global), matching Pi's theme locations. The built-in palettes are built
+//! from `oxide_core::theme_view`, so the CLI and desktop use identical colors.
 
 use serde::Deserialize;
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 use ratatui::style::Color;
@@ -36,56 +38,43 @@ pub struct Theme {
 }
 
 impl Theme {
-    pub fn dark() -> Self {
+    /// Builds a theme from a slot map of `#rrggbb` values, ignoring the surface
+    /// slots the terminal does not use. The built-in palettes come from
+    /// `oxide_core::theme_view` so the CLI and desktop share identical colors.
+    fn from_slots(name: &str, slots: &BTreeMap<String, String>) -> Self {
+        let color =
+            |slot: &str| parse_color(slots.get(slot).map(String::as_str)).unwrap_or(Color::Reset);
         Self {
-            name: "dark".to_string(),
-            accent: Color::LightCyan,
-            user: Color::LightCyan,
-            assistant: Color::White,
-            success: Color::LightGreen,
-            tool: Color::LightYellow,
-            error: Color::LightRed,
-            info: Color::Gray,
-            dim: Color::Gray,
-            border: Color::LightCyan,
-            tool_pending_bg: Color::Rgb(0x28, 0x28, 0x32),
-            tool_success_bg: Color::Rgb(0x28, 0x32, 0x28),
-            tool_error_bg: Color::Rgb(0x3c, 0x28, 0x28),
-            usage_bar_bg: Color::Rgb(0x1d, 0x3b, 0x78),
-            usage_bar_fg: Color::White,
-            usage_bar_label: Color::LightCyan,
-            thinking_off: Color::Gray,
-            thinking_low: Color::LightCyan,
-            thinking_medium: Color::LightBlue,
-            thinking_high: Color::LightMagenta,
-            thinking_text: Color::Gray,
+            name: name.to_string(),
+            accent: color("accent"),
+            user: color("user"),
+            assistant: color("assistant"),
+            success: color("success"),
+            tool: color("tool"),
+            error: color("error"),
+            info: color("info"),
+            dim: color("dim"),
+            border: color("border"),
+            tool_pending_bg: color("tool_pending_bg"),
+            tool_success_bg: color("tool_success_bg"),
+            tool_error_bg: color("tool_error_bg"),
+            usage_bar_bg: color("usage_bar_bg"),
+            usage_bar_fg: color("usage_bar_fg"),
+            usage_bar_label: color("usage_bar_label"),
+            thinking_off: color("thinking_off"),
+            thinking_low: color("thinking_low"),
+            thinking_medium: color("thinking_medium"),
+            thinking_high: color("thinking_high"),
+            thinking_text: color("thinking_text"),
         }
     }
 
+    pub fn dark() -> Self {
+        Self::from_slots("dark", &oxide_core::theme_view::builtin("dark").colors)
+    }
+
     pub fn light() -> Self {
-        Self {
-            name: "light".to_string(),
-            accent: Color::Blue,
-            user: Color::Blue,
-            assistant: Color::Black,
-            success: Color::Green,
-            tool: Color::Magenta,
-            error: Color::Red,
-            info: Color::DarkGray,
-            dim: Color::DarkGray,
-            border: Color::Blue,
-            tool_pending_bg: Color::Rgb(0xe8, 0xe8, 0xf0),
-            tool_success_bg: Color::Rgb(0xe8, 0xf0, 0xe8),
-            tool_error_bg: Color::Rgb(0xf0, 0xe8, 0xe8),
-            usage_bar_bg: Color::Rgb(0xd8, 0xe4, 0xff),
-            usage_bar_fg: Color::Black,
-            usage_bar_label: Color::Blue,
-            thinking_off: Color::Gray,
-            thinking_low: Color::Cyan,
-            thinking_medium: Color::Blue,
-            thinking_high: Color::Magenta,
-            thinking_text: Color::DarkGray,
-        }
+        Self::from_slots("light", &oxide_core::theme_view::builtin("light").colors)
     }
 
     pub fn by_name(name: &str) -> Option<Self> {
@@ -271,6 +260,24 @@ mod tests {
         assert_eq!(Theme::by_name("light").unwrap().name, "light");
         assert_eq!(Theme::by_name("").unwrap().name, "dark");
         assert!(Theme::by_name("missing").is_none());
+    }
+
+    #[test]
+    fn builtin_palettes_match_theme_view() {
+        // The CLI built-ins are built from the shared `theme_view` palettes, so
+        // the CLI and desktop use identical dark/light colors.
+        let dark = Theme::dark();
+        assert_eq!(dark.accent, Color::Rgb(0xa9, 0xc7, 0xff));
+        assert_eq!(dark.user, dark.accent);
+        assert_eq!(dark.assistant, Color::Rgb(0xed, 0xed, 0xed));
+        assert_eq!(dark.tool_pending_bg, Color::Rgb(0x23, 0x23, 0x23));
+        let light = Theme::light();
+        assert_eq!(light.accent, Color::Rgb(0x1a, 0x6f, 0xd4));
+        assert_eq!(light.assistant, Color::Rgb(0x1b, 0x1b, 0x1f));
+        assert_ne!(dark.accent, light.accent);
+        // And they agree with the shared source of truth.
+        let slots = oxide_core::theme_view::builtin("dark").colors;
+        assert_eq!(slots.get("accent").map(String::as_str), Some("#a9c7ff"));
     }
 
     #[test]

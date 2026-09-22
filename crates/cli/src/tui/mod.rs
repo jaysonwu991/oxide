@@ -48,6 +48,7 @@ pub async fn run(
     cwd: PathBuf,
     session: Option<SessionLog>,
     open_sessions_picker: bool,
+    theme_name: String,
 ) -> Result<()> {
     let mcp = Arc::new(McpRegistry::new(&config.ecosystem.mcp));
     let plugins = Arc::new(PluginHost::spawn(&config.ecosystem.hooks, &cwd).await);
@@ -74,6 +75,7 @@ pub async fn run(
         lsp,
         session,
         open_sessions_picker,
+        theme_name,
     )
     .await;
 
@@ -99,11 +101,11 @@ async fn event_loop(
     lsp: Arc<LspManager>,
     mut session: Option<SessionLog>,
     open_sessions_picker: bool,
+    theme_name: String,
 ) -> Result<()> {
     let mut app = App::new(
         config.model.clone(),
         cwd.display().to_string(),
-        config.mode,
         config.reasoning,
     );
     app.context_limit = context_limit(&config);
@@ -122,7 +124,7 @@ async fn event_loop(
     }
     app.show_thinking = config.supports_reasoning();
     app.show_thinking_blocks = !crate::config::load_hide_thinking_block();
-    app.theme = config.theme.clone();
+    app.theme = crate::theme::load(&cwd, &theme_name);
     app.usage_settings = crate::portkey_usage::UsageSettings::load().unwrap_or_default();
     if app.usage_settings.enabled && app.usage_settings.available(&config) {
         app.usage = Some(crate::portkey_usage::UsageBar::new(&app.usage_settings));
@@ -524,11 +526,7 @@ fn handle_key(
             refresh_suggestions(app, config);
         }
         KeyCode::BackTab => {
-            config.mode = config.mode.next();
-            app.mode = config.mode;
-            app.show_status(format!("mode: {}", app.mode.label()));
-        }
-        KeyCode::Char('r') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+            // Pi cycles the thinking level with Shift+Tab.
             config.reasoning = config.reasoning.next();
             app.reasoning = config.reasoning;
             if let Some(log) = session.as_ref() {
@@ -1276,7 +1274,6 @@ fn handle_key(
                         .push(ChatItem::Error(format!("unknown theme `{requested}`")));
                     return;
                 }
-                config.theme = theme.clone();
                 app.theme = theme;
                 app.invalidate_render_cache();
                 app.items
@@ -1324,7 +1321,6 @@ fn handle_key(
                     None,
                     None,
                     None,
-                    Some(config.mode.label().to_string()),
                     Some(config.reasoning.label().to_string()),
                 ) {
                     Ok(mut reloaded) => {
@@ -1463,6 +1459,7 @@ fn handle_key(
                 approve: Arc::clone(approve),
                 steering: app.steering.clone(),
                 follow_ups: app.follow_ups.clone(),
+                cancel: crate::agent::Cancel::new(),
             };
             tokio::spawn(async move {
                 if subtask {
@@ -1637,7 +1634,7 @@ fn help_text(config: &Config) -> String {
         "  /copy                 copy the last assistant message".to_string(),
         "  /copy all             copy the whole transcript".to_string(),
         format!(
-            "keys: Enter send/guide · Shift+Enter newline · Alt+Enter follow-up while busy · {} edit queued · Shift+Tab mode · Ctrl+R reasoning · Ctrl+O tool details · Ctrl+T thinking · Ctrl+V image · Ctrl+A/E message start/end · ↑/↓ history · PgUp/PgDn/wheel scroll · Ctrl+U/D half page · drag to select and copy · Ctrl+C copy selection/quit",
+            "keys: Enter send/guide · Shift+Enter newline · Alt+Enter follow-up while busy · {} edit queued · Shift+Tab reasoning · Ctrl+O tool details · Ctrl+T thinking · Ctrl+V image · Ctrl+A/E message start/end · ↑/↓ history · PgUp/PgDn/wheel scroll · Ctrl+U/D half page · drag to select and copy · Ctrl+C copy selection/quit",
             dequeue_key_label()
         ),
     ];
@@ -2203,8 +2200,7 @@ fn hotkeys_text() -> String {
             dequeue_key_label()
         ),
         "  Esc                   clear the input".to_string(),
-        "  Shift+Tab             cycle permission mode".to_string(),
-        "  Ctrl+R                cycle reasoning/thinking level".to_string(),
+        "  Shift+Tab             cycle reasoning/thinking level".to_string(),
         "  Ctrl+O                toggle tool output".to_string(),
         "  Ctrl+T                show or hide thinking blocks".to_string(),
         "  Ctrl+V                attach a clipboard image".to_string(),
@@ -3975,24 +3971,7 @@ struct ModelCatalogs {
 /// URL of its own, since otherwise its catalog would be queried against the
 /// active provider's endpoint.
 fn model_providers(config: &Config) -> Vec<(String, Config)> {
-    let active = crate::auth::canonical_provider(&config.provider);
-    let mut providers: Vec<(String, Config)> = Vec::new();
-    if !config.api_key.trim().is_empty() {
-        providers.push((active.clone(), config.clone()));
-    }
-    let store = crate::auth::AuthStore::load().unwrap_or_default();
-    for name in store.providers() {
-        if providers.iter().any(|(known, _)| known == &name) {
-            continue;
-        }
-        let is_preset = crate::config::ProviderPreset::for_name(&name).is_some();
-        if !is_preset && !config.provider_base_urls.contains_key(&name) {
-            continue;
-        }
-        let key = store.key(&name).unwrap_or_default().to_string();
-        providers.push((name.clone(), config.for_provider(&name, &key)));
-    }
-    providers
+    crate::config::provider_configs(config)
 }
 
 /// Switches the running session to a provider that already has a stored
@@ -4412,13 +4391,12 @@ fn trailing_text(text: &str, max_bytes: usize) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::{Config, Mode, Reasoning};
+    use crate::config::{Config, Reasoning};
 
     fn test_app() -> App {
         App::new(
             "test-model".to_string(),
             "/tmp".to_string(),
-            Mode::Build,
             Reasoning::Auto,
         )
     }
@@ -4984,7 +4962,6 @@ mod tests {
         let mut app = App::new(
             "test-model".to_string(),
             dir.display().to_string(),
-            crate::config::Mode::Build,
             crate::config::Reasoning::Auto,
         );
         app.set_input("review @main".to_string());

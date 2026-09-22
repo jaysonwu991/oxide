@@ -1,9 +1,10 @@
-# Configuration guide
+# CLI and configuration
 
-This guide covers day-to-day configuration: where files live, and how to add or
-remove MCP servers, subagents, slash commands, prompt templates, skills, plugins,
+This guide covers the `oxide` CLI: where files live, and how to add or remove
+MCP servers, subagents, slash commands, prompt templates, skills, plugins,
 permissions, modes, reasoning, memory, project trust, themes, and context
-compaction.
+compaction. The desktop app reads the same configuration and session files — see
+[desktop.md](desktop.md).
 
 ## Scopes and precedence
 
@@ -565,24 +566,10 @@ permission:
   wildcards. The last matching rule wins.
 - `auto_approve: true` in `config.json` skips prompts for `ask` rules. When
   `false`, `ask` is denied in non-interactive (`-p`) mode.
-- The active [mode](#modes) is applied after the rules: `plan` denies workspace
-  mutations, `auto-edit` approves file edits.
 
-## Modes
-
-The agent runs in one of three permission modes, modelled on Claude Code:
-
-| Mode | Behavior |
-| --- | --- |
-| `build` (default) | Follows the active agent's permission rules. |
-| `plan` | Read-only: `write`, `edit`, `patch`, `bash`, and all MCP tools are denied, and the model is instructed to produce an implementation plan. |
-| `auto-edit` | Auto-approves `write`, `edit`, and `patch`; other rules still apply. |
-
-Set the starting mode with `--mode build|plan|auto-edit`, the `OXIDE_MODE`
-environment variable, or `"mode": "..."` in `config.json`. In the TUI, press
-Shift+Tab to cycle build → auto-edit → plan; cycling shows the current mode in
-the editor status row. Plan mode keeps read-only tools available and is useful
-for review and planning before switching back to build.
+There is no permission mode: the rules and `auto_approve` decide every call.
+For a read-only run, allowlist the read tools with `--tools` (e.g.
+`oxide -t read,grep,find,ls -p "review this"`).
 
 ## Reasoning
 
@@ -610,7 +597,7 @@ of an unsupported `disabled`.
 
 Set the starting level with `--reasoning auto|off|low|medium|high`, the
 `OXIDE_REASONING` environment variable, or `"reasoning": "..."` in `config.json`.
-In the TUI, press Ctrl+R to cycle auto → off → low → medium → high; the current
+In the TUI, press Shift+Tab to cycle auto → off → low → medium → high; the current
 level is shown in the footer (for models that support reasoning) and colors the
 composer rules.
 
@@ -719,8 +706,11 @@ decision is saved; non-interactive runs use `defaultProjectTrust` (in
 
 oxide ships `dark` and `light`. Add custom themes as JSON under
 `.oxide/themes/<name>.json` or `<config>/oxide/themes/<name>.json`, then select
-one with `--use-theme <name>` or `/theme <name>`. Colors accept names or
-`#rrggbb`; unset slots fall back to the built-in `dark` theme.
+one with `--use-theme <name>` or `/theme <name>`. The built-in palettes come
+from `oxide_core::theme_view`, shared with the desktop app, so the CLI and
+desktop render identical colors and both read the same custom theme files.
+Colors accept names or `#rrggbb`; unset slots fall back to the built-in `dark`
+theme.
 
 ```json
 {

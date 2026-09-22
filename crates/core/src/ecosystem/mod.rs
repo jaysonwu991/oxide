@@ -328,7 +328,7 @@ fn push_context(ecosystem: &mut Ecosystem, path: &Path) {
     }
 }
 
-pub(crate) fn project_root(cwd: &Path) -> Option<PathBuf> {
+pub fn project_root(cwd: &Path) -> Option<PathBuf> {
     let mut current = Some(cwd.to_path_buf());
     while let Some(dir) = current {
         if dir.join(".git").exists() || dir.join(".oxide").exists() || dir.join(".claude").exists()

@@ -1,0 +1,168 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>oxide</title>
+    <link rel="stylesheet" href="style.css" />
+  </head>
+  <body>
+    <aside class="sidebar">
+      <div class="sidebar-top">
+        <div class="brand"><span class="dot">◆</span> oxide</div>
+        <button id="new-chat" class="new-task" disabled>New task</button>
+      </div>
+
+      <div class="project-picker">
+        <button id="project-menu" class="project-btn">
+          <span id="project-current">Select a project</span>
+          <span class="chev">⌄</span>
+        </button>
+        <div id="project-dropdown" class="dropdown" hidden>
+          <div class="dropdown-add">
+            <input id="project-path" placeholder="Add a folder…" spellcheck="false" />
+            <button id="add-project" class="ghost small">Add</button>
+          </div>
+          <div id="projects" class="projects"></div>
+        </div>
+      </div>
+
+      <div class="threads-head">
+        <span>Threads</span>
+        <button id="toggle-all" class="ghost small" title="Show threads from every project">All projects</button>
+      </div>
+      <div id="sessions" class="threads"></div>
+
+      <div class="sidebar-foot">
+        <button id="connect" class="foot-btn">Connect</button>
+        <button id="theme" class="icon" title="Theme">◐</button>
+        <button id="permissions" class="icon" title="Saved tool approvals">🔒</button>
+        <button id="help" class="icon" title="Keyboard shortcuts">?</button>
+      </div>
+    </aside>
+
+    <main class="main">
+      <header class="topbar">
+        <div class="thread-title" id="thread-title">New task</div>
+        <div class="thread-meta" id="project-meta"></div>
+      </header>
+
+      <div id="transcript" class="conversation"></div>
+
+      <div class="composer-wrap">
+        <div class="composer">
+          <textarea id="prompt" placeholder="Ask oxide…" disabled></textarea>
+          <div class="composer-bar">
+            <div class="composer-left">
+              <button id="model" class="chip" title="Switch model">model</button>
+              <button id="reasoning" class="chip" title="Reasoning effort (Shift+Tab)">auto</button>
+            </div>
+            <div class="composer-right">
+              <button id="stop" class="icon danger" hidden title="Stop">■</button>
+              <button id="send" class="send" disabled title="Send (Enter)">↑</button>
+            </div>
+          </div>
+        </div>
+        <footer id="status">
+          <span id="status-text">Ready</span>
+          <span id="usage" class="spend"></span>
+        </footer>
+      </div>
+    </main>
+
+    <div id="approval" class="overlay" hidden>
+      <div class="dialog">
+        <h2>Permission required</h2>
+        <p class="dialog-sub">oxide wants to run a tool that needs your approval.</p>
+        <div class="approval-tool"><span id="approval-tool">tool</span></div>
+        <pre id="approval-detail" class="approval-detail"></pre>
+        <div class="dialog-actions">
+          <button id="approval-deny" class="ghost">Deny</button>
+          <button id="approval-once" class="primary">Allow once</button>
+          <button id="approval-always" class="primary">Always allow</button>
+        </div>
+      </div>
+    </div>
+
+    <div id="connect-modal" class="overlay" hidden>
+      <div class="dialog">
+        <h2>Connect a provider</h2>
+        <p class="dialog-sub">Credentials are stored in the same <code>auth.json</code> the CLI uses.</p>
+        <div id="provider-list" class="provider-list"></div>
+        <div class="field">
+          <label for="login-key">API key</label>
+          <input id="login-key" type="password" placeholder="sk-…" spellcheck="false" autocomplete="off" />
+        </div>
+        <div class="field-row">
+          <div class="field">
+            <label for="login-model">Model (optional)</label>
+            <input id="login-model" placeholder="default" spellcheck="false" />
+          </div>
+          <div class="field">
+            <label for="login-url">Base URL (optional)</label>
+            <input id="login-url" placeholder="default" spellcheck="false" />
+          </div>
+        </div>
+        <div class="dialog-actions">
+          <button id="login-cancel" class="ghost">Cancel</button>
+          <button id="login-save" class="primary">Save</button>
+        </div>
+      </div>
+    </div>
+
+    <div id="models-modal" class="overlay" hidden>
+      <div class="dialog">
+        <h2>Models</h2>
+        <p class="dialog-sub">From every connected provider. Selecting one updates <code>config.json</code>.</p>
+        <input id="model-filter" class="search" placeholder="Filter models…" spellcheck="false" />
+        <div id="model-list" class="model-list"></div>
+        <div class="dialog-actions">
+          <button id="models-close" class="ghost">Close</button>
+        </div>
+      </div>
+    </div>
+
+    <div id="themes-modal" class="overlay" hidden>
+      <div class="dialog">
+        <h2>Theme</h2>
+        <p class="dialog-sub">Built-in and <code>.oxide/themes</code> files, shared with the CLI.</p>
+        <div id="theme-list" class="theme-list"></div>
+        <div class="dialog-actions">
+          <button id="themes-close" class="ghost">Close</button>
+        </div>
+      </div>
+    </div>
+
+    <div id="permissions-modal" class="overlay" hidden>
+      <div class="dialog">
+        <h2>Tool approvals</h2>
+        <p class="dialog-sub">Tools allowed without prompting in this project.</p>
+        <div id="approval-list" class="theme-list"></div>
+        <div class="dialog-actions">
+          <button id="permissions-clear" class="ghost danger">Clear all</button>
+          <button id="permissions-close" class="ghost">Close</button>
+        </div>
+      </div>
+    </div>
+
+    <div id="help-modal" class="overlay" hidden>
+      <div class="dialog">
+        <h2>Keyboard shortcuts</h2>
+        <table class="shortcuts">
+          <tr><td>Enter</td><td>Send; while busy, steer the running turn</td></tr>
+          <tr><td>Shift+Enter</td><td>Newline</td></tr>
+          <tr><td>Alt+Enter</td><td>Queue a follow-up</td></tr>
+          <tr><td>Shift+Tab / Ctrl+R</td><td>Cycle reasoning</td></tr>
+          <tr><td>Ctrl+K</td><td>Open the model picker</td></tr>
+          <tr><td>Ctrl+/</td><td>Toggle this help</td></tr>
+          <tr><td>Escape</td><td>Close any dialog</td></tr>
+        </table>
+        <div class="dialog-actions">
+          <button id="help-close" class="ghost">Close</button>
+        </div>
+      </div>
+    </div>
+
+    <script src="app.js"></script>
+  </body>
+</html>

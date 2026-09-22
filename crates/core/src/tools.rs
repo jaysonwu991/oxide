@@ -55,7 +55,7 @@ pub fn canonical_tool_name(name: &str) -> &str {
 
 /// A line-numbered diff of a file edit, carried alongside the tool result for
 /// display only. It is never sent to the model (the text result is).
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, serde::Serialize)]
 pub struct DiffPreview {
     pub path: String,
     pub text: String,
@@ -1378,7 +1378,7 @@ fn walk(root: &Path, visit: &mut impl FnMut(&Path) -> bool) {
 ///
 /// This shares the tool walker's ignore behavior so the TUI does not suggest
 /// build output, dependencies, or files excluded by project `.gitignore`s.
-pub(crate) fn workspace_paths(root: &Path) -> Vec<String> {
+pub fn workspace_paths(root: &Path) -> Vec<String> {
     let mut paths = BTreeSet::new();
     walk(root, &mut |path| {
         let rel = path.strip_prefix(root).unwrap_or(path);
@@ -1765,7 +1765,7 @@ fn stream_temp_path(label: &str) -> PathBuf {
 /// rendered or replayed without corrupting the screen. A carriage return
 /// overwrites the current line, so only the text after the last one is kept,
 /// which also collapses `\r`-based progress output to its final state.
-pub(crate) fn sanitize_terminal_output(text: &str) -> String {
+pub fn sanitize_terminal_output(text: &str) -> String {
     let mut out = String::with_capacity(text.len());
     for (index, line) in text.split('\n').enumerate() {
         if index > 0 {

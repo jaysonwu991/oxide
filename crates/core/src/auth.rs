@@ -5,14 +5,14 @@ use std::path::{Path, PathBuf};
 
 const AUTH_FILE: &str = "auth.json";
 #[derive(Debug, Clone, Copy)]
-pub(crate) struct ProviderOption {
+pub struct ProviderOption {
     pub name: &'static str,
     pub label: &'static str,
     pub description: &'static str,
     pub key_url: &'static str,
 }
 
-pub(crate) const KNOWN_PROVIDERS: [ProviderOption; 5] = [
+pub const KNOWN_PROVIDERS: [ProviderOption; 5] = [
     ProviderOption {
         name: "openai",
         label: "OpenAI",
@@ -186,12 +186,12 @@ pub fn canonical_provider(name: &str) -> String {
     }
 }
 
-pub(crate) fn provider_option(name: &str) -> Option<&'static ProviderOption> {
+pub fn provider_option(name: &str) -> Option<&'static ProviderOption> {
     let name = canonical_provider(name);
     KNOWN_PROVIDERS.iter().find(|option| option.name == name)
 }
 
-pub(crate) fn provider_label(name: &str) -> &str {
+pub fn provider_label(name: &str) -> &str {
     provider_option(name)
         .map(|option| option.label)
         .unwrap_or(name)

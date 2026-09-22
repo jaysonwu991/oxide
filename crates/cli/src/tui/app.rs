@@ -1,5 +1,5 @@
 use crate::agent::{ApprovalRequest, Steering};
-use crate::config::{Mode, Reasoning};
+use crate::config::Reasoning;
 use crate::llm::{ContentPart, Message};
 use crate::plugin_registry::{MarketplaceOverview, MarketplacePluginOverview};
 use crate::session::SessionSummary;
@@ -689,7 +689,6 @@ pub struct App {
     pub suggestions: Vec<CommandHint>,
     pub suggestion_index: usize,
     pub workspace_paths: Option<Vec<String>>,
-    pub mode: Mode,
     pub reasoning: Reasoning,
     pub tokens_in: u64,
     pub tokens_out: u64,
@@ -732,7 +731,7 @@ impl App {
         self.git_branch = current_git_branch(&self.cwd);
     }
 
-    pub fn new(model: String, cwd: String, mode: Mode, reasoning: Reasoning) -> Self {
+    pub fn new(model: String, cwd: String, reasoning: Reasoning) -> Self {
         let git_branch = current_git_branch(&cwd);
         Self {
             input: String::new(),
@@ -765,7 +764,6 @@ impl App {
             suggestions: Vec::new(),
             suggestion_index: 0,
             workspace_paths: None,
-            mode,
             reasoning,
             tokens_in: 0,
             tokens_out: 0,
@@ -1258,13 +1256,13 @@ mod tests {
 
     #[test]
     fn tool_output_is_previewed_by_default() {
-        let app = App::new("gpt-4o".into(), ".".into(), Mode::Build, Reasoning::Auto);
+        let app = App::new("gpt-4o".into(), ".".into(), Reasoning::Auto);
         assert!(!app.expand_tools);
         assert!(app.show_thinking_blocks);
     }
 
     fn test_app() -> App {
-        App::new("gpt-4o".into(), ".".into(), Mode::Build, Reasoning::Auto)
+        App::new("gpt-4o".into(), ".".into(), Reasoning::Auto)
     }
 
     #[test]
