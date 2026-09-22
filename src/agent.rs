@@ -347,6 +347,9 @@ async fn run_loop(
     // model gets one hidden reminder to verify before its summary.
     let mut verification = VerificationState::default();
     let mut verification_reminder: Option<String> = None;
+    // Verification commands already run this turn, so an exact repeat can be
+    // flagged instead of silently re-run (a slow build or test suite).
+    let mut seen_verifications: BTreeSet<String> = BTreeSet::new();
 
     loop {
         for steered in runtime.steering.drain() {
@@ -703,6 +706,7 @@ async fn run_loop(
                 } else {
                     false
                 };
+                let mut dispatched = false;
                 let mut output = if block_reply {
                     tools::ToolOutput::text(
                         "error: commit and push the code changes before replying to the review, so \
@@ -719,6 +723,7 @@ async fn run_loop(
                 .await
                 {
                     snapshot_needed |= tool_may_mutate_workspace(&name);
+                    dispatched = true;
                     dispatch(&config, &cwd, &runtime, &tx, &call, depth, &progress).await
                 } else {
                     tools::ToolOutput::text(format!("error: permission denied for `{name}`"))
@@ -746,6 +751,17 @@ async fn run_loop(
                 }
                 let millis = started.elapsed().as_millis() as u64;
                 verification.record(&name, &effective_args, &output.text);
+                if canonical_name == "bash" {
+                    if let Some(command) = effective_args.get("command").and_then(Value::as_str) {
+                        if note_verifier(&mut seen_verifications, dispatched, command) {
+                            output.text.push_str(
+                                "\n\n[note: this build or test already ran in this run; its result \
+                                 is unchanged unless you edited files, so there is no need to run it \
+                                 again]",
+                            );
+                        }
+                    }
+                }
                 terminated.push(output.terminate);
                 let text = output.text.clone();
 
@@ -1327,6 +1343,50 @@ async fn repo_has_pending_delivery(cwd: &Path) -> bool {
         .await
         .and_then(|count| count.parse::<u64>().ok())
         .is_some_and(|count| count > 0)
+}
+
+/// The identity of a build/test invocation for repeat detection: the command
+/// before its output plumbing, so `./gradlew test | tail -50` and
+/// `./gradlew test | wc -l` count as the same run. Returns `None` for a command
+/// that is not a verifier at all.
+fn verification_key(command: &str) -> Option<String> {
+    if !looks_like_verification_command(command) {
+        return None;
+    }
+    let base = match first_unquoted(command, '|') {
+        Some(index) => &command[..index],
+        None => command,
+    };
+    let base = base.trim().trim_end_matches("2>&1").trim();
+    (!base.is_empty()).then(|| base.to_string())
+}
+
+/// The byte index of the first `needle` outside single or double quotes.
+fn first_unquoted(command: &str, needle: char) -> Option<usize> {
+    let mut quote: Option<char> = None;
+    for (index, ch) in command.char_indices() {
+        match quote {
+            Some(open) if ch == open => quote = None,
+            Some(_) => {}
+            None if ch == '\'' || ch == '"' => quote = Some(ch),
+            None if ch == needle => return Some(index),
+            None => {}
+        }
+    }
+    None
+}
+
+/// Records a verifier that actually ran and reports whether it had already run
+/// this turn. A denied or disabled call never dispatched, so it must not be
+/// recorded: approving and retrying it is a first run, not a repeat.
+fn note_verifier(seen: &mut BTreeSet<String>, dispatched: bool, command: &str) -> bool {
+    if !dispatched {
+        return false;
+    }
+    match verification_key(command) {
+        Some(key) => !seen.insert(key),
+        None => false,
+    }
 }
 
 async fn dispatch(
@@ -2820,6 +2880,45 @@ mod tests {
         assert!(same_path(r"C:\repo\src\main.rs", r"src\main.rs"));
         assert!(same_path("/repo/a.rs", "/repo/a.rs"));
         assert!(!same_path(r"C:\repo\a.rs", "b.rs"));
+    }
+
+    #[test]
+    fn repeated_verifiers_share_a_key_across_output_plumbing() {
+        let base = verification_key("./gradlew test --tests '*Boutique*'").unwrap();
+        assert_eq!(
+            verification_key("./gradlew test --tests '*Boutique*' 2>&1 | tail -50").unwrap(),
+            base
+        );
+        assert_eq!(
+            verification_key("./gradlew test --tests '*Boutique*' | grep PASSED | wc -l").unwrap(),
+            base
+        );
+        // A different verifier is a different key, and non-verifiers have none.
+        assert_ne!(
+            verification_key("./gradlew test --tests '*Villa*'").unwrap(),
+            base
+        );
+        assert!(verification_key("git status").is_none());
+        assert!(verification_key("echo hello").is_none());
+
+        // A pipe inside a quoted selector is part of the key, not plumbing.
+        let quoted = verification_key("cargo test -- --exact 'foo|bar'").unwrap();
+        assert_eq!(quoted, "cargo test -- --exact 'foo|bar'");
+        assert_ne!(
+            verification_key("cargo test -- --exact 'foo'").unwrap(),
+            quoted
+        );
+    }
+
+    #[test]
+    fn a_denied_verifier_is_not_recorded_as_run() {
+        let mut seen = BTreeSet::new();
+        // A denied call never dispatched, so it must not count as a run.
+        assert!(!note_verifier(&mut seen, false, "cargo test"));
+        // The first real run is new; repeating it is flagged.
+        assert!(!note_verifier(&mut seen, true, "cargo test"));
+        assert!(note_verifier(&mut seen, true, "cargo test 2>&1 | tail -5"));
+        assert!(!note_verifier(&mut seen, true, "cargo build"));
     }
 
     #[test]

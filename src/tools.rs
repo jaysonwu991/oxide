@@ -24,6 +24,12 @@ const PROGRESS_INTERVAL: Duration = Duration::from_millis(50);
 /// background descendant can keep the stdout/stderr pipe open indefinitely, so
 /// this must be bounded or the tool hangs even though the shell is gone.
 const STREAM_DRAIN_GRACE: Duration = Duration::from_secs(1);
+/// Default timeout for an arbitrary shell command.
+const DEFAULT_BASH_TIMEOUT_SECS: u64 = 120;
+/// Build and test runners get a longer default: a cold Gradle, Maven or Cargo
+/// build routinely runs past two minutes, and timing it out only makes the
+/// agent re-run it (often several times).
+const BUILD_BASH_TIMEOUT_SECS: u64 = 600;
 
 static TRUNCATION_ID: AtomicU64 = AtomicU64::new(0);
 
@@ -184,7 +190,7 @@ pub fn specs(mcp: &McpRegistry) -> Vec<ToolSpec> {
                 "type": "object",
                 "properties": {
                     "command": { "type": "string", "description": "Shell command to execute" },
-                    "timeout": { "type": "integer", "description": "Timeout in milliseconds (default 120000)" }
+                    "timeout": { "type": "integer", "description": "Timeout in milliseconds (default 120000; build/test commands get 600000)" }
                 },
                 "required": ["command"]
             }),
@@ -1424,20 +1430,74 @@ fn find_lines(haystack: &[String], needle: &[String], start: usize) -> Option<us
         .find(|&index| haystack[index..index + needle.len()] == *needle)
 }
 
+/// The timeout for a shell command. An explicit `timeout` (milliseconds, Pi's
+/// form) or `timeout_secs` wins; otherwise build and test runners get a longer
+/// budget than an arbitrary command.
+fn bash_timeout_secs(args: &Value, command: &str) -> u64 {
+    if let Some(millis) = int_arg(args, "timeout") {
+        return (millis as u64).div_ceil(1000).max(1);
+    }
+    if let Some(secs) = args.get("timeout_secs").and_then(Value::as_u64) {
+        return secs;
+    }
+    if is_build_command(command) {
+        BUILD_BASH_TIMEOUT_SECS
+    } else {
+        DEFAULT_BASH_TIMEOUT_SECS
+    }
+}
+
+/// Whether a command invokes a build, test or lint runner. Detection is
+/// deliberately loose: a longer timeout on a command that did not need it costs
+/// nothing, while timing out a real build costs a full re-run.
+fn is_build_command(command: &str) -> bool {
+    const RUNNERS: &[&str] = &[
+        "gradlew",
+        "gradle",
+        "mvn",
+        "mvnw",
+        "cargo",
+        "make",
+        "bazel",
+        "buck",
+        "dotnet",
+        "npm",
+        "yarn",
+        "pnpm",
+        "pytest",
+        "tox",
+        "rake",
+        "go",
+        "bundle",
+        "swift",
+        "xcodebuild",
+        "ctest",
+        "meson",
+        "ninja",
+        "sbt",
+    ];
+    command.split(['\n', ';', '&', '|']).any(|segment| {
+        segment.split_whitespace().any(|word| {
+            // Windows invokes ` .\gradlew.bat`, so normalize both separators
+            // and the batch/executable suffix before matching.
+            let word = word.trim_matches(['\'', '"']);
+            let word = word.rsplit(['/', '\\']).next().unwrap_or(word);
+            let word = word
+                .strip_suffix(".bat")
+                .or_else(|| word.strip_suffix(".cmd"))
+                .or_else(|| word.strip_suffix(".exe"))
+                .unwrap_or(word);
+            RUNNERS.contains(&word)
+        })
+    })
+}
+
 async fn bash(cwd: &Path, args: &Value, progress: &Progress) -> Result<String> {
     let command = args
         .get("command")
         .and_then(Value::as_str)
         .context("missing `command`")?;
-    // Pi passes `timeout` in milliseconds; the legacy `timeout_secs` is still
-    // accepted for backward compatibility.
-    let secs = if let Some(millis) = int_arg(args, "timeout") {
-        (millis as u64).div_ceil(1000).max(1)
-    } else {
-        args.get("timeout_secs")
-            .and_then(Value::as_u64)
-            .unwrap_or(120)
-    };
+    let secs = bash_timeout_secs(args, command);
 
     #[cfg(windows)]
     let mut shell = {
@@ -2399,6 +2459,46 @@ mod tests {
         assert!(streamed.contains("two"), "{seen:?}");
 
         std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn build_commands_get_a_longer_default_timeout() {
+        assert!(is_build_command("./gradlew test"));
+        assert!(is_build_command(
+            "cd /repo && ./gradlew clean build test 2>&1 | tail -30"
+        ));
+        assert!(is_build_command("npm run lint"));
+        assert!(is_build_command("cargo test --all"));
+        // Windows wrappers keep their path separator and `.bat`/`.cmd` suffix.
+        assert!(is_build_command(r".\gradlew.bat test"));
+        assert!(is_build_command(r".\mvnw.cmd verify"));
+        assert!(is_build_command(r"C:\tools\gradle.bat test"));
+        assert!(!is_build_command("git log --grep latest"));
+        assert!(!is_build_command("echo hello"));
+
+        assert_eq!(
+            bash_timeout_secs(&json!({ "command": "./gradlew test" }), "./gradlew test"),
+            BUILD_BASH_TIMEOUT_SECS
+        );
+        assert_eq!(
+            bash_timeout_secs(&json!({ "command": "echo hi" }), "echo hi"),
+            DEFAULT_BASH_TIMEOUT_SECS
+        );
+        // An explicit timeout (Pi's milliseconds or the legacy seconds) wins.
+        assert_eq!(
+            bash_timeout_secs(
+                &json!({ "command": "./gradlew test", "timeout": 5_000 }),
+                "./gradlew test"
+            ),
+            5
+        );
+        assert_eq!(
+            bash_timeout_secs(
+                &json!({ "command": "./gradlew test", "timeout_secs": 42 }),
+                "./gradlew test"
+            ),
+            42
+        );
     }
 
     #[tokio::test]
