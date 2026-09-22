@@ -357,7 +357,7 @@ impl LlmClient {
         let mut turn = AssistantTurn::default();
         let mut partials: Vec<PartialToolCall> = Vec::new();
 
-        let completed = read_sse(response, |data| {
+        let outcome = read_sse(response, |data| {
             let Ok(parsed) = serde_json::from_str::<StreamChunk>(data) else {
                 return Ok(());
             };
@@ -449,7 +449,11 @@ impl LlmClient {
             })
             .collect();
 
-        if !completed && turn.content.is_empty() && turn.tool_calls.is_empty() {
+        if stream_incomplete(
+            &outcome,
+            turn.finish_reason.as_deref(),
+            !turn.content.is_empty() || !turn.tool_calls.is_empty(),
+        ) {
             anyhow::bail!("provider stream ended before completing the response");
         }
 
@@ -504,7 +508,7 @@ impl LlmClient {
         let mut turn = AssistantTurn::default();
         let mut partials = BTreeMap::new();
 
-        let completed = read_sse(response, |data| {
+        let outcome = read_sse(response, |data| {
             anthropic::apply_event(data, &mut turn, &mut partials, hooks.text, hooks.thinking)
         })
         .await?;
@@ -513,7 +517,11 @@ impl LlmClient {
         // Anthropic ends on `message_stop` rather than a `[DONE]` sentinel, and
         // its `message_delta` stop reason is what proves the turn finished. Only
         // a stream that ended without one is a dropped connection.
-        if !completed && turn.finish_reason.is_none() && assistant_turn_is_empty(&turn) {
+        if stream_incomplete(
+            &outcome,
+            turn.finish_reason.as_deref(),
+            !assistant_turn_is_empty(&turn),
+        ) {
             anyhow::bail!("provider stream ended before completing the response");
         }
         Ok(turn)
@@ -672,26 +680,29 @@ fn glm_reasoning(
     }
 }
 
-async fn read_sse<F>(response: reqwest::Response, mut on_data: F) -> Result<bool>
+async fn read_sse<F>(response: reqwest::Response, mut on_data: F) -> Result<SseOutcome>
 where
     F: FnMut(&str) -> Result<()>,
 {
     let mut buffer = String::new();
     let mut stream = response.bytes_stream();
     let mut completed = false;
+    let mut abrupt = false;
 
     while let Some(chunk) = stream.next().await {
         let chunk = match chunk {
             Ok(chunk) => chunk,
             Err(err) => {
                 // A `[DONE]` sentinel proves the turn finished, so a connection
-                // dropped afterwards is not a failure. A TLS connection that
-                // ends without a `close_notify` (several providers and proxies
-                // close an SSE response this way) is reported by rustls as an
-                // unexpected EOF; the HTTP framing already ended the body, so
-                // treat it as the end of the stream and let the sentinel or
-                // stop reason decide whether the turn is complete.
-                if completed || is_abrupt_stream_close(&err) {
+                // dropped afterwards is not a failure. A rustls unexpected EOF
+                // (a TLS close without `close_notify`, which several providers
+                // and proxies do) is otherwise remembered so the caller can tell
+                // a complete turn from one the connection cut short.
+                if completed {
+                    break;
+                }
+                if is_abrupt_stream_close(&err) {
+                    abrupt = true;
                     break;
                 }
                 return Err(err).context("reading response stream");
@@ -716,7 +727,14 @@ where
         })?;
     }
 
-    Ok(completed)
+    Ok(SseOutcome { completed, abrupt })
+}
+
+/// How an SSE body ended: whether the `[DONE]` sentinel arrived, and whether
+/// the connection dropped before the body was framed complete.
+struct SseOutcome {
+    completed: bool,
+    abrupt: bool,
 }
 
 /// Hands every complete line in `buffer` to `on_line`, keeping the trailing
@@ -748,13 +766,27 @@ where
 fn is_abrupt_stream_close(err: &(dyn std::error::Error + 'static)) -> bool {
     let mut current: Option<&(dyn std::error::Error + 'static)> = Some(err);
     while let Some(error) = current {
-        let message = error.to_string().to_ascii_lowercase();
-        if message.contains("close_notify") || message.contains("unexpected eof") {
+        // rustls reports a missing TLS shutdown as "peer closed connection
+        // without sending TLS close_notify". Matching that wording keeps a
+        // generic truncated body (a `Content-Length` that was not met) an error.
+        if error
+            .to_string()
+            .to_ascii_lowercase()
+            .contains("close_notify")
+        {
             return true;
         }
         current = error.source();
     }
     false
+}
+
+/// Whether a stream that ended without `[DONE]` and without a stop reason is
+/// incomplete. An abrupt TLS close after a few content chunks is as truncated as
+/// an empty turn; a clean close with content is tolerated for providers that
+/// omit the sentinel.
+fn stream_incomplete(outcome: &SseOutcome, finish_reason: Option<&str>, has_payload: bool) -> bool {
+    finish_reason.is_none() && !outcome.completed && (outcome.abrupt || !has_payload)
 }
 
 /// Whether a completed turn carries nothing the agent can act on.
@@ -1320,6 +1352,33 @@ mod tests {
             "provider returned 500: server error",
             None
         )));
+    }
+
+    #[test]
+    fn an_abrupt_close_with_content_is_still_incomplete() {
+        let done = SseOutcome {
+            completed: true,
+            abrupt: false,
+        };
+        let clean = SseOutcome {
+            completed: false,
+            abrupt: false,
+        };
+        let abrupt = SseOutcome {
+            completed: false,
+            abrupt: true,
+        };
+
+        assert!(!stream_incomplete(&done, None, true));
+        assert!(!stream_incomplete(&clean, Some("stop"), true));
+        // A clean close with content and no stop reason is tolerated (some
+        // providers omit `[DONE]`).
+        assert!(!stream_incomplete(&clean, None, true));
+        // An abrupt close with content but no stop reason is truncated.
+        assert!(stream_incomplete(&abrupt, None, true));
+        // ...unless the stop reason already proved the turn finished.
+        assert!(!stream_incomplete(&abrupt, Some("stop"), true));
+        assert!(stream_incomplete(&clean, None, false));
     }
 
     #[tokio::test]

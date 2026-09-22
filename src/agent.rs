@@ -696,7 +696,11 @@ async fn run_loop(
                     && effective_args
                         .get("command")
                         .and_then(Value::as_str)
-                        .is_some_and(|command| verification.blocks_review_reply(command));
+                        .is_some_and(|command| {
+                            posts_review_reply(command)
+                                && verification
+                                    .blocks_review_reply(command, repo_has_pending_delivery(&cwd))
+                        });
                 let mut output = if block_reply {
                     tools::ToolOutput::text(
                         "error: commit and push the code changes before replying to the review, so \
@@ -921,7 +925,6 @@ const DONE_RULES: &[DoneRule] = &[
             "gh issue comment",
             "glab mr note",
             "glab issue note",
-            "/replies",
         ],
         checks: &[
             "gh pr view",
@@ -1056,7 +1059,7 @@ impl VerificationState {
                 }
                 let command = raw.to_ascii_lowercase();
                 let failed = output_failed(output);
-                if !failed && command.contains("git push") {
+                if !failed && runs_git_push(raw) {
                     self.edited_since_push = false;
                 }
                 for rule in DONE_RULES {
@@ -1070,6 +1073,12 @@ impl VerificationState {
                         self.pending.remove(rule.key);
                     }
                 }
+                // The REST reply endpoint is not in the rule's actions because
+                // a bare `/replies` substring is also a read; only a POST posts.
+                if !failed && posts_review_reply(raw) {
+                    self.pending.insert("comment");
+                    self.reviewed = true;
+                }
             }
             _ => {}
         }
@@ -1078,8 +1087,10 @@ impl VerificationState {
     /// Whether a review reply must be held until the pending code changes are
     /// pushed. Replying that a comment is fixed before the branch has the fix
     /// is misleading, so the reply is refused with an instruction to push first.
-    fn blocks_review_reply(&mut self, command: &str) -> bool {
-        if self.edited_since_push && posts_review_reply(command) {
+    /// `repo_pending` covers edits made outside the tracked tools (a `sed -i`,
+    /// a formatter, a script) and commits that were not pushed.
+    fn blocks_review_reply(&mut self, command: &str, repo_pending: bool) -> bool {
+        if posts_review_reply(command) && (self.edited_since_push || repo_pending) {
             // The reply is part of a review delivery: if the run stops here, the
             // finish reminder still has to ask for the push.
             self.reviewed = true;
@@ -1251,12 +1262,63 @@ fn nudge_failed_quietly(nudging: bool, err: &anyhow::Error) -> bool {
 /// Whether a shell command posts a reply or review comment on a pull/merge
 /// request. Replying that a comment is fixed before the fix is on the branch is
 /// misleading, so these commands are held until the pending edits are pushed.
+/// The bare `/replies` endpoint also reads a thread, so a REST call counts only
+/// when it explicitly POSTs.
 fn posts_review_reply(command: &str) -> bool {
     let command = command.to_ascii_lowercase();
-    DONE_RULES
+    if DONE_RULES
         .iter()
         .find(|rule| rule.key == "comment")
         .is_some_and(|rule| rule.actions.iter().any(|action| command.contains(action)))
+    {
+        return true;
+    }
+    command.contains("/replies")
+        && ["-x post", "-xpost", "--method post", "--method=post"]
+            .iter()
+            .any(|flag| command.contains(flag))
+}
+
+/// Whether a shell command runs `git push` as the invoked program (not, say,
+/// `echo git push`) and is not a dry run. Clearing the delivery flag is only an
+/// optimization: [`repo_has_pending_delivery`] is the authority.
+fn runs_git_push(command: &str) -> bool {
+    command.split(['\n', ';', '&', '|']).any(|segment| {
+        if segment.contains("--dry-run") {
+            return false;
+        }
+        let mut words = segment.split_whitespace();
+        words
+            .find(|word| !matches!(*word, "cd" | "env" | "sudo" | "time" | "nohup"))
+            .is_some_and(|program| program == "git")
+            && segment.contains(" push")
+    })
+}
+
+/// Whether the repository has work that a review reply would falsely claim is
+/// delivered. The tracked tools (`write`/`edit`) cover the common case, but
+/// `bash` can edit files through `sed -i`, a formatter, or a script, so the
+/// guard also inspects the repository: tracked modifications and staged files,
+/// plus commits that are not on a remote-tracking branch. Untracked files are
+/// ignored so unrelated new files (notes, reports) do not block a reply.
+fn repo_has_pending_delivery(cwd: &Path) -> bool {
+    let output = |args: &[&str]| {
+        std::process::Command::new("git")
+            .args(args)
+            .current_dir(cwd)
+            .output()
+            .ok()
+            .filter(|out| out.status.success())
+            .map(|out| String::from_utf8_lossy(&out.stdout).trim().to_string())
+    };
+    if output(&["status", "--porcelain", "--untracked-files=no"])
+        .is_some_and(|status| !status.is_empty())
+    {
+        return true;
+    }
+    output(&["rev-list", "--count", "HEAD", "--not", "--remotes"])
+        .and_then(|count| count.parse::<u64>().ok())
+        .is_some_and(|count| count > 0)
 }
 
 async fn dispatch(
@@ -1895,24 +1957,44 @@ mod tests {
     /// that never arrives fails the test instead of hanging the runner.
     /// Creates a repository with a committed `catalog.yaml`, so a later edit
     /// produces a real `git diff` hunk.
+    /// Runs `git` in `dir` for a test, panicking on failure.
+    fn run_git(dir: &std::path::Path, args: &[&str]) {
+        let status = std::process::Command::new("git")
+            .args(args)
+            .current_dir(dir)
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status()
+            .expect("git is available for the test");
+        assert!(status.success(), "git {args:?} failed");
+    }
+
+    /// Creates a repository with a committed `catalog.yaml`, so a later edit
+    /// produces a real `git diff` hunk.
     fn init_git_repo(dir: &std::path::Path) {
-        let git = |args: &[&str]| {
-            let status = std::process::Command::new("git")
-                .args(args)
-                .current_dir(dir)
-                .stdout(std::process::Stdio::null())
-                .stderr(std::process::Stdio::null())
-                .status()
-                .expect("git is available for the test");
-            assert!(status.success(), "git {args:?} failed");
-        };
-        git(&["init", "-q"]);
-        git(&["config", "user.email", "oxide@example.com"]);
-        git(&["config", "user.name", "Oxide Test"]);
+        run_git(dir, &["init", "-q"]);
+        run_git(dir, &["config", "user.email", "oxide@example.com"]);
+        run_git(dir, &["config", "user.name", "Oxide Test"]);
+        // A global `commit.gpgsign` would otherwise make commits fail.
+        run_git(dir, &["config", "commit.gpgsign", "false"]);
         std::fs::write(dir.join("catalog.yaml"), "old\n").unwrap();
-        git(&["add", "catalog.yaml"]);
-        // A global `commit.gpgsign` would otherwise make the test commit fail.
-        git(&["-c", "commit.gpgsign=false", "commit", "-q", "-m", "init"]);
+        run_git(dir, &["add", "catalog.yaml"]);
+        run_git(dir, &["commit", "-q", "-m", "init"]);
+    }
+
+    /// Adds a bare `origin` remote and pushes the current commit, so
+    /// [`repo_has_pending_delivery`] starts clean.
+    fn add_git_remote(dir: &std::path::Path) {
+        let origin = std::path::PathBuf::from(format!("{}.origin.git", dir.display()));
+        std::fs::remove_dir_all(&origin).ok();
+        let status = std::process::Command::new("git")
+            .args(["init", "--bare", "-q"])
+            .arg(&origin)
+            .status()
+            .expect("git is available for the test");
+        assert!(status.success(), "git init --bare failed");
+        run_git(dir, &["remote", "add", "origin", origin.to_str().unwrap()]);
+        run_git(dir, &["push", "-u", "origin", "HEAD"]);
     }
 
     async fn sse_server(
@@ -2583,23 +2665,60 @@ mod tests {
         assert!(posts_review_reply(
             "gh api -X POST repos/o/r/pulls/5/comments/1/replies -f body=x"
         ));
+        // Reading a thread is a GET, not a posted reply.
+        assert!(!posts_review_reply(
+            "gh api repos/o/r/pulls/5/comments/1/replies"
+        ));
         assert!(!posts_review_reply("gh pr view 5 --comments"));
         assert!(!posts_review_reply("git push"));
 
-        // A reply while an edit is unpushed is held.
+        // A reply while a tracked edit is unpushed is held.
         let mut state = VerificationState::default();
         state.record("edit", &json!({"path": "src/a.rs"}), "ok");
-        assert!(state.blocks_review_reply("gh pr comment 5 --body fixed"));
+        assert!(state.blocks_review_reply("gh pr comment 5 --body fixed", false));
 
-        // Pushing the edit unblocks it.
+        // Repository state holds it even when no tracked edit was seen.
+        let mut state = VerificationState::default();
+        assert!(state.blocks_review_reply("gh pr comment 5 --body fixed", true));
+
+        // A real push unblocks the tracked edit.
         let mut state = VerificationState::default();
         state.record("edit", &json!({"path": "src/a.rs"}), "ok");
         state.record("bash", &json!({"command": "git push"}), "[exit: 0]");
-        assert!(!state.blocks_review_reply("gh pr comment 5 --body fixed"));
+        assert!(!state.blocks_review_reply("gh pr comment 5 --body fixed", false));
+
+        // `echo git push` is not a push, and does not clear the guard.
+        let mut state = VerificationState::default();
+        state.record("edit", &json!({"path": "src/a.rs"}), "ok");
+        state.record("bash", &json!({"command": "echo git push"}), "[exit: 0]");
+        assert!(state.blocks_review_reply("gh pr comment 5 --body fixed", false));
 
         // A reply with no pending code change is allowed.
         let mut state = VerificationState::default();
-        assert!(!state.blocks_review_reply("gh pr comment 5 --body hi"));
+        assert!(!state.blocks_review_reply("gh pr comment 5 --body hi", false));
+    }
+
+    #[test]
+    fn repo_delivery_pending_tracks_uncommitted_and_unpushed_work() {
+        let dir = std::env::temp_dir().join(format!("oxide_pending_{}", std::process::id()));
+        std::fs::remove_dir_all(&dir).ok();
+        std::fs::create_dir_all(&dir).unwrap();
+        init_git_repo(&dir);
+        add_git_remote(&dir);
+        assert!(!repo_has_pending_delivery(&dir), "clean and pushed");
+
+        std::fs::write(dir.join("catalog.yaml"), "changed\n").unwrap();
+        assert!(repo_has_pending_delivery(&dir), "uncommitted change");
+
+        run_git(&dir, &["add", "catalog.yaml"]);
+        run_git(&dir, &["commit", "-q", "-m", "fix"]);
+        assert!(repo_has_pending_delivery(&dir), "unpushed commit");
+
+        run_git(&dir, &["push"]);
+        assert!(!repo_has_pending_delivery(&dir), "pushed");
+
+        std::fs::remove_dir_all(&dir).ok();
+        std::fs::remove_dir_all(format!("{}.origin.git", dir.display())).ok();
     }
 
     #[tokio::test]
@@ -2608,16 +2727,24 @@ mod tests {
         std::fs::remove_dir_all(&dir).ok();
         std::fs::create_dir_all(&dir).unwrap();
         init_git_repo(&dir);
+        add_git_remote(&dir);
         let edited = dir.join("catalog.yaml");
         let edited = edited.to_str().unwrap().to_string();
 
         let (addr, server) = sse_server(vec![
             write_call_body(&edited),
-            // The reply is refused until the edit is pushed.
+            // The reply is refused while the edit is uncommitted.
             bash_call_body("gh pr comment 5 --body 'fixed'"),
             bash_call_body("git diff catalog.yaml"),
-            // `record` only needs the `git push` substring and a zero exit.
-            bash_call_body("echo git push"),
+            // Committing is not enough: the commit is not pushed yet.
+            bash_call_body("git add catalog.yaml && git commit -m 'fix'"),
+            // ...so the reply is still refused.
+            bash_call_body("gh pr comment 5 --body 'fixed'"),
+            // Pushing the commit delivers it.
+            bash_call_body("git push"),
+            // Now the reply is allowed.
+            bash_call_body("gh pr comment 5 --body 'fixed'"),
+            bash_call_body("gh pr view 5 --comments"),
             answer_body("Done."),
         ])
         .await;
@@ -2652,16 +2779,21 @@ mod tests {
         }
         assert!(errors.is_empty(), "{errors:?}");
         let requests = server.await.unwrap();
-        assert_eq!(requests.len(), 5);
+        assert_eq!(requests.len(), 9);
         assert!(
             requests[2].contains("commit and push the code changes before replying"),
             "{}",
             requests[2]
         );
         assert!(
-            !requests[4].contains("Before you finish"),
+            requests[5].contains("commit and push the code changes before replying"),
             "{}",
-            requests[4]
+            requests[5]
+        );
+        assert!(
+            !requests[8].contains("Before you finish"),
+            "{}",
+            requests[8]
         );
         assert_eq!(
             finished
