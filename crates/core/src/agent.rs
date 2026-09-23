@@ -807,8 +807,9 @@ async fn run_loop(
                 verification.record(&name, &effective_args, &output.text);
                 // An edit invalidates a verifier result: the next run of the same
                 // build/test is a fresh check, not a repeat, so it must not get the
-                // "already ran" note.
-                if matches!(canonical_name, "write_file" | "edit" | "patch") {
+                // "already ran" note. A failed edit left the workspace unchanged, so
+                // it must not clear the tracking.
+                if mutation_invalidates_verifier(canonical_name, &output.text) {
                     seen_verifications.clear();
                 }
                 if canonical_name == "bash" {
@@ -1447,6 +1448,13 @@ fn note_verifier(seen: &mut BTreeSet<String>, dispatched: bool, command: &str) -
         Some(key) => !seen.insert(key),
         None => false,
     }
+}
+
+/// Whether a tool result invalidates a build/test result seen earlier in the
+/// run. Only a successful `write`/`edit`/`patch` changes the workspace; a failed
+/// one leaves it untouched, so the earlier verifier still applies.
+fn mutation_invalidates_verifier(canonical_name: &str, output: &str) -> bool {
+    matches!(canonical_name, "write_file" | "edit" | "patch") && !output_failed(output)
 }
 
 async fn dispatch(
@@ -2990,6 +2998,30 @@ mod tests {
         assert!(!note_verifier(&mut seen, true, "cargo test"));
         assert!(note_verifier(&mut seen, true, "cargo test 2>&1 | tail -5"));
         assert!(!note_verifier(&mut seen, true, "cargo build"));
+    }
+
+    #[test]
+    fn only_a_successful_mutation_invalidates_a_verifier() {
+        // A successful edit makes the prior build/test result stale, so the next
+        // run must be treated as fresh.
+        assert!(mutation_invalidates_verifier(
+            "edit",
+            "applied 1 replacement"
+        ));
+        assert!(mutation_invalidates_verifier("write_file", "wrote a.rs"));
+        assert!(mutation_invalidates_verifier("patch", "patched a.rs"));
+        // A failed mutation left the workspace unchanged and must not.
+        assert!(!mutation_invalidates_verifier(
+            "edit",
+            "error: oldText not found"
+        ));
+        assert!(!mutation_invalidates_verifier(
+            "write_file",
+            "error: denied"
+        ));
+        // Non-mutating tools never invalidate.
+        assert!(!mutation_invalidates_verifier("bash", "ok"));
+        assert!(!mutation_invalidates_verifier("read_file", "1|line"));
     }
 
     #[test]

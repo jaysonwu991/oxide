@@ -508,9 +508,12 @@ async function selectProject(project) {
   state.project = project.path;
   state.projectName = project.name;
   state.session = null;
+  state.trust = null;
   el("project-current").textContent = project.name;
   el("new-chat").disabled = false;
   el("prompt").disabled = false;
+  el("trust-modal").hidden = true;
+  updateTrustButton();
   renderProjects();
   resetTranscript();
   await Promise.all([loadInfo(), loadSessions(), loadTheme()]);
@@ -518,8 +521,12 @@ async function selectProject(project) {
 
 async function loadInfo() {
   if (!state.project) return;
+  const project = state.project;
   try {
-    const info = await invoke("project_info", { project: state.project });
+    const info = await invoke("project_info", { project });
+    // The selection can change while the request is in flight; a late reply
+    // must not replace the new project's trust state or open its dialog.
+    if (project !== state.project) return;
     state.reasoning = info.reasoning;
     state.contextWindow = info.contextWindow || 0;
     state.trust = info.trust || null;
@@ -528,6 +535,7 @@ async function loadInfo() {
     updateTrustButton();
     if (state.trust && state.trust.awaiting) showTrust(state.trust);
   } catch (error) {
+    if (project !== state.project) return;
     el("project-meta").textContent = String(error);
   }
 }
