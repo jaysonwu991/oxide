@@ -1132,7 +1132,11 @@ impl Config {
              directory. Keep each `bash` command focused on one task instead of chaining unrelated \
              commands with `;` or `&&`, and scope searches to the project or a specific directory \
              — never sweep the whole filesystem with `find /`. `read`, `ls`, `find`, and `grep` \
-             accept absolute paths, so you do not need a shell to inspect files outside the project."
+             accept absolute paths, so you do not need a shell to inspect files outside the project, \
+             and `bash` already starts in the project root, so run a command directly instead of \
+             prefixing `cd <root> &&`. When a command can print a large payload, select just the \
+             fields you need (for example a `--jq`/`jq` filter) rather than piping it through `head`, \
+             which still fetches and renders everything."
                 .to_string(),
         );
 
@@ -1247,6 +1251,10 @@ mod tests {
         let prompt = config.compose_system_prompt();
         assert!(prompt.contains("# Tool use"));
         assert!(prompt.contains("batches"));
+        assert!(
+            prompt.contains("already starts in the project root"),
+            "{prompt}"
+        );
     }
 
     #[test]

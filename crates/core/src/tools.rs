@@ -16,7 +16,12 @@ use tokio::time::{timeout, Duration};
 const MAX_OUTPUT_BYTES: usize = 6_000;
 const MAX_OUTPUT_LINES: usize = 250;
 const MAX_LINE_LEN: usize = 1_000;
-const DEFAULT_READ_LINES: usize = 250;
+/// `read` gets a larger budget than the other tools: the prompt tells the model
+/// to read a whole file in one call, and a 6 KB cap forced ordinary source
+/// files into several paged round trips.
+const READ_MAX_BYTES: usize = 16_000;
+const READ_MAX_LINES: usize = 400;
+const DEFAULT_READ_LINES: usize = READ_MAX_LINES;
 const TRUNCATION_RETENTION_SECS: u64 = 7 * 24 * 60 * 60;
 const PROGRESS_BATCH_BYTES: usize = 4_096;
 const PROGRESS_INTERVAL: Duration = Duration::from_millis(50);
@@ -132,7 +137,7 @@ pub fn specs(mcp: &McpRegistry) -> Vec<ToolSpec> {
                 "properties": {
                     "path": { "type": "string", "description": "File path; absolute paths are allowed" },
                     "offset": { "type": "integer", "description": "1-based display line to start from (text only; a long line counts once per chunk)" },
-                    "limit": { "type": "integer", "description": "Maximum number of display lines to return (text only, default 250)" }
+                    "limit": { "type": "integer", "description": "Maximum number of display lines to return (text only, default 400)" }
                 },
                 "required": ["path"]
             }),
@@ -403,15 +408,10 @@ fn read_file(cwd: &Path, args: &Value) -> Result<ToolOutput> {
         ));
     }
 
-    let offset = args
-        .get("offset")
-        .and_then(Value::as_u64)
-        .unwrap_or(1)
-        .max(1) as usize;
-    let limit = args
-        .get("limit")
-        .and_then(Value::as_u64)
-        .unwrap_or(DEFAULT_READ_LINES as u64) as usize;
+    // A present-but-unparseable value (some models emit `"offset": ".130"`)
+    // must fail instead of silently restarting at line 1.
+    let offset = strict_int_arg(args, "offset")?.unwrap_or(1).max(1);
+    let limit = strict_int_arg(args, "limit")?.unwrap_or(DEFAULT_READ_LINES);
 
     let bytes = std::fs::read(&full).with_context(|| format!("reading {}", full.display()))?;
     let content = match String::from_utf8(bytes) {
@@ -432,7 +432,7 @@ fn read_file(cwd: &Path, args: &Value) -> Result<ToolOutput> {
         .iter()
         .map(|line| line.chars().count().max(1).div_ceil(MAX_LINE_LEN))
         .sum();
-    let budget = MAX_OUTPUT_BYTES.saturating_sub(128);
+    let budget = READ_MAX_BYTES.saturating_sub(128);
     let mut numbered: Vec<String> = Vec::new();
     let mut used = 0usize;
     let mut display = 0usize;
@@ -531,12 +531,12 @@ struct Replacement {
 /// `oldText`/`newText` are folded into the list.
 fn parse_edits(args: &Value) -> Result<Vec<Replacement>> {
     let mut raw: Vec<Replacement> = Vec::new();
+    let mut string_error = None;
     match args.get("edits") {
-        Some(Value::String(text)) => {
-            if let Ok(parsed) = serde_json::from_str::<Value>(text) {
-                collect_edits(&parsed, &mut raw);
-            }
-        }
+        Some(Value::String(text)) => match serde_json::from_str::<Value>(text) {
+            Ok(parsed) => collect_edits(&parsed, &mut raw),
+            Err(err) => string_error = Some(err),
+        },
         Some(value) => collect_edits(value, &mut raw),
         None => {}
     }
@@ -550,6 +550,11 @@ fn parse_edits(args: &Value) -> Result<Vec<Replacement>> {
         });
     }
     if raw.is_empty() {
+        if let Some(err) = string_error {
+            anyhow::bail!(
+                "`edits` is a JSON string that did not parse ({err}); pass `edits` as an array of {{oldText,newText}} objects"
+            );
+        }
         anyhow::bail!("edits must contain at least one replacement");
     }
     Ok(raw)
@@ -1060,6 +1065,18 @@ fn int_arg(args: &Value, key: &str) -> Option<usize> {
         Some(Value::Number(number)) => number.as_u64().map(|value| value as usize),
         Some(Value::String(text)) => text.trim().parse().ok(),
         _ => None,
+    }
+}
+
+/// Like [`int_arg`], but distinguishes an absent value from one that is present
+/// and unparseable, so the latter can be reported instead of silently ignored.
+fn strict_int_arg(args: &Value, key: &str) -> Result<Option<usize>> {
+    match args.get(key) {
+        None | Some(Value::Null) => Ok(None),
+        Some(value) => match int_arg(args, key) {
+            Some(number) => Ok(Some(number)),
+            None => anyhow::bail!("`{key}` must be an integer, got {value}"),
+        },
     }
 }
 
@@ -1951,6 +1968,7 @@ fn output_limits(name: &str) -> (usize, usize) {
         "grep" | "glob" | "list_dir" => (4_000, 160),
         "webfetch" => (6_000, 200),
         "write_file" | "patch" | "edit" => (3_000, 120),
+        "read_file" => (READ_MAX_BYTES, READ_MAX_LINES),
         _ => (MAX_OUTPUT_BYTES, MAX_OUTPUT_LINES),
     }
 }
@@ -2823,14 +2841,14 @@ mod tests {
         std::fs::remove_dir_all(&dir).ok();
 
         let mut output = String::new();
-        for i in 0..(MAX_OUTPUT_LINES + 50) {
+        for i in 0..(READ_MAX_LINES + 50) {
             output.push_str(&format!("line {i}\n"));
         }
 
         let result = truncate_into("read_file", output, Some(&dir));
         assert!(result.contains("line 0\n"), "{result}");
         assert!(
-            !result.contains(&format!("line {}\n", MAX_OUTPUT_LINES + 40)),
+            !result.contains(&format!("line {}\n", READ_MAX_LINES + 40)),
             "{result}"
         );
 
@@ -2842,7 +2860,7 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("oxide_trunc_save_{}", std::process::id()));
         std::fs::remove_dir_all(&dir).ok();
 
-        let output = "x".repeat(MAX_OUTPUT_BYTES + 100);
+        let output = "x".repeat(READ_MAX_BYTES + 100);
         let result = truncate_into("read_file", output.clone(), Some(&dir));
         assert!(result.contains("; full:"), "{result}");
 
@@ -2858,7 +2876,7 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("oxide_read_cap_{}", std::process::id()));
         std::fs::remove_dir_all(&dir).ok();
         std::fs::create_dir_all(&dir).unwrap();
-        let line = "a".repeat(MAX_LINE_LEN * 8);
+        let line = "a".repeat(READ_MAX_BYTES + MAX_LINE_LEN * 4);
         std::fs::write(dir.join("long.txt"), &line).unwrap();
 
         // The line is served in continuation chunks, not cut off, and the
@@ -2921,6 +2939,49 @@ mod tests {
         let out = read_file(&dir, &json!({ "path": "blob.bin" })).unwrap();
         assert!(out.text.contains("binary file"), "{}", out.text);
         assert!(out.text.contains("4 bytes"), "{}", out.text);
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn read_file_rejects_an_unparseable_offset() {
+        let dir =
+            std::env::temp_dir().join(format!("oxide_read_bad_offset_{}", std::process::id()));
+        std::fs::remove_dir_all(&dir).ok();
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("a.txt"), "one\ntwo\nthree\n").unwrap();
+
+        let err = read_file(&dir, &json!({ "path": "a.txt", "offset": ".2" })).unwrap_err();
+        assert!(
+            err.to_string().contains("`offset` must be an integer"),
+            "{err}"
+        );
+
+        // A numeric string is still accepted.
+        let out = read_file(
+            &dir,
+            &json!({ "path": "a.txt", "offset": "2", "limit": "1" }),
+        )
+        .unwrap();
+        assert!(out.text.contains("2|two"), "{}", out.text);
+        assert!(!out.text.contains("1|one"), "{}", out.text);
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn edit_reports_an_unparseable_edits_string() {
+        let dir = std::env::temp_dir().join(format!("oxide_edit_string_{}", std::process::id()));
+        std::fs::remove_dir_all(&dir).ok();
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("a.txt"), "hello\n").unwrap();
+
+        let err = edit(
+            &dir,
+            &json!({ "path": "a.txt", "edits": "[{\"oldText\": \"hello\"" }),
+        )
+        .unwrap_err();
+        assert!(err.to_string().contains("did not parse"), "{err}");
 
         std::fs::remove_dir_all(&dir).ok();
     }
