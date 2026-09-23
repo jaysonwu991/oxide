@@ -162,6 +162,31 @@
       </div>
     </div>
 
+    <div id="confirm-modal" class="overlay" hidden>
+      <div class="dialog">
+        <h2 id="confirm-title">Confirm</h2>
+        <p class="dialog-sub" id="confirm-message"></p>
+        <div class="dialog-actions">
+          <button id="confirm-cancel" class="ghost">Cancel</button>
+          <button id="confirm-ok" class="primary">Confirm</button>
+        </div>
+      </div>
+    </div>
+
+    <div id="rename-modal" class="overlay" hidden>
+      <div class="dialog">
+        <h2>Rename thread</h2>
+        <div class="field">
+          <label for="rename-input">Name</label>
+          <input id="rename-input" spellcheck="false" autocomplete="off" />
+        </div>
+        <div class="dialog-actions">
+          <button id="rename-cancel" class="ghost">Cancel</button>
+          <button id="rename-save" class="primary">Save</button>
+        </div>
+      </div>
+    </div>
+
     <div id="help-modal" class="overlay" hidden>
       <div class="dialog">
         <h2>Keyboard shortcuts</h2>

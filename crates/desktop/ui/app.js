@@ -632,7 +632,7 @@ function renderSessions(sessions, crossRepo) {
     rename.title = "Rename";
     rename.onclick = async (event) => {
       event.stopPropagation();
-      const name = window.prompt("Rename thread", session.name || "");
+      const name = await promptDialog(session.name || "");
       if (name === null) return;
       await invoke("rename_session", { project: session.cwd, id: session.id, name });
       loadSessions();
@@ -643,7 +643,13 @@ function renderSessions(sessions, crossRepo) {
     del.title = "Delete";
     del.onclick = async (event) => {
       event.stopPropagation();
-      if (!window.confirm("Delete this thread?")) return;
+      const label = session.name || session.preview || session.id.slice(0, 8);
+      const ok = await confirmDialog(
+        "Delete thread",
+        `“${label}” will be deleted permanently.`,
+        "Delete",
+      );
+      if (!ok) return;
       await invoke("delete_session", { project: session.cwd, id: session.id });
       if (state.session === session.id) resetTranscript();
       loadSessions();
@@ -973,6 +979,8 @@ const OVERLAYS = [
   "themes-modal",
   "permissions-modal",
   "trust-modal",
+  "confirm-modal",
+  "rename-modal",
   "help-modal",
 ];
 
@@ -980,6 +988,48 @@ function closeOverlays(except) {
   for (const id of OVERLAYS) {
     if (id !== except) el(id).hidden = true;
   }
+}
+
+// macOS's WKWebView does not implement `window.confirm`/`window.prompt`, so
+// destructive and rename actions go through these in-app dialogs instead.
+let confirmResolution = null;
+let renameResolution = null;
+
+function confirmDialog(title, message, confirmLabel = "Confirm") {
+  el("confirm-title").textContent = title;
+  el("confirm-message").textContent = message;
+  el("confirm-ok").textContent = confirmLabel;
+  closeOverlays("confirm-modal");
+  el("confirm-modal").hidden = false;
+  el("confirm-ok").focus();
+  return new Promise((resolve) => {
+    confirmResolution = resolve;
+  });
+}
+
+function resolveConfirm(value) {
+  const resolve = confirmResolution;
+  confirmResolution = null;
+  el("confirm-modal").hidden = true;
+  if (resolve) resolve(value);
+}
+
+function promptDialog(value) {
+  el("rename-input").value = value || "";
+  closeOverlays("rename-modal");
+  el("rename-modal").hidden = false;
+  el("rename-input").focus();
+  el("rename-input").select();
+  return new Promise((resolve) => {
+    renameResolution = resolve;
+  });
+}
+
+function resolveRename(value) {
+  const resolve = renameResolution;
+  renameResolution = null;
+  el("rename-modal").hidden = true;
+  if (resolve) resolve(value);
 }
 
 async function openConnect() {
@@ -1078,12 +1128,15 @@ function renderModels() {
 
 // ---------- themes ----------
 
+function themeProject() {
+  return state.project || "";
+}
+
 async function openThemes() {
-  if (!state.project) return;
   closeOverlays("themes-modal");
   el("themes-modal").hidden = false;
   try {
-    const themes = await invoke("list_themes", { project: state.project });
+    const themes = await invoke("list_themes", { project: themeProject() });
     const box = el("theme-list");
     box.innerHTML = "";
     for (const name of themes.names) {
@@ -1091,7 +1144,7 @@ async function openThemes() {
       row.className = "theme" + (name === themes.current ? " active" : "");
       row.textContent = name;
       row.onclick = async () => {
-        const result = await invoke("set_theme", { project: state.project, name });
+        const result = await invoke("set_theme", { project: themeProject(), name });
         applyTheme(result.colors);
         box.querySelectorAll(".theme").forEach((node) => node.classList.remove("active"));
         row.classList.add("active");
@@ -1131,11 +1184,10 @@ function applyTheme(colors) {
 }
 
 async function loadTheme() {
-  if (!state.project) return;
   try {
-    const themes = await invoke("list_themes", { project: state.project });
+    const themes = await invoke("list_themes", { project: themeProject() });
     const name = themes.current || "dark";
-    const colors = await invoke("theme_colors", { project: state.project, name });
+    const colors = await invoke("theme_colors", { project: themeProject(), name });
     applyTheme(colors.colors);
   } catch (error) {
     // Keep the default palette.
@@ -1145,7 +1197,10 @@ async function loadTheme() {
 // ---------- permissions ----------
 
 async function openPermissions() {
-  if (!state.project) return;
+  if (!state.project) {
+    setStatus("Select a project to review its tool approvals");
+    return;
+  }
   closeOverlays("permissions-modal");
   el("permissions-modal").hidden = false;
   const list = await invoke("list_approvals", { project: state.project });
@@ -1243,6 +1298,16 @@ function init() {
   el("trust").onclick = () => state.trust && showTrust(state.trust);
   el("trust-allow").onclick = () => answerTrust(true);
   el("trust-deny").onclick = () => answerTrust(false);
+  el("confirm-cancel").onclick = () => resolveConfirm(false);
+  el("confirm-ok").onclick = () => resolveConfirm(true);
+  el("rename-cancel").onclick = () => resolveRename(null);
+  el("rename-save").onclick = () => resolveRename(el("rename-input").value.trim());
+  el("rename-input").addEventListener("keydown", (event) => {
+    if (event.key === "Enter") {
+      event.preventDefault();
+      resolveRename(el("rename-input").value.trim());
+    }
+  });
   el("help-close").onclick = () => (el("help-modal").hidden = true);
 
   el("prompt").addEventListener("input", () => {
@@ -1259,6 +1324,8 @@ function init() {
 
   document.addEventListener("keydown", (event) => {
     if (event.key === "Escape") {
+      if (!el("confirm-modal").hidden) resolveConfirm(false);
+      if (!el("rename-modal").hidden) resolveRename(null);
       closeOverlays();
       toggleDropdown(false);
       return;
@@ -1285,6 +1352,7 @@ function init() {
   updateSendState();
   renderWelcome();
   initEvents();
+  loadTheme();
   loadProjects();
 }
 
