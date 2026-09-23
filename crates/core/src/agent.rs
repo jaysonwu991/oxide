@@ -805,6 +805,12 @@ async fn run_loop(
                 }
                 let millis = started.elapsed().as_millis() as u64;
                 verification.record(&name, &effective_args, &output.text);
+                // An edit invalidates a verifier result: the next run of the same
+                // build/test is a fresh check, not a repeat, so it must not get the
+                // "already ran" note.
+                if matches!(canonical_name, "write_file" | "edit" | "patch") {
+                    seen_verifications.clear();
+                }
                 if canonical_name == "bash" {
                     if let Some(command) = effective_args.get("command").and_then(Value::as_str) {
                         if note_verifier(&mut seen_verifications, dispatched, command) {
