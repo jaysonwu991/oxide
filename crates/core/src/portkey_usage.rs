@@ -1,7 +1,7 @@
 //! The Portkey spend status bar.
 //!
 //! `/usage` configures it; the settings live in `portkey-usage.json` in the
-//! oxide config directory (mode 0600, since they hold an API key). The bar reads
+//! Oxide config directory (mode 0600, since they hold an API key). The bar reads
 //! the spend of the logged-in Portkey account, so it only runs while the active
 //! provider is Portkey with a usable credential. Today's and the month's spend
 //! come from the Portkey analytics API (`GET <base_url>/analytics/graphs/cost`)
@@ -110,10 +110,7 @@ impl UsageSettings {
                 return PathBuf::from(path);
             }
         }
-        dirs::config_dir()
-            .unwrap_or_else(|| PathBuf::from("."))
-            .join("oxide")
-            .join(CONFIG_FILE)
+        crate::config::config_dir_or_default().join(CONFIG_FILE)
     }
 
     pub fn load() -> Result<Self> {

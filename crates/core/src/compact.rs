@@ -531,8 +531,8 @@ pub fn load_config(cwd: &Path) -> CompactionConfig {
 
 fn config_paths(cwd: &Path) -> Vec<PathBuf> {
     let mut paths = Vec::new();
-    if let Some(dir) = dirs::config_dir() {
-        paths.push(dir.join("oxide").join("settings.json"));
+    if let Some(dir) = crate::config::config_dir() {
+        paths.push(dir.join("settings.json"));
     }
     if let Some(root) = crate::ecosystem::project_root(cwd) {
         paths.push(root.join(".oxide").join("settings.json"));

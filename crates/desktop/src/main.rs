@@ -1,4 +1,4 @@
-//! Tauri entry point for the oxide desktop app.
+//! Tauri entry point for the Oxide desktop app.
 //!
 //! The project/session/turn logic lives in the `oxide_desktop` library and the
 //! shared `oxide-core`; this binary only wires state and commands to a window.
@@ -54,5 +54,5 @@ fn main() {
             set_theme,
         ])
         .run(tauri::generate_context!())
-        .expect("error while running the oxide desktop app");
+        .expect("error while running the Oxide desktop app");
 }

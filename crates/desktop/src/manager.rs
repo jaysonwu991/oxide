@@ -77,8 +77,8 @@ pub struct DesktopManager {
 }
 
 impl DesktopManager {
-    /// Loads the registry from `<config>/oxide/desktop/projects.json`, sharing
-    /// the oxide config directory with the CLI.
+    /// Loads the registry from `<config>/Oxide/desktop/projects.json`, sharing
+    /// the Oxide config directory with the CLI.
     pub fn load() -> Result<Self> {
         Self::load_from(default_store_path()?)
     }
@@ -280,12 +280,12 @@ fn now_secs() -> u64 {
         .unwrap_or(0)
 }
 
-/// `<config>/oxide/desktop/projects.json`, alongside the CLI's `config.json`.
+/// `<config>/Oxide/desktop/projects.json`, alongside the CLI's `config.json`.
 pub fn default_store_path() -> Result<PathBuf> {
     let config = Config::config_path();
     let dir = config
         .parent()
-        .context("resolving the oxide config directory")?;
+        .context("resolving the Oxide config directory")?;
     Ok(dir.join("desktop/projects.json"))
 }
 

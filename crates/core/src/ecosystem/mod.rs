@@ -277,8 +277,8 @@ pub fn load_opts(cwd: &Path, options: LoadOptions) -> Ecosystem {
         load_mcp(&mut ecosystem, &home.join(".claude.json"));
         load_oxide_dir(&mut ecosystem, &home.join(".oxide"));
     }
-    if let Some(config) = dirs::config_dir() {
-        load_oxide_dir(&mut ecosystem, &config.join("oxide"));
+    if let Some(config) = crate::config::config_dir() {
+        load_oxide_dir(&mut ecosystem, &config);
     }
 
     load_enabled_plugins(&mut ecosystem);
@@ -385,7 +385,7 @@ fn counted(count: usize, noun: &str) -> String {
 }
 
 /// The single-file hook plugins in a `plugins` directory. The global
-/// `<config>/oxide/plugins` directory doubles as the install root for plugin
+/// `<config>/Oxide/plugins` directory doubles as the install root for plugin
 /// packages, so directories and the plugin state file are skipped; only JS/TS
 /// modules are run by the hook host.
 fn hook_files(dir: &Path) -> Vec<PathBuf> {

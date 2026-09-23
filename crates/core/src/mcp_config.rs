@@ -76,7 +76,7 @@ fn sources_for(home: Option<&Path>, config: Option<&Path>, root: &Path) -> Vec<S
     if let Some(config) = config {
         list.push(Source {
             label: "platform global".to_string(),
-            path: config.join("oxide").join("mcp.json"),
+            path: config.join("Oxide").join("mcp.json"),
             scope: Scope::Global,
         });
     }
@@ -142,7 +142,7 @@ fn find_server(sources: &[Source], name: &str) -> Result<Option<(String, Value)>
 
 fn sources(cwd: &Path) -> Vec<Source> {
     let home = dirs::home_dir();
-    let config = dirs::config_dir();
+    let config = crate::config::config_dir().and_then(|dir| dir.parent().map(Path::to_path_buf));
     let root = project_root(cwd).unwrap_or_else(|| cwd.to_path_buf());
     sources_for(home.as_deref(), config.as_deref(), &root)
 }
@@ -431,7 +431,7 @@ pub fn add(cwd: &Path, request: AddRequest) -> Result<()> {
 }
 
 /// Run the OAuth authorization-code flow for a configured remote server,
-/// storing the resulting token under the oxide config directory.
+/// storing the resulting token under the Oxide config directory.
 pub async fn auth(cwd: &Path, scope: Option<String>, name: String) -> Result<()> {
     let scope = explicit_scope(scope.as_deref())?;
     let Some((label, config)) = find_server(&candidates(sources(cwd), scope), &name)? else {
@@ -646,7 +646,7 @@ mod tests {
                 "project"
             ]
         );
-        assert_eq!(sources[2].path, Path::new("/etc/xdg/oxide/mcp.json"));
+        assert_eq!(sources[2].path, Path::new("/etc/xdg/Oxide/mcp.json"));
         assert_eq!(sources[4].path, root.join(".oxide").join("mcp.json"));
     }
 

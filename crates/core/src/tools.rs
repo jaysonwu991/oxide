@@ -1915,7 +1915,7 @@ fn now_millis() -> u128 {
 /// preview uses a tool-specific line and byte budget. `bash` keeps its tail
 /// (where errors and the exit code live), everything else
 /// keeps its head. When content is dropped, the full text is saved under the
-/// oxide config dir and the result points at it so the model can inspect the
+/// Oxide config dir and the result points at it so the model can inspect the
 /// full output without re-running the tool.
 fn truncate(name: &str, output: String) -> String {
     truncate_into(name, output, truncation_dir().as_deref())
@@ -1978,7 +1978,7 @@ fn truncation_dir() -> Option<PathBuf> {
     if let Ok(dir) = std::env::var("OXIDE_TRUNCATION_DIR") {
         return Some(PathBuf::from(dir));
     }
-    Some(dirs::config_dir()?.join("oxide").join("truncated"))
+    Some(crate::config::config_dir()?.join("truncated"))
 }
 
 fn save_truncated(dir: &Path, text: &str) -> Option<PathBuf> {

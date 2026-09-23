@@ -39,9 +39,8 @@ struct RemovalGroup {
 }
 
 pub fn run(options: Options) -> Result<()> {
-    let config_root = dirs::config_dir()
-        .context("resolving platform config directory")?
-        .join("oxide");
+    let config_root =
+        oxide_core::config::config_dir().context("resolving platform config directory")?;
     let home_config = dirs::home_dir().map(|home| home.join(".oxide"));
     let executable = std::env::current_exe().context("resolving oxide executable")?;
     run_with_paths(options, config_root, home_config, executable)

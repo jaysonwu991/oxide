@@ -88,7 +88,7 @@ stored provider via `auth::select_stored`. Model and base URL are persisted with
 ## Multiple projects (cross-repo)
 
 `manager::DesktopManager` keeps a project registry at
-`<config>/oxide/desktop/projects.json` (same config directory as the CLI). The
+`<config>/Oxide/desktop/projects.json` (same config directory as the CLI). The
 sidebar shows two kinds of project:
 
 - **Added** — folders the user added in the desktop, persisted in the registry.
@@ -116,7 +116,7 @@ the run's `Steering` handles and its cooperative `Cancel` flag. The Tauri comman
 - **Approvals** — `approval.rs` implements `Approver`. When a rule resolves to
   `ask`, it emits `approval-request` and awaits the UI's `resolve_approval`
   (`deny`, `once`, or `always`); `always` records a per-project rule in
-  `ApprovalStore` (`<config>/oxide/desktop/approvals.json`) so the prompt does
+  `ApprovalStore` (`<config>/Oxide/desktop/approvals.json`) so the prompt does
   not repeat for that tool. The 🔒 dialog lists and clears those rules. An
   unanswered request denies after a 5-minute timeout so a turn cannot hang.
 - **Cancel / steer** — `send_prompt` returns a run id immediately and runs the
@@ -151,7 +151,7 @@ rough context percentage using `config.context_window()`.
 
 The desktop ships built-in **Dark** and **Light** themes (default Dark) and
 reads the same `.oxide/themes/<name>.json` (project) and
-`<config>/oxide/themes/<name>.json` (global) files the CLI uses. Each theme
+`<config>/Oxide/themes/<name>.json` (global) files the CLI uses. Each theme
 resolves every slot to a `#rrggbb` string; the desktop maps them onto CSS
 variables. Slots cover the surfaces (`background`, `sidebar`, `panel`,
 `panel_2`, `panel_3`, `border`, `text`, `dim`, `faint`) as well as the semantic

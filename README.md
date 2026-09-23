@@ -546,9 +546,9 @@ before descriptions. See
 
 Oxide reads `config.json` from the platform config directory:
 
-- Linux: `~/.config/oxide/config.json`
-- macOS: `~/Library/Application Support/oxide/config.json`
-- Windows: `%APPDATA%\oxide\config.json`
+- Linux: `~/.config/Oxide/config.json`
+- macOS: `~/Library/Application Support/Oxide/config.json`
+- Windows: `%APPDATA%\Oxide\config.json`
 
 ```json
 {
@@ -690,7 +690,7 @@ overrides the Claude Code layout.
 - `.oxide/plugins/` — JS/TS plugin hooks
 - `.oxide/SYSTEM.md`, `.oxide/APPEND_SYSTEM.md` — replace or extend the system prompt
 - `.oxide/mcp.json` — MCP servers (same schema as `.mcp.json`; manage with `oxide mcp`)
-- Global scope: `~/.oxide/` and the platform oxide config directory (the latter
+- Global scope: `~/.oxide/` and the platform Oxide config directory (the latter
   has higher precedence)
 
 This repository keeps its own agents, commands, prompts, skills, and plugins in
@@ -827,7 +827,7 @@ the TUI asks before loading them.
 ## Themes
 
 Oxide ships `dark` and `light` themes. Add a custom theme as JSON under
-`.oxide/themes/<name>.json` (project) or `<config>/oxide/themes/<name>.json`
+`.oxide/themes/<name>.json` (project) or `<config>/Oxide/themes/<name>.json`
 (global), then select it with `--use-theme <name>` or `/theme <name>`. The
 built-in palettes come from `oxide_core::theme_view`, shared with the desktop
 app, so the CLI and desktop use identical colors; custom theme files are read by

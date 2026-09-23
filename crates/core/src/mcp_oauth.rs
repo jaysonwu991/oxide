@@ -3,7 +3,7 @@
 //! Remote MCP servers can require the client to obtain a bearer token before
 //! calling `tools/*`. This module discovers the authorization
 //! server, runs the browser-based authorization-code flow with PKCE, stores the
-//! resulting token under the oxide config dir, and refreshes it as needed.
+//! resulting token under the Oxide config dir, and refreshes it as needed.
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -864,7 +864,7 @@ fn parse_token(value: &Value, status: reqwest::StatusCode) -> Result<StoredAuth>
 }
 
 fn token_path(name: &str) -> Option<PathBuf> {
-    let dir = dirs::config_dir()?.join("oxide").join("mcp-oauth");
+    let dir = crate::config::config_dir()?.join("mcp-oauth");
     Some(dir.join(format!("{}.json", sanitize(name))))
 }
 

@@ -51,10 +51,7 @@ pub struct TrustStore {
 
 impl TrustStore {
     pub fn path() -> PathBuf {
-        dirs::config_dir()
-            .unwrap_or_else(|| PathBuf::from("."))
-            .join("oxide")
-            .join(TRUST_FILE)
+        crate::config::config_dir_or_default().join(TRUST_FILE)
     }
 
     pub fn load() -> Result<Self> {

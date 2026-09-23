@@ -6,8 +6,8 @@
 //! directory containing a manifest (`.oxide/plugin.json` or
 //! `.claude-plugin/plugin.json`) plus bundled resources: `commands/`,
 //! `agents/`, `skills/`, `hooks/` (declared in the manifest) and `mcpServers`.
-//! Installed plugins live under the oxide config directory
-//! (`<config>/oxide/plugins/`) and are loaded into the ecosystem at startup,
+//! Installed plugins live under the Oxide config directory
+//! (`<config>/Oxide/plugins/`) and are loaded into the ecosystem at startup,
 //! mirroring Claude Code's plugin model.
 
 use anyhow::{bail, Context, Result};
@@ -24,10 +24,7 @@ fn default_true() -> bool {
 /// The directory that holds installed plugins, marketplaces, and the plugin
 /// state file.
 pub fn install_root() -> PathBuf {
-    dirs::config_dir()
-        .unwrap_or_else(|| PathBuf::from("."))
-        .join("oxide")
-        .join("plugins")
+    crate::config::config_dir_or_default().join("plugins")
 }
 
 // ---------------------------------------------------------------------------

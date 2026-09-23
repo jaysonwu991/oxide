@@ -210,10 +210,7 @@ fn settings_path() -> PathBuf {
     if let Some(path) = std::env::var_os("OXIDE_SETTINGS_FILE") {
         return PathBuf::from(path);
     }
-    dirs::config_dir()
-        .unwrap_or_else(|| PathBuf::from("."))
-        .join("oxide")
-        .join("settings.json")
+    crate::config::config_dir_or_default().join("settings.json")
 }
 
 fn save_to(path: &Path, key: NotifyKey, enabled: bool) -> Result<()> {

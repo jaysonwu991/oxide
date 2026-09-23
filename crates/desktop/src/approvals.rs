@@ -22,7 +22,7 @@ pub struct ApprovalStore {
 }
 
 impl ApprovalStore {
-    /// Loads `<config>/oxide/desktop/approvals.json`.
+    /// Loads `<config>/Oxide/desktop/approvals.json`.
     pub fn load() -> Self {
         let path = default_path().unwrap_or_else(|_| PathBuf::from("desktop-approvals.json"));
         Self::load_from(path)
@@ -87,7 +87,7 @@ fn key(project: &Path) -> String {
         .to_string()
 }
 
-/// `<config>/oxide/desktop/approvals.json`, beside the project registry.
+/// `<config>/Oxide/desktop/approvals.json`, beside the project registry.
 pub fn default_path() -> Result<PathBuf> {
     let projects = crate::manager::default_store_path()?;
     let dir = projects

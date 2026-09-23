@@ -543,7 +543,7 @@ fn model_cache_key(config: &Config) -> String {
 }
 
 fn model_cache_path() -> Option<PathBuf> {
-    Some(dirs::config_dir()?.join("oxide").join(MODEL_CACHE_FILE))
+    Some(crate::config::config_dir()?.join(MODEL_CACHE_FILE))
 }
 
 fn cached_models(key: &str) -> Option<CachedModels> {

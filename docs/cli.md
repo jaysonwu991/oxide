@@ -11,8 +11,8 @@ compaction. The desktop app reads the same configuration and session files — s
 Oxide merges two scopes:
 
 - **Global** — native resources can live in either `~/.oxide/` or the platform
-  oxide config directory (`~/.config/oxide` on Linux,
-  `~/Library/Application Support/oxide` on macOS, and `%APPDATA%\oxide` on
+  Oxide config directory (`~/.config/Oxide` on Linux,
+  `~/Library/Application Support/Oxide` on macOS, and `%APPDATA%\Oxide` on
   Windows). Claude Code-compatible resources come from `~/.claude/` and
   `~/.claude.json`.
 - **Project** — the nearest ancestor of the working directory containing `.git`,
@@ -46,7 +46,7 @@ increasing precedence:
 
 1. Global `~/.claude.json`
 2. Global `~/.oxide/mcp.json`
-3. Global `<platform-config>/oxide/mcp.json`
+3. Global `<platform-config>/Oxide/mcp.json`
 4. Project `<root>/.mcp.json`
 5. Project `<root>/.oxide/mcp.json`
 
@@ -487,7 +487,7 @@ oxide plugin uninstall <name>[@marketplace]
 
 `add` accepts a git URL, a local directory, or GitHub's `owner/repo` shorthand
 (expanded to `https://github.com/owner/repo.git`). Git marketplaces are cloned
-under `<config>/oxide/plugins/marketplaces/<name>/`; a local directory is
+under `<config>/Oxide/plugins/marketplaces/<name>/`; a local directory is
 recorded in place, so edits to it are live. `update` fast-forwards a git
 marketplace to its remote head and reports the plugin count (local directories
 report that there is nothing to fetch).
@@ -509,7 +509,7 @@ output. A `@marketplace` that does not match the installed plugin's marketplace
 is rejected.
 
 Installed plugins are copied under
-`<config>/oxide/plugins/<marketplace>/<plugin>/`, so uninstalling a plugin or
+`<config>/Oxide/plugins/<marketplace>/<plugin>/`, so uninstalling a plugin or
 removing its marketplace never touches the upstream source.
 
 In the TUI, `/plugins` lists installed plugins — marketplace, version,
@@ -526,7 +526,7 @@ plugin names match first, and a plugin's description is only searched when no
 name matches, so a query like `doc` stays on `doc-mcp` rather than listing
 every plugin that mentions "documentation".
 
-Installed plugins live under `<config>/oxide/plugins/` (next to `auth.json` and
+Installed plugins live under `<config>/Oxide/plugins/` (next to `auth.json` and
 `trust.json`), with their state in `plugins/config.json`. Their commands,
 agents, skills, and MCP servers load at startup before project resources, so
 project-local entries still override plugins with the same name. After
@@ -705,7 +705,7 @@ decision is saved; non-interactive runs use `defaultProjectTrust` (in
 ## Themes
 
 Oxide ships `dark` and `light`. Add custom themes as JSON under
-`.oxide/themes/<name>.json` or `<config>/oxide/themes/<name>.json`, then select
+`.oxide/themes/<name>.json` or `<config>/Oxide/themes/<name>.json`, then select
 one with `--use-theme <name>` or `/theme <name>`. The built-in palettes come
 from `oxide_core::theme_view`, shared with the desktop app, so the CLI and
 desktop render identical colors and both read the same custom theme files.
@@ -947,8 +947,8 @@ from the Portkey Model Catalog, set its identifier in `config.json`:
 }
 ```
 
-The global file is `~/Library/Application Support/oxide/config.json` on macOS,
-`~/.config/oxide/config.json` on Linux, and `%APPDATA%\oxide\config.json` on
+The global file is `~/Library/Application Support/Oxide/config.json` on macOS,
+`~/.config/Oxide/config.json` on Linux, and `%APPDATA%\Oxide\config.json` on
 Windows.
 
 #### Login with a custom gateway
