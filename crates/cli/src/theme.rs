@@ -152,7 +152,7 @@ impl ThemeFile {
 }
 
 /// Resolves a theme by name: built-ins first, then `.oxide/themes/<name>.json`
-/// (project), then `<config>/oxide/themes/<name>.json` (global).
+/// (project), then `<config>/Oxide/themes/<name>.json` (global).
 pub fn load(cwd: &Path, name: &str) -> Theme {
     let trimmed = name.trim();
     let mut theme = Theme::by_name(trimmed).unwrap_or_default();
@@ -198,8 +198,8 @@ fn theme_dirs(cwd: &Path) -> Vec<PathBuf> {
     if let Some(root) = crate::ecosystem::project_root(cwd) {
         dirs.push(root.join(".oxide/themes"));
     }
-    if let Some(config) = dirs::config_dir() {
-        dirs.push(config.join("oxide/themes"));
+    if let Some(config) = oxide_core::config::config_dir() {
+        dirs.push(config.join("themes"));
     }
     dirs
 }
@@ -211,8 +211,8 @@ fn project_theme(cwd: &Path, name: &str) -> Option<PathBuf> {
 }
 
 fn global_theme(name: &str) -> Option<PathBuf> {
-    let path = dirs::config_dir()?
-        .join("oxide/themes")
+    let path = oxide_core::config::config_dir()?
+        .join("themes")
         .join(format!("{name}.json"));
     path.is_file().then_some(path)
 }

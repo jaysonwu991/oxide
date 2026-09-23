@@ -9,10 +9,10 @@
 </pre>
 </div>
 
-# oxide
+# Oxide
 
 A native Rust AI coding agent with a terminal UI and a Tauri desktop app.
-oxide streams from OpenAI-compatible and Anthropic models, runs a tool-using
+Oxide streams from OpenAI-compatible and Anthropic models, runs a tool-using
 agent loop against your project, and understands its own `.oxide/` configuration
 layout out of the box, with Claude Code configuration support for compatibility.
 
@@ -168,12 +168,12 @@ layout out of the box, with Claude Code configuration support for compatibility.
 
 ## Comparison
 
-oxide is a small, native terminal agent that deliberately borrows the Claude
+Oxide is a small, native terminal agent that deliberately borrows the Claude
 Code configuration layout so existing `.claude/` setups keep working. The table
 below compares the high-level shape of the four tools; feature sets move fast,
 so check each project's documentation for the current details.
 
-| Capability | oxide | [Codex](https://github.com/openai/codex) | [OpenCode](https://opencode.ai) | [Claude Code](https://docs.claude.com/en/docs/claude-code/overview) |
+| Capability | Oxide | [Codex](https://github.com/openai/codex) | [OpenCode](https://opencode.ai) | [Claude Code](https://docs.claude.com/en/docs/claude-code/overview) |
 | --- | --- | --- | --- | --- |
 | Distribution | Native Rust core + Tauri desktop app | Open-source CLI (Rust) + IDE extension | Open-source CLI (Node/Bun) | Proprietary CLI + apps |
 | License | MIT | Apache-2.0 | Open source | Proprietary |
@@ -194,7 +194,7 @@ so check each project's documentation for the current details.
 | Context management | Auto-compaction + branch summarization | Auto-compaction | Auto-compaction + DCP plugin | Auto-compaction |
 | Multimodal input | Images and PDFs (`--image`, `@path`) | Images | Images | Images |
 
-A dash indicates no first-class built-in equivalent. Where oxide differs most:
+A dash indicates no first-class built-in equivalent. Where Oxide differs most:
 it is a dependency-light Rust core with a terminal binary and a Tauri desktop
 app, it speaks both the OpenAI-compatible and Anthropic APIs directly, its plugin
 packages reuse the same on-disk commands, agents, skills, and MCP servers the
@@ -230,7 +230,7 @@ irm https://github.com/jaysonwu991/oxide/releases/latest/download/install.ps1 | 
 
 The PowerShell installer detects your OS/arch, downloads the matching release,
 verifies its SHA-256 checksum, and installs `oxide.exe` to
-`%LOCALAPPDATA%\Programs\oxide` by default. The same script also runs on macOS
+`%LOCALAPPDATA%\Programs\Oxide` by default. The same script also runs on macOS
 and Linux under PowerShell (`pwsh`), installing `oxide` to `~/.local/bin`.
 
 Overrides:
@@ -238,7 +238,7 @@ Overrides:
 | Variable | Purpose |
 | --- | --- |
 | `OXIDE_VERSION` | Version to install (with or without a leading `v`). Defaults to the latest release. |
-| `OXIDE_INSTALL_DIR` | Install directory. Defaults to `%LOCALAPPDATA%\Programs\oxide` on Windows, `$HOME/.local/bin` elsewhere. |
+| `OXIDE_INSTALL_DIR` | Install directory. Defaults to `%LOCALAPPDATA%\Programs\Oxide` on Windows, `$HOME/.local/bin` elsewhere. |
 | `OXIDE_REPO` | GitHub repo slug. Defaults to `jaysonwu991/oxide`. |
 
 ### Supported platforms
@@ -477,7 +477,7 @@ the key again, and pressing Enter on the key step reuses the stored key). After
 the key, an optional settings step lets you set the model, base URL, and (for
 Portkey) Config ID, pre-filled with the provider's defaults so Enter keeps them.
 Keys are
-stored in `auth.json` in the oxide config directory
+stored in `auth.json` in the Oxide config directory
 (mode `0600`) and resolved after environment variables and before the config
 file. Any number of providers can be stored at once, and the active provider is
 written to `config.json` so the next launch uses it. `/models` lists the catalogs
@@ -501,7 +501,7 @@ oxide mcp auth [--scope project|global] <name>
 writes `~/.oxide/mcp.json`. See
 [docs/cli.md](docs/cli.md#mcp-servers) for examples.
 
-Remote servers can require OAuth. Add the server by URL; oxide detects a `401`
+Remote servers can require OAuth. Add the server by URL; Oxide detects a `401`
 authentication challenge, discovers the authorization server, runs the
 authorization-code flow with PKCE, and refreshes the token automatically. You
 can also authorize up front with `oxide mcp auth <name>`. See
@@ -534,7 +534,7 @@ and command hooks behind a `.oxide/plugin.json` or `.claude-plugin/plugin.json`
 manifest; a marketplace is a repo or directory with a `.oxide/marketplace.json`
 or `.claude-plugin/marketplace.json` manifest. MCP servers can come from the
 manifest's `mcpServers` or a plugin-root `.mcp.json` (either a `mcpServers` map
-or the server entries directly). Installed plugins live under the oxide config
+or the server entries directly). Installed plugins live under the Oxide config
 directory and load at startup before project resources, so project-local
 entries still override plugins with the same name. After installing, `/reload`
 picks up new commands, agents, and skills; hooks and MCP servers need a restart.
@@ -544,11 +544,11 @@ before descriptions. See
 
 ## Configuration
 
-oxide reads `config.json` from the platform config directory:
+Oxide reads `config.json` from the platform config directory:
 
-- Linux: `~/.config/oxide/config.json`
-- macOS: `~/Library/Application Support/oxide/config.json`
-- Windows: `%APPDATA%\oxide\config.json`
+- Linux: `~/.config/Oxide/config.json`
+- macOS: `~/Library/Application Support/Oxide/config.json`
+- Windows: `%APPDATA%\Oxide\config.json`
 
 ```json
 {
@@ -569,7 +569,7 @@ environment. `auto_approve` controls whether tool calls run without prompting;
 when `false`, permission rules that resolve to `ask` are denied in
 non-interactive mode.
 
-`reasoning` controls how much reasoning effort oxide requests. `auto` (the
+`reasoning` controls how much reasoning effort Oxide requests. `auto` (the
 default) leaves reasoning behavior and effort to the provider/model. Newer
 Claude models use adaptive thinking without a forced effort; other APIs receive
 no effort override. `off`, `low`, `medium`, and `high` force a level using
@@ -580,7 +580,7 @@ the starting level.
 
 `max_tokens` caps the output of a single model turn, reasoning included. When a
 reasoning model exhausts that budget on hidden reasoning and returns nothing,
-oxide retries with a doubled budget (up to 32768) before reporting the failure,
+Oxide retries with a doubled budget (up to 32768) before reporting the failure,
 so a long-thinking turn recovers instead of ending in an empty response.
 
 ### Environment variables
@@ -653,7 +653,7 @@ For the mainland-China BigModel endpoint
 
 ## Context files and system prompt
 
-oxide loads `AGENTS.md` (or `CLAUDE.md`) as project instructions by walking
+Oxide loads `AGENTS.md` (or `CLAUDE.md`) as project instructions by walking
 every ancestor directory from the filesystem root down to the working
 directory, so nested projects layer their instructions. If a directory contains
 `AGENTS.override.md`, it replaces `AGENTS.md`/`CLAUDE.md` for that directory
@@ -670,7 +670,7 @@ only. The global `~/.oxide/AGENTS.md` is loaded first (lowest precedence).
 
 ## Ecosystem
 
-oxide discovers configuration from the project root (the nearest ancestor
+Oxide discovers configuration from the project root (the nearest ancestor
 containing `.git`, `.oxide`, or `.claude`) and the user's global scope. Project
 entries override global entries with the same name, and the Oxide layout
 overrides the Claude Code layout.
@@ -690,7 +690,7 @@ overrides the Claude Code layout.
 - `.oxide/plugins/` — JS/TS plugin hooks
 - `.oxide/SYSTEM.md`, `.oxide/APPEND_SYSTEM.md` — replace or extend the system prompt
 - `.oxide/mcp.json` — MCP servers (same schema as `.mcp.json`; manage with `oxide mcp`)
-- Global scope: `~/.oxide/` and the platform oxide config directory (the latter
+- Global scope: `~/.oxide/` and the platform Oxide config directory (the latter
   has higher precedence)
 
 This repository keeps its own agents, commands, prompts, skills, and plugins in
@@ -716,7 +716,7 @@ Run `cargo clippy --all-targets -- -D warnings` and fix each finding.
 
 **Claude Code compatibility**
 
-oxide also reads the Claude Code layout, so existing configurations work as-is:
+Oxide also reads the Claude Code layout, so existing configurations work as-is:
 
 - `CLAUDE.md` — project memory and instructions
 - `.claude/CLAUDE.md` — additional layout-scoped instructions
@@ -753,7 +753,7 @@ its tools then appear as `<server>__<tool>`.
 
 | Tool | Parameters |
 | --- | --- |
-| `read` | `path`, `offset?` (1-based), `limit?` (default 250 lines) |
+| `read` | `path`, `offset?` (1-based), `limit?` (default 400 lines) |
 | `write` | `path`, `content` |
 | `edit` | `path`, `edits: [{ oldText, newText }]` |
 | `bash` | `command`, `timeout?` in milliseconds (default 120000) |
@@ -780,14 +780,16 @@ is dependency-free and handles headings, paragraphs, lists, tables, links,
 images, inline and fenced code, blockquotes, and HTML entities.
 
 Tool results are capped before they enter the model's context. The default cap
-is 250 lines and 6 KB (per-tool overrides: `bash` 160 lines / 5 KB, `grep`,
-`find`, and `ls` 160 / 4 KB, `webfetch` 200 / 6 KB, and `write`, `edit`, and
-`patch` 120 / 3 KB); `read` splits a line longer than 1 000 characters into
-continuation chunks (`offset`/`limit` count those display lines), so an
-over-long line can be paged through instead of being cut off.
+is 250 lines and 6 KB, but `read` gets a larger budget (400 lines / 16 KB) so an
+ordinary source file is returned whole instead of paged in slices; other
+per-tool overrides are `bash` 160 lines / 5 KB, `grep`, `find`, and `ls` 160 / 4
+KB, `webfetch` 200 / 6 KB, and `write`, `edit`, and `patch` 120 / 3 KB. `read`
+splits a line longer than 1 000 characters into continuation chunks
+(`offset`/`limit` count those display lines), so an over-long line can be paged
+through instead of being cut off.
 `bash` keeps the **tail** so the exit code and recent errors survive; other
 tools keep the head. When output is dropped, the full text is written under
-`truncated/` in the oxide config directory and the result includes the path plus
+`truncated/` in the Oxide config directory and the result includes the path plus
 a hint to grep it or `read` it with an offset, so the model can recover detail
 without re-running the tool. Set `OXIDE_TRUNCATION_DIR` to change where those
 files go; they are retained for 7 days.
@@ -809,7 +811,7 @@ termination for the batch with `output.terminate = true`.
 Projects may contain local resources that change how the agent behaves or
 execute code — agents, commands, prompts, skills, plugins, `SYSTEM.md`, and
 `APPEND_SYSTEM.md`.
-oxide treats the presence of any of these as requiring trust. When a project
+Oxide treats the presence of any of these as requiring trust. When a project
 requires trust and no decision has been saved for it (or a parent directory),
 the TUI asks before loading them.
 
@@ -824,8 +826,8 @@ the TUI asks before loading them.
 
 ## Themes
 
-oxide ships `dark` and `light` themes. Add a custom theme as JSON under
-`.oxide/themes/<name>.json` (project) or `<config>/oxide/themes/<name>.json`
+Oxide ships `dark` and `light` themes. Add a custom theme as JSON under
+`.oxide/themes/<name>.json` (project) or `<config>/Oxide/themes/<name>.json`
 (global), then select it with `--use-theme <name>` or `/theme <name>`. The
 built-in palettes come from `oxide_core::theme_view`, shared with the desktop
 app, so the CLI and desktop use identical colors; custom theme files are read by
@@ -906,7 +908,7 @@ session seeded with the summary.
 
 ## Data locations
 
-Runtime state lives under the platform oxide config directory:
+Runtime state lives under the platform Oxide config directory:
 
 - Main configuration: `config.json`
 - Credentials: `auth.json`

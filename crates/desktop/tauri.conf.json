@@ -1,6 +1,6 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "oxide",
+  "productName": "Oxide",
   "version": "0.0.0",
   "identifier": "dev.oxide.desktop",
   "build": {
@@ -11,7 +11,7 @@
     "windows": [
       {
         "label": "main",
-        "title": "oxide",
+        "title": "Oxide",
         "width": 1200,
         "height": 800,
         "minWidth": 820,
@@ -27,7 +27,7 @@
     "targets": "all",
     "category": "DeveloperTool",
     "shortDescription": "Native Rust AI coding agent",
-    "longDescription": "oxide desktop manages multiple projects and sessions, sharing the same configuration and session store as the oxide CLI.",
+    "longDescription": "Oxide desktop manages multiple projects and sessions, sharing the same configuration and session store as the Oxide CLI.",
     "icon": [
       "icons/32x32.png",
       "icons/128x128.png",

@@ -1,5 +1,5 @@
 #!/bin/sh
-# Install the oxide CLI.
+# Install the Oxide CLI.
 #
 #   curl -fsSL https://github.com/jaysonwu991/oxide/releases/latest/download/install.sh | bash
 #
@@ -15,7 +15,8 @@ REPO="${OXIDE_REPO:-jaysonwu991/oxide}"
 VERSION="${OXIDE_VERSION:-}"
 INSTALL_DIR="${OXIDE_INSTALL_DIR:-$HOME/.local/bin}"
 BASE_URL="https://github.com/${REPO}"
-MANIFEST_NAME="oxide-manifest"
+MANIFEST_NAME="Oxide-manifest"
+LEGACY_MANIFEST_NAME="oxide-manifest"
 
 err() {
     printf 'oxide-install: error: %s\n' "$*" >&2
@@ -86,17 +87,27 @@ resolve_url() {
 
     if [ -n "$VERSION" ]; then
         ver="${VERSION#v}"
-        printf '%s/releases/download/v%s/oxide-v%s-%s.tar.gz' "$BASE_URL" "$ver" "$ver" "$platform"
+        printf '%s/releases/download/v%s/Oxide-v%s-%s.tar.gz' "$BASE_URL" "$ver" "$ver" "$platform"
         return
     fi
 
     info "fetching ${MANIFEST_NAME}"
-    manifest="$(fetch "${BASE_URL}/releases/latest/download/${MANIFEST_NAME}")" \
+    manifest="$(fetch "${BASE_URL}/releases/latest/download/${MANIFEST_NAME}" 2>/dev/null)" \
+        || manifest="$(fetch "${BASE_URL}/releases/latest/download/${LEGACY_MANIFEST_NAME}")" \
         || err "could not fetch ${MANIFEST_NAME}; has a release been published?"
     ver="$(printf '%s\n' "$manifest" | awk -F': ' '/^version:/ {print $2; exit}')"
     [ -n "$ver" ] || err "could not read version from ${MANIFEST_NAME}"
     asset="$(manifest_asset "$manifest" "$platform")"
     printf '%s/releases/download/%s/%s' "$BASE_URL" "$ver" "$asset"
+}
+
+# Pre-branding releases published only the lowercase archive names, so an
+# explicit OXIDE_VERSION (pin or rollback) can still need the old name.
+legacy_url() {
+    case "$1" in
+        */Oxide-v*) printf '%s' "$1" | sed 's#/Oxide-v#/oxide-v#' ;;
+        *) return 1 ;;
+    esac
 }
 
 verify_checksum() {
@@ -132,7 +143,17 @@ main() {
     trap 'rm -rf "$tmp"' EXIT INT TERM
 
     info "downloading ${archive} for ${platform}"
-    download "$url" "${tmp}/${archive}"
+    if ! download "$url" "${tmp}/${archive}"; then
+        if fallback="$(legacy_url "$url")"; then
+            archive="${fallback##*/}"
+            info "downloading ${archive} for ${platform}"
+            download "$fallback" "${tmp}/${archive}" \
+                || err "download failed for ${archive}"
+            url="$fallback"
+        else
+            err "download failed for ${archive}"
+        fi
+    fi
 
     if download "${url}.sha256" "${tmp}/${archive}.sha256" 2>/dev/null; then
         verify_checksum "${tmp}/${archive}" "${tmp}/${archive}.sha256"
@@ -146,7 +167,7 @@ main() {
     mv -f "${tmp}/oxide" "${INSTALL_DIR}/oxide"
     chmod 0755 "${INSTALL_DIR}/oxide"
 
-    info "installed oxide to ${INSTALL_DIR}/oxide"
+    info "installed Oxide to ${INSTALL_DIR}/oxide"
 
     case ":${PATH:-}:" in
         *":${INSTALL_DIR}:"*) ;;

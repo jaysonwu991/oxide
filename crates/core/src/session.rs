@@ -751,10 +751,7 @@ fn latest_name(entries: &[Entry]) -> Option<String> {
 }
 
 fn sessions_root() -> PathBuf {
-    dirs::config_dir()
-        .unwrap_or_else(|| PathBuf::from("."))
-        .join("oxide")
-        .join("sessions")
+    crate::config::config_dir_or_default().join("sessions")
 }
 
 fn project_dir(cwd: &Path) -> PathBuf {

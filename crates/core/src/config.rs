@@ -321,6 +321,54 @@ fn apply_stored_provider_fallback(
     }
 }
 
+const CONFIG_DIR_NAME: &str = "Oxide";
+
+/// The Oxide configuration directory under the platform config dir
+/// (`<platform config>/Oxide`). The pre-branding `<platform config>/oxide`
+/// directory is migrated once on first access when the new one is absent.
+pub fn config_dir() -> Option<PathBuf> {
+    let base = dirs::config_dir()?;
+    let dir = base.join(CONFIG_DIR_NAME);
+    migrate_legacy_config_dir(&base, &dir);
+    Some(dir)
+}
+
+/// Like [`config_dir`], falling back to a relative `Oxide` path when the
+/// platform config directory cannot be resolved.
+pub fn config_dir_or_default() -> PathBuf {
+    config_dir().unwrap_or_else(|| PathBuf::from(CONFIG_DIR_NAME))
+}
+
+fn migrate_legacy_config_dir(base: &Path, dir: &Path) {
+    if has_dir_entry(base, CONFIG_DIR_NAME) {
+        return;
+    }
+    if !has_dir_entry(base, "oxide") {
+        return;
+    }
+    // Rename through a temporary name: on case-insensitive filesystems
+    // (macOS, Windows) `oxide` and `Oxide` are the same directory, so a
+    // direct rename would not change the on-disk case.
+    let staging = base.join(".Oxide-migrate");
+    let _ = std::fs::remove_dir_all(&staging);
+    if std::fs::rename(base.join("oxide"), &staging).is_ok() {
+        let _ = std::fs::rename(&staging, dir);
+    }
+}
+
+/// Whether `base` contains an entry whose name matches `name` exactly
+/// (case-sensitively), even on a case-insensitive filesystem.
+fn has_dir_entry(base: &Path, name: &str) -> bool {
+    std::fs::read_dir(base)
+        .map(|entries| {
+            entries.flatten().any(|entry| {
+                entry.file_name() == std::ffi::OsStr::new(name)
+                    && entry.file_type().map(|kind| kind.is_dir()).unwrap_or(true)
+            })
+        })
+        .unwrap_or(false)
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Config {
     #[serde(default = "default_provider")]
@@ -400,10 +448,7 @@ fn default_true() -> bool {
 /// Reads `hideThinkingBlock` from the global `settings.json`, Pi's key for
 /// whether reasoning blocks start collapsed.
 pub fn load_hide_thinking_block() -> bool {
-    let path = dirs::config_dir()
-        .unwrap_or_else(|| PathBuf::from("."))
-        .join("oxide")
-        .join("settings.json");
+    let path = config_dir_or_default().join("settings.json");
     let Ok(text) = std::fs::read_to_string(path) else {
         return false;
     };
@@ -416,10 +461,7 @@ pub fn load_hide_thinking_block() -> bool {
 /// Reads `defaultProjectTrust` from the global `settings.json` in the oxide
 /// config directory (Pi keeps the same key in `~/.pi/agent/settings.json`).
 pub(crate) fn load_default_project_trust() -> crate::trust::DefaultTrust {
-    let path = dirs::config_dir()
-        .unwrap_or_else(|| PathBuf::from("."))
-        .join("oxide")
-        .join("settings.json");
+    let path = config_dir_or_default().join("settings.json");
     let Ok(text) = std::fs::read_to_string(path) else {
         return crate::trust::DefaultTrust::default();
     };
@@ -504,10 +546,7 @@ impl Config {
     }
 
     pub fn config_path() -> PathBuf {
-        dirs::config_dir()
-            .unwrap_or_else(|| PathBuf::from("."))
-            .join("oxide")
-            .join("config.json")
+        config_dir_or_default().join("config.json")
     }
 
     /// Load config from disk, then apply CLI overrides and environment, and
@@ -1132,7 +1171,11 @@ impl Config {
              directory. Keep each `bash` command focused on one task instead of chaining unrelated \
              commands with `;` or `&&`, and scope searches to the project or a specific directory \
              — never sweep the whole filesystem with `find /`. `read`, `ls`, `find`, and `grep` \
-             accept absolute paths, so you do not need a shell to inspect files outside the project."
+             accept absolute paths, so you do not need a shell to inspect files outside the project, \
+             and `bash` already starts in the project root, so run a command directly instead of \
+             prefixing `cd <root> &&`. When a command can print a large payload, select just the \
+             fields you need (for example a `--jq`/`jq` filter) rather than piping it through `head`, \
+             which still fetches and renders everything."
                 .to_string(),
         );
 
@@ -1247,6 +1290,10 @@ mod tests {
         let prompt = config.compose_system_prompt();
         assert!(prompt.contains("# Tool use"));
         assert!(prompt.contains("batches"));
+        assert!(
+            prompt.contains("already starts in the project root"),
+            "{prompt}"
+        );
     }
 
     #[test]
@@ -1915,6 +1962,33 @@ mod tests {
         assert_eq!(value["provider"], "deepseek");
         assert_eq!(value["mode"], "plan");
         std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn legacy_lowercase_config_dir_is_migrated() {
+        fn temp(tag: &str) -> PathBuf {
+            let dir = std::env::temp_dir()
+                .join(format!("oxide_config_migrate_{tag}_{}", std::process::id()));
+            std::fs::remove_dir_all(&dir).ok();
+            std::fs::create_dir_all(&dir).unwrap();
+            dir
+        }
+
+        let base = temp("move");
+        std::fs::create_dir_all(base.join("oxide")).unwrap();
+        std::fs::write(base.join("oxide/config.json"), "{}").unwrap();
+        migrate_legacy_config_dir(&base, &base.join(CONFIG_DIR_NAME));
+        assert!(has_dir_entry(&base, CONFIG_DIR_NAME));
+        assert!(!has_dir_entry(&base, "oxide"));
+        assert!(base.join(CONFIG_DIR_NAME).join("config.json").is_file());
+        std::fs::remove_dir_all(&base).ok();
+
+        // An already-branded directory wins and the legacy entry is untouched.
+        let base = temp("keep");
+        std::fs::create_dir_all(base.join(CONFIG_DIR_NAME)).unwrap();
+        migrate_legacy_config_dir(&base, &base.join(CONFIG_DIR_NAME));
+        assert!(has_dir_entry(&base, CONFIG_DIR_NAME));
+        std::fs::remove_dir_all(&base).ok();
     }
 
     #[test]

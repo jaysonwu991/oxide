@@ -1,4 +1,4 @@
-name: release
+name: cli
 
 on:
   push:
@@ -85,7 +85,7 @@ jobs:
         run: |
           set -euo pipefail
           ver="${GITHUB_REF_NAME}"
-          asset="oxide-${ver}-${{ matrix.platform }}"
+          asset="Oxide-${ver}-${{ matrix.platform }}"
           binary="oxide"
           [ "${{ matrix.target }}" = "x86_64-pc-windows-msvc" ] && binary="oxide.exe"
           staged="$(mktemp -d)"
@@ -110,8 +110,8 @@ jobs:
         with:
           name: asset-${{ matrix.platform }}
           path: |
-            oxide-${{ github.ref_name }}-${{ matrix.platform }}.${{ matrix.archive_ext }}
-            oxide-${{ github.ref_name }}-${{ matrix.platform }}.${{ matrix.archive_ext }}.sha256
+            Oxide-${{ github.ref_name }}-${{ matrix.platform }}.${{ matrix.archive_ext }}
+            Oxide-${{ github.ref_name }}-${{ matrix.platform }}.${{ matrix.archive_ext }}.sha256
           if-no-files-found: error
 
   release:
@@ -127,7 +127,7 @@ jobs:
           pattern: asset-*
           path: assets
           merge-multiple: true
-      - name: Build oxide-manifest
+      - name: Build Oxide-manifest
         shell: bash
         run: |
           set -euo pipefail
@@ -137,17 +137,17 @@ jobs:
             for platform in darwin-arm64 darwin-x64 linux-x64 linux-arm64 win32-x64; do
               ext="tar.gz"
               [ "${platform}" = "win32-x64" ] && ext="zip"
-              printf '%s: oxide-%s-%s.%s\n' "${platform}" "${ver}" "${platform}" "${ext}"
+              printf '%s: Oxide-%s-%s.%s\n' "${platform}" "${ver}" "${platform}" "${ext}"
             done
-          } > assets/oxide-manifest
-          cat assets/oxide-manifest
+          } > assets/Oxide-manifest
+          cat assets/Oxide-manifest
       - name: Create release (idempotent)
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           gh release view "${GITHUB_REF_NAME}" --repo "${{ github.repository }}" >/dev/null 2>&1 \
             || gh release create "${GITHUB_REF_NAME}" --repo "${{ github.repository }}" \
-                 --title "${GITHUB_REF_NAME}" --generate-notes
+                 --title "Oxide ${GITHUB_REF_NAME}" --generate-notes
       - name: Upload release assets
         env:
           GH_TOKEN: ${{ github.token }}

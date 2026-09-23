@@ -1,7 +1,7 @@
 //! Semantic theme colors for front-ends other than the TUI.
 //!
 //! Reads the same `.oxide/themes/<name>.json` (project) and
-//! `<config>/oxide/themes/<name>.json` (global) files the CLI uses, and
+//! `<config>/Oxide/themes/<name>.json` (global) files the CLI uses, and
 //! resolves every slot to a `#rrggbb` string so a web front-end can map them
 //! onto CSS variables. The built-in `dark` and `light` palettes provide both
 //! the surface colors (window, sidebar, panels) and the semantic slots; theme
@@ -226,8 +226,8 @@ fn theme_dirs(cwd: &Path) -> Vec<PathBuf> {
     if let Some(root) = crate::ecosystem::project_root(cwd) {
         dirs.push(root.join(".oxide/themes"));
     }
-    if let Some(config) = dirs::config_dir() {
-        dirs.push(config.join("oxide/themes"));
+    if let Some(config) = crate::config::config_dir() {
+        dirs.push(config.join("themes"));
     }
     dirs
 }
@@ -239,8 +239,8 @@ fn project_theme(cwd: &Path, name: &str) -> Option<PathBuf> {
 }
 
 fn global_theme(name: &str) -> Option<PathBuf> {
-    let path = dirs::config_dir()?
-        .join("oxide/themes")
+    let path = crate::config::config_dir()?
+        .join("themes")
         .join(format!("{name}.json"));
     path.is_file().then_some(path)
 }

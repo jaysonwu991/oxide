@@ -55,7 +55,7 @@ fn dispatch(title: &str, body: &str, sound: bool) -> bool {
 
 #[cfg(target_os = "linux")]
 fn dispatch(title: &str, body: &str, sound: bool) -> bool {
-    let posted = run("notify-send", &["-a", "oxide", title, body]);
+    let posted = run("notify-send", &["-a", "Oxide", title, body]);
     if sound {
         play_linux_sound();
     }
@@ -210,10 +210,7 @@ fn settings_path() -> PathBuf {
     if let Some(path) = std::env::var_os("OXIDE_SETTINGS_FILE") {
         return PathBuf::from(path);
     }
-    dirs::config_dir()
-        .unwrap_or_else(|| PathBuf::from("."))
-        .join("oxide")
-        .join("settings.json")
+    crate::config::config_dir_or_default().join("settings.json")
 }
 
 fn save_to(path: &Path, key: NotifyKey, enabled: bool) -> Result<()> {

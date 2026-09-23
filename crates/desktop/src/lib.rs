@@ -1,4 +1,4 @@
-//! Desktop front-end for oxide.
+//! Desktop front-end for Oxide.
 //!
 //! `manager` holds the multi-project and session-listing logic and `turn` runs
 //! an agent turn against a project using the shared `oxide-core` configuration.

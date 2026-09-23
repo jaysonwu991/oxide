@@ -22,9 +22,8 @@ impl Snapshots {
                 cwd.display()
             );
         }
-        let git_dir = dirs::config_dir()
+        let git_dir = crate::config::config_dir()
             .context("no config directory")?
-            .join("oxide")
             .join("snapshots")
             .join(crate::memory::project_id(cwd));
         let snapshots = Self {

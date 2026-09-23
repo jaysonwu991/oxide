@@ -670,7 +670,7 @@ function bubble(kind, text) {
   wrap.className = `msg ${kind}`;
   const label = document.createElement("div");
   label.className = "label";
-  label.textContent = kind === "user" ? "you" : "◆ oxide";
+  label.textContent = kind === "user" ? "you" : "◆ Oxide";
   const body = document.createElement("div");
   body.className = "body";
   body.innerHTML = kind === "assistant" ? renderMarkdown(text) : escapeHtml(text);
@@ -759,7 +759,7 @@ function ensureAssistant() {
   wrap.className = "msg assistant";
   const label = document.createElement("div");
   label.className = "label";
-  label.textContent = "◆ oxide";
+  label.textContent = "◆ Oxide";
   const body = document.createElement("div");
   body.className = "body";
   wrap.append(label, body);

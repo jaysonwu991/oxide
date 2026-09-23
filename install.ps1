@@ -1,4 +1,4 @@
-# Install the oxide CLI.
+# Install the Oxide CLI.
 #
 #   irm https://github.com/jaysonwu991/oxide/releases/latest/download/install.ps1 | iex
 #
@@ -6,7 +6,7 @@
 #   OXIDE_VERSION      version to install, with or without a leading "v"
 #                      (default: latest release)
 #   OXIDE_INSTALL_DIR  directory to install the binary into
-#                      (default: %LOCALAPPDATA%\Programs\oxide on Windows,
+#                      (default: %LOCALAPPDATA%\Programs\Oxide on Windows,
 #                       $HOME/.local/bin elsewhere)
 #   OXIDE_REPO         GitHub repository slug (default: jaysonwu991/oxide)
 
@@ -16,7 +16,8 @@
     $Repo = if ($env:OXIDE_REPO) { $env:OXIDE_REPO } else { "jaysonwu991/oxide" }
     $Version = if ($env:OXIDE_VERSION) { $env:OXIDE_VERSION } else { "" }
     $BaseUrl = "https://github.com/$Repo"
-    $ManifestName = "oxide-manifest"
+    $ManifestName = "Oxide-manifest"
+    $LegacyManifestName = "oxide-manifest"
 
     function Write-Info([string]$Message) {
         Write-Host "oxide-install: $Message"
@@ -94,14 +95,19 @@
 
         if ($Version) {
             $ver = $Version -replace "^v", ""
-            return "$BaseUrl/releases/download/v$ver/oxide-v$ver-$Platform.$ext"
+            return "$BaseUrl/releases/download/v$ver/Oxide-v$ver-$Platform.$ext"
         }
 
         Write-Info "fetching $ManifestName"
+        $manifest = $null
         try {
             $manifest = Get-Text "$BaseUrl/releases/latest/download/$ManifestName"
         } catch {
-            throw "could not fetch $ManifestName; has a release been published?"
+            try {
+                $manifest = Get-Text "$BaseUrl/releases/latest/download/$LegacyManifestName"
+            } catch {
+                throw "could not fetch $ManifestName; has a release been published?"
+            }
         }
         $ver = Get-ManifestValue $manifest "version"
         if (-not $ver) { throw "could not read version from $ManifestName" }
@@ -110,6 +116,15 @@
             throw "no asset for $Platform; supported targets: darwin-arm64, darwin-x64, linux-x64, linux-arm64, win32-x64"
         }
         return "$BaseUrl/releases/download/$ver/$asset"
+    }
+
+    # Pre-branding releases published only the lowercase archive names, so an
+    # explicit OXIDE_VERSION (pin or rollback) can still need the old name.
+    function Get-LegacyUrl([string]$Url) {
+        if ($Url -match "/Oxide-v") {
+            return $Url -replace "/Oxide-v", "/oxide-v"
+        }
+        return $null
     }
 
     function Test-Checksum([string]$File, [string]$SumsFile) {
@@ -126,7 +141,7 @@
 
     function Get-DefaultInstallDir([string]$Platform) {
         if ($Platform -like "win32-*") {
-            return (Join-Path $env:LOCALAPPDATA "Programs\oxide")
+            return (Join-Path $env:LOCALAPPDATA "Programs\Oxide")
         }
         return (Join-Path $HOME ".local/bin")
     }
@@ -153,7 +168,17 @@
     try {
         $archivePath = Join-Path $tmp $archiveName
         Write-Info "downloading $archiveName for $platform"
-        Get-Binary $url $archivePath
+        try {
+            Get-Binary $url $archivePath
+        } catch {
+            $fallback = Get-LegacyUrl $url
+            if (-not $fallback) { throw }
+            $archiveName = ($fallback -split "/")[-1]
+            $archivePath = Join-Path $tmp $archiveName
+            Write-Info "downloading $archiveName for $platform"
+            Get-Binary $fallback $archivePath
+            $url = $fallback
+        }
 
         $sumsPath = Join-Path $tmp "$archiveName.sha256"
         $haveSums = $true
@@ -184,7 +209,7 @@
             & chmod 0755 $dest
         }
 
-        Write-Info "installed oxide to $dest"
+        Write-Info "installed Oxide to $dest"
         Test-PathWarning $installDir $platform
     } finally {
         Remove-Item -Recurse -Force $tmp -ErrorAction SilentlyContinue

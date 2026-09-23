@@ -3,7 +3,7 @@ name = "oxide-desktop"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
-description = "Desktop app for oxide: manage multiple projects and sessions"
+description = "Desktop app for Oxide: manage multiple projects and sessions"
 
 [features]
 default = []
