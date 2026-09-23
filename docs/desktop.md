@@ -211,6 +211,95 @@ unsigned bundle is instead rejected outright as *damaged* on Apple Silicon, so
 the fallback matters. Auto-update artifacts are not enabled yet (they need a
 signing key).
 
+## Signing secrets
+
+`desktop.yml` reads the signing material from repository secrets
+(**Settings → Secrets and variables → Actions → New repository secret**).
+Nothing is required to build the bundles; without a certificate the macOS app is
+only ad-hoc signed (see above).
+
+### Enroll first
+
+A **Developer ID Application** certificate can only be created by an Apple ID
+enrolled in the [Apple Developer Program](https://developer.apple.com/programs/enroll/)
+($99/year). An unenrolled Apple ID that opens
+`developer.apple.com/account/resources` gets *Access Unavailable*: enroll as an
+**Individual** (usually minutes to ~48 h; needs your legal name/address and an
+identity check) or as an **Organization** (needs a D-U-N-S number and can take
+days to weeks). Enable two-factor authentication on the account. Until then
+there is nothing to sign with and the ad-hoc fallback is the only option.
+
+### macOS certificate
+
+1. Create a **Developer ID Application** certificate:
+   - Xcode — *Settings → Accounts → (team) → Manage Certificates → **+** →
+     Developer ID Application*, or
+   - [developer.apple.com](https://developer.apple.com/account/resources/certificates)
+     → *Certificates → **+** → Developer ID Application* (make the CSR with
+     Keychain Access → *Certificate Assistant → Request a Certificate From a
+     Certificate Authority*).
+2. Export it — *Keychain Access → login → My Certificates*, right-click the
+   certificate → *Export*, save as `.p12` with a password.
+3. Read the certificate common name on the same Mac:
+   `security find-identity -v -p codesigning`.
+
+Then either use your **Apple ID**, or an **App Store Connect API key**, for
+notarization — not both.
+
+**Apple ID** (`tauri-action` notarizes and staples automatically):
+
+| Secret | Value |
+| --- | --- |
+| `APPLE_CERTIFICATE` | base64 of the `.p12` (`base64 -i cert.p12 \| pbcopy`; Linux `base64 -w0 cert.p12`) |
+| `APPLE_CERTIFICATE_PASSWORD` | the `.p12` export password |
+| `APPLE_SIGNING_IDENTITY` | e.g. `Developer ID Application: Jayson Wu (ABCDE12345)` |
+| `APPLE_ID` | the enrolled Apple ID email |
+| `APPLE_PASSWORD` | an **app-specific password** (account.apple.com → *Sign-In and Security → App-Specific Passwords*) |
+| `APPLE_TEAM_ID` | 10-character Team ID (developer.apple.com → *Membership details*) |
+
+**App Store Connect API key** (create under *Users and Access → Integrations →
+App Store Connect API*, role *Admin* or *App Manager*):
+
+| Secret | Value |
+| --- | --- |
+| `APPLE_API_ISSUER` | the issuer UUID shown above the key list |
+| `APPLE_API_KEY` | the key ID (the `AuthKey_<id>.p8` file name) |
+| `APPLE_API_KEY_P8` | base64 of the `.p8` (`base64 -i AuthKey_XXXX.p8 \| pbcopy`) |
+
+The workflow decodes `APPLE_API_KEY_P8` to `$RUNNER_TEMP/AuthKey.p8` and sets
+`APPLE_API_KEY_PATH`; the `.p8` can only be downloaded once, so store it
+somewhere safe.
+
+### Tauri updater keys
+
+Only needed if Tauri's updater is enabled — the app does not ship update
+artifacts yet. Generate a key pair and keep the private half backed up (losing
+it means existing installs can never accept an update):
+
+```sh
+npx @tauri-apps/cli@^2 signer generate -w ~/.tauri/oxide.key
+```
+
+Put the key text in `TAURI_SIGNING_PRIVATE_KEY`, its password in
+`TAURI_SIGNING_PRIVATE_KEY_PASSWORD`, and the printed public key in
+`tauri.conf.json` as `plugins.updater.pubkey`.
+
+### From the CLI
+
+On the machine that holds the `.p12`:
+
+```sh
+base64 -i cert.p12 | gh secret set APPLE_CERTIFICATE
+gh secret set APPLE_CERTIFICATE_PASSWORD
+gh secret set APPLE_SIGNING_IDENTITY --body 'Developer ID Application: Your Name (ABCDE12345)'
+gh secret set APPLE_ID --body 'you@example.com'
+gh secret set APPLE_PASSWORD              # paste the app-specific password
+gh secret set APPLE_TEAM_ID --body 'ABCDE12345'
+```
+
+`gh secret set NAME` without `--body` prompts, so the value never lands in your
+shell history.
+
 ## Release assets
 
 Each `v*` release carries prebuilt bundles for every platform. Pick the asset
