@@ -35,6 +35,7 @@
 
       <div class="sidebar-foot">
         <button id="connect" class="foot-btn">Connect</button>
+        <button id="trust" class="icon" title="Project trust" hidden>☑</button>
         <button id="theme" class="icon" title="Theme">◐</button>
         <button id="permissions" class="icon" title="Saved tool approvals">🔒</button>
         <button id="help" class="icon" title="Keyboard shortcuts">?</button>
@@ -106,6 +107,22 @@
         <div class="dialog-actions">
           <button id="login-cancel" class="ghost">Cancel</button>
           <button id="login-save" class="primary">Save</button>
+        </div>
+      </div>
+    </div>
+
+    <div id="trust-modal" class="overlay" hidden>
+      <div class="dialog">
+        <h2>Trust this project?</h2>
+        <p class="dialog-sub">
+          This folder ships project-local resources that can run commands or change how
+          the agent behaves. They load only once you trust the project — the same
+          decision the CLI asks for.
+        </p>
+        <div id="trust-resources" class="trust-resources"></div>
+        <div class="dialog-actions">
+          <button id="trust-deny" class="ghost">Don't trust</button>
+          <button id="trust-allow" class="primary">Trust project</button>
         </div>
       </div>
     </div>

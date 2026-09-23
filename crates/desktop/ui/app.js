@@ -30,6 +30,7 @@ const state = {
   providerIndex: 0,
   models: null,
   pendingApproval: null,
+  trust: null,
   currentAssistant: null,
   tools: [],
   currentThinking: null,
@@ -507,9 +508,12 @@ async function selectProject(project) {
   state.project = project.path;
   state.projectName = project.name;
   state.session = null;
+  state.trust = null;
   el("project-current").textContent = project.name;
   el("new-chat").disabled = false;
   el("prompt").disabled = false;
+  el("trust-modal").hidden = true;
+  updateTrustButton();
   renderProjects();
   resetTranscript();
   await Promise.all([loadInfo(), loadSessions(), loadTheme()]);
@@ -517,15 +521,72 @@ async function selectProject(project) {
 
 async function loadInfo() {
   if (!state.project) return;
+  const project = state.project;
   try {
-    const info = await invoke("project_info", { project: state.project });
+    const info = await invoke("project_info", { project });
+    // The selection can change while the request is in flight; a late reply
+    // must not replace the new project's trust state or open its dialog.
+    if (project !== state.project) return;
     state.reasoning = info.reasoning;
     state.contextWindow = info.contextWindow || 0;
+    state.trust = info.trust || null;
     updateChips();
-    el("model").textContent = info.model;
-    el("project-meta").textContent = info.provider + (info.hasKey ? "" : " · no API key");
+    renderProjectMeta(info);
+    updateTrustButton();
+    if (state.trust && state.trust.awaiting) showTrust(state.trust);
   } catch (error) {
+    if (project !== state.project) return;
     el("project-meta").textContent = String(error);
+  }
+}
+
+function renderProjectMeta(info) {
+  const off =
+    info.trust && info.trust.required && !info.trust.trusted ? " · project resources off" : "";
+  el("model").textContent = info.model;
+  el("project-meta").textContent =
+    info.provider + (info.hasKey ? "" : " · no API key") + off;
+}
+
+function updateTrustButton() {
+  const button = el("trust");
+  if (!button) return;
+  const required = Boolean(state.project && state.trust && state.trust.required);
+  button.hidden = !required;
+  button.classList.toggle("active", Boolean(state.trust && state.trust.trusted));
+  button.title = state.trust && state.trust.trusted
+    ? "Project trusted · click to review"
+    : "Project resources are not trusted";
+}
+
+function showTrust(trust) {
+  state.trust = trust;
+  const box = el("trust-resources");
+  box.innerHTML = "";
+  for (const name of trust.resources || []) {
+    const code = document.createElement("code");
+    code.textContent = name;
+    box.appendChild(code);
+  }
+  closeOverlays("trust-modal");
+  el("trust-modal").hidden = false;
+}
+
+async function answerTrust(trusted) {
+  if (!state.project) return;
+  el("trust-modal").hidden = true;
+  try {
+    const info = await invoke("set_project_trust", { project: state.project, trusted });
+    state.trust = info.trust || null;
+    renderProjectMeta(info);
+    updateTrustButton();
+    setStatus(
+      trusted
+        ? "Project trusted · project resources loaded"
+        : "Project resources left untrusted",
+    );
+  } catch (error) {
+    setStatus(`Trust update failed: ${error}`);
   }
 }
 
@@ -911,6 +972,7 @@ const OVERLAYS = [
   "models-modal",
   "themes-modal",
   "permissions-modal",
+  "trust-modal",
   "help-modal",
 ];
 
@@ -958,7 +1020,7 @@ async function saveConnect() {
       provider: provider.name,
       key: el("login-key").value || null,
       model: el("login-model").value || null,
-      base_url: el("login-url").value || null,
+      baseUrl: el("login-url").value || null,
     });
     el("connect-modal").hidden = true;
     el("login-key").value = "";
@@ -1178,6 +1240,9 @@ function init() {
   el("themes-close").onclick = () => (el("themes-modal").hidden = true);
   el("permissions-close").onclick = () => (el("permissions-modal").hidden = true);
   el("permissions-clear").onclick = clearApprovals;
+  el("trust").onclick = () => state.trust && showTrust(state.trust);
+  el("trust-allow").onclick = () => answerTrust(true);
+  el("trust-deny").onclick = () => answerTrust(false);
   el("help-close").onclick = () => (el("help-modal").hidden = true);
 
   el("prompt").addEventListener("input", () => {

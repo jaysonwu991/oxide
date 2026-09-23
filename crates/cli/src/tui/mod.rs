@@ -438,6 +438,21 @@ fn is_dequeue_shortcut(key: &KeyEvent) -> bool {
     }
 }
 
+/// Cycles the thinking level and records it on the session. Shared by the
+/// `Shift+Tab` (Pi's binding) and `Ctrl+R` (the pre-desktop binding) shortcuts.
+fn cycle_reasoning(app: &mut App, config: &mut Config, session: &mut Option<SessionLog>) {
+    config.reasoning = config.reasoning.next();
+    app.reasoning = config.reasoning;
+    if let Some(log) = session.as_ref() {
+        let _ = log.append_thinking_level(config.reasoning.label());
+    }
+    app.show_status(if app.reasoning == Reasoning::Auto {
+        "reasoning: auto (provider native)".to_string()
+    } else {
+        format!("reasoning: {}", app.reasoning.label())
+    });
+}
+
 #[allow(clippy::too_many_arguments)]
 fn handle_key(
     key: KeyEvent,
@@ -526,17 +541,10 @@ fn handle_key(
             refresh_suggestions(app, config);
         }
         KeyCode::BackTab => {
-            // Pi cycles the thinking level with Shift+Tab.
-            config.reasoning = config.reasoning.next();
-            app.reasoning = config.reasoning;
-            if let Some(log) = session.as_ref() {
-                let _ = log.append_thinking_level(config.reasoning.label());
-            }
-            app.show_status(if app.reasoning == Reasoning::Auto {
-                "reasoning: auto (provider native)".to_string()
-            } else {
-                format!("reasoning: {}", app.reasoning.label())
-            });
+            cycle_reasoning(app, config, session);
+        }
+        KeyCode::Char('r') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+            cycle_reasoning(app, config, session);
         }
         KeyCode::Char('o') if key.modifiers.contains(KeyModifiers::CONTROL) => {
             app.toggle_tool_output();
@@ -1634,7 +1642,7 @@ fn help_text(config: &Config) -> String {
         "  /copy                 copy the last assistant message".to_string(),
         "  /copy all             copy the whole transcript".to_string(),
         format!(
-            "keys: Enter send/guide · Shift+Enter newline · Alt+Enter follow-up while busy · {} edit queued · Shift+Tab reasoning · Ctrl+O tool details · Ctrl+T thinking · Ctrl+V image · Ctrl+A/E message start/end · ↑/↓ history · PgUp/PgDn/wheel scroll · Ctrl+U/D half page · drag to select and copy · Ctrl+C copy selection/quit",
+            "keys: Enter send/guide · Shift+Enter newline · Alt+Enter follow-up while busy · {} edit queued · Shift+Tab/Ctrl+R reasoning · Ctrl+O tool details · Ctrl+T thinking · Ctrl+V image · Ctrl+A/E message start/end · ↑/↓ history · PgUp/PgDn/wheel scroll · Ctrl+U/D half page · drag to select and copy · Ctrl+C copy selection/quit",
             dequeue_key_label()
         ),
     ];
@@ -2200,7 +2208,7 @@ fn hotkeys_text() -> String {
             dequeue_key_label()
         ),
         "  Esc                   clear the input".to_string(),
-        "  Shift+Tab             cycle reasoning/thinking level".to_string(),
+        "  Shift+Tab / Ctrl+R    cycle reasoning/thinking level".to_string(),
         "  Ctrl+O                toggle tool output".to_string(),
         "  Ctrl+T                show or hide thinking blocks".to_string(),
         "  Ctrl+V                attach a clipboard image".to_string(),

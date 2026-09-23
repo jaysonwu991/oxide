@@ -12,6 +12,10 @@ package names are `oxide-core`, `oxide` (the CLI), and `oxide-desktop`. Both
 front-ends share `oxide_core::config`, `oxide_core::session`,
 `oxide_core::runner` (starting a turn), and `oxide_core::theme_view` (themes as
 CSS-ready colors), so they read the same on-disk configuration and session tree.
+The desktop resolves project trust from the same `trust.json` the CLI uses and
+asks **Trust this project?** before loading a project's `.oxide` agents,
+commands, skills and plugins, so its harness matches the CLI instead of being
+silently dropped.
 
 - `crates/cli/src/main.rs` — CLI entry (clap). Non-interactive `-p/--print`, `--mode json`, and `--mode rpc` modes plus TUI dispatch; the `mcp`, `sessions`, `plugin` (including `plugin marketplace`), and `uninstall` subcommands. Provider login is TUI-only (`/login`, `/logout`), matching Pi.
 - `crates/core/src/mcp_config.rs` — `oxide mcp add/list/get/add-json/remove/auth`: reads and writes MCP servers in the native `.oxide/mcp.json` files (`--scope project|global`), merging sources for listing in the same precedence the runtime loads (Claude Code global, `~/.oxide`, the platform config dir, then the project), with a global file reported once as global when the project root resolves to the home directory; `auth` and `remove` keep a pinned `--scope` inside that scope's files in both layouts (`--scope project` covers a Claude Code `.mcp.json` as well as `.oxide/mcp.json`, so a name defined in both scopes resolves to the requested one), while an unpinned command searches every source in precedence order. `add` also accepts the Claude Code-style `oauth` fields (`--oauth-client-id`, `--oauth-client-secret`, `--callback-port`, `--oauth-scope`, `--redirect-uri`).

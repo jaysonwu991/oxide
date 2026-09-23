@@ -12,7 +12,7 @@ pub mod turn;
 pub use approvals::ApprovalStore;
 
 pub use manager::{
-    load_project_config, load_project_config_with, DesktopManager, Project, ProjectRegistry,
-    ProjectView,
+    load_project_config, load_project_config_with, set_project_trust, DesktopManager, Project,
+    ProjectRegistry, ProjectTrust, ProjectView,
 };
 pub use turn::{open_session, start_turn, Turn};
