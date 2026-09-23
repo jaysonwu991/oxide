@@ -311,7 +311,7 @@ impl OAuthState {
             );
         };
         let payload = json!({
-            "client_name": "oxide",
+            "client_name": "Oxide",
             "redirect_uris": [redirect_uri],
             "grant_types": ["authorization_code", "refresh_token"],
             "response_types": ["code"],

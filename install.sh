@@ -1,5 +1,5 @@
 #!/bin/sh
-# Install the oxide CLI.
+# Install the Oxide CLI.
 #
 #   curl -fsSL https://github.com/jaysonwu991/oxide/releases/latest/download/install.sh | bash
 #
@@ -15,7 +15,7 @@ REPO="${OXIDE_REPO:-jaysonwu991/oxide}"
 VERSION="${OXIDE_VERSION:-}"
 INSTALL_DIR="${OXIDE_INSTALL_DIR:-$HOME/.local/bin}"
 BASE_URL="https://github.com/${REPO}"
-MANIFEST_NAME="oxide-manifest"
+MANIFEST_NAME="Oxide-manifest"
 
 err() {
     printf 'oxide-install: error: %s\n' "$*" >&2
@@ -86,7 +86,7 @@ resolve_url() {
 
     if [ -n "$VERSION" ]; then
         ver="${VERSION#v}"
-        printf '%s/releases/download/v%s/oxide-v%s-%s.tar.gz' "$BASE_URL" "$ver" "$ver" "$platform"
+        printf '%s/releases/download/v%s/Oxide-v%s-%s.tar.gz' "$BASE_URL" "$ver" "$ver" "$platform"
         return
     fi
 
@@ -146,7 +146,7 @@ main() {
     mv -f "${tmp}/oxide" "${INSTALL_DIR}/oxide"
     chmod 0755 "${INSTALL_DIR}/oxide"
 
-    info "installed oxide to ${INSTALL_DIR}/oxide"
+    info "installed Oxide to ${INSTALL_DIR}/oxide"
 
     case ":${PATH:-}:" in
         *":${INSTALL_DIR}:"*) ;;

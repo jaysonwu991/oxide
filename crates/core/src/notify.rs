@@ -55,7 +55,7 @@ fn dispatch(title: &str, body: &str, sound: bool) -> bool {
 
 #[cfg(target_os = "linux")]
 fn dispatch(title: &str, body: &str, sound: bool) -> bool {
-    let posted = run("notify-send", &["-a", "oxide", title, body]);
+    let posted = run("notify-send", &["-a", "Oxide", title, body]);
     if sound {
         play_linux_sound();
     }

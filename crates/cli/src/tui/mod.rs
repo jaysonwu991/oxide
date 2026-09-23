@@ -294,7 +294,7 @@ async fn event_loop(
                         app.notify_on_finish = false;
                     }
                     if notify {
-                        crate::notify::send("oxide", &app.completion_summary(), config.notify.sound);
+                        crate::notify::send("Oxide", &app.completion_summary(), config.notify.sound);
                     }
                     if finished && plugins.is_active() {
                         app.extension_statuses = plugins.statuses().await;
@@ -1745,7 +1745,7 @@ fn handle_notify_command(app: &mut App, config: &mut Config, raw: &str) {
     let (key, enabled) = match verb {
         "test" => {
             crate::notify::send(
-                "oxide",
+                "Oxide",
                 "Test notification — all tasks completed.",
                 settings.sound,
             );

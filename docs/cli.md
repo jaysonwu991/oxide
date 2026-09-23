@@ -8,7 +8,7 @@ compaction. The desktop app reads the same configuration and session files — s
 
 ## Scopes and precedence
 
-oxide merges two scopes:
+Oxide merges two scopes:
 
 - **Global** — native resources can live in either `~/.oxide/` or the platform
   oxide config directory (`~/.config/oxide` on Linux,
@@ -19,7 +19,7 @@ oxide merges two scopes:
   `.oxide`, or `.claude`.
 
 Project entries override global entries with the same name (for agents,
-commands, prompt templates, skills, and MCP servers). oxide reads its native
+commands, prompt templates, skills, and MCP servers). Oxide reads its native
 `.oxide/` layout and also reads the Claude Code layout (`.claude/`, `CLAUDE.md`,
 `.mcp.json`) for compatibility. Native Oxide entries override Claude-compatible
 entries within the global or project scope. If both native global locations
@@ -41,7 +41,7 @@ override plugins with the same name.
 
 ## MCP servers
 
-MCP servers are declared under `mcpServers` in a JSON file. oxide reads, in
+MCP servers are declared under `mcpServers` in a JSON file. Oxide reads, in
 increasing precedence:
 
 1. Global `~/.claude.json`
@@ -100,13 +100,13 @@ defined in both project and global resolves to the requested one. Without
 `--scope`, both search every configured source in precedence order, so
 `oxide mcp remove <name>` still deletes the entry the runtime actually uses.
 
-At startup, oxide adds only the enabled server names and configured URLs or
+At startup, Oxide adds only the enabled server names and configured URLs or
 commands to the model context. It does not start a local process, make a remote
 request, or check OAuth until a matching server is needed. A server is selected
 two ways:
 
 - **URL routing** — when a user message contains a URL whose host matches a
-  server's routing domains, oxide loads that server before the next model call
+  server's routing domains, Oxide loads that server before the next model call
   so its tools are ready on the first turn. `webfetch` also redirects to the
   matching server instead of making an unauthenticated request.
 - **`mcp_load`** — the model loads a server on demand through the built-in
@@ -153,12 +153,12 @@ Add the server by URL; no `oauth` block is required:
 }
 ```
 
-On a `401 Unauthorized` response, oxide reads the `WWW-Authenticate` challenge
+On a `401 Unauthorized` response, Oxide reads the `WWW-Authenticate` challenge
 and falls back to the standard `/.well-known/oauth-protected-resource` URLs. It
 then discovers the authorization server, dynamically registers a client when
 supported, runs the authorization-code flow with PKCE (`S256`) on a loopback
 callback, stores the token under
-`mcp-oauth/<server>.json` in the oxide config directory (mode `0600`), and
+`mcp-oauth/<server>.json` in the Oxide config directory (mode `0600`), and
 refreshes it automatically. Run the flow up front with:
 
 ```sh
@@ -180,7 +180,7 @@ Streamable HTTP. Adding the server by URL is enough:
 oxide mcp add --transport http atlassian https://mcp.atlassian.com/v1/mcp
 ```
 
-On the first prompt that needs Atlassian, oxide loads the server, follows its
+On the first prompt that needs Atlassian, Oxide loads the server, follows its
 OAuth discovery metadata, opens the consent screen, and dynamically registers
 the client. To authorize before starting oxide, run `oxide mcp auth atlassian`.
 
@@ -202,7 +202,7 @@ Once authorized, the tools appear as `atlassian__<tool>`.
 #### Connect to the Context7 MCP server
 
 Context7's own setup command (`npx ctx7 setup --oxide` or `npx @upstash/context7-mcp@latest --setup --oxide`) does not
-recognize oxide, since it only writes config files for editors it knows about.
+recognize Oxide, since it only writes config files for editors it knows about.
 Add the server directly with the CLI instead:
 
 ```sh
@@ -222,9 +222,9 @@ Or add the equivalent entry to `.mcp.json` / `.oxide/mcp.json` by hand:
 }
 ```
 
-On the first prompt that needs Context7, oxide loads the server, follows its
+On the first prompt that needs Context7, Oxide loads the server, follows its
 OAuth discovery metadata, and opens the consent screen. To authorize before
-starting oxide, run:
+starting Oxide, run:
 
 ```sh
 oxide mcp auth context7
@@ -272,7 +272,7 @@ Add a remote (HTTP) server:
   (or the file).
 - Enabled servers start lazily when first needed (URL routing or `mcp_load`). A
   server that fails to start or list tools is logged to stderr and skipped.
-- Restart oxide after editing.
+- Restart Oxide after editing.
 
 ## Subagents
 
@@ -422,7 +422,7 @@ export const RustFmt = async ({ $, directory }) => {
 
 ### Plugin packages and marketplaces
 
-oxide also supports Claude Code-style plugin packages: directories with a
+Oxide also supports Claude Code-style plugin packages: directories with a
 `.claude-plugin/plugin.json` manifest that bundle slash commands, subagents,
 skills, MCP servers, and command hooks. The manifest may also live at
 `.oxide/plugin.json` (preferred when both are present).
@@ -573,7 +573,7 @@ For a read-only run, allowlist the read tools with `--tools` (e.g.
 
 ## Reasoning
 
-Reasoning effort controls how much internal reasoning oxide asks the model to
+Reasoning effort controls how much internal reasoning Oxide asks the model to
 spend before answering:
 
 | Level | Behavior |
@@ -615,7 +615,7 @@ shown in place, before the answer it produced:
 The block streams as `✦ Thinking` and picks up its duration once the model moves
 on. Press Ctrl+T to collapse reasoning to its label
 (`✦ Thought for 1.4s · Ctrl+T to expand`) and again to expand it;
-`hideThinkingBlock` in the global `settings.json` makes oxide start collapsed,
+`hideThinkingBlock` in the global `settings.json` makes Oxide start collapsed,
 matching Pi. Reasoning is stored in the session as thinking blocks and, for
 Anthropic, replayed on later turns; OpenAI-compatible requests strip it. While a
 turn is in flight the status row names the phase (`thinking...`,
@@ -645,7 +645,7 @@ WSL, where the terminal claims `Alt+Up` for scrollback.
 
 ## Desktop notifications
 
-When an agent turn finishes, oxide raises a system toast (Notification Center on
+When an agent turn finishes, Oxide raises a system toast (Notification Center on
 macOS, `notify-send` on Linux, a Windows toast) whose body is a short snippet of
 the reply, so you can switch windows while a long task runs. Only real agent
 turns notify — internal work such as `/compact` and branch summaries stays
@@ -684,7 +684,7 @@ configured base for one run, but a loaded `SYSTEM.md` remains the
 higher-precedence replacement.
 
 Persistent cross-session memory is managed by the `memory` tool and stored under
-`memory/` in the oxide config dir; the 8 most recent entries are injected into
+`memory/` in the Oxide config dir; the 8 most recent entries are injected into
 the system prompt automatically. Use the `memory` tool to add, search, or forget
 entries.
 
@@ -692,7 +692,7 @@ entries.
 
 Project-local resources that can change behavior or execute code (agents,
 commands, prompts, skills, plugins, `SYSTEM.md`) load only after the project is
-trusted. On interactive startup oxide asks when a project requires trust and no
+trusted. On interactive startup Oxide asks when a project requires trust and no
 decision is saved; non-interactive runs use `defaultProjectTrust` (in
 `settings.json`) without prompting.
 
@@ -704,7 +704,7 @@ decision is saved; non-interactive runs use `defaultProjectTrust` (in
 
 ## Themes
 
-oxide ships `dark` and `light`. Add custom themes as JSON under
+Oxide ships `dark` and `light`. Add custom themes as JSON under
 `.oxide/themes/<name>.json` or `<config>/oxide/themes/<name>.json`, then select
 one with `--use-theme <name>` or `/theme <name>`. The built-in palettes come
 from `oxide_core::theme_view`, shared with the desktop app, so the CLI and
@@ -735,7 +735,7 @@ autocomplete, status row, input, and footer use these semantic roles.
 `tool_*_bg` fill the background behind a tool's header, body, and
 `Took`/`Elapsed` footer (pending while running, success or error once it
 settles), and `usage_bar_*` paint the [Portkey spend bar](#portkey-usage-bar).
-`/theme` lists available themes; after a switch, oxide immediately rebuilds the
+`/theme` lists available themes; after a switch, Oxide immediately rebuilds the
 styled transcript.
 
 Selections use reverse video and outcome rows retain words or symbols, so color
@@ -1030,7 +1030,7 @@ and [OpenAI-compatible setup](https://portkey.ai/docs/integrations/libraries/ope
 
 ## Portkey usage bar
 
-When your models are routed through Portkey, oxide can show a spend bar on the
+When your models are routed through Portkey, Oxide can show a spend bar on the
 last line of the TUI:
 
 ```text
@@ -1093,14 +1093,14 @@ attributes users with a different key (`email`, `user_id`, ...), set it with
 `/usage metadata <key>` so the query matches your traffic.
 
 The bar refreshes every 60 seconds and once after each turn. Its settings and
-key live in `portkey-usage.json` in the oxide config directory (mode `0600`,
+key live in `portkey-usage.json` in the Oxide config directory (mode `0600`,
 override the path with `OXIDE_USAGE_FILE`); they are never written to a project
 scope. When a request fails, the bar keeps the last known amounts and appends
 the error message after a `|`.
 
 ## Data locations and reset
 
-Runtime state lives under the platform oxide config directory:
+Runtime state lives under the platform Oxide config directory:
 
 - `config.json` — provider and behavior settings
 - `auth.json` — stored API keys (mode `0600`)

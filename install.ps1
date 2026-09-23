@@ -1,4 +1,4 @@
-# Install the oxide CLI.
+# Install the Oxide CLI.
 #
 #   irm https://github.com/jaysonwu991/oxide/releases/latest/download/install.ps1 | iex
 #
@@ -6,7 +6,7 @@
 #   OXIDE_VERSION      version to install, with or without a leading "v"
 #                      (default: latest release)
 #   OXIDE_INSTALL_DIR  directory to install the binary into
-#                      (default: %LOCALAPPDATA%\Programs\oxide on Windows,
+#                      (default: %LOCALAPPDATA%\Programs\Oxide on Windows,
 #                       $HOME/.local/bin elsewhere)
 #   OXIDE_REPO         GitHub repository slug (default: jaysonwu991/oxide)
 
@@ -16,7 +16,7 @@
     $Repo = if ($env:OXIDE_REPO) { $env:OXIDE_REPO } else { "jaysonwu991/oxide" }
     $Version = if ($env:OXIDE_VERSION) { $env:OXIDE_VERSION } else { "" }
     $BaseUrl = "https://github.com/$Repo"
-    $ManifestName = "oxide-manifest"
+    $ManifestName = "Oxide-manifest"
 
     function Write-Info([string]$Message) {
         Write-Host "oxide-install: $Message"
@@ -94,7 +94,7 @@
 
         if ($Version) {
             $ver = $Version -replace "^v", ""
-            return "$BaseUrl/releases/download/v$ver/oxide-v$ver-$Platform.$ext"
+            return "$BaseUrl/releases/download/v$ver/Oxide-v$ver-$Platform.$ext"
         }
 
         Write-Info "fetching $ManifestName"
@@ -126,7 +126,7 @@
 
     function Get-DefaultInstallDir([string]$Platform) {
         if ($Platform -like "win32-*") {
-            return (Join-Path $env:LOCALAPPDATA "Programs\oxide")
+            return (Join-Path $env:LOCALAPPDATA "Programs\Oxide")
         }
         return (Join-Path $HOME ".local/bin")
     }
@@ -184,7 +184,7 @@
             & chmod 0755 $dest
         }
 
-        Write-Info "installed oxide to $dest"
+        Write-Info "installed Oxide to $dest"
         Test-PathWarning $installDir $platform
     } finally {
         Remove-Item -Recurse -Force $tmp -ErrorAction SilentlyContinue

@@ -50,7 +50,7 @@ logic build and test without it.
 
 The window follows a Codex-style layout:
 
-- **Sidebar** — the `oxide` brand, a **New task** button, a project switcher
+- **Sidebar** — the `Oxide` brand, a **New task** button, a project switcher
   (dropdown with add/remove and a searchable project list), the thread list for
   the selected project (or every project via **All projects**), and a footer
   with **Connect**, theme, tool approvals, and help.
@@ -206,7 +206,7 @@ Without a Developer ID, `.github/workflows/desktop.yml` — which builds macOS
 signature is valid, but the app is not notarized and macOS quarantines the
 download, so the first launch must be approved in **System Settings → Privacy &
 Security → Open Anyway**, or the app moved to `/Applications` and the quarantine
-cleared with `xattr -dr com.apple.quarantine /Applications/oxide.app`. An
+cleared with `xattr -dr com.apple.quarantine /Applications/Oxide.app`. An
 unsigned bundle is instead rejected outright as *damaged* on Apple Silicon, so
 the fallback matters. Auto-update artifacts are not enabled yet (they need a
 signing key).
@@ -219,14 +219,14 @@ leading `v`, e.g. `0.16.1`):
 
 | Asset | Platform |
 | --- | --- |
-| `oxide_<version>_aarch64.dmg` | macOS, Apple Silicon (`uname -m` → `arm64`) |
-| `oxide_<version>_x64.dmg` | macOS, Intel (`uname -m` → `x86_64`) |
-| `oxide_<version>_amd64.deb` | Linux x64 (Debian/Ubuntu) |
-| `oxide_<version>_amd64.AppImage` | Linux x64 (portable) |
-| `oxide-<version>-1.x86_64.rpm` | Linux x64 (Fedora/RHEL) |
-| `oxide_<version>_x64-setup.exe` | Windows x64 (NSIS installer) |
-| `oxide_<version>_x64_en-US.msi` | Windows x64 (MSI) |
+| `Oxide_<version>_aarch64.dmg` | macOS, Apple Silicon (`uname -m` → `arm64`) |
+| `Oxide_<version>_x64.dmg` | macOS, Intel (`uname -m` → `x86_64`) |
+| `Oxide_<version>_amd64.deb` | Linux x64 (Debian/Ubuntu) |
+| `Oxide_<version>_amd64.AppImage` | Linux x64 (portable) |
+| `Oxide-<version>-1.x86_64.rpm` | Linux x64 (Fedora/RHEL) |
+| `Oxide_<version>_x64-setup.exe` | Windows x64 (NSIS installer) |
+| `Oxide_<version>_x64_en-US.msi` | Windows x64 (MSI) |
 
 The same release also holds the CLI archives
-(`oxide-v<version>-<platform>.tar.gz` and `oxide-v<version>-win32-x64.zip`) plus
+(`Oxide-v<version>-<platform>.tar.gz` and `Oxide-v<version>-win32-x64.zip`) plus
 `install.sh`/`install.ps1`; see the README's Installation section for the CLI.

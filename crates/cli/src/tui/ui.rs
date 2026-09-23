@@ -1946,7 +1946,7 @@ fn render_item_themed(
                     Style::default().fg(theme.assistant).add_modifier(bold),
                 ),
                 Span::styled(
-                    "oxide",
+                    "Oxide",
                     Style::default().fg(theme.assistant).add_modifier(bold),
                 ),
                 Span::styled(" ", Style::default()),
@@ -2327,7 +2327,7 @@ fn render_banner_themed(
         .unwrap_or(0);
     if art_width > width {
         lines.push(Line::from(Span::styled(
-            "oxide",
+            "Oxide",
             Style::default()
                 .fg(theme.accent)
                 .add_modifier(Modifier::BOLD),
@@ -3409,7 +3409,7 @@ mod tests {
 
         let mut narrow = Vec::new();
         render_banner(10, &info, &mut narrow);
-        assert_eq!(line_text(&narrow[0]), "oxide");
+        assert_eq!(line_text(&narrow[0]), "Oxide");
         assert!(narrow.len() > 1);
     }
 
@@ -3789,7 +3789,7 @@ mod tests {
             false,
             &mut lines,
         );
-        assert_eq!(line_text(&lines[0]), "◆ oxide here is the answer");
+        assert_eq!(line_text(&lines[0]), "◆ Oxide here is the answer");
     }
 
     #[test]
@@ -3802,7 +3802,7 @@ mod tests {
             &mut lines,
         );
         let text: Vec<String> = lines.iter().map(line_text).collect();
-        assert_eq!(text[0], "◆ oxide Summary");
+        assert_eq!(text[0], "◆ Oxide Summary");
         assert!(text.iter().any(|line| line.contains("• bold item")));
         assert!(text.iter().any(|line| line.contains("some code")));
         for line in &text {

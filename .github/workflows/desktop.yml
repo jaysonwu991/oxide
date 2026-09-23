@@ -120,6 +120,6 @@ jobs:
           projectPath: crates/desktop
           args: ${{ matrix.args }}
           tagName: ${{ github.ref_name }}
-          releaseName: "oxide ${{ github.ref_name }}"
+          releaseName: "Oxide ${{ github.ref_name }}"
           releaseDraft: true
           prerelease: false
