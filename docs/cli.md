@@ -182,7 +182,7 @@ oxide mcp add --transport http atlassian https://mcp.atlassian.com/v1/mcp
 
 On the first prompt that needs Atlassian, Oxide loads the server, follows its
 OAuth discovery metadata, opens the consent screen, and dynamically registers
-the client. To authorize before starting oxide, run `oxide mcp auth atlassian`.
+the client. To authorize before starting Oxide, run `oxide mcp auth atlassian`.
 
 The equivalent `.mcp.json` / `.oxide/mcp.json` entry is:
 
@@ -391,7 +391,7 @@ Detailed instructions loaded on demand.
 
 ### Hook plugins (single files)
 
-Place a `.ts` or `.js` file in `.oxide/plugins/` (or `.claude/plugins/`). oxide
+Place a `.ts` or `.js` file in `.oxide/plugins/` (or `.claude/plugins/`). Oxide
 runs it under `bun` or `node`, whichever is found first. Export a function
 (default or named) that returns hook handlers:
 

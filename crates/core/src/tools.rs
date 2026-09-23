@@ -1069,10 +1069,11 @@ fn int_arg(args: &Value, key: &str) -> Option<usize> {
 }
 
 /// Like [`int_arg`], but distinguishes an absent value from one that is present
-/// and unparseable, so the latter can be reported instead of silently ignored.
+/// and unparseable, so the latter (including explicit JSON `null`) can be
+/// reported instead of silently ignored.
 fn strict_int_arg(args: &Value, key: &str) -> Result<Option<usize>> {
     match args.get(key) {
-        None | Some(Value::Null) => Ok(None),
+        None => Ok(None),
         Some(value) => match int_arg(args, key) {
             Some(number) => Ok(Some(number)),
             None => anyhow::bail!("`{key}` must be an integer, got {value}"),
@@ -2954,6 +2955,13 @@ mod tests {
         let err = read_file(&dir, &json!({ "path": "a.txt", "offset": ".2" })).unwrap_err();
         assert!(
             err.to_string().contains("`offset` must be an integer"),
+            "{err}"
+        );
+
+        // An explicit `null` is a present, non-integer value, not an omission.
+        let err = read_file(&dir, &json!({ "path": "a.txt", "limit": null })).unwrap_err();
+        assert!(
+            err.to_string().contains("`limit` must be an integer"),
             "{err}"
         );
 

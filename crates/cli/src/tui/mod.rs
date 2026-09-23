@@ -1604,7 +1604,7 @@ fn help_text(config: &Config) -> String {
         "built-in commands:".to_string(),
         "  /help                 show this help".to_string(),
         "  /hotkeys              show the keyboard shortcuts".to_string(),
-        "  /exit                 quit oxide".to_string(),
+        "  /exit                 quit Oxide".to_string(),
         "  /skill:<name>         load a skill by name".to_string(),
         "  /new                  start a new session".to_string(),
         "  /session              show session file, id, name, and stats".to_string(),
@@ -2216,7 +2216,7 @@ fn hotkeys_text() -> String {
         "  Up / Down             input history".to_string(),
         "  drag (mouse)          select text; copies on release".to_string(),
         "  Ctrl+C                copy the selection, or quit".to_string(),
-        "  /exit                 quit oxide".to_string(),
+        "  /exit                 quit Oxide".to_string(),
         "  /copy                 copy the last assistant message".to_string(),
         "  /copy all             copy the whole transcript".to_string(),
     ]
@@ -2449,7 +2449,7 @@ fn export_session(
             .as_ref()
             .map(|log| log.id().to_string())
             .unwrap_or_else(|| "session".to_string());
-        cwd.join(format!("oxide-{id}.html"))
+        cwd.join(format!("Oxide-{id}.html"))
     } else {
         let path = PathBuf::from(target);
         if path.is_absolute() {
@@ -2459,7 +2459,7 @@ fn export_session(
         }
     };
     let mut body = String::from(
-        "<!doctype html>\n<meta charset=\"utf-8\">\n<title>oxide session</title>\n\
+        "<!doctype html>\n<meta charset=\"utf-8\">\n<title>Oxide session</title>\n\
          <style>body{font-family:ui-monospace,monospace;max-width:48rem;margin:2rem auto;padding:0 1rem}\
          .user{color:#0a7}.assistant{color:#333}.tool{color:#888}pre{white-space:pre-wrap}</style>\n",
     );
@@ -2511,7 +2511,7 @@ fn builtin_commands() -> Vec<CommandHint> {
         },
         CommandHint {
             name: "exit".to_string(),
-            description: "quit oxide".to_string(),
+            description: "quit Oxide".to_string(),
         },
         CommandHint {
             name: "new".to_string(),

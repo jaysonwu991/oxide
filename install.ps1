@@ -17,6 +17,7 @@
     $Version = if ($env:OXIDE_VERSION) { $env:OXIDE_VERSION } else { "" }
     $BaseUrl = "https://github.com/$Repo"
     $ManifestName = "Oxide-manifest"
+    $LegacyManifestName = "oxide-manifest"
 
     function Write-Info([string]$Message) {
         Write-Host "oxide-install: $Message"
@@ -98,10 +99,15 @@
         }
 
         Write-Info "fetching $ManifestName"
+        $manifest = $null
         try {
             $manifest = Get-Text "$BaseUrl/releases/latest/download/$ManifestName"
         } catch {
-            throw "could not fetch $ManifestName; has a release been published?"
+            try {
+                $manifest = Get-Text "$BaseUrl/releases/latest/download/$LegacyManifestName"
+            } catch {
+                throw "could not fetch $ManifestName; has a release been published?"
+            }
         }
         $ver = Get-ManifestValue $manifest "version"
         if (-not $ver) { throw "could not read version from $ManifestName" }
@@ -110,6 +116,15 @@
             throw "no asset for $Platform; supported targets: darwin-arm64, darwin-x64, linux-x64, linux-arm64, win32-x64"
         }
         return "$BaseUrl/releases/download/$ver/$asset"
+    }
+
+    # Pre-branding releases published only the lowercase archive names, so an
+    # explicit OXIDE_VERSION (pin or rollback) can still need the old name.
+    function Get-LegacyUrl([string]$Url) {
+        if ($Url -match "/Oxide-v") {
+            return $Url -replace "/Oxide-v", "/oxide-v"
+        }
+        return $null
     }
 
     function Test-Checksum([string]$File, [string]$SumsFile) {
@@ -153,7 +168,17 @@
     try {
         $archivePath = Join-Path $tmp $archiveName
         Write-Info "downloading $archiveName for $platform"
-        Get-Binary $url $archivePath
+        try {
+            Get-Binary $url $archivePath
+        } catch {
+            $fallback = Get-LegacyUrl $url
+            if (-not $fallback) { throw }
+            $archiveName = ($fallback -split "/")[-1]
+            $archivePath = Join-Path $tmp $archiveName
+            Write-Info "downloading $archiveName for $platform"
+            Get-Binary $fallback $archivePath
+            $url = $fallback
+        }
 
         $sumsPath = Join-Path $tmp "$archiveName.sha256"
         $haveSums = $true

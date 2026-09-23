@@ -478,7 +478,7 @@ impl McpConnection {
         let params = json!({
             "protocolVersion": PROTOCOL_VERSION,
             "capabilities": {},
-            "clientInfo": { "name": "oxide", "version": env!("CARGO_PKG_VERSION") },
+            "clientInfo": { "name": "Oxide", "version": env!("CARGO_PKG_VERSION") },
         });
         self.request("initialize", params).await?;
         self.notify("notifications/initialized", json!({})).await?;
