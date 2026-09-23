@@ -53,7 +53,7 @@ The window follows a Codex-style layout:
 - **Sidebar** — the `Oxide` brand, a **New task** button, a project switcher
   (dropdown with add/remove and a searchable project list), the thread list for
   the selected project (or every project via **All projects**), and a footer
-  with **Connect**, theme, tool approvals, and help.
+  with **Connect**, project trust, theme, tool approvals, and help.
 - **Top bar** — the current thread title and the active provider.
 - **Conversation** — a centered 760px column. User messages are right-aligned
   bubbles; assistant replies render Markdown. Tool calls are compact cards
@@ -79,6 +79,15 @@ project's ecosystem — exactly what `oxide` does when launched in that folder.
 Credentials added with the CLI's `/login` are therefore available to the
 desktop, and vice versa. Project trust (`trust.json`) is resolved the same way
 the CLI resolves it before a run.
+
+When a project has resources that can execute or reshape the agent
+(`.oxide/agents`, `.oxide/commands`, `.oxide/skills`, `.oxide/plugins`,
+`SYSTEM.md`/`APPEND_SYSTEM.md`, or the Claude Code equivalents) and no decision
+is saved, the desktop asks **Trust this project?** the way the CLI's trust
+prompt does. Trusting it saves a `true` decision to `trust.json` and reloads the
+ecosystem; declining saves `false` and leaves project resources out. The ☑
+button in the sidebar footer shows and reviews the current decision, so the
+harness loads exactly as it would in the CLI instead of being silently dropped.
 
 The **Connect** button stores credentials through `oxide_core::auth`: a new key
 via `auth::connect` (which also makes that provider active), or an existing

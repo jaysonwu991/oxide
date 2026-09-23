@@ -9,6 +9,7 @@
 use anyhow::{Context, Result};
 use oxide_core::config::Config;
 use oxide_core::session::{SessionLog, SessionSummary};
+use oxide_core::trust::{DefaultTrust, TrustStore};
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -43,6 +44,23 @@ pub struct ProjectView {
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct ProjectRegistry {
     pub projects: Vec<Project>,
+}
+
+/// How a project's local resources (agents, commands, skills, plugins, MCP)
+/// are treated, mirroring the CLI's `trust.json` resolution.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ProjectTrust {
+    /// The project has resources that can execute or reshape the agent.
+    pub required: bool,
+    /// Those resources are currently loaded.
+    pub trusted: bool,
+    /// Nothing is saved and the default is `ask`, so the desktop should prompt
+    /// before loading project resources.
+    pub awaiting: bool,
+    /// The configured fallback (`ask` / `always` / `never`).
+    pub default: String,
+    /// The gated resources, for the prompt.
+    pub resources: Vec<String>,
 }
 
 impl ProjectRegistry {
@@ -255,6 +273,43 @@ pub fn load_project_config_with(project: &Path, reasoning: Option<String>) -> Re
     Ok(config)
 }
 
+/// Resolves a project's trust state from the shared `trust.json`, the same
+/// source the CLI reads. `config` must already be loaded for the project.
+pub fn project_trust(config: &Config, project: &Path) -> ProjectTrust {
+    project_trust_with(&TrustStore::load().unwrap_or_default(), config, project)
+}
+
+/// Resolves a project's trust state against an explicit store, so the decision
+/// can be tested without touching the real `trust.json`.
+pub(crate) fn project_trust_with(
+    store: &TrustStore,
+    config: &Config,
+    project: &Path,
+) -> ProjectTrust {
+    let required = oxide_core::trust::requires_trust(project);
+    let awaiting = required
+        && store.decision(project).is_none()
+        && config.default_project_trust == DefaultTrust::Ask;
+    ProjectTrust {
+        required,
+        trusted: config.trusted,
+        awaiting,
+        default: config.default_project_trust.label().to_string(),
+        resources: if required {
+            oxide_core::trust::project_resources(project)
+        } else {
+            Vec::new()
+        },
+    }
+}
+
+/// Saves a trust decision for `project`, exactly like the CLI's `/trust`.
+pub fn set_project_trust(project: &Path, trusted: bool) -> Result<()> {
+    let mut store = TrustStore::load().unwrap_or_default();
+    store.set(project, trusted);
+    store.save()
+}
+
 fn session_stats(sessions: &[SessionSummary], path: &Path) -> (usize, u64) {
     let path = path.to_string_lossy();
     sessions
@@ -376,6 +431,61 @@ mod tests {
 
         // Registered projects sort ahead of discovered ones.
         assert!(views[0].registered);
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    fn project_with_agents(tag: &str) -> PathBuf {
+        let dir =
+            std::env::temp_dir().join(format!("oxide_proj_trust_{tag}_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join(".oxide/agents")).unwrap();
+        std::fs::write(dir.join(".oxide/agents/helper.md"), "body").unwrap();
+        dir
+    }
+
+    #[test]
+    fn trust_is_required_and_awaiting_without_a_decision() {
+        let dir = project_with_agents("ask");
+        let store = TrustStore::default();
+        let config = Config::default();
+
+        let trust = project_trust_with(&store, &config, &dir);
+        assert!(trust.required);
+        assert!(trust.awaiting);
+        assert!(!trust.resources.is_empty());
+        assert_eq!(trust.default, "ask");
+
+        // A saved decision stops the prompt regardless of the default.
+        let mut decided = store.clone();
+        decided.set(&dir, true);
+        let trust = project_trust_with(&decided, &config, &dir);
+        assert!(!trust.awaiting);
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn trust_is_not_required_without_project_resources() {
+        let dir = std::env::temp_dir().join(format!("oxide_proj_plain_{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let trust = project_trust_with(&TrustStore::default(), &Config::default(), &dir);
+        assert!(!trust.required);
+        assert!(!trust.awaiting);
+        assert!(trust.resources.is_empty());
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn trust_follows_a_non_ask_default() {
+        let dir = project_with_agents("always");
+        let config = Config {
+            default_project_trust: DefaultTrust::Always,
+            ..Config::default()
+        };
+        let trust = project_trust_with(&TrustStore::default(), &config, &dir);
+        assert!(trust.required);
+        assert!(!trust.awaiting);
+        assert_eq!(trust.default, "always");
         std::fs::remove_dir_all(&dir).ok();
     }
 }

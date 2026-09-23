@@ -456,6 +456,19 @@ input:focus, textarea:focus { outline: none; border-color: var(--dim); }
 }
 
 .provider-list { display: flex; flex-direction: column; gap: 3px; margin-bottom: 16px; }
+.trust-resources {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin: 14px 0 0;
+}
+.trust-resources code {
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 2px 8px;
+  font-size: 12px;
+}
 .provider {
   display: grid;
   grid-template-columns: 1fr auto;

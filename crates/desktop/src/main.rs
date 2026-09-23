@@ -16,7 +16,7 @@ use commands::{
     add_project, all_sessions, cancel_run, clear_approvals, delete_session, list_approvals,
     list_models, list_projects, list_providers, list_sessions, list_themes, login, logout,
     project_info, remove_project, rename_session, resolve_approval, send_prompt, session_messages,
-    set_model, set_theme, steer_run, theme_colors, DesktopState,
+    set_model, set_project_trust, set_theme, steer_run, theme_colors, DesktopState,
 };
 use oxide_desktop::manager::DesktopManager;
 use tauri::Manager;
@@ -35,6 +35,7 @@ fn main() {
             list_sessions,
             all_sessions,
             project_info,
+            set_project_trust,
             session_messages,
             rename_session,
             delete_session,

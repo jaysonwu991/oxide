@@ -87,19 +87,42 @@ pub async fn remove_project(
     manager.overview().map_err(err)
 }
 
-/// Provider/model resolved from the same `config.json` the CLI uses.
+/// Provider/model resolved from the same `config.json` the CLI uses, plus the
+/// project's trust state so the UI can prompt before loading project resources.
 #[tauri::command]
 pub async fn project_info(project: String, state: State<'_, DesktopState>) -> CmdResult<Value> {
     let manager = state.manager.lock().await;
-    let config = manager.config_for(&PathBuf::from(&project)).map_err(err)?;
-    Ok(json!({
+    let path = PathBuf::from(&project);
+    let config = manager.config_for(&path).map_err(err)?;
+    Ok(project_info_value(&config, &path))
+}
+
+/// Saves a trust decision for a project (the desktop equivalent of the CLI's
+/// `/trust`) and returns the refreshed project info.
+#[tauri::command]
+pub async fn set_project_trust(
+    project: String,
+    trusted: bool,
+    state: State<'_, DesktopState>,
+) -> CmdResult<Value> {
+    let path = PathBuf::from(&project);
+    oxide_desktop::manager::set_project_trust(&path, trusted).map_err(err)?;
+    let manager = state.manager.lock().await;
+    let config = manager.config_for(&path).map_err(err)?;
+    Ok(project_info_value(&config, &path))
+}
+
+fn project_info_value(config: &Config, project: &Path) -> Value {
+    let trust = oxide_desktop::manager::project_trust(config, project);
+    json!({
         "provider": config.provider,
         "model": config.model,
         "reasoning": config.reasoning.label(),
         "supportsReasoning": config.supports_reasoning(),
         "contextWindow": config.context_window(),
         "hasKey": !config.api_key.is_empty(),
-    }))
+        "trust": trust,
+    })
 }
 
 // ---------- sessions ----------
