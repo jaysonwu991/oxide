@@ -1448,11 +1448,11 @@ async fn git_stdout(cwd: &Path, args: &[&str]) -> Option<String> {
         .then(|| String::from_utf8_lossy(&output.stdout).trim().to_string())
 }
 
-/// Whether the current branch's `HEAD` is already the tip of the same-named
+/// Whether the current branch's `HEAD` is already delivered to the same-named
 /// branch on its remote. Only consulted when the branch has no remote-tracking
 /// ref, so it corrects the single-branch-clone blind spot without adding a
-/// network round trip to the common case. An unreachable remote is treated as
-/// not delivered, preserving the guard.
+/// network round trip to the common case. A remote that cannot be reached is
+/// treated as not delivered, preserving the guard.
 async fn remote_has_head(cwd: &Path) -> bool {
     let Some((remote, branch)) = tracking_branch(cwd).await else {
         return false;
@@ -1460,21 +1460,50 @@ async fn remote_has_head(cwd: &Path) -> bool {
     let Some(head) = git_stdout(cwd, &["rev-parse", "HEAD"]).await else {
         return false;
     };
-    let lookup = tokio::process::Command::new("git")
-        .args(["ls-remote", "--heads", &remote, &branch])
-        .current_dir(cwd)
-        .env("GIT_TERMINAL_PROMPT", "0")
-        .kill_on_drop(true)
-        .output();
-    let Ok(Ok(output)) = tokio::time::timeout(std::time::Duration::from_secs(5), lookup).await
-    else {
+    let Some(remote_sha) = ls_remote(cwd, &remote, &branch).await else {
         return false;
     };
-    output.status.success()
-        && String::from_utf8_lossy(&output.stdout)
-            .split_whitespace()
-            .next()
-            .is_some_and(|sha| sha == head)
+    if remote_sha == head {
+        return true;
+    }
+    // The remote branch may have advanced past this commit; `HEAD` is still
+    // delivered if it is an ancestor of the remote tip. A tip that is behind
+    // (`HEAD` not an ancestor) stays pending.
+    git_stdout(cwd, &["merge-base", "--is-ancestor", &head, &remote_sha])
+        .await
+        .is_some()
+}
+
+/// Runs `git ls-remote --heads <remote> <branch>` and returns the branch tip, or
+/// `None` when it is absent, unreachable, or slower than the timeout. The child
+/// is spawned explicitly so a slow lookup is killed and reaped instead of being
+/// left alive by a dropped `output()` future.
+async fn ls_remote(cwd: &Path, remote: &str, branch: &str) -> Option<String> {
+    use tokio::io::AsyncReadExt;
+    let mut child = tokio::process::Command::new("git")
+        .args(["ls-remote", "--heads", remote, branch])
+        .current_dir(cwd)
+        .env("GIT_TERMINAL_PROMPT", "0")
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::null())
+        .kill_on_drop(true)
+        .spawn()
+        .ok()?;
+    let mut stdout = child.stdout.take()?;
+    let mut text = String::new();
+    let read = stdout.read_to_string(&mut text);
+    match tokio::time::timeout(std::time::Duration::from_secs(5), read).await {
+        Ok(Ok(_)) => {}
+        _ => {
+            let _ = child.start_kill();
+            let _ = child.wait().await;
+            return None;
+        }
+    }
+    match child.wait().await {
+        Ok(status) if status.success() => text.split_whitespace().next().map(str::to_string),
+        _ => None,
+    }
 }
 
 /// The identity of a build/test invocation for repeat detection: the command
@@ -2996,6 +3025,19 @@ mod tests {
         assert!(
             !repo_has_pending_delivery(&dir).await,
             "a commit already on the remote is delivered"
+        );
+
+        // A second commit lands on the remote branch, then the local branch is
+        // rewound behind it: the older local commit is still delivered because
+        // it is an ancestor of the remote tip.
+        std::fs::write(dir.join("catalog.yaml"), "later\n").unwrap();
+        run_git(&dir, &["add", "catalog.yaml"]);
+        run_git(&dir, &["commit", "-q", "-m", "later"]);
+        run_git(&dir, &["push", "-q", "origin", "feature"]);
+        run_git(&dir, &["reset", "-q", "--hard", "HEAD~1"]);
+        assert!(
+            !repo_has_pending_delivery(&dir).await,
+            "a commit behind the remote tip is still delivered"
         );
 
         std::fs::remove_dir_all(&dir).ok();

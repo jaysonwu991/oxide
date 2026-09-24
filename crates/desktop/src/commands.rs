@@ -5,9 +5,9 @@ use oxide_core::agent::{AgentEvent, Cancel, Steering};
 use oxide_core::auth::{self, AuthStore};
 use oxide_core::cli::{event_json, session_header};
 use oxide_core::config::Config;
-use oxide_core::llm::ContentPart;
 use oxide_core::llm::LlmClient;
 use oxide_core::llm::Message;
+use oxide_core::llm::{ContentPart, MessageContent};
 use oxide_core::session::{SessionLog, SessionSummary};
 use oxide_core::theme_view;
 use oxide_desktop::manager::{expand_project_path, DesktopManager, ProjectView};
@@ -57,7 +57,30 @@ fn message_view(message: &Message) -> Value {
     json!({
         "role": message.role,
         "content": message.display().unwrap_or_default(),
+        "attachments": message_attachments(message),
     })
+}
+
+/// Media the message carried, so a reopened thread can still preview it instead
+/// of reducing it to the `[image]` marker in `content`.
+fn message_attachments(message: &Message) -> Vec<Value> {
+    let Some(MessageContent::Parts(parts)) = &message.content else {
+        return Vec::new();
+    };
+    parts
+        .iter()
+        .filter_map(|part| match part {
+            ContentPart::ImageUrl { image_url } => Some(json!({
+                "name": "image",
+                "dataUrl": image_url.url,
+            })),
+            ContentPart::File { file } => Some(json!({
+                "name": file.filename.clone().unwrap_or_else(|| "document".into()),
+                "dataUrl": file.file_data,
+            })),
+            ContentPart::Text { .. } => None,
+        })
+        .collect()
 }
 
 // ---------- projects ----------

@@ -725,7 +725,7 @@ async function openSession(session) {
     for (const message of data.messages) {
       if (!message.content) continue;
       const kind = message.role === "user" ? "user" : "assistant";
-      transcript.appendChild(bubble(kind, message.content));
+      transcript.appendChild(bubble(kind, message.content, message.attachments || []));
     }
     scrollDown();
     setThreadTitle(session.name || session.preview || session.id.slice(0, 8));
@@ -769,11 +769,7 @@ function bubble(kind, text, attachments = []) {
     const strip = document.createElement("div");
     strip.className = "msg-attachments";
     for (const attachment of images) {
-      const img = document.createElement("img");
-      img.src = attachment.dataUrl;
-      img.alt = attachment.name || "attachment";
-      img.onclick = () => openImage(attachment.dataUrl);
-      strip.appendChild(img);
+      strip.appendChild(openableImage(attachment.dataUrl, attachment.name));
     }
     body.appendChild(strip);
   }
@@ -881,14 +877,20 @@ async function resizeImageDataUrl(dataUrl, mime) {
   const longest = Math.max(image.width, image.height);
   if (!longest || longest <= MAX_IMAGE_EDGE) return dataUrl;
   const scale = MAX_IMAGE_EDGE / longest;
-  const canvas = document.createElement("canvas");
-  canvas.width = Math.max(1, Math.round(image.width * scale));
-  canvas.height = Math.max(1, Math.round(image.height * scale));
-  canvas.getContext("2d").drawImage(image, 0, 0, canvas.width, canvas.height);
-  const type =
-    mime === "image/jpeg" ? "image/jpeg" : mime === "image/webp" ? "image/webp" : "image/png";
-  const resized = canvas.toDataURL(type, 0.9);
-  return resized.length < dataUrl.length ? resized : dataUrl;
+  try {
+    const canvas = document.createElement("canvas");
+    canvas.width = Math.max(1, Math.round(image.width * scale));
+    canvas.height = Math.max(1, Math.round(image.height * scale));
+    canvas.getContext("2d").drawImage(image, 0, 0, canvas.width, canvas.height);
+    const type =
+      mime === "image/jpeg" ? "image/jpeg" : mime === "image/webp" ? "image/webp" : "image/png";
+    const resized = canvas.toDataURL(type, 0.9);
+    // Keep the smaller dimensions even when the re-encoded bytes are not
+    // shorter (a highly compressed source), so the 1568px guarantee holds.
+    return resized && resized.startsWith("data:image/") ? resized : dataUrl;
+  } catch (error) {
+    return dataUrl;
+  }
 }
 
 async function addAttachmentFiles(files) {
@@ -914,11 +916,7 @@ function renderAttachments() {
     const chip = document.createElement("div");
     chip.className = "attachment";
     if (isImageAttachment(attachment.dataUrl)) {
-      const img = document.createElement("img");
-      img.src = attachment.dataUrl;
-      img.alt = attachment.name;
-      img.onclick = () => openImage(attachment.dataUrl);
-      chip.appendChild(img);
+      chip.appendChild(openableImage(attachment.dataUrl, attachment.name));
     } else {
       const icon = document.createElement("div");
       icon.className = "att-file";
@@ -960,6 +958,22 @@ function openImage(dataUrl) {
   el("image-view-img").src = dataUrl;
   closeOverlays("image-modal");
   el("image-modal").hidden = false;
+}
+
+/// A thumbnail that opens the full preview. A real button makes it focusable
+/// and activatable with Enter/Space, without extra key handling.
+function openableImage(dataUrl, name) {
+  const button = document.createElement("button");
+  button.type = "button";
+  button.className = "att-open";
+  button.title = "Open preview";
+  button.setAttribute("aria-label", name ? `Open ${name}` : "Open image preview");
+  const img = document.createElement("img");
+  img.src = dataUrl;
+  img.alt = name || "attachment";
+  button.appendChild(img);
+  button.onclick = () => openImage(dataUrl);
+  return button;
 }
 
 async function send(followUp = false) {

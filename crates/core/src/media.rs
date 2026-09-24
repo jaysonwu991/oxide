@@ -137,6 +137,7 @@ fn jpeg_dimensions(bytes: &[u8]) -> Option<(u32, u32)> {
     None
 }
 
+#[cfg(any(target_os = "macos", target_os = "linux"))]
 fn image_extension(mime: &str) -> &str {
     match mime {
         "image/jpeg" => "jpg",
@@ -145,21 +146,61 @@ fn image_extension(mime: &str) -> &str {
     }
 }
 
-fn temp_image_paths(extension: &str) -> (PathBuf, PathBuf) {
-    static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-    let id = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-    let dir = std::env::temp_dir();
-    let stamp = format!("{}-{id}", std::process::id());
-    (
-        dir.join(format!("oxide-image-in-{stamp}.{extension}")),
-        dir.join(format!("oxide-image-out-{stamp}.{extension}")),
-    )
+/// A private temporary directory for one image conversion. The name is random
+/// and the mode is owner-only, and it is removed on drop, so a predictable-name
+/// symlink cannot redirect the bytes written or read during a conversion.
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+struct TempImageDir(PathBuf);
+
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+impl TempImageDir {
+    fn new() -> Option<Self> {
+        let mut random = [0u8; 16];
+        getrandom::getrandom(&mut random).ok()?;
+        let name: String = random.iter().map(|byte| format!("{byte:02x}")).collect();
+        let dir = std::env::temp_dir().join(format!("oxide-image-{name}"));
+        let mut builder = std::fs::DirBuilder::new();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::DirBuilderExt;
+            builder.mode(0o700);
+        }
+        builder.create(&dir).ok()?;
+        Some(Self(dir))
+    }
+
+    fn path(&self) -> &Path {
+        &self.0
+    }
+
+    /// Writes a file that must not already exist, so an existing symlink is
+    /// never followed.
+    fn write(&self, name: &str, bytes: &[u8]) -> Option<PathBuf> {
+        use std::io::Write;
+        let path = self.0.join(name);
+        let mut file = std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&path)
+            .ok()?;
+        file.write_all(bytes).ok()?;
+        Some(path)
+    }
+}
+
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+impl Drop for TempImageDir {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
 }
 
 #[cfg(target_os = "macos")]
 fn downscale_image(bytes: &[u8], mime: &str) -> Option<Vec<u8>> {
-    let (input, output) = temp_image_paths(image_extension(mime));
-    std::fs::write(&input, bytes).ok()?;
+    let dir = TempImageDir::new()?;
+    let extension = image_extension(mime);
+    let input = dir.write(&format!("input.{extension}"), bytes)?;
+    let output = dir.path().join(format!("output.{extension}"));
     let status = Command::new("sips")
         .args(["-Z", &MAX_IMAGE_EDGE.to_string()])
         .arg(&input)
@@ -167,20 +208,19 @@ fn downscale_image(bytes: &[u8], mime: &str) -> Option<Vec<u8>> {
         .arg(&output)
         .output()
         .ok()?;
-    let result = status
+    status
         .status
         .success()
         .then(|| std::fs::read(&output).ok())
-        .flatten();
-    let _ = std::fs::remove_file(&input);
-    let _ = std::fs::remove_file(&output);
-    result
+        .flatten()
 }
 
 #[cfg(target_os = "linux")]
 fn downscale_image(bytes: &[u8], mime: &str) -> Option<Vec<u8>> {
-    let (input, output) = temp_image_paths(image_extension(mime));
-    std::fs::write(&input, bytes).ok()?;
+    let dir = TempImageDir::new()?;
+    let extension = image_extension(mime);
+    let input = dir.write(&format!("input.{extension}"), bytes)?;
+    let output = dir.path().join(format!("output.{extension}"));
     let input = input.to_str()?.to_string();
     let output = output.to_str()?.to_string();
     let geometry = format!("{MAX_IMAGE_EDGE}x{MAX_IMAGE_EDGE}>");
@@ -201,10 +241,7 @@ fn downscale_image(bytes: &[u8], mime: &str) -> Option<Vec<u8>> {
                 &output,
             ],
         );
-    let result = resized.then(|| std::fs::read(&output).ok()).flatten();
-    let _ = std::fs::remove_file(&input);
-    let _ = std::fs::remove_file(&output);
-    result
+    resized.then(|| std::fs::read(&output).ok()).flatten()
 }
 
 #[cfg(target_os = "linux")]

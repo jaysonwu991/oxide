@@ -66,8 +66,9 @@ The window follows a Codex-style layout:
   chips on the left and the send/stop controls on the right; the status and
   token/cost usage sit just below it. The 📎 button (or a pasted clipboard
   image) attaches images/PDFs, shown above the input as thumbnails that open a
-  full preview when clicked and can be removed before sending; a message queued
-  while busy carries the same attachments. Pasted and picked images are
+  full preview when clicked (or focused and opened with Enter/Space) and can be
+  removed before sending; a message queued while busy carries the same
+  attachments, and reopening a stored thread restores their thumbnails. Pasted and picked images are
   downscaled to a 1568px long edge in the webview before they are sent.
 
 ## Running
