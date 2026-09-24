@@ -7,9 +7,10 @@ use oxide_core::cli::{event_json, session_header};
 use oxide_core::config::Config;
 use oxide_core::llm::LlmClient;
 use oxide_core::llm::Message;
+use oxide_core::llm::{ContentPart, MessageContent};
 use oxide_core::session::{SessionLog, SessionSummary};
 use oxide_core::theme_view;
-use oxide_desktop::manager::{DesktopManager, ProjectView};
+use oxide_desktop::manager::{expand_project_path, DesktopManager, ProjectView};
 use oxide_desktop::turn::{open_session, start_turn, Turn};
 use serde_json::{json, Value};
 use std::collections::HashMap;
@@ -56,10 +57,54 @@ fn message_view(message: &Message) -> Value {
     json!({
         "role": message.role,
         "content": message.display().unwrap_or_default(),
+        "attachments": message_attachments(message),
     })
 }
 
+/// Media the message carried, so a reopened thread can still preview it instead
+/// of reducing it to the `[image]` marker in `content`.
+fn message_attachments(message: &Message) -> Vec<Value> {
+    let Some(MessageContent::Parts(parts)) = &message.content else {
+        return Vec::new();
+    };
+    parts
+        .iter()
+        .filter_map(|part| match part {
+            ContentPart::ImageUrl { image_url } => Some(json!({
+                "name": "image",
+                "dataUrl": image_url.url,
+            })),
+            ContentPart::File { file } => Some(json!({
+                "name": file.filename.clone().unwrap_or_else(|| "document".into()),
+                "dataUrl": file.file_data,
+            })),
+            ContentPart::Text { .. } => None,
+        })
+        .collect()
+}
+
 // ---------- projects ----------
+
+/// An image/PDF the desktop attached from the clipboard or a file picker. A
+/// pasted image has no on-disk path in the webview, so the bytes travel as a
+/// data URL.
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AttachmentInput {
+    pub data_url: String,
+    #[serde(default)]
+    pub name: Option<String>,
+}
+
+fn attachment_parts(attachments: Option<Vec<AttachmentInput>>) -> Vec<ContentPart> {
+    attachments
+        .unwrap_or_default()
+        .into_iter()
+        .filter_map(|attachment| {
+            oxide_core::media::content_part_from_data_url(attachment.data_url, attachment.name)
+        })
+        .collect()
+}
 
 /// Every project: folders added here plus ones discovered from sessions.
 #[tauri::command]
@@ -71,10 +116,83 @@ pub async fn list_projects(state: State<'_, DesktopState>) -> CmdResult<Vec<Proj
 pub async fn add_project(
     path: String,
     state: State<'_, DesktopState>,
-) -> CmdResult<Vec<ProjectView>> {
+) -> CmdResult<AddProjectResult> {
     let mut manager = state.manager.lock().await;
-    manager.add_project(&PathBuf::from(path)).map_err(err)?;
-    manager.overview().map_err(err)
+    let project = manager
+        .add_project(&expand_project_path(&path))
+        .map_err(err)?;
+    let projects = manager.overview().map_err(err)?;
+    Ok(AddProjectResult {
+        projects,
+        added: project.id,
+    })
+}
+
+/// The refreshed project list plus the id of the folder that was added, so the
+/// UI can select it without guessing from the typed path.
+#[derive(serde::Serialize)]
+pub struct AddProjectResult {
+    pub projects: Vec<ProjectView>,
+    pub added: String,
+}
+
+/// Opens the platform folder chooser. Used by the desktop's **Add** button when
+/// the path field is empty, so adding a project does not require typing an
+/// absolute path from memory.
+#[tauri::command]
+pub async fn pick_folder() -> CmdResult<Option<String>> {
+    tokio::task::spawn_blocking(choose_folder)
+        .await
+        .map_err(err)
+}
+
+fn choose_folder() -> Option<String> {
+    #[cfg(target_os = "macos")]
+    {
+        let output = std::process::Command::new("osascript")
+            .args([
+                "-e",
+                "POSIX path of (choose folder with prompt \"Add a project to Oxide\")",
+            ])
+            .output()
+            .ok()?;
+        nonempty_stdout(output)
+    }
+    #[cfg(target_os = "linux")]
+    {
+        let output = std::process::Command::new("zenity")
+            .args([
+                "--file-selection",
+                "--directory",
+                "--title=Add a project to Oxide",
+            ])
+            .output()
+            .ok()?;
+        nonempty_stdout(output)
+    }
+    #[cfg(target_os = "windows")]
+    {
+        let script = "Add-Type -AssemblyName System.Windows.Forms; \
+                      $d = New-Object System.Windows.Forms.FolderBrowserDialog; \
+                      if ($d.ShowDialog() -eq 'OK') { Write-Output $d.SelectedPath }";
+        let output = std::process::Command::new("powershell")
+            .args(["-NoProfile", "-Command", script])
+            .output()
+            .ok()?;
+        nonempty_stdout(output)
+    }
+    #[cfg(not(any(target_os = "macos", target_os = "linux", target_os = "windows")))]
+    {
+        None
+    }
+}
+
+fn nonempty_stdout(output: std::process::Output) -> Option<String> {
+    if !output.status.success() {
+        return None;
+    }
+    let path = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    (!path.is_empty()).then_some(path)
 }
 
 #[tauri::command]
@@ -243,6 +361,7 @@ pub async fn send_prompt(
     prompt: String,
     session: Option<String>,
     reasoning: Option<String>,
+    attachments: Option<Vec<AttachmentInput>>,
 ) -> CmdResult<u64> {
     let (run_id, approvals, runs) = {
         let state = app.state::<DesktopState>();
@@ -252,10 +371,19 @@ pub async fn send_prompt(
             state.runs.clone(),
         )
     };
+    let attachments = attachment_parts(attachments);
     let app = app.clone();
     tauri::async_runtime::spawn(async move {
         let _ = drive_turn(
-            app, run_id, project, prompt, session, reasoning, approvals, runs,
+            app,
+            run_id,
+            project,
+            prompt,
+            session,
+            reasoning,
+            attachments,
+            approvals,
+            runs,
         )
         .await;
     });
@@ -270,6 +398,7 @@ async fn drive_turn(
     prompt: String,
     session: Option<String>,
     reasoning: Option<String>,
+    attachments: Vec<ContentPart>,
     approvals: Arc<ApprovalBroker>,
     runs: Arc<Mutex<HashMap<u64, RunHandle>>>,
 ) -> anyhow::Result<()> {
@@ -277,7 +406,7 @@ async fn drive_turn(
     let reference = session.as_deref().unwrap_or("latest");
     let log = open_session(&cwd, reference)?;
     let approver = approvals.approver(cwd.clone());
-    let turn = start_turn(&cwd, &prompt, log, Some(approver), reasoning).await?;
+    let turn = start_turn(&cwd, &prompt, log, Some(approver), reasoning, attachments).await?;
     let Turn {
         session_id,
         mut events,
@@ -348,6 +477,7 @@ pub async fn steer_run(
     run_id: u64,
     message: String,
     follow_up: Option<bool>,
+    attachments: Option<Vec<AttachmentInput>>,
     app: AppHandle,
 ) -> CmdResult<()> {
     let runs = app.state::<DesktopState>().runs.clone();
@@ -358,7 +488,12 @@ pub async fn steer_run(
         } else {
             &run.steering
         };
-        queue.push(Message::user(message));
+        let parts = attachment_parts(attachments);
+        queue.push(if parts.is_empty() {
+            Message::user(message)
+        } else {
+            Message::user_parts(message, parts)
+        });
     }
     Ok(())
 }

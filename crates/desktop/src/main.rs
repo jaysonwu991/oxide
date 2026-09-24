@@ -15,8 +15,9 @@ mod commands;
 use commands::{
     add_project, all_sessions, cancel_run, clear_approvals, delete_session, list_approvals,
     list_models, list_projects, list_providers, list_sessions, list_themes, login, logout,
-    project_info, remove_project, rename_session, resolve_approval, send_prompt, session_messages,
-    set_model, set_project_trust, set_theme, steer_run, theme_colors, DesktopState,
+    pick_folder, project_info, remove_project, rename_session, resolve_approval, send_prompt,
+    session_messages, set_model, set_project_trust, set_theme, steer_run, theme_colors,
+    DesktopState,
 };
 use oxide_desktop::manager::DesktopManager;
 use tauri::Manager;
@@ -31,6 +32,7 @@ fn main() {
         .invoke_handler(tauri::generate_handler![
             list_projects,
             add_project,
+            pick_folder,
             remove_project,
             list_sessions,
             all_sessions,

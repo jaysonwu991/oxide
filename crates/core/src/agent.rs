@@ -363,7 +363,12 @@ async fn run_loop(
     runtime: Runtime,
     depth: usize,
 ) {
-    let client = LlmClient::new(config.clone());
+    let client = match runtime.session.as_ref() {
+        // The session id doubles as the provider's cache-affinity key, so
+        // successive turns reuse the cached conversation prefix.
+        Some(log) => LlmClient::new(config.clone()).with_session_id(log.id()),
+        None => LlmClient::new(config.clone()),
+    };
     let permissions = Permissions::from_config(&config);
     let mut messages = history;
     let context_window = config.context_window();
@@ -1382,28 +1387,123 @@ fn runs_git_push(command: &str) -> bool {
 /// ignored so unrelated new files (notes, reports) do not block a reply. The git
 /// calls are async so a slow `git` never blocks the runtime.
 async fn repo_has_pending_delivery(cwd: &Path) -> bool {
-    async fn git(cwd: &Path, args: &[&str]) -> Option<String> {
-        let output = tokio::process::Command::new("git")
-            .args(args)
-            .current_dir(cwd)
-            .output()
-            .await
-            .ok()?;
-        output
-            .status
-            .success()
-            .then(|| String::from_utf8_lossy(&output.stdout).trim().to_string())
-    }
-    if git(cwd, &["status", "--porcelain", "--untracked-files=no"])
+    if git_stdout(cwd, &["status", "--porcelain", "--untracked-files=no"])
         .await
         .is_some_and(|status| !status.is_empty())
     {
         return true;
     }
-    git(cwd, &["rev-list", "--count", "HEAD", "--not", "--remotes"])
+    let unpushed = git_stdout(cwd, &["rev-list", "--count", "HEAD", "--not", "--remotes"])
         .await
         .and_then(|count| count.parse::<u64>().ok())
-        .is_some_and(|count| count > 0)
+        .is_some_and(|count| count > 0);
+    if !unpushed {
+        return false;
+    }
+    // A normal clone gives the current branch a remote-tracking ref, so the
+    // non-zero count is trustworthy (the commit really is unpushed). A
+    // single-branch clone does not — its fetch refspec maps only the default
+    // branch, so `--remotes` reports a pushed feature branch as unpushed
+    // forever. Ask the remote for the tip only in that case.
+    if let Some((remote, branch)) = tracking_branch(cwd).await {
+        let reference = format!("refs/remotes/{remote}/{branch}");
+        if git_stdout(cwd, &["rev-parse", "--verify", "--quiet", &reference])
+            .await
+            .is_some()
+        {
+            return true;
+        }
+    }
+    !remote_has_head(cwd).await
+}
+
+/// The remote and branch the current `HEAD` tracks, when configured. Falls back
+/// to `origin` when the branch has no explicit remote.
+async fn tracking_branch(cwd: &Path) -> Option<(String, String)> {
+    let branch = git_stdout(cwd, &["symbolic-ref", "--short", "HEAD"]).await?;
+    let remote = git_stdout(
+        cwd,
+        &["config", "--get", &format!("branch.{branch}.remote")],
+    )
+    .await
+    .filter(|remote| !remote.is_empty())
+    .unwrap_or_else(|| "origin".to_string());
+    Some((remote, branch))
+}
+
+/// Runs `git` in `cwd` and returns trimmed stdout, or `None` on any failure.
+/// `GIT_TERMINAL_PROMPT=0` keeps a credential prompt from hanging the agent.
+async fn git_stdout(cwd: &Path, args: &[&str]) -> Option<String> {
+    let output = tokio::process::Command::new("git")
+        .args(args)
+        .current_dir(cwd)
+        .env("GIT_TERMINAL_PROMPT", "0")
+        .kill_on_drop(true)
+        .output()
+        .await
+        .ok()?;
+    output
+        .status
+        .success()
+        .then(|| String::from_utf8_lossy(&output.stdout).trim().to_string())
+}
+
+/// Whether the current branch's `HEAD` is already delivered to the same-named
+/// branch on its remote. Only consulted when the branch has no remote-tracking
+/// ref, so it corrects the single-branch-clone blind spot without adding a
+/// network round trip to the common case. A remote that cannot be reached is
+/// treated as not delivered, preserving the guard.
+async fn remote_has_head(cwd: &Path) -> bool {
+    let Some((remote, branch)) = tracking_branch(cwd).await else {
+        return false;
+    };
+    let Some(head) = git_stdout(cwd, &["rev-parse", "HEAD"]).await else {
+        return false;
+    };
+    let Some(remote_sha) = ls_remote(cwd, &remote, &branch).await else {
+        return false;
+    };
+    if remote_sha == head {
+        return true;
+    }
+    // The remote branch may have advanced past this commit; `HEAD` is still
+    // delivered if it is an ancestor of the remote tip. A tip that is behind
+    // (`HEAD` not an ancestor) stays pending.
+    git_stdout(cwd, &["merge-base", "--is-ancestor", &head, &remote_sha])
+        .await
+        .is_some()
+}
+
+/// Runs `git ls-remote --heads <remote> <branch>` and returns the branch tip, or
+/// `None` when it is absent, unreachable, or slower than the timeout. The child
+/// is spawned explicitly so a slow lookup is killed and reaped instead of being
+/// left alive by a dropped `output()` future.
+async fn ls_remote(cwd: &Path, remote: &str, branch: &str) -> Option<String> {
+    use tokio::io::AsyncReadExt;
+    let mut child = tokio::process::Command::new("git")
+        .args(["ls-remote", "--heads", remote, branch])
+        .current_dir(cwd)
+        .env("GIT_TERMINAL_PROMPT", "0")
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::null())
+        .kill_on_drop(true)
+        .spawn()
+        .ok()?;
+    let mut stdout = child.stdout.take()?;
+    let mut text = String::new();
+    let read = stdout.read_to_string(&mut text);
+    match tokio::time::timeout(std::time::Duration::from_secs(5), read).await {
+        Ok(Ok(_)) => {}
+        _ => {
+            let _ = child.start_kill();
+            let _ = child.wait().await;
+            return None;
+        }
+    }
+    match child.wait().await {
+        Ok(status) if status.success() => text.split_whitespace().next().map(str::to_string),
+        _ => None,
+    }
 }
 
 /// The identity of a build/test invocation for repeat detection: the command
@@ -2104,6 +2204,17 @@ mod tests {
             .status()
             .expect("git is available for the test");
         assert!(status.success(), "git {args:?} failed");
+    }
+
+    fn git_text(dir: &std::path::Path, args: &[&str]) -> String {
+        let output = std::process::Command::new("git")
+            .args(args)
+            .current_dir(dir)
+            .stderr(std::process::Stdio::null())
+            .output()
+            .expect("git is available for the test");
+        assert!(output.status.success(), "git {args:?} failed");
+        String::from_utf8_lossy(&output.stdout).trim().to_string()
     }
 
     /// Creates a repository with a committed `catalog.yaml`, so a later edit
@@ -2863,6 +2974,71 @@ mod tests {
 
         run_git(&dir, &["push"]);
         assert!(!repo_has_pending_delivery(&dir).await, "pushed");
+
+        std::fs::remove_dir_all(&dir).ok();
+        std::fs::remove_dir_all(format!("{}.origin.git", dir.display())).ok();
+    }
+
+    #[tokio::test]
+    async fn repo_delivery_ignores_a_pushed_branch_the_remote_tracking_ref_misses() {
+        let dir = std::env::temp_dir().join(format!("oxide_pending_sb_{}", std::process::id()));
+        std::fs::remove_dir_all(&dir).ok();
+        std::fs::create_dir_all(&dir).unwrap();
+        init_git_repo(&dir);
+        add_git_remote(&dir);
+
+        // Simulate a single-branch clone: the fetch refspec maps only the
+        // default branch, so pushing `feature` never creates `origin/feature`.
+        let default = git_text(&dir, &["symbolic-ref", "--short", "HEAD"]);
+        run_git(
+            &dir,
+            &[
+                "config",
+                "remote.origin.fetch",
+                &format!("+refs/heads/{default}:refs/remotes/origin/{default}"),
+            ],
+        );
+        run_git(&dir, &["checkout", "-q", "-b", "feature"]);
+        std::fs::write(dir.join("catalog.yaml"), "feature\n").unwrap();
+        run_git(&dir, &["add", "catalog.yaml"]);
+        run_git(&dir, &["commit", "-q", "-m", "feature"]);
+        assert!(
+            repo_has_pending_delivery(&dir).await,
+            "an unpushed feature commit is held"
+        );
+
+        run_git(&dir, &["push", "-q", "origin", "feature"]);
+        // The pushed branch is not visible locally...
+        assert!(
+            std::process::Command::new("git")
+                .args(["rev-parse", "--verify", "refs/remotes/origin/feature"])
+                .current_dir(&dir)
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null())
+                .status()
+                .expect("git runs")
+                .code()
+                .is_none_or(|code| code != 0),
+            "no remote-tracking ref for the feature branch"
+        );
+        // ...but asking the remote clears the guard.
+        assert!(
+            !repo_has_pending_delivery(&dir).await,
+            "a commit already on the remote is delivered"
+        );
+
+        // A second commit lands on the remote branch, then the local branch is
+        // rewound behind it: the older local commit is still delivered because
+        // it is an ancestor of the remote tip.
+        std::fs::write(dir.join("catalog.yaml"), "later\n").unwrap();
+        run_git(&dir, &["add", "catalog.yaml"]);
+        run_git(&dir, &["commit", "-q", "-m", "later"]);
+        run_git(&dir, &["push", "-q", "origin", "feature"]);
+        run_git(&dir, &["reset", "-q", "--hard", "HEAD~1"]);
+        assert!(
+            !repo_has_pending_delivery(&dir).await,
+            "a commit behind the remote tip is still delivered"
+        );
 
         std::fs::remove_dir_all(&dir).ok();
         std::fs::remove_dir_all(format!("{}.origin.git", dir.display())).ok();

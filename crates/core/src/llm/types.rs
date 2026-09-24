@@ -210,17 +210,21 @@ pub struct FunctionSpec {
 #[derive(Debug, Serialize)]
 pub struct ChatRequest {
     pub model: String,
-    pub messages: Vec<Message>,
+    pub messages: Vec<Value>,
     pub stream: bool,
     pub max_tokens: u32,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub tools: Option<Vec<ToolSpec>>,
+    pub tools: Option<Vec<Value>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub reasoning_effort: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub thinking: Option<Value>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub output_config: Option<Value>,
+    /// Cache-affinity key for direct OpenAI, so a follow-up turn hits the same
+    /// prompt cache as the previous one.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub prompt_cache_key: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub stream_options: Option<StreamOptions>,
 }

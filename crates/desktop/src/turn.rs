@@ -7,6 +7,7 @@
 
 use anyhow::{Context, Result};
 use oxide_core::agent::{AgentEvent, Approver, Cancel, Steering};
+use oxide_core::llm::ContentPart;
 use oxide_core::runner::{self, AgentRun};
 use oxide_core::session::SessionLog;
 use std::path::Path;
@@ -35,13 +36,14 @@ pub async fn start_turn(
     session: Option<SessionLog>,
     approve: Option<Approver>,
     reasoning: Option<String>,
+    inline: Vec<ContentPart>,
 ) -> Result<Turn> {
     let config = crate::manager::load_project_config_with(project, reasoning)
         .with_context(|| format!("loading configuration for {}", project.display()))?;
     config.require_api_key()?;
 
     let ephemeral = config.ephemeral;
-    let (history, log) = runner::begin_session(project, session, ephemeral, prompt, &[])?;
+    let (history, log) = runner::begin_session(project, session, ephemeral, prompt, &[], &inline)?;
     let session_id = log.as_ref().map(|entry| entry.id().to_string());
 
     let steering = Steering::new();

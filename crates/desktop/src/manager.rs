@@ -31,6 +31,10 @@ pub struct Project {
 /// discovered from sessions, annotated with activity.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ProjectView {
+    /// Stable identity for the row: the canonical path for a registered folder,
+    /// the session `cwd` for a discovered one. The UI needs it to remove a
+    /// project and to select the one that was just added.
+    pub id: String,
     pub path: String,
     pub name: String,
     /// Whether the folder was explicitly added (vs. only seen in a session).
@@ -208,6 +212,7 @@ impl DesktopManager {
             let path = project.path.to_string_lossy().to_string();
             let (count, last) = session_stats(sessions, &project.path);
             views.push(ProjectView {
+                id: project.id.clone(),
                 exists: project.path.is_dir(),
                 path,
                 name: project.name.clone(),
@@ -226,6 +231,7 @@ impl DesktopManager {
             // One row per distinct session cwd not already registered.
             let (count, last) = session_stats(sessions, &path);
             views.push(ProjectView {
+                id: summary.cwd.clone(),
                 exists: path.is_dir(),
                 name: display_name(&path),
                 path: summary.cwd.clone(),
@@ -318,6 +324,33 @@ fn session_stats(sessions: &[SessionSummary], path: &Path) -> (usize, u64) {
         .fold((0, 0), |(count, last), summary| {
             (count + 1, last.max(summary.modified_at))
         })
+}
+
+/// Resolves a path typed into the desktop's "Add a folder" field. Expands a
+/// leading `~`, strips surrounding quotes, and resolves a relative path against
+/// the home directory (a GUI has no meaningful working directory, so a bare
+/// `Projects/app` should not depend on how the app was launched).
+pub fn expand_project_path(input: &str) -> PathBuf {
+    let trimmed = input.trim().trim_matches(['"', '\'']);
+    if trimmed.is_empty() {
+        return PathBuf::from(trimmed);
+    }
+    let expanded = if trimmed == "~" {
+        dirs::home_dir().unwrap_or_else(|| PathBuf::from(trimmed))
+    } else if let Some(rest) = trimmed.strip_prefix("~/") {
+        dirs::home_dir()
+            .map(|home| home.join(rest))
+            .unwrap_or_else(|| PathBuf::from(trimmed))
+    } else {
+        PathBuf::from(trimmed)
+    };
+    if expanded.is_absolute() {
+        expanded
+    } else {
+        dirs::home_dir()
+            .map(|home| home.join(&expanded))
+            .unwrap_or(expanded)
+    }
 }
 
 fn display_name(path: &Path) -> String {
@@ -425,13 +458,55 @@ mod tests {
         let reg = views.iter().find(|view| view.registered).unwrap();
         assert_eq!(reg.session_count, 2);
         assert_eq!(reg.last_session_at, 30);
+        assert_eq!(reg.id, registered);
         let disc = views.iter().find(|view| !view.registered).unwrap();
         assert_eq!(disc.name, "from-terminal");
         assert_eq!(disc.session_count, 1);
+        assert_eq!(disc.id, "/tmp/from-terminal");
 
         // Registered projects sort ahead of discovered ones.
         assert!(views[0].registered);
         std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn add_dedupes_and_reports_the_same_id() {
+        let store = temp_store();
+        let mut manager = DesktopManager::load_from(store.clone()).unwrap();
+        let dir = std::env::temp_dir().join(format!("oxide_proj_id_{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let first = manager.add_project(&dir).unwrap();
+        let second = manager.add_project(&dir).unwrap();
+        assert_eq!(first.id, second.id);
+        assert!(manager
+            .overview()
+            .unwrap()
+            .iter()
+            .any(|view| view.id == first.id));
+        std::fs::remove_dir_all(&dir).ok();
+        let _ = std::fs::remove_dir_all(manager.store_path().parent().unwrap());
+    }
+
+    #[test]
+    fn expand_project_path_handles_tilde_quotes_and_relative_paths() {
+        let home = dirs::home_dir().expect("a home directory");
+        assert_eq!(expand_project_path("~"), home);
+        assert_eq!(
+            expand_project_path("~/Projects/app"),
+            home.join("Projects/app")
+        );
+        assert_eq!(
+            expand_project_path("  \"~/Projects/app\"  "),
+            home.join("Projects/app")
+        );
+        assert_eq!(
+            expand_project_path("Projects/app"),
+            home.join("Projects/app")
+        );
+        // An absolute path is returned unchanged on every platform.
+        let absolute = std::env::temp_dir();
+        assert_eq!(expand_project_path(absolute.to_str().unwrap()), absolute);
+        assert_eq!(expand_project_path("   "), PathBuf::from(""));
     }
 
     fn project_with_agents(tag: &str) -> PathBuf {

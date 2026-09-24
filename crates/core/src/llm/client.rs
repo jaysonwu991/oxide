@@ -8,6 +8,7 @@ use crate::llm::types::{
 };
 use anyhow::{Context, Result};
 use futures::StreamExt;
+use serde_json::Value;
 use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -31,6 +32,10 @@ static MODEL_CACHE_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
 pub struct LlmClient {
     http: reqwest::Client,
     config: Config,
+    /// Session id used as a provider cache-affinity hint (`prompt_cache_key` for
+    /// OpenAI, `x-session-id` for gateways). `None` disables the hint, as for
+    /// one-off catalog and compaction requests.
+    session_id: Option<String>,
 }
 
 /// The provider finished a turn without an answer: it either emitted nothing at
@@ -126,7 +131,18 @@ impl LlmClient {
             .read_timeout(READ_TIMEOUT)
             .build()
             .unwrap_or_else(|_| reqwest::Client::new());
-        Self { http, config }
+        Self {
+            http,
+            config,
+            session_id: None,
+        }
+    }
+
+    /// Attaches the session id so providers can keep the conversation prefix in
+    /// their prompt cache across turns.
+    pub fn with_session_id(mut self, session_id: impl Into<String>) -> Self {
+        self.session_id = Some(session_id.into());
+        self
     }
 
     /// Lists the model ids the provider exposes, sorted and de-duplicated.
@@ -339,10 +355,19 @@ impl LlmClient {
         let url = format!("{}/chat/completions", self.config.base_url);
         let mut config = self.config.clone();
         config.max_tokens = max_tokens;
-        let request = openai_request(&config, messages, tools);
+        let request = openai_request(&config, messages, tools, self.session_id.as_deref());
 
-        let response = self
-            .authenticate_openai(self.http.post(&url))?
+        let mut builder = self.authenticate_openai(self.http.post(&url))?;
+        if let Some(session) = self.session_id.as_deref() {
+            // Cache-affinity hints for OpenAI-compatible gateways (OpenRouter,
+            // litellm, ...). Direct OpenAI uses `prompt_cache_key` in the body.
+            if !url.contains("api.openai.com") {
+                builder = builder
+                    .header("x-session-id", session)
+                    .header("x-client-request-id", session);
+            }
+        }
+        let response = builder
             .json(&request)
             .send()
             .await
@@ -602,33 +627,126 @@ fn now_secs() -> u64 {
         .as_secs()
 }
 
-fn openai_request(config: &Config, messages: &[Message], tools: &[ToolSpec]) -> ChatRequest {
-    let messages = messages
+fn openai_request(
+    config: &Config,
+    messages: &[Message],
+    tools: &[ToolSpec],
+    session_id: Option<&str>,
+) -> ChatRequest {
+    let messages: Vec<Value> = messages
         .iter()
         .cloned()
         .map(|mut message| {
             message.thinking = None;
             message
         })
+        .map(|message| serde_json::to_value(message).unwrap_or(Value::Null))
         .collect();
+    // Anthropic prompt caching behind an OpenAI-compatible gateway is opt-in
+    // via `cache_control` blocks, matching the native Anthropic path.
+    let anthropic_cache = anthropic_cache_control(config);
+    let messages = openai_messages(messages, anthropic_cache);
     let (reasoning_effort, thinking, output_config) = openai_reasoning(config);
+    // Direct OpenAI routes a cached prefix by `prompt_cache_key`; gateways use
+    // the session headers instead, so only send it for `api.openai.com`.
+    let prompt_cache_key = session_id
+        .filter(|_| config.base_url.contains("api.openai.com"))
+        .map(|id| id.chars().take(64).collect());
     ChatRequest {
         model: config.model.clone(),
         messages,
         stream: true,
         max_tokens: config.max_tokens,
-        tools: if tools.is_empty() {
-            None
-        } else {
-            Some(tools.to_vec())
-        },
+        tools: openai_tools(tools, anthropic_cache),
         reasoning_effort,
         thinking,
         output_config,
+        prompt_cache_key,
         stream_options: Some(StreamOptions {
             include_usage: true,
         }),
     }
+}
+
+/// `cache_control` markers are only understood by providers that proxy Anthropic
+/// (OpenRouter/Portkey with a Claude model). A plain OpenAI-compatible provider
+/// may reject an unknown field, so they are limited to a Claude model on a
+/// non-OpenAI endpoint.
+fn anthropic_cache_control(config: &Config) -> bool {
+    config.model.to_ascii_lowercase().contains("claude")
+        && !config.base_url.contains("api.openai.com")
+}
+
+fn cache_control() -> Value {
+    serde_json::json!({ "type": "ephemeral" })
+}
+
+/// Serializes messages for OpenAI, optionally marking the system prompt and the
+/// newest turn so a gateway can cache the prefix up to them.
+fn openai_messages(messages: Vec<Value>, cache: bool) -> Vec<Value> {
+    let mut messages = messages;
+    if !cache {
+        return messages;
+    }
+    if let Some(system) = messages
+        .iter_mut()
+        .find(|message| message["role"] == "system")
+    {
+        let text = system["content"].as_str().map(str::to_string);
+        if let Some(text) = text {
+            system["content"] = serde_json::json!([{
+                "type": "text",
+                "text": text,
+                "cache_control": cache_control(),
+            }]);
+        }
+    }
+    if let Some(last) = messages.iter_mut().rev().find(|message| {
+        matches!(
+            message["role"].as_str(),
+            Some("user" | "assistant" | "tool")
+        )
+    }) {
+        cache_control_message(last);
+    }
+    messages
+}
+
+/// Marks the last text block of a message, converting string content to the
+/// block form a gateway needs for a cache breakpoint.
+fn cache_control_message(message: &mut Value) {
+    match message.get_mut("content") {
+        Some(Value::String(text)) => {
+            let text = std::mem::take(text);
+            message["content"] = serde_json::json!([{
+                "type": "text",
+                "text": text,
+                "cache_control": cache_control(),
+            }]);
+        }
+        Some(Value::Array(parts)) => {
+            if let Some(block) = parts.iter_mut().rev().find(|block| block["type"] == "text") {
+                block["cache_control"] = cache_control();
+            }
+        }
+        _ => {}
+    }
+}
+
+fn openai_tools(tools: &[ToolSpec], cache: bool) -> Option<Vec<Value>> {
+    if tools.is_empty() {
+        return None;
+    }
+    let mut specs: Vec<Value> = tools
+        .iter()
+        .map(|tool| serde_json::to_value(tool).unwrap_or(Value::Null))
+        .collect();
+    if cache {
+        if let Some(last) = specs.last_mut() {
+            last["cache_control"] = cache_control();
+        }
+    }
+    Some(specs)
 }
 
 fn openai_reasoning(
@@ -930,7 +1048,8 @@ mod tests {
             };
             assert_eq!(openai_reasoning(&config), (None, None, None));
             let body =
-                serde_json::to_value(openai_request(&config, &[Message::user("hi")], &[])).unwrap();
+                serde_json::to_value(openai_request(&config, &[Message::user("hi")], &[], None))
+                    .unwrap();
             assert!(body.get("reasoning_effort").is_none());
             assert!(body.get("thinking").is_none());
             assert!(body.get("output_config").is_none());
@@ -949,8 +1068,8 @@ mod tests {
         assert_eq!(effort, None);
         assert_eq!(thinking.unwrap()["type"], "adaptive");
         assert_eq!(output, None);
-        let body =
-            serde_json::to_value(openai_request(&config, &[Message::user("hi")], &[])).unwrap();
+        let body = serde_json::to_value(openai_request(&config, &[Message::user("hi")], &[], None))
+            .unwrap();
         assert_eq!(body["thinking"]["type"], "adaptive");
         assert!(body.get("reasoning_effort").is_none());
         assert!(body.get("output_config").is_none());
@@ -1022,6 +1141,7 @@ mod tests {
             &config("glm-5.3", Reasoning::Low),
             &[Message::user("hi")],
             &[],
+            None,
         ))
         .unwrap();
         assert_eq!(body["thinking"]["type"], "enabled");
@@ -1077,6 +1197,112 @@ mod tests {
     #[test]
     fn backoff_grows_with_each_attempt() {
         assert_eq!(MAX_STREAM_ATTEMPTS, 3);
+    }
+
+    #[test]
+    fn openai_cache_key_is_sent_only_for_direct_openai() {
+        let mut config = Config {
+            api_key: "sk-test".into(),
+            base_url: "https://api.openai.com/v1".into(),
+            ..Config::default()
+        };
+        let body = serde_json::to_value(openai_request(
+            &config,
+            &[Message::user("hi")],
+            &[],
+            Some("session-123"),
+        ))
+        .unwrap();
+        assert_eq!(body["prompt_cache_key"], "session-123");
+
+        config.base_url = "https://api.portkey.ai/v1".into();
+        let body = serde_json::to_value(openai_request(
+            &config,
+            &[Message::user("hi")],
+            &[],
+            Some("session-123"),
+        ))
+        .unwrap();
+        assert!(body.get("prompt_cache_key").is_none());
+    }
+
+    #[test]
+    fn anthropic_cache_control_marks_a_gateway_claude_request() {
+        let tool = |name: &str| ToolSpec {
+            kind: "function",
+            function: crate::llm::types::FunctionSpec {
+                name: name.into(),
+                description: "does a thing".into(),
+                parameters: serde_json::json!({"type": "object", "properties": {}}),
+            },
+        };
+        let config = Config {
+            provider: "portkey".into(),
+            model: "claude-sonnet-5".into(),
+            base_url: "https://api.portkey.ai/v1".into(),
+            api_key: "pk-test".into(),
+            ..Config::default()
+        };
+        let messages = vec![Message::system("be helpful"), Message::user("hi")];
+        let body = serde_json::to_value(openai_request(
+            &config,
+            &messages,
+            &[tool("bash"), tool("read")],
+            Some("session-1"),
+        ))
+        .unwrap();
+
+        assert_eq!(
+            body["messages"][0]["content"][0]["cache_control"]["type"],
+            "ephemeral"
+        );
+        assert_eq!(
+            body["messages"][1]["content"][0]["cache_control"]["type"],
+            "ephemeral"
+        );
+        assert_eq!(body["tools"][1]["cache_control"]["type"], "ephemeral");
+        assert!(body["tools"][0].get("cache_control").is_none());
+        assert!(body.get("prompt_cache_key").is_none());
+
+        // A non-Claude model on the same gateway keeps plain content.
+        let config = Config {
+            model: "gpt-5.6-sol".into(),
+            ..config
+        };
+        let body = serde_json::to_value(openai_request(&config, &messages, &[tool("bash")], None))
+            .unwrap();
+        assert!(body["messages"][0]["content"].is_string());
+        assert!(body["tools"][0].get("cache_control").is_none());
+    }
+
+    #[tokio::test]
+    async fn gateway_requests_carry_the_session_cache_headers() {
+        let (addr, server) = sse_server(vec![completed_turn("done")]).await;
+        let client = LlmClient::new(sse_test_config(addr, 1024)).with_session_id("session-xyz");
+
+        let mut text = String::new();
+        let mut hooks = StreamHooks {
+            text: &mut |delta: String| text.push_str(&delta),
+            thinking: &mut |_| {},
+            retry: &mut |_| {},
+        };
+        client
+            .stream_chat(&[Message::user("hi")], &[], &mut hooks)
+            .await
+            .unwrap();
+
+        let requests = server.await.unwrap();
+        let request = requests[0].to_ascii_lowercase();
+        assert!(
+            request.contains("x-session-id: session-xyz"),
+            "{}",
+            requests[0]
+        );
+        assert!(
+            request.contains("x-client-request-id: session-xyz"),
+            "{}",
+            requests[0]
+        );
     }
 
     fn drained(chunks: &[&str]) -> (Vec<String>, String) {

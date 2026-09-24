@@ -60,17 +60,33 @@ pub fn request_body(config: &Config, messages: &[Message], tools: &[ToolSpec]) -
         }
     }
 
+    let mut merged = merge_adjacent(converted);
+    // Cache the whole conversation prefix up to the latest turn, matching Pi.
+    // Anthropic caching is opt-in per request via `cache_control`, so without
+    // this every turn re-processes (and re-bills) the entire context.
+    if let Some(last) = merged.last_mut() {
+        apply_cache_breakpoint(last);
+    }
     let mut body = json!({
         "model": config.model,
         "max_tokens": config.max_tokens,
-        "messages": merge_adjacent(converted),
+        "messages": merged,
         "stream": true,
     });
     if !system.is_empty() {
-        body["system"] = json!(system);
+        body["system"] = json!([{
+            "type": "text",
+            "text": system,
+            "cache_control": cache_control(),
+        }]);
     }
     if !tools.is_empty() {
-        let specs: Vec<Value> = tools.iter().map(tool_schema).collect();
+        let mut specs: Vec<Value> = tools.iter().map(tool_schema).collect();
+        // A breakpoint on the last tool caches the system prompt and the tool
+        // definitions, which are identical on every turn.
+        if let Some(last) = specs.last_mut() {
+            last["cache_control"] = cache_control();
+        }
         body["tools"] = json!(specs);
     }
     let adaptive = supports_adaptive_thinking(&config.model);
@@ -336,6 +352,30 @@ fn tool_schema(spec: &ToolSpec) -> Value {
     })
 }
 
+fn cache_control() -> Value {
+    json!({ "type": "ephemeral" })
+}
+
+/// Marks the last cacheable block of the final user/tool-result message, so the
+/// whole prefix up to the newest turn is served from the prompt cache.
+fn apply_cache_breakpoint(message: &mut Value) {
+    if !matches!(message["role"].as_str(), Some("user") | Some("system")) {
+        return;
+    }
+    let Some(blocks) = message["content"].as_array_mut() else {
+        return;
+    };
+    let Some(last) = blocks.last_mut() else {
+        return;
+    };
+    if matches!(
+        last["type"].as_str(),
+        Some("text") | Some("image") | Some("tool_result")
+    ) {
+        last["cache_control"] = cache_control();
+    }
+}
+
 fn is_tool_result(message: &Value) -> bool {
     message["content"]
         .as_array()
@@ -410,9 +450,11 @@ mod tests {
             Message::tool("toolu_1", "files"),
         ];
         let body = request_body(&config(), &messages, &[spec("bash")]);
-        assert_eq!(body["system"], "be helpful");
+        assert_eq!(body["system"][0]["text"], "be helpful");
+        assert_eq!(body["system"][0]["cache_control"]["type"], "ephemeral");
         assert_eq!(body["max_tokens"], 4096);
         assert_eq!(body["tools"][0]["name"], "bash");
+        assert_eq!(body["tools"][0]["cache_control"]["type"], "ephemeral");
         assert_eq!(body["tools"][0]["input_schema"]["type"], "object");
 
         let msgs = body["messages"].as_array().unwrap();
@@ -422,6 +464,30 @@ mod tests {
         assert_eq!(msgs[2]["role"], "user");
         assert_eq!(msgs[2]["content"][0]["type"], "tool_result");
         assert_eq!(msgs[2]["content"][0]["tool_use_id"], "toolu_1");
+    }
+
+    #[test]
+    fn caches_the_conversation_prefix_for_anthropic() {
+        let messages = vec![
+            Message::system("be helpful"),
+            Message::user("first"),
+            Message::assistant("ok", vec![]),
+            Message::tool("toolu_1", "files"),
+        ];
+        let body = request_body(&config(), &messages, &[spec("bash"), spec("read")]);
+
+        // The system prompt and tool list get a breakpoint.
+        assert_eq!(body["system"][0]["cache_control"]["type"], "ephemeral");
+        assert_eq!(body["tools"][1]["cache_control"]["type"], "ephemeral");
+        assert!(body["tools"][0].get("cache_control").is_none());
+
+        // The last tool result carries the final breakpoint.
+        let msgs = body["messages"].as_array().unwrap();
+        let last = msgs.last().unwrap();
+        assert_eq!(last["role"], "user");
+        let block = last["content"].as_array().unwrap().last().unwrap();
+        assert_eq!(block["type"], "tool_result");
+        assert_eq!(block["cache_control"]["type"], "ephemeral");
     }
 
     #[test]

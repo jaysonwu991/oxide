@@ -2385,6 +2385,29 @@ fn render_banner(width: usize, info: &[String], lines: &mut Vec<Line<'static>>) 
     render_banner_themed(width, &crate::theme::Theme::dark(), info, lines);
 }
 
+/// The composer rule while the agent is busy: the phase, elapsed time, pending
+/// attachment count (so a queued image is visible as part of the message), and
+/// the queued-message/dequeue hint Pi advertises.
+fn busy_status_text(app: &App) -> String {
+    let secs = app
+        .busy_since
+        .map(|start| start.elapsed().as_secs())
+        .unwrap_or(0);
+    let mut text = format!(" {} {} · {secs}s", spinner(app.busy_since), app.status);
+    if !app.attachments.is_empty() {
+        text.push_str(&format!(" · {} attachment(s)", app.attachments.len()));
+    }
+    let queued = app.queued_count();
+    if queued > 0 {
+        text.push_str(&format!(
+            " · {queued} queued · {} to edit",
+            crate::tui::dequeue_key_label()
+        ));
+    }
+    text.push_str(" · Esc clear · /exit quit ");
+    text
+}
+
 fn draw_input(frame: &mut Frame, app: &App, area: Rect) {
     // Pi renders the editor as two full-width rules with no side borders,
     // corners or prompt, and embeds the working status in the top rule while
@@ -2396,22 +2419,10 @@ fn draw_input(frame: &mut Frame, app: &App, area: Rect) {
         ..area
     };
     let title = if app.busy {
-        let secs = app
-            .busy_since
-            .map(|start| start.elapsed().as_secs())
-            .unwrap_or(0);
-        let mut text = format!(" {} {} · {secs}s", spinner(app.busy_since), app.status);
-        // Pi advertises how to pull queued messages back into the editor
-        // (`app.message.dequeue`) while they are still waiting.
-        let queued = app.queued_count();
-        if queued > 0 {
-            text.push_str(&format!(
-                " · {queued} queued · {} to edit",
-                crate::tui::dequeue_key_label()
-            ));
-        }
-        text.push_str(" · Esc clear · /exit quit ");
-        vec![Span::styled(text, Style::default().fg(app.theme.tool))]
+        vec![Span::styled(
+            busy_status_text(app),
+            Style::default().fg(app.theme.tool),
+        )]
     } else if app.attachments.is_empty() {
         Vec::new()
     } else {
@@ -3295,6 +3306,27 @@ mod tests {
             .iter()
             .any(|line| line_text(line).contains("updated")));
         assert_eq!(app.render_dirty_from, None);
+    }
+
+    #[test]
+    fn busy_status_shows_pending_attachments() {
+        let mut app = App::new("model".into(), "/tmp".into(), Reasoning::Auto);
+        app.busy = true;
+        app.status = "thinking...".into();
+        app.add_attachment(crate::llm::ContentPart::ImageUrl {
+            image_url: crate::llm::ImageUrl {
+                url: "data:image/png;base64,AAAA".into(),
+                detail: None,
+            },
+        });
+
+        let text = busy_status_text(&app);
+        assert!(text.contains("thinking..."), "{text}");
+        assert!(text.contains("1 attachment(s)"), "{text}");
+
+        app.attachments.clear();
+        let text = busy_status_text(&app);
+        assert!(!text.contains("attachment(s)"), "{text}");
     }
 
     #[test]

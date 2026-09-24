@@ -574,22 +574,15 @@ fn handle_key(
                 app.should_quit = true;
                 return;
             }
+            let command = app.input.trim().to_string();
+            if handle_attach_command(app, &command) {
+                app.clear_input();
+                refresh_suggestions(app, config);
+                return;
+            }
             if app.busy {
                 let raw = app.input.trim().to_string();
-                if raw.is_empty() {
-                    return;
-                }
-                app.remember_input(&raw);
-                app.clear_input();
-                app.items.push(ChatItem::User(raw.clone()));
-                app.auto_scroll = true;
-                if key.modifiers.contains(KeyModifiers::ALT) {
-                    app.follow_ups.push(Message::user(raw));
-                    app.status = "queued follow-up...".to_string();
-                } else {
-                    app.steering.push(Message::user(raw));
-                    app.status = "queued guidance...".to_string();
-                }
+                queue_while_busy(app, &raw, cwd, key.modifiers.contains(KeyModifiers::ALT));
                 return;
             }
             let raw = app.input.trim().to_string();
@@ -1412,7 +1405,7 @@ fn handle_key(
                 }
             }
 
-            let mut parts = std::mem::take(&mut app.attachments);
+            let mut parts = app.take_attachment_parts();
             for path in media::referenced_attachments(&raw, cwd) {
                 match media::load_attachment(&path) {
                     Ok(part) => parts.push(part),
@@ -1486,9 +1479,12 @@ fn handle_key(
         KeyCode::Char('v') if key.modifiers.contains(KeyModifiers::CONTROL) => {
             match media::clipboard_image() {
                 Some(part) => {
-                    app.attachments.push(part);
-                    let count = app.attachments.len();
-                    app.show_status(format!("{count} attachment(s) pending"));
+                    if app.add_attachment(part) {
+                        let count = app.attachments.len();
+                        app.show_status(format!("{count} attachment(s) pending"));
+                    } else {
+                        app.show_status("image already attached");
+                    }
                 }
                 None => {
                     app.show_status("no image found on clipboard");
@@ -2507,6 +2503,50 @@ fn resolve_provider_choice(value: &str) -> String {
 }
 
 /// The built-in slash commands surfaced in the input autocomplete.
+/// Handles `/attach [list|remove <id|n>|clear]`, editing the pending composer
+/// attachments. Returns whether the input was an attach command.
+fn handle_attach_command(app: &mut App, raw: &str) -> bool {
+    let Some(rest) = raw
+        .strip_prefix("/attachments")
+        .or_else(|| raw.strip_prefix("/attach"))
+    else {
+        return false;
+    };
+    match rest.trim() {
+        "" | "list" => app.items.push(ChatItem::Info(app.attachment_listing())),
+        "clear" => {
+            let removed = app.attachments.len();
+            app.attachments.clear();
+            app.items.push(ChatItem::Info(if removed == 0 {
+                "no attachments".to_string()
+            } else {
+                format!("cleared {removed} attachment(s)")
+            }));
+        }
+        other => {
+            let key = other
+                .strip_prefix("remove")
+                .or_else(|| other.strip_prefix("rm"))
+                .map(str::trim)
+                .filter(|key| !key.is_empty());
+            match key {
+                Some(key) => match app.remove_attachment(key) {
+                    Some(label) => app
+                        .items
+                        .push(ChatItem::Info(format!("removed attachment {label}"))),
+                    None => app
+                        .items
+                        .push(ChatItem::Error(format!("no attachment matching `{key}`"))),
+                },
+                None => app.items.push(ChatItem::Info(
+                    "usage: /attach · /attach remove <id|n> · /attach clear".to_string(),
+                )),
+            }
+        }
+    }
+    true
+}
+
 fn builtin_commands() -> Vec<CommandHint> {
     vec![
         CommandHint {
@@ -2625,6 +2665,10 @@ fn builtin_commands() -> Vec<CommandHint> {
             name: "redo".to_string(),
             description: "reapply file changes".to_string(),
         },
+        CommandHint {
+            name: "attach".to_string(),
+            description: "list, remove, or clear pending attachments".to_string(),
+        },
     ]
 }
 
@@ -2706,6 +2750,26 @@ const PLUGINS_ARGS: &[ArgSpec] = &[
 
 /// Argument completions for the built-in commands with a fixed grammar.
 const COMMAND_ARGS: &[(&str, &[ArgSpec])] = &[
+    (
+        "attach",
+        &[
+            ArgSpec {
+                value: "list",
+                description: "list pending attachments",
+                children: &[],
+            },
+            ArgSpec {
+                value: "remove",
+                description: "remove one by id or number",
+                children: &[],
+            },
+            ArgSpec {
+                value: "clear",
+                description: "remove every attachment",
+                children: &[],
+            },
+        ],
+    ),
     (
         "copy",
         &[ArgSpec {
@@ -3822,6 +3886,46 @@ fn handle_mouse(mouse: MouseEvent, app: &mut App, terminal_area: Rect) {
     }
 }
 
+/// Queues a message typed while the agent is busy. Attachments gathered with
+/// `Ctrl+V` and `@path` image/pdf references travel with it, so a steer sent
+/// mid-run contributes the same context the idle send path would.
+fn queue_while_busy(app: &mut App, raw: &str, cwd: &Path, follow_up: bool) {
+    let mut parts = app.take_attachment_parts();
+    for path in media::referenced_attachments(raw, cwd) {
+        match media::load_attachment(&path) {
+            Ok(part) => parts.push(part),
+            Err(err) => app
+                .items
+                .push(ChatItem::Error(format!("attachment: {err:#}"))),
+        }
+    }
+    if raw.is_empty() && parts.is_empty() {
+        return;
+    }
+    let media_count = parts.len();
+    app.remember_input(raw);
+    app.clear_input();
+    let shown = if media_count > 0 {
+        format!("{raw}\n[{media_count} attachment(s)]")
+    } else {
+        raw.to_string()
+    };
+    app.items.push(ChatItem::User(shown));
+    app.auto_scroll = true;
+    let message = if parts.is_empty() {
+        Message::user(raw)
+    } else {
+        Message::user_parts(raw, parts)
+    };
+    if follow_up {
+        app.follow_ups.push(message);
+        app.status = "queued follow-up...".to_string();
+    } else {
+        app.steering.push(message);
+        app.status = "queued guidance...".to_string();
+    }
+}
+
 /// Pulls every queued message back into the editor so it can be edited or
 /// extended before it is sent, like Pi's `app.message.dequeue`. The queued text
 /// leads and whatever is already in the editor follows, so typing while busy
@@ -3834,10 +3938,23 @@ fn dequeue_messages(app: &mut App) {
         return;
     }
 
-    let texts: Vec<String> = queued
-        .iter()
-        .map(|message| message.display().unwrap_or_default())
-        .collect();
+    // A queued message's images/PDFs have no text form, so put them back with
+    // the pending attachments rather than dropping them when the text is
+    // edited.
+    let mut restored_media = 0usize;
+    for message in &queued {
+        if let Some(crate::llm::MessageContent::Parts(parts)) = &message.content {
+            for part in parts {
+                if !matches!(part, crate::llm::ContentPart::Text { .. })
+                    && app.add_attachment(part.clone())
+                {
+                    restored_media += 1;
+                }
+            }
+        }
+    }
+
+    let texts: Vec<String> = queued.iter().map(queued_text).collect();
     let current = app.input.trim_matches('\n');
     let combined = if current.trim().is_empty() {
         texts.join("\n\n")
@@ -3848,23 +3965,45 @@ fn dequeue_messages(app: &mut App) {
     app.input_cursor = app.input.len();
 
     // Queued messages are shown in the transcript as they are typed, so drop
-    // those entries: they were never sent and are editable again.
+    // those entries: they were never sent and are editable again. The entry may
+    // carry a `[N attachment(s)]` suffix the message text does not.
     for text in texts.iter().rev() {
-        if let Some(index) = app
-            .items
-            .iter()
-            .rposition(|item| matches!(item, ChatItem::User(shown) if shown == text))
-        {
+        let with_media = format!("{text}\n[");
+        if let Some(index) = app.items.iter().rposition(|item| {
+            matches!(item, ChatItem::User(shown) if shown == text || shown.starts_with(&with_media))
+        }) {
             app.items.remove(index);
             app.mark_render_dirty(index);
         }
     }
 
     let count = texts.len();
+    let media = if restored_media > 0 {
+        format!(" and {restored_media} attachment(s)")
+    } else {
+        String::new()
+    };
     app.show_status(format!(
-        "restored {count} queued message{} to the editor",
+        "restored {count} queued message{}{media} to the editor",
         if count == 1 { "" } else { "s" }
     ));
+}
+
+/// The user-visible text of a message, ignoring `[image]`/`[file]` markers that
+/// [`Message::display`] adds for media parts.
+fn queued_text(message: &Message) -> String {
+    match &message.content {
+        Some(crate::llm::MessageContent::Text(text)) => text.clone(),
+        Some(crate::llm::MessageContent::Parts(parts)) => parts
+            .iter()
+            .filter_map(|part| match part {
+                crate::llm::ContentPart::Text { text } => Some(text.as_str()),
+                _ => None,
+            })
+            .collect::<Vec<_>>()
+            .join("\n"),
+        None => String::new(),
+    }
 }
 
 /// Copies the active mouse selection, if any, reporting the result. Returns
@@ -4496,6 +4635,107 @@ mod tests {
         assert!(matches!(
             app.items.last(),
             Some(ChatItem::Status(text)) if text == "restored 2 queued messages to the editor"
+        ));
+    }
+
+    #[test]
+    fn queued_steering_while_busy_keeps_attachments() {
+        let mut app = test_app();
+        app.busy = true;
+        app.add_attachment(crate::llm::ContentPart::ImageUrl {
+            image_url: crate::llm::ImageUrl {
+                url: "data:image/png;base64,AAAA".into(),
+                detail: None,
+            },
+        });
+
+        queue_while_busy(&mut app, "look at this", Path::new("."), false);
+
+        assert_eq!(app.queued_count(), 1);
+        assert!(app.attachments.is_empty(), "attachments are consumed");
+        let queued = app.steering.drain();
+        let has_image = matches!(
+            queued[0].content,
+            Some(crate::llm::MessageContent::Parts(ref parts))
+                if parts.iter().any(|part| matches!(part, crate::llm::ContentPart::ImageUrl { .. }))
+        );
+        assert!(has_image, "the queued message carries the image");
+        assert!(app.items.iter().any(|item| matches!(
+            item,
+            ChatItem::User(text) if text.contains("[1 attachment(s)]")
+        )));
+    }
+
+    #[test]
+    fn attach_command_lists_removes_and_clears() {
+        let mut app = test_app();
+        let image = |data: &str| crate::llm::ContentPart::ImageUrl {
+            image_url: crate::llm::ImageUrl {
+                url: format!("data:image/png;base64,{data}"),
+                detail: None,
+            },
+        };
+        app.add_attachment(image("AAAA"));
+        app.add_attachment(image("BBBB"));
+
+        assert!(!handle_attach_command(&mut app, "hello"));
+        assert!(handle_attach_command(&mut app, "/attach"));
+        assert!(matches!(
+            app.items.last(),
+            Some(ChatItem::Info(text)) if text.contains("pending attachments") && text.contains("2.")
+        ));
+
+        assert!(handle_attach_command(&mut app, "/attachments remove 1"));
+        assert_eq!(app.attachments.len(), 1);
+
+        assert!(handle_attach_command(&mut app, "/attach remove zzzz"));
+        assert!(matches!(
+            app.items.last(),
+            Some(ChatItem::Error(text)) if text.contains("no attachment")
+        ));
+
+        assert!(handle_attach_command(&mut app, "/attach clear"));
+        assert!(app.attachments.is_empty());
+        assert!(matches!(
+            app.items.last(),
+            Some(ChatItem::Info(text)) if text.contains("cleared 1")
+        ));
+    }
+
+    #[test]
+    fn dequeuing_a_queued_attachment_restores_it() {
+        let mut app = test_app();
+        app.busy = true;
+        app.add_attachment(crate::llm::ContentPart::ImageUrl {
+            image_url: crate::llm::ImageUrl {
+                url: "data:image/png;base64,AAAA".into(),
+                detail: None,
+            },
+        });
+        queue_while_busy(&mut app, "look", Path::new("."), false);
+        assert!(app.attachments.is_empty());
+        assert!(app
+            .items
+            .iter()
+            .any(|item| matches!(item, ChatItem::User(_))));
+
+        dequeue_messages(&mut app);
+
+        assert_eq!(app.input, "look");
+        assert_eq!(
+            app.attachments.len(),
+            1,
+            "the image returns as a pending attachment"
+        );
+        assert!(
+            !app.items
+                .iter()
+                .any(|item| matches!(item, ChatItem::User(_))),
+            "the queued transcript entry is removed"
+        );
+        assert!(matches!(
+            app.items.last(),
+            Some(ChatItem::Status(text)) if text.contains("1 attachment(s)")
         ));
     }
 

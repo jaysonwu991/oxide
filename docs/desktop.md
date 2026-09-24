@@ -53,16 +53,23 @@ The window follows a Codex-style layout:
 - **Sidebar** — the `Oxide` brand, a **New task** button, a project switcher
   (dropdown with add/remove and a searchable project list), the thread list for
   the selected project (or every project via **All projects**), and a footer
-  with **Connect**, project trust, theme, tool approvals, and help.
+  with **Connect**, project trust, theme, tool approvals, and help. **Add** takes
+  a path (`~` and relative paths resolve against the home directory) or opens
+  the platform folder chooser when the field is empty.
 - **Top bar** — the current thread title and the active provider.
 - **Conversation** — a centered 760px column. User messages are right-aligned
   bubbles; assistant replies render Markdown. Tool calls are compact cards
   showing the call (e.g. `bash cargo test --all`); they expand automatically for
   diffs and errors and can be clicked open/closed. `write`/`edit` results get a
   colored diff.
-- **Composer** — a floating rounded box with the model and reasoning chips on
-  the left and the send/stop controls on the right; the status and token/cost
-  usage sit just below it.
+- **Composer** — a floating rounded box with the attach, model, and reasoning
+  chips on the left and the send/stop controls on the right; the status and
+  token/cost usage sit just below it. The 📎 button (or a pasted clipboard
+  image) attaches images/PDFs, shown above the input as thumbnails that open a
+  full preview when clicked (or focused and opened with Enter/Space) and can be
+  removed before sending; a message queued while busy carries the same
+  attachments, and reopening a stored thread restores their thumbnails. Pasted and picked images are
+  downscaled to a 1568px long edge in the webview before they are sent.
 
 ## Running
 

@@ -34,6 +34,7 @@ const state = {
   currentAssistant: null,
   tools: [],
   currentThinking: null,
+  attachments: [],
 };
 
 // ---------- helpers ----------
@@ -478,20 +479,39 @@ function renderProjects() {
 
 async function addProject() {
   const input = el("project-path");
-  const path = input.value.trim();
-  if (!path) return;
+  let path = input.value.trim();
+  if (!path) {
+    // An empty field opens the platform folder chooser so a project can be
+    // added without typing its absolute path.
+    try {
+      path = (await invoke("pick_folder")) || "";
+    } catch (error) {
+      setAddError(`Could not open the folder chooser: ${error}`);
+      return;
+    }
+    if (!path) return;
+  }
   try {
-    state.projects = await invoke("add_project", { path });
+    const result = await invoke("add_project", { path });
+    state.projects = result.projects;
     input.value = "";
+    setAddError("");
     renderProjects();
-    const added = state.projects.find((project) => project.path.endsWith(baseName(path)) && project.registered);
+    const added = state.projects.find((project) => project.id === result.added);
     if (added) {
       toggleDropdown(false);
       selectProject(added);
     }
   } catch (error) {
-    setStatus(`Could not add project: ${error}`);
+    setAddError(`Could not add project: ${error}`);
   }
+}
+
+function setAddError(message) {
+  const box = el("add-project-error");
+  if (!box) return;
+  box.textContent = message || "";
+  box.hidden = !message;
 }
 
 function toggleDropdown(show) {
@@ -500,6 +520,7 @@ function toggleDropdown(show) {
   dropdown.hidden = !open;
   el("project-menu").classList.toggle("active", open);
   if (open) {
+    setAddError("");
     el("project-path").focus();
   }
 }
@@ -509,6 +530,7 @@ async function selectProject(project) {
   state.projectName = project.name;
   state.session = null;
   state.trust = null;
+  clearAttachments();
   el("project-current").textContent = project.name;
   el("new-chat").disabled = false;
   el("prompt").disabled = false;
@@ -703,7 +725,7 @@ async function openSession(session) {
     for (const message of data.messages) {
       if (!message.content) continue;
       const kind = message.role === "user" ? "user" : "assistant";
-      transcript.appendChild(bubble(kind, message.content));
+      transcript.appendChild(bubble(kind, message.content, message.attachments || []));
     }
     scrollDown();
     setThreadTitle(session.name || session.preview || session.id.slice(0, 8));
@@ -726,13 +748,14 @@ function resetTranscript() {
 
 function newChat() {
   resetTranscript();
+  clearAttachments();
   loadSessions();
   el("prompt").focus();
 }
 
 // ---------- chat ----------
 
-function bubble(kind, text) {
+function bubble(kind, text, attachments = []) {
   const wrap = document.createElement("div");
   wrap.className = `msg ${kind}`;
   const label = document.createElement("div");
@@ -741,6 +764,15 @@ function bubble(kind, text) {
   const body = document.createElement("div");
   body.className = "body";
   body.innerHTML = kind === "assistant" ? renderMarkdown(text) : escapeHtml(text);
+  const images = attachments.filter((attachment) => isImageAttachment(attachment.dataUrl));
+  if (images.length) {
+    const strip = document.createElement("div");
+    strip.className = "msg-attachments";
+    for (const attachment of images) {
+      strip.appendChild(openableImage(attachment.dataUrl, attachment.name));
+    }
+    body.appendChild(strip);
+  }
   wrap.append(label, body);
   return wrap;
 }
@@ -757,7 +789,8 @@ function resetTurn() {
 }
 
 function updateSendState() {
-  const hasText = el("prompt").value.trim().length > 0;
+  const hasText =
+    el("prompt").value.trim().length > 0 || state.attachments.length > 0;
   el("send").classList.toggle("enabled", hasText);
   el("send").disabled = !hasText;
 }
@@ -776,27 +809,202 @@ function setIdle() {
   updateSendState();
 }
 
+// ---------- attachments ----------
+
+/// `data:<mime>;base64,...` — the only shape the clipboard and FileReader give
+/// us, and the shape the backend turns back into a media part.
+function dataUrlMime(dataUrl) {
+  const match = /^data:([^;,]+)[;,]/.exec(dataUrl || "");
+  return match ? match[1] : "";
+}
+
+function isImageAttachment(dataUrl) {
+  return dataUrlMime(dataUrl).startsWith("image/");
+}
+
+function addAttachment(name, dataUrl) {
+  const mime = dataUrlMime(dataUrl);
+  if (!mime.startsWith("image/") && mime !== "application/pdf") return false;
+  if (state.attachments.some((attachment) => attachment.dataUrl === dataUrl)) {
+    setStatus("Already attached");
+    return false;
+  }
+  if (state.attachments.length >= 8) {
+    setStatus("At most 8 attachments per message");
+    return false;
+  }
+  state.attachments.push({
+    name: name || (mime === "application/pdf" ? "document.pdf" : "image"),
+    dataUrl,
+  });
+  renderAttachments();
+  updateSendState();
+  return true;
+}
+
+function readFileAsDataUrl(file) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(reader.result);
+    reader.onerror = () => reject(reader.error || new Error("read failed"));
+    reader.readAsDataURL(file);
+  });
+}
+
+/// Matches the core's downscale target so a pasted screenshot is not shipped at
+/// full resolution.
+const MAX_IMAGE_EDGE = 1568;
+
+function loadImage(dataUrl) {
+  return new Promise((resolve, reject) => {
+    const image = new Image();
+    image.onload = () => resolve(image);
+    image.onerror = () => reject(new Error("could not decode image"));
+    image.src = dataUrl;
+  });
+}
+
+/// Downscales an image data URL on a canvas, keeping the original when it is
+/// already small enough, the format is not a still image, or canvas fails.
+async function resizeImageDataUrl(dataUrl, mime) {
+  if (mime === "image/gif") return dataUrl;
+  let image;
+  try {
+    image = await loadImage(dataUrl);
+  } catch (error) {
+    return dataUrl;
+  }
+  const longest = Math.max(image.width, image.height);
+  if (!longest || longest <= MAX_IMAGE_EDGE) return dataUrl;
+  const scale = MAX_IMAGE_EDGE / longest;
+  try {
+    const canvas = document.createElement("canvas");
+    canvas.width = Math.max(1, Math.round(image.width * scale));
+    canvas.height = Math.max(1, Math.round(image.height * scale));
+    canvas.getContext("2d").drawImage(image, 0, 0, canvas.width, canvas.height);
+    const type =
+      mime === "image/jpeg" ? "image/jpeg" : mime === "image/webp" ? "image/webp" : "image/png";
+    const resized = canvas.toDataURL(type, 0.9);
+    // Keep the smaller dimensions even when the re-encoded bytes are not
+    // shorter (a highly compressed source), so the 1568px guarantee holds.
+    return resized && resized.startsWith("data:image/") ? resized : dataUrl;
+  } catch (error) {
+    return dataUrl;
+  }
+}
+
+async function addAttachmentFiles(files) {
+  for (const file of files) {
+    try {
+      let dataUrl = await readFileAsDataUrl(file);
+      const mime = dataUrlMime(dataUrl);
+      if (mime.startsWith("image/")) {
+        dataUrl = await resizeImageDataUrl(dataUrl, mime);
+      }
+      addAttachment(file.name, dataUrl);
+    } catch (error) {
+      setStatus(`Could not read ${file.name}: ${error}`);
+    }
+  }
+}
+
+function renderAttachments() {
+  const box = el("attachments");
+  box.innerHTML = "";
+  box.hidden = state.attachments.length === 0;
+  state.attachments.forEach((attachment, index) => {
+    const chip = document.createElement("div");
+    chip.className = "attachment";
+    if (isImageAttachment(attachment.dataUrl)) {
+      chip.appendChild(openableImage(attachment.dataUrl, attachment.name));
+    } else {
+      const icon = document.createElement("div");
+      icon.className = "att-file";
+      icon.textContent = "📄";
+      chip.appendChild(icon);
+    }
+    const label = document.createElement("div");
+    label.className = "att-name";
+    label.textContent = attachment.name;
+    chip.appendChild(label);
+    const remove = document.createElement("button");
+    remove.className = "att-remove";
+    remove.textContent = "×";
+    remove.title = "Remove attachment";
+    remove.onclick = () => {
+      state.attachments.splice(index, 1);
+      renderAttachments();
+      updateSendState();
+    };
+    chip.appendChild(remove);
+    box.appendChild(chip);
+  });
+}
+
+function attachmentPayload() {
+  return state.attachments.map((attachment) => ({
+    dataUrl: attachment.dataUrl,
+    name: attachment.name,
+  }));
+}
+
+function clearAttachments() {
+  state.attachments = [];
+  renderAttachments();
+  updateSendState();
+}
+
+function openImage(dataUrl) {
+  el("image-view-img").src = dataUrl;
+  closeOverlays("image-modal");
+  el("image-modal").hidden = false;
+}
+
+/// A thumbnail that opens the full preview. A real button makes it focusable
+/// and activatable with Enter/Space, without extra key handling.
+function openableImage(dataUrl, name) {
+  const button = document.createElement("button");
+  button.type = "button";
+  button.className = "att-open";
+  button.title = "Open preview";
+  button.setAttribute("aria-label", name ? `Open ${name}` : "Open image preview");
+  const img = document.createElement("img");
+  img.src = dataUrl;
+  img.alt = name || "attachment";
+  button.appendChild(img);
+  button.onclick = () => openImage(dataUrl);
+  return button;
+}
+
 async function send(followUp = false) {
   const textarea = el("prompt");
   const prompt = textarea.value.trim();
-  if (!prompt) return;
+  const attachments = attachmentPayload();
+  if (!prompt && attachments.length === 0) return;
 
   if (state.busy) {
     if (state.runId == null) return;
     textarea.value = "";
-    updateSendState();
+    clearAttachments();
     clearWelcome();
-    el("transcript").appendChild(bubble("user", prompt + (followUp ? "  (follow-up)" : "")));
+    el("transcript").appendChild(
+      bubble("user", prompt + (followUp ? "  (follow-up)" : ""), attachments),
+    );
     scrollDown();
-    await invoke("steer_run", { runId: state.runId, message: prompt, followUp });
+    await invoke("steer_run", {
+      runId: state.runId,
+      message: prompt,
+      followUp,
+      attachments: attachments.length ? attachments : null,
+    });
     return;
   }
 
   if (!state.project) return;
   textarea.value = "";
-  updateSendState();
+  clearAttachments();
   clearWelcome();
-  el("transcript").appendChild(bubble("user", prompt));
+  el("transcript").appendChild(bubble("user", prompt, attachments));
   scrollDown();
   resetTurn();
   setBusy();
@@ -807,6 +1015,7 @@ async function send(followUp = false) {
       prompt,
       session: state.session || "latest",
       reasoning: state.reasoning,
+      attachments: attachments.length ? attachments : null,
     });
   } catch (error) {
     setStatus(`Error: ${error}`);
@@ -981,6 +1190,7 @@ const OVERLAYS = [
   "trust-modal",
   "confirm-modal",
   "rename-modal",
+  "image-modal",
   "help-modal",
 ];
 
@@ -1315,6 +1525,28 @@ function init() {
     el("prompt").style.height = `${Math.min(el("prompt").scrollHeight, 220)}px`;
     updateSendState();
   });
+  el("prompt").addEventListener("paste", (event) => {
+    // A pasted image becomes an attachment; a text paste keeps its default
+    // behavior. The platform's own paste shortcut (⌘V / Ctrl+V) triggers this.
+    const items = event.clipboardData?.items || [];
+    const files = [];
+    for (const item of items) {
+      if (item.kind === "file" && item.type.startsWith("image/")) {
+        const file = item.getAsFile();
+        if (file) files.push(file);
+      }
+    }
+    if (files.length) {
+      event.preventDefault();
+      addAttachmentFiles(files);
+    }
+  });
+  el("attach").onclick = () => el("attach-input").click();
+  el("attach-input").addEventListener("change", async (event) => {
+    await addAttachmentFiles(Array.from(event.target.files || []));
+    event.target.value = "";
+  });
+  el("image-view-close").onclick = () => (el("image-modal").hidden = true);
   el("prompt").addEventListener("keydown", (event) => {
     if (event.key === "Enter" && !event.shiftKey) {
       event.preventDefault();
