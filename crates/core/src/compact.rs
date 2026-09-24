@@ -352,10 +352,19 @@ fn merge_files(target: &mut Vec<String>, incoming: Vec<String>) {
 }
 
 const SUMMARY_SYSTEM_PROMPT: &str = "\
-You compact conversation history for another AI coding agent. Rewrite the \
-conversation below as a structured handoff that preserves everything needed to \
-continue the work. Do not continue the conversation or answer any question in \
-it; only produce the summary. Use exactly this Markdown structure:
+You are a context summarization assistant. Your task is to read a conversation \
+between a user and an AI assistant, then produce a structured summary in the \
+exact format specified. Do NOT continue the conversation or respond to any \
+question in it. ONLY output the structured summary.";
+
+/// The format block is sent *after* the conversation. Ordering the prompt this
+/// way matters: with the transcript last the model tends to continue it (the
+/// observed compaction summary was an echoed assistant reply), so the final
+/// instruction must be the request to summarize.
+const SUMMARY_INSTRUCTIONS: &str = "\
+The conversation above is history to summarize, not a conversation to continue. \
+Create a structured context checkpoint that another agent will use to continue \
+the work. Use exactly this Markdown structure:
 
 ## Goal
 [What the user is trying to accomplish]
@@ -382,7 +391,7 @@ it; only produce the summary. Use exactly this Markdown structure:
 ## Critical Context
 - [Data needed to continue]
 
-Be concise but complete. Preserve file paths, commands, code changes and \
+Be concise but complete. Preserve exact file paths, commands, code changes and \
 unresolved tasks.";
 
 /// Generates a compaction summary for the prepared span. `instructions`
@@ -392,33 +401,7 @@ async fn generate_summary(
     preparation: &Preparation,
     instructions: Option<&str>,
 ) -> Result<(String, Usage)> {
-    let transcript = serialize_conversation(&preparation.messages_to_summarize);
-    let mut user = String::new();
-    if let Some(previous) = &preparation.previous_summary {
-        user.push_str("Summary of the earlier conversation:\n");
-        user.push_str(previous);
-        user.push_str("\n\n");
-    }
-    if let Some(instructions) = instructions.map(str::trim).filter(|text| !text.is_empty()) {
-        user.push_str("Additional focus for this summary:\n");
-        user.push_str(instructions);
-        user.push_str("\n\n");
-    }
-    user.push_str("Conversation to summarize:\n\n");
-    user.push_str(&transcript);
-    if !preparation.details.read_files.is_empty() {
-        user.push_str("\nFiles read:\n");
-        for path in &preparation.details.read_files {
-            user.push_str(&format!("- {path}\n"));
-        }
-    }
-    if !preparation.details.modified_files.is_empty() {
-        user.push_str("\nFiles modified:\n");
-        for path in &preparation.details.modified_files {
-            user.push_str(&format!("- {path}\n"));
-        }
-    }
-
+    let user = summary_prompt(preparation, instructions);
     let messages = vec![Message::system(SUMMARY_SYSTEM_PROMPT), Message::user(user)];
     let client = LlmClient::new(config.clone());
     let mut summary = String::new();
@@ -436,6 +419,41 @@ async fn generate_summary(
             .context("summarizing conversation")?
     };
     Ok((summary.trim().to_string(), turn.usage))
+}
+
+/// Builds the summarizer's user message: transcript first, then the request to
+/// summarize, so the final instruction is not "continue this conversation".
+fn summary_prompt(preparation: &Preparation, instructions: Option<&str>) -> String {
+    let transcript = serialize_conversation(&preparation.messages_to_summarize);
+    let mut user = String::new();
+    user.push_str("<conversation>\n");
+    user.push_str(&transcript);
+    user.push_str("\n</conversation>\n\n");
+    if let Some(previous) = &preparation.previous_summary {
+        user.push_str("<previous-summary>\n");
+        user.push_str(previous);
+        user.push_str("\n</previous-summary>\n\n");
+    }
+    if !preparation.details.read_files.is_empty() {
+        user.push_str("Files read so far:\n");
+        for path in &preparation.details.read_files {
+            user.push_str(&format!("- {path}\n"));
+        }
+        user.push('\n');
+    }
+    if !preparation.details.modified_files.is_empty() {
+        user.push_str("Files modified so far:\n");
+        for path in &preparation.details.modified_files {
+            user.push_str(&format!("- {path}\n"));
+        }
+        user.push('\n');
+    }
+    user.push_str(SUMMARY_INSTRUCTIONS);
+    if let Some(instructions) = instructions.map(str::trim).filter(|text| !text.is_empty()) {
+        user.push_str("\n\nAdditional focus: ");
+        user.push_str(instructions);
+    }
+    user
 }
 
 /// Produces a compaction record when the conversation has something to
@@ -706,6 +724,46 @@ mod tests {
         assert!(text.contains("[Assistant tool calls]: bash("));
         assert!(text.contains("[Tool result]:"));
         assert!(text.contains("characters truncated"));
+    }
+
+    #[test]
+    fn summary_prompt_puts_the_request_after_the_conversation() {
+        let preparation = Preparation {
+            messages_to_summarize: vec![
+                Message::user("build the thing"),
+                Message::assistant("Done.", vec![]),
+            ],
+            first_kept: 2,
+            previous_summary: Some("earlier summary".into()),
+            details: CompactionDetails {
+                read_files: vec!["/a.rs".into()],
+                modified_files: vec!["/b.rs".into()],
+            },
+            tokens_before: 10,
+            summarized: 2,
+        };
+        let prompt = summary_prompt(&preparation, Some("focus on tests"));
+
+        // The transcript is wrapped and the summarize request comes last, so a
+        // model cannot mistake the final assistant turn for the instruction.
+        let conversation = prompt.find("<conversation>").unwrap();
+        let goal = prompt.find("## Goal").unwrap();
+        assert!(conversation < goal, "{prompt}");
+        assert!(
+            prompt.contains("<previous-summary>\nearlier summary\n</previous-summary>"),
+            "{prompt}"
+        );
+        assert!(prompt.contains("Files read so far:\n- /a.rs"), "{prompt}");
+        assert!(
+            prompt.contains("Files modified so far:\n- /b.rs"),
+            "{prompt}"
+        );
+        assert!(
+            prompt
+                .trim_end()
+                .ends_with("Additional focus: focus on tests"),
+            "{prompt}"
+        );
     }
 
     #[test]

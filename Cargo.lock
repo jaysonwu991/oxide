@@ -2497,6 +2497,7 @@ name = "oxide-desktop"
 version = "0.0.0"
 dependencies = [
  "anyhow",
+ "dirs 5.0.1",
  "oxide-core",
  "serde",
  "serde_json",

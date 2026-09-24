@@ -411,7 +411,12 @@ fn read_file(cwd: &Path, args: &Value) -> Result<ToolOutput> {
     // A present-but-unparseable value (some models emit `"offset": ".130"`)
     // must fail instead of silently restarting at line 1.
     let offset = strict_int_arg(args, "offset")?.unwrap_or(1).max(1);
-    let limit = strict_int_arg(args, "limit")?.unwrap_or(DEFAULT_READ_LINES);
+    // Clamp to the read budget so the page (plus the `more lines` pointer the
+    // caller appends) never exceeds what `output_limits` allows and gets the
+    // continuation hint cut off by the central truncation.
+    let limit = strict_int_arg(args, "limit")?
+        .unwrap_or(DEFAULT_READ_LINES)
+        .clamp(1, READ_MAX_LINES);
 
     let bytes = std::fs::read(&full).with_context(|| format!("reading {}", full.display()))?;
     let content = match String::from_utf8(bytes) {
@@ -1637,8 +1642,13 @@ async fn bash(cwd: &Path, args: &Value, progress: &Progress) -> Result<String> {
     let stdout = join_stream(stdout_task, stdout_path).await?;
     let stderr = join_stream(stderr_task, stderr_path).await?;
     let Some(status) = status else {
-        remove_stream_files(&[&stdout, &stderr]);
-        anyhow::bail!("command timed out after {secs}s");
+        // Keep whatever the command printed before the timeout: a search or
+        // build that was killed mid-run may already have produced the answer,
+        // and re-running it from scratch is the expensive path.
+        let captured = finish_bash_output(stdout, stderr, -1)
+            .unwrap_or_default()
+            .replace("\n[exit: -1]", "");
+        anyhow::bail!("command timed out after {secs}s\n{captured}");
     };
     finish_bash_output(stdout, stderr, status.code().unwrap_or(-1))
 }
@@ -1969,7 +1979,9 @@ fn output_limits(name: &str) -> (usize, usize) {
         "grep" | "glob" | "list_dir" => (4_000, 160),
         "webfetch" => (6_000, 200),
         "write_file" | "patch" | "edit" => (3_000, 120),
-        "read_file" => (READ_MAX_BYTES, READ_MAX_LINES),
+        // One extra line for the `… more lines; use offset=` pointer, so a
+        // full page of `read` output is never trimmed by the central cap.
+        "read_file" => (READ_MAX_BYTES, READ_MAX_LINES + 1),
         _ => (MAX_OUTPUT_BYTES, MAX_OUTPUT_LINES),
     }
 }
@@ -2709,6 +2721,33 @@ mod tests {
         std::fs::remove_dir_all(&dir).ok();
     }
 
+    // `cmd` has no `;` separator, so on Windows this command would finish
+    // before the timeout. The partial-output path is platform-independent and
+    // covered by the macOS/Linux jobs.
+    #[cfg(not(target_os = "windows"))]
+    #[tokio::test]
+    async fn bash_timeout_keeps_the_output_produced_so_far() {
+        let dir = std::env::temp_dir().join(format!("oxide_bash_partial_{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let mcp = McpRegistry::default();
+        let progress = Progress::new(Arc::new(|_: &str| {}));
+
+        let out = execute(
+            &call(
+                "bash",
+                json!({ "command": "echo important-line; sleep 10", "timeout": 500 }),
+            ),
+            &dir,
+            &mcp,
+            &progress,
+        )
+        .await;
+        assert!(out.text.contains("timed out"), "{}", out.text);
+        assert!(out.text.contains("important-line"), "{}", out.text);
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
     #[tokio::test]
     async fn stream_capture_spools_full_output_and_bounds_memory() {
         use tokio::io::AsyncWriteExt;
@@ -2911,6 +2950,34 @@ mod tests {
             }
         }
         assert_eq!(assembled, line);
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn read_keeps_its_continuation_pointer_inside_the_output_cap() {
+        let dir = std::env::temp_dir().join(format!("oxide_read_ptr_{}", std::process::id()));
+        std::fs::remove_dir_all(&dir).ok();
+        std::fs::create_dir_all(&dir).unwrap();
+        let mut content = String::new();
+        for i in 0..(READ_MAX_LINES + 1) {
+            content.push_str(&format!("line {i}\n"));
+        }
+        std::fs::write(dir.join("big.txt"), &content).unwrap();
+
+        // A full page plus the `… more lines` pointer must survive the central
+        // cap, otherwise the model never learns the offset to page with.
+        let out = read_file(&dir, &json!({ "path": "big.txt" })).unwrap();
+        assert!(out.text.contains("use offset="), "{}", out.text);
+        let capped = truncate_into("read_file", out.text.clone(), None);
+        assert!(!capped.starts_with("[truncated:"), "{capped}");
+        assert!(capped.contains("use offset="), "{capped}");
+
+        // An oversized explicit limit is clamped, so it cannot produce a page
+        // the central cap would silently cut.
+        let out = read_file(&dir, &json!({ "path": "big.txt", "limit": 10_000 })).unwrap();
+        let capped = truncate_into("read_file", out.text.clone(), None);
+        assert!(!capped.starts_with("[truncated:"), "{capped}");
 
         std::fs::remove_dir_all(&dir).ok();
     }

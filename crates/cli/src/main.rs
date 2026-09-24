@@ -659,7 +659,7 @@ async fn run_print(
         Some(log) => log.messages()?,
         None => Vec::new(),
     };
-    let user = runner::build_user_message(&prompt, &cwd, &attachments)?;
+    let user = runner::build_user_message(&prompt, &cwd, &attachments, &[])?;
     if let Some(log) = &log {
         log.append(&user)?;
     }
@@ -816,7 +816,7 @@ async fn run_rpc_mode(config: Config, cwd: PathBuf, session: Option<SessionLog>)
                 .unwrap_or(prompt);
             let command_agent = resolved.as_ref().and_then(|command| command.agent.clone());
             let subtask = resolved.as_ref().is_some_and(|command| command.subtask);
-            let user = runner::build_user_message(&text, &cwd, &[])?;
+            let user = runner::build_user_message(&text, &cwd, &[], &[])?;
             if let Some(log) = &log {
                 log.append(&user)?;
             }

@@ -23,6 +23,7 @@
             <input id="project-path" placeholder="Add a folder…" spellcheck="false" />
             <button id="add-project" class="ghost small">Add</button>
           </div>
+          <div id="add-project-error" class="add-error" hidden></div>
           <div id="projects" class="projects"></div>
         </div>
       </div>
@@ -52,9 +53,11 @@
 
       <div class="composer-wrap">
         <div class="composer">
+          <div id="attachments" class="attachments" hidden></div>
           <textarea id="prompt" placeholder="Ask Oxide…" disabled></textarea>
           <div class="composer-bar">
             <div class="composer-left">
+              <button id="attach" class="chip" title="Attach images or PDFs (paste with the platform paste shortcut)">📎</button>
               <button id="model" class="chip" title="Switch model">model</button>
               <button id="reasoning" class="chip" title="Reasoning effort (Shift+Tab)">auto</button>
             </div>
@@ -194,6 +197,7 @@
           <tr><td>Enter</td><td>Send; while busy, steer the running turn</td></tr>
           <tr><td>Shift+Enter</td><td>Newline</td></tr>
           <tr><td>Alt+Enter</td><td>Queue a follow-up</td></tr>
+          <tr><td>⌘V / Ctrl+V</td><td>Attach a clipboard image</td></tr>
           <tr><td>Shift+Tab / Ctrl+R</td><td>Cycle reasoning</td></tr>
           <tr><td>Ctrl+K</td><td>Open the model picker</td></tr>
           <tr><td>Ctrl+/</td><td>Toggle this help</td></tr>
@@ -204,6 +208,15 @@
         </div>
       </div>
     </div>
+
+    <div id="image-modal" class="overlay" hidden>
+      <div class="image-view">
+        <img id="image-view-img" alt="attachment preview" />
+        <button id="image-view-close" class="ghost">Close</button>
+      </div>
+    </div>
+
+    <input id="attach-input" type="file" accept="image/*,application/pdf" multiple hidden />
 
     <script src="app.js"></script>
   </body>

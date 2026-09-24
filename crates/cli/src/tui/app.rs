@@ -1,6 +1,7 @@
 use crate::agent::{ApprovalRequest, Steering};
 use crate::config::Reasoning;
 use crate::llm::{ContentPart, Message};
+use crate::media;
 use crate::plugin_registry::{MarketplaceOverview, MarketplacePluginOverview};
 use crate::session::SessionSummary;
 use crate::tools::DiffPreview;
@@ -658,6 +659,15 @@ impl MarketplacesState {
     }
 }
 
+/// One pending image/PDF attached to the next message. The id is content
+/// addressed, so pasting the same image twice replaces rather than duplicates.
+#[derive(Clone, Debug)]
+pub struct Attachment {
+    pub id: String,
+    pub label: String,
+    pub part: ContentPart,
+}
+
 pub struct App {
     pub input: String,
     pub input_cursor: usize,
@@ -665,7 +675,7 @@ pub struct App {
     pub history_index: Option<usize>,
     pub items: Vec<ChatItem>,
     pub history: Vec<Message>,
-    pub attachments: Vec<ContentPart>,
+    pub attachments: Vec<Attachment>,
     pub scroll: u16,
     pub auto_scroll: bool,
     pub view_height: u16,
@@ -727,6 +737,69 @@ pub struct App {
 }
 
 impl App {
+    /// Adds a pending attachment, de-duplicating by content id. Returns `false`
+    /// when an identical image/PDF is already attached.
+    pub fn add_attachment(&mut self, part: ContentPart) -> bool {
+        let id = media::attachment_id(&part);
+        if self.attachments.iter().any(|existing| existing.id == id) {
+            return false;
+        }
+        let label = media::attachment_label(&part);
+        self.attachments.push(Attachment { id, label, part });
+        true
+    }
+
+    /// Removes a pending attachment by exact id, a unique id prefix, or a 1-based
+    /// index. Returns the removed label when something matched.
+    pub fn remove_attachment(&mut self, key: &str) -> Option<String> {
+        let key = key.trim();
+        if key.is_empty() {
+            return None;
+        }
+        if let Ok(index) = key.parse::<usize>() {
+            if (1..=self.attachments.len()).contains(&index) {
+                return Some(self.attachments.remove(index - 1).label);
+            }
+        }
+        let matches: Vec<usize> = self
+            .attachments
+            .iter()
+            .enumerate()
+            .filter(|(_, attachment)| attachment.id.starts_with(key))
+            .map(|(index, _)| index)
+            .collect();
+        match matches.as_slice() {
+            [index] => Some(self.attachments.remove(*index).label),
+            _ => None,
+        }
+    }
+
+    /// Takes every pending attachment's content part, leaving the list empty.
+    pub fn take_attachment_parts(&mut self) -> Vec<ContentPart> {
+        std::mem::take(&mut self.attachments)
+            .into_iter()
+            .map(|attachment| attachment.part)
+            .collect()
+    }
+
+    /// A one-line listing of the pending attachments for `/attach`.
+    pub fn attachment_listing(&self) -> String {
+        if self.attachments.is_empty() {
+            return "no attachments".to_string();
+        }
+        let mut out = String::from("pending attachments:\n");
+        for (index, attachment) in self.attachments.iter().enumerate() {
+            out.push_str(&format!(
+                "  {}. {}  {}\n",
+                index + 1,
+                attachment.id,
+                attachment.label
+            ));
+        }
+        out.push_str("remove one with /attach remove <id|n>, or clear with /attach clear");
+        out
+    }
+
     pub fn refresh_git_branch(&mut self) {
         self.git_branch = current_git_branch(&self.cwd);
     }
@@ -1263,6 +1336,39 @@ mod tests {
 
     fn test_app() -> App {
         App::new("gpt-4o".into(), ".".into(), Reasoning::Auto)
+    }
+
+    #[test]
+    fn attachments_dedupe_by_content_and_remove_by_id_or_index() {
+        let mut app = test_app();
+        let image = |data: &str| ContentPart::ImageUrl {
+            image_url: crate::llm::ImageUrl {
+                url: format!("data:image/png;base64,{data}"),
+                detail: None,
+            },
+        };
+
+        assert!(app.add_attachment(image("AAAA")));
+        assert!(
+            !app.add_attachment(image("AAAA")),
+            "the same image is not attached twice"
+        );
+        assert!(app.add_attachment(image("BBBB")));
+        assert_eq!(app.attachments.len(), 2);
+
+        // A unique id prefix removes one, and the remaining index is 1-based.
+        let id = app.attachments[0].id.clone();
+        assert_eq!(app.remove_attachment(&id[..6]).as_deref(), Some("png"));
+        assert_eq!(app.attachments.len(), 1);
+        assert_eq!(app.remove_attachment("1").as_deref(), Some("png"));
+        assert!(app.attachments.is_empty());
+        assert_eq!(app.remove_attachment("1"), None);
+        assert_eq!(app.remove_attachment("zzzz"), None);
+
+        app.add_attachment(image("CCCC"));
+        let parts = app.take_attachment_parts();
+        assert_eq!(parts.len(), 1);
+        assert!(app.attachments.is_empty());
     }
 
     #[test]

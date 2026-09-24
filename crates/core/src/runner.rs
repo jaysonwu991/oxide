@@ -6,7 +6,7 @@
 
 use crate::agent::{self, AgentEvent, Approver, Cancel, Runtime, Steering};
 use crate::config::Config;
-use crate::llm::Message;
+use crate::llm::{ContentPart, Message};
 use crate::lsp::LspManager;
 use crate::mcp::McpRegistry;
 use crate::media;
@@ -40,9 +40,15 @@ pub struct AgentRun {
 }
 
 /// Builds the user message, attaching inline images/PDFs referenced by the
-/// prompt and any explicit attachments.
-pub fn build_user_message(prompt: &str, cwd: &Path, attachments: &[PathBuf]) -> Result<Message> {
-    let mut parts = Vec::new();
+/// prompt, explicit attachment paths, and already-loaded media parts (the
+/// desktop sends pasted images as data URLs, which have no path on disk).
+pub fn build_user_message(
+    prompt: &str,
+    cwd: &Path,
+    attachments: &[PathBuf],
+    inline: &[ContentPart],
+) -> Result<Message> {
+    let mut parts: Vec<ContentPart> = inline.to_vec();
     for path in attachments {
         parts.push(media::load_attachment(path)?);
     }
@@ -114,6 +120,7 @@ pub fn begin_session(
     ephemeral: bool,
     prompt: &str,
     attachments: &[PathBuf],
+    inline: &[ContentPart],
 ) -> Result<(Vec<Message>, Option<SessionLog>)> {
     let log = match session {
         Some(log) => Some(log),
@@ -124,7 +131,7 @@ pub fn begin_session(
         Some(log) => log.messages()?,
         None => Vec::new(),
     };
-    let user = build_user_message(prompt, cwd, attachments)
+    let user = build_user_message(prompt, cwd, attachments, inline)
         .with_context(|| "building the user message")?;
     if let Some(log) = &log {
         log.append(&user)?;
