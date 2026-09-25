@@ -208,6 +208,43 @@ fn nonempty_stdout(output: std::process::Output) -> Option<String> {
     (!path.is_empty()).then_some(path)
 }
 
+/// Opens an external link in the platform browser. The transcript renders
+/// URLs as anchors, but the webview cannot navigate to a remote page, so a
+/// click is routed here instead of relying on `target="_blank"`.
+#[tauri::command]
+pub fn open_url(url: String) -> CmdResult<()> {
+    let url = url.trim();
+    if !is_openable_url(url) {
+        return Err("Only http(s) links can be opened".to_string());
+    }
+    open_in_browser(url).map_err(err)
+}
+
+fn is_openable_url(url: &str) -> bool {
+    let scheme = url.to_ascii_lowercase();
+    scheme.starts_with("https://") || scheme.starts_with("http://")
+}
+
+fn open_in_browser(url: &str) -> std::io::Result<()> {
+    #[cfg(target_os = "macos")]
+    let spawned = std::process::Command::new("open").arg(url).spawn();
+    // `cmd /C start` would let a URL with quotes or shell metacharacters be
+    // read as command text, so hand the URL to a handler that takes it as a
+    // plain argument instead.
+    #[cfg(target_os = "windows")]
+    let spawned = std::process::Command::new("rundll32")
+        .args(["url.dll,FileProtocolHandler", url])
+        .spawn();
+    #[cfg(all(unix, not(target_os = "macos")))]
+    let spawned = std::process::Command::new("xdg-open").arg(url).spawn();
+    #[cfg(not(any(unix, target_os = "windows")))]
+    let spawned: std::io::Result<std::process::Child> = Err(std::io::Error::new(
+        std::io::ErrorKind::Unsupported,
+        "opening links is not supported on this platform",
+    ));
+    spawned.map(|_| ())
+}
+
 #[tauri::command]
 pub async fn remove_project(
     id: String,
@@ -647,7 +684,7 @@ pub async fn create_project(
 
     // If no folders were provided or all failed, create an empty project entry
     let projects = manager.overview().map_err(err)?;
-    let added = project_added.unwrap_or_else(|| name);
+    let added = project_added.unwrap_or(name);
 
     Ok(AddProjectResult { projects, added })
 }
@@ -669,6 +706,16 @@ fn current_theme_name() -> String {
 mod tests {
     use super::*;
     use oxide_core::llm::{FunctionCall, ToolCall};
+
+    #[test]
+    fn open_url_only_accepts_web_links() {
+        assert!(is_openable_url("https://github.com/o/r/pull/7"));
+        assert!(is_openable_url("http://localhost:3000"));
+        assert!(is_openable_url("HTTPS://example.com"));
+        assert!(!is_openable_url("file:///etc/passwd"));
+        assert!(!is_openable_url("javascript:alert(1)"));
+        assert!(!is_openable_url(""));
+    }
 
     #[test]
     fn message_view_exposes_tool_calls_for_replay() {

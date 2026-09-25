@@ -1,5 +1,9 @@
 name: cli
 
+# Builds and publishes the CLI. The CLI and desktop release independently: a
+# `v*` tag ships the CLI while `desktop.yml` only runs for `desktop-v*` tags, so
+# an unchanged desktop is never rebuilt for a CLI release.
+
 on:
   push:
     tags: ["v*"]

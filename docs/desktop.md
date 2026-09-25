@@ -61,7 +61,8 @@ The window follows a Codex-style layout:
   creating a project never requires typing a name.
 - **Top bar** — the current thread title and the active provider.
 - **Conversation** — a centered 760px column. User messages are right-aligned
-  bubbles; assistant replies render Markdown. Tool calls are compact cards
+  bubbles; assistant replies render Markdown and links open in the system
+  browser (see [Rendering](#rendering)). Tool calls are compact cards
   showing the call (e.g. `bash cargo test --all`); they expand automatically for
   diffs and errors and can be clicked open/closed. `write`/`edit` results get a
   colored diff.
@@ -230,7 +231,9 @@ immediately and persists it.
 Assistant replies render as Markdown: headings, ordered/unordered lists
 (including `- [ ]` tasks), blockquotes, rules, pipe tables, fenced code with
 lightweight syntax highlighting (Rust, JS/TS, Python, Go, Bash, JSON), and
-inline emphasis/code/links. Tool results render as panels; `write`/`edit`
+inline emphasis/code/links. Bare `http(s)://` URLs are auto-linked too, and
+clicking any link opens it in the system browser — the Tauri webview cannot
+navigate to a remote page itself. Tool results render as panels; `write`/`edit`
 results include a colored diff.
 
 ## Packaging
@@ -253,15 +256,15 @@ notarization are automatic when the usual Developer ID variables are set:
 - **Linux**: no signing; `.deb`/`.rpm`/AppImage as-is.
 
 Without a Developer ID, `.github/workflows/desktop.yml` — which builds macOS
-(arm64 + x64), Linux, and Windows on a tag push and drafts a release — sets
-`APPLE_SIGNING_IDENTITY=-`, so Tauri **ad-hoc signs** the macOS bundle. The
-signature is valid, but the app is not notarized and macOS quarantines the
-download, so the first launch must be approved in **System Settings → Privacy &
-Security → Open Anyway**, or the app moved to `/Applications` and the quarantine
-cleared with `xattr -dr com.apple.quarantine /Applications/Oxide.app`. An
-unsigned bundle is instead rejected outright as *damaged* on Apple Silicon, so
-the fallback matters. Auto-update artifacts are not enabled yet (they need a
-signing key).
+(arm64 + x64), Linux, and Windows on a `desktop-v*` tag push and drafts a
+release — sets `APPLE_SIGNING_IDENTITY=-`, so Tauri **ad-hoc signs** the macOS
+bundle. The signature is valid, but the app is not notarized and macOS
+quarantines the download, so the first launch must be approved in **System
+Settings → Privacy & Security → Open Anyway**, or the app moved to
+`/Applications` and the quarantine cleared with
+`xattr -dr com.apple.quarantine /Applications/Oxide.app`. An unsigned bundle is
+instead rejected outright as *damaged* on Apple Silicon, so the fallback
+matters. Auto-update artifacts are not enabled yet (they need a signing key).
 
 ## Signing secrets
 
@@ -354,9 +357,10 @@ shell history.
 
 ## Release assets
 
-Each `v*` release carries prebuilt bundles for every platform. Pick the asset
-whose platform matches the machine (`<version>` is the release tag without the
-leading `v`, e.g. `0.16.1`):
+Each `desktop-v*` release carries prebuilt bundles for every platform. Pick the
+asset whose platform matches the machine (`<version>` is the release tag without
+the `desktop-v` prefix, e.g. `0.1.0`). The desktop app is versioned separately
+from the CLI, so a CLI release never rebuilds these bundles:
 
 | Asset | Platform |
 | --- | --- |
@@ -368,6 +372,6 @@ leading `v`, e.g. `0.16.1`):
 | `Oxide_<version>_x64-setup.exe` | Windows x64 (NSIS installer) |
 | `Oxide_<version>_x64_en-US.msi` | Windows x64 (MSI) |
 
-The same release also holds the CLI archives
-(`Oxide-v<version>-<platform>.tar.gz` and `Oxide-v<version>-win32-x64.zip`) plus
-`install.sh`/`install.ps1`; see the README's Installation section for the CLI.
+The CLI archives (`Oxide-v<version>-<platform>.tar.gz` and
+`Oxide-v<version>-win32-x64.zip`) plus `install.sh`/`install.ps1` live in the
+separate `v*` CLI releases, not here; see the README's Installation section.

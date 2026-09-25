@@ -92,13 +92,45 @@ function setThreadTitle(text) {
 
 // ---------- markdown ----------
 
+function anchor(href, label) {
+  const text = label == null ? escapeHtml(href) : label;
+  return `<a href="${escapeHtml(href)}" target="_blank" rel="noreferrer">${text}</a>`;
+}
+
+// A bare URL often ends a sentence, so trailing punctuation stays outside the
+// link and an unbalanced closing bracket is handed back to the surrounding text.
+function autolink(url, stash) {
+  let href = url.replace(/[.,;:!?]+$/, "");
+  let trail = url.slice(href.length);
+  while (href.endsWith(")") && href.split("(").length < href.split(")").length) {
+    href = href.slice(0, -1);
+    trail = ")" + trail;
+  }
+  return href ? stash(anchor(href)) + trail : url;
+}
+
 function inline(text) {
-  let s = escapeHtml(text);
-  s = s.replace(/`([^`]+)`/g, (_, code) => `<code>${code}</code>`);
-  s = s.replace(/\[([^\]]+)\]\(([^)\s]+)\)/g, '<a href="$2" target="_blank" rel="noreferrer">$1</a>');
+  const stashed = [];
+  const stash = (html) => {
+    stashed.push(html);
+    return `\u0000${stashed.length - 1}\u0000`;
+  };
+  // Links and code spans are stashed on the raw text (before escaping), so a
+  // URL is never folded into an HTML entity (`&lt;`, `&gt;`, `&amp;`) and an
+  // entity is never read as part of the URL. Whatever is left is escaped once,
+  // after the placeholders are in place.
+  let s = String(text);
+  s = s.replace(/`([^`]+)`/g, (_, code) => stash(`<code>${escapeHtml(code)}</code>`));
+  s = s.replace(/\[([^\]]+)\]\(([^)\s]+)\)/g, (_, label, href) =>
+    stash(anchor(href, escapeHtml(label))),
+  );
+  s = s.replace(/<(https?:\/\/[^\s<>]+)>/g, (_, url) => stash(anchor(url)));
+  s = s.replace(/\bhttps?:\/\/[^\s<>"'`]+/g, (url) => autolink(url, stash));
+  s = escapeHtml(s);
   s = s.replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>");
   s = s.replace(/(^|[^*])\*([^*\n]+)\*/g, "$1<em>$2</em>");
   s = s.replace(/~~([^~]+)~~/g, "<del>$1</del>");
+  s = s.replace(/\u0000(\d+)\u0000/g, (_, i) => stashed[Number(i)]);
   return s;
 }
 
@@ -1732,6 +1764,18 @@ function init() {
     }
   });
   el("help-close").onclick = () => (el("help-modal").hidden = true);
+
+  // The webview cannot navigate to a remote page, so a link click opens the
+  // platform browser through the host instead of reloading the app window.
+  document.addEventListener("click", (event) => {
+    const target = event.target;
+    const link = target instanceof Element ? target.closest("a[href]") : null;
+    if (!link) return;
+    event.preventDefault();
+    invoke("open_url", { url: link.getAttribute("href") }).catch((error) =>
+      setStatus(`Could not open link: ${error}`),
+    );
+  });
 
   el("prompt").addEventListener("input", () => {
     el("prompt").style.height = "auto";

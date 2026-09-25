@@ -375,9 +375,12 @@ It also has an interactive approval prompt for `ask` rules (with per-project
 `auth.json`/`config.json` the CLI uses, a model picker and reasoning control,
 graceful cancel and mid-run steering, session rename/delete, colored
 diffs for `write`/`edit` results, Markdown with tables and syntax highlighting,
+clickable links that open in the system browser,
 token/cost usage in the footer, and built-in Dark/Light themes (default Dark)
-that read the same `.oxide/themes` files as the CLI. Bundle it with
-`npx @tauri-apps/cli@^2 build --features gui`; see
+that read the same `.oxide/themes` files as the CLI. Prebuilt bundles are
+drafted under `desktop-v*` releases on the
+[releases page](https://github.com/jaysonwu991/oxide/releases); to build from
+source, bundle it with `npx @tauri-apps/cli@^2 build --features gui`. See
 [docs/desktop.md](docs/desktop.md) for the full layout, shortcuts, signing, and
 packaging details.
 
