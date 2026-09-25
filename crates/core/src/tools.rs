@@ -58,6 +58,12 @@ pub fn canonical_tool_name(name: &str) -> &str {
     }
 }
 
+/// Determines if a tool mutates the workspace (state-changing) or only reads.
+/// Read-only tools can be parallelized safely; state-changing tools should run sequentially.
+pub fn tool_is_readonly(canonical_name: &str) -> bool {
+    matches!(canonical_name, "read_file" | "list_dir" | "glob" | "grep" | "webfetch" | "diagnostics")
+}
+
 /// A line-numbered diff of a file edit, carried alongside the tool result for
 /// display only. It is never sent to the model (the text result is).
 #[derive(Debug, Clone, Default, serde::Serialize)]
