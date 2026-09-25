@@ -50,12 +50,15 @@ logic build and test without it.
 
 The window follows a Codex-style layout:
 
-- **Sidebar** — the `Oxide` brand, a **New task** button, a project switcher
-  (dropdown with add/remove and a searchable project list), the thread list for
-  the selected project (or every project via **All projects**), and a footer
-  with **Connect**, project trust, theme, tool approvals, and help. **Add** takes
-  a path (`~` and relative paths resolve against the home directory) or opens
-  the platform folder chooser when the field is empty.
+- **Sidebar** — the `Oxide` brand, a **New task** button, the **Projects**
+  tree, and a footer pinned to the bottom with **Connect**, project trust,
+  theme, tool approvals, and help. The tree groups each project's sessions
+  under it, and every project and session row carries a `✕` that removes it
+  (see [Multiple projects](#multiple-projects-cross-repo)); hovering a session
+  shows its `⌘1`…`⌘9` shortcut. The **+ New** button in the Projects header
+  opens the **Create project** dialog: pick one or more source folders and the
+  **Project name** defaults to the first folder's basename (still editable), so
+  creating a project never requires typing a name.
 - **Top bar** — the current thread title and the active provider.
 - **Conversation** — a centered 760px column. User messages are right-aligned
   bubbles; assistant replies render Markdown. Tool calls are compact cards
@@ -75,6 +78,28 @@ The window follows a Codex-style layout:
 
 ```sh
 cargo run -p oxide-desktop --features gui
+# or run the binary directly
+./target/debug/oxide-desktop
+```
+
+The front-end (`ui/`) is embedded into the binary at compile time, so editing
+`crates/desktop/ui/app.js`, `style.css`, or `index.html` requires a **rebuild**
+before the change appears — a running app is never hot-reloaded. `tauri-build`
+emits `rerun-if-changed` for the `ui/` directory, so a UI edit marks
+`oxide-desktop` dirty and the next `cargo build` re-embeds the assets.
+
+To refresh the app you launch from `/Applications` (or any installed bundle),
+build a bundle, replace it, and ad-hoc sign it if macOS complains:
+
+```sh
+# quickest test — rebuilds and runs the dev binary
+cargo run -p oxide-desktop --features gui
+
+# to refresh the installed .app
+npx @tauri-apps/cli@^2 build --features gui --debug   # faster, unsigned dev bundle
+# quit Oxide, then:
+cp -R target/debug/bundle/macos/oxide.app /Applications/Oxide.app
+codesign --force --deep --sign - /Applications/Oxide.app   # only if macOS complains
 ```
 
 ## Sharing configuration with the CLI
@@ -112,11 +137,19 @@ sidebar shows two kinds of project:
   added (e.g. opened only from the terminal). They are derived by grouping
   `SessionLog::list_all()` by the session's `cwd`.
 
-Each row reports its session count and latest activity. Selecting one lists that
-project's sessions (`SessionLog::list`) with previews; the **All** toggle in the
-sessions header switches to the flat cross-repo list from `all_sessions`, where
-opening a session also switches to its project. Sessions can be renamed
-(`SessionLog::rename`) and deleted (`SessionLog::delete`) from the list.
+Each row shows its session count. Clicking a project selects it and reveals its
+sessions nested underneath; clicking a session opens that thread (switching to
+its project first when the selection differs). The transcript is loaded with
+`session_messages` (`SessionLog::open_id`).
+
+The `✕` on a project row removes an **Added** project from the registry
+(`remove_project`), keeping its sessions; for a **Discovered** project it
+deletes that project's sessions, since those sessions are the only reason the
+row exists. The `✕` on a session row deletes just that thread
+(`SessionLog::delete`). Both ask for confirmation, and removing a deleted
+project's last session drops its row on the next refresh. A stray discovered row
+such as `oxide-old` simply means a session was recorded while the CLI ran in
+that directory; it is not a project you added.
 
 ## Agent turns
 
@@ -175,7 +208,9 @@ colors (`accent`, `user`, `assistant`, `success`, `tool`, `error`, `info`,
 `tool_pending_bg`, `thinking_*`). A custom theme file overrides only the slots it
 sets, on top of Dark. `set_theme` writes the `theme` key in `config.json`, which
 the CLI already reads as its startup default, and the choice is re-applied on
-launch.
+launch. The **Theme** dialog lists each theme with a swatch strip of its key
+colors, the theme name, and a ✓ on the active one; selecting a row applies it
+immediately and persists it.
 
 ## Keyboard shortcuts
 
@@ -187,6 +222,7 @@ launch.
 | `Shift+Tab` / `Ctrl+R` | Cycle reasoning |
 | `Ctrl+K` | Model picker |
 | `Ctrl+/` | Shortcut help |
+| `⌘1`…`⌘9` / `Ctrl+1`…`9` | Open the session with that number in the Projects tree |
 | `Escape` | Close any dialog |
 
 ## Rendering
