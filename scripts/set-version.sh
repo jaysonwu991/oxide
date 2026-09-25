@@ -7,7 +7,13 @@
 # `tauri.conf.json` (which duplicates it), then it is up to the caller to
 # refresh `Cargo.lock` (e.g. `cargo update --workspace`).
 #
-# Usage: scripts/set-version.sh v1.2.3   (a leading `v` is optional)
+# A tag may carry a component prefix so the CLI and desktop release
+# independently: `v1.2.3` / `cli-v1.2.3` for the CLI and `desktop-v1.2.3` for
+# the desktop app. A bare `1.2.3` is also accepted.
+#
+# Usage: scripts/set-version.sh v1.2.3
+#        scripts/set-version.sh cli-v1.2.3
+#        scripts/set-version.sh desktop-v1.2.3
 
 set -euo pipefail
 
@@ -17,7 +23,12 @@ if [ -z "$raw" ]; then
   exit 2
 fi
 
-version="${raw#v}"
+version="${raw}"
+case "$version" in
+  cli-*) version="${version#cli-}" ;;
+  desktop-*) version="${version#desktop-}" ;;
+esac
+version="${version#v}"
 if ! printf '%s' "$version" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+([-+][0-9A-Za-z.-]+)?$'; then
   echo "error: '$raw' is not a semver version (expected like v1.2.3)" >&2
   exit 2

@@ -1,15 +1,18 @@
 name: desktop
 
-# Builds the desktop app for macOS, Linux, and Windows. Signing and notarization
-# happen automatically when the corresponding secrets are configured; without
-# them the macOS bundle is ad-hoc signed (so it still launches after Gatekeeper
-# approval) and the other platforms are produced unsigned.
+# Builds the desktop app for macOS, Linux, and Windows. It releases
+# independently of the CLI: only a `desktop-v*` tag builds and drafts a desktop
+# release, so a CLI `v*` tag never forces a desktop rebuild. Signing and
+# notarization happen automatically when the corresponding secrets are
+# configured; without them the macOS bundle is ad-hoc signed (so it still
+# launches after Gatekeeper approval) and the other platforms are produced
+# unsigned.
 
 on:
   workflow_dispatch:
   push:
     tags:
-      - "v*"
+      - "desktop-v*"
 
 jobs:
   build:
@@ -56,12 +59,14 @@ jobs:
           node-version: 20
 
       - name: Set version from tag
-        if: startsWith(github.ref, 'refs/tags/v')
+        id: version
+        if: startsWith(github.ref, 'refs/tags/desktop-v')
         shell: bash
         run: |
           set -euo pipefail
           ./scripts/set-version.sh "${GITHUB_REF_NAME}"
           cargo update --workspace
+          echo "value=${GITHUB_REF_NAME#desktop-}" >> "${GITHUB_OUTPUT}"
 
       # Only export signing variables that actually have a value: an unset
       # GitHub secret becomes an empty string, which Tauri treats as "set" and
@@ -137,7 +142,7 @@ jobs:
         with:
           projectPath: crates/desktop
           args: ${{ matrix.args }}
-          tagName: ${{ github.ref_name }}
-          releaseName: "Oxide ${{ github.ref_name }}"
+          tagName: ${{ startsWith(github.ref, 'refs/tags/desktop-v') && github.ref_name || '' }}
+          releaseName: "Oxide Desktop ${{ steps.version.outputs.value || github.ref_name }}"
           releaseDraft: true
           prerelease: false
