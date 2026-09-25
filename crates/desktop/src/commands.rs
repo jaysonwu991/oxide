@@ -611,11 +611,16 @@ pub async fn create_project(
     let mut manager = state.manager.lock().await;
     let mut project_added = None;
 
-    // Add each source folder as a project
+    // Add each source folder as a project. The dialog's name labels the first
+    // folder; any extra folders keep their own basename so one name is never
+    // applied to unrelated folders.
     if let Some(folder_list) = folders {
+        let mut first = true;
         for folder in folder_list {
             if !folder.is_empty() {
-                match manager.add_project(&expand_project_path(&folder)) {
+                let custom = if first { Some(name.as_str()) } else { None };
+                first = false;
+                match manager.add_project_with_name(&expand_project_path(&folder), custom) {
                     Ok(project) => {
                         if project_added.is_none() {
                             project_added = Some(project.id);

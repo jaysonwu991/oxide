@@ -123,8 +123,16 @@ impl DesktopManager {
     }
 
     /// Adds a folder, canonicalizing it so the same project added twice (or via
-    /// a symlink) resolves to one entry.
+    /// a symlink) resolves to one entry. The display name defaults to the
+    /// folder's basename; [`add_project_with_name`] overrides it.
     pub fn add_project(&mut self, path: &Path) -> Result<Project> {
+        self.add_project_with_name(path, None)
+    }
+
+    /// Like [`add_project`], but stores a caller-supplied display name (the
+    /// Create project dialog's field). A blank name keeps the folder basename.
+    pub fn add_project_with_name(&mut self, path: &Path, name: Option<&str>) -> Result<Project> {
+        let custom = name.map(str::trim).filter(|name| !name.is_empty());
         let canonical = path
             .canonicalize()
             .with_context(|| format!("resolving {}", path.display()))?;
@@ -137,6 +145,9 @@ impl DesktopManager {
             .iter_mut()
             .find(|project| project.path == canonical)
         {
+            if let Some(name) = custom {
+                existing.name = name.to_string();
+            }
             existing.last_opened_at = Some(now_secs());
             let found = existing.clone();
             self.persist()?;
@@ -144,7 +155,9 @@ impl DesktopManager {
         }
         let project = Project {
             id: canonical.to_string_lossy().to_string(),
-            name: display_name(&canonical),
+            name: custom
+                .map(str::to_string)
+                .unwrap_or_else(|| display_name(&canonical)),
             path: canonical,
             added_at: now_secs(),
             last_opened_at: Some(now_secs()),
@@ -420,6 +433,35 @@ mod tests {
         // Persisted across reloads.
         let reloaded = DesktopManager::load_from(store).unwrap();
         assert_eq!(reloaded.registered().len(), 1);
+
+        std::fs::remove_dir_all(&dir).ok();
+        let _ = std::fs::remove_dir_all(manager.store_path().parent().unwrap());
+    }
+
+    #[test]
+    fn add_with_name_overrides_the_folder_basename() {
+        let store = temp_store();
+        let mut manager = DesktopManager::load_from(store).unwrap();
+        let dir = std::env::temp_dir().join(format!("oxide_proj_named_{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+
+        let project = manager
+            .add_project_with_name(&dir, Some("My Blog"))
+            .unwrap();
+        assert_eq!(project.name, "My Blog");
+        assert_eq!(manager.registered()[0].name, "My Blog");
+
+        // A blank name falls back to the folder basename.
+        let id = project.id.clone();
+        assert!(manager.remove_project(&id).unwrap());
+        let unnamed = manager.add_project_with_name(&dir, Some("   ")).unwrap();
+        assert_ne!(unnamed.name, "   ");
+
+        // Re-adding an existing entry with a name renames it.
+        let renamed = manager
+            .add_project_with_name(&dir, Some("Renamed"))
+            .unwrap();
+        assert_eq!(renamed.name, "Renamed");
 
         std::fs::remove_dir_all(&dir).ok();
         let _ = std::fs::remove_dir_all(manager.store_path().parent().unwrap());

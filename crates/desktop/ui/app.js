@@ -1713,6 +1713,21 @@ function clearSelectedProject() {
   resetTranscript();
 }
 
+// True when nothing is selected or the selected project is still in the tree.
+function selectedProjectStillListed() {
+  return !state.project || state.projects.some((project) => project.path === state.project);
+}
+
+// After a deletion, reload the tree and drop the selection if its project no
+// longer exists, so the composer cannot start a turn against a removed row.
+async function refreshAfterRemoval() {
+  await loadProjects();
+  if (!selectedProjectStillListed()) {
+    clearSelectedProject();
+    loadTheme();
+  }
+}
+
 async function removeProject(project) {
   if (project.registered) {
     const ok = await confirmDialog(
@@ -1722,7 +1737,10 @@ async function removeProject(project) {
     );
     if (!ok) return;
     state.projects = await invoke("remove_project", { id: project.id });
-    if (state.project === project.path) clearSelectedProject();
+    if (!selectedProjectStillListed()) {
+      clearSelectedProject();
+      loadTheme();
+    }
     renderProjectsTree();
     return;
   }
@@ -1739,8 +1757,7 @@ async function removeProject(project) {
   for (const session of sessions) {
     await invoke("delete_session", { project: session.cwd, id: session.id });
   }
-  if (state.project === project.path) clearSelectedProject();
-  await loadProjects();
+  await refreshAfterRemoval();
 }
 
 async function removeSession(session) {
@@ -1753,5 +1770,5 @@ async function removeSession(session) {
   if (!ok) return;
   await invoke("delete_session", { project: session.cwd, id: session.id });
   if (state.session === session.id) resetTranscript();
-  await loadProjects();
+  await refreshAfterRemoval();
 }
