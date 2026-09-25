@@ -1123,7 +1123,9 @@ fn range_len(value: &Value) -> Option<usize> {
     let mut numbers = items.iter().filter_map(int_value);
     let first = numbers.next()?;
     let last = numbers.next()?;
-    (last >= first).then_some(last - first + 1)
+    // `checked_sub` rejects a reversed range and `checked_add` a span that
+    // would overflow, so a malformed model argument cannot panic `read`.
+    last.checked_sub(first)?.checked_add(1)
 }
 
 /// Like [`int_arg`], but distinguishes an absent value from one that is present
@@ -3156,6 +3158,15 @@ mod tests {
         assert!(out.text.contains("3|three"), "{}", out.text);
         assert!(!out.text.contains("1|one"), "{}", out.text);
         assert!(!out.text.contains("4|four"), "{}", out.text);
+
+        // A reversed or overflowing range must not panic; the first number is
+        // still the offset and the page falls back to the default span.
+        let out = read_file(&dir, &json!({ "path": "a.txt", "offset": [3, 2] })).unwrap();
+        assert!(out.text.contains("3|three"), "{}", out.text);
+        assert!(!out.text.contains("1|one"), "{}", out.text);
+
+        let out = read_file(&dir, &json!({ "path": "a.txt", "offset": [0, u64::MAX] })).unwrap();
+        assert!(out.text.contains("1|one"), "{}", out.text);
 
         std::fs::remove_dir_all(&dir).ok();
     }
