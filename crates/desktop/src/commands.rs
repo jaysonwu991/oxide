@@ -596,6 +596,44 @@ pub async fn set_theme(project: String, name: String) -> CmdResult<Value> {
     Ok(json!({ "name": theme.name, "colors": theme.colors }))
 }
 
+/// Creates a new project with the given name and adds it to the registry.
+/// Optionally accepts source folders to add.
+#[tauri::command]
+pub async fn create_project(
+    name: String,
+    folders: Option<Vec<String>>,
+    state: State<'_, DesktopState>,
+) -> CmdResult<AddProjectResult> {
+    if name.trim().is_empty() {
+        return Err("Project name cannot be empty".to_string());
+    }
+
+    let mut manager = state.manager.lock().await;
+    let mut project_added = None;
+
+    // Add each source folder as a project
+    if let Some(folder_list) = folders {
+        for folder in folder_list {
+            if !folder.is_empty() {
+                match manager.add_project(&expand_project_path(&folder)) {
+                    Ok(project) => {
+                        if project_added.is_none() {
+                            project_added = Some(project.id);
+                        }
+                    }
+                    Err(e) => return Err(format!("Failed to add folder {}: {}", folder, e)),
+                }
+            }
+        }
+    }
+
+    // If no folders were provided or all failed, create an empty project entry
+    let projects = manager.overview().map_err(err)?;
+    let added = project_added.unwrap_or_else(|| name);
+
+    Ok(AddProjectResult { projects, added })
+}
+
 fn current_theme_name() -> String {
     std::fs::read_to_string(Config::config_path())
         .ok()

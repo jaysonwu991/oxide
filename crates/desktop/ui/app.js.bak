@@ -446,7 +446,7 @@ function renderProjects() {
       remove.onclick = async (event) => {
         event.stopPropagation();
         state.projects = await invoke("remove_project", { id: project.id });
-        renderProjectsTree(); // Update tree view instead of dropdown
+        renderProjects();
       };
       row.appendChild(remove);
     }
@@ -496,7 +496,7 @@ async function addProject() {
     state.projects = result.projects;
     input.value = "";
     setAddError("");
-    renderProjectsTree(); // Update tree view instead of dropdown
+    renderProjects();
     const added = state.projects.find((project) => project.id === result.added);
     if (added) {
       toggleDropdown(false);
@@ -536,7 +536,7 @@ async function selectProject(project) {
   el("prompt").disabled = false;
   el("trust-modal").hidden = true;
   updateTrustButton();
-  renderProjectsTree(); // Update tree view instead of dropdown
+  renderProjects();
   resetTranscript();
   await Promise.all([loadInfo(), loadSessions(), loadTheme()]);
 }
@@ -706,7 +706,7 @@ function renderSessions(sessions, crossRepo) {
         state.projectName = baseName(session.cwd);
         el("project-current").textContent = state.projectName;
         el("new-chat").disabled = false;
-        renderProjectsTree(); // Update tree view instead of dropdown
+        renderProjects();
         await loadInfo();
       }
       openSession(session);
@@ -1538,7 +1538,7 @@ async function saveCreateProject() {
     });
     state.projects = result.projects;
     el("create-project-modal").hidden = true;
-    renderProjectsTree(); // Update tree view instead of dropdown
+    renderProjects();
     const added = state.projects.find((project) => project.id === result.added);
     if (added) {
       toggleDropdown(false);
@@ -1555,8 +1555,6 @@ function init() {
     if (event.key === "Enter") addProject();
   });
   el("create-project-btn").onclick = openCreateProject;
-  const createBtnTree = el("create-project-btn-tree");
-  if (createBtnTree) createBtnTree.onclick = openCreateProject;
   el("browse-projects-btn").onclick = () => el("project-path").focus();
   el("create-project-add-folder").onclick = addCreateProjectFolder;
   el("create-project-cancel").onclick = () => (el("create-project-modal").hidden = true);
