@@ -421,7 +421,7 @@ function clearWelcome() {
 async function loadProjects() {
   try {
     state.projects = await invoke("list_projects");
-    renderProjects();
+    await loadSessions(); // This will also call renderProjectsTree
   } catch (error) {
     setStatus(`Failed to load projects: ${error}`);
   }
@@ -446,7 +446,7 @@ function renderProjects() {
       remove.onclick = async (event) => {
         event.stopPropagation();
         state.projects = await invoke("remove_project", { id: project.id });
-        renderProjects();
+        renderProjectsTree(); // Update tree view instead of dropdown
       };
       row.appendChild(remove);
     }
@@ -496,7 +496,7 @@ async function addProject() {
     state.projects = result.projects;
     input.value = "";
     setAddError("");
-    renderProjects();
+    renderProjectsTree(); // Update tree view instead of dropdown
     const added = state.projects.find((project) => project.id === result.added);
     if (added) {
       toggleDropdown(false);
@@ -536,7 +536,7 @@ async function selectProject(project) {
   el("prompt").disabled = false;
   el("trust-modal").hidden = true;
   updateTrustButton();
-  renderProjects();
+  renderProjectsTree(); // Update tree view instead of dropdown
   resetTranscript();
   await Promise.all([loadInfo(), loadSessions(), loadTheme()]);
 }
@@ -620,12 +620,11 @@ function updateChips() {
 
 async function loadSessions() {
   try {
-    state.sessions = state.allView
-      ? await invoke("all_sessions")
-      : state.project
-        ? await invoke("list_sessions", { project: state.project })
-        : [];
-    renderSessions(state.sessions, state.allView);
+    // Always load all sessions for tree view
+    state.sessions = await invoke("all_sessions");
+    renderProjectsTree();
+    // Keep old renderSessions for backwards compat if needed
+    renderSessions(state.sessions, true);
   } catch (error) {
     setStatus(`Failed to load threads: ${error}`);
   }
@@ -707,7 +706,7 @@ function renderSessions(sessions, crossRepo) {
         state.projectName = baseName(session.cwd);
         el("project-current").textContent = state.projectName;
         el("new-chat").disabled = false;
-        renderProjects();
+        renderProjectsTree(); // Update tree view instead of dropdown
         await loadInfo();
       }
       openSession(session);
@@ -1184,6 +1183,7 @@ async function answerApproval(decision) {
 const OVERLAYS = [
   "approval",
   "connect-modal",
+  "create-project-modal",
   "models-modal",
   "themes-modal",
   "permissions-modal",
@@ -1464,11 +1464,103 @@ async function initEvents() {
   await listen("approval-request", (event) => showApproval(event.payload || {}));
 }
 
+// Create project modal state
+const createProjectState = {
+  folders: [],
+};
+
+function openCreateProject() {
+  createProjectState.folders = [];
+  el("create-project-name").value = "";
+  el("create-project-folders").innerHTML = "";
+  el("create-project-error").hidden = true;
+  el("create-project-modal").hidden = false;
+  el("create-project-name").focus();
+}
+
+async function addCreateProjectFolder() {
+  try {
+    const path = (await invoke("pick_folder")) || "";
+    if (path && !createProjectState.folders.includes(path)) {
+      createProjectState.folders.push(path);
+      renderCreateProjectFolders();
+    }
+  } catch (error) {
+    showCreateProjectError(`Could not open folder chooser: ${error}`);
+  }
+}
+
+function removeCreateProjectFolder(path) {
+  createProjectState.folders = createProjectState.folders.filter((f) => f !== path);
+  renderCreateProjectFolders();
+}
+
+function renderCreateProjectFolders() {
+  const container = el("create-project-folders");
+  container.innerHTML = "";
+  for (const folder of createProjectState.folders) {
+    const item = document.createElement("div");
+    item.className = "folder-item";
+    const pathEl = document.createElement("span");
+    pathEl.className = "folder-item-path";
+    pathEl.textContent = folder;
+    const removeBtn = document.createElement("button");
+    removeBtn.className = "folder-item-remove ghost small";
+    removeBtn.textContent = "Remove";
+    removeBtn.onclick = () => removeCreateProjectFolder(folder);
+    item.appendChild(pathEl);
+    item.appendChild(removeBtn);
+    container.appendChild(item);
+  }
+}
+
+function showCreateProjectError(message) {
+  const box = el("create-project-error");
+  if (!box) return;
+  box.textContent = message || "";
+  box.hidden = !message;
+}
+
+async function saveCreateProject() {
+  const name = el("create-project-name").value.trim();
+  if (!name) {
+    showCreateProjectError("Project name is required");
+    return;
+  }
+  if (createProjectState.folders.length === 0) {
+    showCreateProjectError("At least one source folder is required");
+    return;
+  }
+  try {
+    const result = await invoke("create_project", {
+      name,
+      folders: createProjectState.folders,
+    });
+    state.projects = result.projects;
+    el("create-project-modal").hidden = true;
+    renderProjectsTree(); // Update tree view instead of dropdown
+    const added = state.projects.find((project) => project.id === result.added);
+    if (added) {
+      toggleDropdown(false);
+      selectProject(added);
+    }
+  } catch (error) {
+    showCreateProjectError(`Could not create project: ${error}`);
+  }
+}
+
 function init() {
   el("add-project").onclick = addProject;
   el("project-path").addEventListener("keydown", (event) => {
     if (event.key === "Enter") addProject();
   });
+  el("create-project-btn").onclick = openCreateProject;
+  const createBtnTree = el("create-project-btn-tree");
+  if (createBtnTree) createBtnTree.onclick = openCreateProject;
+  el("browse-projects-btn").onclick = () => el("project-path").focus();
+  el("create-project-add-folder").onclick = addCreateProjectFolder;
+  el("create-project-cancel").onclick = () => (el("create-project-modal").hidden = true);
+  el("create-project-save").onclick = saveCreateProject;
   el("project-menu").onclick = (event) => {
     event.stopPropagation();
     toggleDropdown();
@@ -1589,3 +1681,117 @@ function init() {
 }
 
 init();
+
+// ============================================================================
+// CodeX-style tree view rendering
+// ============================================================================
+
+async function renderProjectsTree() {
+  const container = el("projects-tree");
+  if (!container) return;
+  
+  container.innerHTML = "";
+  
+  if (!state.projects || !state.projects.length) {
+    container.innerHTML = '<div class="empty" style="margin:12px; font-size:12px; color:var(--faint);">No projects yet. Click "+ New" to add one.</div>';
+    return;
+  }
+  
+  // Group sessions by project
+  const sessionsByProject = {};
+  for (const project of state.projects) {
+    sessionsByProject[project.path] = [];
+  }
+  
+  if (state.sessions && state.sessions.length) {
+    for (const session of state.sessions) {
+      if (sessionsByProject[session.cwd]) {
+        sessionsByProject[session.cwd].push(session);
+      }
+    }
+  }
+  
+  let globalShortcutIndex = 1;
+  
+  for (const project of state.projects) {
+    const projectGroup = document.createElement("div");
+    projectGroup.className = "project-group";
+    
+    // Project header/button
+    const projectItem = document.createElement("div");
+    projectItem.className = "project-item" + (project.path === state.project ? " active" : "");
+    
+    const icon = document.createElement("div");
+    icon.className = "icon";
+    icon.textContent = "📁";
+    projectItem.appendChild(icon);
+    
+    const name = document.createElement("div");
+    name.className = "name";
+    name.textContent = project.name;
+    projectItem.appendChild(name);
+    
+    const count = document.createElement("div");
+    count.className = "count";
+    const sessionsForProject = sessionsByProject[project.path] || [];
+    count.textContent = sessionsForProject.length;
+    projectItem.appendChild(count);
+    
+    projectItem.onclick = () => {
+      selectProject(project);
+    };
+    
+    projectGroup.appendChild(projectItem);
+    
+    // Sessions for this project
+    if (sessionsForProject.length > 0) {
+      const sessionsContainer = document.createElement("div");
+      sessionsContainer.className = "project-sessions";
+      
+      for (const session of sessionsForProject) {
+        const sessionItem = document.createElement("div");
+        sessionItem.className = "session-item" + (session.id === state.session ? " active" : "");
+        
+        const sessionName = document.createElement("div");
+        sessionName.className = "name";
+        sessionName.textContent = session.name || session.preview || session.id.slice(0, 8);
+        sessionItem.appendChild(sessionName);
+        
+        const shortcut = document.createElement("div");
+        shortcut.className = "shortcut";
+        shortcut.textContent = "⌘" + globalShortcutIndex;
+        sessionItem.appendChild(shortcut);
+        
+        sessionItem.onclick = () => {
+          selectSessionFromTree(session);
+        };
+        
+        sessionsContainer.appendChild(sessionItem);
+        globalShortcutIndex++;
+        if (globalShortcutIndex > 9) globalShortcutIndex = 1;
+      }
+      
+      projectGroup.appendChild(sessionsContainer);
+    }
+    
+    container.appendChild(projectGroup);
+  }
+}
+
+async function selectSessionFromTree(session) {
+  if (!session) return;
+  
+  // Switch to the session's project first if different
+  const project = state.projects.find((p) => p.path === session.cwd);
+  if (project && project.path !== state.project) {
+    state.project = project.path;
+    state.session = null;
+    await loadInfo();
+  }
+  
+  // Now select the session
+  state.session = session.id;
+  window.history.replaceState({}, "", `?session=${session.id}`);
+  await Promise.all([loadInfo(), loadTheme()]);
+  renderProjectsTree();
+}

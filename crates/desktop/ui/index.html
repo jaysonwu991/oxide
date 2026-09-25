@@ -13,26 +13,13 @@
         <button id="new-chat" class="new-task" disabled>New task</button>
       </div>
 
-      <div class="project-picker">
-        <button id="project-menu" class="project-btn">
-          <span id="project-current">Select a project</span>
-          <span class="chev">⌄</span>
-        </button>
-        <div id="project-dropdown" class="dropdown" hidden>
-          <div class="dropdown-add">
-            <input id="project-path" placeholder="Add a folder…" spellcheck="false" />
-            <button id="add-project" class="ghost small">Add</button>
-          </div>
-          <div id="add-project-error" class="add-error" hidden></div>
-          <div id="projects" class="projects"></div>
+      <div class="projects-section">
+        <div class="projects-header">
+          <span>Projects</span>
+          <button id="create-project-btn-tree" class="ghost small" title="Create a new project">+ New</button>
         </div>
+        <div id="projects-tree" class="projects-tree"></div>
       </div>
-
-      <div class="threads-head">
-        <span>Threads</span>
-        <button id="toggle-all" class="ghost small" title="Show threads from every project">All projects</button>
-      </div>
-      <div id="sessions" class="threads"></div>
 
       <div class="sidebar-foot">
         <button id="connect" class="foot-btn">Connect</button>
@@ -216,7 +203,28 @@
       </div>
     </div>
 
+    <div id="create-project-modal" class="overlay" hidden>
+      <div class="dialog">
+        <h2>Create project</h2>
+        <div class="field">
+          <label for="create-project-name">Project name</label>
+          <input id="create-project-name" placeholder="Project name" spellcheck="false" autocomplete="off" />
+        </div>
+        <div class="field">
+          <label>Source folders</label>
+          <div id="create-project-folders" class="folder-list"></div>
+          <button id="create-project-add-folder" class="ghost small">+ Add a folder</button>
+        </div>
+        <div id="create-project-error" class="add-error" hidden></div>
+        <div class="dialog-actions">
+          <button id="create-project-cancel" class="ghost">Cancel</button>
+          <button id="create-project-save" class="primary">Create project</button>
+        </div>
+      </div>
+    </div>
+
     <input id="attach-input" type="file" accept="image/*,application/pdf" multiple hidden />
+    <input id="folder-picker-input" type="file" webkitdirectory directory multiple hidden />
 
     <script src="app.js"></script>
   </body>

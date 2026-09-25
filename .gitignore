@@ -25,3 +25,4 @@
 
 # Session dumps captured into the repo root
 /*.jsonl
+/sessions/
