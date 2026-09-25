@@ -90,6 +90,7 @@ input:focus, textarea:focus { outline: none; border-color: var(--dim); }
 }
 .sidebar-resizer:hover,
 body.resizing .sidebar-resizer { background: var(--border); }
+.sidebar-resizer:focus-visible { background: var(--border); outline: 2px solid var(--accent); outline-offset: -2px; }
 body.resizing { cursor: col-resize; user-select: none; }
 
 .sidebar-top { padding: 14px 12px 8px; }

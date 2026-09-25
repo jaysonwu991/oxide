@@ -613,6 +613,9 @@ function scrollDown() {
 }
 
 function resetTurn() {
+  for (const tool of state.tools) {
+    if (tool.timer) clearInterval(tool.timer);
+  }
   state.currentAssistant = null;
   state.tools = [];
   state.currentThinking = null;
@@ -978,6 +981,7 @@ function createToolCard(name, args) {
     live: "",
     expanded: false,
     started: performance.now(),
+    timer: null,
   };
   head.onclick = () => toggleTool(tool);
   block.append(head, pre, hint);
@@ -992,13 +996,30 @@ function startTool(name, args) {
   const tool = createToolCard(name, args);
   el("transcript").appendChild(tool.block);
   state.tools.push(tool);
+  startToolTimer(tool);
   scrollDown();
   return tool;
+}
+
+/// Keeps a running card honest: a spinner plus how long the tool has been
+/// going, so a long call is not a static "running".
+function startToolTimer(tool) {
+  tool.timer = setInterval(() => {
+    if (tool.done) return;
+    const elapsed = Math.max(0, Math.round(performance.now() - tool.started));
+    tool.tstate.innerHTML = `<span class="spinner"></span>${formatDuration(elapsed)}`;
+  }, 1000);
+  // Timers must not keep a headless test process alive.
+  if (tool.timer && typeof tool.timer.unref === "function") tool.timer.unref();
 }
 
 /// Marks a card finished and paints the collapsed preview (or the full result
 /// when it carries a diff). Shared by the live stream and the stored transcript.
 function finishTool(tool, output, { isError = false, diff = null, elapsed = 0 } = {}) {
+  if (tool.timer) {
+    clearInterval(tool.timer);
+    tool.timer = null;
+  }
   tool.done = true;
   tool.full = output || "";
   tool.expanded = Boolean(diff);
@@ -1607,17 +1628,23 @@ function initSidebarResize() {
   const handle = el("sidebar-resizer");
   if (!sidebar || !handle) return;
   const MIN = 160;
+  const STEP = 16;
   const STORAGE_KEY = "oxide.sidebarWidth";
   // Keep a comfortable reading column for the transcript.
   const maxWidth = () => Math.max(MIN, window.innerWidth - 420);
   const clamp = (width) => Math.max(MIN, Math.min(maxWidth(), Math.round(width)));
   const apply = (width, persist) => {
-    sidebar.style.width = `${clamp(width)}px`;
-    if (persist) localStorage.setItem(STORAGE_KEY, sidebar.style.width);
+    const next = clamp(width);
+    sidebar.style.width = `${next}px`;
+    // The separator advertises a resize affordance, so keep its value in sync
+    // for screen readers.
+    handle.setAttribute("aria-valuenow", String(next));
+    handle.setAttribute("aria-valuemax", String(maxWidth()));
+    if (persist) localStorage.setItem(STORAGE_KEY, String(next));
   };
 
   const saved = Number(localStorage.getItem(STORAGE_KEY) || 0);
-  if (saved > 0) apply(saved, false);
+  apply(saved > 0 ? saved : sidebar.getBoundingClientRect().width, false);
 
   handle.addEventListener("pointerdown", (event) => {
     event.preventDefault();
@@ -1637,13 +1664,30 @@ function initSidebarResize() {
     handle.addEventListener("pointerup", onUp);
   });
 
+  // Keyboard path for the same resize, since the separator is focusable.
+  handle.addEventListener("keydown", (event) => {
+    const step = event.shiftKey ? STEP * 4 : STEP;
+    const width = sidebar.getBoundingClientRect().width;
+    let next;
+    if (event.key === "ArrowLeft") next = width - step;
+    else if (event.key === "ArrowRight") next = width + step;
+    else if (event.key === "Home") next = MIN;
+    else if (event.key === "End") next = maxWidth();
+    else return;
+    event.preventDefault();
+    apply(next, true);
+  });
+
   handle.addEventListener("dblclick", () => {
     localStorage.removeItem(STORAGE_KEY);
     sidebar.style.width = "";
+    const current = sidebar.getBoundingClientRect().width;
+    handle.setAttribute("aria-valuenow", String(Math.round(current)));
+    handle.setAttribute("aria-valuemax", String(maxWidth()));
   });
 
   window.addEventListener("resize", () => {
-    if (sidebar.style.width) apply(sidebar.getBoundingClientRect().width, false);
+    apply(sidebar.getBoundingClientRect().width, false);
   });
 }
 
