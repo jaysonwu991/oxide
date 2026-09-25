@@ -1720,13 +1720,44 @@ fn draw_messages(frame: &mut Frame, app: &mut App, area: Rect) {
 
     let start = app.scroll as usize;
     let end = (start + view as usize).min(app.lines.len());
-    let content = selection_lines(app, start, end);
+    // The transcript draws into the full area rather than the inset `inner`,
+    // wrapping every row in a styled space, because ratatui only writes cells
+    // whose style changed since the previous frame: a blank cell is blank in
+    // both, so a glyph the terminal left in an edge column - a stray cell from
+    // a reflow on resize, an overlay drawn outside the frame - survived every
+    // repaint and showed up as a one-column strip at the side of the pane.
+    // Padding every row of the area keeps the text where it was and makes the
+    // frame own every cell of the transcript.
+    let edge = Style::default().fg(app.theme.assistant);
+    let mut content = vec![edge_fill(area.width, edge); top_pad as usize];
+    content.extend(
+        selection_lines(app, start, end)
+            .into_iter()
+            .map(|mut line| {
+                line.spans.insert(0, Span::styled(" ", edge));
+                let used: usize = line
+                    .spans
+                    .iter()
+                    .map(|span| span.content.chars().count())
+                    .sum();
+                let pad = (area.width as usize).saturating_sub(used);
+                line.spans.push(Span::styled(" ".repeat(pad), edge));
+                line
+            }),
+    );
+    content.resize_with(area.height as usize, || edge_fill(area.width, edge));
     // Every message line is already wrapped to the viewport width, so the
     // paragraph must not wrap again: `Wrap` inserts a phantom empty row before
     // any line that exactly fills the width, which desynchronises the tool
     // panel backgrounds from their text.
     let paragraph = Paragraph::new(content);
-    frame.render_widget(paragraph, inner);
+    frame.render_widget(paragraph, area);
+}
+
+/// A blank row wide enough to span `width`, carrying `style` so the terminal
+/// repaints it instead of keeping whatever glyph was already in those cells.
+fn edge_fill(width: u16, style: Style) -> Line<'static> {
+    Line::from(Span::styled(" ".repeat(width as usize), style))
 }
 
 /// The visible conversation lines with the active selection background applied.
@@ -4177,6 +4208,49 @@ mod tests {
         assert_eq!(body, header + 2);
         assert_eq!(buffer[(1, header)].style().bg, bg);
         assert_eq!(buffer[(1, body)].style().bg, bg);
+    }
+
+    #[test]
+    fn every_transcript_cell_is_repainted() {
+        use ratatui::backend::TestBackend;
+        use ratatui::buffer::Buffer;
+        use ratatui::Terminal;
+
+        let mut app = App::new(
+            "deepseek-flash".into(),
+            "/tmp/project".into(),
+            crate::config::Reasoning::Auto,
+        );
+        app.items.push(ChatItem::Thinking {
+            text: "first thought\nsecond thought".into(),
+            millis: Some(1200),
+        });
+        app.items
+            .push(ChatItem::Assistant("a reply that mentions 9 and 2".into()));
+        let whole = Rect::new(0, 0, 80, 24);
+        let messages = main_areas(whole, &app)[0];
+
+        let mut terminal = Terminal::new(TestBackend::new(whole.width, whole.height)).unwrap();
+        terminal.draw(|frame| draw(frame, &mut app)).unwrap();
+
+        // The terminal applies only the cells ratatui emits, and ratatui emits
+        // only the cells whose style changed, so a glyph left in a pane column
+        // the frame never painted - a stray cell from a reflow on resize, an
+        // overlay drawn outside the frame - outlived every repaint. The diff
+        // against an empty screen is what a first frame (or a resize's clear)
+        // hands the terminal, so every cell of the transcript, edge columns and
+        // blank rows included, has to appear in it.
+        let updates = Buffer::empty(whole).diff(terminal.backend().buffer());
+        for y in messages.y..messages.bottom() {
+            for x in [messages.x, messages.right() - 1] {
+                let cell = &terminal.backend().buffer()[(x, y)];
+                assert_eq!(cell.symbol(), " ", "({x},{y}) must stay blank");
+                assert!(
+                    updates.iter().any(|(cx, cy, _)| *cx == x && *cy == y),
+                    "({x},{y}) is never repainted"
+                );
+            }
+        }
     }
 
     #[test]

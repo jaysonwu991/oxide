@@ -633,14 +633,27 @@ fn openai_request(
     tools: &[ToolSpec],
     session_id: Option<&str>,
 ) -> ChatRequest {
+    // DeepSeek's thinking mode rejects a replayed tool-call turn that drops its
+    // `reasoning_content`, so the captured reasoning is put back as that field
+    // on assistant messages that carry tool calls. Every other assistant turn,
+    // and every other OpenAI-compatible provider, gets the thinking blocks
+    // stripped instead, since the field would be an unknown argument there.
+    let replay_reasoning = config.is_deepseek();
     let messages: Vec<Value> = messages
         .iter()
-        .cloned()
-        .map(|mut message| {
-            message.thinking = None;
-            message
+        .map(|message| {
+            let mut value = serde_json::to_value(message).unwrap_or(Value::Null);
+            let Some(object) = value.as_object_mut() else {
+                return value;
+            };
+            object.remove("thinking");
+            if replay_reasoning && message.tool_calls.is_some() {
+                if let Some(reasoning) = message.reasoning_content() {
+                    object.insert("reasoning_content".to_string(), Value::String(reasoning));
+                }
+            }
+            value
         })
-        .map(|message| serde_json::to_value(message).unwrap_or(Value::Null))
         .collect();
     // Anthropic prompt caching behind an OpenAI-compatible gateway is opt-in
     // via `cache_control` blocks, matching the native Anthropic path.
@@ -992,6 +1005,58 @@ mod tests {
         assert!(!is_retryable(&anyhow::anyhow!(
             "provider returned 401 Unauthorized: bad key"
         )));
+    }
+
+    #[test]
+    fn deepseek_replays_reasoning_content() {
+        let config = Config {
+            provider: "deepseek".into(),
+            model: "deepseek-flash".into(),
+            ..Config::default()
+        };
+        let call = ToolCall {
+            id: "call_0".into(),
+            kind: "function".into(),
+            function: FunctionCall {
+                name: "read".into(),
+                arguments: "{}".into(),
+            },
+        };
+        let assistant = Message::assistant("answer", vec![call]).with_thinking(vec![
+            serde_json::json!({"type": "thinking", "thinking": "step one "}),
+            serde_json::json!({"type": "thinking", "thinking": "step two"}),
+        ]);
+        let body = serde_json::to_value(openai_request(
+            &config,
+            &[Message::user("hi"), assistant],
+            &[],
+            None,
+        ))
+        .unwrap();
+        let last = &body["messages"][1];
+        assert_eq!(last["reasoning_content"], "step one step two");
+        assert!(last.get("thinking").is_none());
+
+        // A plain assistant answer must not replay its reasoning.
+        let answer = Message::assistant("done", vec![]).with_thinking(vec![
+            serde_json::json!({"type": "thinking", "thinking": "trace"}),
+        ]);
+        let body = serde_json::to_value(openai_request(&config, &[answer], &[], None)).unwrap();
+        assert!(body["messages"][0].get("reasoning_content").is_none());
+    }
+
+    #[test]
+    fn other_providers_strip_thinking_blocks() {
+        let config = Config {
+            provider: "openai".into(),
+            ..Config::default()
+        };
+        let assistant = Message::assistant("answer", vec![]).with_thinking(vec![
+            serde_json::json!({"type": "thinking", "thinking": "trace"}),
+        ]);
+        let body = serde_json::to_value(openai_request(&config, &[assistant], &[], None)).unwrap();
+        assert!(body["messages"][0].get("reasoning_content").is_none());
+        assert!(body["messages"][0].get("thinking").is_none());
     }
 
     #[test]
