@@ -1,0 +1,35 @@
+# Labels the release-drafter autolabeler applies (see release-drafter.yml).
+# They are kept in sync by .github/workflows/labels.yml. Existing GitHub
+# defaults (`bug`, `documentation`, `enhancement`) are reused, so only the
+# extra type labels are defined here.
+
+- name: breaking
+  color: b60205
+  description: Breaking change — bumps the major version
+- name: performance
+  color: 1d76db
+  description: Performance improvement
+- name: refactor
+  color: fbca04
+  description: Code refactoring with no behavior change
+- name: test
+  color: c2e0c6
+  description: Test coverage
+- name: ci
+  color: 5319e7
+  description: Build, CI, and release tooling
+- name: chore
+  color: ededed
+  description: Routine maintenance
+- name: dependencies
+  color: 0366d6
+  description: Dependency updates
+- name: cli
+  color: 006b75
+  description: Change limited to the CLI crate
+- name: desktop
+  color: bfd4f2
+  description: Change limited to the desktop crate
+- name: skip-changelog
+  color: ffffff
+  description: Exclude this pull request from the release notes

@@ -1,60 +1,183 @@
+# Release Drafter configuration. It drafts the next CLI release on every push
+# to `main`; the desktop app is versioned and released independently from
+# `desktop-v*` tags (see .github/workflows/desktop.yml), so this draft only
+# describes the CLI.
+#
+# The notes are driven by labels. This repository writes conventional-commit PR
+# titles and does not label PRs by hand, so the `autolabeler` below derives the
+# labels from the title (and branch). `.github/labels.yml` creates the labels
+# the autolabeler needs; without them it cannot apply anything.
+
 name-template: 'Oxide v$RESOLVED_VERSION'
 tag-template: 'v$RESOLVED_VERSION'
+change-template: '- $TITLE (#$NUMBER) by @$AUTHOR'
+change-title-escapes: '\<*_&'
+sort-by: merged_at
+sort-direction: descending
+
+# Drop a `feat(scope): ` prefix so the notes read as plain English.
+replacers:
+  - search: '/^(feat|fix|perf|refactor|docs|test|ci|build|chore)(\(.+?\))?!?:\s*/i'
+    replace: ''
+
+# Administrative labels that should never reach the changelog.
+exclude-labels:
+  - 'skip-changelog'
+  - 'duplicate'
+  - 'invalid'
+  - 'question'
+  - 'wontfix'
+
 categories:
+  - title: '⚠️ Breaking Changes'
+    labels:
+      - 'breaking'
+    collapse-after: 3
   - title: '🚀 Features'
     labels:
+      - 'enhancement'
       - 'feat'
       - 'feature'
-      - 'enhancement'
   - title: '🐛 Bug Fixes'
     labels:
-      - 'fix'
       - 'bug'
+      - 'fix'
       - 'bugfix'
   - title: '⚡ Performance'
     labels:
-      - 'perf'
       - 'performance'
+      - 'perf'
   - title: '📚 Documentation'
     labels:
-      - 'docs'
       - 'documentation'
+      - 'docs'
+  - title: '♻️ Refactoring'
+    labels:
+      - 'refactor'
+  - title: '🧪 Tests'
+    labels:
+      - 'test'
+    collapse-after: 5
+  - title: '🏗️ Build & CI'
+    labels:
+      - 'ci'
+      - 'build'
+    collapse-after: 5
+  - title: '📦 Dependencies'
+    labels:
+      - 'dependencies'
+      - 'deps'
+    collapse-after: 5
   - title: '🧰 Maintenance'
     labels:
       - 'chore'
-      - 'refactor'
-      - 'ci'
-      - 'test'
-change-template: '- $TITLE (#$NUMBER) by @$AUTHOR'
-change-title-escapes: '\<*_&'
+    collapse-after: 5
+  - title: '🧩 Other Changes'
+
 version-resolver:
   major:
     labels:
-      - 'major'
       - 'breaking'
+      - 'major'
   minor:
     labels:
-      - 'minor'
+      - 'enhancement'
       - 'feat'
       - 'feature'
-      - 'enhancement'
+      - 'minor'
   patch:
     labels:
-      - 'patch'
-      - 'fix'
       - 'bug'
+      - 'fix'
       - 'bugfix'
-      - 'docs'
+      - 'performance'
       - 'perf'
-      - 'chore'
+      - 'documentation'
+      - 'docs'
       - 'refactor'
-      - 'ci'
       - 'test'
+      - 'ci'
+      - 'build'
+      - 'dependencies'
+      - 'deps'
+      - 'chore'
+      - 'patch'
   default: patch
+
+# Derives labels from the conventional-commit title (and branch) so the
+# categories above resolve without manual labelling.
+autolabeler:
+  - label: 'breaking'
+    title:
+      - '/!:/'
+      - '/BREAKING[ -]CHANGE/i'
+  - label: 'enhancement'
+    title:
+      - '/^feat(\(.+?\))?!?:/i'
+    branch:
+      - '/^feat(ure)?[/-]/'
+  - label: 'bug'
+    title:
+      - '/^fix(\(.+?\))?!?:/i'
+    branch:
+      - '/^(fix|hotfix|bug)[/-]/'
+  - label: 'performance'
+    title:
+      - '/^perf(\(.+?\))?!?:/i'
+    branch:
+      - '/^perf(ormance)?[/-]/'
+  - label: 'documentation'
+    title:
+      - '/^docs(\(.+?\))?!?:/i'
+    branch:
+      - '/^docs?[/-]/'
+  - label: 'refactor'
+    title:
+      - '/^refactor(\(.+?\))?!?:/i'
+  - label: 'test'
+    title:
+      - '/^test(\(.+?\))?!?:/i'
+  - label: 'ci'
+    title:
+      - '/^(ci|build)(\(.+?\))?!?:/i'
+  - label: 'chore'
+    title:
+      - '/^chore(\(.+?\))?!?:/i'
+  - label: 'dependencies'
+    title:
+      - '/^(deps|dependabot):/i'
+    branch:
+      - '/^dependabot[/-]/'
+
+no-changes-template: |
+  _No user-facing changes in this release._
+
 template: |
   ## What's Changed
 
   $CHANGES
+
+  ## Install
+
+  **CLI — macOS / Linux**
+
+  ```sh
+  curl -fsSL https://github.com/$OWNER/$REPOSITORY/releases/latest/download/install.sh | bash
+  ```
+
+  **CLI — Windows (PowerShell)**
+
+  ```powershell
+  irm https://github.com/$OWNER/$REPOSITORY/releases/latest/download/install.ps1 | iex
+  ```
+
+  The desktop app is versioned separately: its bundles are drafted from
+  `desktop-v*` tags and live on the
+  [releases page](https://github.com/$OWNER/$REPOSITORY/releases).
+
+  ## Full Changelog
+
+  https://github.com/$OWNER/$REPOSITORY/compare/$PREVIOUS_TAG...v$RESOLVED_VERSION
 
   ## Contributors
 

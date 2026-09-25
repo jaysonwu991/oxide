@@ -3,10 +3,14 @@ name: release-drafter
 on:
   push:
     branches: [main]
+  # The autolabeler derives type labels from conventional-commit PR titles, so
+  # the draft's categories resolve without manual labelling.
+  pull_request:
+    types: [opened, reopened, synchronize, edited]
 
 permissions:
   contents: write
-  pull-requests: read
+  pull-requests: write
 
 jobs:
   update_release_draft:
@@ -17,3 +21,49 @@ jobs:
           config-name: release-drafter.yml
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      # release-drafter's autolabeler matches one file at a time, so it cannot
+      # express "only this crate". Label the component only when every changed
+      # file lives under it; a shared (`crates/core`) or mixed change keeps no
+      # component label.
+      - name: Label the changed component
+        # Fork PRs get a read-only token, so skip them rather than fail on the
+        # label write; same-repo branches are the ones the release notes track.
+        if: >-
+          github.event_name == 'pull_request' &&
+          github.event.pull_request.head.repo.full_name == github.repository
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          PR: ${{ github.event.pull_request.number }}
+        run: |
+          set -euo pipefail
+
+          files="$(gh api "repos/${REPO}/pulls/${PR}/files" --paginate --jq '.[].filename')"
+          only_cli=1
+          only_desktop=1
+          counted=0
+          while IFS= read -r file; do
+            [ -n "$file" ] || continue
+            counted=1
+            case "$file" in crates/cli/*) ;; *) only_cli=0 ;; esac
+            case "$file" in crates/desktop/*) ;; *) only_desktop=0 ;; esac
+          done <<< "$files"
+
+          label=""
+          if [ "$counted" = 1 ]; then
+            if [ "$only_cli" = 1 ]; then label="cli"; fi
+            if [ "$only_desktop" = 1 ]; then label="desktop"; fi
+          fi
+
+          current="$(gh pr view "$PR" --repo "$REPO" --json labels --jq '.labels[].name')"
+          has() { printf '%s\n' "$current" | grep -qx "$1"; }
+          add() { if ! has "$1"; then gh pr edit "$PR" --repo "$REPO" --add-label "$1"; fi; }
+          remove() { if has "$1"; then gh pr edit "$PR" --repo "$REPO" --remove-label "$1"; fi; }
+
+          case "$label" in
+            cli) remove desktop; add cli ;;
+            desktop) remove cli; add desktop ;;
+            *) remove cli; remove desktop ;;
+          esac
