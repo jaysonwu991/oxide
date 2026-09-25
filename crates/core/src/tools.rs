@@ -35,6 +35,13 @@ const DEFAULT_BASH_TIMEOUT_SECS: u64 = 120;
 /// build routinely runs past two minutes, and timing it out only makes the
 /// agent re-run it (often several times).
 const BUILD_BASH_TIMEOUT_SECS: u64 = 600;
+/// Appended to a shell command that ran past its timeout. The usual cause is an
+/// unbounded search that walked build output, so the message steers the retry
+/// to a narrower command rather than letting the same one time out again.
+const BASH_TIMEOUT_HINT: &str = "[the output above is what the command printed before it was \
+killed. Retry narrower rather than repeating it: scope it to a directory, exclude build output \
+(`target/`, `node_modules/`, `.venv/`, `.git/`), or use the `grep`/`find` tools, which skip those \
+and honor .gitignore. Raise `timeout` only for a known-slow build.]";
 
 static TRUNCATION_ID: AtomicU64 = AtomicU64::new(0);
 
@@ -1707,7 +1714,7 @@ async fn bash(cwd: &Path, args: &Value, progress: &Progress) -> Result<String> {
         let captured = finish_bash_output(stdout, stderr, -1)
             .unwrap_or_default()
             .replace("\n[exit: -1]", "");
-        anyhow::bail!("command timed out after {secs}s\n{captured}");
+        anyhow::bail!("command timed out after {secs}s\n{captured}\n{BASH_TIMEOUT_HINT}");
     };
     finish_bash_output(stdout, stderr, status.code().unwrap_or(-1))
 }
@@ -2803,6 +2810,8 @@ mod tests {
         .await;
         assert!(out.text.contains("timed out"), "{}", out.text);
         assert!(out.text.contains("important-line"), "{}", out.text);
+        assert!(out.text.contains("Retry narrower"), "{}", out.text);
+        assert!(out.text.contains("`grep`/`find` tools"), "{}", out.text);
 
         std::fs::remove_dir_all(&dir).ok();
     }
