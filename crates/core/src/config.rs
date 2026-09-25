@@ -998,6 +998,19 @@ impl Config {
         base_url.contains("api.z.ai") || base_url.contains("open.bigmodel.cn")
     }
 
+    /// Whether the active provider is DeepSeek's API, whose thinking mode
+    /// requires an assistant turn's `reasoning_content` to be replayed on the
+    /// next request. A custom provider pointed at the same host is detected
+    /// too.
+    pub fn is_deepseek(&self) -> bool {
+        if canonical_provider(&self.provider) == "deepseek" {
+            return true;
+        }
+        self.base_url
+            .to_ascii_lowercase()
+            .contains("api.deepseek.com")
+    }
+
     /// The models bundled with a provider whose catalog cannot be listed.
     fn bundled_models(&self) -> Vec<String> {
         let models: &[&str] = if self.is_portkey() {

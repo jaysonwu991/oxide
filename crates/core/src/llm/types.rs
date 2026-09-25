@@ -11,7 +11,8 @@ pub struct Message {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub tool_call_id: Option<String>,
     /// Anthropic extended-thinking blocks captured from the assistant turn so
-    /// they can be replayed with tool results. Never sent to OpenAI.
+    /// they can be replayed with tool results. Never sent to OpenAI as blocks;
+    /// DeepSeek receives their text as `reasoning_content` instead.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub thinking: Option<Vec<Value>>,
 }
@@ -176,6 +177,20 @@ impl Message {
             self.thinking = Some(thinking);
         }
         self
+    }
+
+    /// The reasoning text captured from an OpenAI-compatible provider, flattened
+    /// from the stored thinking blocks so it can be replayed as
+    /// `reasoning_content`. Returns `None` when the message carries no
+    /// reasoning (or only signed/redacted Anthropic blocks).
+    pub fn reasoning_content(&self) -> Option<String> {
+        let mut text = String::new();
+        for block in self.thinking.as_deref().unwrap_or_default() {
+            if let Some(piece) = block["thinking"].as_str() {
+                text.push_str(piece);
+            }
+        }
+        (!text.is_empty()).then_some(text)
     }
 }
 
