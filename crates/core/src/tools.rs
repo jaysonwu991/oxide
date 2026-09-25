@@ -256,7 +256,7 @@ pub fn specs(mcp: &McpRegistry) -> Vec<ToolSpec> {
     ];
     let configured = mcp.configured_servers();
     if !configured.is_empty() {
-        let names: Vec<String> = configured.iter().map(|(name, _)| name.clone()).collect();
+        let names: Vec<&str> = configured.iter().map(|(name, _)| *name).collect();
         let sources = configured
             .iter()
             .map(|(name, source)| {
@@ -332,8 +332,8 @@ pub async fn execute(
             "read_file" | "write_file" | "edit" | "list_dir" | "glob" | "grep" | "patch" => {
                 let cwd = cwd.to_path_buf();
                 let args = args.clone();
-                let tool = canonical.to_string();
-                match tokio::task::spawn_blocking(move || match tool.as_str() {
+                let tool = canonical; // Use &str directly, not canonical.to_string()
+                match tokio::task::spawn_blocking(move || match tool {
                     "read_file" => read_file(&cwd, &args),
                     "write_file" => write_file(&cwd, &args),
                     "edit" => edit(&cwd, &args),
@@ -1374,8 +1374,8 @@ fn walk(root: &Path, visit: &mut impl FnMut(&Path) -> bool) {
         ignores.extend(gitignore_patterns(&dir));
         let ignores = Arc::new(ignores);
         for entry in entries.flatten() {
-            let name = entry.file_name().to_string_lossy().to_string();
-            if matches!(name.as_str(), ".git" | "node_modules" | "target" | ".venv") {
+            let name_lossy = entry.file_name().to_string_lossy();
+            if matches!(name_lossy.as_ref(), ".git" | "node_modules" | "target" | ".venv") {
                 continue;
             }
             let path = entry.path();
