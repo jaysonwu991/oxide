@@ -868,8 +868,9 @@ impl App {
         }
     }
 
-    /// A short plain-text summary of the newest assistant reply, used as the
-    /// body of the completion toast.
+    /// A short title for the newest assistant reply, used as the body of the
+    /// completion toast. Only the reply's first non-empty line is used, so a
+    /// long final summary does not fill the notification.
     pub fn completion_summary(&self) -> String {
         let Some(message) = self.history.iter().rev().find(|m| m.role == "assistant") else {
             return "Turn complete".to_string();
@@ -877,11 +878,11 @@ impl App {
         let Some(text) = message.display() else {
             return "Turn complete".to_string();
         };
-        let summary = bounded_summary(&text, COMPLETION_SUMMARY_LIMIT);
-        if summary.is_empty() {
+        let title = summary_title(&text, COMPLETION_TITLE_LIMIT);
+        if title.is_empty() {
             "Turn complete".to_string()
         } else {
-            summary
+            title
         }
     }
 
@@ -1283,8 +1284,25 @@ fn current_git_branch(cwd: &str) -> Option<String> {
     (!branch.is_empty()).then(|| branch.to_string())
 }
 
-/// The maximum length of the completion toast body, including the ellipsis.
-const COMPLETION_SUMMARY_LIMIT: usize = 160;
+/// The maximum length of the completion toast title, including the ellipsis.
+const COMPLETION_TITLE_LIMIT: usize = 64;
+
+/// Picks a one-line title out of a completed reply: the first non-empty line
+/// with any leading Markdown markers (`#`, `>`, `-`, `*`, backticks) stripped,
+/// then collapsed and truncated. Later paragraphs are ignored so the toast
+/// reads as a headline rather than a summary.
+fn summary_title(text: &str, max: usize) -> String {
+    for line in text.lines() {
+        let stripped = line.trim().trim_start_matches(|c: char| {
+            matches!(c, '#' | '*' | '-' | '+' | '>' | '`') || c.is_whitespace()
+        });
+        if stripped.is_empty() {
+            continue;
+        }
+        return bounded_summary(stripped, max);
+    }
+    String::new()
+}
 
 /// Collapses whitespace and truncates to `max` characters, stopping as soon as
 /// the limit is reached so a very long final reply is not normalized in full on
@@ -1372,14 +1390,27 @@ mod tests {
     }
 
     #[test]
-    fn completion_summary_uses_the_last_assistant_reply() {
+    fn completion_summary_uses_the_last_assistant_reply_title() {
         let mut app = test_app();
         app.history = vec![
             Message::user("do the thing"),
             Message::assistant("first", vec![]),
             Message::assistant("all  done\n\non two lines", vec![]),
         ];
-        assert_eq!(app.completion_summary(), "all done on two lines");
+        assert_eq!(app.completion_summary(), "all done");
+    }
+
+    #[test]
+    fn completion_summary_strips_markdown_and_ignores_the_body() {
+        let mut app = test_app();
+        app.history = vec![Message::assistant(
+            "\n\n## \u{2705} Create Project Feature - Complete\n\n**Implementation:** lots of detail",
+            vec![],
+        )];
+        assert_eq!(
+            app.completion_summary(),
+            "\u{2705} Create Project Feature - Complete"
+        );
     }
 
     #[test]
@@ -1398,7 +1429,7 @@ mod tests {
         assert_eq!(app.completion_summary(), "Turn complete");
         app.history = vec![Message::assistant("x".repeat(400), vec![])];
         let summary = app.completion_summary();
-        assert_eq!(summary.chars().count(), 160);
+        assert_eq!(summary.chars().count(), 64);
         assert!(summary.ends_with('…'));
     }
 
