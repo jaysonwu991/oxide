@@ -40,8 +40,8 @@ jobs:
 
       # v7 moved the autolabeler into its own action; it reads the
       # `autolabeler` section of `release-drafter.cli.yml` (the desktop config
-      # carries no autolabeler of its own) and applies the type labels both
-      # changelogs also match on.
+      # carries no autolabeler of its own) and applies the type labels that
+      # both changelogs also match on.
       - name: Apply type labels
         if: github.event_name == 'pull_request'
         uses: release-drafter/release-drafter/autolabeler@v7
