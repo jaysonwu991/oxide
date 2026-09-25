@@ -4452,7 +4452,9 @@ fn handle_agent_event(event: AgentEvent, app: &mut App) {
             app.tokens_cache_read = app.tokens_cache_read.saturating_add(cache_read);
             app.tokens_cache_write = app.tokens_cache_write.saturating_add(cache_write);
             app.cost += cost;
-            app.context_used = input;
+            // `input` is the uncached prompt only; the cached prefix is still
+            // part of the context that occupies the window.
+            app.context_used = input.saturating_add(cache_read).saturating_add(cache_write);
             if cache_read + cache_write > 0 {
                 let prompt = input + cache_read + cache_write;
                 if prompt > 0 {

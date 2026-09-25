@@ -380,10 +380,18 @@ impl SessionLog {
         Ok(out)
     }
 
-    /// Deletes a session file for a project.
+    /// Deletes a session file for a project. Once the project's last session is
+    /// gone its now-empty directory is removed too.
     pub fn delete(cwd: &Path, id: &str) -> Result<()> {
         let log = Self::open_id(cwd, id)?;
-        remove_file(&log.path)
+        let dir = log.path.parent().map(|parent| parent.to_path_buf());
+        remove_file(&log.path)?;
+        if let Some(dir) = dir {
+            if dir != sessions_root() {
+                remove_project_dir_if_empty(&dir);
+            }
+        }
+        Ok(())
     }
 
     /// Renames a session by appending a `session_info` entry.
@@ -821,6 +829,26 @@ fn remove_file(path: &Path) -> Result<()> {
     std::fs::remove_file(path).with_context(|| format!("deleting {}", path.display()))
 }
 
+/// Removes a project's session directory once its last session is gone, so the
+/// sessions tree does not keep empty per-project folders. A stray Finder
+/// `.DS_Store` does not count as content.
+fn remove_project_dir_if_empty(dir: &Path) {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
+    let mut artifacts = Vec::new();
+    for entry in entries.flatten() {
+        if entry.file_name() != ".DS_Store" {
+            return;
+        }
+        artifacts.push(entry.path());
+    }
+    for path in artifacts {
+        let _ = std::fs::remove_file(path);
+    }
+    let _ = std::fs::remove_dir(dir);
+}
+
 /// Appends one JSONL record and flushes it to disk. A partial trailing line
 /// from an interrupted write is terminated first so the record starts fresh.
 fn append_line(path: &Path, line: &str) -> Result<()> {
@@ -943,6 +971,30 @@ mod tests {
         std::fs::remove_dir_all(&dir).ok();
         std::fs::create_dir_all(&dir).unwrap();
         dir
+    }
+
+    #[test]
+    fn emptied_project_dir_is_removed() {
+        let dir = temp_dir("empty_project");
+        let project = dir.join("project");
+        std::fs::create_dir_all(&project).unwrap();
+        std::fs::write(project.join("session.jsonl"), "{}").unwrap();
+
+        remove_project_dir_if_empty(&project);
+        assert!(project.exists(), "a project with sessions must stay");
+
+        std::fs::remove_file(project.join("session.jsonl")).unwrap();
+        remove_project_dir_if_empty(&project);
+        assert!(!project.exists(), "an emptied project directory is removed");
+
+        // A stray Finder `.DS_Store` does not keep the folder alive.
+        let project = dir.join("project_ds");
+        std::fs::create_dir_all(&project).unwrap();
+        std::fs::write(project.join(".DS_Store"), "").unwrap();
+        remove_project_dir_if_empty(&project);
+        assert!(!project.exists());
+
+        std::fs::remove_dir_all(&dir).ok();
     }
 
     #[test]

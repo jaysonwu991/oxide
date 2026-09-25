@@ -10,7 +10,6 @@
     <aside class="sidebar">
       <div class="sidebar-top">
         <div class="brand"><span class="dot">◆</span> Oxide</div>
-        <button id="new-chat" class="new-task" disabled>New task</button>
       </div>
 
       <div class="projects-section">
@@ -29,6 +28,15 @@
         <button id="help" class="icon" title="Keyboard shortcuts">?</button>
       </div>
     </aside>
+
+    <div
+      id="sidebar-resizer"
+      class="sidebar-resizer"
+      role="separator"
+      aria-orientation="vertical"
+      aria-label="Resize sidebar"
+      title="Drag to resize · double-click to reset"
+    ></div>
 
     <main class="main">
       <header class="topbar">
@@ -158,6 +166,7 @@
         <p class="dialog-sub" id="confirm-message"></p>
         <div class="dialog-actions">
           <button id="confirm-cancel" class="ghost">Cancel</button>
+          <button id="confirm-alt" class="ghost danger" hidden></button>
           <button id="confirm-ok" class="primary">Confirm</button>
         </div>
       </div>

@@ -71,30 +71,30 @@ input:focus, textarea:focus { outline: none; border-color: var(--dim); }
 /* ---------- sidebar ---------- */
 
 .sidebar {
+  flex: none;
   width: 268px;
-  min-width: 268px;
+  min-width: 160px;
   background: var(--sidebar);
-  border-right: 1px solid var(--border);
   display: flex;
   flex-direction: column;
   overflow: hidden;
 }
 
+/* The drag handle that resizes the sidebar; its right border is the divider. */
+.sidebar-resizer {
+  flex: none;
+  width: 7px;
+  cursor: col-resize;
+  background: var(--sidebar);
+  border-right: 1px solid var(--border);
+}
+.sidebar-resizer:hover,
+body.resizing .sidebar-resizer { background: var(--border); }
+body.resizing { cursor: col-resize; user-select: none; }
+
 .sidebar-top { padding: 14px 12px 8px; }
 .brand { font-weight: 600; letter-spacing: 0.02em; padding: 0 4px 12px; }
 .brand .dot { color: var(--accent); margin-right: 6px; }
-
-.new-task {
-  width: 100%;
-  text-align: left;
-  padding: 9px 12px;
-  border: 1px solid var(--border);
-  border-radius: 10px;
-  color: var(--text);
-  background: var(--panel);
-}
-.new-task:hover:not(:disabled) { background: var(--panel-2); border-color: var(--dim); }
-.new-task::before { content: "＋"; color: var(--dim); margin-right: 8px; }
 
 .project-picker { padding: 4px 12px 10px; position: relative; }
 .project-btn {
@@ -316,16 +316,21 @@ input:focus, textarea:focus { outline: none; border-color: var(--dim); }
   padding: 9px 12px;
   font-size: 12.5px;
 }
+.tool.running { border-color: var(--dim); }
 .tool .thead { display: flex; align-items: center; gap: 8px; color: var(--text); font-weight: 500; cursor: pointer; }
 .tool .thead .tname { flex: none; }
-.tool .thead .targ { color: var(--faint); font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 11.5px; font-weight: 400; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.tool .thead .targ { flex: 1 1 auto; min-width: 0; color: var(--faint); font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 11.5px; font-weight: 400; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.tool .thead .tstate { flex: none; display: inline-flex; align-items: center; gap: 5px; color: var(--faint); font-size: 11px; font-weight: 400; }
+.tool.error .tstate { color: var(--error); }
 .tool .thead::before { content: "▸"; color: var(--faint); font-size: 10px; transition: transform 0.1s; }
 .tool.expanded .thead::before { transform: rotate(90deg); }
 .tool.error .thead { color: var(--error); }
+.spinner { width: 10px; height: 10px; flex: none; border: 1.5px solid var(--faint); border-top-color: transparent; border-radius: 50%; animation: spin 0.7s linear infinite; }
+@keyframes spin { to { transform: rotate(360deg); } }
 .tool pre {
   color: var(--dim);
   margin: 6px 0 0;
-  max-height: 0;
+  max-height: 5.4em;
   overflow: hidden;
   white-space: pre-wrap;
   word-break: break-word;
@@ -334,6 +339,7 @@ input:focus, textarea:focus { outline: none; border-color: var(--dim); }
 }
 .tool.expanded pre { max-height: 460px; overflow: auto; }
 .tool.running pre { max-height: 120px; overflow: auto; }
+.tool .thint { color: var(--faint); font-size: 11px; margin-top: 5px; cursor: pointer; }
 
 .diff { margin-top: 8px; border-top: 1px solid var(--border); padding-top: 7px; }
 .diff .diff-path { color: var(--faint); font-size: 11px; margin-bottom: 4px; }
@@ -516,7 +522,7 @@ input:focus, textarea:focus { outline: none; border-color: var(--dim); }
   box-shadow: 0 24px 70px rgba(0, 0, 0, 0.6);
 }
 .dialog h2 { margin: 0 0 4px; font-size: 16px; }
-.dialog-sub { color: var(--dim); font-size: 12.5px; margin: 0 0 16px; }
+.dialog-sub { color: var(--dim); font-size: 12.5px; margin: 0 0 16px; white-space: pre-line; }
 .dialog-sub code { background: var(--panel-2); padding: 1px 5px; border-radius: 5px; }
 .dialog-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 18px; }
 
@@ -679,7 +685,7 @@ input:focus, textarea:focus { outline: none; border-color: var(--dim); }
   display: flex;
   align-items: center;
   gap: 6px;
-  padding: 8px 30px 8px 10px;
+  padding: 8px 54px 8px 10px;
   border-radius: 6px;
   cursor: pointer;
   user-select: none;
@@ -710,6 +716,29 @@ input:focus, textarea:focus { outline: none; border-color: var(--dim); }
 .session-item .shortcut { color: var(--faint); font-size: 10px; margin-left: auto; font-family: ui-monospace; }
 .session-item .name { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
+.row-add {
+  position: absolute;
+  right: 28px;
+  top: 50%;
+  transform: translateY(-50%);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
+  padding: 0;
+  border: none;
+  border-radius: 5px;
+  background: transparent;
+  color: var(--faint);
+  font-size: 12px;
+  line-height: 1;
+  cursor: pointer;
+  opacity: 0.4;
+  transition: opacity 0.15s, background 0.15s, color 0.15s;
+}
+.row-add:hover { opacity: 1; background: var(--panel-3); color: var(--accent); }
+
 .row-remove {
   position: absolute;
   right: 6px;
@@ -733,4 +762,5 @@ input:focus, textarea:focus { outline: none; border-color: var(--dim); }
 }
 .row-remove:hover { opacity: 1; background: var(--panel-3); color: var(--error); }
 .project-item:hover .row-remove,
+.project-item:hover .row-add,
 .session-item:hover .row-remove { opacity: 1; }

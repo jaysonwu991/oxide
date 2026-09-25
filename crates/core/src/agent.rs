@@ -542,7 +542,10 @@ async fn run_loop(
         record_usage(&runtime.session, depth, &assistant, Some(turn.usage.into()));
         messages.push(assistant);
         if turn.usage.total() > 0 {
-            context_tokens = turn.usage.input + turn.usage.output;
+            context_tokens = turn.usage.input
+                + turn.usage.cache_read
+                + turn.usage.cache_write
+                + turn.usage.output;
             let _ = tx.send(AgentEvent::Usage {
                 input: turn.usage.input,
                 output: turn.usage.output,
