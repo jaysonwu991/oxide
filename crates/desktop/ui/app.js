@@ -21,7 +21,6 @@ const state = {
   projectName: "",
   session: null,
   sessions: [],
-  allView: false,
   busy: false,
   runId: null,
   reasoning: "auto",
@@ -427,111 +426,12 @@ async function loadProjects() {
   }
 }
 
-function renderProjects() {
-  const box = el("projects");
-  box.innerHTML = "";
-  if (!state.projects.length) {
-    box.innerHTML = '<div class="empty" style="margin:12px">No projects yet.</div>';
-    return;
-  }
-  for (const project of state.projects) {
-    const row = document.createElement("div");
-    row.className = "project" + (project.path === state.project ? " active" : "");
-
-    if (project.registered) {
-      const remove = document.createElement("button");
-      remove.className = "remove";
-      remove.textContent = "×";
-      remove.title = "Remove from list";
-      remove.onclick = async (event) => {
-        event.stopPropagation();
-        state.projects = await invoke("remove_project", { id: project.id });
-        renderProjectsTree(); // Update tree view instead of dropdown
-      };
-      row.appendChild(remove);
-    }
-
-    const name = document.createElement("div");
-    name.className = "name";
-    name.innerHTML =
-      `<span>${escapeHtml(project.name)}</span>` +
-      (project.registered ? "" : '<span class="badge discovered">session</span>') +
-      (project.exists ? "" : '<span class="badge">missing</span>');
-    row.appendChild(name);
-
-    const path = document.createElement("div");
-    path.className = "path";
-    path.textContent = project.path;
-    row.appendChild(path);
-
-    const count = document.createElement("div");
-    count.className = "count";
-    count.textContent = `${project.session_count} thread${project.session_count === 1 ? "" : "s"}`;
-    row.appendChild(count);
-
-    row.onclick = () => {
-      toggleDropdown(false);
-      selectProject(project);
-    };
-    box.appendChild(row);
-  }
-}
-
-async function addProject() {
-  const input = el("project-path");
-  let path = input.value.trim();
-  if (!path) {
-    // An empty field opens the platform folder chooser so a project can be
-    // added without typing its absolute path.
-    try {
-      path = (await invoke("pick_folder")) || "";
-    } catch (error) {
-      setAddError(`Could not open the folder chooser: ${error}`);
-      return;
-    }
-    if (!path) return;
-  }
-  try {
-    const result = await invoke("add_project", { path });
-    state.projects = result.projects;
-    input.value = "";
-    setAddError("");
-    renderProjectsTree(); // Update tree view instead of dropdown
-    const added = state.projects.find((project) => project.id === result.added);
-    if (added) {
-      toggleDropdown(false);
-      selectProject(added);
-    }
-  } catch (error) {
-    setAddError(`Could not add project: ${error}`);
-  }
-}
-
-function setAddError(message) {
-  const box = el("add-project-error");
-  if (!box) return;
-  box.textContent = message || "";
-  box.hidden = !message;
-}
-
-function toggleDropdown(show) {
-  const dropdown = el("project-dropdown");
-  const open = show === undefined ? dropdown.hidden : show;
-  dropdown.hidden = !open;
-  el("project-menu").classList.toggle("active", open);
-  if (open) {
-    setAddError("");
-    el("project-path").focus();
-  }
-}
-
 async function selectProject(project) {
   state.project = project.path;
   state.projectName = project.name;
   state.session = null;
   state.trust = null;
   clearAttachments();
-  el("project-current").textContent = project.name;
   el("new-chat").disabled = false;
   el("prompt").disabled = false;
   el("trust-modal").hidden = true;
@@ -620,98 +520,10 @@ function updateChips() {
 
 async function loadSessions() {
   try {
-    // Always load all sessions for tree view
     state.sessions = await invoke("all_sessions");
     renderProjectsTree();
-    // Keep old renderSessions for backwards compat if needed
-    renderSessions(state.sessions, true);
   } catch (error) {
     setStatus(`Failed to load threads: ${error}`);
-  }
-}
-
-function renderSessions(sessions, crossRepo) {
-  const box = el("sessions");
-  box.innerHTML = "";
-  if (!sessions.length) {
-    const empty = document.createElement("div");
-    empty.className = "empty";
-    empty.style.margin = "14px 8px";
-    empty.textContent = "No threads yet.";
-    box.appendChild(empty);
-    return;
-  }
-  for (const session of sessions) {
-    const row = document.createElement("div");
-    row.className = "session" + (!crossRepo && session.id === state.session ? " active" : "");
-
-    const tools = document.createElement("div");
-    tools.className = "s-tools";
-    const rename = document.createElement("button");
-    rename.className = "ghost";
-    rename.textContent = "✎";
-    rename.title = "Rename";
-    rename.onclick = async (event) => {
-      event.stopPropagation();
-      const name = await promptDialog(session.name || "");
-      if (name === null) return;
-      await invoke("rename_session", { project: session.cwd, id: session.id, name });
-      loadSessions();
-    };
-    const del = document.createElement("button");
-    del.className = "ghost danger";
-    del.textContent = "🗑";
-    del.title = "Delete";
-    del.onclick = async (event) => {
-      event.stopPropagation();
-      const label = session.name || session.preview || session.id.slice(0, 8);
-      const ok = await confirmDialog(
-        "Delete thread",
-        `“${label}” will be deleted permanently.`,
-        "Delete",
-      );
-      if (!ok) return;
-      await invoke("delete_session", { project: session.cwd, id: session.id });
-      if (state.session === session.id) resetTranscript();
-      loadSessions();
-    };
-    tools.append(rename, del);
-    row.appendChild(tools);
-
-    const sname = document.createElement("div");
-    sname.className = "sname";
-    sname.textContent = session.name || session.preview || session.id.slice(0, 8);
-    row.appendChild(sname);
-
-    if (crossRepo) {
-      const repo = document.createElement("div");
-      repo.className = "s-repo";
-      repo.textContent = baseName(session.cwd);
-      row.appendChild(repo);
-    } else {
-      const preview = document.createElement("div");
-      preview.className = "preview";
-      preview.textContent = session.preview || "—";
-      row.appendChild(preview);
-    }
-
-    const meta = document.createElement("div");
-    meta.className = "smeta";
-    meta.textContent = formatTime(session.modified_at);
-    row.appendChild(meta);
-
-    row.onclick = async () => {
-      if (session.cwd !== state.project) {
-        state.project = session.cwd;
-        state.projectName = baseName(session.cwd);
-        el("project-current").textContent = state.projectName;
-        el("new-chat").disabled = false;
-        renderProjectsTree(); // Update tree view instead of dropdown
-        await loadInfo();
-      }
-      openSession(session);
-    };
-    box.appendChild(row);
   }
 }
 
@@ -1345,24 +1157,80 @@ function themeProject() {
 async function openThemes() {
   closeOverlays("themes-modal");
   el("themes-modal").hidden = false;
+  const box = el("theme-list");
+  box.innerHTML = '<div class="theme-empty">Loading themes…</div>';
   try {
     const themes = await invoke("list_themes", { project: themeProject() });
-    const box = el("theme-list");
+    const names = themes.names || [];
+    const entries = await Promise.all(
+      names.map(async (name) => {
+        try {
+          const { colors } = await invoke("theme_colors", { project: themeProject(), name });
+          return { name, colors };
+        } catch {
+          return { name, colors: null };
+        }
+      }),
+    );
+    renderThemes(entries, themes.current);
+  } catch (error) {
     box.innerHTML = "";
-    for (const name of themes.names) {
-      const row = document.createElement("button");
-      row.className = "theme" + (name === themes.current ? " active" : "");
-      row.textContent = name;
-      row.onclick = async () => {
-        const result = await invoke("set_theme", { project: themeProject(), name });
-        applyTheme(result.colors);
-        box.querySelectorAll(".theme").forEach((node) => node.classList.remove("active"));
-        row.classList.add("active");
-      };
-      box.appendChild(row);
+    setStatus(`Themes failed: ${error}`);
+  }
+}
+
+const THEME_SWATCH_SLOTS = ["background", "panel", "accent", "text", "success", "tool"];
+
+function renderThemes(entries, current) {
+  const box = el("theme-list");
+  box.innerHTML = "";
+  if (!entries.length) {
+    box.innerHTML = '<div class="theme-empty">No themes available.</div>';
+    return;
+  }
+  for (const { name, colors } of entries) {
+    const row = document.createElement("button");
+    row.type = "button";
+    row.className = "theme-option" + (name === current ? " active" : "");
+
+    const swatches = document.createElement("span");
+    swatches.className = "theme-swatches";
+    for (const slot of THEME_SWATCH_SLOTS) {
+      const swatch = document.createElement("span");
+      swatch.className = "theme-swatch";
+      if (colors && colors[slot]) swatch.style.background = colors[slot];
+      swatches.appendChild(swatch);
+    }
+    row.appendChild(swatches);
+
+    const label = document.createElement("span");
+    label.className = "theme-option-name";
+    label.textContent = name;
+    row.appendChild(label);
+
+    const check = document.createElement("span");
+    check.className = "theme-option-check";
+    check.textContent = name === current ? "✓" : "";
+    row.appendChild(check);
+
+    row.onclick = () => selectTheme(name, row);
+    box.appendChild(row);
+  }
+}
+
+async function selectTheme(name, row) {
+  try {
+    const result = await invoke("set_theme", { project: themeProject(), name });
+    applyTheme(result.colors);
+    const box = el("theme-list");
+    for (const node of box.querySelectorAll(".theme-option")) {
+      const isActive = node === row;
+      node.classList.toggle("active", isActive);
+      const check = node.querySelector(".theme-option-check");
+      if (check) check.textContent = isActive ? "✓" : "";
     }
   } catch (error) {
-    setStatus(`Themes failed: ${error}`);
+    setStatus(`Theme failed: ${error}`);
   }
 }
 
@@ -1469,6 +1337,13 @@ const createProjectState = {
   folders: [],
 };
 
+// The last path segment, used to default the project name to the folder's name.
+function folderBasename(path) {
+  const trimmed = String(path || "").replace(/[\\/]+$/, "");
+  const parts = trimmed.split(/[\\/]+/);
+  return parts[parts.length - 1] || trimmed;
+}
+
 function openCreateProject() {
   createProjectState.folders = [];
   el("create-project-name").value = "";
@@ -1484,6 +1359,8 @@ async function addCreateProjectFolder() {
     if (path && !createProjectState.folders.includes(path)) {
       createProjectState.folders.push(path);
       renderCreateProjectFolders();
+      const nameInput = el("create-project-name");
+      if (!nameInput.value.trim()) nameInput.value = folderBasename(path);
     }
   } catch (error) {
     showCreateProjectError(`Could not open folder chooser: ${error}`);
@@ -1522,13 +1399,18 @@ function showCreateProjectError(message) {
 }
 
 async function saveCreateProject() {
-  const name = el("create-project-name").value.trim();
-  if (!name) {
-    showCreateProjectError("Project name is required");
-    return;
-  }
   if (createProjectState.folders.length === 0) {
     showCreateProjectError("At least one source folder is required");
+    return;
+  }
+  const nameInput = el("create-project-name");
+  let name = nameInput.value.trim();
+  if (!name) {
+    name = folderBasename(createProjectState.folders[0]);
+    nameInput.value = name;
+  }
+  if (!name) {
+    showCreateProjectError("Project name is required");
     return;
   }
   try {
@@ -1541,7 +1423,6 @@ async function saveCreateProject() {
     renderProjectsTree(); // Update tree view instead of dropdown
     const added = state.projects.find((project) => project.id === result.added);
     if (added) {
-      toggleDropdown(false);
       selectProject(added);
     }
   } catch (error) {
@@ -1550,26 +1431,11 @@ async function saveCreateProject() {
 }
 
 function init() {
-  el("add-project").onclick = addProject;
-  el("project-path").addEventListener("keydown", (event) => {
-    if (event.key === "Enter") addProject();
-  });
-  el("create-project-btn").onclick = openCreateProject;
   const createBtnTree = el("create-project-btn-tree");
   if (createBtnTree) createBtnTree.onclick = openCreateProject;
-  el("browse-projects-btn").onclick = () => el("project-path").focus();
   el("create-project-add-folder").onclick = addCreateProjectFolder;
   el("create-project-cancel").onclick = () => (el("create-project-modal").hidden = true);
   el("create-project-save").onclick = saveCreateProject;
-  el("project-menu").onclick = (event) => {
-    event.stopPropagation();
-    toggleDropdown();
-  };
-  document.addEventListener("click", (event) => {
-    if (!el("project-dropdown").hidden && !event.target.closest(".project-picker")) {
-      toggleDropdown(false);
-    }
-  });
 
   el("new-chat").onclick = newChat;
   el("reasoning").onclick = cycleReasoning;
@@ -1578,12 +1444,6 @@ function init() {
   el("permissions").onclick = openPermissions;
   el("help").onclick = toggleHelp;
   el("connect").onclick = openConnect;
-  el("toggle-all").onclick = () => {
-    state.allView = !state.allView;
-    el("toggle-all").classList.toggle("active", state.allView);
-    el("toggle-all").textContent = state.allView ? "This project" : "All projects";
-    loadSessions();
-  };
 
   el("send").onclick = () => send(false);
   el("stop").onclick = stop;
@@ -1651,7 +1511,6 @@ function init() {
       if (!el("confirm-modal").hidden) resolveConfirm(false);
       if (!el("rename-modal").hidden) resolveRename(null);
       closeOverlays();
-      toggleDropdown(false);
       return;
     }
     if (event.key === "Tab" && event.shiftKey) {
@@ -1669,6 +1528,12 @@ function init() {
     } else if (event.key === "/") {
       event.preventDefault();
       toggleHelp();
+    } else if (event.key >= "1" && event.key <= "9") {
+      const session = orderedSessions()[Number(event.key) - 1];
+      if (session) {
+        event.preventDefault();
+        selectSessionFromTree(session);
+      }
     }
   });
 
@@ -1685,6 +1550,20 @@ init();
 // ============================================================================
 // CodeX-style tree view rendering
 // ============================================================================
+
+// Flattened project/session order, matching how the tree renders them, so
+// `⌘1`…`⌘9` select the session carrying that label.
+function orderedSessions() {
+  const byProject = new Map();
+  for (const project of state.projects) byProject.set(project.path, []);
+  for (const session of state.sessions || []) {
+    const list = byProject.get(session.cwd);
+    if (list) list.push(session);
+  }
+  const ordered = [];
+  for (const project of state.projects) ordered.push(...(byProject.get(project.path) || []));
+  return ordered;
+}
 
 async function renderProjectsTree() {
   const container = el("projects-tree");
@@ -1711,7 +1590,11 @@ async function renderProjectsTree() {
     }
   }
   
-  let globalShortcutIndex = 1;
+  const shortcutFor = new Map(
+    orderedSessions()
+      .slice(0, 9)
+      .map((session, index) => [session.id, index + 1]),
+  );
   
   for (const project of state.projects) {
     const projectGroup = document.createElement("div");
@@ -1736,6 +1619,19 @@ async function renderProjectsTree() {
     const sessionsForProject = sessionsByProject[project.path] || [];
     count.textContent = sessionsForProject.length;
     projectItem.appendChild(count);
+
+    const removeProjectBtn = document.createElement("button");
+    removeProjectBtn.type = "button";
+    removeProjectBtn.className = "row-remove";
+    removeProjectBtn.title = project.registered
+      ? "Remove from list"
+      : "Delete this project's sessions";
+    removeProjectBtn.textContent = "✕";
+    removeProjectBtn.onclick = (event) => {
+      event.stopPropagation();
+      removeProject(project);
+    };
+    projectItem.appendChild(removeProjectBtn);
     
     projectItem.onclick = () => {
       selectProject(project);
@@ -1757,18 +1653,30 @@ async function renderProjectsTree() {
         sessionName.textContent = session.name || session.preview || session.id.slice(0, 8);
         sessionItem.appendChild(sessionName);
         
-        const shortcut = document.createElement("div");
-        shortcut.className = "shortcut";
-        shortcut.textContent = "⌘" + globalShortcutIndex;
-        sessionItem.appendChild(shortcut);
+        const shortcutNumber = shortcutFor.get(session.id);
+        if (shortcutNumber) {
+          const shortcut = document.createElement("div");
+          shortcut.className = "shortcut";
+          shortcut.textContent = "⌘" + shortcutNumber;
+          sessionItem.appendChild(shortcut);
+        }
+
+        const removeSessionBtn = document.createElement("button");
+        removeSessionBtn.type = "button";
+        removeSessionBtn.className = "row-remove";
+        removeSessionBtn.title = "Delete thread";
+        removeSessionBtn.textContent = "✕";
+        removeSessionBtn.onclick = (event) => {
+          event.stopPropagation();
+          removeSession(session);
+        };
+        sessionItem.appendChild(removeSessionBtn);
         
         sessionItem.onclick = () => {
           selectSessionFromTree(session);
         };
         
         sessionsContainer.appendChild(sessionItem);
-        globalShortcutIndex++;
-        if (globalShortcutIndex > 9) globalShortcutIndex = 1;
       }
       
       projectGroup.appendChild(sessionsContainer);
@@ -1780,18 +1688,87 @@ async function renderProjectsTree() {
 
 async function selectSessionFromTree(session) {
   if (!session) return;
-  
-  // Switch to the session's project first if different
+
+  // Switch to the session's project first if different, so `session_messages`
+  // is queried against the right project and the composer is enabled.
   const project = state.projects.find((p) => p.path === session.cwd);
   if (project && project.path !== state.project) {
-    state.project = project.path;
-    state.session = null;
-    await loadInfo();
+    await selectProject(project);
   }
-  
-  // Now select the session
-  state.session = session.id;
+
   window.history.replaceState({}, "", `?session=${session.id}`);
-  await Promise.all([loadInfo(), loadTheme()]);
-  renderProjectsTree();
+  await openSession(session);
+}
+
+function clearSelectedProject() {
+  state.project = null;
+  state.projectName = "";
+  state.session = null;
+  state.trust = null;
+  el("new-chat").disabled = true;
+  el("prompt").disabled = true;
+  el("project-meta").textContent = "";
+  el("trust-modal").hidden = true;
+  updateTrustButton();
+  resetTranscript();
+}
+
+// True when nothing is selected or the selected project is still in the tree.
+function selectedProjectStillListed() {
+  return !state.project || state.projects.some((project) => project.path === state.project);
+}
+
+// After a deletion, reload the tree and drop the selection if its project no
+// longer exists, so the composer cannot start a turn against a removed row.
+async function refreshAfterRemoval() {
+  await loadProjects();
+  if (!selectedProjectStillListed()) {
+    clearSelectedProject();
+    loadTheme();
+  }
+}
+
+async function removeProject(project) {
+  if (project.registered) {
+    const ok = await confirmDialog(
+      "Remove project",
+      `“${project.name}” will be removed from the list. Its sessions are kept.`,
+      "Remove",
+    );
+    if (!ok) return;
+    state.projects = await invoke("remove_project", { id: project.id });
+    if (!selectedProjectStillListed()) {
+      clearSelectedProject();
+      loadTheme();
+    }
+    renderProjectsTree();
+    return;
+  }
+
+  const sessions = (state.sessions || []).filter((session) => session.cwd === project.path);
+  if (!sessions.length) return;
+  const count = sessions.length;
+  const ok = await confirmDialog(
+    "Delete project",
+    `“${project.name}” only appears because of ${count} session${count === 1 ? "" : "s"}. Deleting ${count === 1 ? "it" : "them"} removes the project.`,
+    "Delete",
+  );
+  if (!ok) return;
+  for (const session of sessions) {
+    await invoke("delete_session", { project: session.cwd, id: session.id });
+  }
+  await refreshAfterRemoval();
+}
+
+async function removeSession(session) {
+  const label = session.name || session.preview || session.id.slice(0, 8);
+  const ok = await confirmDialog(
+    "Delete thread",
+    `“${label}” will be deleted permanently.`,
+    "Delete",
+  );
+  if (!ok) return;
+  await invoke("delete_session", { project: session.cwd, id: session.id });
+  if (state.session === session.id) resetTranscript();
+  await refreshAfterRemoval();
 }

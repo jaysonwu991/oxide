@@ -256,7 +256,11 @@ impl SessionLog {
     /// Creates a new session seeded with a linear chain of `messages`. Used by
     /// `/fork` and `/clone` (Pi forks into a new session file).
     pub fn fork(cwd: &Path, messages: &[Message]) -> Result<Self> {
-        let log = Self::create(cwd)?;
+        Self::fork_in(&project_dir(cwd), cwd, messages)
+    }
+
+    pub(crate) fn fork_in(dir: &Path, cwd: &Path, messages: &[Message]) -> Result<Self> {
+        let log = Self::create_in(dir, cwd)?;
         for message in messages {
             log.append(message)?;
         }
@@ -1123,7 +1127,7 @@ mod tests {
         parent.append(&Message::user("three")).unwrap();
 
         let messages = parent.messages().unwrap();
-        let fork = SessionLog::fork(&cwd, &messages[..2]).unwrap();
+        let fork = SessionLog::fork_in(&dir, &cwd, &messages[..2]).unwrap();
         assert_ne!(fork.id(), parent.id());
         let copied = fork.messages().unwrap();
         assert_eq!(copied.len(), 2);
