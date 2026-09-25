@@ -71,8 +71,16 @@ function setStatus(text) {
   el("status-text").textContent = text;
 }
 
-function setUsage({ input = 0, output = 0, cost = 0, contextPct = null }) {
+function setUsage({
+  input = 0,
+  output = 0,
+  cacheRead = 0,
+  cacheWrite = 0,
+  cost = 0,
+  contextPct = null,
+}) {
   const bits = [`↑ ${input} ↓ ${output}`];
+  if (cacheRead || cacheWrite) bits.push(`R ${cacheRead} W ${cacheWrite}`);
   if (cost) bits.push(`$${Number(cost).toFixed(4)}`);
   if (contextPct != null && state.contextWindow) bits.push(`ctx ${contextPct.toFixed(0)}%`);
   el("usage").textContent = bits.join(" · ");
@@ -432,10 +440,10 @@ async function selectProject(project) {
   state.session = null;
   state.trust = null;
   clearAttachments();
-  el("new-chat").disabled = false;
   el("prompt").disabled = false;
   el("trust-modal").hidden = true;
   updateTrustButton();
+  setStatus("Ready");
   renderProjectsTree(); // Update tree view instead of dropdown
   resetTranscript();
   await Promise.all([loadInfo(), loadSessions(), loadTheme()]);
@@ -533,15 +541,17 @@ async function openSession(session) {
     const data = await invoke("session_messages", { project: state.project, id: session.id });
     const transcript = el("transcript");
     transcript.innerHTML = "";
-    for (const message of data.messages) {
-      if (!message.content) continue;
-      const kind = message.role === "user" ? "user" : "assistant";
-      transcript.appendChild(bubble(kind, message.content, message.attachments || []));
-    }
+    renderStoredTranscript(transcript, data.messages);
     scrollDown();
     setThreadTitle(session.name || session.preview || session.id.slice(0, 8));
     if (data.usage) {
-      setUsage({ input: data.usage.input, output: data.usage.output, cost: data.usage.cost });
+      setUsage({
+        input: data.usage.input,
+        output: data.usage.output,
+        cacheRead: data.usage.cacheRead,
+        cacheWrite: data.usage.cacheWrite,
+        cost: data.usage.cost,
+      });
     }
   } catch (error) {
     setStatus(`Failed to open thread: ${error}`);
@@ -562,6 +572,15 @@ function newChat() {
   clearAttachments();
   loadSessions();
   el("prompt").focus();
+}
+
+/// Starts a task in `project`, selecting it first when it is not the active one.
+/// The composer belongs to a project, so a task always lands in a real one.
+async function newTaskIn(project) {
+  if (project && project.path !== state.project) {
+    await selectProject(project);
+  }
+  newChat();
 }
 
 // ---------- chat ----------
@@ -594,6 +613,9 @@ function scrollDown() {
 }
 
 function resetTurn() {
+  for (const tool of state.tools) {
+    if (tool.timer) clearInterval(tool.timer);
+  }
   state.currentAssistant = null;
   state.tools = [];
   state.currentThinking = null;
@@ -874,23 +896,61 @@ function appendThinking(delta) {
   scrollDown();
 }
 
-function toolArg(name, argsJson) {
+// Leading shell noise (`export PATH=…;`, `cd …;`) and label/utility statements
+// that would fill the card header without saying what the call does.
+const CMD_NOISE = /^(?:export\b|cd\b|date\b|pwd\b|true\b|:|echo\b|printf\b|set\b)/;
+
+/// The one-line subject a tool card shows. Shell calls drop the boilerplate
+/// (the PATH export every desktop shell needs, the `cd` prefix, `echo` labels)
+/// and keep the first real statement; other tools show their subject.
+function toolSummary(name, argsJson) {
   let args = {};
   try {
     args = JSON.parse(argsJson || "{}");
   } catch (error) {
     args = {};
   }
-  const value =
-    args.command || args.path || args.pattern || args.query || args.url || args.prompt || "";
-  const text = String(value).replace(/\s+/g, " ").trim();
-  if (!text) return "";
-  return text.length > 72 ? `${text.slice(0, 72)}…` : text;
+  const raw = String(
+    args.command || args.path || args.pattern || args.query || args.url || args.prompt || "",
+  )
+    .replace(/\s+/g, " ")
+    .trim();
+  let text = raw;
+  if (name === "bash" && raw) {
+    const parts = raw
+      .split(/\s*(?:&&|\|\||;)\s*/)
+      .map((part) => part.trim())
+      .filter(Boolean);
+    text = parts.find((part) => !CMD_NOISE.test(part)) || parts[parts.length - 1] || raw;
+  }
+  return {
+    text: text.length > 96 ? `${text.slice(0, 96)}…` : text,
+    title: raw || text,
+  };
 }
 
-function startTool(name, args) {
+/// The first `lines` of `text`, plus how many were dropped, for the collapsed
+/// card preview.
+function previewText(text, lines = 3) {
+  const all = String(text || "").replace(/\s+$/, "");
+  if (!all) return { text: "", more: 0 };
+  const split = all.split("\n");
+  if (split.length <= lines) return { text: all, more: 0 };
+  return { text: split.slice(0, lines).join("\n"), more: split.length - lines };
+}
+
+function formatDuration(ms) {
+  if (ms < 1000) return `${ms}ms`;
+  const seconds = ms / 1000;
+  if (seconds < 60) return `${seconds.toFixed(1)}s`;
+  return `${Math.floor(seconds / 60)}m ${Math.round(seconds % 60)}s`;
+}
+
+/// Builds one tool card. `startTool` wires it for a live call; the stored
+/// transcript calls it too so a reopened thread reads the same way.
+function createToolCard(name, args) {
   const block = document.createElement("div");
-  block.className = "tool running expanded";
+  block.className = "tool running";
   const head = document.createElement("div");
   head.className = "thead";
   const tname = document.createElement("span");
@@ -898,14 +958,128 @@ function startTool(name, args) {
   tname.textContent = name;
   const targ = document.createElement("span");
   targ.className = "targ";
-  targ.textContent = toolArg(name, args);
-  head.append(tname, targ);
-  head.onclick = () => block.classList.toggle("expanded");
+  const summary = toolSummary(name, args);
+  targ.textContent = summary.text;
+  if (summary.title) head.title = summary.title;
+  const tstate = document.createElement("span");
+  tstate.className = "tstate";
+  tstate.innerHTML = '<span class="spinner"></span>running';
+  head.append(tname, targ, tstate);
   const pre = document.createElement("pre");
-  block.append(head, pre);
-  el("transcript").appendChild(block);
-  state.tools.push({ name, block, pre, done: false });
+  pre.className = "tbody";
+  const hint = document.createElement("div");
+  hint.className = "thint";
+  hint.hidden = true;
+  const tool = {
+    name,
+    block,
+    pre,
+    hint,
+    tstate,
+    done: false,
+    full: "",
+    live: "",
+    expanded: false,
+    started: performance.now(),
+    timer: null,
+  };
+  head.onclick = () => toggleTool(tool);
+  block.append(head, pre, hint);
+  return tool;
+}
+
+function startTool(name, args) {
+  // A new tool call opens a new step: the next text lands after this card
+  // instead of merging into the previous step's narration.
+  state.currentAssistant = null;
+  state.currentThinking = null;
+  const tool = createToolCard(name, args);
+  el("transcript").appendChild(tool.block);
+  state.tools.push(tool);
+  startToolTimer(tool);
   scrollDown();
+  return tool;
+}
+
+/// Keeps a running card honest: a spinner plus how long the tool has been
+/// going, so a long call is not a static "running".
+function startToolTimer(tool) {
+  tool.timer = setInterval(() => {
+    if (tool.done) return;
+    const elapsed = Math.max(0, Math.round(performance.now() - tool.started));
+    tool.tstate.innerHTML = `<span class="spinner"></span>${formatDuration(elapsed)}`;
+  }, 1000);
+  // Timers must not keep a headless test process alive.
+  if (tool.timer && typeof tool.timer.unref === "function") tool.timer.unref();
+}
+
+/// Marks a card finished and paints the collapsed preview (or the full result
+/// when it carries a diff). Shared by the live stream and the stored transcript.
+function finishTool(tool, output, { isError = false, diff = null, elapsed = 0 } = {}) {
+  if (tool.timer) {
+    clearInterval(tool.timer);
+    tool.timer = null;
+  }
+  tool.done = true;
+  tool.full = output || "";
+  tool.expanded = Boolean(diff);
+  tool.block.classList.remove("running");
+  if (isError) tool.block.classList.add("error");
+  tool.tstate.textContent = `${isError ? "✖" : "✔"}${elapsed ? ` ${formatDuration(elapsed)}` : ""}`;
+  if (diff) tool.block.insertAdjacentHTML("beforeend", renderDiff(diff));
+  paintTool(tool);
+}
+
+/// Collapsed cards show the first lines of output plus how much was hidden;
+/// clicking swaps in the full result.
+function paintTool(tool) {
+  if (!tool.done) {
+    tool.pre.textContent = tool.live;
+    return;
+  }
+  if (tool.expanded) {
+    tool.pre.textContent = tool.full;
+    tool.hint.hidden = true;
+    tool.block.classList.add("expanded");
+    return;
+  }
+  const { text, more } = previewText(tool.full, 3);
+  tool.pre.textContent = text;
+  tool.hint.hidden = more === 0;
+  tool.hint.textContent = `⋯ ${more} more line${more === 1 ? "" : "s"} · click to expand`;
+  tool.block.classList.remove("expanded");
+}
+
+function toggleTool(tool) {
+  if (!tool.done) return;
+  tool.expanded = !tool.expanded;
+  paintTool(tool);
+}
+
+/// Replays a stored session: user/assistant text as bubbles, each turn's tool
+/// calls as finished cards, with results matched back by `toolCallId`.
+function renderStoredTranscript(container, messages) {
+  const results = new Map();
+  for (const message of messages) {
+    if (message.role === "tool" && message.toolCallId) {
+      results.set(message.toolCallId, message.content || "");
+    }
+  }
+  for (const message of messages) {
+    if (message.role === "user") {
+      container.appendChild(bubble("user", message.content, message.attachments || []));
+    } else if (message.role === "assistant") {
+      if (message.content) {
+        container.appendChild(bubble("assistant", message.content, []));
+      }
+      for (const call of message.toolCalls || []) {
+        const output = results.get(call.id) || "";
+        const tool = createToolCard(call.name || "tool", call.arguments);
+        finishTool(tool, output, { isError: output.startsWith("error:") });
+        container.appendChild(tool.block);
+      }
+    }
+  }
 }
 
 /// The still-running card a tool event belongs to. Results are emitted in call
@@ -932,7 +1106,8 @@ function handleEvent(event) {
     case "tool_execution_update": {
       const tool = activeTool(event.toolName);
       if (tool) {
-        tool.pre.textContent += event.partialResult || "";
+        tool.live += event.partialResult || "";
+        tool.pre.textContent = tool.live;
         scrollDown();
       }
       break;
@@ -940,15 +1115,12 @@ function handleEvent(event) {
     case "tool_execution_end": {
       const tool = activeTool(event.toolName);
       if (tool) {
-        tool.done = true;
-        tool.pre.textContent = event.result || "";
-        tool.block.classList.remove("running");
-        // Compact by default; expand when there is something to inspect.
-        tool.block.classList.toggle("expanded", Boolean(event.isError || event.diff));
-        if (event.isError) tool.block.classList.add("error");
-        if (event.diff) {
-          tool.block.insertAdjacentHTML("beforeend", renderDiff(event.diff));
-        }
+        finishTool(tool, event.result || tool.live, {
+          isError: event.isError,
+          diff: event.diff,
+          elapsed: Math.max(0, Math.round(performance.now() - tool.started)),
+        });
+        scrollDown();
       }
       break;
     }
@@ -957,8 +1129,18 @@ function handleEvent(event) {
       break;
     case "usage": {
       const usage = event.usage || {};
-      const pct = state.contextWindow ? (usage.input / state.contextWindow) * 100 : null;
-      setUsage({ input: usage.input, output: usage.output, cost: usage.cost, contextPct: pct });
+      // The provider reports `input` as the uncached prompt; the cached prefix
+      // still occupies the window, so count it toward the context percentage.
+      const prompt = (usage.input || 0) + (usage.cacheRead || 0) + (usage.cacheWrite || 0);
+      const pct = state.contextWindow ? (prompt / state.contextWindow) * 100 : null;
+      setUsage({
+        input: usage.input,
+        output: usage.output,
+        cacheRead: usage.cacheRead,
+        cacheWrite: usage.cacheWrite,
+        cost: usage.cost,
+        contextPct: pct,
+      });
       break;
     }
     case "compaction":
@@ -1017,10 +1199,14 @@ function closeOverlays(except) {
 let confirmResolution = null;
 let renameResolution = null;
 
-function confirmDialog(title, message, confirmLabel = "Confirm") {
+function confirmDialog(title, message, confirmLabel = "Confirm", alt = null) {
   el("confirm-title").textContent = title;
   el("confirm-message").textContent = message;
   el("confirm-ok").textContent = confirmLabel;
+  const altButton = el("confirm-alt");
+  altButton.hidden = !alt;
+  altButton.textContent = alt ? alt.label : "";
+  altButton.onclick = alt ? () => resolveConfirm(alt.value) : null;
   closeOverlays("confirm-modal");
   el("confirm-modal").hidden = false;
   el("confirm-ok").focus();
@@ -1275,14 +1461,19 @@ async function loadTheme() {
 // ---------- permissions ----------
 
 async function openPermissions() {
-  if (!state.project) {
-    setStatus("Select a project to review its tool approvals");
-    return;
-  }
+  // The approvals are per-project, so with nothing selected the dialog itself
+  // explains what to do instead of leaving a one-off line in the status bar.
+  const box = el("approval-list");
   closeOverlays("permissions-modal");
   el("permissions-modal").hidden = false;
+  if (!state.project) {
+    el("permissions-clear").disabled = true;
+    box.innerHTML =
+      '<div class="empty" style="margin:6px">Select a project to review its tool approvals.</div>';
+    return;
+  }
+  el("permissions-clear").disabled = false;
   const list = await invoke("list_approvals", { project: state.project });
-  const box = el("approval-list");
   box.innerHTML = "";
   if (!list.length) {
     box.innerHTML = '<div class="empty" style="margin:6px">No saved approvals.</div>';
@@ -1430,14 +1621,84 @@ async function saveCreateProject() {
   }
 }
 
+/// Drag the divider to resize the sidebar; double-click restores the default.
+/// The width is remembered so the layout survives a relaunch.
+function initSidebarResize() {
+  const sidebar = document.querySelector(".sidebar");
+  const handle = el("sidebar-resizer");
+  if (!sidebar || !handle) return;
+  const MIN = 160;
+  const STEP = 16;
+  const STORAGE_KEY = "oxide.sidebarWidth";
+  // Keep a comfortable reading column for the transcript.
+  const maxWidth = () => Math.max(MIN, window.innerWidth - 420);
+  const clamp = (width) => Math.max(MIN, Math.min(maxWidth(), Math.round(width)));
+  const apply = (width, persist) => {
+    const next = clamp(width);
+    sidebar.style.width = `${next}px`;
+    // The separator advertises a resize affordance, so keep its value in sync
+    // for screen readers.
+    handle.setAttribute("aria-valuenow", String(next));
+    handle.setAttribute("aria-valuemax", String(maxWidth()));
+    if (persist) localStorage.setItem(STORAGE_KEY, String(next));
+  };
+
+  const saved = Number(localStorage.getItem(STORAGE_KEY) || 0);
+  apply(saved > 0 ? saved : sidebar.getBoundingClientRect().width, false);
+
+  handle.addEventListener("pointerdown", (event) => {
+    event.preventDefault();
+    handle.setPointerCapture(event.pointerId);
+    document.body.classList.add("resizing");
+    const startX = event.clientX;
+    const startWidth = sidebar.getBoundingClientRect().width;
+    const onMove = (move) => apply(startWidth + (move.clientX - startX), false);
+    const onUp = (up) => {
+      handle.removeEventListener("pointermove", onMove);
+      handle.removeEventListener("pointerup", onUp);
+      handle.releasePointerCapture?.(up.pointerId);
+      document.body.classList.remove("resizing");
+      apply(sidebar.getBoundingClientRect().width, true);
+    };
+    handle.addEventListener("pointermove", onMove);
+    handle.addEventListener("pointerup", onUp);
+  });
+
+  // Keyboard path for the same resize, since the separator is focusable.
+  handle.addEventListener("keydown", (event) => {
+    const step = event.shiftKey ? STEP * 4 : STEP;
+    const width = sidebar.getBoundingClientRect().width;
+    let next;
+    if (event.key === "ArrowLeft") next = width - step;
+    else if (event.key === "ArrowRight") next = width + step;
+    else if (event.key === "Home") next = MIN;
+    else if (event.key === "End") next = maxWidth();
+    else return;
+    event.preventDefault();
+    apply(next, true);
+  });
+
+  handle.addEventListener("dblclick", () => {
+    localStorage.removeItem(STORAGE_KEY);
+    sidebar.style.width = "";
+    const current = sidebar.getBoundingClientRect().width;
+    handle.setAttribute("aria-valuenow", String(Math.round(current)));
+    handle.setAttribute("aria-valuemax", String(maxWidth()));
+  });
+
+  window.addEventListener("resize", () => {
+    apply(sidebar.getBoundingClientRect().width, false);
+  });
+}
+
 function init() {
+  initSidebarResize();
   const createBtnTree = el("create-project-btn-tree");
   if (createBtnTree) createBtnTree.onclick = openCreateProject;
   el("create-project-add-folder").onclick = addCreateProjectFolder;
   el("create-project-cancel").onclick = () => (el("create-project-modal").hidden = true);
   el("create-project-save").onclick = saveCreateProject;
 
-  el("new-chat").onclick = newChat;
   el("reasoning").onclick = cycleReasoning;
   el("model").onclick = openModels;
   el("theme").onclick = openThemes;
@@ -1620,12 +1881,23 @@ async function renderProjectsTree() {
     count.textContent = sessionsForProject.length;
     projectItem.appendChild(count);
 
+    const newTaskBtn = document.createElement("button");
+    newTaskBtn.type = "button";
+    newTaskBtn.className = "row-add";
+    newTaskBtn.title = `New task in ${project.name}`;
+    newTaskBtn.textContent = "＋";
+    newTaskBtn.onclick = (event) => {
+      event.stopPropagation();
+      newTaskIn(project);
+    };
+    projectItem.appendChild(newTaskBtn);
+
     const removeProjectBtn = document.createElement("button");
     removeProjectBtn.type = "button";
     removeProjectBtn.className = "row-remove";
     removeProjectBtn.title = project.registered
-      ? "Remove from list"
-      : "Delete this project's sessions";
+      ? "Remove or delete project…"
+      : "Delete project…";
     removeProjectBtn.textContent = "✕";
     removeProjectBtn.onclick = (event) => {
       event.stopPropagation();
@@ -1639,48 +1911,48 @@ async function renderProjectsTree() {
     
     projectGroup.appendChild(projectItem);
     
-    // Sessions for this project
-    if (sessionsForProject.length > 0) {
-      const sessionsContainer = document.createElement("div");
-      sessionsContainer.className = "project-sessions";
-      
-      for (const session of sessionsForProject) {
-        const sessionItem = document.createElement("div");
-        sessionItem.className = "session-item" + (session.id === state.session ? " active" : "");
-        
-        const sessionName = document.createElement("div");
-        sessionName.className = "name";
-        sessionName.textContent = session.name || session.preview || session.id.slice(0, 8);
-        sessionItem.appendChild(sessionName);
-        
-        const shortcutNumber = shortcutFor.get(session.id);
-        if (shortcutNumber) {
-          const shortcut = document.createElement("div");
-          shortcut.className = "shortcut";
-          shortcut.textContent = "⌘" + shortcutNumber;
-          sessionItem.appendChild(shortcut);
-        }
+    // Threads for this project, grouped under its row.
+    const sessionsContainer = document.createElement("div");
+    sessionsContainer.className = "project-sessions";
 
-        const removeSessionBtn = document.createElement("button");
-        removeSessionBtn.type = "button";
-        removeSessionBtn.className = "row-remove";
-        removeSessionBtn.title = "Delete thread";
-        removeSessionBtn.textContent = "✕";
-        removeSessionBtn.onclick = (event) => {
-          event.stopPropagation();
-          removeSession(session);
-        };
-        sessionItem.appendChild(removeSessionBtn);
-        
-        sessionItem.onclick = () => {
-          selectSessionFromTree(session);
-        };
-        
-        sessionsContainer.appendChild(sessionItem);
+    for (const session of sessionsForProject) {
+      const sessionItem = document.createElement("div");
+      sessionItem.className = "session-item" + (session.id === state.session ? " active" : "");
+
+      const label = session.name || session.preview || session.id.slice(0, 8);
+      const sessionName = document.createElement("div");
+      sessionName.className = "name";
+      sessionName.textContent = label;
+      sessionItem.title = label;
+      sessionItem.appendChild(sessionName);
+
+      const shortcutNumber = shortcutFor.get(session.id);
+      if (shortcutNumber) {
+        const shortcut = document.createElement("div");
+        shortcut.className = "shortcut";
+        shortcut.textContent = "⌘" + shortcutNumber;
+        sessionItem.appendChild(shortcut);
       }
-      
-      projectGroup.appendChild(sessionsContainer);
+
+      const removeSessionBtn = document.createElement("button");
+      removeSessionBtn.type = "button";
+      removeSessionBtn.className = "row-remove";
+      removeSessionBtn.title = "Delete thread";
+      removeSessionBtn.textContent = "✕";
+      removeSessionBtn.onclick = (event) => {
+        event.stopPropagation();
+        removeSession(session);
+      };
+      sessionItem.appendChild(removeSessionBtn);
+
+      sessionItem.onclick = () => {
+        selectSessionFromTree(session);
+      };
+
+      sessionsContainer.appendChild(sessionItem);
     }
+
+    projectGroup.appendChild(sessionsContainer);
     
     container.appendChild(projectGroup);
   }
@@ -1705,11 +1977,11 @@ function clearSelectedProject() {
   state.projectName = "";
   state.session = null;
   state.trust = null;
-  el("new-chat").disabled = true;
   el("prompt").disabled = true;
   el("project-meta").textContent = "";
   el("trust-modal").hidden = true;
   updateTrustButton();
+  setStatus("Ready");
   resetTranscript();
 }
 
@@ -1729,13 +2001,28 @@ async function refreshAfterRemoval() {
 }
 
 async function removeProject(project) {
+  const threads = (state.sessions || []).filter((session) => session.cwd === project.path);
+  const count = threads.length;
+
   if (project.registered) {
-    const ok = await confirmDialog(
+    // "Remove" and "delete its threads" are different actions, so the dialog
+    // makes the choice explicit instead of guessing from the row.
+    const choice = await confirmDialog(
       "Remove project",
-      `“${project.name}” will be removed from the list. Its sessions are kept.`,
-      "Remove",
+      count
+        ? `Remove “${project.name}” from the sidebar, or also delete its ${count} thread${count === 1 ? "" : "s"}?\n\nRemoving keeps the threads on disk, so adding the folder again brings them back.`
+        : `Remove “${project.name}” from the sidebar?`,
+      "Remove project",
+      count
+        ? { label: `Delete ${count} thread${count === 1 ? "" : "s"}`, value: "delete-threads" }
+        : null,
     );
-    if (!ok) return;
+    if (!choice) return;
+    if (choice === "delete-threads") {
+      for (const session of threads) {
+        await invoke("delete_session", { project: session.cwd, id: session.id });
+      }
+    }
     state.projects = await invoke("remove_project", { id: project.id });
     if (!selectedProjectStillListed()) {
       clearSelectedProject();
@@ -1745,16 +2032,14 @@ async function removeProject(project) {
     return;
   }
 
-  const sessions = (state.sessions || []).filter((session) => session.cwd === project.path);
-  if (!sessions.length) return;
-  const count = sessions.length;
+  if (!count) return;
   const ok = await confirmDialog(
     "Delete project",
-    `“${project.name}” only appears because of ${count} session${count === 1 ? "" : "s"}. Deleting ${count === 1 ? "it" : "them"} removes the project.`,
-    "Delete",
+    `“${project.name}” only exists because of its ${count} thread${count === 1 ? "" : "s"}. Deleting removes the project and ${count === 1 ? "that thread" : "those threads"} permanently.`,
+    "Delete project",
   );
   if (!ok) return;
-  for (const session of sessions) {
+  for (const session of threads) {
     await invoke("delete_session", { project: session.cwd, id: session.id });
   }
   await refreshAfterRemoval();
@@ -1764,8 +2049,8 @@ async function removeSession(session) {
   const label = session.name || session.preview || session.id.slice(0, 8);
   const ok = await confirmDialog(
     "Delete thread",
-    `“${label}” will be deleted permanently.`,
-    "Delete",
+    `Delete “${label}” permanently?\n\nThe project and its other threads are not affected.`,
+    "Delete thread",
   );
   if (!ok) return;
   await invoke("delete_session", { project: session.cwd, id: session.id });

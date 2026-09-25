@@ -58,6 +58,19 @@ fn message_view(message: &Message) -> Value {
         "role": message.role,
         "content": message.display().unwrap_or_default(),
         "attachments": message_attachments(message),
+        "toolCalls": message
+            .tool_calls
+            .as_ref()
+            .map(|calls| calls
+                .iter()
+                .map(|call| json!({
+                    "id": call.id,
+                    "name": call.function.name,
+                    "arguments": call.function.arguments,
+                }))
+                .collect::<Vec<_>>())
+            .unwrap_or_default(),
+        "toolCallId": message.tool_call_id,
     })
 }
 
@@ -650,4 +663,35 @@ fn current_theme_name() -> String {
                 .map(str::to_string)
         })
         .unwrap_or_else(|| "dark".to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use oxide_core::llm::{FunctionCall, ToolCall};
+
+    #[test]
+    fn message_view_exposes_tool_calls_for_replay() {
+        let call = ToolCall {
+            id: "call_1".into(),
+            kind: "function".into(),
+            function: FunctionCall {
+                name: "bash".into(),
+                arguments: "{\"command\":\"ls\"}".into(),
+            },
+        };
+        let message = Message::assistant("checking", vec![call]);
+        let view = message_view(&message);
+        assert_eq!(view["role"], "assistant");
+        assert_eq!(view["content"], "checking");
+        assert_eq!(view["toolCalls"][0]["id"], "call_1");
+        assert_eq!(view["toolCalls"][0]["name"], "bash");
+        assert_eq!(view["toolCalls"][0]["arguments"], "{\"command\":\"ls\"}");
+
+        let result = Message::tool("call_1", "file-a\nfile-b");
+        let view = message_view(&result);
+        assert_eq!(view["role"], "tool");
+        assert_eq!(view["toolCallId"], "call_1");
+        assert_eq!(view["content"], "file-a\nfile-b");
+    }
 }
