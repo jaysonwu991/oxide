@@ -19,23 +19,34 @@ jobs:
       github.event.pull_request.head.repo.full_name == github.repository
     runs-on: ubuntu-latest
     steps:
-      # The draft itself only changes when a pull request merges into main.
+      # The drafts themselves only change when a pull request merges into main.
+      # Each component has its own config, pinned to its own tag prefix, so the
+      # two runs keep to their own draft.
       - name: Draft the next CLI release
         if: github.event_name == 'push'
         uses: release-drafter/release-drafter@v7
         with:
-          config-name: release-drafter.yml
+          config-name: release-drafter.cli.yml
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Draft the next desktop release
+        if: github.event_name == 'push'
+        uses: release-drafter/release-drafter@v7
+        with:
+          config-name: release-drafter.desktop.yml
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       # v7 moved the autolabeler into its own action; it reads the
-      # `autolabeler` section of the same config and applies the type labels
-      # the changelog categories also match on.
+      # `autolabeler` section of `release-drafter.cli.yml` (the desktop config
+      # carries no autolabeler of its own) and applies the type labels both
+      # changelogs also match on.
       - name: Apply type labels
         if: github.event_name == 'pull_request'
         uses: release-drafter/release-drafter/autolabeler@v7
         with:
-          config-name: release-drafter.yml
+          config-name: release-drafter.cli.yml
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 

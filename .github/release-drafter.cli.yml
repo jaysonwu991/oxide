@@ -1,0 +1,205 @@
+# Release Drafter configuration for the CLI. It drafts the next CLI release on
+# every push to `main`; the desktop app is versioned and released independently
+# from `desktop-v*` tags (see .github/workflows/desktop.yml), so this draft only
+# describes the CLI. The desktop app has its own config in
+# `release-drafter.desktop.yml`, which the same workflow runs alongside this
+# one.
+#
+# Categories match a conventional-commit title directly, and also accept the
+# type labels the autolabeler action
+# (release-drafter/release-drafter/autolabeler@v7) derives from that title, so
+# the notes stay organized even for a PR that was never labeled by hand.
+# `.github/labels.yml` creates the labels the autolabeler applies. The desktop
+# config carries the same categories and replacers; keep the two in sync.
+
+name-template: 'Oxide v$RESOLVED_VERSION'
+tag-template: 'v$RESOLVED_VERSION'
+
+# Two drafters live in this repository, so each one is pinned to the tag prefix
+# of its own component: it only ever sees the `v*` releases, which keeps the
+# `desktop-v*` draft out of the draft search and out of the previous-release
+# lookup that resolves the next version. A run without a prefix would adopt
+# whichever draft GitHub returns first.
+tag-prefix: 'v'
+change-template: '- $TITLE (#$NUMBER) by @$AUTHOR'
+change-title-escapes: '\<*_&'
+category-template: '### $TITLE'
+sort-by: merged_at
+sort-direction: descending
+
+# Drop a `feat(scope): ` prefix so the notes read as plain English.
+replacers:
+  - search: '/^(feat|fix|perf|refactor|docs|test|ci|build|chore)(\(.+?\))?!?:\s*/i'
+    replace: ''
+
+categories:
+  # Administrative labels that should never reach the changelog.
+  - type: 'pre-exclude'
+    when:
+      labels:
+        - 'skip-changelog'
+        - 'duplicate'
+        - 'invalid'
+        - 'question'
+        - 'wontfix'
+
+  - title: '⚠️ Breaking Changes'
+    semver-increment: 'major'
+    collapse-after: 3
+    when:
+      - conventional:
+          breaking: true
+      - label: 'breaking'
+
+  - title: '🚀 Features'
+    semver-increment: 'minor'
+    when:
+      - conventional:
+          type: 'feat'
+      - labels:
+          - 'enhancement'
+          - 'feat'
+          - 'feature'
+
+  - title: '🐛 Bug Fixes'
+    when:
+      - conventional:
+          type: 'fix'
+      - labels:
+          - 'bug'
+          - 'fix'
+          - 'bugfix'
+
+  - title: '⚡ Performance'
+    when:
+      - conventional:
+          type: 'perf'
+      - label: 'performance'
+
+  - title: '📚 Documentation'
+    when:
+      - conventional:
+          type: 'docs'
+      - label: 'documentation'
+
+  - title: '♻️ Refactoring'
+    when:
+      - conventional:
+          type: 'refactor'
+      - label: 'refactor'
+
+  - title: '🧪 Tests'
+    collapse-after: 5
+    when:
+      - conventional:
+          type: 'test'
+      - label: 'test'
+
+  - title: '🏗️ Build & CI'
+    collapse-after: 5
+    when:
+      - conventional:
+          types:
+            - 'ci'
+            - 'build'
+      - label: 'ci'
+
+  - title: '📦 Dependencies'
+    collapse-after: 5
+    when:
+      labels:
+        - 'dependencies'
+        - 'deps'
+
+  - title: '🧰 Maintenance'
+    collapse-after: 5
+    when:
+      - conventional:
+          type: 'chore'
+      - label: 'chore'
+
+  # The one changelog category without `when` receives anything uncategorized.
+  - title: '🧩 Other Changes'
+
+# Derives the type labels from the conventional-commit title (and branch), for
+# the release-drafter/release-drafter/autolabeler@v7 step.
+autolabeler:
+  - label: 'breaking'
+    title:
+      - '/!:/'
+      - '/BREAKING[ -]CHANGE/i'
+  - label: 'enhancement'
+    title:
+      - '/^feat(\(.+?\))?!?:/i'
+    branch:
+      - '/^feat(ure)?[/-]/'
+  - label: 'bug'
+    title:
+      - '/^fix(\(.+?\))?!?:/i'
+    branch:
+      - '/^(fix|hotfix|bug)[/-]/'
+  - label: 'performance'
+    title:
+      - '/^perf(\(.+?\))?!?:/i'
+    branch:
+      - '/^perf(ormance)?[/-]/'
+  - label: 'documentation'
+    title:
+      - '/^docs(\(.+?\))?!?:/i'
+    branch:
+      - '/^docs?[/-]/'
+  - label: 'refactor'
+    title:
+      - '/^refactor(\(.+?\))?!?:/i'
+  - label: 'test'
+    title:
+      - '/^test(\(.+?\))?!?:/i'
+  - label: 'ci'
+    title:
+      - '/^(ci|build)(\(.+?\))?!?:/i'
+  - label: 'chore'
+    title:
+      - '/^chore(\(.+?\))?!?:/i'
+  - label: 'dependencies'
+    title:
+      - '/^(deps|dependabot):/i'
+    branch:
+      - '/^dependabot[/-]/'
+
+no-changes-template: |
+  _No user-facing changes in this release._
+
+template: |
+  ## What's Changed
+
+  $CHANGES
+
+  ## Install
+
+  **CLI — macOS / Linux**
+
+  ```sh
+  curl -fsSL https://github.com/$OWNER/$REPOSITORY/releases/latest/download/install.sh | bash
+  ```
+
+  **CLI — Windows (PowerShell)**
+
+  ```powershell
+  irm https://github.com/$OWNER/$REPOSITORY/releases/latest/download/install.ps1 | iex
+  ```
+
+  The desktop app is versioned separately: its bundles are drafted from
+  `desktop-v*` tags and live on the
+  [releases page](https://github.com/$OWNER/$REPOSITORY/releases).
+
+  ## Full Changelog
+
+  https://github.com/$OWNER/$REPOSITORY/compare/$PREVIOUS_TAG...v$RESOLVED_VERSION
+
+  ## New Contributors
+
+  $NEW_CONTRIBUTORS
+
+  ## Contributors
+
+  $CONTRIBUTORS

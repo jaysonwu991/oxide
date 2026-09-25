@@ -1,16 +1,26 @@
-# Release Drafter configuration. It drafts the next CLI release on every push
-# to `main`; the desktop app is versioned and released independently from
-# `desktop-v*` tags (see .github/workflows/desktop.yml), so this draft only
-# describes the CLI.
+# Release Drafter configuration for the desktop app. It drafts the next desktop
+# release on every push to `main`, alongside the CLI draft that
+# `release-drafter.cli.yml` maintains; both are run by
+# .github/workflows/release-drafter.yml.
+#
+# The two drafters coexist because each one is pinned to the tag prefix of its
+# own component: a run only ever sees its own releases, which keeps the other
+# component's draft out of the draft search and out of the previous-release
+# lookup that resolves the next version. Without a prefix, both runs would
+# adopt whichever draft GitHub returns first.
 #
 # Categories match a conventional-commit title directly, and also accept the
 # type labels the autolabeler action
-# (release-drafter/release-drafter/autolabeler@v7) derives from that title, so
-# the notes stay organized even for a PR that was never labeled by hand.
-# `.github/labels.yml` creates the labels the autolabeler applies.
+# (release-drafter/release-drafter/autolabeler@v7) derives from that title. That
+# action runs once, from the CLI config, so the labels land on the PR either
+# way. `.github/labels.yml` creates the labels it applies.
+#
+# The categories, replacers, and change templates are shared with the CLI
+# config; keep the two files in sync.
 
-name-template: 'Oxide v$RESOLVED_VERSION'
-tag-template: 'v$RESOLVED_VERSION'
+name-template: 'Oxide Desktop v$RESOLVED_VERSION'
+tag-template: 'desktop-v$RESOLVED_VERSION'
+tag-prefix: 'desktop-v'
 change-template: '- $TITLE (#$NUMBER) by @$AUTHOR'
 change-title-escapes: '\<*_&'
 category-template: '### $TITLE'
@@ -111,51 +121,6 @@ categories:
   # The one changelog category without `when` receives anything uncategorized.
   - title: '🧩 Other Changes'
 
-# Derives the type labels from the conventional-commit title (and branch), for
-# the release-drafter/release-drafter/autolabeler@v7 step.
-autolabeler:
-  - label: 'breaking'
-    title:
-      - '/!:/'
-      - '/BREAKING[ -]CHANGE/i'
-  - label: 'enhancement'
-    title:
-      - '/^feat(\(.+?\))?!?:/i'
-    branch:
-      - '/^feat(ure)?[/-]/'
-  - label: 'bug'
-    title:
-      - '/^fix(\(.+?\))?!?:/i'
-    branch:
-      - '/^(fix|hotfix|bug)[/-]/'
-  - label: 'performance'
-    title:
-      - '/^perf(\(.+?\))?!?:/i'
-    branch:
-      - '/^perf(ormance)?[/-]/'
-  - label: 'documentation'
-    title:
-      - '/^docs(\(.+?\))?!?:/i'
-    branch:
-      - '/^docs?[/-]/'
-  - label: 'refactor'
-    title:
-      - '/^refactor(\(.+?\))?!?:/i'
-  - label: 'test'
-    title:
-      - '/^test(\(.+?\))?!?:/i'
-  - label: 'ci'
-    title:
-      - '/^(ci|build)(\(.+?\))?!?:/i'
-  - label: 'chore'
-    title:
-      - '/^chore(\(.+?\))?!?:/i'
-  - label: 'dependencies'
-    title:
-      - '/^(deps|dependabot):/i'
-    branch:
-      - '/^dependabot[/-]/'
-
 no-changes-template: |
   _No user-facing changes in this release._
 
@@ -166,25 +131,18 @@ template: |
 
   ## Install
 
-  **CLI — macOS / Linux**
+  Download the bundle for your platform from the assets below:
 
-  ```sh
-  curl -fsSL https://github.com/$OWNER/$REPOSITORY/releases/latest/download/install.sh | bash
-  ```
+  - **macOS** — `dmg` for Apple Silicon (`aarch64`) or Intel (`x64`)
+  - **Windows** — `exe` installer or `msi` package
+  - **Linux** — `AppImage`, `deb`, or `rpm`
 
-  **CLI — Windows (PowerShell)**
-
-  ```powershell
-  irm https://github.com/$OWNER/$REPOSITORY/releases/latest/download/install.ps1 | iex
-  ```
-
-  The desktop app is versioned separately: its bundles are drafted from
-  `desktop-v*` tags and live on the
-  [releases page](https://github.com/$OWNER/$REPOSITORY/releases).
+  The CLI is released separately: its binaries, install scripts, and notes live
+  on the [releases page](https://github.com/$OWNER/$REPOSITORY/releases).
 
   ## Full Changelog
 
-  https://github.com/$OWNER/$REPOSITORY/compare/$PREVIOUS_TAG...v$RESOLVED_VERSION
+  https://github.com/$OWNER/$REPOSITORY/compare/$PREVIOUS_TAG...desktop-v$RESOLVED_VERSION
 
   ## New Contributors
 
