@@ -1,4 +1,4 @@
-# Labels the release-drafter autolabeler applies (see release-drafter.yml).
+# Labels the release-drafter autolabeler applies (see release-drafter.cli.yml).
 # They are kept in sync by .github/workflows/labels.yml. Existing GitHub
 # defaults (`bug`, `documentation`, `enhancement`) are reused, so only the
 # extra type labels are defined here.

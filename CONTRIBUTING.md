@@ -195,11 +195,16 @@ CLI only; a `desktop-vX.Y.Z` tag builds and drafts the desktop bundles. The
 component that did not change keeps its previous version, so it does not need a
 new tag or release.
 
-Release notes are drafted by `release-drafter.yml` on every push to `main`. Its
-categories match conventional-commit PR titles (`feat:`, `fix:`, `perf:`, …)
-directly and by the type label the `release-drafter/autolabeler` step derives
-from that same title, so keep the PR title in that form and no manual labelling
-is needed. The type labels it applies are created by `labels.yml`.
+Release notes are drafted on every push to `main`, one draft per component:
+`release-drafter.cli.yml` drafts the CLI release and
+`release-drafter.desktop.yml` drafts the desktop release. Each config is pinned
+to its component's tag prefix (`v` and `desktop-v`), so a run only sees its own
+draft and resolves its next version from its own last release; the draft it
+produces already carries the tag to push. Their categories match
+conventional-commit PR titles (`feat:`, `fix:`, `perf:`, …) directly and by the
+type label the `release-drafter/autolabeler` step derives from that same title,
+so keep the PR title in that form and no manual labelling is needed. The type
+labels it applies are created by `labels.yml`.
 
 A PR whose changes are limited to `crates/cli/` is labeled `cli`, and one
 limited to `crates/desktop/` is labeled `desktop`; a change that also touches
