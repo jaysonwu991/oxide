@@ -58,12 +58,6 @@ pub fn canonical_tool_name(name: &str) -> &str {
     }
 }
 
-/// Determines if a tool mutates the workspace (state-changing) or only reads.
-/// Read-only tools can be parallelized safely; state-changing tools should run sequentially.
-pub fn tool_is_readonly(canonical_name: &str) -> bool {
-    matches!(canonical_name, "read_file" | "list_dir" | "glob" | "grep" | "webfetch" | "diagnostics")
-}
-
 /// A line-numbered diff of a file edit, carried alongside the tool result for
 /// display only. It is never sent to the model (the text result is).
 #[derive(Debug, Clone, Default, serde::Serialize)]
@@ -262,7 +256,7 @@ pub fn specs(mcp: &McpRegistry) -> Vec<ToolSpec> {
     ];
     let configured = mcp.configured_servers();
     if !configured.is_empty() {
-        let names: Vec<&str> = configured.iter().map(|(name, _)| *name).collect();
+        let names: Vec<&str> = configured.iter().map(|(name, _)| name.as_str()).collect();
         let sources = configured
             .iter()
             .map(|(name, source)| {
@@ -338,8 +332,10 @@ pub async fn execute(
             "read_file" | "write_file" | "edit" | "list_dir" | "glob" | "grep" | "patch" => {
                 let cwd = cwd.to_path_buf();
                 let args = args.clone();
-                let tool = canonical; // Use &str directly, not canonical.to_string()
-                match tokio::task::spawn_blocking(move || match tool {
+                // `spawn_blocking` requires a `'static` closure, so the owned tool
+                // name has to be moved in.
+                let tool = canonical.to_string();
+                match tokio::task::spawn_blocking(move || match tool.as_str() {
                     "read_file" => read_file(&cwd, &args),
                     "write_file" => write_file(&cwd, &args),
                     "edit" => edit(&cwd, &args),
@@ -1380,8 +1376,12 @@ fn walk(root: &Path, visit: &mut impl FnMut(&Path) -> bool) {
         ignores.extend(gitignore_patterns(&dir));
         let ignores = Arc::new(ignores);
         for entry in entries.flatten() {
-            let name_lossy = entry.file_name().to_string_lossy();
-            if matches!(name_lossy.as_ref(), ".git" | "node_modules" | "target" | ".venv") {
+            let file_name = entry.file_name();
+            let name_lossy = file_name.to_string_lossy();
+            if matches!(
+                name_lossy.as_ref(),
+                ".git" | "node_modules" | "target" | ".venv"
+            ) {
                 continue;
             }
             let path = entry.path();
