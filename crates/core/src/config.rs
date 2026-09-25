@@ -13,7 +13,9 @@ and with the work around them: research, automation, and answering questions. \
 Use the provided tools to inspect and modify the user's project. \
 You can see images and PDFs attached to user messages, and read returns image/PDF files as viewable attachments. \
 Prefer small, focused changes and verify your work. \
-Be concise. When you are done, give a short summary of what you changed.";
+Be concise while you work, but when you are done give the user a detailed final summary: what \
+changed and why, the files or areas you touched, and how you verified it. Make it detailed enough \
+to review without re-reading the conversation, but do not pad it or restate unchanged code.";
 
 const PORTKEY_FALLBACK_MODELS: &[&str] = &[
     "claude-haiku-4-5",

@@ -415,10 +415,17 @@ fn read_file(cwd: &Path, args: &Value) -> Result<ToolOutput> {
     let offset = strict_int_arg(args, "offset")?.unwrap_or(1).max(1);
     // Clamp to the read budget so the page (plus the `more lines` pointer the
     // caller appends) never exceeds what `output_limits` allows and gets the
-    // continuation hint cut off by the central truncation.
-    let limit = strict_int_arg(args, "limit")?
-        .unwrap_or(DEFAULT_READ_LINES)
-        .clamp(1, READ_MAX_LINES);
+    // continuation hint cut off by the central truncation. A model that asks
+    // for a range (`"offset": [820, 850]`) gets that span rather than the
+    // default page.
+    let limit = match strict_int_arg(args, "limit")? {
+        Some(limit) => limit,
+        None => args
+            .get("offset")
+            .and_then(range_len)
+            .unwrap_or(DEFAULT_READ_LINES),
+    }
+    .clamp(1, READ_MAX_LINES);
 
     let bytes = std::fs::read(&full).with_context(|| format!("reading {}", full.display()))?;
     let content = match String::from_utf8(bytes) {
@@ -538,11 +545,18 @@ struct Replacement {
 /// `oldText`/`newText` are folded into the list.
 fn parse_edits(args: &Value) -> Result<Vec<Replacement>> {
     let mut raw: Vec<Replacement> = Vec::new();
-    let mut string_error = None;
+    let mut string_error: Option<String> = None;
     match args.get("edits") {
-        Some(Value::String(text)) => match serde_json::from_str::<Value>(text) {
-            Ok(parsed) => collect_edits(&parsed, &mut raw),
-            Err(err) => string_error = Some(err),
+        Some(Value::String(text)) => match parse_edits_string(text) {
+            Some(parsed) => collect_edits(&parsed, &mut raw),
+            None => {
+                string_error = Some(
+                    serde_json::from_str::<Value>(text)
+                        .err()
+                        .map(|err| err.to_string())
+                        .unwrap_or_else(|| "it held no {oldText,newText} edits".to_string()),
+                )
+            }
         },
         Some(value) => collect_edits(value, &mut raw),
         None => {}
@@ -565,6 +579,25 @@ fn parse_edits(args: &Value) -> Result<Vec<Replacement>> {
         anyhow::bail!("edits must contain at least one replacement");
     }
     Ok(raw)
+}
+
+/// Parses a stringified `edits` value, tolerating the extra `}` some models
+/// emit when they double-encode the array (`[{"oldText":"...","newText":
+/// "..."}}]`). Strict parsing is tried first, so a well-formed string is
+/// never rewritten.
+fn parse_edits_string(text: &str) -> Option<Value> {
+    if let Ok(value) = serde_json::from_str::<Value>(text) {
+        return Some(value);
+    }
+    let mut candidate = text.trim().to_string();
+    while candidate.ends_with("}}]") {
+        candidate.truncate(candidate.len() - 2);
+        candidate.push(']');
+        if let Ok(value) = serde_json::from_str::<Value>(&candidate) {
+            return Some(value);
+        }
+    }
+    None
 }
 
 fn collect_edits(value: &Value, out: &mut Vec<Replacement>) {
@@ -1065,14 +1098,32 @@ fn read_text_file(path: &Path) -> Option<String> {
     String::from_utf8(bytes).ok()
 }
 
-/// Reads an integer argument, accepting both a JSON number and a numeric
-/// string (some models stringify numbers).
+/// Reads an integer argument, accepting a JSON number, a numeric string (some
+/// models stringify numbers), or an array of either (some models pass a line
+/// range like `[820, 850]`, where the first element is the offset).
 fn int_arg(args: &Value, key: &str) -> Option<usize> {
-    match args.get(key) {
-        Some(Value::Number(number)) => number.as_u64().map(|value| value as usize),
-        Some(Value::String(text)) => text.trim().parse().ok(),
+    int_value(args.get(key)?)
+}
+
+fn int_value(value: &Value) -> Option<usize> {
+    match value {
+        Value::Number(number) => number.as_u64().map(|value| value as usize),
+        Value::String(text) => text.trim().parse().ok(),
+        Value::Array(items) => items.iter().find_map(int_value),
         _ => None,
     }
+}
+
+/// The number of lines covered by an array offset like `[820, 850]`, so a
+/// model that asks for a range gets that span instead of the default page.
+fn range_len(value: &Value) -> Option<usize> {
+    let Value::Array(items) = value else {
+        return None;
+    };
+    let mut numbers = items.iter().filter_map(int_value);
+    let first = numbers.next()?;
+    let last = numbers.next()?;
+    (last >= first).then_some(last - first + 1)
 }
 
 /// Like [`int_arg`], but distinguishes an absent value from one that is present
@@ -3063,6 +3114,48 @@ mod tests {
         )
         .unwrap_err();
         assert!(err.to_string().contains("did not parse"), "{err}");
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn edit_repairs_a_stringified_edits_array_with_an_extra_brace() {
+        let dir = std::env::temp_dir().join(format!("oxide_edit_repair_{}", std::process::id()));
+        std::fs::remove_dir_all(&dir).ok();
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("a.txt"), "hello\n").unwrap();
+
+        // Some models double-encode `edits` as a string and close the object
+        // with one brace too many; it still applies instead of erroring.
+        let out = edit(
+            &dir,
+            &json!({
+                "path": "a.txt",
+                "edits": "[{\"oldText\": \"hello\", \"newText\": \"world\"}}]",
+            }),
+        )
+        .unwrap();
+        assert!(out.text.contains("Successfully replaced"), "{}", out.text);
+        assert_eq!(
+            std::fs::read_to_string(dir.join("a.txt")).unwrap(),
+            "world\n"
+        );
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn read_file_accepts_a_range_offset() {
+        let dir = std::env::temp_dir().join(format!("oxide_read_range_{}", std::process::id()));
+        std::fs::remove_dir_all(&dir).ok();
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("a.txt"), "one\ntwo\nthree\nfour\n").unwrap();
+
+        let out = read_file(&dir, &json!({ "path": "a.txt", "offset": [2, 3] })).unwrap();
+        assert!(out.text.contains("2|two"), "{}", out.text);
+        assert!(out.text.contains("3|three"), "{}", out.text);
+        assert!(!out.text.contains("1|one"), "{}", out.text);
+        assert!(!out.text.contains("4|four"), "{}", out.text);
 
         std::fs::remove_dir_all(&dir).ok();
     }
