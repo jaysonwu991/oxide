@@ -221,15 +221,19 @@ pub fn open_url(url: String) -> CmdResult<()> {
 }
 
 fn is_openable_url(url: &str) -> bool {
-    url.starts_with("https://") || url.starts_with("http://")
+    let scheme = url.to_ascii_lowercase();
+    scheme.starts_with("https://") || scheme.starts_with("http://")
 }
 
 fn open_in_browser(url: &str) -> std::io::Result<()> {
     #[cfg(target_os = "macos")]
     let spawned = std::process::Command::new("open").arg(url).spawn();
+    // `cmd /C start` would let a URL with quotes or shell metacharacters be
+    // read as command text, so hand the URL to a handler that takes it as a
+    // plain argument instead.
     #[cfg(target_os = "windows")]
-    let spawned = std::process::Command::new("cmd")
-        .args(["/C", "start", "", url])
+    let spawned = std::process::Command::new("rundll32")
+        .args(["url.dll,FileProtocolHandler", url])
         .spawn();
     #[cfg(all(unix, not(target_os = "macos")))]
     let spawned = std::process::Command::new("xdg-open").arg(url).spawn();
@@ -707,6 +711,7 @@ mod tests {
     fn open_url_only_accepts_web_links() {
         assert!(is_openable_url("https://github.com/o/r/pull/7"));
         assert!(is_openable_url("http://localhost:3000"));
+        assert!(is_openable_url("HTTPS://example.com"));
         assert!(!is_openable_url("file:///etc/passwd"));
         assert!(!is_openable_url("javascript:alert(1)"));
         assert!(!is_openable_url(""));

@@ -93,7 +93,8 @@ function setThreadTitle(text) {
 // ---------- markdown ----------
 
 function anchor(href, label) {
-  return `<a href="${href}" target="_blank" rel="noreferrer">${label || href}</a>`;
+  const text = label == null ? escapeHtml(href) : label;
+  return `<a href="${escapeHtml(href)}" target="_blank" rel="noreferrer">${text}</a>`;
 }
 
 // A bare URL often ends a sentence, so trailing punctuation stays outside the
@@ -109,17 +110,23 @@ function autolink(url, stash) {
 }
 
 function inline(text) {
-  let s = escapeHtml(text);
   const stashed = [];
   const stash = (html) => {
     stashed.push(html);
     return `\u0000${stashed.length - 1}\u0000`;
   };
-  // Code spans and links are stashed so linkifying cannot reach inside them or
-  // rewrite the `href` of an already-built anchor.
-  s = s.replace(/`([^`]+)`/g, (_, code) => stash(`<code>${code}</code>`));
-  s = s.replace(/\[([^\]]+)\]\(([^)\s]+)\)/g, (_, label, href) => stash(anchor(href, label)));
+  // Links and code spans are stashed on the raw text (before escaping), so a
+  // URL is never folded into an HTML entity (`&lt;`, `&gt;`, `&amp;`) and an
+  // entity is never read as part of the URL. Whatever is left is escaped once,
+  // after the placeholders are in place.
+  let s = String(text);
+  s = s.replace(/`([^`]+)`/g, (_, code) => stash(`<code>${escapeHtml(code)}</code>`));
+  s = s.replace(/\[([^\]]+)\]\(([^)\s]+)\)/g, (_, label, href) =>
+    stash(anchor(href, escapeHtml(label))),
+  );
+  s = s.replace(/<(https?:\/\/[^\s<>]+)>/g, (_, url) => stash(anchor(url)));
   s = s.replace(/\bhttps?:\/\/[^\s<>"'`]+/g, (url) => autolink(url, stash));
+  s = escapeHtml(s);
   s = s.replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>");
   s = s.replace(/(^|[^*])\*([^*\n]+)\*/g, "$1<em>$2</em>");
   s = s.replace(/~~([^~]+)~~/g, "<del>$1</del>");

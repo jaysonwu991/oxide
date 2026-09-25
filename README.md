@@ -378,7 +378,7 @@ diffs for `write`/`edit` results, Markdown with tables and syntax highlighting,
 clickable links that open in the system browser,
 token/cost usage in the footer, and built-in Dark/Light themes (default Dark)
 that read the same `.oxide/themes` files as the CLI. Prebuilt bundles are
-published under `desktop-v*` releases on the
+drafted under `desktop-v*` releases on the
 [releases page](https://github.com/jaysonwu991/oxide/releases); to build from
 source, bundle it with `npx @tauri-apps/cli@^2 build --features gui`. See
 [docs/desktop.md](docs/desktop.md) for the full layout, shortcuts, signing, and

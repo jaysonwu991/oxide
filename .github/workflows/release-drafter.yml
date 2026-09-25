@@ -12,6 +12,11 @@ permissions:
 
 jobs:
   update_release_draft:
+    # Fork PRs only get a read-only token, so skip the job entirely rather than
+    # let the drafter or autolabeler fail on a fork event.
+    if: >-
+      github.event_name == 'push' ||
+      github.event.pull_request.head.repo.full_name == github.repository
     runs-on: ubuntu-latest
     steps:
       # The draft itself only changes when a pull request merges into main.
@@ -25,12 +30,9 @@ jobs:
 
       # v7 moved the autolabeler into its own action; it reads the
       # `autolabeler` section of the same config and applies the type labels
-      # the changelog categories also match on. Skipped for fork PRs, whose
-      # token is read-only.
+      # the changelog categories also match on.
       - name: Apply type labels
-        if: >-
-          github.event_name == 'pull_request' &&
-          github.event.pull_request.head.repo.full_name == github.repository
+        if: github.event_name == 'pull_request'
         uses: release-drafter/release-drafter/autolabeler@v7
         with:
           config-name: release-drafter.yml
@@ -40,11 +42,10 @@ jobs:
       # release-drafter's autolabeler matches one file at a time, so it cannot
       # express "only this crate". Label the component only when every changed
       # file lives under it; a shared (`crates/core`) or mixed change keeps no
-      # component label.
+      # component label. A rename counts its old path too, so moving a file
+      # between crates is not mistaken for a single-crate change.
       - name: Label the changed component
-        if: >-
-          github.event_name == 'pull_request' &&
-          github.event.pull_request.head.repo.full_name == github.repository
+        if: github.event_name == 'pull_request'
         shell: bash
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -53,7 +54,8 @@ jobs:
         run: |
           set -euo pipefail
 
-          files="$(gh api "repos/${REPO}/pulls/${PR}/files" --paginate --jq '.[].filename')"
+          files="$(gh api "repos/${REPO}/pulls/${PR}/files" --paginate \
+            --jq '.[] | (.filename, .previous_filename) | select(. != null)')"
           only_cli=1
           only_desktop=1
           counted=0
