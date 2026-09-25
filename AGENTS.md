@@ -18,7 +18,9 @@ commands, skills and plugins, so its harness matches the CLI instead of being
 silently dropped. It accepts image/PDF attachments the way the CLI does — paste
 from the clipboard or pick files — by passing them to `runner` as inline content
 parts (the webview has no on-disk path for a pasted image), and previews each one
-as a clickable thumbnail.
+as a clickable thumbnail. Assistant replies render Markdown as HTML, and both
+inline and bare `http(s)` links open in the system browser through the `open_url`
+command, since the webview cannot navigate to a remote page itself.
 
 - `crates/cli/src/main.rs` — CLI entry (clap). Non-interactive `-p/--print`, `--mode json`, and `--mode rpc` modes plus TUI dispatch; the `mcp`, `sessions`, `plugin` (including `plugin marketplace`), and `uninstall` subcommands. Provider login is TUI-only (`/login`, `/logout`), matching Pi.
 - `crates/core/src/mcp_config.rs` — `oxide mcp add/list/get/add-json/remove/auth`: reads and writes MCP servers in the native `.oxide/mcp.json` files (`--scope project|global`), merging sources for listing in the same precedence the runtime loads (Claude Code global, `~/.oxide`, the platform config dir, then the project), with a global file reported once as global when the project root resolves to the home directory; `auth` and `remove` keep a pinned `--scope` inside that scope's files in both layouts (`--scope project` covers a Claude Code `.mcp.json` as well as `.oxide/mcp.json`, so a name defined in both scopes resolves to the requested one), while an unpinned command searches every source in precedence order. `add` also accepts the Claude Code-style `oauth` fields (`--oauth-client-id`, `--oauth-client-secret`, `--callback-port`, `--oauth-scope`, `--redirect-uri`).

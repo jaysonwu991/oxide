@@ -187,16 +187,34 @@ Releases are automated by GitHub Actions:
    (including `x86_64-pc-windows-msvc`), packages each binary with a `.sha256`
    checksum, and publishes a GitHub Release with `install.sh` and `install.ps1`
    attached.
-3. `desktop.yml` triggers on `v*` tags (and manually) and builds the macOS,
-   Linux, and Windows desktop bundles, drafting a release.
+3. `desktop.yml` triggers on `desktop-v*` tags (and manually) and builds the
+   macOS, Linux, and Windows desktop bundles, drafting a release.
 
-The repository keeps a placeholder version (`0.0.0`). On a tag, both release
-workflows run `scripts/set-version.sh "$GITHUB_REF_NAME"` followed by
-`cargo update --workspace`, so the built CLI binary and desktop bundles report
-the tag version — there is no manual version bump. To cut a release, push a
-`vX.Y.Z` tag:
+The CLI and the desktop app release independently. A `vX.Y.Z` tag releases the
+CLI only; a `desktop-vX.Y.Z` tag builds and drafts the desktop bundles. The
+component that did not change keeps its previous version, so it does not need a
+new tag or release.
+
+Release notes are drafted by `release-drafter.yml` on every push to `main`. Its
+categories are label-driven, and `release-drafter.yml`'s autolabeler derives
+those labels from conventional-commit PR titles (`feat:`, `fix:`, `perf:`, …),
+so keep the PR title in that form and no manual labelling is needed. The type
+labels it applies are created by `labels.yml`.
+
+A PR whose changes are limited to `crates/cli/` is labeled `cli`, and one
+limited to `crates/desktop/` is labeled `desktop`; a change that also touches
+shared code (for example `crates/core/`) or both components carries neither
+label.
+
+The repository keeps a placeholder version (`0.0.0`). On a tag, the matching
+workflow runs `scripts/set-version.sh "$GITHUB_REF_NAME"` followed by
+`cargo update --workspace`, so the built CLI binary or desktop bundle reports the
+tag version — there is no manual version bump. To cut a release, push the tag:
 
 ```sh
-git tag vX.Y.Z
+git tag vX.Y.Z             # CLI release
 git push origin vX.Y.Z
+
+git tag desktop-vX.Y.Z     # desktop release
+git push origin desktop-vX.Y.Z
 ```
