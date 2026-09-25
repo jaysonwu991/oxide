@@ -602,10 +602,29 @@ async fn run_loop(
 
         let mut terminated: Vec<bool> = Vec::with_capacity(tool_calls.len());
         let mut snapshot_needed = depth == 0 && runtime.plugins.is_active();
-        let parallel = tool_calls.len() > 1
+        
+        // Phase 3 optimization: Smart parallelization of read-heavy tool batches
+        // When a batch contains both read-only and state-changing tools, reorder
+        // to put readonly first for better parallelization in the concurrent path.
+        let mixed_tools = has_mixed_tool_types(&tool_calls);
+        let tool_calls = if mixed_tools {
+            let (readonly, state): (Vec<_>, Vec<_>) = tool_calls.into_iter().partition(|call| {
+                crate::tools::tool_is_readonly(crate::tools::canonical_tool_name(
+                    &call.function.name,
+                ))
+            });
+            let mut reordered = readonly;
+            reordered.extend(state);
+            reordered
+        } else {
+            tool_calls
+        };
+
+        let parallel = (tool_calls.len() > 1
             && tool_calls
                 .iter()
-                .all(|call| concurrency_safe(&call.function.name));
+                .all(|call| concurrency_safe(&call.function.name)))
+            || mixed_tools;
 
         if parallel {
             enum Prepared {
@@ -934,6 +953,18 @@ async fn permission_granted(
 ) -> bool {
     action == Action::Allow || auto_approve || approve(tool.to_string(), subject.to_string()).await
 }
+/// Returns true if a tool batch has both read-only and state-changing tools.
+/// This information guides the reordering strategy to maximize parallelization.
+fn has_mixed_tool_types(tools: &[ToolCall]) -> bool {
+    let (has_readonly, has_state) = tools.iter().fold((false, false), |(r, s), call| {
+        let is_readonly = crate::tools::tool_is_readonly(crate::tools::canonical_tool_name(
+            &call.function.name,
+        ));
+        (r || is_readonly, s || !is_readonly)
+    });
+    has_readonly && has_state
+}
+
 
 /// Tools with no cross-call side effects can run concurrently when the model
 /// batches several of them. Anything that mutates the workspace (`write_file`,
