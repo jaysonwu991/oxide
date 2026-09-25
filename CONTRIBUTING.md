@@ -196,10 +196,10 @@ component that did not change keeps its previous version, so it does not need a
 new tag or release.
 
 Release notes are drafted by `release-drafter.yml` on every push to `main`. Its
-categories are label-driven, and `release-drafter.yml`'s autolabeler derives
-those labels from conventional-commit PR titles (`feat:`, `fix:`, `perf:`, …),
-so keep the PR title in that form and no manual labelling is needed. The type
-labels it applies are created by `labels.yml`.
+categories match conventional-commit PR titles (`feat:`, `fix:`, `perf:`, …)
+directly and by the type label the `release-drafter/autolabeler` step derives
+from that same title, so keep the PR title in that form and no manual labelling
+is needed. The type labels it applies are created by `labels.yml`.
 
 A PR whose changes are limited to `crates/cli/` is labeled `cli`, and one
 limited to `crates/desktop/` is labeled `desktop`; a change that also touches

@@ -3,8 +3,6 @@ name: release-drafter
 on:
   push:
     branches: [main]
-  # The autolabeler derives type labels from conventional-commit PR titles, so
-  # the draft's categories resolve without manual labelling.
   pull_request:
     types: [opened, reopened, synchronize, edited]
 
@@ -16,7 +14,24 @@ jobs:
   update_release_draft:
     runs-on: ubuntu-latest
     steps:
-      - uses: release-drafter/release-drafter@v7
+      # The draft itself only changes when a pull request merges into main.
+      - name: Draft the next CLI release
+        if: github.event_name == 'push'
+        uses: release-drafter/release-drafter@v7
+        with:
+          config-name: release-drafter.yml
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      # v7 moved the autolabeler into its own action; it reads the
+      # `autolabeler` section of the same config and applies the type labels
+      # the changelog categories also match on. Skipped for fork PRs, whose
+      # token is read-only.
+      - name: Apply type labels
+        if: >-
+          github.event_name == 'pull_request' &&
+          github.event.pull_request.head.repo.full_name == github.repository
+        uses: release-drafter/release-drafter/autolabeler@v7
         with:
           config-name: release-drafter.yml
         env:
@@ -27,8 +42,6 @@ jobs:
       # file lives under it; a shared (`crates/core`) or mixed change keeps no
       # component label.
       - name: Label the changed component
-        # Fork PRs get a read-only token, so skip them rather than fail on the
-        # label write; same-repo branches are the ones the release notes track.
         if: >-
           github.event_name == 'pull_request' &&
           github.event.pull_request.head.repo.full_name == github.repository

@@ -3,15 +3,17 @@
 # `desktop-v*` tags (see .github/workflows/desktop.yml), so this draft only
 # describes the CLI.
 #
-# The notes are driven by labels. This repository writes conventional-commit PR
-# titles and does not label PRs by hand, so the `autolabeler` below derives the
-# labels from the title (and branch). `.github/labels.yml` creates the labels
-# the autolabeler needs; without them it cannot apply anything.
+# Categories match a conventional-commit title directly, and also accept the
+# type labels the autolabeler action
+# (release-drafter/release-drafter/autolabeler@v7) derives from that title, so
+# the notes stay organized even for a PR that was never labeled by hand.
+# `.github/labels.yml` creates the labels the autolabeler applies.
 
 name-template: 'Oxide v$RESOLVED_VERSION'
 tag-template: 'v$RESOLVED_VERSION'
 change-template: '- $TITLE (#$NUMBER) by @$AUTHOR'
 change-title-escapes: '\<*_&'
+category-template: '### $TITLE'
 sort-by: merged_at
 sort-direction: descending
 
@@ -20,92 +22,97 @@ replacers:
   - search: '/^(feat|fix|perf|refactor|docs|test|ci|build|chore)(\(.+?\))?!?:\s*/i'
     replace: ''
 
-# Administrative labels that should never reach the changelog.
-exclude-labels:
-  - 'skip-changelog'
-  - 'duplicate'
-  - 'invalid'
-  - 'question'
-  - 'wontfix'
-
 categories:
+  # Administrative labels that should never reach the changelog.
+  - type: 'pre-exclude'
+    when:
+      labels:
+        - 'skip-changelog'
+        - 'duplicate'
+        - 'invalid'
+        - 'question'
+        - 'wontfix'
+
   - title: '⚠️ Breaking Changes'
-    labels:
-      - 'breaking'
+    semver-increment: 'major'
     collapse-after: 3
+    when:
+      - conventional:
+          breaking: true
+      - label: 'breaking'
+
   - title: '🚀 Features'
-    labels:
-      - 'enhancement'
-      - 'feat'
-      - 'feature'
+    semver-increment: 'minor'
+    when:
+      - conventional:
+          type: 'feat'
+      - labels:
+          - 'enhancement'
+          - 'feat'
+          - 'feature'
+
   - title: '🐛 Bug Fixes'
-    labels:
-      - 'bug'
-      - 'fix'
-      - 'bugfix'
+    when:
+      - conventional:
+          type: 'fix'
+      - labels:
+          - 'bug'
+          - 'fix'
+          - 'bugfix'
+
   - title: '⚡ Performance'
-    labels:
-      - 'performance'
-      - 'perf'
+    when:
+      - conventional:
+          type: 'perf'
+      - label: 'performance'
+
   - title: '📚 Documentation'
-    labels:
-      - 'documentation'
-      - 'docs'
+    when:
+      - conventional:
+          type: 'docs'
+      - label: 'documentation'
+
   - title: '♻️ Refactoring'
-    labels:
-      - 'refactor'
+    when:
+      - conventional:
+          type: 'refactor'
+      - label: 'refactor'
+
   - title: '🧪 Tests'
-    labels:
-      - 'test'
     collapse-after: 5
+    when:
+      - conventional:
+          type: 'test'
+      - label: 'test'
+
   - title: '🏗️ Build & CI'
-    labels:
-      - 'ci'
-      - 'build'
     collapse-after: 5
+    when:
+      - conventional:
+          types:
+            - 'ci'
+            - 'build'
+      - label: 'ci'
+
   - title: '📦 Dependencies'
-    labels:
-      - 'dependencies'
-      - 'deps'
     collapse-after: 5
+    when:
+      labels:
+        - 'dependencies'
+        - 'deps'
+
   - title: '🧰 Maintenance'
-    labels:
-      - 'chore'
     collapse-after: 5
+    when:
+      - conventional:
+          type: 'chore'
+      - label: 'chore'
+
+  # The one changelog category without `when` receives anything uncategorized.
   - title: '🧩 Other Changes'
 
-version-resolver:
-  major:
-    labels:
-      - 'breaking'
-      - 'major'
-  minor:
-    labels:
-      - 'enhancement'
-      - 'feat'
-      - 'feature'
-      - 'minor'
-  patch:
-    labels:
-      - 'bug'
-      - 'fix'
-      - 'bugfix'
-      - 'performance'
-      - 'perf'
-      - 'documentation'
-      - 'docs'
-      - 'refactor'
-      - 'test'
-      - 'ci'
-      - 'build'
-      - 'dependencies'
-      - 'deps'
-      - 'chore'
-      - 'patch'
-  default: patch
-
-# Derives labels from the conventional-commit title (and branch) so the
-# categories above resolve without manual labelling.
+# Derives the type labels from the conventional-commit title (and branch), for
+# the release-drafter/release-drafter/autolabeler@v7 step.
 autolabeler:
   - label: 'breaking'
     title:
@@ -178,6 +185,10 @@ template: |
   ## Full Changelog
 
   https://github.com/$OWNER/$REPOSITORY/compare/$PREVIOUS_TAG...v$RESOLVED_VERSION
+
+  ## New Contributors
+
+  $NEW_CONTRIBUTORS
 
   ## Contributors
 
