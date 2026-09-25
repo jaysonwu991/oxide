@@ -15,7 +15,7 @@ mod commands;
 use commands::{
     add_project, all_sessions, cancel_run, clear_approvals, create_project, delete_session,
     list_approvals, list_models, list_projects, list_providers, list_sessions, list_themes, login,
-    logout, pick_folder, project_info, remove_project, rename_session, resolve_approval,
+    logout, open_url, pick_folder, project_info, remove_project, rename_session, resolve_approval,
     send_prompt, session_messages, set_model, set_project_trust, set_theme, steer_run,
     theme_colors, DesktopState,
 };
@@ -56,6 +56,7 @@ fn main() {
             list_themes,
             theme_colors,
             set_theme,
+            open_url,
         ])
         .run(tauri::generate_context!())
         .expect("error while running the Oxide desktop app");

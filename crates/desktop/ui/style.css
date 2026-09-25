@@ -278,7 +278,8 @@ body.resizing { cursor: col-resize; user-select: none; }
 .msg .body ul, .msg .body ol { margin: 7px 0; padding-left: 22px; }
 .msg .body li { margin: 2px 0; }
 .msg .body blockquote { margin: 7px 0; padding-left: 11px; border-left: 2px solid var(--border); color: var(--dim); }
-.msg .body a { color: var(--accent); }
+.msg .body a { color: var(--accent); text-decoration: underline; cursor: pointer; }
+.msg .body a:hover { opacity: 0.8; }
 .msg .body hr { border: none; border-top: 1px solid var(--border); margin: 12px 0; }
 .msg .body code {
   background: var(--panel-2);
