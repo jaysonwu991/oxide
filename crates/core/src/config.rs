@@ -1170,14 +1170,19 @@ impl Config {
              `grep` to locate a symbol or string, then read the surrounding lines. Only re-read a \
              file after you edit it. Prefer the dedicated tools over shell equivalents: `read` to \
              inspect a file, `grep` to find text, `find` to locate files, and `ls` to list a \
-             directory. Keep each `bash` command focused on one task instead of chaining unrelated \
-             commands with `;` or `&&`, and scope searches to the project or a specific directory \
-             — never sweep the whole filesystem with `find /`. `read`, `ls`, `find`, and `grep` \
-             accept absolute paths, so you do not need a shell to inspect files outside the project, \
-             and `bash` already starts in the project root, so run a command directly instead of \
-             prefixing `cd <root> &&`. When a command can print a large payload, select just the \
-             fields you need (for example a `--jq`/`jq` filter) rather than piping it through `head`, \
-             which still fetches and renders everything."
+             directory. Search the codebase with `grep`/`find`, never with a shell \
+             `grep -r`/`rg`/`find` from the repo root: the tools skip `.git/`, `target/`, \
+             `node_modules/` and `.venv/` and honor `.gitignore`; `grep` spreads its scan across \
+             threads, while a shell search reads every build artifact — and a `| grep -v` filter \
+             after it cannot give back the time already spent. Scope a shell search to one \
+             directory and reserve it for a command's own output (`git log | grep`); never sweep \
+             the whole filesystem with `find /`. Keep each `bash` command focused on one task \
+             instead of chaining unrelated commands with `;` or `&&`. `read`, `ls`, `find`, and \
+             `grep` accept absolute paths, so you do not need a shell to inspect files outside \
+             the project, and `bash` already starts in the project root, so run a command \
+             directly instead of prefixing `cd <root> &&`. When a command can print a large \
+             payload, select just the fields you need (for example a `--jq`/`jq` filter) rather \
+             than piping it through `head`, which still fetches and renders everything."
                 .to_string(),
         );
 
@@ -1296,6 +1301,25 @@ mod tests {
             prompt.contains("already starts in the project root"),
             "{prompt}"
         );
+    }
+
+    #[test]
+    fn system_prompt_keeps_searches_out_of_the_shell() {
+        let config = Config::default();
+        let prompt = config.compose_system_prompt();
+        assert!(prompt.contains("never with a shell"), "{prompt}");
+        assert!(
+            prompt.contains("never sweep the whole filesystem"),
+            "{prompt}"
+        );
+        assert!(prompt.contains("honor `.gitignore`"), "{prompt}");
+        // Only `grep` fans its scan across threads; `find` dispatches to the
+        // sequential `walk` loop, so the prompt must not credit both.
+        assert!(
+            prompt.contains("`grep` spreads its scan across"),
+            "{prompt}"
+        );
+        assert!(!prompt.contains("walk in parallel"), "{prompt}");
     }
 
     #[test]
