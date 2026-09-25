@@ -603,43 +603,182 @@ async fn run_loop(
         let mut terminated: Vec<bool> = Vec::with_capacity(tool_calls.len());
         let mut snapshot_needed = depth == 0 && runtime.plugins.is_active();
 
-        // Only an all-read-only batch can run concurrently. A single state-changing
-        // call keeps the whole batch sequential so the model's requested call order
-        // (and read/write dependencies) is preserved.
-        let parallel = tool_calls.len() > 1
-            && tool_calls
-                .iter()
-                .all(|call| concurrency_safe(&call.function.name));
+        // Dispatch the batch in the model's requested order, but run each maximal
+        // run of concurrency-safe calls together. A state-changing call always gets
+        // its own run, so read/write dependencies keep their order while a mixed
+        // batch still parallelizes its reads.
+        for tool_calls in batch_runs(tool_calls) {
+            let parallel = tool_calls.len() > 1
+                && tool_calls
+                    .iter()
+                    .all(|call| concurrency_safe(&call.function.name));
 
-        if parallel {
-            enum Prepared {
-                Immediate(tools::ToolOutput),
-                Run { call: ToolCall, args: Value },
-            }
+            if parallel {
+                enum Prepared {
+                    Immediate(tools::ToolOutput),
+                    Run { call: ToolCall, args: Value },
+                }
 
-            let mut prepared = Vec::with_capacity(tool_calls.len());
-            for original in &tool_calls {
-                let name = original.function.name.clone();
-                let _ = tx.send(AgentEvent::ToolCall {
-                    name: name.clone(),
-                    args: original.function.arguments.clone(),
-                });
+                let mut prepared = Vec::with_capacity(tool_calls.len());
+                for original in &tool_calls {
+                    let name = original.function.name.clone();
+                    let _ = tx.send(AgentEvent::ToolCall {
+                        name: name.clone(),
+                        args: original.function.arguments.clone(),
+                    });
 
-                let mut call = original.clone();
-                let args =
-                    serde_json::from_str::<Value>(&call.function.arguments).unwrap_or(Value::Null);
-                let effective_args = match runtime.plugins.tool_before(&name, &args).await {
-                    Some(mutated) if mutated != args => {
-                        if let Ok(text) = serde_json::to_string(&mutated) {
-                            call.function.arguments = text;
+                    let mut call = original.clone();
+                    let args = serde_json::from_str::<Value>(&call.function.arguments)
+                        .unwrap_or(Value::Null);
+                    let effective_args = match runtime.plugins.tool_before(&name, &args).await {
+                        Some(mutated) if mutated != args => {
+                            if let Ok(text) = serde_json::to_string(&mutated) {
+                                call.function.arguments = text;
+                            }
+                            mutated
                         }
-                        mutated
-                    }
-                    _ => args,
-                };
-                let subject = subject_for(&name, &effective_args);
-                prepared.push(
-                    if permission_granted(
+                        _ => args,
+                    };
+                    let subject = subject_for(&name, &effective_args);
+                    prepared.push(
+                        if permission_granted(
+                            permissions.decide(&name, &subject),
+                            config.auto_approve,
+                            &runtime.approve,
+                            &name,
+                            &subject,
+                        )
+                        .await
+                        {
+                            Prepared::Run {
+                                call,
+                                args: effective_args,
+                            }
+                        } else {
+                            Prepared::Immediate(tools::ToolOutput::text(format!(
+                                "error: permission denied for `{name}`"
+                            )))
+                        },
+                    );
+                }
+
+                let mut handles = Vec::with_capacity(prepared.len());
+                for item in prepared {
+                    let config = config.clone();
+                    let cwd = cwd.clone();
+                    let runtime = runtime.clone();
+                    let tx = tx.clone();
+                    handles.push(tokio::spawn(async move {
+                        match item {
+                            Prepared::Immediate(output) => (output, 0),
+                            Prepared::Run { call, args } => {
+                                let name = call.function.name.clone();
+                                let progress = tools::Progress::new(Arc::new({
+                                    let tx = tx.clone();
+                                    let name = name.clone();
+                                    move |chunk: &str| {
+                                        let _ = tx.send(AgentEvent::ToolProgress {
+                                            name: name.clone(),
+                                            chunk: chunk.to_string(),
+                                        });
+                                    }
+                                }));
+                                let started = std::time::Instant::now();
+                                let mut output =
+                                    dispatch(&config, &cwd, &runtime, &tx, &call, depth, &progress)
+                                        .await;
+                                if let Some(result) =
+                                    runtime.plugins.tool_after(&name, &args, &output.text).await
+                                {
+                                    output.text = result.output;
+                                    output.terminate |= result.terminate;
+                                }
+                                (output, started.elapsed().as_millis() as u64)
+                            }
+                        }
+                    }));
+                }
+
+                for (handle, original) in handles.into_iter().zip(&tool_calls) {
+                    let (output, millis) = match handle.await {
+                        Ok(result) => result,
+                        Err(err) => (
+                            tools::ToolOutput::text(format!("error: tool task failed: {err}")),
+                            0,
+                        ),
+                    };
+                    let args = serde_json::from_str::<Value>(&original.function.arguments)
+                        .unwrap_or(Value::Null);
+                    verification.record(&original.function.name, &args, &output.text);
+                    terminated.push(output.terminate);
+                    let _ = tx.send(AgentEvent::ToolResult {
+                        name: original.function.name.clone(),
+                        args: original.function.arguments.clone(),
+                        output: output.text.clone(),
+                        diff: output.diff.clone(),
+                        millis,
+                    });
+                    let tool_message = if output.media.is_empty() {
+                        Message::tool(original.id.clone(), output.text)
+                    } else {
+                        Message::tool_parts(original.id.clone(), output.text, output.media)
+                    };
+                    record(&runtime.session, depth, &tool_message);
+                    messages.push(tool_message);
+                }
+            } else {
+                for original in &tool_calls {
+                    let name = original.function.name.clone();
+                    let _ = tx.send(AgentEvent::ToolCall {
+                        name: name.clone(),
+                        args: original.function.arguments.clone(),
+                    });
+
+                    let mut call = original.clone();
+                    let args = serde_json::from_str::<Value>(&call.function.arguments)
+                        .unwrap_or(Value::Null);
+                    let effective_args = match runtime.plugins.tool_before(&name, &args).await {
+                        Some(mutated) if mutated != args => {
+                            if let Ok(text) = serde_json::to_string(&mutated) {
+                                call.function.arguments = text;
+                            }
+                            mutated
+                        }
+                        _ => args,
+                    };
+
+                    let subject = subject_for(&name, &effective_args);
+                    let progress = tools::Progress::new(Arc::new({
+                        let tx = tx.clone();
+                        let name = name.clone();
+                        move |chunk: &str| {
+                            let _ = tx.send(AgentEvent::ToolProgress {
+                                name: name.clone(),
+                                chunk: chunk.to_string(),
+                            });
+                        }
+                    }));
+                    let started = std::time::Instant::now();
+                    let canonical = crate::tools::canonical_tool_name(&name);
+                    let block_reply = if canonical == "bash" {
+                        match effective_args.get("command").and_then(Value::as_str) {
+                            Some(command) if posts_review_reply(command) => {
+                                let repo_pending = repo_has_pending_delivery(&cwd).await;
+                                verification.blocks_review_reply(command, repo_pending)
+                            }
+                            _ => false,
+                        }
+                    } else {
+                        false
+                    };
+                    let mut dispatched = false;
+                    let mut output = if block_reply {
+                        tools::ToolOutput::text(
+                        "error: commit and push the code changes before replying to the review, so \
+                         the reply does not claim a fix that is not on the branch under review"
+                            .to_string(),
+                    )
+                    } else if permission_granted(
                         permissions.decide(&name, &subject),
                         config.auto_approve,
                         &runtime.approve,
@@ -648,207 +787,72 @@ async fn run_loop(
                     )
                     .await
                     {
-                        Prepared::Run {
-                            call,
-                            args: effective_args,
-                        }
+                        snapshot_needed |= tool_may_mutate_workspace(&name);
+                        dispatched = true;
+                        dispatch(&config, &cwd, &runtime, &tx, &call, depth, &progress).await
                     } else {
-                        Prepared::Immediate(tools::ToolOutput::text(format!(
-                            "error: permission denied for `{name}`"
-                        )))
-                    },
-                );
-            }
-
-            let mut handles = Vec::with_capacity(prepared.len());
-            for item in prepared {
-                let config = config.clone();
-                let cwd = cwd.clone();
-                let runtime = runtime.clone();
-                let tx = tx.clone();
-                handles.push(tokio::spawn(async move {
-                    match item {
-                        Prepared::Immediate(output) => (output, 0),
-                        Prepared::Run { call, args } => {
-                            let name = call.function.name.clone();
-                            let progress = tools::Progress::new(Arc::new({
-                                let tx = tx.clone();
-                                let name = name.clone();
-                                move |chunk: &str| {
-                                    let _ = tx.send(AgentEvent::ToolProgress {
-                                        name: name.clone(),
-                                        chunk: chunk.to_string(),
-                                    });
-                                }
-                            }));
-                            let started = std::time::Instant::now();
-                            let mut output =
-                                dispatch(&config, &cwd, &runtime, &tx, &call, depth, &progress)
-                                    .await;
-                            if let Some(result) =
-                                runtime.plugins.tool_after(&name, &args, &output.text).await
+                        tools::ToolOutput::text(format!("error: permission denied for `{name}`"))
+                    };
+                    let canonical_name = canonical;
+                    if matches!(canonical_name, "write_file" | "edit")
+                        && !output.text.starts_with("error:")
+                    {
+                        if let Some(path) = effective_args.get("path").and_then(Value::as_str) {
+                            if let Some(diagnostics) =
+                                runtime.lsp.diagnostics(&cwd, Path::new(path)).await
                             {
-                                output.text = result.output;
-                                output.terminate |= result.terminate;
+                                output.text.push_str("\n\n");
+                                output.text.push_str(&diagnostics);
                             }
-                            (output, started.elapsed().as_millis() as u64)
                         }
                     }
-                }));
-            }
-
-            for (handle, original) in handles.into_iter().zip(&tool_calls) {
-                let (output, millis) = match handle.await {
-                    Ok(result) => result,
-                    Err(err) => (
-                        tools::ToolOutput::text(format!("error: tool task failed: {err}")),
-                        0,
-                    ),
-                };
-                let args = serde_json::from_str::<Value>(&original.function.arguments)
-                    .unwrap_or(Value::Null);
-                verification.record(&original.function.name, &args, &output.text);
-                terminated.push(output.terminate);
-                let _ = tx.send(AgentEvent::ToolResult {
-                    name: original.function.name.clone(),
-                    args: original.function.arguments.clone(),
-                    output: output.text.clone(),
-                    diff: output.diff.clone(),
-                    millis,
-                });
-                let tool_message = if output.media.is_empty() {
-                    Message::tool(original.id.clone(), output.text)
-                } else {
-                    Message::tool_parts(original.id.clone(), output.text, output.media)
-                };
-                record(&runtime.session, depth, &tool_message);
-                messages.push(tool_message);
-            }
-        } else {
-            for original in &tool_calls {
-                let name = original.function.name.clone();
-                let _ = tx.send(AgentEvent::ToolCall {
-                    name: name.clone(),
-                    args: original.function.arguments.clone(),
-                });
-
-                let mut call = original.clone();
-                let args =
-                    serde_json::from_str::<Value>(&call.function.arguments).unwrap_or(Value::Null);
-                let effective_args = match runtime.plugins.tool_before(&name, &args).await {
-                    Some(mutated) if mutated != args => {
-                        if let Ok(text) = serde_json::to_string(&mutated) {
-                            call.function.arguments = text;
-                        }
-                        mutated
+                    if let Some(result) = runtime
+                        .plugins
+                        .tool_after(&name, &effective_args, &output.text)
+                        .await
+                    {
+                        output.text = result.output;
+                        output.terminate |= result.terminate;
                     }
-                    _ => args,
-                };
-
-                let subject = subject_for(&name, &effective_args);
-                let progress = tools::Progress::new(Arc::new({
-                    let tx = tx.clone();
-                    let name = name.clone();
-                    move |chunk: &str| {
-                        let _ = tx.send(AgentEvent::ToolProgress {
-                            name: name.clone(),
-                            chunk: chunk.to_string(),
-                        });
+                    let millis = started.elapsed().as_millis() as u64;
+                    verification.record(&name, &effective_args, &output.text);
+                    // An edit invalidates a verifier result: the next run of the same
+                    // build/test is a fresh check, not a repeat, so it must not get the
+                    // "already ran" note. A failed edit left the workspace unchanged, so
+                    // it must not clear the tracking.
+                    if mutation_invalidates_verifier(canonical_name, &output.text) {
+                        seen_verifications.clear();
                     }
-                }));
-                let started = std::time::Instant::now();
-                let canonical = crate::tools::canonical_tool_name(&name);
-                let block_reply = if canonical == "bash" {
-                    match effective_args.get("command").and_then(Value::as_str) {
-                        Some(command) if posts_review_reply(command) => {
-                            let repo_pending = repo_has_pending_delivery(&cwd).await;
-                            verification.blocks_review_reply(command, repo_pending)
-                        }
-                        _ => false,
-                    }
-                } else {
-                    false
-                };
-                let mut dispatched = false;
-                let mut output = if block_reply {
-                    tools::ToolOutput::text(
-                        "error: commit and push the code changes before replying to the review, so \
-                         the reply does not claim a fix that is not on the branch under review"
-                            .to_string(),
-                    )
-                } else if permission_granted(
-                    permissions.decide(&name, &subject),
-                    config.auto_approve,
-                    &runtime.approve,
-                    &name,
-                    &subject,
-                )
-                .await
-                {
-                    snapshot_needed |= tool_may_mutate_workspace(&name);
-                    dispatched = true;
-                    dispatch(&config, &cwd, &runtime, &tx, &call, depth, &progress).await
-                } else {
-                    tools::ToolOutput::text(format!("error: permission denied for `{name}`"))
-                };
-                let canonical_name = canonical;
-                if matches!(canonical_name, "write_file" | "edit")
-                    && !output.text.starts_with("error:")
-                {
-                    if let Some(path) = effective_args.get("path").and_then(Value::as_str) {
-                        if let Some(diagnostics) =
-                            runtime.lsp.diagnostics(&cwd, Path::new(path)).await
+                    if canonical_name == "bash" {
+                        if let Some(command) = effective_args.get("command").and_then(Value::as_str)
                         {
-                            output.text.push_str("\n\n");
-                            output.text.push_str(&diagnostics);
-                        }
-                    }
-                }
-                if let Some(result) = runtime
-                    .plugins
-                    .tool_after(&name, &effective_args, &output.text)
-                    .await
-                {
-                    output.text = result.output;
-                    output.terminate |= result.terminate;
-                }
-                let millis = started.elapsed().as_millis() as u64;
-                verification.record(&name, &effective_args, &output.text);
-                // An edit invalidates a verifier result: the next run of the same
-                // build/test is a fresh check, not a repeat, so it must not get the
-                // "already ran" note. A failed edit left the workspace unchanged, so
-                // it must not clear the tracking.
-                if mutation_invalidates_verifier(canonical_name, &output.text) {
-                    seen_verifications.clear();
-                }
-                if canonical_name == "bash" {
-                    if let Some(command) = effective_args.get("command").and_then(Value::as_str) {
-                        if note_verifier(&mut seen_verifications, dispatched, command) {
-                            output.text.push_str(
+                            if note_verifier(&mut seen_verifications, dispatched, command) {
+                                output.text.push_str(
                                 "\n\n[note: this build or test already ran in this run; its result \
                                  is unchanged unless you edited files, so there is no need to run it \
                                  again]",
                             );
+                            }
                         }
                     }
-                }
-                terminated.push(output.terminate);
-                let text = output.text.clone();
+                    terminated.push(output.terminate);
+                    let text = output.text.clone();
 
-                let _ = tx.send(AgentEvent::ToolResult {
-                    name,
-                    args: serde_json::to_string(&effective_args).unwrap_or_default(),
-                    output: text.clone(),
-                    diff: output.diff.clone(),
-                    millis,
-                });
-                let tool_message = if output.media.is_empty() {
-                    Message::tool(call.id.clone(), text)
-                } else {
-                    Message::tool_parts(call.id.clone(), text, output.media)
-                };
-                record(&runtime.session, depth, &tool_message);
-                messages.push(tool_message);
+                    let _ = tx.send(AgentEvent::ToolResult {
+                        name,
+                        args: serde_json::to_string(&effective_args).unwrap_or_default(),
+                        output: text.clone(),
+                        diff: output.diff.clone(),
+                        millis,
+                    });
+                    let tool_message = if output.media.is_empty() {
+                        Message::tool(call.id.clone(), text)
+                    } else {
+                        Message::tool_parts(call.id.clone(), text, output.media)
+                    };
+                    record(&runtime.session, depth, &tool_message);
+                    messages.push(tool_message);
+                }
             }
         }
 
@@ -938,6 +942,27 @@ async fn permission_granted(
 ) -> bool {
     action == Action::Allow || auto_approve || approve(tool.to_string(), subject.to_string()).await
 }
+/// Splits a tool batch into dispatch runs. A maximal run of concurrency-safe
+/// calls becomes one run (dispatched together), while every other call becomes
+/// its own run so state-changing calls stay sequential and keep their order.
+fn batch_runs(calls: Vec<ToolCall>) -> Vec<Vec<ToolCall>> {
+    let mut runs: Vec<Vec<ToolCall>> = Vec::new();
+    let mut current: Vec<ToolCall> = Vec::new();
+    let mut current_safe = false;
+    for call in calls {
+        let safe = concurrency_safe(&call.function.name);
+        if !current.is_empty() && !(safe && current_safe) {
+            runs.push(std::mem::take(&mut current));
+        }
+        current.push(call);
+        current_safe = safe;
+    }
+    if !current.is_empty() {
+        runs.push(current);
+    }
+    runs
+}
+
 /// Tools with no cross-call side effects can run concurrently when the model
 /// batches several of them. Anything that mutates the workspace (`write_file`,
 /// `patch`, `bash`), spawns work (`task`), or has unknown remote effects (MCP)
@@ -2573,6 +2598,51 @@ mod tests {
         ] {
             assert!(!concurrency_safe(name), "{name} must stay sequential");
         }
+    }
+
+    fn tool_call(name: &str) -> ToolCall {
+        ToolCall {
+            id: format!("call_{name}"),
+            kind: "function".into(),
+            function: crate::llm::FunctionCall {
+                name: name.into(),
+                arguments: "{}".into(),
+            },
+        }
+    }
+
+    #[test]
+    fn batch_runs_group_reads_and_isolate_state_changes() {
+        let runs = batch_runs(vec![
+            tool_call("read"),
+            tool_call("grep"),
+            tool_call("write"),
+            tool_call("read"),
+            tool_call("edit"),
+            tool_call("find"),
+            tool_call("ls"),
+        ]);
+        let shape: Vec<Vec<&str>> = runs
+            .iter()
+            .map(|run| run.iter().map(|call| call.function.name.as_str()).collect())
+            .collect();
+        assert_eq!(
+            shape,
+            vec![
+                vec!["read", "grep"],
+                vec!["write"],
+                vec!["read"],
+                vec!["edit"],
+                vec!["find", "ls"],
+            ]
+        );
+    }
+
+    #[test]
+    fn batch_runs_keep_a_lone_read_sequential() {
+        let runs = batch_runs(vec![tool_call("read")]);
+        assert_eq!(runs.len(), 1);
+        assert_eq!(runs[0].len(), 1);
     }
 
     #[test]
