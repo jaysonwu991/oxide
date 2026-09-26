@@ -215,7 +215,7 @@ while using its own `.oxide/` format.
 #### macOS and Linux
 
 ```sh
-curl -fsSL https://github.com/jaysonwu991/oxide/releases/latest/download/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/jaysonwu991/oxide/main/install.sh | bash
 ```
 
 The installer detects your OS/arch, downloads the matching release, verifies its
@@ -232,7 +232,7 @@ Overrides:
 #### Windows (x86_64)
 
 ```powershell
-irm https://github.com/jaysonwu991/oxide/releases/latest/download/install.ps1 | iex
+irm https://raw.githubusercontent.com/jaysonwu991/oxide/main/install.ps1 | iex
 ```
 
 The PowerShell installer detects your OS/arch, downloads the matching release,

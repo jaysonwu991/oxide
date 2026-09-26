@@ -27,7 +27,7 @@ Install from VSIX…** in VS Code.
 The `oxide` binary on your `PATH` (or set `oxide.binaryPath`). Install it with:
 
 ```sh
-curl -fsSL https://github.com/jaysonwu991/oxide/releases/latest/download/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/jaysonwu991/oxide/main/install.sh | bash
 # or, from a checkout
 cargo install --path crates/cli
 ```

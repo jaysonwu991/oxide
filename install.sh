@@ -1,11 +1,11 @@
 #!/bin/sh
 # Install the Oxide CLI.
 #
-#   curl -fsSL https://github.com/jaysonwu991/oxide/releases/latest/download/install.sh | bash
+#   curl -fsSL https://raw.githubusercontent.com/jaysonwu991/oxide/main/install.sh | bash
 #
 # Environment overrides:
 #   OXIDE_VERSION      version to install, with or without a leading "v"
-#                      (default: latest release)
+#                      (default: latest CLI release)
 #   OXIDE_INSTALL_DIR  directory to install the binary into
 #                      (default: $HOME/.local/bin)
 #   OXIDE_REPO         GitHub repository slug (default: jaysonwu991/oxide)
@@ -82,6 +82,29 @@ manifest_asset() {
     printf '%s' "$name"
 }
 
+# The repository publishes the CLI (`v*`), the desktop app (`desktop-v*`), and
+# the VS Code extension (`extension-v*`), so `/releases/latest` can point at a
+# component that carries no CLI manifest. Prefer `latest` when it has one, and
+# otherwise resolve the newest CLI release from the API.
+latest_cli_tag() {
+    releases="$(fetch "https://api.github.com/repos/${REPO}/releases?per_page=100" 2>/dev/null)" || return 1
+    tag="$(printf '%s\n' "$releases" \
+        | tr ',' '\n' \
+        | sed -n 's/.*"tag_name":[[:space:]]*"\(v[0-9][^"]*\)".*/\1/p' \
+        | head -n1)"
+    [ -n "$tag" ] || return 1
+    printf '%s' "$tag"
+}
+
+fetch_manifest() {
+    fetch "${BASE_URL}/releases/latest/download/${MANIFEST_NAME}" 2>/dev/null && return 0
+    fetch "${BASE_URL}/releases/latest/download/${LEGACY_MANIFEST_NAME}" 2>/dev/null && return 0
+    tag="$(latest_cli_tag)" || return 1
+    info "fetching ${MANIFEST_NAME} from ${tag}"
+    fetch "${BASE_URL}/releases/download/${tag}/${MANIFEST_NAME}" 2>/dev/null \
+        || fetch "${BASE_URL}/releases/download/${tag}/${LEGACY_MANIFEST_NAME}"
+}
+
 resolve_url() {
     platform="$1"
 
@@ -92,8 +115,7 @@ resolve_url() {
     fi
 
     info "fetching ${MANIFEST_NAME}"
-    manifest="$(fetch "${BASE_URL}/releases/latest/download/${MANIFEST_NAME}" 2>/dev/null)" \
-        || manifest="$(fetch "${BASE_URL}/releases/latest/download/${LEGACY_MANIFEST_NAME}")" \
+    manifest="$(fetch_manifest)" \
         || err "could not fetch ${MANIFEST_NAME}; has a release been published?"
     ver="$(printf '%s\n' "$manifest" | awk -F': ' '/^version:/ {print $2; exit}')"
     [ -n "$ver" ] || err "could not read version from ${MANIFEST_NAME}"
