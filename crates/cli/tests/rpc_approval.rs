@@ -288,6 +288,57 @@ fn without_the_approval_flag_no_prompt_is_emitted() {
     );
 }
 
+#[test]
+fn a_denial_message_reaches_the_model() {
+    let project = TempDir::new("project_deny");
+    let config_home = TempDir::new("config_deny");
+    let target = project.path().join("denied.txt").display().to_string();
+    let (base_url, server) = serve(vec![write_call_body(&target), answer_body("Understood.")]);
+
+    let mut rpc = start(config_home.path(), project.path(), &base_url, true);
+    rpc.send(json!({"type": "prompt", "message": "write the file"}));
+    loop {
+        let event = rpc.event();
+        match event["type"].as_str() {
+            Some("approval_request") => {
+                let id = event["id"].as_u64().expect("a request id");
+                rpc.send(json!({
+                    "type": "approval",
+                    "id": id,
+                    "decision": "deny",
+                    "message": "use ls instead",
+                }));
+            }
+            Some("agent_end") => break,
+            _ => {}
+        }
+    }
+    assert!(
+        !project.path().join("denied.txt").exists(),
+        "the denied tool did not run"
+    );
+
+    let bodies = server.join().unwrap();
+    assert_eq!(
+        bodies.len(),
+        2,
+        "the model was asked again after the denial"
+    );
+    let second: Value = serde_json::from_str(&bodies[1]).expect("the request is JSON");
+    let guided = second["messages"]
+        .as_array()
+        .expect("the request carries messages")
+        .iter()
+        .any(|message| {
+            message["role"] == "user" && message["content"].as_str() == Some("use ls instead")
+        });
+    assert!(
+        guided,
+        "the denial's guidance is in the next request: {}",
+        bodies[1]
+    );
+}
+
 /// The extension sends the prompt as a request frame rather than through `-p`,
 /// so the images a message carries have to travel with it: the run has to turn
 /// the paths into media parts of that one message.

@@ -605,7 +605,8 @@ async fn main() -> Result<()> {
                 "--ask-approvals/--no-ask-approvals need the interactive TUI or --mode rpc, where the question can be answered"
             );
         }
-        config.auto_approve = cli.no_ask_approvals;
+        config.auto_approve =
+            resolve_auto_approve(cli.ask_approvals, cli.no_ask_approvals, config.auto_approve);
     }
 
     if explicit_prompt {
@@ -837,6 +838,19 @@ fn build_prompt(
     Ok((expanded.text, attachments))
 }
 
+/// The `auto_approve` a run should use. `--ask-approvals` turns prompting on
+/// (so auto-approval is off), `--no-ask-approvals` turns it off (so a gated
+/// tool runs), and neither keeps the value already in the config.
+fn resolve_auto_approve(ask_approvals: bool, no_ask_approvals: bool, stored: bool) -> bool {
+    if ask_approvals && !no_ask_approvals {
+        false
+    } else if no_ask_approvals {
+        true
+    } else {
+        stored
+    }
+}
+
 /// Everything needed to start one agent run is `runner::AgentRun`.
 /// RPC mode: reads JSONL requests from stdin and streams JSONL events to stdout.
 /// Each `prompt` request starts a fresh agent run on the session history, and
@@ -855,11 +869,11 @@ async fn run_rpc_mode(
     // caller that does not understand `approval_request` would otherwise hang
     // until the request times out.
     let asking = ask_approvals && !no_ask_approvals;
-    if asking {
-        // The broker answers every `ask`/`deny` rule, so the blanket
-        // auto-approval has to be off for the prompt to be reached at all.
-        config.auto_approve = false;
-    }
+    // `--ask-approvals` needs auto-approval off for the prompt to be reached;
+    // `--no-ask-approvals` runs gated tools instead of inheriting a stored
+    // `auto_approve: false` that would deny them; neither keeps the stored one.
+    config.auto_approve =
+        resolve_auto_approve(ask_approvals, no_ask_approvals, config.auto_approve);
     let ephemeral = config.ephemeral;
     let mut log = session;
     let mut history = match &log {
@@ -901,8 +915,12 @@ async fn run_rpc_mode(
             }
             history.push(user);
             let (run_tx, mut run_rx) = unbounded_channel();
+            // The broker and the run share one steering queue, so a denial's
+            // message is drained by the agent it was meant to steer (a fresh
+            // queue here would swallow the guidance and let it retry blind).
+            let steering = Steering::new();
             let approve = match &driver_approvals {
-                Some(broker) => Some(broker.approver(&cwd, run_tx.clone(), Steering::new())),
+                Some(broker) => Some(broker.approver(&cwd, run_tx.clone(), steering.clone())),
                 None => Some(cli_approver(config.auto_approve)),
             };
             let run = runner::AgentRun {
@@ -914,7 +932,7 @@ async fn run_rpc_mode(
                 command_agent,
                 session: log.clone(),
                 approve,
-                steering: Steering::new(),
+                steering,
                 follow_ups: Steering::new(),
                 cancel: Cancel::new(),
             };
@@ -943,7 +961,7 @@ async fn run_rpc_mode(
 
 #[cfg(test)]
 mod tests {
-    use super::{parse_mode, Cli, Command, MarketplaceAction, PluginAction};
+    use super::{parse_mode, resolve_auto_approve, Cli, Command, MarketplaceAction, PluginAction};
     use clap::Parser;
 
     #[test]
@@ -995,6 +1013,18 @@ mod tests {
         assert!(!cli.ask_approvals && cli.no_ask_approvals);
 
         assert!(Cli::try_parse_from(["oxide", "--ask-approvals", "--no-ask-approvals"]).is_err());
+    }
+
+    #[test]
+    fn approval_flags_decide_auto_approval() {
+        // Neither flag leaves the stored setting alone.
+        assert!(!resolve_auto_approve(false, false, false));
+        assert!(resolve_auto_approve(false, false, true));
+        // Asking wins over a stored auto-approval.
+        assert!(!resolve_auto_approve(true, false, true));
+        // Not asking wins over a stored denial, which is the case the flag was
+        // silently losing before.
+        assert!(resolve_auto_approve(false, true, false));
     }
 
     #[test]

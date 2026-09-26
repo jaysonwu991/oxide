@@ -40,10 +40,7 @@ impl ApprovalStore {
     }
 
     pub fn load_from(path: PathBuf) -> Self {
-        let rules = std::fs::read_to_string(&path)
-            .ok()
-            .and_then(|text| serde_json::from_str(&text).ok())
-            .unwrap_or_default();
+        let rules = read_rules(&path);
         Self { path, rules }
     }
 
@@ -51,7 +48,16 @@ impl ApprovalStore {
         &self.path
     }
 
-    pub fn is_allowed(&self, project: &Path, tool: &str) -> bool {
+    /// Re-reads the file so a rule another front-end saved after this store was
+    /// loaded is visible, and so a save merges onto the newest rules instead of
+    /// a snapshot that would drop them. The file is the source of truth; the
+    /// in-memory copy only saves a disk read within one operation.
+    fn reload(&mut self) {
+        self.rules = read_rules(&self.path);
+    }
+
+    pub fn is_allowed(&mut self, project: &Path, tool: &str) -> bool {
+        self.reload();
         self.rules
             .allow
             .get(&key(project))
@@ -59,6 +65,7 @@ impl ApprovalStore {
     }
 
     pub fn allow(&mut self, project: &Path, tool: &str) -> Result<()> {
+        self.reload();
         self.rules
             .allow
             .entry(key(project))
@@ -67,7 +74,8 @@ impl ApprovalStore {
         self.save()
     }
 
-    pub fn list(&self, project: &Path) -> Vec<String> {
+    pub fn list(&mut self, project: &Path) -> Vec<String> {
+        self.reload();
         self.rules
             .allow
             .get(&key(project))
@@ -76,6 +84,7 @@ impl ApprovalStore {
     }
 
     pub fn clear(&mut self, project: &Path) -> Result<()> {
+        self.reload();
         self.rules.allow.remove(&key(project));
         self.save()
     }
@@ -86,8 +95,27 @@ impl ApprovalStore {
                 .with_context(|| format!("creating {}", parent.display()))?;
         }
         let text = serde_json::to_string_pretty(&self.rules)?;
-        std::fs::write(&self.path, text).with_context(|| format!("writing {}", self.path.display()))
+        // Write to a private temporary and rename: another front-end reading
+        // the file at the same moment sees either the old rules or the new
+        // ones, never a half-written file.
+        let temporary = self
+            .path
+            .with_extension(format!("tmp-{}", std::process::id()));
+        std::fs::write(&temporary, format!("{text}\n"))
+            .with_context(|| format!("writing {}", temporary.display()))?;
+        if let Err(err) = std::fs::rename(&temporary, &self.path) {
+            let _ = std::fs::remove_file(&temporary);
+            return Err(err).with_context(|| format!("writing {}", self.path.display()));
+        }
+        Ok(())
     }
+}
+
+fn read_rules(path: &Path) -> Rules {
+    std::fs::read_to_string(path)
+        .ok()
+        .and_then(|text| serde_json::from_str(&text).ok())
+        .unwrap_or_default()
 }
 
 fn key(project: &Path) -> String {
@@ -136,7 +164,7 @@ mod tests {
         assert!(!store.is_allowed(&other, "bash"));
         assert_eq!(store.list(&project), vec!["bash".to_string()]);
 
-        let reloaded = ApprovalStore::load_from(path);
+        let mut reloaded = ApprovalStore::load_from(path);
         assert!(reloaded.is_allowed(&project, "bash"));
 
         let mut store = reloaded;
@@ -162,7 +190,7 @@ mod tests {
             vec!["bash".to_string(), "edit".to_string()]
         );
 
-        let reloaded = ApprovalStore::load_from(path);
+        let mut reloaded = ApprovalStore::load_from(path);
         assert!(reloaded.is_allowed(&project, "edit"));
         assert!(reloaded.is_allowed(&project, "bash"));
 
@@ -170,9 +198,36 @@ mod tests {
     }
 
     #[test]
+    fn a_rule_saved_by_another_front_end_is_seen_and_survives_a_save() {
+        let dir = temp_dir("approvals_cross_process");
+        std::fs::create_dir_all(&dir).unwrap();
+        let project = dir.join("proj");
+        std::fs::create_dir_all(&project).unwrap();
+
+        let path = dir.join("approvals.json");
+        // Two stores loaded before either saved: the second's `bash` rule is
+        // not in the first's snapshot.
+        let mut first = ApprovalStore::load_from(path.clone());
+        let mut second = ApprovalStore::load_from(path.clone());
+        second.allow(&project, "bash").unwrap();
+        assert!(
+            first.is_allowed(&project, "bash"),
+            "a check re-reads the file"
+        );
+
+        // And the first's own save merges instead of dropping the new rule.
+        first.allow(&project, "edit").unwrap();
+        let mut reloaded = ApprovalStore::load_from(path);
+        assert!(reloaded.is_allowed(&project, "bash"));
+        assert!(reloaded.is_allowed(&project, "edit"));
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
     fn a_missing_file_reads_as_empty() {
         let dir = temp_dir("approvals_missing");
-        let store = ApprovalStore::load_from(dir.join("approvals.json"));
+        let mut store = ApprovalStore::load_from(dir.join("approvals.json"));
         assert!(!store.is_allowed(&dir, "bash"));
         assert!(store.list(&dir).is_empty());
     }
