@@ -163,7 +163,7 @@ pub fn specs(mcp: &McpRegistry) -> Vec<ToolSpec> {
         ),
         spec(
             "edit",
-            "Edit a single file using exact text replacement. Every edits[].oldText must match a unique, non-overlapping region of the original file. If two changes affect the same block or nearby lines, merge them into one edit instead of emitting overlapping edits. Do not include large unchanged regions just to connect distant changes.",
+            "Edit a single file using targeted text replacement. Every edits[].oldText must match a unique region of the file. A match is exact first; trailing whitespace differences and the `N|` line numbers that `read` prints are tolerated, so a block copied from a read result still lands. If the text has genuinely changed, the error names the closest region so you can copy it exactly. If two changes affect the same block or nearby lines, merge them into one edit instead of emitting overlapping edits. Do not include large unchanged regions just to connect distant changes.",
             json!({
                 "type": "object",
                 "properties": {
@@ -174,7 +174,7 @@ pub fn specs(mcp: &McpRegistry) -> Vec<ToolSpec> {
                         "items": {
                             "type": "object",
                             "properties": {
-                                "oldText": { "type": "string", "description": "Exact text for one targeted replacement. It must be unique in the original file and must not overlap with any other edits[].oldText in the same call." },
+                                "oldText": { "type": "string", "description": "Text to replace, copied from the file or a read result. It must be unique in the file and must not overlap any other edits[].oldText in the same call; trailing whitespace and `N|` line-number prefixes are ignored when matching." },
                                 "newText": { "type": "string", "description": "Replacement text for this targeted edit." }
                             },
                             "required": ["oldText", "newText"]
@@ -629,10 +629,211 @@ fn collect_edits(value: &Value, out: &mut Vec<Replacement>) {
     }
 }
 
-/// Applies Pi-style exact text replacements. Each `oldText` is matched against
-/// the original file (never incrementally) and must be unique; overlapping or
-/// non-unique matches are rejected so a bad edit cannot silently corrupt a
-/// file.
+/// One line of a file with its byte range, used by the whitespace-insensitive
+/// matcher and the "closest region" hint.
+struct SourceLine<'a> {
+    start: usize,
+    /// End of the line including its trailing newline, when present.
+    end: usize,
+    /// The line without its trailing newline.
+    text: &'a str,
+}
+
+fn source_lines(text: &str) -> Vec<SourceLine<'_>> {
+    let mut lines = Vec::new();
+    let mut start = 0;
+    for segment in text.split_inclusive('\n') {
+        let content = segment.strip_suffix('\n').unwrap_or(segment);
+        let content = content.strip_suffix('\r').unwrap_or(content);
+        lines.push(SourceLine {
+            start,
+            end: start + segment.len(),
+            text: content,
+        });
+        start += segment.len();
+    }
+    lines
+}
+
+/// A unique region of a file to replace.
+struct Located {
+    start: usize,
+    end: usize,
+}
+
+/// Why an `oldText` could not be applied: it is absent (with the closest region
+/// when one was found), or it matched on several lines.
+enum MatchFailure {
+    /// The closest region, as `(first line, last line, raw text)`. The text is
+    /// rendered without `read`'s numbering so copying it back applies exactly.
+    Missing(Option<(usize, usize, String)>),
+    /// 1-based line numbers of every occurrence, so the retry can add context.
+    Ambiguous(Vec<usize>),
+}
+
+/// Locates `old` in `base`: byte-exact first, then a whole-line match that
+/// ignores trailing whitespace (which is invisible to the model and often the
+/// only difference). Either must be unique, so the tolerance repairs a trailing
+/// space without letting a fuzzy hit rewrite the wrong region. Leading
+/// indentation is deliberately not ignored: a replacement that silently lost
+/// its indentation would corrupt the file's formatting.
+fn locate(base: &str, old: &str) -> Result<Located, MatchFailure> {
+    let exact: Vec<usize> = base.match_indices(old).map(|(start, _)| start).collect();
+    match exact.len() {
+        1 => {
+            let start = exact[0];
+            return Ok(Located {
+                start,
+                end: start + old.len(),
+            });
+        }
+        n if n > 1 => {
+            let base_lines = source_lines(base);
+            let lines = exact
+                .iter()
+                .map(|&offset| {
+                    base_lines
+                        .iter()
+                        .take_while(|line| line.start <= offset)
+                        .count()
+                })
+                .collect();
+            return Err(MatchFailure::Ambiguous(lines));
+        }
+        _ => {}
+    }
+
+    let base_lines = source_lines(base);
+    let old_lines = source_lines(old);
+    if old_lines.is_empty() || old_lines.len() > base_lines.len() {
+        return Err(MatchFailure::Missing(closest_region(
+            &base_lines,
+            &old_lines,
+        )));
+    }
+    let width = old_lines.len();
+    let mut hits: Vec<(usize, Located)> = Vec::new();
+    for i in 0..=base_lines.len() - width {
+        if !(0..width).all(|k| base_lines[i + k].text.trim_end() == old_lines[k].text.trim_end()) {
+            continue;
+        }
+        let last = &base_lines[i + width - 1];
+        // Keep the file's trailing newline unless the matched text replaced it.
+        let end = if old.ends_with('\n') {
+            last.end
+        } else {
+            last.start + last.text.len()
+        };
+        hits.push((
+            i + 1,
+            Located {
+                start: base_lines[i].start,
+                end,
+            },
+        ));
+    }
+    match hits.len() {
+        1 => Ok(hits.remove(0).1),
+        n if n > 1 => Err(MatchFailure::Ambiguous(
+            hits.into_iter().map(|(line, _)| line).collect(),
+        )),
+        _ => Err(MatchFailure::Missing(closest_region(
+            &base_lines,
+            &old_lines,
+        ))),
+    }
+}
+
+/// The file region most similar to a failed `oldText`, as its 1-based line
+/// range and raw text, so the model can copy the exact text on a retry. The
+/// text is deliberately not numbered: a copied `N|` prefix on a single line
+/// would fail the same way again.
+fn closest_region(
+    base_lines: &[SourceLine<'_>],
+    old_lines: &[SourceLine<'_>],
+) -> Option<(usize, usize, String)> {
+    if old_lines.is_empty() || base_lines.is_empty() {
+        return None;
+    }
+    let width = old_lines.len().min(base_lines.len());
+    let mut best: Option<(usize, usize)> = None;
+    for start in 0..=base_lines.len() - width {
+        let score = (0..width)
+            .filter(|&k| base_lines[start + k].text.trim() == old_lines[k].text.trim())
+            .count();
+        let better = match best {
+            Some((best_score, _)) => score > best_score,
+            None => true,
+        };
+        if score > 0 && better {
+            best = Some((score, start));
+        }
+    }
+    let (_, start) = best?;
+    let end = (start + old_lines.len()).min(base_lines.len());
+    let region = base_lines[start..end]
+        .iter()
+        .map(|line| line.text)
+        .collect::<Vec<_>>()
+        .join("\n");
+    Some((start + 1, end, region))
+}
+
+/// Strips the `N|` / `N+|` prefixes `read` adds, so a block copied straight out
+/// of a numbered listing still matches. A single numbered line is accepted too
+/// (`read` numbers its first line as `1|`), and the remaining lines must carry a
+/// strictly ascending number, so a multi-line block that merely contains `|` is
+/// left untouched.
+fn strip_line_prefixes(text: &str) -> Option<String> {
+    let lines: Vec<&str> = text.split('\n').collect();
+    let mut previous = 0u64;
+    let mut stripped = Vec::with_capacity(lines.len());
+    let mut found = false;
+    for line in &lines {
+        if line.trim().is_empty() {
+            stripped.push((*line).to_string());
+            continue;
+        }
+        let (number, rest) = line_prefix(line)?;
+        if number <= previous {
+            return None;
+        }
+        previous = number;
+        found = true;
+        stripped.push(rest.to_string());
+    }
+    found.then(|| stripped.join("\n"))
+}
+
+/// Splits a `12|text` or `12+|text` read line into its number and text.
+fn line_prefix(line: &str) -> Option<(u64, &str)> {
+    let digits = line
+        .find(|ch: char| !ch.is_ascii_digit())
+        .unwrap_or(line.len());
+    if digits == 0 {
+        return None;
+    }
+    let number = line[..digits].parse().ok()?;
+    let trailing = &line[digits..];
+    let rest = trailing.strip_prefix('+').unwrap_or(trailing);
+    Some((number, rest.strip_prefix('|')?))
+}
+
+/// Removes `N|` / `N+|` prefixes from every line, used for the replacement text
+/// once the old text was recognized as a copied numbered block.
+fn strip_all_line_prefixes(text: &str) -> String {
+    text.split('\n')
+        .map(|line| line_prefix(line).map(|(_, rest)| rest).unwrap_or(line))
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+/// Applies targeted text replacements. Each `oldText` is matched against the
+/// original file (never incrementally) and must be unique; a non-unique match
+/// is rejected instead of guessed. Beyond a byte-exact match, a line-wise
+/// comparison ignores trailing whitespace, and a block copied from a numbered
+/// `read` listing has its `N|` prefixes removed, so the common "cosmetically
+/// different" edit still lands without a round trip.
 fn edit(cwd: &Path, args: &Value) -> Result<ToolOutput> {
     let path = args
         .get("path")
@@ -646,24 +847,50 @@ fn edit(cwd: &Path, args: &Value) -> Result<ToolOutput> {
     let (bom, content) = split_bom(&raw);
     let crlf = content.contains("\r\n");
     let mut base = content.replace("\r\n", "\n");
+    let mut failures: Vec<String> = Vec::new();
 
     for (index, replacement) in edits.iter().enumerate() {
-        let old = replacement.old.replace("\r\n", "\n");
+        let raw_old = replacement.old.replace("\r\n", "\n");
+        let (old, copied_listing) = match strip_line_prefixes(&raw_old) {
+            Some(stripped) => (stripped, true),
+            None => (raw_old, false),
+        };
+        // Only a truly empty target is rejected; a whitespace-only one is
+        // allowed as long as it matches uniquely, as the exact matcher decides.
         if old.is_empty() {
-            anyhow::bail!("edits[{index}].oldText must not be empty");
+            failures.push(format!("edits[{index}].oldText must not be empty"));
+            continue;
         }
-        let matches = base.matches(&old).count();
-        match matches {
-            0 => anyhow::bail!(
+        let new = replacement.new.replace("\r\n", "\n");
+        let new = if copied_listing {
+            strip_all_line_prefixes(&new)
+        } else {
+            new
+        };
+        match locate(&base, &old) {
+            Ok(located) => base.replace_range(located.start..located.end, &new),
+            Err(MatchFailure::Ambiguous(lines)) => failures.push(format!(
+                "edits[{index}].oldText matched {} times in {path} (lines {}); include more \
+                 surrounding text to make it unique",
+                lines.len(),
+                lines
+                    .iter()
+                    .map(usize::to_string)
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            )),
+            Err(MatchFailure::Missing(Some((first, last, region)))) => failures.push(format!(
+                "edits[{index}].oldText did not match anything in {path}. The closest text (lines \
+                 {first}-{last}) is:\n{region}\nCopy it exactly, then retry."
+            )),
+            Err(MatchFailure::Missing(None)) => failures.push(format!(
                 "edits[{index}].oldText did not match anything in {path}; check the exact text"
-            ),
-            1 => {
-                base = base.replacen(&old, &replacement.new.replace("\r\n", "\n"), 1);
-            }
-            n => anyhow::bail!(
-                "edits[{index}].oldText matched {n} times in {path}; include more surrounding text to make it unique"
-            ),
+            )),
         }
+    }
+
+    if !failures.is_empty() {
+        anyhow::bail!("{}", failures.join("\n\n"));
     }
 
     let final_content = if crlf {
@@ -2276,6 +2503,7 @@ mod tests {
         )
         .await;
         assert!(out.text.contains("matched 2 times"), "{}", out.text);
+        assert!(out.text.contains("(lines 1, 2)"), "{}", out.text);
         assert_eq!(
             std::fs::read_to_string(dir.join("g.rs")).unwrap(),
             "aa\naa\n"
@@ -2293,6 +2521,151 @@ mod tests {
         )
         .await;
         assert!(out.text.contains("1 block(s)"), "{}", out.text);
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[tokio::test]
+    async fn edit_tolerates_trailing_whitespace_and_copied_line_numbers() {
+        let dir = std::env::temp_dir().join(format!("oxide_edit_loose_{}", std::process::id()));
+        std::fs::remove_dir_all(&dir).ok();
+        std::fs::create_dir_all(&dir).unwrap();
+        let mcp = McpRegistry::default();
+        let progress = Progress::default();
+
+        execute(
+            &call(
+                "write",
+                json!({ "path": "f.rs", "content": "fn main() {\n    let x = 1;   \n    let y = 2;\n}\n" }),
+            ),
+            &dir,
+            &mcp,
+            &progress,
+        )
+        .await;
+        // The file has trailing spaces the model cannot see; the edit still
+        // lands, and the replacement keeps its original indentation.
+        let out = execute(
+            &call(
+                "edit",
+                json!({
+                    "path": "f.rs",
+                    "edits": [{
+                        "oldText": "    let x = 1;\n    let y = 2;",
+                        "newText": "    let x = 9;\n    let y = 9;"
+                    }]
+                }),
+            ),
+            &dir,
+            &mcp,
+            &progress,
+        )
+        .await;
+        assert!(out.text.contains("1 block(s)"), "{}", out.text);
+        assert_eq!(
+            std::fs::read_to_string(dir.join("f.rs")).unwrap(),
+            "fn main() {\n    let x = 9;\n    let y = 9;\n}\n"
+        );
+
+        // A block copied from a numbered `read` result has its prefixes
+        // stripped from both the old and the replacement text.
+        std::fs::write(dir.join("g.rs"), "alpha\nbeta\ngamma\n").unwrap();
+        let out = execute(
+            &call(
+                "edit",
+                json!({
+                    "path": "g.rs",
+                    "edits": [{
+                        "oldText": "1|alpha\n2|beta",
+                        "newText": "1|ALPHA\n2|BETA"
+                    }]
+                }),
+            ),
+            &dir,
+            &mcp,
+            &progress,
+        )
+        .await;
+        assert!(out.text.contains("1 block(s)"), "{}", out.text);
+        assert_eq!(
+            std::fs::read_to_string(dir.join("g.rs")).unwrap(),
+            "ALPHA\nBETA\ngamma\n"
+        );
+
+        // A single numbered line is stripped too, since `read` numbers its
+        // first line as `1|`.
+        std::fs::write(dir.join("h.rs"), "let x = 1;\nlet y = 2;\n").unwrap();
+        let out = execute(
+            &call(
+                "edit",
+                json!({
+                    "path": "h.rs",
+                    "edits": [{ "oldText": "2|let y = 2;", "newText": "2|let y = 3;" }]
+                }),
+            ),
+            &dir,
+            &mcp,
+            &progress,
+        )
+        .await;
+        assert!(out.text.contains("1 block(s)"), "{}", out.text);
+        assert_eq!(
+            std::fs::read_to_string(dir.join("h.rs")).unwrap(),
+            "let x = 1;\nlet y = 3;\n"
+        );
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[tokio::test]
+    async fn edit_failure_names_the_closest_region_and_collects_every_edit() {
+        let dir = std::env::temp_dir().join(format!("oxide_edit_hint_{}", std::process::id()));
+        std::fs::remove_dir_all(&dir).ok();
+        std::fs::create_dir_all(&dir).unwrap();
+        let mcp = McpRegistry::default();
+        let progress = Progress::default();
+
+        execute(
+            &call(
+                "write",
+                json!({ "path": "f.rs", "content": "fn main() {\n    let x = 1;\n    let y = 2;\n}\n" }),
+            ),
+            &dir,
+            &mcp,
+            &progress,
+        )
+        .await;
+
+        // Both edits are stale. The result names the region closest to each so
+        // the next attempt can copy it exactly, and nothing is written.
+        let out = execute(
+            &call(
+                "edit",
+                json!({
+                    "path": "f.rs",
+                    "edits": [
+                        { "oldText": "    let x = 1;\n    let z = 9;", "newText": "    let x = 9;" },
+                        { "oldText": "    let q = 7;", "newText": "    let q = 8;" }
+                    ]
+                }),
+            ),
+            &dir,
+            &mcp,
+            &progress,
+        )
+        .await;
+        assert!(out.text.contains("edits[0]"), "{}", out.text);
+        assert!(out.text.contains("edits[1]"), "{}", out.text);
+        assert!(
+            out.text.contains("The closest text (lines 2-3)"),
+            "{}",
+            out.text
+        );
+        assert!(out.text.contains("    let x = 1;"), "{}", out.text);
+        assert_eq!(
+            std::fs::read_to_string(dir.join("f.rs")).unwrap(),
+            "fn main() {\n    let x = 1;\n    let y = 2;\n}\n"
+        );
 
         std::fs::remove_dir_all(&dir).ok();
     }
