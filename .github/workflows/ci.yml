@@ -1,5 +1,11 @@
 name: ci
 
+# Pull-request and `main` checks for the whole repository: the Rust workspace
+# (formatting, clippy, tests), the Tauri desktop app's `gui` feature (which the
+# default-feature test job does not compile), and the VS Code extension. This
+# workflow only verifies; the tag-triggered release workflows (`cli.yml`,
+# `desktop.yml`, and a future extension workflow) build the shippable artifacts.
+
 on:
   push:
     branches: [main]
@@ -37,3 +43,67 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - run: cargo test --locked
       - run: cargo build --release --locked
+
+  # The `gui` feature is off by default (so the plain workspace build stays
+  # Tauri-free), which means the `test` job above never compiles the desktop
+  # front-end. Build and lint it on each platform here, with the same Linux
+  # system libraries the release workflow installs, so a platform-specific
+  # Tauri break is caught on the pull request instead of at tag time.
+  desktop:
+    name: desktop (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-22.04, macos-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: desktop
+      - name: Install Linux dependencies
+        if: matrix.os == 'ubuntu-22.04'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libwebkit2gtk-4.1-dev \
+            libappindicator3-dev \
+            librsvg2-dev \
+            patchelf
+      - name: Lint the desktop app
+        run: cargo clippy -p oxide-desktop --features gui --all-targets --locked -- -D warnings
+      - name: Build the desktop app
+        run: cargo build -p oxide-desktop --features gui --locked
+
+  # The extension is a standalone pnpm/TypeScript package, so it is not covered
+  # by the Cargo jobs. Run its type check, unit tests, and a real `vsce package`
+  # so a broken manifest or bundling change fails here.
+  vscode:
+    name: vscode
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 11.23.0
+          run_install: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+          cache-dependency-path: editors/vscode/pnpm-lock.yaml
+      - name: Install dependencies
+        working-directory: editors/vscode
+        run: pnpm install --frozen-lockfile
+      - name: Type check
+        working-directory: editors/vscode
+        run: pnpm run check
+      - name: Test
+        working-directory: editors/vscode
+        run: pnpm test
+      - name: Package
+        working-directory: editors/vscode
+        run: pnpm run package
