@@ -780,14 +780,12 @@ fn closest_region(
 }
 
 /// Strips the `N|` / `N+|` prefixes `read` adds, so a block copied straight out
-/// of a numbered listing still matches. Only a run whose every non-blank line
-/// carries a strictly ascending number is rewritten, so code that merely
-/// contains `|` is left untouched.
+/// of a numbered listing still matches. A single numbered line is accepted too
+/// (`read` numbers its first line as `1|`), and the remaining lines must carry a
+/// strictly ascending number, so a multi-line block that merely contains `|` is
+/// left untouched.
 fn strip_line_prefixes(text: &str) -> Option<String> {
     let lines: Vec<&str> = text.split('\n').collect();
-    if lines.len() < 2 {
-        return None;
-    }
     let mut previous = 0u64;
     let mut stripped = Vec::with_capacity(lines.len());
     let mut found = false;
@@ -857,7 +855,9 @@ fn edit(cwd: &Path, args: &Value) -> Result<ToolOutput> {
             Some(stripped) => (stripped, true),
             None => (raw_old, false),
         };
-        if old.trim().is_empty() {
+        // Only a truly empty target is rejected; a whitespace-only one is
+        // allowed as long as it matches uniquely, as the exact matcher decides.
+        if old.is_empty() {
             failures.push(format!("edits[{index}].oldText must not be empty"));
             continue;
         }
@@ -2590,6 +2590,28 @@ mod tests {
         assert_eq!(
             std::fs::read_to_string(dir.join("g.rs")).unwrap(),
             "ALPHA\nBETA\ngamma\n"
+        );
+
+        // A single numbered line is stripped too, since `read` numbers its
+        // first line as `1|`.
+        std::fs::write(dir.join("h.rs"), "let x = 1;\nlet y = 2;\n").unwrap();
+        let out = execute(
+            &call(
+                "edit",
+                json!({
+                    "path": "h.rs",
+                    "edits": [{ "oldText": "2|let y = 2;", "newText": "2|let y = 3;" }]
+                }),
+            ),
+            &dir,
+            &mcp,
+            &progress,
+        )
+        .await;
+        assert!(out.text.contains("1 block(s)"), "{}", out.text);
+        assert_eq!(
+            std::fs::read_to_string(dir.join("h.rs")).unwrap(),
+            "let x = 1;\nlet y = 3;\n"
         );
 
         std::fs::remove_dir_all(&dir).ok();
