@@ -5,11 +5,8 @@
 //! Both build without any GUI dependency so they are unit tested like the rest
 //! of the workspace. The Tauri shell lives behind the `gui` feature.
 
-pub mod approvals;
 pub mod manager;
 pub mod turn;
-
-pub use approvals::ApprovalStore;
 
 pub use manager::{
     expand_project_path, load_project_config, load_project_config_with, set_project_trust,
