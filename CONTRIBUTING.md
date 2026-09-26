@@ -205,23 +205,20 @@ component that did not change keeps its previous version, so it does not need a
 new tag or release.
 
 Release notes are drafted on every push to `main`, one draft per component:
-`release-drafter.cli.yml` drafts the CLI release, `release-drafter.desktop.yml`
-the desktop release, and `release-drafter.vscode.yml` the VS Code extension
-release (published as `oxide-vscode-<version>.vsix`). Each config is pinned to
-its component's tag prefix (`v`, `desktop-v`, and `extension-v`), so a run only
-sees its own draft and resolves its next version from its own last release; the
-draft it produces already carries the tag to push. The extension prefix is
-`extension-v` rather than `vscode-v` so it cannot match the CLI's `v*` trigger
-or the CLI drafter's `v` prefix. Their categories match conventional-commit PR
-titles (`feat:`, `fix:`, `perf:`, …) directly and by the type label the
-`release-drafter/autolabeler` step derives from that same title, so keep the PR
-title in that form and no manual labelling is needed. The type labels it applies
-are created by `labels.yml`.
+`release-drafter.cli.yml` drafts the CLI release and
+`release-drafter.desktop.yml` drafts the desktop release. Each config is pinned
+to its component's tag prefix (`v` and `desktop-v`), so a run only sees its own
+draft and resolves its next version from its own last release; the draft it
+produces already carries the tag to push. Their categories match
+conventional-commit PR titles (`feat:`, `fix:`, `perf:`, …) directly and by the
+type label the `release-drafter/autolabeler` step derives from that same title,
+so keep the PR title in that form and no manual labelling is needed. The type
+labels it applies are created by `labels.yml`.
 
-A PR whose changes are limited to `crates/cli/` is labeled `cli`, one limited to
-`crates/desktop/` is labeled `desktop`, and one limited to `editors/vscode/` is
-labeled `vscode`; a change that also touches shared code (for example
-`crates/core/`) or more than one component carries none of those labels.
+A PR whose changes are limited to `crates/cli/` is labeled `cli`, and one
+limited to `crates/desktop/` is labeled `desktop`; a change that also touches
+shared code (for example `crates/core/`) or both components carries neither
+label.
 
 The repository keeps a placeholder version (`0.0.0`). On a tag, the matching
 workflow runs `scripts/set-version.sh "$GITHUB_REF_NAME"` followed by
@@ -235,10 +232,3 @@ git push origin vX.Y.Z
 git tag desktop-vX.Y.Z     # desktop release
 git push origin desktop-vX.Y.Z
 ```
-
-The VS Code extension has no tag-triggered workflow yet: its draft (tagged
-`extension-vX.Y.Z`) is published from the GitHub UI, and its
-`oxide-vscode-<version>.vsix` — built with `pnpm run package` in
-`editors/vscode/` — is attached by hand. Its version lives in
-`editors/vscode/package.json`, separate from the `0.0.0` Cargo placeholder, so
-`set-version.sh` does not touch it.
