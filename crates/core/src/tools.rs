@@ -43,6 +43,58 @@ killed. Retry narrower rather than repeating it: scope it to a directory, exclud
 (`target/`, `node_modules/`, `.venv/`, `.git/`), or use the `grep`/`find` tools, which skip those \
 and honor .gitignore. Raise `timeout` only for a known-slow build.]";
 
+/// Appended to a failed shell command that required a relative module from a
+/// script outside the project. Node resolves `require('./...')` against the
+/// script's own directory, not the working directory, so the retry should move
+/// the script into the project or use an absolute path.
+const BASH_MODULE_HINT: &str = "[a relative import could not be resolved: Node resolves \
+`require('./...')`/`import './...'` against the script's own directory, not the working \
+directory. This script lives outside the tree it imports from — create it inside the project \
+with the `write` tool, or point the import at an absolute path, then run it again.]";
+
+/// Appended to a failed shell command whose relative import could not be
+/// resolved from a script inside the project or with no locatable script, where
+/// the usual cause is a wrong specifier rather than a script run from outside
+/// the tree.
+const BASH_MODULE_PATH_HINT: &str = "[a relative import could not be resolved: Node resolves \
+`require('./...')`/`import './...'` against the script's own directory, not the working \
+directory. Check the specifier and that the file it names exists at that path, then run it \
+again.]";
+
+/// Whether a failed command's output shows a relative module specifier that
+/// could not be found. Absolute specifiers (a genuinely missing dependency) are
+/// excluded, since the fix there is not a path inside the project.
+fn unresolved_relative_import(output: &str) -> bool {
+    if !(output.contains("Cannot find module")
+        || output.contains("Cannot find package")
+        || output.contains("MODULE_NOT_FOUND")
+        || output.contains("ERR_MODULE_NOT_FOUND"))
+    {
+        return false;
+    }
+    ["'./", "\"./", "'../", "\"../"]
+        .iter()
+        .any(|specifier| output.contains(specifier))
+}
+
+/// Chooses the relative-import hint: a script that lives outside `cwd` gets the
+/// move-it-into-the-project advice, anything else is told to check the path. A
+/// Node require stack lists the requiring script as `- <abs path>`.
+fn module_failure_hint(output: &str, cwd: &Path) -> &'static str {
+    let outside = output.lines().any(|line| {
+        let Some(entry) = line.trim().strip_prefix("- ") else {
+            return false;
+        };
+        let entry = Path::new(entry.trim());
+        entry.is_absolute() && !entry.starts_with(cwd)
+    });
+    if outside {
+        BASH_MODULE_HINT
+    } else {
+        BASH_MODULE_PATH_HINT
+    }
+}
+
 static TRUNCATION_ID: AtomicU64 = AtomicU64::new(0);
 
 /// Maps a tool name to its internal canonical form, accepting both the Pi-style
@@ -1943,7 +1995,13 @@ async fn bash(cwd: &Path, args: &Value, progress: &Progress) -> Result<String> {
             .replace("\n[exit: -1]", "");
         anyhow::bail!("command timed out after {secs}s\n{captured}\n{BASH_TIMEOUT_HINT}");
     };
-    finish_bash_output(stdout, stderr, status.code().unwrap_or(-1))
+    let exit = status.code().unwrap_or(-1);
+    let mut output = finish_bash_output(stdout, stderr, exit)?;
+    if exit != 0 && unresolved_relative_import(&output) {
+        output.push('\n');
+        output.push_str(module_failure_hint(&output, cwd));
+    }
+    Ok(output)
 }
 
 struct StreamCapture {
@@ -3064,6 +3122,89 @@ mod tests {
         assert!(streamed.contains("one"), "{seen:?}");
         assert!(streamed.contains("two"), "{seen:?}");
 
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn detects_an_unresolved_relative_import() {
+        assert!(unresolved_relative_import(
+            "Error: Cannot find module './out/core/protocol.js'"
+        ));
+        assert!(unresolved_relative_import(
+            "error: Cannot find module \"./dist/index.js\""
+        ));
+        assert!(unresolved_relative_import(
+            "code: 'MODULE_NOT_FOUND'\nrequireStack: [ '../lib/a.js' ]"
+        ));
+        assert!(unresolved_relative_import(
+            "Error [ERR_MODULE_NOT_FOUND]: Cannot find module './b'"
+        ));
+        // An absolute specifier is a missing dependency, not a path mistake.
+        assert!(!unresolved_relative_import(
+            "Error: Cannot find module 'express'"
+        ));
+        assert!(!unresolved_relative_import(
+            "Error: Cannot find module '/opt/app/node_modules/x'"
+        ));
+        assert!(!unresolved_relative_import("everything worked"));
+    }
+
+    #[test]
+    fn picks_the_module_hint_from_the_require_stack() {
+        let cwd = std::env::temp_dir().join("oxide_module_project");
+        let outside = std::env::temp_dir().join("oxide_module_elsewhere/replay.js");
+        let inside = cwd.join("scripts/replay.js");
+
+        // A require-stack entry outside the working directory is a scratch
+        // script run from elsewhere.
+        let from_outside = format!(
+            "Error: Cannot find module './x'\nRequire stack:\n- {}",
+            outside.display()
+        );
+        assert_eq!(module_failure_hint(&from_outside, &cwd), BASH_MODULE_HINT);
+
+        let from_inside = format!(
+            "Error: Cannot find module './x'\nRequire stack:\n- {}",
+            inside.display()
+        );
+        assert_eq!(
+            module_failure_hint(&from_inside, &cwd),
+            BASH_MODULE_PATH_HINT
+        );
+
+        // No require stack: assume a bad specifier, not a misplaced script.
+        assert_eq!(
+            module_failure_hint("Error: Cannot find module './x'", &cwd),
+            BASH_MODULE_PATH_HINT
+        );
+    }
+
+    // `cmd` has no `;` separator and quotes `echo` differently, so this command
+    // would exit 0 on Windows. The hint path is platform-independent and covered
+    // by the macOS/Linux jobs; the detector itself is tested above on all hosts.
+    #[cfg(not(target_os = "windows"))]
+    #[tokio::test]
+    async fn bash_hints_at_a_relative_import_failure() {
+        let dir = std::env::temp_dir().join(format!("oxide_bash_module_{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let mcp = McpRegistry::default();
+        let output = execute(
+            &call(
+                "bash",
+                json!({
+                    "command": "echo \"Error: Cannot find module './out/x.js'\" >&2; exit 1"
+                }),
+            ),
+            &dir,
+            &mcp,
+            &Progress::default(),
+        )
+        .await;
+        assert!(
+            output.text.contains(BASH_MODULE_PATH_HINT),
+            "{}",
+            output.text
+        );
         std::fs::remove_dir_all(&dir).ok();
     }
 

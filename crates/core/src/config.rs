@@ -1196,7 +1196,11 @@ impl Config {
              instead of chaining unrelated commands with `;` or `&&`. `read`, `ls`, `find`, and \
              `grep` accept absolute paths, so you do not need a shell to inspect files outside \
              the project, and `bash` already starts in the project root, so run a command \
-             directly instead of prefixing `cd <root> &&`. When a command can print a large \
+             directly instead of prefixing `cd <root> &&`. Create a file — including a scratch or \
+             verification script — with the `write` tool rather than a shell heredoc, and keep it \
+             inside the project: a script run from the temp directory resolves its relative imports \
+             against its own directory, not the working directory, so `require('./...')` fails the \
+             moment it runs. When a command can print a large \
              payload, select just the fields you need (for example a `--jq`/`jq` filter) rather \
              than piping it through `head`, which still fetches and renders everything."
                 .to_string(),
@@ -1317,6 +1321,9 @@ mod tests {
             prompt.contains("already starts in the project root"),
             "{prompt}"
         );
+        // A scratch script outside the project breaks a relative import, so the
+        // prompt steers it to `write` inside the project instead of a heredoc.
+        assert!(prompt.contains("resolves its relative imports"), "{prompt}");
     }
 
     #[test]
