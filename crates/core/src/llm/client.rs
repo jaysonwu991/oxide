@@ -631,11 +631,14 @@ fn openai_request(
     tools: &[ToolSpec],
     session_id: Option<&str>,
 ) -> ChatRequest {
-    // DeepSeek's thinking mode rejects a replayed tool-call turn that drops its
-    // `reasoning_content`, so the captured reasoning is put back as that field
-    // on assistant messages that carry tool calls. Every other assistant turn,
-    // and every other OpenAI-compatible provider, gets the thinking blocks
-    // stripped instead, since the field would be an unknown argument there.
+    // DeepSeek's thinking mode requires the `reasoning_content` an assistant
+    // turn produced to be handed back on every later request that carries
+    // `tools` -- not only for tool-call turns but for plain final answers too.
+    // Dropping any of those fields earns a 400 ("The `reasoning_content` in
+    // the thinking mode must be passed back to the API."), so the captured
+    // reasoning is put back as `reasoning_content` on every assistant message.
+    // Other OpenAI-compatible providers get the thinking blocks stripped
+    // instead, since the field would be an unknown argument there.
     let replay_reasoning = config.is_deepseek();
     let messages: Vec<Value> = messages
         .iter()
@@ -645,7 +648,7 @@ fn openai_request(
                 return value;
             };
             object.remove("thinking");
-            if replay_reasoning && message.tool_calls.is_some() {
+            if replay_reasoning && message.role == "assistant" {
                 if let Some(reasoning) = message.reasoning_content() {
                     object.insert("reasoning_content".to_string(), Value::String(reasoning));
                 }
@@ -1024,23 +1027,75 @@ mod tests {
             serde_json::json!({"type": "thinking", "thinking": "step one "}),
             serde_json::json!({"type": "thinking", "thinking": "step two"}),
         ]);
+        // A final answer that made no tool call still has to replay its
+        // reasoning: DeepSeek requires every earlier assistant turn to carry
+        // `reasoning_content` while the request uses tools.
+        let answer = Message::assistant("done", vec![]).with_thinking(vec![
+            serde_json::json!({"type": "thinking", "thinking": "final trace"}),
+        ]);
         let body = serde_json::to_value(openai_request(
             &config,
-            &[Message::user("hi"), assistant],
+            &[Message::user("hi"), assistant, answer],
             &[],
             None,
         ))
         .unwrap();
-        let last = &body["messages"][1];
-        assert_eq!(last["reasoning_content"], "step one step two");
-        assert!(last.get("thinking").is_none());
+        let call_turn = &body["messages"][1];
+        let answer_turn = &body["messages"][2];
+        assert_eq!(call_turn["reasoning_content"], "step one step two");
+        assert_eq!(answer_turn["reasoning_content"], "final trace");
+        assert!(call_turn.get("thinking").is_none());
+        assert!(answer_turn.get("thinking").is_none());
 
-        // A plain assistant answer must not replay its reasoning.
-        let answer = Message::assistant("done", vec![]).with_thinking(vec![
-            serde_json::json!({"type": "thinking", "thinking": "trace"}),
-        ]);
-        let body = serde_json::to_value(openai_request(&config, &[answer], &[], None)).unwrap();
+        // A turn that produced no reasoning has nothing to replay.
+        let body = serde_json::to_value(openai_request(
+            &config,
+            &[Message::assistant("plain", vec![])],
+            &[],
+            None,
+        ))
+        .unwrap();
         assert!(body["messages"][0].get("reasoning_content").is_none());
+    }
+
+    #[test]
+    fn deepseek_replays_reasoning_for_every_assistant_turn() {
+        // The thinking mode requires every earlier assistant turn's reasoning
+        // back, so a conversation that mixes a tool-call turn and a plain
+        // answer replays each one on the next request.
+        let config = Config {
+            provider: "deepseek".into(),
+            model: "deepseek-v4-pro".into(),
+            ..Config::default()
+        };
+        let call = ToolCall {
+            id: "call_0".into(),
+            kind: "function".into(),
+            function: FunctionCall {
+                name: "bash".into(),
+                arguments: "{}".into(),
+            },
+        };
+        let messages = vec![
+            Message::user("do the thing"),
+            Message::assistant("", vec![call]).with_thinking(vec![
+                serde_json::json!({"type": "thinking", "thinking": "first"}),
+            ]),
+            Message::tool("call_0", "done"),
+            Message::assistant("all set", vec![]).with_thinking(vec![
+                serde_json::json!({"type": "thinking", "thinking": "second"}),
+            ]),
+        ];
+        let body = serde_json::to_value(openai_request(&config, &messages, &[], None)).unwrap();
+        let assistants: Vec<&Value> = body["messages"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|message| message["role"] == "assistant")
+            .collect();
+        assert_eq!(assistants.len(), 2);
+        assert_eq!(assistants[0]["reasoning_content"], "first");
+        assert_eq!(assistants[1]["reasoning_content"], "second");
     }
 
     #[test]
