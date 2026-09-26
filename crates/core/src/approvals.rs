@@ -28,9 +28,17 @@ impl ApprovalStore {
     /// Loads `<config>/Oxide/approvals.json`, migrating the desktop's older
     /// private file (`<config>/Oxide/desktop/approvals.json`) on first use.
     pub fn load() -> Self {
-        let mut store = Self::load_from(default_path());
-        if store.rules.allow.is_empty() {
-            let legacy = Self::load_from(legacy_path());
+        Self::load_with_migration(default_path(), legacy_path())
+    }
+
+    /// Loads `path`, copying `legacy` the first time only. The migration keys
+    /// off the file not existing rather than off its rules being empty, so
+    /// clearing every rule (which writes an empty file) does not resurrect the
+    /// legacy ones on the next load.
+    fn load_with_migration(path: PathBuf, legacy: PathBuf) -> Self {
+        let mut store = Self::load_from(path.clone());
+        if !path.exists() {
+            let legacy = Self::load_from(legacy);
             if !legacy.rules.allow.is_empty() {
                 store.rules = legacy.rules;
                 let _ = store.save();
@@ -220,6 +228,31 @@ mod tests {
         let mut reloaded = ApprovalStore::load_from(path);
         assert!(reloaded.is_allowed(&project, "bash"));
         assert!(reloaded.is_allowed(&project, "edit"));
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn migration_runs_once_and_does_not_resurrect_cleared_rules() {
+        let dir = temp_dir("approvals_migration");
+        std::fs::create_dir_all(&dir).unwrap();
+        let project = dir.join("proj");
+        std::fs::create_dir_all(&project).unwrap();
+        let primary = dir.join("approvals.json");
+        let legacy = dir.join("desktop/approvals.json");
+        std::fs::create_dir_all(legacy.parent().unwrap()).unwrap();
+        let mut old = ApprovalStore::load_from(legacy.clone());
+        old.allow(&project, "bash").unwrap();
+
+        // First load copies the legacy file across.
+        let mut migrated = ApprovalStore::load_with_migration(primary.clone(), legacy.clone());
+        assert!(migrated.is_allowed(&project, "bash"));
+
+        // Clearing writes an empty primary; a later load must not read the
+        // legacy file again and bring the rule back.
+        migrated.clear(&project).unwrap();
+        let mut again = ApprovalStore::load_with_migration(primary, legacy);
+        assert!(!again.is_allowed(&project, "bash"));
 
         std::fs::remove_dir_all(&dir).ok();
     }
