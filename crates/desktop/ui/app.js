@@ -916,6 +916,17 @@ function appendText(delta) {
   scrollDown();
 }
 
+function discardAttempt() {
+  if (state.currentThinking) {
+    state.currentThinking.remove();
+    state.currentThinking = null;
+  }
+  if (state.currentAssistant) {
+    state.currentAssistant.wrap.remove();
+    state.currentAssistant = null;
+  }
+}
+
 function appendThinking(delta) {
   if (!state.currentThinking) {
     const block = document.createElement("div");
@@ -1156,7 +1167,17 @@ function handleEvent(event) {
       }
       break;
     }
+    case "thinking_done":
+      // The step's output is committed. Clearing the in-progress pointers means
+      // a later step's text opens a new bubble, and a retry only discards its
+      // own attempt instead of a previous step's reply.
+      state.currentAssistant = null;
+      state.currentThinking = null;
+      break;
     case "auto_retry_start":
+      // A retry re-streams the response from the start, so the partial output
+      // of the failed attempt is dropped instead of being extended.
+      discardAttempt();
       setStatus(`Retrying (${event.attempt}/${event.maxAttempts})…`);
       break;
     case "usage": {

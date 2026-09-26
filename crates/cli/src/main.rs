@@ -692,12 +692,13 @@ async fn run_print(
 
 async fn run_print_text(mut rx: tokio::sync::mpsc::UnboundedReceiver<AgentEvent>) -> Result<()> {
     let mut stdout = io::stdout();
+    // Text is held until the step commits (a tool call, or the turn ending): a
+    // dropped stream is retried from scratch, so a partial attempt flushed the
+    // moment it arrived would be duplicated once the retry re-sends it.
+    let mut pending = String::new();
     while let Some(event) = rx.recv().await {
         match event {
-            AgentEvent::Text(delta) => {
-                print!("{delta}");
-                stdout.flush()?;
-            }
+            AgentEvent::Text(delta) => pending.push_str(&delta),
             AgentEvent::Thought { .. } => {}
             AgentEvent::ThoughtDone { .. } => {}
             AgentEvent::ThinkingDelta(_) => {}
@@ -709,9 +710,11 @@ async fn run_print_text(mut rx: tokio::sync::mpsc::UnboundedReceiver<AgentEvent>
                 max,
                 delay_ms,
             } => {
+                pending.clear();
                 eprintln!("[retry {attempt}/{max} in {delay_ms}ms]");
             }
             AgentEvent::ToolCall { name, args } => {
+                flush_stdout(&mut stdout, &mut pending)?;
                 eprintln!("\n[tool] {name} {args}");
             }
             AgentEvent::ToolProgress { chunk, .. } => {
@@ -732,12 +735,26 @@ async fn run_print_text(mut rx: tokio::sync::mpsc::UnboundedReceiver<AgentEvent>
             }
             AgentEvent::Branch { .. } => {}
             AgentEvent::Error(message) => {
+                flush_stdout(&mut stdout, &mut pending)?;
                 eprintln!("\nerror: {message}");
             }
-            AgentEvent::Finished(_) => break,
+            AgentEvent::Finished(_) => {
+                flush_stdout(&mut stdout, &mut pending)?;
+                break;
+            }
         }
     }
     println!();
+    Ok(())
+}
+
+/// Writes the text buffered for the current step to stdout.
+fn flush_stdout(stdout: &mut impl Write, pending: &mut String) -> Result<()> {
+    if !pending.is_empty() {
+        write!(stdout, "{pending}")?;
+        stdout.flush()?;
+        pending.clear();
+    }
     Ok(())
 }
 
