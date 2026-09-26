@@ -1685,6 +1685,9 @@ async function runSlashCommand(text) {
       toggleHelp();
       return true;
     case "mcp":
+      // Only the bare command is the app's own: `/mcp list` is an argument the
+      // agent may have something to say about, so it stays a prompt.
+      if (args) return false;
       if (!state.project) {
         setStatus("Select a project first.");
         return true;

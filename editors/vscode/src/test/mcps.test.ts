@@ -110,6 +110,25 @@ describe("MCP server listing", () => {
     assert.ok(!isMcpCommand("/mcp list"));
     assert.ok(!isMcpCommand("show me /mcps"));
     assert.ok(!isMcpCommand(""));
+    // The slash is what makes it a command: plain text about MCP reaches the
+    // model instead of opening the picker.
+    assert.ok(!isMcpCommand("mcp"));
+    assert.ok(!isMcpCommand("mcps"));
+    assert.ok(!isMcpCommand("MCP: how do servers authenticate?"));
+  });
+
+  it("requires a workspace folder before listing servers", () => {
+    const root = path.join(__dirname, "..", "..");
+    const chat = fs.readFileSync(path.join(root, "src", "chat.ts"), "utf8");
+    const start = chat.indexOf("async showMcps(");
+    const end = chat.indexOf("\n  async ", start + 1);
+    const showMcps = chat.slice(start, end > 0 ? end : undefined);
+    // The listing and a toggle write into the files that define a project's
+    // servers, so a window with no folder refuses instead of acting on the
+    // directory the extension host happens to run in.
+    assert.ok(showMcps.includes("const cwd = this.cwd();"), "resolves the workspace folder");
+    assert.ok(showMcps.includes('showNotice("Open a folder first."'), "says so when there is none");
+    assert.ok(!showMcps.includes("process.cwd()"), "uses no fallback directory");
   });
 
   // The controller imports `vscode`, so it cannot be loaded here; the decision

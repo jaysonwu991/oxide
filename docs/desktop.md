@@ -249,18 +249,18 @@ immediately and persists it.
 ## Slash commands
 
 The composer answers a leading `/` with the client's own commands. Typing `/`
-opens a palette of them — the built-in list plus the agents, commands and skills
-the project or its plugins load, from `oxide_core::commands`, the catalog
-`oxide commands --json` prints and the terminal's own autocomplete mirrors. A
-name the app itself owns is performed here: `/mcps` (`/mcp`) opens the **MCP
-servers** dialog, `/model`, `/theme`, `/approvals`, `/trust`, `/connect`,
-`/new`, `/usage` and `/help` open or run what their sidebar entries do. A
-project command, a prompt template and a skill are sent on as a normal message,
-so the CLI's own resolution handles them; a client command the app does not
-perform yet, today `/agent`, says so in the transcript rather than reaching the
-model as the literal text `/agent`. With no project selected the project-scoped
-commands say that first, so a listing or a toggle cannot land in the app's own
-directory.
+opens a palette of them — the built-in list plus the commands, prompt templates
+and skills the project or its plugins load, from `oxide_core::commands`, the
+catalog `oxide commands --json` prints and the terminal's own autocomplete
+mirrors. A name the app itself owns is performed here: `/mcps` (`/mcp`) opens
+the **MCP servers** dialog, `/model`, `/theme`, `/approvals`, `/trust`,
+`/connect`, `/new`, `/usage` and `/help` open or run what their sidebar entries
+do. A project command, a prompt template and a skill are sent on as a normal
+message, so the CLI's own resolution handles them. A name the app cannot
+perform — today `/agent`, whose palette of subagents the app does not have yet —
+says so in the transcript rather than reaching the model as the literal text
+`/agent`. With no project selected the project-scoped commands say that first,
+so a listing or a toggle cannot land in the app's own directory.
 
 The **MCP servers** dialog lists every server the project loads, with the state
 the core probed (`Connected`, `Needs Auth`, `Needs Trust`, `Disabled`, or the

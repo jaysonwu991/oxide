@@ -851,7 +851,14 @@ export class ChatController {
   /// defines it, then the list is shown again with the fresh state — the same
   /// open, inspect, toggle flow the terminal's `/mcps` and Claude Code's offer.
   async showMcps(): Promise<void> {
-    const cwd = this.cwd() ?? process.cwd();
+    const cwd = this.cwd();
+    // The listing and a toggle act on the files that define a project's
+    // servers, and an empty path would resolve to whatever directory the
+    // extension host was launched from, so the workspace is required first.
+    if (!cwd) {
+      this.showNotice("Open a folder first.", "error");
+      return;
+    }
     const binary = this.binary();
     for (;;) {
       // Every server is started or reached to learn its state, which is quick

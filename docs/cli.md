@@ -367,13 +367,19 @@ Focus: $ARGUMENTS
   highlighted suggestion.
 - **Remove** a command by deleting its file.
 - `oxide commands [--json]` prints the catalog a client offers: the built-in
-  names with their aliases and `kind` (`client` for a command a front-end
-  answers itself, like `/mcps`; `agent` and `subtask` for the routing ones),
-  then the project's and the plugins' commands, prompt templates, skills and
-  agents. The desktop app's `/` palette is built from it, so its menu and the
-  terminal's autocomplete agree on what exists; the VS Code panel answers
-  `/mcps` from its own detection and leaves the rest of the catalog to the
-  terminal.
+  names with their aliases, their argument hint and their `kind` (`client` for a
+  command a front-end answers itself, like `/mcps`; `prompt` for one it runs by
+  sending `/name args`; `skill` for `/skill:<name>`), then the commands, prompt
+  templates and skills the project and its plugins contribute, each with the
+  `source` it was found in (`builtin`, `project` or `global`). A command whose
+  frontmatter routes it to an agent or a subtask is one of those `prompt`
+  entries: the CLI applies the routing when it runs the `/name` prompt, so a
+  client only has to send it. An agent is not a slash command — it is selected
+  with a picker of the front-end's own (`/agent` in the terminal, `--agent` for
+  a run) — so agent files contribute no entry. The desktop app's `/` palette is
+  built from the catalog, so its menu and the terminal's autocomplete agree on
+  what exists; the VS Code panel answers `/mcps` from its own detection and
+  leaves the rest of the catalog to the terminal.
 
 ## Prompt templates
 

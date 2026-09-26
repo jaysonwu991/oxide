@@ -105,10 +105,13 @@ export function mcpListArgs(): string[] {
 
 /// True for the slash command the picker answers, so a typed `/mcps` opens the
 /// list instead of being sent to the model as a prompt. Only the bare command:
-/// `/mcp list something` is left to the agent's own resolution.
+/// the leading slash is required — bare `mcp` is ordinary text — and
+/// `/mcp list` is left to the agent's own resolution.
 export function isMcpCommand(text: string): boolean {
-  const parts = text.trim().split(/\s+/);
+  const trimmed = text.trim();
+  if (!trimmed.startsWith("/")) return false;
+  const parts = trimmed.split(/\s+/);
   if (parts.length !== 1) return false;
-  const name = parts[0].replace(/^\//, "").toLowerCase();
+  const name = parts[0].slice(1).toLowerCase();
   return name === "mcps" || name === "mcp";
 }

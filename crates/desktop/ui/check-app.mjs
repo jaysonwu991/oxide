@@ -314,6 +314,24 @@ const failed = elementFor("mcp-list").innerHTML;
 check("showed why the listing failed", String(failed).includes("connection refused"), String(failed));
 mcpsError = null;
 
+// Only the bare command is the app's own; an argument is the agent's.
+calls.length = 0;
+elementFor("mcp-list").children = [];
+elementFor("mcps-modal").hidden = true;
+elementFor("prompt").value = "/mcp list";
+await app.send(false);
+check(
+  "sent `/mcp list` on as a prompt",
+  projectCalls("send_prompt")[0]?.[1]?.prompt === "/mcp list",
+  JSON.stringify(projectCalls("send_prompt")),
+);
+check(
+  "left the dialog closed and asked for nothing",
+  elementFor("mcps-modal").hidden === true && projectCalls("mcp_servers").length === 0,
+);
+app.state.busy = false;
+app.state.runId = null;
+
 // ---------- the Add-project dialog ----------
 
 console.log("create project");

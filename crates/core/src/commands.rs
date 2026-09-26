@@ -12,11 +12,16 @@
 //! the commands the agent would resolve, including the ones contributed by
 //! installed plugin packages, and a project that is not trusted contributes
 //! none of its own.
+//!
+//! An agent is not a slash command: a client selects one through its own agent
+//! picker (`/agent` in the terminal, `--agent` for a run), so agent files
+//! contribute no entry here. The routing a command's frontmatter declares
+//! (`agent:`, `subtask:`) is resolved by the CLI when it runs the `/name`
+//! prompt, so a client that only sends the prompt needs no entry for it.
 
 use crate::ecosystem::{self, LoadOptions};
 use crate::trust;
 use serde::Serialize;
-use std::collections::BTreeMap;
 use std::path::Path;
 
 /// A client's own drawing: it runs the action rather than sending a prompt.
@@ -221,12 +226,9 @@ pub fn palette_with(cwd: &Path, project_trusted: bool) -> Vec<CommandEntry> {
     );
 
     let mut entries: Vec<CommandEntry> = BUILTINS.iter().map(CommandEntry::builtin).collect();
-    // The scope each configured entry came from: anything the global load
-    // already knew about is global, the rest belongs to the project.
-    let global: BTreeMap<String, ()> = configured(&global)
-        .into_iter()
-        .map(|entry| (entry.name, ()))
-        .collect();
+    // The project load already merges the global scope, so the global listing
+    // is what is compared against to tell where an entry came from.
+    let global = configured(&global);
 
     for mut entry in configured(&project) {
         // A configured entry that matches a built-in or an alias is unreachable
@@ -235,21 +237,43 @@ pub fn palette_with(cwd: &Path, project_trusted: bool) -> Vec<CommandEntry> {
         if builtin(&entry.name).is_some() {
             continue;
         }
-        entry.source = if global.contains_key(&entry.name) {
-            // Visible without project resources: an entry of the same name the
-            // project also defines is the project's, but this one loads in an
-            // untrusted project either way.
-            "global".to_string()
-        } else {
-            "project".to_string()
-        };
+        entry.source = scope_of(&entry, &global).to_string();
         entries.push(entry);
     }
     entries
 }
 
+/// The scope a configured entry was found in. The project listing contains the
+/// global one, so an entry of the same name is only the global scope's when it
+/// is *identical* to what the global scope defines: a project that overrides a
+/// global command of the same name contributes its own definition, and the
+/// name alone would mislabel it as global.
+fn scope_of(entry: &CommandEntry, global: &[CommandEntry]) -> &'static str {
+    let from_global = global
+        .iter()
+        .find(|other| other.name == entry.name)
+        .is_some_and(|other| same_definition(other, entry));
+    if from_global {
+        "global"
+    } else {
+        "project"
+    }
+}
+
+/// Whether two entries describe the same command, so a project's own version of
+/// a name can be told apart from the global one it shadows.
+fn same_definition(left: &CommandEntry, right: &CommandEntry) -> bool {
+    left.name == right.name
+        && left.aliases == right.aliases
+        && left.description == right.description
+        && left.arguments == right.arguments
+        && left.kind == right.kind
+}
+
 /// The commands, prompt templates and skills of one loaded ecosystem, as menu
-/// entries. The scope they came from is filled in by the caller.
+/// entries. The scope they came from is filled in by the caller. Agents are not
+/// entries: they are chosen with a client's own picker rather than typed as a
+/// slash command.
 fn configured(ecosystem: &ecosystem::Ecosystem) -> Vec<CommandEntry> {
     let mut entries = Vec::new();
     for command in &ecosystem.commands {
@@ -543,6 +567,28 @@ mod tests {
         );
         assert!(!names(&entries).contains(&"mcps"));
         std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn a_project_override_is_not_reported_as_global() {
+        let entry = CommandEntry {
+            name: "ship".to_string(),
+            aliases: Vec::new(),
+            description: "Ship the branch".to_string(),
+            arguments: Some("arguments".to_string()),
+            kind: Kind::Prompt.label().to_string(),
+            desktop_only: false,
+            source: String::new(),
+        };
+        let mut overridden = entry.clone();
+        overridden.description = "Ship the branch the project's way".to_string();
+        let global = [entry.clone()];
+        // The same definition is the global scope's, whoever loaded it.
+        assert_eq!(scope_of(&entry, &global), "global");
+        // A name the project defines differently is the project's own, even
+        // though the global scope has one of that name.
+        assert_eq!(scope_of(&overridden, &global), "project");
+        assert_eq!(scope_of(&overridden, &[]), "project");
     }
 
     #[test]
