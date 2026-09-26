@@ -2,7 +2,7 @@
   "name": "oxide-vscode",
   "displayName": "Oxide",
   "description": "The Oxide coding agent inside VS Code: a chat panel and editor actions backed by the oxide CLI.",
-  "version": "0.1.0",
+  "version": "0.0.0",
   "publisher": "jaysonwu991",
   "icon": "media/icon.png",
   "license": "MIT",
