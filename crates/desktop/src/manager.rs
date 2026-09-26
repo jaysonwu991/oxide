@@ -110,6 +110,33 @@ impl DesktopManager {
         Ok(Self { registry, store })
     }
 
+    /// Loads the registry the way the app starts: a `projects.json` that cannot
+    /// be read or parsed must not take the window down with it. The unreadable
+    /// file is kept beside itself as `projects.json.bak` for inspection and an
+    /// empty registry is used, so the window opens and the user can add the
+    /// projects again. Only a missing config directory leaves the manager
+    /// unable to persist, which surfaces as an error on the add itself.
+    pub fn load_lossy() -> Self {
+        Self::load_lossy_from(default_store_path().unwrap_or_default())
+    }
+
+    pub fn load_lossy_from(store: PathBuf) -> Self {
+        match ProjectRegistry::load_from(&store) {
+            Ok(registry) => Self { registry, store },
+            Err(error) => {
+                eprintln!("oxide: {error:#}");
+                let backup = store.with_extension("json.bak");
+                if std::fs::rename(&store, &backup).is_ok() {
+                    eprintln!("oxide: kept the unreadable file at {}", backup.display());
+                }
+                Self {
+                    registry: ProjectRegistry::default(),
+                    store,
+                }
+            }
+        }
+    }
+
     pub fn store_path(&self) -> &Path {
         &self.store
     }
@@ -436,6 +463,37 @@ mod tests {
 
         std::fs::remove_dir_all(&dir).ok();
         let _ = std::fs::remove_dir_all(manager.store_path().parent().unwrap());
+    }
+
+    #[test]
+    fn an_unreadable_registry_does_not_stop_the_app() {
+        let store = temp_store();
+        std::fs::create_dir_all(store.parent().unwrap()).unwrap();
+        std::fs::write(&store, "{ this is not json").unwrap();
+
+        let manager = DesktopManager::load_lossy_from(store.clone());
+        assert!(manager.registered().is_empty());
+        // The original bytes are kept for inspection rather than overwritten.
+        let backup = store.with_extension("json.bak");
+        assert_eq!(
+            std::fs::read_to_string(&backup).unwrap(),
+            "{ this is not json"
+        );
+        assert!(!store.exists());
+
+        // A missing file is not a failure either, and the empty manager still
+        // persists what it is given.
+        let mut fresh = DesktopManager::load_lossy_from(store.clone());
+        let dir = std::env::temp_dir().join(format!("oxide_proj_lossy_{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        fresh.add_project(&dir).unwrap();
+        assert_eq!(
+            DesktopManager::load_from(store).unwrap().registered().len(),
+            1
+        );
+
+        std::fs::remove_dir_all(&dir).ok();
+        let _ = std::fs::remove_dir_all(backup.parent().unwrap());
     }
 
     #[test]

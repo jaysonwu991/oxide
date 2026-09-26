@@ -38,7 +38,7 @@ crates/desktop/
     commands.rs     Tauri commands (gui feature)
     main.rs         Tauri entry point (gui feature)
   ui/               front-end: index.html, app.js, style.css
-  capabilities/     Tauri capability (core:default, for events)
+  capabilities/     Tauri capability (core:default, for events; dialog:default, for the folder picker)
   tauri.conf.json   window + bundle config
   entitlements.plist  macOS signing entitlements
   icons/            app icons (PNG, .icns, .ico)
@@ -104,6 +104,19 @@ npx @tauri-apps/cli@^2 build --features gui --debug   # faster, unsigned dev bun
 cp -R target/debug/bundle/macos/oxide.app /Applications/Oxide.app
 codesign --force --deep --sign - /Applications/Oxide.app   # only if macOS complains
 ```
+
+The front-end has a headless check of its own, which loads `ui/app.js` against a
+stubbed DOM and Tauri bridge and drives the dialogs no Rust test can reach:
+
+```sh
+cargo build -p oxide              # the catalog and MCP state are read from the CLI
+node crates/desktop/ui/check-app.mjs
+```
+
+It covers the `/mcps` listing (including the state colors, a failed probe and a
+toggle), the **Create project** dialog, and every client command in the catalog —
+a command the app does not perform has to be answered here rather than sent to
+the model as a prompt.
 
 ## Sharing configuration with the CLI
 
@@ -232,6 +245,33 @@ immediately and persists it.
 | `Ctrl+/` | Shortcut help |
 | `⌘1`…`⌘9` / `Ctrl+1`…`9` | Open the session with that number in the Projects tree |
 | `Escape` | Close any dialog |
+
+## Slash commands
+
+The composer answers a leading `/` with the client's own commands. Typing `/`
+opens a palette of them — the built-in list plus the agents, commands and skills
+the project or its plugins load, from `oxide_core::commands`, the catalog
+`oxide commands --json` prints and the terminal's own autocomplete mirrors. A
+name the app itself owns is performed here: `/mcps` (`/mcp`) opens the **MCP
+servers** dialog, `/model`, `/theme`, `/approvals`, `/trust`, `/connect`,
+`/new`, `/usage` and `/help` open or run what their sidebar entries do. A
+project command, a prompt template and a skill are sent on as a normal message,
+so the CLI's own resolution handles them; a client command the app does not
+perform yet, today `/agent`, says so in the transcript rather than reaching the
+model as the literal text `/agent`. With no project selected the project-scoped
+commands say that first, so a listing or a toggle cannot land in the app's own
+directory.
+
+The **MCP servers** dialog lists every server the project loads, with the state
+the core probed (`Connected`, `Needs Auth`, `Needs Trust`, `Disabled`, or the
+connection error) and a line naming its transport, its endpoint or command line,
+and the file it was defined in. **Disable** / **Enable** writes `enabled` into
+that file — and Claude Code's `disabled`, kept in step, since either harness may
+be the one reading it — without deleting the configuration, **Recheck** probes
+again, and the listing comes from
+`oxide_core::mcp_config::server_views`, so it matches `oxide mcp list --json`
+and the VS Code picker. A project's own servers report **Needs Trust** rather
+than being started until the project is trusted.
 
 ## Rendering
 

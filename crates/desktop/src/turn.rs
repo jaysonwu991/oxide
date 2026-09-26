@@ -42,8 +42,17 @@ pub async fn start_turn(
         .with_context(|| format!("loading configuration for {}", project.display()))?;
     config.require_api_key()?;
 
+    // A leading `/command` is resolved here exactly as the CLI resolves it for
+    // `-p` and rpc, so a command from the `/` menu (or typed by hand) reaches
+    // the agent as its expanded prompt, with the agent routing its frontmatter
+    // asked for.
+    let resolved = runner::resolve_command(&config, prompt);
+    let prompt = resolved.text;
+    let command_agent = resolved.agent;
+    let subtask = resolved.subtask;
+
     let ephemeral = config.ephemeral;
-    let (history, log) = runner::begin_session(project, session, ephemeral, prompt, &[], &inline)?;
+    let (history, log) = runner::begin_session(project, session, ephemeral, &prompt, &[], &inline)?;
     let session_id = log.as_ref().map(|entry| entry.id().to_string());
 
     let steering = Steering::new();
@@ -54,9 +63,9 @@ pub async fn start_turn(
         config,
         cwd: project.to_path_buf(),
         history,
-        prompt: prompt.to_string(),
-        subtask: false,
-        command_agent: None,
+        prompt,
+        subtask,
+        command_agent,
         session: log,
         approve,
         steering: steering.clone(),

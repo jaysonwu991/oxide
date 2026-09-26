@@ -165,6 +165,12 @@
         "command": "oxide.setProjectTrust",
         "title": "Set Project Trust...",
         "category": "Oxide"
+      },
+      {
+        "command": "oxide.mcpServers",
+        "title": "MCP Servers...",
+        "category": "Oxide",
+        "icon": "$(server-process)"
       }
     ],
     "menus": {

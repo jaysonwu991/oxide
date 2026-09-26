@@ -152,6 +152,23 @@ pub fn resolve(
     }
 }
 
+/// Whether `cwd`'s own resources load, with no per-run override in play. The
+/// saved decision wins over `defaultProjectTrust`, matching the CLI: a project
+/// trusted once is trusted for every reader of the same store.
+pub fn project_trusted(cwd: &Path) -> bool {
+    project_decision(cwd).is_trusted()
+}
+
+/// The project trust decision a non-interactive caller should apply.
+pub fn project_decision(cwd: &Path) -> Trust {
+    resolve(
+        &TrustStore::load().unwrap_or_default(),
+        cwd,
+        None,
+        crate::config::load_default_project_trust(),
+    )
+}
+
 /// True when the project has resources that require trust.
 pub fn requires_trust(cwd: &Path) -> bool {
     let Some(root) = crate::ecosystem::project_root(cwd) else {

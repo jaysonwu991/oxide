@@ -1,7 +1,7 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
-  "description": "Core permissions for the oxide desktop window (events for streaming agent output).",
+  "description": "Core permissions for the oxide desktop window (events for streaming agent output) plus the dialog plugin's own set.",
   "windows": ["main"],
-  "permissions": ["core:default"]
+  "permissions": ["core:default", "dialog:default"]
 }
