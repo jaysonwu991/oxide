@@ -1,4 +1,4 @@
-use crate::agent::{ApprovalRequest, Steering};
+use crate::agent::Steering;
 use crate::config::Reasoning;
 use crate::llm::{ContentPart, Message};
 use crate::media;
@@ -668,6 +668,15 @@ pub struct Attachment {
     pub part: ContentPart,
 }
 
+/// A tool call waiting for the user's answer. The question is asked in the
+/// transcript and answered through the shared `ApprovalBroker`, so `always` is
+/// remembered and a denial's text reaches the agent as guidance.
+#[derive(Clone, Debug)]
+pub struct PendingApproval {
+    pub id: u64,
+    pub tool: String,
+}
+
 pub struct App {
     pub input: String,
     pub input_cursor: usize,
@@ -690,7 +699,7 @@ pub struct App {
     pub cwd: String,
     pub git_branch: Option<String>,
     pub assistant_open: bool,
-    pub pending_approval: Option<ApprovalRequest>,
+    pub pending_approval: Option<PendingApproval>,
     pub connect: Option<ConnectState>,
     pub models: Option<ModelsState>,
     pub sessions: Option<SessionsState>,

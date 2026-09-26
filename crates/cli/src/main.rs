@@ -6,14 +6,15 @@ mod uninstall;
 // plugins, agent loop) is re-exported at the crate root so existing `crate::`
 // paths keep resolving with the same names as before the workspace split.
 pub use oxide_core::{
-    agent, auth, cli, clipboard, compact, config, diff, ecosystem, html, llm, lsp, mcp, mcp_config,
-    mcp_oauth, media, memory, notify, permission, plugin, plugin_registry, portkey_usage, pricing,
-    runner, session, sessions, snapshots, tools, trust,
+    agent, approval, approvals, auth, cli, clipboard, compact, config, diff, ecosystem, html, llm,
+    lsp, mcp, mcp_config, mcp_oauth, media, memory, notify, permission, plugin, plugin_registry,
+    portkey_usage, pricing, runner, session, sessions, snapshots, tools, trust,
 };
 
 use agent::{AgentEvent, Approver, Cancel, Steering};
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
+use cli::RpcRequest;
 use config::Config;
 use session::SessionLog;
 use std::io::{self, IsTerminal, Read, Write};
@@ -83,6 +84,15 @@ struct Cli {
     /// Ignore project-local resources for this run
     #[arg(long = "no-approve", conflicts_with = "approve")]
     no_approve: bool,
+
+    /// Ask before running a tool whose permission rule requires approval
+    /// (the TUI, and `--mode rpc` where the front-end answers over its channel)
+    #[arg(long = "ask-approvals", conflicts_with = "no_ask_approvals")]
+    ask_approvals: bool,
+
+    /// Run permission-gated tools without asking
+    #[arg(long = "no-ask-approvals", conflicts_with = "ask_approvals")]
+    no_ask_approvals: bool,
 
     /// Allowlist specific tools (comma-separated); accepts Pi and legacy names
     #[arg(long = "tools", short = 't', value_name = "LIST")]
@@ -575,7 +585,27 @@ async fn main() -> Result<()> {
     }
 
     if mode == "rpc" {
-        return run_rpc_mode(config, cwd, session).await;
+        return run_rpc_mode(
+            config,
+            cwd,
+            session,
+            tool_filter,
+            cli.ask_approvals,
+            cli.no_ask_approvals,
+        )
+        .await;
+    }
+
+    // Only rpc mode and the interactive TUI can carry an answer; every other
+    // mode has no channel, so the flag would silently run the tool it was meant
+    // to gate.
+    if cli.ask_approvals || cli.no_ask_approvals {
+        if explicit_prompt || mode != "print" {
+            anyhow::bail!(
+                "--ask-approvals/--no-ask-approvals need the interactive TUI or --mode rpc, where the question can be answered"
+            );
+        }
+        config.auto_approve = cli.no_ask_approvals;
     }
 
     if explicit_prompt {
@@ -726,6 +756,9 @@ async fn run_print_text(mut rx: tokio::sync::mpsc::UnboundedReceiver<AgentEvent>
                 eprintln!("[result: {name}] {} bytes", output.len());
             }
             AgentEvent::Usage { .. } => {}
+            // Print mode has no way to ask: it always runs a non-interactive
+            // approver, so a request here can only be a no-op.
+            AgentEvent::ApprovalRequest { .. } => {}
             AgentEvent::Compaction {
                 summarized,
                 tokens_before,
@@ -805,10 +838,28 @@ fn build_prompt(
 }
 
 /// Everything needed to start one agent run is `runner::AgentRun`.
-/// RPC mode: reads JSONL prompts from stdin and streams JSONL events to stdout.
-/// Each `prompt` request starts a fresh agent run on the session history.
-async fn run_rpc_mode(config: Config, cwd: PathBuf, session: Option<SessionLog>) -> Result<()> {
+/// RPC mode: reads JSONL requests from stdin and streams JSONL events to stdout.
+/// Each `prompt` request starts a fresh agent run on the session history, and
+/// an `approval` request answers a tool that is waiting for the user.
+async fn run_rpc_mode(
+    mut config: Config,
+    cwd: PathBuf,
+    session: Option<SessionLog>,
+    tool_filter: cli::ToolFilter,
+    ask_approvals: bool,
+    no_ask_approvals: bool,
+) -> Result<()> {
     config.require_api_key()?;
+    config.tool_filter = tool_filter;
+    // Only a front-end that can answer prompts gets the interactive broker: a
+    // caller that does not understand `approval_request` would otherwise hang
+    // until the request times out.
+    let asking = ask_approvals && !no_ask_approvals;
+    if asking {
+        // The broker answers every `ask`/`deny` rule, so the blanket
+        // auto-approval has to be off for the prompt to be reached at all.
+        config.auto_approve = false;
+    }
     let ephemeral = config.ephemeral;
     let mut log = session;
     let mut history = match &log {
@@ -816,40 +867,53 @@ async fn run_rpc_mode(config: Config, cwd: PathBuf, session: Option<SessionLog>)
         None => Vec::new(),
     };
 
-    let (prompt_tx, mut prompt_rx) = tokio::sync::mpsc::unbounded_channel::<String>();
+    let approvals = asking.then(oxide_core::approval::ApprovalBroker::new);
+    let (prompt_tx, mut prompt_rx) = tokio::sync::mpsc::unbounded_channel::<RpcRequest>();
     let (event_tx, event_rx) = unbounded_channel();
+    let (control_tx, control_rx) = tokio::sync::mpsc::unbounded_channel();
     let mut out = io::stdout();
 
+    // `run_rpc` answers approvals from its stdin thread while the driver below
+    // is busy streaming the turn that is waiting for the answer, so both hold
+    // a handle on the same broker.
+    let driver_approvals = approvals.clone();
     let driver = tokio::spawn(async move {
-        while let Some(prompt) = prompt_rx.recv().await {
-            if prompt.is_empty() {
-                break;
-            }
+        while let Some(request) = prompt_rx.recv().await {
+            let RpcRequest::Prompt { text, images } = request else {
+                continue;
+            };
             if log.is_none() && !ephemeral {
                 log = Some(SessionLog::create(&cwd)?);
             }
-            let resolved = config.resolve_command(&prompt);
-            let text = resolved
+            if let Some(log) = &log {
+                let _ = control_tx.send(cli::session_header(log));
+            }
+            let resolved = config.resolve_command(&text);
+            let prompt = resolved
                 .as_ref()
                 .map(|command| command.prompt.clone())
-                .unwrap_or(prompt);
+                .unwrap_or(text);
             let command_agent = resolved.as_ref().and_then(|command| command.agent.clone());
             let subtask = resolved.as_ref().is_some_and(|command| command.subtask);
-            let user = runner::build_user_message(&text, &cwd, &[], &[])?;
+            let user = runner::build_user_message(&prompt, &cwd, &images, &[])?;
             if let Some(log) = &log {
                 log.append(&user)?;
             }
             history.push(user);
             let (run_tx, mut run_rx) = unbounded_channel();
+            let approve = match &driver_approvals {
+                Some(broker) => Some(broker.approver(&cwd, run_tx.clone(), Steering::new())),
+                None => Some(cli_approver(config.auto_approve)),
+            };
             let run = runner::AgentRun {
                 config: config.clone(),
                 cwd: cwd.clone(),
                 history: history.clone(),
-                prompt: text,
+                prompt,
                 subtask,
                 command_agent,
                 session: log.clone(),
-                approve: Some(cli_approver(config.auto_approve)),
+                approve,
                 steering: Steering::new(),
                 follow_ups: Steering::new(),
                 cancel: Cancel::new(),
@@ -871,7 +935,7 @@ async fn run_rpc_mode(config: Config, cwd: PathBuf, session: Option<SessionLog>)
         Ok::<(), anyhow::Error>(())
     });
 
-    let result = cli::run_rpc(event_rx, prompt_tx).await;
+    let result = cli::run_rpc(event_rx, control_rx, prompt_tx, approvals).await;
     let _ = driver.await;
     writeln!(out)?;
     result
@@ -920,6 +984,17 @@ mod tests {
                 }
             })
         ));
+    }
+
+    #[test]
+    fn approval_flags_are_opposites() {
+        let cli = Cli::try_parse_from(["oxide", "--mode", "rpc", "--ask-approvals"]).unwrap();
+        assert!(cli.ask_approvals && !cli.no_ask_approvals);
+
+        let cli = Cli::try_parse_from(["oxide", "--mode", "rpc", "--no-ask-approvals"]).unwrap();
+        assert!(!cli.ask_approvals && cli.no_ask_approvals);
+
+        assert!(Cli::try_parse_from(["oxide", "--ask-approvals", "--no-ask-approvals"]).is_err());
     }
 
     #[test]

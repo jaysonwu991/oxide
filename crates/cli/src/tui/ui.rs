@@ -2424,6 +2424,16 @@ fn busy_status_text(app: &App) -> String {
         .busy_since
         .map(|start| start.elapsed().as_secs())
         .unwrap_or(0);
+    // A tool waiting for an answer makes the composer the answer field, so the
+    // rule asks the question instead of the usual working hints.
+    if let Some(pending) = &app.pending_approval {
+        return format!(
+            " {} approve `{}`? {} · Esc deny ",
+            spinner(app.busy_since),
+            pending.tool,
+            crate::tui::APPROVAL_HINT
+        );
+    }
     let mut text = format!(" {} {} · {secs}s", spinner(app.busy_since), app.status);
     if !app.attachments.is_empty() {
         text.push_str(&format!(" · {} attachment(s)", app.attachments.len()));
@@ -4696,6 +4706,38 @@ mod tests {
         assert!(footer.contains("↓4.8k"));
         assert!(footer.contains("20%/100"));
         assert!(footer.contains("(auto)"));
+    }
+
+    #[test]
+    fn composer_rule_asks_the_pending_approval() {
+        use crate::config::Reasoning;
+        use crate::tui::app::PendingApproval;
+        use ratatui::backend::TestBackend;
+        use ratatui::Terminal;
+
+        let mut app = App::new("gpt-4o".into(), "/tmp/project".into(), Reasoning::Auto);
+        app.busy = true;
+        app.busy_since = Some(std::time::Instant::now());
+        app.status = "waiting for approval".into();
+        app.pending_approval = Some(PendingApproval {
+            id: 7,
+            tool: "bash".into(),
+        });
+        let mut terminal = Terminal::new(TestBackend::new(120, 24)).unwrap();
+        terminal.draw(|frame| draw(frame, &mut app)).unwrap();
+        let buffer = terminal.backend().buffer();
+
+        let row = row_of(buffer, "approve").expect("the question takes the composer rule");
+        let line: String = (0..buffer.area.width)
+            .map(|x| buffer[(x, row)].symbol())
+            .collect();
+        assert!(line.contains("approve `bash`?"));
+        assert!(line.contains("a = always"));
+        assert!(line.contains("Esc deny"));
+        assert!(
+            !line.contains("Esc clear"),
+            "Esc answers while a tool waits"
+        );
     }
 
     #[test]

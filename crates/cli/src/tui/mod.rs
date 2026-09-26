@@ -2,7 +2,8 @@ pub mod app;
 mod markdown;
 pub mod ui;
 
-use crate::agent::{self, AgentEvent, ApprovalRequest, Approver, Runtime};
+use crate::agent::{self, AgentEvent, Runtime};
+use crate::approval::{ApprovalBroker, Decision};
 use crate::config::{Config, Reasoning};
 use crate::ecosystem::AgentMode;
 use crate::llm::{LlmClient, Message};
@@ -14,8 +15,8 @@ use crate::session::SessionLog;
 use crate::snapshots::Snapshots;
 use crate::tui::app::{
     App, ChatItem, CommandHint, ConnectField, ConnectState, ConnectStep, ListRow, MarketplacePane,
-    MarketplacesState, ModelChoice, ModelsState, Selection, SessionsState, SubagentState, Tone,
-    TrustState, UsageField, UsageState,
+    MarketplacesState, ModelChoice, ModelsState, PendingApproval, Selection, SessionsState,
+    SubagentState, Tone, TrustState, UsageField, UsageState,
 };
 use anyhow::{Context, Result};
 use crossterm::event::{
@@ -249,24 +250,11 @@ async fn event_loop(
     let mut usage_tick = tokio::time::interval(std::time::Duration::from_secs(60));
     let mut usage_inflight = false;
 
-    let (approval_tx, mut approval_rx) = unbounded_channel::<ApprovalRequest>();
-    let approve: Approver = Arc::new(move |tool, detail| {
-        let tx = approval_tx.clone();
-        Box::pin(async move {
-            let (respond, response) = tokio::sync::oneshot::channel();
-            if tx
-                .send(ApprovalRequest {
-                    tool,
-                    detail,
-                    respond,
-                })
-                .is_err()
-            {
-                return false;
-            }
-            response.await.unwrap_or(false)
-        })
-    });
+    // Every front-end asks through the same broker, so a rule saved with
+    // "always allow" is remembered in the shared `approvals.json` and a denial's
+    // text reaches the agent as guidance. The question arrives on the run's own
+    // event stream, ordered after the tool call it belongs to.
+    let approvals = ApprovalBroker::new();
 
     loop {
         let terminal_area = terminal.draw(|frame| ui::draw(frame, &mut app))?.area;
@@ -277,7 +265,7 @@ async fn event_loop(
                 match maybe_event {
                     Some(Ok(Event::Key(key))) => handle_key(
                         key, &mut app, &mut config, &cwd, &mut rx, &mcp, &plugins,
-                        snapshots.as_ref(), &lsp, &mut session, &approve, &models_tx, &mcps_tx,
+                        snapshots.as_ref(), &lsp, &mut session, &approvals, &models_tx, &mcps_tx,
                         &plugins_tx, &listings_tx, &marketplaces_tx, &usage_tx,
                     ),
                     Some(Ok(Event::Paste(text))) => handle_paste(text, &mut app),
@@ -349,12 +337,6 @@ async fn event_loop(
                     if let Some(bar) = app.usage.as_mut() {
                         bar.apply(result);
                     }
-                }
-            }
-            approval = approval_rx.recv() => {
-                if let Some(request) = approval {
-                    app.status = format!("approve `{}`? y/n — {}", request.tool, request.detail);
-                    app.pending_approval = Some(request);
                 }
             }
             _ = tick.tick(), if app.busy => {
@@ -465,7 +447,7 @@ fn handle_key(
     snapshots: Option<&Arc<Snapshots>>,
     lsp: &Arc<LspManager>,
     session: &mut Option<SessionLog>,
-    approve: &Approver,
+    approvals: &Arc<ApprovalBroker>,
     models_tx: &UnboundedSender<ModelCatalogs>,
     mcps_tx: &UnboundedSender<Vec<(String, String, McpStatus)>>,
     plugins_tx: &UnboundedSender<String>,
@@ -520,23 +502,15 @@ fn handle_key(
         return;
     }
 
-    if let Some(request) = app.pending_approval.take() {
-        match key.code {
-            KeyCode::Char('y') | KeyCode::Char('Y') => {
-                let _ = request.respond.send(true);
-                app.status = "thinking...".to_string();
-            }
-            KeyCode::Char('n') | KeyCode::Char('N') | KeyCode::Esc => {
-                let _ = request.respond.send(false);
-                app.status = "denied".to_string();
-            }
-            _ => app.pending_approval = Some(request),
-        }
-        return;
-    }
-
     match key.code {
         KeyCode::Esc => {
+            // Esc refuses the tool while one is waiting: the composer is the
+            // answer field then, so clearing it would leave the request open.
+            if app.pending_approval.is_some() {
+                answer_approval(app, approvals, Decision::Deny { message: None });
+                refresh_suggestions(app, config);
+                return;
+            }
             escape_action(app);
             refresh_suggestions(app, config);
         }
@@ -577,6 +551,15 @@ fn handle_key(
             let command = app.input.trim().to_string();
             if handle_attach_command(app, &command) {
                 app.clear_input();
+                refresh_suggestions(app, config);
+                return;
+            }
+            // While a tool waits for an answer, what is typed is the answer:
+            // `y`/`a` allow it, `n` refuses it, and any other text refuses it
+            // with that text as guidance for the agent. A leading `/` is left
+            // to the commands above so `/exit` still quits.
+            if app.pending_approval.is_some() && !command.starts_with('/') {
+                answer_approval_input(app, approvals, &command);
                 refresh_suggestions(app, config);
                 return;
             }
@@ -982,6 +965,12 @@ fn handle_key(
                 app.clear_input();
                 refresh_suggestions(app, config);
                 handle_notify_command(app, config, &raw);
+                return;
+            }
+            if raw == "/approvals" || raw.starts_with("/approvals ") {
+                app.clear_input();
+                refresh_suggestions(app, config);
+                handle_approvals_command(app, config, approvals, cwd, &raw, &Config::config_path());
                 return;
             }
             if raw == "/usage" {
@@ -1451,13 +1440,14 @@ fn handle_key(
             let config = config.clone();
             let cwd = cwd.to_path_buf();
             let history = app.history.clone();
+            let approve = approvals.approver(&cwd, tx.clone(), app.steering.clone());
             let runtime = Runtime {
                 mcp: Arc::clone(mcp),
                 plugins: Arc::clone(plugins),
                 session: session.clone().map(Arc::new),
                 snapshots: snapshots.cloned(),
                 lsp: Arc::clone(lsp),
-                approve: Arc::clone(approve),
+                approve,
                 steering: app.steering.clone(),
                 follow_ups: app.follow_ups.clone(),
                 cancel: crate::agent::Cancel::new(),
@@ -1568,6 +1558,73 @@ fn escape_action(app: &mut App) {
     app.clear_input();
 }
 
+/// What the typed answer to a tool approval accepts.
+pub(crate) const APPROVAL_HINT: &str = "y = once · a = always (this project) · n [reason] = deny";
+
+/// Maps what the user typed into the answer field to a decision: `y`/`a`/`n`
+/// (or the words) answer it, and any other text refuses the tool with that text
+/// as guidance for the agent. `None` means nothing to answer with — an empty
+/// line keeps the request open.
+fn parse_approval_answer(input: &str) -> Option<Decision> {
+    let text = input.trim();
+    if text.is_empty() {
+        return None;
+    }
+    let lowered = text.to_ascii_lowercase();
+    let word = match lowered.as_str() {
+        "y" => "yes",
+        "a" => "always",
+        "n" => "no",
+        other => other,
+    };
+    Some(
+        Decision::parse(word, None).unwrap_or_else(|| Decision::Deny {
+            message: Some(text.to_string()),
+        }),
+    )
+}
+
+/// Answers the waiting tool with what was typed. An empty line is not an
+/// answer, so the request stays open with the hint.
+fn answer_approval_input(app: &mut App, approvals: &ApprovalBroker, typed: &str) {
+    match parse_approval_answer(typed) {
+        Some(decision) => answer_approval(app, approvals, decision),
+        None => app.show_status(format!("approve: {APPROVAL_HINT}")),
+    }
+}
+
+/// Sends the answer for the tool that is waiting and records it in the
+/// transcript. The broker routes the id back to the request that emitted it, so
+/// an answer for a request that already timed out is dropped rather than applied
+/// to the next one.
+fn answer_approval(app: &mut App, approvals: &ApprovalBroker, decision: Decision) {
+    let Some(pending) = app.pending_approval.take() else {
+        return;
+    };
+    app.clear_input();
+    app.auto_scroll = true;
+    let outcome = match &decision {
+        Decision::Once => format!("allowed `{}` once", pending.tool),
+        Decision::Always => format!("always allowed `{}` in this project", pending.tool),
+        Decision::Deny {
+            message: Some(reason),
+        } => format!("denied `{}` — told the agent: {reason}", pending.tool),
+        Decision::Deny { message: None } => format!("denied `{}`", pending.tool),
+    };
+    app.status = match &decision {
+        Decision::Deny { .. } => "denied".to_string(),
+        _ => "thinking...".to_string(),
+    };
+    if approvals.answer(pending.id, decision) {
+        app.items.push(ChatItem::Info(outcome));
+    } else {
+        app.items.push(ChatItem::Error(format!(
+            "`{}` was no longer waiting for an answer; it was denied when the prompt timed out",
+            pending.tool
+        )));
+    }
+}
+
 /// The instruction sent to the agent by the `/init` command.
 fn init_prompt() -> String {
     "Initialize this project's AGENTS.md file.\n\n\
@@ -1632,6 +1689,8 @@ fn help_text(config: &Config) -> String {
         "  /plugins              manage plugins and marketplaces".to_string(),
         "  /marketplaces         browse, add, and remove plugin marketplaces".to_string(),
         "  /notify [on|off]      show or set completion notifications (sound too)".to_string(),
+        "  /approvals [on|off]   ask before a gated tool runs; list or clear the rules"
+            .to_string(),
         "  /usage                 configure the Portkey spend bar (dialog)".to_string(),
         "  /undo, /redo          revert or reapply the agent's file changes".to_string(),
         "  /compact [focus]      summarize older context, optionally with a focus".to_string(),
@@ -1803,6 +1862,71 @@ fn on_off(value: bool) -> &'static str {
         "on"
     } else {
         "off"
+    }
+}
+
+/// `/approvals`: whether a permission-gated tool is asked about, plus the rules
+/// this project has already answered with "always allow".
+fn handle_approvals_command(
+    app: &mut App,
+    config: &mut Config,
+    approvals: &ApprovalBroker,
+    cwd: &Path,
+    raw: &str,
+    path: &Path,
+) {
+    const HINT: &str = "usage: /approvals [on|off] · /approvals list · /approvals clear";
+    let args = raw.strip_prefix("/approvals").unwrap_or_default().trim();
+    let verb = args.split_whitespace().next().unwrap_or_default();
+
+    match verb {
+        "list" | "" => {
+            let allowed = approvals.list(cwd);
+            let rules = if allowed.is_empty() {
+                "none".to_string()
+            } else {
+                allowed.join(", ")
+            };
+            app.items.push(ChatItem::Info(format!(
+                "tool approvals: {} ({}); always allowed here: {rules}\n{HINT}",
+                if config.auto_approve { "off" } else { "on" },
+                if config.auto_approve {
+                    "gated tools run without asking"
+                } else {
+                    "asked before a gated tool runs"
+                },
+            )));
+        }
+        "clear" => match approvals.clear(cwd) {
+            Ok(()) => app.items.push(ChatItem::Info(
+                "cleared this project's approvals".to_string(),
+            )),
+            Err(err) => app
+                .items
+                .push(ChatItem::Error(format!("approvals: {err:#}"))),
+        },
+        other => {
+            let Some(asking) = parse_toggle(other) else {
+                app.items.push(ChatItem::Error(format!(
+                    "unknown /approvals option `{other}`\n{HINT}"
+                )));
+                return;
+            };
+            // Asking is the inverse of the stored auto-approval, and it is a
+            // `config.json` key, so `/approvals` writes the same field the
+            // `--ask-approvals` flag overrides for a single run.
+            config.auto_approve = !asking;
+            match Config::set_auto_approve_at(path, config.auto_approve) {
+                Ok(()) => app.items.push(ChatItem::Info(format!(
+                    "tool approvals: {} ({})",
+                    on_off(asking),
+                    path.display()
+                ))),
+                Err(err) => app
+                    .items
+                    .push(ChatItem::Error(format!("approvals: {err:#}"))),
+            }
+        }
     }
 }
 
@@ -2203,7 +2327,7 @@ fn hotkeys_text() -> String {
             "  {:<22}pull queued messages back into the editor",
             dequeue_key_label()
         ),
-        "  Esc                   clear the input".to_string(),
+        "  Esc                   clear the input, or deny a waiting tool".to_string(),
         "  Shift+Tab / Ctrl+R    cycle reasoning/thinking level".to_string(),
         "  Ctrl+O                toggle tool output".to_string(),
         "  Ctrl+T                show or hide thinking blocks".to_string(),
@@ -2646,6 +2770,10 @@ fn builtin_commands() -> Vec<CommandHint> {
             description: "toggle completion notifications and sound".to_string(),
         },
         CommandHint {
+            name: "approvals".to_string(),
+            description: "ask before a gated tool runs".to_string(),
+        },
+        CommandHint {
             name: "usage".to_string(),
             description: "Portkey spend bar".to_string(),
         },
@@ -2799,6 +2927,31 @@ const COMMAND_ARGS: &[(&str, &[ArgSpec])] = &[
             ArgSpec {
                 value: "test",
                 description: "send a sample notification",
+                children: &[],
+            },
+        ],
+    ),
+    (
+        "approvals",
+        &[
+            ArgSpec {
+                value: "on",
+                description: "ask before a gated tool runs",
+                children: &[],
+            },
+            ArgSpec {
+                value: "off",
+                description: "run gated tools without asking",
+                children: &[],
+            },
+            ArgSpec {
+                value: "list",
+                description: "show the state and this project's rules",
+                children: &[],
+            },
+            ArgSpec {
+                value: "clear",
+                description: "forget this project's always-allow rules",
                 children: &[],
             },
         ],
@@ -4364,6 +4517,14 @@ fn ensure_session<'a>(session: &'a mut Option<SessionLog>, cwd: &Path) -> Result
 
 fn handle_agent_event(event: AgentEvent, app: &mut App) {
     match event {
+        AgentEvent::ApprovalRequest { id, tool, detail } => {
+            app.status = "waiting for approval".to_string();
+            app.items.push(ChatItem::Info(format!(
+                "approve `{tool}`? {APPROVAL_HINT}\n  {detail}"
+            )));
+            app.auto_scroll = true;
+            app.pending_approval = Some(PendingApproval { id, tool });
+        }
         AgentEvent::Text(delta) => {
             app.auto_scroll = true;
             // Clear any `retrying...` notice now that output is flowing again.
@@ -4442,6 +4603,15 @@ fn handle_agent_event(event: AgentEvent, app: &mut App) {
             app.auto_scroll = true;
             app.running_tool = None;
             app.subagent = None;
+            // The tool this question was about has resolved (answered, or denied
+            // when the prompt timed out), so the composer stops asking for it.
+            if app
+                .pending_approval
+                .as_ref()
+                .is_some_and(|pending| pending.tool == name)
+            {
+                app.pending_approval = None;
+            }
             app.resolve_tool(name, args, output, diff, millis);
             app.status = "thinking...".to_string();
         }
@@ -4491,6 +4661,7 @@ fn handle_agent_event(event: AgentEvent, app: &mut App) {
             app.running_tool = None;
             app.busy = false;
             app.busy_since = None;
+            app.pending_approval = None;
             app.assistant_open = false;
             app.status = "ready".to_string();
             app.reset_history(history);
@@ -4510,6 +4681,7 @@ fn handle_agent_event(event: AgentEvent, app: &mut App) {
             app.subagent = None;
             app.busy = false;
             app.busy_since = None;
+            app.pending_approval = None;
             app.assistant_open = false;
             app.auto_scroll = true;
             app.status = "ready".to_string();
@@ -4545,7 +4717,9 @@ fn trailing_text(text: &str, max_bytes: usize) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::approvals::ApprovalStore;
     use crate::config::{Config, Reasoning};
+    use std::path::Path;
 
     fn test_app() -> App {
         App::new(
@@ -4553,6 +4727,237 @@ mod tests {
             "/tmp".to_string(),
             Reasoning::Auto,
         )
+    }
+
+    #[test]
+    fn approval_answers_parse_from_the_composer() {
+        assert_eq!(parse_approval_answer("y"), Some(Decision::Once));
+        assert_eq!(parse_approval_answer(" Yes "), Some(Decision::Once));
+        assert_eq!(parse_approval_answer("a"), Some(Decision::Always));
+        assert_eq!(parse_approval_answer("ALWAYS"), Some(Decision::Always));
+        assert_eq!(
+            parse_approval_answer("n"),
+            Some(Decision::Deny { message: None })
+        );
+        assert_eq!(
+            parse_approval_answer("deny"),
+            Some(Decision::Deny { message: None })
+        );
+        // Anything else refuses the tool and reaches the agent as guidance.
+        assert_eq!(
+            parse_approval_answer("use a narrower command"),
+            Some(Decision::Deny {
+                message: Some("use a narrower command".to_string())
+            })
+        );
+        assert_eq!(parse_approval_answer("   "), None);
+    }
+
+    fn approval_broker(dir: &Path) -> ApprovalBroker {
+        ApprovalBroker::from_store(
+            ApprovalStore::load_from(dir.join("approvals.json")),
+            crate::approval::APPROVAL_TIMEOUT,
+        )
+    }
+
+    fn approval_dir(name: &str) -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join(format!("oxide_{name}_{}", std::process::id()));
+        std::fs::remove_dir_all(&dir).ok();
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    #[tokio::test]
+    async fn a_typed_always_is_remembered_for_the_project() {
+        let dir = approval_dir("tui_approval_always");
+        let broker = Arc::new(approval_broker(&dir));
+        let (tx, mut rx) = unbounded_channel();
+        let approve = broker.approver(&dir, tx, crate::agent::Steering::new());
+        let answered = tokio::spawn(approve("bash".into(), "rm -rf /tmp/x".into()));
+
+        let mut app = test_app();
+        handle_agent_event(rx.recv().await.unwrap(), &mut app);
+        let pending = app.pending_approval.as_ref().expect("a waiting approval");
+        assert_eq!(pending.tool, "bash");
+        assert!(app.items.iter().any(|item| matches!(
+            item,
+            ChatItem::Info(text) if text.contains("approve `bash`?") && text.contains("rm -rf /tmp/x")
+        )));
+
+        app.set_input("a".to_string());
+        let decision = parse_approval_answer(&app.input).unwrap();
+        answer_approval(&mut app, &broker, decision);
+
+        assert!(answered.await.unwrap(), "always allow runs the tool");
+        assert!(app.pending_approval.is_none());
+        assert!(app.input.is_empty(), "the answer clears the composer");
+        assert_eq!(broker.list(&dir), vec!["bash".to_string()]);
+        assert!(app.items.iter().any(|item| matches!(
+            item,
+            ChatItem::Info(text) if text.contains("always allowed `bash`")
+        )));
+
+        // The stored rule answers the next request for the same tool without a
+        // prompt, which is what keeps the three front-ends in step.
+        let (tx, mut rx) = unbounded_channel();
+        let approve = broker.approver(&dir, tx, crate::agent::Steering::new());
+        assert!(approve("bash".into(), "ls".into()).await);
+        assert!(rx.try_recv().is_err(), "no question the second time");
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[tokio::test]
+    async fn a_typed_denial_reaches_the_agent_as_guidance() {
+        let dir = approval_dir("tui_approval_deny");
+        let broker = Arc::new(approval_broker(&dir));
+        let steering = crate::agent::Steering::new();
+        let (tx, mut rx) = unbounded_channel();
+        let approve = broker.approver(&dir, tx, steering.clone());
+        let answered = tokio::spawn(approve("bash".into(), "rm -rf /".into()));
+
+        let mut app = test_app();
+        handle_agent_event(rx.recv().await.unwrap(), &mut app);
+        app.set_input("target just that directory".to_string());
+        answer_approval_input(&mut app, &broker, "target just that directory");
+
+        assert!(!answered.await.unwrap(), "a denial refuses the tool");
+        let messages = steering.drain();
+        assert_eq!(messages.len(), 1);
+        assert_eq!(
+            messages[0].display().as_deref(),
+            Some("target just that directory")
+        );
+
+        // Esc denies without a message, and an empty line keeps the request
+        // open with the hint.
+        let broker = Arc::new(approval_broker(&dir));
+        let (tx, mut rx) = unbounded_channel();
+        let approve = broker.approver(&dir, tx, crate::agent::Steering::new());
+        let answered = tokio::spawn(approve("bash".into(), "ls".into()));
+        let mut app = test_app();
+        handle_agent_event(rx.recv().await.unwrap(), &mut app);
+        answer_approval_input(&mut app, &broker, "   ");
+        assert!(
+            app.pending_approval.is_some(),
+            "an empty line answers nothing"
+        );
+        assert!(matches!(
+            app.items.last(),
+            Some(ChatItem::Status(text)) if text.contains("a = always")
+        ));
+        answer_approval(&mut app, &broker, Decision::Deny { message: None });
+        assert!(!answered.await.unwrap());
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn approvals_command_toggles_lists_and_clears() {
+        let dir = approval_dir("tui_approvals_cmd");
+        let path = dir.join("config.json");
+        let store_path = dir.join("approvals.json");
+        let mut store = ApprovalStore::load_from(store_path);
+        store.allow(&dir, "bash").unwrap();
+        let broker = ApprovalBroker::from_store(store, crate::approval::APPROVAL_TIMEOUT);
+
+        let mut app = test_app();
+        let mut config = Config::default();
+        assert!(
+            config.auto_approve,
+            "gated tools run without asking by default"
+        );
+
+        handle_approvals_command(&mut app, &mut config, &broker, &dir, "/approvals on", &path);
+        assert!(!config.auto_approve);
+        let saved: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        assert_eq!(saved["auto_approve"], serde_json::json!(false));
+
+        handle_approvals_command(&mut app, &mut config, &broker, &dir, "/approvals", &path);
+        assert!(matches!(
+            app.items.last(),
+            Some(ChatItem::Info(text))
+                if text.contains("tool approvals: on") && text.contains("always allowed here: bash")
+        ));
+
+        handle_approvals_command(
+            &mut app,
+            &mut config,
+            &broker,
+            &dir,
+            "/approvals off",
+            &path,
+        );
+        assert!(config.auto_approve);
+        let saved: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        assert_eq!(saved["auto_approve"], serde_json::json!(true));
+
+        handle_approvals_command(
+            &mut app,
+            &mut config,
+            &broker,
+            &dir,
+            "/approvals clear",
+            &path,
+        );
+        assert!(broker.list(&dir).is_empty());
+        assert!(matches!(
+            app.items.last(),
+            Some(ChatItem::Info(text)) if text.contains("cleared this project's approvals")
+        ));
+
+        handle_approvals_command(
+            &mut app,
+            &mut config,
+            &broker,
+            &dir,
+            "/approvals maybe",
+            &path,
+        );
+        assert!(matches!(
+            app.items.last(),
+            Some(ChatItem::Error(text)) if text.contains("unknown /approvals option `maybe`")
+        ));
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[tokio::test]
+    async fn a_question_stops_when_its_tool_resolves_or_the_turn_ends() {
+        let dir = approval_dir("tui_approval_stale");
+        let broker = Arc::new(approval_broker(&dir));
+        let (tx, mut rx) = unbounded_channel();
+        let approve = broker.approver(&dir, tx, crate::agent::Steering::new());
+        let answered = tokio::spawn(approve("bash".into(), "ls".into()));
+
+        let mut app = test_app();
+        handle_agent_event(rx.recv().await.unwrap(), &mut app);
+        assert!(app.pending_approval.is_some());
+
+        // The tool resolving without an answer (the prompt timed out) ends the
+        // question, so the composer is a prompt again rather than a stale one.
+        handle_agent_event(
+            AgentEvent::ToolResult {
+                name: "bash".into(),
+                args: "{}".into(),
+                output: "denied".into(),
+                diff: None,
+                millis: 1,
+            },
+            &mut app,
+        );
+        assert!(app.pending_approval.is_none());
+
+        // A turn that ends while the question is up (an abort) drops it too.
+        let (tx, mut rx) = unbounded_channel();
+        let approve = broker.approver(&dir, tx, crate::agent::Steering::new());
+        let _unanswered = tokio::spawn(approve("write".into(), "file.txt".into()));
+        handle_agent_event(rx.recv().await.unwrap(), &mut app);
+        assert!(app.pending_approval.is_some());
+        handle_agent_event(AgentEvent::Finished(Vec::new()), &mut app);
+        assert!(app.pending_approval.is_none());
+
+        answered.abort();
+        std::fs::remove_dir_all(&dir).ok();
     }
 
     #[test]
