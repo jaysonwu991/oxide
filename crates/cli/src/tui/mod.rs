@@ -31,6 +31,7 @@ use futures::StreamExt;
 use ratatui::backend::CrosstermBackend;
 use ratatui::layout::Rect;
 use ratatui::Terminal;
+use std::io::IsTerminal;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use tokio::sync::mpsc::{unbounded_channel, UnboundedReceiver, UnboundedSender};
@@ -51,6 +52,14 @@ pub async fn run(
     open_sessions_picker: bool,
     theme_name: String,
 ) -> Result<()> {
+    // Refuse before touching the terminal: with stdin or stdout redirected (a
+    // test, a pipe, a CI runner) raw mode has no console to drive and the event
+    // loop would block on input that never arrives.
+    if !std::io::stdin().is_terminal() || !std::io::stdout().is_terminal() {
+        anyhow::bail!(
+            "the interactive TUI requires a terminal; use -p or --mode rpc when input or output is redirected"
+        );
+    }
     let mcp = Arc::new(McpRegistry::new(&config.ecosystem.mcp));
     let plugins = Arc::new(PluginHost::spawn(&config.ecosystem.hooks, &cwd).await);
     let snapshots = Snapshots::open(&cwd).ok().map(Arc::new);
