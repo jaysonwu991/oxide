@@ -4377,13 +4377,18 @@ fn handle_agent_event(event: AgentEvent, app: &mut App) {
             app.status = "thinking...".to_string();
         }
         AgentEvent::Thought { millis } => app.finish_thinking(millis),
-        AgentEvent::ThoughtDone { .. } => {}
+        AgentEvent::ThoughtDone { .. } => {
+            // The step's text is committed: a later step (or a retry's discard)
+            // must not merge into or remove this step's bubble.
+            app.assistant_open = false;
+        }
         AgentEvent::Retrying {
             attempt,
             max,
             delay_ms,
         } => {
             app.discard_thinking();
+            app.discard_assistant();
             app.status = format!(
                 "retrying ({attempt}/{max}) in {}s...",
                 delay_ms.div_ceil(1000).max(1)
@@ -4548,6 +4553,41 @@ mod tests {
             "/tmp".to_string(),
             Reasoning::Auto,
         )
+    }
+
+    #[test]
+    fn a_finished_step_survives_a_later_retry() {
+        let mut app = test_app();
+        handle_agent_event(AgentEvent::Text("summary".into()), &mut app);
+        // The step commits (`ThoughtDone`), so a later step that fails before
+        // emitting anything and retries must not discard this reply.
+        handle_agent_event(AgentEvent::ThoughtDone { millis: 5 }, &mut app);
+        assert!(!app.assistant_open);
+        handle_agent_event(
+            AgentEvent::Retrying {
+                attempt: 1,
+                max: 3,
+                delay_ms: 500,
+            },
+            &mut app,
+        );
+        assert_eq!(app.items.len(), 1);
+        assert!(matches!(&app.items[0], ChatItem::Assistant(text) if text == "summary"));
+    }
+
+    #[test]
+    fn a_retry_discards_the_step_in_progress() {
+        let mut app = test_app();
+        handle_agent_event(AgentEvent::Text("partial".into()), &mut app);
+        handle_agent_event(
+            AgentEvent::Retrying {
+                attempt: 1,
+                max: 3,
+                delay_ms: 500,
+            },
+            &mut app,
+        );
+        assert!(app.items.is_empty());
     }
 
     #[test]

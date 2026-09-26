@@ -1133,6 +1133,17 @@ impl App {
         }
     }
 
+    /// Drops the assistant bubble a failed attempt was still streaming into.
+    /// The retry re-sends the response from the start, so keeping the partial
+    /// text would duplicate it.
+    pub fn discard_assistant(&mut self) {
+        if self.assistant_open {
+            self.items.pop();
+            self.assistant_open = false;
+            self.mark_render_dirty(self.items.len());
+        }
+    }
+
     pub fn mark_render_dirty(&mut self, index: usize) {
         self.render_dirty_from = Some(
             self.render_dirty_from
@@ -1354,6 +1365,22 @@ mod tests {
 
     fn test_app() -> App {
         App::new("gpt-4o".into(), ".".into(), Reasoning::Auto)
+    }
+
+    #[test]
+    fn a_retry_discards_the_partial_assistant_and_thinking_items() {
+        let mut app = test_app();
+        app.push_assistant_delta("partial reply".into());
+        assert!(app.assistant_open);
+        app.discard_assistant();
+        assert!(!app.assistant_open);
+        assert!(app.items.is_empty());
+
+        app.push_thinking_delta("partial reasoning".into());
+        assert!(app.thinking_open());
+        app.discard_thinking();
+        assert!(!app.thinking_open());
+        assert!(app.items.is_empty());
     }
 
     #[test]

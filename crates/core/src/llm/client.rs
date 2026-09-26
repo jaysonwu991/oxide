@@ -106,10 +106,11 @@ struct CachedModels {
 /// the work in progress: reasoning text as the model emits it, and transient
 /// failures that are about to be retried.
 ///
-/// A retried attempt re-sends its reasoning from the start, so `thinking` may
-/// repeat fragments it already delivered; consumers reset their view when
-/// `retry` fires. Text is never repeated, because an attempt that emitted any
-/// is not retried.
+/// A retried attempt re-sends its output from the start, so `text` and
+/// `thinking` may repeat fragments a failed attempt already delivered;
+/// consumers reset their view when `retry` fires. That is why a stream that
+/// drops after emitting text is retried too, instead of failing the turn: the
+/// failed attempt is discarded and the retry streams fresh.
 pub struct StreamHooks<'a> {
     pub text: &'a mut (dyn FnMut(String) + Send),
     pub thinking: &'a mut (dyn FnMut(String) + Send),
@@ -222,8 +223,10 @@ impl LlmClient {
     /// calls).
     ///
     /// Transient failures (network errors, truncated streams, rate limits and
-    /// 5xx responses) are retried with backoff, but only while the attempt has
-    /// not emitted any text yet, so a partial response is never duplicated.
+    /// 5xx responses) are retried with backoff. A retry may follow an attempt
+    /// that already streamed text or reasoning: the caller resets its view when
+    /// `retry` fires, so the failed attempt is discarded rather than left to be
+    /// extended by the new one.
     ///
     /// An empty turn whose provider stop reason is the output limit (a
     /// reasoning model that spent the whole budget thinking) is retried with a
@@ -240,14 +243,9 @@ impl LlmClient {
         let mut escalated_from: Option<u32> = None;
         loop {
             attempt += 1;
-            let mut emitted = false;
             let result = {
-                let mut attempt_text = |delta: String| {
-                    emitted = true;
-                    (hooks.text)(delta);
-                };
                 let mut attempt_hooks = StreamHooks {
-                    text: &mut attempt_text,
+                    text: &mut *hooks.text,
                     thinking: &mut *hooks.thinking,
                     retry: &mut *hooks.retry,
                 };
@@ -330,7 +328,7 @@ impl LlmClient {
                         }
                         return Err(err);
                     }
-                    if emitted || attempt >= MAX_STREAM_ATTEMPTS {
+                    if attempt >= MAX_STREAM_ATTEMPTS {
                         return Err(err);
                     }
                     let delay = Duration::from_millis(500 * 2u64.pow(attempt - 1));
@@ -1481,26 +1479,35 @@ mod tests {
         (addr, handle)
     }
 
-    /// Serves one response whose declared `content-length` is larger than the
-    /// body actually written, then drops the connection. That is how a stream
-    /// ends when the peer closes without a TLS `close_notify`: the bytes arrive
-    /// but the body never completes.
-    async fn truncated_sse_server(
-        body: String,
-    ) -> (std::net::SocketAddr, tokio::task::JoinHandle<()>) {
+    /// Serves a scripted sequence of SSE responses on one listener, in order,
+    /// returning the raw request texts. A `truncated` entry declares a
+    /// `content-length` larger than the body it writes and then drops the
+    /// connection — how a stream ends when the peer closes without a TLS
+    /// `close_notify`.
+    async fn scripted_sse_server(
+        responses: Vec<(String, bool)>,
+    ) -> (std::net::SocketAddr, tokio::task::JoinHandle<Vec<String>>) {
         use tokio::io::AsyncWriteExt;
 
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
         let handle = tokio::spawn(async move {
-            let (mut socket, _) = listener.accept().await.unwrap();
-            let _ = read_request(&mut socket).await;
-            let response = format!(
-                "HTTP/1.1 200 OK\r\ncontent-type: text/event-stream\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",
-                body.len() + 64
-            );
-            let _ = socket.write_all(response.as_bytes()).await;
-            let _ = socket.shutdown().await;
+            let mut seen = Vec::new();
+            for (body, truncated) in responses {
+                let (mut socket, _) = listener.accept().await.unwrap();
+                seen.push(read_request(&mut socket).await);
+                let declared = if truncated {
+                    body.len() + 64
+                } else {
+                    body.len()
+                };
+                let response = format!(
+                    "HTTP/1.1 200 OK\r\ncontent-type: text/event-stream\r\ncontent-length: {declared}\r\nconnection: close\r\n\r\n{body}"
+                );
+                let _ = socket.write_all(response.as_bytes()).await;
+                let _ = socket.shutdown().await;
+            }
+            seen
         });
         (addr, handle)
     }
@@ -1680,7 +1687,7 @@ mod tests {
         let body = sse(&[serde_json::json!(
             {"choices": [{"index": 0, "delta": {"content": "par"}}]}
         )]);
-        let (addr, _server) = truncated_sse_server(body).await;
+        let (addr, _server) = scripted_sse_server(vec![(body, true)]).await;
         let client = LlmClient::new(sse_test_config(addr, 8192));
 
         let mut retries = Vec::new();
@@ -1701,23 +1708,101 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_truncated_stream_without_a_sentinel_is_not_accepted() {
-        // No `[DONE]` and a truncated body: the turn is not known to be
-        // complete, so it stays an error instead of a partial answer.
+    async fn a_truncated_stream_after_text_is_retried_from_scratch() {
+        // The connection drops after the model streamed "par" and no stop
+        // reason arrived: the attempt is incomplete, so it is retried instead
+        // of being returned as a partial answer or failing the turn.
         let partial =
             "data: {\"choices\":[{\"index\":0,\"delta\":{\"content\":\"par\"}}]}\n\n".to_string();
-        let (addr, _server) = truncated_sse_server(partial).await;
+        let (addr, server) =
+            scripted_sse_server(vec![(partial, true), (completed_turn("done"), false)]).await;
         let client = LlmClient::new(sse_test_config(addr, 8192));
 
-        let mut hooks = StreamHooks {
-            text: &mut |_| {},
-            thinking: &mut |_| {},
-            retry: &mut |_| {},
+        let mut retries = Vec::new();
+        let turn = {
+            let mut hooks = StreamHooks {
+                text: &mut |_| {},
+                thinking: &mut |_| {},
+                retry: &mut |r: Retry| retries.push(r),
+            };
+            client
+                .stream_chat(&[Message::user("hi")], &[], &mut hooks)
+                .await
+                .unwrap()
         };
-        client
-            .stream_chat(&[Message::user("hi")], &[], &mut hooks)
-            .await
-            .unwrap_err();
+
+        assert_eq!(turn.content, "done");
+        assert_eq!(retries.len(), 1);
+        assert_eq!(retries[0].attempt, 1);
+        assert_eq!(server.await.unwrap().len(), 2);
+    }
+
+    #[tokio::test]
+    async fn a_truncated_anthropic_stream_after_text_is_retried() {
+        // Anthropic has no `[DONE]`; the `message_delta` stop reason is what
+        // proves completion, so a stream that drops after its text block is
+        // retried from scratch like the OpenAI-compatible path.
+        let partial = anthropic_sse(&[
+            serde_json::json!({"type": "message_start", "message": {"usage": {"input_tokens": 10, "output_tokens": 1}}}),
+            serde_json::json!({"type": "content_block_start", "index": 0, "content_block": {"type": "text", "text": ""}}),
+            serde_json::json!({"type": "content_block_delta", "index": 0, "delta": {"type": "text_delta", "text": "par"}}),
+        ]);
+        let answer = anthropic_sse(&[
+            serde_json::json!({"type": "message_start", "message": {"usage": {"input_tokens": 10, "output_tokens": 1}}}),
+            serde_json::json!({"type": "content_block_start", "index": 0, "content_block": {"type": "text", "text": ""}}),
+            serde_json::json!({"type": "content_block_delta", "index": 0, "delta": {"type": "text_delta", "text": "done"}}),
+            serde_json::json!({"type": "message_delta", "delta": {"stop_reason": "end_turn"}, "usage": {"output_tokens": 2}}),
+            serde_json::json!({"type": "message_stop"}),
+        ]);
+        let (addr, server) = scripted_sse_server(vec![(partial, true), (answer, false)]).await;
+        let client = LlmClient::new(anthropic_test_config(addr, 8192));
+
+        let mut retries = Vec::new();
+        let turn = {
+            let mut hooks = StreamHooks {
+                text: &mut |_| {},
+                thinking: &mut |_| {},
+                retry: &mut |r: Retry| retries.push(r),
+            };
+            client
+                .stream_chat(&[Message::user("hi")], &[], &mut hooks)
+                .await
+                .unwrap()
+        };
+
+        assert_eq!(turn.content, "done");
+        assert_eq!(retries.len(), 1);
+        assert_eq!(server.await.unwrap().len(), 2);
+    }
+
+    #[tokio::test]
+    async fn a_permanently_truncated_stream_errors_after_the_retry_budget() {
+        // A stream that never completes still fails the turn once the retry
+        // budget is spent, so a dead connection is not mistaken for an answer.
+        let partial =
+            "data: {\"choices\":[{\"index\":0,\"delta\":{\"content\":\"par\"}}]}\n\n".to_string();
+        let (addr, server) = scripted_sse_server(vec![
+            (partial.clone(), true),
+            (partial.clone(), true),
+            (partial, true),
+        ])
+        .await;
+        let client = LlmClient::new(sse_test_config(addr, 8192));
+
+        let err = {
+            let mut hooks = StreamHooks {
+                text: &mut |_| {},
+                thinking: &mut |_| {},
+                retry: &mut |_| {},
+            };
+            client
+                .stream_chat(&[Message::user("hi")], &[], &mut hooks)
+                .await
+                .unwrap_err()
+        };
+
+        assert!(err.to_string().contains("reading response stream"), "{err}");
+        assert_eq!(server.await.unwrap().len(), 3);
     }
 
     #[tokio::test]

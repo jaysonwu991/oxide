@@ -125,7 +125,10 @@ pub fn session_header(log: &SessionLog) -> Value {
 pub fn event_json(event: &AgentEvent) -> Option<Value> {
     let value = match event {
         AgentEvent::Thought { .. } => json!({ "type": "thinking" }),
-        AgentEvent::ThoughtDone { .. } => return None,
+        // The model step finished streaming. A consumer that renders the live
+        // transcript uses this as the step boundary: text and reasoning after
+        // it belong to a new step, so a retry can discard only its own attempt.
+        AgentEvent::ThoughtDone { millis } => json!({ "type": "thinking_done", "millis": millis }),
         AgentEvent::ThinkingDelta(delta) => json!({
             "type": "message_update",
             "assistantMessageEvent": { "type": "thinking_delta", "delta": delta }
@@ -335,6 +338,10 @@ mod tests {
         })
         .unwrap();
         assert_eq!(result["isError"], true);
+
+        let done = event_json(&AgentEvent::ThoughtDone { millis: 12 }).unwrap();
+        assert_eq!(done["type"], "thinking_done");
+        assert_eq!(done["millis"], 12);
 
         let thinking = event_json(&AgentEvent::ThinkingDelta("weighing".into())).unwrap();
         assert_eq!(thinking["assistantMessageEvent"]["type"], "thinking_delta");

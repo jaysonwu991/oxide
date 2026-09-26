@@ -116,7 +116,9 @@ pub enum AgentEvent {
     ThoughtDone {
         millis: u64,
     },
-    /// A transient provider failure that is about to be retried.
+    /// A transient provider failure that is about to be retried. The failed
+    /// attempt's streamed text and reasoning are abandoned, so a view drops the
+    /// item it was building and lets the retry start fresh.
     Retrying {
         attempt: u32,
         max: u32,
@@ -233,6 +235,10 @@ pub fn run_subagent(
         ));
 
         let mut report = String::new();
+        // Text before a tool call belongs to a completed step and is kept; a
+        // retry re-sends the current step from the start, so its partial text
+        // is dropped instead of accumulating twice.
+        let mut committed = 0usize;
         while let Some(event) = sub_rx.recv().await {
             match event {
                 AgentEvent::Text(delta) => {
@@ -246,6 +252,8 @@ pub fn run_subagent(
                     let _ = tx.send(AgentEvent::Thought { millis });
                 }
                 AgentEvent::ThoughtDone { millis } => {
+                    // A no-tool step commits here, not at the next tool call.
+                    committed = report.len();
                     let _ = tx.send(AgentEvent::ThoughtDone { millis });
                 }
                 AgentEvent::Retrying {
@@ -253,6 +261,7 @@ pub fn run_subagent(
                     max,
                     delay_ms,
                 } => {
+                    report.truncate(committed);
                     let _ = tx.send(AgentEvent::Retrying {
                         attempt,
                         max,
@@ -260,6 +269,7 @@ pub fn run_subagent(
                     });
                 }
                 AgentEvent::ToolCall { name, args } => {
+                    committed = report.len();
                     let _ = tx.send(AgentEvent::ToolCall { name, args });
                 }
                 AgentEvent::SubagentActivity { agent, tool, args } => {
@@ -472,21 +482,40 @@ async fn run_loop(
         let tool_specs = build_tool_specs(&config, &runtime, depth);
 
         let started = std::time::Instant::now();
-        let mut thought_sent = false;
-        let mut on_text = |delta: String| {
-            if !thought_sent {
-                thought_sent = true;
-                let _ = tx.send(AgentEvent::Thought {
+        // Reset on a retry: the failed attempt's `Thought` marker belongs to the
+        // discarded output, so the retry sends its own when its text starts.
+        let thought_sent = Arc::new(AtomicBool::new(false));
+        // The current attempt's text, kept so an exhausted retry budget can keep
+        // what the user already saw instead of losing it with the error.
+        let attempt_text = Arc::new(Mutex::new(String::new()));
+
+        let text_sent = Arc::clone(&thought_sent);
+        let retry_sent = Arc::clone(&thought_sent);
+        let text_delta = Arc::clone(&attempt_text);
+        let retry_text = Arc::clone(&attempt_text);
+        let text_tx = tx.clone();
+        let retry_tx = tx.clone();
+        let thinking_tx = tx.clone();
+        let mut on_text = move |delta: String| {
+            if let Ok(mut text) = text_delta.lock() {
+                text.push_str(&delta);
+            }
+            if !text_sent.swap(true, Ordering::Relaxed) {
+                let _ = text_tx.send(AgentEvent::Thought {
                     millis: started.elapsed().as_millis() as u64,
                 });
             }
-            let _ = tx.send(AgentEvent::Text(delta));
+            let _ = text_tx.send(AgentEvent::Text(delta));
         };
-        let mut on_thinking = |delta: String| {
-            let _ = tx.send(AgentEvent::ThinkingDelta(delta));
+        let mut on_thinking = move |delta: String| {
+            let _ = thinking_tx.send(AgentEvent::ThinkingDelta(delta));
         };
-        let mut on_retry = |retry: Retry| {
-            let _ = tx.send(AgentEvent::Retrying {
+        let mut on_retry = move |retry: Retry| {
+            if let Ok(mut text) = retry_text.lock() {
+                text.clear();
+            }
+            retry_sent.store(false, Ordering::Relaxed);
+            let _ = retry_tx.send(AgentEvent::Retrying {
                 attempt: retry.attempt,
                 max: retry.max,
                 delay_ms: retry.delay.as_millis() as u64,
@@ -513,13 +542,28 @@ async fn run_loop(
                     return;
                 }
                 Err(err) => {
+                    // The retry budget is exhausted. Text the last attempt
+                    // streamed was shown to the user, so it is kept in the
+                    // session for the next turn rather than dropped with the
+                    // error.
+                    let streamed = attempt_text
+                        .lock()
+                        .map(|text| text.clone())
+                        .unwrap_or_default();
+                    if !streamed.trim().is_empty() {
+                        // Keep the exact streamed string, including any leading
+                        // or trailing whitespace the user already saw.
+                        let partial = Message::assistant(streamed, Vec::new());
+                        record(&runtime.session, depth, &partial);
+                        messages.push(partial);
+                    }
                     let _ = tx.send(AgentEvent::Error(format!("{err:#}")));
                     let _ = tx.send(AgentEvent::Finished(messages));
                     return;
                 }
             }
         };
-        if !thought_sent {
+        if !thought_sent.load(Ordering::Relaxed) {
             let _ = tx.send(AgentEvent::Thought {
                 millis: started.elapsed().as_millis() as u64,
             });
@@ -1731,6 +1775,9 @@ async fn task_inner(
 
     let mut output = String::new();
     let mut error = None;
+    // Text before a tool call is committed; the current step's partial text is
+    // dropped when the stream is retried, so it is not reported twice.
+    let mut committed = 0usize;
     while let Some(event) = rx.recv().await {
         match event {
             AgentEvent::Text(delta) => output.push_str(&delta),
@@ -1739,12 +1786,16 @@ async fn task_inner(
             // The subagent's own tool traffic feeds the caller's progress view;
             // only its final report becomes the tool result.
             AgentEvent::ToolCall { name, args } => {
+                committed = output.len();
                 let _ = events.send(AgentEvent::SubagentActivity {
                     agent: agent_name.clone(),
                     tool: name,
                     args,
                 });
             }
+            AgentEvent::Retrying { .. } => output.truncate(committed),
+            // A no-tool step commits here, not at the next tool call.
+            AgentEvent::ThoughtDone { .. } => committed = output.len(),
             AgentEvent::ToolProgress { .. }
             | AgentEvent::ToolResult { .. }
             | AgentEvent::Usage { .. }
@@ -1752,9 +1803,7 @@ async fn task_inner(
             | AgentEvent::Branch { .. }
             | AgentEvent::SubagentActivity { .. }
             | AgentEvent::ThinkingDelta(_)
-            | AgentEvent::Retrying { .. }
-            | AgentEvent::Thought { .. }
-            | AgentEvent::ThoughtDone { .. } => {}
+            | AgentEvent::Thought { .. } => {}
         }
     }
     let _ = handle.await;
@@ -2279,21 +2328,34 @@ mod tests {
     async fn sse_server(
         bodies: Vec<String>,
     ) -> (std::net::SocketAddr, tokio::task::JoinHandle<Vec<String>>) {
+        scripted_sse_server(bodies.into_iter().map(|body| (body, false)).collect()).await
+    }
+
+    /// Serves a scripted sequence of responses; a `truncated` entry declares a
+    /// larger `content-length` than it writes, so the client sees a dropped
+    /// stream and retries (see `LlmClient::stream_chat`).
+    async fn scripted_sse_server(
+        responses: Vec<(String, bool)>,
+    ) -> (std::net::SocketAddr, tokio::task::JoinHandle<Vec<String>>) {
         use tokio::io::AsyncWriteExt;
 
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
         let handle = tokio::spawn(async move {
             let mut seen = Vec::new();
-            for body in bodies {
+            for (body, truncated) in responses {
                 let (mut socket, _) = tokio::time::timeout(POLL_TIMEOUT, listener.accept())
                     .await
                     .expect("the agent stopped short of every scripted request")
                     .unwrap();
                 seen.push(read_request(&mut socket).await);
-                let response = format!(
-                    "HTTP/1.1 200 OK\r\ncontent-type: text/event-stream\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",
+                let declared = if truncated {
+                    body.len() + 64
+                } else {
                     body.len()
+                };
+                let response = format!(
+                    "HTTP/1.1 200 OK\r\ncontent-type: text/event-stream\r\ncontent-length: {declared}\r\nconnection: close\r\n\r\n{body}"
                 );
                 let _ = socket.write_all(response.as_bytes()).await;
                 let _ = socket.shutdown().await;
@@ -2373,6 +2435,207 @@ mod tests {
 
     fn empty_body() -> String {
         openai_sse(&[serde_json::json!({"choices": [{"delta": {}, "finish_reason": "stop"}]})])
+    }
+
+    /// A text delta with no `[DONE]` and no stop reason, paired with a
+    /// truncated server response so the client treats the turn as dropped.
+    fn partial_text_body(text: &str) -> String {
+        format!(
+            "data: {}\n\n",
+            json!({"choices": [{"delta": {"content": text}, "finish_reason": null}]})
+        )
+    }
+
+    /// A subagent whose stream drops after streaming text is retried, and the
+    /// failed attempt's text must not be reported twice in the task result.
+    #[tokio::test]
+    async fn a_retried_subagent_stream_reports_its_text_once() {
+        let (addr, server) = scripted_sse_server(vec![
+            (partial_text_body("partial "), true),
+            (answer_body("final"), false),
+        ])
+        .await;
+        let mut config = Config {
+            provider: "deepseek".into(),
+            model: "deepseek-flash".into(),
+            base_url: format!("http://{addr}"),
+            api_key: "sk-test".into(),
+            ..Config::default()
+        };
+        config.ecosystem.agents.push(AgentDef {
+            name: "reviewer".into(),
+            description: Some("reviews code".into()),
+            mode: AgentMode::Subagent,
+            permission: None,
+            prompt: String::new(),
+        });
+        let runtime = test_runtime().await;
+        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+
+        let output = task_inner(
+            &config,
+            std::env::temp_dir().as_path(),
+            &runtime,
+            &tx,
+            r#"{"prompt":"review it","subagent_type":"reviewer"}"#,
+            0,
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(output, "final");
+        assert_eq!(server.await.unwrap().len(), 2);
+    }
+
+    /// The subtask-command path accumulates subagent text the same way, so a
+    /// retried stream must not put the failed attempt in the merged history.
+    #[tokio::test]
+    async fn a_retried_subtask_command_reports_its_text_once() {
+        let (addr, server) = scripted_sse_server(vec![
+            (partial_text_body("partial "), true),
+            (answer_body("final"), false),
+        ])
+        .await;
+        let mut config = Config {
+            provider: "deepseek".into(),
+            model: "deepseek-flash".into(),
+            base_url: format!("http://{addr}"),
+            api_key: "sk-test".into(),
+            ..Config::default()
+        };
+        config.ecosystem.agents.push(AgentDef {
+            name: "reviewer".into(),
+            description: Some("reviews code".into()),
+            mode: AgentMode::Subagent,
+            permission: None,
+            prompt: String::new(),
+        });
+        let runtime = test_runtime().await;
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+
+        run_subagent(
+            config,
+            std::env::temp_dir(),
+            Vec::new(),
+            "reviewer".into(),
+            "review it".into(),
+            tx,
+            runtime,
+        )
+        .await;
+
+        let mut finished = None;
+        while let Ok(event) = rx.try_recv() {
+            if let AgentEvent::Finished(messages) = event {
+                finished = Some(messages);
+            }
+        }
+        let messages = finished.expect("the subagent finished");
+        assert_eq!(
+            messages.last().and_then(|message| message.display()),
+            Some("final".to_string())
+        );
+        assert_eq!(server.await.unwrap().len(), 2);
+    }
+
+    /// When every retry is exhausted, the text the last attempt already
+    /// streamed stays in the session so the next turn can build on it.
+    #[tokio::test]
+    async fn an_exhausted_retry_budget_keeps_the_last_attempt_text() {
+        let (addr, server) = scripted_sse_server(vec![
+            (partial_text_body(" half a thought "), true),
+            (partial_text_body(" half a thought "), true),
+            (partial_text_body(" half a thought "), true),
+        ])
+        .await;
+        let config = Config {
+            provider: "deepseek".into(),
+            model: "deepseek-flash".into(),
+            base_url: format!("http://{addr}"),
+            api_key: "sk-test".into(),
+            ..Config::default()
+        };
+        let runtime = test_runtime().await;
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+
+        run(
+            config,
+            std::env::temp_dir(),
+            vec![Message::user("hi")],
+            tx,
+            runtime,
+        )
+        .await;
+
+        let mut error = None;
+        let mut finished = None;
+        while let Ok(event) = rx.try_recv() {
+            match event {
+                AgentEvent::Error(message) => error = Some(message),
+                AgentEvent::Finished(messages) => finished = Some(messages),
+                _ => {}
+            }
+        }
+        assert!(error.is_some(), "the exhausted budget is reported");
+        let finished = finished.expect("the run finished");
+        assert_eq!(
+            finished.last().and_then(|message| message.display()),
+            Some(" half a thought ".to_string())
+        );
+        assert_eq!(server.await.unwrap().len(), 3);
+    }
+
+    /// A retried step must re-open the thinking boundary on the wire, so the
+    /// recovered text is not left inside the failed attempt's thinking block.
+    #[tokio::test]
+    async fn a_retry_reopens_the_thinking_boundary() {
+        let (addr, server) = scripted_sse_server(vec![
+            (partial_text_body("partial "), true),
+            (answer_body("final"), false),
+        ])
+        .await;
+        let config = Config {
+            provider: "deepseek".into(),
+            model: "deepseek-flash".into(),
+            base_url: format!("http://{addr}"),
+            api_key: "sk-test".into(),
+            ..Config::default()
+        };
+        let runtime = test_runtime().await;
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+
+        run(
+            config,
+            std::env::temp_dir(),
+            vec![Message::user("hi")],
+            tx,
+            runtime,
+        )
+        .await;
+
+        let mut thoughts = 0;
+        let mut texts = Vec::new();
+        let mut errors = Vec::new();
+        let mut finished = None;
+        while let Ok(event) = rx.try_recv() {
+            match event {
+                AgentEvent::Thought { .. } => thoughts += 1,
+                AgentEvent::Text(delta) => texts.push(delta),
+                AgentEvent::Error(message) => errors.push(message),
+                AgentEvent::Finished(messages) => finished = Some(messages),
+                _ => {}
+            }
+        }
+        assert!(errors.is_empty(), "{errors:?}");
+        // One boundary per attempt, so the retry's answer closes its own block.
+        assert_eq!(thoughts, 2);
+        assert_eq!(texts, vec!["partial ".to_string(), "final".to_string()]);
+        let finished = finished.expect("the run finished");
+        assert_eq!(
+            finished.last().and_then(|message| message.display()),
+            Some("final".to_string())
+        );
+        assert_eq!(server.await.unwrap().len(), 2);
     }
 
     /// The regression from a real session: the model edited a file and
