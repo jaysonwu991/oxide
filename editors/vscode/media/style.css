@@ -18,6 +18,14 @@ body {
   flex-direction: column;
   font-family: var(--vscode-font-family);
   font-size: var(--vscode-font-size, 13px);
+  /* Output read in a narrow side bar keeps the panel's own text as a floor, so a
+     small `editor.fontSize` cannot shrink the tool output, the diffs and the code
+     blocks below what the prose around them uses. Declared here rather than on
+     `:root` because VS Code's own variables are not always set that high. */
+  --code-size: max(var(--vscode-font-size, 13px), var(--vscode-editor-font-size, 13px));
+  /* The browser default is `normal`, a little over one line height, which reads
+     as crammed on a command's output. */
+  line-height: 1.5;
   color: var(--vscode-foreground);
   background: var(--vscode-sideBar-background, var(--vscode-editor-background));
 }
@@ -59,7 +67,7 @@ code,
 pre,
 .mono {
   font-family: var(--vscode-editor-font-family, monospace);
-  font-size: var(--vscode-editor-font-size, 12px);
+  font-size: var(--code-size);
 }
 
 /* ---------- header ---------- */
@@ -351,7 +359,7 @@ pre,
   margin: 0;
   padding: 0 8px 6px;
   font-family: var(--vscode-editor-font-family, monospace);
-  font-size: var(--vscode-editor-font-size, 12px);
+  font-size: var(--code-size);
   white-space: pre-wrap;
   overflow-wrap: anywhere;
   color: var(--vscode-foreground);
@@ -386,7 +394,7 @@ pre,
   max-height: 45vh;
   overflow: auto;
   font-family: var(--vscode-editor-font-family, monospace);
-  font-size: var(--vscode-editor-font-size, 12px);
+  font-size: var(--code-size);
 }
 
 .dline {
@@ -414,28 +422,330 @@ footer {
   padding: 6px 10px 8px;
 }
 
-.usage {
+/* An author `display` beats the UA's `[hidden] { display: none }`, so a hidden
+   element has to be turned off explicitly. */
+.usage[hidden],
+.chips[hidden],
+.gauge[hidden],
+#elapsed[hidden],
+#dropzone[hidden] {
+  display: none;
+}
+
+/* The chips above the composer: the model, thinking level, agent, project
+   access and session the next turn runs with. Each is a real button, with the
+   key of the host's `model: …` label dimmed so the value reads first. */
+.meta {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 3px;
+  margin-bottom: 6px;
+}
+
+.meta:empty {
+  display: none;
+}
+
+.meta-chip {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 5px;
+  border: 1px solid transparent;
+  background: none;
+  color: var(--vscode-foreground);
+  font-family: var(--vscode-editor-font-family, monospace);
+  font-size: 0.78em;
+  padding: 2px 7px;
+  border-radius: 999px;
+  max-width: 100%;
+  overflow: hidden;
+  white-space: nowrap;
+}
+
+.meta-chip:hover {
+  border-color: var(--vscode-panel-border, rgba(128, 128, 128, 0.35));
+  background: var(--vscode-toolbar-hoverBackground, rgba(128, 128, 128, 0.12));
+}
+
+.meta-chip:focus-visible {
+  outline: 1px solid var(--vscode-focusBorder);
+  outline-offset: -1px;
+}
+
+.meta-chip .chip-key {
+  color: var(--vscode-descriptionForeground);
+  text-transform: uppercase;
+  font-size: 0.85em;
+  letter-spacing: 0.04em;
+}
+
+.meta-chip .chip-value {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* The composer card: the attachments, the message and its toolbar as one
+   bordered block, like the desktop app's composer. */
+#composer {
+  position: relative;
+  border: 1px solid var(--vscode-input-border, var(--vscode-panel-border, rgba(128, 128, 128, 0.35)));
+  border-radius: 8px;
+  background: var(--vscode-input-background);
+  padding: 4px 6px 2px;
+}
+
+#composer:focus-within {
+  border-color: var(--vscode-focusBorder);
+}
+
+#composer.dragging {
+  border-color: var(--vscode-focusBorder);
+  border-style: dashed;
+}
+
+#input {
+  display: block;
+  width: 100%;
+  resize: none;
+  border: none;
+  background: transparent;
+  color: var(--vscode-input-foreground);
+  padding: 4px 2px 2px;
+  font-family: inherit;
+  font-size: inherit;
+  line-height: 1.45;
+  /* Two rows by default, matching the textarea's `rows="2"`. */
+  min-height: 2.9em;
+  max-height: 200px;
+  overflow-y: hidden;
+}
+
+#input:focus {
+  outline: none;
+}
+
+#input::placeholder {
+  color: var(--vscode-input-placeholderForeground, var(--vscode-descriptionForeground));
+}
+
+/* The attachment strip sits inside the card, above the message it belongs to. */
+.chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+  padding: 2px 0 4px;
+}
+
+.chips .chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  border: 1px solid var(--vscode-panel-border, rgba(128, 128, 128, 0.35));
+  border-radius: 6px;
+  background: var(--vscode-sideBar-background, rgba(128, 128, 128, 0.08));
+  padding: 2px 4px 2px 6px;
+  font-size: 0.8em;
+  color: var(--vscode-descriptionForeground);
+  max-width: 100%;
+}
+
+.chips .chip.attachment {
+  padding-left: 3px;
+}
+
+.chips .chip img {
+  width: 26px;
+  height: 26px;
+  object-fit: cover;
+  border-radius: 4px;
+  border: 1px solid var(--vscode-panel-border, rgba(128, 128, 128, 0.25));
+  display: block;
+}
+
+.chips .chip-glyph {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+  border-radius: 4px;
+  background: var(--vscode-toolbar-hoverBackground, rgba(128, 128, 128, 0.12));
+  color: var(--vscode-descriptionForeground);
+  font-size: 0.9em;
+}
+
+.chips .chip-text {
+  display: flex;
+  flex-direction: column;
+  line-height: 1.25;
+  min-width: 0;
+}
+
+.chips .chip-name {
+  color: var(--vscode-foreground);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 18em;
+}
+
+.chips .chip-detail {
+  color: var(--vscode-descriptionForeground);
+  font-size: 0.85em;
+  white-space: nowrap;
+}
+
+.chips .chip-remove {
+  border: none;
+  background: none;
+  color: inherit;
+  padding: 0 3px;
+  line-height: 1;
+  border-radius: 3px;
+}
+
+.chips .chip-remove:hover {
+  color: var(--vscode-errorForeground, var(--vscode-charts-red, #f14c4c));
+  background: var(--vscode-toolbar-hoverBackground, rgba(128, 128, 128, 0.15));
+}
+
+.chips .chip-clear {
+  border: none;
+  background: none;
+  color: var(--vscode-descriptionForeground);
+  font-size: 0.8em;
+  padding: 0 4px;
+  text-decoration: underline;
+}
+
+.chips .chip-clear:hover {
+  color: var(--vscode-foreground);
+}
+
+/* The composer's toolbar: the attach button, the phase, and the send controls
+   on one line so the primary action never moves. */
+#bar {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 2px 0 2px;
+}
+
+#attach {
+  padding: 2px 8px;
+  font-size: 0.82em;
+  border-radius: 4px;
+  color: var(--vscode-descriptionForeground);
+}
+
+#attach:hover {
+  color: var(--vscode-foreground);
+}
+
+#status {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  color: var(--vscode-descriptionForeground);
+  font-size: 0.82em;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+#status::before {
+  content: "";
+  flex: 0 0 auto;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: currentColor;
+  opacity: 0.55;
+}
+
+/* While a turn runs the dot becomes the spinner the tool panels use. */
+#status.busy {
+  color: var(--vscode-charts-blue, var(--vscode-foreground));
+}
+
+#status.busy::before {
+  background: none;
+  border: 1px solid currentColor;
+  border-top-color: transparent;
+  opacity: 1;
+  animation: spin 0.8s linear infinite;
+}
+
+#elapsed {
+  color: var(--vscode-descriptionForeground);
+  font-size: 0.82em;
+  font-variant-numeric: tabular-nums;
+  flex: 0 0 auto;
+}
+
+#stop {
+  padding: 2px 8px;
+  font-size: 0.82em;
+  border-radius: 4px;
+}
+
+#send {
+  padding: 3px 12px;
+  font-size: 0.85em;
+  font-weight: 500;
+  border-radius: 4px;
+}
+
+#dropzone {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 8px;
+  background: var(--vscode-editor-background);
+  opacity: 0.92;
+  color: var(--vscode-descriptionForeground);
+  font-size: 0.85em;
+  pointer-events: none;
+}
+
+/* The dim line under the composer: the usage the provider reported, the
+   context gauge, and the branch on the right. */
+#footline {
   display: flex;
   align-items: center;
   gap: 8px;
+  margin-top: 5px;
+  min-height: 1em;
   color: var(--vscode-descriptionForeground);
   font-family: var(--vscode-editor-font-family, monospace);
-  font-size: 0.78em;
-  min-height: 1em;
-  margin-bottom: 4px;
+  font-size: 0.75em;
+}
+
+.usage {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  flex: 1 1 auto;
+  min-width: 0;
 }
 
 #usage-text {
-  white-space: nowrap;
-  overflow-x: auto;
-  flex: 0 1 auto;
+  /* The line wraps rather than scrolling: a hidden `$cost` or `ctx` is worse
+     than a second line in a narrow side bar. */
+  overflow-wrap: anywhere;
 }
 
-/* An author `display` beats the UA's `[hidden] { display: none }`, so a hidden
-   row has to be turned off explicitly. */
-.usage[hidden],
-.chips[hidden] {
-  display: none;
+#branch {
+  flex: 0 0 auto;
+  max-width: 40%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 /* The context gauge: a thin bar next to the percentage, escalating through the
@@ -462,130 +772,6 @@ footer {
 
 .gauge[data-level="high"] > #gauge-fill {
   background: var(--vscode-editorError-foreground, var(--vscode-charts-red, #f14c4c));
-}
-
-/* The chips under the transcript: the model, thinking level, agent, project
-   access and session the next turn runs with. */
-.meta {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 4px;
-  margin-bottom: 5px;
-}
-
-.meta:empty {
-  display: none;
-}
-
-.meta-chip {
-  border: none;
-  background: none;
-  color: var(--vscode-descriptionForeground);
-  font-family: var(--vscode-editor-font-family, monospace);
-  font-size: 0.78em;
-  padding: 1px 4px;
-  border-radius: 3px;
-  max-width: 100%;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  cursor: pointer;
-}
-
-.meta-chip:hover {
-  color: var(--vscode-foreground);
-  background: var(--vscode-toolbar-hoverBackground, rgba(128, 128, 128, 0.15));
-}
-
-.meta-chip:focus-visible {
-  outline: 1px solid var(--vscode-focusBorder);
-  outline-offset: -1px;
-}
-
-.meta-branch {
-  margin-left: auto;
-  color: var(--vscode-descriptionForeground);
-  font-family: var(--vscode-editor-font-family, monospace);
-  font-size: 0.78em;
-  opacity: 0.8;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-
-#elapsed {
-  color: var(--vscode-descriptionForeground);
-  font-size: 0.85em;
-  font-variant-numeric: tabular-nums;
-  flex: 0 0 auto;
-}
-
-.chips {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 4px;
-  margin-bottom: 5px;
-}
-
-.chips .chip {
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
-  border: 1px solid var(--vscode-panel-border, rgba(128, 128, 128, 0.35));
-  border-radius: 10px;
-  padding: 0 4px 0 7px;
-  font-family: var(--vscode-editor-font-family, monospace);
-  font-size: 0.8em;
-  color: var(--vscode-descriptionForeground);
-  max-width: 100%;
-}
-
-.chips .chip button {
-  border: none;
-  background: none;
-  color: inherit;
-  padding: 0 2px;
-  line-height: 1;
-}
-
-#input {
-  width: 100%;
-  resize: none;
-  border: 1px solid var(--vscode-input-border, var(--vscode-panel-border, rgba(128, 128, 128, 0.35)));
-  border-radius: 4px;
-  background: var(--vscode-input-background);
-  color: var(--vscode-input-foreground);
-  padding: 5px 7px;
-  font-family: inherit;
-  font-size: inherit;
-  line-height: 1.4;
-  max-height: 200px;
-  overflow-y: auto;
-}
-
-#input:focus {
-  outline: 1px solid var(--vscode-focusBorder);
-  outline-offset: -1px;
-}
-
-#bar {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  margin-top: 5px;
-}
-
-#status {
-  color: var(--vscode-descriptionForeground);
-  font-size: 0.85em;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-
-#status.busy {
-  color: var(--vscode-charts-blue, var(--vscode-foreground));
 }
 
 .spacer {

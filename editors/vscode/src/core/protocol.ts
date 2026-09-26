@@ -88,9 +88,20 @@ export type ToolPatch = Partial<
   Pick<ToolItem, "output" | "diff" | "running" | "isError" | "name" | "args">
 >;
 
+/// A file or selection that is inlined into the prompt.
 export interface ContextChip {
   id: number;
   label: string;
+}
+
+/// An image or PDF the message carries as media (`--image`).
+export interface AttachmentChip extends ContextChip {
+  kind: "image" | "pdf";
+  /// A data URL for the chip's thumbnail, or `null` when the picture is too
+  /// large to send to the webview (the chip shows a glyph instead).
+  preview: string | null;
+  /// The size and origin, for the chip's tooltip.
+  detail: string;
 }
 
 /// Everything the webview needs to repaint from scratch.
@@ -101,6 +112,7 @@ export interface TranscriptState {
   queued: number;
   usage: UsageTotals;
   context: ContextChip[];
+  attachments: AttachmentChip[];
   sessionId: string | null;
   folder: string;
   model: string;
@@ -119,7 +131,9 @@ export type ViewMessage =
   /// The footer is attached by the controller (the transcript only knows the
   /// totals), so a usage event repaints the whole footer row.
   | { k: "usage"; usage: UsageTotals; footer?: FooterState }
-  | { k: "context"; context: ContextChip[] };
+  /// The composer's pending context and attachments, which travel together:
+  /// one removal message addresses either list by chip id.
+  | { k: "context"; context: ContextChip[]; attachments: AttachmentChip[] };
 
 /// Splits a chunk into complete lines, returning the unterminated remainder.
 /// Mirrors `oxide_core::llm::drain_lines`: the buffer is compacted once per
@@ -192,6 +206,7 @@ export class Transcript {
   state(extra: {
     queued: number;
     context: ContextChip[];
+    attachments: AttachmentChip[];
     folder: string;
     model: string;
     binary: string;

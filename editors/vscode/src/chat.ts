@@ -2,6 +2,7 @@
 // follow-ups and the editor context, and broadcasts view updates to every
 // attached webview. All CLI contact goes through here.
 
+import * as fs from "node:fs";
 import * as path from "node:path";
 import * as vscode from "vscode";
 
@@ -12,6 +13,18 @@ import {
   type TrustSetting,
   type TurnOptions,
 } from "./core/args";
+import {
+  attachmentFileName,
+  attachmentId,
+  attachmentKind,
+  attachmentMimeForPath,
+  attachmentRejection,
+  decodeDataUrl,
+  formatBytes,
+  MAX_ATTACHMENTS,
+  type AttachmentKind,
+} from "./core/attachments";
+import { AttachmentStore, previewForDataUrl, previewForFile } from "./attachments";
 import { modelsForProvider } from "./core/config";
 import { footerState, nextReasoning, REASONING_LEVELS, type FooterState } from "./core/footer";
 import { projectInfo, type ProjectDeps, type ProjectInfo } from "./core/project";
@@ -28,6 +41,7 @@ import { toolDiff } from "./core/preview";
 import {
   Transcript,
   type AssistantItem,
+  type AttachmentChip,
   type ContextChip,
   type ViewMessage,
   type WireEvent,
@@ -41,8 +55,31 @@ import {
   type Turn,
 } from "./cli";
 
+/// A whole-file context block is inlined into the prompt, so anything larger
+/// than this is trimmed rather than shipped to the model in full.
+const MAX_CONTEXT_LINES = 2_000;
+
 interface Chip extends ContextChip {
   block: ContextBlock;
+}
+
+/// An image or PDF the composer is holding. A pasted blob has no path of its
+/// own, so it is written to a temporary file the CLI can read.
+interface Attachment {
+  /// The chip id, shared with the context chips so one removal message
+  /// addresses either list.
+  id: number;
+  /// The name shown on the chip.
+  label: string;
+  /// The absolute path passed to `--image`.
+  path: string;
+  kind: AttachmentKind;
+  /// A content address, so the same screenshot pasted twice stays one chip.
+  key: string;
+  /// A data URL for the chip's thumbnail, when the picture is small enough.
+  preview: string | null;
+  /// The size and origin, for the chip's tooltip.
+  detail: string;
 }
 
 interface RunState {
@@ -50,20 +87,24 @@ interface RunState {
   sawEvent: boolean;
   stderr: string[];
   context: Chip[];
+  attachments: Attachment[];
 }
 
-/// A follow-up queued while a turn runs. The context chips are snapshotted at
-/// queue time so later edits to the composer's chips cannot change what the
-/// queued message sends.
+/// A follow-up queued while a turn runs. The context chips and attachments are
+/// snapshotted at queue time so later edits to the composer cannot change what
+/// the queued message sends.
 interface QueuedMessage {
   text: string;
   context: Chip[];
+  attachments: Attachment[];
 }
 
 export class ChatController {
   private readonly transcript: Transcript;
   private readonly views = new Set<vscode.WebviewView>();
+  private readonly store = new AttachmentStore();
   private context: Chip[] = [];
+  private attachments: Attachment[] = [];
   private nextChipId = 1;
   private turn: Turn | null = null;
   private run: RunState | null = null;
@@ -89,6 +130,7 @@ export class ChatController {
 
   dispose(): void {
     this.turn?.cancel();
+    this.store.dispose();
     this.onDidChange.dispose();
   }
 
@@ -131,6 +173,7 @@ export class ChatController {
       ...this.transcript.state({
         queued: this.queue.length,
         context: this.chips(),
+        attachments: this.attachmentChips(),
         folder: folder ? folder.name : "",
         model: this.modelLabel(),
         binary: this.binary(),
@@ -273,32 +316,165 @@ export class ChatController {
     return readTextFile(resolved);
   }
 
-  // ---------- context ----------
+  // ---------- context and attachments ----------
 
+  /// A file's text or an editor selection the message carries.
   addContext(block: ContextBlock): ContextChip {
-    const chip: Chip = { id: this.nextChipId++, label: contextLabel(block), block };
-    this.context.push(chip);
-    this.broadcast({ k: "context", context: this.chips() });
-    return { id: chip.id, label: chip.label };
+    const { block: trimmed, cut } = trimLines(block);
+    if (cut) {
+      this.showNotice(`Attached the first ${MAX_CONTEXT_LINES} lines of ${trimmed.path}.`, "warn");
+    }
+    return this.pushContext(trimmed);
+  }
+
+  /// A file the user attached — from the explorer, a drop or the picker. An
+  /// image or PDF travels as media, a text file is inlined as context, and
+  /// anything else is refused rather than shipped as mojibake.
+  addFile(file: string): ContextChip | null {
+    const mime = attachmentMimeForPath(file);
+    if (mime) return this.addAttachmentFile(file, mime);
+    const label = this.relativeTo(file);
+    const text = readTextFile(file);
+    if (text === null || text.includes("\u0000")) {
+      this.showNotice(`${label} is not a text file, an image or a PDF.`, "warn");
+      return null;
+    }
+    return this.addContext({ path: label, text });
+  }
+
+  /// A pasted or dropped blob. The bytes are written to a temporary file
+  /// because the CLI takes attachment paths (`--image`), not data URLs.
+  addAttachment(dataUrl: string, name = ""): ContextChip | null {
+    const decoded = decodeDataUrl(dataUrl);
+    if (!decoded) {
+      this.showNotice("Only images and PDFs can be attached.", "warn");
+      return null;
+    }
+    const key = attachmentId(decoded.bytes);
+    const label = attachmentFileName(name, decoded.mime);
+    // Check the cap and the duplicate before the blob is written, so a
+    // rejected paste never leaves a temp file behind.
+    if (!this.canAddAttachment(key, label)) return null;
+    const written = this.store.write(name, dataUrl);
+    if (!written) {
+      this.showNotice(`Could not write ${name || "the attachment"} to a file.`, "error");
+      return null;
+    }
+    return this.pushAttachment({
+      key,
+      label,
+      path: written.path,
+      kind: decoded.kind,
+      // Only an image gets a thumbnail: a PDF would echo its whole data URL
+      // back to the view for nothing.
+      preview: decoded.kind === "image" ? previewForDataUrl(dataUrl) : null,
+      detail: `${written.detail} · pasted`,
+    });
+  }
+
+  /// An image or PDF that is already on disk, addressed by an absolute path
+  /// passed straight to `--image`.
+  private addAttachmentFile(file: string, mime: string): ContextChip | null {
+    const kind = attachmentKind(mime);
+    if (!kind) return null;
+    return this.pushAttachment({
+      key: `file:${file}`,
+      label: path.basename(file),
+      path: file,
+      kind,
+      preview: kind === "image" ? previewForFile(file, mime) : null,
+      detail: `${fileDetail(file)} · ${this.relativeTo(file)}`,
+    });
+  }
+
+  /// The file picker behind the composer's attach button. An image or PDF
+  /// becomes media and anything else is inlined as context, so a picked file
+  /// reads the same as one attached from the editor.
+  async pickFiles(): Promise<void> {
+    const picked = await vscode.window.showOpenDialog({
+      canSelectMany: true,
+      openLabel: "Attach",
+      title: "Oxide: attach files",
+    });
+    if (!picked?.length) return;
+    for (const uri of picked) {
+      if (uri.scheme === "file") this.addFile(uri.fsPath);
+    }
+  }
+
+  /// Removes one pending chip, whichever list it is in.
+  removeChip(id: number): void {
+    const before = this.context.length + this.attachments.length;
+    this.context = this.context.filter((chip) => chip.id !== id);
+    this.attachments = this.attachments.filter((chip) => chip.id !== id);
+    if (this.context.length + this.attachments.length !== before) this.broadcastChips();
+  }
+
+  /// A message from the webview that is worth showing in the transcript: a
+  /// paste the view could not read, for instance.
+  warn(text: string): void {
+    if (text) this.notice(text, "warn");
+  }
+
+  clearChips(): void {
+    if (!this.context.length && !this.attachments.length) return;
+    this.context = [];
+    this.attachments = [];
+    this.broadcastChips();
   }
 
   get contextCount(): number {
-    return this.context.length;
+    return this.context.length + this.attachments.length;
   }
 
-  removeContext(id: number): void {
-    this.context = this.context.filter((chip) => chip.id !== id);
-    this.broadcast({ k: "context", context: this.chips() });
+  private pushContext(block: ContextBlock): ContextChip {
+    const chip: Chip = { id: this.nextChipId++, label: contextLabel(block), block };
+    this.context.push(chip);
+    this.broadcastChips();
+    return { id: chip.id, label: chip.label };
   }
 
-  clearContext(): void {
-    if (!this.context.length) return;
-    this.context = [];
-    this.broadcast({ k: "context", context: this.chips() });
+  /// The cap and dedup guard both attachment paths share, checked before a
+  /// pasted blob is written so a rejected paste leaves no temp file behind.
+  private canAddAttachment(key: string, label: string): boolean {
+    const rejection = attachmentRejection(this.attachments, key);
+    if (rejection === "cap") {
+      this.showNotice(`At most ${MAX_ATTACHMENTS} attachments per message.`, "warn");
+      return false;
+    }
+    if (rejection === "duplicate") {
+      this.showNotice(`${label} is already attached.`);
+      return false;
+    }
+    return true;
+  }
+
+  private pushAttachment(attachment: Omit<Attachment, "id">): ContextChip | null {
+    if (!this.canAddAttachment(attachment.key, attachment.label)) return null;
+    const chip: Attachment = { id: this.nextChipId++, ...attachment };
+    this.attachments.push(chip);
+    this.broadcastChips();
+    return { id: chip.id, label: chip.label };
+  }
+
+  /// Every list the composer paints changes together: they share one id space,
+  /// so the view always receives both and can tell a removal where to land.
+  private broadcastChips(): void {
+    this.broadcast({ k: "context", context: this.chips(), attachments: this.attachmentChips() });
   }
 
   private chips(): ContextChip[] {
     return this.context.map((chip) => ({ id: chip.id, label: chip.label }));
+  }
+
+  private attachmentChips(): AttachmentChip[] {
+    return this.attachments.map((chip) => ({
+      id: chip.id,
+      label: chip.label,
+      kind: chip.kind,
+      preview: chip.preview,
+      detail: chip.detail,
+    }));
   }
 
   // ---------- turns ----------
@@ -306,9 +482,15 @@ export class ChatController {
   /// Sends a message, starting a turn or queueing a follow-up while one runs.
   async send(text: string): Promise<void> {
     const message = text.trim();
-    if (!message && this.context.length === 0) return;
+    if (!message && !this.contextCount) return;
     if (this.turn) {
-      this.queue.push({ text: message, context: this.context });
+      // Snapshot the chips: the composer stays editable while the turn runs,
+      // so a later chip must not join a message already queued.
+      this.queue.push({
+        text: message,
+        context: [...this.context],
+        attachments: [...this.attachments],
+      });
       this.showNotice(`Queued: ${firstLine(message)}`);
       return;
     }
@@ -332,9 +514,14 @@ export class ChatController {
       label: (absolute) => relativePath(cwd, absolute),
     });
 
-    const chips = this.context;
+    // Snapshot the composer: the running turn (or a failure restoring it)
+    // owns these arrays, so chips added afterwards cannot leak into it.
+    const chips = [...this.context];
+    const attached = [...this.attachments];
     const blocks = chips.map((chip) => chip.block);
-    const attachments = blocks
+    // An `@path` reference to an image or PDF is media, not prompt text — the
+    // same split the CLI's own `@file` expansion makes.
+    const referenced = blocks
       .filter((block) => isAttachmentPath(block.path))
       .map((block) => path.resolve(cwd, block.path))
       .concat(expanded.attachments);
@@ -355,17 +542,19 @@ export class ChatController {
       ...this.turnOptions(),
       session: this.transcript.sessionId,
       continueLast: this.continueLast && !this.transcript.sessionId,
-      attachments,
+      attachments: [...attached.map((chip) => chip.path), ...referenced],
     });
     this.continueLast = false;
 
     this.context = [];
-    this.broadcast({ k: "context", context: [] });
-    // The bubble names what was sent: the pending chips plus whatever `@path`
-    // references were resolved out of the message itself.
+    this.attachments = [];
+    this.broadcastChips();
+    // The bubble names what was sent: the pending context and attachments plus
+    // whatever `@path` references were resolved out of the message itself.
     this.broadcastItem(
       this.transcript.pushUser(message, [
         ...chips.map((chip) => ({ id: chip.id, label: chip.label })),
+        ...attached.map((chip) => ({ id: chip.id, label: chip.label })),
         ...expanded.blocks.map((block) => ({ id: 0, label: contextLabel(block) })),
       ]),
     );
@@ -377,7 +566,13 @@ export class ChatController {
 
     this.transcript.busy = true;
     this.transcript.status = "Thinking…";
-    this.run = { cancelled: false, sawEvent: false, stderr: [], context: chips };
+    this.run = {
+      cancelled: false,
+      sawEvent: false,
+      stderr: [],
+      context: chips,
+      attachments: attached,
+    };
     this.turn = startTurn(command, args, cwd, prompt, {
       onEvent: (event) => this.handleEvent(event),
       onStderr: (line) => {
@@ -396,7 +591,8 @@ export class ChatController {
     // Restore the chips the message was queued with, not whatever the composer
     // holds now.
     this.context = next.context;
-    this.broadcast({ k: "context", context: this.chips() });
+    this.attachments = next.attachments;
+    this.broadcastChips();
     void this.send(next.text);
   }
 
@@ -439,8 +635,11 @@ export class ChatController {
     if (run?.cancelled) {
       this.showNotice("Run stopped. The next message continues this session.");
     } else if (result.error) {
+      // The turn never started, so hand the message's chips back to the
+      // composer instead of losing them with the failed run.
       for (const chip of run?.context ?? []) this.context.push(chip);
-      this.broadcast({ k: "context", context: this.chips() });
+      for (const chip of run?.attachments ?? []) this.attachments.push(chip);
+      this.broadcastChips();
       this.showNotice(
         `Could not run ${this.binary()}: ${result.error}. Set "oxide.binaryPath" to the oxide binary, then use "Oxide: Open Terminal" to connect a provider.`,
         "error",
@@ -498,6 +697,7 @@ export class ChatController {
     this.transcript.reset();
     this.continueLast = false;
     this.queue = [];
+    this.clearChips();
     this.broadcast(this.stateMessage());
     this.showNotice("New session: the next message starts a fresh thread.");
   }
@@ -561,6 +761,7 @@ export class ChatController {
     this.transcript.reset();
     this.transcript.sessionId = picked.sessionId ?? null;
     this.queue = [];
+    this.clearChips();
     this.broadcast(this.stateMessage());
     this.showNotice(
       `Resuming ${picked.sessionId} — the thread continues from its stored context.`,
@@ -753,6 +954,31 @@ function indent(text: string): string {
     .split("\n")
     .map((line) => `  | ${line}`)
     .join("\n");
+}
+
+/// A context block capped at `MAX_CONTEXT_LINES`, so a huge file cannot fill the
+/// prompt on its own. The flag lets the caller say it was cut.
+function trimLines(block: ContextBlock): { block: ContextBlock; cut: boolean } {
+  const lines = block.text.split("\n");
+  if (lines.length <= MAX_CONTEXT_LINES) return { block, cut: false };
+  return {
+    block: {
+      ...block,
+      endLine: undefined,
+      text: `${lines.slice(0, MAX_CONTEXT_LINES).join("\n")}\n… (truncated)`,
+    },
+    cut: true,
+  };
+}
+
+/// A size for an attachment chip's tooltip, or `?` for a file that is no longer
+/// there.
+function fileDetail(file: string): string {
+  try {
+    return formatBytes(fs.statSync(file).size);
+  } catch {
+    return "missing";
+  }
 }
 
 function firstLine(text: string): string {

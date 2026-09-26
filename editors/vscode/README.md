@@ -13,12 +13,17 @@ and MCP servers as the terminal and the desktop app — nothing is reconfigured.
   strip Copilot Chat lives in — and both panes show the same thread. Its icons
   are the desktop app's: the cyan diamond mark and, in the Extensions view, the
   desktop app icon.
-- **Footer** under the composer, matching the terminal's: clickable
-  `model: …`, `thinking: …`, `agent: …`, `access: …` and `session: …` chips, the
-  git branch, a live elapsed timer while a turn runs, the context gauge
-  (amber past 70%, red past 90%), and a usage line of `↑`/`↓` tokens, `R`/`W`
-  cache tokens, `CH` hit rate, `$cost` and `ctx %/window` with an `(auto)`
-  marker when auto-compaction is on.
+- **Attachments**: paste an image into the composer, drop files onto it, or
+  click **Attach** — images and PDFs become chips above the message and travel
+  to the model as media, while a text file is inlined as context. Each chip
+  shows a thumbnail (or its size), can be removed with ✕, and the message box
+  starts two rows tall and grows as you type.
+- **Footer** around the composer, matching the terminal's: clickable
+  `model: …`, `thinking: …`, `agent: …`, `access: …` and `session: …` chips above
+  it, and under it the git branch, the context gauge (amber past 70%, red past
+  90%) and a usage line of `↑`/`↓` tokens, `R`/`W` cache tokens, `CH` hit rate,
+  `$cost` and `ctx %/window` with an `(auto)` marker when auto-compaction is on.
+  A live elapsed timer appears in the composer's toolbar while a turn runs.
 - **Editor actions**: explain, fix, or ask about a selection; attach a file,
   a selection, or an image to the chat.
 - **Sessions**: continue the project's latest session, or pick one from the
@@ -55,11 +60,14 @@ Provider logins live in the CLI: run **Oxide: Open Terminal (TUI)** and use
    with **Oxide: Set Project Trust…** (untrusted runs simply skip them).
 3. Type a message. Tool calls appear as coloured panels with a diff preview for
    file changes; `Enter` sends, `Shift+Enter` adds a newline, and `Alt+Enter`
-   queues a follow-up for after the current turn.
-4. The row under the transcript is the footer: click `model: …` to switch the
-   model, `thinking: …` to cycle the reasoning level, `agent: …` to pick a
-   subagent, `access: …` for project trust, or `session: …` to resume another
-   session.
+   queues a follow-up for after the current turn. Paste an image, drop files on
+   the composer, or click **Attach** to add images, PDFs and text files to the
+   message.
+4. The chips above the composer are the next turn's settings: click `model: …`
+   to switch the model, `thinking: …` to cycle the reasoning level, `agent: …`
+   to pick a subagent, `access: …` for project trust, or `session: …` to resume
+   another session. Under the composer the branch, the context gauge and the
+   usage line match the terminal's footer.
 
 ## Commands
 
@@ -70,7 +78,7 @@ Provider logins live in the CLI: run **Oxide: Open Terminal (TUI)** and use
 | **Oxide: Resume Session…** | Pick from this project's sessions (or continue the latest). |
 | **Oxide: Continue Last Session** | Continue the most recent session on the next message. |
 | **Oxide: Stop** | Cancel the running turn (the session keeps what it has written). |
-| **Oxide: Add File or Selection to Chat** | Attach the selection or the whole file as context (`Ctrl+Alt+A` / `Cmd+Alt+A`). |
+| **Oxide: Add File or Selection to Chat** | Attach the selection or the whole file as context (`Ctrl+Alt+A` / `Cmd+Alt+A`); on an image or PDF in the explorer, it attaches the file as media instead. |
 | **Oxide: Ask About Selection** | Attach the selection and ask a question about it. |
 | **Oxide: Explain Selection** | Attach the selection and ask for an explanation. |
 | **Oxide: Fix Selection** | Attach the selection and ask for a minimal fix. |
@@ -107,6 +115,11 @@ Provider logins live in the CLI: run **Oxide: Open Terminal (TUI)** and use
   either way: sessions live in the CLI's own store.
 - Runs are non-interactive, so there is no approval prompt: a tool the
   permission rules mark `ask` is decided by Oxide's own `auto_approve` setting.
+- An image or PDF attached from the clipboard is written to a private OS
+  temporary directory (`os.tmpdir()`), because the CLI takes attachment *paths*
+  (`--image`); the directory is removed when the window closes. Files picked or
+  dropped from the explorer are passed where they already are, so nothing is
+  copied for them. At most eight attachments ride on one message.
 - The footer reads the same files the CLI does, read-only: `config.json` for the
   model and window, `trust.json` plus `defaultProjectTrust` for the access chip,
   `settings.json`/`.oxide/settings.json` for auto-compaction, the project's

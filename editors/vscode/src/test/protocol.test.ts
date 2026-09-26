@@ -484,6 +484,9 @@ describe("Transcript", () => {
     const state = transcript.state({
       queued: 1,
       context: [{ id: 7, label: "a.rs" }],
+      attachments: [
+        { id: 8, label: "shot.png", kind: "image", preview: "data:image/png;base64,AA", detail: "4 B · pasted" },
+      ],
       folder: "oxide",
       model: "deepseek-flash",
       binary: "/usr/local/bin/oxide",
@@ -495,5 +498,8 @@ describe("Transcript", () => {
     assert.equal(state.queued, 1);
     assert.equal(state.showThinking, false);
     assert.equal(state.folder, "oxide");
+    assert.deepEqual(state.attachments, [
+      { id: 8, label: "shot.png", kind: "image", preview: "data:image/png;base64,AA", detail: "4 B · pasted" },
+    ]);
   });
 });

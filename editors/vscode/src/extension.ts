@@ -11,11 +11,7 @@ import { ChatViewProvider } from "./chatView";
 import { isFile, exists, listMarkdown, readTextFile, realPath, resolveBinary } from "./cli";
 import { configDir, parseConfigSummary } from "./core/config";
 import type { ProjectDeps } from "./core/project";
-import { isAttachmentPath, type ContextBlock } from "./core/prompt";
-
-/// A whole-file context block is inlined into the prompt, so anything larger
-/// than this is trimmed rather than shipped to the model in full.
-const MAX_CONTEXT_LINES = 2_000;
+import type { ContextChip } from "./core/protocol";
 
 export function activate(context: vscode.ExtensionContext): void {
   const output = vscode.window.createOutputChannel("Oxide");
@@ -98,7 +94,7 @@ export function activate(context: vscode.ExtensionContext): void {
           placeHolder: "e.g. why does this retry loop spin?",
         });
         if (!question?.trim()) {
-          if (chip) controller.removeContext(chip.id);
+          if (chip) controller.removeChip(chip.id);
           return;
         }
         await controller.send(question);
@@ -216,58 +212,35 @@ async function addSelection(controller: ChatController): Promise<{ id: number } 
   }
   const selection = editor.selection;
   const selected = !selection.isEmpty;
-  const block = trimLines({
-    path: controller.relativeTo(document.uri.fsPath),
-    startLine: selected ? selection.start.line + 1 : undefined,
-    endLine: selected ? selection.end.line + 1 : undefined,
-    text: selected ? document.getText(selection) : document.getText(),
-  });
-  return add(controller, block);
+  return add(
+    controller,
+    controller.addContext({
+      path: controller.relativeTo(document.uri.fsPath),
+      startLine: selected ? selection.start.line + 1 : undefined,
+      endLine: selected ? selection.end.line + 1 : undefined,
+      text: selected ? document.getText(selection) : document.getText(),
+    }),
+  );
 }
 
+/// A file the explorer, a drop or a picker handed over: an image or PDF becomes
+/// media, a text file is inlined as context.
 async function addToChat(controller: ChatController, uri?: vscode.Uri): Promise<void> {
   if (!uri || uri.scheme !== "file") {
     await addSelection(controller);
     return;
   }
-  const relative = controller.relativeTo(uri.fsPath);
-  if (isAttachmentPath(uri.fsPath)) {
-    // Images and PDFs travel as media (`--image`), not as prompt text.
-    add(controller, { path: relative, text: "" });
-    return;
-  }
-  let text: string;
-  try {
-    text = fs.readFileSync(uri.fsPath, "utf8");
-  } catch (error) {
-    void vscode.window.showWarningMessage(`Oxide: could not read ${relative} (${String(error)}).`);
-    return;
-  }
-  if (text.includes("\u0000")) {
-    void vscode.window.showWarningMessage(`Oxide: ${relative} is not a text file.`);
-    return;
-  }
-  add(controller, trimLines({ path: relative, text }));
+  const chip = controller.addFile(uri.fsPath);
+  if (chip) add(controller, chip);
 }
 
-function add(controller: ChatController, block: ContextBlock): { id: number } | null {
-  const chip = controller.addContext(block);
+function add(controller: ChatController, chip: ContextChip): { id: number } | null {
   const pending = controller.contextCount;
   void vscode.window.setStatusBarMessage(
     `Oxide: attached ${chip.label}${pending > 1 ? ` (${pending} pending)` : ""} — send a message to include it.`,
     5_000,
   );
   return chip;
-}
-
-function trimLines(block: ContextBlock): ContextBlock {
-  const lines = block.text.split("\n");
-  if (lines.length <= MAX_CONTEXT_LINES) return block;
-  const kept = lines.slice(0, MAX_CONTEXT_LINES).join("\n");
-  void vscode.window.showWarningMessage(
-    `Oxide: attached the first ${MAX_CONTEXT_LINES} lines of ${block.path}.`,
-  );
-  return { ...block, endLine: undefined, text: `${kept}\n… (truncated)` };
 }
 
 function openTerminal(binary: string): void {

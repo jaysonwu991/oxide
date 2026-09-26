@@ -22,6 +22,8 @@ interface Manifest {
 const manifest = JSON.parse(fs.readFileSync(path.join(root, "package.json"), "utf8")) as Manifest;
 const extension = fs.readFileSync(path.join(root, "src", "extension.ts"), "utf8");
 const chat = fs.readFileSync(path.join(root, "src", "chat.ts"), "utf8");
+const chatView = fs.readFileSync(path.join(root, "src", "chatView.ts"), "utf8");
+const renderer = fs.readFileSync(path.join(root, "media", "main.js"), "utf8");
 
 describe("command contributions", () => {
   it("registers every command it contributes", () => {
@@ -55,6 +57,20 @@ describe("command contributions", () => {
     });
     for (const chip of state.chips) {
       assert.ok(chat.includes(`case "${chip.id}":`), `the ${chip.id} chip is handled`);
+    }
+  });
+
+  it("handles every message the webview sends", () => {
+    // The webview is plain JavaScript with no type checking of its own, so a
+    // mistyped `k` would silently do nothing: every kind it posts has to have a
+    // case in the view's message switch.
+    const kinds = new Set<string>();
+    for (const match of renderer.matchAll(/postMessage\(\s*\{\s*k:\s*"([A-Za-z]+)"/g)) {
+      kinds.add(match[1]);
+    }
+    assert.ok(kinds.size >= 8, `found the webview's messages (${[...kinds].join(", ")})`);
+    for (const kind of kinds) {
+      assert.ok(chatView.includes(`case "${kind}":`), `the host handles "${kind}"`);
     }
   });
 });
