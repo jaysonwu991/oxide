@@ -49,6 +49,14 @@ interface RunState {
   context: Chip[];
 }
 
+/// A follow-up queued while a turn runs. The context chips are snapshotted at
+/// queue time so later edits to the composer's chips cannot change what the
+/// queued message sends.
+interface QueuedMessage {
+  text: string;
+  context: Chip[];
+}
+
 export class ChatController {
   private readonly transcript: Transcript;
   private readonly views = new Set<vscode.WebviewView>();
@@ -56,7 +64,7 @@ export class ChatController {
   private nextChipId = 1;
   private turn: Turn | null = null;
   private run: RunState | null = null;
-  private queue: string[] = [];
+  private queue: QueuedMessage[] = [];
   private continueLast = false;
   private activeFolder: string | null = null;
 
@@ -232,7 +240,7 @@ export class ChatController {
     const message = text.trim();
     if (!message && this.context.length === 0) return;
     if (this.turn) {
-      this.queue.push(message);
+      this.queue.push({ text: message, context: this.context });
       this.showNotice(`Queued: ${firstLine(message)}`);
       return;
     }
@@ -314,7 +322,11 @@ export class ChatController {
   private drainQueue(): void {
     const next = this.queue.shift();
     if (next === undefined) return;
-    void this.send(next);
+    // Restore the chips the message was queued with, not whatever the composer
+    // holds now.
+    this.context = next.context;
+    this.broadcast({ k: "context", context: this.chips() });
+    void this.send(next.text);
   }
 
   stop(): void {
@@ -375,6 +387,9 @@ export class ChatController {
     }
 
     this.broadcastStatus();
+    // The view's status-bar spinner is driven by this event, and `handleExit`
+    // runs after the last stream event, so refresh it here too.
+    this.onDidChange.fire();
     this.drainQueue();
   }
 
@@ -396,6 +411,12 @@ export class ChatController {
   // ---------- sessions ----------
 
   newSession(): void {
+    if (this.turn) {
+      // Resetting now would apply the running process's later events to the new
+      // thread and drop the session id it is about to report.
+      this.showNotice("A turn is running; stop it before starting a new session.", "warn");
+      return;
+    }
     this.transcript.reset();
     this.continueLast = false;
     this.queue = [];
@@ -406,6 +427,10 @@ export class ChatController {
   /// Resumes a session picked from the CLI's own listing, so the picker and the
   /// terminal agree on what exists.
   async resumeSession(): Promise<void> {
+    if (this.turn) {
+      this.showNotice("A turn is running; stop it before switching sessions.", "warn");
+      return;
+    }
     const cwd = this.cwd();
     if (!cwd) {
       this.showNotice("Open a folder first.", "error");
@@ -449,8 +474,9 @@ export class ChatController {
       return;
     }
     if (picked.sessionId === "continue") {
-      this.continueLast = true;
       this.newSession();
+      // `newSession` clears the flag, so set it afterwards.
+      this.continueLast = true;
       this.showNotice("The next message continues the most recent session.");
       return;
     }
@@ -464,12 +490,17 @@ export class ChatController {
   }
 
   continueSession(): void {
+    if (this.turn) {
+      this.showNotice("A turn is running; stop it before switching sessions.", "warn");
+      return;
+    }
     if (!this.cwd()) {
       this.showNotice("Open a folder first.", "error");
       return;
     }
-    this.continueLast = true;
     this.newSession();
+    // `newSession` clears the flag, so set it afterwards.
+    this.continueLast = true;
     this.showNotice("The next message continues the most recent session.");
   }
 

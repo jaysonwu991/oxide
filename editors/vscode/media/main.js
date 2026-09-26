@@ -486,6 +486,11 @@
     wrap.className = "tool";
     const head = document.createElement("div");
     head.className = "thead";
+    // A real button control: focusable and keyboard-activatable, so the
+    // collapsible tool output is reachable without a mouse.
+    head.setAttribute("role", "button");
+    head.tabIndex = 0;
+    head.setAttribute("aria-expanded", "false");
     const name = document.createElement("span");
     name.className = "tname";
     name.textContent = String(item.name || "tool");
@@ -513,7 +518,7 @@
     hint.className = "thint";
     hint.hidden = true;
     wrap.append(head, pre, hint);
-    return { el: wrap, pre, hint, state, summary };
+    return { el: wrap, pre, hint, state, head, summary };
   }
 
   function parseArgs(raw) {
@@ -570,6 +575,7 @@
   function toggleTool(entry) {
     if (!entry.item || entry.item.running) return;
     entry.expanded = !entry.expanded;
+    if (entry.head) entry.head.setAttribute("aria-expanded", String(entry.expanded));
     paintTool(entry);
   }
 
@@ -830,6 +836,16 @@
     }
     const entry = entryOf(target);
     if (entry && target.closest(".thead")) toggleTool(entry);
+  });
+
+  transcript.addEventListener("keydown", (event) => {
+    if (event.key !== "Enter" && event.key !== " ") return;
+    const target = event.target;
+    if (!(target instanceof Element) || !target.closest(".thead")) return;
+    const entry = entryOf(target);
+    if (!entry) return;
+    event.preventDefault();
+    toggleTool(entry);
   });
 
   window.addEventListener("message", (event) => apply(event.data));

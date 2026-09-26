@@ -142,8 +142,18 @@ export function startTurn(
     }
   });
 
+  // A failed spawn emits `error` and then `close`, and both are reported once.
+  // The controller treats an exit as final (it clears the run and drains the
+  // queue), so a second callback is ignored.
+  let exited = false;
+  const exit = (result: { code: number | null; signal: string | null; error?: string }): void => {
+    if (exited) return;
+    exited = true;
+    callbacks.onExit(result);
+  };
+
   child.on("error", (error: Error) => {
-    callbacks.onExit({ code: null, signal: null, error: error.message });
+    exit({ code: null, signal: null, error: error.message });
   });
 
   child.on("close", (code: number | null, signal: NodeJS.Signals | null) => {
@@ -152,7 +162,7 @@ export function startTurn(
       if (event) callbacks.onEvent(event);
     }
     if (stderrBuffer.trim()) callbacks.onStderr(stderrBuffer);
-    callbacks.onExit({ code, signal, error: undefined });
+    exit({ code, signal, error: undefined });
   });
 
   try {

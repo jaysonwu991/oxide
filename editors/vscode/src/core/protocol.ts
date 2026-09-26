@@ -267,6 +267,11 @@ export class Transcript {
       case "tool_execution_end":
         return this.finishTool(str(event.toolName), str(event.result), event.isError === true);
       case "usage": {
+        // Usage is emitted once a model step has completed, so it commits the
+        // step's text and reasoning even when no tool call follows and the CLI
+        // has not sent a `thinking_done` boundary (older CLI builds).
+        this.closeAssistant();
+        this.closeThinking();
         const usage = obj(event.usage);
         const context =
           num(usage.input) + num(usage.cacheRead) + num(usage.cacheWrite);
@@ -407,9 +412,23 @@ export class Transcript {
     return tools.find((item) => item.name === name) ?? tools[0];
   }
 
+  /// Progress events carry only a tool name, so two parallel calls of the same
+  /// tool are indistinguishable. Never guess between them: drop the update
+  /// instead of appending it to the wrong card. The result pass uses `runningTool`
+  /// because results arrive in call order.
+  private progressTool(name: string): ToolItem | undefined {
+    const running = this.items.filter(
+      (item): item is ToolItem => item.kind === "tool" && item.running,
+    );
+    const named = running.filter((item) => item.name === name);
+    if (named.length === 1) return named[0];
+    if (named.length > 1) return undefined;
+    return running.length === 1 ? running[0] : undefined;
+  }
+
   private appendToolOutput(name: string, chunk: string): ViewMessage[] {
     if (!chunk) return [];
-    const tool = this.runningTool(name);
+    const tool = this.progressTool(name);
     if (!tool) return [];
     tool.output += chunk;
     return [{ k: "append", id: tool.id, field: "output", delta: chunk }];

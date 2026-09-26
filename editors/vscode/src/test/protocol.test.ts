@@ -235,6 +235,48 @@ describe("Transcript", () => {
     assert.equal(card(transcript, 2).output, "hit");
   });
 
+  it("drops progress when two running cards share a tool name", () => {
+    const transcript = new Transcript();
+    transcript.apply({ type: "tool_call", toolName: "read", arguments: '{"path":"a"}' });
+    transcript.apply({ type: "tool_call", toolName: "read", arguments: '{"path":"b"}' });
+    // Progress carries no call id, so it must not be guessed at either card.
+    assert.deepEqual(
+      transcript.apply({ type: "tool_execution_update", toolName: "read", partialResult: "x" }),
+      [],
+    );
+    assert.equal(card(transcript, 0).output, "");
+    assert.equal(card(transcript, 1).output, "");
+
+    // Once only one card is running, its progress lands again.
+    transcript.apply({ type: "tool_execution_end", toolName: "read", result: "first", isError: false });
+    assert.deepEqual(
+      transcript.apply({ type: "tool_execution_update", toolName: "read", partialResult: "y" }),
+      [{ k: "append", id: card(transcript, 1).id, field: "output", delta: "y" }],
+    );
+  });
+
+  it("commits the step on usage so a later retry keeps the reply", () => {
+    // Older CLI builds do not send `thinking_done`, so the usage event is the
+    // only step boundary before a no-tool step is followed by another request.
+    const transcript = new Transcript();
+    const reply = push(
+      transcript.apply({
+        type: "message_update",
+        assistantMessageEvent: { type: "text_delta", delta: "summary" },
+      })[0],
+    );
+    transcript.apply({
+      type: "usage",
+      usage: { input: 1, output: 1, cacheRead: 0, cacheWrite: 0, cost: 0 },
+    });
+    assert.deepEqual(
+      transcript.apply({ type: "auto_retry_start", attempt: 1, maxAttempts: 3 }),
+      [],
+    );
+    assert.equal(transcript.items.length, 1);
+    assert.equal(transcript.items[0].id, reply.id);
+  });
+
   it("accumulates usage and tracks the latest context size", () => {
     const transcript = new Transcript();
     usage(

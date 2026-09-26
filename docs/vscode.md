@@ -151,10 +151,7 @@ pnpm run package   # vsce package -> oxide-vscode-<version>.vsix
 Press <kbd>F5</kbd> with the folder open to launch an Extension Development
 Host. The tests cover the pure modules only: argv building, prompt assembly and
 `@path` expansion, diff and tool previews, session-list parsing, config-dir
-resolution, binary lookup, and the transcript state machine. CI runs the same
-checks on every pull request (the `vscode` job in
-`.github/workflows/ci.yml`): `pnpm run check`, `pnpm test`, and
-`pnpm run package`, so a type error or a broken manifest fails the PR.
+resolution, binary lookup, and the transcript state machine.
 
 ## Packaging
 

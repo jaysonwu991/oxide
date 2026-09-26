@@ -99,7 +99,9 @@ export function activate(context: vscode.ExtensionContext): void {
     vscode.commands.registerCommand(
       "oxide.explainSelection",
       guard(async () => {
-        await addSelection(controller);
+        // No editor or no on-disk file means there is nothing attached, so the
+        // instruction would refer to a selection the run never received.
+        if (!(await addSelection(controller))) return;
         await controller.send(
           "Explain the attached selection: what it does, and anything surprising, risky, or subtly wrong about it.",
         );
@@ -108,7 +110,7 @@ export function activate(context: vscode.ExtensionContext): void {
     vscode.commands.registerCommand(
       "oxide.fixSelection",
       guard(async () => {
-        await addSelection(controller);
+        if (!(await addSelection(controller))) return;
         await controller.send(
           "Fix the attached selection. Keep the change minimal and make it match the surrounding code.",
         );
