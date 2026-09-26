@@ -258,6 +258,14 @@ Overrides:
 | Linux (ARM64) | `aarch64-unknown-linux-gnu` | `.tar.gz` |
 | Windows (x86_64) | `x86_64-pc-windows-msvc` | `.zip` |
 
+### VS Code extension
+
+Install **Oxide** (`jaysonwu991.oxide-vscode`) by downloading
+`oxide-vscode-<version>.vsix` from an `extension-v*`
+[release](https://github.com/jaysonwu991/oxide/releases) and running
+**Extensions: Install from VSIX…** in VS Code. The extension drives the `oxide`
+CLI, so install the CLI above first.
+
 ### From source
 
 Requires a stable Rust toolchain (edition 2021). The workspace splits the
@@ -424,7 +432,9 @@ pnpm test          # compile, then node --test out/test/
 pnpm run package   # vsce package -> oxide-vscode-<version>.vsix
 ```
 
-Provider logins stay in the CLI (`/login` in the TUI). See
+Published releases are cut from `extension-v*` tags and attach the packaged
+VSIX (see [CONTRIBUTING.md](CONTRIBUTING.md#releases)). Provider logins stay in
+the CLI (`/login` in the TUI). See
 [editors/vscode/README.md](editors/vscode/README.md) for the command and setting
 tables, and [docs/vscode.md](docs/vscode.md) for the architecture.
 

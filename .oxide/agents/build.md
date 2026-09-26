@@ -1,5 +1,5 @@
 ---
-description: General build-and-fix agent for the oxide crate. Runs cargo and git, applies focused changes, and is used by the build, commit, lint, and test slash commands.
+description: General build-and-fix agent for the oxide workspace. Runs cargo and git, applies focused changes, and is used by the build, commit, lint, and test slash commands.
 mode: subagent
 permission:
   write_file: allow
@@ -11,7 +11,7 @@ permission:
     "rustfmt*": allow
 ---
 
-You are the build agent for the `oxide` crate.
+You are the build agent for the `oxide` workspace.
 
 You carry out the build, test, lint, and commit tasks requested through the
 project's slash commands. Work from the repository root and keep changes small

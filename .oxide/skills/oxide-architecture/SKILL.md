@@ -7,9 +7,9 @@ description: Use when navigating or modifying the oxide internals — the agent 
 
 ## Request flow
 
-1. `src/main.rs` parses CLI args (clap), handles the `mcp` subcommand, resolves
-   the working directory, and loads `Config`. Provider login and logout are TUI
-   slash commands rather than CLI subcommands.
+1. `crates/cli/src/main.rs` parses CLI args (clap), handles the `mcp` subcommand,
+   resolves the working directory, and loads `Config`. Provider login and logout
+   are TUI slash commands rather than CLI subcommands.
 2. Non-interactive mode (`-p/--print` or a positional prompt) reads the prompt
    and calls `run_print`; otherwise the TUI starts via `tui::run`.
 3. `agent::run(config, cwd, history, tx, runtime)` drives a turn:
@@ -44,65 +44,69 @@ description: Use when navigating or modifying the oxide internals — the agent 
 
 ## Modules
 
-- `src/llm/client.rs` — `LlmClient::stream_chat` and the OpenAI-compatible /
-  Anthropic stream paths; `StreamHooks` (text/thinking/retry), the retry budget
-  (transient failures plus empty turns), and `read_sse`/`drain_lines` live here.
-- `src/llm/types.rs` — OpenAI-compatible request/response, `Message`, and
-  `Usage` (input/output plus cache tokens and cost).
-- `src/llm/mod.rs` — module re-exports (`LlmClient`, `Message`, `ToolSpec`, ...).
-- `src/auth.rs` — multi-provider credential store in `auth.json`, behind the
-  TUI `/login`, `/logout`, and `/connect` commands.
-- `src/lsp.rs` — `LspManager`/`Server`: a cached language server that exits or
-  whose pipe breaks is evicted and reconnected before the call is retried.
-- `src/agent.rs` — the agent loop (`run`, `run_loop`, `dispatch`) and
-  `run_subagent` for `subtask` commands.
-- `src/tools.rs` — built-in/MCP `specs()` and `execute()`; `grep` prefers
-  `ripgrep` (`rg`) when present and otherwise uses a parallel built-in walker
-  that sniffs binary files; `edit` matches a unique `oldText` byte-exact first,
-  then tolerating trailing whitespace and the `N|`/`N+|` line numbers a `read`
-  result prints, and reports every failing edit with the closest region to copy;
-  agent-level tools are wired in `src/agent.rs`.
-- `src/ecosystem/mod.rs` — Oxide (`.oxide/`, `AGENTS.md`) and Claude Code
-  (`.claude/`, `CLAUDE.md`, `.mcp.json`) layout discovery; `frontmatter.rs`
-  parses Markdown frontmatter; `resolve_command` returns command prompt +
-  `agent`/`subtask` routing.
-- `src/config.rs` — `Config`, `load`, `activate_agent`, `resolve_command`,
-  `config_path`, `require_api_key`, `context_window`, `supports_reasoning`, and
-  the `compaction`/`prices` settings.
-- `src/diff.rs` — `preview(old, new)` LCS line diff with context windows and gap
-  markers, used for the TUI's colored edit previews.
-- `src/session.rs` — Pi-compatible JSONL session trees: typed entries with
-  `id`/`parentId`, compaction and branch-summary entries, leaf-path context
+- `crates/core/src/llm/client.rs` — `LlmClient::stream_chat` and the
+  OpenAI-compatible / Anthropic stream paths; `StreamHooks` (text/thinking/retry),
+  the retry budget (transient failures plus empty turns), and
+  `read_sse`/`drain_lines` live here.
+- `crates/core/src/llm/types.rs` — OpenAI-compatible request/response,
+  `Message`, and `Usage` (input/output plus cache tokens and cost).
+- `crates/core/src/llm/mod.rs` — module re-exports (`LlmClient`, `Message`,
+  `ToolSpec`, ...).
+- `crates/core/src/auth.rs` — multi-provider credential store in `auth.json`,
+  behind the TUI `/login`, `/logout`, and `/connect` commands.
+- `crates/core/src/lsp.rs` — `LspManager`/`Server`: a cached language server that
+  exits or whose pipe breaks is evicted and reconnected before the call is
+  retried.
+- `crates/core/src/agent.rs` — the agent loop (`run`, `run_loop`, `dispatch`)
+  and `run_subagent` for `subtask` commands.
+- `crates/core/src/tools.rs` — built-in/MCP `specs()` and `execute()`; `grep`
+  prefers `ripgrep` (`rg`) when present and otherwise uses a parallel built-in
+  walker that sniffs binary files; `edit` matches a unique `oldText` byte-exact
+  first, then tolerating trailing whitespace and the `N|`/`N+|` line numbers a
+  `read` result prints, and reports every failing edit with the closest region to
+  copy; agent-level tools are wired in `crates/core/src/agent.rs`.
+- `crates/core/src/ecosystem/mod.rs` — Oxide (`.oxide/`, `AGENTS.md`) and Claude
+  Code (`.claude/`, `CLAUDE.md`, `.mcp.json`) layout discovery;
+  `frontmatter.rs` parses Markdown frontmatter; `resolve_command` returns command
+  prompt + `agent`/`subtask` routing.
+- `crates/core/src/config.rs` — `Config`, `load`, `activate_agent`,
+  `resolve_command`, `config_path`, `require_api_key`, `context_window`,
+  `supports_reasoning`, and the `compaction`/`prices` settings.
+- `crates/core/src/diff.rs` — `preview(old, new)` LCS line diff with context
+  windows and gap markers, used for the TUI's colored edit previews.
+- `crates/core/src/session.rs` — Pi-compatible JSONL session trees: typed entries
+  with `id`/`parentId`, compaction and branch-summary entries, leaf-path context
   building (`messages`, `context_ids`), per-entry usage, forking, and picker
   metadata.
-- `src/pricing.rs` — `modelPrices` lookup for the footer's `$cost` segment.
-- `src/compact.rs` — Pi-style compaction: `prepare`, `generate`,
+- `crates/core/src/pricing.rs` — `modelPrices` lookup for the footer's `$cost`
+  segment.
+- `crates/core/src/compact.rs` — Pi-style compaction: `prepare`, `generate`,
   `summarize_branch`, `needs_compaction`, and token estimation.
-- `src/mcp.rs` / `src/mcp_config.rs` / `src/mcp_oauth.rs` — MCP runtime
-  (`McpRegistry`, stdio/HTTP), the `oxide mcp` CLI that reads/writes
-  `.oxide/mcp.json`, and the OAuth authorization-code + PKCE flow for remote
-  servers.
-- `src/tui/` — `run` entry plus `app`/`ui` for rendering and input; renders the
-  welcome banner as the block-letter `OXIDE` wordmark stacked above the
-  ecosystem summary (falling back to plain `oxide` text on narrow terminals),
-  renders each tool call as one background-filled panel (header, blank line,
-  body, and `Took` footer) colored by state, shows bodies by default and `read`
-  file contents (Ctrl+O collapses), wraps long actions and tool output with a
-  hanging indent, times slow non-shell tools, renders concise `Run`/`Ran` shell
-  actions, shows inline user/assistant labels and colored edit diffs, and draws
-  the Pi-style footer (path/branch/session, cumulative tokens with cache and
-  cost, context `%`/window, model/thinking, and plugin statuses).
+- `crates/core/src/mcp.rs` / `crates/core/src/mcp_config.rs` /
+  `crates/core/src/mcp_oauth.rs` — MCP runtime (`McpRegistry`, stdio/HTTP), the
+  `oxide mcp` CLI that reads/writes `.oxide/mcp.json`, and the OAuth
+  authorization-code + PKCE flow for remote servers.
+- `crates/cli/src/tui/` — `run` entry plus `app`/`ui` for rendering and input;
+  renders the welcome banner as the block-letter `OXIDE` wordmark stacked above
+  the ecosystem summary (falling back to plain `oxide` text on narrow
+  terminals), renders each tool call as one background-filled panel (header,
+  blank line, body, and `Took` footer) colored by state, shows bodies by default
+  and `read` file contents (Ctrl+O collapses), wraps long actions and tool output
+  with a hanging indent, times slow non-shell tools, renders concise `Run`/`Ran`
+  shell actions, shows inline user/assistant labels and colored edit diffs, and
+  draws the Pi-style footer (path/branch/session, cumulative tokens with cache
+  and cost, context `%`/window, model/thinking, and plugin statuses).
 
 ## Adding a model provider
 
-Provider presets are resolved by `ProviderPreset::for_name` in `src/config.rs`;
-each sets a default `model` and `base_url`. Override them with `OXIDE_PROVIDER`,
-`OXIDE_MODEL`, `OXIDE_BASE_URL`, or `OXIDE_API_KEY`, or the provider-specific
-`*_API_KEY` / `*_BASE_URL` variables (`OPENAI_*`, `DEEPSEEK_*`, `ANTHROPIC_*`,
-`PORTKEY_*`). Portkey additionally supports `PORTKEY_CONFIG` and
-`PORTKEY_MODELS`.
-OpenAI-compatible and Anthropic APIs are dispatched in `src/llm/client.rs` (see
-`src/llm/anthropic.rs`). Config on disk lives in the oxide config dir
+Provider presets are resolved by `ProviderPreset::for_name` in
+`crates/core/src/config.rs`; each sets a default `model` and `base_url`. Override
+them with `OXIDE_PROVIDER`, `OXIDE_MODEL`, `OXIDE_BASE_URL`, or `OXIDE_API_KEY`,
+or the provider-specific `*_API_KEY` / `*_BASE_URL` variables (`OPENAI_*`,
+`DEEPSEEK_*`, `ANTHROPIC_*`, `PORTKEY_*`). Portkey additionally supports
+`PORTKEY_CONFIG` and `PORTKEY_MODELS`. OpenAI-compatible and Anthropic APIs are
+dispatched in `crates/core/src/llm/client.rs` (see
+`crates/core/src/llm/anthropic.rs`). Config on disk lives in the oxide config dir
 (`dirs::config_dir()/Oxide/config.json`; e.g. `~/.config/Oxide` on Linux,
 `~/Library/Application Support/Oxide` on macOS; see `Config::config_path`).
 

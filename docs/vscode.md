@@ -168,6 +168,6 @@ dependencies (`@vscode/vsce-sign`, `keytar`) that pnpm otherwise refuses to run.
 Release notes are drafted on every push to `main` by
 `.github/release-drafter.vscode.yml`, pinned to the `extension-v*` tag prefix so
 it resolves versions from its own releases only (the prefix avoids the CLI's
-`v*` tags and its drafter). The draft already carries the tag to push; build the
-VSIX with `pnpm run package` and attach `oxide-vscode-<version>.vsix` to the
-release.
+`v*` tags and its drafter). The draft already carries the tag to push. Pushing
+that tag runs `.github/workflows/vscode.yml`, which builds the VSIX with
+`pnpm run package` and attaches `oxide-vscode-<version>.vsix` to the release.

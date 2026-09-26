@@ -16,6 +16,12 @@ and MCP servers as the terminal and the desktop app — nothing is reconfigured.
 - **`@path` in a message**: `@src/main.rs` attaches the file's text; an image or
   PDF becomes a media attachment.
 
+## Install
+
+Download `oxide-vscode-<version>.vsix` from an `extension-v*`
+[release](https://github.com/jaysonwu991/oxide/releases) and run **Extensions:
+Install from VSIX…** in VS Code.
+
 ## Requirements
 
 The `oxide` binary on your `PATH` (or set `oxide.binaryPath`). Install it with:

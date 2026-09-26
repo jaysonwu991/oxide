@@ -198,11 +198,15 @@ Releases are automated by GitHub Actions:
    attached.
 3. `desktop.yml` triggers on `desktop-v*` tags (and manually) and builds the
    macOS, Linux, and Windows desktop bundles, drafting a release.
+4. `vscode.yml` triggers on `extension-v*` tags, runs the extension's type
+   check and unit tests, builds `oxide-vscode-<version>.vsix`, and attaches it
+   to the matching GitHub Release.
 
-The CLI and the desktop app release independently. A `vX.Y.Z` tag releases the
-CLI only; a `desktop-vX.Y.Z` tag builds and drafts the desktop bundles. The
-component that did not change keeps its previous version, so it does not need a
-new tag or release.
+The CLI, the desktop app, and the VS Code extension release independently. A
+`vX.Y.Z` tag releases the CLI only; a `desktop-vX.Y.Z` tag builds and drafts the
+desktop bundles; an `extension-vX.Y.Z` tag builds and attaches the extension's
+VSIX. A component that did not change keeps its previous version, so it does not
+need a new tag or release.
 
 Release notes are drafted on every push to `main`, one draft per component:
 `release-drafter.cli.yml` drafts the CLI release, `release-drafter.desktop.yml`
@@ -226,7 +230,9 @@ labeled `vscode`; a change that also touches shared code (for example
 The repository keeps a placeholder version (`0.0.0`). On a tag, the matching
 workflow runs `scripts/set-version.sh "$GITHUB_REF_NAME"` followed by
 `cargo update --workspace`, so the built CLI binary or desktop bundle reports the
-tag version — there is no manual version bump. To cut a release, push the tag:
+tag version — there is no manual version bump. The VS Code extension is
+versioned separately in `editors/vscode/package.json`; the script patches it
+there for an `extension-v*` tag. To cut a release, push the tag:
 
 ```sh
 git tag vX.Y.Z             # CLI release
@@ -234,11 +240,11 @@ git push origin vX.Y.Z
 
 git tag desktop-vX.Y.Z     # desktop release
 git push origin desktop-vX.Y.Z
+
+git tag extension-vX.Y.Z   # VS Code extension release
+git push origin extension-vX.Y.Z
 ```
 
-The VS Code extension has no tag-triggered workflow yet: its draft (tagged
-`extension-vX.Y.Z`) is published from the GitHub UI, and its
-`oxide-vscode-<version>.vsix` — built with `pnpm run package` in
-`editors/vscode/` — is attached by hand. Its version lives in
-`editors/vscode/package.json`, separate from the `0.0.0` Cargo placeholder, so
-`set-version.sh` does not touch it.
+The VS Code extension's release is attached by `vscode.yml`: it builds
+`oxide-vscode-<version>.vsix` with `pnpm run package` in `editors/vscode/` and
+uploads it to the release the drafter already created for that tag.

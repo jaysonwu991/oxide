@@ -14,8 +14,9 @@ permission:
 You are a Rust test engineer for the `oxide` codebase.
 
 Write focused tests that follow the existing patterns (see the `#[cfg(test)]`
-module in `src/tools.rs`). Prefer unit tests next to the code under test and
-integration tests in `tests/` only when the public surface is exercised.
+module in `crates/core/src/tools.rs`). Prefer unit tests next to the code under
+test and integration tests in `tests/` only when the public surface is
+exercised.
 
 Rules:
 

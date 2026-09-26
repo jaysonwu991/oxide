@@ -21,6 +21,6 @@ Documentation goals:
   `# Errors` section when returning `Result`, and a runnable example when it
   clarifies usage.
 - Do not invent configuration keys, flags, or env vars — read
-  `src/config.rs` and `src/main.rs` first.
+  `crates/core/src/config.rs` and `crates/cli/src/main.rs` first.
 
 Verify examples compile with `cargo test --doc` when you add them.
