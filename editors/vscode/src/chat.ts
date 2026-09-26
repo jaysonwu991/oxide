@@ -25,6 +25,7 @@ import {
   type AttachmentKind,
 } from "./core/attachments";
 import { AttachmentStore, previewForDataUrl, previewForFile } from "./attachments";
+import { isApprovalDecision, type ApprovalDecision } from "./core/approvals";
 import { modelsForProvider } from "./core/config";
 import { footerState, nextReasoning, REASONING_LEVELS, type FooterState } from "./core/footer";
 import { projectInfo, type ProjectDeps, type ProjectInfo } from "./core/project";
@@ -264,6 +265,7 @@ export class ChatController {
       trust: this.trust(),
       tools: splitList(this.setting<string>("tools", "")),
       excludeTools: splitList(this.setting<string>("excludeTools", "")),
+      askApprovals: this.setting<boolean>("askApprovals", true),
       extra: this.setting<string[]>("additionalArguments", []),
     };
   }
@@ -542,7 +544,6 @@ export class ChatController {
       ...this.turnOptions(),
       session: this.transcript.sessionId,
       continueLast: this.continueLast && !this.transcript.sessionId,
-      attachments: [...attached.map((chip) => chip.path), ...referenced],
     });
     this.continueLast = false;
 
@@ -573,14 +574,43 @@ export class ChatController {
       context: chips,
       attachments: attached,
     };
-    this.turn = startTurn(command, args, cwd, prompt, {
-      onEvent: (event) => this.handleEvent(event),
-      onStderr: (line) => {
-        this.run?.stderr.push(line.trim());
-        this.output.appendLine(`[stderr] ${line}`);
+    this.turn = startTurn(
+      command,
+      args,
+      cwd,
+      {
+        prompt,
+        // The paths travel with the prompt instead of in `--image` flags: in
+        // rpc mode the prompt itself is a request frame.
+        images: [...attached.map((chip) => chip.path), ...referenced],
       },
-      onExit: (result) => this.handleExit(result),
-    });
+      {
+        onEvent: (event) => this.handleEvent(event),
+        onStderr: (line) => {
+          this.run?.stderr.push(line.trim());
+          this.output.appendLine(`[stderr] ${line}`);
+        },
+        onExit: (result) => this.handleExit(result),
+      },
+    );
+    this.broadcastStatus();
+  }
+
+  /// Answers the tool approval waiting behind `requestId`. The CLI holds the
+  /// turn until it arrives, so this is the only way a gated tool ever runs.
+  /// An `always` answer is remembered by the CLI's own broker, in the shared
+  /// `approvals.json` the terminal and the desktop app read too.
+  approve(requestId: number, decision: ApprovalDecision): void {
+    if (!isApprovalDecision(decision)) return;
+    const turn = this.turn;
+    if (!turn) {
+      this.showNotice("That approval request is no longer waiting.", "warn");
+      return;
+    }
+    const messages = this.transcript.answerApproval(requestId, decision);
+    if (!messages) return;
+    turn.approve(requestId, decision);
+    this.broadcastItem(messages);
     this.broadcastStatus();
   }
 
@@ -631,6 +661,9 @@ export class ChatController {
     this.run = null;
     this.transcript.busy = false;
     this.transcript.status = "Idle";
+    // A card still waiting belongs to a request whose process is gone (a stop,
+    // or a crash): leaving its buttons live would offer an answer nobody reads.
+    this.broadcastItem(this.transcript.closeApprovals());
 
     if (run?.cancelled) {
       this.showNotice("Run stopped. The next message continues this session.");

@@ -29,22 +29,23 @@ const diffRow = (marker: string, old: string, next: string, text: string) =>
   `${marker}${old.padStart(3)} ${next.padStart(3)}  ${text}`;
 
 describe("buildTurnArgs", () => {
-  it("always asks for the JSON stream with an explicit prompt", () => {
-    assert.deepEqual(buildTurnArgs({}), ["--mode", "json", "-p"]);
+  it("always asks for the request channel, asking before gated tools", () => {
+    assert.deepEqual(buildTurnArgs({}), ["--mode", "rpc", "--ask-approvals"]);
+    assert.deepEqual(buildTurnArgs({ askApprovals: false }), ["--mode", "rpc", "--no-ask-approvals"]);
   });
 
   it("resumes a session by id, and only one of session/continue", () => {
     assert.deepEqual(buildTurnArgs({ session: "abc123", continueLast: true }), [
       "--mode",
-      "json",
-      "-p",
+      "rpc",
+      "--ask-approvals",
       "--session",
       "abc123",
     ]);
     assert.deepEqual(buildTurnArgs({ session: null, continueLast: true }), [
       "--mode",
-      "json",
-      "-p",
+      "rpc",
+      "--ask-approvals",
       "--continue",
     ]);
   });
@@ -58,12 +59,11 @@ describe("buildTurnArgs", () => {
         ephemeral: true,
         tools: "read,grep",
         excludeTools: "bash",
-        attachments: ["/tmp/a.png", "/tmp/b.pdf"],
       }),
       [
         "--mode",
-        "json",
-        "-p",
+        "rpc",
+        "--ask-approvals",
         "--no-session",
         "--model",
         "glm-5",
@@ -75,12 +75,15 @@ describe("buildTurnArgs", () => {
         "read,grep",
         "--exclude-tools",
         "bash",
-        "--image",
-        "/tmp/a.png",
-        "--image",
-        "/tmp/b.pdf",
       ],
     );
+  });
+
+  // Attachment paths are not flags any more: rpc mode reads them from the
+  // `prompt` request (`core/rpc.ts`).
+  it("carries no --image flags", () => {
+    assert.equal(buildTurnArgs({}).includes("--image"), false);
+    assert.equal(buildTurnArgs({}).includes("-p"), false);
   });
 
   it("omits the reasoning flag for the provider default", () => {
@@ -97,8 +100,8 @@ describe("buildTurnArgs", () => {
   it("appends extra arguments and drops blank ones", () => {
     assert.deepEqual(buildTurnArgs({ extra: ["--use-theme", "light", "", "  "] }), [
       "--mode",
-      "json",
-      "-p",
+      "rpc",
+      "--ask-approvals",
       "--use-theme",
       "light",
     ]);

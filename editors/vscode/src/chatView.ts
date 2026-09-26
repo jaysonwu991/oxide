@@ -6,12 +6,16 @@ import * as path from "node:path";
 import * as vscode from "vscode";
 
 import { ChatController } from "./chat";
+import { isApprovalDecision } from "./core/approvals";
 import { CHAT_VIEW, CHAT_VIEW_SECONDARY } from "./core/views";
 
 interface WebviewMessage {
   k?: string;
   text?: string;
   id?: number;
+  /// The approval card's own fields: the broker's request id and the answer.
+  requestId?: number;
+  decision?: string;
   url?: string;
   path?: string;
   line?: number;
@@ -75,6 +79,11 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         return;
       case "removeChip":
         if (typeof message.id === "number") this.controller.removeChip(message.id);
+        return;
+      case "approval":
+        if (typeof message.requestId === "number" && isApprovalDecision(message.decision)) {
+          this.controller.approve(message.requestId, message.decision);
+        }
         return;
       case "clearChips":
         this.controller.clearChips();
@@ -161,7 +170,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
 <main id="transcript" tabindex="0">
   <div id="empty" class="empty">
     <p>Ask Oxide to make a change, explain code, or run something.</p>
-    <p class="hint">Runs use the same configuration, sessions and project trust as the terminal: <code>oxide</code> starts a turn with <code>--mode json</code>.</p>
+    <p class="hint">Runs use the same configuration, sessions and project trust as the terminal: <code>oxide</code> starts a turn with <code>--mode rpc</code>, so a tool that needs your approval waits for an answer here.</p>
   </div>
 </main>
 <footer>

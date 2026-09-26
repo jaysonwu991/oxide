@@ -296,6 +296,112 @@ pre,
   color: var(--vscode-editorError-foreground, var(--vscode-charts-red));
 }
 
+/* ---------- approval card ---------- */
+
+.approval {
+  border: 1px solid var(--vscode-panel-border, rgba(128, 128, 128, 0.3));
+  border-left: 3px solid var(--vscode-editorWarning-foreground, var(--vscode-charts-orange, #d18616));
+  border-radius: 4px;
+  margin: 0 0 10px;
+  background: var(--vscode-editor-background);
+}
+
+.approval.allowed {
+  border-left-color: var(--vscode-charts-green, #89d185);
+}
+
+.approval.denied {
+  border-left-color: var(--vscode-charts-red, #f14c4c);
+}
+
+/* A question still waiting for an answer is the one thing on screen that needs
+   the user, so it sits on the widget background rather than the editor's. */
+.approval.waiting {
+  background: var(--vscode-editorWidget-background, var(--vscode-editor-background));
+}
+
+.alock {
+  font-size: 0.9em;
+}
+
+.ahead {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  padding: 5px 8px 0;
+  font-size: 0.85em;
+  font-weight: 600;
+  color: var(--vscode-editorWarning-foreground, var(--vscode-charts-orange, #d18616));
+}
+
+.approval.allowed .ahead {
+  color: var(--vscode-charts-green, #89d185);
+}
+
+.approval.denied .ahead {
+  color: var(--vscode-charts-red, #f14c4c);
+}
+
+.awhat {
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: 6px;
+  padding: 4px 8px 0;
+}
+
+.atool {
+  font-family: var(--vscode-editor-font-family, monospace);
+  font-size: 0.85em;
+  border: 1px solid var(--vscode-panel-border, rgba(128, 128, 128, 0.35));
+  border-radius: 3px;
+  padding: 0 5px;
+}
+
+.asub {
+  font-size: 0.85em;
+  color: var(--vscode-descriptionForeground);
+}
+
+.adetail {
+  margin: 6px 8px 0;
+  padding: 6px 8px;
+  max-height: 30vh;
+  overflow: auto;
+  background: var(--vscode-textCodeBlock-background, rgba(128, 128, 128, 0.12));
+  border-radius: 3px;
+  font-family: var(--vscode-editor-font-family, monospace);
+  font-size: var(--code-size);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.aactions {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+  padding: 8px;
+}
+
+.aactions .awaiting {
+  font-size: 0.8em;
+  color: var(--vscode-descriptionForeground);
+}
+
+.aactions .adone {
+  font-size: 0.85em;
+  color: var(--vscode-descriptionForeground);
+}
+
+.approval.allowed .adone {
+  color: var(--vscode-charts-green, #89d185);
+}
+
+.approval.denied .adone {
+  color: var(--vscode-charts-red, #f14c4c);
+}
+
 /* ---------- tool cards ---------- */
 
 .tool {

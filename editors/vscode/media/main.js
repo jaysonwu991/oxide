@@ -610,6 +610,86 @@
     return row ? entries.get(Number(row.dataset.id)) : undefined;
   }
 
+  // ---------- approvals ----------
+
+  /// The three answers the CLI accepts, in the order the card offers them.
+  const APPROVAL_ACTIONS = [
+    { decision: "deny", label: "Deny", className: "ghost", title: "Refuse the tool and tell the agent to stop" },
+    { decision: "once", label: "Allow once", className: "primary", title: "Run the tool this one time" },
+    { decision: "always", label: "Always allow", className: "primary", title: "Run it, and stop asking about this tool in this project" },
+  ];
+
+  /// A tool the agent is holding until the user answers. The answer travels to
+  /// the host, which forwards it over the CLI's request channel; the card is
+  /// repainted from the `k: "approval"` update the host sends back.
+  function approvalNode(item) {
+    const wrap = document.createElement("div");
+    wrap.className = "approval";
+    const head = document.createElement("div");
+    head.className = "ahead";
+    const lock = document.createElement("span");
+    lock.className = "alock";
+    lock.textContent = "\u{1F512}";
+    const title = document.createElement("span");
+    title.className = "atitle";
+    title.textContent = "Permission required";
+    head.append(lock, title);
+    const what = document.createElement("div");
+    what.className = "awhat";
+    const tool = document.createElement("span");
+    tool.className = "atool";
+    tool.textContent = String(item.tool || "tool");
+    const sub = document.createElement("span");
+    sub.className = "asub";
+    sub.textContent = String(item.title || "");
+    what.append(tool, sub);
+    const detail = document.createElement("pre");
+    detail.className = "adetail";
+    detail.textContent = String(item.detail || "");
+    detail.hidden = !item.detail;
+    const actions = document.createElement("div");
+    actions.className = "aactions";
+    wrap.append(head, what, detail, actions);
+    return { el: wrap, actions, detail };
+  }
+
+  /// Paints a card from its item: the waiting state offers the three answers,
+  /// and an answered one keeps only what it was answered with.
+  function paintApproval(entry) {
+    const item = entry.item;
+    const waiting = item.state === "pending";
+    entry.el.classList.toggle("waiting", waiting);
+    entry.el.classList.toggle("allowed", item.state === "once" || item.state === "always");
+    entry.el.classList.toggle("denied", item.state === "deny" || item.state === "closed");
+    entry.actions.textContent = "";
+    if (!waiting) {
+      const done = document.createElement("span");
+      done.className = "adone";
+      done.textContent = item.label || "Answered";
+      entry.actions.appendChild(done);
+      return;
+    }
+    for (const action of APPROVAL_ACTIONS) {
+      const button = document.createElement("button");
+      button.type = "button";
+      button.className = action.className;
+      button.textContent = action.label;
+      button.title = action.title;
+      button.addEventListener("click", () =>
+        vscode.postMessage({
+          k: "approval",
+          requestId: item.requestId,
+          decision: action.decision,
+        }),
+      );
+      entry.actions.appendChild(button);
+    }
+    const hint = document.createElement("span");
+    hint.className = "awaiting";
+    hint.textContent = "Waiting for your answer…";
+    entry.actions.appendChild(hint);
+  }
+
   // ---------- transcript items ----------
 
   function itemNode(item) {
@@ -652,6 +732,7 @@
       el.textContent = item.text;
       return { el };
     }
+    if (item.kind === "approval") return approvalNode(item);
     const card = toolCard(item);
     return { ...card, started: item.running ? Date.now() : 0 };
   }
@@ -684,6 +765,7 @@
     if (item.kind === "assistant") renderAssistant(entry);
     else if (item.kind === "thinking") entry.el.textContent = item.text;
     else if (item.kind === "tool") paintTool(entry);
+    else if (item.kind === "approval") paintApproval(entry);
     scrollDown(keepScroll);
     return entry;
   }
@@ -736,6 +818,15 @@
         if (!entry) return;
         Object.assign(entry.item, message.patch);
         paintTool(entry);
+        scrollDown(false);
+        return;
+      }
+      case "approval": {
+        const entry = entries.get(message.id);
+        if (!entry) return;
+        entry.item.state = message.state;
+        entry.item.label = message.label;
+        paintApproval(entry);
         scrollDown(false);
         return;
       }

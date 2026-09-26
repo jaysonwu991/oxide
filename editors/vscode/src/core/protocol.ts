@@ -1,4 +1,4 @@
-// Wire events from `oxide --mode json` and the transcript state machine the
+// Wire events from `oxide --mode rpc` and the transcript state machine the
 // chat view renders. This module deliberately imports nothing from `vscode` so
 // it can be unit tested under plain node (`node --test out/test/`).
 //
@@ -6,6 +6,12 @@
 // applies the `ViewMessage`s produced here. Every event-to-DOM decision is
 // therefore testable without a webview.
 
+import {
+  approvalLabel,
+  approvalRequest,
+  approvalTitle,
+  type ApprovalDecision,
+} from "./approvals";
 import type { FooterState } from "./footer";
 
 /// One JSONL line from the agent's stdout. Only `type` is guaranteed.
@@ -82,7 +88,32 @@ export interface NoticeItem {
   tone: "info" | "warn" | "error";
 }
 
-export type Item = UserItem | AssistantItem | ThinkingItem | ToolItem | NoticeItem;
+/// How a card stands: waiting for the user, answered with one of the three
+/// decisions, or settled without an answer because the run ended or was
+/// stopped before one arrived.
+export type ApprovalState = "pending" | "once" | "always" | "deny" | "closed";
+
+export interface ApprovalItem {
+  id: number;
+  kind: "approval";
+  /// The broker's request id, echoed back in the answer frame.
+  requestId: number;
+  tool: string;
+  /// What the tool would do (`approvalTitle`), shown beside its name.
+  title: string;
+  detail: string;
+  state: ApprovalState;
+  /// What an answered card reads; empty while it waits.
+  label: string;
+}
+
+export type Item =
+  | UserItem
+  | AssistantItem
+  | ThinkingItem
+  | ToolItem
+  | NoticeItem
+  | ApprovalItem;
 
 export type ToolPatch = Partial<
   Pick<ToolItem, "output" | "diff" | "running" | "isError" | "name" | "args">
@@ -127,6 +158,9 @@ export type ViewMessage =
   | { k: "remove"; id: number }
   | { k: "append"; id: number; field: "text" | "output"; delta: string }
   | { k: "patch"; id: number; patch: ToolPatch }
+  /// One approval card's state. It is not a `patch`: a tool card repaints from
+  /// the item, while a card that is settled keeps its buttons removed.
+  | { k: "approval"; id: number; state: ApprovalState; label: string }
   | { k: "status"; status: string; busy: boolean; queued: number; footer: FooterState }
   /// The footer is attached by the controller (the transcript only knows the
   /// totals), so a usage event repaints the whole footer row.
@@ -327,6 +361,27 @@ export class Transcript {
         this.status = `Retrying (${num(event.attempt)}/${num(event.maxAttempts)})${wait}…`;
         return messages;
       }
+      case "approval_request": {
+        const request = approvalRequest(event);
+        if (!request) return [];
+        // The request arrives right after the `tool_call` it belongs to, so the
+        // step's text and reasoning are already committed.
+        this.closeAssistant();
+        this.closeThinking();
+        const item: ApprovalItem = {
+          id: this.nextId++,
+          kind: "approval",
+          requestId: request.id,
+          tool: request.tool,
+          title: approvalTitle(request.tool),
+          detail: request.detail,
+          state: "pending",
+          label: "",
+        };
+        this.items.push(item);
+        this.status = "Waiting for approval…";
+        return [{ k: "push", item }];
+      }
       case "compaction":
         return this.notice(
           `Compacted ${num(event.summarized)} earlier messages (~${formatTokens(
@@ -343,6 +398,41 @@ export class Transcript {
       default:
         return [];
     }
+  }
+
+  /// Records the user's answer on a waiting card. `null` when the id is not a
+  /// waiting request (already answered, or from a run that is gone), so the
+  /// controller never sends a second answer for one request.
+  answerApproval(requestId: number, decision: ApprovalDecision): ViewMessage[] | null {
+    const item = this.items.find(
+      (entry): entry is ApprovalItem =>
+        entry.kind === "approval" && entry.requestId === requestId && entry.state === "pending",
+    );
+    if (!item) return null;
+    return [this.settleApproval(item, decision, approvalLabel(decision))];
+  }
+
+  /// Settles every card still waiting, which is what a run that ended (or was
+  /// stopped, or whose process died) leaves behind: the request it was waiting
+  /// on is gone with the process, so its buttons must stop offering an answer.
+  closeApprovals(): ViewMessage[] {
+    const messages: ViewMessage[] = [];
+    for (const item of [...this.items]) {
+      if (item.kind === "approval" && item.state === "pending") {
+        messages.push(this.settleApproval(item, "closed", "Not answered"));
+      }
+    }
+    return messages;
+  }
+
+  private settleApproval(
+    item: ApprovalItem,
+    state: ApprovalState,
+    label: string,
+  ): ViewMessage {
+    item.state = state;
+    item.label = label;
+    return { k: "approval", id: item.id, state, label };
   }
 
   /// Drops the assistant or thinking item a failed attempt was still streaming

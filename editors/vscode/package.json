@@ -299,6 +299,11 @@
           "default": true,
           "description": "Show the model's reasoning in the transcript as a collapsible block."
         },
+        "oxide.askApprovals": {
+          "type": "boolean",
+          "default": true,
+          "markdownDescription": "Ask before running a tool a permission rule gates (`--ask-approvals`). The question appears in the transcript and the turn waits for it; **Always allow** is remembered per project in the shared `approvals.json`, so the terminal and the desktop app honour it too. Turn this off to run gated tools without a prompt (`--no-ask-approvals`). Either way the flag is passed explicitly, so this setting — not `askApprovals` in the shared `settings.json` — decides for a run started from the panel."
+        },
         "oxide.notifyOnFinish": {
           "type": "boolean",
           "default": true,

@@ -770,6 +770,106 @@ describe("webview composer", () => {
   });
 });
 
+describe("webview approvals", () => {
+  /// The card the CLI's `approval_request` becomes: the tool, what it would do,
+  /// the command or path it would touch, and the three answers.
+  const pending = {
+    id: 9,
+    kind: "approval",
+    requestId: 12,
+    tool: "bash",
+    title: "Run a shell command",
+    detail: "rm -rf build",
+    state: "pending",
+    label: "",
+  };
+
+  it("offers the three answers for a waiting request", () => {
+    const { byId, send } = loadRenderer();
+    send(stateMessage());
+    const transcript = byId.get("transcript")!;
+    send({ k: "push", item: pending });
+
+    assert.equal(find(transcript, "atool")!.textContent, "bash");
+    assert.equal(find(transcript, "asub")!.textContent, "Run a shell command");
+    assert.equal(find(transcript, "adetail")!.textContent, "rm -rf build");
+    const actions = find(transcript, "aactions")!;
+    assert.deepEqual(
+      actions.children.map((child) => child.textContent),
+      ["Deny", "Allow once", "Always allow", "Waiting for your answer…"],
+    );
+  });
+
+  it("hides an empty detail rather than leaving a blank block", () => {
+    const { byId, send } = loadRenderer();
+    send(stateMessage());
+    const transcript = byId.get("transcript")!;
+    send({ k: "push", item: { ...pending, detail: "" } });
+    assert.equal(find(transcript, "adetail")!.hidden, true);
+  });
+
+  /// The answer itself is the host's to send: the webview only names the
+  /// request and the decision it was answered with.
+  it("posts the request id and the decision a button was clicked with", () => {
+    const { byId, send, posted } = loadRenderer();
+    send(stateMessage());
+    const transcript = byId.get("transcript")!;
+    send({ k: "push", item: pending });
+
+    const buttons = find(transcript, "aactions")!.children;
+    buttons[2].fire("click");
+    assert.deepEqual(shape(posted[posted.length - 1]), {
+      k: "approval",
+      requestId: 12,
+      decision: "always",
+    });
+
+    buttons[0].fire("click");
+    assert.deepEqual(shape(posted[posted.length - 1]), {
+      k: "approval",
+      requestId: 12,
+      decision: "deny",
+    });
+  });
+
+  /// An answered card keeps only what it was answered with, so a stale button
+  /// can never send a second answer for a request the CLI has moved past.
+  it("replaces the buttons with the answer, and repaints it from a state replay", () => {
+    const { byId, send } = loadRenderer();
+    send(stateMessage());
+    const transcript = byId.get("transcript")!;
+    send({ k: "push", item: pending });
+    send({ k: "approval", id: 9, state: "always", label: "Always allowed in this project" });
+
+    const actions = find(transcript, "aactions")!;
+    assert.deepEqual(
+      actions.children.map((child) => child.textContent),
+      ["Always allowed in this project"],
+    );
+
+    // A view that attaches later is painted from the transcript state.
+    const second = loadRenderer();
+    second.send(stateMessage({ items: [{ ...pending, state: "always", label: "Always allowed in this project" }] }));
+    const replayed = find(second.byId.get("transcript")!, "aactions")!;
+    assert.deepEqual(
+      replayed.children.map((child) => child.textContent),
+      ["Always allowed in this project"],
+    );
+  });
+
+  it("settles a card whose run ended without an answer", () => {
+    const { byId, send } = loadRenderer();
+    send(stateMessage());
+    const transcript = byId.get("transcript")!;
+    send({ k: "push", item: pending });
+    send({ k: "approval", id: 9, state: "closed", label: "Not answered" });
+    assert.deepEqual(
+      find(transcript, "aactions")!.children.map((child) => child.textContent),
+      ["Not answered"],
+    );
+  });
+});
+
 describe("webview scrolling", () => {
   /// A reply arrives as a delta per model chunk and is painted on the next
   /// animation frame, so the view has to follow the height the paint adds rather

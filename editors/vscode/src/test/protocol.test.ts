@@ -477,6 +477,86 @@ describe("Transcript", () => {
     assert.equal(transcript.status, "Idle");
   });
 
+  it("pushes an approval card that waits for an answer", () => {
+    const transcript = new Transcript();
+    const messages = transcript.apply({
+      type: "approval_request",
+      id: 12,
+      toolName: "bash",
+      detail: "rm -rf build",
+    });
+    const item = push(messages[0]);
+    assert.ok(item.kind === "approval");
+    assert.equal(item.requestId, 12);
+    assert.equal(item.tool, "bash");
+    assert.equal(item.title, "Run a shell command");
+    assert.equal(item.detail, "rm -rf build");
+    assert.equal(item.state, "pending");
+    assert.equal(item.label, "");
+    assert.equal(transcript.status, "Waiting for approval…");
+  });
+
+  it("ignores a request it could not answer", () => {
+    const transcript = new Transcript();
+    assert.deepEqual(transcript.apply({ type: "approval_request", toolName: "bash" }), []);
+    assert.deepEqual(transcript.items, []);
+  });
+
+  it("records the answer on the card it belongs to", () => {
+    const transcript = new Transcript();
+    for (const id of [1, 2]) {
+      transcript.apply({
+        type: "approval_request",
+        id,
+        toolName: id === 1 ? "bash" : "edit",
+        detail: "",
+      });
+    }
+    const messages = transcript.answerApproval(2, "always");
+    assert.ok(messages);
+    assert.deepEqual(messages[0], {
+      k: "approval",
+      id: 2,
+      state: "always",
+      label: "Always allowed in this project",
+    });
+    const cards = transcript.items.filter((item) => item.kind === "approval");
+    assert.deepEqual(
+      cards.map((entry) => [entry.id, entry.state]),
+      [
+        [1, "pending"],
+        [2, "always"],
+      ],
+    );
+  });
+
+  // The same answer arriving twice (a double click, or a replayed message) must
+  // not send a second frame: the controller uses `null` to tell.
+  it("answers a request once", () => {
+    const transcript = new Transcript();
+    transcript.apply({ type: "approval_request", id: 5, toolName: "bash", detail: "" });
+    assert.ok(transcript.answerApproval(5, "once"));
+    assert.equal(transcript.answerApproval(5, "deny"), null);
+    assert.equal(transcript.answerApproval(99, "once"), null);
+  });
+
+  it("settles a card whose run ended before an answer", () => {
+    const transcript = new Transcript();
+    transcript.apply({ type: "approval_request", id: 1, toolName: "bash", detail: "" });
+    transcript.apply({
+      type: "message_update",
+      assistantMessageEvent: { type: "text_delta", delta: "thinking again" },
+    });
+    transcript.apply({ type: "agent_end", messages: [] });
+    const messages = transcript.closeApprovals();
+    assert.deepEqual(messages, [
+      { k: "approval", id: 1, state: "closed", label: "Not answered" },
+    ]);
+    assert.equal(transcript.answerApproval(1, "once"), null);
+    // Nothing is waiting a second time.
+    assert.deepEqual(transcript.closeApprovals(), []);
+  });
+
   it("carries the current state for a repainted view", () => {
     const transcript = new Transcript();
     transcript.apply({ type: "session", id: "s" });
