@@ -900,6 +900,10 @@ fn edit(cwd: &Path, args: &Value) -> Result<ToolOutput> {
     let crlf = content.contains("\r\n");
     let mut base = content.replace("\r\n", "\n");
     let mut failures: Vec<String> = Vec::new();
+    // Every edit is matched against the original file, so a later edit cannot
+    // be broken by an earlier one rewriting nearby text (or introducing a
+    // second copy of its target). The located ranges are applied at the end.
+    let mut located: Vec<(usize, Located, String)> = Vec::new();
 
     for (index, replacement) in edits.iter().enumerate() {
         let raw_old = replacement.old.replace("\r\n", "\n");
@@ -920,7 +924,7 @@ fn edit(cwd: &Path, args: &Value) -> Result<ToolOutput> {
             new
         };
         match locate(&base, &old) {
-            Ok(located) => base.replace_range(located.start..located.end, &new),
+            Ok(range) => located.push((index, range, new)),
             Err(MatchFailure::Ambiguous(lines)) => failures.push(format!(
                 "edits[{index}].oldText matched {} times in {path} (lines {}); include more \
                  surrounding text to make it unique",
@@ -936,13 +940,36 @@ fn edit(cwd: &Path, args: &Value) -> Result<ToolOutput> {
                  {first}-{last}) is:\n{region}\nCopy it exactly, then retry."
             )),
             Err(MatchFailure::Missing(None)) => failures.push(format!(
-                "edits[{index}].oldText did not match anything in {path}; check the exact text"
+                "edits[{index}].oldText did not match anything in {path}; check the exact text \
+                 (each call edits one file, so split edits for different files into separate \
+                 calls)"
             )),
+        }
+    }
+
+    // Ranges are matched against the same original, so two of them can overlap
+    // or duplicate. Applying both would be ambiguous, so the whole batch is
+    // rejected and the pair is named.
+    located.sort_by_key(|(_, range, _)| (range.start, range.end));
+    for pair in located.windows(2) {
+        let (first_index, first, _) = &pair[0];
+        let (second_index, second, _) = &pair[1];
+        if second.start < first.end {
+            failures.push(format!(
+                "edits[{first_index}].oldText and edits[{second_index}].oldText overlap in {path}; \
+                 merge them into one edit"
+            ));
         }
     }
 
     if !failures.is_empty() {
         anyhow::bail!("{}", failures.join("\n\n"));
+    }
+
+    // Apply from the end so the ranges computed against the original stay
+    // valid: each replacement shifts only text after the ranges already done.
+    for (_, range, new) in located.iter().rev() {
+        base.replace_range(range.start..range.end, new);
     }
 
     let final_content = if crlf {
@@ -2723,6 +2750,81 @@ mod tests {
         assert_eq!(
             std::fs::read_to_string(dir.join("f.rs")).unwrap(),
             "fn main() {\n    let x = 1;\n    let y = 2;\n}\n"
+        );
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[tokio::test]
+    async fn edit_batches_match_the_original_and_reject_overlaps() {
+        let dir = std::env::temp_dir().join(format!("oxide_edit_batch_{}", std::process::id()));
+        std::fs::remove_dir_all(&dir).ok();
+        std::fs::create_dir_all(&dir).unwrap();
+        let mcp = McpRegistry::default();
+        let progress = Progress::default();
+
+        // Applying the first edit would make the second's `oldText` ambiguous,
+        // so both are matched against the original and applied together.
+        execute(
+            &call("write", json!({ "path": "f.rs", "content": "Foo\nBar\n" })),
+            &dir,
+            &mcp,
+            &progress,
+        )
+        .await;
+        let out = execute(
+            &call(
+                "edit",
+                json!({
+                    "path": "f.rs",
+                    "edits": [
+                        { "oldText": "Foo", "newText": "Bar" },
+                        { "oldText": "Bar", "newText": "Baz" }
+                    ]
+                }),
+            ),
+            &dir,
+            &mcp,
+            &progress,
+        )
+        .await;
+        assert!(out.text.contains("2 block(s)"), "{}", out.text);
+        assert_eq!(
+            std::fs::read_to_string(dir.join("f.rs")).unwrap(),
+            "Bar\nBaz\n"
+        );
+
+        // Overlapping edits are rejected instead of corrupting the file.
+        execute(
+            &call(
+                "write",
+                json!({ "path": "g.rs", "content": "let x = 1;\n" }),
+            ),
+            &dir,
+            &mcp,
+            &progress,
+        )
+        .await;
+        let out = execute(
+            &call(
+                "edit",
+                json!({
+                    "path": "g.rs",
+                    "edits": [
+                        { "oldText": "let x = 1;", "newText": "let x = 2;" },
+                        { "oldText": "let x", "newText": "let y" }
+                    ]
+                }),
+            ),
+            &dir,
+            &mcp,
+            &progress,
+        )
+        .await;
+        assert!(out.text.contains("overlap"), "{}", out.text);
+        assert_eq!(
+            std::fs::read_to_string(dir.join("g.rs")).unwrap(),
+            "let x = 1;\n"
         );
 
         std::fs::remove_dir_all(&dir).ok();
