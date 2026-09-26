@@ -16,6 +16,11 @@ interface WebviewMessage {
   path?: string;
   line?: number;
   control?: string;
+  /// The name and `data:` URL of a pasted or dropped blob.
+  name?: string;
+  data?: string;
+  /// Absolute paths of dropped or picked files.
+  paths?: string[];
 }
 
 export class ChatViewProvider implements vscode.WebviewViewProvider {
@@ -57,11 +62,25 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       case "resumeSession":
         await this.controller.resumeSession();
         return;
-      case "removeContext":
-        if (typeof message.id === "number") this.controller.removeContext(message.id);
+      case "attach":
+        this.controller.addAttachment(message.data ?? "", message.name ?? "");
         return;
-      case "clearContext":
-        this.controller.clearContext();
+      case "attachFiles":
+        // A drop of files that exist on disk: the host decides whether each is
+        // an image/PDF (media), text (context) or neither.
+        for (const file of message.paths ?? []) this.controller.addFile(file);
+        return;
+      case "pickFiles":
+        await this.controller.pickFiles();
+        return;
+      case "removeChip":
+        if (typeof message.id === "number") this.controller.removeChip(message.id);
+        return;
+      case "clearChips":
+        this.controller.clearChips();
+        return;
+      case "notice":
+        this.controller.warn(message.text ?? "");
         return;
       case "control":
         await this.controller.control(message.control ?? "");
@@ -146,22 +165,25 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
   </div>
 </main>
 <footer>
-  <div id="usage" class="usage">
-    <span id="usage-text"></span>
-    <span id="gauge" class="gauge" hidden><span id="gauge-fill"></span></span>
-  </div>
   <div id="meta" class="meta"></div>
   <div id="composer">
     <div id="chips" class="chips" hidden></div>
-    <textarea id="input" rows="1" spellcheck="false"
-      placeholder="Ask Oxide… (Enter to send, Shift+Enter for a newline)"></textarea>
+    <textarea id="input" rows="2" spellcheck="false"
+      placeholder="Ask Oxide…  Enter to send · Shift+Enter for a newline · paste or drop an image"></textarea>
     <div id="bar">
+      <button id="attach" class="ghost" title="Attach images, PDFs or files (paste or drop them here too)">Attach</button>
       <span id="status">Idle</span>
       <span id="elapsed" hidden></span>
       <span class="spacer"></span>
-      <button id="stop" class="ghost" hidden>Stop</button>
-      <button id="send" class="primary" disabled>Send</button>
+      <button id="stop" class="ghost" hidden title="Stop the running turn (Esc)">Stop</button>
+      <button id="send" class="primary" disabled title="Send (Enter)">Send</button>
     </div>
+    <div id="dropzone" hidden><span>Drop files to attach</span></div>
+  </div>
+  <div id="footline">
+    <span id="usage" class="usage"><span id="usage-text"></span></span>
+    <span id="gauge" class="gauge" hidden><span id="gauge-fill"></span></span>
+    <span id="branch"></span>
   </div>
 </footer>
 <script nonce="${nonce}" src="${script}"></script>

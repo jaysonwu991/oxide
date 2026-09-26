@@ -27,11 +27,16 @@
   const gaugeFill = $("gauge-fill");
   const metaBox = $("meta");
   const chipBox = $("chips");
+  const branchLabel = $("branch");
+  const attachButton = $("attach");
+  const composer = $("composer");
+  const dropHint = $("dropzone");
   const folderLabel = $("folder");
   const modelLabel = $("model");
 
   const entries = new Map();
   let chips = [];
+  let attachments = [];
   let busy = false;
   let queued = 0;
   let startedAt = 0;
@@ -56,12 +61,23 @@
     return `${Math.floor(seconds / 60)}m ${Math.round(seconds % 60)}s`;
   }
 
+  /// Whether the view is pinned to the newest line. The reader decides: scrolling
+  /// away stops the follow, coming back to the bottom resumes it. The scroll
+  /// event that reports it is asynchronous, so a message re-measures before it
+  /// grows the content as well (`apply`), and the scroll that follows a delta is
+  /// taken in the frame that paints it — a reply that adds more than the
+  /// tolerance while its paint is still pending would otherwise read as a reader
+  /// who scrolled away, and the view would stop following for the rest of the
+  /// turn.
+  let following = true;
+
   function atBottom() {
     return transcript.scrollHeight - transcript.scrollTop - transcript.clientHeight < 40;
   }
 
   function scrollDown(force) {
-    if (force || atBottom()) transcript.scrollTop = transcript.scrollHeight;
+    if (force) following = true;
+    if (following) transcript.scrollTop = transcript.scrollHeight;
   }
 
   // ---------- inline markdown ----------
@@ -531,6 +547,17 @@
   }
 
   /// Paints a tool card from its item. `running` cards show the live output.
+  /// Replace a streaming body without losing the reader's place. Writing the
+  /// text of a scroll container back resets it to the top, so a running command
+  /// would keep showing its first line instead of its latest; a body that was
+  /// already at its bottom is put back there. Output that has finished is left at
+  /// the top, since expanding a card is a request to read it from the beginning.
+  function setOutput(el, text, running) {
+    const follow = running && el.scrollHeight - el.scrollTop - el.clientHeight < 4;
+    el.textContent = text;
+    if (follow) el.scrollTop = el.scrollHeight;
+  }
+
   function paintTool(entry) {
     const item = entry.item;
     entry.el.classList.toggle("running", item.running);
@@ -539,7 +566,7 @@
     if (item.running) {
       const elapsed = entry.started ? Date.now() - entry.started : 0;
       entry.state.innerHTML = `<span class="spinner"></span>${elapsed > 1000 ? formatDuration(elapsed) : ""}`;
-      entry.pre.textContent = item.output;
+      setOutput(entry.pre, item.output, true);
       entry.hint.hidden = true;
       return;
     }
@@ -551,7 +578,7 @@
       entry.expanded = true;
     }
     if (entry.expanded) {
-      entry.pre.textContent = item.output;
+      setOutput(entry.pre, item.output, false);
       entry.hint.hidden = true;
       return;
     }
@@ -560,8 +587,11 @@
     const preview = useTail
       ? previewTail(item.output, budget)
       : previewText(item.output, budget);
-    entry.pre.textContent =
-      preview.more > 0 && useTail ? `… ${preview.more} earlier lines\n${preview.text}` : preview.text;
+    setOutput(
+      entry.pre,
+      preview.more > 0 && useTail ? `… ${preview.more} earlier lines\n${preview.text}` : preview.text,
+      false,
+    );
     entry.hint.hidden = preview.more === 0;
     entry.hint.textContent = `⋯ ${preview.more} ${useTail ? "earlier" : "more"} line${
       preview.more === 1 ? "" : "s"
@@ -636,6 +666,10 @@
     frame = requestAnimationFrame(() => {
       frame = 0;
       for (const target of dirty) renderAssistant(target);
+      // The scroll that came with this delta ran before this paint, so follow the
+      // height it just added; without it the last line of a streamed reply stays
+      // under the fold.
+      if (following) transcript.scrollTop = transcript.scrollHeight;
       dirty = new Set();
     });
   }
@@ -655,6 +689,10 @@
   }
 
   function apply(message) {
+    // Measured before anything grows, so it reflects the frame the reader is
+    // looking at rather than the output that has just arrived, and so a scroll
+    // whose event has not been dispatched yet is still seen in time.
+    following = atBottom();
     switch (message.k) {
       case "state": {
         entries.clear();
@@ -667,7 +705,7 @@
         for (const item of message.items) appendItem(item, false);
         setStatus(message.status, message.busy, message.queued);
         setFooter(message.footer);
-        setChips(message.context);
+        setChips(message.context, message.attachments);
         scrollDown(true);
         return;
       }
@@ -709,7 +747,7 @@
         if (message.footer) setFooter(message.footer);
         return;
       case "context":
-        setChips(message.context);
+        setChips(message.context, message.attachments);
         return;
       default:
         return;
@@ -721,10 +759,14 @@
   function setStatus(text, isBusy, queuedCount) {
     busy = Boolean(isBusy);
     queued = queuedCount || 0;
-    statusLabel.textContent = queued > 0 ? `${text} · ${queued} queued` : text;
+    const label = queued > 0 ? `${text} · ${queued} queued` : text;
+    // A running turn keeps its live spinner; an idle one is a quiet dot.
+    statusLabel.textContent = label;
     statusLabel.classList.toggle("busy", busy);
+    statusLabel.title = busy ? "Oxide is working" : "Ready for the next message";
     stopButton.hidden = !busy;
     sendButton.textContent = busy ? "Queue" : "Send";
+    sendButton.title = busy ? "Queue for after this turn (Alt+Enter)" : "Send (Enter)";
     updateElapsed();
     updateSendState();
   }
@@ -745,29 +787,19 @@
     if (!elapsedTimer) elapsedTimer = setInterval(updateElapsed, 500);
   }
 
-  /// The footer the extension host composes: the chips under the transcript
-  /// (`model: … · thinking: … · access: … · session: …`), the branch, the usage
-  /// line and the context gauge. Everything is a string by the time it gets
-  /// here, so this function only paints.
+  /// The footer the extension host composes: the row of chips above the
+  /// composer (`model: … · thinking: … · access: … · session: …`), the usage
+  /// line, the branch and the context gauge. Everything is a string by the time
+  /// it gets here, so this function only paints.
   function setFooter(footer) {
     if (!footer) return;
     metaBox.innerHTML = "";
     for (const chip of footer.chips || []) {
-      const el = document.createElement("button");
-      el.type = "button";
-      el.className = "meta-chip";
-      el.dataset.control = chip.id;
-      el.textContent = chip.label;
-      if (chip.title) el.title = chip.title;
-      metaBox.appendChild(el);
+      metaBox.appendChild(chipNode(chip.label, chip.id, chip.title));
     }
-    if (footer.info) {
-      const branch = document.createElement("span");
-      branch.className = "meta-branch";
-      branch.textContent = footer.info;
-      branch.title = `Current branch: ${footer.info}`;
-      metaBox.appendChild(branch);
-    }
+    const info = footer.info || "";
+    branchLabel.textContent = info;
+    branchLabel.title = info ? `Current branch: ${info}` : "";
     usageText.textContent = footer.usage || "";
     usageText.title = footer.usage || "";
     usageRow.hidden = !footer.usage;
@@ -778,41 +810,123 @@
     gaugeFill.style.width = percent === null ? "0%" : `${Math.min(percent, 100)}%`;
   }
 
-  function setChips(next) {
+  /// One clickable chip. The host's label reads `model: glm-5 · 128.0k`, so the
+  /// key is split off and painted quietly: the same string the terminal shows,
+  /// with a value that a glance can find.
+  function chipNode(label, control, title) {
+    const el = document.createElement("button");
+    el.type = "button";
+    el.className = "meta-chip";
+    el.dataset.control = control;
+    const at = String(label).indexOf(": ");
+    if (at > 0) {
+      const key = document.createElement("span");
+      key.className = "chip-key";
+      key.textContent = String(label).slice(0, at);
+      const value = document.createElement("span");
+      value.className = "chip-value";
+      value.textContent = String(label).slice(at + 2);
+      el.append(key, value);
+    } else {
+      el.textContent = String(label);
+    }
+    el.title = title || `${label} — click to change`;
+    return el;
+  }
+
+  function setChips(next, nextAttachments) {
     chips = next || [];
+    attachments = nextAttachments || [];
     chipBox.innerHTML = "";
-    chipBox.hidden = chips.length === 0;
-    for (const chip of chips) {
-      const el = document.createElement("span");
-      el.className = "chip";
-      const label = document.createElement("span");
-      label.textContent = chip.label;
-      const remove = document.createElement("button");
-      remove.textContent = "✕";
-      remove.title = "Remove from the next message";
-      remove.addEventListener("click", () => {
-        vscode.postMessage({ k: "removeContext", id: chip.id });
-      });
-      el.append(label, remove);
-      chipBox.appendChild(el);
+    chipBox.hidden = chips.length + attachments.length === 0;
+    for (const attachment of attachments) chipBox.appendChild(attachmentNode(attachment));
+    for (const chip of chips) chipBox.appendChild(contextNode(chip));
+    if (chips.length + attachments.length > 1) {
+      const clear = document.createElement("button");
+      clear.type = "button";
+      clear.className = "chip-clear";
+      clear.textContent = "Clear";
+      clear.title = "Remove everything pending";
+      clear.addEventListener("click", () => vscode.postMessage({ k: "clearChips" }));
+      chipBox.appendChild(clear);
     }
     updateSendState();
   }
 
+  /// An image or PDF the next message will carry: a thumbnail where the host
+  /// could send one, a glyph and the size where it could not.
+  function attachmentNode(attachment) {
+    const el = document.createElement("div");
+    el.className = "chip attachment";
+    if (attachment.kind === "image" && attachment.preview) {
+      const image = document.createElement("img");
+      image.src = attachment.preview;
+      image.alt = attachment.label;
+      el.appendChild(image);
+    } else {
+      const glyph = document.createElement("span");
+      glyph.className = "chip-glyph";
+      glyph.textContent = attachment.kind === "pdf" ? "▤" : "▣";
+      el.appendChild(glyph);
+    }
+    const text = document.createElement("span");
+    text.className = "chip-text";
+    const name = document.createElement("span");
+    name.className = "chip-name";
+    name.textContent = attachment.label;
+    const detail = document.createElement("span");
+    detail.className = "chip-detail";
+    detail.textContent = attachment.detail || "";
+    text.append(name, detail);
+    el.append(text, removeNode(attachment));
+    el.title = `${attachment.label}${attachment.detail ? ` · ${attachment.detail}` : ""}`;
+    return el;
+  }
+
+  function contextNode(chip) {
+    const el = document.createElement("div");
+    el.className = "chip context";
+    const glyph = document.createElement("span");
+    glyph.className = "chip-glyph";
+    glyph.textContent = "❮❯";
+    const name = document.createElement("span");
+    name.className = "chip-name";
+    name.textContent = chip.label;
+    el.append(glyph, name, removeNode(chip));
+    el.title = `${chip.label} — inlined into the next message`;
+    return el;
+  }
+
+  function removeNode(chip) {
+    const remove = document.createElement("button");
+    remove.type = "button";
+    remove.className = "chip-remove";
+    remove.textContent = "✕";
+    remove.title = "Remove from the next message";
+    remove.addEventListener("click", () => vscode.postMessage({ k: "removeChip", id: chip.id }));
+    return remove;
+  }
+
   function updateSendState() {
-    sendButton.disabled = busy ? false : !input.value.trim() && chips.length === 0;
+    const pending = chips.length + attachments.length > 0;
+    sendButton.disabled = busy ? false : !input.value.trim() && !pending;
   }
 
   // ---------- composer ----------
 
+  /// The composer starts two rows tall (the host's `<textarea rows="2">`) and
+  /// grows with the message, up to a point where scrolling takes over.
+  const MAX_INPUT_HEIGHT = 200;
+
   function resizeInput() {
     input.style.height = "auto";
-    input.style.height = `${Math.min(input.scrollHeight, 200)}px`;
+    input.style.height = `${Math.min(input.scrollHeight, MAX_INPUT_HEIGHT)}px`;
+    input.style.overflowY = input.scrollHeight > MAX_INPUT_HEIGHT ? "auto" : "hidden";
   }
 
   function submit() {
     const text = input.value;
-    if (!text.trim() && chips.length === 0) return;
+    if (!text.trim() && chips.length + attachments.length === 0) return;
     input.value = "";
     resizeInput();
     updateSendState();
@@ -834,6 +948,140 @@
       event.preventDefault();
       vscode.postMessage({ k: "stop" });
     }
+  });
+
+  // ---------- attachments ----------
+
+  /// The longest edge an image is downscaled to before it is sent on, matching
+  /// `oxide_core::media` (and the desktop composer's canvas resize).
+  const MAX_IMAGE_EDGE = 1568;
+  /// What the host accepts, so a pasted blob is refused here rather than
+  /// written to a file first.
+  const ATTACHABLE = ["image/png", "image/jpeg", "image/gif", "image/webp", "image/bmp", "application/pdf"];
+
+  function readAsDataUrl(file) {
+    return new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = () => resolve(String(reader.result || ""));
+      reader.onerror = () => reject(reader.error || new Error("read failed"));
+      reader.readAsDataURL(file);
+    });
+  }
+
+  function loadImage(dataUrl) {
+    return new Promise((resolve, reject) => {
+      const image = new Image();
+      image.onload = () => resolve(image);
+      image.onerror = () => reject(new Error("could not decode image"));
+      image.src = dataUrl;
+    });
+  }
+
+  /// Downscales a pasted screenshot on a canvas, so a retina screenshot does not
+  /// travel to the host at full resolution. The original is kept when it is
+  /// already small, is a GIF (which would lose its animation) or cannot be
+  /// decoded.
+  async function resizeImageDataUrl(dataUrl, mime) {
+    if (mime === "image/gif") return dataUrl;
+    let image;
+    try {
+      image = await loadImage(dataUrl);
+    } catch (error) {
+      return dataUrl;
+    }
+    const longest = Math.max(image.width, image.height);
+    if (!longest || longest <= MAX_IMAGE_EDGE) return dataUrl;
+    const scale = MAX_IMAGE_EDGE / longest;
+    try {
+      const canvas = document.createElement("canvas");
+      canvas.width = Math.max(1, Math.round(image.width * scale));
+      canvas.height = Math.max(1, Math.round(image.height * scale));
+      canvas.getContext("2d").drawImage(image, 0, 0, canvas.width, canvas.height);
+      const type =
+        mime === "image/jpeg" ? "image/jpeg" : mime === "image/webp" ? "image/webp" : "image/png";
+      const resized = canvas.toDataURL(type, 0.9);
+      return resized && resized.startsWith("data:image/") ? resized : dataUrl;
+    } catch (error) {
+      return dataUrl;
+    }
+  }
+
+  /// A pasted or dropped blob. It is sent to the host as a data URL, which
+  /// writes it to a file the CLI can read (`--image <path>`).
+  async function attachBlob(file) {
+    const mime = file.type;
+    if (!ATTACHABLE.includes(mime)) {
+      vscode.postMessage({
+        k: "notice",
+        text: "Only images and PDFs can be attached from a paste or a drop.",
+      });
+      return;
+    }
+    try {
+      let dataUrl = await readAsDataUrl(file);
+      if (mime.startsWith("image/")) dataUrl = await resizeImageDataUrl(dataUrl, mime);
+      vscode.postMessage({ k: "attach", name: file.name, data: dataUrl });
+    } catch (error) {
+      vscode.postMessage({
+        k: "notice",
+        text: `Could not read ${file.name || "the attachment"}.`,
+      });
+    }
+  }
+
+  /// A drop carries real paths when the webview can see them, which is what the
+  /// host prefers: a file on disk needs no copy and its text can be inlined.
+  /// A blob is the fallback, so an image dragged in from outside still lands.
+  function attachDataTransfer(transfer) {
+    const files = Array.from((transfer && transfer.files) || []);
+    const paths = [];
+    const blobs = [];
+    for (const file of files) {
+      if (file.path) paths.push(String(file.path));
+      else blobs.push(file);
+    }
+    if (paths.length) vscode.postMessage({ k: "attachFiles", paths });
+    for (const file of blobs) void attachBlob(file);
+  }
+
+  attachButton.addEventListener("click", () => vscode.postMessage({ k: "pickFiles" }));
+
+  // A pasted screenshot becomes an attachment; a text paste keeps its default
+  // behavior, because a message is usually what the clipboard holds.
+  input.addEventListener("paste", (event) => {
+    const items = Array.from((event.clipboardData && event.clipboardData.items) || []);
+    const files = items
+      .filter((item) => item.kind === "file")
+      .map((item) => item.getAsFile())
+      .filter(Boolean);
+    if (!files.length) return;
+    event.preventDefault();
+    for (const file of files) void attachBlob(file);
+  });
+
+  function endDrag() {
+    composer.classList.remove("dragging");
+    dropHint.hidden = true;
+  }
+  document.addEventListener("dragenter", (event) => {
+    if (!event.dataTransfer || !Array.from(event.dataTransfer.types || []).includes("Files")) return;
+    composer.classList.add("dragging");
+    dropHint.hidden = false;
+  });
+  document.addEventListener("dragover", (event) => {
+    if (composer.classList.contains("dragging")) event.preventDefault();
+  });
+  document.addEventListener("dragleave", (event) => {
+    // A drag crossing a child element fires `dragleave` too, so the overlay is
+    // only dropped once the pointer has left the document.
+    if (!event.relatedTarget) endDrag();
+  });
+  document.addEventListener("dragend", endDrag);
+  document.addEventListener("drop", (event) => {
+    endDrag();
+    if (!event.dataTransfer) return;
+    event.preventDefault();
+    attachDataTransfer(event.dataTransfer);
   });
 
   sendButton.addEventListener("click", () => submit());
@@ -884,6 +1132,20 @@
     event.preventDefault();
     toggleTool(entry);
   });
+
+  transcript.addEventListener("scroll", () => {
+    following = atBottom();
+  });
+
+  // The pane gets shorter when the composer grows — an attachment chip arrives,
+  // the message wraps to another line, the usage line below wraps — which pushes
+  // the newest line under the fold with nothing left to bring it back. A reader
+  // who was at the bottom is put back on it.
+  if (typeof ResizeObserver === "function") {
+    new ResizeObserver(() => {
+      if (following) transcript.scrollTop = transcript.scrollHeight;
+    }).observe(transcript);
+  }
 
   window.addEventListener("message", (event) => apply(event.data));
   resizeInput();

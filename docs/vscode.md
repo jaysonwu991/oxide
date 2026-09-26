@@ -19,11 +19,13 @@ editors/vscode/
     chat.ts           ChatController: transcript + running turn + queue
     chatView.ts       WebviewViewProvider: HTML shell, CSP, message bridge
     cli.ts            process layer: binary lookup, startTurn, runCapture
+    attachments.ts    thumbnails and the temp files pasted blobs are written to
     core/             pure, webview-free logic (unit tested under node)
       protocol.ts     wire events -> transcript state machine -> view messages
       views.ts        view ids shared by the manifest and the provider
       args.ts         VS Code settings -> `oxide` argv
       prompt.ts       prompt assembly, @path expansion, attachments
+      attachments.ts  attachment types, extensions, naming and data URLs
       preview.ts      write/edit/patch diff previews
       config.ts       shared config-dir resolution (read-only)
       settings.ts     settings.json / .oxide/settings.json reads (read-only)
@@ -126,16 +128,28 @@ and `core/footer.ts` turns it plus the transcript's usage into a `FooterState` �
 and the webview only paints it, so the footer reads the same in both panes and
 is unit tested without a webview.
 
+It is arranged the way the composer is used, from the top down: the chips that
+describe the next turn, the composer itself, and the dim line of numbers under
+it.
+
 - **Chips** — `model: <model> · <window>`, `thinking: <level>`, `agent: <name>`,
   `access: trusted|untrusted` and `session: <short id>`, each with a tooltip
   saying which setting or file behind it. A click posts a `control` message that
   the controller routes to the same action the matching command runs:
   `thinking` cycles the level (like <kbd>Shift+Tab</kbd> in the terminal), the
-  others open the model, agent, trust and session pickers.
+  others open the model, agent, trust and session pickers. The webview splits
+  the host's `model: glm-5 · 128.0k` label at the first `: ` and paints the key
+  dim and uppercased, so the value is what reads first.
+- **Composer** — the message box: the attachment strip, the textarea and the
+  toolbar inside one bordered block. It starts two rows tall (`rows="2"`) and
+  grows with the message up to 200px, where it scrolls instead.
+- **Toolbar** — **Attach** (the file picker), the live phase with an elapsed
+  timer while a turn runs, **Stop** and **Send** (which reads **Queue** while a
+  turn is running). The primary action never moves, because it is anchored to
+  the right of the same row.
 - **Branch** — the repository the folder sits in, read from `.git/HEAD` rather
   than through the Git extension, so it needs no other extension installed; a
   worktree's or submodule's `gitdir:` pointer is followed to the real HEAD.
-- **Status** — the live phase and an elapsed timer while a turn runs.
 - **Gauge** — the last request's prompt tokens over the context window, amber
   past 70% and red past 90% (the terminal's thresholds).
 - **Usage line** — `↑input · ↓output · RcacheRead · WcacheWrite · CHhit% · $cost
@@ -144,6 +158,39 @@ is unit tested without a webview.
   `UsageTotals::cache_hit_rate` reports, and a step that reads no cache leaves
   the previous rate in place; `(auto)` marks auto-compaction as on, and the
   window is shown dimmed when nothing has run yet.
+
+## Attachments
+
+A message can carry images and PDFs, which the provider reads as media. They are
+added by pasting an image into the composer, dropping files onto it, or from the
+**Attach** button or **Oxide: Add File or Selection to Chat**; on an image or PDF
+in the explorer, `addToChat` attaches it as media rather than trying to inline
+it as text. Each one becomes a chip above the textarea: a thumbnail for an image
+the host could render small enough to send, a glyph and the file size otherwise,
+with a ✕ to drop it and a **Clear** to drop them all.
+
+The CLI takes attachment *paths* (`--image <path>`), so:
+
+- a file already on disk is passed through as its absolute path, and its
+  thumbnail is read by `src/attachments.ts` only when the file is small enough to
+  be worth sending to the webview;
+- a pasted or dropped blob exists only as a `data:` URL, so the host writes it
+  into one private temporary directory per window (removed when the window is
+  disposed) and passes that path instead.
+
+The webview downscales an image's longest edge to 1568px on a canvas before it
+sends it on (`oxide_core::media::optimize_image` does the same on the CLI side),
+so a retina screenshot does not travel as a data URL at full resolution. `src/core/attachments.ts`
+is pure: it reads a data URL's type, refuses anything but the image types the
+CLI sniffs (`png`, `jpg`/`jpeg`, `gif`, `webp`, `bmp`, and PDF), maps a type onto
+an extension, names a written file so it cannot escape its directory, and
+content-addresses the bytes so pasting the same screenshot twice stays one chip.
+At most eight attach to a message, and a duplicate is refused with a notice.
+
+The chips and the text attachments share one id space and travel in one
+`context` message, so a single `removeChip` addresses either list. A queued
+follow-up keeps the attachments it was queued with, and a turn that never started
+hands them back to the composer instead of losing them.
 
 The reads are best effort: a missing or malformed file blanks the value it
 feeds — the model chip falls back to `config.json`, the branch and agent names
@@ -185,12 +232,21 @@ discarded one, `append` a text/output fragment, `patch` a tool card when it
 settles, and `status` / `usage` / `context` for the footer. The `state`,
 `status` and `usage` messages carry the whole `FooterState` — the controller
 attaches it, since it is the only place that knows the context window and the
-resolved settings — and `control` is the one message that travels the other way,
-carrying a chip's id. Reasoning and text stream into separate items, and a
+resolved settings. Reasoning and text stream into separate items, and a
 thinking block is created by its first delta, so a turn that only starts one
 never leaves an empty block in the transcript. When a stream drops and the CLI
 retries, `auto_retry_start` drops the item the failed attempt was streaming
 into, so the retry's fresh output does not extend the partial reply.
+
+`context` carries the composer's pending context *and* attachments, and the
+messages back are `send`, `stop`, `newSession`, `resumeSession`, `attach` (a
+pasted blob as a `data:` URL), `attachFiles` (dropped paths), `pickFiles`,
+`removeChip` (by chip id, either list), `clearChips`, `notice` (something the
+view could not do, such as a paste it could not read) and `control`. A
+chip-shaped `control` message is the one that carries the model, agent, trust or
+session picker's choice back into the same action the matching command runs;
+`test/commands.test.ts` asserts the two sides agree, because a mistyped message
+kind would otherwise fail silently on either side of the bridge.
 
 ## Prompt assembly
 
@@ -228,9 +284,32 @@ and elapsed time while running, a short per-tool output preview that expands on
 click, and a colored diff for `write` / `edit` / `patch`. Reasoning renders as a
 muted thinking block that `oxide.showThinking` can hide.
 
+Monospace output — a tool's body, code blocks, the diff — is set at
+`--code-size`: the panel's own text size or the editor's `editor.fontSize`,
+whichever is larger. The editor's font alone is often small enough that a build's
+output is hard to read in a side bar, and the panel's body carries a 1.5
+line-height so those lines are not left at the browser's `normal`.
+
+The footer and composer are painted the same way — from `FooterState` data, not
+from decisions taken in the browser — and the composer's own interactions (paste,
+drag and drop, the canvas resize before a pasted image is sent on) are the only
+logic in the webview. Nothing there writes to disk: a pasted blob goes back to
+the host as a `data:` URL, and the host is what decides which file to write and
+which `--image` path to pass.
+
 Links in a reply open in the system browser (`chatView.ts::openUrl`), since a
 webview cannot navigate to a remote page; a path in a tool card opens in the
 editor, but only inside the workspace.
+
+The transcript follows the newest line on its own, and stops doing so the moment
+you scroll up to read something earlier — scrolling back to the bottom picks it
+up again. Two details make that work: text deltas are painted on an animation
+frame, so the scroll that follows one is taken after that paint rather than
+before it, and the pane gets shorter whenever the composer grows (an attachment
+chip, a taller message box, a usage line that wraps), so a resize puts the
+newest line back on screen. A running command's own output box is capped at 40vh
+and follows its last line the same way, since writing its text back would
+otherwise reset it to the top.
 
 ## Commands and settings
 
@@ -253,12 +332,16 @@ pnpm run package   # vsce package -> oxide-vscode-<version>.vsix
 
 Press <kbd>F5</kbd> with the folder open to launch an Extension Development
 Host. The tests cover the pure modules only: argv building, prompt assembly and
-`@path` expansion, diff and tool previews, session-list parsing, config-dir
-resolution, binary lookup, and the transcript state machine — plus, in
-`test/views.test.ts`, that the chat view ids the host registers match the views
-`package.json` contributes, in `test/brand.test.ts`, that the two icons stay
-the desktop app's, and, in `test/commands.test.ts`, that every contributed
-command has a handler and every footer chip has a click handler. The footer's own
+`@path` expansion, attachment types and naming, diff and tool previews,
+session-list parsing, config-dir resolution, binary lookup, and the transcript
+state machine — plus, in `test/views.test.ts`, that the chat view ids the host
+registers match the views `package.json` contributes, in `test/brand.test.ts`,
+that the two icons stay the desktop app's, in `test/commands.test.ts`, that
+every contributed command has a handler, every footer chip has a click handler,
+and every message the webview posts is handled by `chatView.ts`, and in
+`test/webview.test.ts`, that `media/main.js` — plain JavaScript with no type
+checking — paints the footer, the chips, the attachment strip and the disabled
+state of Send from its messages when it runs against a DOM stub. The footer's own
 readers are covered one file each: `test/settings.test.ts`, `test/trust.test.ts`,
 `test/git.test.ts`, `test/agents.test.ts`, `test/plugins.test.ts`,
 `test/project.test.ts` (the five together, against an injected file map, with the
