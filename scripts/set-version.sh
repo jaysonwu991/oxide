@@ -7,13 +7,15 @@
 # `tauri.conf.json` (which duplicates it), then it is up to the caller to
 # refresh `Cargo.lock` (e.g. `cargo update --workspace`).
 #
-# A tag may carry a component prefix so the CLI and desktop release
-# independently: `v1.2.3` / `cli-v1.2.3` for the CLI and `desktop-v1.2.3` for
-# the desktop app. A bare `1.2.3` is also accepted.
+# A tag may carry a component prefix so each component releases independently:
+# `v1.2.3` / `cli-v1.2.3` for the CLI, `desktop-v1.2.3` for the desktop app,
+# and `extension-v1.2.3` for the VS Code extension (which is versioned in its
+# own `editors/vscode/package.json`). A bare `1.2.3` is also accepted.
 #
 # Usage: scripts/set-version.sh v1.2.3
 #        scripts/set-version.sh cli-v1.2.3
 #        scripts/set-version.sh desktop-v1.2.3
+#        scripts/set-version.sh extension-v1.2.3
 
 set -euo pipefail
 
@@ -24,9 +26,14 @@ if [ -z "$raw" ]; then
 fi
 
 version="${raw}"
+component=""
 case "$version" in
   cli-*) version="${version#cli-}" ;;
   desktop-*) version="${version#desktop-}" ;;
+  extension-*)
+    component="vscode"
+    version="${version#extension-}"
+    ;;
 esac
 version="${version#v}"
 if ! printf '%s' "$version" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+([-+][0-9A-Za-z.-]+)?$'; then
@@ -45,11 +52,30 @@ else
   exit 1
 fi
 
-"$py" - "$root" "$version" <<'PY'
+"$py" - "$root" "$version" "$component" <<'PY'
 import re
 import sys
 
-root, version = sys.argv[1], sys.argv[2]
+root, version, component = sys.argv[1], sys.argv[2], sys.argv[3]
+
+# editors/vscode/package.json: the VS Code extension keeps its own version,
+# separate from the `0.0.0` Cargo placeholder, and `vsce package` names the
+# VSIX from it.
+if component == "vscode":
+    manifest = f"{root}/editors/vscode/package.json"
+    with open(manifest, encoding="utf-8") as handle:
+        package, count = re.subn(
+            r'("version"\s*:\s*")[^"]*(")',
+            lambda match: f"{match.group(1)}{version}{match.group(2)}",
+            handle.read(),
+            count=1,
+        )
+    if count != 1:
+        sys.exit("error: could not find version in editors/vscode/package.json")
+    with open(manifest, "w", encoding="utf-8") as handle:
+        handle.write(package)
+    print(f"set extension version to {version}")
+    sys.exit(0)
 
 # Cargo.toml: the `version` inside `[workspace.package]`.
 cargo_path = f"{root}/Cargo.toml"
