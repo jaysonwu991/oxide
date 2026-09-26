@@ -700,7 +700,9 @@ async fn run_print_text(mut rx: tokio::sync::mpsc::UnboundedReceiver<AgentEvent>
         match event {
             AgentEvent::Text(delta) => pending.push_str(&delta),
             AgentEvent::Thought { .. } => {}
-            AgentEvent::ThoughtDone { .. } => {}
+            // A no-tool step commits here, so a later retry only clears the
+            // current step instead of text already written to stdout.
+            AgentEvent::ThoughtDone { .. } => flush_stdout(&mut stdout, &mut pending)?,
             AgentEvent::ThinkingDelta(_) => {}
             AgentEvent::SubagentActivity { agent, tool, args } => {
                 eprintln!("[{agent}] {tool} {args}");

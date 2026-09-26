@@ -252,6 +252,8 @@ pub fn run_subagent(
                     let _ = tx.send(AgentEvent::Thought { millis });
                 }
                 AgentEvent::ThoughtDone { millis } => {
+                    // A no-tool step commits here, not at the next tool call.
+                    committed = report.len();
                     let _ = tx.send(AgentEvent::ThoughtDone { millis });
                 }
                 AgentEvent::Retrying {
@@ -546,9 +548,11 @@ async fn run_loop(
                     // error.
                     let streamed = attempt_text
                         .lock()
-                        .map(|text| text.trim().to_string())
+                        .map(|text| text.clone())
                         .unwrap_or_default();
-                    if !streamed.is_empty() {
+                    if !streamed.trim().is_empty() {
+                        // Keep the exact streamed string, including any leading
+                        // or trailing whitespace the user already saw.
                         let partial = Message::assistant(streamed, Vec::new());
                         record(&runtime.session, depth, &partial);
                         messages.push(partial);
@@ -1790,6 +1794,8 @@ async fn task_inner(
                 });
             }
             AgentEvent::Retrying { .. } => output.truncate(committed),
+            // A no-tool step commits here, not at the next tool call.
+            AgentEvent::ThoughtDone { .. } => committed = output.len(),
             AgentEvent::ToolProgress { .. }
             | AgentEvent::ToolResult { .. }
             | AgentEvent::Usage { .. }
@@ -1797,8 +1803,7 @@ async fn task_inner(
             | AgentEvent::Branch { .. }
             | AgentEvent::SubagentActivity { .. }
             | AgentEvent::ThinkingDelta(_)
-            | AgentEvent::Thought { .. }
-            | AgentEvent::ThoughtDone { .. } => {}
+            | AgentEvent::Thought { .. } => {}
         }
     }
     let _ = handle.await;
@@ -2538,9 +2543,9 @@ mod tests {
     #[tokio::test]
     async fn an_exhausted_retry_budget_keeps_the_last_attempt_text() {
         let (addr, server) = scripted_sse_server(vec![
-            (partial_text_body("half a thought"), true),
-            (partial_text_body("half a thought"), true),
-            (partial_text_body("half a thought"), true),
+            (partial_text_body(" half a thought "), true),
+            (partial_text_body(" half a thought "), true),
+            (partial_text_body(" half a thought "), true),
         ])
         .await;
         let config = Config {
@@ -2575,7 +2580,7 @@ mod tests {
         let finished = finished.expect("the run finished");
         assert_eq!(
             finished.last().and_then(|message| message.display()),
-            Some("half a thought".to_string())
+            Some(" half a thought ".to_string())
         );
         assert_eq!(server.await.unwrap().len(), 3);
     }
