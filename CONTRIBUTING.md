@@ -39,6 +39,7 @@ cargo run -- -p "summarize this repository"
 | `cargo clippy --all-targets -- -D warnings` | Lint; warnings are errors. |
 | `cargo fmt` | Format the code. |
 | `cargo build -p oxide-desktop --features gui` | Desktop app (the `gui` feature is off by default so the plain build stays free of the Tauri tree). |
+| `cd editors/vscode && pnpm test` | VS Code extension tests (`tsc -p .` then `node --test out/test/`). |
 
 Before opening a pull request, make sure `cargo fmt`, `cargo clippy`, and
 `cargo test` all pass. CI checks formatting with `cargo fmt --all -- --check`,
@@ -47,12 +48,14 @@ macOS, and Windows.
 
 ## Project layout
 
-The repository is a Cargo workspace with three packages: `oxide-core`
+The repository is a Cargo workspace with three Cargo packages: `oxide-core`
 (`crates/core`, shared agent core), `oxide` (`crates/cli`, the terminal binary:
 `main.rs`, `tui/`, `theme.rs`, `uninstall.rs`), and `oxide-desktop`
 (`crates/desktop`, the Tauri app, documented in
-[`docs/desktop.md`](docs/desktop.md)). Every path below is relative to the
-repository root.
+[`docs/desktop.md`](docs/desktop.md)). The VS Code extension under
+`editors/vscode` is a separate pnpm/TypeScript package, not a Cargo workspace
+member, documented in [`docs/vscode.md`](docs/vscode.md). Every path below is
+relative to the repository root.
 
 | Path | Responsibility |
 | --- | --- |
@@ -93,6 +96,7 @@ repository root.
 | `crates/desktop/src/turn.rs` | Starts an agent turn for a project (session resolution + `runner::spawn_agent`), returning the event stream, steering handles, and cancel flag. |
 | `crates/desktop/src/approval.rs` / `approvals.rs` | Interactive approve/deny broker (emits `approval-request`, resolves `deny`/`once`/`always`) and the persisted per-project `allow` rules (`desktop/approvals.json`). |
 | `crates/desktop/src/commands.rs` | Tauri commands (projects, sessions, turns, models, themes, providers, approvals); `crates/desktop/src/main.rs` is the `gui`-featured entry point and `ui/` the HTML/CSS/JS front-end. |
+| `editors/vscode/` | VS Code extension (separate pnpm/TypeScript package): a chat webview and editor actions that drive the installed `oxide` binary as `oxide --mode json -p`; `src/core/` is webview-free and unit tested under `node --test`. |
 | `.oxide/` | Project agents, commands, prompts, skills, and plugins (Oxide layout). |
 
 ## Conventions
@@ -156,9 +160,12 @@ repository root.
   forward it from the stream/loop, and handle it in whichever surfaces consume
   the event: the TUI in `crates/cli/src/tui/mod.rs::handle_agent_event`, the
   JSON and RPC framings in `crates/core/src/cli.rs`, and the print-mode reporter
-  in `crates/cli/src/main.rs`. Nested subagents must forward the event
-  themselves (`task_inner`/`run_subagent`) or the parent view stays silent until
-  the subagent returns.
+  in `crates/cli/src/main.rs`. An event that reaches a live transcript also needs
+  the mapping in `event_json` plus the desktop UI (`crates/desktop/ui/app.js`)
+  and the extension's `editors/vscode/src/core/protocol.ts` (and `media/main.js`
+  when it introduces a new view message). Nested subagents must forward the
+  event themselves (`task_inner`/`run_subagent`) or the parent view stays silent
+  until the subagent returns.
 - **Plugin hooks.** Handlers are dispatched by name in the embedded harness in
   `crates/core/src/plugin.rs`; add one by exposing it on the plugin object and
   calling `Host::call` from a `PluginHost` method (see `status`).
@@ -181,8 +188,10 @@ repository root.
 
 Releases are automated by GitHub Actions:
 
-1. `ci.yml` runs formatting, clippy, tests, and a release build on pushes to
-   `main` and on pull requests.
+1. `ci.yml` runs on pushes to `main` and on pull requests: formatting, clippy,
+   and the test suite plus a release build for the Rust workspace; a clippy and
+   `gui`-feature build of the desktop app on Linux, macOS, and Windows; and the
+   VS Code extension's type check, unit tests, and `vsce package`.
 2. `cli.yml` triggers on `v*` tags, builds the supported CLI targets
    (including `x86_64-pc-windows-msvc`), packages each binary with a `.sha256`
    checksum, and publishes a GitHub Release with `install.sh` and `install.ps1`
@@ -196,20 +205,23 @@ component that did not change keeps its previous version, so it does not need a
 new tag or release.
 
 Release notes are drafted on every push to `main`, one draft per component:
-`release-drafter.cli.yml` drafts the CLI release and
-`release-drafter.desktop.yml` drafts the desktop release. Each config is pinned
-to its component's tag prefix (`v` and `desktop-v`), so a run only sees its own
-draft and resolves its next version from its own last release; the draft it
-produces already carries the tag to push. Their categories match
-conventional-commit PR titles (`feat:`, `fix:`, `perf:`, …) directly and by the
-type label the `release-drafter/autolabeler` step derives from that same title,
-so keep the PR title in that form and no manual labelling is needed. The type
-labels it applies are created by `labels.yml`.
+`release-drafter.cli.yml` drafts the CLI release, `release-drafter.desktop.yml`
+the desktop release, and `release-drafter.vscode.yml` the VS Code extension
+release (published as `oxide-vscode-<version>.vsix`). Each config is pinned to
+its component's tag prefix (`v`, `desktop-v`, and `extension-v`), so a run only
+sees its own draft and resolves its next version from its own last release; the
+draft it produces already carries the tag to push. The extension prefix is
+`extension-v` rather than `vscode-v` so it cannot match the CLI's `v*` trigger
+or the CLI drafter's `v` prefix. Their categories match conventional-commit PR
+titles (`feat:`, `fix:`, `perf:`, …) directly and by the type label the
+`release-drafter/autolabeler` step derives from that same title, so keep the PR
+title in that form and no manual labelling is needed. The type labels it applies
+are created by `labels.yml`.
 
-A PR whose changes are limited to `crates/cli/` is labeled `cli`, and one
-limited to `crates/desktop/` is labeled `desktop`; a change that also touches
-shared code (for example `crates/core/`) or both components carries neither
-label.
+A PR whose changes are limited to `crates/cli/` is labeled `cli`, one limited to
+`crates/desktop/` is labeled `desktop`, and one limited to `editors/vscode/` is
+labeled `vscode`; a change that also touches shared code (for example
+`crates/core/`) or more than one component carries none of those labels.
 
 The repository keeps a placeholder version (`0.0.0`). On a tag, the matching
 workflow runs `scripts/set-version.sh "$GITHUB_REF_NAME"` followed by
@@ -223,3 +235,10 @@ git push origin vX.Y.Z
 git tag desktop-vX.Y.Z     # desktop release
 git push origin desktop-vX.Y.Z
 ```
+
+The VS Code extension has no tag-triggered workflow yet: its draft (tagged
+`extension-vX.Y.Z`) is published from the GitHub UI, and its
+`oxide-vscode-<version>.vsix` — built with `pnpm run package` in
+`editors/vscode/` — is attached by hand. Its version lives in
+`editors/vscode/package.json`, separate from the `0.0.0` Cargo placeholder, so
+`set-version.sh` does not touch it.

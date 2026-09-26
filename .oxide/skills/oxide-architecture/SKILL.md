@@ -21,8 +21,9 @@ description: Use when navigating or modifying the oxide internals — the agent 
    - Calls `LlmClient::stream_chat` with `StreamHooks`, forwarding text as
      `AgentEvent::Text`, reasoning as `ThinkingDelta`, and retry notices as
      `Retrying` through an unbounded mpsc channel. The client retries transient
-     failures and turns with neither text nor tool calls with backoff while no
-     text has been emitted.
+     failures and turns with neither text nor tool calls with backoff, including
+     an attempt that already streamed text: the view drops the failed attempt's
+     partial item when `Retrying` arrives and the retry streams fresh.
    - Pushes the assistant message (with any tool calls and thinking blocks) onto
      history.
    - If there are no tool calls, drains the steering and follow-up queues and
@@ -57,7 +58,10 @@ description: Use when navigating or modifying the oxide internals — the agent 
   `run_subagent` for `subtask` commands.
 - `src/tools.rs` — built-in/MCP `specs()` and `execute()`; `grep` prefers
   `ripgrep` (`rg`) when present and otherwise uses a parallel built-in walker
-  that sniffs binary files; agent-level tools are wired in `src/agent.rs`.
+  that sniffs binary files; `edit` matches a unique `oldText` byte-exact first,
+  then tolerating trailing whitespace and the `N|`/`N+|` line numbers a `read`
+  result prints, and reports every failing edit with the closest region to copy;
+  agent-level tools are wired in `src/agent.rs`.
 - `src/ecosystem/mod.rs` — Oxide (`.oxide/`, `AGENTS.md`) and Claude Code
   (`.claude/`, `CLAUDE.md`, `.mcp.json`) layout discovery; `frontmatter.rs`
   parses Markdown frontmatter; `resolve_command` returns command prompt +
@@ -99,8 +103,8 @@ each sets a default `model` and `base_url`. Override them with `OXIDE_PROVIDER`,
 `PORTKEY_MODELS`.
 OpenAI-compatible and Anthropic APIs are dispatched in `src/llm/client.rs` (see
 `src/llm/anthropic.rs`). Config on disk lives in the oxide config dir
-(`dirs::config_dir()/oxide/config.json`; e.g. `~/.config/oxide` on Linux,
-`~/Library/Application Support/oxide` on macOS; see `Config::config_path`).
+(`dirs::config_dir()/Oxide/config.json`; e.g. `~/.config/Oxide` on Linux,
+`~/Library/Application Support/Oxide` on macOS; see `Config::config_path`).
 
 ## Invariants
 
