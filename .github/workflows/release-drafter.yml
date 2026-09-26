@@ -20,8 +20,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       # The drafts themselves only change when a pull request merges into main.
-      # Each component has its own config, pinned to its own tag prefix, so the
-      # two runs keep to their own draft.
+      # Each component has its own config, pinned to its own tag prefix, so each
+      # run keeps to its own draft.
       - name: Draft the next CLI release
         if: github.event_name == 'push'
         uses: release-drafter/release-drafter@v7
@@ -38,10 +38,18 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
+      - name: Draft the next VS Code extension release
+        if: github.event_name == 'push'
+        uses: release-drafter/release-drafter@v7
+        with:
+          config-name: release-drafter.vscode.yml
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
       # v7 moved the autolabeler into its own action; it reads the
-      # `autolabeler` section of `release-drafter.cli.yml` (the desktop config
-      # carries no autolabeler of its own) and applies the type labels that
-      # both changelogs also match on.
+      # `autolabeler` section of `release-drafter.cli.yml` (the desktop and VS
+      # Code configs carry no autolabeler of their own) and applies the type
+      # labels that every changelog also matches on.
       - name: Apply type labels
         if: github.event_name == 'pull_request'
         uses: release-drafter/release-drafter/autolabeler@v7
@@ -51,10 +59,10 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       # release-drafter's autolabeler matches one file at a time, so it cannot
-      # express "only this crate". Label the component only when every changed
-      # file lives under it; a shared (`crates/core`) or mixed change keeps no
-      # component label. A rename counts its old path too, so moving a file
-      # between crates is not mistaken for a single-crate change.
+      # express "only this component". Label the component only when every
+      # changed file lives under it; a shared (`crates/core`) or mixed change
+      # keeps no component label. A rename counts its old path too, so moving a
+      # file between components is not mistaken for a single-component change.
       - name: Label the changed component
         if: github.event_name == 'pull_request'
         shell: bash
@@ -69,18 +77,21 @@ jobs:
             --jq '.[] | (.filename, .previous_filename) | select(. != null)')"
           only_cli=1
           only_desktop=1
+          only_vscode=1
           counted=0
           while IFS= read -r file; do
             [ -n "$file" ] || continue
             counted=1
             case "$file" in crates/cli/*) ;; *) only_cli=0 ;; esac
             case "$file" in crates/desktop/*) ;; *) only_desktop=0 ;; esac
+            case "$file" in editors/vscode/*) ;; *) only_vscode=0 ;; esac
           done <<< "$files"
 
           label=""
           if [ "$counted" = 1 ]; then
             if [ "$only_cli" = 1 ]; then label="cli"; fi
             if [ "$only_desktop" = 1 ]; then label="desktop"; fi
+            if [ "$only_vscode" = 1 ]; then label="vscode"; fi
           fi
 
           current="$(gh pr view "$PR" --repo "$REPO" --json labels --jq '.labels[].name')"
@@ -89,7 +100,8 @@ jobs:
           remove() { if has "$1"; then gh pr edit "$PR" --repo "$REPO" --remove-label "$1"; fi; }
 
           case "$label" in
-            cli) remove desktop; add cli ;;
-            desktop) remove cli; add desktop ;;
-            *) remove cli; remove desktop ;;
+            cli) remove desktop; remove vscode; add cli ;;
+            desktop) remove cli; remove vscode; add desktop ;;
+            vscode) remove cli; remove desktop; add vscode ;;
+            *) remove cli; remove desktop; remove vscode ;;
           esac

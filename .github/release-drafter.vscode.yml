@@ -1,14 +1,18 @@
-# Release Drafter configuration for the desktop app. It drafts the next desktop
-# release on every push to `main`, alongside the CLI draft
-# (`release-drafter.cli.yml`) and the VS Code extension draft
-# (`release-drafter.vscode.yml`); all three are run by
+# Release Drafter configuration for the VS Code extension. It drafts the next
+# extension release on every push to `main`, alongside the CLI draft that
+# `release-drafter.cli.yml` maintains and the desktop draft in
+# `release-drafter.desktop.yml`; all three are run by
 # .github/workflows/release-drafter.yml.
 #
-# The drafters coexist because each one is pinned to the tag prefix of its own
-# component: a run only ever sees its own releases, which keeps the other
-# components' drafts out of the draft search and out of the previous-release
-# lookup that resolves the next version. Without a prefix, every run would
-# adopt whichever draft GitHub returns first.
+# Each drafter is pinned to the tag prefix of its own component, so a run only
+# ever sees its own releases. That keeps the other components' drafts out of the
+# draft search and out of the previous-release lookup that resolves the next
+# version; without a prefix, every run would adopt whichever draft GitHub
+# returns first.
+#
+# The extension's prefix is `extension-v`, not `vscode-v`, on purpose: a tag
+# starting with `v` would match the CLI workflow's `v*` trigger and the CLI
+# drafter's `v` prefix too. The desktop's `desktop-v` avoids the same collision.
 #
 # Categories match a conventional-commit title directly, and also accept the
 # type labels the autolabeler action
@@ -17,11 +21,11 @@
 # way. `.github/labels.yml` creates the labels it applies.
 #
 # The categories, replacers, and change templates are shared with the CLI and
-# VS Code configs; keep the three files in sync.
+# desktop configs; keep the three files in sync.
 
-name-template: 'Oxide Desktop v$RESOLVED_VERSION'
-tag-template: 'desktop-v$RESOLVED_VERSION'
-tag-prefix: 'desktop-v'
+name-template: 'Oxide for VS Code v$RESOLVED_VERSION'
+tag-template: 'extension-v$RESOLVED_VERSION'
+tag-prefix: 'extension-v'
 change-template: '- $TITLE (#$NUMBER) by @$AUTHOR'
 change-title-escapes: '\<*_&'
 category-template: '### $TITLE'
@@ -132,18 +136,19 @@ template: |
 
   ## Install
 
-  Download the bundle for your platform from the assets below:
+  Download `oxide-vscode-$RESOLVED_VERSION.vsix` from the assets below, then in
+  VS Code run **Extensions: Install from VSIX…**. The extension is also on the
+  [Visual Studio Marketplace](https://marketplace.visualstudio.com/items?itemName=jaysonwu991.oxide-vscode)
+  as `jaysonwu991.oxide-vscode`, where it can be installed directly once the
+  release is published there.
 
-  - **macOS** — `dmg` for Apple Silicon (`aarch64`) or Intel (`x64`)
-  - **Windows** — `exe` installer or `msi` package
-  - **Linux** — `AppImage`, `deb`, or `rpm`
-
-  The CLI is released separately: its binaries, install scripts, and notes live
-  on the [releases page](https://github.com/$OWNER/$REPOSITORY/releases).
+  The extension drives the `oxide` CLI, which is released separately: install it
+  from the [releases page](https://github.com/$OWNER/$REPOSITORY/releases) (see
+  `install.sh` / `install.ps1`).
 
   ## Full Changelog
 
-  https://github.com/$OWNER/$REPOSITORY/compare/$PREVIOUS_TAG...desktop-v$RESOLVED_VERSION
+  https://github.com/$OWNER/$REPOSITORY/compare/$PREVIOUS_TAG...extension-v$RESOLVED_VERSION
 
   ## New Contributors
 

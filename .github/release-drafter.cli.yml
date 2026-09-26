@@ -1,25 +1,25 @@
 # Release Drafter configuration for the CLI. It drafts the next CLI release on
-# every push to `main`; the desktop app is versioned and released independently
-# from `desktop-v*` tags (see .github/workflows/desktop.yml), so this draft only
-# describes the CLI. The desktop app has its own config in
-# `release-drafter.desktop.yml`, which the same workflow runs alongside this
-# one.
+# every push to `main`. The desktop app (`.github/release-drafter.desktop.yml`)
+# and the VS Code extension (`.github/release-drafter.vscode.yml`) are versioned
+# and released independently, so this draft only describes the CLI;
+# .github/workflows/release-drafter.yml runs all three configs.
 #
 # Categories match a conventional-commit title directly, and also accept the
 # type labels the autolabeler action
 # (release-drafter/release-drafter/autolabeler@v7) derives from that title, so
 # the notes stay organized even for a PR that was never labeled by hand.
 # `.github/labels.yml` creates the labels the autolabeler applies. The desktop
-# config carries the same categories and replacers; keep the two in sync.
+# and VS Code configs carry the same categories and replacers; keep the three in
+# sync.
 
 name-template: 'Oxide v$RESOLVED_VERSION'
 tag-template: 'v$RESOLVED_VERSION'
 
-# Two drafters live in this repository, so each one is pinned to the tag prefix
-# of its own component: it only ever sees the `v*` releases, which keeps the
-# `desktop-v*` draft out of the draft search and out of the previous-release
-# lookup that resolves the next version. A run without a prefix would adopt
-# whichever draft GitHub returns first.
+# Several drafters live in this repository, so each one is pinned to the tag
+# prefix of its own component: it only ever sees the `v*` releases, which keeps
+# the `desktop-v*` and `extension-v*` drafts out of the draft search and out of
+# the previous-release lookup that resolves the next version. A run without a
+# prefix would adopt whichever draft GitHub returns first.
 tag-prefix: 'v'
 change-template: '- $TITLE (#$NUMBER) by @$AUTHOR'
 change-title-escapes: '\<*_&'

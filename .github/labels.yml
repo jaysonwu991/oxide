@@ -30,6 +30,9 @@
 - name: desktop
   color: bfd4f2
   description: Change limited to the desktop crate
+- name: vscode
+  color: 0078d4
+  description: Change limited to the VS Code extension
 - name: skip-changelog
   color: ffffff
   description: Exclude this pull request from the release notes
