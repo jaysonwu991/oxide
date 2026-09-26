@@ -381,7 +381,9 @@ enum Transport {
     Local {
         stdin: ChildStdin,
         stdout: BufReader<ChildStdout>,
-        _child: Child,
+        // Boxed so the local variant stays small next to `Remote`; a Windows
+        // `Child` is several hundred bytes, which trips `large_enum_variant`.
+        _child: Box<Child>,
     },
     Remote {
         client: reqwest::Client,
@@ -424,7 +426,7 @@ impl McpConnection {
                 Transport::Local {
                     stdin,
                     stdout: BufReader::new(stdout),
-                    _child: child,
+                    _child: Box::new(child),
                 }
             }
             McpKind::Remote {
