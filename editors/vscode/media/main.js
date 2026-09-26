@@ -2,8 +2,9 @@
 //
 // It is deliberately dumb: the extension host owns the transcript and sends
 // `state` / `push` / `append` / `patch` / `status` / `usage` / `context`
-// messages (see src/core/protocol.ts). Nothing here decides what an agent event
-// means, so the rendering can be replaced without touching the agent loop.
+// messages (see src/core/protocol.ts), including the footer's own labels. Like
+// the desktop app it decides nothing about the agent; even the `model:` and
+// `thinking:` chips arrive as text, so the footer reads the same in both panes.
 //
 // The Markdown, syntax highlighting and diff renderers are adapted from the
 // desktop app (crates/desktop/ui/app.js) so a reply reads the same in both
@@ -19,7 +20,12 @@
   const sendButton = $("send");
   const stopButton = $("stop");
   const statusLabel = $("status");
-  const usageLabel = $("usage");
+  const elapsedLabel = $("elapsed");
+  const usageRow = $("usage");
+  const usageText = $("usage-text");
+  const gauge = $("gauge");
+  const gaugeFill = $("gauge-fill");
+  const metaBox = $("meta");
   const chipBox = $("chips");
   const folderLabel = $("folder");
   const modelLabel = $("model");
@@ -28,6 +34,8 @@
   let chips = [];
   let busy = false;
   let queued = 0;
+  let startedAt = 0;
+  let elapsedTimer = 0;
   let dirty = new Set();
   let frame = 0;
 
@@ -46,18 +54,6 @@
     const seconds = ms / 1000;
     if (seconds < 60) return `${seconds.toFixed(1)}s`;
     return `${Math.floor(seconds / 60)}m ${Math.round(seconds % 60)}s`;
-  }
-
-  function formatTokens(count) {
-    if (!count) return "0";
-    if (count < 1000) return String(count);
-    if (count < 1_000_000) return `${(count / 1000).toFixed(1)}k`;
-    return `${(count / 1_000_000).toFixed(2)}M`;
-  }
-
-  function formatCost(cost) {
-    if (!cost) return "";
-    return cost < 0.01 ? `$${cost.toFixed(4)}` : `$${cost.toFixed(2)}`;
   }
 
   function atBottom() {
@@ -670,7 +666,7 @@
         modelLabel.textContent = message.model ? `${message.model}` : "";
         for (const item of message.items) appendItem(item, false);
         setStatus(message.status, message.busy, message.queued);
-        setUsage(message.usage, message.contextWindow);
+        setFooter(message.footer);
         setChips(message.context);
         scrollDown(true);
         return;
@@ -707,9 +703,10 @@
       }
       case "status":
         setStatus(message.status, message.busy, message.queued);
+        setFooter(message.footer);
         return;
       case "usage":
-        setUsage(message.usage, null);
+        if (message.footer) setFooter(message.footer);
         return;
       case "context":
         setChips(message.context);
@@ -721,8 +718,6 @@
 
   // ---------- footer ----------
 
-  let contextWindow = 0;
-
   function setStatus(text, isBusy, queuedCount) {
     busy = Boolean(isBusy);
     queued = queuedCount || 0;
@@ -730,25 +725,57 @@
     statusLabel.classList.toggle("busy", busy);
     stopButton.hidden = !busy;
     sendButton.textContent = busy ? "Queue" : "Send";
+    updateElapsed();
     updateSendState();
   }
 
-  function setUsage(usage, contextLimit) {
-    if (typeof contextLimit === "number") contextWindow = contextLimit;
-    const parts = [];
-    if (usage && (usage.input || usage.output)) {
-      parts.push(`↑${formatTokens(usage.input)} ↓${formatTokens(usage.output)}`);
+  /// A running turn reports how long it has been running, like the terminal's
+  /// status row (and the tool panels' live `Elapsed`) do.
+  function updateElapsed() {
+    if (!busy) {
+      clearInterval(elapsedTimer);
+      elapsedTimer = 0;
+      startedAt = 0;
+      elapsedLabel.hidden = true;
+      return;
     }
-    if (usage && (usage.cacheRead || usage.cacheWrite)) {
-      parts.push(`cached ${formatTokens(usage.cacheRead + usage.cacheWrite)}`);
+    if (!startedAt) startedAt = Date.now();
+    elapsedLabel.hidden = false;
+    elapsedLabel.textContent = `${((Date.now() - startedAt) / 1000).toFixed(1)}s`;
+    if (!elapsedTimer) elapsedTimer = setInterval(updateElapsed, 500);
+  }
+
+  /// The footer the extension host composes: the chips under the transcript
+  /// (`model: … · thinking: … · access: … · session: …`), the branch, the usage
+  /// line and the context gauge. Everything is a string by the time it gets
+  /// here, so this function only paints.
+  function setFooter(footer) {
+    if (!footer) return;
+    metaBox.innerHTML = "";
+    for (const chip of footer.chips || []) {
+      const el = document.createElement("button");
+      el.type = "button";
+      el.className = "meta-chip";
+      el.dataset.control = chip.id;
+      el.textContent = chip.label;
+      if (chip.title) el.title = chip.title;
+      metaBox.appendChild(el);
     }
-    if (usage && usage.contextTokens) {
-      const pct = contextWindow ? ` (${Math.round((usage.contextTokens / contextWindow) * 100)}%)` : "";
-      parts.push(`ctx ${formatTokens(usage.contextTokens)}${pct}`);
+    if (footer.info) {
+      const branch = document.createElement("span");
+      branch.className = "meta-branch";
+      branch.textContent = footer.info;
+      branch.title = `Current branch: ${footer.info}`;
+      metaBox.appendChild(branch);
     }
-    const cost = usage ? formatCost(usage.cost) : "";
-    if (cost) parts.push(cost);
-    usageLabel.textContent = parts.join("  ·  ");
+    usageText.textContent = footer.usage || "";
+    usageText.title = footer.usage || "";
+    usageRow.hidden = !footer.usage;
+    const percent = typeof footer.percent === "number" ? footer.percent : null;
+    gauge.hidden = percent === null;
+    gauge.dataset.level = footer.level || "ok";
+    gauge.title = percent === null ? "" : `${percent}% of the context window used`;
+    gaugeFill.style.width = percent === null ? "0%" : `${Math.min(percent, 100)}%`;
   }
 
   function setChips(next) {
@@ -813,6 +840,16 @@
   stopButton.addEventListener("click", () => vscode.postMessage({ k: "stop" }));
   $("new-session").addEventListener("click", () => vscode.postMessage({ k: "newSession" }));
   $("resume-session").addEventListener("click", () => vscode.postMessage({ k: "resumeSession" }));
+
+  // The footer's chips are the extension's own commands: each one opens a picker
+  // or cycles a setting, and the host re-sends the footer afterwards.
+  metaBox.addEventListener("click", (event) => {
+    const target = event.target;
+    if (!(target instanceof Element)) return;
+    const chip = target.closest("[data-control]");
+    if (!chip) return;
+    vscode.postMessage({ k: "control", control: chip.dataset.control });
+  });
 
   // Links open in the browser and paths open in the editor, because a webview
   // cannot navigate or read the workspace itself.

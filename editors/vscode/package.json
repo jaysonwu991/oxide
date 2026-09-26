@@ -4,6 +4,7 @@
   "description": "The Oxide coding agent inside VS Code: a chat panel and editor actions backed by the oxide CLI.",
   "version": "0.1.0",
   "publisher": "jaysonwu991",
+  "icon": "media/icon.png",
   "license": "MIT",
   "repository": {
     "type": "git",
@@ -33,7 +34,8 @@
   "main": "./out/extension.js",
   "activationEvents": [
     "onStartupFinished",
-    "onView:oxide.chat"
+    "onView:oxide.chat",
+    "onView:oxide.chatSecondary"
   ],
   "capabilities": {
     "untrustedWorkspaces": {
@@ -50,6 +52,13 @@
           "title": "Oxide",
           "icon": "media/oxide.svg"
         }
+      ],
+      "secondarySidebar": [
+        {
+          "id": "oxide-secondary",
+          "title": "Oxide",
+          "icon": "media/oxide.svg"
+        }
       ]
     },
     "views": {
@@ -57,6 +66,15 @@
         {
           "type": "webview",
           "id": "oxide.chat",
+          "name": "Chat",
+          "icon": "media/oxide.svg",
+          "contextualTitle": "Oxide"
+        }
+      ],
+      "oxide-secondary": [
+        {
+          "type": "webview",
+          "id": "oxide.chatSecondary",
           "name": "Chat",
           "icon": "media/oxide.svg",
           "contextualTitle": "Oxide"
@@ -132,6 +150,11 @@
         "category": "Oxide"
       },
       {
+        "command": "oxide.setAgent",
+        "title": "Set Agent...",
+        "category": "Oxide"
+      },
+      {
         "command": "oxide.setReasoning",
         "title": "Set Reasoning Effort...",
         "category": "Oxide"
@@ -180,17 +203,17 @@
       "view/title": [
         {
           "command": "oxide.newSession",
-          "when": "view == oxide.chat",
+          "when": "view == oxide.chat || view == oxide.chatSecondary",
           "group": "navigation@1"
         },
         {
           "command": "oxide.resumeSession",
-          "when": "view == oxide.chat",
+          "when": "view == oxide.chat || view == oxide.chatSecondary",
           "group": "navigation@2"
         },
         {
           "command": "oxide.openTerminal",
-          "when": "view == oxide.chat",
+          "when": "view == oxide.chat || view == oxide.chatSecondary",
           "group": "navigation@3"
         }
       ]

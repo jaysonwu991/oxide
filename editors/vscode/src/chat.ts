@@ -12,6 +12,8 @@ import {
   type TrustSetting,
   type TurnOptions,
 } from "./core/args";
+import { footerState, nextReasoning, REASONING_LEVELS, type FooterState } from "./core/footer";
+import { projectInfo, type ProjectDeps, type ProjectInfo } from "./core/project";
 import {
   buildPrompt,
   contextLabel,
@@ -67,18 +69,21 @@ export class ChatController {
   private queue: QueuedMessage[] = [];
   private continueLast = false;
   private activeFolder: string | null = null;
+  /// The shared on-disk state the footer reports. Re-read when something the
+  /// user or the agent could have changed it happens — not per stream event,
+  /// which would stat a dozen files for every token.
+  private project: ProjectInfo | null = null;
 
   readonly onDidChange = new vscode.EventEmitter<void>();
 
   constructor(
     private readonly output: vscode.OutputChannel,
-    contextWindow = 0,
+    private readonly deps: ProjectDeps,
   ) {
     this.transcript = new Transcript((name, args) => {
       const preview = toolDiff(name, args, (file) => this.readForPreview(file));
       return preview ? preview.diff : null;
     });
-    this.transcript.contextWindow = contextWindow;
   }
 
   dispose(): void {
@@ -95,6 +100,16 @@ export class ChatController {
     view.onDidDispose(() => this.views.delete(view));
   }
 
+  /// The type of the chat view the user is looking at, if any. The chat has a
+  /// pane in the activity bar and one in the secondary side bar, so "open the
+  /// chat" should bring forward the one already on screen.
+  visibleViewType(): string | null {
+    for (const view of this.views) {
+      if (view.visible) return view.viewType;
+    }
+    return null;
+  }
+
   private broadcast(message: ViewMessage): void {
     for (const view of this.views) void this.push(view, message);
   }
@@ -109,6 +124,7 @@ export class ChatController {
 
   stateMessage(): ViewMessage {
     const folder = this.folder();
+    this.refreshProject();
     return {
       k: "state",
       ...this.transcript.state({
@@ -118,13 +134,55 @@ export class ChatController {
         model: this.modelLabel(),
         binary: this.binary(),
         showThinking: this.setting<boolean>("showThinking", true),
+        footer: this.footer(),
       }),
     };
   }
 
+  // ---------- footer ----------
+
+  /// Re-reads the shared configuration the footer reports. Called when the
+  /// panel is painted, when a turn starts or ends (the agent may have created a
+  /// branch or written `.oxide/` files) and when a setting changes.
+  private refreshProject(): void {
+    const folder = this.folder();
+    if (!folder) {
+      this.project = null;
+      return;
+    }
+    this.project = projectInfo(folder.uri.fsPath, this.trust(), this.deps);
+  }
+
+  /// A setting or the workspace changed: the chips are stale until the shared
+  /// configuration is re-read, which `stateMessage` does.
+  configurationChanged(): void {
+    this.broadcast(this.stateMessage());
+  }
+
+  private footer(): FooterState {
+    const project = this.project;
+    const agent = this.setting<string>("agent", "").trim();
+    return footerState({
+      model: this.setting<string>("model", "").trim() || project?.model || "",
+      provider: project?.provider ?? "",
+      contextWindow: project?.contextWindow ?? 0,
+      reasoning: this.setting<string>("reasoning", "auto"),
+      agent,
+      agentCount: project?.agents.length ?? 0,
+      access: project?.access ?? "untrusted",
+      trustSetting: this.trust(),
+      defaultTrust: project?.defaultTrust ?? "ask",
+      savedTrust: project?.savedTrust,
+      sessionId: this.transcript.sessionId,
+      branch: project?.branch ?? "",
+      autoCompact: project?.autoCompact ?? true,
+      usage: this.transcript.usage,
+    });
+  }
+
   private modelLabel(): string {
     const configured = this.setting<string>("model", "").trim();
-    return configured || "config.json";
+    return configured || this.project?.model || "config.json";
   }
 
   // ---------- settings ----------
@@ -143,6 +201,15 @@ export class ChatController {
 
   private trust(): TrustSetting {
     return this.setting<TrustSetting>("projectTrust", "default");
+  }
+
+  /// Writes a setting where a workspace is available, and to the user's own
+  /// settings when there is none (a `.vscode/settings.json` needs a folder).
+  private async updateSetting(key: string, value: string): Promise<void> {
+    const target = vscode.workspace.workspaceFolders?.length
+      ? vscode.ConfigurationTarget.Workspace
+      : vscode.ConfigurationTarget.Global;
+    await vscode.workspace.getConfiguration("oxide").update(key, value, target);
   }
 
   private turnOptions(): TurnOptions {
@@ -249,6 +316,9 @@ export class ChatController {
       this.showNotice("Open a folder to run Oxide: sessions and context are per project.", "error");
       return;
     }
+    // The agent may have written `.oxide/` files, committed, or the user may
+    // have changed a setting since the panel was painted.
+    this.refreshProject();
 
     // A prompt sent on stdin skips the CLI's own `@file` expansion, so the
     // references are resolved here and become ordinary context blocks.
@@ -341,7 +411,12 @@ export class ChatController {
   }
 
   private broadcastItem(messages: ViewMessage[]): void {
-    for (const message of messages) this.broadcast(message);
+    for (const message of messages) {
+      // A usage message is the one the transcript cannot complete on its own:
+      // the usage line is composed by the controller, which knows the context
+      // window and the settings the CLI resolved.
+      this.broadcast(message.k === "usage" ? { ...message, footer: this.footer() } : message);
+    }
   }
 
   private handleEvent(event: WireEvent): void {
@@ -386,6 +461,8 @@ export class ChatController {
       this.notify(run);
     }
 
+    // The run may have created a branch, committed, or written `.oxide/` files.
+    this.refreshProject();
     this.broadcastStatus();
     // The view's status-bar spinner is driven by this event, and `handleExit`
     // runs after the last stream event, so refresh it here too.
@@ -506,9 +583,57 @@ export class ChatController {
 
   // ---------- settings commands ----------
 
+  /// A click on a footer chip. The chips are the same actions the commands
+  /// expose, so both entry points share one implementation.
+  async control(id: string): Promise<void> {
+    switch (id) {
+      case "model":
+        return this.setModel();
+      case "reasoning":
+        return this.cycleReasoning();
+      case "agent":
+        return this.setAgent();
+      case "access":
+        return this.setProjectTrust();
+      case "session":
+        return this.resumeSession();
+      default:
+        return;
+    }
+  }
+
+  /// The model picker. The models every provider has already been used with are
+  /// remembered in `config.json`, so they are offered by name instead of asking
+  /// for the id to be typed from memory.
   async setModel(): Promise<void> {
-    const config = vscode.workspace.getConfiguration("oxide");
-    const current = config.get<string>("model", "");
+    this.refreshProject();
+    const current = this.setting<string>("model", "").trim();
+    const configured = this.project?.model ?? "";
+    type Pick = vscode.QuickPickItem & { model?: string; other?: boolean };
+    const items: Pick[] = [
+      {
+        label: configured || "config.json",
+        description: current ? "Oxide config" : "in use",
+        detail: "Use the model stored in the Oxide config",
+        model: "",
+      },
+      ...(this.project?.models ?? []).map((remembered) => ({
+        label: remembered.model,
+        description: remembered.model === current ? "in use" : remembered.provider,
+        detail: `Last used with ${remembered.provider}`,
+        model: remembered.model,
+      })),
+      { label: "$(edit) Other model…", detail: "Type a model id to pass to --model", other: true },
+    ];
+    const picked = await vscode.window.showQuickPick(items, {
+      title: "Oxide: model",
+      placeHolder: `A turn passes --model; empty follows the Oxide config (${configured || "none"})`,
+    });
+    if (!picked) return;
+    if (!picked.other) {
+      await this.updateSetting("model", picked.model ?? "");
+      return;
+    }
     const value = await vscode.window.showInputBox({
       title: "Oxide: model",
       prompt: "Model passed with --model. Leave empty to use the model from the Oxide config.json.",
@@ -516,20 +641,68 @@ export class ChatController {
       placeHolder: "e.g. glm-4.6, claude-sonnet-4-5, deepseek-chat",
     });
     if (value === undefined) return;
-    // `oxide.model` overrides the shared config.json for this workspace only.
-    await config.update("model", value.trim(), vscode.ConfigurationTarget.Workspace);
+    await this.updateSetting("model", value.trim());
+  }
+
+  /// Cycles the reasoning level the way the terminal's Shift+Tab and the
+  /// desktop composer chip do.
+  async cycleReasoning(): Promise<void> {
+    const next = nextReasoning(this.setting<string>("reasoning", "auto"));
+    await this.updateSetting("reasoning", next);
+    this.showNotice(next === "auto" ? "Reasoning: auto (provider native)" : `Reasoning: ${next}`);
+  }
+
+  /// Picks the agent a chat runs with from the ones discovered on disk, which
+  /// is the same set `--agent` resolves a name against.
+  async setAgent(): Promise<void> {
+    this.refreshProject();
+    const current = this.setting<string>("agent", "").trim();
+    const agents = this.project?.agents ?? [];
+    type Pick = vscode.QuickPickItem & { agent?: string; other?: boolean };
+    const items: Pick[] = [
+      {
+        label: "No agent",
+        description: current ? "Oxide default" : "in use",
+        detail: "Run the main agent, without a subagent prompt",
+        agent: "",
+      },
+      ...agents.map((agent) => ({
+        label: agent.name,
+        description: agent.name === current ? "in use" : "",
+        detail: agent.description,
+        agent: agent.name,
+      })),
+      { label: "$(edit) Other agent…", detail: "Type an agent name", other: true },
+    ];
+    const picked = await vscode.window.showQuickPick(items, {
+      title: "Oxide: agent",
+      placeHolder: agents.length
+        ? `${agents.length} agent${agents.length === 1 ? "" : "s"} discovered for this project and globally`
+        : "No agents were found; type a name to pass to --agent",
+    });
+    if (!picked) return;
+    if (!picked.other) {
+      await this.updateSetting("agent", picked.agent ?? "");
+      return;
+    }
+    const value = await vscode.window.showInputBox({
+      title: "Oxide: agent",
+      prompt: "Agent passed with --agent. Leave empty to run the main agent.",
+      value: current,
+      placeHolder: "e.g. planner, rust-reviewer",
+    });
+    if (value === undefined) return;
+    await this.updateSetting("agent", value.trim());
   }
 
   async setReasoning(): Promise<void> {
-    const levels = ["auto", "off", "low", "medium", "high"];
+    const levels = [...REASONING_LEVELS];
     const picked = await vscode.window.showQuickPick(levels, {
       title: "Oxide: reasoning effort",
       placeHolder: "Passed with --reasoning",
     });
     if (!picked) return;
-    await vscode.workspace
-      .getConfiguration("oxide")
-      .update("reasoning", picked, vscode.ConfigurationTarget.Workspace);
+    await this.updateSetting("reasoning", picked);
   }
 
   async setProjectTrust(): Promise<void> {
@@ -546,9 +719,7 @@ export class ChatController {
       placeHolder: 'Runs are non-interactive, so nothing is ever prompted; "default" follows trust.json',
     });
     if (!picked) return;
-    await vscode.workspace
-      .getConfiguration("oxide")
-      .update("projectTrust", picked.label, vscode.ConfigurationTarget.Workspace);
+    await this.updateSetting("projectTrust", picked.label);
   }
 
   // ---------- notices ----------
@@ -565,7 +736,7 @@ export class ChatController {
   }
 
   private broadcastStatus(): void {
-    this.broadcast(this.transcript.statusMessage(this.queue.length));
+    this.broadcast(this.transcript.statusMessage(this.queue.length, this.footer()));
   }
 
   get running(): boolean {

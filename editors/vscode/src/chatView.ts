@@ -6,6 +6,7 @@ import * as path from "node:path";
 import * as vscode from "vscode";
 
 import { ChatController } from "./chat";
+import { CHAT_VIEW, CHAT_VIEW_SECONDARY } from "./core/views";
 
 interface WebviewMessage {
   k?: string;
@@ -14,10 +15,12 @@ interface WebviewMessage {
   url?: string;
   path?: string;
   line?: number;
+  control?: string;
 }
 
 export class ChatViewProvider implements vscode.WebviewViewProvider {
-  static readonly viewType = "oxide.chat";
+  static readonly viewType = CHAT_VIEW;
+  static readonly secondaryViewType = CHAT_VIEW_SECONDARY;
 
   constructor(
     private readonly extensionUri: vscode.Uri,
@@ -59,6 +62,9 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         return;
       case "clearContext":
         this.controller.clearContext();
+        return;
+      case "control":
+        await this.controller.control(message.control ?? "");
         return;
       case "openUrl":
         await this.openUrl(message.url ?? "");
@@ -140,13 +146,18 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
   </div>
 </main>
 <footer>
-  <div id="usage" class="usage"></div>
+  <div id="usage" class="usage">
+    <span id="usage-text"></span>
+    <span id="gauge" class="gauge" hidden><span id="gauge-fill"></span></span>
+  </div>
+  <div id="meta" class="meta"></div>
   <div id="composer">
     <div id="chips" class="chips" hidden></div>
     <textarea id="input" rows="1" spellcheck="false"
       placeholder="Ask Oxide… (Enter to send, Shift+Enter for a newline)"></textarea>
     <div id="bar">
       <span id="status">Idle</span>
+      <span id="elapsed" hidden></span>
       <span class="spacer"></span>
       <button id="stop" class="ghost" hidden>Stop</button>
       <button id="send" class="primary" disabled>Send</button>

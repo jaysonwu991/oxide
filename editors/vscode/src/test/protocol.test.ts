@@ -10,6 +10,11 @@ import {
   type ToolItem,
   type ViewMessage,
 } from "../core/protocol";
+import type { FooterState } from "../core/footer";
+
+/// The status message carries the footer the controller composed, so the checks
+/// below need one; its contents are covered by `footer.test.ts`.
+const footer: FooterState = { chips: [], info: "", usage: "", percent: null, level: "ok" };
 
 /// `assert.ok` is the only node assertion with an assertion signature, so the
 /// discriminated union is narrowed through it.
@@ -298,7 +303,24 @@ describe("Transcript", () => {
       cacheWrite: 5,
       cost: 0.005,
       contextTokens: 260,
+      // The rate is measured against the latest request's own prompt.
+      cacheHit: (60 / 260) * 100,
     });
+  });
+
+  it("keeps the last hit rate when a later request reads no cache", () => {
+    const transcript = new Transcript();
+    transcript.apply({
+      type: "usage",
+      usage: { input: 100, output: 10, cacheRead: 300, cacheWrite: 0, cost: 0 },
+    });
+    assert.equal(transcript.usage.cacheHit, 75);
+    transcript.apply({
+      type: "usage",
+      usage: { input: 20, output: 10, cacheRead: 0, cacheWrite: 0, cost: 0 },
+    });
+    assert.equal(transcript.usage.cacheHit, 75);
+    assert.equal(transcript.usage.contextTokens, 20);
   });
 
   it("reports retries as a status change", () => {
@@ -386,25 +408,27 @@ describe("Transcript", () => {
     transcript.apply({ type: "agent_end", messages: [] });
     transcript.busy = false;
     assert.equal(transcript.status, "Done");
-    assert.deepEqual(status(transcript.statusMessage(0)), {
+    assert.deepEqual(status(transcript.statusMessage(0, footer)), {
       k: "status",
       status: "Idle",
       busy: false,
       queued: 0,
+      footer,
     });
   });
 
   it("reports the live activity while a turn runs", () => {
     const transcript = new Transcript();
     transcript.busy = true;
-    assert.deepEqual(status(transcript.statusMessage(2)), {
+    assert.deepEqual(status(transcript.statusMessage(2, footer)), {
       k: "status",
       status: "Thinking…",
       busy: true,
       queued: 2,
+      footer,
     });
     transcript.apply({ type: "tool_call", toolName: "bash", arguments: "{}" });
-    assert.equal(status(transcript.statusMessage(0)).status, "Running bash…");
+    assert.equal(status(transcript.statusMessage(0, footer)).status, "Running bash…");
   });
 
   it("ignores unknown events and tolerates missing fields", () => {
@@ -464,6 +488,7 @@ describe("Transcript", () => {
       model: "deepseek-flash",
       binary: "/usr/local/bin/oxide",
       showThinking: false,
+      footer,
     });
     assert.equal(state.items.length, 1);
     assert.equal(state.sessionId, "s");

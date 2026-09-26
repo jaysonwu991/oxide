@@ -6,6 +6,8 @@
 // applies the `ViewMessage`s produced here. Every event-to-DOM decision is
 // therefore testable without a webview.
 
+import type { FooterState } from "./footer";
+
 /// One JSONL line from the agent's stdout. Only `type` is guaranteed.
 export interface WireEvent {
   type?: string;
@@ -21,6 +23,10 @@ export interface UsageTotals {
   /// Prompt tokens of the most recent step (uncached prompt plus cache reads
   /// and writes), the number the context gauge tracks.
   contextTokens: number;
+  /// The latest request's cache hit rate in percent, which is what the terminal
+  /// footer's `CH` shows: a step that read or wrote no cache leaves the previous
+  /// rate in place, so a cold turn does not erase a warm one.
+  cacheHit: number | null;
 }
 
 export function emptyUsage(): UsageTotals {
@@ -31,6 +37,7 @@ export function emptyUsage(): UsageTotals {
     cacheWrite: 0,
     cost: 0,
     contextTokens: 0,
+    cacheHit: null,
   };
 }
 
@@ -93,13 +100,13 @@ export interface TranscriptState {
   busy: boolean;
   queued: number;
   usage: UsageTotals;
-  contextWindow: number;
   context: ContextChip[];
   sessionId: string | null;
   folder: string;
   model: string;
   binary: string;
   showThinking: boolean;
+  footer: FooterState;
 }
 
 export type ViewMessage =
@@ -108,8 +115,10 @@ export type ViewMessage =
   | { k: "remove"; id: number }
   | { k: "append"; id: number; field: "text" | "output"; delta: string }
   | { k: "patch"; id: number; patch: ToolPatch }
-  | { k: "status"; status: string; busy: boolean; queued: number }
-  | { k: "usage"; usage: UsageTotals }
+  | { k: "status"; status: string; busy: boolean; queued: number; footer: FooterState }
+  /// The footer is attached by the controller (the transcript only knows the
+  /// totals), so a usage event repaints the whole footer row.
+  | { k: "usage"; usage: UsageTotals; footer?: FooterState }
   | { k: "context"; context: ContextChip[] };
 
 /// Splits a chunk into complete lines, returning the unterminated remainder.
@@ -169,7 +178,6 @@ export class Transcript {
   status = "Idle";
   busy = false;
   sessionId: string | null = null;
-  contextWindow = 0;
 
   private currentAssistant: AssistantItem | null = null;
   private currentThinking: ThinkingItem | null = null;
@@ -188,6 +196,7 @@ export class Transcript {
     model: string;
     binary: string;
     showThinking: boolean;
+    footer: FooterState;
   }): TranscriptState {
     return {
       items: this.items,
@@ -195,7 +204,6 @@ export class Transcript {
       busy: this.busy,
       usage: this.usage,
       sessionId: this.sessionId,
-      contextWindow: this.contextWindow,
       ...extra,
     };
   }
@@ -231,11 +239,11 @@ export class Transcript {
 
   /// The current status/footer line. The controller sends this after applying
   /// a batch so the view never sees a stale busy flag or queue count.
-  statusMessage(queued: number): ViewMessage {
+  statusMessage(queued: number, footer: FooterState): ViewMessage {
     // While a turn runs the status names the activity; otherwise the agent is
     // idle and the outcome is in the transcript.
     const status = this.busy ? (this.status === "Idle" ? "Thinking…" : this.status) : "Idle";
-    return { k: "status", status, busy: this.busy, queued };
+    return { k: "status", status, busy: this.busy, queued, footer };
   }
 
   /// Applies one wire event, returning the view updates it implies.
@@ -273,15 +281,23 @@ export class Transcript {
         this.closeAssistant();
         this.closeThinking();
         const usage = obj(event.usage);
-        const context =
-          num(usage.input) + num(usage.cacheRead) + num(usage.cacheWrite);
+        const cacheRead = num(usage.cacheRead);
+        const cacheWrite = num(usage.cacheWrite);
+        const prompt = num(usage.input) + cacheRead + cacheWrite;
+        // Mirrors `UsageTotals::cache_hit_rate`: the rate belongs to one
+        // request, so a step without cache traffic keeps the previous one.
+        const cacheHit =
+          cacheRead + cacheWrite > 0 && prompt > 0
+            ? (cacheRead / prompt) * 100
+            : this.usage.cacheHit;
         this.usage = {
           input: this.usage.input + num(usage.input),
           output: this.usage.output + num(usage.output),
-          cacheRead: this.usage.cacheRead + num(usage.cacheRead),
-          cacheWrite: this.usage.cacheWrite + num(usage.cacheWrite),
+          cacheRead: this.usage.cacheRead + cacheRead,
+          cacheWrite: this.usage.cacheWrite + cacheWrite,
           cost: this.usage.cost + num(usage.cost),
-          contextTokens: context,
+          contextTokens: prompt,
+          cacheHit,
         };
         return [{ k: "usage", usage: this.usage }];
       }

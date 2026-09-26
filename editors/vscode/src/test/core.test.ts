@@ -3,7 +3,7 @@ import * as path from "node:path";
 import { describe, it } from "node:test";
 
 import { buildTurnArgs, sessionsListArgs, splitList } from "../core/args";
-import { configDir, contextWindowFromEnv, parseConfigSummary } from "../core/config";
+import { configDir, contextWindow, contextWindowFromEnv, parseConfigSummary } from "../core/config";
 import { canonicalTool, diffPreview, toolDiff } from "../core/preview";
 import {
   buildPrompt,
@@ -455,12 +455,23 @@ describe("shared configuration", () => {
     );
   });
 
-  it("reads the provider and model from config.json", () => {
-    assert.deepEqual(parseConfigSummary('{"provider":"zai","model":"glm-5"}'), {
-      provider: "zai",
-      model: "glm-5",
-    });
-    assert.deepEqual(parseConfigSummary("{}"), { provider: "", model: "" });
+  it("reads the provider, model, remembered models and reply cap from config.json", () => {
+    assert.deepEqual(
+      parseConfigSummary(
+        '{"provider":"zai","model":"glm-5","max_tokens":16384,"provider_models":{"zai":"glm-5","openai":"gpt-5"}}',
+      ),
+      {
+        provider: "zai",
+        model: "glm-5",
+        models: [
+          { provider: "zai", model: "glm-5" },
+          { provider: "openai", model: "gpt-5" },
+        ],
+        maxTokens: 16384,
+      },
+    );
+    assert.deepEqual(parseConfigSummary("{}"), { provider: "", model: "", models: [], maxTokens: 0 });
+    assert.deepEqual(parseConfigSummary(null), null);
     assert.equal(parseConfigSummary("{"), null);
     assert.equal(parseConfigSummary("[1]"), null);
   });
@@ -470,6 +481,20 @@ describe("shared configuration", () => {
     assert.equal(contextWindowFromEnv({ OXIDE_CONTEXT_LIMIT: "0" }), 0);
     assert.equal(contextWindowFromEnv({ OXIDE_CONTEXT_LIMIT: "abc" }), 0);
     assert.equal(contextWindowFromEnv({}), 0);
+  });
+
+  it("mirrors the CLI's context window, floored at 128k", () => {
+    // `Config::context_window`: the override wins, else `max_tokens` floored.
+    assert.equal(contextWindow({ OXIDE_CONTEXT_LIMIT: "200000" }, null), 200000);
+    assert.equal(contextWindow({}, null), 128_000);
+    assert.equal(
+      contextWindow({}, { provider: "", model: "", models: [], maxTokens: 8192 }),
+      128_000,
+    );
+    assert.equal(
+      contextWindow({}, { provider: "", model: "", models: [], maxTokens: 1_000_000 }),
+      1_000_000,
+    );
   });
 });
 
