@@ -84,7 +84,7 @@ Provider logins live in the CLI: run **Oxide: Open Terminal (TUI)** and use
 | Setting | Default | Meaning |
 | --- | --- | --- |
 | `oxide.binaryPath` | `oxide` | The binary to run. A bare name is looked up on `PATH`, then in `~/.local/bin` and `~/.cargo/bin`. |
-| `oxide.model` | *(empty)* | `--model`. Empty uses the model from the Oxide `config.json`. |
+| `oxide.model` | *(empty)* | `--model`. Empty uses the model from the Oxide `config.json`; the picker lists only the models remembered for that config's provider. |
 | `oxide.agent` | *(empty)* | `--agent`, loaded from the workspace's `.oxide/agents`. |
 | `oxide.reasoning` | `auto` | `--reasoning`: `auto`, `off`, `low`, `medium`, `high`. |
 | `oxide.projectTrust` | `default` | `always` passes `--approve`, `never` passes `--no-approve`; `default` follows `trust.json`/`defaultProjectTrust`. |
@@ -109,9 +109,12 @@ Provider logins live in the CLI: run **Oxide: Open Terminal (TUI)** and use
   permission rules mark `ask` is decided by Oxide's own `auto_approve` setting.
 - The footer reads the same files the CLI does, read-only: `config.json` for the
   model and window, `trust.json` plus `defaultProjectTrust` for the access chip,
-  `settings.json`/`.oxide/settings.json` for auto-compaction, `.oxide/agents` for
-  the agent names, and `.git/HEAD` for the branch. Nothing outside the folder you
-  opened is written, and a missing file only blanks the value it feeds.
+  `settings.json`/`.oxide/settings.json` for auto-compaction, the project's
+  `.oxide/agents` and `.claude/agents` for the agent names (only while the project
+  is trusted, since an untrusted run drops project resources), the CLI's own
+  plugin state for the agents installed plugins bundle, and `.git/HEAD` for the
+  branch. Nothing outside the folder you opened is written, and a missing file
+  only blanks the value it feeds.
 - Diff previews are rendered from the tool's arguments (the JSON stream carries
   no diff), and they read the file from disk — the panel is a preview, not a
   file viewer.

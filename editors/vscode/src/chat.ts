@@ -12,6 +12,7 @@ import {
   type TrustSetting,
   type TurnOptions,
 } from "./core/args";
+import { modelsForProvider } from "./core/config";
 import { footerState, nextReasoning, REASONING_LEVELS, type FooterState } from "./core/footer";
 import { projectInfo, type ProjectDeps, type ProjectInfo } from "./core/project";
 import {
@@ -602,13 +603,16 @@ export class ChatController {
     }
   }
 
-  /// The model picker. The models every provider has already been used with are
-  /// remembered in `config.json`, so they are offered by name instead of asking
-  /// for the id to be typed from memory.
+  /// The model picker. The models a provider has been used with are remembered
+  /// in `config.json`, so they are offered by name instead of asking for the id
+  /// to be typed from memory — only the active provider's, because the id is
+  /// sent to whichever provider the CLI has active and another provider's model
+  /// would run against the wrong endpoint.
   async setModel(): Promise<void> {
     this.refreshProject();
     const current = this.setting<string>("model", "").trim();
     const configured = this.project?.model ?? "";
+    const provider = this.project?.provider ?? "";
     type Pick = vscode.QuickPickItem & { model?: string; other?: boolean };
     const items: Pick[] = [
       {
@@ -617,9 +621,9 @@ export class ChatController {
         detail: "Use the model stored in the Oxide config",
         model: "",
       },
-      ...(this.project?.models ?? []).map((remembered) => ({
+      ...modelsForProvider(this.project, provider).map((remembered) => ({
         label: remembered.model,
-        description: remembered.model === current ? "in use" : remembered.provider,
+        description: remembered.model === current ? "in use" : provider,
         detail: `Last used with ${remembered.provider}`,
         model: remembered.model,
       })),

@@ -67,12 +67,17 @@ export function parseConfigSummary(raw: string | null): ConfigSummary | null {
   };
 }
 
-/// The context window from `OXIDE_CONTEXT_LIMIT`, when the user set one.
+/// The context window from `OXIDE_CONTEXT_LIMIT`, when the user set one. The
+/// CLI parses the value as a `u64` and falls back to its configured window when
+/// that fails, so a decimal (`1.5`), an exponent (`1e5`) or anything else has to
+/// be ignored here too — otherwise the footer would report a window the run is
+/// not using.
 export function contextWindowFromEnv(env: Record<string, string | undefined>): number {
-  const raw = env.OXIDE_CONTEXT_LIMIT;
-  if (!raw) return 0;
+  const raw = env.OXIDE_CONTEXT_LIMIT?.trim();
+  // A leading `+` is the one form `u64::from_str` accepts beyond the digits.
+  if (!raw || !/^\+?\d+$/.test(raw)) return 0;
   const value = Number(raw);
-  return Number.isFinite(value) && value > 0 ? value : 0;
+  return Number.isSafeInteger(value) && value > 0 ? value : 0;
 }
 
 /// The window the CLI measures context against, mirroring
@@ -84,4 +89,18 @@ export function contextWindow(
   summary: ConfigSummary | null,
 ): number {
   return contextWindowFromEnv(env) || Math.max(summary?.maxTokens ?? 0, 128_000);
+}
+
+/// The models remembered for one provider (`provider_models`), which is what a
+/// picker may offer: a model id is sent to whichever provider the CLI has
+/// active, so a remembered model from another one would run against the wrong
+/// endpoint. Switching provider is the terminal's `/login`, which updates
+/// `config.json` and therefore this list.
+export function modelsForProvider(
+  summary: { models: { provider: string; model: string }[] } | null,
+  provider: string,
+): { provider: string; model: string }[] {
+  const wanted = provider.trim().toLowerCase();
+  if (!wanted) return [];
+  return (summary?.models ?? []).filter((entry) => entry.provider.trim().toLowerCase() === wanted);
 }

@@ -30,6 +30,7 @@ editors/vscode/
       trust.ts        trust.json resolution and the access decision
       git.ts          the branch, read from .git/HEAD
       agents.ts       agent names for `--agent`
+      plugins.ts      installed plugins, whose agents `--agent` also resolves
       json.ts         a tolerant JSON object reader
       project.ts      the on-disk state the footer reports
       footer.ts       footer chips, usage line and context gauge
@@ -153,6 +154,19 @@ reads as untrusted because a non-interactive run cannot prompt), and
 `settings.ts` reads `compaction.enabled` from the global and the project
 `settings.json` with the project winning per key.
 
+Two of those reads are gated on the numbers they feed rather than taken at face
+value. The agent names come from the project's `.oxide/agents` and
+`.claude/agents` only while the project is trusted: an untrusted run reloads the
+ecosystem without project resources, but `Config::load` activates `--agent`
+before that reload, so offering a project agent would run its prompt and
+permissions inside a project the user did not trust. Installed plugins are read
+too, from the CLI's own plugin state (`plugins/config.json`, enabled entries
+with a live directory and manifest), because `ecosystem::load_enabled_plugins`
+loads their `agents/` ahead of project resources — the order is project, then
+plugins, then the global directories. The model picker offers only the active
+provider's remembered models: a model id is sent to whichever provider the CLI
+has active, so another provider's would run against the wrong endpoint.
+
 ## Wire protocol
 
 `core/protocol.ts` turns the CLI's Pi-shaped events into view updates. Only
@@ -246,9 +260,10 @@ resolution, binary lookup, and the transcript state machine — plus, in
 the desktop app's, and, in `test/commands.test.ts`, that every contributed
 command has a handler and every footer chip has a click handler. The footer's own
 readers are covered one file each: `test/settings.test.ts`, `test/trust.test.ts`,
-`test/git.test.ts`, `test/agents.test.ts`, `test/project.test.ts` (the four
-together, against an injected file map) and `test/footer.test.ts` (the labels,
-the usage line and the gauge).
+`test/git.test.ts`, `test/agents.test.ts`, `test/plugins.test.ts`,
+`test/project.test.ts` (the five together, against an injected file map, with the
+untrusted and plugin-agent cases spelled out) and `test/footer.test.ts` (the
+labels, the usage line and the gauge).
 
 ## Packaging
 

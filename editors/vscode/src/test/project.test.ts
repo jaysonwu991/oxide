@@ -105,11 +105,55 @@ describe("projectInfo", () => {
       "/home/me/.oxide/agents/dreamer.md": "\n",
       "/home/me/.claude/agents/legacy.md": "Legacy.\n",
     });
-    const info = projectInfo(pkg, "default", deps);
+    const info = projectInfo(pkg, "always", deps);
     assert.equal(info.branch, "fix/footer");
     assert.deepEqual(
       info.agents.map((agent) => `${agent.name}:${agent.description}`),
       ["dreamer:", "legacy:", "planner:config dir", "reviewer:Reviews"],
+    );
+  });
+
+  it("drops project agents when the project is not trusted", () => {
+    const deps = tree({
+      [path.join(repo, ".git/HEAD")]: "ref: refs/heads/main\n",
+      [path.join(repo, ".oxide/agents/reviewer.md")]: "Project prompt and permissions.\n",
+      "/config/agents/planner.md": "Global.\n",
+    });
+    // `default` with no saved decision resolves to untrusted, and the CLI
+    // activates `--agent` before it drops project resources, so the project's
+    // own agents must not be offered.
+    const untrusted = projectInfo(pkg, "default", deps);
+    assert.equal(untrusted.access, "untrusted");
+    assert.deepEqual(
+      untrusted.agents.map((agent) => agent.name),
+      ["planner"],
+    );
+    assert.deepEqual(
+      projectInfo(pkg, "always", deps).agents.map((agent) => agent.name),
+      ["planner", "reviewer"],
+    );
+  });
+
+  it("offers the agents installed plugins bundle", () => {
+    const plugin = "/config/plugins/hello";
+    const deps = tree({
+      [path.join(repo, ".oxide/agents/worker.md")]: "Project.\n",
+      "/config/plugins/config.json": JSON.stringify({
+        plugins: { hello: { name: "hello", enabled: true, path: plugin } },
+      }),
+      [`${plugin}/.oxide/plugin.json`]: "{}",
+      [`${plugin}/agents/helper.md`]: '---\nname: helper\ndescription: Bundled\n---\n',
+      [`${plugin}/agents/worker.md`]: "Loses to the project one.\n",
+    });
+    const trusted = projectInfo(pkg, "always", deps);
+    assert.deepEqual(
+      trusted.agents.map((agent) => `${agent.name}:${agent.description}`),
+      ["helper:Bundled", "worker:"],
+    );
+    // A plugin is a global resource: an untrusted project still gets it.
+    assert.deepEqual(
+      projectInfo(pkg, "never", deps).agents.map((agent) => agent.name),
+      ["helper", "worker"],
     );
   });
 

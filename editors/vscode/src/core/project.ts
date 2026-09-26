@@ -12,6 +12,7 @@ import { agentChoices, type AgentChoice, type AgentFile } from "./agents";
 import type { TrustSetting } from "./args";
 import { contextWindow, parseConfigSummary } from "./config";
 import { gitBranch } from "./git";
+import { enabledPluginDirs } from "./plugins";
 import { sharedSettings } from "./settings";
 import { resolveAccess, trustDecision, parseTrustStore, type Access } from "./trust";
 
@@ -49,9 +50,10 @@ export interface ProjectInfo {
 export function projectInfo(folder: string, trust: TrustSetting, deps: ProjectDeps): ProjectInfo {
   const configPath = path.join(deps.configDir, "config.json");
   const config = parseConfigSummary(deps.read(configPath));
+  const root = projectRoot(folder, deps);
   const settings = sharedSettings(
     deps.read(path.join(deps.configDir, "settings.json")),
-    deps.read(path.join(projectRoot(folder, deps) ?? folder, ".oxide", "settings.json")),
+    deps.read(path.join(root ?? folder, ".oxide", "settings.json")),
     deps.env,
   );
   const savedTrust = trustDecision(
@@ -59,17 +61,18 @@ export function projectInfo(folder: string, trust: TrustSetting, deps: ProjectDe
     folder,
     deps.realpath,
   );
+  const access = resolveAccess({ setting: trust, saved: savedTrust, defaultTrust: settings.defaultTrust });
   return {
     provider: config?.provider ?? "",
     model: config?.model ?? "",
     models: config?.models ?? [],
     contextWindow: contextWindow(deps.env, config),
-    access: resolveAccess({ setting: trust, saved: savedTrust, defaultTrust: settings.defaultTrust }),
+    access,
     savedTrust,
     defaultTrust: settings.defaultTrust,
     autoCompact: settings.autoCompact,
     branch: gitBranch(folder, { read: deps.read }),
-    agents: agentChoices(agentFiles(folder, deps)),
+    agents: agentChoices(agentFiles(root, access, deps)),
     configPath,
   };
 }
@@ -91,13 +94,20 @@ export function projectRoot(cwd: string, deps: Pick<ProjectDeps, "exists">): str
 }
 
 /// Every agent file the CLI could be asked for, in the CLI's own load order:
-/// project `.oxide` over project `.claude`, then the global directories. The
-/// first file of a name wins, which is what `upsert_agent` does by overwriting,
-/// so a project agent shadows a global one.
-function agentFiles(folder: string, deps: ProjectDeps): AgentFile[] {
-  const root = projectRoot(folder, deps);
+/// the project's layouts, then the installed plugins, then the global
+/// directories. The first file of a name wins, which is what `upsert_agent`
+/// does by overwriting, so a project agent shadows a plugin or global one.
+///
+/// The project's own directories are only read when it is trusted: an untrusted
+/// run reloads the ecosystem without project resources, but `Config::load`
+/// activates `--agent` before that reload, so offering a project agent would run
+/// its prompt and permissions inside an untrusted project.
+function agentFiles(root: string | null, access: Access, deps: ProjectDeps): AgentFile[] {
   const dirs = [
-    ...(root ? [path.join(root, ".oxide", "agents"), path.join(root, ".claude", "agents")] : []),
+    ...(root && access === "trusted"
+      ? [path.join(root, ".oxide", "agents"), path.join(root, ".claude", "agents")]
+      : []),
+    ...enabledPluginDirs(deps).map((dir) => path.join(dir, "agents")),
     path.join(deps.configDir, "agents"),
     path.join(deps.home, ".oxide", "agents"),
     path.join(deps.home, ".claude", "agents"),
