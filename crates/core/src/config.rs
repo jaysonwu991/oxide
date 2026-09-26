@@ -1181,7 +1181,10 @@ impl Config {
              wide `offset`/`limit`) once instead of re-reading the same path in small slices, and \
              issue several independent `read`, `grep`, `find`, or `ls` calls in the same step. Use \
              `grep` to locate a symbol or string, then read the surrounding lines. Only re-read a \
-             file after you edit it. Prefer the dedicated tools over shell equivalents: `read` to \
+             file after you edit it. Before you edit a region, read it and copy `oldText` from \
+             that result — the `N|` line numbers and trailing whitespace are tolerated, but text \
+             that has moved on is not, and a mismatch replies with the closest region to copy. \
+             Prefer the dedicated tools over shell equivalents: `read` to \
              inspect a file, `grep` to find text, `find` to locate files, and `ls` to list a \
              directory. Search the codebase with `grep`/`find`, never with a shell \
              `grep -r`/`rg`/`find` from the repo root: the tools skip `.git/`, `target/`, \
