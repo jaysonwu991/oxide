@@ -6,6 +6,8 @@
 //! on-disk configuration.
 
 pub mod agent;
+pub mod approval;
+pub mod approvals;
 pub mod auth;
 pub mod cli;
 pub mod clipboard;

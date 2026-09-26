@@ -450,7 +450,7 @@ fn default_true() -> bool {
 /// Reads `hideThinkingBlock` from the global `settings.json`, Pi's key for
 /// whether reasoning blocks start collapsed.
 pub fn load_hide_thinking_block() -> bool {
-    let path = config_dir_or_default().join("settings.json");
+    let path = settings_path();
     let Ok(text) = std::fs::read_to_string(path) else {
         return false;
     };
@@ -460,10 +460,40 @@ pub fn load_hide_thinking_block() -> bool {
         .unwrap_or(false)
 }
 
+/// The global `settings.json`, beside `config.json`. `OXIDE_SETTINGS_FILE`
+/// overrides it, which is how tests (and a project-aware caller) redirect it.
+pub fn settings_path() -> PathBuf {
+    if let Some(path) = std::env::var_os("OXIDE_SETTINGS_FILE") {
+        return PathBuf::from(path);
+    }
+    config_dir_or_default().join("settings.json")
+}
+
+/// Persists one key into a `settings.json`, preserving every other key, so a
+/// caller can write the global file or a redirected one. A front-end that
+/// needs the path it wrote reads [`settings_path`] itself.
+pub fn save_setting_to(path: &Path, key: &str, value: serde_json::Value) -> Result<()> {
+    let mut current = std::fs::read_to_string(path)
+        .ok()
+        .and_then(|text| serde_json::from_str::<serde_json::Value>(&text).ok())
+        .filter(serde_json::Value::is_object)
+        .unwrap_or_else(|| serde_json::json!({}));
+    current
+        .as_object_mut()
+        .expect("an object")
+        .insert(key.to_string(), value);
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)
+            .with_context(|| format!("creating {}", parent.display()))?;
+    }
+    let text = serde_json::to_string_pretty(&current).context("serializing settings")?;
+    std::fs::write(path, format!("{text}\n")).with_context(|| format!("writing {}", path.display()))
+}
+
 /// Reads `defaultProjectTrust` from the global `settings.json` in the oxide
 /// config directory (Pi keeps the same key in `~/.pi/agent/settings.json`).
 pub(crate) fn load_default_project_trust() -> crate::trust::DefaultTrust {
-    let path = config_dir_or_default().join("settings.json");
+    let path = settings_path();
     let Ok(text) = std::fs::read_to_string(path) else {
         return crate::trust::DefaultTrust::default();
     };
@@ -930,6 +960,17 @@ impl Config {
     /// desktop both start with it (the CLI reads the same `theme` key).
     pub fn set_theme_at(path: &Path, name: &str) -> Result<()> {
         Self::set_active_field_at(path, "theme", name)
+    }
+
+    /// Persists whether a permission-gated tool runs without asking, so the
+    /// next launch keeps the answer `/approvals on|off` gave.
+    pub fn set_auto_approve_at(path: &Path, auto_approve: bool) -> Result<()> {
+        Self::update_at(path, move |object| {
+            object.insert(
+                "auto_approve".to_string(),
+                serde_json::Value::Bool(auto_approve),
+            );
+        })
     }
 
     fn set_active_field_at(path: &Path, key: &str, value: &str) -> Result<()> {
@@ -1609,6 +1650,30 @@ mod tests {
 
         let reloaded: Config = serde_json::from_value(stored).unwrap();
         assert_eq!(reloaded.provider_models["openai"], "gpt-4o-mini");
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn set_auto_approve_rewrites_only_that_key() {
+        let dir = temp_dir("set-auto-approve");
+        let path = dir.join("config.json");
+        std::fs::write(&path, r#"{"provider":"zai","model":"glm-5"}"#).unwrap();
+
+        Config::set_auto_approve_at(&path, false).unwrap();
+
+        let stored: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        assert_eq!(stored["auto_approve"], false);
+        assert_eq!(stored["provider"], "zai");
+        assert_eq!(stored["model"], "glm-5");
+
+        // A missing or malformed file is recovered from rather than fatal, and
+        // the wider config round-trips the written key.
+        std::fs::remove_file(&path).unwrap();
+        Config::set_auto_approve_at(&path, true).unwrap();
+        let reloaded = Config::load(&dir, None, None, None, None).unwrap();
+        assert!(reloaded.auto_approve);
 
         std::fs::remove_dir_all(&dir).ok();
     }
