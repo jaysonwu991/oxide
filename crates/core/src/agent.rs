@@ -26,12 +26,6 @@ pub type RunFuture = Pin<Box<dyn Future<Output = ()> + Send>>;
 pub type Approver =
     Arc<dyn Fn(String, String) -> Pin<Box<dyn Future<Output = bool> + Send>> + Send + Sync>;
 
-pub struct ApprovalRequest {
-    pub tool: String,
-    pub detail: String,
-    pub respond: tokio::sync::oneshot::Sender<bool>,
-}
-
 /// A queue of user messages typed while the agent is busy. They are injected
 /// into the conversation between steps, so the model sees the guidance without
 /// interrupting the in-flight tool batch.
@@ -105,6 +99,15 @@ pub struct Runtime {
 
 #[derive(Debug, Clone)]
 pub enum AgentEvent {
+    /// A tool call is waiting on the user's permission decision. The front-end
+    /// answers by id through the approval broker; the event carries enough to
+    /// describe the call on its own, and arrives after the `ToolCall` it
+    /// belongs to so a view can pair it with the tool card it just rendered.
+    ApprovalRequest {
+        id: u64,
+        tool: String,
+        detail: String,
+    },
     Text(String),
     /// A fragment of the model's reasoning, streamed before its answer.
     ThinkingDelta(String),
@@ -271,6 +274,11 @@ pub fn run_subagent(
                 AgentEvent::ToolCall { name, args } => {
                     committed = report.len();
                     let _ = tx.send(AgentEvent::ToolCall { name, args });
+                }
+                // Forwarded so a subagent's prompt reaches the front-end: the
+                // request id is broker-wide, so the answer still lands.
+                AgentEvent::ApprovalRequest { id, tool, detail } => {
+                    let _ = tx.send(AgentEvent::ApprovalRequest { id, tool, detail });
                 }
                 AgentEvent::SubagentActivity { agent, tool, args } => {
                     let _ = tx.send(AgentEvent::SubagentActivity { agent, tool, args });
@@ -1794,6 +1802,11 @@ async fn task_inner(
                 });
             }
             AgentEvent::Retrying { .. } => output.truncate(committed),
+            // A subagent's approval prompt is surfaced as-is; the same broker
+            // answers it, so the reply reaches the subagent that is waiting.
+            AgentEvent::ApprovalRequest { id, tool, detail } => {
+                let _ = events.send(AgentEvent::ApprovalRequest { id, tool, detail });
+            }
             // A no-tool step commits here, not at the next tool call.
             AgentEvent::ThoughtDone { .. } => committed = output.len(),
             AgentEvent::ToolProgress { .. }
@@ -2951,6 +2964,78 @@ mod tests {
 
         assert!(permission_granted(Action::Deny, false, &approve, "bash", "ls").await);
         assert_eq!(calls.load(Ordering::SeqCst), 1);
+    }
+
+    /// The whole ask-and-answer path: a gated tool call surfaces an
+    /// `ApprovalRequest` on the run's event stream, the answer releases it, and
+    /// an `always` answer stops the next call from asking again.
+    #[tokio::test]
+    async fn an_always_answer_gates_the_tool_and_stops_the_next_prompt() {
+        let dir = std::env::temp_dir().join(format!("oxide_approval_gate_{}", std::process::id()));
+        std::fs::remove_dir_all(&dir).ok();
+        std::fs::create_dir_all(&dir).unwrap();
+
+        let (addr, server) = sse_server(vec![
+            bash_call_body("echo hello > out.txt"),
+            bash_call_body("echo again > out2.txt"),
+            answer_body("Done."),
+        ])
+        .await;
+        let config = Config {
+            provider: "deepseek".into(),
+            model: "deepseek-flash".into(),
+            base_url: format!("http://{addr}"),
+            api_key: "sk-test".into(),
+            // Without this every `ask` rule is allowed without a prompt.
+            auto_approve: false,
+            ..Config::default()
+        };
+        let store = crate::approvals::ApprovalStore::load_from(dir.join("approvals.json"));
+        let broker = Arc::new(crate::approval::ApprovalBroker::from_store(
+            store,
+            crate::approval::APPROVAL_TIMEOUT,
+        ));
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        let mut runtime = test_runtime().await;
+        runtime.approve = broker.approver(&dir, tx.clone(), Steering::new());
+
+        let run_handle = tokio::spawn(run(
+            config,
+            dir.clone(),
+            vec![Message::user("write the files")],
+            tx,
+            runtime,
+        ));
+
+        let mut requests = Vec::new();
+        let mut finished = None;
+        while let Some(event) = rx.recv().await {
+            match event {
+                AgentEvent::ApprovalRequest { id, tool, detail } => {
+                    requests.push((tool.clone(), detail.clone()));
+                    assert!(broker.resolve(id, "always", None), "the request resolves");
+                }
+                AgentEvent::Finished(messages) => {
+                    finished = Some(messages);
+                    break;
+                }
+                _ => {}
+            }
+        }
+        run_handle.await.unwrap();
+        assert_eq!(server.await.unwrap().len(), 3);
+
+        // The first call was described and approved; the second was released
+        // by the saved rule instead of prompting again.
+        assert_eq!(requests.len(), 1, "asked once: {requests:?}");
+        assert_eq!(requests[0].0, "bash");
+        assert_eq!(requests[0].1, "echo hello > out.txt");
+        assert!(finished.is_some(), "the turn finished");
+        assert!(dir.join("out.txt").is_file(), "the approved call ran");
+        assert!(dir.join("out2.txt").is_file(), "the remembered rule ran");
+        assert!(broker.list(&dir).contains(&"bash".to_string()));
+
+        std::fs::remove_dir_all(&dir).ok();
     }
 
     #[tokio::test]

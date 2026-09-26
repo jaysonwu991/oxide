@@ -63,6 +63,47 @@ button:disabled {
   cursor: default;
 }
 
+/* Icon-only buttons (the header's new/resume, the composer's attach/send/stop).
+   A square hit target that centers an inline SVG, so the chrome reads like
+   Claude Code's instead of a row of text buttons. */
+button.icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+  padding: 0;
+  color: var(--vscode-descriptionForeground);
+  background: transparent;
+  border-color: transparent;
+  border-radius: 4px;
+}
+
+button.icon:hover:not(:disabled) {
+  color: var(--vscode-foreground);
+  background: var(--vscode-toolbar-hoverBackground, rgba(128, 128, 128, 0.15));
+}
+
+button.icon.primary {
+  color: var(--vscode-button-foreground);
+  background: var(--vscode-button-background);
+}
+
+button.icon.primary:hover:not(:disabled) {
+  background: var(--vscode-button-hoverBackground);
+}
+
+button.icon svg {
+  display: block;
+}
+
+#actions {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  flex: 0 0 auto;
+}
+
 code,
 pre,
 .mono {
@@ -294,6 +335,112 @@ pre,
 
 .notice.error {
   color: var(--vscode-editorError-foreground, var(--vscode-charts-red));
+}
+
+/* ---------- approval card ---------- */
+
+.approval {
+  border: 1px solid var(--vscode-panel-border, rgba(128, 128, 128, 0.3));
+  border-left: 3px solid var(--vscode-editorWarning-foreground, var(--vscode-charts-orange, #d18616));
+  border-radius: 4px;
+  margin: 0 0 10px;
+  background: var(--vscode-editor-background);
+}
+
+.approval.allowed {
+  border-left-color: var(--vscode-charts-green, #89d185);
+}
+
+.approval.denied {
+  border-left-color: var(--vscode-charts-red, #f14c4c);
+}
+
+/* A question still waiting for an answer is the one thing on screen that needs
+   the user, so it sits on the widget background rather than the editor's. */
+.approval.waiting {
+  background: var(--vscode-editorWidget-background, var(--vscode-editor-background));
+}
+
+.alock {
+  font-size: 0.9em;
+}
+
+.ahead {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  padding: 5px 8px 0;
+  font-size: 0.85em;
+  font-weight: 600;
+  color: var(--vscode-editorWarning-foreground, var(--vscode-charts-orange, #d18616));
+}
+
+.approval.allowed .ahead {
+  color: var(--vscode-charts-green, #89d185);
+}
+
+.approval.denied .ahead {
+  color: var(--vscode-charts-red, #f14c4c);
+}
+
+.awhat {
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: 6px;
+  padding: 4px 8px 0;
+}
+
+.atool {
+  font-family: var(--vscode-editor-font-family, monospace);
+  font-size: 0.85em;
+  border: 1px solid var(--vscode-panel-border, rgba(128, 128, 128, 0.35));
+  border-radius: 3px;
+  padding: 0 5px;
+}
+
+.asub {
+  font-size: 0.85em;
+  color: var(--vscode-descriptionForeground);
+}
+
+.adetail {
+  margin: 6px 8px 0;
+  padding: 6px 8px;
+  max-height: 30vh;
+  overflow: auto;
+  background: var(--vscode-textCodeBlock-background, rgba(128, 128, 128, 0.12));
+  border-radius: 3px;
+  font-family: var(--vscode-editor-font-family, monospace);
+  font-size: var(--code-size);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.aactions {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+  padding: 8px;
+}
+
+.aactions .awaiting {
+  font-size: 0.8em;
+  color: var(--vscode-descriptionForeground);
+}
+
+.aactions .adone {
+  font-size: 0.85em;
+  color: var(--vscode-descriptionForeground);
+}
+
+.approval.allowed .adone {
+  color: var(--vscode-charts-green, #89d185);
+}
+
+.approval.denied .adone {
+  color: var(--vscode-charts-red, #f14c4c);
 }
 
 /* ---------- tool cards ---------- */
@@ -633,16 +780,7 @@ footer {
   padding: 2px 0 2px;
 }
 
-#attach {
-  padding: 2px 8px;
-  font-size: 0.82em;
-  border-radius: 4px;
-  color: var(--vscode-descriptionForeground);
-}
-
-#attach:hover {
-  color: var(--vscode-foreground);
-}
+/* Attach, stop and send are icon-only; their shape comes from `button.icon`. */
 
 #status {
   display: inline-flex;
@@ -683,19 +821,6 @@ footer {
   font-size: 0.82em;
   font-variant-numeric: tabular-nums;
   flex: 0 0 auto;
-}
-
-#stop {
-  padding: 2px 8px;
-  font-size: 0.82em;
-  border-radius: 4px;
-}
-
-#send {
-  padding: 3px 12px;
-  font-size: 0.85em;
-  font-weight: 500;
-  border-radius: 4px;
 }
 
 #dropzone {

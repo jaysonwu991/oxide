@@ -1,17 +1,22 @@
 // The oxide CLI process layer: locating the binary, streaming one turn's JSON
 // events, and running one-shot commands (`sessions list`, `--version`).
 //
-// A turn is one process: `oxide --mode json -p` with the prompt on stdin. The
-// process streams Pi-shaped JSONL events and exits, so stopping a run is a
-// kill, and the next turn resumes the same thread with `--session <id>` (the
-// id arrives in the `session` header event).
+// A turn is one process: `oxide --mode rpc` with the prompt written to its
+// stdin as a request frame. The process streams Pi-shaped JSONL events; a tool
+// approval is answered on the same pipe (`core/rpc.ts`) rather than by starting
+// another process, and the turn ends with a `quit` frame so the process exits
+// on its own. Stopping a run is still a kill, and the next turn resumes the
+// same thread with `--session <id>` (the id arrives in the `session` header
+// event).
 
 import { spawn } from "node:child_process";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 
+import type { ApprovalDecision } from "./core/approvals";
 import { drainLines, parseEvent, type WireEvent } from "./core/protocol";
+import { approvalFrame, promptFrame, quitFrame } from "./core/rpc";
 
 export interface BinaryLookup {
   env: NodeJS.ProcessEnv;
@@ -102,35 +107,61 @@ export interface TurnCallbacks {
   onExit: (result: { code: number | null; signal: string | null; error?: string }) => void;
 }
 
+export interface TurnInput {
+  /// The assembled prompt (context blocks included) sent as a `prompt` request.
+  prompt: string;
+  /// Absolute paths of the images/PDFs the message carries, which the CLI reads
+  /// as media parts of that prompt.
+  images?: readonly string[];
+}
+
 export interface Turn {
+  /// Answers a waiting tool approval. An unknown id is ignored by the CLI, so a
+  /// double answer is harmless.
+  approve(requestId: number, decision: ApprovalDecision): void;
   /// Stops the process. The session on disk stays intact, so the thread can be
   /// resumed with `--session <id>`.
   cancel(): void;
 }
 
-/// Starts one agent turn. The prompt is written to stdin and the stream is
-/// closed, which is how `-p` receives a prompt without exposing it to `@file`
-/// expansion.
+/// Starts one agent turn. The prompt is written to stdin as a request frame and
+/// the pipe stays open for approvals until the turn ends.
 export function startTurn(
   command: string,
   args: string[],
   cwd: string,
-  prompt: string,
+  input: TurnInput,
   callbacks: TurnCallbacks,
 ): Turn {
   const child = spawn(command, args, { cwd, env: process.env });
   let stdoutBuffer = "";
   let stderrBuffer = "";
+  let exited = false;
 
   child.stdout.setEncoding("utf8");
   child.stderr.setEncoding("utf8");
+
+  // `agent_end` is the last event of the turn, but the CLI waits on its input
+  // channel for another request instead of exiting, so the session is ended
+  // and its stdin closed here.
+  const quit = (): void => {
+    if (exited) return;
+    try {
+      child.stdin.write(quitFrame());
+      child.stdin.end();
+    } catch {
+      // The pipe is already gone; the exit handler reports why.
+    }
+  };
 
   child.stdout.on("data", (chunk: string) => {
     const { lines, rest } = drainLines(stdoutBuffer, chunk);
     stdoutBuffer = rest;
     for (const line of lines) {
       const event = parseEvent(line);
-      if (event) callbacks.onEvent(event);
+      if (!event) continue;
+      if (event.type === "agent_end") quit();
+      callbacks.onEvent(event);
     }
   });
 
@@ -145,7 +176,6 @@ export function startTurn(
   // A failed spawn emits `error` and then `close`, and both are reported once.
   // The controller treats an exit as final (it clears the run and drains the
   // queue), so a second callback is ignored.
-  let exited = false;
   const exit = (result: { code: number | null; signal: string | null; error?: string }): void => {
     if (exited) return;
     exited = true;
@@ -170,12 +200,20 @@ export function startTurn(
       // A process that exits before reading stdin (a startup failure) closes
       // the pipe; the exit handler reports the real problem.
     });
-    child.stdin.end(prompt);
+    child.stdin.write(promptFrame(input.prompt, input.images ?? []));
   } catch {
     // Nothing to do: the exit handler reports the failure.
   }
 
   return {
+    approve(requestId: number, decision: ApprovalDecision) {
+      if (exited) return;
+      try {
+        child.stdin.write(approvalFrame(requestId, decision));
+      } catch {
+        // The turn is gone; the approval simply stays unanswered.
+      }
+    },
     cancel() {
       child.kill("SIGTERM");
       setTimeout(() => {

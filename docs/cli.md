@@ -339,11 +339,12 @@ Focus: $ARGUMENTS
 - Built-in commands: `/help`, `/hotkeys`, `/exit`, `/new`, `/session`, `/resume`,
   `/tree`, `/fork`, `/clone`, `/name`, `/model`, `/thinking`, `/theme`,
   `/trust`, `/export`, `/reload`, `/init`, `/login`, `/logout`, `/models`,
-  `/mcps`, `/plugins`, `/marketplaces`, `/notify`, `/usage`, `/connect`, `/undo`,
-  `/redo`, `/compact`, `/copy`, `/copy all`, and `/skill:<name>`. After a space,
-  the built-in commands autocomplete their fixed arguments too (`/notify sound`,
-  `/usage currency usd`, `/plugins marketplace update`, and providers for
-  `/login`); Tab accepts the highlighted suggestion.
+  `/mcps`, `/plugins`, `/marketplaces`, `/notify`, `/approvals`, `/usage`,
+  `/connect`, `/undo`, `/redo`, `/compact`, `/copy`, `/copy all`, and
+  `/skill:<name>`. After a space, the built-in commands autocomplete their fixed
+  arguments too (`/notify sound`, `/approvals on`, `/usage currency usd`,
+  `/plugins marketplace update`, and providers for `/login`); Tab accepts the
+  highlighted suggestion.
 - **Remove** a command by deleting its file.
 
 ## Prompt templates
@@ -564,8 +565,32 @@ permission:
   `list_dir`, `glob`).
 - Patterns match the `bash` command or a file tool's `path`; `*` and `?` are
   wildcards. The last matching rule wins.
-- `auto_approve: true` in `config.json` skips prompts for `ask` rules. When
-  `false`, `ask` is denied in non-interactive (`-p`) mode.
+- `auto_approve: true` in `config.json` (the default) skips prompts for `ask`
+  rules. When it is `false`, the TUI asks: the question appears in the transcript
+  and the composer becomes the answer field, where `y` runs the tool once, `a`
+  allows it for this project from now on, and `n` — optionally with a reason,
+  which the agent reads as guidance — refuses it. `Esc` refuses without a reason,
+  and an empty line leaves the request open.
+- `--ask-approvals` asks for one run (it switches `auto_approve` off for it) and
+  `--no-ask-approvals` runs gated tools without asking; either overrides the
+  stored value.
+- In the TUI, `/approvals [on|off]` toggles that same `auto_approve` key for
+  later runs, `/approvals list` shows the state and the tools this project allows
+  from now on, and `/approvals clear` forgets them.
+- The VS Code panel asks on its own: `oxide.askApprovals` (default on) starts the
+  turn with `--ask-approvals`, so the shared `config.json` value does not decide
+  there.
+- Without an interactive host a gated call is denied rather than run: `-p`,
+  `--mode json`, and an `--mode rpc` client that did not pass `--ask-approvals`
+  never prompt. Those two non-interactive modes have no answer channel at all, so
+  they reject the approval flags instead of silently running the tool they were
+  meant to gate.
+- The desktop app shows the same question as a card in the transcript (`Deny` /
+  `Allow once` / `Always allow`) and holds the tool until it is answered.
+- `Always allow` is remembered per project in `<config>/Oxide/approvals.json`,
+  which every front-end reads — the TUI included — so the question does not come
+  back for that tool in that repository. An answer that never arrives is denied
+  after five minutes so a turn cannot hang.
 
 There is no permission mode: the rules and `auto_approve` decide every call.
 For a read-only run, allowlist the read tools with `--tools` (e.g.

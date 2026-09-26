@@ -3,12 +3,13 @@
 //! When a permission rule resolves to `ask`, the agent awaits this broker. The
 //! broker emits an `approval-request` event carrying a request id, and the UI
 //! answers with the `resolve_approval` command (`deny`, `once`, or `always`).
-//! `always` records a per-project rule in the [`ApprovalStore`] so the prompt
-//! does not repeat for that tool. A request that never gets an answer times out
-//! as a denial so a turn cannot hang forever.
+//! `always` records a per-project rule in the shared
+//! [`oxide_core::approvals::ApprovalStore`] so the prompt does not repeat for
+//! that tool in the terminal, the extension or here. A request that never gets
+//! an answer times out as a denial so a turn cannot hang forever.
 
 use oxide_core::agent::Approver;
-use oxide_desktop::ApprovalStore;
+use oxide_core::approvals::ApprovalStore;
 use serde_json::json;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};

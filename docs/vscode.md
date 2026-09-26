@@ -2,7 +2,7 @@
 
 The `editors/vscode` package is a TypeScript VS Code extension that drives the
 same `oxide` binary the terminal runs. It is **not** part of the Cargo
-workspace: it shells out to `oxide --mode json -p`, so it needs no Rust changes
+workspace: it shells out to `oxide --mode rpc`, so it needs no Rust changes
 and no `oxide-core` link, and it inherits the CLI's provider logins,
 `config.json`, `settings.json`, project trust, sessions, `AGENTS.md`, agents,
 skills, plugins, and MCP servers exactly as they are.
@@ -72,6 +72,15 @@ its view never appear and the activity-bar pane is the only one.
 the order), falling back to the secondary side bar's and then to the
 activity-bar one when that focus command does not exist.
 
+The panel's own chrome is icon-first, the way Claude Code's is. The header shows
+the thread's title — the resumed session's name when the picker knew one, else
+the first message sent, else **New chat** — next to icon buttons for a new or
+resumed session; the composer's **Attach**, **Stop** and **Send** are icons too,
+so the only text in the chrome is the phase and the numbers. The view-title
+actions (`oxide.newSession`, `oxide.resumeSession`) carry the codicon `$(add)`
+and `$(history)` for the same reason, so VS Code draws them as icons instead of
+inline text.
+
 ## Brand assets
 
 Both icons are the desktop app's: `media/oxide.svg` redraws the mark inside
@@ -103,16 +112,33 @@ provider/model.
 
 ## Agent turns
 
-Each turn is one process: `oxide --mode json -p` with the prompt written to
-stdin (so the text never goes through argv or the CLI's positional `@file`
-expansion), started by `cli.ts::startTurn`. Its stdout is framed by `drainLines`
-(compacted once per chunk) and each line parsed by `parseEvent`; the `session`
-header supplies the id reused for the next message with `--session <id>`, and
-`--continue` resumes the newest session.
+Each turn is one process: `oxide --mode rpc` with the prompt written to stdin
+as a request frame (`core/rpc.ts`), so the text never goes through argv or the
+CLI's positional `@file` expansion, and the pipe stays open for the one request
+the CLI has to send back mid-turn — a tool approval. Its stdout is framed by
+`drainLines` (compacted once per chunk) and each line parsed by `parseEvent`;
+the `session` header supplies the id reused for the next message with
+`--session <id>`, and `--continue` resumes the newest session. The turn ends
+with a `quit` frame when `agent_end` arrives, so the process exits on its own.
 
 - **Queue / stop** — a message sent while a turn runs is queued and started
   after it finishes; **Stop** kills the process (SIGTERM, then SIGKILL after 3
   s). The session on disk is intact, so the next message continues the thread.
+- **Approvals** — with `oxide.askApprovals` on (the default) a turn starts with
+  `--ask-approvals`, so a tool a permission rule holds comes back as an
+  `approval_request` event instead of running. The turn waits: a card appears in
+  the transcript naming the tool, what it would do (`Run a shell command`) and
+  the command or path it would touch, with **Deny** / **Allow once** / **Always
+  allow**. The answer travels back over the same pipe as an `approval` frame
+  (`Approve` in `core/approvals.ts`; `chat.ts::approve` → `cli.ts`), and
+  **Always allow** is remembered by the CLI's own broker in
+  `<config>/Oxide/approvals.json` — the file the terminal and the desktop app
+  read — so the question does not come back for that tool in that project. An
+  unanswered card is settled when the run ends or is stopped, since the request
+  it belonged to went with the process (the CLI itself denies after 5 minutes).
+  The flag is passed explicitly in either direction, so `oxide.askApprovals`
+  decides for a panel run; `askApprovals` in the shared `settings.json` still
+  decides for the terminal and the desktop app.
 - **Per folder** — sessions are per project, so switching to a different
   workspace folder resets the transcript and starts its own thread.
 - **Usage** — `usage` events accumulate input/output/cache tokens and cost for
@@ -143,10 +169,10 @@ it.
 - **Composer** — the message box: the attachment strip, the textarea and the
   toolbar inside one bordered block. It starts two rows tall (`rows="2"`) and
   grows with the message up to 200px, where it scrolls instead.
-- **Toolbar** — **Attach** (the file picker), the live phase with an elapsed
-  timer while a turn runs, **Stop** and **Send** (which reads **Queue** while a
-  turn is running). The primary action never moves, because it is anchored to
-  the right of the same row.
+- **Toolbar** — the **Attach** icon (the file picker), the live phase with an
+  elapsed timer while a turn runs, and the **Stop** and **Send** icons (**Send**
+  reads as **Queue** while a turn is running). The primary action never moves,
+  because it is anchored to the right of the same row.
 - **Branch** — the repository the folder sits in, read from `.git/HEAD` rather
   than through the Git extension, so it needs no other extension installed; a
   worktree's or submodule's `gitdir:` pointer is followed to the real HEAD.
@@ -169,7 +195,7 @@ it as text. Each one becomes a chip above the textarea: a thumbnail for an image
 the host could render small enough to send, a glyph and the file size otherwise,
 with a ✕ to drop it and a **Clear** to drop them all.
 
-The CLI takes attachment *paths* (`--image <path>`), so:
+The CLI takes attachment *paths*, so:
 
 - a file already on disk is passed through as its absolute path, and its
   thumbnail is read by `src/attachments.ts` only when the file is small enough to
@@ -221,8 +247,8 @@ has active, so another provider's would run against the wrong endpoint.
 
 Events consumed: `session`, `thinking`, `thinking_done`, `message_update`
 (`thinking_delta` / `text_delta`), `tool_call`, `tool_execution_update`,
-`tool_execution_end`, `usage`, `auto_retry_start`, `compaction`, `error`, and
-`agent_end`. `thinking_done` marks the end of a model step (its `ThoughtDone`
+`tool_execution_end`, `usage`, `auto_retry_start`, `compaction`, `error`,
+`approval_request`, and `agent_end`. `thinking_done` marks the end of a model step (its `ThoughtDone`
 counterpart), so a later step's output does not merge into, and a retry cannot
 discard, a previous step's committed reply.
 
@@ -253,8 +279,8 @@ kind would otherwise fail silently on either side of the bridge.
 `core/prompt.ts` builds the prompt the same way the CLI's own `@file` expansion
 reads: each attached block is a `--- path[:range] ---` header plus its text,
 then the message. Images and PDFs (`png`, `jpg`/`jpeg`, `gif`, `webp`, `bmp`)
-are not inlined; they are passed as `--image` and the CLI attaches them as
-media.
+are not inlined; they are attached as media, named in the `prompt` request the
+CLI reads (`images` in `core/rpc.ts`).
 
 Because the prompt is sent on stdin, a message's own `@path` references are
 resolved by the extension instead of the CLI: `@src/main.rs` becomes a context
@@ -264,7 +290,7 @@ punctuation is not taken as part of the path.
 
 ## Diff previews
 
-The `--mode json` stream does not carry `AgentEvent::ToolResult`'s
+The event stream does not carry `AgentEvent::ToolResult`'s
 `DiffPreview`, so `core/preview.ts` rebuilds one from the tool's arguments
 against the current file. It uses the same LCS line diff and the same compact
 line-numbered layout as `oxide_core::diff`, and applies `edit` calls the way the
@@ -295,7 +321,7 @@ from decisions taken in the browser — and the composer's own interactions (pas
 drag and drop, the canvas resize before a pasted image is sent on) are the only
 logic in the webview. Nothing there writes to disk: a pasted blob goes back to
 the host as a `data:` URL, and the host is what decides which file to write and
-which `--image` path to pass.
+which path to send.
 
 Links in a reply open in the system browser (`chatView.ts::openUrl`), since a
 webview cannot navigate to a remote page; a path in a tool card opens in the
@@ -334,13 +360,16 @@ Press <kbd>F5</kbd> with the folder open to launch an Extension Development
 Host. The tests cover the pure modules only: argv building, prompt assembly and
 `@path` expansion, attachment types and naming, diff and tool previews,
 session-list parsing, config-dir resolution, binary lookup, and the transcript
-state machine — plus, in `test/views.test.ts`, that the chat view ids the host
+state machine — plus, in `test/approvals.test.ts`, the approval request parsing,
+the titles a card shows and the request frames the CLI reads, in
+`test/views.test.ts`, that the chat view ids the host
 registers match the views `package.json` contributes, in `test/brand.test.ts`,
 that the two icons stay the desktop app's, in `test/commands.test.ts`, that
 every contributed command has a handler, every footer chip has a click handler,
 and every message the webview posts is handled by `chatView.ts`, and in
 `test/webview.test.ts`, that `media/main.js` — plain JavaScript with no type
-checking — paints the footer, the chips, the attachment strip and the disabled
+checking — paints the footer, the chips, the attachment strip, the approval
+card and the disabled
 state of Send from its messages when it runs against a DOM stub. The footer's own
 readers are covered one file each: `test/settings.test.ts`, `test/trust.test.ts`,
 `test/git.test.ts`, `test/agents.test.ts`, `test/plugins.test.ts`,

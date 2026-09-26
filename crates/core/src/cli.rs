@@ -5,11 +5,13 @@
 //! matching Pi's event-stream contract.
 
 use crate::agent::AgentEvent;
+use crate::approval::ApprovalBroker;
 use crate::session::SessionLog;
 use anyhow::{Context, Result};
 use serde_json::{json, Value};
 use std::io::{BufRead, Write};
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 /// Non-interactive output mode selected by `--mode`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -109,6 +111,61 @@ fn matches_tool(rule: &str, raw: &str, canonical: &str) -> bool {
     rule == raw || rule == canonical || crate::tools::canonical_tool_name(rule) == canonical
 }
 
+/// A request a front-end sends over the `--mode rpc` input channel.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RpcRequest {
+    /// Start an agent turn. `images` are attachment paths for the message.
+    Prompt { text: String, images: Vec<PathBuf> },
+    /// Answer a pending approval request. `decision` is `deny`, `once` or
+    /// `always`; a `deny` may carry a message for the agent.
+    Approval {
+        id: u64,
+        decision: String,
+        message: Option<String>,
+    },
+    /// End the session.
+    Quit,
+}
+
+impl RpcRequest {
+    /// Parses one JSONL request. Unknown shapes and unknown types return
+    /// `None`, so a newer front-end can send a request this build ignores.
+    pub fn parse(value: &Value) -> Option<Self> {
+        match value.get("type").and_then(Value::as_str)? {
+            "prompt" => {
+                let text = value
+                    .get("message")
+                    .or_else(|| value.get("text"))
+                    .and_then(Value::as_str)
+                    .unwrap_or("")
+                    .to_string();
+                let images = value
+                    .get("images")
+                    .and_then(Value::as_array)
+                    .map(|values| {
+                        values
+                            .iter()
+                            .filter_map(Value::as_str)
+                            .map(PathBuf::from)
+                            .collect()
+                    })
+                    .unwrap_or_default();
+                Some(RpcRequest::Prompt { text, images })
+            }
+            "approval" => Some(RpcRequest::Approval {
+                id: value.get("id").and_then(Value::as_u64)?,
+                decision: value.get("decision").and_then(Value::as_str)?.to_string(),
+                message: value
+                    .get("message")
+                    .and_then(Value::as_str)
+                    .map(str::to_string),
+            }),
+            "quit" | "abort" => Some(RpcRequest::Quit),
+            _ => None,
+        }
+    }
+}
+
 /// JSON line emitted at the start of a session, matching Pi's header shape.
 pub fn session_header(log: &SessionLog) -> Value {
     json!({
@@ -124,6 +181,14 @@ pub fn session_header(log: &SessionLog) -> Value {
 /// keeps the mapping explicit).
 pub fn event_json(event: &AgentEvent) -> Option<Value> {
     let value = match event {
+        // A tool is waiting for the user's decision. The consumer answers with
+        // an `approval` request on the RPC input channel (see [`RpcRequest`]).
+        AgentEvent::ApprovalRequest { id, tool, detail } => json!({
+            "type": "approval_request",
+            "id": id,
+            "toolName": tool,
+            "detail": detail,
+        }),
         AgentEvent::Thought { .. } => json!({ "type": "thinking" }),
         // The model step finished streaming. A consumer that renders the live
         // transcript uses this as the step boundary: text and reasoning after
@@ -236,14 +301,20 @@ pub async fn run_json(
 }
 
 /// RPC mode: reads LF-delimited JSONL requests from stdin and writes JSONL
-/// events to stdout. Each request is `{"type":"prompt","message":"..."}`.
+/// events to stdout. Each request is `{"type":"prompt","message":"..."}`; an
+/// `{"type":"approval","id":1,"decision":"once"}` answers a pending tool
+/// approval, and `quit`/`abort` ends the session.
 pub async fn run_rpc(
-    mut rx: tokio::sync::mpsc::UnboundedReceiver<AgentEvent>,
-    prompt_tx: tokio::sync::mpsc::UnboundedSender<String>,
+    mut events: tokio::sync::mpsc::UnboundedReceiver<AgentEvent>,
+    mut control: tokio::sync::mpsc::UnboundedReceiver<Value>,
+    prompts: tokio::sync::mpsc::UnboundedSender<RpcRequest>,
+    approvals: Option<Arc<ApprovalBroker>>,
 ) -> Result<()> {
     // Reads LF-delimited JSONL requests until stdin closes or a `quit`/`abort`
-    // request arrives. Dropping `prompt_tx` on EOF lets the driver finish and
-    // close the event channel, which ends the loop below.
+    // request arrives. Dropping `prompts` on EOF lets the driver finish and
+    // close the event channel, which ends the loop below. Approvals are
+    // answered straight from this thread, because the driver is busy streaming
+    // the very turn that is waiting for the answer.
     std::thread::spawn(move || {
         let stdin = std::io::stdin();
         for line in stdin.lock().lines() {
@@ -255,25 +326,49 @@ pub async fn run_rpc(
             let Ok(value) = serde_json::from_str::<Value>(line) else {
                 continue;
             };
-            match value.get("type").and_then(Value::as_str) {
-                Some("prompt") => {
-                    if let Some(message) = value.get("message").and_then(Value::as_str) {
-                        if prompt_tx.send(message.to_string()).is_err() {
-                            break;
-                        }
+            match RpcRequest::parse(&value) {
+                Some(request @ RpcRequest::Prompt { .. }) => {
+                    if prompts.send(request).is_err() {
+                        break;
                     }
                 }
-                Some("quit") | Some("abort") => break,
-                _ => {}
+                Some(RpcRequest::Approval {
+                    id,
+                    decision,
+                    message,
+                }) => {
+                    if let Some(broker) = &approvals {
+                        broker.resolve(id, &decision, message.as_deref());
+                    }
+                }
+                Some(RpcRequest::Quit) => break,
+                None => {}
             }
         }
     });
 
     let mut stdout = std::io::stdout();
-    while let Some(event) = rx.recv().await {
-        if let Some(value) = event_json(&event) {
-            writeln!(stdout, "{value}")?;
-            stdout.flush()?;
+    let mut control_open = true;
+    loop {
+        tokio::select! {
+            event = events.recv() => match event {
+                Some(event) => {
+                    if let Some(value) = event_json(&event) {
+                        writeln!(stdout, "{value}")?;
+                        stdout.flush()?;
+                    }
+                }
+                None => break,
+            },
+            // Host messages interleaved with the event stream: the session
+            // header, and anything else the driver needs to say.
+            message = control.recv(), if control_open => match message {
+                Some(value) => {
+                    writeln!(stdout, "{value}")?;
+                    stdout.flush()?;
+                }
+                None => control_open = false,
+            },
         }
     }
     Ok(())
@@ -302,6 +397,70 @@ mod tests {
         assert!(both.permits("read"));
         assert!(!both.permits("write_file"));
         assert!(!both.permits("bash"));
+    }
+
+    #[test]
+    fn rpc_requests_parse() {
+        let prompt = RpcRequest::parse(&json!({
+            "type": "prompt",
+            "message": "fix the build",
+            "images": ["shot.png", 7, "diagram.pdf"],
+        }))
+        .unwrap();
+        assert_eq!(
+            prompt,
+            RpcRequest::Prompt {
+                text: "fix the build".into(),
+                images: vec![PathBuf::from("shot.png"), PathBuf::from("diagram.pdf")],
+            }
+        );
+
+        // `text` is accepted as an alias, with no images.
+        assert_eq!(
+            RpcRequest::parse(&json!({"type": "prompt", "text": "hi"})).unwrap(),
+            RpcRequest::Prompt {
+                text: "hi".into(),
+                images: Vec::new()
+            }
+        );
+
+        assert_eq!(
+            RpcRequest::parse(&json!({"type": "approval", "id": 3, "decision": "always"})).unwrap(),
+            RpcRequest::Approval {
+                id: 3,
+                decision: "always".into(),
+                message: None
+            }
+        );
+        assert_eq!(
+            RpcRequest::parse(&json!({
+                "type": "approval",
+                "id": 4,
+                "decision": "deny",
+                "message": "use tabs"
+            }))
+            .unwrap(),
+            RpcRequest::Approval {
+                id: 4,
+                decision: "deny".into(),
+                message: Some("use tabs".into())
+            }
+        );
+
+        assert_eq!(
+            RpcRequest::parse(&json!({"type": "quit"})),
+            Some(RpcRequest::Quit)
+        );
+        assert_eq!(
+            RpcRequest::parse(&json!({"type": "abort"})),
+            Some(RpcRequest::Quit)
+        );
+        // An approval without an id, and an unknown type, are ignored.
+        assert_eq!(
+            RpcRequest::parse(&json!({"type": "approval", "decision": "once"})),
+            None
+        );
+        assert_eq!(RpcRequest::parse(&json!({"type": "telepathy"})), None);
     }
 
     #[test]
@@ -355,6 +514,17 @@ mod tests {
         .unwrap();
         assert_eq!(retry["type"], "auto_retry_start");
         assert_eq!(retry["maxAttempts"], 3);
+
+        let approval = event_json(&AgentEvent::ApprovalRequest {
+            id: 7,
+            tool: "bash".into(),
+            detail: "rm -rf /".into(),
+        })
+        .unwrap();
+        assert_eq!(approval["type"], "approval_request");
+        assert_eq!(approval["id"], 7);
+        assert_eq!(approval["toolName"], "bash");
+        assert_eq!(approval["detail"], "rm -rf /");
     }
 
     #[test]

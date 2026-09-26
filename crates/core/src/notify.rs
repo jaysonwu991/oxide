@@ -6,7 +6,7 @@
 //! `settings.json` control whether a finished turn raises a toast and whether it
 //! plays the system alert sound.
 
-use anyhow::{Context, Result};
+use anyhow::Result;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
@@ -207,33 +207,11 @@ pub fn save(key: NotifyKey, enabled: bool) -> Result<PathBuf> {
 }
 
 fn settings_path() -> PathBuf {
-    if let Some(path) = std::env::var_os("OXIDE_SETTINGS_FILE") {
-        return PathBuf::from(path);
-    }
-    crate::config::config_dir_or_default().join("settings.json")
+    crate::config::settings_path()
 }
 
 fn save_to(path: &Path, key: NotifyKey, enabled: bool) -> Result<()> {
-    let mut value = std::fs::read_to_string(path)
-        .ok()
-        .and_then(|text| serde_json::from_str::<serde_json::Value>(&text).ok())
-        .unwrap_or_else(|| serde_json::json!({}));
-    if !value.is_object() {
-        value = serde_json::json!({});
-    }
-    let object = value.as_object_mut().expect("object");
-    object.insert(
-        key.setting_name().to_string(),
-        serde_json::Value::Bool(enabled),
-    );
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent)
-            .with_context(|| format!("creating {}", parent.display()))?;
-    }
-    let text = serde_json::to_string_pretty(&value).context("serializing settings")?;
-    std::fs::write(path, format!("{text}\n"))
-        .with_context(|| format!("writing {}", path.display()))?;
-    Ok(())
+    crate::config::save_setting_to(path, key.setting_name(), serde_json::Value::Bool(enabled))
 }
 
 fn config_paths(cwd: &Path) -> Vec<PathBuf> {

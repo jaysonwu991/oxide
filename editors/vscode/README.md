@@ -100,6 +100,7 @@ Provider logins live in the CLI: run **Oxide: Open Terminal (TUI)** and use
 | `oxide.excludeTools` | *(empty)* | `--exclude-tools` denylist. |
 | `oxide.additionalArguments` | `[]` | Extra argv appended to every invocation. |
 | `oxide.showThinking` | `true` | Show `✦ Thinking` blocks. |
+| `oxide.askApprovals` | `true` | `--ask-approvals`: ask in the transcript before running a tool a permission rule gates. **Always allow** is remembered per project in the shared `approvals.json`. Off passes `--no-ask-approvals`. Either flag is passed explicitly, so this setting decides for panel runs (the shared `settings.json` key still decides for the terminal). |
 | `oxide.notifyOnFinish` | `true` | Notify when a run finishes while the panel is hidden. |
 
 ## Notes and limits

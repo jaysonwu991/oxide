@@ -34,8 +34,7 @@ crates/desktop/
     lib.rs          re-exports the GUI-free library
     manager.rs      project registry + session aggregation (shared, tested)
     turn.rs         starts an agent turn against a project (shared, tested)
-    approvals.rs    persisted per-project approval rules (shared, tested)
-    approval.rs     interactive approve/deny broker (gui feature)
+    approval.rs     interactive approve/deny broker (uses `oxide_core::approvals`)
     commands.rs     Tauri commands (gui feature)
     main.rs         Tauri entry point (gui feature)
   ui/               front-end: index.html, app.js, style.css
@@ -166,12 +165,17 @@ the run's `Steering` handles and its cooperative `Cancel` flag. The Tauri comman
 `--mode json`), attaches any `DiffPreview`, and forwards them over
 `agent-event` tagged with a run id.
 
-- **Approvals** — `approval.rs` implements `Approver`. When a rule resolves to
-  `ask`, it emits `approval-request` and awaits the UI's `resolve_approval`
-  (`deny`, `once`, or `always`); `always` records a per-project rule in
-  `ApprovalStore` (`<config>/Oxide/desktop/approvals.json`) so the prompt does
-  not repeat for that tool. The 🔒 dialog lists and clears those rules. An
-  unanswered request denies after a 5-minute timeout so a turn cannot hang.
+- **Approvals** — `approval.rs` implements `Approver`. A rule resolves to `ask`
+  or `deny` while `auto_approve` is off in the shared `config.json` (it defaults
+  to on, so nothing is asked): the broker then emits `approval-request` and
+  awaits the UI's `resolve_approval` (`deny`, `once`, or
+  `always`); `always` records a per-project rule in
+  `oxide_core::approvals::ApprovalStore`
+  (`<config>/Oxide/approvals.json`, migrating the older
+  `<config>/Oxide/desktop/approvals.json`) so the prompt does not repeat for
+  that tool — and so the terminal and the VS Code extension honour the same
+  rule. The 🔒 dialog lists and clears those rules. An unanswered request denies
+  after a 5-minute timeout so a turn cannot hang.
 - **Cancel / steer** — `send_prompt` returns a run id immediately and runs the
   turn in the background. `cancel_run` sets the run's cooperative `Cancel` flag
   (`oxide_core::agent::Cancel`): the loop finishes the current step — recording

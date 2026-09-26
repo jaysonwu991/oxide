@@ -16,21 +16,24 @@ export interface TurnOptions {
   continueLast?: boolean;
   /// Do not persist a session (`--no-session`).
   ephemeral?: boolean;
-  /// Image/PDF paths passed as `--image`.
-  attachments?: string[];
+  /// Ask before running a permission-gated tool (`--ask-approvals`). Off passes
+  /// `--no-ask-approvals`, and the tool runs without a prompt.
+  askApprovals?: boolean;
   /// Extra arguments from `oxide.additionalArguments`.
   extra?: string[];
 }
 
-/// `--mode json` streams one Pi-shaped JSON event per line, and `-p` makes the
-/// prompt explicit so it can be delivered on stdin. Sending the prompt on
-/// stdin (rather than as a positional argument) keeps the message out of the
-/// shell and out of argv parsing; a prompt that is empty is never started.
-/// The `@path` references a message may carry are expanded by the extension
-/// itself (`core/prompt.ts`), so the composer behaves like the CLI's own
-/// positional `@file` handling.
+/// `--mode rpc` streams the same Pi-shaped JSON events as `--mode json`, but
+/// keeps stdin open for requests, which is what lets the extension answer a
+/// tool approval mid-turn (`core/rpc.ts`). The prompt therefore travels as a
+/// request frame rather than through `-p`, and the images a message carries
+/// travel with it (the CLI reads no `--image` flags in rpc mode).
+/// The `@path` references a message may carry are still expanded by the
+/// extension itself (`core/prompt.ts`), so the composer behaves like the CLI's
+/// own positional `@file` handling.
 export function buildTurnArgs(options: TurnOptions): string[] {
-  const args = ["--mode", "json", "-p"];
+  const args = ["--mode", "rpc"];
+  args.push(options.askApprovals === false ? "--no-ask-approvals" : "--ask-approvals");
   if (options.session) args.push("--session", options.session);
   else if (options.continueLast) args.push("--continue");
   if (options.ephemeral) args.push("--no-session");
@@ -43,7 +46,6 @@ export function buildTurnArgs(options: TurnOptions): string[] {
   else if (options.trust === "never") args.push("--no-approve");
   if (options.tools) args.push("--tools", options.tools);
   if (options.excludeTools) args.push("--exclude-tools", options.excludeTools);
-  for (const path of options.attachments ?? []) args.push("--image", path);
   for (const arg of options.extra ?? []) {
     // An empty or whitespace-only entry would be an argument clap rejects.
     if (arg.trim()) args.push(arg);

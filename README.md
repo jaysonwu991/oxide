@@ -303,7 +303,7 @@ present).
 | Shift+Enter | Insert a newline without sending. |
 | Alt+Enter | While busy, queue a follow-up to run after the current work finishes. |
 | Alt+Up / Option+Up | Pull every queued message back into the message box to edit or extend it (`Alt+Q` on Windows and WSL, where the terminal owns `Alt+Up`). |
-| Esc | Clear the input. In dialogs, cancel or close. |
+| Esc | Clear the input, or refuse a tool waiting for an approval. In dialogs, cancel or close. |
 | `/` | Open slash-command autocomplete. |
 | `@` | Open file/folder path autocomplete to add a file to the prompt. |
 | Tab | Complete the selected slash-command (including fixed arguments such as `/notify sound on`) or `@path` suggestion. |
@@ -386,7 +386,8 @@ default workspace build stays GUI-free:
 cargo run -p oxide-desktop --features gui
 ```
 
-It also has an interactive approval prompt for `ask` rules (with per-project
+It also has an interactive approval prompt for `ask` rules (shown while
+`auto_approve` is off in the shared `config.json`, with per-project
 "Always allow" memory), a **Connect** dialog that writes the same
 `auth.json`/`config.json` the CLI uses, a model picker and reasoning control,
 graceful cancel and mid-run steering, session rename/delete, colored
@@ -408,7 +409,7 @@ commands in `crates/desktop/src/commands.rs` back it.
 The `editors/vscode` package is a TypeScript extension (a separate pnpm
 package, not a Cargo workspace member) that drives the same `oxide` binary from
 a chat panel in the activity bar and from editor actions. It shells out to
-`oxide --mode json -p`, so it reads the same provider logins, `config.json`,
+`oxide --mode rpc`, so it reads the same provider logins, `config.json`,
 `sessions/`, `trust.json`, `AGENTS.md`, agents, skills, plugins, and MCP servers
 as the terminal and the desktop app:
 
@@ -455,6 +456,8 @@ oxide uninstall [--keep-config] [--keep-data] [--dry-run] [--force]
 | `--provider <PROVIDER>` | Provider name (overrides config). |
 | `--agent <AGENT>` | Agent to run, from `.oxide/agents` (or `.claude/agents`). |
 | `--mode <MODE>` | Output mode: `print`, `json`, or `rpc` (defaults to print for a prompt). |
+| `--ask-approvals` | Ask before a permission-gated tool runs: in the TUI the question is answered in the composer, and in `--mode rpc` it goes to the client as an `approval_request`. |
+| `--no-ask-approvals` | Run gated tools without asking, overriding `auto_approve` for this run. |
 | `--reasoning <LEVEL>` | Reasoning effort: `auto` (default), `off`, `low`, `medium`, or `high`. |
 | `--system-prompt <TEXT>` | Replace the default system prompt for this run. |
 | `--append-system-prompt <TEXT>` | Append text to the system prompt (repeatable). |
@@ -482,6 +485,7 @@ oxide @prompt.md "answer this"          # include a file in the prompt
 cat README.md | oxide -p "summarize"    # merge piped stdin
 oxide --mode json "list files"           # JSONL events on stdout
 oxide --mode rpc                         # JSONL prompts over stdin
+oxide --mode rpc --ask-approvals         # ...asking before a gated tool runs
 oxide -t read,grep,find -p "review"      # read-only tool allowlist
 oxide --session <id> -p "continue"       # reuse a specific session
 oxide --fork <id> -p "try another path"  # branch a saved session
@@ -490,6 +494,14 @@ oxide --fork <id> -p "try another path"  # branch a saved session
 `print` mode writes a step's text once that step commits — at a tool call or the
 end of the turn — so a stream the client retries never prints a partial answer
 twice; `--mode json` still emits each delta as it arrives.
+
+`--mode rpc` reads one JSON request per line (`{"type":"prompt","message":…}`,
+`{"type":"approval","id":…,"decision":"once"|"always"|"deny"}`, and
+`{"type":"quit"}`) and writes its events to stdout. A tool a permission rule
+gates runs unless the client passed `--ask-approvals`, which instead holds it and
+emits an `approval_request` event for the client to answer; `always` is
+remembered per project in the shared `approvals.json`, so the terminal and the
+desktop app stop asking for that tool too.
 
 Manage saved sessions (list, clean up stale ones, compact, and merge):
 
@@ -624,8 +636,15 @@ Oxide reads `config.json` from the platform config directory:
 
 `api_key` may be left empty when a key is available via `/login` or the
 environment. `auto_approve` controls whether tool calls run without prompting;
-when `false`, permission rules that resolve to `ask` are denied in
-non-interactive mode.
+with it off, permission rules that resolve to `ask` are asked about by the TUI
+and by the desktop app (an approval card), and are denied in a non-interactive
+run. The TUI asks in the transcript and answers in the composer: `y` runs the
+tool once, `a` allows it for this project from now on, and `n` — optionally with
+a reason the agent reads as guidance — refuses it (`Esc` refuses too).
+`--ask-approvals` asks for one run, `/approvals [on|off]` toggles the stored
+value, `/approvals list` shows the state and the tools this project allows, and
+`/approvals clear` forgets them. The VS Code panel asks on its own setting
+(`oxide.askApprovals`) rather than this one.
 
 `reasoning` controls how much reasoning effort Oxide requests. `auto` (the
 default) leaves reasoning behavior and effort to the provider/model. Newer
@@ -789,7 +808,8 @@ Slash commands are expanded from the ecosystem and also include built-ins:
 `/help`, `/hotkeys`, `/exit`, `/new`, `/session`, `/resume`, `/tree`, `/fork`,
 `/clone`, `/name`, `/model`, `/thinking`, `/theme`, `/trust`, `/export`,
 `/reload`, `/init`, `/login`, `/logout`, `/models`, `/mcps`, `/plugins`,
-`/marketplaces`, `/notify`, `/usage`, `/connect`, `/undo`, `/redo`, `/compact`,
+`/marketplaces`, `/notify`, `/approvals`, `/usage`, `/connect`, `/undo`,
+`/redo`, `/compact`,
 `/copy`, `/copy all`, and `/skill:<name>`. Discovered commands and prompt
 templates can also be invoked by the agent through the `command` tool, and skills load on
 demand with `skill` or via `/skill:<name>`.
@@ -988,7 +1008,8 @@ Runtime state lives under the platform Oxide config directory:
   `modelPrices`, `hideThinkingBlock`)
 - Themes: `themes/<name>.json`
 - Desktop projects: `desktop/projects.json` (folders added to the desktop sidebar)
-- Desktop approvals: `desktop/approvals.json` (tools allowed without prompting, per project)
+- Approvals: `approvals.json` (tools allowed without prompting, per project;
+  shared by the terminal, the desktop app and the VS Code extension)
 - Truncated tool output: `truncated/` (retained 7 days; see `OXIDE_TRUNCATION_DIR`)
 - Context compaction config: `compaction` in `settings.json` / `.oxide/settings.json`
 
