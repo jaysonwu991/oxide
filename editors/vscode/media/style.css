@@ -1,0 +1,512 @@
+/* The panel follows the editor's theme through VS Code's theme variables, so
+   light, dark and high-contrast all read correctly without a theme setting. */
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  height: 100%;
+  margin: 0;
+  padding: 0;
+  overflow: hidden;
+}
+
+body {
+  display: flex;
+  flex-direction: column;
+  font-family: var(--vscode-font-family);
+  font-size: var(--vscode-font-size, 13px);
+  color: var(--vscode-foreground);
+  background: var(--vscode-sideBar-background, var(--vscode-editor-background));
+}
+
+button {
+  font-family: inherit;
+  font-size: inherit;
+  cursor: pointer;
+  border-radius: 3px;
+  border: 1px solid transparent;
+  padding: 3px 8px;
+}
+
+button.primary {
+  color: var(--vscode-button-foreground);
+  background: var(--vscode-button-background);
+}
+
+button.primary:hover:not(:disabled) {
+  background: var(--vscode-button-hoverBackground);
+}
+
+button.ghost {
+  color: var(--vscode-foreground);
+  background: transparent;
+  border-color: var(--vscode-panel-border, rgba(128, 128, 128, 0.35));
+}
+
+button.ghost:hover {
+  background: var(--vscode-toolbar-hoverBackground, rgba(128, 128, 128, 0.15));
+}
+
+button:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+code,
+pre,
+.mono {
+  font-family: var(--vscode-editor-font-family, monospace);
+  font-size: var(--vscode-editor-font-size, 12px);
+}
+
+/* ---------- header ---------- */
+
+#header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 10px;
+  border-bottom: 1px solid var(--vscode-panel-border, rgba(128, 128, 128, 0.25));
+  flex: 0 0 auto;
+}
+
+#identity {
+  display: flex;
+  flex-direction: column;
+  line-height: 1.25;
+  min-width: 0;
+  flex: 1 1 auto;
+}
+
+#folder {
+  font-weight: 600;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+#model {
+  color: var(--vscode-descriptionForeground);
+  font-size: 0.85em;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* ---------- transcript ---------- */
+
+#transcript {
+  flex: 1 1 auto;
+  overflow-y: auto;
+  overflow-x: hidden;
+  padding: 10px;
+  outline: none;
+}
+
+#transcript.hide-thinking .thinking {
+  display: none;
+}
+
+.empty {
+  color: var(--vscode-descriptionForeground);
+  line-height: 1.5;
+}
+
+.empty .hint {
+  font-size: 0.9em;
+}
+
+.empty code {
+  background: var(--vscode-textCodeBlock-background, rgba(128, 128, 128, 0.17));
+  padding: 0 3px;
+  border-radius: 3px;
+}
+
+.msg {
+  margin: 0 0 12px;
+}
+
+.msg.user {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 4px;
+}
+
+.msg.user .bubble {
+  background: var(--vscode-input-background, rgba(128, 128, 128, 0.15));
+  border: 1px solid var(--vscode-input-border, transparent);
+  border-radius: 6px;
+  padding: 6px 9px;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  max-width: 100%;
+}
+
+.ctx {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  justify-content: flex-end;
+}
+
+.ctx .chip {
+  font-family: var(--vscode-editor-font-family, monospace);
+  font-size: 0.8em;
+  color: var(--vscode-descriptionForeground);
+  border: 1px solid var(--vscode-panel-border, rgba(128, 128, 128, 0.35));
+  border-radius: 10px;
+  padding: 0 6px;
+}
+
+.assistant .body > :first-child {
+  margin-top: 0;
+}
+
+.assistant .body > :last-child {
+  margin-bottom: 0;
+}
+
+.assistant .body p,
+.assistant .body li {
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+}
+
+.assistant .body h1,
+.assistant .body h2,
+.assistant .body h3,
+.assistant .body h4 {
+  margin: 12px 0 6px;
+  line-height: 1.3;
+}
+
+.assistant .body ul,
+.assistant .body ol {
+  padding-left: 20px;
+  margin: 6px 0;
+}
+
+.assistant .body blockquote {
+  margin: 6px 0;
+  padding: 0 0 0 8px;
+  border-left: 2px solid var(--vscode-panel-border, rgba(128, 128, 128, 0.5));
+  color: var(--vscode-descriptionForeground);
+}
+
+.assistant .body hr {
+  border: none;
+  border-top: 1px solid var(--vscode-panel-border, rgba(128, 128, 128, 0.35));
+  margin: 10px 0;
+}
+
+.assistant .body a {
+  color: var(--vscode-textLink-foreground);
+}
+
+.assistant .body a:hover {
+  color: var(--vscode-textLink-activeForeground);
+}
+
+.assistant .body code {
+  background: var(--vscode-textCodeBlock-background, rgba(128, 128, 128, 0.17));
+  padding: 0 3px;
+  border-radius: 3px;
+}
+
+.assistant .body pre {
+  background: var(--vscode-textCodeBlock-background, rgba(128, 128, 128, 0.17));
+  border-radius: 4px;
+  padding: 8px;
+  overflow-x: auto;
+  margin: 8px 0;
+}
+
+.assistant .body pre code {
+  background: none;
+  padding: 0;
+}
+
+.assistant .body table {
+  border-collapse: collapse;
+  margin: 8px 0;
+  display: block;
+  overflow-x: auto;
+}
+
+.assistant .body th,
+.assistant .body td {
+  border: 1px solid var(--vscode-panel-border, rgba(128, 128, 128, 0.35));
+  padding: 3px 7px;
+  text-align: left;
+}
+
+/* syntax tokens, mapped onto the editor's own token colors */
+.tok-keyword {
+  color: var(--vscode-charts-purple, #c586c0);
+}
+
+.tok-string {
+  color: var(--vscode-charts-orange, #ce9178);
+}
+
+.tok-number {
+  color: var(--vscode-charts-green, #b5cea8);
+}
+
+.tok-comment {
+  color: var(--vscode-descriptionForeground);
+  font-style: italic;
+}
+
+.thinking {
+  margin: 0 0 10px;
+  color: var(--vscode-descriptionForeground);
+  font-style: italic;
+  font-size: 0.92em;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  border-left: 2px solid var(--vscode-panel-border, rgba(128, 128, 128, 0.35));
+  padding-left: 8px;
+}
+
+.notice {
+  margin: 0 0 10px;
+  color: var(--vscode-descriptionForeground);
+  font-size: 0.92em;
+  overflow-wrap: anywhere;
+}
+
+.notice.warn {
+  color: var(--vscode-editorWarning-foreground, var(--vscode-charts-orange));
+}
+
+.notice.error {
+  color: var(--vscode-editorError-foreground, var(--vscode-charts-red));
+}
+
+/* ---------- tool cards ---------- */
+
+.tool {
+  border: 1px solid var(--vscode-panel-border, rgba(128, 128, 128, 0.3));
+  border-left: 3px solid var(--vscode-charts-blue, #4a9eff);
+  border-radius: 4px;
+  margin: 0 0 10px;
+  background: var(--vscode-editor-background);
+}
+
+.tool.error {
+  border-left-color: var(--vscode-charts-red, #f14c4c);
+}
+
+.tool.done {
+  border-left-color: var(--vscode-charts-green, #89d185);
+}
+
+.thead {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  padding: 5px 8px;
+  cursor: pointer;
+  overflow: hidden;
+}
+
+.tname {
+  font-family: var(--vscode-editor-font-family, monospace);
+  font-size: 0.85em;
+  font-weight: 600;
+  flex: 0 0 auto;
+}
+
+.targ {
+  font-family: var(--vscode-editor-font-family, monospace);
+  font-size: 0.85em;
+  color: var(--vscode-descriptionForeground);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  flex: 1 1 auto;
+}
+
+.targ.pathlike:hover {
+  color: var(--vscode-textLink-activeForeground);
+  text-decoration: underline;
+}
+
+.tstate {
+  font-size: 0.8em;
+  color: var(--vscode-descriptionForeground);
+  flex: 0 0 auto;
+}
+
+.tool.error .tstate {
+  color: var(--vscode-editorError-foreground, var(--vscode-charts-red));
+}
+
+.tbody {
+  margin: 0;
+  padding: 0 8px 6px;
+  font-family: var(--vscode-editor-font-family, monospace);
+  font-size: var(--vscode-editor-font-size, 12px);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  color: var(--vscode-foreground);
+  max-height: 40vh;
+  overflow-y: auto;
+}
+
+.tbody:empty {
+  display: none;
+}
+
+.thint {
+  padding: 0 8px 6px;
+  font-size: 0.8em;
+  color: var(--vscode-descriptionForeground);
+}
+
+.tool .diff {
+  border-top: 1px solid var(--vscode-panel-border, rgba(128, 128, 128, 0.25));
+}
+
+.diff-path {
+  font-family: var(--vscode-editor-font-family, monospace);
+  font-size: 0.8em;
+  color: var(--vscode-descriptionForeground);
+  padding: 4px 8px 0;
+}
+
+.diff pre {
+  margin: 0;
+  padding: 4px 8px 6px;
+  max-height: 45vh;
+  overflow: auto;
+  font-family: var(--vscode-editor-font-family, monospace);
+  font-size: var(--vscode-editor-font-size, 12px);
+}
+
+.dline {
+  display: block;
+  white-space: pre;
+}
+
+.dline.add {
+  background: var(--vscode-diffEditor-insertedLineBackground, rgba(155, 185, 85, 0.2));
+}
+
+.dline.del {
+  background: var(--vscode-diffEditor-removedLineBackground, rgba(255, 0, 0, 0.2));
+}
+
+.dline.hunk {
+  color: var(--vscode-descriptionForeground);
+}
+
+/* ---------- composer ---------- */
+
+footer {
+  flex: 0 0 auto;
+  border-top: 1px solid var(--vscode-panel-border, rgba(128, 128, 128, 0.25));
+  padding: 6px 10px 8px;
+}
+
+.usage {
+  color: var(--vscode-descriptionForeground);
+  font-size: 0.82em;
+  min-height: 1em;
+  margin-bottom: 4px;
+  white-space: nowrap;
+  overflow-x: auto;
+}
+
+.chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin-bottom: 5px;
+}
+
+.chips .chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  border: 1px solid var(--vscode-panel-border, rgba(128, 128, 128, 0.35));
+  border-radius: 10px;
+  padding: 0 4px 0 7px;
+  font-family: var(--vscode-editor-font-family, monospace);
+  font-size: 0.8em;
+  color: var(--vscode-descriptionForeground);
+  max-width: 100%;
+}
+
+.chips .chip button {
+  border: none;
+  background: none;
+  color: inherit;
+  padding: 0 2px;
+  line-height: 1;
+}
+
+#input {
+  width: 100%;
+  resize: none;
+  border: 1px solid var(--vscode-input-border, var(--vscode-panel-border, rgba(128, 128, 128, 0.35)));
+  border-radius: 4px;
+  background: var(--vscode-input-background);
+  color: var(--vscode-input-foreground);
+  padding: 5px 7px;
+  font-family: inherit;
+  font-size: inherit;
+  line-height: 1.4;
+  max-height: 200px;
+  overflow-y: auto;
+}
+
+#input:focus {
+  outline: 1px solid var(--vscode-focusBorder);
+  outline-offset: -1px;
+}
+
+#bar {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 5px;
+}
+
+#status {
+  color: var(--vscode-descriptionForeground);
+  font-size: 0.85em;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+#status.busy {
+  color: var(--vscode-charts-blue, var(--vscode-foreground));
+}
+
+.spacer {
+  flex: 1 1 auto;
+}
+
+.spinner {
+  display: inline-block;
+  width: 7px;
+  height: 7px;
+  margin-right: 4px;
+  border-radius: 50%;
+  border: 1px solid currentColor;
+  border-top-color: transparent;
+  animation: spin 0.8s linear infinite;
+}
+
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
