@@ -11,10 +11,11 @@
 
 # Oxide
 
-A native Rust AI coding agent with a terminal UI and a Tauri desktop app.
-Oxide streams from OpenAI-compatible and Anthropic models, runs a tool-using
-agent loop against your project, and understands its own `.oxide/` configuration
-layout out of the box, with Claude Code configuration support for compatibility.
+A native Rust AI coding agent with a terminal UI, a Tauri desktop app, and a
+VS Code extension. Oxide streams from OpenAI-compatible and Anthropic models,
+runs a tool-using agent loop against your project, and understands its own
+`.oxide/` configuration layout out of the box, with Claude Code configuration
+support for compatibility.
 
 ## Features
 
@@ -24,6 +25,9 @@ layout out of the box, with Claude Code configuration support for compatibility.
 - Desktop app (`oxide-desktop`, Tauri) that manages multiple projects and shows
   the shared session store, using the same configuration as the CLI (see
   [docs/desktop.md](docs/desktop.md)).
+- VS Code extension (`editors/vscode`) that drives the same `oxide` binary from
+  a chat panel in the activity bar, with editor actions for the selection and
+  the CLI's own sessions and configuration (see [docs/vscode.md](docs/vscode.md)).
 - OpenAI-compatible (OpenAI, DeepSeek, Portkey, Z.AI/GLM, custom) and
   Anthropic Messages API clients.
 - Built-in tools under Pi-style names: `read`, `write`, `edit`, `bash`, `grep`,
@@ -126,11 +130,14 @@ layout out of the box, with Claude Code configuration support for compatibility.
   `notifyOnComplete` / `notifySound` keys in `settings.json`, or
   `OXIDE_NOTIFY_ON_COMPLETE` / `OXIDE_NOTIFY_SOUND`.
 - Resilient streaming: transient failures (network errors, truncated streams,
-  429, and 5xx responses) are retried with backoff while no text has been
-  emitted, and a turn that comes back with neither text nor tool calls is
-  retried on the same schedule; only after that budget is exhausted do empty or
-  truncated responses and in-band stream errors surface as errors instead of
-  silently ending the turn.
+  429, and 5xx responses) and a turn that comes back with neither text nor tool
+  calls are retried with backoff. A stream that drops after it has already
+  emitted part of the reply is retried too — the failed attempt is discarded so
+  the retry streams fresh instead of extending the partial text — and only
+  after that budget is exhausted do empty or truncated responses and in-band
+  stream errors surface as errors instead of silently ending the turn. Text the
+  last attempt streamed is kept in the session, so the next message can
+  continue from what you already saw.
 - Tool selection: `--tools`/`-t` allowlists and `--exclude-tools`/`-x`
   disables tools (accepting both Pi and legacy names); disabled tools are hidden
   from the model and refused if requested.
@@ -148,7 +155,7 @@ layout out of the box, with Claude Code configuration support for compatibility.
   decision.
 - Themes: built-in `dark` and `light` plus custom `.oxide/themes/<name>.json`,
   selected with `--use-theme` or `/theme`. The built-in palettes are shared with
-  the desktop app, so both front-ends render the same colors.
+  the desktop app, so the CLI and desktop render the same colors.
 - Portkey spend bar: with a Portkey login, `/usage` opens a settings dialog
   that adds a full-width bar at the bottom of the screen showing the user, this
   session's cost, and today's and the month's spend from the Portkey analytics
@@ -175,10 +182,10 @@ so check each project's documentation for the current details.
 
 | Capability | Oxide | [Codex](https://github.com/openai/codex) | [OpenCode](https://opencode.ai) | [Claude Code](https://docs.claude.com/en/docs/claude-code/overview) |
 | --- | --- | --- | --- | --- |
-| Distribution | Native Rust core + Tauri desktop app | Open-source CLI (Rust) + IDE extension | Open-source CLI (Node/Bun) | Proprietary CLI + apps |
+| Distribution | Native Rust core + Tauri desktop app + VS Code extension | Open-source CLI (Rust) + IDE extension | Open-source CLI (Node/Bun) | Proprietary CLI + apps |
 | License | MIT | Apache-2.0 | Open source | Proprietary |
 | Model providers | OpenAI-compatible (OpenAI, DeepSeek, Portkey, Z.AI/GLM, custom) + Anthropic Messages API | OpenAI models (GPT-5-Codex family) + custom providers | Any provider (bring your own keys) | Claude (Anthropic API, Bedrock, Vertex, third-party) |
-| Interfaces | Terminal TUI, `-p` print, JSON/RPC modes, desktop app | Terminal CLI, IDE (VS Code, Cursor) | Terminal, desktop, IDE, web | Terminal, IDE, desktop, web |
+| Interfaces | Terminal TUI, `-p` print, JSON/RPC modes, desktop app, VS Code extension | Terminal CLI, IDE (VS Code, Cursor) | Terminal, desktop, IDE, web | Terminal, IDE, desktop, web |
 | Project config | `.oxide/` + `AGENTS.md` (also reads `.claude/`) | `AGENTS.md` + `~/.codex/config.toml` | `opencode.json` + `AGENTS.md` | `CLAUDE.md` + `.claude/` |
 | Subagents | `--agent`, `task`, command routing | Subagents | Agents | Subagents, background agents |
 | Reasoning effort | `auto` / `off` / `low` / `medium` / `high` (Shift+Tab, `--reasoning`) | `--reasoning-effort` (model-dependent) | Model-dependent | Extended thinking |
@@ -255,7 +262,8 @@ Overrides:
 
 Requires a stable Rust toolchain (edition 2021). The workspace splits the
 shared agent core (`crates/core`), the terminal CLI (`crates/cli`),
-and the desktop app (`crates/desktop`).
+and the desktop app (`crates/desktop`); the VS Code extension in
+`editors/vscode` is a separate pnpm package.
 
 ```sh
 cargo install --path crates/cli
@@ -387,6 +395,39 @@ packaging details.
 The front-end (`crates/desktop/ui/`) is plain HTML/CSS/JS; the Rust
 commands in `crates/desktop/src/commands.rs` back it.
 
+## VS Code extension
+
+The `editors/vscode` package is a TypeScript extension (a separate pnpm
+package, not a Cargo workspace member) that drives the same `oxide` binary from
+a chat panel in the activity bar and from editor actions. It shells out to
+`oxide --mode json -p`, so it reads the same provider logins, `config.json`,
+`sessions/`, `trust.json`, `AGENTS.md`, agents, skills, plugins, and MCP servers
+as the terminal and the desktop app:
+
+- **Chat panel** — streaming replies rendered as Markdown, `✦ Thinking` blocks,
+  collapsible tool cards with file diffs, token/cost usage, and a composer that
+  queues follow-ups while a turn runs.
+- **Editor actions** — explain, fix, or ask about a selection; attach a file, a
+  selection, or an image to the chat.
+- **Sessions** — continue the project's latest session or pick one from the
+  CLI's own list.
+- **`@path` in a message** — `@src/main.rs` attaches the file's text; an image
+  or PDF becomes a media attachment.
+
+Build it with:
+
+```sh
+cd editors/vscode
+pnpm install
+pnpm run compile   # tsc -p .
+pnpm test          # compile, then node --test out/test/
+pnpm run package   # vsce package -> oxide-vscode-<version>.vsix
+```
+
+Provider logins stay in the CLI (`/login` in the TUI). See
+[editors/vscode/README.md](editors/vscode/README.md) for the command and setting
+tables, and [docs/vscode.md](docs/vscode.md) for the architecture.
+
 ## CLI
 
 ```
@@ -435,6 +476,10 @@ oxide -t read,grep,find -p "review"      # read-only tool allowlist
 oxide --session <id> -p "continue"       # reuse a specific session
 oxide --fork <id> -p "try another path"  # branch a saved session
 ```
+
+`print` mode writes a step's text once that step commits — at a tool call or the
+end of the turn — so a stream the client retries never prints a partial answer
+twice; `--mode json` still emits each delta as it arrives.
 
 Manage saved sessions (list, clean up stale ones, compact, and merge):
 
@@ -600,6 +645,9 @@ so a long-thinking turn recovers instead of ending in an empty response.
 | `OXIDE_COMPACTION_RESERVE_TOKENS` | Tokens reserved for the response before compaction triggers. |
 | `OXIDE_COMPACTION_KEEP_RECENT_TOKENS` | Recent tokens kept verbatim when compacting. |
 | `OXIDE_TRUNCATION_DIR` | Directory for saved truncated tool output (default `truncated/` in the config dir). |
+| `OXIDE_NOTIFY_ON_COMPLETE` / `OXIDE_NOTIFY_SOUND` | Override the desktop-notification flags (`/notify`). |
+| `OXIDE_SETTINGS_FILE` | Override the global `settings.json` path the TUI writes. |
+| `OXIDE_USAGE_FILE` | Override the `portkey-usage.json` path for the Portkey spend bar. |
 | `OPENAI_API_KEY` / `OPENAI_BASE_URL` | OpenAI credentials. |
 | `DEEPSEEK_API_KEY` / `DEEPSEEK_BASE_URL` | DeepSeek credentials. |
 | `ANTHROPIC_API_KEY` / `ANTHROPIC_BASE_URL` | Anthropic credentials. |
@@ -766,10 +814,13 @@ its tools then appear as `<server>__<tool>`.
 | `patch` | `diff` (unified diff) |
 | `webfetch` | `url`, `format?` (`markdown` default, `text`, or raw `html`) |
 
-`edit` performs exact text replacement: each `oldText` is matched against the
-original file (never incrementally) and must be unique, so a non-unique or
-missing match is rejected rather than silently corrupting a file. Line endings
-and a leading BOM are preserved. `write` and `edit` append LSP diagnostics for
+`edit` performs targeted text replacement: each `oldText` is matched against
+the original file (never incrementally) and must be unique, so a non-unique or
+missing match is rejected rather than silently corrupting a file. Matching is
+byte-exact first, then tolerates trailing whitespace and the `N|` line numbers
+`read` prints, so a block copied straight from a read result still lands; when
+the text has genuinely changed, the error names the closest region to copy.
+Line endings and a leading BOM are preserved. `write` and `edit` append LSP diagnostics for
 the edited file. `read`, `ls`, `find`, and `grep` accept absolute paths, so they
 can inspect files outside the project without a shell; `ls` marks directories
 with a trailing `/` and renders symlink targets as `name -> target`. `find` and
@@ -951,6 +1002,9 @@ The desktop GUI is feature-gated, so build it explicitly:
 ```sh
 cargo build -p oxide-desktop --features gui
 ```
+
+The VS Code extension is a separate pnpm package under `editors/vscode` and is
+built with the `pnpm` commands above, not with Cargo.
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) for architecture notes and guidelines.
 

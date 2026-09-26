@@ -623,7 +623,11 @@ turn is in flight the status row names the phase (`thinking...`,
 transient stream failures as `retrying (1/3) in 1s...` before the client backs
 off and tries again. A response that arrives with neither text nor tool calls is
 retried on the same schedule, so an occasional empty reply does not end the
-turn; only after the retries are exhausted is it reported as an error.
+turn, and a stream that drops after it has already streamed part of the answer
+is retried too: the partial reply disappears when the retry starts and the new
+attempt streams from the beginning. Only after the retries are exhausted is the
+failure reported as an error, and the text the last attempt streamed is kept in
+the session so the next message can continue from it.
 
 ### Status tips and queued messages
 

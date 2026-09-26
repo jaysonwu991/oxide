@@ -2,8 +2,9 @@
 
 The `oxide-desktop` package (`crates/desktop`) is a Tauri v2 front-end for the
 same agent the terminal CLI runs. The goal is one configuration and one session
-store shared by both front-ends, with a GUI that can manage **multiple projects**
-(cross-repo) and show each project's session list.
+store shared by every front-end (the CLI, the desktop app, and the VS Code
+extension), with a GUI that can manage **multiple projects** (cross-repo) and
+show each project's session list.
 
 ## Workspace
 
@@ -17,11 +18,13 @@ crates/
   desktop/    the `oxide-desktop` app
 ```
 
-The Cargo package names are `oxide-core`, `oxide` (the CLI), and
-`oxide-desktop`. `oxide-core` owns everything the agent needs; the CLI and
-desktop are thin front-ends over it, and `oxide-desktop` reuses
-`oxide_core::config` and `oxide_core::session` directly, so both read the same
-`config.json`, `auth.json`, `settings.json`, and `sessions/` tree.
+The Cargo package names are `oxide-core`, `oxide`, and `oxide-desktop`.
+`oxide-core` owns everything the agent needs; the CLI and desktop are thin
+front-ends over it, and `oxide-desktop` reuses `oxide_core::config` and
+`oxide_core::session` directly, so they read the same `config.json`, `auth.json`,
+`settings.json`, and `sessions/` tree. The VS Code extension (`editors/vscode`,
+see [docs/vscode.md](vscode.md)) is a separate pnpm package that drives the
+`oxide` binary, so it shares the same files without linking `oxide-core`.
 
 ## Desktop layout
 
