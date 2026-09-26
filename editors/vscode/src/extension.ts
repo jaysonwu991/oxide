@@ -135,6 +135,9 @@ export function activate(context: vscode.ExtensionContext): void {
     vscode.commands.registerCommand("oxide.setAgent", guard(() => controller.setAgent())),
     vscode.commands.registerCommand("oxide.setReasoning", guard(() => controller.setReasoning())),
     vscode.commands.registerCommand("oxide.setProjectTrust", guard(() => controller.setProjectTrust())),
+    // The same list `/mcps` opens in the composer, so the picker is reachable
+    // from the palette whether or not the user knows the slash command.
+    vscode.commands.registerCommand("oxide.mcpServers", guard(() => controller.showMcps())),
   );
 
   refreshStatus();

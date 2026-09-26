@@ -27,6 +27,15 @@ import {
 import { AttachmentStore, previewForDataUrl, previewForFile } from "./attachments";
 import { isApprovalDecision, type ApprovalDecision } from "./core/approvals";
 import { modelsForProvider } from "./core/config";
+import {
+  isMcpCommand,
+  mcpAppearance,
+  mcpDescription,
+  mcpListArgs,
+  mcpToggleArgs,
+  parseMcpList,
+  type McpServerView,
+} from "./core/mcps";
 import { footerState, nextReasoning, REASONING_LEVELS, type FooterState } from "./core/footer";
 import { projectInfo, type ProjectDeps, type ProjectInfo } from "./core/project";
 import {
@@ -495,6 +504,13 @@ export class ChatController {
   async send(text: string): Promise<void> {
     const message = text.trim();
     if (!message && !this.contextCount) return;
+    // `/mcps` is the client's own command: it opens the server list here rather
+    // than being shipped to the model as a prompt, the way the terminal and the
+    // desktop app answer it.
+    if (this.contextCount === 0 && isMcpCommand(message)) {
+      await this.showMcps();
+      return;
+    }
     if (this.turn) {
       // Snapshot the chips: the composer stays editable while the turn runs,
       // so a later chip must not join a message already queued.
@@ -826,6 +842,65 @@ export class ChatController {
     // `newSession` clears the flag, so set it afterwards.
     this.continueLast = true;
     this.showNotice("The next message continues the most recent session.");
+  }
+
+  // ---------- MCP servers ----------
+
+  /// The `/mcps` list: every configured server with the state the core probed,
+  /// in a QuickPick. Picking one turns it off (or back on) in the file that
+  /// defines it, then the list is shown again with the fresh state — the same
+  /// open, inspect, toggle flow the terminal's `/mcps` and Claude Code's offer.
+  async showMcps(): Promise<void> {
+    const cwd = this.cwd() ?? process.cwd();
+    const binary = this.binary();
+    for (;;) {
+      // Every server is started or reached to learn its state, which is quick
+      // when they answer and up to the command timeout when they do not, so the
+      // wait is shown rather than looking like nothing happened.
+      void vscode.window.setStatusBarMessage("Oxide: checking MCP servers…", 20_000);
+      const result = await runCapture(binary, mcpListArgs(), cwd);
+      if (result.error || result.code !== 0) {
+        const detail = result.error || firstLine(result.stderr) || `exit ${result.code}`;
+        this.showNotice(`Could not list MCP servers: ${detail}`, "error");
+        return;
+      }
+      const servers = parseMcpList(result.stdout);
+      type Pick = vscode.QuickPickItem & { server?: McpServerView; refresh?: boolean };
+      const items: Pick[] = servers.map((server) => ({
+        label: `${mcpAppearance(server.state).icon} ${server.name}`,
+        description: server.enabled ? server.status : "Disabled",
+        detail: mcpDescription(server),
+        server,
+      }));
+      items.push({
+        label: "$(refresh) Recheck",
+        detail: "Probe the servers again",
+        refresh: true,
+      });
+
+      const picked = await vscode.window.showQuickPick(items, {
+        title: `Oxide: MCP servers (${servers.length})`,
+        placeHolder: servers.length
+          ? "Pick a server to connect or disconnect it; it is written to the file that defines it"
+          : "No MCP servers configured — add one with oxide mcp add",
+      });
+      if (!picked) return;
+      if (picked.refresh || !picked.server) continue;
+
+      // A server that cannot be reached is still worth turning over: an
+      // unanswered probe may be exactly why the user opened this list.
+      const server = picked.server;
+      const enabling = !server.enabled;
+      const toggle = await runCapture(binary, mcpToggleArgs(server, enabling), cwd);
+      if (toggle.error || toggle.code !== 0) {
+        const detail = toggle.error || firstLine(toggle.stderr) || `exit ${toggle.code}`;
+        this.showNotice(`Could not ${enabling ? "enable" : "disable"} ${server.name}: ${detail}`, "error");
+        return;
+      }
+      this.showNotice(
+        `${server.name} ${enabling ? "enabled" : "disabled"} in its ${server.source} config.`,
+      );
+    }
   }
 
   // ---------- settings commands ----------

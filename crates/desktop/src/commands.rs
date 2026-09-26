@@ -18,6 +18,7 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use tauri::{AppHandle, Emitter, Manager, State};
+use tauri_plugin_dialog::DialogExt;
 use tokio::sync::Mutex;
 use tokio::task::AbortHandle;
 
@@ -152,60 +153,22 @@ pub struct AddProjectResult {
 /// Opens the platform folder chooser. Used by the desktop's **Add** button when
 /// the path field is empty, so adding a project does not require typing an
 /// absolute path from memory.
+///
+/// The panel is the app's own (the dialog plugin's `NSOpenPanel`/GTK/Windows
+/// equivalent), not a chooser shelled out to `osascript`/`zenity`: a child
+/// process's panel opens as a background app, which can put it behind the
+/// window — or never show it at all where the platform refuses the request —
+/// and the user is left with a button that appears to do nothing.
 #[tauri::command]
-pub async fn pick_folder() -> CmdResult<Option<String>> {
-    tokio::task::spawn_blocking(choose_folder)
-        .await
-        .map_err(err)
-}
-
-fn choose_folder() -> Option<String> {
-    #[cfg(target_os = "macos")]
-    {
-        let output = std::process::Command::new("osascript")
-            .args([
-                "-e",
-                "POSIX path of (choose folder with prompt \"Add a project to Oxide\")",
-            ])
-            .output()
-            .ok()?;
-        nonempty_stdout(output)
-    }
-    #[cfg(target_os = "linux")]
-    {
-        let output = std::process::Command::new("zenity")
-            .args([
-                "--file-selection",
-                "--directory",
-                "--title=Add a project to Oxide",
-            ])
-            .output()
-            .ok()?;
-        nonempty_stdout(output)
-    }
-    #[cfg(target_os = "windows")]
-    {
-        let script = "Add-Type -AssemblyName System.Windows.Forms; \
-                      $d = New-Object System.Windows.Forms.FolderBrowserDialog; \
-                      if ($d.ShowDialog() -eq 'OK') { Write-Output $d.SelectedPath }";
-        let output = std::process::Command::new("powershell")
-            .args(["-NoProfile", "-Command", script])
-            .output()
-            .ok()?;
-        nonempty_stdout(output)
-    }
-    #[cfg(not(any(target_os = "macos", target_os = "linux", target_os = "windows")))]
-    {
-        None
-    }
-}
-
-fn nonempty_stdout(output: std::process::Output) -> Option<String> {
-    if !output.status.success() {
-        return None;
-    }
-    let path = String::from_utf8_lossy(&output.stdout).trim().to_string();
-    (!path.is_empty()).then_some(path)
+pub async fn pick_folder(app: AppHandle) -> CmdResult<Option<String>> {
+    let (tx, rx) = tokio::sync::oneshot::channel();
+    app.dialog()
+        .file()
+        .set_title("Add a project to Oxide")
+        .pick_folder(move |path| {
+            let _ = tx.send(path.map(|path| path.to_string()));
+        });
+    rx.await.map_err(err)
 }
 
 /// Opens an external link in the platform browser. The transcript renders
@@ -291,6 +254,51 @@ fn project_info_value(config: &Config, project: &Path) -> Value {
         "hasKey": !config.api_key.is_empty(),
         "trust": trust,
     })
+}
+
+// ---------- mcp servers ----------
+
+/// The MCP servers visible from `project` with their connection state: what
+/// `/mcps` lists. The view is the same one the CLI prints and the VS Code
+/// extension draws, so all three agree on names, transports and statuses.
+#[tauri::command]
+pub async fn mcp_servers(project: String) -> CmdResult<Vec<oxide_core::mcp_config::ServerView>> {
+    let cwd = project_dir(&project)?;
+    Ok(oxide_core::mcp_config::server_views(&cwd).await)
+}
+
+/// Turns an MCP server off (or back on) in the file that defines it, then
+/// returns the re-probed list so the modal can redraw from one round trip.
+#[tauri::command]
+pub async fn set_mcp_server(
+    project: String,
+    name: String,
+    enabled: bool,
+) -> CmdResult<Vec<oxide_core::mcp_config::ServerView>> {
+    let cwd = project_dir(&project)?;
+    oxide_core::mcp_config::set_enabled(&cwd, None, name, enabled).map_err(err)?;
+    Ok(oxide_core::mcp_config::server_views(&cwd).await)
+}
+
+// ---------- slash commands ----------
+
+/// The `/` palette: the built-in client commands plus the agents, commands and
+/// skills this project loads. Draws the same catalog the CLI's autocomplete and
+/// the extension's menu do, from the shared `oxide_core::commands`.
+#[tauri::command]
+pub async fn list_commands(project: String) -> CmdResult<Vec<oxide_core::commands::CommandEntry>> {
+    Ok(oxide_core::commands::palette(&project_dir(&project)?))
+}
+
+/// A project root a command can read. An empty one has no folder behind it, and
+/// `PathBuf::from("")` is the process's own working directory — a relative
+/// path, so the listing (and a toggle) would land in whatever directory the app
+/// was launched from instead of the project the window shows.
+fn project_dir(project: &str) -> Result<PathBuf, String> {
+    if project.trim().is_empty() {
+        return Err("select a project first".to_string());
+    }
+    Ok(PathBuf::from(project))
 }
 
 // ---------- sessions ----------

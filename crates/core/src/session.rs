@@ -351,20 +351,8 @@ impl SessionLog {
                 .map(system_time_secs)
                 .unwrap_or_else(|| parse_iso(&header.timestamp).unwrap_or(0));
             let name = latest_name(&state.entries);
-            let path_desc = leaf_path(&state);
-            let message_count = path_desc
-                .iter()
-                .filter(|entry| matches!(entry, Entry::Message(_)))
-                .count();
-            let preview = path_desc
-                .iter()
-                .find_map(|entry| match entry {
-                    Entry::Message(message) if message.message.role == "user" => {
-                        message.message.display().map(|text| preview_text(&text))
-                    }
-                    _ => None,
-                })
-                .unwrap_or_default();
+            let (message_count, preview) =
+                leaf_digest(&state.entries, state.leaf_id.as_deref(), &state.by_id);
             out.push(SessionSummary {
                 id: header.id,
                 name,
@@ -433,20 +421,8 @@ impl SessionLog {
             .and_then(|metadata| metadata.modified().ok())
             .map(system_time_secs)
             .unwrap_or_else(|| parse_iso(&self.header.timestamp).unwrap_or(0));
-        let path_desc = leaf_path(&state);
-        let message_count = path_desc
-            .iter()
-            .filter(|entry| matches!(entry, Entry::Message(_)))
-            .count();
-        let preview = path_desc
-            .iter()
-            .find_map(|entry| match entry {
-                Entry::Message(message) if message.message.role == "user" => {
-                    message.message.display().map(|text| preview_text(&text))
-                }
-                _ => None,
-            })
-            .unwrap_or_default();
+        let (message_count, preview) =
+            leaf_digest(&state.entries, state.leaf_id.as_deref(), &state.by_id);
         Ok(SessionSummary {
             id: self.header.id.clone(),
             name: latest_name(&state.entries),
@@ -725,34 +701,76 @@ fn context_entries(
     out
 }
 
-fn leaf_path(state: &SessionState) -> Vec<Entry> {
-    leaf_path_with(&state.entries, state.leaf_id.as_deref(), &state.by_id)
-}
-
 fn leaf_path_with(
     entries: &[Entry],
     leaf_id: Option<&str>,
     by_id: &HashMap<String, usize>,
 ) -> Vec<Entry> {
+    leaf_indices_with(entries, leaf_id, by_id)
+        .into_iter()
+        .map(|index| entries[index].clone())
+        .collect()
+}
+
+/// The indices of the leaf path (last one is the leaf), oldest first.
+///
+/// The walk follows parent links, so a file whose entries point at each other
+/// in a cycle would otherwise never finish — appending a fresh clone at every
+/// step until the process is out of memory. Each index is followed at most
+/// once, which bounds the walk by the file itself.
+fn leaf_indices_with(
+    entries: &[Entry],
+    leaf_id: Option<&str>,
+    by_id: &HashMap<String, usize>,
+) -> Vec<usize> {
     let leaf = leaf_id
         .and_then(|id| by_id.get(id).copied())
         .or_else(|| entries.len().checked_sub(1));
-    let Some(mut current) = leaf else {
+    let Some(leaf) = leaf.filter(|index| *index < entries.len()) else {
         return Vec::new();
     };
-    let mut path = Vec::new();
-    loop {
-        path.push(entries[current].clone());
-        let Some(parent) = entries[current]
+    let mut seen = vec![false; entries.len()];
+    let mut chain = Vec::new();
+    let mut current = leaf;
+    while !seen[current] {
+        seen[current] = true;
+        chain.push(current);
+        match entries[current]
             .parent_id()
             .and_then(|id| by_id.get(id).copied())
-        else {
-            break;
-        };
-        current = parent;
+            .filter(|index| *index < entries.len())
+        {
+            Some(parent) => current = parent,
+            None => break,
+        }
     }
-    path.reverse();
-    path
+    chain.reverse();
+    chain
+}
+
+/// The message count and preview of a leaf path without cloning the entries
+/// themselves, which is what a picker needs and all it should pay for.
+fn leaf_digest(
+    entries: &[Entry],
+    leaf_id: Option<&str>,
+    by_id: &HashMap<String, usize>,
+) -> (usize, String) {
+    let mut count = 0;
+    let mut preview = String::new();
+    let mut found_preview = false;
+    for index in leaf_indices_with(entries, leaf_id, by_id) {
+        let Entry::Message(message) = &entries[index] else {
+            continue;
+        };
+        count += 1;
+        if !found_preview && message.message.role == "user" {
+            if let Some(text) = message.message.display() {
+                preview = preview_text(&text);
+                found_preview = true;
+            }
+        }
+    }
+    (count, preview)
 }
 
 fn latest_name(entries: &[Entry]) -> Option<String> {
@@ -786,6 +804,14 @@ fn read_session(path: &Path) -> Result<(SessionHeader, SessionState)> {
         match entry {
             Entry::Session(value) => header = Some(value),
             other => {
+                // A repeated id would repoint an existing parent link at the
+                // newer entry, which can fold the tree back on itself. The
+                // first entry under an id keeps it and the duplicate is
+                // dropped: a file this broken is already lossy, and one node
+                // per id is what the walk relies on.
+                if state.by_id.contains_key(other.id()) {
+                    continue;
+                }
                 state
                     .by_id
                     .insert(other.id().to_string(), state.entries.len());
@@ -880,17 +906,24 @@ fn ensure_terminated_line(file: &mut std::fs::File) -> Result<()> {
     Ok(())
 }
 
-/// Pi-style short entry id: six hex characters derived from time and a counter.
+/// A 64-bit entry id: the current time in nanoseconds mixed with a
+/// per-process counter.
+///
+/// Ids are the parent links of the session tree, so two entries sharing one is
+/// not a cosmetic clash — the reader maps the id to a single node, and if the
+/// duplicates sit on each other's path the tree becomes a cycle that no walk
+/// can leave. The previous 32-bit value made that collision reachable in a
+/// session of a few thousand entries.
 fn new_id() -> String {
     static COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
     let nanos = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map(|duration| duration.as_nanos() as u64)
         .unwrap_or(0);
-    let value = nanos
-        .rotate_left(17)
-        .wrapping_add(COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed));
-    format!("{:08x}", value & 0xffff_ffff)
+    let ticks = COUNTER
+        .fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+        .wrapping_mul(0x9E37_79B9_7F4A_7C15);
+    format!("{:016x}", nanos ^ ticks)
 }
 
 fn session_file_stem(id: &str) -> String {
@@ -1137,6 +1170,65 @@ mod tests {
 
         std::fs::remove_dir_all(&dir).ok();
         std::fs::remove_dir_all(&cwd).ok();
+    }
+
+    #[test]
+    fn a_duplicate_entry_id_does_not_fold_the_session_tree() {
+        let dir = temp_dir("dup_id");
+        let cwd = temp_dir("dup_id_proj");
+        let log = SessionLog::create_in(&dir, &cwd).unwrap();
+        let first = log.append(&Message::user("one")).unwrap();
+        let second = log.append(&Message::assistant("two", Vec::new())).unwrap();
+        log.append(&Message::user("three")).unwrap();
+
+        // A further entry reusing the first message's id: with the id pointing
+        // at the newer entry, the chain the third message's parent link enters
+        // leads back through itself and the walk never ends.
+        let duplicate = serde_json::json!({
+            "type": "message",
+            "id": first,
+            "parentId": second,
+            "timestamp": "2026-01-01T00:00:00.000Z",
+            "message": { "role": "user", "content": "four" },
+        });
+        let mut file = std::fs::OpenOptions::new()
+            .append(true)
+            .open(log.path())
+            .unwrap();
+        writeln!(file, "{duplicate}").unwrap();
+        drop(file);
+
+        let reopened = SessionLog::open(log.path().to_path_buf()).unwrap();
+        let messages = reopened.messages().unwrap();
+        assert_eq!(messages.len(), 3);
+        assert_eq!(messages[0].display().as_deref(), Some("one"));
+        assert_eq!(reopened.summary().unwrap().message_count, 3);
+
+        std::fs::remove_dir_all(&dir).ok();
+        std::fs::remove_dir_all(&cwd).ok();
+    }
+
+    #[test]
+    fn a_parent_cycle_terminates_the_leaf_walk() {
+        let mut state = SessionState::default();
+        for (id, parent, text) in [("aa", "bb", "one"), ("bb", "aa", "two")] {
+            state.by_id.insert(id.to_string(), state.entries.len());
+            state.entries.push(Entry::Message(MessageEntry {
+                id: id.to_string(),
+                parent_id: Some(parent.to_string()),
+                timestamp: String::new(),
+                message: Box::new(Message::user(text)),
+                usage: None,
+            }));
+            state.leaf_id = Some(id.to_string());
+        }
+
+        let indices = leaf_indices_with(&state.entries, state.leaf_id.as_deref(), &state.by_id);
+        assert_eq!(indices, vec![0, 1]);
+        assert_eq!(
+            context_entries(&state.entries, state.leaf_id.as_deref(), &state.by_id).len(),
+            2
+        );
     }
 
     #[test]

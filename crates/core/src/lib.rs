@@ -11,6 +11,7 @@ pub mod approvals;
 pub mod auth;
 pub mod cli;
 pub mod clipboard;
+pub mod commands;
 pub mod compact;
 pub mod config;
 pub mod diff;

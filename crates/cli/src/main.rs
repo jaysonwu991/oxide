@@ -6,9 +6,9 @@ mod uninstall;
 // plugins, agent loop) is re-exported at the crate root so existing `crate::`
 // paths keep resolving with the same names as before the workspace split.
 pub use oxide_core::{
-    agent, approval, approvals, auth, cli, clipboard, compact, config, diff, ecosystem, html, llm,
-    lsp, mcp, mcp_config, mcp_oauth, media, memory, notify, permission, plugin, plugin_registry,
-    portkey_usage, pricing, runner, session, sessions, snapshots, tools, trust,
+    agent, approval, approvals, auth, cli, clipboard, commands, compact, config, diff, ecosystem,
+    html, llm, lsp, mcp, mcp_config, mcp_oauth, media, memory, notify, permission, plugin,
+    plugin_registry, portkey_usage, pricing, runner, session, sessions, snapshots, tools, trust,
 };
 
 use agent::{AgentEvent, Approver, Cancel, Steering};
@@ -172,6 +172,12 @@ enum Command {
         #[command(subcommand)]
         action: PluginAction,
     },
+    /// List the slash commands a client can offer
+    Commands {
+        /// Print the listing as JSON
+        #[arg(long)]
+        json: bool,
+    },
 }
 
 #[derive(Subcommand, Debug)]
@@ -276,7 +282,11 @@ enum MarketplaceAction {
 #[derive(Subcommand, Debug)]
 enum McpAction {
     /// List configured MCP servers
-    List,
+    List {
+        /// Print the listing as JSON
+        #[arg(long)]
+        json: bool,
+    },
     /// Show a server's configuration
     Get {
         /// Server name
@@ -349,6 +359,22 @@ enum McpAction {
         #[arg(short, long)]
         scope: Option<String>,
     },
+    /// Turn a server off without removing its configuration
+    Disable {
+        /// Server name
+        name: String,
+        /// Limit the change to project or global (default: the source that defines it)
+        #[arg(short, long)]
+        scope: Option<String>,
+    },
+    /// Turn a disabled server back on
+    Enable {
+        /// Server name
+        name: String,
+        /// Limit the change to project or global (default: the source that defines it)
+        #[arg(short, long)]
+        scope: Option<String>,
+    },
 }
 
 #[tokio::main]
@@ -359,7 +385,13 @@ async fn main() -> Result<()> {
             Command::Mcp { action } => {
                 let current_dir = std::env::current_dir().context("resolving current directory")?;
                 match action {
-                    McpAction::List => mcp_config::list(&current_dir).await,
+                    McpAction::List { json } => {
+                        if json {
+                            mcp_config::list_json(&current_dir).await
+                        } else {
+                            mcp_config::list(&current_dir).await
+                        }
+                    }
                     McpAction::Get { name } => mcp_config::get(&current_dir, &name),
                     McpAction::Add {
                         name,
@@ -401,6 +433,12 @@ async fn main() -> Result<()> {
                     }
                     McpAction::Auth { name, scope } => {
                         mcp_config::auth(&current_dir, scope, name).await
+                    }
+                    McpAction::Enable { name, scope } => {
+                        mcp_config::set_enabled(&current_dir, scope, name, true)
+                    }
+                    McpAction::Disable { name, scope } => {
+                        mcp_config::set_enabled(&current_dir, scope, name, false)
                     }
                 }
             }
@@ -479,6 +517,10 @@ async fn main() -> Result<()> {
                     },
                 }
                 Ok(())
+            }
+            Command::Commands { json } => {
+                let current_dir = std::env::current_dir().context("resolving current directory")?;
+                commands::list(&current_dir, json)
             }
         };
     }
@@ -671,13 +713,10 @@ async fn run_print(
 ) -> Result<()> {
     config.require_api_key()?;
     config.tool_filter = tool_filter.clone();
-    let resolved = config.resolve_command(&prompt);
-    let prompt = resolved
-        .as_ref()
-        .map(|command| command.prompt.clone())
-        .unwrap_or(prompt);
-    let command_agent = resolved.as_ref().and_then(|command| command.agent.clone());
-    let subtask = resolved.as_ref().is_some_and(|command| command.subtask);
+    let resolved = runner::resolve_command(&config, &prompt);
+    let prompt = resolved.text;
+    let command_agent = resolved.agent;
+    let subtask = resolved.subtask;
     // `--no-session` gives a throwaway log that is never persisted, so the run
     // behaves like Pi's ephemeral mode while keeping the agent loop unchanged.
     let ephemeral = config.ephemeral;
@@ -902,13 +941,10 @@ async fn run_rpc_mode(
             if let Some(log) = &log {
                 let _ = control_tx.send(cli::session_header(log));
             }
-            let resolved = config.resolve_command(&text);
-            let prompt = resolved
-                .as_ref()
-                .map(|command| command.prompt.clone())
-                .unwrap_or(text);
-            let command_agent = resolved.as_ref().and_then(|command| command.agent.clone());
-            let subtask = resolved.as_ref().is_some_and(|command| command.subtask);
+            let resolved = runner::resolve_command(&config, &text);
+            let prompt = resolved.text;
+            let command_agent = resolved.agent;
+            let subtask = resolved.subtask;
             let user = runner::build_user_message(&prompt, &cwd, &images, &[])?;
             if let Some(log) = &log {
                 log.append(&user)?;

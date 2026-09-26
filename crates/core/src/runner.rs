@@ -39,6 +39,35 @@ pub struct AgentRun {
     pub cancel: Cancel,
 }
 
+/// A prompt a front-end is about to send, with any leading `/command` already
+/// expanded.
+pub struct Prompt {
+    pub text: String,
+    /// The agent the command's frontmatter asked for, if any.
+    pub agent: Option<String>,
+    /// Whether the command runs as a subagent rather than in this transcript.
+    pub subtask: bool,
+}
+
+/// Resolves a leading `/command` against the ecosystem the way every front-end
+/// does, so a command from a client's `/` menu and one typed by hand behave
+/// identically. A prompt that names no command passes through unchanged, and an
+/// unknown `/name` is sent as written rather than swallowed.
+pub fn resolve_command(config: &Config, prompt: &str) -> Prompt {
+    match config.resolve_command(prompt) {
+        Some(resolved) => Prompt {
+            text: resolved.prompt,
+            agent: resolved.agent,
+            subtask: resolved.subtask,
+        },
+        None => Prompt {
+            text: prompt.to_string(),
+            agent: None,
+            subtask: false,
+        },
+    }
+}
+
 /// Builds the user message, attaching inline images/PDFs referenced by the
 /// prompt, explicit attachment paths, and already-loaded media parts (the
 /// desktop sends pasted images as data URLs, which have no path on disk).

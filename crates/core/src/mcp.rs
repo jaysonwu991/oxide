@@ -27,6 +27,19 @@ pub enum McpStatus {
     Error(String),
 }
 
+impl McpStatus {
+    /// The machine-readable form a front-end colors and groups by.
+    pub fn state(&self) -> &'static str {
+        match self {
+            Self::Connected => "connected",
+            Self::NeedsAuth => "needs-auth",
+            Self::NeedsTrust => "needs-trust",
+            Self::Disabled => "disabled",
+            Self::Error(_) => "error",
+        }
+    }
+}
+
 impl fmt::Display for McpStatus {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {

@@ -14,18 +14,19 @@ mod commands;
 
 use commands::{
     add_project, all_sessions, cancel_run, clear_approvals, create_project, delete_session,
-    list_approvals, list_models, list_projects, list_providers, list_sessions, list_themes, login,
-    logout, open_url, pick_folder, project_info, remove_project, rename_session, resolve_approval,
-    send_prompt, session_messages, set_model, set_project_trust, set_theme, steer_run,
-    theme_colors, DesktopState,
+    list_approvals, list_commands, list_models, list_projects, list_providers, list_sessions,
+    list_themes, login, logout, mcp_servers, open_url, pick_folder, project_info, remove_project,
+    rename_session, resolve_approval, send_prompt, session_messages, set_mcp_server, set_model,
+    set_project_trust, set_theme, steer_run, theme_colors, DesktopState,
 };
 use oxide_desktop::manager::DesktopManager;
 use tauri::Manager;
 
 fn main() {
     tauri::Builder::default()
+        .plugin(tauri_plugin_dialog::init())
         .setup(|app| {
-            let manager = DesktopManager::load().expect("loading desktop projects");
+            let manager = DesktopManager::load_lossy();
             app.manage(DesktopState::new(manager, app.handle().clone()));
             Ok(())
         })
@@ -39,6 +40,9 @@ fn main() {
             all_sessions,
             project_info,
             set_project_trust,
+            mcp_servers,
+            set_mcp_server,
+            list_commands,
             session_messages,
             rename_session,
             delete_session,

@@ -34,6 +34,10 @@ const state = {
   tools: [],
   currentThinking: null,
   attachments: [],
+  mcps: null,
+  palette: [],
+  paletteIndex: 0,
+  paletteOpen: false,
 };
 
 // ---------- helpers ----------
@@ -847,6 +851,20 @@ async function send(followUp = false) {
   const attachments = attachmentPayload();
   if (!prompt && attachments.length === 0) return;
 
+  // A leading slash draws the client's own command first: the app answers the
+  // ones it owns (the MCP list, a picker, a new thread) instead of sending
+  // them to the model, while everything else stays a prompt for the agent to
+  // resolve.
+  if (prompt.startsWith("/") && attachments.length === 0) {
+    closePalette();
+    if (await runSlashCommand(prompt)) {
+      textarea.value = "";
+      textarea.style.height = "auto";
+      updateSendState();
+      return;
+    }
+  }
+
   if (state.busy) {
     if (state.runId == null) return;
     textarea.value = "";
@@ -1231,6 +1249,7 @@ const OVERLAYS = [
   "approval",
   "connect-modal",
   "create-project-modal",
+  "mcps-modal",
   "models-modal",
   "themes-modal",
   "permissions-modal",
@@ -1245,6 +1264,9 @@ function closeOverlays(except) {
   for (const id of OVERLAYS) {
     if (id !== except) el(id).hidden = true;
   }
+  // The palette lives above the composer rather than in an overlay, but any
+  // dialog that opens takes the keyboard with it.
+  if (except !== "command-palette") closePalette();
 }
 
 // macOS's WKWebView does not implement `window.confirm`/`window.prompt`, so
@@ -1546,6 +1568,338 @@ async function clearApprovals() {
   openPermissions();
 }
 
+// ---------- MCP servers ----------
+
+/// The servers this project loads, with the state the core reports: the same
+/// listing `oxide mcp list` prints and the terminal's `/mcps` shows.
+async function openMcps() {
+  closeOverlays("mcps-modal");
+  el("mcps-modal").hidden = false;
+  el("mcp-list").innerHTML = '<div class="mcp-empty">Checking servers…</div>';
+  await loadMcps();
+}
+
+async function loadMcps() {
+  try {
+    state.mcps = await invoke("mcp_servers", { project: state.project || "" });
+    renderMcps();
+  } catch (error) {
+    el("mcp-list").innerHTML =
+      `<div class="mcp-empty">Could not list MCP servers: ${escapeHtml(String(error))}</div>`;
+  }
+}
+
+function renderMcps() {
+  const box = el("mcp-list");
+  box.innerHTML = "";
+  const servers = state.mcps || [];
+  if (!servers.length) {
+    box.innerHTML =
+      '<div class="mcp-empty">No MCP servers configured. Add one with <code>oxide mcp add</code>, or a <code>.mcp.json</code> in the project.</div>';
+    return;
+  }
+  for (const server of servers) {
+    const row = document.createElement("div");
+    row.className = "mcp-row";
+
+    const head = document.createElement("div");
+    head.className = "mcp-head";
+    const name = document.createElement("span");
+    name.className = "mcp-name";
+    name.textContent = server.name;
+    const status = document.createElement("span");
+    status.className = `mcp-status state-${server.state}`;
+    status.textContent = server.status;
+    const toggle = document.createElement("button");
+    toggle.type = "button";
+    toggle.className = "ghost small mcp-toggle";
+    toggle.textContent = server.enabled ? "Disable" : "Enable";
+    toggle.title = server.enabled
+      ? "Turn this server off in the file that defines it"
+      : "Turn this server back on";
+    toggle.onclick = () => toggleMcp(server, toggle);
+    head.append(name, status, toggle);
+
+    const detail = document.createElement("div");
+    detail.className = "mcp-detail";
+    detail.textContent = [server.transport, server.detail].filter(Boolean).join(" · ");
+    const source = document.createElement("div");
+    source.className = "mcp-source";
+    source.textContent = `source: ${server.source}`;
+
+    row.append(head, detail, source);
+    box.appendChild(row);
+  }
+}
+
+async function toggleMcp(server, button) {
+  if (!state.project) {
+    setStatus("Select a project first.");
+    return;
+  }
+  button.disabled = true;
+  setStatus(`${server.enabled ? "Turning off" : "Turning on"} ${server.name}…`);
+  try {
+    state.mcps = await invoke("set_mcp_server", {
+      project: state.project || "",
+      name: server.name,
+      enabled: !server.enabled,
+    });
+    renderMcps();
+    setStatus("Ready");
+  } catch (error) {
+    button.disabled = false;
+    setStatus(`Could not change ${server.name}: ${error}`);
+  }
+}
+
+// ---------- slash commands ----------
+
+/// Alias → the name the built-ins dispatch on, mirroring
+/// `oxide_core::commands`.
+const SLASH_ALIASES = {
+  mcps: "mcp",
+  approvals: "permissions",
+  access: "trust",
+  thinking: "reasoning",
+  sessions: "session",
+  clear: "new",
+  cost: "usage",
+  login: "connect",
+};
+
+function slashName(raw) {
+  const name = String(raw || "").replace(/^\//, "").toLowerCase();
+  return SLASH_ALIASES[name] || name;
+}
+
+/// The built-ins this app performs itself. A name that is not here is sent on as
+/// a prompt, so a project command, prompt template or skill still reaches the
+/// agent through the CLI's own resolution.
+async function runSlashCommand(text) {
+  const parts = String(text).trim().split(/\s+/);
+  const name = slashName(parts[0]);
+  const args = parts.slice(1).join(" ").trim();
+  switch (name) {
+    case "help":
+      toggleHelp();
+      return true;
+    case "mcp":
+      if (!state.project) {
+        setStatus("Select a project first.");
+        return true;
+      }
+      await openMcps();
+      return true;
+    case "model":
+      await openModels();
+      return true;
+    case "theme":
+      await openThemes();
+      return true;
+    case "permissions":
+      await openPermissions();
+      return true;
+    case "trust":
+      if (state.trust) showTrust(state.trust);
+      else setStatus("Nothing to decide — this project needs no trust decision.");
+      return true;
+    case "connect":
+      await openConnect();
+      if (args) {
+        const index = state.providers.findIndex(
+          (provider) =>
+            provider.name === args.toLowerCase() ||
+            provider.label.toLowerCase() === args.toLowerCase(),
+        );
+        if (index >= 0) {
+          state.providerIndex = index;
+          renderProviders();
+        } else {
+          el("login-key").focus();
+        }
+      }
+      return true;
+    case "logout": {
+      if (!state.providers.length) state.providers = await invoke("list_providers");
+      const stored = state.providers.filter((entry) => entry.stored);
+      const wanted = args.toLowerCase();
+      const target = args
+        ? stored.find(
+            (entry) => entry.name === wanted || entry.label.toLowerCase() === wanted,
+          )
+        : stored.length === 1
+          ? stored[0]
+          : null;
+      if (!target) {
+        setStatus(
+          stored.length
+            ? `Name a provider: /logout ${stored.map((entry) => entry.name).join("|")}`
+            : "No provider is connected.",
+        );
+        return true;
+      }
+      const ok = await confirmDialog(
+        "Sign out",
+        `Forget the stored credential for ${target.label}?`,
+        "Sign out",
+      );
+      if (!ok) return true;
+      await invoke("logout", { provider: target.name });
+      await loadInfo();
+      setStatus(`Signed out of ${target.label}`);
+      return true;
+    }
+    case "session":
+      setStatus("Open a thread from the sidebar to resume it.");
+      return true;
+    case "new":
+      if (!state.project) {
+        setStatus("Select a project first.");
+        return true;
+      }
+      newChat();
+      return true;
+    case "reasoning":
+      if (!args) {
+        cycleReasoning();
+      } else if (REASONING.includes(args)) {
+        state.reasoning = args;
+        updateChips();
+      } else {
+        setStatus(`Reasoning must be one of ${REASONING.join(", ")}.`);
+      }
+      return true;
+    case "attach":
+      el("attach-input").click();
+      return true;
+    case "usage":
+      setStatus(el("usage").textContent ? `This chat: ${el("usage").textContent}` : "No usage reported yet.");
+      return true;
+    default: {
+      // A client command the app does not implement yet is still worth naming,
+      // rather than sending `/logout` to the model as a prompt.
+      const builtin = state.palette.find((entry) => entry.kind === "client" && entry.name === name);
+      if (!builtin) return false;
+      setStatus(`/${builtin.name} is not available in the desktop app yet.`);
+      return true;
+    }
+  }
+}
+
+// ---------- command palette ----------
+
+function openPalette() {
+  const box = el("command-palette");
+  const prompt = el("prompt");
+  if (!box || !prompt || !prompt.offsetParent) return;
+  const rect = prompt.getBoundingClientRect();
+  box.style.left = `${rect.left}px`;
+  box.style.width = `${rect.width}px`;
+  box.style.top = `${Math.max(12, rect.top - 8)}px`;
+  box.style.transform = "translateY(-100%)";
+  box.hidden = false;
+  state.paletteOpen = true;
+  renderPalette();
+}
+
+function closePalette() {
+  const box = el("command-palette");
+  if (box) box.hidden = true;
+  state.paletteOpen = false;
+}
+
+/// The entries the slot can become, loaded when the palette opens rather than
+/// kept warm: the list depends on the selected project's own commands.
+async function refreshPaletteEntries() {
+  try {
+    state.palette = await invoke("list_commands", { project: state.project || "" });
+  } catch (error) {
+    state.palette = state.palette || [];
+  }
+}
+
+function paletteMatches() {
+  const text = el("prompt").value;
+  if (!text.startsWith("/")) return null;
+  const query = text.slice(1).toLowerCase();
+  if (/\s/.test(query)) return null;
+  return state.palette.filter(
+    (entry) =>
+      entry.name.toLowerCase().includes(query) ||
+      entry.aliases.some((alias) => alias.toLowerCase().includes(query)),
+  );
+}
+
+function renderPalette() {
+  const list = el("palette-list");
+  const matches = paletteMatches();
+  if (!matches) {
+    closePalette();
+    return;
+  }
+  list.innerHTML = "";
+  if (!matches.length) {
+    list.innerHTML = '<div class="palette-empty">No matching command.</div>';
+    return;
+  }
+  state.paletteIndex = Math.min(state.paletteIndex, matches.length - 1);
+  matches.forEach((entry, index) => {
+    const row = document.createElement("button");
+    row.type = "button";
+    row.className = "palette-item" + (index === state.paletteIndex ? " active" : "");
+    row.setAttribute("role", "option");
+    row.innerHTML =
+      `<span class="cmd">/${escapeHtml(entry.name)}</span>` +
+      (entry.arguments ? `<span class="args">${escapeHtml(entry.arguments)}</span>` : "") +
+      `<span class="desc">${escapeHtml(entry.description)}</span>` +
+      `<span class="source">${escapeHtml(entry.source)}</span>`;
+    row.onclick = () => {
+      state.paletteIndex = index;
+      runPaletteEntry(entry);
+    };
+    list.appendChild(row);
+  });
+}
+
+/// Choosing an entry runs it when it takes no arguments beyond what the app
+/// knows, and otherwise completes it in the composer so the arguments can be
+/// typed before it is sent — the same split the catalog describes.
+function runPaletteEntry(entry) {
+  closePalette();
+  const prompt = el("prompt");
+  if (entry.kind === "client" && !entry.arguments) {
+    prompt.value = "";
+    updateSendState();
+    runSlashCommand(`/${entry.name}`);
+    return;
+  }
+  prompt.value = `/${entry.name}${entry.arguments ? " " : ""}`;
+  prompt.focus();
+  prompt.style.height = "auto";
+  prompt.style.height = `${Math.min(prompt.scrollHeight, 220)}px`;
+  updateSendState();
+}
+
+/// Moves the selection in the open palette. Returns true when the key was
+/// consumed so the composer does not also act on it.
+function paletteKey(event) {
+  const matches = paletteMatches();
+  if (!state.paletteOpen || !matches) return false;
+  if (event.key === "ArrowDown" || event.key === "ArrowUp") {
+    const step = event.key === "ArrowDown" ? 1 : -1;
+    state.paletteIndex =
+      (state.paletteIndex + step + matches.length) % Math.max(1, matches.length);
+    renderPalette();
+    return true;
+  }
+  if ((event.key === "Enter" || event.key === "Tab") && matches.length) {
+    runPaletteEntry(matches[state.paletteIndex] || matches[0]);
+    return true;
+  }
+  return false;
+}
+
 // ---------- wiring ----------
 
 function toggleHelp() {
@@ -1591,6 +1945,7 @@ function folderBasename(path) {
 function openCreateProject() {
   createProjectState.folders = [];
   el("create-project-name").value = "";
+  el("create-project-path").value = "";
   el("create-project-folders").innerHTML = "";
   el("create-project-error").hidden = true;
   el("create-project-modal").hidden = false;
@@ -1609,6 +1964,25 @@ async function addCreateProjectFolder() {
   } catch (error) {
     showCreateProjectError(`Could not open folder chooser: ${error}`);
   }
+}
+
+/// A path typed by hand, so a folder can be added even when the platform
+/// chooser cannot be seen — a window without focus leaves the panel behind and
+/// the list must not depend on it.
+function addCreateProjectTypedPath() {
+  const input = el("create-project-path");
+  const path = input.value.trim();
+  if (!path) return;
+  if (createProjectState.folders.includes(path)) {
+    showCreateProjectError("That folder is already in the list");
+    return;
+  }
+  createProjectState.folders.push(path);
+  input.value = "";
+  showCreateProjectError("");
+  renderCreateProjectFolders();
+  const nameInput = el("create-project-name");
+  if (!nameInput.value.trim()) nameInput.value = folderBasename(path);
 }
 
 function removeCreateProjectFolder(path) {
@@ -1784,6 +2158,15 @@ function init() {
       resolveRename(el("rename-input").value.trim());
     }
   });
+  el("mcps-close").onclick = () => (el("mcps-modal").hidden = true);
+  el("mcps-refresh").onclick = () => loadMcps();
+  el("create-project-add-path").onclick = addCreateProjectTypedPath;
+  el("create-project-path").addEventListener("keydown", (event) => {
+    if (event.key === "Enter") {
+      event.preventDefault();
+      addCreateProjectTypedPath();
+    }
+  });
   el("help-close").onclick = () => (el("help-modal").hidden = true);
 
   // The webview cannot navigate to a remote page, so a link click opens the
@@ -1802,6 +2185,19 @@ function init() {
     el("prompt").style.height = "auto";
     el("prompt").style.height = `${Math.min(el("prompt").scrollHeight, 220)}px`;
     updateSendState();
+    // Typing `/` at the start of a message opens the palette; anything with a
+    // space in it is arguments, so the menu closes and lets the text through.
+    if (el("prompt").value.startsWith("/") && !/\s/.test(el("prompt").value.slice(1))) {
+      if (!state.paletteOpen) {
+        state.paletteIndex = 0;
+        refreshPaletteEntries().then(openPalette);
+      } else {
+        state.paletteIndex = 0;
+        renderPalette();
+      }
+    } else {
+      closePalette();
+    }
   });
   el("prompt").addEventListener("paste", (event) => {
     // A pasted image becomes an attachment; a text paste keeps its default
@@ -1826,6 +2222,14 @@ function init() {
   });
   el("image-view-close").onclick = () => (el("image-modal").hidden = true);
   el("prompt").addEventListener("keydown", (event) => {
+    if (paletteKey(event)) {
+      event.preventDefault();
+      return;
+    }
+    if (event.key === "Escape") {
+      closePalette();
+      return;
+    }
     if (event.key === "Enter" && !event.shiftKey) {
       event.preventDefault();
       send(event.altKey);
