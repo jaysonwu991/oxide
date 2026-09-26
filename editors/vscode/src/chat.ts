@@ -18,6 +18,7 @@ import {
   attachmentId,
   attachmentKind,
   attachmentMimeForPath,
+  attachmentRejection,
   decodeDataUrl,
   formatBytes,
   MAX_ATTACHMENTS,
@@ -349,14 +350,19 @@ export class ChatController {
       this.showNotice("Only images and PDFs can be attached.", "warn");
       return null;
     }
+    const key = attachmentId(decoded.bytes);
+    const label = attachmentFileName(name, decoded.mime);
+    // Check the cap and the duplicate before the blob is written, so a
+    // rejected paste never leaves a temp file behind.
+    if (!this.canAddAttachment(key, label)) return null;
     const written = this.store.write(name, dataUrl);
     if (!written) {
       this.showNotice(`Could not write ${name || "the attachment"} to a file.`, "error");
       return null;
     }
     return this.pushAttachment({
-      key: attachmentId(decoded.bytes),
-      label: attachmentFileName(name, decoded.mime),
+      key,
+      label,
       path: written.path,
       kind: decoded.kind,
       // Only an image gets a thumbnail: a PDF would echo its whole data URL
@@ -428,15 +434,23 @@ export class ChatController {
     return { id: chip.id, label: chip.label };
   }
 
-  private pushAttachment(attachment: Omit<Attachment, "id">): ContextChip | null {
-    if (this.attachments.length >= MAX_ATTACHMENTS) {
+  /// The cap and dedup guard both attachment paths share, checked before a
+  /// pasted blob is written so a rejected paste leaves no temp file behind.
+  private canAddAttachment(key: string, label: string): boolean {
+    const rejection = attachmentRejection(this.attachments, key);
+    if (rejection === "cap") {
       this.showNotice(`At most ${MAX_ATTACHMENTS} attachments per message.`, "warn");
-      return null;
+      return false;
     }
-    if (this.attachments.some((existing) => existing.key === attachment.key)) {
-      this.showNotice(`${attachment.label} is already attached.`);
-      return null;
+    if (rejection === "duplicate") {
+      this.showNotice(`${label} is already attached.`);
+      return false;
     }
+    return true;
+  }
+
+  private pushAttachment(attachment: Omit<Attachment, "id">): ContextChip | null {
+    if (!this.canAddAttachment(attachment.key, attachment.label)) return null;
     const chip: Attachment = { id: this.nextChipId++, ...attachment };
     this.attachments.push(chip);
     this.broadcastChips();
@@ -470,7 +484,13 @@ export class ChatController {
     const message = text.trim();
     if (!message && !this.contextCount) return;
     if (this.turn) {
-      this.queue.push({ text: message, context: this.context, attachments: this.attachments });
+      // Snapshot the chips: the composer stays editable while the turn runs,
+      // so a later chip must not join a message already queued.
+      this.queue.push({
+        text: message,
+        context: [...this.context],
+        attachments: [...this.attachments],
+      });
       this.showNotice(`Queued: ${firstLine(message)}`);
       return;
     }
@@ -494,8 +514,10 @@ export class ChatController {
       label: (absolute) => relativePath(cwd, absolute),
     });
 
-    const chips = this.context;
-    const attached = this.attachments;
+    // Snapshot the composer: the running turn (or a failure restoring it)
+    // owns these arrays, so chips added afterwards cannot leak into it.
+    const chips = [...this.context];
+    const attached = [...this.attachments];
     const blocks = chips.map((chip) => chip.block);
     // An `@path` reference to an image or PDF is media, not prompt text — the
     // same split the CLI's own `@file` expansion makes.

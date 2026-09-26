@@ -115,8 +115,8 @@ Provider logins live in the CLI: run **Oxide: Open Terminal (TUI)** and use
   either way: sessions live in the CLI's own store.
 - Runs are non-interactive, so there is no approval prompt: a tool the
   permission rules mark `ask` is decided by Oxide's own `auto_approve` setting.
-- An image or PDF attached from the clipboard is written to a temporary file
-  inside the extension's storage, because the CLI takes attachment *paths*
+- An image or PDF attached from the clipboard is written to a private OS
+  temporary directory (`os.tmpdir()`), because the CLI takes attachment *paths*
   (`--image`); the directory is removed when the window closes. Files picked or
   dropped from the explorer are passed where they already are, so nothing is
   copied for them. At most eight attachments ride on one message.

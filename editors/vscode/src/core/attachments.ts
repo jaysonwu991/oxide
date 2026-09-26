@@ -59,6 +59,19 @@ export function attachmentExtension(mime: string): string | null {
   return EXTENSIONS[mime] ?? null;
 }
 
+/// Why another attachment cannot join the pending list, or `null` when it can:
+/// the cap and the content-address duplicate rule both attachment paths share.
+/// The controller checks this before writing a pasted blob, so a rejected paste
+/// never leaves a temp file behind.
+export function attachmentRejection(
+  existing: readonly { key: string }[],
+  key: string,
+): "cap" | "duplicate" | null {
+  if (existing.length >= MAX_ATTACHMENTS) return "cap";
+  if (existing.some((entry) => entry.key === key)) return "duplicate";
+  return null;
+}
+
 /// The MIME type the CLI would read from a path, or `null` when the path is not
 /// an attachment. Mirrors `media::is_attachment_path`, including its tolerance
 /// for a Windows separator.

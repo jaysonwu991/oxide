@@ -13,9 +13,11 @@ import {
   attachmentId,
   attachmentKind,
   attachmentMimeForPath,
+  attachmentRejection,
   dataUrlMime,
   decodeDataUrl,
   formatBytes,
+  MAX_ATTACHMENTS,
   MAX_PREVIEW_CHARS,
 } from "../core/attachments";
 
@@ -139,6 +141,22 @@ describe("attachmentId", () => {
     assert.equal(attachmentId(Buffer.from("hello")), first);
     assert.notEqual(attachmentId(Buffer.from("hellp")), first);
     assert.notEqual(attachmentId(Buffer.from("hello!")), first);
+  });
+});
+
+describe("attachmentRejection", () => {
+  it("refuses a ninth attachment", () => {
+    const full = Array.from({ length: MAX_ATTACHMENTS }, (_, i) => ({ key: `k${i}` }));
+    assert.equal(attachmentRejection(full, "new"), "cap");
+  });
+
+  it("refuses a duplicate content address", () => {
+    assert.equal(attachmentRejection([{ key: "abc" }], "abc"), "duplicate");
+  });
+
+  it("allows a new attachment below the cap", () => {
+    assert.equal(attachmentRejection([], "abc"), null);
+    assert.equal(attachmentRejection([{ key: "abc" }], "def"), null);
   });
 });
 
