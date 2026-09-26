@@ -57,6 +57,11 @@ struct Server {
 #[derive(Default)]
 pub struct LspManager {
     servers: Mutex<HashMap<String, Server>>,
+    /// Languages whose server could not be started or kept alive. Diagnostics
+    /// are best-effort, so a broken server (a missing toolchain's
+    /// `rust-analyzer` shim, for example) is remembered instead of being
+    /// respawned and reported on every edit.
+    unavailable: Mutex<HashSet<String>>,
 }
 
 impl LspManager {
@@ -98,11 +103,17 @@ impl LspManager {
         let uri = file_uri(&full);
 
         let mut servers = self.servers.lock().await;
-        let mut last_error = None;
+        if self.unavailable.lock().await.contains(config.language_id) {
+            return Ok(None);
+        }
         for _ in 0..2 {
             if !servers.contains_key(config.language_id) {
-                let server = Server::connect(config, cwd).await?;
-                servers.insert(config.language_id.to_string(), server);
+                match Server::connect(config, cwd).await {
+                    Ok(server) => {
+                        servers.insert(config.language_id.to_string(), server);
+                    }
+                    Err(_) => break,
+                }
             }
             let server = servers
                 .get_mut(config.language_id)
@@ -112,16 +123,23 @@ impl LspManager {
                 .await
             {
                 Ok(report) => return Ok(Some(report)),
-                Err(err) => {
+                Err(_) => {
                     // A cached process is unusable once it exits or its pipe
                     // breaks. Drop it so the retry starts a fresh one instead
                     // of failing forever against a dead server.
                     servers.remove(config.language_id);
-                    last_error = Some(err);
                 }
             }
         }
-        Err(last_error.expect("the loop records the last failure"))
+        // Both the cached and a freshly spawned server failed, so the language
+        // is treated as having no server at all: surfacing `lsp server closed
+        // the connection` on every edit is noise, and a manager that cannot
+        // talk to a server must not keep spawning one.
+        self.unavailable
+            .lock()
+            .await
+            .insert(config.language_id.to_string());
+        Ok(None)
     }
 }
 
@@ -476,6 +494,44 @@ while True:
         assert!(report.contains("mock diagnostic"), "{report}");
         // The dead first process was evicted and replaced by the live one.
         assert_eq!(manager.servers.lock().await.len(), 1);
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[tokio::test]
+    async fn an_unusable_server_is_treated_as_absent() {
+        if !command_exists("python3") {
+            return;
+        }
+        let dir = std::env::temp_dir().join(format!("oxide_lsp_dead_{}", std::process::id()));
+        std::fs::remove_dir_all(&dir).ok();
+        std::fs::create_dir_all(&dir).unwrap();
+        let source = dir.join("a.rs");
+        std::fs::write(&source, "fn main() {}\n").unwrap();
+
+        // `python3 -c` exits before answering `initialize`, like a broken
+        // language-server shim. That must read as "no diagnostics" instead of
+        // an error appended to every edit.
+        let config = ServerConfig {
+            language_id: "rust",
+            command: "python3",
+            args: &["-c", "import sys; sys.exit(0)"],
+        };
+        let manager = LspManager::new();
+        assert!(manager
+            .diagnostics_for(config, &dir, &source)
+            .await
+            .expect("a dead server is not an error")
+            .is_none());
+        assert!(manager.unavailable.lock().await.contains("rust"));
+
+        // Once a language is marked unavailable it is not spawned again.
+        assert!(manager
+            .diagnostics_for(config, &dir, &source)
+            .await
+            .unwrap()
+            .is_none());
+        assert!(manager.servers.lock().await.is_empty());
 
         std::fs::remove_dir_all(&dir).ok();
     }
