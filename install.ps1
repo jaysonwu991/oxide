@@ -1,10 +1,10 @@
 # Install the Oxide CLI.
 #
-#   irm https://github.com/jaysonwu991/oxide/releases/latest/download/install.ps1 | iex
+#   irm https://raw.githubusercontent.com/jaysonwu991/oxide/main/install.ps1 | iex
 #
 # Environment overrides:
 #   OXIDE_VERSION      version to install, with or without a leading "v"
-#                      (default: latest release)
+#                      (default: latest CLI release)
 #   OXIDE_INSTALL_DIR  directory to install the binary into
 #                      (default: %LOCALAPPDATA%\Programs\Oxide on Windows,
 #                       $HOME/.local/bin elsewhere)
@@ -90,6 +90,43 @@
         return $null
     }
 
+    # The repository publishes the CLI (`v*`), the desktop app (`desktop-v*`),
+    # and the VS Code extension (`extension-v*`), so `/releases/latest` can
+    # point at a component that carries no CLI manifest. Prefer `latest` when it
+    # has one, and otherwise resolve the newest CLI release from the API.
+    function Get-LatestCliTag {
+        try {
+            $releases = Get-Text "https://api.github.com/repos/$Repo/releases?per_page=100"
+        } catch {
+            return $null
+        }
+        foreach ($line in ($releases -split "`r?`n")) {
+            if ($line -match '"tag_name"\s*:\s*"(v[0-9][^"]*)"') {
+                return $Matches[1]
+            }
+        }
+        return $null
+    }
+
+    function Get-Manifest {
+        try {
+            return Get-Text "$BaseUrl/releases/latest/download/$ManifestName"
+        } catch {}
+        try {
+            return Get-Text "$BaseUrl/releases/latest/download/$LegacyManifestName"
+        } catch {}
+        $tag = Get-LatestCliTag
+        if (-not $tag) { return $null }
+        Write-Info "fetching $ManifestName from $tag"
+        try {
+            return Get-Text "$BaseUrl/releases/download/$tag/$ManifestName"
+        } catch {}
+        try {
+            return Get-Text "$BaseUrl/releases/download/$tag/$LegacyManifestName"
+        } catch {}
+        return $null
+    }
+
     function Resolve-Url([string]$Platform) {
         $ext = if ($Platform -like "win32-*") { "zip" } else { "tar.gz" }
 
@@ -99,15 +136,9 @@
         }
 
         Write-Info "fetching $ManifestName"
-        $manifest = $null
-        try {
-            $manifest = Get-Text "$BaseUrl/releases/latest/download/$ManifestName"
-        } catch {
-            try {
-                $manifest = Get-Text "$BaseUrl/releases/latest/download/$LegacyManifestName"
-            } catch {
-                throw "could not fetch $ManifestName; has a release been published?"
-            }
+        $manifest = Get-Manifest
+        if (-not $manifest) {
+            throw "could not fetch $ManifestName; has a release been published?"
         }
         $ver = Get-ManifestValue $manifest "version"
         if (-not $ver) { throw "could not read version from $ManifestName" }

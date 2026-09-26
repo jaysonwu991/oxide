@@ -1,0 +1,78 @@
+name: vscode
+
+# Builds and publishes the VS Code extension. It releases independently of the
+# CLI and the desktop app: only an `extension-v*` tag builds the VSIX and
+# attaches it to the matching release, so neither a `v*` nor a `desktop-v*` tag
+# rebuilds it. The extension is a standalone pnpm/TypeScript package, so the job
+# mirrors the `vscode` job in `ci.yml` (type check, unit tests, `vsce package`)
+# and then uploads the artifact the release-drafter notes advertise.
+
+on:
+  push:
+    tags: ["extension-v*"]
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: build vsix
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 11.23.0
+          run_install: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+          cache-dependency-path: editors/vscode/pnpm-lock.yaml
+      - name: Set version from tag
+        shell: bash
+        run: ./scripts/set-version.sh "${GITHUB_REF_NAME}"
+      - name: Install dependencies
+        working-directory: editors/vscode
+        run: pnpm install --frozen-lockfile
+      - name: Type check
+        working-directory: editors/vscode
+        run: pnpm run check
+      - name: Test
+        working-directory: editors/vscode
+        run: pnpm test
+      - name: Package
+        working-directory: editors/vscode
+        run: pnpm run package
+      - uses: actions/upload-artifact@v4
+        with:
+          name: vsix
+          path: editors/vscode/*.vsix
+          if-no-files-found: error
+
+  release:
+    name: publish release
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: vsix
+          path: vsix
+      # Keep the notes release-drafter already drafted for this tag; only create
+      # a release when none exists yet (for example a tag pushed by hand).
+      - name: Create release (idempotent)
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release view "${GITHUB_REF_NAME}" --repo "${{ github.repository }}" >/dev/null 2>&1 \
+            || gh release create "${GITHUB_REF_NAME}" --repo "${{ github.repository }}" \
+                 --title "Oxide for VS Code ${GITHUB_REF_NAME#extension-}" --generate-notes
+      - name: Upload release assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          find vsix -type f -name '*.vsix' -exec gh release upload "${GITHUB_REF_NAME}" --repo "${{ github.repository }}" --clobber {} \;

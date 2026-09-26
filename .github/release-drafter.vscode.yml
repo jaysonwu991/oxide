@@ -137,10 +137,7 @@ template: |
   ## Install
 
   Download `oxide-vscode-$RESOLVED_VERSION.vsix` from the assets below, then in
-  VS Code run **Extensions: Install from VSIX…**. The extension is also on the
-  [Visual Studio Marketplace](https://marketplace.visualstudio.com/items?itemName=jaysonwu991.oxide-vscode)
-  as `jaysonwu991.oxide-vscode`, where it can be installed directly once the
-  release is published there.
+  VS Code run **Extensions: Install from VSIX…**.
 
   The extension drives the `oxide` CLI, which is released separately: install it
   from the [releases page](https://github.com/$OWNER/$REPOSITORY/releases) (see

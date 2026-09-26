@@ -215,7 +215,7 @@ while using its own `.oxide/` format.
 #### macOS and Linux
 
 ```sh
-curl -fsSL https://github.com/jaysonwu991/oxide/releases/latest/download/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/jaysonwu991/oxide/main/install.sh | bash
 ```
 
 The installer detects your OS/arch, downloads the matching release, verifies its
@@ -232,7 +232,7 @@ Overrides:
 #### Windows (x86_64)
 
 ```powershell
-irm https://github.com/jaysonwu991/oxide/releases/latest/download/install.ps1 | iex
+irm https://raw.githubusercontent.com/jaysonwu991/oxide/main/install.ps1 | iex
 ```
 
 The PowerShell installer detects your OS/arch, downloads the matching release,
@@ -257,6 +257,14 @@ Overrides:
 | Linux (x86_64) | `x86_64-unknown-linux-gnu` | `.tar.gz` |
 | Linux (ARM64) | `aarch64-unknown-linux-gnu` | `.tar.gz` |
 | Windows (x86_64) | `x86_64-pc-windows-msvc` | `.zip` |
+
+### VS Code extension
+
+Install **Oxide** (`jaysonwu991.oxide-vscode`) by downloading
+`oxide-vscode-<version>.vsix` from an `extension-v*`
+[release](https://github.com/jaysonwu991/oxide/releases) and running
+**Extensions: Install from VSIX…** in VS Code. The extension drives the `oxide`
+CLI, so install the CLI above first.
 
 ### From source
 
@@ -424,7 +432,9 @@ pnpm test          # compile, then node --test out/test/
 pnpm run package   # vsce package -> oxide-vscode-<version>.vsix
 ```
 
-Provider logins stay in the CLI (`/login` in the TUI). See
+Published releases are cut from `extension-v*` tags and attach the packaged
+VSIX (see [CONTRIBUTING.md](CONTRIBUTING.md#releases)). Provider logins stay in
+the CLI (`/login` in the TUI). See
 [editors/vscode/README.md](editors/vscode/README.md) for the command and setting
 tables, and [docs/vscode.md](docs/vscode.md) for the architecture.
 

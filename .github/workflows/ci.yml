@@ -4,7 +4,7 @@ name: ci
 # (formatting, clippy, tests), the Tauri desktop app's `gui` feature (which the
 # default-feature test job does not compile), and the VS Code extension. This
 # workflow only verifies; the tag-triggered release workflows (`cli.yml`,
-# `desktop.yml`, and a future extension workflow) build the shippable artifacts.
+# `desktop.yml`, and `vscode.yml`) build the shippable artifacts.
 
 on:
   push:
