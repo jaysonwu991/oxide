@@ -206,3 +206,42 @@ export function isFile(candidate: string): boolean {
     return false;
   }
 }
+
+/// True when the path exists at all. A `.git` marker is a directory in a normal
+/// clone and a file in a worktree, so both have to count.
+export function exists(candidate: string): boolean {
+  try {
+    return fs.existsSync(candidate);
+  } catch {
+    return false;
+  }
+}
+
+/// The canonical path, or the input when it cannot be resolved. `trust.json`
+/// stores resolved directories, so the lookup has to resolve them the same way.
+export function realPath(candidate: string): string {
+  try {
+    return fs.realpathSync(candidate);
+  } catch {
+    return candidate;
+  }
+}
+
+/// The markdown files of a directory with their contents, which is how the
+/// footer lists the agents `--agent` can name. A missing or unreadable
+/// directory is an empty list.
+export function listMarkdown(dir: string): { stem: string; text: string }[] {
+  let names: string[];
+  try {
+    names = fs.readdirSync(dir);
+  } catch {
+    return [];
+  }
+  const files: { stem: string; text: string }[] = [];
+  for (const name of names.sort()) {
+    if (!name.toLowerCase().endsWith(".md")) continue;
+    const text = readTextFile(path.join(dir, name));
+    if (text !== null) files.push({ stem: name.replace(/\.md$/i, ""), text });
+  }
+  return files;
+}

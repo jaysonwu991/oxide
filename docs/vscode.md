@@ -21,22 +21,70 @@ editors/vscode/
     cli.ts            process layer: binary lookup, startTurn, runCapture
     core/             pure, webview-free logic (unit tested under node)
       protocol.ts     wire events -> transcript state machine -> view messages
+      views.ts        view ids shared by the manifest and the provider
       args.ts         VS Code settings -> `oxide` argv
       prompt.ts       prompt assembly, @path expansion, attachments
       preview.ts      write/edit/patch diff previews
       config.ts       shared config-dir resolution (read-only)
+      settings.ts     settings.json / .oxide/settings.json reads (read-only)
+      trust.ts        trust.json resolution and the access decision
+      git.ts          the branch, read from .git/HEAD
+      agents.ts       agent names for `--agent`
+      plugins.ts      installed plugins, whose agents `--agent` also resolves
+      json.ts         a tolerant JSON object reader
+      project.ts      the on-disk state the footer reports
+      footer.ts       footer chips, usage line and context gauge
       sessions.ts     `oxide sessions list` / `--version` parsing
-    test/             node:test suites for src/core
+    test/             node:test suites for src/core and the manifest
   media/
     main.js           dependency-free webview renderer (Markdown, diffs, …)
     style.css         themed styles (VS Code CSS variables)
-    oxide.svg         activity-bar icon
+    oxide.svg         container and view icon: the desktop app's mark
+    icon.png          extension icon: a copy of the desktop app's app icon
 ```
 
 The extension host owns all the state; the webview is a dumb renderer that
 applies the view messages produced in `core/protocol.ts`. That module imports
 nothing from `vscode`, so the whole event-to-DOM decision surface is unit tested
 with `node --test` and no webview.
+
+## Where the chat lives
+
+The chat is one controller behind two contributed webview views, so it can sit
+where the user keeps chat:
+
+- `oxide.chat` — the `Chat` view in the `oxide` activity-bar container.
+- `oxide.chatSecondary` — the same view in the `oxide-secondary`
+  `secondarySidebar` container, the strip GitHub Copilot Chat uses.
+
+Both ids live in `src/core/views.ts` and must match `package.json`; a view VS
+Code contributes without a matching `registerWebviewViewProvider` is an empty
+panel, and `test/views.test.ts` asserts the manifest, the activation events, the
+view-title menus and the icons agree with those constants. `ChatController`
+holds the transcript, the running turn and the queue, and broadcasts every view
+message to all attached views, so both panes follow one conversation; on an
+older VS Code that ignores `viewsContainers.secondarySidebar`, the container and
+its view never appear and the activity-bar pane is the only one.
+
+`oxide.openChat` raises the pane already on screen (`WebviewView.visible` decides
+the order), falling back to the secondary side bar's and then to the
+activity-bar one when that focus command does not exist.
+
+## Brand assets
+
+Both icons are the desktop app's: `media/oxide.svg` redraws the mark inside
+`crates/desktop/icons/icon.png` — a cyan diamond (`#5fd7ff`) with a dark rim
+(`#2d2d3a`), at the same proportions relative to its box (the cyan diamond
+spans 62.5% of the canvas, the rim reaches 71.9%) — and `media/icon.png` is the
+desktop's `128x128.png` byte for byte, which is what the Extensions view and the
+Marketplace listing show.
+
+The SVG carries those colours instead of `currentColor` on purpose: VS Code
+draws a contributed icon as a plain background image, and `currentColor` in a
+standalone SVG document resolves to black, so a tinted mark would vanish on a
+dark side bar. `test/brand.test.ts` keeps both files honest — it reads the
+manifest's `icon`, checks the PNG header, and compares the file against the
+desktop's, so the two can only drift together.
 
 ## Sharing configuration with the CLI
 
@@ -66,9 +114,58 @@ header supplies the id reused for the next message with `--session <id>`, and
 - **Per folder** — sessions are per project, so switching to a different
   workspace folder resets the transcript and starts its own thread.
 - **Usage** — `usage` events accumulate input/output/cache tokens and cost for
-  the footer; the context gauge uses the most recent step's prompt tokens and
-  `OXIDE_CONTEXT_LIMIT` when it is set (the extension cannot read a model's
-  window out of the CLI's config).
+  the usage line, and the latest one sets the context gauge (its prompt tokens
+  over the window), which is `OXIDE_CONTEXT_LIMIT` when it is set else the
+  config's `max_tokens` floored at 128k.
+
+## The footer
+
+Under the transcript sits the footer, which mirrors the terminal's. Every value
+is composed in the extension host — `core/project.ts` gathers the on-disk state
+and `core/footer.ts` turns it plus the transcript's usage into a `FooterState` —
+and the webview only paints it, so the footer reads the same in both panes and
+is unit tested without a webview.
+
+- **Chips** — `model: <model> · <window>`, `thinking: <level>`, `agent: <name>`,
+  `access: trusted|untrusted` and `session: <short id>`, each with a tooltip
+  saying which setting or file behind it. A click posts a `control` message that
+  the controller routes to the same action the matching command runs:
+  `thinking` cycles the level (like <kbd>Shift+Tab</kbd> in the terminal), the
+  others open the model, agent, trust and session pickers.
+- **Branch** — the repository the folder sits in, read from `.git/HEAD` rather
+  than through the Git extension, so it needs no other extension installed; a
+  worktree's or submodule's `gitdir:` pointer is followed to the real HEAD.
+- **Status** — the live phase and an elapsed timer while a turn runs.
+- **Gauge** — the last request's prompt tokens over the context window, amber
+  past 70% and red past 90% (the terminal's thresholds).
+- **Usage line** — `↑input · ↓output · RcacheRead · WcacheWrite · CHhit% · $cost
+  · ctx %/window (auto)`, matching the terminal's footer segments. `CH` is the
+  latest request's cache hit rate (`cache_read / prompt`), the same number
+  `UsageTotals::cache_hit_rate` reports, and a step that reads no cache leaves
+  the previous rate in place; `(auto)` marks auto-compaction as on, and the
+  window is shown dimmed when nothing has run yet.
+
+The reads are best effort: a missing or malformed file blanks the value it
+feeds — the model chip falls back to `config.json`, the branch and agent names
+to empty — and never throws in the middle of a turn. `trust.ts` resolves
+`trust.json` by closest ancestor like `oxide_core::trust`, folds in
+`oxide.projectTrust` (a saved decision beats `defaultProjectTrust`, and `ask`
+reads as untrusted because a non-interactive run cannot prompt), and
+`settings.ts` reads `compaction.enabled` from the global and the project
+`settings.json` with the project winning per key.
+
+Two of those reads are gated on the numbers they feed rather than taken at face
+value. The agent names come from the project's `.oxide/agents` and
+`.claude/agents` only while the project is trusted: an untrusted run reloads the
+ecosystem without project resources, but `Config::load` activates `--agent`
+before that reload, so offering a project agent would run its prompt and
+permissions inside a project the user did not trust. Installed plugins are read
+too, from the CLI's own plugin state (`plugins/config.json`, enabled entries
+with a live directory and manifest), because `ecosystem::load_enabled_plugins`
+loads their `agents/` ahead of project resources — the order is project, then
+plugins, then the global directories. The model picker offers only the active
+provider's remembered models: a model id is sent to whichever provider the CLI
+has active, so another provider's would run against the wrong endpoint.
 
 ## Wire protocol
 
@@ -85,12 +182,15 @@ discard, a previous step's committed reply.
 The transcript is a list of items (`user`, `assistant`, `thinking`, `tool`,
 `notice`). The view applies small deltas: `push` a new item, `remove` a
 discarded one, `append` a text/output fragment, `patch` a tool card when it
-settles, and `status` / `usage` / `context` for the footer. Reasoning and text
-stream into separate items, and a thinking block is created by its first delta,
-so a turn that only starts one never leaves an empty block in the transcript.
-When a stream drops and the CLI retries, `auto_retry_start` drops the item the
-failed attempt was streaming into, so the retry's fresh output does not extend
-the partial reply.
+settles, and `status` / `usage` / `context` for the footer. The `state`,
+`status` and `usage` messages carry the whole `FooterState` — the controller
+attaches it, since it is the only place that knows the context window and the
+resolved settings — and `control` is the one message that travels the other way,
+carrying a chip's id. Reasoning and text stream into separate items, and a
+thinking block is created by its first delta, so a turn that only starts one
+never leaves an empty block in the transcript. When a stream drops and the CLI
+retries, `auto_retry_start` drops the item the failed attempt was streaming
+into, so the retry's fresh output does not extend the partial reply.
 
 ## Prompt assembly
 
@@ -134,9 +234,12 @@ editor, but only inside the workspace.
 
 ## Commands and settings
 
-The manifest defines the activity-bar view, the commands and keybindings, and
-the `oxide.*` settings. See the
-[extension README](../editors/vscode/README.md) for the user-facing tables.
+The manifest defines the two view containers (activity bar and secondary side
+bar), the commands and keybindings, and the `oxide.*` settings. See the
+[extension README](../editors/vscode/README.md) for the user-facing tables. The
+footer's chips are shortcuts into the same actions: `setModel`, `setAgent`,
+`cycleReasoning`, `setProjectTrust` and `resumeSession` are reached from a chip
+click and from the palette, so the two entry points never drift.
 
 ## Development and testing
 
@@ -151,7 +254,16 @@ pnpm run package   # vsce package -> oxide-vscode-<version>.vsix
 Press <kbd>F5</kbd> with the folder open to launch an Extension Development
 Host. The tests cover the pure modules only: argv building, prompt assembly and
 `@path` expansion, diff and tool previews, session-list parsing, config-dir
-resolution, binary lookup, and the transcript state machine.
+resolution, binary lookup, and the transcript state machine — plus, in
+`test/views.test.ts`, that the chat view ids the host registers match the views
+`package.json` contributes, in `test/brand.test.ts`, that the two icons stay
+the desktop app's, and, in `test/commands.test.ts`, that every contributed
+command has a handler and every footer chip has a click handler. The footer's own
+readers are covered one file each: `test/settings.test.ts`, `test/trust.test.ts`,
+`test/git.test.ts`, `test/agents.test.ts`, `test/plugins.test.ts`,
+`test/project.test.ts` (the five together, against an injected file map, with the
+untrusted and plugin-agent cases spelled out) and `test/footer.test.ts` (the
+labels, the usage line and the gauge).
 
 ## Packaging
 

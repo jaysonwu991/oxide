@@ -8,8 +8,9 @@ import * as vscode from "vscode";
 
 import { ChatController } from "./chat";
 import { ChatViewProvider } from "./chatView";
-import { isFile, readTextFile, resolveBinary } from "./cli";
-import { configDir, contextWindowFromEnv, parseConfigSummary } from "./core/config";
+import { isFile, exists, listMarkdown, readTextFile, realPath, resolveBinary } from "./cli";
+import { configDir, parseConfigSummary } from "./core/config";
+import type { ProjectDeps } from "./core/project";
 import { isAttachmentPath, type ContextBlock } from "./core/prompt";
 
 /// A whole-file context block is inlined into the prompt, so anything larger
@@ -18,15 +19,21 @@ const MAX_CONTEXT_LINES = 2_000;
 
 export function activate(context: vscode.ExtensionContext): void {
   const output = vscode.window.createOutputChannel("Oxide");
-  const controller = new ChatController(output, contextWindowFromEnv(process.env));
+  const controller = new ChatController(output, projectDeps());
 
+  // One provider serves both panes: the transcript, the running turn and the
+  // queued follow-ups live in the controller, which broadcasts to every
+  // attached view.
+  const chatView = new ChatViewProvider(context.extensionUri, controller);
+  const webviewOptions = { webviewOptions: { retainContextWhenHidden: true } };
   context.subscriptions.push(
     output,
     controller,
+    vscode.window.registerWebviewViewProvider(ChatViewProvider.viewType, chatView, webviewOptions),
     vscode.window.registerWebviewViewProvider(
-      ChatViewProvider.viewType,
-      new ChatViewProvider(context.extensionUri, controller),
-      { webviewOptions: { retainContextWhenHidden: true } },
+      ChatViewProvider.secondaryViewType,
+      chatView,
+      webviewOptions,
     ),
   );
 
@@ -69,12 +76,13 @@ export function activate(context: vscode.ExtensionContext): void {
   context.subscriptions.push(
     controller.onDidChange.event(() => refreshStatus()),
     vscode.workspace.onDidChangeConfiguration((event) => {
-      if (event.affectsConfiguration("oxide")) refreshStatus();
+      if (!event.affectsConfiguration("oxide")) return;
+      refreshStatus();
+      // The footer's chips read the same settings the status bar does.
+      controller.configurationChanged();
     }),
     vscode.window.onDidChangeActiveTextEditor(() => refreshStatus()),
-    vscode.commands.registerCommand("oxide.openChat", () => {
-      void vscode.commands.executeCommand(`${ChatViewProvider.viewType}.focus`);
-    }),
+    vscode.commands.registerCommand("oxide.openChat", guard(() => focusChat(controller))),
     vscode.commands.registerCommand("oxide.newSession", () => controller.newSession()),
     vscode.commands.registerCommand("oxide.resumeSession", guard(() => controller.resumeSession())),
     vscode.commands.registerCommand("oxide.continueSession", () => controller.continueSession()),
@@ -119,7 +127,7 @@ export function activate(context: vscode.ExtensionContext): void {
     vscode.commands.registerCommand(
       "oxide.reviewChanges",
       guard(async () => {
-        await vscode.commands.executeCommand(`${ChatViewProvider.viewType}.focus`);
+        await focusChat(controller);
         await controller.send(
           "Review the uncommitted changes in this working tree. Summarize what changed, then flag anything wrong or risky. Do not modify files.",
         );
@@ -128,6 +136,7 @@ export function activate(context: vscode.ExtensionContext): void {
     vscode.commands.registerCommand("oxide.openTerminal", () => openTerminal(binaryPath())),
     vscode.commands.registerCommand("oxide.showOutput", () => output.show(true)),
     vscode.commands.registerCommand("oxide.setModel", guard(() => controller.setModel())),
+    vscode.commands.registerCommand("oxide.setAgent", guard(() => controller.setAgent())),
     vscode.commands.registerCommand("oxide.setReasoning", guard(() => controller.setReasoning())),
     vscode.commands.registerCommand("oxide.setProjectTrust", guard(() => controller.setProjectTrust())),
   );
@@ -144,12 +153,43 @@ function setting<T>(key: string, fallback: T): T {
   return vscode.workspace.getConfiguration("oxide").get<T>(key, fallback);
 }
 
+/// Brings the chat forward where the user keeps it. The secondary side bar's
+/// pane is the default target because that is where chat lives in VS Code; a
+/// build without that container has no such view to focus, so the activity-bar
+/// pane takes over.
+async function focusChat(controller: ChatController): Promise<void> {
+  const visible = controller.visibleViewType();
+  if (visible) {
+    await vscode.commands.executeCommand(`${visible}.focus`);
+    return;
+  }
+  try {
+    await vscode.commands.executeCommand(`${ChatViewProvider.secondaryViewType}.focus`);
+  } catch {
+    await vscode.commands.executeCommand(`${ChatViewProvider.viewType}.focus`);
+  }
+}
+
 function binaryPath(): string {
   return resolveBinary(setting<string>("binaryPath", "oxide"), {
     env: process.env,
     platform: process.platform,
     exists: isFile,
   });
+}
+
+/// Everything the footer reads off disk: the shared Oxide config directory, the
+/// workspace's own `.oxide/` files, and the git branch the session runs on.
+function projectDeps(): ProjectDeps {
+  return {
+    read: readTextFile,
+    list: listMarkdown,
+    exists,
+    realpath: realPath,
+    configDir: configFile(),
+    home: os.homedir(),
+    env: process.env,
+  };
 }
 
 function configFile(): string {

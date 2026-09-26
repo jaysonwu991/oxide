@@ -3,7 +3,13 @@ import * as path from "node:path";
 import { describe, it } from "node:test";
 
 import { buildTurnArgs, sessionsListArgs, splitList } from "../core/args";
-import { configDir, contextWindowFromEnv, parseConfigSummary } from "../core/config";
+import {
+  configDir,
+  contextWindow,
+  contextWindowFromEnv,
+  modelsForProvider,
+  parseConfigSummary,
+} from "../core/config";
 import { canonicalTool, diffPreview, toolDiff } from "../core/preview";
 import {
   buildPrompt,
@@ -455,21 +461,71 @@ describe("shared configuration", () => {
     );
   });
 
-  it("reads the provider and model from config.json", () => {
-    assert.deepEqual(parseConfigSummary('{"provider":"zai","model":"glm-5"}'), {
-      provider: "zai",
-      model: "glm-5",
-    });
-    assert.deepEqual(parseConfigSummary("{}"), { provider: "", model: "" });
+  it("reads the provider, model, remembered models and reply cap from config.json", () => {
+    assert.deepEqual(
+      parseConfigSummary(
+        '{"provider":"zai","model":"glm-5","max_tokens":16384,"provider_models":{"zai":"glm-5","openai":"gpt-5"}}',
+      ),
+      {
+        provider: "zai",
+        model: "glm-5",
+        models: [
+          { provider: "zai", model: "glm-5" },
+          { provider: "openai", model: "gpt-5" },
+        ],
+        maxTokens: 16384,
+      },
+    );
+    assert.deepEqual(parseConfigSummary("{}"), { provider: "", model: "", models: [], maxTokens: 0 });
+    assert.deepEqual(parseConfigSummary(null), null);
     assert.equal(parseConfigSummary("{"), null);
     assert.equal(parseConfigSummary("[1]"), null);
   });
 
   it("only shows a context percentage when the limit is set", () => {
     assert.equal(contextWindowFromEnv({ OXIDE_CONTEXT_LIMIT: "200000" }), 200000);
+    assert.equal(contextWindowFromEnv({ OXIDE_CONTEXT_LIMIT: " 200000 " }), 200000);
+    assert.equal(contextWindowFromEnv({ OXIDE_CONTEXT_LIMIT: "+200000" }), 200000);
     assert.equal(contextWindowFromEnv({ OXIDE_CONTEXT_LIMIT: "0" }), 0);
     assert.equal(contextWindowFromEnv({ OXIDE_CONTEXT_LIMIT: "abc" }), 0);
     assert.equal(contextWindowFromEnv({}), 0);
+    // `u64::from_str` rejects these, so the CLI falls back to its configured
+    // window and the footer has to report the same one.
+    assert.equal(contextWindowFromEnv({ OXIDE_CONTEXT_LIMIT: "1.5" }), 0);
+    assert.equal(contextWindowFromEnv({ OXIDE_CONTEXT_LIMIT: "1e5" }), 0);
+    assert.equal(contextWindowFromEnv({ OXIDE_CONTEXT_LIMIT: "12abc" }), 0);
+    assert.equal(contextWindowFromEnv({ OXIDE_CONTEXT_LIMIT: "-5" }), 0);
+    assert.equal(contextWindowFromEnv({ OXIDE_CONTEXT_LIMIT: "" }), 0);
+    assert.equal(contextWindowFromEnv({ OXIDE_CONTEXT_LIMIT: "99999999999999999999" }), 0);
+  });
+
+  it("mirrors the CLI's context window, floored at 128k", () => {
+    // `Config::context_window`: the override wins, else `max_tokens` floored.
+    assert.equal(contextWindow({ OXIDE_CONTEXT_LIMIT: "200000" }, null), 200000);
+    assert.equal(contextWindow({}, null), 128_000);
+    assert.equal(contextWindow({ OXIDE_CONTEXT_LIMIT: "1.5" }, null), 128_000);
+    assert.equal(
+      contextWindow({}, { provider: "", model: "", models: [], maxTokens: 8192 }),
+      128_000,
+    );
+    assert.equal(
+      contextWindow({}, { provider: "", model: "", models: [], maxTokens: 1_000_000 }),
+      1_000_000,
+    );
+  });
+
+  it("offers only the models remembered for the active provider", () => {
+    const summary = parseConfigSummary(
+      '{"provider":"zai","provider_models":{"zai":"glm-5","openai":"gpt-5"}}',
+    );
+    // The id goes to whichever provider the CLI has active, so another
+    // provider's model must not be offered as a choice.
+    assert.deepEqual(modelsForProvider(summary, "zai"), [{ provider: "zai", model: "glm-5" }]);
+    assert.deepEqual(modelsForProvider(summary, "ZAI"), [{ provider: "zai", model: "glm-5" }]);
+    assert.deepEqual(modelsForProvider(summary, "openai"), [{ provider: "openai", model: "gpt-5" }]);
+    assert.deepEqual(modelsForProvider(summary, ""), []);
+    assert.deepEqual(modelsForProvider(summary, "anthropic"), []);
+    assert.deepEqual(modelsForProvider(null, "zai"), []);
   });
 });
 

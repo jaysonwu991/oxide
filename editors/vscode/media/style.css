@@ -415,12 +415,110 @@ footer {
 }
 
 .usage {
+  display: flex;
+  align-items: center;
+  gap: 8px;
   color: var(--vscode-descriptionForeground);
-  font-size: 0.82em;
+  font-family: var(--vscode-editor-font-family, monospace);
+  font-size: 0.78em;
   min-height: 1em;
   margin-bottom: 4px;
+}
+
+#usage-text {
   white-space: nowrap;
   overflow-x: auto;
+  flex: 0 1 auto;
+}
+
+/* An author `display` beats the UA's `[hidden] { display: none }`, so a hidden
+   row has to be turned off explicitly. */
+.usage[hidden],
+.chips[hidden] {
+  display: none;
+}
+
+/* The context gauge: a thin bar next to the percentage, escalating through the
+   same thresholds the terminal footer's context color uses. */
+.gauge {
+  flex: 0 0 auto;
+  width: 38px;
+  height: 4px;
+  border-radius: 2px;
+  background: var(--vscode-panel-border, rgba(128, 128, 128, 0.3));
+  overflow: hidden;
+}
+
+.gauge > #gauge-fill {
+  display: block;
+  height: 100%;
+  background: var(--vscode-charts-blue, #4a9eff);
+  transition: width 0.2s linear;
+}
+
+.gauge[data-level="warn"] > #gauge-fill {
+  background: var(--vscode-editorWarning-foreground, var(--vscode-charts-orange, #ce9178));
+}
+
+.gauge[data-level="high"] > #gauge-fill {
+  background: var(--vscode-editorError-foreground, var(--vscode-charts-red, #f14c4c));
+}
+
+/* The chips under the transcript: the model, thinking level, agent, project
+   access and session the next turn runs with. */
+.meta {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px;
+  margin-bottom: 5px;
+}
+
+.meta:empty {
+  display: none;
+}
+
+.meta-chip {
+  border: none;
+  background: none;
+  color: var(--vscode-descriptionForeground);
+  font-family: var(--vscode-editor-font-family, monospace);
+  font-size: 0.78em;
+  padding: 1px 4px;
+  border-radius: 3px;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.meta-chip:hover {
+  color: var(--vscode-foreground);
+  background: var(--vscode-toolbar-hoverBackground, rgba(128, 128, 128, 0.15));
+}
+
+.meta-chip:focus-visible {
+  outline: 1px solid var(--vscode-focusBorder);
+  outline-offset: -1px;
+}
+
+.meta-branch {
+  margin-left: auto;
+  color: var(--vscode-descriptionForeground);
+  font-family: var(--vscode-editor-font-family, monospace);
+  font-size: 0.78em;
+  opacity: 0.8;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+#elapsed {
+  color: var(--vscode-descriptionForeground);
+  font-size: 0.85em;
+  font-variant-numeric: tabular-nums;
+  flex: 0 0 auto;
 }
 
 .chips {
