@@ -111,6 +111,9 @@ export class ChatController {
   private run: RunState | null = null;
   private queue: QueuedMessage[] = [];
   private continueLast = false;
+  /// The name of the thread when the CLI knows one (a resumed session keeps its
+  /// picker label); otherwise the header falls back to the first message.
+  private sessionTitle: string | null = null;
   private activeFolder: string | null = null;
   /// The shared on-disk state the footer reports. Re-read when something the
   /// user or the agent could have changed it happens — not per stream event,
@@ -167,7 +170,6 @@ export class ChatController {
   }
 
   stateMessage(): ViewMessage {
-    const folder = this.folder();
     this.refreshProject();
     return {
       k: "state",
@@ -175,7 +177,7 @@ export class ChatController {
         queued: this.queue.length,
         context: this.chips(),
         attachments: this.attachmentChips(),
-        folder: folder ? folder.name : "",
+        title: this.threadTitle(),
         model: this.modelLabel(),
         binary: this.binary(),
         showThinking: this.setting<boolean>("showThinking", true),
@@ -228,6 +230,14 @@ export class ChatController {
   private modelLabel(): string {
     const configured = this.setting<string>("model", "").trim();
     return configured || this.project?.model || "config.json";
+  }
+
+  /// The header's title: a known session name, else the first message the user
+  /// sent, else a neutral placeholder for a thread that has not started. Claude
+  /// Code names a conversation the same way, so the panel says what the thread
+  /// is about instead of repeating the folder name.
+  private threadTitle(): string {
+    return this.sessionTitle || this.transcript.title() || "New chat";
   }
 
   // ---------- settings ----------
@@ -728,6 +738,7 @@ export class ChatController {
       return;
     }
     this.transcript.reset();
+    this.sessionTitle = null;
     this.continueLast = false;
     this.queue = [];
     this.clearChips();
@@ -793,6 +804,7 @@ export class ChatController {
     }
     this.transcript.reset();
     this.transcript.sessionId = picked.sessionId ?? null;
+    this.sessionTitle = picked.label || null;
     this.queue = [];
     this.clearChips();
     this.broadcast(this.stateMessage());

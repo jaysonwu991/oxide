@@ -145,7 +145,9 @@ export interface TranscriptState {
   context: ContextChip[];
   attachments: AttachmentChip[];
   sessionId: string | null;
-  folder: string;
+  /// The thread's own title: the session name or the first thing the user sent,
+  /// shown where the terminal's footer shows the session.
+  title: string;
   model: string;
   binary: string;
   showThinking: boolean;
@@ -241,7 +243,7 @@ export class Transcript {
     queued: number;
     context: ContextChip[];
     attachments: AttachmentChip[];
-    folder: string;
+    title: string;
     model: string;
     binary: string;
     showThinking: boolean;
@@ -265,6 +267,21 @@ export class Transcript {
     this.sessionId = null;
     this.currentAssistant = null;
     this.currentThinking = null;
+  }
+
+  /// A short title for this thread: the first thing the user sent, collapsed to
+  /// one line so a pasted or multi-line message does not fill the header. Empty
+  /// for a thread that has not been written to yet, which the host turns into a
+  /// neutral placeholder.
+  title(): string {
+    const first = this.items.find((item): item is UserItem => item.kind === "user");
+    if (!first) return "";
+    const line = first.text
+      .split("\n")
+      .map((part) => part.trim())
+      .find((part) => part.length > 0);
+    if (!line) return "";
+    return line.length > 64 ? `${line.slice(0, 63).trimEnd()}…` : line;
   }
 
   pushUser(text: string, context: ContextChip[]): ViewMessage[] {

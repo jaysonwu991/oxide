@@ -557,6 +557,23 @@ describe("Transcript", () => {
     assert.deepEqual(transcript.closeApprovals(), []);
   });
 
+  it("titles the thread from the first message", () => {
+    const transcript = new Transcript();
+    assert.equal(transcript.title(), "", "an empty thread has no title");
+    transcript.pushUser("  \nFix the build  \nplease", []);
+    assert.equal(transcript.title(), "Fix the build", "the first non-empty line wins");
+    transcript.pushUser("a later message", []);
+    assert.equal(transcript.title(), "Fix the build", "the first message keeps the title");
+  });
+
+  it("keeps a long title to one truncated line", () => {
+    const transcript = new Transcript();
+    transcript.pushUser("x".repeat(200), []);
+    const title = transcript.title();
+    assert.ok(title.length <= 64, title);
+    assert.ok(title.endsWith("…"), title);
+  });
+
   it("carries the current state for a repainted view", () => {
     const transcript = new Transcript();
     transcript.apply({ type: "session", id: "s" });
@@ -567,7 +584,7 @@ describe("Transcript", () => {
       attachments: [
         { id: 8, label: "shot.png", kind: "image", preview: "data:image/png;base64,AA", detail: "4 B · pasted" },
       ],
-      folder: "oxide",
+      title: "Fix the build",
       model: "deepseek-flash",
       binary: "/usr/local/bin/oxide",
       showThinking: false,
@@ -577,7 +594,7 @@ describe("Transcript", () => {
     assert.equal(state.sessionId, "s");
     assert.equal(state.queued, 1);
     assert.equal(state.showThinking, false);
-    assert.equal(state.folder, "oxide");
+    assert.equal(state.title, "Fix the build");
     assert.deepEqual(state.attachments, [
       { id: 8, label: "shot.png", kind: "image", preview: "data:image/png;base64,AA", detail: "4 B · pasted" },
     ]);

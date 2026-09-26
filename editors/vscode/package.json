@@ -90,12 +90,14 @@
       {
         "command": "oxide.newSession",
         "title": "New Session",
-        "category": "Oxide"
+        "category": "Oxide",
+        "icon": "$(add)"
       },
       {
         "command": "oxide.resumeSession",
         "title": "Resume Session...",
-        "category": "Oxide"
+        "category": "Oxide",
+        "icon": "$(history)"
       },
       {
         "command": "oxide.continueSession",

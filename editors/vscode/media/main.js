@@ -782,7 +782,7 @@
         transcript.appendChild(empty);
         empty.hidden = message.items.length > 0;
         transcript.classList.toggle("hide-thinking", message.showThinking === false);
-        folderLabel.textContent = message.folder || "Oxide";
+        folderLabel.textContent = message.title || "New chat";
         modelLabel.textContent = message.model ? `${message.model}` : "";
         for (const item of message.items) appendItem(item, false);
         setStatus(message.status, message.busy, message.queued);
@@ -856,8 +856,8 @@
     statusLabel.classList.toggle("busy", busy);
     statusLabel.title = busy ? "Oxide is working" : "Ready for the next message";
     stopButton.hidden = !busy;
-    sendButton.textContent = busy ? "Queue" : "Send";
     sendButton.title = busy ? "Queue for after this turn (Alt+Enter)" : "Send (Enter)";
+    sendButton.setAttribute("aria-label", busy ? "Queue" : "Send");
     updateElapsed();
     updateSendState();
   }

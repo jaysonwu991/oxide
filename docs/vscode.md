@@ -72,6 +72,15 @@ its view never appear and the activity-bar pane is the only one.
 the order), falling back to the secondary side bar's and then to the
 activity-bar one when that focus command does not exist.
 
+The panel's own chrome is icon-first, the way Claude Code's is. The header shows
+the thread's title — the resumed session's name when the picker knew one, else
+the first message sent, else **New chat** — next to icon buttons for a new or
+resumed session; the composer's **Attach**, **Stop** and **Send** are icons too,
+so the only text in the chrome is the phase and the numbers. The view-title
+actions (`oxide.newSession`, `oxide.resumeSession`) carry the codicon `$(add)`
+and `$(history)` for the same reason, so VS Code draws them as icons instead of
+inline text.
+
 ## Brand assets
 
 Both icons are the desktop app's: `media/oxide.svg` redraws the mark inside
@@ -160,10 +169,10 @@ it.
 - **Composer** — the message box: the attachment strip, the textarea and the
   toolbar inside one bordered block. It starts two rows tall (`rows="2"`) and
   grows with the message up to 200px, where it scrolls instead.
-- **Toolbar** — **Attach** (the file picker), the live phase with an elapsed
-  timer while a turn runs, **Stop** and **Send** (which reads **Queue** while a
-  turn is running). The primary action never moves, because it is anchored to
-  the right of the same row.
+- **Toolbar** — the **Attach** icon (the file picker), the live phase with an
+  elapsed timer while a turn runs, and the **Stop** and **Send** icons (**Send**
+  reads as **Queue** while a turn is running). The primary action never moves,
+  because it is anchored to the right of the same row.
 - **Branch** — the repository the folder sits in, read from `.git/HEAD` rather
   than through the Git extension, so it needs no other extension installed; a
   worktree's or submodule's `gitdir:` pointer is followed to the real HEAD.

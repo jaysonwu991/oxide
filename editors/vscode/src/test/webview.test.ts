@@ -377,7 +377,7 @@ function stateMessage(extra: Record<string, unknown> = {}): Record<string, unkno
     context: [],
     attachments: [],
     showThinking: true,
-    folder: "oxide",
+    title: "oxide",
     model: "glm-5",
     status: "Idle",
     busy: false,
@@ -487,6 +487,12 @@ describe("webview composer", () => {
     assert.match(shell, /id="input" rows="2"/);
   });
 
+  it("renders the header and composer actions as icon buttons", () => {
+    for (const id of ["new-session", "resume-session", "attach", "send", "stop"]) {
+      assert.match(shell, new RegExp(`id="${id}" class="icon`), id);
+    }
+  });
+
   it("enables Send only when there is something to send", () => {
     const { byId, send } = loadRenderer();
     send(stateMessage());
@@ -510,19 +516,28 @@ describe("webview composer", () => {
     assert.equal(sendButton.disabled, false);
   });
 
+  it("shows the thread title in the header", () => {
+    const { byId, send } = loadRenderer();
+    send(stateMessage({ title: "Fix the flaky test" }));
+    assert.equal(byId.get("folder")!.textContent, "Fix the flaky test");
+    // A thread with no message yet falls back to a neutral placeholder.
+    send(stateMessage({ title: "" }));
+    assert.equal(byId.get("folder")!.textContent, "New chat");
+  });
+
   it("reads Queue and shows Stop while a turn runs", () => {
     const { byId, send } = loadRenderer();
     send(stateMessage({ busy: true, status: "Thinking…", queued: 2 }));
     assert.equal(byId.get("status")!.textContent, "Thinking… · 2 queued");
     assert.equal(byId.get("status")!.classList.contains("busy"), true);
     assert.equal(byId.get("stop")!.hidden, false);
-    assert.equal(byId.get("send")!.textContent, "Queue");
+    assert.equal(byId.get("send")!.getAttribute("aria-label"), "Queue");
     // A busy composer can still queue, so Send stays live with an empty box.
     assert.equal(byId.get("send")!.disabled, false);
 
     send(stateMessage());
     assert.equal(byId.get("stop")!.hidden, true);
-    assert.equal(byId.get("send")!.textContent, "Send");
+    assert.equal(byId.get("send")!.getAttribute("aria-label"), "Send");
     assert.equal(byId.get("send")!.disabled, true);
   });
 

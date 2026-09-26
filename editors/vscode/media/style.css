@@ -63,6 +63,47 @@ button:disabled {
   cursor: default;
 }
 
+/* Icon-only buttons (the header's new/resume, the composer's attach/send/stop).
+   A square hit target that centers an inline SVG, so the chrome reads like
+   Claude Code's instead of a row of text buttons. */
+button.icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+  padding: 0;
+  color: var(--vscode-descriptionForeground);
+  background: transparent;
+  border-color: transparent;
+  border-radius: 4px;
+}
+
+button.icon:hover:not(:disabled) {
+  color: var(--vscode-foreground);
+  background: var(--vscode-toolbar-hoverBackground, rgba(128, 128, 128, 0.15));
+}
+
+button.icon.primary {
+  color: var(--vscode-button-foreground);
+  background: var(--vscode-button-background);
+}
+
+button.icon.primary:hover:not(:disabled) {
+  background: var(--vscode-button-hoverBackground);
+}
+
+button.icon svg {
+  display: block;
+}
+
+#actions {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  flex: 0 0 auto;
+}
+
 code,
 pre,
 .mono {
@@ -739,16 +780,7 @@ footer {
   padding: 2px 0 2px;
 }
 
-#attach {
-  padding: 2px 8px;
-  font-size: 0.82em;
-  border-radius: 4px;
-  color: var(--vscode-descriptionForeground);
-}
-
-#attach:hover {
-  color: var(--vscode-foreground);
-}
+/* Attach, stop and send are icon-only; their shape comes from `button.icon`. */
 
 #status {
   display: inline-flex;
@@ -789,19 +821,6 @@ footer {
   font-size: 0.82em;
   font-variant-numeric: tabular-nums;
   flex: 0 0 auto;
-}
-
-#stop {
-  padding: 2px 8px;
-  font-size: 0.82em;
-  border-radius: 4px;
-}
-
-#send {
-  padding: 3px 12px;
-  font-size: 0.85em;
-  font-weight: 500;
-  border-radius: 4px;
 }
 
 #dropzone {
