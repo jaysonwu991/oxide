@@ -15,12 +15,20 @@ import {
   attachmentFileName,
   decodeDataUrl,
   formatBytes,
+  MAX_ATTACHMENT_BYTES,
   MAX_PREVIEW_CHARS,
 } from "./core/attachments";
 
 /// A thumbnail is a data URL in a view message; a file large enough to blow up
 /// that message gets a glyph chip instead.
 const MAX_PREVIEW_BYTES = MAX_PREVIEW_CHARS / 2;
+
+/// The previews already read, keyed by path and the length and mtime they were
+/// read at. A chip rides along with every state message — several per turn —
+/// and re-reading and re-encoding a photo each time is how a thumbnail turns
+/// into an out-of-memory crash.
+const previews = new Map<string, string | null>();
+const PREVIEW_CACHE_MAX = 16;
 
 export interface WrittenAttachment {
   /// The absolute path passed to `--image`.
@@ -34,10 +42,11 @@ export class AttachmentStore {
   private next = 1;
 
   /// Writes a data URL to a file and returns where it landed, or `null` when
-  /// the data URL is not an attachment or cannot be written.
+  /// the data URL is not an attachment, is past the limit, or cannot be
+  /// written.
   write(name: string, dataUrl: string): WrittenAttachment | null {
     const decoded = decodeDataUrl(dataUrl);
-    if (!decoded) return null;
+    if (!decoded || decoded.bytes.length > MAX_ATTACHMENT_BYTES) return null;
     try {
       // The counter keeps two different blobs with the same name apart, so the
       // second paste cannot overwrite the first.
@@ -71,11 +80,31 @@ export class AttachmentStore {
 }
 
 /// A data URL for a file on disk, for a chip's thumbnail, or `null` when it is
-/// too large to send through a view message or cannot be read.
+/// too large to send through a view message or cannot be read. A file that has
+/// not changed since it was last read is answered from the cache.
 export function previewForFile(file: string, mime: string): string | null {
+  let stat: fs.Stats;
   try {
-    const stat = fs.statSync(file);
-    if (!stat.isFile() || stat.size > MAX_PREVIEW_BYTES) return null;
+    stat = fs.statSync(file);
+  } catch {
+    return null;
+  }
+  if (!stat.isFile()) return null;
+  const key = `${file}:${stat.size}:${stat.mtimeMs}`;
+  const cached = previews.get(key);
+  if (cached !== undefined) return cached;
+  const preview = stat.size > MAX_PREVIEW_BYTES ? null : readPreview(file, mime);
+  if (previews.size >= PREVIEW_CACHE_MAX) {
+    const oldest = previews.keys().next().value;
+    if (oldest !== undefined) previews.delete(oldest);
+  }
+  previews.set(key, preview);
+  return preview;
+}
+
+/// Reads and encodes one file, bounded by what a view message may carry.
+function readPreview(file: string, mime: string): string | null {
+  try {
     const url = `data:${mime};base64,${fs.readFileSync(file).toString("base64")}`;
     return url.length > MAX_PREVIEW_CHARS ? null : url;
   } catch {

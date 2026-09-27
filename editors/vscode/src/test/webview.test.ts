@@ -243,11 +243,15 @@ class StubImage {
   height = 10;
 
   set src(value: string) {
+    this.loads += 1;
     this.loaded = value;
     setTimeout(() => this.onload?.(), 0);
   }
 
   loaded = "";
+  /// How many sources this image was told to load, so a test can see that a
+  /// repaint reused the decode already in flight.
+  loads = 0;
 }
 
 /// The renderer re-follows the bottom when the pane it paints into changes size.
@@ -378,7 +382,6 @@ function stateMessage(extra: Record<string, unknown> = {}): Record<string, unkno
     attachments: [],
     showThinking: true,
     title: "oxide",
-    model: "glm-5",
     status: "Idle",
     busy: false,
     queued: 0,
@@ -519,10 +522,10 @@ describe("webview composer", () => {
   it("shows the thread title in the header", () => {
     const { byId, send } = loadRenderer();
     send(stateMessage({ title: "Fix the flaky test" }));
-    assert.equal(byId.get("folder")!.textContent, "Fix the flaky test");
+    assert.equal(byId.get("title")!.textContent, "Fix the flaky test");
     // A thread with no message yet falls back to a neutral placeholder.
     send(stateMessage({ title: "" }));
-    assert.equal(byId.get("folder")!.textContent, "New chat");
+    assert.equal(byId.get("title")!.textContent, "New chat");
   });
 
   it("reads Queue and shows Stop while a turn runs", () => {
@@ -530,12 +533,16 @@ describe("webview composer", () => {
     send(stateMessage({ busy: true, status: "Thinking…", queued: 2 }));
     assert.equal(byId.get("status")!.textContent, "Thinking… · 2 queued");
     assert.equal(byId.get("status")!.classList.contains("busy"), true);
+    assert.equal(byId.get("status")!.hidden, false);
     assert.equal(byId.get("stop")!.hidden, false);
     assert.equal(byId.get("send")!.getAttribute("aria-label"), "Queue");
     // A busy composer can still queue, so Send stays live with an empty box.
     assert.equal(byId.get("send")!.disabled, false);
 
+    // An idle turn has no phase to report, so the label (and its dot) goes
+    // rather than sitting there reading like a control.
     send(stateMessage());
+    assert.equal(byId.get("status")!.hidden, true);
     assert.equal(byId.get("stop")!.hidden, true);
     assert.equal(byId.get("send")!.getAttribute("aria-label"), "Send");
     assert.equal(byId.get("send")!.disabled, true);
@@ -573,6 +580,59 @@ describe("webview composer", () => {
     assert.equal(chips.children[1].children[0].className, "chip-glyph");
     assert.equal(chips.children[1].children[0].textContent, "▤");
     assert.equal(chips.children[2].children[1].textContent, "src/main.rs");
+  });
+
+  it("keeps the chip-sized copy of a thumbnail for the repaints", async () => {
+    const { byId, send } = loadRenderer();
+    const attachment = {
+      id: 2,
+      label: "photo.jpg",
+      kind: "image",
+      preview: "data:image/png;base64,U0hPVC1ZT1VH",
+      detail: "4.2 MB · pasted",
+    };
+    send(stateMessage({ attachments: [attachment] }));
+    // The first paint shows what the host sent, so the chip is never empty...
+    const first = byId.get("chips")!.children[0].children[0];
+    assert.equal(first.src, attachment.preview);
+    // ...and the canvas copy it drew in the background replaces it.
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    assert.equal(first.src, "data:image/png;base64,QUJD");
+    // Every later repaint starts from the small copy instead of decoding the
+    // photo-sized one again.
+    send(stateMessage({ attachments: [attachment] }));
+    assert.equal(byId.get("chips")!.children[0].children[0].src, "data:image/png;base64,QUJD");
+  });
+
+  it("starts one decode when a repaint arrives before the thumbnail is ready", async () => {
+    const { send, readable } = loadRenderer();
+    const attachment = {
+      id: 3,
+      label: "big.png",
+      kind: "image",
+      preview: "data:image/png;base64,QUJDRA==",
+      detail: "9.1 MB · pasted",
+    };
+    // Both paints land in the same tick, before the first decode can finish.
+    send(stateMessage({ attachments: [attachment] }));
+    send(stateMessage({ attachments: [attachment] }));
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    assert.equal(readable().image.loads, 1, "the repaint reused the decode in flight");
+  });
+
+  it("refuses a paste past the attachment limit before reading it", async () => {
+    const { byId, posted } = loadRenderer();
+    const file = { name: "huge.png", type: "image/png", size: 30 * 1024 * 1024 };
+    byId.get("input")!.fire("paste", {
+      clipboardData: { items: [{ kind: "file", getAsFile: () => file }] },
+      preventDefault: () => {},
+    });
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    assert.deepEqual(last(posted), {
+      k: "notice",
+      text: "huge.png is past the 20 MB attachment limit.",
+    });
+    assert.ok(!posted.some((message) => message.k === "attach"), "the blob was never read");
   });
 
   it("hides the strip when nothing is pending", () => {

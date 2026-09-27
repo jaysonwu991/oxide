@@ -35,5 +35,6 @@ pub mod session;
 pub mod sessions;
 pub mod snapshots;
 pub mod theme_view;
+pub mod title;
 pub mod tools;
 pub mod trust;

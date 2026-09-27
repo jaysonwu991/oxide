@@ -1302,7 +1302,9 @@ impl VerificationState {
         }
         self.nudged = true;
         Some(format!(
-            "# Definition of Done\nBefore you finish: {}",
+            "# Definition of Done\nBefore you finish: {} An explicit instruction from the user \
+             outranks these checks — if they said one is not needed, do what they asked and say \
+             plainly what you did not verify instead of running it anyway.",
             parts.join(" ")
         ))
     }
@@ -2712,6 +2714,13 @@ mod tests {
         let requests = server.await.unwrap();
         assert_eq!(requests.len(), 5);
         assert!(requests[2].contains("Before you finish"), "{}", requests[2]);
+        // The nudge repeats the one thing that outranks it, so it never pushes
+        // a check the user asked to skip back onto the model.
+        assert!(
+            requests[2].contains("explicit instruction from the user outranks"),
+            "{}",
+            requests[2]
+        );
 
         std::fs::remove_dir_all(&dir).ok();
     }

@@ -170,10 +170,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
 </head>
 <body>
 <header id="header">
-  <div id="identity">
-    <span id="folder">New chat</span>
-    <span id="model"></span>
-  </div>
+  <span id="title">New chat</span>
   <div id="actions">
     <button id="new-session" class="icon" title="New session" aria-label="New session">${ICONS.new}</button>
     <button id="resume-session" class="icon" title="Resume a session" aria-label="Resume a session">${ICONS.resume}</button>
@@ -193,7 +190,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       placeholder="Ask Oxide…  Enter to send · Shift+Enter for a newline · paste or drop an image"></textarea>
     <div id="bar">
       <button id="attach" class="icon" title="Attach images, PDFs or files (paste or drop them here too)" aria-label="Attach">${ICONS.attach}</button>
-      <span id="status">Idle</span>
+      <span id="status" hidden></span>
       <span id="elapsed" hidden></span>
       <span class="spacer"></span>
       <button id="stop" class="icon" hidden title="Stop the running turn (Esc)" aria-label="Stop">${ICONS.stop}</button>

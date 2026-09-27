@@ -11,7 +11,7 @@ use oxide_core::llm::{ContentPart, MessageContent};
 use oxide_core::session::{SessionLog, SessionSummary};
 use oxide_core::theme_view;
 use oxide_desktop::manager::{expand_project_path, DesktopManager, ProjectView};
-use oxide_desktop::turn::{open_session, start_turn, Turn};
+use oxide_desktop::turn::{notify_finished, open_session, start_turn, Turn};
 use serde_json::{json, Value};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -110,14 +110,27 @@ pub struct AttachmentInput {
     pub name: Option<String>,
 }
 
-fn attachment_parts(attachments: Option<Vec<AttachmentInput>>) -> Vec<ContentPart> {
-    attachments
-        .unwrap_or_default()
-        .into_iter()
-        .filter_map(|attachment| {
+/// A refused attachment fails the send instead of vanishing from the message:
+/// a type neither the provider nor the webview takes, a payload that is not
+/// base64, or one past the limit the core enforces.
+fn attachment_parts(attachments: Option<Vec<AttachmentInput>>) -> Result<Vec<ContentPart>, String> {
+    let mut parts = Vec::new();
+    for attachment in attachments.unwrap_or_default() {
+        let name = attachment
+            .name
+            .clone()
+            .unwrap_or_else(|| "attachment".to_string());
+        let part =
             oxide_core::media::content_part_from_data_url(attachment.data_url, attachment.name)
-        })
-        .collect()
+                .ok_or_else(|| {
+                    let limit = oxide_core::media::MAX_ATTACHMENT_BYTES / (1024 * 1024);
+                    format!(
+                        "{name} could not be attached: attach a PNG, JPEG, GIF, WebP or BMP image or a PDF of at most {limit} MB"
+                    )
+                })?;
+        parts.push(part);
+    }
+    Ok(parts)
 }
 
 /// Every project: folders added here plus ones discovered from sessions.
@@ -429,7 +442,7 @@ pub async fn send_prompt(
             state.runs.clone(),
         )
     };
-    let attachments = attachment_parts(attachments);
+    let attachments = attachment_parts(attachments)?;
     let app = app.clone();
     tauri::async_runtime::spawn(async move {
         let _ = drive_turn(
@@ -473,6 +486,7 @@ async fn drive_turn(
         follow_ups,
         cancel,
     } = turn;
+    let stopped = cancel.clone();
     runs.lock().await.insert(
         run_id,
         RunHandle {
@@ -508,6 +522,7 @@ async fn drive_turn(
         "agent-end",
         json!({ "runId": run_id, "sessionId": session_id }),
     );
+    notify_finished(&cwd, session_id.as_deref(), stopped.is_cancelled());
     Ok(())
 }
 
@@ -546,7 +561,7 @@ pub async fn steer_run(
         } else {
             &run.steering
         };
-        let parts = attachment_parts(attachments);
+        let parts = attachment_parts(attachments)?;
         queue.push(if parts.is_empty() {
             Message::user(message)
         } else {
@@ -723,6 +738,20 @@ mod tests {
         assert!(!is_openable_url("file:///etc/passwd"));
         assert!(!is_openable_url("javascript:alert(1)"));
         assert!(!is_openable_url(""));
+    }
+
+    #[test]
+    fn a_refused_attachment_names_the_types_and_the_limit() {
+        let refused = attachment_parts(Some(vec![AttachmentInput {
+            data_url: "data:image/tiff;base64,AAAA".to_string(),
+            name: Some("scan.tif".to_string()),
+        }]))
+        .expect_err("a TIFF is not attachable");
+        assert_eq!(
+            refused,
+            "scan.tif could not be attached: attach a PNG, JPEG, GIF, WebP or BMP image or a PDF \
+             of at most 20 MB"
+        );
     }
 
     #[test]

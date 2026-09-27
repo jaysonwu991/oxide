@@ -709,15 +709,44 @@ also removed from the transcript, since they were never sent. The key is `Alt+Up
 (`Option+Up` on macOS, where `Alt` is the Option key) and `Alt+Q` on Windows and
 WSL, where the terminal claims `Alt+Up` for scrollback.
 
+## Attachments
+
+A message can carry images and PDFs, which the provider reads as media. `Ctrl+V`
+pastes a clipboard image — or the file the clipboard holds, so a screenshot
+copied from the Finder attaches the picture itself rather than the pasteboard's
+icon of the file — `@path` names one on disk, and `/attach
+[list|remove <id|n>|clear]` lists and edits what is pending; a message queued
+while the agent is busy keeps the attachments it was queued with. In a
+non-interactive run the same parts come from `--image <path>` and from `@path`
+references in the prompt, so `oxide -p "what changed here? @shot.png"` works
+without a terminal.
+
+An image is downscaled to a 1568px long edge — the same bound the desktop app
+and the VS Code panel paint their thumbnails at — so a retina screenshot is not
+re-encoded at full resolution into every request and every session entry. An
+attachment is limited to 20 MB
+(`oxide_core::media::MAX_ATTACHMENT_BYTES`), checked before the file is read,
+and a type no provider takes or no browser can paint (`png`, `jpeg`, `gif`,
+`webp`, `bmp`, `pdf`) is refused with a message naming the file rather than
+being sent.
+
 ## Desktop notifications
 
 When an agent turn finishes, Oxide raises a system toast (Notification Center on
-macOS, `notify-send` on Linux, a Windows toast) whose body is a short snippet of
-the reply, so you can switch windows while a long task runs. Only real agent
-turns notify — internal work such as `/compact` and branch summaries stays
-silent.
+macOS, `notify-send` on Linux, a Windows toast) whose body names the turn, so you
+can switch windows while a long task runs. The desktop app and the VS Code panel
+name the thread by its summarized title — its session name, else the first
+message sent — which is the same line the panel's header shows; the TUI's body
+is a short snippet of the reply. Only real agent turns notify — internal work
+such as `/compact` and branch summaries stays silent — and a turn you stopped
+yourself is not announced by the desktop app or the panel.
 
-Both the toast and its alert sound are on by default. In the TUI, `/notify`
+All three front-ends honor the same switch: the desktop app and the VS Code
+panel read `notifyOnComplete` (the panel next to its own
+`oxide.notifyOnFinish`), so turning the toast off in the terminal silences them
+too — only the alert sound is the terminal's and the desktop app's, since a VS
+Code notification has none of its own. Both the toast and its alert sound are on
+by default. In the TUI, `/notify`
 shows the current state, `/notify on|off` toggles the toast, `/notify sound
 on|off` toggles the alert sound, and `/notify test` sends a sample; the choice is
 saved to the global `settings.json`. The same keys (`notifyOnComplete` and

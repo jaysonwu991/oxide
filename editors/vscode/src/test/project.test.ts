@@ -94,6 +94,21 @@ describe("projectInfo", () => {
     assert.equal(projectInfo(pkg, "default", deps).autoCompact, false);
   });
 
+  it("reports the notification flag the terminal's /notify writes", () => {
+    assert.equal(projectInfo(pkg, "default", tree({})).notifyOnComplete, true);
+    const off = projectInfo(pkg, "default", tree({ "/config/settings.json": '{"notifyOnComplete":false}' }));
+    assert.equal(off.notifyOnComplete, false);
+    const overridden = projectInfo(
+      pkg,
+      "default",
+      tree({
+        "/config/settings.json": '{"notifyOnComplete":false}',
+        [path.join(repo, ".oxide/settings.json")]: '{"notifyOnComplete":true}',
+      }),
+    );
+    assert.equal(overridden.notifyOnComplete, true);
+  });
+
   it("reports the branch and the discovered agents", () => {
     const deps = tree({
       [path.join(repo, ".git/HEAD")]: "ref: refs/heads/fix/footer\n",

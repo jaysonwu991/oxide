@@ -824,17 +824,12 @@ fn read_session(path: &Path) -> Result<(SessionHeader, SessionState)> {
     Ok((header, state))
 }
 
+/// What a session is listed under when it was never named: the summarized
+/// first message, by the same rules every front-end titles a thread with
+/// ([`crate::title`]), so the picker, the desktop's sidebar and the VS Code
+/// panel's header name a conversation the same way.
 fn preview_text(text: &str) -> String {
-    let first = text
-        .lines()
-        .find(|line| !line.trim().is_empty())
-        .unwrap_or("")
-        .trim();
-    let mut preview: String = first.chars().take(80).collect();
-    if first.chars().count() > 80 {
-        preview.push('…');
-    }
-    preview
+    crate::title::summarize(text, crate::title::TITLE_LIMIT)
 }
 
 fn system_time_secs(time: SystemTime) -> u64 {
@@ -1295,6 +1290,22 @@ mod tests {
         assert_eq!(sessions[0].id, log.id());
         assert_eq!(sessions[0].message_count, 2);
         assert_eq!(sessions[0].preview, "first user message");
+
+        std::fs::remove_dir_all(&dir).ok();
+        std::fs::remove_dir_all(&cwd).ok();
+    }
+
+    #[test]
+    fn a_preview_reads_as_a_title_rather_than_raw_markdown() {
+        let dir = temp_dir("preview_title");
+        let cwd = temp_dir("preview_title_proj");
+        let log = SessionLog::create_in(&dir, &cwd).unwrap();
+        log.append(&Message::user("### Fix the **flaky** test"))
+            .unwrap();
+        let sessions = SessionLog::list_in(&dir).unwrap();
+        // The name a picker row, the desktop's sidebar and the panel's header
+        // all show for the first message of the conversation.
+        assert_eq!(sessions[0].preview, "Fix the flaky test");
 
         std::fs::remove_dir_all(&dir).ok();
         std::fs::remove_dir_all(&cwd).ok();

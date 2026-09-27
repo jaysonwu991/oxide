@@ -5,8 +5,12 @@
 
 import assert from "node:assert/strict";
 import { Buffer } from "node:buffer";
+import * as fs from "node:fs";
+import * as os from "node:os";
+import * as path from "node:path";
 import { describe, it } from "node:test";
 
+import { AttachmentStore, previewForFile } from "../attachments";
 import {
   attachmentExtension,
   attachmentFileName,
@@ -17,11 +21,24 @@ import {
   dataUrlMime,
   decodeDataUrl,
   formatBytes,
+  MAX_ATTACHMENT_BYTES,
   MAX_ATTACHMENTS,
   MAX_PREVIEW_CHARS,
 } from "../core/attachments";
 
 const PNG = "data:image/png;base64,iVBORw0KGgo=";
+
+/// A file on disk, in a directory of its own so one test's sizes and mtimes
+/// cannot be another's.
+function tempFile(name: string, contents: Buffer): { dir: string; file: string } {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "oxide-vscode-preview-"));
+  const file = path.join(dir, name);
+  fs.writeFileSync(file, contents);
+  return { dir, file };
+}
+
+const dataUrlFor = (contents: Buffer, mime = "image/png") =>
+  `data:${mime};base64,${contents.toString("base64")}`;
 
 describe("dataUrlMime", () => {
   it("reads the MIME type of a data URL", () => {
@@ -167,8 +184,63 @@ describe("formatBytes", () => {
     assert.equal(formatBytes(1_500_000), "1.4 MB");
   });
 
-  it("keeps a thumbnail small enough to send to the webview", () => {
-    assert.ok(MAX_PREVIEW_CHARS > 0);
-    assert.ok(MAX_PREVIEW_CHARS < 1_000_000);
+  it("keeps a thumbnail to what one view message may carry", () => {
+    assert.ok(MAX_PREVIEW_CHARS > 1_000_000, "a screenshot is not too large to preview");
+    assert.ok(MAX_PREVIEW_CHARS <= MAX_ATTACHMENT_BYTES, "a thumbnail is smaller than an attachment");
+  });
+});
+
+describe("previewForFile", () => {
+  it("reads a file into a data URL", () => {
+    const { dir, file } = tempFile("shot.png", Buffer.from("ok"));
+    assert.equal(previewForFile(file, "image/png"), dataUrlFor(Buffer.from("ok")));
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
+
+  it("answers a file it has already read without reading it again", () => {
+    const { dir, file } = tempFile("shot.png", Buffer.from("ok"));
+    const first = previewForFile(file, "image/png");
+    // A chip rides along with every state message, so the read has to happen
+    // once: a file that cannot be read any more still answers from the cache.
+    fs.chmodSync(file, 0o000);
+    assert.equal(previewForFile(file, "image/png"), first);
+    fs.chmodSync(file, 0o644);
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
+
+  it("reads a file that changed since the last look", () => {
+    const { dir, file } = tempFile("shot.png", Buffer.from("ok"));
+    previewForFile(file, "image/png");
+    fs.writeFileSync(file, Buffer.from("changed"));
+    assert.equal(previewForFile(file, "image/png"), dataUrlFor(Buffer.from("changed")));
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
+
+  it("gives a file too large for a view message no thumbnail", () => {
+    const { dir, file } = tempFile("huge.png", Buffer.alloc(MAX_PREVIEW_CHARS / 2 + 1));
+    assert.equal(previewForFile(file, "image/png"), null);
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
+
+  it("reports a file it cannot read as no thumbnail", () => {
+    assert.equal(previewForFile(path.join(os.tmpdir(), "oxide-missing.png"), "image/png"), null);
+  });
+});
+
+describe("AttachmentStore", () => {
+  it("writes a blob to a file the CLI can read", () => {
+    const store = new AttachmentStore();
+    const written = store.write("shot.png", PNG);
+    assert.ok(written, "the blob was written");
+    assert.equal(path.extname(written.path), ".png");
+    assert.equal(fs.readFileSync(written.path).toString("base64"), "iVBORw0KGgo=");
+    store.dispose();
+  });
+
+  it("refuses a blob past the attachment limit", () => {
+    const store = new AttachmentStore();
+    const payload = Buffer.alloc(MAX_ATTACHMENT_BYTES + 1);
+    assert.equal(store.write("huge.png", dataUrlFor(payload)), null);
+    store.dispose();
   });
 });

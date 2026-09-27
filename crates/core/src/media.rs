@@ -33,6 +33,59 @@ pub fn base64_encode(input: &[u8]) -> String {
     out
 }
 
+/// Decodes standard base64, ignoring whitespace, or `None` for input that is
+/// not base64 at all. A front-end that hands over an attachment as a data URL
+/// has nothing else to decode it from, and the payload has to be read before it
+/// can be downscaled.
+pub fn base64_decode(input: &str) -> Option<Vec<u8>> {
+    let mut out = Vec::with_capacity(input.len() / 4 * 3);
+    let mut buffer = 0u32;
+    let mut bits = 0u32;
+    for byte in input.bytes() {
+        let value = match byte {
+            b'A'..=b'Z' => byte - b'A',
+            b'a'..=b'z' => byte - b'a' + 26,
+            b'0'..=b'9' => byte - b'0' + 52,
+            b'+' => 62,
+            b'/' => 63,
+            b'=' => break,
+            b' ' | b'\n' | b'\r' | b'\t' => continue,
+            _ => return None,
+        } as u32;
+        buffer = (buffer << 6) | value;
+        bits += 6;
+        if bits >= 8 {
+            bits -= 8;
+            out.push((buffer >> bits) as u8);
+            buffer &= (1 << bits) - 1;
+        }
+    }
+    Some(out)
+}
+
+/// The largest attachment that may travel to a provider, on disk or as a data
+/// URL. The bytes exist several times over while a turn is set up — the
+/// front-end's own copy, the IPC message, the session log entry and the request
+/// body — so an attachment past this is refused instead of being multiplied.
+pub const MAX_ATTACHMENT_BYTES: usize = 20 * 1024 * 1024;
+
+/// The most characters a data URL may hold. Base64 spends four characters per
+/// three bytes and the `data:<mime>;base64,` header spends part of that budget,
+/// so a URL at this length decodes to *fewer* than [`MAX_ATTACHMENT_BYTES`] —
+/// the guard is a bound on the bytes, not an approximation of one. Whitespace
+/// inside the payload only makes it stricter.
+const MAX_DATA_URL_CHARS: usize = MAX_ATTACHMENT_BYTES / 3 * 4;
+
+/// The image types a provider takes *and* a webview can paint. Anything else
+/// (a TIFF, a HEIC) is refused at the door rather than reaching the model or
+/// showing as a thumbnail that cannot be drawn.
+pub fn is_supported_image_mime(mime: &str) -> bool {
+    matches!(
+        mime,
+        "image/png" | "image/jpeg" | "image/gif" | "image/webp" | "image/bmp"
+    )
+}
+
 pub fn image_mime(path: &Path) -> Option<&'static str> {
     let ext = path.extension()?.to_str()?.to_ascii_lowercase();
     match ext.as_str() {
@@ -258,8 +311,21 @@ fn downscale_image(_bytes: &[u8], _mime: &str) -> Option<Vec<u8>> {
     None
 }
 
-/// Reads an image or PDF and turns it into a provider-ready content part.
+/// Reads an image or PDF and turns it into a provider-ready content part. A
+/// file past [`MAX_ATTACHMENT_BYTES`] is refused before it is read, so a stray
+/// 200 MB PDF cannot be multiplied through the session and the request.
 pub fn load_attachment(path: &Path) -> Result<ContentPart> {
+    let size = std::fs::metadata(path)
+        .with_context(|| format!("reading {}", path.display()))?
+        .len();
+    if size > MAX_ATTACHMENT_BYTES as u64 {
+        anyhow::bail!(
+            "{} is {} which is past the {} limit for an attachment",
+            path.display(),
+            human_bytes(size),
+            human_bytes(MAX_ATTACHMENT_BYTES as u64)
+        );
+    }
     let bytes = std::fs::read(path).with_context(|| format!("reading {}", path.display()))?;
     if is_pdf_path(path) {
         return Ok(ContentPart::File {
@@ -350,31 +416,68 @@ fn data_url_media_type(url: &str) -> Option<&str> {
     Some(meta.strip_suffix(";base64").unwrap_or(meta))
 }
 
+/// A size for a message a person reads: `18 MB`, `900 KB`.
+fn human_bytes(bytes: u64) -> String {
+    if bytes < 1024 {
+        return format!("{bytes} B");
+    }
+    if bytes < 1024 * 1024 {
+        return format!("{} KB", bytes / 1024);
+    }
+    format!("{} MB", bytes / (1024 * 1024))
+}
+
 /// Builds a content part from an already-encoded data URL, e.g. an image the
 /// desktop read from the clipboard. Returns `None` for a type the provider
-/// cannot take as an attachment.
+/// cannot take as an attachment, a type a webview cannot paint, or a payload
+/// past [`MAX_ATTACHMENT_BYTES`]. An image is downscaled here — the one place a
+/// data URL can be — so a full-resolution paste is not stored or shipped at
+/// full size just because it never touched a path.
 pub fn content_part_from_data_url(
     data_url: String,
     filename: Option<String>,
 ) -> Option<ContentPart> {
     let media_type = data_url_media_type(&data_url)?;
-    if media_type.starts_with("image/") {
-        Some(ContentPart::ImageUrl {
-            image_url: ImageUrl {
-                url: data_url,
-                detail: None,
-            },
-        })
-    } else if media_type == "application/pdf" {
-        Some(ContentPart::File {
+    let image = media_type.starts_with("image/");
+    if (!image && media_type != "application/pdf")
+        || (image && !is_supported_image_mime(media_type))
+    {
+        return None;
+    }
+    if data_url.len() > MAX_DATA_URL_CHARS {
+        return None;
+    }
+    if !image {
+        return Some(ContentPart::File {
             file: FileData {
                 filename,
                 file_data: data_url,
             },
-        })
-    } else {
-        None
+        });
     }
+    // A GIF is left alone so an animation is not flattened to one frame.
+    if media_type != "image/gif" {
+        let payload = data_url.split_once(',')?.1;
+        let bytes = base64_decode(payload)?;
+        // The decoded length is what the limit is about, and it is in hand here
+        // for nothing.
+        if bytes.len() > MAX_ATTACHMENT_BYTES {
+            return None;
+        }
+        let bytes = optimize_image(bytes, media_type);
+        return Some(ContentPart::ImageUrl {
+            image_url: ImageUrl {
+                url: format!("data:{media_type};base64,{}", base64_encode(&bytes)),
+                detail: None,
+            },
+        });
+    }
+    Some(ContentPart::ImageUrl {
+        image_url: ImageUrl {
+            url: data_url,
+            detail: None,
+        },
+    })
 }
 
 pub fn expand_path(raw: &str, cwd: &Path) -> PathBuf {
@@ -389,6 +492,22 @@ pub fn expand_path(raw: &str, cwd: &Path) -> PathBuf {
     } else {
         cwd.join(candidate)
     }
+}
+
+/// The attachment the clipboard holds, for a front-end whose paste has no file
+/// to go with it.
+///
+/// A copy from the Finder is preferred over its picture: the pasteboard also
+/// carries the copied file's *icon*, so grabbing the PNG-flavoured data would
+/// attach a placeholder image of the file instead of the file — a copied
+/// screenshot arrived as a `PNG`-document icon. When the clipboard holds a file
+/// URL, nothing else is tried, so a file this front-end cannot attach is
+/// reported rather than replaced by that icon.
+pub fn clipboard_attachment() -> Option<ContentPart> {
+    if let Some(path) = clipboard_path() {
+        return load_attachment(&path).ok();
+    }
+    clipboard_image()
 }
 
 /// Best-effort clipboard image grab. On macOS this uses the built-in
@@ -406,6 +525,40 @@ pub fn clipboard_image() -> Option<ContentPart> {
             detail: None,
         },
     })
+}
+
+/// The file the clipboard holds, when a copy put a file URL on it. macOS only:
+/// a copy from the Finder also puts the file's own icon on the pasteboard,
+/// which is the picture the grab below would take. A Linux or Windows file copy
+/// carries no picture for it to mistake for the file, so the grab stays the
+/// whole story there.
+#[cfg(target_os = "macos")]
+fn clipboard_path() -> Option<PathBuf> {
+    let output = Command::new("osascript")
+        .args(["-e", "POSIX path of (the clipboard as «class furl»)"])
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    clipboard_path_from(&String::from_utf8_lossy(&output.stdout))
+}
+
+#[cfg(not(target_os = "macos"))]
+fn clipboard_path() -> Option<PathBuf> {
+    None
+}
+
+/// A clipboard file URL as a path. Existence is left to the caller: a file that
+/// has since moved should still be reported as the file that was copied rather
+/// than falling through to the pasteboard's icon of it.
+#[cfg(target_os = "macos")]
+fn clipboard_path_from(path: &str) -> Option<PathBuf> {
+    let path = path.trim();
+    if path.is_empty() || !path.starts_with('/') {
+        return None;
+    }
+    Some(PathBuf::from(path))
 }
 
 #[cfg(target_os = "macos")]
@@ -579,6 +732,40 @@ mod tests {
         std::fs::remove_dir_all(&dir).ok();
     }
 
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn reads_a_copied_file_out_of_the_clipboard_url() {
+        assert_eq!(
+            clipboard_path_from("  /Users/me/Desktop/My Shot.png\n"),
+            Some(PathBuf::from("/Users/me/Desktop/My Shot.png"))
+        );
+        // Plain text on the clipboard is not a file URL, and the folder a
+        // Finder copy can hold is left to fail as an attachment rather than
+        // falling through to the pasteboard's icon of it.
+        assert_eq!(clipboard_path_from("hello there"), None);
+        assert_eq!(clipboard_path_from("file:///Users/me/shot.png"), None);
+        assert_eq!(clipboard_path_from("   "), None);
+    }
+
+    #[test]
+    fn decodes_base64_back_to_bytes() {
+        for value in [
+            Vec::new(),
+            b"f".to_vec(),
+            b"fo".to_vec(),
+            b"foo".to_vec(),
+            b"foob".to_vec(),
+            b"fooba".to_vec(),
+            b"foobar".to_vec(),
+            (0..=255u8).collect(),
+        ] {
+            let encoded = base64_encode(&value);
+            assert_eq!(base64_decode(&encoded), Some(value.clone()));
+        }
+        assert_eq!(base64_decode("Zm9v\nYmFy"), Some(b"foobar".to_vec()));
+        assert_eq!(base64_decode("!!!!"), None);
+    }
+
     #[test]
     fn builds_parts_from_data_urls() {
         let image = content_part_from_data_url(
@@ -603,7 +790,41 @@ mod tests {
         assert!(
             content_part_from_data_url("data:text/plain;base64,AAAA".to_string(), None).is_none()
         );
+        // A type no webview can paint and no provider takes is refused rather
+        // than stored as a thumbnail that cannot be drawn.
+        assert!(content_part_from_data_url(
+            "data:image/tiff;base64,AAAA".to_string(),
+            Some("scan.tif".to_string())
+        )
+        .is_none());
+        assert!(
+            content_part_from_data_url("data:image/png;base64,!!!!".to_string(), None).is_none()
+        );
         assert!(content_part_from_data_url("not a data url".to_string(), None).is_none());
+    }
+
+    #[test]
+    fn refuses_a_data_url_past_the_attachment_limit() {
+        let payload = "A".repeat(MAX_DATA_URL_CHARS);
+        let data_url = format!("data:application/pdf;base64,{payload}");
+        assert!(content_part_from_data_url(data_url, None).is_none());
+    }
+
+    #[test]
+    fn refuses_a_file_past_the_attachment_limit() {
+        let dir = std::env::temp_dir().join(format!("oxide_media_limit_{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("huge.pdf");
+        // Sparse, so the test does not write 20 MB to disk.
+        std::fs::File::create(&file)
+            .unwrap()
+            .set_len(MAX_ATTACHMENT_BYTES as u64 + 1)
+            .unwrap();
+
+        let error = load_attachment(&file).unwrap_err().to_string();
+        assert!(error.contains("20 MB"), "unexpected error: {error}");
+
+        std::fs::remove_dir_all(&dir).ok();
     }
 
     #[test]

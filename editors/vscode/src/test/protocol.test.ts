@@ -4,6 +4,7 @@ import { describe, it } from "node:test";
 import {
   drainLines,
   parseEvent,
+  summarizeTitle,
   Transcript,
   type AssistantItem,
   type Item,
@@ -574,6 +575,25 @@ describe("Transcript", () => {
     assert.ok(title.endsWith("…"), title);
   });
 
+  it("summarizes a title from prose rather than Markdown", () => {
+    assert.equal(summarizeTitle("### Fix the **flaky** test"), "Fix the flaky test");
+    assert.equal(
+      summarizeTitle("See [the docs](https://example.com/x) and `cargo test`"),
+      "See the docs and cargo test",
+    );
+    assert.equal(summarizeTitle("> quoted request"), "quoted request");
+    assert.equal(summarizeTitle("- first item"), "first item");
+    // A fence, a rule and a table border say nothing on their own, and a fenced
+    // block is a listing rather than a title.
+    assert.equal(summarizeTitle("```rust\nfn main() {}\n```\nRun this"), "Run this");
+    assert.equal(summarizeTitle("---\n| a | b |\nWhitespace   collapsed"), "Whitespace collapsed");
+    assert.equal(summarizeTitle("   "), "");
+    // A long title is cut at a word boundary, never mid-word.
+    const long = summarizeTitle("word ".repeat(30));
+    assert.ok(long.length <= 64, long);
+    assert.ok(long.endsWith("word…"), long);
+  });
+
   it("carries the current state for a repainted view", () => {
     const transcript = new Transcript();
     transcript.apply({ type: "session", id: "s" });
@@ -585,7 +605,6 @@ describe("Transcript", () => {
         { id: 8, label: "shot.png", kind: "image", preview: "data:image/png;base64,AA", detail: "4 B · pasted" },
       ],
       title: "Fix the build",
-      model: "deepseek-flash",
       binary: "/usr/local/bin/oxide",
       showThinking: false,
       footer,

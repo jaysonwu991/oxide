@@ -1,4 +1,4 @@
-//! Desktop toast notifications for the TUI.
+//! Desktop toast notifications for the TUI and the desktop app.
 //!
 //! Best-effort and dependency-free: each platform's native notifier is invoked
 //! directly, and any failure is ignored so a missing helper (or a headless

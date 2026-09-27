@@ -28,6 +28,13 @@ describe("parseSettings", () => {
     assert.equal(parseSettings('{"compaction":{}}').autoCompact, undefined);
   });
 
+  it("reads the notification switch the CLI writes, and only as a boolean", () => {
+    assert.equal(parseSettings('{"notifyOnComplete":false}').notifyOnComplete, false);
+    assert.equal(parseSettings('{"notifyOnComplete":true}').notifyOnComplete, true);
+    assert.equal(parseSettings('{"notifyOnComplete":"false"}').notifyOnComplete, undefined);
+    assert.equal(parseSettings("{}").notifyOnComplete, undefined);
+  });
+
   it("reads nothing out of a missing or malformed file", () => {
     assert.deepEqual(parseSettings(null), {});
     assert.deepEqual(parseSettings("{"), {});
@@ -37,7 +44,35 @@ describe("parseSettings", () => {
 
 describe("sharedSettings", () => {
   it("defaults to ask and auto-compaction on", () => {
-    assert.deepEqual(sharedSettings(null, null), { defaultTrust: "ask", autoCompact: true });
+    assert.deepEqual(sharedSettings(null, null), {
+      defaultTrust: "ask",
+      autoCompact: true,
+      notifyOnComplete: true,
+    });
+  });
+
+  it("resolves the notification flag like notify.rs", () => {
+    assert.equal(sharedSettings(null, '{"notifyOnComplete":false}').notifyOnComplete, false);
+    assert.equal(
+      sharedSettings('{"notifyOnComplete":false}', '{"notifyOnComplete":true}').notifyOnComplete,
+      true,
+      "the project's .oxide/settings.json wins per key",
+    );
+    assert.equal(
+      sharedSettings(
+        '{"notifyOnComplete":true}',
+        null,
+        { OXIDE_NOTIFY_ON_COMPLETE: "false" },
+      ).notifyOnComplete,
+      false,
+      "the env override wins over both files",
+    );
+    // `notify.rs::env_bool` accepts a bare true/false and nothing else.
+    assert.equal(
+      sharedSettings(null, '{"notifyOnComplete":false}', { OXIDE_NOTIFY_ON_COMPLETE: "0" })
+        .notifyOnComplete,
+      false,
+    );
   });
 
   it("takes defaultProjectTrust from the global file only", () => {

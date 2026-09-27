@@ -73,13 +73,21 @@ the order), falling back to the secondary side bar's and then to the
 activity-bar one when that focus command does not exist.
 
 The panel's own chrome is icon-first, the way Claude Code's is. The header shows
-the thread's title — the resumed session's name when the picker knew one, else
-the first message sent, else **New chat** — next to icon buttons for a new or
-resumed session; the composer's **Attach**, **Stop** and **Send** are icons too,
-so the only text in the chrome is the phase and the numbers. The view-title
-actions (`oxide.newSession`, `oxide.resumeSession`) carry the codicon `$(add)`
-and `$(history)` for the same reason, so VS Code draws them as icons instead of
-inline text.
+the thread's summarized title — the resumed session's name when the picker knew
+one, else the first message sent condensed to one line (Markdown stripped, cut
+at a word boundary), else **New chat** — next to icon buttons for a new or
+resumed session; the model is the footer's first chip rather than a second line
+under the title, and the composer's **Attach**, **Stop** and **Send** are icons
+too, so the only text in the chrome is the phase and the numbers. The phase
+appears while a turn runs (with the elapsed timer) and goes when it does, rather
+than sitting in the toolbar as an idle dot. A turn that finishes while the panel
+is hidden raises a toast naming the thread by that same title; it takes the
+panel's own `oxide.notifyOnFinish` and the shared `notifyOnComplete` the
+terminal's `/notify` writes, so turning notifications off in one silences the
+other (a VS Code notification has no alert sound of its own, so `notifySound` is
+the terminal's and the desktop app's). The view-title actions (`oxide.newSession`,
+`oxide.resumeSession`) carry the codicon `$(add)` and `$(history)` for the same
+reason, so VS Code draws them as icons instead of inline text.
 
 ## Brand assets
 
@@ -220,13 +228,17 @@ added by pasting an image into the composer, dropping files onto it, or from the
 in the explorer, `addToChat` attaches it as media rather than trying to inline
 it as text. Each one becomes a chip above the textarea: a thumbnail for an image
 the host could render small enough to send, a glyph and the file size otherwise,
-with a ✕ to drop it and a **Clear** to drop them all.
+with a ✕ to drop it and a **Clear** to drop them all. A chip's thumbnail is
+drawn on a canvas once per attachment and cached at chip size, so the strip
+being rebuilt with every state message paints the small copy rather than
+decoding the photo-sized preview again.
 
 The CLI takes attachment *paths*, so:
 
 - a file already on disk is passed through as its absolute path, and its
   thumbnail is read by `src/attachments.ts` only when the file is small enough to
-  be worth sending to the webview;
+  be worth sending to the webview, and only once per length and mtime, so the
+  chips that ride along with every state message never re-read and re-encode it;
 - a pasted or dropped blob exists only as a `data:` URL, so the host writes it
   into one private temporary directory per window (removed when the window is
   disposed) and passes that path instead.
@@ -239,6 +251,12 @@ CLI sniffs (`png`, `jpg`/`jpeg`, `gif`, `webp`, `bmp`, and PDF), maps a type ont
 an extension, names a written file so it cannot escape its directory, and
 content-addresses the bytes so pasting the same screenshot twice stays one chip.
 At most eight attach to a message, and a duplicate is refused with a notice.
+
+An attachment is bounded so it cannot be multiplied through the chat: a paste
+past the core's 20 MB limit (`oxide_core::media::MAX_ATTACHMENT_BYTES`) is
+refused before the blob is read into a string, the host writes and echoes
+nothing past it, and a thumbnail over `MAX_PREVIEW_CHARS` falls back to the
+glyph and the file size.
 
 The chips and the text attachments share one id space and travel in one
 `context` message, so a single `removeChip` addresses either list. A queued

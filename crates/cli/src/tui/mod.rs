@@ -1476,7 +1476,7 @@ fn handle_key(
             });
         }
         KeyCode::Char('v') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-            match media::clipboard_image() {
+            match media::clipboard_attachment() {
                 Some(part) => {
                     if app.add_attachment(part) {
                         let count = app.attachments.len();
@@ -1486,7 +1486,7 @@ fn handle_key(
                     }
                 }
                 None => {
-                    app.show_status("no image found on clipboard");
+                    app.show_status("nothing to attach from the clipboard");
                 }
             }
         }
@@ -2340,7 +2340,7 @@ fn hotkeys_text() -> String {
         "  Shift+Tab / Ctrl+R    cycle reasoning/thinking level".to_string(),
         "  Ctrl+O                toggle tool output".to_string(),
         "  Ctrl+T                show or hide thinking blocks".to_string(),
-        "  Ctrl+V                attach a clipboard image".to_string(),
+        "  Ctrl+V                attach the clipboard image or copied file".to_string(),
         "  Tab                   complete the selected command or @path".to_string(),
         "  Ctrl+A / Ctrl+E       jump to the start/end of the message (when it is not empty)"
             .to_string(),

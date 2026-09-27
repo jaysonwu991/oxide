@@ -122,24 +122,13 @@ pre,
   flex: 0 0 auto;
 }
 
-#identity {
-  display: flex;
-  flex-direction: column;
-  line-height: 1.25;
+/* The thread's summarized title: the session's name, else a summary of the
+   first message. The model lives in the footer's first chip, so the header is
+   one line that says which conversation this is. */
+#title {
+  font-weight: 600;
   min-width: 0;
   flex: 1 1 auto;
-}
-
-#folder {
-  font-weight: 600;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-
-#model {
-  color: var(--vscode-descriptionForeground);
-  font-size: 0.85em;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -574,6 +563,7 @@ footer {
 .usage[hidden],
 .chips[hidden],
 .gauge[hidden],
+#status[hidden],
 #elapsed[hidden],
 #dropzone[hidden] {
   display: none;
