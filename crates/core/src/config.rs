@@ -1039,17 +1039,18 @@ impl Config {
         base_url.contains("api.z.ai") || base_url.contains("open.bigmodel.cn")
     }
 
-    /// Whether the active provider is DeepSeek's API, whose thinking mode
-    /// requires an assistant turn's `reasoning_content` to be replayed on the
-    /// next request. A custom provider pointed at the same host is detected
-    /// too.
+    /// Whether the active model is DeepSeek's thinking mode, wherever it is
+    /// served from. Its `reasoning_content` has to be replayed on every later
+    /// assistant message, so the provider and the first-party endpoint are
+    /// checked along with the model name, which covers a DeepSeek model behind
+    /// a gateway (OpenRouter, Portkey).
     pub fn is_deepseek(&self) -> bool {
-        if canonical_provider(&self.provider) == "deepseek" {
-            return true;
-        }
-        self.base_url
-            .to_ascii_lowercase()
-            .contains("api.deepseek.com")
+        canonical_provider(&self.provider) == "deepseek"
+            || self
+                .base_url
+                .to_ascii_lowercase()
+                .contains("api.deepseek.com")
+            || self.model.to_ascii_lowercase().contains("deepseek")
     }
 
     /// The models bundled with a provider whose catalog cannot be listed.

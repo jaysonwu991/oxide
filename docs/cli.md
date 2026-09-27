@@ -705,10 +705,12 @@ on. Press Ctrl+T to collapse reasoning to its label
 (`✦ Thought for 1.4s · Ctrl+T to expand`) and again to expand it;
 `hideThinkingBlock` in the global `settings.json` makes Oxide start collapsed,
 matching Pi. Reasoning is stored in the session as thinking blocks: Anthropic
-replays them on later turns, and a DeepSeek thinking-mode request replays them as
-`reasoning_content` (the API rejects any later request that drops an earlier
-turn's reasoning, whether it made a tool call or gave the final answer); every
-other OpenAI-compatible request strips them. While a
+replays them on later turns, and a DeepSeek thinking-mode request puts them back
+as `reasoning_content` on every earlier assistant message — the API rejects a
+request that drops an earlier turn's reasoning, whether it made a tool call or
+gave the final answer, and `deepseek-flash` skips reasoning on quick tool calls
+and short answers, so that field is sent empty rather than left out; every other
+OpenAI-compatible request strips them. While a
 turn is in flight the status row names the phase (`thinking...`,
 `running tool...`, `compacting...`, `summarizing branch...`) and reports
 transient stream failures as `retrying (1/3) in 1s...` before the client backs
