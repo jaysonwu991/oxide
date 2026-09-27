@@ -518,7 +518,11 @@ pub fn clipboard_image() -> Option<ContentPart> {
     })
 }
 
-/// The file the clipboard holds, when a copy put a file URL on it.
+/// The file the clipboard holds, when a copy put a file URL on it. macOS only:
+/// a copy from the Finder also puts the file's own icon on the pasteboard,
+/// which is the picture the grab below would take. A Linux or Windows file copy
+/// carries no picture for it to mistake for the file, so the grab stays the
+/// whole story there.
 #[cfg(target_os = "macos")]
 fn clipboard_path() -> Option<PathBuf> {
     let output = Command::new("osascript")
@@ -531,12 +535,7 @@ fn clipboard_path() -> Option<PathBuf> {
     clipboard_path_from(&String::from_utf8_lossy(&output.stdout))
 }
 
-#[cfg(target_os = "linux")]
-fn clipboard_path() -> Option<PathBuf> {
-    None
-}
-
-#[cfg(not(any(target_os = "macos", target_os = "linux")))]
+#[cfg(not(target_os = "macos"))]
 fn clipboard_path() -> Option<PathBuf> {
     None
 }
@@ -544,6 +543,7 @@ fn clipboard_path() -> Option<PathBuf> {
 /// A clipboard file URL as a path. Existence is left to the caller: a file that
 /// has since moved should still be reported as the file that was copied rather
 /// than falling through to the pasteboard's icon of it.
+#[cfg(target_os = "macos")]
 fn clipboard_path_from(path: &str) -> Option<PathBuf> {
     let path = path.trim();
     if path.is_empty() || !path.starts_with('/') {
@@ -723,6 +723,7 @@ mod tests {
         std::fs::remove_dir_all(&dir).ok();
     }
 
+    #[cfg(target_os = "macos")]
     #[test]
     fn reads_a_copied_file_out_of_the_clipboard_url() {
         assert_eq!(
