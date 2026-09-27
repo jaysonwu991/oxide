@@ -1081,12 +1081,15 @@
 
   // ---------- dialogs ----------
 
-  /// The one icon a dialog's own rows need: the power switch beside a server,
-  /// which no character renders the same way everywhere. The header's Recheck
-  /// and Close come from the shell, and every other row is words.
+  /// The icons a dialog's own rows need: the power switch beside a server and
+  /// the trash at the end of a thread, neither of which a character renders the
+  /// same way everywhere. The header's Recheck and Close come from the shell,
+  /// and every other row is words.
   const POWER_ICON =
     '<svg viewBox="0 0 24 24" width="14" height="14" aria-hidden="true"><path d="M18.36 6.64a9 9 0 1 1-12.73 0" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/><path d="M12 2v10" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>';
-  const DIALOG_ICONS = { power: POWER_ICON };
+  const TRASH_ICON =
+    '<svg viewBox="0 0 24 24" width="14" height="14" aria-hidden="true"><path d="M4 7h16M10 11v6M14 11v6M6 7l1 13h10l1-13M9 7V4h6v3" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>';
+  const DIALOG_ICONS = { power: POWER_ICON, trash: TRASH_ICON };
 
   /// The dialog the host composes (`src/core/dialogs.ts`): the MCP server list
   /// and the session history, painted here rather than in a QuickPick — which

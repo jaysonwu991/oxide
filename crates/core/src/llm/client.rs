@@ -640,7 +640,11 @@ fn openai_request(
     // Other OpenAI-compatible providers get the thinking blocks stripped
     // instead, since the field would be an unknown argument there.
     let replay_reasoning = config.is_deepseek();
-    let messages: Vec<Value> = messages
+    // Every provider rejects an assistant tool-call turn without its results,
+    // and a stored thread can hold one (a run killed mid-tool, a truncated
+    // file), so the wire copy is repaired before it is serialized.
+    let paired = crate::llm::repair_tool_pairs(messages);
+    let messages: Vec<Value> = paired
         .iter()
         .map(|message| {
             let mut value = serde_json::to_value(message).unwrap_or(Value::Null);
@@ -1009,6 +1013,41 @@ mod tests {
     }
 
     #[test]
+    fn a_dangling_tool_call_is_repaired_before_the_request_is_sent() {
+        // A log that holds an assistant call with no result would be rejected
+        // by the API, so the wire copy carries a synthetic result for it.
+        let config = Config {
+            provider: "deepseek".into(),
+            model: "deepseek-chat".into(),
+            ..Config::default()
+        };
+        let call = ToolCall {
+            id: "call_0".into(),
+            kind: "function".into(),
+            function: FunctionCall {
+                name: "read".into(),
+                arguments: "{}".into(),
+            },
+        };
+        let body = serde_json::to_value(openai_request(
+            &config,
+            &[
+                Message::user("do it"),
+                Message::assistant("", vec![call]),
+                Message::user("again"),
+            ],
+            &[],
+            None,
+        ))
+        .unwrap();
+        let messages = body["messages"].as_array().unwrap();
+        assert_eq!(messages.len(), 4);
+        assert_eq!(messages[2]["role"], "tool");
+        assert_eq!(messages[2]["tool_call_id"], "call_0");
+        assert_eq!(messages[3]["role"], "user");
+    }
+
+    #[test]
     fn deepseek_replays_reasoning_content() {
         let config = Config {
             provider: "deepseek".into(),
@@ -1035,13 +1074,18 @@ mod tests {
         ]);
         let body = serde_json::to_value(openai_request(
             &config,
-            &[Message::user("hi"), assistant, answer],
+            &[
+                Message::user("hi"),
+                assistant,
+                Message::tool("call_0", "contents"),
+                answer,
+            ],
             &[],
             None,
         ))
         .unwrap();
         let call_turn = &body["messages"][1];
-        let answer_turn = &body["messages"][2];
+        let answer_turn = &body["messages"][3];
         assert_eq!(call_turn["reasoning_content"], "step one step two");
         assert_eq!(answer_turn["reasoning_content"], "final trace");
         assert!(call_turn.get("thinking").is_none());

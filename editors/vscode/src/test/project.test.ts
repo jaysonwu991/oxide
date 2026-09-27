@@ -9,6 +9,8 @@ import { projectInfo, projectRoot, type ProjectDeps } from "../core/project";
 
 const repo = path.join("/repo");
 const pkg = path.join(repo, "pkg");
+const configDir = "/config";
+const home = "/home/me";
 
 /// A file map shaped like the paths the module reads. Any ancestor directory of
 /// a known file counts as existing, so `.git/HEAD` implies `.git`.
@@ -16,9 +18,11 @@ function tree(files: Record<string, string>, env: Record<string, string | undefi
   const dirs = new Set<string>();
   for (const file of Object.keys(files)) {
     let dir = path.dirname(file);
-    while (dir && dir !== "/" && !dirs.has(dir)) {
+    while (dir && !dirs.has(dir)) {
       dirs.add(dir);
-      dir = path.dirname(dir);
+      const parent = path.dirname(dir);
+      if (parent === dir) break;
+      dir = parent;
     }
   }
   return {
@@ -29,8 +33,8 @@ function tree(files: Record<string, string>, env: Record<string, string | undefi
         .map(([file, text]) => ({ stem: path.basename(file, ".md"), text })),
     exists: (candidate) => candidate in files || dirs.has(candidate),
     realpath: (candidate) => candidate,
-    configDir: "/config",
-    home: "/home/me",
+    configDir,
+    home,
     env,
   };
 }
@@ -53,7 +57,8 @@ describe("projectRoot", () => {
 describe("projectInfo", () => {
   it("reads the model, the remembered models and the window from config.json", () => {
     const deps = tree({
-      "/config/config.json": '{"provider":"zai","model":"glm-5","provider_models":{"zai":"glm-5"}}',
+      [path.join(configDir, "config.json")]:
+        '{"provider":"zai","model":"glm-5","provider_models":{"zai":"glm-5"}}',
     });
     const info = projectInfo(pkg, "default", deps);
     assert.equal(info.provider, "zai");
@@ -61,18 +66,21 @@ describe("projectInfo", () => {
     assert.deepEqual(info.models, [{ provider: "zai", model: "glm-5" }]);
     // An untouched config has no `max_tokens`, so the window is the 128k floor.
     assert.equal(info.contextWindow, 128_000);
-    assert.equal(info.configPath, path.join("/config", "config.json"));
+    assert.equal(info.configPath, path.join(configDir, "config.json"));
   });
 
   it("lets OXIDE_CONTEXT_LIMIT override the window", () => {
-    const deps = tree({ "/config/config.json": '{"max_tokens":1}' }, { OXIDE_CONTEXT_LIMIT: "300000" });
+    const deps = tree(
+      { [path.join(configDir, "config.json")]: '{"max_tokens":1}' },
+      { OXIDE_CONTEXT_LIMIT: "300000" },
+    );
     assert.equal(projectInfo(pkg, "default", deps).contextWindow, 300_000);
   });
 
   it("resolves access from trust.json, defaultProjectTrust and the setting", () => {
     const deps = tree({
-      "/config/trust.json": JSON.stringify({ [repo]: true }),
-      "/config/settings.json": '{"defaultProjectTrust":"never"}',
+      [path.join(configDir, "trust.json")]: JSON.stringify({ [repo]: true }),
+      [path.join(configDir, "settings.json")]: '{"defaultProjectTrust":"never"}',
     });
     assert.equal(projectInfo(pkg, "default", deps).access, "trusted");
     assert.equal(projectInfo(pkg, "default", deps).savedTrust, true);
@@ -88,7 +96,7 @@ describe("projectInfo", () => {
   it("lets the project's .oxide/settings.json override the global compaction flag", () => {
     const deps = tree({
       [path.join(repo, ".git/HEAD")]: "ref: refs/heads/main\n",
-      "/config/settings.json": '{"compaction":{"enabled":true}}',
+      [path.join(configDir, "settings.json")]: '{"compaction":{"enabled":true}}',
       [path.join(repo, ".oxide/settings.json")]: '{"compaction":{"enabled":false}}',
     });
     assert.equal(projectInfo(pkg, "default", deps).autoCompact, false);
@@ -96,13 +104,17 @@ describe("projectInfo", () => {
 
   it("reports the notification flag the terminal's /notify writes", () => {
     assert.equal(projectInfo(pkg, "default", tree({})).notifyOnComplete, true);
-    const off = projectInfo(pkg, "default", tree({ "/config/settings.json": '{"notifyOnComplete":false}' }));
+    const off = projectInfo(
+      pkg,
+      "default",
+      tree({ [path.join(configDir, "settings.json")]: '{"notifyOnComplete":false}' }),
+    );
     assert.equal(off.notifyOnComplete, false);
     const overridden = projectInfo(
       pkg,
       "default",
       tree({
-        "/config/settings.json": '{"notifyOnComplete":false}',
+        [path.join(configDir, "settings.json")]: '{"notifyOnComplete":false}',
         [path.join(repo, ".oxide/settings.json")]: '{"notifyOnComplete":true}',
       }),
     );
@@ -114,11 +126,13 @@ describe("projectInfo", () => {
       [path.join(repo, ".git/HEAD")]: "ref: refs/heads/fix/footer\n",
       [path.join(repo, ".oxide/agents/reviewer.md")]: '---\nname: reviewer\ndescription: Reviews\n---\n',
       [path.join(repo, ".claude/agents/reviewer.md")]: "Loses to the .oxide one.\n",
-      "/config/agents/reviewer.md": '---\nname: reviewer\ndescription: global\n---\n',
-      "/config/agents/planner.md": '---\nname: planner\ndescription: config dir\n---\n',
-      "/home/me/.oxide/agents/planner.md": "Loses to the config dir one.\n",
-      "/home/me/.oxide/agents/dreamer.md": "\n",
-      "/home/me/.claude/agents/legacy.md": "Legacy.\n",
+      [path.join(configDir, "agents/reviewer.md")]:
+        '---\nname: reviewer\ndescription: global\n---\n',
+      [path.join(configDir, "agents/planner.md")]:
+        '---\nname: planner\ndescription: config dir\n---\n',
+      [path.join(home, ".oxide/agents/planner.md")]: "Loses to the config dir one.\n",
+      [path.join(home, ".oxide/agents/dreamer.md")]: "\n",
+      [path.join(home, ".claude/agents/legacy.md")]: "Legacy.\n",
     });
     const info = projectInfo(pkg, "always", deps);
     assert.equal(info.branch, "fix/footer");
@@ -132,7 +146,7 @@ describe("projectInfo", () => {
     const deps = tree({
       [path.join(repo, ".git/HEAD")]: "ref: refs/heads/main\n",
       [path.join(repo, ".oxide/agents/reviewer.md")]: "Project prompt and permissions.\n",
-      "/config/agents/planner.md": "Global.\n",
+      [path.join(configDir, "agents/planner.md")]: "Global.\n",
     });
     // `default` with no saved decision resolves to untrusted, and the CLI
     // activates `--agent` before it drops project resources, so the project's
@@ -150,15 +164,15 @@ describe("projectInfo", () => {
   });
 
   it("offers the agents installed plugins bundle", () => {
-    const plugin = "/config/plugins/hello";
+    const plugin = path.join(configDir, "plugins", "hello");
     const deps = tree({
       [path.join(repo, ".oxide/agents/worker.md")]: "Project.\n",
-      "/config/plugins/config.json": JSON.stringify({
+      [path.join(configDir, "plugins", "config.json")]: JSON.stringify({
         plugins: { hello: { name: "hello", enabled: true, path: plugin } },
       }),
-      [`${plugin}/.oxide/plugin.json`]: "{}",
-      [`${plugin}/agents/helper.md`]: '---\nname: helper\ndescription: Bundled\n---\n',
-      [`${plugin}/agents/worker.md`]: "Loses to the project one.\n",
+      [path.join(plugin, ".oxide", "plugin.json")]: "{}",
+      [path.join(plugin, "agents", "helper.md")]: '---\nname: helper\ndescription: Bundled\n---\n',
+      [path.join(plugin, "agents", "worker.md")]: "Loses to the project one.\n",
     });
     const trusted = projectInfo(pkg, "always", deps);
     assert.deepEqual(

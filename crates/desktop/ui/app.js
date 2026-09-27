@@ -470,6 +470,20 @@ async function loadProjects() {
   }
 }
 
+/// Opens the app on the first project the sidebar shows — a registered folder,
+/// most recently opened first, then one discovered from a session — rather than
+/// on nothing. The composer belongs to a project: with none selected the box
+/// stays disabled, and the path behind it would resolve against whatever
+/// directory the app was launched in ($HOME on one platform, `/` on another),
+/// which is not a folder the user picked. With no project at all the empty
+/// state stays, since there is nothing to run in.
+async function openDefaultProject() {
+  await loadProjects();
+  if (state.project) return;
+  const [first] = state.projects || [];
+  if (first) await selectProject(first);
+}
+
 async function selectProject(project) {
   state.project = project.path;
   state.projectName = project.name;
@@ -2421,7 +2435,7 @@ function init() {
   renderWelcome();
   initEvents();
   loadTheme();
-  loadProjects();
+  openDefaultProject();
 }
 
 init();
@@ -2664,6 +2678,12 @@ async function removeProject(project) {
 }
 
 async function removeSession(session) {
+  // A running turn appends to this thread's file as it works, so deleting it
+  // here would leave the process writing into a file that is gone.
+  if (state.busy && state.session === session.id) {
+    setStatus("A turn is running; stop it before deleting this thread.");
+    return;
+  }
   const label = session.name || session.preview || session.id.slice(0, 8);
   const ok = await confirmDialog(
     "Delete thread",

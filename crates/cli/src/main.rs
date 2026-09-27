@@ -191,6 +191,17 @@ enum SessionsAction {
         #[arg(long)]
         older_than: Option<u64>,
     },
+    /// Print one saved session's conversation
+    Show {
+        /// Session id or path
+        id: String,
+        /// Only the newest N messages
+        #[arg(long)]
+        tail: Option<usize>,
+        /// Print the session as JSON, for a client that draws it
+        #[arg(long)]
+        json: bool,
+    },
     /// Delete saved sessions
     Delete {
         /// Session id to delete
@@ -458,6 +469,9 @@ async fn main() -> Result<()> {
                 match action {
                     SessionsAction::List { all, older_than } => {
                         sessions::list(&current_dir, all, older_than)
+                    }
+                    SessionsAction::Show { id, tail, json } => {
+                        sessions::show(&current_dir, &id, tail, json)
                     }
                     SessionsAction::Delete {
                         id,

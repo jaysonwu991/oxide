@@ -1,16 +1,20 @@
 // The two dialogs the panel paints are composed here as data, so what a row
 // says — a server's state and the scope a toggle writes to, a session's age and
-// size — is assertable without a webview or a CLI.
+// size, what a deletion would remove — is assertable without a webview or a CLI.
 
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 
 import {
+  CLOSE_DIALOG,
   CONTINUE_SESSION,
+  deleteSessionDialog,
   MCP_TOGGLE,
   NEW_SESSION,
   mcpDialog,
   OPEN_SESSION,
+  SESSION_DELETE,
+  SESSION_DELETE_CONFIRM,
   sessionDialog,
 } from "../core/dialogs";
 import { parseMcpList } from "../core/mcps";
@@ -127,13 +131,19 @@ describe("session dialog", () => {
     );
     // Both are answered by the panel, so neither carries a toggle.
     assert.equal(dialog.refreshLabel, "");
+    // A session row ends in a trash: the two ways out of the current thread do
+    // not, since neither deletes anything.
     assert.deepEqual(
       dialog.rows.map((row) => row.button),
-      ["", "", "", ""],
+      ["", "", "Delete Create VS Code Extension for Oxide", "Delete say hi"],
+    );
+    assert.deepEqual(
+      dialog.rows.map((row) => row.buttonAction),
+      ["", "", SESSION_DELETE, SESSION_DELETE],
     );
     assert.deepEqual(
       dialog.rows.map((row) => row.icon),
-      ["", "", "", ""],
+      ["", "", "trash", "trash"],
     );
   });
 
@@ -159,5 +169,38 @@ describe("session dialog", () => {
 
   it("shows the listing in progress rather than an empty list", () => {
     assert.equal(sessionDialog(sessions, "Loading sessions…").note, "Loading sessions…");
+  });
+});
+
+describe("delete-thread confirmation", () => {
+  const thread = {
+    id: "fe0031b1",
+    label: "Create VS Code Extension for Oxide",
+    detail: "just now · 195 messages · fe0031b1",
+  };
+
+  it("names the thread, and puts the deletion in a row of its own", () => {
+    const dialog = deleteSessionDialog(thread);
+    assert.equal(dialog.title, "Delete thread");
+    assert.match(dialog.subtitle, /Create VS Code Extension for Oxide/);
+    assert.match(dialog.note, /cannot be undone/);
+    assert.deepEqual(
+      dialog.rows.map((row) => row.label),
+      ["Delete thread", "Cancel"],
+    );
+    assert.deepEqual(
+      dialog.rows.map((row) => row.action),
+      [SESSION_DELETE_CONFIRM, CLOSE_DIALOG],
+    );
+    // The row carries the id the deletion acts on, and reads as destructive.
+    assert.equal(dialog.rows[0].value, "fe0031b1");
+    assert.equal(dialog.rows[0].tone, "error");
+    assert.equal(dialog.rows[0].detail, thread.detail);
+    assert.equal(dialog.refreshLabel, "", "the listing is repainted, not rechecked");
+  });
+
+  it("falls back to the id for a thread that was never named", () => {
+    const dialog = deleteSessionDialog({ id: "abc123", label: "", detail: "" });
+    assert.match(dialog.subtitle, /abc123/);
   });
 });

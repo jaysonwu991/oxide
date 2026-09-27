@@ -22,7 +22,7 @@ export type DialogTone = "ok" | "warn" | "error" | "muted" | "";
 /// The glyphs a row's own button can be painted with. The webview cannot load
 /// VS Code's codicon font, so the few it needs are named here and inlined as
 /// SVG by the renderer — the words the button carries stay in `button`.
-export type DialogIcon = "power" | "";
+export type DialogIcon = "power" | "trash" | "";
 
 export interface DialogRow {
   /// What the row's action posts back — a server name, a session id.
@@ -62,6 +62,11 @@ export interface DialogState {
 export const MCP_TOGGLE = "mcpToggle";
 export const MCP_REFRESH = "mcpRefresh";
 export const OPEN_SESSION = "openSession";
+/// The trash at the end of a session row: it opens the confirmation rather than
+/// deleting, because a thread cannot be recovered once its file is gone.
+export const SESSION_DELETE = "sessionDelete";
+/// The confirmation's own row, which does the deletion.
+export const SESSION_DELETE_CONFIRM = "sessionDeleteConfirm";
 /// Close or Escape: the view dismisses it and tells the controller, so the next
 /// pane to attach does not paint it again.
 export const CLOSE_DIALOG = "dialogClose";
@@ -153,8 +158,41 @@ export function sessionDialog(sessions: readonly SessionEntry[], note = ""): Dia
           status: session.age,
           tone: "muted",
           action: OPEN_SESSION,
+          button: `Delete ${session.label || session.id}`,
+          buttonAction: SESSION_DELETE,
+          icon: "trash",
         }),
       ),
+    ],
+    refreshLabel: "",
+    refreshAction: "",
+  };
+}
+
+/// The confirmation a session row's trash opens: the thread is named, so the
+/// dialog says what it would delete, and the deletion itself is the row rather
+/// than a second button.
+///
+/// A panel dialog rather than `showWarningMessage({ modal: true }, …)`: the
+/// listing stays readable behind it, and answering it does not hand the window
+/// to VS Code's own chrome.
+export function deleteSessionDialog(session: {
+  id: string;
+  label: string;
+  detail: string;
+}): DialogState {
+  const label = session.label || session.id;
+  return {
+    title: "Delete thread",
+    subtitle: `“${label}” and its stored conversation are removed from this project.`,
+    note: "This cannot be undone. The file is deleted from Oxide's session store.",
+    rows: [
+      row(session.id, "Delete thread", {
+        detail: session.detail,
+        tone: "error",
+        action: SESSION_DELETE_CONFIRM,
+      }),
+      row("", "Cancel", { detail: "Keep the thread", action: CLOSE_DIALOG }),
     ],
     refreshLabel: "",
     refreshAction: "",

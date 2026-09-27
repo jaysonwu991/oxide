@@ -268,20 +268,48 @@ impl SessionLog {
     }
 
     pub fn open_id(cwd: &Path, id: &str) -> Result<Self> {
-        let dir = project_dir(cwd);
+        Self::open_id_in(&project_dir(cwd), id)
+    }
+
+    pub(crate) fn open_id_in(dir: &Path, id: &str) -> Result<Self> {
         let direct = dir.join(format!("{id}.jsonl"));
         if direct.exists() {
             return Self::open(direct);
         }
-        for entry in std::fs::read_dir(&dir).into_iter().flatten().flatten() {
+        // A session file is named `<millis>_<id>.jsonl`, so the id names its own
+        // file. Reading every other session in the project just to find this one
+        // is what made resuming a thread slow once a project had a long history,
+        // and it is the path every front-end takes: `--session <id>` for the CLI
+        // and the extension, `open_ref` for the desktop's stored transcript.
+        let suffixed = format!("_{id}");
+        let mut by_suffix = None;
+        let mut renamed = Vec::new();
+        for entry in std::fs::read_dir(dir).into_iter().flatten().flatten() {
             let path = entry.path();
             if path.extension().is_none_or(|ext| ext != "jsonl") {
                 continue;
             }
-            if let Ok((header, _)) = read_session(&path) {
-                if header.id == id || path.file_stem().is_some_and(|stem| stem == id) {
-                    return Self::open(path);
+            let stem = path
+                .file_stem()
+                .map(|stem| stem.to_string_lossy().into_owned());
+            match stem.as_deref() {
+                // `<millis>_<id>.jsonl`, the name this crate writes.
+                Some(stem) if stem == id => return Self::open(path),
+                Some(stem) if stem.ends_with(&suffixed) => {
+                    by_suffix.get_or_insert(path);
                 }
+                _ => renamed.push(path),
+            }
+        }
+        if let Some(path) = by_suffix {
+            return Self::open(path);
+        }
+        // A file that was renamed no longer carries the id in its name, so its
+        // header line is read — one small line per file, and only once nothing
+        // matched by name.
+        for path in renamed {
+            if read_header_id(&path).as_deref() == Some(id) {
+                return Self::open(path);
             }
         }
         anyhow::bail!("no session `{id}` for this project")
@@ -372,8 +400,20 @@ impl SessionLog {
     /// gone its now-empty directory is removed too.
     pub fn delete(cwd: &Path, id: &str) -> Result<()> {
         let log = Self::open_id(cwd, id)?;
-        let dir = log.path.parent().map(|parent| parent.to_path_buf());
-        remove_file(&log.path)?;
+        Self::delete_path(&log.path)
+    }
+
+    /// Removes one session log, by the file it is rather than by an id that has
+    /// to be resolved again. An id is not a unique key for a file: `open_id`
+    /// trusts a file's name and falls back to the header of a renamed one, so a
+    /// store holding a copy (two files, one id) resolves the same id to
+    /// different files at different moments. Deleting by path makes `oxide
+    /// sessions delete <id>` remove the file the id resolved to and nothing
+    /// else — before this, a delete could remove a session the user never
+    /// named.
+    pub fn delete_path(path: &Path) -> Result<()> {
+        let dir = path.parent().map(|parent| parent.to_path_buf());
+        remove_file(path)?;
         if let Some(dir) = dir {
             if dir != sessions_root() {
                 remove_project_dir_if_empty(&dir);
@@ -500,6 +540,26 @@ impl SessionLog {
         totals
     }
 
+    /// The prompt tokens of the newest recorded request: the context the thread
+    /// was last run with. A client that reopens a stored thread shows it in its
+    /// context gauge, which would otherwise read zero until the next turn.
+    pub fn context_tokens(&self) -> u64 {
+        let state = self.state();
+        let mut tokens = 0;
+        for entry in &state.entries {
+            let usage = match entry {
+                Entry::Message(entry) => entry.usage,
+                Entry::Compaction(entry) => entry.usage,
+                Entry::BranchSummary(entry) => entry.usage,
+                _ => None,
+            };
+            if let Some(usage) = usage {
+                tokens = usage.input + usage.cache_read + usage.cache_write;
+            }
+        }
+        tokens
+    }
+
     /// Appends a compaction entry and returns its id.
     #[allow(clippy::too_many_arguments)]
     pub fn append_compaction(
@@ -585,9 +645,20 @@ impl SessionLog {
     }
 
     /// Entry ids aligned with [`Self::messages`], used to anchor compaction.
+    /// Bookkeeping entries (a name, a model or thinking-level change) carry no
+    /// message, so they are left out: including them would shift every id after
+    /// them, and a compaction boundary resolved through a shifted index can land
+    /// on the wrong entry, splitting a tool call from its results — the shape a
+    /// provider rejects.
     pub fn context_ids(&self) -> Vec<String> {
         self.context()
             .iter()
+            .filter(|entry| {
+                matches!(
+                    entry,
+                    Entry::Message(_) | Entry::Compaction(_) | Entry::BranchSummary(_)
+                )
+            })
             .map(|entry| entry.id().to_string())
             .collect()
     }
@@ -657,6 +728,13 @@ impl SessionLog {
     fn append_entry(&self, entry: Entry) -> Result<String> {
         let id = entry.id().to_string();
         let line = serde_json::to_string(&entry)?;
+        // Another front-end can delete a thread while this one still has it
+        // open, and every later append would then fail with `No such file or
+        // directory`. The whole log is rewritten from memory first, so the live
+        // conversation is not lost to a store that no longer has the file.
+        if !self.path.exists() {
+            self.restore_file()?;
+        }
         append_line(&self.path, &line)?;
         let mut state = self.state();
         let index = state.entries.len();
@@ -668,6 +746,30 @@ impl SessionLog {
 
     fn state(&self) -> MutexGuard<'_, SessionState> {
         self.state.lock().unwrap_or_else(|err| err.into_inner())
+    }
+
+    /// Writes the header and every entry held in memory back to `self.path`.
+    /// Used when the file is gone at append time; it is the same shape the file
+    /// had before it was removed, so reopening the session reads the whole
+    /// conversation rather than a headless fragment.
+    fn restore_file(&self) -> Result<()> {
+        let mut file = std::fs::OpenOptions::new()
+            .create(true)
+            .write(true)
+            .truncate(true)
+            .open(&self.path)
+            .with_context(|| format!("recreating session log {}", self.path.display()))?;
+        writeln!(
+            file,
+            "{}",
+            serde_json::to_string(&Entry::Session(self.header.clone()))?
+        )?;
+        for entry in &self.state().entries {
+            writeln!(file, "{}", serde_json::to_string(entry)?)?;
+        }
+        file.sync_data()
+            .with_context(|| format!("syncing session log {}", self.path.display()))?;
+        Ok(())
     }
 }
 
@@ -784,8 +886,21 @@ fn sessions_root() -> PathBuf {
     crate::config::config_dir_or_default().join("sessions")
 }
 
-fn project_dir(cwd: &Path) -> PathBuf {
+pub(crate) fn project_dir(cwd: &Path) -> PathBuf {
     sessions_root().join(crate::memory::project_id(cwd))
+}
+
+/// The session id in a log's header, read from its first line alone. A log this
+/// crate wrote always starts with the header entry, and only a file that was
+/// renamed needs this at all (`SessionLog::open_id`).
+fn read_header_id(path: &Path) -> Option<String> {
+    let file = std::fs::File::open(path).ok()?;
+    let mut line = String::new();
+    BufReader::new(file).read_line(&mut line).ok()?;
+    match serde_json::from_str::<Entry>(line.trim()) {
+        Ok(Entry::Session(header)) => Some(header.id),
+        _ => None,
+    }
 }
 
 fn read_session(path: &Path) -> Result<(SessionHeader, SessionState)> {
@@ -1026,6 +1141,43 @@ mod tests {
     }
 
     #[test]
+    fn finds_a_session_by_id_without_reading_the_others() {
+        let dir = temp_dir("open_id");
+        let cwd = temp_dir("open_id_proj");
+        let wanted = SessionLog::create_in(&dir, &cwd).unwrap();
+        wanted.append(&Message::user("hello")).unwrap();
+        let other = SessionLog::create_in(&dir, &cwd).unwrap();
+        other.append(&Message::user("other")).unwrap();
+        // An unreadable file stands in for every other session in the project:
+        // the lookup must not need to parse one to find the session it names.
+        std::fs::write(dir.join("1790346365204_00000000.jsonl"), "not a session\n").unwrap();
+
+        let found = SessionLog::open_id_in(&dir, wanted.id()).unwrap();
+        assert_eq!(found.id(), wanted.id());
+        assert_eq!(found.messages().unwrap().len(), 1);
+        assert!(SessionLog::open_id_in(&dir, "deadbeef").is_err());
+
+        std::fs::remove_dir_all(&dir).ok();
+        std::fs::remove_dir_all(&cwd).ok();
+    }
+
+    #[test]
+    fn finds_a_session_whose_file_was_renamed() {
+        let dir = temp_dir("open_id_renamed");
+        let cwd = temp_dir("open_id_renamed_proj");
+        let log = SessionLog::create_in(&dir, &cwd).unwrap();
+        log.append(&Message::user("hello")).unwrap();
+        let id = log.id().to_string();
+        std::fs::rename(log.path(), dir.join("notes.jsonl")).unwrap();
+
+        // The name no longer carries the id, so the header decides.
+        assert_eq!(SessionLog::open_id_in(&dir, &id).unwrap().id(), id);
+
+        std::fs::remove_dir_all(&dir).ok();
+        std::fs::remove_dir_all(&cwd).ok();
+    }
+
+    #[test]
     fn append_and_reload_round_trip() {
         let dir = temp_dir("round");
         let cwd = temp_dir("round_proj");
@@ -1040,6 +1192,34 @@ mod tests {
         assert_eq!(messages[0].role, "user");
         assert_eq!(messages[0].display().as_deref(), Some("hello"));
         assert_eq!(messages[1].display().as_deref(), Some("hi there"));
+
+        std::fs::remove_dir_all(&dir).ok();
+        std::fs::remove_dir_all(&cwd).ok();
+    }
+
+    #[test]
+    fn a_session_survives_its_file_being_removed() {
+        // Deleting a thread from one front-end must not brick a turn that has
+        // the same session open in another: the next append rebuilds the file
+        // from memory instead of failing with `No such file or directory`.
+        let dir = temp_dir("removed");
+        let cwd = temp_dir("removed_proj");
+        let log = SessionLog::create_in(&dir, &cwd).unwrap();
+        log.append(&Message::user("one")).unwrap();
+        log.append(&Message::assistant("two", vec![])).unwrap();
+        std::fs::remove_file(log.path()).unwrap();
+        assert!(!log.path().exists());
+
+        log.append(&Message::user("three")).unwrap();
+        let reopened = SessionLog::open(log.path().to_path_buf()).unwrap();
+        assert_eq!(reopened.id(), log.id());
+        let texts: Vec<String> = reopened
+            .messages()
+            .unwrap()
+            .iter()
+            .filter_map(Message::display)
+            .collect();
+        assert_eq!(texts, vec!["one", "two", "three"]);
 
         std::fs::remove_dir_all(&dir).ok();
         std::fs::remove_dir_all(&cwd).ok();
@@ -1079,6 +1259,54 @@ mod tests {
         assert!(texts.contains(&"three".to_string()));
         assert!(texts.contains(&"four".to_string()));
         assert!(!texts.contains(&"one".to_string()));
+
+        std::fs::remove_dir_all(&dir).ok();
+        std::fs::remove_dir_all(&cwd).ok();
+    }
+
+    #[test]
+    fn context_ids_line_up_with_the_messages() {
+        // A `/name`, a `/model` and a thinking-level change add entries that
+        // carry no message. They must not appear in `context_ids`, or a
+        // compaction boundary named by an index into `messages` resolves to a
+        // different entry and can keep a tool call while dropping its result.
+        let dir = temp_dir("context_ids");
+        let cwd = temp_dir("context_ids_proj");
+        let log = SessionLog::create_in(&dir, &cwd).unwrap();
+        let first = log.append(&Message::user("one")).unwrap();
+        log.set_name("a thread").unwrap();
+        log.append_model_change("deepseek", "deepseek-chat")
+            .unwrap();
+        let call = log
+            .append(&Message::assistant(
+                "",
+                vec![crate::llm::ToolCall {
+                    id: "call_1".into(),
+                    kind: "function".into(),
+                    function: crate::llm::FunctionCall {
+                        name: "read".into(),
+                        arguments: "{}".into(),
+                    },
+                }],
+            ))
+            .unwrap();
+        log.append(&Message::tool("call_1", "contents")).unwrap();
+        log.append_thinking_level("high").unwrap();
+        log.append(&Message::user("two")).unwrap();
+
+        let ids = log.context_ids();
+        let messages = log.messages().unwrap();
+        assert_eq!(ids.len(), messages.len());
+        assert_eq!(ids[0], first);
+
+        // The boundary the agent would store for the tool-call step is the
+        // call's own entry, so the result stays with it.
+        let boundary = ids.iter().position(|id| id == &call).unwrap();
+        assert_eq!(
+            messages[boundary].tool_calls.as_ref().unwrap()[0].id,
+            "call_1"
+        );
+        assert_eq!(messages[boundary + 1].role, "tool");
 
         std::fs::remove_dir_all(&dir).ok();
         std::fs::remove_dir_all(&cwd).ok();

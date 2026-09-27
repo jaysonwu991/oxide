@@ -939,6 +939,41 @@ describe("webview dialogs", () => {
           status: "just now",
           tone: "muted",
           action: "openSession",
+          button: "Delete Fix the flaky test",
+          buttonAction: "sessionDelete",
+          icon: "trash",
+        },
+      ],
+      refreshLabel: "",
+      refreshAction: "",
+    },
+  };
+
+  const confirmDelete = {
+    k: "dialog",
+    dialog: {
+      title: "Delete thread",
+      subtitle: "“Fix the flaky test” and its stored conversation are removed.",
+      note: "This cannot be undone.",
+      rows: [
+        {
+          value: "fe0031b1",
+          label: "Delete thread",
+          detail: "just now · 195 messages · fe0031b1",
+          status: "",
+          tone: "error",
+          action: "sessionDeleteConfirm",
+          button: "",
+          buttonAction: "",
+          icon: "",
+        },
+        {
+          value: "",
+          label: "Cancel",
+          detail: "Keep the thread",
+          status: "",
+          tone: "",
+          action: "dialogClose",
           button: "",
           buttonAction: "",
           icon: "",
@@ -1031,6 +1066,46 @@ describe("webview dialogs", () => {
     assert.deepEqual(last(posted), { k: "dialogAction", action: "openSession", value: "new" });
     // A session listing has nothing to recheck, so the button is left off.
     assert.equal(byId.get("dialog-refresh")!.hidden, true);
+  });
+
+  it("paints the trash a session row carries, and posts what it means", () => {
+    const { byId, posted, send } = loadRenderer();
+    send(sessions);
+    const row = byId.get("dialog-list")!.children[1];
+    const button = row.children[2];
+    assert.equal(button.className, "dialog-button icon-trash tone-muted");
+    assert.ok(button.innerHTML.includes("<svg"), button.innerHTML);
+    assert.equal(button.title, "Delete Fix the flaky test");
+    assert.equal(button.dataset.action, "sessionDelete");
+    assert.equal(button.dataset.value, "fe0031b1");
+    // The row itself still resumes the thread; the trash is what deletes it.
+    assert.equal(row.dataset.action, "openSession");
+
+    byId.get("dialog")!.fire("click", { target: button });
+    assert.deepEqual(last(posted), {
+      k: "dialogAction",
+      action: "sessionDelete",
+      value: "fe0031b1",
+    });
+  });
+
+  it("paints the confirmation and posts the row that deletes", () => {
+    const { byId, posted, send } = loadRenderer();
+    send(confirmDelete);
+    assert.equal(byId.get("dialog-title")!.textContent, "Delete thread");
+    const rows = byId.get("dialog-list")!.children;
+    assert.deepEqual(
+      rows.map((row) => row.dataset.action),
+      ["sessionDeleteConfirm", "dialogClose"],
+    );
+    byId.get("dialog")!.fire("click", { target: rows[0] });
+    assert.deepEqual(last(posted), {
+      k: "dialogAction",
+      action: "sessionDeleteConfirm",
+      value: "fe0031b1",
+    });
+    byId.get("dialog")!.fire("click", { target: rows[1] });
+    assert.deepEqual(last(posted), { k: "dialogAction", action: "dialogClose", value: "" });
   });
 
   it("closes on the Close button and on Escape", () => {

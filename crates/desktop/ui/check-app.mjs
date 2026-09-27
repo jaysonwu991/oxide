@@ -206,9 +206,37 @@ const existing = [
 let threads = existing;
 let threadsError = null;
 
+// The sidebar's rows as `list_projects` answers them: registered folders first
+// (most recently opened first), then projects discovered from sessions. The app
+// opens on the first of them, so the stub carries two.
+let projectRows = [
+  {
+    id: "/Users/jayson/Projects/oxide",
+    path: "/Users/jayson/Projects/oxide",
+    name: "oxide",
+    registered: true,
+    exists: true,
+    session_count: 2,
+    last_session_at: 1,
+    last_opened_at: 9,
+  },
+  {
+    id: "/tmp/elsewhere",
+    path: "/tmp/elsewhere",
+    name: "elsewhere",
+    registered: false,
+    exists: true,
+    session_count: 1,
+    last_session_at: 2,
+    last_opened_at: null,
+  },
+];
+
 const invoke = async (command, args = {}) => {
   calls.push([command, args]);
   switch (command) {
+    case "list_projects":
+      return projectRows.map((row) => ({ ...row }));
     case "mcp_servers":
       if (mcpsError) throw mcpsError;
       if (!String(args.project || "").trim()) throw "select a project first";
@@ -288,17 +316,58 @@ globalThis.FileReader = class {
   }
 };
 
+/// The markup ships the composer disabled and the app enables it once a project
+/// is selected, so the stub starts it the way the page does.
+elementFor("prompt").disabled = true;
+
 const source = readFileSync(`${here}app.js`, "utf8");
 vm.runInThisContext(
   source +
     "\nglobalThis.__app = { send, runSlashCommand, state, createProjectState," +
-    " openCreateProject, addCreateProjectTypedPath, saveCreateProject, refreshPaletteEntries," +
-    " addAttachment, addAttachmentFiles, el };\n",
+    " openDefaultProject, openCreateProject, addCreateProjectTypedPath, saveCreateProject," +
+    " refreshPaletteEntries, addAttachment, addAttachmentFiles, el };\n",
 );
 
 const app = globalThis.__app;
 const status = () => String(elementFor("status-text").textContent);
 const projectCalls = (command) => calls.filter(([name]) => name === command);
+
+// ---------- the project it opens on ----------
+
+console.log("default project");
+// `init()` ran as the source loaded; its project list arrives on a promise, so
+// let the startup chain settle before reading what it selected.
+await new Promise((resolve) => setTimeout(resolve, 0));
+check(
+  "opened on the first project in the sidebar",
+  app.state.project === projectRows[0].path,
+  String(app.state.project),
+);
+const firstRow = elementFor("projects-tree").children[0]?.children[0];
+check(
+  "marked that row as the active one",
+  String(firstRow?.className).includes("active"),
+  String(firstRow?.className),
+);
+check("left the composer ready to type in", elementFor("prompt").disabled === false);
+app.state.project = projectRows[1].path;
+await app.openDefaultProject();
+check(
+  "left a project that was already selected alone",
+  app.state.project === projectRows[1].path,
+  String(app.state.project),
+);
+// With no project at all there is nothing to open, so the empty state stays
+// rather than a task being started in a folder the user never picked.
+const rows = projectRows;
+app.state.project = null;
+projectRows = [];
+await app.openDefaultProject();
+check("kept the empty state with no project to open", app.state.project === null, String(app.state.project));
+// Back to what the app opened with, so the sections below start from a real
+// startup rather than an empty sidebar.
+projectRows = rows;
+await app.openDefaultProject();
 
 // ---------- the composer's popovers ----------
 

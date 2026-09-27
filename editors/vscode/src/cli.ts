@@ -9,7 +9,7 @@
 // same thread with `--session <id>` (the id arrives in the `session` header
 // event).
 
-import { spawn } from "node:child_process";
+import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
@@ -31,17 +31,21 @@ export interface BinaryLookup {
 export function resolveBinary(configured: string, lookup: BinaryLookup): string {
   const value = (configured || "").trim() || "oxide";
   if (value.includes("/") || value.includes("\\")) return value;
+  // The lookup is driven by the platform the caller names, not the one this
+  // process happens to run on: the PATH separator and the join both differ, and
+  // a test (or a wrapper) can ask for the Windows branch from any host.
+  const flavor = lookup.platform === "win32" ? path.win32 : path.posix;
   const suffix = lookup.platform === "win32" ? [".exe", ".cmd", ".bat", ""] : [""];
   const home = lookup.env.HOME || lookup.env.USERPROFILE || os.homedir();
   const dirs = [
-    ...(lookup.env.PATH ?? "").split(path.delimiter),
-    path.join(home, ".local", "bin"),
-    path.join(home, ".cargo", "bin"),
+    ...(lookup.env.PATH ?? "").split(flavor.delimiter),
+    flavor.join(home, ".local", "bin"),
+    flavor.join(home, ".cargo", "bin"),
   ];
   for (const dir of dirs) {
     if (!dir) continue;
     for (const ext of suffix) {
-      const candidate = path.join(dir, value + ext);
+      const candidate = flavor.join(dir, value + ext);
       if (lookup.exists(candidate)) return candidate;
     }
   }
@@ -55,8 +59,46 @@ export interface CommandResult {
   error?: string;
 }
 
+export interface SpawnPlan {
+  file: string;
+  args: string[];
+  /// Windows only: the arguments are already quoted the way `cmd.exe` reads
+  /// them, so Node must pass them through without quoting them again.
+  verbatim: boolean;
+}
+
+/// How a command is started, which differs on Windows for one case: a batch
+/// shim — what scoop and `npm -g` put on PATH — cannot be spawned directly
+/// (Node refuses `.cmd`/`.bat` without a shell, `EINVAL`), so it is handed to
+/// `cmd.exe`. Everything else, oxide's own binary included, is spawned as a
+/// plain process with no shell in the way, so an argument with a space, a
+/// quote or a `&` reaches the CLI as one argument on every platform.
+export function spawnPlan(
+  command: string,
+  args: readonly string[],
+  platform: NodeJS.Platform = process.platform,
+  env: NodeJS.ProcessEnv = process.env,
+): SpawnPlan {
+  if (platform !== "win32" || !/\.(cmd|bat)$/i.test(command)) {
+    return { file: command, args: [...args], verbatim: false };
+  }
+  const shell = env.ComSpec || env.COMSPEC || "cmd.exe";
+  const line = [command, ...args].map(quoteForCmd).join(" ");
+  return { file: shell, args: ["/d", "/s", "/c", `"${line}"`], verbatim: true };
+}
+
+/// Quotes one argument for `cmd.exe`, which splits its command line on spaces
+/// and reads `"`, `&`, `|`, `<`, `>`, `^` and the parentheses as syntax. A
+/// wrapper's own quoting is why `shell: true` is not used instead: it joins the
+/// arguments unquoted, and an attachment path with a space would split in two.
+function quoteForCmd(arg: string): string {
+  if (arg !== "" && !/[\s"&|<>^()]/.test(arg)) return arg;
+  return `"${arg.replace(/"/g, '\\"')}"`;
+}
+
 /// Runs a command to completion and collects its output. Used for the session
-/// picker and the version probe, both of which are fast and one-shot.
+/// picker, the stored conversation of a resumed thread, and the version probe,
+/// all of which are fast and one-shot.
 export function runCapture(
   command: string,
   args: string[],
@@ -75,7 +117,7 @@ export function runCapture(
     };
     let child: ReturnType<typeof spawn>;
     try {
-      child = spawn(command, args, { cwd, env: process.env });
+      ({ child } = startCli(command, args, cwd));
     } catch (error) {
       resolve({ code: null, stdout: "", stderr: "", error: String(error) });
       return;
@@ -99,6 +141,42 @@ export function runCapture(
       finish({ code, stdout, stderr });
     });
   });
+}
+
+/// Starts one CLI process, with the plan it was started from. `windowsHide`
+/// matters on Windows: the extension host has no console of its own, so a
+/// console program — the CLI on every turn, and on every `sessions list`,
+/// `sessions show` and `sessions delete` — would otherwise open one, flashing a
+/// black window each time.
+function startCli(
+  command: string,
+  args: readonly string[],
+  cwd: string,
+): { child: ChildProcessWithoutNullStreams; plan: SpawnPlan } {
+  const plan = spawnPlan(command, args);
+  const child = spawn(plan.file, plan.args, {
+    cwd,
+    env: process.env,
+    windowsHide: true,
+    ...(plan.verbatim ? { windowsVerbatimArguments: true } : {}),
+  });
+  return { child, plan };
+}
+
+/// Ends a process and, for a batch wrapper, the tree under it: `cmd.exe` runs
+/// the real binary as its own child, so stopping the wrapper alone would leave
+/// the turn running behind a panel that thinks it stopped.
+function stopCli(child: ChildProcessWithoutNullStreams, plan: SpawnPlan): void {
+  if (plan.verbatim) {
+    if (child.pid !== undefined) {
+      spawn("taskkill", ["/pid", String(child.pid), "/t", "/f"], { windowsHide: true });
+    }
+    return;
+  }
+  child.kill("SIGTERM");
+  setTimeout(() => {
+    if (child.exitCode === null && child.signalCode === null) child.kill("SIGKILL");
+  }, 3_000);
 }
 
 export interface TurnCallbacks {
@@ -133,7 +211,7 @@ export function startTurn(
   input: TurnInput,
   callbacks: TurnCallbacks,
 ): Turn {
-  const child = spawn(command, args, { cwd, env: process.env });
+  const { child, plan } = startCli(command, args, cwd);
   let stdoutBuffer = "";
   let stderrBuffer = "";
   let exited = false;
@@ -215,10 +293,7 @@ export function startTurn(
       }
     },
     cancel() {
-      child.kill("SIGTERM");
-      setTimeout(() => {
-        if (child.exitCode === null && child.signalCode === null) child.kill("SIGKILL");
-      }, 3_000);
+      stopCli(child, plan);
     },
   };
 }
