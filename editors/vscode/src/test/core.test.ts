@@ -583,6 +583,7 @@ describe("binary resolution", () => {
     env,
     exists: (candidate: string) => found.includes(candidate),
   });
+  const flavor = (platform: NodeJS.Platform) => (platform === "win32" ? path.win32 : path.posix);
 
   it("uses an explicit path as given", () => {
     assert.equal(
@@ -592,7 +593,7 @@ describe("binary resolution", () => {
   });
 
   it("finds a bare name on PATH", () => {
-    const bin = path.join("/usr/local/bin", "oxide");
+    const bin = flavor("linux").join("/usr/local/bin", "oxide");
     assert.equal(
       resolveBinary("oxide", lookup("linux", { PATH: "/usr/bin:/usr/local/bin" }, [bin])),
       bin,
@@ -600,12 +601,12 @@ describe("binary resolution", () => {
   });
 
   it("falls back to the installer and cargo directories", () => {
-    const installer = path.join("/home/me", ".local", "bin", "oxide");
+    const installer = flavor("linux").join("/home/me", ".local", "bin", "oxide");
     assert.equal(
       resolveBinary("oxide", lookup("linux", { PATH: "/usr/bin", HOME: "/home/me" }, [installer])),
       installer,
     );
-    const cargo = path.join("/home/me", ".cargo", "bin", "oxide");
+    const cargo = flavor("linux").join("/home/me", ".cargo", "bin", "oxide");
     assert.equal(
       resolveBinary("oxide", lookup("linux", { PATH: "", HOME: "/home/me" }, [cargo])),
       cargo,
@@ -614,9 +615,10 @@ describe("binary resolution", () => {
 
   it("looks for a Windows executable suffix", () => {
     // The PATH entry avoids a drive-letter colon, which only separates entries
-    // on Windows, where the extension would be running anyway.
+    // on Windows, where the extension would be running anyway. The path is
+    // built with the Windows flavor because that is the branch under test.
     const dir = "/tools/bin";
-    const exe = path.join(dir, "oxide.exe");
+    const exe = flavor("win32").join(dir, "oxide.exe");
     assert.equal(
       resolveBinary("oxide", lookup("win32", { PATH: dir, APPDATA: "C:\\x" }, [exe])),
       exe,

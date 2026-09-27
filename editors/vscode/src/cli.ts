@@ -31,17 +31,21 @@ export interface BinaryLookup {
 export function resolveBinary(configured: string, lookup: BinaryLookup): string {
   const value = (configured || "").trim() || "oxide";
   if (value.includes("/") || value.includes("\\")) return value;
+  // The lookup is driven by the platform the caller names, not the one this
+  // process happens to run on: the PATH separator and the join both differ, and
+  // a test (or a wrapper) can ask for the Windows branch from any host.
+  const flavor = lookup.platform === "win32" ? path.win32 : path.posix;
   const suffix = lookup.platform === "win32" ? [".exe", ".cmd", ".bat", ""] : [""];
   const home = lookup.env.HOME || lookup.env.USERPROFILE || os.homedir();
   const dirs = [
-    ...(lookup.env.PATH ?? "").split(path.delimiter),
-    path.join(home, ".local", "bin"),
-    path.join(home, ".cargo", "bin"),
+    ...(lookup.env.PATH ?? "").split(flavor.delimiter),
+    flavor.join(home, ".local", "bin"),
+    flavor.join(home, ".cargo", "bin"),
   ];
   for (const dir of dirs) {
     if (!dir) continue;
     for (const ext of suffix) {
-      const candidate = path.join(dir, value + ext);
+      const candidate = flavor.join(dir, value + ext);
       if (lookup.exists(candidate)) return candidate;
     }
   }

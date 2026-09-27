@@ -19,22 +19,25 @@ function deps(files: Record<string, unknown>) {
   const dirs = new Set<string>();
   for (const file of texts.keys()) {
     let dir = path.dirname(file);
-    while (dir && dir !== "/" && !dirs.has(dir)) {
+    while (dir && !dirs.has(dir)) {
       dirs.add(dir);
-      dir = path.dirname(dir);
+      const parent = path.dirname(dir);
+      if (parent === dir) break;
+      dir = parent;
     }
   }
   return {
     read: (file: string) => texts.get(file) ?? null,
     exists: (candidate: string) => texts.has(candidate) || dirs.has(candidate),
-    configDir: "/config",
+    configDir,
   };
 }
 
-const statePath = "/config/plugins/config.json";
-const hello = "/config/plugins/hello";
-const alpha = "/config/plugins/alpha";
-const broken = "/config/plugins/broken";
+const configDir = "/config";
+const statePath = path.join(configDir, "plugins", "config.json");
+const hello = path.join(configDir, "plugins", "hello");
+const alpha = path.join(configDir, "plugins", "alpha");
+const broken = path.join(configDir, "plugins", "broken");
 
 describe("enabledPluginDirs", () => {
   it("returns an enabled package's directory, in name order", () => {
@@ -44,8 +47,8 @@ describe("enabledPluginDirs", () => {
           hello: { name: "hello", enabled: true, path: hello },
           alpha: { name: "alpha", enabled: true, path: alpha },
         }),
-        [`${hello}/.claude-plugin/plugin.json`]: { name: "hello" },
-        [`${alpha}/.oxide/plugin.json`]: { name: "alpha" },
+        [path.join(hello, ".claude-plugin", "plugin.json")]: { name: "hello" },
+        [path.join(alpha, ".oxide", "plugin.json")]: { name: "alpha" },
       }),
     );
     assert.deepEqual(dirs, [alpha, hello]);
@@ -55,7 +58,7 @@ describe("enabledPluginDirs", () => {
     const dirs = enabledPluginDirs(
       deps({
         [statePath]: state({ hello: { name: "hello", path: hello } }),
-        [`${hello}/.oxide/plugin.json`]: "{}",
+        [path.join(hello, ".oxide", "plugin.json")]: "{}",
       }),
     );
     assert.deepEqual(dirs, [hello]);
@@ -66,13 +69,13 @@ describe("enabledPluginDirs", () => {
       deps({
         [statePath]: state({
           off: { name: "off", enabled: false, path: hello },
-          gone: { name: "gone", enabled: true, path: "/config/plugins/gone" },
+          gone: { name: "gone", enabled: true, path: path.join(configDir, "plugins", "gone") },
           broken: { name: "broken", enabled: true, path: broken },
           ok: { name: "ok", enabled: true, path: alpha },
         }),
-        [`${hello}/.oxide/plugin.json`]: "{}",
-        [`${broken}/agents/x.md`]: "no manifest here",
-        [`${alpha}/.claude-plugin/plugin.json`]: "{}",
+        [path.join(hello, ".oxide", "plugin.json")]: "{}",
+        [path.join(broken, "agents", "x.md")]: "no manifest here",
+        [path.join(alpha, ".claude-plugin", "plugin.json")]: "{}",
       }),
     );
     assert.deepEqual(dirs, [alpha]);
