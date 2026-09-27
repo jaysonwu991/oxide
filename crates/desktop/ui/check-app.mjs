@@ -5,8 +5,10 @@
 //
 // It covers what `cargo test` cannot reach — the `/mcps` dialog (its listing,
 // the toggle, and the no-project and failure paths), the Add-project dialog's
-// call into the core, and the `/` menu's dispatch of every built-in the shared
-// catalog offers — since a Rust test never runs the app's own JavaScript. The
+// call into the core, the attachment chips (an image's thumbnail and the
+// full-size preview it opens), and the `/` menu's dispatch of every built-in
+// the shared catalog offers — since a Rust test never runs the app's own
+// JavaScript. The
 // catalog is read from the built CLI (`target/debug/oxide commands --json`)
 // when that binary is present, so a client command the palette offers but the
 // app cannot answer is caught here rather than in the window.
@@ -228,11 +230,28 @@ globalThis.requestAnimationFrame = globalThis.window.requestAnimationFrame;
 globalThis.matchMedia = globalThis.window.matchMedia;
 globalThis.addEventListener = () => {};
 
+/// `readFileAsDataUrl` resolves `reader.result`, so the stub fills that in from
+/// the file's own data URL.
+globalThis.FileReader = class {
+  readAsDataURL(file) {
+    setTimeout(() => {
+      if (!file.dataUrl) {
+        this.error = new Error("read failed");
+        this.onerror?.();
+        return;
+      }
+      this.result = file.dataUrl;
+      this.onload?.();
+    }, 0);
+  }
+};
+
 const source = readFileSync(`${here}app.js`, "utf8");
 vm.runInThisContext(
   source +
     "\nglobalThis.__app = { send, runSlashCommand, state, createProjectState," +
-    " openCreateProject, addCreateProjectTypedPath, saveCreateProject, refreshPaletteEntries, el };\n",
+    " openCreateProject, addCreateProjectTypedPath, saveCreateProject, refreshPaletteEntries," +
+    " addAttachment, addAttachmentFiles, el };\n",
 );
 
 const app = globalThis.__app;
@@ -367,6 +386,69 @@ const message = elementFor("create-project-error").textContent;
 check("reported why the project could not be added", String(message).includes("No such file or directory"), String(message));
 check("left the dialog open to correct it", elementFor("create-project-modal").hidden === false);
 createError = null;
+
+// ---------- attachment previews ----------
+
+console.log("attachments");
+const shot = "data:image/png;base64,iVBORw0KGgo=";
+check("kept an image attachment", app.addAttachment("shot.png", shot) === true);
+const chips = () => elementFor("attachments").children;
+const chip = chips()[0];
+// The chip is [thumbnail, name, remove]; the thumbnail is the button that opens
+// the full-size preview, which is what makes the image inspectable before it is
+// sent to a model that may be looking at a downscaled copy.
+const opener = chip && chip.children[0];
+check(
+  "showed a thumbnail that opens the full image",
+  opener?.tagName.toLowerCase() === "button" && opener.children[0]?.src === shot,
+  elementFor("attachments").outline(),
+);
+check("named the attachment", chip?.children[1]?.textContent === "shot.png", chip?.children[1]?.textContent);
+opener.onclick();
+check(
+  "opened the full-size preview",
+  elementFor("image-view-img").src === shot && elementFor("image-modal").hidden === false,
+  String(elementFor("image-modal").hidden),
+);
+elementFor("image-view-close").onclick();
+check("closed it again", elementFor("image-modal").hidden === true);
+
+check("kept a PDF attachment", app.addAttachment("report.pdf", "data:application/pdf;base64,AA") === true);
+const pdf = chips()[1];
+check(
+  "gave a PDF a glyph instead of a thumbnail",
+  pdf?.children[0]?.className === "att-file" && pdf.children[0].textContent === "📄",
+  elementFor("attachments").outline(),
+);
+check("refused any other file", app.addAttachment("notes.txt", "data:text/plain;base64,AA") === false);
+check(
+  "refused a format the webview cannot paint",
+  app.addAttachment("scan.tif", "data:image/tiff;base64,AA") === false &&
+    status() === "Only PNG, JPEG, GIF, WebP, BMP and PDF can be attached",
+  status(),
+);
+app.state.attachments = [];
+
+// A paste or a pick reads the file into a data URL before anything else, so
+// the size is checked first: an over-large file never becomes a string in the
+// webview, and the core would refuse it at the far end anyway.
+await app.addAttachmentFiles([
+  { name: "huge.pdf", size: 26 * 1024 * 1024, type: "application/pdf", dataUrl: "data:application/pdf;base64,AA" },
+]);
+check(
+  "refused a file past the attachment limit without reading it",
+  app.state.attachments.length === 0 && status().includes("the attachment limit is 20.0 MB"),
+  status(),
+);
+await app.addAttachmentFiles([
+  { name: "small.pdf", size: 1024, type: "application/pdf", dataUrl: "data:application/pdf;base64,AA" },
+]);
+check(
+  "attached the file that was within the limit",
+  app.state.attachments.length === 1 && app.state.attachments[0].name === "small.pdf",
+  JSON.stringify(app.state.attachments),
+);
+app.state.attachments = [];
 
 // ---------- the / menu ----------
 

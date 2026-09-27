@@ -17,9 +17,17 @@ export const MAX_ATTACHMENTS = 8;
 /// The webview does the resizing on a canvas.
 export const MAX_IMAGE_EDGE = 1568;
 
-/// Above this, a thumbnail is not sent to the webview: the chip falls back to a
-/// glyph and its size, so a huge paste cannot bloat a footer message.
-export const MAX_PREVIEW_CHARS = 400_000;
+/// The largest attachment that may be sent, matching
+/// `oxide_core::media::MAX_ATTACHMENT_BYTES`. The CLI refuses one past this at
+/// the far end; the checks here mean an over-large paste is refused before it
+/// ever becomes a base64 string, a temp file or a view message.
+export const MAX_ATTACHMENT_BYTES = 20 * 1024 * 1024;
+
+/// The largest thumbnail sent to the webview: the chip falls back to a glyph
+/// and its size past this, so a huge paste cannot bloat a view message. It has
+/// to hold a real photo — a screenshot is megabytes — because the view shrinks
+/// what it receives to the few KB it actually paints.
+export const MAX_PREVIEW_CHARS = 6_000_000;
 
 export type AttachmentKind = "image" | "pdf";
 

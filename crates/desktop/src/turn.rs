@@ -9,7 +9,7 @@ use anyhow::{Context, Result};
 use oxide_core::agent::{AgentEvent, Approver, Cancel, Steering};
 use oxide_core::llm::ContentPart;
 use oxide_core::runner::{self, AgentRun};
-use oxide_core::session::SessionLog;
+use oxide_core::session::{SessionLog, SessionSummary};
 use std::path::Path;
 use tokio::sync::mpsc::UnboundedReceiver;
 use tokio::task::JoinHandle;
@@ -90,5 +90,79 @@ pub fn open_session(project: &Path, reference: &str) -> Result<Option<SessionLog
         "new" | "" => Ok(Some(SessionLog::create(project)?)),
         "latest" => Ok(SessionLog::latest(project).or_else(|| SessionLog::create(project).ok())),
         other => Ok(Some(SessionLog::open_ref(project, other)?)),
+    }
+}
+
+/// Raises the completion toast the terminal sends too, so a turn that finishes
+/// while the window is elsewhere is announced. It carries the thread's
+/// summarized title — the same label the sidebar and the CLI's session picker
+/// show for it — since a notification is the one place the app has to say which
+/// conversation just finished. `stopped` marks a turn the user ended
+/// themselves, which has no outcome to announce; a missing or malformed session
+/// leaves the plain body rather than failing the turn.
+pub fn notify_finished(cwd: &Path, session_id: Option<&str>, stopped: bool) {
+    let notify = oxide_core::notify::load_config(cwd);
+    if stopped || !notify.on_complete {
+        return;
+    }
+    let body = session_id
+        .and_then(|id| summarized_title(cwd, id))
+        .unwrap_or_else(|| "Turn complete".to_string());
+    oxide_core::notify::send("Oxide", &body, notify.sound);
+}
+
+/// The thread's summarized title: its name when one was set, else the first
+/// thing the user sent. `None` when the session is gone, was never written to,
+/// or has nothing to name it with.
+fn summarized_title(cwd: &Path, id: &str) -> Option<String> {
+    let summary = SessionLog::open_ref(cwd, id).ok()?.summary().ok()?;
+    session_label(&summary)
+}
+
+/// The label the sidebar shows a session under, used as the toast's body.
+fn session_label(summary: &SessionSummary) -> Option<String> {
+    let label = summary
+        .name
+        .clone()
+        .unwrap_or_else(|| summary.preview.clone());
+    let label = label.trim();
+    (!label.is_empty()).then(|| label.to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::path::PathBuf;
+
+    fn session(name: Option<&str>, preview: &str) -> SessionSummary {
+        SessionSummary {
+            id: "s1".to_string(),
+            name: name.map(|value| value.to_string()),
+            cwd: "/tmp/project".to_string(),
+            created_at: 0,
+            modified_at: 0,
+            message_count: 1,
+            preview: preview.to_string(),
+            path: PathBuf::from("/tmp/s1.jsonl"),
+        }
+    }
+
+    #[test]
+    fn the_toast_names_the_thread() {
+        // The same label the sidebar and the CLI's picker show: a name when one
+        // was set, else the summarized first message.
+        assert_eq!(
+            session_label(&session(Some("Ship the parser"), "ignored")).unwrap(),
+            "Ship the parser"
+        );
+        assert_eq!(
+            session_label(&session(None, "Fix the flaky test")).unwrap(),
+            "Fix the flaky test"
+        );
+        assert_eq!(
+            session_label(&session(Some("  "), "  ")),
+            None,
+            "an empty label leaves the plain body"
+        );
     }
 }

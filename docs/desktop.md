@@ -75,7 +75,13 @@ The window follows a Codex-style layout:
   full preview when clicked (or focused and opened with Enter/Space) and can be
   removed before sending; a message queued while busy carries the same
   attachments, and reopening a stored thread restores their thumbnails. Pasted and picked images are
-  downscaled to a 1568px long edge in the webview before they are sent.
+  downscaled to a 1568px long edge in the webview before they are sent, and an
+  image a paste handed over at full resolution is downscaled again by
+  `oxide_core::media::optimize_image` when the turn is built — the one place a
+  data URL can be — so it is not embedded at full size in the request, the
+  session and the webview's own message at once. A file past the core's 20 MB
+  attachment limit, or of a type no provider takes and no browser can paint, is
+  refused with a status line instead of being read.
 
 ## Running
 
@@ -196,6 +202,12 @@ the run's `Steering` handles and its cooperative `Cancel` flag. The Tauri comman
   call/result sequence — and ends cleanly, with a 5-second force-abort fallback
   if it is stuck. `steer_run` pushes into the interleaved or follow-up steering
   queue.
+- **Notification** — a finished turn raises the same desktop toast the TUI does
+  (`oxide_core::notify`, gated by the shared `notifyOnComplete` and
+  `notifySound` settings). `turn::notify_finished` names the thread by its
+  summarized title — the session's name, else the first message sent, the label
+  the sidebar shows it under — and stays quiet for a turn the user stopped
+  themselves, which has no outcome to announce.
 
 ## Models and reasoning
 

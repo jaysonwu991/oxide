@@ -31,12 +31,15 @@
   const attachButton = $("attach");
   const composer = $("composer");
   const dropHint = $("dropzone");
-  const folderLabel = $("folder");
-  const modelLabel = $("model");
+  const titleLabel = $("title");
 
   const entries = new Map();
   let chips = [];
   let attachments = [];
+  /// Chip thumbnails by attachment id: the downscaled copy the view paints,
+  /// and the `<img>` a pending downscale writes it into.
+  const thumbnails = new Map();
+  const thumbnailNodes = new Map();
   let busy = false;
   let queued = 0;
   let startedAt = 0;
@@ -782,8 +785,7 @@
         transcript.appendChild(empty);
         empty.hidden = message.items.length > 0;
         transcript.classList.toggle("hide-thinking", message.showThinking === false);
-        folderLabel.textContent = message.title || "New chat";
-        modelLabel.textContent = message.model ? `${message.model}` : "";
+        titleLabel.textContent = message.title || "New chat";
         for (const item of message.items) appendItem(item, false);
         setStatus(message.status, message.busy, message.queued);
         setFooter(message.footer);
@@ -851,7 +853,10 @@
     busy = Boolean(isBusy);
     queued = queuedCount || 0;
     const label = queued > 0 ? `${text} · ${queued} queued` : text;
-    // A running turn keeps its live spinner; an idle one is a quiet dot.
+    // The phase is only worth a line while there is one: the TUI reserves its
+    // status row for a running turn too, and an idle panel says nothing rather
+    // than sitting on a dot that reads as a button.
+    statusLabel.hidden = !busy && queued === 0;
     statusLabel.textContent = label;
     statusLabel.classList.toggle("busy", busy);
     statusLabel.title = busy ? "Oxide is working" : "Ready for the next message";
@@ -930,6 +935,13 @@
     attachments = nextAttachments || [];
     chipBox.innerHTML = "";
     chipBox.hidden = chips.length + attachments.length === 0;
+    const live = new Set(attachments.map((attachment) => String(attachment.id)));
+    for (const key of [...thumbnails.keys()]) {
+      if (!live.has(key)) thumbnails.delete(key);
+    }
+    for (const key of [...thumbnailNodes.keys()]) {
+      if (!live.has(key)) thumbnailNodes.delete(key);
+    }
     for (const attachment of attachments) chipBox.appendChild(attachmentNode(attachment));
     for (const chip of chips) chipBox.appendChild(contextNode(chip));
     if (chips.length + attachments.length > 1) {
@@ -944,6 +956,39 @@
     updateSendState();
   }
 
+  /// The thumbnail a chip paints, by attachment id. The box is rebuilt with
+  /// every state message, and a photo-sized preview decoded over and over is
+  /// what an out-of-memory crash looks like: the first paint shows what it was
+  /// handed while a chip-sized copy is drawn in the background, and every paint
+  /// after that uses the small copy.
+  function thumbnailFor(attachment) {
+    const key = String(attachment.id);
+    const cached = thumbnails.get(key);
+    if (cached) return cached;
+    if (attachment.preview) void downscaleThumbnail(key, attachment.preview);
+    return attachment.preview || "";
+  }
+
+  async function downscaleThumbnail(key, preview) {
+    try {
+      const image = await loadImage(preview);
+      const longest = Math.max(image.width, image.height);
+      if (!longest) return;
+      const scale = longest > THUMBNAIL_EDGE ? THUMBNAIL_EDGE / longest : 1;
+      const canvas = document.createElement("canvas");
+      canvas.width = Math.max(1, Math.round(image.width * scale));
+      canvas.height = Math.max(1, Math.round(image.height * scale));
+      canvas.getContext("2d").drawImage(image, 0, 0, canvas.width, canvas.height);
+      const small = canvas.toDataURL("image/png");
+      if (!small || !small.startsWith("data:image/")) return;
+      thumbnails.set(key, small);
+      const node = thumbnailNodes.get(key);
+      if (node) node.src = small;
+    } catch (error) {
+      // A preview the canvas cannot draw stays as it came.
+    }
+  }
+
   /// An image or PDF the next message will carry: a thumbnail where the host
   /// could send one, a glyph and the size where it could not.
   function attachmentNode(attachment) {
@@ -951,8 +996,9 @@
     el.className = "chip attachment";
     if (attachment.kind === "image" && attachment.preview) {
       const image = document.createElement("img");
-      image.src = attachment.preview;
+      image.src = thumbnailFor(attachment);
       image.alt = attachment.label;
+      thumbnailNodes.set(String(attachment.id), image);
       el.appendChild(image);
     } else {
       const glyph = document.createElement("span");
@@ -1049,6 +1095,13 @@
   /// What the host accepts, so a pasted blob is refused here rather than
   /// written to a file first.
   const ATTACHABLE = ["image/png", "image/jpeg", "image/gif", "image/webp", "image/bmp", "application/pdf"];
+  /// The core's own limit (`oxide_core::media::MAX_ATTACHMENT_BYTES`), checked
+  /// before the blob is read: a data URL for a 200 MB file is a 270 MB string
+  /// in this document, and the CLI would refuse it at the far end anyway.
+  const MAX_ATTACHMENT_BYTES = 20 * 1024 * 1024;
+  /// How small a chip's thumbnail is drawn, and the size of the copy kept for
+  /// the repaints that follow.
+  const THUMBNAIL_EDGE = 96;
 
   function readAsDataUrl(file) {
     return new Promise((resolve, reject) => {
@@ -1105,6 +1158,13 @@
       vscode.postMessage({
         k: "notice",
         text: "Only images and PDFs can be attached from a paste or a drop.",
+      });
+      return;
+    }
+    if (file.size > MAX_ATTACHMENT_BYTES) {
+      vscode.postMessage({
+        k: "notice",
+        text: `${file.name || "That file"} is past the ${MAX_ATTACHMENT_BYTES / (1024 * 1024)} MB attachment limit.`,
       });
       return;
     }

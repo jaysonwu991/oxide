@@ -145,10 +145,10 @@ export interface TranscriptState {
   context: ContextChip[];
   attachments: AttachmentChip[];
   sessionId: string | null;
-  /// The thread's own title: the session name or the first thing the user sent,
-  /// shown where the terminal's footer shows the session.
+  /// The thread's summarized title: the session name or a one-line summary of
+  /// the first thing the user sent, shown in the header. Empty for a thread
+  /// that has not been written to yet.
   title: string;
-  model: string;
   binary: string;
   showThinking: boolean;
   footer: FooterState;
@@ -214,6 +214,65 @@ const obj = (value: unknown): WireEvent =>
     ? (value as WireEvent)
     : {};
 
+/// How long a summarized title may be, in characters. It is short enough to
+/// read in a side bar and in a notification.
+export const TITLE_LIMIT = 64;
+
+/// A leading block marker: a heading, a quote, a bullet or an ordered item.
+const BLOCK_MARKER = /^(?:#{1,6}\s+|>\s*|[-*+]\s+|\d+[.)]\s+)+/;
+
+/// Condenses a message into a one-line title: the first line that carries
+/// prose (a fence, a rule or a table row says nothing on its own, and a
+/// fenced block's contents are a listing rather than a title), with the
+/// Markdown markers stripped and the whitespace collapsed. The result is cut
+/// at a word boundary so it never ends mid-word.
+export function summarizeTitle(text: string, max = TITLE_LIMIT): string {
+  const line = titleLine(text);
+  if (!line) return "";
+  return bound(line, max);
+}
+
+/// The first line of `text` that reads as prose, with its Markdown taken off:
+/// `""` when the message has none.
+function titleLine(text: string): string {
+  let fenced = false;
+  for (const raw of text.split("\n")) {
+    const line = raw.trim();
+    if (/^(?:```|~~~)/.test(line)) {
+      fenced = !fenced;
+      continue;
+    }
+    if (fenced || !line || line.startsWith("|")) continue;
+    const plain = plainText(line);
+    // A line that is only punctuation (`---`, `| --- |`) is a rule or a table
+    // border, not a title.
+    if (plain && /[\p{L}\p{N}]/u.test(plain)) return plain;
+  }
+  return "";
+}
+
+/// One line with its Markdown markers removed: a link or an image keeps its
+/// text, and the emphasis, code and quote markers go.
+function plainText(line: string): string {
+  return line
+    .replace(BLOCK_MARKER, "")
+    .replace(/!?\[([^\]]*)\]\([^)]*\)/g, "$1")
+    .replace(/[`*_~]/g, "")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+/// Truncates to `max` characters at a word boundary, marking the cut with an
+/// ellipsis. A single word longer than the limit is cut where it has to be.
+function bound(text: string, max: number): string {
+  if (max === 0) return "";
+  if (text.length <= max) return text;
+  const cut = text.slice(0, max - 1);
+  const space = cut.lastIndexOf(" ");
+  const kept = space > 0 ? cut.slice(0, space) : cut;
+  return `${kept.trimEnd()}…`;
+}
+
 /// Renders a byte count for the footer (`1.2k`, `34`).
 export function formatTokens(count: number): string {
   if (count < 1000) return String(count);
@@ -244,7 +303,6 @@ export class Transcript {
     context: ContextChip[];
     attachments: AttachmentChip[];
     title: string;
-    model: string;
     binary: string;
     showThinking: boolean;
     footer: FooterState;
@@ -269,19 +327,13 @@ export class Transcript {
     this.currentThinking = null;
   }
 
-  /// A short title for this thread: the first thing the user sent, collapsed to
-  /// one line so a pasted or multi-line message does not fill the header. Empty
-  /// for a thread that has not been written to yet, which the host turns into a
-  /// neutral placeholder.
+  /// The thread's summarized title: a one-line summary of the first thing the
+  /// user sent, so a pasted or multi-line message does not fill the header.
+  /// Empty for a thread that has not been written to yet, which the host leaves
+  /// to the view's neutral placeholder.
   title(): string {
     const first = this.items.find((item): item is UserItem => item.kind === "user");
-    if (!first) return "";
-    const line = first.text
-      .split("\n")
-      .map((part) => part.trim())
-      .find((part) => part.length > 0);
-    if (!line) return "";
-    return line.length > 64 ? `${line.slice(0, 63).trimEnd()}…` : line;
+    return first ? summarizeTitle(first.text) : "";
   }
 
   pushUser(text: string, context: ContextChip[]): ViewMessage[] {

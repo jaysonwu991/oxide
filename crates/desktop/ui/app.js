@@ -684,7 +684,27 @@ function setIdle() {
 /// us, and the shape the backend turns back into a media part.
 function dataUrlMime(dataUrl) {
   const match = /^data:([^;,]+)[;,]/.exec(dataUrl || "");
-  return match ? match[1] : "";
+  return match ? match[1].toLowerCase() : "";
+}
+
+/// The core's own limit (`media::MAX_ATTACHMENT_BYTES`) and the types a
+/// provider takes and this webview can paint, so an over-large file is refused
+/// before it is read into a data URL and a format nothing can draw never
+/// becomes a thumbnail the browser cannot render.
+const MAX_ATTACHMENT_BYTES = 20 * 1024 * 1024;
+const ATTACHABLE_MIMES = [
+  "image/png",
+  "image/jpeg",
+  "image/gif",
+  "image/webp",
+  "image/bmp",
+  "application/pdf",
+];
+
+function formatBytes(bytes) {
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${Math.round(bytes / 1024)} KB`;
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
 }
 
 function isImageAttachment(dataUrl) {
@@ -693,7 +713,10 @@ function isImageAttachment(dataUrl) {
 
 function addAttachment(name, dataUrl) {
   const mime = dataUrlMime(dataUrl);
-  if (!mime.startsWith("image/") && mime !== "application/pdf") return false;
+  if (!ATTACHABLE_MIMES.includes(mime)) {
+    setStatus("Only PNG, JPEG, GIF, WebP, BMP and PDF can be attached");
+    return false;
+  }
   if (state.attachments.some((attachment) => attachment.dataUrl === dataUrl)) {
     setStatus("Already attached");
     return false;
@@ -764,6 +787,12 @@ async function resizeImageDataUrl(dataUrl, mime) {
 
 async function addAttachmentFiles(files) {
   for (const file of files) {
+    if (file.size > MAX_ATTACHMENT_BYTES) {
+      setStatus(
+        `${file.name} is ${formatBytes(file.size)}; the attachment limit is ${formatBytes(MAX_ATTACHMENT_BYTES)}`,
+      );
+      continue;
+    }
     try {
       let dataUrl = await readFileAsDataUrl(file);
       const mime = dataUrlMime(dataUrl);

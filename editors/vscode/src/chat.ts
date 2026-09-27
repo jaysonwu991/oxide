@@ -21,6 +21,7 @@ import {
   attachmentRejection,
   decodeDataUrl,
   formatBytes,
+  MAX_ATTACHMENT_BYTES,
   MAX_ATTACHMENTS,
   type AttachmentKind,
 } from "./core/attachments";
@@ -50,7 +51,6 @@ import { parseSessionList } from "./core/sessions";
 import { toolDiff } from "./core/preview";
 import {
   Transcript,
-  type AssistantItem,
   type AttachmentChip,
   type ContextChip,
   type ViewMessage,
@@ -187,7 +187,6 @@ export class ChatController {
         context: this.chips(),
         attachments: this.attachmentChips(),
         title: this.threadTitle(),
-        model: this.modelLabel(),
         binary: this.binary(),
         showThinking: this.setting<boolean>("showThinking", true),
         footer: this.footer(),
@@ -236,17 +235,14 @@ export class ChatController {
     });
   }
 
-  private modelLabel(): string {
-    const configured = this.setting<string>("model", "").trim();
-    return configured || this.project?.model || "config.json";
-  }
-
-  /// The header's title: a known session name, else the first message the user
-  /// sent, else a neutral placeholder for a thread that has not started. Claude
-  /// Code names a conversation the same way, so the panel says what the thread
-  /// is about instead of repeating the folder name.
+  /// The thread's title: a known session name, else a one-line summary of the
+  /// first message the user sent. Empty for a thread that has not started; the
+  /// view shows a neutral placeholder for that, and the notification falls back
+  /// to a plain "finished" message. Claude Code names a conversation the same
+  /// way, so the panel says what the thread is about instead of repeating the
+  /// folder name.
   private threadTitle(): string {
-    return this.sessionTitle || this.transcript.title() || "New chat";
+    return this.sessionTitle || this.transcript.title();
   }
 
   // ---------- settings ----------
@@ -373,6 +369,13 @@ export class ChatController {
     }
     const key = attachmentId(decoded.bytes);
     const label = attachmentFileName(name, decoded.mime);
+    if (decoded.bytes.length > MAX_ATTACHMENT_BYTES) {
+      this.showNotice(
+        `${label} is ${formatBytes(decoded.bytes.length)}; the attachment limit is ${formatBytes(MAX_ATTACHMENT_BYTES)}.`,
+        "warn",
+      );
+      return null;
+    }
     // Check the cap and the duplicate before the blob is written, so a
     // rejected paste never leaves a temp file behind.
     if (!this.canAddAttachment(key, label)) return null;
@@ -398,13 +401,30 @@ export class ChatController {
   private addAttachmentFile(file: string, mime: string): ContextChip | null {
     const kind = attachmentKind(mime);
     if (!kind) return null;
+    const label = path.basename(file);
+    let size: number;
+    try {
+      size = fs.statSync(file).size;
+    } catch {
+      this.showNotice(`${label} could not be read.`, "warn");
+      return null;
+    }
+    // The CLI refuses one past the limit too, but a turn that fails halfway
+    // says less than a chip that never appeared.
+    if (size > MAX_ATTACHMENT_BYTES) {
+      this.showNotice(
+        `${label} is ${formatBytes(size)}; the attachment limit is ${formatBytes(MAX_ATTACHMENT_BYTES)}.`,
+        "warn",
+      );
+      return null;
+    }
     return this.pushAttachment({
       key: `file:${file}`,
-      label: path.basename(file),
+      label,
       path: file,
       kind,
       preview: kind === "image" ? previewForFile(file, mime) : null,
-      detail: `${fileDetail(file)} · ${this.relativeTo(file)}`,
+      detail: `${formatBytes(size)} · ${this.relativeTo(file)}`,
     });
   }
 
@@ -730,18 +750,15 @@ export class ChatController {
   }
 
   /// A turn that finishes while the chat view is hidden is worth a toast — the
-  /// CLI and desktop notify on completion too.
+  /// CLI, desktop and extension notify on completion too. The toast names the
+  /// thread, the same summarized title the panel's header shows, so it says
+  /// which conversation finished.
   private notify(run: RunState | null): void {
     if (!run || this.views.size === 0) return;
     if (!this.setting<boolean>("notifyOnFinish", true)) return;
     if ([...this.views].some((view) => view.visible)) return;
-    const last = [...this.transcript.items]
-      .reverse()
-      .find((item): item is AssistantItem => item.kind === "assistant");
-    const body = last ? firstLine(stripMarkdown(last.text)) : "";
-    void vscode.window.showInformationMessage(
-      body ? `Oxide: ${truncate(body, 120)}` : "Oxide finished.",
-    );
+    const title = this.threadTitle();
+    void vscode.window.showInformationMessage(title ? `Oxide: ${title}` : "Oxide finished.");
   }
 
   // ---------- sessions ----------
@@ -1098,30 +1115,7 @@ function trimLines(block: ContextBlock): { block: ContextBlock; cut: boolean } {
   };
 }
 
-/// A size for an attachment chip's tooltip, or `?` for a file that is no longer
-/// there.
-function fileDetail(file: string): string {
-  try {
-    return formatBytes(fs.statSync(file).size);
-  } catch {
-    return "missing";
-  }
-}
-
 function firstLine(text: string): string {
   const line = text.split("\n").find((entry) => entry.trim());
   return line ? line.trim() : "";
-}
-
-function truncate(text: string, max: number): string {
-  return text.length > max ? `${text.slice(0, max - 1)}…` : text;
-}
-
-/// The first non-empty line of a reply, with the Markdown markers the TUI also
-/// strips for its notification body.
-function stripMarkdown(text: string): string {
-  return text
-    .replace(/^#{1,6}\s+/gm, "")
-    .replace(/[*_`>]/g, "")
-    .trim();
 }
