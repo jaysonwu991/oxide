@@ -217,11 +217,16 @@ the run's `Steering` handles and its cooperative `Cancel` flag. The Tauri comman
   The dialog is one block per question — a radio group (the first option
   preselected) or checkboxes when several labels may be picked — plus a field
   for an answer in the user's own words, so a question with no options is still
-  answerable. **Answer** sends what was ticked and typed, **Skip** (or
-  <kbd>Esc</kbd>) sends nothing at all, which the agent reports to the model as
-  a question nobody answered, and a request that is never answered gives up
-  after the same 5-minute timeout. Nothing is remembered between questions: an
-  answer is about the turn that asked it.
+  answerable. **Answer** sends what was ticked and typed — a submission with
+  nothing filled in is sent as the same dismissal **Skip** is, so the agent
+  hears one thing — while **Skip** (or <kbd>Esc</kbd>) sends nothing at all,
+  which the agent reports to the model as a question nobody answered. A request
+  that is never answered gives up after the same 5-minute timeout, and the
+  broker then emits `question-closed` so the dialog goes away even though the
+  turn it belongs to is still running; a turn that ends (or is stopped) takes
+  its own requests with it (`AskBroker::clear_run`), and the window closes the
+  dialog with it. Nothing is remembered between questions: an answer is about
+  the turn that asked it.
 - **Cancel / steer** — `send_prompt` returns a run id immediately and runs the
   turn in the background. `cancel_run` sets the run's cooperative `Cancel` flag
   (`oxide_core::agent::Cancel`): the loop finishes the current step — recording

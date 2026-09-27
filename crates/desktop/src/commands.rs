@@ -483,7 +483,7 @@ async fn drive_turn(
     let reference = session.as_deref().unwrap_or("latest");
     let log = open_session(&cwd, reference)?;
     let approver = approvals.approver(cwd.clone());
-    let asker = questions.asker();
+    let asker = questions.asker_for(run_id);
     let turn = start_turn(
         &cwd,
         &prompt,
@@ -534,6 +534,11 @@ async fn drive_turn(
     }
 
     runs.lock().await.remove(&run_id);
+    // The turn is over, so any question it left waiting can never be answered:
+    // drop it here rather than letting it sit until its timeout, and before
+    // `agent-end` so the window is never told a turn ended while a request of
+    // its own is still open.
+    questions.clear_run(run_id).await;
     let _ = app.emit(
         "agent-end",
         json!({ "runId": run_id, "sessionId": session_id }),

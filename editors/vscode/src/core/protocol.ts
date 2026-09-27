@@ -520,6 +520,16 @@ export class Transcript {
         this.status = "Waiting for your answer…";
         return [{ k: "push", item }];
       }
+      // The CLI gave up on the request because nobody answered in time. The run
+      // it belongs to may still be going, so the card stops taking an answer
+      // the broker would no longer read, and the status goes back to the work
+      // the turn resumed.
+      case "question_closed": {
+        const item = this.pendingQuestion(num(event.id));
+        if (!item) return [];
+        this.status = "Thinking…";
+        return [this.settleQuestion(item, "closed", "Not answered")];
+      }
       case "compaction":
         return this.notice(
           `Compacted ${num(event.summarized)} earlier messages (~${formatTokens(
@@ -573,6 +583,16 @@ export class Transcript {
     return { k: "approval", id: item.id, state, label };
   }
 
+  /// The waiting card for a request id, or `undefined` when none is waiting:
+  /// the id was never painted here, was already answered, or belongs to a
+  /// request the CLI has given up on.
+  private pendingQuestion(requestId: number): QuestionItem | undefined {
+    return this.items.find(
+      (entry): entry is QuestionItem =>
+        entry.kind === "question" && entry.requestId === requestId && entry.state === "pending",
+    );
+  }
+
   /// Records the user's answers on a waiting question card. `null` when the id
   /// is not a waiting request (already answered, or from a run that is gone), so
   /// the controller never sends a second answer for one request. An answer with
@@ -581,10 +601,7 @@ export class Transcript {
     requestId: number,
     answers: readonly QuestionAnswer[],
   ): ViewMessage[] | null {
-    const item = this.items.find(
-      (entry): entry is QuestionItem =>
-        entry.kind === "question" && entry.requestId === requestId && entry.state === "pending",
-    );
+    const item = this.pendingQuestion(requestId);
     if (!item) return null;
     const answered = answers.some((answer) => answer.values.length > 0);
     return [

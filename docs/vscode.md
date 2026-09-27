@@ -272,9 +272,14 @@ with a `quit` frame when `agent_end` arrives, so the process exits on its own.
   `question` frame (`core/questions.ts`; `chat.ts::answerQuestion` →
   `cli.ts`), **Skip** answers with nothing at all, which the agent reports to the
   model as a question nobody answered, and the card then shows the answer it was
-  answered with. An unanswered card is settled when the run ends or is stopped
-  (the CLI itself gives up after 5 minutes). Nothing is remembered between them:
-  unlike an approval, a question is about this conversation only.
+  answered with — a submission with nothing filled in is sent as that same
+  dismissal rather than as a set of blank answers, so both reach the model
+  alike. A card is settled when the CLI gives up on the request (a
+  `question_closed` event, which the CLI sends after its 5-minute timeout while
+  the turn it belongs to keeps running) or when the run ends or is stopped. An
+  answer that would otherwise have ridden on it is never sent. Nothing is
+  remembered between them: unlike an approval, a question is about this
+  conversation only.
 - **Per folder** — sessions are per project, so switching to a different
   workspace folder resets the transcript and starts its own thread.
 - **Usage** — `usage` events accumulate input/output/cache tokens and cost for
@@ -394,7 +399,7 @@ has active, so another provider's would run against the wrong endpoint.
 Events consumed: `session`, `thinking`, `thinking_done`, `message_update`
 (`thinking_delta` / `text_delta`), `tool_call`, `tool_execution_update`,
 `tool_execution_end`, `usage`, `auto_retry_start`, `compaction`, `error`,
-`approval_request`, `question_request`, and `agent_end`. `thinking_done` marks the end of a model step (its `ThoughtDone`
+`approval_request`, `question_request`, `question_closed`, and `agent_end`. `thinking_done` marks the end of a model step (its `ThoughtDone`
 counterpart), so a later step's output does not merge into, and a retry cannot
 discard, a previous step's committed reply.
 
@@ -529,8 +534,9 @@ command is started from, and the transcript state machine — plus, in
 `test/approvals.test.ts`, the approval request parsing,
 the titles a card shows and the request frames the CLI reads, in
 `test/questions.test.ts`, the same for a skill's question — the request a
-`question_request` event becomes, the answers the webview posts back and the
-title and settled label a card carries — in
+`question_request` event becomes, the answers the webview posts back (a blank
+form among them, which is the dismissal Skip posts), the title and settled label
+a card carries, and the frames the CLI reads — in
 `test/views.test.ts`, that the chat view ids the host
 registers match the views `package.json` contributes, in `test/brand.test.ts`,
 that the two icons stay the desktop app's, in `test/commands.test.ts`, that

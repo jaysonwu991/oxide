@@ -833,7 +833,7 @@ async fn run_print_text(mut rx: tokio::sync::mpsc::UnboundedReceiver<AgentEvent>
             AgentEvent::ApprovalRequest { .. } => {}
             // Print mode is given no asker, so `ask` is not offered to the
             // model and a question cannot arrive.
-            AgentEvent::QuestionRequest { .. } => {}
+            AgentEvent::QuestionRequest { .. } | AgentEvent::QuestionClosed { .. } => {}
             AgentEvent::Compaction {
                 summarized,
                 tokens_before,

@@ -121,6 +121,14 @@ pub enum AgentEvent {
         id: u64,
         questions: Vec<Question>,
     },
+    /// The request with that id is gone without an answer, because it timed out
+    /// with nobody answering: a view that painted the questions hides them
+    /// instead of offering an answer nothing is waiting for. Only a timeout is
+    /// announced — a front-end that answered, or a run that ended with the
+    /// request still open, already knows.
+    QuestionClosed {
+        id: u64,
+    },
     Text(String),
     /// A fragment of the model's reasoning, streamed before its answer.
     ThinkingDelta(String),
@@ -298,6 +306,9 @@ pub fn run_subagent(
                 // lands.
                 AgentEvent::QuestionRequest { id, questions } => {
                     let _ = tx.send(AgentEvent::QuestionRequest { id, questions });
+                }
+                AgentEvent::QuestionClosed { id } => {
+                    let _ = tx.send(AgentEvent::QuestionClosed { id });
                 }
                 AgentEvent::SubagentActivity { agent, tool, args } => {
                     let _ = tx.send(AgentEvent::SubagentActivity { agent, tool, args });
@@ -2031,6 +2042,9 @@ async fn task_inner(
             }
             AgentEvent::QuestionRequest { id, questions } => {
                 let _ = events.send(AgentEvent::QuestionRequest { id, questions });
+            }
+            AgentEvent::QuestionClosed { id } => {
+                let _ = events.send(AgentEvent::QuestionClosed { id });
             }
             // A no-tool step commits here, not at the next tool call.
             AgentEvent::ThoughtDone { .. } => committed = output.len(),

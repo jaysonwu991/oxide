@@ -675,6 +675,10 @@ function resetTurn() {
   state.currentAssistant = null;
   state.tools = [];
   state.currentThinking = null;
+  // A run that ended took its requests with it, so a question it left waiting
+  // is not answerable any more: the dialog goes away, as the extension settles
+  // a card a finished run left behind.
+  closeQuestion();
 }
 
 function updateSendState() {
@@ -1312,8 +1316,10 @@ function showQuestion(request) {
   const questions = Array.isArray(request.questions) ? request.questions : [];
   if (!questions.length) return;
   state.pendingQuestion = { id: request.id, questions };
-  const first = questions.find((q) => q.header) || questions[0];
-  el("question-title").textContent = first.header || "Question";
+  // The core's title rule, and the extension's: the *first* question's header,
+  // else that question itself, so both front-ends name the same dialog.
+  const first = questions[0];
+  el("question-title").textContent = first.header || first.question;
   const body = el("question-body");
   body.replaceChildren();
   questions.forEach((question, index) => {
@@ -1392,15 +1398,26 @@ function collectAnswers() {
   });
 }
 
-// `dismiss` (Skip) answers with nothing, which the agent reports to the model as
-// a question the user did not answer.
-async function answerQuestion(dismiss = false) {
+// Hides the question dialog without answering it, for a request that is gone:
+// the run that asked it ended, or it timed out with nobody answering.
+function closeQuestion() {
   if (!state.pendingQuestion) return;
-  const id = state.pendingQuestion.id;
-  const answers = dismiss ? [] : collectAnswers();
   state.pendingQuestion = null;
   el("question").hidden = true;
-  await invoke("resolve_question", { id, answers });
+}
+
+// `dismiss` (Skip) answers with nothing, which the agent reports to the model as
+// a question the user did not answer. A submission with nothing filled in is
+// that same dismissal rather than a set of blank answers, so the agent reads it
+// the way the dialog's own Skip does.
+async function answerQuestion(dismiss = false) {
+  const pending = state.pendingQuestion;
+  if (!pending) return;
+  const answers = dismiss
+    ? []
+    : collectAnswers().filter((answer) => answer.values.length > 0);
+  closeQuestion();
+  await invoke("resolve_question", { id: pending.id, answers });
 }
 
 // ---------- providers ----------
@@ -2191,6 +2208,15 @@ async function initEvents() {
   });
   await listen("approval-request", (event) => showApproval(event.payload || {}));
   await listen("question-request", (event) => showQuestion(event.payload || {}));
+  // The request timed out with nobody answering, while the run it belongs to
+  // may still be going: the dialog goes away so it does not offer an answer that
+  // nothing is waiting for.
+  await listen("question-closed", (event) => {
+    const payload = event.payload || {};
+    if (state.pendingQuestion && state.pendingQuestion.id === payload.id) {
+      closeQuestion();
+    }
+  });
 }
 
 // Create project modal state

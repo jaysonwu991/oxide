@@ -4549,6 +4549,9 @@ fn handle_agent_event(event: AgentEvent, app: &mut App) {
             ));
             app.auto_scroll = true;
         }
+        // Nothing was painted for it here, so a request nobody answered is not
+        // announced either: the tool result already says so in the transcript.
+        AgentEvent::QuestionClosed { .. } => {}
         AgentEvent::Text(delta) => {
             app.auto_scroll = true;
             // Clear any `retrying...` notice now that output is flowing again.

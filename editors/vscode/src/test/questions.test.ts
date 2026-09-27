@@ -185,4 +185,39 @@ describe("question frame", () => {
   it("sends an empty answer list as a dismissal, never an omitted field", () => {
     assert.deepEqual(parsed(questionFrame(5, [])), { type: "question", id: 5, answers: [] });
   });
+
+  it("sends a submission with nothing filled in as that same dismissal", () => {
+    // Answering an empty form and pressing Skip tell the model the same thing;
+    // a set of blank answers would reach it as questions it did fill in.
+    assert.deepEqual(parsed(questionFrame(6, [{ question: "Anything to add?", values: [] }])), {
+      type: "question",
+      id: 6,
+      answers: [],
+    });
+    assert.deepEqual(
+      parsed(
+        questionFrame(7, [
+          { question: "Which database?", values: [" "] },
+          { question: "Anything else?", values: [] },
+        ]),
+      ),
+      { type: "question", id: 7, answers: [] },
+    );
+  });
+
+  it("keeps the answers that were filled in and drops the blank ones", () => {
+    assert.deepEqual(
+      parsed(
+        questionFrame(8, [
+          { question: "Which database?", values: ["Postgres"] },
+          { question: "Anything else?", values: [] },
+        ]),
+      ),
+      {
+        type: "question",
+        id: 8,
+        answers: [{ question: "Which database?", values: ["Postgres"] }],
+      },
+    );
+  });
 });

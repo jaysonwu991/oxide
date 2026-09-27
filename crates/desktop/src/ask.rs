@@ -5,7 +5,14 @@
 //! `question-request` event carrying a request id and the questions, and the UI
 //! answers with the `resolve_question` command: the values the user picked or
 //! typed, or nothing at all for a dismissed dialog. A request that never gets an
-//! answer times out as a dismissal so a turn cannot hang forever.
+//! answer times out as a dismissal so a turn cannot hang forever, and the UI is
+//! told with a `question-closed` event so a dialog stops offering an answer
+//! nothing is waiting for.
+//!
+//! The broker outlives a turn — the window keeps one — so every request records
+//! the turn that asked: a turn that is stopped or crashes takes its own pending
+//! requests with it when [`AskBroker::clear_run`] runs, rather than leaving them
+//! to age out against the cap.
 
 use oxide_core::ask::{Answer, Asker, Question, Reply};
 use serde_json::json;
@@ -20,10 +27,13 @@ const ASK_TIMEOUT: Duration = Duration::from_secs(300);
 
 /// How many questions wait at once: more than one `ask` call can ask, with the
 /// headroom a second request needs if the model asks again before the first is
-/// answered.
+/// answered. Entries are removed when they are answered, when they time out, and
+/// when the turn that asked ends.
 const MAX_PENDING: usize = 32;
 
 struct Pending {
+    /// The turn that asked, so it can take its own requests with it.
+    run: u64,
     sender: oneshot::Sender<Vec<Answer>>,
 }
 
@@ -42,16 +52,17 @@ impl AskBroker {
         }
     }
 
-    /// An `Asker` for the agent runtime that routes each question here.
-    pub fn asker(self: &Arc<Self>) -> Asker {
+    /// An `Asker` for the agent runtime of the turn numbered `run`, so a
+    /// request belongs to the turn that asked it.
+    pub fn asker_for(self: &Arc<Self>, run: u64) -> Asker {
         let broker = Arc::clone(self);
         Arc::new(move |questions| {
             let broker = Arc::clone(&broker);
-            Box::pin(async move { broker.request(questions).await })
+            Box::pin(async move { broker.request(run, questions).await })
         })
     }
 
-    async fn request(&self, questions: Vec<Question>) -> Option<Reply> {
+    async fn request(&self, run: u64, questions: Vec<Question>) -> Option<Reply> {
         if questions.is_empty() {
             return None;
         }
@@ -62,7 +73,7 @@ impl AskBroker {
             if pending.len() >= MAX_PENDING {
                 return None;
             }
-            pending.insert(id, Pending { sender: tx });
+            pending.insert(id, Pending { run, sender: tx });
         }
         if self
             .app
@@ -79,11 +90,31 @@ impl AskBroker {
             // An answer with nothing in it is a dialog the user dismissed.
             Ok(Ok(answers)) if answers.is_empty() => Some(Reply::Dismissed),
             Ok(Ok(answers)) => Some(Reply::Answers(answers)),
-            _ => {
+            // Nobody answered in time: the dialog is told to close, and the
+            // request is gone either way.
+            Err(_) => {
+                self.pending.lock().await.remove(&id);
+                let _ = self.app.emit("question-closed", json!({ "id": id }));
+                None
+            }
+            // The sender was dropped by a turn that ended, which already told
+            // the UI to close its dialog.
+            Ok(Err(_)) => {
                 self.pending.lock().await.remove(&id);
                 None
             }
         }
+    }
+
+    /// Forgets every request the turn numbered `run` is waiting on, which is
+    /// what its end has to do: the run is gone (answered elsewhere, stopped, or
+    /// aborted), so its requests can never be answered and would otherwise sit
+    /// against [`MAX_PENDING`] until each one timed out.
+    pub async fn clear_run(&self, run: u64) {
+        self.pending
+            .lock()
+            .await
+            .retain(|_, entry| entry.run != run);
     }
 
     /// Resolves a pending question with what the user answered. An empty list is

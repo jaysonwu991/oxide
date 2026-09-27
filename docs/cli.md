@@ -431,10 +431,14 @@ user in a front-end and returns the answer as the tool's result:
 - One call carries 1–4 questions; each is a short `question`, an optional
   `header` (the dialog's title for it), up to 8 `options`, and `multiSelect` for
   a list where more than one label may be picked. A question with no options is
-  answered in the user's own words.
+  answered in the user's own words. A `multiSelect` written out as a string
+  (`"true"`) is read as the flag it is rather than failing the call.
 - A question the user dismisses, or one that is never answered, comes back as
   the tool answering that nobody answered, so the model carries on without it —
-  the request times out after five minutes and the turn never hangs.
+  the request times out after five minutes and the turn never hangs. A front-end
+  that painted the questions is told when the request goes (a `question_closed`
+  event in rpc mode), so a dialog stops offering an answer nothing is waiting
+  for.
 - The tool is only offered when a front-end can answer it: the desktop app
   (`crates/desktop/src/ask.rs`) and the VS Code panel (which passes
   `--ask-questions` to `--mode rpc`, answering with a `question` frame). The TUI

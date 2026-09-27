@@ -674,6 +674,26 @@ describe("Transcript", () => {
     assert.deepEqual(transcript.closeQuestions(), []);
   });
 
+  // The CLI timed the request out while the run it belongs to kept going, so the
+  // card stops taking an answer the broker no longer reads.
+  it("settles a question the CLI gave up on, and leaves the others alone", () => {
+    const transcript = new Transcript();
+    const waiting = push(
+      transcript.apply({ type: "question_request", id: 4, questions: [{ question: "Pick" }] })[0],
+    );
+    transcript.apply({ type: "question_request", id: 5, questions: [{ question: "Name it" }] });
+    assert.deepEqual(transcript.apply({ type: "question_closed", id: 4 }), [
+      { k: "question", id: waiting.id, state: "closed", label: "Not answered" },
+    ]);
+    assert.equal(transcript.status, "Thinking…", "the turn it belongs to is still running");
+    assert.equal(transcript.answerQuestion(4, [{ question: "Pick", values: ["a"] }]), null);
+    assert.ok(transcript.answerQuestion(5, [{ question: "Name it", values: ["oxide"] }]));
+    // An id nothing is waiting on, or one already settled, changes nothing.
+    assert.deepEqual(transcript.apply({ type: "question_closed", id: 4 }), []);
+    assert.deepEqual(transcript.apply({ type: "question_closed", id: 99 }), []);
+    assert.deepEqual(transcript.apply({ type: "question_closed" }), []);
+  });
+
   it("titles the thread from the first message", () => {
     const transcript = new Transcript();
     assert.equal(transcript.title(), "", "an empty thread has no title");

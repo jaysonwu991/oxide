@@ -6,7 +6,9 @@
 // It covers what `cargo test` cannot reach — the `/mcps` dialog (its listing,
 // the toggle, and the no-project and failure paths), the Add-project dialog's
 // call into the core, the attachment chips (an image's thumbnail and the
-// full-size preview it opens), and the `/` menu's dispatch of every built-in
+// full-size preview it opens), the question dialog (its title, what a blank
+// form sends, and the two ways a request goes away — the run ending, and the CLI
+// giving up on it), and the `/` menu's dispatch of every built-in
 // the shared catalog offers — since a Rust test never runs the app's own
 // JavaScript. The
 // catalog is read from the built CLI (`target/debug/oxide commands --json`)
@@ -320,8 +322,19 @@ const document = {
 };
 
 globalThis.document = document;
+// The app listens for the events the Rust side emits; the handlers are kept so
+// the checks can emit one the way a finished turn does.
+const listeners = new Map();
 globalThis.window = {
-  __TAURI__: { core: { invoke }, event: { listen: async () => {} } },
+  __TAURI__: {
+    core: { invoke },
+    event: {
+      listen: async (name, handler) => {
+        if (!listeners.has(name)) listeners.set(name, []);
+        listeners.get(name).push(handler);
+      },
+    },
+  },
   innerWidth: 1280,
   innerHeight: 900,
   addEventListener: () => {},
@@ -367,6 +380,10 @@ vm.runInThisContext(
 const app = globalThis.__app;
 const status = () => String(elementFor("status-text").textContent);
 const projectCalls = (command) => calls.filter(([name]) => name === command);
+/// Delivers an event to the app the way Tauri does (`event.payload`).
+const emit = async (name, payload) => {
+  for (const handler of listeners.get(name) || []) await handler({ payload });
+};
 
 // ---------- the project it opens on ----------
 
@@ -846,6 +863,73 @@ await app.answerQuestion(false);
 check(
   "ignored a question with nothing in it",
   elementFor("question").hidden === true && calls.length === 0,
+  JSON.stringify(calls),
+);
+
+// The dialog is named the way the core and the extension name it: the *first*
+// question's own header, else that question itself.
+app.showQuestion({
+  id: 45,
+  questions: [
+    { question: "Proceed?", options: [{ label: "Yes" }] },
+    { header: "Details", question: "Which ones?" },
+  ],
+});
+check(
+  "headed it with the first question, not the first header it finds",
+  elementFor("question-title").textContent === "Proceed?",
+  elementFor("question-title").textContent,
+);
+
+// Answering an empty form is the same dismissal as pressing Skip, so the agent
+// hears one thing rather than a set of blank answers.
+calls.length = 0;
+app.showQuestion({ id: 46, questions: [{ question: "Anything to add?" }] });
+await app.answerQuestion(false);
+const blank = calls.find(([name]) => name === "resolve_question");
+check(
+  "sent an empty form as a dismissal",
+  blank && blank[1].id === 46 && blank[1].answers.length === 0,
+  JSON.stringify(blank && blank[1]),
+);
+
+// A request that times out while the turn keeps running closes its own dialog,
+// and leaves a dialog for another request alone.
+calls.length = 0;
+app.showQuestion({ id: 47, questions: [{ question: "Still there?" }] });
+await emit("question-closed", { id: 48 });
+check(
+  "left a dialog open when another request closed",
+  elementFor("question").hidden === false,
+  String(elementFor("question").hidden),
+);
+await emit("question-closed", { id: 47 });
+check(
+  "hid the dialog when its request timed out",
+  elementFor("question").hidden === true && app.state.pendingQuestion === null,
+  JSON.stringify(app.state.pendingQuestion),
+);
+await app.answerQuestion(false);
+check(
+  "sent nothing for a request that timed out",
+  !calls.some(([name]) => name === "resolve_question"),
+  JSON.stringify(calls),
+);
+
+// A run that ends takes a question it left waiting with it, so the dialog does
+// not offer an answer the finished turn can never read.
+calls.length = 0;
+app.showQuestion({ id: 49, questions: [{ question: "One more thing?" }] });
+await emit("agent-end", { runId: 1 });
+check(
+  "hid the dialog when the run ended",
+  elementFor("question").hidden === true && app.state.pendingQuestion === null,
+  JSON.stringify(app.state.pendingQuestion),
+);
+await app.answerQuestion(false);
+check(
+  "sent nothing for a question a finished run left waiting",
+  !calls.some(([name]) => name === "resolve_question"),
   JSON.stringify(calls),
 );
 

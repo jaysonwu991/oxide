@@ -216,6 +216,12 @@ pub fn event_json(event: &AgentEvent) -> Option<Value> {
             "id": id,
             "questions": questions,
         }),
+        // The request timed out with nobody answering, so a client stops
+        // offering an answer for it rather than waiting on one that cannot land.
+        AgentEvent::QuestionClosed { id } => json!({
+            "type": "question_closed",
+            "id": id,
+        }),
         AgentEvent::Thought { .. } => json!({ "type": "thinking" }),
         // The model step finished streaming. A consumer that renders the live
         // transcript uses this as the step boundary: text and reasoning after
@@ -618,6 +624,10 @@ mod tests {
         assert_eq!(question["questions"][0]["header"], "Database");
         assert_eq!(question["questions"][0]["multiSelect"], true);
         assert_eq!(question["questions"][0]["options"][0]["label"], "SQLite");
+
+        let closed = event_json(&AgentEvent::QuestionClosed { id: 8 }).unwrap();
+        assert_eq!(closed["type"], "question_closed");
+        assert_eq!(closed["id"], 8);
     }
 
     #[test]

@@ -52,7 +52,12 @@ pub struct Question {
         skip_serializing_if = "Vec::is_empty"
     )]
     pub options: Vec<Choice>,
-    #[serde(default, rename = "multiSelect", alias = "multi_select")]
+    #[serde(
+        default,
+        rename = "multiSelect",
+        alias = "multi_select",
+        deserialize_with = "boolean"
+    )]
     pub multi_select: bool,
 }
 
@@ -155,10 +160,17 @@ impl AskBroker {
         }
         match tokio::time::timeout(self.timeout, receiver).await {
             Ok(Ok(reply)) => Some(reply),
-            // A dropped sender is a broker that went away with its run; either
-            // way nobody answered.
-            _ => {
+            // The request is gone either way: a timeout tells the front-end to
+            // stop offering an answer nobody is waiting for, while a dropped
+            // sender is a broker that went away with its run — the front-end
+            // that dropped it already knows, so only the timeout is announced.
+            Ok(Err(_)) => {
                 self.lock().remove(&id);
+                None
+            }
+            Err(_) => {
+                self.lock().remove(&id);
+                let _ = events.send(AgentEvent::QuestionClosed { id });
                 None
             }
         }
@@ -318,6 +330,33 @@ where
         .collect())
 }
 
+/// `multiSelect` is a bool; a model that spelled it out — `"true"`, `"yes"`,
+/// `1` — is read the same way rather than failing the whole call.
+fn boolean<'de, D>(deserializer: D) -> std::result::Result<bool, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let value = Value::deserialize(deserializer)?;
+    match &value {
+        Value::Bool(flag) => Ok(*flag),
+        Value::Null => Ok(false),
+        Value::Number(number) => number
+            .as_i64()
+            .and_then(|number| match number {
+                0 => Some(false),
+                1 => Some(true),
+                _ => None,
+            })
+            .ok_or_else(|| D::Error::custom(format!("expected a boolean, got {value}"))),
+        Value::String(text) => match text.trim().to_ascii_lowercase().as_str() {
+            "true" | "yes" | "1" => Ok(true),
+            "false" | "no" | "0" | "" => Ok(false),
+            _ => Err(D::Error::custom(format!("expected a boolean, got {value}"))),
+        },
+        _ => Err(D::Error::custom(format!("expected a boolean, got {value}"))),
+    }
+}
+
 /// A typed answer arrives as a list, but a front-end that collected one field
 /// may send the value alone.
 fn strings<'de, D>(deserializer: D) -> std::result::Result<Vec<String>, D::Error>
@@ -406,6 +445,30 @@ mod tests {
         assert!(parse_questions(r#"{"questions":[{"question":"   "}]}"#).is_err());
         assert!(parse_questions("{}").is_err());
         assert!(parse_questions("not json").is_err());
+    }
+
+    #[test]
+    fn accepts_a_spelled_out_multi_select() {
+        // A model that writes the flag out is read the same way as one that
+        // sends a bool, since the call is not worth failing over spelling.
+        for (value, expected) in [
+            ("true", true),
+            ("\"true\"", true),
+            ("\"Yes\"", true),
+            ("1", true),
+            ("false", false),
+            ("\"false\"", false),
+            ("0", false),
+            ("null", false),
+        ] {
+            let questions = parse_questions(&format!(
+                r#"{{"question":"Which extras?","multiSelect":{value}}}"#
+            ))
+            .unwrap_or_else(|err| panic!("multiSelect {value}: {err:#}"));
+            assert_eq!(questions[0].multi_select, expected, "multiSelect {value}");
+        }
+        // Anything else is a question that cannot be painted as asked.
+        assert!(parse_questions(r#"{"question":"Which extras?","multiSelect":"maybe"}"#).is_err());
     }
 
     #[test]
@@ -513,7 +576,7 @@ mod tests {
     #[tokio::test]
     async fn an_unanswered_question_times_out() {
         let broker = Arc::new(AskBroker::from_timeout(Duration::from_millis(20)));
-        let (tx, _rx) = unbounded_channel();
+        let (tx, mut rx) = unbounded_channel();
         let asker = broker.asker(tx);
         let reply = asker(vec![Question {
             question: "Which database?".into(),
@@ -523,6 +586,18 @@ mod tests {
         }])
         .await;
         assert_eq!(reply, None);
+        // The front-end is told the request is dead, so a dialog it painted
+        // stops offering an answer nobody is waiting for any more.
+        let event = rx.recv().await.expect("a request");
+        let AgentEvent::QuestionRequest { id, .. } = event else {
+            panic!("expected a question request");
+        };
+        let event = rx.recv().await.expect("a closed request");
+        let AgentEvent::QuestionClosed { id: closed } = event else {
+            panic!("expected a closed question");
+        };
+        assert_eq!(closed, id);
+        assert!(!broker.resolve(closed, Vec::new()));
     }
 
     #[tokio::test]
