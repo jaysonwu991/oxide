@@ -797,6 +797,10 @@ export class ChatController {
 
   // ---------- sessions ----------
 
+  /// Leaves the thread the panel is showing and puts it back on the new-chat
+  /// page: the transcript is cleared, the thread's id is dropped (so the next
+  /// message starts a session of its own rather than appending to the one that
+  /// was open), and the view paints the welcome page it starts on.
   newSession(): void {
     if (this.turn) {
       // Resetting now would apply the running process's later events to the new
@@ -811,13 +815,24 @@ export class ChatController {
     this.queue = [];
     this.clearChips();
     this.broadcast(this.stateMessage());
-    this.showNotice("New session: the next message starts a fresh thread.");
+    this.showNotice("New chat: the next message starts a thread of its own.");
+  }
+
+  /// The session listing, painted from the store's last answer with the thread
+  /// the panel has open marked, and `note` over it where there is something to
+  /// say (a load in progress, a listing that failed, a turn holding the switch
+  /// off). Every redraw goes through here rather than composing the dialog at
+  /// the point it is shown, so the mark and the "New chat" row cannot go
+  /// missing from a rebuild — closing the open thread is only safe to offer
+  /// while the listing knows which one that is.
+  private showSessions(note = ""): void {
+    this.showDialog(sessionDialog(this.sessions, this.transcript.sessionId, note));
   }
 
   /// Opens the session history in the panel: the threads the CLI lists for this
   /// project, so the dialog and the terminal agree on what exists. The listing
-  /// is shown as soon as it arrives; a row either resumes a session or leaves
-  /// the current one behind.
+  /// is shown as soon as it arrives; a row either resumes a session, leaves the
+  /// current one for a fresh chat, or continues the newest thread.
   async resumeSession(): Promise<void> {
     const cwd = this.cwd();
     if (!cwd) {
@@ -828,17 +843,17 @@ export class ChatController {
       this.showNotice("A turn is running; stop it before switching sessions.", "warn");
       return;
     }
-    this.showDialog(sessionDialog(this.sessions, "Loading sessions…"));
+    this.showSessions("Loading sessions…");
     const result = await runCapture(this.binary(), sessionsListArgs(), cwd);
     if (result.error || result.code !== 0) {
       const detail = result.error || firstLine(result.stderr) || `exit ${result.code}`;
       const failed = `Could not list sessions: ${detail}`;
       this.showNotice(failed, "error");
-      this.showDialog(sessionDialog(this.sessions, failed));
+      this.showSessions(failed);
       return;
     }
     this.sessions = parseSessionList(result.stdout);
-    this.showDialog(sessionDialog(this.sessions));
+    this.showSessions();
   }
 
   continueSession(): void {
@@ -864,9 +879,7 @@ export class ChatController {
     if (this.turn) {
       // The dialog stays open with the reason in place rather than closing over
       // a notice painted behind it.
-      this.showDialog(
-        sessionDialog(this.sessions, "A turn is running; stop it before switching sessions."),
-      );
+      this.showSessions("A turn is running; stop it before switching sessions.");
       return;
     }
     this.closeDialog();
@@ -938,12 +951,7 @@ export class ChatController {
     // deleting it here would pull the file out from under the process — the
     // next append fails with `No such file or directory` and the turn is lost.
     if (this.turn) {
-      this.showDialog(
-        sessionDialog(
-          this.sessions,
-          "A turn is running; stop it before deleting a thread.",
-        ),
-      );
+      this.showSessions("A turn is running; stop it before deleting a thread.");
       return;
     }
     const session = this.sessions.find((entry) => entry.id === id);
@@ -982,7 +990,7 @@ export class ChatController {
       const detail = result.error || firstLine(result.stderr) || `exit ${result.code}`;
       const failed = `Could not delete ${label}: ${detail}`;
       this.showNotice(failed, "error");
-      this.showDialog(sessionDialog(this.sessions, failed));
+      this.showSessions(failed);
       return;
     }
     if (this.transcript.sessionId === id) {

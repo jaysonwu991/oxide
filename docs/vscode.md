@@ -75,10 +75,12 @@ activity-bar one when that focus command does not exist.
 The panel's own chrome is icon-first, the way Claude Code's is. The header shows
 the thread's summarized title — the resumed session's name when the dialog knew
 one, else the first message sent condensed to one line (Markdown stripped, cut
-at a word boundary), else **New chat** — next to icon buttons for a new or
-resumed session; the model is the footer's first chip rather than a second line
-under the title, and the composer's **Attach**, **Stop** and **Send** are icons
-too, so the only text in the chrome is the phase and the numbers. The phase
+at a word boundary), else **New chat** — next to icon buttons for a new chat
+and for resuming one, whose tooltips — and `aria-label`s, the names a screen
+reader reads out — say **New chat** and **Resume a session**; the model is the
+footer's first chip rather than a second line under the title, and the
+composer's **Attach**, **Stop** and **Send** are icons too, so the only text in
+the chrome is the phase and the numbers. The phase
 appears while a turn runs (with the elapsed timer) and goes when it does, rather
 than sitting in the toolbar as an idle dot. A turn that finishes while the panel
 is hidden raises a toast naming the thread by that same title; it takes the
@@ -124,9 +126,10 @@ The composer answers `/mcps` (alias `/mcp`) itself, the way the terminal's
 `/mcps` and Claude Code's `/mcp` do: the message is not sent to the model but
 opens the panel's own **MCP servers** listing — not a `showQuickPick`, which
 takes over the window, hides the transcript the listing is about, and cannot be
-answered while a turn streams. It opens out of the footer: the listing is a
-panel of the composer's own column, growing upward from its top edge and staying
-attached to it, with its own scrollbar once a project has more servers than fit.
+answered while a turn streams. It is the listing that belongs to the composer it
+was typed in: the same sheet the session history drops from the header, pinned to
+the other end, rising from the footer's top edge and staying attached to it, with
+its own scrollbar once a project has more servers than fit.
 Every server is a row carrying the state the core reported (`Connected`, `Needs
 auth`, `Needs trust`, `Disabled`, `Error`) and a line naming its transport, the
 file that defined it and its state, plus an icon-only power switch that turns it
@@ -162,19 +165,29 @@ the agent, the reasoning level and the project's trust from here.
 The header's history icon, the `session: <short id>` footer chip, **Oxide:
 Resume Session**, and `/session` (alias `/sessions`) in the composer all open
 the panel's **Sessions** listing — the listing `oxide sessions list` prints,
-painted in the panel rather than in a QuickPick, and opening out of the footer
-the way the MCP servers listing does. The first two rows are the way
-out of the current thread (**New session**, **Continue most recent**); under
-them is every thread stored for the folder, newest first, each named by its
-session name or, unnamed, by the summarized preview `oxide_core::title` gives
-it in the terminal's own picker and the desktop app's sidebar, with how long ago
-it was written and how many messages it holds. Each row carries a trash button
-that asks to confirm and then deletes the thread through `oxide sessions
-delete <id>`, the way the desktop app's sidebar does; deleting the thread the
-panel is showing starts a new one rather than leaving a thread that is gone from
-the list still on screen. A deletion is refused while a turn is running — the
-turn's CLI appends to that session file as it works, so removing it would pull
-the file out from under the process — and the confirmation says so.
+painted in the panel rather than in a QuickPick. It hangs from the header
+rather than from the composer the way the MCP servers listing does: it is about
+the thread the header names, and its first row is about leaving it.
+
+Its first two rows are the way out of the thread the panel has open. **New
+chat** closes it and puts the panel back on the new-chat page it starts on —
+the transcript is cleared and the thread's id dropped, so the next message
+starts a session of its own instead of appending to the one that was open —
+and, with nothing open to close, the row settles for "start a fresh thread".
+**Continue most recent session** picks up the newest thread this project has.
+
+Under them is every thread stored for the folder, newest first, each named by
+its session name or, unnamed, by the summarized preview `oxide_core::title`
+gives it in the terminal's own picker and the desktop app's sidebar, with how
+long ago it was written and how many messages it holds; the row the panel is
+showing carries **Current** where the others carry their age, since "close this
+thread" would otherwise name nothing. Each row carries a trash button that asks
+to confirm and then deletes the thread through `oxide sessions delete <id>`, the
+way the desktop app's sidebar does; deleting the thread the panel is showing
+starts a new one rather than leaving a thread that is gone from the list still
+on screen. A deletion is refused while a turn is running — the turn's CLI
+appends to that session file as it works, so removing it would pull the file out
+from under the process — and the confirmation says so.
 
 Picking a row resumes that thread here: the CLI is launched with `--session
 <id>`, and the title in the header follows. Resuming also fills the transcript
@@ -192,21 +205,24 @@ parses `oxide sessions list`), so the panel and the terminal agree on which
 threads exist and what they are called. Sessions are per project: the dialog
 lists the folder that is open.
 
-Both dialogs are composed in the extension host as data
-(`core/dialogs.ts`) — a title, a note for an empty or failed listing, and rows
-where each row carries the action it posts back (`mcpToggle` with the server's
-name, `mcpRefresh`, `openSession` with `new`, `continue` or a session id,
-`sessionDelete` and `sessionDeleteConfirm` for a thread's trash button,
-`dialogClose`) — and the controller holds the open one, so both panes paint the
-same dialog and a pane that attaches afterwards is sent it again. A row's button
-carries the glyph it is painted as (`icon: "power"`, `icon: "trash"`) and the
-words it would otherwise show, which become its tooltip and its name for a
-screen reader. The
-webview only builds the rows and posts the clicked one's action back as a
-`dialogAction`; it decides nothing about what a click means, the same way a
-footer chip posts the control id it carries. Neither dialog covers the panel
-with a backdrop, so a click inside one keeps it open: it is dismissed by its
-Close icon, by <kbd>Esc</kbd>, or by picking a row.
+Both dialogs are composed in the extension host as data (`core/dialogs.ts`) — a
+title, the panel edge it hangs from (`pin`), a note for an empty or failed
+listing, and rows where each row carries the action it posts back (`mcpToggle`
+with the server's name, `mcpRefresh`, `openSession` with `new`, `continue` or a
+session id, `sessionDelete` and `sessionDeleteConfirm` for a thread's trash
+button, `dialogClose`) — and the controller holds the open one, so both panes
+paint the same dialog and a pane that attaches afterwards is sent it again.
+Nothing about where it opens is left to the renderer either: the MCP list is
+pinned to the footer, above the composer it was asked for in, the session
+history to the header that names the thread it lists, and the webview only
+carries that as a class. A
+row's button carries the glyph it is painted as (`icon: "power"`,
+`icon: "trash"`) and the words it would otherwise show, which become its
+tooltip and its name for a screen reader. The webview only builds the rows and
+posts the clicked one's action back as a `dialogAction`; it decides nothing about
+what a click means, the same way a footer chip posts the control id it carries.
+Neither dialog covers the panel with a backdrop, so a click inside one keeps it
+open: it is dismissed by its Close icon, by <kbd>Esc</kbd>, or by picking a row.
 
 ## Image previews
 
@@ -388,9 +404,10 @@ chip-shaped `control` message is the one that carries the model, agent or trust
 picker's choice back into the same action the matching command runs;
 `test/commands.test.ts` asserts the two sides agree, because a mistyped message
 kind would otherwise fail silently on either side of the bridge. A `dialog`
-message paints the listing above the footer (or clears it with `null`), and
-`dialogAction` is the answer to one — the action a clicked row or button
-carried, in the same shape a chip's control id travels.
+message paints the listing on the edge it was composed with — under the header,
+or above the footer (or clears it with `null`) — and `dialogAction` is the
+answer to one: the action a clicked row or button carried, in the same shape a
+chip's control id travels.
 
 ## Prompt assembly
 
@@ -440,10 +457,18 @@ drag and drop, the canvas resize before a pasted image is sent on) are the only
 logic in the webview. A dialog is handed over the same way: the rows and the
 action each one posts are composed in the host (`core/dialogs.ts`), so the
 webview is only a renderer and a click is reported rather than interpreted.
-Its own layout is all in `media/style.css`: the listing is a panel of the
-composer's column (a flex child between the transcript and the footer) rather
-than an overlay, which is what keeps it attached to the footer and lets its row
-list scroll.
+Its own layout is all in `media/style.css`: a listing is a flex child of the
+panel's column rather than an overlay, which is what keeps it attached to the
+edge it belongs to and lets its row list scroll. One element serves both — it
+sits under the header in the markup and the `.pin-footer` class the host's `pin`
+becomes moves the same node above the footer with `order` — so there is a
+single sheet whose borders and shadow turn around with the end it is pinned to,
+and the transcript is ordered between the two either way: the listing takes its
+room from the transcript rather than from the end it is attached to. It is also
+the one child of that column that does not shrink — the transcript is a scroll
+container whose content is what its base size is measured from, so a dialog that
+may shrink opens a couple of rows tall with the rest of the list scrolling
+inside a sliver.
 Nothing there writes to disk: a pasted blob goes back to
 the host as a `data:` URL, and the host is what decides which file to write and
 which path to send.
@@ -492,16 +517,25 @@ the titles a card shows and the request frames the CLI reads, in
 registers match the views `package.json` contributes, in `test/brand.test.ts`,
 that the two icons stay the desktop app's, in `test/commands.test.ts`, that
 every contributed command has a handler, every footer chip has a click handler,
-and every message the webview posts is handled by `chatView.ts`, and in
+and every message the webview posts is handled by `chatView.ts` — and that the
+header's new-chat button carries the command's own name in its tooltip and
+`aria-label` rather than the name the command had before, and that the session
+listing is composed in exactly one place, which supplies the id of the thread on
+screen, so no redraw can quietly drop the `Current` mark — and in
 `test/webview.test.ts`, that `media/main.js` — plain JavaScript with no type
 checking — paints the footer, the chips, the attachment strip, the approval
 card, the `/mcps` and `/sessions` listings (and the full-size image a thumbnail
 opens) and the disabled
 state of Send from its messages when it runs against a DOM stub, and that the
-shell puts the listing between the transcript and the footer with icon-only
-buttons in its header. The dialog
-composition itself — the rows, the status each server is in, the switch it
-offers, the session rows — is covered in `test/dialogs.test.ts`. The footer's own
+shell puts the listing under the header, ahead of the transcript, with
+`flex: 0 0 auto` so it cannot be squeezed to a sliver of scrolling rows, turns
+the same element around above the footer for the listing the host pins to that
+edge, and carries icon-only buttons in its own header, and that the welcome page
+stays up while the page only carries a notice — which is what "New chat" leaves
+behind, since a line about the thread that was closed is not a message in a new
+one. The dialog composition itself — the rows, the status each server is in,
+the switch it offers, the session rows — is covered in `test/dialogs.test.ts`.
+The footer's own
 readers are covered one file each: `test/settings.test.ts`, `test/trust.test.ts`,
 `test/git.test.ts`, `test/agents.test.ts`, `test/plugins.test.ts`,
 `test/project.test.ts` (the five together, against an injected file map, with the
@@ -512,7 +546,9 @@ command — is covered in `test/mcps.test.ts`, which also holds the controller's
 `send` to answering that command before a message is queued or prompted (a
 source-level assertion, because `chat.ts` imports `vscode` and cannot be loaded
 there). What each dialog's rows say — a server's state and the scope its toggle
-writes to, a session's age and size, the rows' own actions — is covered in
+writes to, a session's age and size, the row that closes the open thread and the
+`Current` mark on it, the panel edge each listing opens on, the rows' own
+actions — is covered in
 `test/dialogs.test.ts`, which needs neither a webview nor a CLI. What a resumed
 thread reads back — `oxide sessions show --json` parsed into the messages the
 panel paints and the totals the footer shows, including the output of a CLI that

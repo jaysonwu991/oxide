@@ -14,6 +14,7 @@ import * as vm from "node:vm";
 const root = path.join(__dirname, "..", "..");
 const renderer = fs.readFileSync(path.join(root, "media", "main.js"), "utf8");
 const shell = fs.readFileSync(path.join(root, "src", "chatView.ts"), "utf8");
+const style = fs.readFileSync(path.join(root, "media", "style.css"), "utf8");
 
 /// Every element the HTML shell declares, with the `hidden` attribute it starts
 /// with, so the stubbed document matches the real one and a renamed id fails
@@ -883,6 +884,7 @@ describe("webview dialogs", () => {
   const mcp = {
     k: "dialog",
     dialog: {
+      pin: "footer",
       title: "MCP servers",
       subtitle: "The servers this project loads, and whether Oxide can reach them.",
       note: "",
@@ -917,14 +919,15 @@ describe("webview dialogs", () => {
   const sessions = {
     k: "dialog",
     dialog: {
+      pin: "header",
       title: "Sessions",
       subtitle: "Threads stored for this project.",
       note: "",
       rows: [
         {
           value: "new",
-          label: "New session",
-          detail: "Start a fresh thread",
+          label: "New chat",
+          detail: "Close this thread and start a fresh one",
           status: "",
           tone: "",
           action: "openSession",
@@ -936,7 +939,7 @@ describe("webview dialogs", () => {
           value: "fe0031b1",
           label: "Fix the flaky test",
           detail: "195 messages",
-          status: "just now",
+          status: "Current",
           tone: "muted",
           action: "openSession",
           button: "Delete Fix the flaky test",
@@ -952,6 +955,7 @@ describe("webview dialogs", () => {
   const confirmDelete = {
     k: "dialog",
     dialog: {
+      pin: "header",
       title: "Delete thread",
       subtitle: "“Fix the flaky test” and its stored conversation are removed.",
       note: "This cannot be undone.",
@@ -988,8 +992,7 @@ describe("webview dialogs", () => {
     const { byId, send } = loadRenderer();
     assert.equal(byId.get("dialog")!.hidden, true);
     send(mcp);
-    assert.equal(byId.get("dialog")!.hidden, false);
-    assert.equal(byId.get("dialog-title")!.textContent, "MCP servers");
+    assert.equal(byId.get("dialog")!.hidden, false);    assert.equal(byId.get("dialog-title")!.textContent, "MCP servers");
     assert.equal(
       byId.get("dialog-sub")!.textContent,
       "The servers this project loads, and whether Oxide can reach them.",
@@ -1015,6 +1018,29 @@ describe("webview dialogs", () => {
   /// A row's own button carries a switch rather than a word, so it is one glyph
   /// wide and says what it does in its tooltip — the panel is a narrow side bar,
   /// and `Disable` on every row is a column of text where a switch will do.
+  it("paints each listing on the edge its host pinned it to", () => {
+    const { byId, send } = loadRenderer();
+    // The host decides — `dialogs.ts` pins the server list to the composer and
+    // the session history to the header — and the renderer only carries it: the
+    // class is what the stylesheet moves and turns around. Read the name from
+    // the stylesheet rather than spelling it a second time here, since a class
+    // the two sides disagree about would leave the listing under the header.
+    const pinned = /#dialog\.([\w-]+) \{/.exec(style)?.[1];
+    assert.equal(pinned, "pin-footer");
+    send(mcp);
+    assert.equal(byId.get("dialog")!.classList.contains(pinned!), true);
+    send(sessions);
+    assert.equal(byId.get("dialog")!.classList.contains(pinned!), false);
+    // And back, since both panes paint whichever listing the controller holds.
+    send(mcp);
+    assert.equal(byId.get("dialog")!.classList.contains(pinned!), true);
+    // Closing one takes the pin with it: the element is hidden, but its siblings
+    // are still ordered around it until the next listing says where it goes.
+    send({ k: "dialog", dialog: null });
+    assert.equal(byId.get("dialog")!.hidden, true);
+    assert.equal(byId.get("dialog")!.classList.contains(pinned!), false);
+  });
+
   it("paints a row's button as an icon with the host's label on it", () => {
     const { byId, send } = loadRenderer();
     send(mcp);
@@ -1115,7 +1141,7 @@ describe("webview dialogs", () => {
     assert.equal(byId.get("dialog")!.hidden, true);
     assert.deepEqual(last(posted), { k: "dialogAction", action: "dialogClose", value: "" });
 
-    // The listing grows out of the footer rather than covering the panel, so a
+    // The listing hangs from the header rather than covering the panel, so a
     // click inside it — or on the padding around its rows — keeps it up: closing
     // it is the Close button, Escape, or picking a row.
     send(sessions);
@@ -1159,16 +1185,26 @@ describe("webview dialogs", () => {
   });
 
   /// The listing is part of the panel's own column rather than a window over it:
-  /// it sits between the transcript and the footer, which is what makes it grow
-  /// out of the footer and stay attached to it, with a row list that scrolls.
-  it("anchors the dialog to the footer and gives its buttons icons", () => {
+  /// it sits between the header and the transcript, which is what makes it hang
+  /// from the header and stay attached to it, with a row list that scrolls. It
+  /// is also the one part of the column that never gives up height — a dialog
+  /// squeezed down to a sliver of scrolling rows is what the flex there was for.
+  it("anchors the dialog to the header and gives its buttons icons", () => {
     const at = (needle: string) => shell.indexOf(needle);
-    assert.ok(at('id="transcript"') < at('id="dialog"'), "the dialog comes after the transcript");
-    assert.ok(at('id="dialog"') < at("<footer>"), "and before the footer");
+    assert.ok(at("</header>") < at('id="dialog"'), "the dialog comes after the header");
+    assert.ok(at('id="dialog"') < at('id="transcript"'), "and before the transcript");
     assert.ok(
       shell.includes('<section id="dialog" class="popover"'),
       "it is a popover, not an overlay",
     );
+    // The transcript below is a scroll container whose content is thousands of
+    // pixels tall and whose base size is that content: a dialog that may shrink
+    // loses that contest and opens a couple of rows tall, which is the bug this
+    // pins. The cap carries a px floor so the footer stays on screen too.
+    const rule = /#dialog \{[^}]*\}/.exec(style)?.[0] ?? "";
+    assert.match(rule, /flex: 0 0 auto;/, "the dialog does not shrink");
+    assert.match(rule, /max-height: min\([^)]*\d+px[^)]*\)/, "its cap leaves room for the footer");
+    assert.match(rule, /border-top: none;/, "the header's border closes the sheet");
     // Icon-only, with the words as the tooltip and the accessible name: the
     // shell paints each one from its own `ICONS` map.
     for (const [id, label, icon] of [
@@ -1182,6 +1218,26 @@ describe("webview dialogs", () => {
       assert.ok(button.includes(`\${ICONS.${icon}}`), button);
       assert.match(shell, new RegExp(`${icon}: ` + "`<svg"), `${icon} is drawn in ICONS`);
     }
+  });
+
+  /// One element, two anchors: the markup keeps the position under the header
+  /// that a header-pinned listing drops from, and `.pin-footer` moves the same
+  /// node above the footer with `order`, turning the sheet's shape around with
+  /// it. The transcript is ordered between the two so the listing takes its room
+  /// from the transcript in either direction.
+  it("turns the dialog around for the listing that belongs to the composer", () => {
+    const pinned = /#dialog\.pin-footer \{[^}]*\}/.exec(style)?.[0] ?? "";
+    assert.match(pinned, /order: 2;/, "it is placed after the transcript");
+    assert.match(pinned, /border-bottom: none;/, "the footer's border closes the sheet");
+    assert.match(pinned, /border-top: var\(--dialog-edge\);/, "and its own top edge comes back");
+    assert.match(pinned, /border-radius: 8px 8px 0 0;/, "square where it meets the composer");
+    assert.match(pinned, /box-shadow: 0 -10px/, "the shadow is cast upward");
+    assert.match(pinned, /margin: 0 8px -1px;/, "its bottom edge overlaps the footer's border");
+
+    const order = (selector: string) =>
+      new RegExp(`#dialog\\.pin-footer ~ ${selector} \\{\\s*order: (\\d)`).exec(style)?.[1];
+    assert.equal(order("#transcript"), "1", "the transcript keeps its place");
+    assert.equal(order("footer"), "3", "so does the footer, after both");
   });
 });
 
@@ -1397,5 +1453,38 @@ describe("webview scrolling", () => {
     transcript.clientHeight = 60;
     resize();
     assert.equal(transcript.scrollTop, 0);
+  });
+});
+
+/// The block the panel starts on, which is the page a closed thread returns
+/// you to: `#empty` is the new-chat page, and a notice is painted on it rather
+/// than instead of it.
+describe("webview welcome page", () => {
+  it("stays up while the page only carries a line about it", () => {
+    const { byId, send } = loadRenderer();
+    send(stateMessage());
+    assert.equal(byId.get("empty")!.hidden, false, "a fresh panel shows the welcome page");
+
+    // What the host sends after New chat: the thread is closed, which is news,
+    // and the page is still the page you can start typing on.
+    send({
+      k: "state",
+      items: [
+        {
+          id: 1,
+          kind: "notice",
+          text: "New chat: the next message starts a thread of its own.",
+          tone: "info",
+        },
+      ],
+    });
+    assert.equal(byId.get("empty")!.hidden, false, "a notice is not a message");
+  });
+
+  it("gives way to the first thing said in the thread", () => {
+    const { byId, send } = loadRenderer();
+    send(stateMessage());
+    send({ k: "push", item: { id: 2, kind: "user", text: "say hi", context: [] } });
+    assert.equal(byId.get("empty")!.hidden, true);
   });
 });

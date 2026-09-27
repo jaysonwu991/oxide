@@ -192,16 +192,10 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
 <header id="header">
   <span id="title">New chat</span>
   <div id="actions">
-    <button id="new-session" class="icon" title="New session" aria-label="New session">${ICONS.new}</button>
+    <button id="new-session" class="icon" title="New chat" aria-label="New chat">${ICONS.new}</button>
     <button id="resume-session" class="icon" title="Resume a session" aria-label="Resume a session">${ICONS.resume}</button>
   </div>
 </header>
-<main id="transcript" tabindex="0">
-  <div id="empty" class="empty">
-    <p>Ask Oxide to make a change, explain code, or run something.</p>
-    <p class="hint">Runs use the same configuration, sessions and project trust as the terminal: <code>oxide</code> starts a turn with <code>--mode rpc</code>, so a tool that needs your approval waits for an answer here.</p>
-  </div>
-</main>
 <section id="dialog" class="popover" hidden aria-labelledby="dialog-title">
   <div class="popover-head">
     <h2 id="dialog-title"></h2>
@@ -214,6 +208,12 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
   <p id="dialog-note" class="popover-note" hidden></p>
   <div id="dialog-list" class="popover-list"></div>
 </section>
+<main id="transcript" tabindex="0">
+  <div id="empty" class="empty">
+    <p>Ask Oxide to make a change, explain code, or run something.</p>
+    <p class="hint">Runs use the same configuration, sessions and project trust as the terminal: <code>oxide</code> starts a turn with <code>--mode rpc</code>, so a tool that needs your approval waits for an answer here.</p>
+  </div>
+</main>
 <footer>
   <div id="meta" class="meta"></div>
   <div id="composer">
