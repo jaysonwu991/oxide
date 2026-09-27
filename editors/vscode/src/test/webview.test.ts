@@ -1780,8 +1780,9 @@ describe("webview approvals", () => {
 });
 
 describe("webview questions", () => {
-  /// The card the CLI's `question_request` becomes: one block per question, each
-  /// with its options and a field for an answer of the user's own wording.
+  /// The card the CLI's `question_request` becomes: the questions are asked one
+  /// at a time, each with its options and a field for an answer of the user's
+  /// own wording.
   const pending = {
     id: 4,
     kind: "question",
@@ -1802,10 +1803,23 @@ describe("webview questions", () => {
     label: "",
   };
 
-  /// The card and every answer field in it, in the order they were painted.
+  /// The card and every answer field in it, in the order they were painted. A
+  /// single choice's last one is the row asking for the user's own wording,
+  /// whose value is empty so its label is never an answer.
   const fields = (card: StubElement) => card.querySelectorAll(".qchoice");
+  /// Every question's own block of fields, whether or not it is the one shown.
+  const blocks = (card: StubElement) => card.querySelectorAll(".qblock");
+  /// The buttons the card offers, in the order they were painted.
+  const actions = (card: StubElement) =>
+    find(card, "qactions")!.children.map((child) => child.textContent);
+  /// The button the card names on this step, which is how a click is delivered.
+  const button = (card: StubElement, label: string) =>
+    find(card, "qactions")!.children.find((child) => child.textContent === label)!;
+  /// What each dash says about where in the questions the reader is.
+  const dashes = (card: StubElement) =>
+    card.querySelectorAll(".qdash").map((dash) => dash.className);
 
-  it("paints a radio group and a free-text field for a single choice", () => {
+  it("paints a radio group and a field for the user's own answer", () => {
     const { byId, send } = loadRenderer();
     send(stateMessage());
     const transcript = byId.get("transcript")!;
@@ -1820,6 +1834,7 @@ describe("webview questions", () => {
       [
         ["radio", "Postgres"],
         ["radio", "SQLite"],
+        ["radio", ""],
       ],
     );
     assert.deepEqual(
@@ -1830,14 +1845,11 @@ describe("webview questions", () => {
     // never be blank by accident.
     assert.deepEqual(
       choices.map((choice) => choice.checked),
-      [true, false],
+      [true, false, false],
     );
-    const free = find(card, "qfree")!;
-    assert.equal(free.placeholder, "Or type an answer…");
-    assert.deepEqual(
-      find(card, "qactions")!.children.map((child) => child.textContent),
-      ["Answer", "Skip", "Waiting for your answer…"],
-    );
+    assert.equal(find(card, "qfree")!.placeholder, "Type your answer…");
+    assert.equal(find(card, "qhint")!.textContent, "Select one answer");
+    assert.deepEqual(actions(card), ["Dismiss", "Submit", "Waiting for your answer…"]);
   });
 
   it("paints boxes and a hint that there is more than one answer", () => {
@@ -1856,11 +1868,14 @@ describe("webview questions", () => {
       fields(card).map((choice) => choice.type),
       ["checkbox", "checkbox"],
     );
-    // A multi-select question starts with nothing ticked.
+    // A multi-select question starts with nothing ticked, and offers the user's
+    // own wording beside the labels rather than as a row of its own.
     assert.deepEqual(
       fields(card).map((choice) => choice.checked),
       [false, false],
     );
+    assert.equal(find(card, "qhint")!.textContent, "Select all that apply");
+    assert.equal(find(card, "qfree")!.placeholder, "Or type your own answer…");
   });
 
   it("asks for free text where no options are offered", () => {
@@ -1872,17 +1887,78 @@ describe("webview questions", () => {
       item: {
         ...pending,
         title: "What should it be called?",
-        questions: [{ question: "What should it be called?", header: "", options: [], multiSelect: false }],
+        questions: [
+          { question: "What should it be called?", header: "", options: [], multiSelect: false },
+        ],
       },
     });
     const card = find(transcript, "question")!;
     assert.deepEqual(fields(card), []);
-    assert.equal(find(card, "qfree")!.placeholder, "Type an answer…");
+    assert.equal(find(card, "qfree")!.placeholder, "Type your answer…");
+    // Nothing to hint at, and the card's own title already asks the question.
+    assert.equal(find(card, "qhint")!.hidden, true);
+    assert.equal(find(card, "qtext")!.hidden, true);
     assert.equal(find(card, "qtitle")!.textContent, "What should it be called?");
   });
 
+  /// A call that asks several things shows one of them at a time, counts them
+  /// and marks the one being asked, so the card never reads as one long form.
+  const twoQuestions = {
+    ...pending,
+    questions: [
+      pending.questions[0],
+      { question: "Anything else?", header: "Notes", options: [], multiSelect: false },
+    ],
+  };
+
+  it("asks one question at a time, counting them", () => {
+    const { byId, send } = loadRenderer();
+    send(stateMessage());
+    const transcript = byId.get("transcript")!;
+    send({ k: "push", item: twoQuestions });
+
+    const card = find(transcript, "question")!;
+    assert.equal(find(card, "qsteplabel")!.textContent, "1 of 2 questions");
+    assert.deepEqual(dashes(card), ["qdash current", "qdash todo"]);
+    assert.deepEqual(
+      blocks(card).map((block) => block.hidden),
+      [false, true],
+    );
+    assert.equal(find(card, "qtext")!.textContent, "Which database?");
+    assert.deepEqual(actions(card), ["Dismiss", "Next", "Waiting for your answer…"]);
+
+    // Walking on marks the question answered and leaves it behind.
+    const first = blocks(card)[0];
+    first.querySelectorAll(".qchoice")[0].checked = false;
+    first.querySelectorAll(".qchoice")[1].checked = true;
+    button(card, "Next").fire("click");
+    assert.equal(find(card, "qsteplabel")!.textContent, "2 of 2 questions");
+    assert.deepEqual(dashes(card), ["qdash done", "qdash current"]);
+    assert.deepEqual(
+      blocks(card).map((block) => block.hidden),
+      [true, false],
+    );
+    assert.equal(find(card, "qtext")!.textContent, "Anything else?");
+    assert.equal(find(card, "qheader")!.textContent, "Notes");
+    assert.deepEqual(actions(card), ["Dismiss", "Back", "Submit", "Waiting for your answer…"]);
+
+    // Walking back finds the question that was left still answered.
+    button(card, "Back").fire("click");
+    assert.equal(find(card, "qsteplabel")!.textContent, "1 of 2 questions");
+    assert.deepEqual(dashes(card), ["qdash current", "qdash todo"]);
+    assert.deepEqual(
+      blocks(card).map((block) => block.hidden),
+      [false, true],
+    );
+    assert.deepEqual(
+      fields(card).map((choice) => choice.checked),
+      [false, true, false],
+    );
+  });
+
   /// The answers are the host's to send: the view names the request and what
-  /// was ticked and typed, and the question each answer belongs to.
+  /// was ticked and typed, and the question each answer belongs to. The last
+  /// question's Submit sends the whole set, including what earlier steps kept.
   it("posts the ticks and the typed text as the answers", () => {
     const { byId, send, posted } = loadRenderer();
     send(stateMessage());
@@ -1898,13 +1974,13 @@ describe("webview questions", () => {
       },
     });
     const card = find(transcript, "question")!;
-    const choices = fields(card);
-    choices[1].checked = true;
-    const free = card.querySelectorAll(".qfree");
-    free[0].value = "  and fast  ";
-    free[1].value = "ship it";
+    const [first, second] = blocks(card);
+    first.querySelectorAll(".qchoice")[1].checked = true;
+    first.querySelector(".qfree")!.value = "  and fast  ";
+    button(card, "Next").fire("click");
+    second.querySelector(".qfree")!.value = "ship it";
+    button(card, "Submit").fire("click");
 
-    find(card, "qactions")!.children[0].fire("click");
     assert.deepEqual(shape(posted[posted.length - 1]), {
       k: "question",
       requestId: 21,
@@ -1915,12 +1991,54 @@ describe("webview questions", () => {
     });
   });
 
-  it("sends an empty answer list for Skip, which is a dismissal", () => {
+  /// A single choice offers the user's own wording as one of its choices, so
+  /// picking it is what makes the typed text answer — the row's empty value is
+  /// never sent, and neither is the label it replaced.
+  it("sends the user's own answer in place of the picked label", () => {
     const { byId, send, posted } = loadRenderer();
     send(stateMessage());
     const transcript = byId.get("transcript")!;
     send({ k: "push", item: pending });
-    find(transcript, "qactions")!.children[1].fire("click");
+
+    const card = find(transcript, "question")!;
+    const choices = fields(card);
+    choices[0].checked = false;
+    choices[2].checked = true;
+    find(card, "qfree")!.value = "  DuckDB  ";
+    button(card, "Submit").fire("click");
+
+    assert.deepEqual(shape(posted[posted.length - 1]), {
+      k: "question",
+      requestId: 21,
+      answers: [{ question: "Which database?", values: ["DuckDB"] }],
+    });
+  });
+
+  it("leaves text typed under a picked label out of the answer", () => {
+    const { byId, send, posted } = loadRenderer();
+    send(stateMessage());
+    const transcript = byId.get("transcript")!;
+    send({ k: "push", item: pending });
+
+    const card = find(transcript, "question")!;
+    fields(card)[0].checked = false;
+    fields(card)[1].checked = true;
+    find(card, "qfree")!.value = "a note the row never asked for";
+    button(card, "Submit").fire("click");
+
+    assert.deepEqual(shape(posted[posted.length - 1]), {
+      k: "question",
+      requestId: 21,
+      answers: [{ question: "Which database?", values: ["SQLite"] }],
+    });
+  });
+
+  it("sends an empty answer list for Dismiss, which is a dismissal", () => {
+    const { byId, send, posted } = loadRenderer();
+    send(stateMessage());
+    const transcript = byId.get("transcript")!;
+    send({ k: "push", item: pending });
+    button(find(transcript, "question")!, "Dismiss").fire("click");
     assert.deepEqual(shape(posted[posted.length - 1]), {
       k: "question",
       requestId: 21,
@@ -1937,10 +2055,7 @@ describe("webview questions", () => {
 
     const card = find(transcript, "question")!;
     assert.deepEqual(fields(card), []);
-    assert.deepEqual(
-      find(card, "qactions")!.children.map((child) => child.textContent),
-      ["Postgres"],
-    );
+    assert.deepEqual(actions(card), ["Postgres"]);
 
     const second = loadRenderer();
     second.send(stateMessage({ items: [{ ...pending, state: "closed", label: "Not answered" }] }));

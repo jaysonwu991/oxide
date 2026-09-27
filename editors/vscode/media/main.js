@@ -708,12 +708,15 @@
 
   /// A question the model asked through the `ask` tool: the agent is holding the
   /// turn until it is answered, which is what a skill does when it needs a
-  /// choice only the user can make. Each question offers its own options —
-  /// radios for one answer, boxes for several — and a field for an answer in the
-  /// user's own words, so a free-text question and a choice are the same card.
-  /// The answers travel to the host, which forwards them over the CLI's request
-  /// channel; the card is repainted from the `k: "question"` update it sends
-  /// back.
+  /// choice only the user can make. The card asks one question at a time — its
+  /// own wording, its options as rows (radios for one answer, boxes for several)
+  /// with a row for an answer in the user's own words, and `Next` walking to the
+  /// question after it — and says where in them the reader is with `N of M
+  /// questions` and a dash per question, so a call that asks several things is
+  /// never one card taller than the panel. Every question's fields stay built,
+  /// so stepping back finds what was already answered still there. The answers
+  /// travel to the host, which forwards them over the CLI's request channel; the
+  /// card is repainted from the `k: "question"` update it sends back.
   function questionNode(item) {
     const wrap = document.createElement("div");
     wrap.className = "question";
@@ -731,25 +734,29 @@
     const actions = document.createElement("div");
     actions.className = "qactions";
     wrap.append(head, body, actions);
-    return { el: wrap, body, actions };
+    // The block of fields each question owns (kept, so an answer survives a walk
+    // back to it) and which of them is on screen.
+    return { el: wrap, body, actions, blocks: [], stepIndex: 0 };
   }
 
-  /// One question's own block: its text, its options, and the field for an
-  /// answer of the user's own wording. A single-select question preselects its
-  /// first option, so an answer can never be blank by accident.
+  /// What a question's hint reads: whether one label answers it or several. A
+  /// question answered in the reader's own words has nothing to hint at.
+  function questionHint(question) {
+    const options = Array.isArray(question.options) ? question.options : [];
+    if (!options.length) return "";
+    return question.multiSelect ? "Select all that apply" : "Select one answer";
+  }
+
+  /// One question's own fields: its options, and the row that takes an answer in
+  /// the user's own words. A single choice offers that row the way the dialog it
+  /// follows does — as one of the choices, with the field under it — so the
+  /// typed text is the answer instead of a second one beside the picked label.
+  /// A single-select question preselects its first option, so an answer can
+  /// never be blank by accident.
   function questionBlock(question, index) {
     const block = document.createElement("div");
     block.className = "qblock";
-    if (question.header) {
-      const header = document.createElement("div");
-      header.className = "qheader";
-      header.textContent = question.header;
-      block.appendChild(header);
-    }
-    const text = document.createElement("p");
-    text.className = "qtext";
-    text.textContent = String(question.question || "");
-    block.appendChild(text);
+    block.hidden = true;
     const options = Array.isArray(question.options) ? question.options : [];
     options.forEach((option, position) => {
       const row = document.createElement("label");
@@ -779,8 +786,35 @@
     free.className = "qfree";
     free.type = "text";
     free.dataset.question = String(index);
-    free.placeholder = options.length ? "Or type an answer…" : "Type an answer…";
-    block.appendChild(free);
+    if (options.length && !question.multiSelect) {
+      const row = document.createElement("label");
+      row.className = "qoption qown";
+      const own = document.createElement("input");
+      own.type = "radio";
+      own.name = `question-${index}`;
+      // The row's value is empty, so the collector never sends its label as an
+      // answer: choosing it is what lets the typed text answer instead.
+      own.value = "";
+      own.dataset.question = String(index);
+      own.className = "qchoice qownchoice";
+      const label = document.createElement("span");
+      label.className = "qlabel";
+      label.textContent = "Type your own answer";
+      free.placeholder = "Type your answer…";
+      own.addEventListener("change", () => {
+        if (own.checked) free.focus();
+      });
+      free.addEventListener("input", () => {
+        // Typing is what picks the row, so the caret never sits in a field whose
+        // text the answer ignores.
+        if (free.value.trim()) own.checked = true;
+      });
+      row.append(own, label);
+      block.append(row, free);
+    } else {
+      free.placeholder = options.length ? "Or type your own answer…" : "Type your answer…";
+      block.appendChild(free);
+    }
     return block;
   }
 
@@ -792,16 +826,113 @@
       const values = [];
       entry.body
         .querySelectorAll(`.qchoice[data-question="${index}"]:checked`)
-        .forEach((input) => values.push(input.value));
-      const typed = entry.body.querySelector(`.qfree[data-question="${index}"]`);
-      const text = typed ? String(typed.value || "").trim() : "";
-      if (text) values.push(text);
+        .forEach((input) => {
+          const value = String(input.value || "").trim();
+          if (value) values.push(value);
+        });
+      const field = entry.body.querySelector(`.qfree[data-question="${index}"]`);
+      const typed = field ? String(field.value || "").trim() : "";
+      // Only a single choice has a row asking for the user's own words, and its
+      // text answers the question when that row is the chosen one.
+      const own = entry.body.querySelector(`.qownchoice[data-question="${index}"]`);
+      if (typed && (!own || own.checked)) values.push(typed);
       return { question: question.question, values };
     });
   }
 
-  /// Paints a card from its item: a waiting one offers the fields, and an
-  /// answered one keeps only what it was answered with.
+  /// The buttons a step offers: the dismissal, `Back` while there is one to go
+  /// back to, and `Next` — `Submit` on the last question, which is where the
+  /// whole set is sent.
+  function paintQuestionActions(entry) {
+    const count = (entry.item.questions || []).length;
+    const last = entry.stepIndex + 1 >= count;
+    entry.actions.textContent = "";
+    const dismiss = document.createElement("button");
+    dismiss.type = "button";
+    dismiss.className = "ghost";
+    dismiss.textContent = "Dismiss";
+    dismiss.title = "Answer nothing and let the agent continue with its own default";
+    dismiss.addEventListener("click", () =>
+      vscode.postMessage({ k: "question", requestId: entry.item.requestId, answers: [] }),
+    );
+    entry.actions.appendChild(dismiss);
+    if (entry.stepIndex > 0) {
+      const back = document.createElement("button");
+      back.type = "button";
+      // Whichever button leads the group on the right carries the margin that
+      // pushes it there, since Back is only there once there is one.
+      back.className = "ghost qback";
+      back.textContent = "Back";
+      back.title = "Go back to the previous question";
+      back.addEventListener("click", () => {
+        entry.stepIndex -= 1;
+        paintQuestionStep(entry);
+      });
+      entry.actions.appendChild(back);
+    }
+    const next = document.createElement("button");
+    next.type = "button";
+    next.className = entry.stepIndex > 0 ? "primary" : "primary qlead";
+    next.textContent = last ? "Submit" : "Next";
+    next.title = last ? "Send these answers to the agent" : "Go to the question after this one";
+    next.addEventListener("click", () => {
+      if (!last) {
+        entry.stepIndex += 1;
+        paintQuestionStep(entry);
+        return;
+      }
+      vscode.postMessage({
+        k: "question",
+        requestId: entry.item.requestId,
+        answers: collectAnswers(entry),
+      });
+    });
+    entry.actions.appendChild(next);
+    const hint = document.createElement("span");
+    hint.className = "awaiting";
+    hint.textContent = "Waiting for your answer…";
+    entry.actions.appendChild(hint);
+  }
+
+  /// Paints the step on screen: how many questions there are and which one this
+  /// is, the question itself with its own header above it, and the buttons this
+  /// position allows. Only the question being asked has its fields shown; the
+  /// other blocks stay where they are, holding what was answered in them.
+  function paintQuestionStep(entry) {
+    const questions = entry.item.questions || [];
+    const count = questions.length;
+    const index = Math.min(Math.max(entry.stepIndex || 0, 0), count - 1);
+    entry.stepIndex = index;
+    const question = questions[index] || {};
+    // One question needs no counter: there is nothing to step through.
+    entry.step.hidden = count < 2;
+    entry.steplabel.textContent = count < 2 ? "" : `${index + 1} of ${count} questions`;
+    entry.dashes.textContent = "";
+    for (let position = 0; count > 1 && position < count; position += 1) {
+      const dash = document.createElement("span");
+      dash.className = `qdash ${
+        position < index ? "done" : position === index ? "current" : "todo"
+      }`;
+      entry.dashes.appendChild(dash);
+    }
+    // The card's own title already names a question that was asked on its own,
+    // so a single question is not said twice.
+    const title = String(entry.item.title || "");
+    entry.kicker.textContent = question.header && question.header !== title ? question.header : "";
+    entry.kicker.hidden = !entry.kicker.textContent;
+    entry.text.textContent = String(question.question || "");
+    entry.text.hidden = !entry.text.textContent || entry.text.textContent === title;
+    entry.hint.textContent = questionHint(question);
+    entry.hint.hidden = !entry.hint.textContent;
+    for (const [position, block] of entry.blocks.entries()) {
+      block.hidden = position !== index;
+    }
+    paintQuestionActions(entry);
+  }
+
+  /// Paints a card from its item: a waiting one is built question by question
+  /// and painted on the first of them, and an answered one keeps only what it
+  /// was answered with.
   function paintQuestion(entry) {
     const item = entry.item;
     const waiting = item.state === "pending";
@@ -809,6 +940,7 @@
     entry.el.classList.toggle("answered", item.state === "answered");
     entry.body.textContent = "";
     entry.actions.textContent = "";
+    entry.blocks = [];
     if (!waiting) {
       const done = document.createElement("span");
       done.className = "qdone";
@@ -816,36 +948,35 @@
       entry.actions.appendChild(done);
       return;
     }
+    const step = document.createElement("div");
+    step.className = "qstep";
+    const steplabel = document.createElement("span");
+    steplabel.className = "qsteplabel";
+    const dashes = document.createElement("span");
+    dashes.className = "qdashes";
+    step.append(steplabel, dashes);
+    const heading = document.createElement("div");
+    heading.className = "qheading";
+    const kicker = document.createElement("div");
+    kicker.className = "qheader";
+    const text = document.createElement("p");
+    text.className = "qtext";
+    const hint = document.createElement("div");
+    hint.className = "qhint";
+    heading.append(kicker, text, hint);
+    entry.body.append(step, heading);
     for (const [index, question] of (item.questions || []).entries()) {
-      entry.body.appendChild(questionBlock(question, index));
+      const block = questionBlock(question, index);
+      entry.blocks.push(block);
+      entry.body.appendChild(block);
     }
-    const answer = document.createElement("button");
-    answer.type = "button";
-    answer.className = "primary";
-    answer.textContent = "Answer";
-    answer.title = "Send these answers to the agent";
-    answer.addEventListener("click", () =>
-      vscode.postMessage({
-        k: "question",
-        requestId: item.requestId,
-        answers: collectAnswers(entry),
-      }),
-    );
-    // Skip is a dismissal, not a set of blank answers: the CLI tells the model
-    // nobody answered, so it continues with a default instead of waiting.
-    const skip = document.createElement("button");
-    skip.type = "button";
-    skip.className = "ghost";
-    skip.textContent = "Skip";
-    skip.title = "Answer nothing and let the agent continue with its own default";
-    skip.addEventListener("click", () =>
-      vscode.postMessage({ k: "question", requestId: item.requestId, answers: [] }),
-    );
-    entry.actions.append(answer, skip);
-    const hint = document.createElement("span");
-    hint.className = "awaiting";
-    hint.textContent = "Waiting for your answer…";
-    entry.actions.appendChild(hint);
+    entry.step = step;
+    entry.steplabel = steplabel;
+    entry.dashes = dashes;
+    entry.kicker = kicker;
+    entry.text = text;
+    entry.hint = hint;
+    paintQuestionStep(entry);
   }
 
   // ---------- transcript items ----------

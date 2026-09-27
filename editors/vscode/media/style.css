@@ -478,42 +478,115 @@ pre,
   padding: 2px 8px 0;
 }
 
-.qblock + .qblock {
-  margin-top: 8px;
+/* The `hidden` attribute has to beat the `display` the step and a block are
+   laid out with, since only one question is ever shown. */
+.qstep[hidden],
+.qblock[hidden],
+.qheader[hidden],
+.qtext[hidden],
+.qhint[hidden] {
+  display: none;
+}
+
+/* Where in the questions the reader is, and a dash per question with the one
+   being asked filled in and the ones behind it filled too and dimmed. */
+.qstep {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 4px 0 2px;
+  font-size: 0.8em;
+  color: var(--vscode-descriptionForeground);
+}
+
+.qdashes {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.qdash {
+  width: 12px;
+  height: 2px;
+  border-radius: 1px;
+  background: var(--vscode-panel-border, rgba(128, 128, 128, 0.3));
+}
+
+.qdash.current {
+  width: 18px;
+  background: var(--vscode-focusBorder, var(--vscode-charts-blue, #4a9eff));
+}
+
+.qdash.done {
+  background: var(--vscode-focusBorder, var(--vscode-charts-blue, #4a9eff));
+  opacity: 0.45;
 }
 
 .qheader {
   font-size: 0.8em;
   font-weight: 600;
   color: var(--vscode-descriptionForeground);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
 }
 
 .qtext {
   margin: 2px 0 4px;
+  font-weight: 600;
 }
 
+.qhint {
+  margin-bottom: 6px;
+  font-size: 0.8em;
+  color: var(--vscode-descriptionForeground);
+}
+
+/* An option is a card: the widget, the label, and what choosing it means under
+   the label, which is where the dialog it follows puts it. */
 .qoption {
-  display: flex;
+  display: grid;
+  grid-template-columns: auto 1fr;
   align-items: baseline;
-  gap: 6px;
-  padding: 2px 0;
+  column-gap: 6px;
+  row-gap: 1px;
+  padding: 5px 7px;
+  border: 1px solid var(--vscode-panel-border, rgba(128, 128, 128, 0.3));
+  border-radius: 6px;
   cursor: pointer;
+}
+
+.qoption + .qoption,
+.qfree {
+  margin-top: 4px;
+}
+
+.qoption:hover {
+  border-color: var(--vscode-focusBorder, var(--vscode-charts-blue, #4a9eff));
 }
 
 .qoption:hover .qlabel {
   color: var(--vscode-textLink-foreground);
 }
 
+.qoption input {
+  grid-row: 1 / span 2;
+}
+
 .qdetail {
+  grid-column: 2;
   font-size: 0.85em;
   color: var(--vscode-descriptionForeground);
+}
+
+.qown {
+  border-style: dashed;
 }
 
 .qfree {
   width: 100%;
   box-sizing: border-box;
-  margin-top: 4px;
-  padding: 3px 6px;
+  padding: 4px 6px;
   color: inherit;
   background: var(--vscode-input-background);
   border: 1px solid var(--vscode-input-border, transparent);
@@ -543,6 +616,13 @@ pre,
 .qactions .awaiting {
   font-size: 0.8em;
   color: var(--vscode-descriptionForeground);
+}
+
+/* The answers sit at the right edge, with the dismissal left where it is out of
+   the way of the button that moves the card on. */
+.qactions .qlead,
+.qactions .qback {
+  margin-left: auto;
 }
 
 .question.answered .qdone {

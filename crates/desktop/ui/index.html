@@ -130,13 +130,20 @@
     </div>
 
     <div id="question" class="overlay" hidden>
-      <div class="dialog">
+      <div class="dialog question-dialog">
+        <div id="question-step-row" class="question-step" hidden>
+          <span id="question-step">1 of 2 questions</span>
+          <span id="question-progress" class="question-progress"></span>
+        </div>
+        <div id="question-header" class="question-kicker" hidden></div>
         <h2 id="question-title">Question</h2>
-        <p class="dialog-sub">Oxide needs an answer before it continues.</p>
+        <p id="question-hint" class="dialog-sub" hidden></p>
         <div id="question-body" class="question-body"></div>
-        <div class="dialog-actions">
-          <button id="question-dismiss" class="ghost">Skip</button>
-          <button id="question-submit" class="primary">Answer</button>
+        <div class="dialog-actions question-actions">
+          <button id="question-dismiss" class="ghost">Dismiss</button>
+          <span class="spacer"></span>
+          <button id="question-back" class="ghost" hidden>Back</button>
+          <button id="question-submit" class="primary">Next</button>
         </div>
       </div>
     </div>

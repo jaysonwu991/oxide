@@ -265,13 +265,19 @@ with a `quit` frame when `agent_end` arrives, so the process exits on its own.
 - **Questions** — a turn always starts with `--ask-questions`, so a skill that
   needs a decision reaches the panel instead of the model guessing. The `ask`
   tool's request arrives as a `question_request` event and becomes a card in the
-  transcript: one block per question, with a radio group (the first option
-  preselected) or, for a list where several labels may be picked, checkboxes,
-  plus a field for an answer in the user's own words — so a question with no
-  options is still answerable. **Answer** posts what was ticked and typed as a
-  `question` frame (`core/questions.ts`; `chat.ts::answerQuestion` →
-  `cli.ts`), **Skip** answers with nothing at all, which the agent reports to the
-  model as a question nobody answered, and the card then shows the answer it was
+  transcript, asked one question at a time: `N of M questions` with a dash per
+  question beside it (neither on a card that asks only one), the question under
+  its own header, and its options as rows — a radio group (the first option
+  preselected) or, for a list where several labels may be picked, checkboxes —
+  with a description under each label and, for a single choice, a row asking for
+  an answer in the user's own words with its field under it, so a question with
+  no options is still answerable and the typed text answers it instead of riding
+  beside a picked label. **Next** walks to the question after this one (**Back**
+  returns to it, keeping what was already answered), and the last step's
+  **Submit** posts the whole set as a `question` frame (`core/questions.ts`;
+  `chat.ts::answerQuestion` → `cli.ts`), while **Dismiss** answers with nothing
+  at all, which the agent reports to the model as a question nobody answered, and
+  the card then shows the answer it was
   answered with — a submission with nothing filled in is sent as that same
   dismissal rather than as a set of blank answers, so both reach the model
   alike. A card is settled when the CLI gives up on the request (a
@@ -649,8 +655,9 @@ command is started from, and the transcript state machine — plus, in
 the titles a card shows and the request frames the CLI reads, in
 `test/questions.test.ts`, the same for a skill's question — the request a
 `question_request` event becomes, the answers the webview posts back (a blank
-form among them, which is the dismissal Skip posts), the title and settled label
-a card carries, and the frames the CLI reads — in
+form among them, which is the dismissal Dismiss posts, and the answers an earlier
+step kept when a later one is submitted), the title and settled label a card
+carries, and the frames the CLI reads — in
 `test/views.test.ts`, that the chat view ids the host
 registers match the views `package.json` contributes, in `test/brand.test.ts`,
 that the two icons stay the desktop app's, in `test/commands.test.ts`, that
@@ -671,8 +678,8 @@ commands the panel owns are performed (checked against the real catalog in
 `test/palette.test.ts`) — and in
 `test/webview.test.ts`, that `media/main.js` — plain JavaScript with no type
 checking — paints the footer, the chips, the attachment strip, the approval
-card, a question card's options and free-text fields and the answers a click
-posts,
+card, a question card's steps, options and free-text fields and the answers a
+click posts,
 the `/mcps` and `/sessions` listings (and the full-size image a thumbnail
 opens), the tracked file's dashed chip and the empty box it cannot send on its
 own, and the rows of the `@` completion with the keys that walk, take and close

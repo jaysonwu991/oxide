@@ -187,7 +187,7 @@ describe("question frame", () => {
   });
 
   it("sends a submission with nothing filled in as that same dismissal", () => {
-    // Answering an empty form and pressing Skip tell the model the same thing;
+    // Answering an empty form and pressing Dismiss tell the model the same thing;
     // a set of blank answers would reach it as questions it did fill in.
     assert.deepEqual(parsed(questionFrame(6, [{ question: "Anything to add?", values: [] }])), {
       type: "question",

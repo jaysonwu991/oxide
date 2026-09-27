@@ -1311,75 +1311,158 @@ async function answerApproval(decision) {
 // ---------- questions ----------
 
 // A skill that needs a decision asks through the `ask` tool, and the answer is
-// painted here: one block per question, each a list of options (radio buttons,
-// or checkboxes when several may be picked) plus a free-text field, so a
-// question with no options is still answerable. The dialog is built from the
-// request's own data, which is also what the model laid out.
+// painted here one question at a time, the way the dialog it is modelled on
+// reads: the question's own wording, its options as rows (radio buttons, or
+// checkboxes when several may be picked) with a row for an answer in the user's
+// own words, and `Next` walking to the question after it. A call that asks
+// several things shows `N of M questions` with a dash per question beside it,
+// so the reader always knows which one is being asked. Every question's fields
+// stay built, so stepping back keeps what was already answered.
 function showQuestion(request) {
   const questions = Array.isArray(request.questions) ? request.questions : [];
   if (!questions.length) return;
-  state.pendingQuestion = { id: request.id, questions };
-  // The core's title rule, and the extension's: the *first* question's header,
-  // else that question itself, so both front-ends name the same dialog.
-  const first = questions[0];
-  el("question-title").textContent = first.header || first.question;
+  state.pendingQuestion = { id: request.id, questions, index: 0 };
   const body = el("question-body");
   body.replaceChildren();
-  questions.forEach((question, index) => {
-    const block = document.createElement("div");
-    block.className = "question";
-    if (question.header) {
-      const header = document.createElement("div");
-      header.className = "question-header";
-      header.textContent = question.header;
-      block.appendChild(header);
-    }
-    const text = document.createElement("p");
-    text.className = "question-text";
-    text.textContent = question.question;
-    block.appendChild(text);
-    const options = Array.isArray(question.options) ? question.options : [];
-    const name = `question-${index}`;
-    options.forEach((option, position) => {
-      const row = document.createElement("label");
-      row.className = "question-option";
-      const input = document.createElement("input");
-      input.type = question.multiSelect ? "checkbox" : "radio";
-      input.name = name;
-      input.value = option.label;
-      input.dataset.question = String(index);
-      // Every option carries the same class: a single-select question's answer
-      // is the checked radio, a multi-select one's the checked boxes, and the
-      // widget itself already says which it is.
-      input.className = "question-choice";
-      const label = document.createElement("span");
-      label.className = "question-label";
-      label.textContent = option.label;
-      row.appendChild(input);
-      row.appendChild(label);
-      if (option.description) {
-        const description = document.createElement("span");
-        description.className = "question-detail";
-        description.textContent = option.description;
-        row.appendChild(description);
-      }
-      block.appendChild(row);
-      // A single-select list needs one of its options chosen, never a blank
-      // group the user can submit by accident.
-      if (!question.multiSelect && position === 0) input.checked = true;
-    });
-    const free = document.createElement("input");
-    free.className = "question-free";
-    free.type = "text";
-    free.placeholder = options.length ? "Or type an answer…" : "Type an answer…";
-    free.dataset.question = String(index);
-    block.appendChild(free);
-    body.appendChild(block);
-  });
+  questions.forEach((question, index) => body.appendChild(questionBlock(question, index)));
   closeOverlays("question");
   el("question").hidden = false;
-  const focus = body.querySelector(".question-free");
-  if (focus) focus.focus();
+  showQuestionStep(0);
+}
+
+// The fields of one question: its options, then the row that takes an answer in
+// the user's own words. A single choice offers that row the way the dialog does
+// — as one of the choices, with its field under it — so the typed text is the
+// answer instead of a second one beside the picked label.
+function questionBlock(question, index) {
+  const block = document.createElement("div");
+  block.className = "question";
+  block.hidden = true;
+  const options = Array.isArray(question.options) ? question.options : [];
+  const name = `question-${index}`;
+  options.forEach((option, position) => {
+    const row = document.createElement("label");
+    row.className = "question-option";
+    const input = document.createElement("input");
+    input.type = question.multiSelect ? "checkbox" : "radio";
+    input.name = name;
+    input.value = option.label;
+    input.dataset.question = String(index);
+    // Every option carries the same class: a single-select question's answer
+    // is the checked radio, a multi-select one's the checked boxes, and the
+    // widget itself already says which it is.
+    input.className = "question-choice";
+    const label = document.createElement("span");
+    label.className = "question-label";
+    label.textContent = option.label;
+    row.appendChild(input);
+    row.appendChild(label);
+    if (option.description) {
+      const description = document.createElement("span");
+      description.className = "question-detail";
+      description.textContent = option.description;
+      row.appendChild(description);
+    }
+    block.appendChild(row);
+    // A single-select list needs one of its options chosen, never a blank
+    // group the user can submit by accident.
+    if (!question.multiSelect && position === 0) input.checked = true;
+  });
+  const free = document.createElement("input");
+  free.className = "question-free";
+  free.type = "text";
+  free.dataset.question = String(index);
+  if (options.length && !question.multiSelect) {
+    const row = document.createElement("label");
+    row.className = "question-option question-own";
+    const own = document.createElement("input");
+    own.type = "radio";
+    own.name = name;
+    // The row's own value is empty, so the collector never sends its label as
+    // an answer: choosing it is what lets the typed text answer instead.
+    own.value = "";
+    own.dataset.question = String(index);
+    own.className = "question-choice question-own-choice";
+    const label = document.createElement("span");
+    label.className = "question-label";
+    label.textContent = "Type your own answer";
+    free.placeholder = "Type your answer…";
+    own.addEventListener("change", () => {
+      if (own.checked) free.focus();
+    });
+    free.addEventListener("input", () => {
+      // Typing is what picks the row, so the caret never sits in a field whose
+      // text the answer ignores.
+      if (free.value.trim()) own.checked = true;
+    });
+    row.append(own, label);
+    block.append(row, free);
+  } else {
+    free.placeholder = options.length ? "Or type your own answer…" : "Type your answer…";
+    block.appendChild(free);
+  }
+  return block;
+}
+
+// Paints the step on screen: the question being asked, how many there are, and
+// the navigation this position allows. The block itself is already built, so
+// stepping only shows and hides.
+function showQuestionStep(index) {
+  const pending = state.pendingQuestion;
+  if (!pending) return;
+  const total = pending.questions.length;
+  pending.index = Math.min(Math.max(index, 0), total - 1);
+  const question = pending.questions[pending.index] || {};
+  const options = Array.isArray(question.options) ? question.options : [];
+  const blocks = Array.from(el("question-body").children);
+  blocks.forEach((block, position) => {
+    block.hidden = position !== pending.index;
+  });
+  // One question needs no counter: there is nothing to step through.
+  el("question-step-row").hidden = total < 2;
+  el("question-step").textContent = `${pending.index + 1} of ${total} questions`;
+  const progress = el("question-progress");
+  progress.replaceChildren();
+  if (total > 1) {
+    for (let position = 0; position < total; position += 1) {
+      const dash = document.createElement("span");
+      dash.className = `question-dash ${position < pending.index ? "done" : position === pending.index ? "current" : "todo"}`;
+      progress.appendChild(dash);
+    }
+  }
+  const header = el("question-header");
+  header.textContent = question.header || "";
+  header.hidden = !question.header;
+  el("question-title").textContent = question.question || "";
+  const hint = el("question-hint");
+  hint.textContent = options.length
+    ? question.multiSelect
+      ? "Select all that apply"
+      : "Select one answer"
+    : "";
+  hint.hidden = !hint.textContent;
+  el("question-back").hidden = pending.index === 0;
+  el("question-submit").textContent = pending.index + 1 < total ? "Next" : "Submit";
+  const block = blocks[pending.index];
+  // A question answered in the user's own words puts the caret where the answer
+  // goes; one that offers options is left alone, so a keystroke is not taken by
+  // a field nobody was asked to fill in.
+  if (block && !options.length) {
+    const focus = block.querySelector(".question-free");
+    if (focus) focus.focus();
+  }
+}
+
+// `Next` moves to the question after this one and only the last step submits,
+// since the agent reads one set of answers for the whole call.
+function questionNext() {
+  const pending = state.pendingQuestion;
+  if (!pending) return;
+  if (pending.index + 1 < pending.questions.length) {
+    showQuestionStep(pending.index + 1);
+    return;
+  }
+  answerQuestion(false);
 }
 
 // Every answer echoes the question it belongs to, so the model reads them in
@@ -1387,16 +1470,21 @@ function showQuestion(request) {
 function collectAnswers() {
   const pending = state.pendingQuestion;
   if (!pending) return [];
+  const body = el("question-body");
   return pending.questions.map((question, index) => {
     const values = [];
-    el("question-body")
+    body
       .querySelectorAll(`.question-choice[data-question="${index}"]:checked`)
-      .forEach((input) => values.push(input.value));
-    const text = el("question-body").querySelector(
-      `.question-free[data-question="${index}"]`,
-    );
+      .forEach((input) => {
+        const value = String(input.value || "").trim();
+        if (value) values.push(value);
+      });
+    const text = body.querySelector(`.question-free[data-question="${index}"]`);
     const typed = text ? text.value.trim() : "";
-    if (typed) values.push(typed);
+    // Only a single choice has a row asking for the user's own words, and its
+    // text answers the question when that row is the chosen one.
+    const own = body.querySelector(`.question-own-choice[data-question="${index}"]`);
+    if (typed && (!own || own.checked)) values.push(typed);
     return { question: question.question, values };
   });
 }
@@ -1409,10 +1497,10 @@ function closeQuestion() {
   el("question").hidden = true;
 }
 
-// `dismiss` (Skip) answers with nothing, which the agent reports to the model as
-// a question the user did not answer. A submission with nothing filled in is
+// `dismiss` (Dismiss) answers with nothing, which the agent reports to the model
+// as a question the user did not answer. A submission with nothing filled in is
 // that same dismissal rather than a set of blank answers, so the agent reads it
-// the way the dialog's own Skip does.
+// the way the dialog's own Dismiss does.
 async function answerQuestion(dismiss = false) {
   const pending = state.pendingQuestion;
   if (!pending) return;
@@ -2608,7 +2696,8 @@ function init() {
   el("approval-once").onclick = () => answerApproval("once");
   el("approval-always").onclick = () => answerApproval("always");
   el("approval-deny").onclick = () => answerApproval("deny");
-  el("question-submit").onclick = () => answerQuestion(false);
+  el("question-submit").onclick = () => questionNext();
+  el("question-back").onclick = () => showQuestionStep((state.pendingQuestion?.index ?? 0) - 1);
   el("question-dismiss").onclick = () => answerQuestion(true);
   el("login-cancel").onclick = () => (el("connect-modal").hidden = true);
   el("login-save").onclick = saveConnect;
