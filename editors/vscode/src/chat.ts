@@ -797,6 +797,10 @@ export class ChatController {
 
   // ---------- sessions ----------
 
+  /// Leaves the thread the panel is showing and puts it back on the new-chat
+  /// page: the transcript is cleared, the thread's id is dropped (so the next
+  /// message starts a session of its own rather than appending to the one that
+  /// was open), and the view paints the welcome page it starts on.
   newSession(): void {
     if (this.turn) {
       // Resetting now would apply the running process's later events to the new
@@ -811,13 +815,13 @@ export class ChatController {
     this.queue = [];
     this.clearChips();
     this.broadcast(this.stateMessage());
-    this.showNotice("New session: the next message starts a fresh thread.");
+    this.showNotice("New chat: the next message starts a thread of its own.");
   }
 
   /// Opens the session history in the panel: the threads the CLI lists for this
   /// project, so the dialog and the terminal agree on what exists. The listing
-  /// is shown as soon as it arrives; a row either resumes a session or leaves
-  /// the current one behind.
+  /// is shown as soon as it arrives; a row either resumes a session, leaves the
+  /// current one for a fresh chat, or continues the newest thread.
   async resumeSession(): Promise<void> {
     const cwd = this.cwd();
     if (!cwd) {
@@ -828,17 +832,17 @@ export class ChatController {
       this.showNotice("A turn is running; stop it before switching sessions.", "warn");
       return;
     }
-    this.showDialog(sessionDialog(this.sessions, "Loading sessions…"));
+    this.showDialog(sessionDialog(this.sessions, "Loading sessions…", this.transcript.sessionId));
     const result = await runCapture(this.binary(), sessionsListArgs(), cwd);
     if (result.error || result.code !== 0) {
       const detail = result.error || firstLine(result.stderr) || `exit ${result.code}`;
       const failed = `Could not list sessions: ${detail}`;
       this.showNotice(failed, "error");
-      this.showDialog(sessionDialog(this.sessions, failed));
+      this.showDialog(sessionDialog(this.sessions, failed, this.transcript.sessionId));
       return;
     }
     this.sessions = parseSessionList(result.stdout);
-    this.showDialog(sessionDialog(this.sessions));
+    this.showDialog(sessionDialog(this.sessions, "", this.transcript.sessionId));
   }
 
   continueSession(): void {
@@ -865,7 +869,11 @@ export class ChatController {
       // The dialog stays open with the reason in place rather than closing over
       // a notice painted behind it.
       this.showDialog(
-        sessionDialog(this.sessions, "A turn is running; stop it before switching sessions."),
+        sessionDialog(
+          this.sessions,
+          "A turn is running; stop it before switching sessions.",
+          this.transcript.sessionId,
+        ),
       );
       return;
     }

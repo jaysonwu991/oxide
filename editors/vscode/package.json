@@ -87,7 +87,7 @@
       },
       {
         "command": "oxide.newSession",
-        "title": "New Session",
+        "title": "New Chat",
         "category": "Oxide",
         "icon": "$(add)"
       },

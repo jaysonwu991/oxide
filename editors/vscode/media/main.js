@@ -774,13 +774,21 @@
     entry.el.dataset.id = String(item.id);
     entries.set(item.id, entry);
     transcript.appendChild(entry.el);
-    empty.hidden = true;
+    if (isConversation(item)) empty.hidden = true;
     if (item.kind === "assistant") renderAssistant(entry);
     else if (item.kind === "thinking") entry.el.textContent = item.text;
     else if (item.kind === "tool") paintTool(entry);
     else if (item.kind === "approval") paintApproval(entry);
     scrollDown(keepScroll);
     return entry;
+  }
+
+  /// Whether an item is a message rather than a line about the page. The
+  /// welcome block is the new-chat page, and a notice (a closed thread, a
+  /// folder that was not opened, a listing that failed) is painted on it: it is
+  /// still the page until something is actually said in it.
+  function isConversation(item) {
+    return item.kind !== "notice";
   }
 
   function apply(message) {
@@ -793,7 +801,7 @@
         entries.clear();
         transcript.innerHTML = "";
         transcript.appendChild(empty);
-        empty.hidden = message.items.length > 0;
+        empty.hidden = message.items.some(isConversation);
         transcript.classList.toggle("hide-thinking", message.showThinking === false);
         titleLabel.textContent = message.title || "New chat";
         for (const item of message.items) appendItem(item, false);
@@ -1094,15 +1102,23 @@
   /// The dialog the host composes (`src/core/dialogs.ts`): the MCP server list
   /// and the session history, painted here rather than in a QuickPick — which
   /// takes over the window, hides the transcript the listing is about, and
-  /// cannot be answered while a turn streams. It opens out of the footer
-  /// (`#dialog` sits above it in the panel's own flow), and a row arrives with
-  /// the action it posts, so the view decides nothing about what a click means.
+  /// cannot be answered while a turn streams. It is one element either way
+  /// (`#dialog` sits under the header, ahead of the transcript, in the panel's
+  /// own flow) and the host says which end it belongs to: `.pin-footer` moves
+  /// it above the footer with CSS `order`, so the MCP list grows up from the
+  /// composer block the `/mcps` was typed in while the session list keeps
+  /// dropping from the header it is about. A row arrives with the action it
+  /// posts, so the view decides nothing about what a click means.
   function setDialog(dialog) {
     dialogList.innerHTML = "";
     if (!dialog) {
+      // The class is dropped with it: a hidden element's siblings would still be
+      // ordered around it, and the next listing says which end it wants.
+      dialogBox.classList.remove("pin-footer");
       dialogBox.hidden = true;
       return;
     }
+    dialogBox.classList.toggle("pin-footer", dialog.pin === "footer");
     dialogTitle.textContent = dialog.title || "";
     dialogSub.textContent = dialog.subtitle || "";
     dialogSub.hidden = !dialog.subtitle;

@@ -57,6 +57,9 @@ describe("MCP dialog", () => {
   it("paints one row per server, in the name order the listing arrives in", () => {
     const dialog = mcpDialog(parseMcpList(listing));
     assert.equal(dialog.title, "MCP servers");
+    // It grows up from the composer: that is where the `/mcps` that opens it was
+    // typed, so the listing stays where the words that asked for it are.
+    assert.equal(dialog.pin, "footer");
     assert.equal(dialog.refreshLabel, "Recheck");
     assert.deepEqual(
       dialog.rows.map((row) => row.label),
@@ -121,6 +124,9 @@ describe("session dialog", () => {
   it("offers the two ways out of the current thread first", () => {
     const dialog = sessionDialog(sessions);
     assert.equal(dialog.title, "Sessions");
+    // It drops from the header: the header names the thread the listing is
+    // about, and the "New chat" row is about leaving that one.
+    assert.equal(dialog.pin, "header");
     assert.deepEqual(
       dialog.rows.map((row) => row.value),
       [NEW_SESSION, CONTINUE_SESSION, "fe0031b1", "7c8031b1"],
@@ -144,6 +150,30 @@ describe("session dialog", () => {
     assert.deepEqual(
       dialog.rows.map((row) => row.icon),
       ["", "", "trash", "trash"],
+    );
+    // With no thread open there is nothing to close, so the row offers a fresh
+    // chat rather than claiming it closes one.
+    assert.equal(dialog.rows[0].label, "New chat");
+    assert.equal(dialog.rows[0].detail, "Start a fresh thread");
+    assert.equal(dialog.rows[1].status, "", "and neither row carries the mark");
+  });
+
+  /// Closing the thread you are in and landing on the new-chat page is the row
+  /// at the top, so the row says what it closes and the list says which thread
+  /// that is: without the mark, "close this thread" names nothing.
+  it("spells out closing the open thread, and marks it in the listing", () => {
+    const dialog = sessionDialog(sessions, "", "fe0031b1");
+    assert.equal(dialog.rows[0].label, "New chat");
+    assert.equal(dialog.rows[0].detail, "Close this thread and start a fresh one");
+    assert.equal(dialog.rows[2].status, "Current");
+    // The age it reported still describes the thread, so the mark replaces the
+    // row's age rather than its message count.
+    assert.equal(dialog.rows[2].detail, "195 messages");
+    assert.equal(dialog.rows[3].status, "7m ago", "every other row keeps its age");
+    // A thread resumed from a listing that has since been renamed, or one the
+    // CLI no longer lists, leaves no row marked rather than one marked wrongly.
+    assert.ok(
+      sessionDialog(sessions, "", "deadbeef").rows.every((row) => row.status !== "Current"),
     );
   });
 
@@ -182,6 +212,9 @@ describe("delete-thread confirmation", () => {
   it("names the thread, and puts the deletion in a row of its own", () => {
     const dialog = deleteSessionDialog(thread);
     assert.equal(dialog.title, "Delete thread");
+    // It replaces the session listing it was opened from, so it stays where
+    // that one was rather than jumping to the other end of the panel.
+    assert.equal(dialog.pin, "header");
     assert.match(dialog.subtitle, /Create VS Code Extension for Oxide/);
     assert.match(dialog.note, /cannot be undone/);
     assert.deepEqual(

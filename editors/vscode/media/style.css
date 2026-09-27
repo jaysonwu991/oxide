@@ -930,25 +930,68 @@ footer {
 /* ---------- dialogs ---------- */
 
 /* The MCP server list and the session history are painted by the panel itself
-   rather than a QuickPick, and they open out of the footer: `#dialog` is a flex
-   child of the panel sitting directly above the footer, so it grows upward from
-   the footer's top edge and stays attached to it however the transcript moves.
-   Nothing is dimmed behind it — the rows arrive from the host as data, and the
-   list scrolls once it has taken its share of the height. */
+   rather than a QuickPick, and both are the one `#dialog` flex child: it sits
+   directly under the header in the markup, so a header-pinned listing drops
+   from the header's bottom edge and stays attached to it however the transcript
+   moves. The host says which listing is up (`pin` in `core/dialogs.ts`): the
+   MCP list is the one that belongs to the composer, so `.pin-footer` gives it
+   an `order` that puts it above the footer instead — growing upward from the
+   footer's top edge, the way the `/mcps` that opened it was typed — with the
+   transcript ordered between the two, so either way it is the transcript that
+   gives up the room. Nothing is dimmed behind a dialog — the rows arrive from
+   the host as data, and the list scrolls once it has taken its share of the
+   height.
+
+   It never shrinks, and that is the second half of the same point: an item whose
+   own content is its flex base size loses a shrink contest against a transcript
+   thousands of pixels tall, so the dialog used to open a row or two high with
+   the rest of the list scrolling inside a sliver. The transcript absorbs the
+   height instead, and the cap's px floor keeps that from pushing the composer
+   — grown to its own maximum — off the bottom of a short panel, whichever end
+   the listing hangs from. */
 #dialog {
-  flex: 0 1 auto;
+  /* One edge is always missing: the one against the panel's own border, header
+     above or composer below, is what closes the sheet. */
+  --dialog-line: var(--vscode-widget-border, var(--vscode-panel-border, rgba(128, 128, 128, 0.35)));
+  --dialog-edge: 1px solid var(--dialog-line);
+  flex: 0 0 auto;
+  position: relative;
+  z-index: 1;
   display: flex;
   flex-direction: column;
   min-height: 0;
-  max-height: 62%;
-  /* The footer's own top border closes the shape, so it reads as one sheet. */
-  margin: 0 8px -1px;
+  max-height: min(62%, calc(100% - 290px));
+  /* The header's own bottom border closes the sheet when it is pinned there. */
+  margin: -1px 8px 0;
   padding: 8px 4px 6px;
-  border: 1px solid var(--vscode-widget-border, var(--vscode-panel-border, rgba(128, 128, 128, 0.35)));
+  border: var(--dialog-edge);
+  border-top: none;
+  border-radius: 0 0 8px 8px;
+  background: var(--vscode-editorWidget-background, var(--vscode-sideBar-background));
+  box-shadow: 0 10px 24px rgba(0, 0, 0, 0.28);
+}
+
+/* The composer's listing: the same sheet turned around. The footer's own top
+   border closes it, and the shadow is cast upward because that is the way it
+   grows. Its `order` is what places it — the markup keeps the one position a
+   transcript can be laid out around, and `#transcript` and the footer follow it
+   so the listing takes its room from the transcript rather than pushing the
+   composer down. */
+#dialog.pin-footer {
+  order: 2;
+  margin: 0 8px -1px;
+  border-top: var(--dialog-edge);
   border-bottom: none;
   border-radius: 8px 8px 0 0;
-  background: var(--vscode-editorWidget-background, var(--vscode-sideBar-background));
   box-shadow: 0 -10px 24px rgba(0, 0, 0, 0.28);
+}
+
+#dialog.pin-footer ~ #transcript {
+  order: 1;
+}
+
+#dialog.pin-footer ~ footer {
+  order: 3;
 }
 
 /* The flex display above would otherwise win over the attribute. */
