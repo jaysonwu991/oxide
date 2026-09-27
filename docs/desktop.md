@@ -224,13 +224,18 @@ the run's `Steering` handles and its cooperative `Cancel` flag. The Tauri comman
 - **Questions** — `ask.rs` implements the `ask` tool's `Asker`, which the turn
   always wires up: when a skill needs a decision the model calls `ask`, the
   broker emits `question-request`, and the UI answers with `resolve_question`.
-  The dialog is one block per question — a radio group (the first option
-  preselected) or checkboxes when several labels may be picked — plus a field
-  for an answer in the user's own words, so a question with no options is still
-  answerable. **Answer** sends what was ticked and typed — a submission with
-  nothing filled in is sent as the same dismissal **Skip** is, so the agent
-  hears one thing — while **Skip** (or <kbd>Esc</kbd>) sends nothing at all,
-  which the agent reports to the model as a question nobody answered. A request
+  The dialog asks one question at a time, the way the dialog it is modelled on
+  reads: `N of M questions` with a dash per question beside it, the question
+  itself under its own header, and its options as rows — a radio group (the first
+  option preselected) or checkboxes when several labels may be picked — with a
+  description under each label and a row asking for an answer in the user's own
+  words with its field under it, so a question with no options is still
+  answerable. **Next** walks to the question after this one (**Back** returns to
+  it, keeping what was already answered), and the last step's **Submit** sends
+  the whole set — a submission with nothing filled in is sent as the same
+  dismissal **Dismiss** is, so the agent hears one thing — while **Dismiss** (or
+  <kbd>Esc</kbd>) sends nothing at all, which the agent reports to the model as a
+  question nobody answered. A request
   that is never answered gives up after the same 5-minute timeout, and the
   broker then emits `question-closed` so the dialog goes away even though the
   turn it belongs to is still running; a turn that ends (or is stopped) takes

@@ -751,7 +751,9 @@ WSL, where the terminal claims `Alt+Up` for scrollback.
 A message can carry images and PDFs, which the provider reads as media. `Ctrl+V`
 pastes a clipboard image — or the file the clipboard holds, so a screenshot
 copied from the Finder attaches the picture itself rather than the pasteboard's
-icon of the file — `@path` names one on disk, and `/attach
+icon of the file; a file copy that arrived from another machine leaves its URL
+behind without the file, and what the pasteboard itself carries is attached
+then — `@path` names one on disk, and `/attach
 [list|remove <id|n>|clear]` lists and edits what is pending; a message queued
 while the agent is busy keeps the attachments it was queued with. In a
 non-interactive run the same parts come from `--image <path>` and from `@path`

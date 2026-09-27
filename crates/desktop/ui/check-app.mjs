@@ -416,8 +416,8 @@ vm.runInThisContext(
     "\nglobalThis.__app = { send, runSlashCommand, state, createProjectState," +
     " openDefaultProject, openCreateProject, addCreateProjectTypedPath, saveCreateProject," +
     " refreshPaletteEntries, paletteMatches, renderPalette, runPaletteEntry," +
-    " addAttachment, addAttachmentFiles, el, showQuestion, answerQuestion," +
-    " collectAnswers, requestAt, acceptAt, moveAt, closeAt, atKey };\n",
+    " addAttachment, addAttachmentFiles, el, showQuestion, showQuestionStep, questionNext," +
+    " answerQuestion, collectAnswers, requestAt, acceptAt, moveAt, closeAt, atKey };\n",
 );
 
 const app = globalThis.__app;
@@ -973,23 +973,42 @@ app.showQuestion({
   ],
 });
 const dialog = elementFor("question-body");
+const blocks = dialog.children;
+/// The dash per question, which says where in the list the reader is.
+const dashes = () => elementFor("question-progress").children;
 check("opened the question dialog", elementFor("question").hidden === false);
 check(
-  "headed it with the question's own header",
-  elementFor("question-title").textContent === "Database",
-  elementFor("question-title").textContent,
+  "asked the question it opens on, with that question's own header above it",
+  elementFor("question-title").textContent === "Which database should the migration target?" &&
+    elementFor("question-header").textContent === "Database" &&
+    elementFor("question-header").hidden === false,
+  `${elementFor("question-header").textContent} / ${elementFor("question-title").textContent}`,
 );
 check(
-  "painted the question text and its options",
-  dialog.outline().includes("Which database should the migration target?") &&
-    dialog.outline().includes("The production store"),
-  dialog.outline(),
+  "counted the questions and marked the one being asked",
+  elementFor("question-step").textContent === "1 of 2 questions" &&
+    elementFor("question-step-row").hidden === false &&
+    dashes().length === 2 &&
+    dashes()[0].className.includes("current") &&
+    dashes()[1].className.includes("todo"),
+  `${elementFor("question-step").textContent} ${dashes().map((dash) => dash.className).join(",")}`,
 );
-const firstBlock = dialog.children[0];
+check(
+  "asked one question at a time",
+  blocks.length === 2 && blocks[0].hidden === false && blocks[1].hidden === true,
+  blocks.map((block) => block.hidden).join(","),
+);
+check(
+  "named the single question's hint",
+  elementFor("question-hint").textContent === "Select one answer" &&
+    elementFor("question-hint").hidden === false,
+  elementFor("question-hint").textContent,
+);
+const firstBlock = blocks[0];
 const optionRows = firstBlock.children.filter((row) => row.tagName === "LABEL");
 check(
   "offered a single answer's options as radios",
-  optionRows.length === 2 && optionRows.every((row) => row.children[0].type === "radio"),
+  optionRows.length === 3 && optionRows.every((row) => row.children[0].type === "radio"),
   dialog.outline(),
 );
 check(
@@ -997,26 +1016,94 @@ check(
   optionRows[0].children[0].checked === true && optionRows[1].children[0].checked === false,
   dialog.outline(),
 );
-const secondBlock = dialog.children[1];
+check(
+  "painted each option's description under its label",
+  firstBlock.outline().includes("The production store"),
+  firstBlock.outline(),
+);
+// The user's own wording is one of the choices, the way the dialog it follows
+// offers it, with the field to type it in under the row.
+check(
+  "offered the user's own answer as a choice with a field under it",
+  optionRows[2].children[1].textContent === "Type your own answer" &&
+    optionRows[2].children[0].value === "" &&
+    firstBlock.querySelector(".question-free").placeholder === "Type your answer…",
+  firstBlock.outline(),
+);
+check(
+  "left the counter and Back out of the first step",
+  elementFor("question-back").hidden === true &&
+    elementFor("question-submit").textContent === "Next",
+  elementFor("question-submit").textContent,
+);
+
+// `Next` walks on, keeping every question's fields built, so stepping back
+// finds what was answered still there.
+optionRows[0].children[0].checked = false;
+optionRows[1].children[0].checked = true;
+// Text left under a picked option is not an answer: only the row asking for the
+// user's own words lets it speak.
+firstBlock.querySelector(".question-free").value = "temporary";
+app.questionNext();
+check(
+  "stepped to the question after it",
+  elementFor("question-step").textContent === "2 of 2 questions" &&
+    elementFor("question-title").textContent === "Which extras?" &&
+    blocks[0].hidden === true &&
+    blocks[1].hidden === false,
+  `${elementFor("question-step").textContent} / ${elementFor("question-title").textContent}`,
+);
+check(
+  "left the header out for a question that has none",
+  elementFor("question-header").hidden === true &&
+    elementFor("question-header").textContent === "",
+  elementFor("question-header").textContent,
+);
+check(
+  "marked the first question as answered and offered to go back",
+  dashes()[0].className.includes("done") &&
+    dashes()[1].className.includes("current") &&
+    elementFor("question-back").hidden === false,
+  dashes().map((dash) => dash.className).join(","),
+);
+check(
+  "named the last step Submit",
+  elementFor("question-submit").textContent === "Submit",
+  elementFor("question-submit").textContent,
+);
+const secondBlock = blocks[1];
 check(
   "offered a multi-select question's options as checkboxes",
   secondBlock.querySelectorAll(".question-choice").every((input) => input.type === "checkbox"),
-  dialog.outline(),
+  secondBlock.outline(),
 );
-// The free-text field answers a question with no options at all, so it is part
-// of every question rather than a fallback for the empty case.
 check(
-  "gave every question a field to type an answer in",
+  "named a multi-select question's hint",
+  elementFor("question-hint").textContent === "Select all that apply",
+  elementFor("question-hint").textContent,
+);
+check(
+  "kept the free-text field part of every question",
   dialog.querySelectorAll(".question-free").length === 2,
   dialog.outline(),
 );
 
-// Pick the second option, add text, tick one box on the multi-select question.
-optionRows[0].children[0].checked = false;
-optionRows[1].children[0].checked = true;
-firstBlock.querySelector(".question-free").value = "temporary";
+// Walking back finds the first question's own answer still painted.
+app.showQuestionStep(0);
+check(
+  "brought back what the first question was answered with",
+  optionRows[1].children[0].checked === true &&
+    optionRows[0].children[0].checked === false &&
+    firstBlock.querySelector(".question-free").value === "temporary",
+  firstBlock.outline(),
+);
+
+// The last step's Submit sends the whole set at once, with the answer the first
+// question kept while its step was away.
+app.questionNext();
 secondBlock.querySelectorAll(".question-choice")[1].checked = true;
-await app.answerQuestion(false);
+secondBlock.querySelector(".question-free").value = "and a third";
+app.questionNext();
 const answered = calls.find(([name]) => name === "resolve_question");
 check("answered the question over the bridge", Boolean(answered), JSON.stringify(calls));
 check(
@@ -1024,13 +1111,55 @@ check(
   answered &&
     answered[1].id === 42 &&
     answered[1].answers[0].question === "Which database should the migration target?" &&
-    JSON.stringify(answered[1].answers[0].values) === '["SQLite","temporary"]' &&
-    JSON.stringify(answered[1].answers[1].values) === '["Fixtures"]',
+    JSON.stringify(answered[1].answers[0].values) === '["SQLite"]' &&
+    JSON.stringify(answered[1].answers[1].values) === '["Fixtures","and a third"]',
   JSON.stringify(answered && answered[1]),
 );
 check("closed the dialog once it was answered", elementFor("question").hidden === true);
 
-// Skip answers with nothing, which is how the model is told the question was
+// The row asking for the user's own words answers in place of the option that
+// was picked, so the label that only means "typing" is never sent as an answer.
+calls.length = 0;
+app.showQuestion({
+  id: 50,
+  questions: [
+    { question: "Which one?", options: [{ label: "Alpha" }, { label: "Beta" }] },
+  ],
+});
+const ownBlock = elementFor("question-body").children[0];
+const ownRows = ownBlock.children.filter((row) => row.tagName === "LABEL");
+ownRows[0].children[0].checked = false;
+ownRows[2].children[0].checked = true;
+ownBlock.querySelector(".question-free").value = "Gamma";
+app.answerQuestion(false);
+const own = calls.find(([name]) => name === "resolve_question");
+check(
+  "sent the typed answer instead of the picked option",
+  own &&
+    own[1].id === 50 &&
+    JSON.stringify(own[1].answers[0].values) === '["Gamma"]',
+  JSON.stringify(own && own[1]),
+);
+
+// A single question is a dialog of its own: no counter, no dashes, no Back.
+calls.length = 0;
+app.showQuestion({
+  id: 51,
+  questions: [{ question: "Proceed?", options: [{ label: "Yes" }, { label: "No" }] }],
+});
+check(
+  "left out the counter for a single question",
+  elementFor("question-step-row").hidden === true && dashes().length === 0,
+  `${elementFor("question-step-row").hidden} ${dashes().length}`,
+);
+check(
+  "offered no Back and named the only step Submit",
+  elementFor("question-back").hidden === true &&
+    elementFor("question-submit").textContent === "Submit",
+  elementFor("question-submit").textContent,
+);
+
+// Dismiss answers with nothing, which is how the model is told the question was
 // dismissed instead of never asked.
 calls.length = 0;
 app.showQuestion({
@@ -1057,8 +1186,9 @@ check(
   JSON.stringify(calls),
 );
 
-// The dialog is named the way the core and the extension name it: the *first*
-// question's own header, else that question itself.
+// Every step carries its own question's header, which is what the dialog it
+// follows reads as the question being asked.
+calls.length = 0;
 app.showQuestion({
   id: 45,
   questions: [
@@ -1067,12 +1197,22 @@ app.showQuestion({
   ],
 });
 check(
-  "headed it with the first question, not the first header it finds",
-  elementFor("question-title").textContent === "Proceed?",
-  elementFor("question-title").textContent,
+  "headed the first step with the first question, not the first header it finds",
+  elementFor("question-title").textContent === "Proceed?" &&
+    elementFor("question-header").hidden === true,
+  `${elementFor("question-title").textContent} / ${elementFor("question-header").textContent}`,
 );
+app.questionNext();
+check(
+  "headed the second step with its own question and header",
+  elementFor("question-title").textContent === "Which ones?" &&
+    elementFor("question-header").textContent === "Details" &&
+    elementFor("question-header").hidden === false,
+  `${elementFor("question-header").textContent} / ${elementFor("question-title").textContent}`,
+);
+await app.answerQuestion(true);
 
-// Answering an empty form is the same dismissal as pressing Skip, so the agent
+// Answering an empty form is the same dismissal as pressing Dismiss, so the agent
 // hears one thing rather than a set of blank answers.
 calls.length = 0;
 app.showQuestion({ id: 46, questions: [{ question: "Anything to add?" }] });

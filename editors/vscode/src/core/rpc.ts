@@ -25,7 +25,7 @@ export function approvalFrame(id: number, decision: ApprovalDecision): string {
 /// id. An empty list is a dismissal, which the CLI reports to the model as a
 /// question the user did not answer — and a submission with nothing filled in is
 /// sent as that dismissal rather than as a set of blank answers, so answering an
-/// empty form and pressing Skip reach the model the same way.
+/// empty form and pressing Dismiss reach the model the same way.
 export function questionFrame(id: number, answers: readonly QuestionAnswer[]): string {
   const filled = answers.filter((answer) => answer.values.some((value) => value.trim()));
   return `${JSON.stringify({

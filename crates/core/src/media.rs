@@ -500,19 +500,31 @@ pub fn expand_path(raw: &str, cwd: &Path) -> PathBuf {
 /// A copy from the Finder is preferred over its picture: the pasteboard also
 /// carries the copied file's *icon*, so grabbing the PNG-flavoured data would
 /// attach a placeholder image of the file instead of the file — a copied
-/// screenshot arrived as a `PNG`-document icon. When the clipboard holds a file
-/// URL, nothing else is tried, so a file this front-end cannot attach is
-/// reported rather than replaced by that icon.
+/// screenshot arrived as a `PNG`-document icon. A file that is here but cannot
+/// be attached is reported rather than replaced by that icon.
 pub fn clipboard_attachment() -> Option<ContentPart> {
-    if let Some(path) = clipboard_path() {
+    if let Some(path) = clipboard_file(clipboard_path()) {
         return load_attachment(&path).ok();
     }
     clipboard_image()
 }
 
-/// Best-effort clipboard image grab. On macOS this uses the built-in
-/// `osascript` (falling back to `pngpaste`); on Linux it needs `wl-paste` or
-/// `xclip`.
+/// The file a clipboard copy names, when this machine can look at it.
+///
+/// A copy made on another machine leaves its file URL on the pasteboard while
+/// the file itself stays where it was — a screenshot or a Finder copy sent over
+/// by Handoff, pasted into a terminal on the machine that received it. The path
+/// names nothing here, so it is not the file that was copied but a reference to
+/// something this machine does not have; the pasteboard's own data is what the
+/// front-end attaches instead of reporting that there is nothing to attach.
+fn clipboard_file(path: Option<PathBuf>) -> Option<PathBuf> {
+    path.filter(|path| path.exists())
+}
+
+/// Best-effort clipboard image grab. On macOS this asks the pasteboard through
+/// AppKit for the type it advertises, then takes `pngpaste`'s answer when it is
+/// installed and coerces the clipboard with `osascript` when that finds none; on
+/// Linux it needs `wl-paste` or `xclip`.
 pub fn clipboard_image() -> Option<ContentPart> {
     let bytes = clipboard_bytes()?;
     if bytes.is_empty() {
@@ -580,7 +592,80 @@ fn clipboard_path_from(path: &str) -> Option<PathBuf> {
 
 #[cfg(target_os = "macos")]
 fn clipboard_bytes() -> Option<Vec<u8>> {
-    run_stdout("pngpaste", &["-"]).or_else(clipboard_bytes_osascript)
+    clipboard_bytes_appkit()
+        .or_else(|| run_stdout("pngpaste", &["-"]))
+        .or_else(clipboard_bytes_osascript)
+}
+
+/// The pasteboard's image as AppKit hands it over: the item is asked for the
+/// type it advertises — `public.png`, then the `public.tiff` a copy from
+/// Preview or Safari leaves — instead of coercing it the way the AppleScript
+/// below does, which reads one item and guesses. Asking the item is what
+/// `pngpaste` does, and it is the read that is worth making on a pasteboard
+/// whose bytes are not on this machine yet: a copy that arrived from another one
+/// over the network is fetched by the pasteboard server for it.
+///
+/// It is asked first, so the read this crate controls decides what is on the
+/// pasteboard — `pngpaste` and the coercion are then answers for a machine
+/// where that read found nothing, rather than gates the new types have to get
+/// past.
+///
+/// A TIFF is turned into a PNG, since that is the type providers take.
+#[cfg(target_os = "macos")]
+fn clipboard_bytes_appkit() -> Option<Vec<u8>> {
+    let dir = TempImageDir::new()?;
+    let script = format!(
+        "use framework \"AppKit\"\n\
+         set pb to current application's NSPasteboard's generalPasteboard()\n\
+         set png to pb's dataForType:\"public.png\"\n\
+         if png is not missing value then\n\
+         if (png's writeToFile:\"{}/clipboard.png\" atomically:true) as boolean then return \"public.png\"\n\
+         end if\n\
+         set tiff to pb's dataForType:\"public.tiff\"\n\
+         if tiff is not missing value then\n\
+         if (tiff's writeToFile:\"{}/clipboard.tiff\" atomically:true) as boolean then return \"public.tiff\"\n\
+         end if\n\
+         return \"\"",
+        dir.path().display(),
+        dir.path().display()
+    );
+    let output = Command::new("osascript")
+        .args(["-e", &script])
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let source = dir.path().join(appkit_output_name(&String::from_utf8_lossy(
+        &output.stdout,
+    ))?);
+    if source.extension().and_then(|ext| ext.to_str()) == Some("png") {
+        return std::fs::read(&source).ok();
+    }
+    let converted = dir.path().join("converted.png");
+    let status = Command::new("sips")
+        .args(["-s", "format", "png"])
+        .arg(&source)
+        .arg("--out")
+        .arg(&converted)
+        .output()
+        .ok()?;
+    status
+        .status
+        .success()
+        .then(|| std::fs::read(&converted).ok())
+        .flatten()
+}
+
+/// The representation the AppKit read wrote out, from the type it reported:
+/// anything else is a pasteboard with no image on it.
+#[cfg(target_os = "macos")]
+fn appkit_output_name(uti: &str) -> Option<&'static str> {
+    match uti.trim() {
+        "public.png" => Some("clipboard.png"),
+        "public.tiff" => Some("clipboard.tiff"),
+        _ => None,
+    }
 }
 
 /// Extracts the clipboard image with the built-in `osascript`, avoiding a
@@ -762,6 +847,37 @@ mod tests {
         assert_eq!(clipboard_path_from("hello there"), None);
         assert_eq!(clipboard_path_from("file:///Users/me/shot.png"), None);
         assert_eq!(clipboard_path_from("   "), None);
+    }
+
+    #[test]
+    fn a_clipboard_file_is_only_taken_from_this_machine() {
+        let dir = std::env::temp_dir().join(format!("oxide_media_clip_{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("shot.png");
+        std::fs::write(&file, b"f").unwrap();
+
+        assert_eq!(clipboard_file(Some(file.clone())), Some(file));
+        assert_eq!(clipboard_file(None), None);
+        // A copy from another machine leaves a path that is not here behind,
+        // and the pasteboard's own image is what to attach instead of giving up
+        // on the paste.
+        assert_eq!(
+            clipboard_file(Some(PathBuf::from("/oxide/nothing/was/copied.png"))),
+            None
+        );
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn takes_the_representation_appkit_wrote_out() {
+        assert_eq!(appkit_output_name("public.png\n"), Some("clipboard.png"));
+        assert_eq!(appkit_output_name("public.tiff"), Some("clipboard.tiff"));
+        // A pasteboard with no image on it, or an answer nothing recognises, is
+        // left to the coercing read below rather than read as a file.
+        assert_eq!(appkit_output_name(""), None);
+        assert_eq!(appkit_output_name("public.utf8-plain-text"), None);
     }
 
     #[test]

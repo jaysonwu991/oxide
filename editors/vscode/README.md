@@ -149,10 +149,12 @@ Provider logins live in the CLI: run **Oxide: Open Terminal (TUI)** and use
   terminal and the desktop app stop asking for that tool in that project too.
 - The model can also ask *you* something mid-turn — typically while following a
   skill — and the panel answers it in the transcript: pick one option, tick
-  several, or type an answer, then **Answer**, or **Skip** to let it continue
-  with its own default. The panel always passes `--ask-questions`, so a question
-  reaches you instead of the model guessing, and an unanswered card is settled
-  when the run ends.
+  several, or type an answer, then **Submit** to send the whole set. A call that
+  asks several things is asked one at a time, with `1 of 2 questions` and a dash
+  per question saying where you are; **Back** returns to one, and **Dismiss**
+  lets the model continue with its own default. The panel always passes
+  `--ask-questions`, so a question reaches you instead of the model guessing, and
+  an unanswered card is settled when the run ends.
 - An image or PDF attached from the clipboard is written to a private OS
   temporary directory (`os.tmpdir()`), because the CLI takes attachment *paths*
   (`--image`); the directory is removed when the window closes. Files picked or
