@@ -450,6 +450,26 @@ check(
 );
 app.state.attachments = [];
 
+// The browser has already typed a picked file, so a format nothing here can
+// paint is refused before it is read: a TIFF with nothing readable behind it
+// would fail the read (and base64 itself) if the check came after it.
+await app.addAttachmentFiles([{ name: "scan.tif", size: 1024, type: "image/tiff" }]);
+check(
+  "refused a format the webview cannot paint without reading it",
+  app.state.attachments.length === 0 && status() === "Cannot attach scan.tif: image/tiff is not one of PNG, JPEG, GIF, WebP, BMP and PDF",
+  status(),
+);
+// A blob the browser did not type is still decided by the data URL it becomes.
+await app.addAttachmentFiles([
+  { name: "shot.png", size: 1024, type: "", dataUrl: "data:image/png;base64,AA" },
+]);
+check(
+  "attached an untyped blob that reads as an image",
+  app.state.attachments.length === 1 && app.state.attachments[0].name === "shot.png",
+  JSON.stringify(app.state.attachments),
+);
+app.state.attachments = [];
+
 // ---------- the / menu ----------
 
 console.log("slash commands");

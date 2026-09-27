@@ -42,6 +42,9 @@ export interface ProjectInfo {
   savedTrust: boolean | undefined;
   defaultTrust: "ask" | "always" | "never";
   autoCompact: boolean;
+  /// Whether a finished turn raises a notification, from the shared settings
+  /// the terminal's `/notify` writes.
+  notifyOnComplete: boolean;
   branch: string;
   agents: AgentChoice[];
   configPath: string;
@@ -71,6 +74,7 @@ export function projectInfo(folder: string, trust: TrustSetting, deps: ProjectDe
     savedTrust,
     defaultTrust: settings.defaultTrust,
     autoCompact: settings.autoCompact,
+    notifyOnComplete: settings.notifyOnComplete,
     branch: gitBranch(folder, { read: deps.read }),
     agents: agentChoices(agentFiles(root, access, deps)),
     configPath,

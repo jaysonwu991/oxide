@@ -125,7 +125,7 @@ fn attachment_parts(attachments: Option<Vec<AttachmentInput>>) -> Result<Vec<Con
                 .ok_or_else(|| {
                     let limit = oxide_core::media::MAX_ATTACHMENT_BYTES / (1024 * 1024);
                     format!(
-                        "{name} could not be attached: only PNG, JPEG, GIF, WebP, BMP and PDF up to {limit} MB are"
+                        "{name} could not be attached: attach a PNG, JPEG, GIF, WebP or BMP image or a PDF of at most {limit} MB"
                     )
                 })?;
         parts.push(part);

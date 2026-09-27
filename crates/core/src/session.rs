@@ -824,17 +824,12 @@ fn read_session(path: &Path) -> Result<(SessionHeader, SessionState)> {
     Ok((header, state))
 }
 
+/// What a session is listed under when it was never named: the summarized
+/// first message, by the same rules every front-end titles a thread with
+/// ([`crate::title`]), so the picker, the desktop's sidebar and the VS Code
+/// panel's header name a conversation the same way.
 fn preview_text(text: &str) -> String {
-    let first = text
-        .lines()
-        .find(|line| !line.trim().is_empty())
-        .unwrap_or("")
-        .trim();
-    let mut preview: String = first.chars().take(80).collect();
-    if first.chars().count() > 80 {
-        preview.push('…');
-    }
-    preview
+    crate::title::summarize(text, crate::title::TITLE_LIMIT)
 }
 
 fn system_time_secs(time: SystemTime) -> u64 {

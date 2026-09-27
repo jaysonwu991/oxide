@@ -956,6 +956,10 @@
     updateSendState();
   }
 
+  /// Thumbnails already being drawn, by attachment id, so a burst of repaints
+  /// is still one decode rather than one per paint.
+  const pending = new Set();
+
   /// The thumbnail a chip paints, by attachment id. The box is rebuilt with
   /// every state message, and a photo-sized preview decoded over and over is
   /// what an out-of-memory crash looks like: the first paint shows what it was
@@ -965,7 +969,10 @@
     const key = String(attachment.id);
     const cached = thumbnails.get(key);
     if (cached) return cached;
-    if (attachment.preview) void downscaleThumbnail(key, attachment.preview);
+    if (attachment.preview && !pending.has(key)) {
+      pending.add(key);
+      void downscaleThumbnail(key, attachment.preview);
+    }
     return attachment.preview || "";
   }
 
@@ -986,6 +993,8 @@
       if (node) node.src = small;
     } catch (error) {
       // A preview the canvas cannot draw stays as it came.
+    } finally {
+      pending.delete(key);
     }
   }
 

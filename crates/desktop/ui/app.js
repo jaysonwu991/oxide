@@ -793,6 +793,15 @@ async function addAttachmentFiles(files) {
       );
       continue;
     }
+    // A blob the browser has typed says what it is before anything is read, so
+    // a format nothing here can paint (a TIFF, a HEIC) is refused rather than
+    // read into a data URL first; one it has not typed is left to the data URL
+    // it turns into.
+    const declared = (file.type || "").toLowerCase();
+    if (declared && !ATTACHABLE_MIMES.includes(declared)) {
+      setStatus(`Cannot attach ${file.name}: ${declared} is not one of PNG, JPEG, GIF, WebP, BMP and PDF`);
+      continue;
+    }
     try {
       let dataUrl = await readFileAsDataUrl(file);
       const mime = dataUrlMime(dataUrl);

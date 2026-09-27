@@ -81,8 +81,11 @@ under the title, and the composer's **Attach**, **Stop** and **Send** are icons
 too, so the only text in the chrome is the phase and the numbers. The phase
 appears while a turn runs (with the elapsed timer) and goes when it does, rather
 than sitting in the toolbar as an idle dot. A turn that finishes while the panel
-is hidden raises a toast naming the thread by that same title
-(`oxide.notifyOnFinish`). The view-title actions (`oxide.newSession`,
+is hidden raises a toast naming the thread by that same title; it takes the
+panel's own `oxide.notifyOnFinish` and the shared `notifyOnComplete` the
+terminal's `/notify` writes, so turning notifications off in one silences the
+other (a VS Code notification has no alert sound of its own, so `notifySound` is
+the terminal's and the desktop app's). The view-title actions (`oxide.newSession`,
 `oxide.resumeSession`) carry the codicon `$(add)` and `$(history)` for the same
 reason, so VS Code draws them as icons instead of inline text.
 

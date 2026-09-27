@@ -69,9 +69,12 @@ pub fn base64_decode(input: &str) -> Option<Vec<u8>> {
 /// body — so an attachment past this is refused instead of being multiplied.
 pub const MAX_ATTACHMENT_BYTES: usize = 20 * 1024 * 1024;
 
-/// The data URL a payload of that size arrives as: base64 is four characters
-/// per three bytes, plus the `data:<mime>;base64,` header.
-const MAX_DATA_URL_CHARS: usize = MAX_ATTACHMENT_BYTES / 3 * 4 + 64;
+/// The most characters a data URL may hold. Base64 spends four characters per
+/// three bytes and the `data:<mime>;base64,` header spends part of that budget,
+/// so a URL at this length decodes to *fewer* than [`MAX_ATTACHMENT_BYTES`] —
+/// the guard is a bound on the bytes, not an approximation of one. Whitespace
+/// inside the payload only makes it stricter.
+const MAX_DATA_URL_CHARS: usize = MAX_ATTACHMENT_BYTES / 3 * 4;
 
 /// The image types a provider takes *and* a webview can paint. Anything else
 /// (a TIFF, a HEIC) is refused at the door rather than reaching the model or
@@ -455,7 +458,13 @@ pub fn content_part_from_data_url(
     // A GIF is left alone so an animation is not flattened to one frame.
     if media_type != "image/gif" {
         let payload = data_url.split_once(',')?.1;
-        let bytes = optimize_image(base64_decode(payload)?, media_type);
+        let bytes = base64_decode(payload)?;
+        // The decoded length is what the limit is about, and it is in hand here
+        // for nothing.
+        if bytes.len() > MAX_ATTACHMENT_BYTES {
+            return None;
+        }
+        let bytes = optimize_image(bytes, media_type);
         return Some(ContentPart::ImageUrl {
             image_url: ImageUrl {
                 url: format!("data:{media_type};base64,{}", base64_encode(&bytes)),

@@ -243,11 +243,15 @@ class StubImage {
   height = 10;
 
   set src(value: string) {
+    this.loads += 1;
     this.loaded = value;
     setTimeout(() => this.onload?.(), 0);
   }
 
   loaded = "";
+  /// How many sources this image was told to load, so a test can see that a
+  /// repaint reused the decode already in flight.
+  loads = 0;
 }
 
 /// The renderer re-follows the bottom when the pane it paints into changes size.
@@ -598,6 +602,22 @@ describe("webview composer", () => {
     // photo-sized one again.
     send(stateMessage({ attachments: [attachment] }));
     assert.equal(byId.get("chips")!.children[0].children[0].src, "data:image/png;base64,QUJD");
+  });
+
+  it("starts one decode when a repaint arrives before the thumbnail is ready", async () => {
+    const { send, readable } = loadRenderer();
+    const attachment = {
+      id: 3,
+      label: "big.png",
+      kind: "image",
+      preview: "data:image/png;base64,QUJDRA==",
+      detail: "9.1 MB · pasted",
+    };
+    // Both paints land in the same tick, before the first decode can finish.
+    send(stateMessage({ attachments: [attachment] }));
+    send(stateMessage({ attachments: [attachment] }));
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    assert.equal(readable().image.loads, 1, "the repaint reused the decode in flight");
   });
 
   it("refuses a paste past the attachment limit before reading it", async () => {

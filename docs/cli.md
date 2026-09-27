@@ -741,7 +741,12 @@ is a short snippet of the reply. Only real agent turns notify — internal work
 such as `/compact` and branch summaries stays silent — and a turn you stopped
 yourself is not announced by the desktop app or the panel.
 
-Both the toast and its alert sound are on by default. In the TUI, `/notify`
+All three front-ends honor the same switch: the desktop app and the VS Code
+panel read `notifyOnComplete` (the panel next to its own
+`oxide.notifyOnFinish`), so turning the toast off in the terminal silences them
+too — only the alert sound is the terminal's and the desktop app's, since a VS
+Code notification has none of its own. Both the toast and its alert sound are on
+by default. In the TUI, `/notify`
 shows the current state, `/notify on|off` toggles the toast, `/notify sound
 on|off` toggles the alert sound, and `/notify test` sends a sample; the choice is
 saved to the global `settings.json`. The same keys (`notifyOnComplete` and

@@ -1,7 +1,8 @@
 // The shared `settings.json` keys the footer reads. Resolution mirrors the CLI:
 // `defaultProjectTrust` comes from the global file (`config.rs`), while
 // `compaction.enabled` is read from the global file and the project's
-// `.oxide/settings.json` with the project winning per key (`compact.rs`).
+// `.oxide/settings.json` with the project winning per key (`compact.rs`),
+// and so are the notification keys (`notify.rs`).
 
 import { parseObject } from "./json";
 
@@ -12,11 +13,18 @@ export interface SharedSettings {
   defaultTrust: DefaultTrust;
   /// Whether the CLI summarizes the context once it approaches the window.
   autoCompact: boolean;
+  /// Whether a finished turn raises a notification. The terminal's `/notify`
+  /// and the desktop app's toast read the same key, so turning it off in one
+  /// silences the other; `notifySound` is not read here, since a VS Code
+  /// notification carries no sound of its own — the editor's own setting
+  /// decides that (`notify.rs`).
+  notifyOnComplete: boolean;
 }
 
 export interface SettingsKeys {
   defaultTrust?: DefaultTrust;
   autoCompact?: boolean;
+  notifyOnComplete?: boolean;
 }
 
 /// The keys one `settings.json` sets. `null` (missing, unreadable, malformed)
@@ -37,6 +45,9 @@ export function parseSettings(raw: string | null): SettingsKeys {
     // to its default rather than being coerced.
     if (typeof enabled === "boolean") keys.autoCompact = enabled;
   }
+
+  // `notify.rs` reads both keys with `as_bool`, so anything else sets neither.
+  if (typeof value.notifyOnComplete === "boolean") keys.notifyOnComplete = value.notifyOnComplete;
   return keys;
 }
 
@@ -57,7 +68,8 @@ function parseDefaultTrust(value: string): DefaultTrust | null {
 }
 
 /// The effective settings for a folder, merged the way `compact::load_config`
-/// merges the two files and `OXIDE_COMPACTION_ENABLED` overrides.
+/// and `notify::load_config` merge the two files (project wins per key) and the
+/// `OXIDE_*` overrides win over both.
 export function sharedSettings(
   globalRaw: string | null,
   projectRaw: string | null,
@@ -73,5 +85,12 @@ export function sharedSettings(
   return {
     defaultTrust: global.defaultTrust ?? "ask",
     autoCompact,
+    notifyOnComplete: envBool(env.OXIDE_NOTIFY_ON_COMPLETE) ?? project.notifyOnComplete ?? global.notifyOnComplete ?? true,
   };
+}
+
+/// `notify.rs::env_bool`: only a trimmed `true`/`false` counts.
+function envBool(value: string | undefined): boolean | null {
+  const trimmed = value?.trim();
+  return trimmed === "true" ? true : trimmed === "false" ? false : null;
 }

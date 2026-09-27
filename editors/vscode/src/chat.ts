@@ -750,12 +750,15 @@ export class ChatController {
   }
 
   /// A turn that finishes while the chat view is hidden is worth a toast — the
-  /// CLI, desktop and extension notify on completion too. The toast names the
+  /// CLI, desktop and extension notify on completion too, and all three honor
+  /// the same switch: the extension's own `oxide.notifyOnFinish` and the shared
+  /// `notifyOnComplete` the terminal's `/notify` writes. The toast names the
   /// thread, the same summarized title the panel's header shows, so it says
   /// which conversation finished.
   private notify(run: RunState | null): void {
     if (!run || this.views.size === 0) return;
     if (!this.setting<boolean>("notifyOnFinish", true)) return;
+    if (!(this.project?.notifyOnComplete ?? true)) return;
     if ([...this.views].some((view) => view.visible)) return;
     const title = this.threadTitle();
     void vscode.window.showInformationMessage(title ? `Oxide: ${title}` : "Oxide finished.");

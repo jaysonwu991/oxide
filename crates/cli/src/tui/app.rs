@@ -887,7 +887,7 @@ impl App {
         let Some(text) = message.display() else {
             return "Turn complete".to_string();
         };
-        let title = summary_title(&text, COMPLETION_TITLE_LIMIT);
+        let title = oxide_core::title::summarize(&text, oxide_core::title::TITLE_LIMIT);
         if title.is_empty() {
             "Turn complete".to_string()
         } else {
@@ -1302,63 +1302,6 @@ fn current_git_branch(cwd: &str) -> Option<String> {
     let branch = String::from_utf8(output.stdout).ok()?;
     let branch = branch.trim();
     (!branch.is_empty()).then(|| branch.to_string())
-}
-
-/// The maximum length of the completion toast title, including the ellipsis.
-const COMPLETION_TITLE_LIMIT: usize = 64;
-
-/// Picks a one-line title out of a completed reply: the first non-empty line
-/// with any leading Markdown markers (`#`, `>`, `-`, `*`, backticks) stripped,
-/// then collapsed and truncated. Later paragraphs are ignored so the toast
-/// reads as a headline rather than a summary.
-fn summary_title(text: &str, max: usize) -> String {
-    for line in text.lines() {
-        let stripped = line.trim().trim_start_matches(|c: char| {
-            matches!(c, '#' | '*' | '-' | '+' | '>' | '`') || c.is_whitespace()
-        });
-        if stripped.is_empty() {
-            continue;
-        }
-        return bounded_summary(stripped, max);
-    }
-    String::new()
-}
-
-/// Collapses whitespace and truncates to `max` characters, stopping as soon as
-/// the limit is reached so a very long final reply is not normalized in full on
-/// the event-loop thread.
-fn bounded_summary(text: &str, max: usize) -> String {
-    if max == 0 {
-        return String::new();
-    }
-    let keep = max - 1;
-    let mut out = String::new();
-    let mut used = 0usize;
-    let mut truncated = false;
-    for word in text.split_whitespace() {
-        let separator = usize::from(!out.is_empty());
-        let length = word.chars().count();
-        if used + separator + length > keep {
-            if separator == 1 && used < keep {
-                out.push(' ');
-                used += 1;
-            }
-            let take = keep.saturating_sub(used);
-            out.extend(word.chars().take(take));
-            truncated = true;
-            break;
-        }
-        if separator == 1 {
-            out.push(' ');
-            used += 1;
-        }
-        out.push_str(word);
-        used += length;
-    }
-    if truncated {
-        out.push('…');
-    }
-    out
 }
 
 #[cfg(test)]
