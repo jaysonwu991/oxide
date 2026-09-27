@@ -20,7 +20,7 @@ import {
   relativePath,
   type AtReferenceSources,
 } from "../core/prompt";
-import { parseSessionList, parseVersion } from "../core/sessions";
+import { isSessionCommand, parseSessionList, parseVersion } from "../core/sessions";
 import { resolveBinary } from "../cli";
 
 /// One rendered diff row, laid out the way `oxide_core::diff` does it: a
@@ -427,6 +427,16 @@ describe("session listing", () => {
     assert.equal(parseVersion("oxide 0.0.0\n"), "0.0.0");
     assert.equal(parseVersion("oxide 1.2.3-beta.1"), "1.2.3-beta.1");
     assert.equal(parseVersion("not installed"), null);
+  });
+
+  it("answers only the bare session command", () => {
+    // The dialog is opened here rather than by sending `/session` to the model,
+    // which is what the terminal and the desktop app do with it too.
+    assert.ok(isSessionCommand("/session"));
+    assert.ok(isSessionCommand("  /SESSIONS  "));
+    assert.ok(!isSessionCommand("/session fe0031b1"));
+    assert.ok(!isSessionCommand("list the sessions"));
+    assert.ok(!isSessionCommand(""));
   });
 });
 

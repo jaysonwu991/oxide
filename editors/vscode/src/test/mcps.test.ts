@@ -1,4 +1,4 @@
-// The `/mcps` picker reads the CLI's own JSON listing, so what it says about a
+// The `/mcps` dialog reads the CLI's own JSON listing, so what it says about a
 // server has to survive a CLI that answers with a human table, a partial entry
 // or a state this build has not seen.
 
@@ -9,9 +9,8 @@ import { describe, it } from "node:test";
 
 import {
   isMcpCommand,
-  mcpAppearance,
-  mcpDescription,
   mcpListArgs,
+  mcpStateLabel,
   mcpToggleArgs,
   parseMcpList,
 } from "../core/mcps";
@@ -67,22 +66,13 @@ describe("MCP server listing", () => {
     assert.deepEqual(parseMcpList('[{"transport":"stdio"}]'), []);
   });
 
-  it("paints each state the core can report", () => {
-    assert.deepEqual(mcpAppearance("connected"), { icon: "$(pass-filled)", label: "Connected" });
-    assert.equal(mcpAppearance("needs-auth").label, "Needs auth");
-    assert.equal(mcpAppearance("needs-trust").label, "Needs trust");
-    assert.equal(mcpAppearance("disabled").label, "Disabled");
-    assert.equal(mcpAppearance("error").label, "Error");
-    assert.equal(mcpAppearance("something-new").label, "something-new");
-  });
-
-  it("describes a server by transport, scope and status", () => {
-    const [context7, sentry] = parseMcpList(listing);
-    assert.equal(
-      mcpDescription(context7),
-      "http · claude (global) · Connected",
-    );
-    assert.equal(mcpDescription(sentry), "stdio · project · Disabled");
+  it("names each state the core can report", () => {
+    assert.equal(mcpStateLabel("connected"), "Connected");
+    assert.equal(mcpStateLabel("needs-auth"), "Needs auth");
+    assert.equal(mcpStateLabel("needs-trust"), "Needs trust");
+    assert.equal(mcpStateLabel("disabled"), "Disabled");
+    assert.equal(mcpStateLabel("error"), "Error");
+    assert.equal(mcpStateLabel("something-new"), "something-new");
   });
 
   it("pins a toggle to the scope that defines the server", () => {
@@ -142,6 +132,25 @@ describe("MCP server listing", () => {
     assert.ok(
       send.indexOf("isMcpCommand(message)") < send.indexOf("this.queue.push"),
       "the command is answered before a message is queued or prompted",
+    );
+  });
+
+  // Recheck stays available while a probe runs, and a toggle re-lists when it
+  // is done, so two probes can be in flight: the older answer must not paint
+  // over the newer one. `chat.ts` still cannot be loaded here, so this reads it.
+  it("drops a probe a newer one has superseded", () => {
+    const root = path.join(__dirname, "..", "..");
+    const chat = fs.readFileSync(path.join(root, "src", "chat.ts"), "utf8");
+    const start = chat.indexOf("async showMcps(");
+    const showMcps = chat.slice(start, chat.indexOf("\n  async ", start + 1));
+    const claim = showMcps.indexOf("this.mcpProbe");
+    const answered = showMcps.indexOf("await runCapture");
+    const applied = showMcps.indexOf("this.servers = parseMcpList");
+    assert.ok(claim > -1 && claim < answered, "takes a generation before probing");
+    assert.ok(
+      showMcps.indexOf("if (probe !== this.mcpProbe) return;") > answered &&
+        showMcps.indexOf("if (probe !== this.mcpProbe) return;") < applied,
+      "checks it before applying the answer",
     );
   });
 });

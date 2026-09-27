@@ -120,9 +120,15 @@ node crates/desktop/ui/check-app.mjs
 ```
 
 It covers the `/mcps` listing (including the state colors, a failed probe and a
-toggle), the **Create project** dialog, and every client command in the catalog —
+toggle), the `/sessions` dialog (this project's threads only, the row that
+resumes one, the empty case, and a store that could not be read), the **Create
+project** dialog, and every
+client command in the catalog —
 a command the app does not perform has to be answered here rather than sent to
-the model as a prompt.
+the model as a prompt. It also reads `ui/index.html` to check what no stub can:
+that both listings are attached to the composer (inside `.composer-wrap`, above
+`.composer`) instead of floating over the window, and that each header button is
+an icon with a title.
 
 ## Sharing configuration with the CLI
 
@@ -265,25 +271,49 @@ opens a palette of them — the built-in list plus the commands, prompt template
 and skills the project or its plugins load, from `oxide_core::commands`, the
 catalog `oxide commands --json` prints and the terminal's own autocomplete
 mirrors. A name the app itself owns is performed here: `/mcps` (`/mcp`) opens
-the **MCP servers** dialog, `/model`, `/theme`, `/approvals`, `/trust`,
+the **MCP servers** dialog, `/sessions` (`/session`) the **Sessions** dialog,
+`/model`, `/theme`, `/approvals`, `/trust`,
 `/connect`, `/new`, `/usage` and `/help` open or run what their sidebar entries
 do. A project command, a prompt template and a skill are sent on as a normal
-message, so the CLI's own resolution handles them. A name the app cannot
+message, so the CLI's own resolution handles them — as is a client command with
+an argument, so `/mcp list` and `/session <id>` reach the agent instead of being
+performed as the bare command would be. A name the app cannot
 perform — today `/agent`, whose palette of subagents the app does not have yet —
 says so in the transcript rather than reaching the model as the literal text
 `/agent`. With no project selected the project-scoped commands say that first,
 so a listing or a toggle cannot land in the app's own directory.
 
+The **MCP servers** listing (`/mcps`, alias `/mcp`) and the **Sessions** listing
+(`/sessions`, alias `/session`) open out of the composer rather than over the
+app: each is a panel of the composer's own column, growing upward from its top
+edge and staying attached to it, with its own scrollbar once the list is longer
+than the space it takes. Nothing is dimmed behind them, so the transcript stays
+readable, and their buttons are icons — a power switch per server, a plus and a
+close in the headers — whose tooltips carry the words. **Escape** closes either.
+
 The **MCP servers** dialog lists every server the project loads, with the state
 the core probed (`Connected`, `Needs Auth`, `Needs Trust`, `Disabled`, or the
 connection error) and a line naming its transport, its endpoint or command line,
-and the file it was defined in. **Disable** / **Enable** writes `enabled` into
+and the file it was defined in. The power switch beside a row writes `enabled` into
 that file — and Claude Code's `disabled`, kept in step, since either harness may
 be the one reading it — without deleting the configuration, **Recheck** probes
 again, and the listing comes from
 `oxide_core::mcp_config::server_views`, so it matches `oxide mcp list --json`
-and the VS Code picker. A project's own servers report **Needs Trust** rather
+and the VS Code panel's listing. A project's own servers report **Needs Trust** rather
 than being started until the project is trusted.
+
+The **Sessions** dialog (`/sessions`, alias `/session`) lists this project's
+threads, newest first, from `all_sessions` — the same rows the tree groups under
+the project — each named by its session name or, unnamed, by the summarized
+preview the terminal's picker and the VS Code panel's listing show it under, with how long
+ago it was written and how many messages it holds, and a row's tooltip is that
+same text rather than the nodes it was written into. Picking one opens that thread
+and closes the listing, and the plus in its header starts a fresh one; the argument form
+`/session <id>` is left to the agent, so the dialog is the bare command's own.
+A store that cannot be read is not a project with no threads: `loadSessions`
+reports why it failed, and the listing says so in place of the empty message the
+same call would otherwise paint — the way the MCP listing already reports a probe
+that could not reach a server.
 
 ## Rendering
 

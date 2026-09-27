@@ -73,4 +73,18 @@ describe("command contributions", () => {
       assert.ok(chatView.includes(`case "${kind}":`), `the host handles "${kind}"`);
     }
   });
+
+  it("answers the client commands in the panel instead of prompting them", () => {
+    // `/mcps` and `/session` are the commands a front-end performs itself, so a
+    // message that reaches the prompt path would ask the model what a server
+    // list is rather than showing it.
+    const send = chat.slice(chat.indexOf("async send("), chat.indexOf("private ", chat.indexOf("async send(")));
+    for (const command of ["isMcpCommand", "isSessionCommand"]) {
+      assert.ok(send.includes(`${command}(message)`), `send consults ${command}`);
+      assert.ok(
+        send.indexOf(`${command}(message)`) < send.indexOf("this.queue.push"),
+        `${command} is answered before a message is queued or prompted`,
+      );
+    }
+  });
 });

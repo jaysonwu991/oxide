@@ -49,6 +49,50 @@
       <div id="transcript" class="conversation"></div>
 
       <div class="composer-wrap">
+        <section id="mcps-modal" class="popover" hidden aria-labelledby="mcps-title">
+          <div class="popover-head">
+            <h2 id="mcps-title">MCP servers</h2>
+            <div class="popover-actions">
+              <button
+                id="mcps-refresh"
+                class="icon"
+                title="Recheck the servers"
+                aria-label="Recheck the servers"
+              ><svg viewBox="0 0 24 24" width="14" height="14" aria-hidden="true"><path d="M23 4v6h-6" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg></button>
+              <button
+                id="mcps-close"
+                class="icon"
+                title="Close"
+                aria-label="Close"
+              ><svg viewBox="0 0 24 24" width="14" height="14" aria-hidden="true"><path d="M18 6 6 18M6 6l12 12" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg></button>
+            </div>
+          </div>
+          <p class="dialog-sub">The servers this project loads, and whether Oxide can reach them. They come from the same <code>mcp.json</code> files the CLI reads, and turning one off writes to the file that defines it.</p>
+          <div id="mcp-list" class="mcp-list"></div>
+        </section>
+
+        <section id="sessions-modal" class="popover" hidden aria-labelledby="sessions-title">
+          <div class="popover-head">
+            <h2 id="sessions-title">Sessions</h2>
+            <div class="popover-actions">
+              <button
+                id="sessions-new"
+                class="icon"
+                title="New thread"
+                aria-label="New thread"
+              ><svg viewBox="0 0 16 16" width="15" height="15" aria-hidden="true"><path d="M8 3.6v8.8M3.6 8h8.8" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg></button>
+              <button
+                id="sessions-close"
+                class="icon"
+                title="Close"
+                aria-label="Close"
+              ><svg viewBox="0 0 24 24" width="14" height="14" aria-hidden="true"><path d="M18 6 6 18M6 6l12 12" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg></button>
+            </div>
+          </div>
+          <p class="dialog-sub">Threads stored for this project, most recent first. Picking one opens it here; the sidebar shows the same list beside every project.</p>
+          <div id="sessions-list" class="session-list"></div>
+        </section>
+
         <div class="composer">
           <div id="attachments" class="attachments" hidden></div>
           <textarea id="prompt" placeholder="Ask Oxide…" disabled></textarea>
@@ -211,18 +255,6 @@
       <div class="image-view">
         <img id="image-view-img" alt="attachment preview" />
         <button id="image-view-close" class="ghost">Close</button>
-      </div>
-    </div>
-
-    <div id="mcps-modal" class="overlay" hidden>
-      <div class="dialog">
-        <h2>MCP servers</h2>
-        <p class="dialog-sub">The servers this project loads, and whether Oxide can reach them. They come from the same <code>mcp.json</code> files the CLI reads, and turning one off writes to the file that defines it.</p>
-        <div id="mcp-list" class="mcp-list"></div>
-        <div class="dialog-actions">
-          <button id="mcps-refresh" class="ghost">Recheck</button>
-          <button id="mcps-close" class="ghost">Close</button>
-        </div>
       </div>
     </div>
 

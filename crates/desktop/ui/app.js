@@ -562,12 +562,17 @@ function updateChips() {
 
 // ---------- threads ----------
 
+/// Loads the shared session store, and reports why it could not be read as its
+/// return value: a caller that just opened a listing can say so instead of
+/// painting an empty one, the same way `loadMcps` does.
 async function loadSessions() {
   try {
     state.sessions = await invoke("all_sessions");
     renderProjectsTree();
+    return "";
   } catch (error) {
     setStatus(`Failed to load threads: ${error}`);
+    return String(error);
   }
 }
 
@@ -1283,6 +1288,8 @@ async function answerApproval(decision) {
 
 // ---------- providers ----------
 
+// Every panel that can take the window's keyboard: most cover the app, while
+// the MCP and session listings open above the composer instead.
 const OVERLAYS = [
   "approval",
   "connect-modal",
@@ -1295,6 +1302,7 @@ const OVERLAYS = [
   "confirm-modal",
   "rename-modal",
   "image-modal",
+  "sessions-modal",
   "help-modal",
 ];
 
@@ -1608,6 +1616,14 @@ async function clearApprovals() {
 
 // ---------- MCP servers ----------
 
+/// The one icon the app builds in JavaScript: the power switch beside a server,
+/// which no character renders the same way everywhere. The popover's Recheck and
+/// Close are in `index.html`, and every other button is words.
+const ICONS = {
+  power:
+    '<svg viewBox="0 0 24 24" width="14" height="14" aria-hidden="true"><path d="M18.36 6.64a9 9 0 1 1-12.73 0" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/><path d="M12 2v10" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>',
+};
+
 /// The servers this project loads, with the state the core reports: the same
 /// listing `oxide mcp list` prints and the terminal's `/mcps` shows.
 async function openMcps() {
@@ -1650,11 +1666,14 @@ function renderMcps() {
     status.textContent = server.status;
     const toggle = document.createElement("button");
     toggle.type = "button";
-    toggle.className = "ghost small mcp-toggle";
-    toggle.textContent = server.enabled ? "Disable" : "Enable";
+    // Icon-only: the listing is a row per server, so the switch is sized to the
+    // row and its meaning is in the tooltip and the accessible name.
+    toggle.className = `icon mcp-toggle${server.enabled ? " on" : ""}`;
+    toggle.innerHTML = ICONS.power;
     toggle.title = server.enabled
-      ? "Turn this server off in the file that defines it"
-      : "Turn this server back on";
+      ? `Disable ${server.name}: turn it off in the file that defines it`
+      : `Enable ${server.name}: turn it back on`;
+    toggle.setAttribute("aria-label", toggle.title);
     toggle.onclick = () => toggleMcp(server, toggle);
     head.append(name, status, toggle);
 
@@ -1689,6 +1708,87 @@ async function toggleMcp(server, button) {
     button.disabled = false;
     setStatus(`Could not change ${server.name}: ${error}`);
   }
+}
+
+// ---------- sessions ----------
+
+/// The threads stored for this project, newest first: what `/sessions` opens,
+/// and the same list the sidebar draws beside the project. The terminal's
+/// `/resume` picker and the VS Code panel's dialog show the same sessions, so a
+/// thread started in one front-end is reachable from the others.
+async function openSessions() {
+  if (!state.project) {
+    setStatus("Select a project first.");
+    return;
+  }
+  closeOverlays("sessions-modal");
+  el("sessions-modal").hidden = false;
+  el("sessions-list").innerHTML = '<div class="dialog-empty">Loading threads…</div>';
+  const reason = await loadSessions();
+  if (reason) {
+    // The store could not be read, so the empty listing that would be painted
+    // from no threads is not a fact about this project.
+    el("sessions-list").innerHTML =
+      `<div class="dialog-empty">Could not read this project's threads: ${escapeHtml(reason)}</div>`;
+    return;
+  }
+  renderSessions();
+}
+
+function renderSessions() {
+  const box = el("sessions-list");
+  box.innerHTML = "";
+  const threads = (state.sessions || []).filter((session) => session.cwd === state.project);
+  if (!threads.length) {
+    box.innerHTML =
+      '<div class="dialog-empty">No threads for this project yet. Send a message to start one.</div>';
+    return;
+  }
+  for (const session of threads) {
+    const row = document.createElement("button");
+    row.type = "button";
+    row.className = "session-row" + (session.id === state.session ? " active" : "");
+
+    const name = session.name || session.preview || session.id.slice(0, 8);
+    const meta = [sessionAge(session.modified_at), sessionMessages(session.message_count)]
+      .filter(Boolean)
+      .join(" · ");
+
+    const main = document.createElement("div");
+    main.className = "session-main";
+    const label = document.createElement("div");
+    label.className = "session-label";
+    label.textContent = name;
+    const detail = document.createElement("div");
+    detail.className = "session-meta";
+    detail.textContent = meta;
+    main.append(label, detail);
+    row.appendChild(main);
+    // The strings, not the elements they were written into: a tooltip built
+    // from a node reads as `[object HTMLDivElement]`.
+    row.title = meta ? `${name} — ${meta}` : name;
+    row.onclick = () => {
+      el("sessions-modal").hidden = true;
+      selectSessionFromTree(session);
+    };
+    box.appendChild(row);
+  }
+}
+
+/// How long ago a thread was last written, in the shape the CLI's own picker
+/// uses for the same number.
+function sessionAge(seconds) {
+  if (!seconds) return "";
+  const elapsed = Math.max(0, Math.floor(Date.now() / 1000) - Number(seconds));
+  if (elapsed < 60) return "just now";
+  if (elapsed < 3600) return `${Math.floor(elapsed / 60)}m ago`;
+  if (elapsed < 86400) return `${Math.floor(elapsed / 3600)}h ago`;
+  return `${Math.floor(elapsed / 86400)}d ago`;
+}
+
+function sessionMessages(count) {
+  if (count === undefined || count === null) return "";
+  return `${count} message${Number(count) === 1 ? "" : "s"}`;
 }
 
 // ---------- slash commands ----------
@@ -1792,7 +1892,10 @@ async function runSlashCommand(text) {
       return true;
     }
     case "session":
-      setStatus("Open a thread from the sidebar to resume it.");
+      // Only the bare command is the app's own: `/session <id>` is passed on as
+      // a prompt, the way `/mcp list` is.
+      if (args) return false;
+      await openSessions();
       return true;
     case "new":
       if (!state.project) {
@@ -2201,6 +2304,11 @@ function init() {
   });
   el("mcps-close").onclick = () => (el("mcps-modal").hidden = true);
   el("mcps-refresh").onclick = () => loadMcps();
+  el("sessions-close").onclick = () => (el("sessions-modal").hidden = true);
+  el("sessions-new").onclick = () => {
+    el("sessions-modal").hidden = true;
+    newChat();
+  };
   el("create-project-add-path").onclick = addCreateProjectTypedPath;
   el("create-project-path").addEventListener("keydown", (event) => {
     if (event.key === "Enter") {

@@ -19,6 +19,8 @@ const ICONS = {
   attach: `<svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true"><path d="M21.44 11.05l-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>`,
   send: `<svg viewBox="0 0 16 16" width="15" height="15" aria-hidden="true"><path d="M8 13.4V3.4M4 7.4 8 3.4l4 4" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>`,
   stop: `<svg viewBox="0 0 16 16" width="13" height="13" aria-hidden="true"><rect x="4" y="4" width="8" height="8" rx="1.7" fill="currentColor"/></svg>`,
+  refresh: `<svg viewBox="0 0 24 24" width="14" height="14" aria-hidden="true"><path d="M23 4v6h-6" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>`,
+  close: `<svg viewBox="0 0 24 24" width="14" height="14" aria-hidden="true"><path d="M18 6 6 18M6 6l12 12" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>`,
 };
 
 interface WebviewMessage {
@@ -32,6 +34,10 @@ interface WebviewMessage {
   path?: string;
   line?: number;
   control?: string;
+  /// A click inside a dialog: the action the row or its button carries, and the
+  /// value it is about (a server name, a session id).
+  action?: string;
+  value?: string;
   /// The name and `data:` URL of a pasted or dropped blob.
   name?: string;
   data?: string;
@@ -64,7 +70,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
   private async handle(message: WebviewMessage, view: vscode.WebviewView): Promise<void> {
     switch (message.k) {
       case "ready":
-        await view.webview.postMessage(this.controller.stateMessage());
+        await this.paint(view);
         return;
       case "send":
         await this.controller.send(message.text ?? "");
@@ -106,6 +112,11 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       case "control":
         await this.controller.control(message.control ?? "");
         return;
+      case "dialogAction":
+        // A row of the MCP or session dialog: the host decides what the action
+        // means, so the view never has to know.
+        await this.controller.dialogAction(message.action ?? "", message.value ?? "");
+        return;
       case "openUrl":
         await this.openUrl(message.url ?? "");
         return;
@@ -115,6 +126,15 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       default:
         return;
     }
+  }
+
+  /// The pane asks for everything it needs to paint itself once its script is
+  /// listening, so a repainted panel restores the whole transcript — and a
+  /// dialog the other pane opened, which both panes show.
+  private async paint(view: vscode.WebviewView): Promise<void> {
+    await view.webview.postMessage(this.controller.stateMessage());
+    const dialog = this.controller.dialogMessage();
+    if (dialog) await view.webview.postMessage(dialog);
   }
 
   /// Links in a reply open in the user's browser; a webview cannot navigate.
@@ -182,6 +202,18 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     <p class="hint">Runs use the same configuration, sessions and project trust as the terminal: <code>oxide</code> starts a turn with <code>--mode rpc</code>, so a tool that needs your approval waits for an answer here.</p>
   </div>
 </main>
+<section id="dialog" class="popover" hidden aria-labelledby="dialog-title">
+  <div class="popover-head">
+    <h2 id="dialog-title"></h2>
+    <div class="popover-actions">
+      <button id="dialog-refresh" class="icon" hidden title="Recheck" aria-label="Recheck">${ICONS.refresh}</button>
+      <button id="dialog-close" class="icon" title="Close" aria-label="Close">${ICONS.close}</button>
+    </div>
+  </div>
+  <p id="dialog-sub" class="popover-sub"></p>
+  <p id="dialog-note" class="popover-note" hidden></p>
+  <div id="dialog-list" class="popover-list"></div>
+</section>
 <footer>
   <div id="meta" class="meta"></div>
   <div id="composer">
@@ -204,6 +236,12 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     <span id="branch"></span>
   </div>
 </footer>
+<div id="image-view" class="overlay image-overlay" hidden>
+  <div class="image-frame">
+    <img id="image-view-img" alt="Attachment preview">
+    <button id="image-view-close" class="ghost">Close</button>
+  </div>
+</div>
 <script nonce="${nonce}" src="${script}"></script>
 </body>
 </html>`;

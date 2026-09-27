@@ -138,6 +138,7 @@ pre,
 
 #transcript {
   flex: 1 1 auto;
+  min-height: 0;
   overflow-y: auto;
   overflow-x: hidden;
   padding: 10px;
@@ -701,6 +702,22 @@ footer {
   display: block;
 }
 
+/* The thumbnail is a button: a chip has no room for more than a 96px copy, so a
+   click opens the full-size image in the preview overlay. */
+.chips .chip .chip-open {
+  display: block;
+  padding: 0;
+  border: none;
+  background: none;
+  border-radius: 4px;
+  line-height: 0;
+}
+
+.chips .chip .chip-open:hover img,
+.chips .chip .chip-open:focus-visible img {
+  border-color: var(--vscode-focusBorder, var(--vscode-charts-blue, #4a9eff));
+}
+
 .chips .chip-glyph {
   display: flex;
   align-items: center;
@@ -908,4 +925,225 @@ footer {
   to {
     transform: rotate(360deg);
   }
+}
+
+/* ---------- dialogs ---------- */
+
+/* The MCP server list and the session history are painted by the panel itself
+   rather than a QuickPick, and they open out of the footer: `#dialog` is a flex
+   child of the panel sitting directly above the footer, so it grows upward from
+   the footer's top edge and stays attached to it however the transcript moves.
+   Nothing is dimmed behind it — the rows arrive from the host as data, and the
+   list scrolls once it has taken its share of the height. */
+#dialog {
+  flex: 0 1 auto;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  max-height: 62%;
+  /* The footer's own top border closes the shape, so it reads as one sheet. */
+  margin: 0 8px -1px;
+  padding: 8px 4px 6px;
+  border: 1px solid var(--vscode-widget-border, var(--vscode-panel-border, rgba(128, 128, 128, 0.35)));
+  border-bottom: none;
+  border-radius: 8px 8px 0 0;
+  background: var(--vscode-editorWidget-background, var(--vscode-sideBar-background));
+  box-shadow: 0 -10px 24px rgba(0, 0, 0, 0.28);
+}
+
+/* The flex display above would otherwise win over the attribute. */
+#dialog[hidden] {
+  display: none;
+}
+
+.popover-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 0 6px;
+}
+
+.popover-head h2 {
+  margin: 0;
+  font-size: 1em;
+  font-weight: 600;
+  min-width: 0;
+}
+
+.popover-actions {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  margin-left: auto;
+  flex: 0 0 auto;
+}
+
+.popover-actions button[hidden] {
+  display: none;
+}
+
+.popover-sub,
+.popover-note {
+  margin: 4px 6px 0;
+  color: var(--vscode-descriptionForeground);
+  font-size: 0.85em;
+}
+
+.popover-note {
+  padding: 4px 6px;
+  border-radius: 4px;
+  background: var(--vscode-toolbar-hoverBackground, rgba(128, 128, 128, 0.12));
+}
+
+.popover-sub[hidden],
+.popover-note[hidden] {
+  display: none;
+}
+
+.popover-list {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  margin: 8px 0 4px;
+  overflow-y: auto;
+  min-height: 0;
+  flex: 1 1 auto;
+}
+
+.dialog-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 6px 8px;
+  border: 1px solid transparent;
+  border-radius: 4px;
+  background: none;
+  color: var(--vscode-foreground);
+  font: inherit;
+  text-align: left;
+}
+
+button.dialog-row:hover,
+button.dialog-row:focus-visible {
+  background: var(--vscode-list-hoverBackground, rgba(128, 128, 128, 0.15));
+  outline: none;
+}
+
+.dialog-main {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  flex: 1 1 auto;
+}
+
+.dialog-label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.dialog-detail {
+  color: var(--vscode-descriptionForeground);
+  font-size: 0.8em;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.dialog-status {
+  flex: 0 0 auto;
+  font-size: 0.8em;
+  color: var(--vscode-descriptionForeground);
+}
+
+.dialog-status.tone-ok {
+  color: var(--vscode-charts-green, #89d185);
+}
+
+.dialog-status.tone-warn {
+  color: var(--vscode-editorWarning-foreground, var(--vscode-charts-orange, #ce9178));
+}
+
+.dialog-status.tone-error {
+  color: var(--vscode-editorError-foreground, var(--vscode-charts-red, #f14c4c));
+}
+
+/* A row's trailing button is a glyph: a power switch, sized to the row rather
+   than to a word, with the host's label as its tooltip. */
+.dialog-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 auto;
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  border: 1px solid transparent;
+  border-radius: 4px;
+  background: none;
+  color: var(--vscode-descriptionForeground);
+  font: inherit;
+  font-size: 0.8em;
+}
+
+.dialog-button:hover {
+  color: var(--vscode-foreground);
+  border-color: var(--vscode-panel-border, rgba(128, 128, 128, 0.35));
+  background: var(--vscode-toolbar-hoverBackground, rgba(128, 128, 128, 0.15));
+}
+
+.dialog-button svg {
+  display: block;
+}
+
+/* The switch says which way the server is set, and clicking it turns it over. */
+.dialog-button.tone-ok {
+  color: var(--vscode-charts-green, #89d185);
+}
+
+.dialog-button.tone-warn {
+  color: var(--vscode-editorWarning-foreground, var(--vscode-charts-orange, #ce9178));
+}
+
+.dialog-button.tone-error {
+  color: var(--vscode-editorError-foreground, var(--vscode-charts-red, #f14c4c));
+}
+
+/* ---------- image preview ---------- */
+
+/* The full-size image is the one thing here that does cover the panel: it has
+   no rows to read behind it. */
+.overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 30;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 8px;
+  background: rgba(0, 0, 0, 0.35);
+}
+
+.overlay[hidden] {
+  display: none;
+}
+
+/* A chip's thumbnail is a 96px copy; this is what the host actually sent. */
+.image-overlay .image-frame {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+  max-width: 100%;
+  max-height: 100%;
+}
+
+.image-frame img {
+  max-width: 100%;
+  max-height: 80vh;
+  object-fit: contain;
+  border-radius: 4px;
+  background: var(--vscode-editor-background);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.4);
 }

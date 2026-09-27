@@ -73,7 +73,7 @@ the order), falling back to the secondary side bar's and then to the
 activity-bar one when that focus command does not exist.
 
 The panel's own chrome is icon-first, the way Claude Code's is. The header shows
-the thread's summarized title — the resumed session's name when the picker knew
+the thread's summarized title — the resumed session's name when the dialog knew
 one, else the first message sent condensed to one line (Markdown stripped, cut
 at a word boundary), else **New chat** — next to icon buttons for a new or
 resumed session; the model is the footer's first chip rather than a second line
@@ -122,17 +122,29 @@ provider/model.
 
 The composer answers `/mcps` (alias `/mcp`) itself, the way the terminal's
 `/mcps` and Claude Code's `/mcp` do: the message is not sent to the model but
-opens a QuickPick of the configured servers, each with the codicon and the
-status the core reported (`Connected`, `Needs auth`, `Needs trust`, `Disabled`,
-`Error`) and a line naming its transport, the file that defined it and its
-state. Picking a server turns it off, or back on, in the file that defines it —
-`oxide mcp disable|enable <name> --scope project|global` — and the list is
-reopened on the fresh state, so a toggle is answered in the same place it was
-asked. **Recheck** probes again without changing anything. **Oxide: MCP
-Servers…** runs the same picker from the palette. Every server has to be started
-or reached to learn its state, so the wait is announced in the status bar rather
+opens the panel's own **MCP servers** listing — not a `showQuickPick`, which
+takes over the window, hides the transcript the listing is about, and cannot be
+answered while a turn streams. It opens out of the footer: the listing is a
+panel of the composer's own column, growing upward from its top edge and staying
+attached to it, with its own scrollbar once a project has more servers than fit.
+Every server is a row carrying the state the core reported (`Connected`, `Needs
+auth`, `Needs trust`, `Disabled`, `Error`) and a line naming its transport, the
+file that defined it and its state, plus an icon-only power switch that turns it
+off, or back on, in the file that defines it — `oxide mcp disable|enable <name>
+--scope project|global` — after which the listing is repainted from the CLI's
+fresh answer, so a toggle is answered in the same place it was asked. Its tooltip
+names the server it would change (**Disable context7**), since the switch itself
+is one glyph. A **Recheck** icon and a **Close** icon sit in the listing's
+header, and <kbd>Esc</kbd> dismisses it too. **Oxide: MCP Servers…** opens the
+same listing from the palette.
+Every server has to be started or reached to learn its state, so the wait is
+announced in the status bar and the listing says **Checking servers…** rather
 than looking like nothing happened; a CLI that does not answer within the
-command timeout is reported as such instead of leaving the picker unopened.
+command timeout is reported as such instead of leaving the listing unopened. A
+**Recheck** clicked while one is already running supersedes it — the listing is
+the controller's, and each probe claims a generation before it runs, so an
+answer that arrives after a newer probe has already been sent is dropped instead
+of repainting the list with the state it replaced.
 
 The listing comes from `oxide mcp list --json` (`core/mcps.ts`), so the
 extension never reads `mcp.json` itself and cannot disagree with the CLI about
@@ -144,6 +156,48 @@ project command, a prompt template or a skill typed with a leading `/` is still
 resolved by the CLI, so the panel and the terminal agree on what exists, and the
 footer chips and the VS Code command palette remain the way to change the model,
 the agent, the reasoning level and the project's trust from here.
+
+## Sessions
+
+The header's history icon, the `session: <short id>` footer chip, **Oxide:
+Resume Session**, and `/session` (alias `/sessions`) in the composer all open
+the panel's **Sessions** listing — the listing `oxide sessions list` prints,
+painted in the panel rather than in a QuickPick, and opening out of the footer
+the way the MCP servers listing does. The first two rows are the way
+out of the current thread (**New session**, **Continue most recent**); under
+them is every thread stored for the folder, newest first, each named by its
+session name or, unnamed, by the summarized preview `oxide_core::title` gives
+it in the terminal's own picker and the desktop app's sidebar, with how long ago
+it was written and how many messages it holds. Picking one resumes that thread
+here: the CLI is launched with `--session <id>`, and the title in the header
+follows. `/session <id>` is left alone — an argument is the agent's, matching
+`/mcp list`.
+
+The listing is unchanged from the native picker it replaces (`core/sessions.ts`
+parses `oxide sessions list`), so the panel and the terminal agree on which
+threads exist and what they are called. Sessions are per project: the dialog
+lists the folder that is open.
+
+Both dialogs are composed in the extension host as data
+(`core/dialogs.ts`) — a title, a note for an empty or failed listing, and rows
+where each row carries the action it posts back (`mcpToggle` with the server's
+name, `mcpRefresh`, `openSession` with `new`, `continue` or a session id,
+`dialogClose`) — and the controller holds the open one, so both panes paint the
+same dialog and a pane that attaches afterwards is sent it again. A row's button
+carries the glyph it is painted as (`icon: "power"`) and the words it would
+otherwise show, which become its tooltip and its name for a screen reader. The
+webview only builds the rows and posts the clicked one's action back as a
+`dialogAction`; it decides nothing about what a click means, the same way a
+footer chip posts the control id it carries. Neither dialog covers the panel
+with a backdrop, so a click inside one keeps it open: it is dismissed by its
+Close icon, by <kbd>Esc</kbd>, or by picking a row.
+
+## Image previews
+
+A thumbnail in the attachment strip is a button: clicking it opens the full-size
+image the host sent, in an overlay on the panel, and **Close**, <kbd>Esc</kbd> or
+a click on the backdrop closes it. A chip has room for a 96px copy, so without
+this the only look at what is being sent was too small to check.
 
 ## Agent turns
 
@@ -198,7 +252,7 @@ it.
   saying which setting or file behind it. A click posts a `control` message that
   the controller routes to the same action the matching command runs:
   `thinking` cycles the level (like <kbd>Shift+Tab</kbd> in the terminal), the
-  others open the model, agent, trust and session pickers. The webview splits
+  others open the model, agent and trust pickers and the session dialog. The webview splits
   the host's `model: glm-5 · 128.0k` label at the first `: ` and paints the key
   dim and uppercased, so the value is what reads first.
 - **Composer** — the message box: the attachment strip, the textarea and the
@@ -314,10 +368,13 @@ messages back are `send`, `stop`, `newSession`, `resumeSession`, `attach` (a
 pasted blob as a `data:` URL), `attachFiles` (dropped paths), `pickFiles`,
 `removeChip` (by chip id, either list), `clearChips`, `notice` (something the
 view could not do, such as a paste it could not read) and `control`. A
-chip-shaped `control` message is the one that carries the model, agent, trust or
-session picker's choice back into the same action the matching command runs;
+chip-shaped `control` message is the one that carries the model, agent or trust
+picker's choice back into the same action the matching command runs;
 `test/commands.test.ts` asserts the two sides agree, because a mistyped message
-kind would otherwise fail silently on either side of the bridge.
+kind would otherwise fail silently on either side of the bridge. A `dialog`
+message paints the listing above the footer (or clears it with `null`), and
+`dialogAction` is the answer to one — the action a clicked row or button
+carried, in the same shape a chip's control id travels.
 
 ## Prompt assembly
 
@@ -364,7 +421,14 @@ line-height so those lines are not left at the browser's `normal`.
 The footer and composer are painted the same way — from `FooterState` data, not
 from decisions taken in the browser — and the composer's own interactions (paste,
 drag and drop, the canvas resize before a pasted image is sent on) are the only
-logic in the webview. Nothing there writes to disk: a pasted blob goes back to
+logic in the webview. A dialog is handed over the same way: the rows and the
+action each one posts are composed in the host (`core/dialogs.ts`), so the
+webview is only a renderer and a click is reported rather than interpreted.
+Its own layout is all in `media/style.css`: the listing is a panel of the
+composer's column (a flex child between the transcript and the footer) rather
+than an overlay, which is what keeps it attached to the footer and lets its row
+list scroll.
+Nothing there writes to disk: a pasted blob goes back to
 the host as a `data:` URL, and the host is what decides which file to write and
 which path to send.
 
@@ -414,18 +478,25 @@ every contributed command has a handler, every footer chip has a click handler,
 and every message the webview posts is handled by `chatView.ts`, and in
 `test/webview.test.ts`, that `media/main.js` — plain JavaScript with no type
 checking — paints the footer, the chips, the attachment strip, the approval
-card and the disabled
-state of Send from its messages when it runs against a DOM stub. The footer's own
+card, the `/mcps` and `/sessions` listings (and the full-size image a thumbnail
+opens) and the disabled
+state of Send from its messages when it runs against a DOM stub, and that the
+shell puts the listing between the transcript and the footer with icon-only
+buttons in its header. The dialog
+composition itself — the rows, the status each server is in, the switch it
+offers, the session rows — is covered in `test/dialogs.test.ts`. The footer's own
 readers are covered one file each: `test/settings.test.ts`, `test/trust.test.ts`,
 `test/git.test.ts`, `test/agents.test.ts`, `test/plugins.test.ts`,
 `test/project.test.ts` (the five together, against an injected file map, with the
 untrusted and plugin-agent cases spelled out) and `test/footer.test.ts` (the
-labels, the usage line and the gauge). The `/mcps` picker's own parsing — the
-server listing, the per-state codicons, the toggle arguments and the bare slash
+labels, the usage line and the gauge). The `/mcps` listing's own parsing — the
+server listing, the per-state names, the toggle arguments and the bare slash
 command — is covered in `test/mcps.test.ts`, which also holds the controller's
 `send` to answering that command before a message is queued or prompted (a
 source-level assertion, because `chat.ts` imports `vscode` and cannot be loaded
-there).
+there). What each dialog's rows say — a server's state and the scope its toggle
+writes to, a session's age and size, the rows' own actions — is covered in
+`test/dialogs.test.ts`, which needs neither a webview nor a CLI.
 
 ## Packaging
 
