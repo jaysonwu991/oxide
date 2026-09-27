@@ -1,4 +1,4 @@
-use crate::ecosystem::{McpKind, McpServer};
+use crate::ecosystem::{service_aliases, McpKind, McpServer};
 use crate::llm::{FunctionSpec, ToolSpec};
 use crate::mcp_oauth::OAuthState;
 use anyhow::{bail, Context, Result};
@@ -17,6 +17,15 @@ const PROTOCOL_VERSION: &str = "2024-11-05";
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(60);
 const STATUS_TIMEOUT: Duration = Duration::from_secs(10);
 const MCP_SESSION_ID: &str = "mcp-session-id";
+/// Shortest word that may name a service; fragments like `nr` are ignored.
+const MIN_SERVICE_WORD: usize = 3;
+/// Words too generic to identify a service on their own.
+const IGNORED_SERVICE_WORDS: &[&str] = &[
+    "app", "cloud", "com", "dev", "local", "mcp", "net", "org", "server", "www",
+];
+/// Cap on a server's own instructions. They are replayed in the system prompt of
+/// every step, so a server that ships an essay must not grow the prompt by it.
+const MAX_INSTRUCTIONS_CHARS: usize = 4_000;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum McpStatus {
@@ -106,6 +115,7 @@ struct McpTool {
 struct McpServerHandle {
     name: String,
     source: String,
+    instructions: Option<String>,
     connection: Mutex<McpConnection>,
     tools: Vec<McpTool>,
 }
@@ -188,18 +198,53 @@ impl McpRegistry {
             })
             .collect();
         let count = tools.len();
+        let instructions = connection.instructions.clone();
         self.servers
             .write()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
             .push(Arc::new(McpServerHandle {
                 name: server.name.clone(),
                 source: server_source(server),
+                instructions: instructions.clone(),
                 connection: Mutex::new(connection),
                 tools,
             }));
-        Ok(format!(
+        let mut message = format!(
             "loaded MCP server `{name}` with {count} tool(s); use its `{name}__*` tools now"
-        ))
+        );
+        if let Some(instructions) = &instructions {
+            message.push_str(&format!("\n\nServer instructions:\n{instructions}"));
+        }
+        Ok(message)
+    }
+
+    /// The instructions the loaded servers ship in their `initialize` result, as
+    /// the system-prompt section that carries them. `None` while no loaded server
+    /// provides any.
+    pub fn instructions_section(&self) -> Option<String> {
+        let mut section = String::new();
+        for server in self
+            .servers
+            .read()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .iter()
+        {
+            let Some(instructions) = &server.instructions else {
+                continue;
+            };
+            if section.is_empty() {
+                section.push_str(
+                    "# MCP server notes\nThese servers ship their own instructions for using their \
+                     tools.",
+                );
+            }
+            section.push_str(&format!("\n\n## {}\n{instructions}", server.name));
+        }
+        if section.is_empty() {
+            None
+        } else {
+            Some(section)
+        }
     }
 
     pub fn tool_specs(&self) -> Vec<ToolSpec> {
@@ -268,13 +313,27 @@ impl McpRegistry {
         self.servers_for_host(&host).into_iter().next()
     }
 
-    /// Unique server names that own any URL found in free-form text.
+    /// Unique server names this text needs, either by URL — a link whose host
+    /// matches a server's routing domains — or by service name, so "create a
+    /// Confluence doc" loads the server configured as `atlassian` before the
+    /// first model call instead of leaving the model to ask for a URL.
     pub fn servers_for_text(&self, text: &str) -> Vec<String> {
         let mut names_set = std::collections::HashSet::new();
         for url in urls_in_text(text) {
             if let Some(host) = host_from_url(&url) {
                 for name in self.servers_for_host(&host) {
                     names_set.insert(name);
+                }
+            }
+        }
+        let words = words_in_text(text);
+        if !words.is_empty() {
+            for server in self.configured.iter().filter(|server| server.enabled) {
+                if service_words(&server.name)
+                    .iter()
+                    .any(|word| words.contains(word.as_str()))
+                {
+                    names_set.insert(server.name.clone());
                 }
             }
         }
@@ -349,6 +408,34 @@ fn urls_in_text(text: &str) -> Vec<String> {
     urls
 }
 
+/// The words that name a server: the parts of its own name plus the aliases of
+/// the well-known service it belongs to, so a message naming Confluence loads a
+/// server configured as `atlassian` (or `my-atlassian`).
+fn service_words(name: &str) -> Vec<String> {
+    let mut words: Vec<String> = name
+        .split(|ch: char| !ch.is_ascii_alphanumeric())
+        .map(|word| word.to_ascii_lowercase())
+        .filter(|word| word.len() >= MIN_SERVICE_WORD)
+        .filter(|word| !IGNORED_SERVICE_WORDS.contains(&word.as_str()))
+        .collect();
+    for alias in service_aliases(name) {
+        if alias.len() >= MIN_SERVICE_WORD && !words.contains(&alias) {
+            words.push(alias);
+        }
+    }
+    words
+}
+
+/// Lowercased words of a free-form message, minus the ones too short or too
+/// generic to name a service.
+fn words_in_text(text: &str) -> std::collections::HashSet<String> {
+    text.split(|ch: char| !ch.is_ascii_alphanumeric())
+        .map(|word| word.to_ascii_lowercase())
+        .filter(|word| word.len() >= MIN_SERVICE_WORD)
+        .filter(|word| !IGNORED_SERVICE_WORDS.contains(&word.as_str()))
+        .collect()
+}
+
 /// Matches a routing domain against a concrete host. Exact domains match
 /// exactly; `*.`/`.`-prefixed domains match the host or any subdomain.
 fn domain_match(domain: &str, host: &str) -> bool {
@@ -388,6 +475,7 @@ struct McpConnection {
     transport: Transport,
     next_id: u64,
     interactive: bool,
+    instructions: Option<String>,
 }
 
 enum Transport {
@@ -484,6 +572,7 @@ impl McpConnection {
             transport,
             next_id: 1,
             interactive,
+            instructions: None,
         };
         connection.initialize().await?;
         Ok(connection)
@@ -495,7 +584,8 @@ impl McpConnection {
             "capabilities": {},
             "clientInfo": { "name": "Oxide", "version": env!("CARGO_PKG_VERSION") },
         });
-        self.request("initialize", params).await?;
+        let initialize = self.request("initialize", params).await?;
+        self.instructions = instructions_from(&initialize);
         self.notify("notifications/initialized", json!({})).await?;
         Ok(())
     }
@@ -753,6 +843,23 @@ fn format_content(result: &Value) -> String {
     }
 }
 
+/// The guidance a server ships in its `initialize` result, trimmed and capped.
+fn instructions_from(result: &Value) -> Option<String> {
+    let text = result.get("instructions")?.as_str()?.trim();
+    if text.is_empty() {
+        return None;
+    }
+    if text.chars().count() <= MAX_INSTRUCTIONS_CHARS {
+        return Some(text.to_string());
+    }
+    let cut = text
+        .char_indices()
+        .nth(MAX_INSTRUCTIONS_CHARS)
+        .map(|(index, _)| index)
+        .unwrap_or(text.len());
+    Some(format!("{}…", &text[..cut]))
+}
+
 fn expose(server: &str, tool: &str) -> String {
     format!("{}__{}", sanitize(server), sanitize(tool))
 }
@@ -918,6 +1025,61 @@ mod tests {
             Some("atlassian".to_string())
         );
         assert_eq!(registry.url_owned("https://unknown.example.com"), None);
+    }
+
+    fn test_server(name: &str) -> McpServer {
+        McpServer {
+            name: name.to_string(),
+            enabled: true,
+            kind: McpKind::Remote {
+                url: format!("https://mcp.example.com/{name}"),
+                headers: Default::default(),
+                oauth: None,
+            },
+            domains: vec![],
+        }
+    }
+
+    #[test]
+    fn routes_service_names_to_configured_servers() {
+        let registry = McpRegistry::new(&[
+            test_server("atlassian"),
+            test_server("my-github"),
+            test_server("mcp-server"),
+        ]);
+        assert_eq!(
+            registry.servers_for_text("Create a Confluence doc to my personal space"),
+            vec!["atlassian".to_string()]
+        );
+        assert_eq!(
+            registry.servers_for_text("open a PR on github for this fix"),
+            vec!["my-github".to_string()]
+        );
+        assert!(registry
+            .servers_for_text("start the mcp server, then sort this list")
+            .is_empty());
+    }
+
+    #[test]
+    fn skips_disabled_servers_when_routing() {
+        let mut server = test_server("atlassian");
+        server.enabled = false;
+        let registry = McpRegistry::new(&[server]);
+        assert!(registry.servers_for_text("create a jira ticket").is_empty());
+    }
+
+    #[test]
+    fn keeps_server_instructions_within_limits() {
+        assert_eq!(instructions_from(&json!({})), None);
+        assert_eq!(instructions_from(&json!({ "instructions": "   " })), None);
+        assert_eq!(
+            instructions_from(&json!({ "instructions": " Call lookup_document first \n" })),
+            Some("Call lookup_document first".to_string())
+        );
+        let long = "x".repeat(MAX_INSTRUCTIONS_CHARS + 50);
+        let capped = instructions_from(&json!({ "instructions": long })).unwrap();
+        assert_eq!(capped.chars().count(), MAX_INSTRUCTIONS_CHARS + 1);
+        assert!(capped.ends_with('…'));
     }
 
     #[test]
@@ -1099,11 +1261,13 @@ for line in sys.stdin:
         assert_eq!(registry.configured_count(), 1);
         assert_eq!(registry.server_count(), 0);
         assert_eq!(registry.tool_count(), 0);
+        assert_eq!(registry.instructions_section(), None);
         registry.load("mock").await.unwrap();
         assert_eq!(registry.server_count(), 1);
         assert_eq!(registry.tool_count(), 1);
         assert!(registry.is_tool("mock__echo"));
         assert_eq!(registry.tool_specs()[0].function.name, "mock__echo");
+        assert_eq!(registry.instructions_section(), None);
 
         let output = registry
             .call("mock__echo", json!({ "text": "hi" }))
@@ -1136,7 +1300,8 @@ for line in sys.stdin:
                         "result": {
                             "protocolVersion": PROTOCOL_VERSION,
                             "capabilities": {},
-                            "serverInfo": { "name": "remote-mock", "version": "0" }
+                            "serverInfo": { "name": "remote-mock", "version": "0" },
+                            "instructions": "Always call lookup_document first"
                         }
                     })
                     .to_string();
@@ -1191,10 +1356,15 @@ for line in sys.stdin:
             domains: vec!["example.com".to_string()],
         };
         let registry = McpRegistry::new(&[server]);
-        registry.load("documents").await.unwrap();
+        let loaded = registry.load("documents").await.unwrap();
+        assert!(loaded.contains("Always call lookup_document first"));
         assert_eq!(registry.server_count(), 1);
         assert!(registry.is_tool("documents__lookup_document"));
         assert!(registry.tool_specs()[0].function.description.contains(&url));
+        let notes = registry.instructions_section().unwrap();
+        assert!(notes.contains("# MCP server notes"));
+        assert!(notes.contains("## documents"));
+        assert!(notes.contains("Always call lookup_document first"));
         let output = registry
             .call(
                 "documents__lookup_document",

@@ -1197,12 +1197,57 @@ impl Config {
             sections.push(list);
         }
 
+        if !self.ecosystem.plugins.is_empty() || !self.ecosystem.hooks.is_empty() {
+            let mut list = String::from(
+                "# Plugins\nInstalled plugins already extend this run: use what one provides instead \
+                 of building the same thing by hand, and never tell the user to install a plugin \
+                 that is listed here. One marked `(disabled)` is installed but switched off — say \
+                 so and let the user switch it on (`/plugins` in the terminal, or \
+                 `oxide plugin enable <name>`) rather than suggesting an install.",
+            );
+            for plugin in &self.ecosystem.plugins {
+                let version = plugin
+                    .version
+                    .as_deref()
+                    .map(|version| format!(" v{version}"))
+                    .unwrap_or_default();
+                let mut row = format!("- {}{version}", plugin.name);
+                if let Some(description) = plugin
+                    .description
+                    .as_deref()
+                    .filter(|text| !text.is_empty())
+                {
+                    row.push_str(&format!(" — {description}"));
+                }
+                let capabilities = plugin.capabilities();
+                if !capabilities.is_empty() {
+                    row.push_str(&format!(" ({capabilities})"));
+                }
+                if !plugin.enabled {
+                    row.push_str(" (disabled)");
+                }
+                list.push_str(&format!("\n{row}"));
+            }
+            if !self.ecosystem.hooks.is_empty() {
+                list.push_str(&format!(
+                    "\nHook plugins are active ({}): a hook can rewrite a tool call's arguments \
+                     before it runs and a tool's output before you see it, so output that looks \
+                     changed by something else may be theirs.",
+                    self.ecosystem.hooks.len()
+                ));
+            }
+            sections.push(list);
+        }
+
         if !self.ecosystem.mcp.is_empty() {
             let mut list = String::from(
-                "# MCP servers\nRoute requests to the matching MCP server: if a pasted URL's domain \
-                 matches one of the domains below (or the service is named), call mcp_load for that \
-                 server first and use its tools instead of webfetch, so authenticated documents, \
-                 tickets, and other resources stay accessible.",
+                "# MCP servers\nRoute requests to the matching MCP server: a server whose URL or \
+                 service name the message mentions is loaded before your first step, so for any \
+                 other request that belongs to a configured service, call mcp_load for that server \
+                 first and use its tools instead of webfetch, so authenticated documents, tickets, \
+                 and other resources stay accessible. Never ask the user for an identifier a \
+                 configured server can discover itself — a cloud, space, project, board or channel \
+                 id, or a URL — because its tools can resolve it.",
             );
             for server in &self.ecosystem.mcp {
                 if !server.enabled {
@@ -1580,8 +1625,81 @@ mod tests {
         let prompt = config.compose_system_prompt();
         assert!(prompt.contains("Route requests to the matching MCP server"));
         assert!(prompt.contains("call mcp_load for that"));
+        assert!(prompt.contains("Never ask the user for an identifier"));
         assert!(prompt.contains("instead of webfetch"));
         assert!(prompt.contains("documents — docs.example.com"));
+    }
+
+    #[test]
+    fn plugin_prompt_names_what_is_installed_and_what_it_brings() {
+        let mut config = Config::default();
+        config.ecosystem.plugins.push(ecosystem::PluginSummary {
+            name: "docs-toolbox".to_string(),
+            description: Some("Writes project docs from source".to_string()),
+            version: Some("1.2".to_string()),
+            enabled: true,
+            skills: 2,
+            commands: 1,
+            ..Default::default()
+        });
+        config.ecosystem.plugins.push(ecosystem::PluginSummary {
+            name: "notion".to_string(),
+            description: Some("Notion pages".to_string()),
+            enabled: false,
+            ..Default::default()
+        });
+        config
+            .ecosystem
+            .hooks
+            .push(std::path::PathBuf::from("format.ts"));
+
+        let prompt = config.compose_system_prompt();
+        assert!(prompt.contains("# Plugins"));
+        assert!(prompt.contains("never tell the user to install a plugin"));
+        assert!(prompt.contains(
+            "- docs-toolbox v1.2 — Writes project docs from source (1 command, 2 skills)"
+        ));
+        assert!(prompt.contains("- notion — Notion pages (disabled)"));
+        assert!(prompt.contains("`oxide plugin enable <name>`"));
+        assert!(prompt.contains("Hook plugins are active (1)"));
+    }
+
+    #[test]
+    fn plugin_prompt_stays_out_without_plugins_or_hooks() {
+        let config = Config::default();
+        let prompt = config.compose_system_prompt();
+        assert!(!prompt.contains("# Plugins"));
+        assert!(!prompt.contains("Hook plugins are active"));
+    }
+
+    #[test]
+    fn project_hook_plugins_reach_the_prompt() {
+        let dir = std::env::temp_dir().join(format!("oxide_plugin_prompt_{}", std::process::id()));
+        std::fs::remove_dir_all(&dir).ok();
+        std::fs::create_dir_all(dir.join(".oxide/plugins")).unwrap();
+        std::fs::write(
+            dir.join(".oxide/plugins/format.ts"),
+            "export default () => ({})",
+        )
+        .unwrap();
+
+        let config = Config {
+            ecosystem: ecosystem::load(&dir),
+            ..Config::default()
+        };
+        let hooks = config.ecosystem.hooks.len();
+        assert!(config
+            .ecosystem
+            .hooks
+            .iter()
+            .any(|path| path.ends_with("format.ts")));
+
+        let prompt = config.compose_system_prompt();
+        assert!(prompt.contains("# Plugins"), "{prompt}");
+        assert!(prompt.contains(&format!("Hook plugins are active ({hooks})")));
+        assert!(config.ecosystem.plugins.is_empty());
+
+        std::fs::remove_dir_all(&dir).ok();
     }
 
     #[test]

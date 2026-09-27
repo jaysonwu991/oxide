@@ -530,7 +530,15 @@ async fn run_loop(
         }
 
         let mut request = Vec::with_capacity(messages.len() + 3);
-        request.push(Message::system(config.compose_system_prompt()));
+        let mut system = config.compose_system_prompt();
+        // A loaded server's own instructions only reach the model here: one the
+        // model loads itself says what it needs in its tool result, while an
+        // auto-loaded server is never loaded by the model at all.
+        if let Some(notes) = runtime.mcp.instructions_section() {
+            system.push_str("\n\n");
+            system.push_str(&notes);
+        }
+        request.push(Message::system(system));
         request.extend(messages.iter().cloned());
         // A reminder makes this request the hidden nudge: it asks the model to
         // confirm work it already summarized, so a provider that answers it
@@ -1071,9 +1079,10 @@ async fn run_loop(
     }
 }
 
-/// Loads any configured MCP servers whose routing domains appear in a user
-/// message before the next model call, so URL-driven requests hit the right
-/// tools on the first turn instead of burning a round trip on `mcp_load`.
+/// Loads every configured server a user message names — by URL host or by
+/// service name — before the first model call, so URL-driven and service-named
+/// requests hit the right tools on the first turn instead of burning a round
+/// trip on `mcp_load` or leaving the model to ask the user for a URL.
 async fn auto_load_mcp_for_user_text<'a>(
     runtime: &Runtime,
     messages: impl IntoIterator<Item = &'a Message>,
@@ -3029,6 +3038,103 @@ mod tests {
             requests[2].contains("explicit instruction from the user outranks"),
             "{}",
             requests[2]
+        );
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// A user message that names a service loads that server before the first
+    /// model call, so the request carries its tools and its own instructions
+    /// even though the message names no URL.
+    #[tokio::test]
+    async fn a_named_service_loads_its_server_before_the_first_step() {
+        if !matches!(
+            std::process::Command::new("python3")
+                .arg("--version")
+                .output(),
+            Ok(output) if output.status.success()
+        ) {
+            return;
+        }
+
+        const INSTRUCTING_SERVER: &str = r#"
+import sys, json
+def send(obj):
+    sys.stdout.write(json.dumps(obj) + "\n")
+    sys.stdout.flush()
+for line in sys.stdin:
+    line = line.strip()
+    if not line:
+        continue
+    msg = json.loads(line)
+    method = msg.get("method")
+    if method == "initialize":
+        send({"jsonrpc": "2.0", "id": msg["id"], "result": {"protocolVersion": "2024-11-05", "capabilities": {}, "serverInfo": {"name": "atlassian", "version": "0"}, "instructions": "Call find_spaces before creating a page"}})
+    elif method == "tools/list":
+        send({"jsonrpc": "2.0", "id": msg["id"], "result": {"tools": [{"name": "find_spaces", "description": "List Confluence spaces", "inputSchema": {"type": "object"}}]}})
+    elif method == "tools/call":
+        send({"jsonrpc": "2.0", "id": msg["id"], "result": {"content": [{"type": "text", "text": "PERSONAL"}]}})
+"#;
+
+        let dir = std::env::temp_dir().join(format!("oxide_mcp_alias_{}", std::process::id()));
+        std::fs::remove_dir_all(&dir).ok();
+        std::fs::create_dir_all(&dir).unwrap();
+        let script = dir.join("mock_mcp.py");
+        std::fs::write(&script, INSTRUCTING_SERVER).unwrap();
+
+        let (addr, server) = sse_server(vec![answer_body("Created the page.")]).await;
+        let mut config = Config {
+            provider: "deepseek".into(),
+            model: "deepseek-flash".into(),
+            base_url: format!("http://{addr}"),
+            api_key: "sk-test".into(),
+            auto_approve: true,
+            ..Config::default()
+        };
+        config.ecosystem.mcp = vec![crate::ecosystem::McpServer {
+            name: "atlassian".into(),
+            enabled: true,
+            kind: crate::ecosystem::McpKind::Local {
+                command: vec!["python3".into(), script.display().to_string()],
+                environment: Default::default(),
+                cwd: None,
+            },
+            domains: vec![],
+        }];
+        let mut runtime = test_runtime().await;
+        runtime.mcp = Arc::new(McpRegistry::new(&config.ecosystem.mcp));
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+
+        run(
+            config,
+            dir.clone(),
+            vec![Message::user(
+                "Create a Confluence doc in my personal space",
+            )],
+            tx,
+            runtime,
+        )
+        .await;
+
+        let mut errors = Vec::new();
+        while let Ok(event) = rx.try_recv() {
+            if let AgentEvent::Error(message) = event {
+                errors.push(message);
+            }
+        }
+        assert!(errors.is_empty(), "{errors:?}");
+
+        let requests = server.await.unwrap();
+        assert_eq!(requests.len(), 1);
+        assert!(
+            requests[0].contains("atlassian__find_spaces"),
+            "{}",
+            requests[0]
+        );
+        assert!(
+            requests[0].contains("Call find_spaces before creating a page"),
+            "{}",
+            requests[0]
         );
 
         std::fs::remove_dir_all(&dir).ok();

@@ -328,14 +328,23 @@ pub fn specs(mcp: &McpRegistry) -> Vec<ToolSpec> {
                 } else {
                     format!(" (domains: {domains})")
                 };
-                format!("`{name}`{domain_hint} ({source})")
+                let aliases: Vec<String> = crate::ecosystem::service_aliases(name)
+                    .into_iter()
+                    .filter(|alias| !name.eq_ignore_ascii_case(alias))
+                    .collect();
+                let alias_hint = if aliases.is_empty() {
+                    String::new()
+                } else {
+                    format!(" (also: {})", aliases.join(", "))
+                };
+                format!("`{name}`{alias_hint}{domain_hint} ({source})")
             })
             .collect::<Vec<_>>()
             .join(", ");
         specs.push(spec(
             "mcp_load",
             &format!(
-                "Load one configured MCP server on demand and reveal its tools. Use this before answering requests that belong to a configured service, including when a document, ticket, or other service URL identifies the server. Route by URL host first: if a pasted link's domain matches a server's listed domains, call mcp_load for that server instead of webfetch. Configured servers: {sources}"
+                "Load one configured MCP server on demand and reveal its tools. A server the message names by URL or by service is already loaded before your first step, so use this when the request needs a configured service the message does not name — a document, ticket or other URL identifies it too. Route by URL host first: if a pasted link's domain matches a server's listed domains, call mcp_load for that server instead of webfetch. Configured servers: {sources}"
             ),
             json!({
                 "type": "object",
@@ -2477,6 +2486,10 @@ mod tests {
             .find(|spec| spec.function.name == "mcp_load")
             .unwrap();
         assert!(loader.function.description.contains("atlassian"));
+        assert!(loader
+            .function
+            .description
+            .contains("(also: confluence, jira)"));
         assert!(loader
             .function
             .description
