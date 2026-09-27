@@ -631,14 +631,16 @@ fn openai_request(
     tools: &[ToolSpec],
     session_id: Option<&str>,
 ) -> ChatRequest {
-    // DeepSeek's thinking mode requires the `reasoning_content` an assistant
-    // turn produced to be handed back on every later request that carries
-    // `tools` -- not only for tool-call turns but for plain final answers too.
-    // Dropping any of those fields earns a 400 ("The `reasoning_content` in
-    // the thinking mode must be passed back to the API."), so the captured
-    // reasoning is put back as `reasoning_content` on every assistant message.
-    // Other OpenAI-compatible providers get the thinking blocks stripped
-    // instead, since the field would be an unknown argument there.
+    // DeepSeek's thinking mode requires every assistant message in the history
+    // to carry `reasoning_content` -- not only turns that made a tool call but
+    // plain final answers too, and not only turns that thought. An assistant
+    // turn missing the field earns a 400 ("The `reasoning_content` in the
+    // thinking mode must be passed back to the API."), which `deepseek-flash`
+    // hits routinely because it skips reasoning on quick tool calls and short
+    // answers. So the field is set on every assistant message: the captured
+    // reasoning when there is one, an empty string when the turn thought
+    // nothing. Other OpenAI-compatible providers get the thinking blocks
+    // stripped instead, since the field would be an unknown argument there.
     let replay_reasoning = config.is_deepseek();
     // Every provider rejects an assistant tool-call turn without its results,
     // and a stored thread can hold one (a run killed mid-tool, a truncated
@@ -653,9 +655,10 @@ fn openai_request(
             };
             object.remove("thinking");
             if replay_reasoning && message.role == "assistant" {
-                if let Some(reasoning) = message.reasoning_content() {
-                    object.insert("reasoning_content".to_string(), Value::String(reasoning));
-                }
+                object.insert(
+                    "reasoning_content".to_string(),
+                    Value::String(message.reasoning_content().unwrap_or_default()),
+                );
             }
             value
         })
@@ -1091,7 +1094,9 @@ mod tests {
         assert!(call_turn.get("thinking").is_none());
         assert!(answer_turn.get("thinking").is_none());
 
-        // A turn that produced no reasoning has nothing to replay.
+        // A turn that produced no reasoning still sends the field, empty:
+        // DeepSeek rejects an assistant message that leaves it out even when
+        // the turn thought nothing (a quick tool call, a short answer).
         let body = serde_json::to_value(openai_request(
             &config,
             &[Message::assistant("plain", vec![])],
@@ -1099,7 +1104,26 @@ mod tests {
             None,
         ))
         .unwrap();
-        assert!(body["messages"][0].get("reasoning_content").is_none());
+        assert_eq!(body["messages"][0]["reasoning_content"], "");
+    }
+
+    #[test]
+    fn deepseek_replays_reasoning_through_a_gateway_too() {
+        // A DeepSeek model behind a gateway is served by another provider but
+        // is the same thinking mode, so the same field applies.
+        let config = Config {
+            provider: "openrouter".into(),
+            model: "deepseek/deepseek-v4-flash".into(),
+            ..Config::default()
+        };
+        let body = serde_json::to_value(openai_request(
+            &config,
+            &[Message::assistant("hi", vec![])],
+            &[],
+            None,
+        ))
+        .unwrap();
+        assert_eq!(body["messages"][0]["reasoning_content"], "");
     }
 
     #[test]
