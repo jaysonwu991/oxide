@@ -741,6 +741,20 @@ mod tests {
     }
 
     #[test]
+    fn a_refused_attachment_names_the_types_and_the_limit() {
+        let refused = attachment_parts(Some(vec![AttachmentInput {
+            data_url: "data:image/tiff;base64,AAAA".to_string(),
+            name: Some("scan.tif".to_string()),
+        }]))
+        .expect_err("a TIFF is not attachable");
+        assert_eq!(
+            refused,
+            "scan.tif could not be attached: attach a PNG, JPEG, GIF, WebP or BMP image or a PDF \
+             of at most 20 MB"
+        );
+    }
+
+    #[test]
     fn message_view_exposes_tool_calls_for_replay() {
         let call = ToolCall {
             id: "call_1".into(),
