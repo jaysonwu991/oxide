@@ -283,6 +283,37 @@ describe("Transcript", () => {
     assert.equal(transcript.items[0].id, reply.id);
   });
 
+  it("keeps a re-checked answer in one bubble when the usage boundary is deferred", () => {
+    // A summary whose Definition-of-Done re-check is pending streams both
+    // answers before the CLI emits the usage event that commits the merged
+    // turn, so no boundary may fall between them.
+    const transcript = new Transcript();
+    const reply = push(
+      transcript.apply({
+        type: "message_update",
+        assistantMessageEvent: { type: "text_delta", delta: "Upgrade complete." },
+      })[0],
+    );
+    assert.deepEqual(
+      transcript.apply({
+        type: "message_update",
+        assistantMessageEvent: { type: "text_delta", delta: " Verified on disk." },
+      }),
+      [{ k: "append", id: reply.id, field: "text", delta: " Verified on disk." }],
+    );
+    // The deferred usage commits the single merged step afterwards, and the
+    // step marker closes it rather than starting a second bubble.
+    transcript.apply({
+      type: "usage",
+      usage: { input: 1, output: 1, cacheRead: 0, cacheWrite: 0, cost: 0 },
+    });
+    transcript.apply({ type: "thinking_done" });
+    assert.equal(transcript.items.length, 1);
+    const item = transcript.items[0];
+    assert.equal(item.kind, "assistant");
+    assert.equal((item as AssistantItem).text, "Upgrade complete. Verified on disk.");
+  });
+
   it("accumulates usage and tracks the latest context size", () => {
     const transcript = new Transcript();
     usage(

@@ -402,13 +402,31 @@ async fn run_loop(
     // Verification commands already run this turn, so an exact repeat can be
     // flagged instead of silently re-run (a slow build or test suite).
     let mut seen_verifications: BTreeSet<String> = BTreeSet::new();
+    // A summary whose verification re-check is still pending. It is kept out of
+    // the log and the transcript until the re-check either extends it or the run
+    // ends, so a re-checked answer reads as one summary instead of two.
+    let mut held_summary: Option<(Message, Option<crate::compact::UsageRecord>)> = None;
+    // Whether the held summary is still the newest message, which is what lets
+    // the re-check merge into it rather than start a second one.
+    let mut held_is_tail = false;
 
     loop {
         if runtime.cancel.is_cancelled() {
+            // A summary held for its re-check is still the answer: keep it.
+            if let Some((held, held_usage)) = held_summary.take() {
+                record_usage(&runtime.session, depth, &held, held_usage);
+                send_usage(&tx, held_usage);
+            }
             let _ = tx.send(AgentEvent::Finished(messages));
             return;
         }
         for steered in runtime.steering.drain() {
+            // A held summary is committed first, so a queued message cannot
+            // land in the log ahead of the summary it followed in the thread.
+            if let Some((held, held_usage)) = held_summary.take() {
+                record_usage(&runtime.session, depth, &held, held_usage);
+                held_is_tail = false;
+            }
             auto_load_mcp_for_user_text(&runtime, std::iter::once(&steered)).await;
             record(&runtime.session, depth, &steered);
             messages.push(steered);
@@ -463,6 +481,13 @@ async fn run_loop(
                             if let Ok(refreshed) = log.messages() {
                                 messages = refreshed;
                             }
+                            // The held summary is deliberately not in the log,
+                            // so the compacted view dropped it; put it back so
+                            // the re-check still sees the answer it extends.
+                            if let Some((held, _)) = &held_summary {
+                                messages.push(held.clone());
+                                held_is_tail = true;
+                            }
                             context_tokens = 0;
                         }
                         Ok(None) => {}
@@ -488,6 +513,13 @@ async fn run_loop(
             None => false,
         };
         let tool_specs = build_tool_specs(&config, &runtime, depth);
+        // The held summary's text, replayed when the re-check is retried: the
+        // failed attempt's item is discarded, and the retry has to restart the
+        // bubble with the answer it is extending.
+        let held_replay = held_summary
+            .as_ref()
+            .and_then(|(message, _)| message.display())
+            .filter(|text| !text.is_empty());
 
         let started = std::time::Instant::now();
         // Reset on a retry: the failed attempt's `Thought` marker belongs to the
@@ -528,6 +560,12 @@ async fn run_loop(
                 max: retry.max,
                 delay_ms: retry.delay.as_millis() as u64,
             });
+            // The retry re-opens the bubble with the summary it is extending, so
+            // a dropped re-check does not leave the merged answer without its
+            // first half on screen.
+            if let Some(text) = held_replay.clone() {
+                let _ = retry_tx.send(AgentEvent::Text(text));
+            }
         };
         let turn = {
             let mut hooks = StreamHooks {
@@ -540,10 +578,18 @@ async fn run_loop(
                 Err(err) if nudge_failed_quietly(nudging, &err) => {
                     // The reminder is advisory: the model already summarized its
                     // work and nothing more will arrive, so finish with the
-                    // answer in hand instead of reporting `err`. The thinking
-                    // block this attempt may have streamed is closed first, so
-                    // the transcript does not keep it open as still thinking.
+                    // answer in hand instead of reporting `err`. The held
+                    // summary is committed and the thinking block this attempt
+                    // may have streamed is closed first, so the transcript does
+                    // not keep it open as still thinking.
+                    if let Some((held, held_usage)) = held_summary.take() {
+                        record_usage(&runtime.session, depth, &held, held_usage);
+                        send_usage(&tx, held_usage);
+                    }
                     let _ = tx.send(AgentEvent::Thought {
+                        millis: started.elapsed().as_millis() as u64,
+                    });
+                    let _ = tx.send(AgentEvent::ThoughtDone {
                         millis: started.elapsed().as_millis() as u64,
                     });
                     let _ = tx.send(AgentEvent::Finished(messages));
@@ -554,6 +600,10 @@ async fn run_loop(
                     // streamed was shown to the user, so it is kept in the
                     // session for the next turn rather than dropped with the
                     // error.
+                    if let Some((held, held_usage)) = held_summary.take() {
+                        record_usage(&runtime.session, depth, &held, held_usage);
+                        send_usage(&tx, held_usage);
+                    }
                     let streamed = attempt_text
                         .lock()
                         .map(|text| text.clone())
@@ -565,6 +615,9 @@ async fn run_loop(
                         record(&runtime.session, depth, &partial);
                         messages.push(partial);
                     }
+                    let _ = tx.send(AgentEvent::ThoughtDone {
+                        millis: started.elapsed().as_millis() as u64,
+                    });
                     let _ = tx.send(AgentEvent::Error(format!("{err:#}")));
                     let _ = tx.send(AgentEvent::Finished(messages));
                     return;
@@ -576,11 +629,24 @@ async fn run_loop(
                 millis: started.elapsed().as_millis() as u64,
             });
         }
-        let _ = tx.send(AgentEvent::ThoughtDone {
-            millis: started.elapsed().as_millis() as u64,
-        });
 
         if turn.content.trim().is_empty() && turn.tool_calls.is_empty() {
+            let _ = tx.send(AgentEvent::ThoughtDone {
+                millis: started.elapsed().as_millis() as u64,
+            });
+            let _ = tx.send(AgentEvent::Error(
+                "the model returned an empty response".to_string(),
+            ));
+            let _ = tx.send(AgentEvent::Finished(messages));
+            return;
+        }
+
+        let usage = (turn.usage.total() > 0).then(|| crate::compact::UsageRecord::from(turn.usage));
+        if turn.content.trim().is_empty() && turn.tool_calls.is_empty() {
+            send_usage(&tx, usage);
+            let _ = tx.send(AgentEvent::ThoughtDone {
+                millis: started.elapsed().as_millis() as u64,
+            });
             let _ = tx.send(AgentEvent::Error(
                 "the model returned an empty response".to_string(),
             ));
@@ -591,48 +657,96 @@ async fn run_loop(
         let tool_calls = turn.tool_calls.clone();
         let assistant = Message::assistant(turn.content, tool_calls.clone())
             .with_thinking(turn.thinking.clone());
-        record_usage(&runtime.session, depth, &assistant, Some(turn.usage.into()));
-        messages.push(assistant);
-        if turn.usage.total() > 0 {
-            context_tokens = turn.usage.input
-                + turn.usage.cache_read
-                + turn.usage.cache_write
-                + turn.usage.output;
-            let _ = tx.send(AgentEvent::Usage {
-                input: turn.usage.input,
-                output: turn.usage.output,
-                cache_read: turn.usage.cache_read,
-                cache_write: turn.usage.cache_write,
-                cost: turn.usage.cost,
-            });
+        if let Some(usage) = &usage {
+            context_tokens = usage.input + usage.cache_read + usage.cache_write + usage.output;
         }
 
         if tool_calls.is_empty() {
             let steered = runtime.steering.drain();
-            if steered.is_empty() {
-                // Follow-up messages are delivered only once all work is done,
-                // so they are drained here, just before finishing.
-                let follow_ups = runtime.follow_ups.drain();
-                if follow_ups.is_empty() {
-                    if let Some(reminder) = verification.reminder() {
-                        verification_reminder = Some(reminder);
-                        continue;
-                    }
-                    let _ = tx.send(AgentEvent::Finished(messages));
-                    return;
+            // Follow-up messages are delivered only once all work is done, so
+            // they are drained here, just before finishing.
+            let follow_ups = if steered.is_empty() {
+                runtime.follow_ups.drain()
+            } else {
+                Vec::new()
+            };
+            let queued = !steered.is_empty() || !follow_ups.is_empty();
+
+            // A reminder is only due on a plain answer with nothing queued. The
+            // answer is held back so its re-check extends the same assistant
+            // turn instead of adding a second summary.
+            if !queued && !runtime.cancel.is_cancelled() {
+                if let Some(reminder) = verification.reminder() {
+                    let (held, held_usage) = match held_summary.take() {
+                        Some((prior, prior_usage)) if held_is_tail => (
+                            merge_summaries(prior, assistant),
+                            combine_usage(prior_usage, usage),
+                        ),
+                        Some((prior, prior_usage)) => {
+                            record_usage(&runtime.session, depth, &prior, prior_usage);
+                            (assistant, usage)
+                        }
+                        None => (assistant, usage),
+                    };
+                    messages.push(held.clone());
+                    held_summary = Some((held, held_usage));
+                    held_is_tail = true;
+                    verification_reminder = Some(reminder);
+                    continue;
                 }
-                for message in follow_ups {
-                    record(&runtime.session, depth, &message);
-                    messages.push(message);
-                }
-                continue;
             }
-            for message in steered {
+
+            // The answer is final: commit it, merged with a held summary when
+            // the two are still adjacent and no queued message intervenes — a
+            // queued message means the re-check answered a run that is not
+            // finishing, so the summary stays its own turn ahead of it.
+            let (assistant, usage) = match held_summary.take() {
+                Some((prior, prior_usage)) if recheck_extends_summary(held_is_tail, queued) => {
+                    messages.pop();
+                    (
+                        merge_summaries(prior, assistant),
+                        combine_usage(prior_usage, usage),
+                    )
+                }
+                Some((prior, prior_usage)) => {
+                    record_usage(&runtime.session, depth, &prior, prior_usage);
+                    send_usage(&tx, prior_usage);
+                    (assistant, usage)
+                }
+                None => (assistant, usage),
+            };
+            held_is_tail = false;
+            record_usage(&runtime.session, depth, &assistant, usage);
+            messages.push(assistant);
+            send_usage(&tx, usage);
+            let _ = tx.send(AgentEvent::ThoughtDone {
+                millis: started.elapsed().as_millis() as u64,
+            });
+            if !queued {
+                // Nothing is queued and no re-check is due, so the run is done.
+                let _ = tx.send(AgentEvent::Finished(messages));
+                return;
+            }
+            for message in steered.into_iter().chain(follow_ups) {
                 record(&runtime.session, depth, &message);
                 messages.push(message);
             }
             continue;
         }
+
+        // A held summary is committed before the turn that follows it, so its
+        // text and usage are not lost when the re-check used a tool.
+        if let Some((prior, prior_usage)) = held_summary.take() {
+            record_usage(&runtime.session, depth, &prior, prior_usage);
+            send_usage(&tx, prior_usage);
+        }
+        held_is_tail = false;
+        record_usage(&runtime.session, depth, &assistant, usage);
+        messages.push(assistant);
+        send_usage(&tx, usage);
+        let _ = tx.send(AgentEvent::ThoughtDone {
+            millis: started.elapsed().as_millis() as u64,
+        });
 
         // Cancelled after the model planned tools: record a result for each
         // pending call so the session stays a valid call/result sequence, then
@@ -1426,6 +1540,73 @@ fn inspected_by_shell(command: &str, output: &str, path: &str) -> bool {
 /// rather than an error for the user to read.
 fn nudge_failed_quietly(nudging: bool, err: &anyhow::Error) -> bool {
     nudging && err.downcast_ref::<crate::llm::NoAnswer>().is_some()
+}
+
+/// Emits a step's usage. A summary held for its re-check defers this until the
+/// run commits it, because the front-ends treat `usage` as a step boundary and
+/// would paint the re-check as a second bubble.
+fn send_usage(tx: &UnboundedSender<AgentEvent>, usage: Option<crate::compact::UsageRecord>) {
+    if let Some(usage) = usage {
+        let _ = tx.send(AgentEvent::Usage {
+            input: usage.input,
+            output: usage.output,
+            cache_read: usage.cache_read,
+            cache_write: usage.cache_write,
+            cost: usage.cost,
+        });
+    }
+}
+
+/// Whether the re-check answer extends the summary it was asked about. A queued
+/// steering or follow-up message means the run is not finishing, so the summary
+/// is committed as its own turn and the answer follows it instead — merging
+/// across a message the user queued would reorder the thread.
+fn recheck_extends_summary(held_is_tail: bool, queued: bool) -> bool {
+    held_is_tail && !queued
+}
+
+/// Joins a summary with the answer its verification re-check produced, so a run
+/// that re-checks its own work ends with one assistant turn rather than two
+/// summaries saying the same thing. The reasoning blocks are joined too, since
+/// the re-check's reasoning explains the final text.
+fn merge_summaries(mut first: Message, second: Message) -> Message {
+    let mut text = first.display().unwrap_or_default();
+    let extra = second.display().unwrap_or_default();
+    if !extra.trim().is_empty() {
+        if !text.trim().is_empty() {
+            text.push_str("\n\n");
+        }
+        text.push_str(extra.trim_end());
+    }
+    let mut thinking = first.thinking.take().unwrap_or_default();
+    if let Some(more) = second.thinking {
+        thinking.extend(more);
+    }
+    let merged = Message::assistant(text, Vec::new());
+    if thinking.is_empty() {
+        merged
+    } else {
+        merged.with_thinking(thinking)
+    }
+}
+
+/// Sums the usage of a held summary and the re-check that extended it, so the
+/// merged turn reports both requests on resume.
+fn combine_usage(
+    first: Option<crate::compact::UsageRecord>,
+    second: Option<crate::compact::UsageRecord>,
+) -> Option<crate::compact::UsageRecord> {
+    match (first, second) {
+        (Some(first), Some(second)) => Some(crate::compact::UsageRecord {
+            input: first.input + second.input,
+            output: first.output + second.output,
+            cache_read: first.cache_read + second.cache_read,
+            cache_write: first.cache_write + second.cache_write,
+            cost: first.cost + second.cost,
+        }),
+        (Some(usage), None) | (None, Some(usage)) => Some(usage),
+        (None, None) => None,
+    }
 }
 
 /// Whether a shell command posts a reply or review comment on a pull/merge
@@ -2725,6 +2906,116 @@ mod tests {
         std::fs::remove_dir_all(&dir).ok();
     }
 
+    /// The re-check must extend the summary it asked about, not produce a
+    /// second one. The run ends with one assistant turn that holds both the
+    /// original answer and the verified answer, and the transcript keeps one
+    /// bubble because the first answer's step is not committed until the
+    /// re-check answers.
+    #[tokio::test]
+    async fn a_recheck_answer_is_merged_into_the_summary() {
+        let dir = std::env::temp_dir().join(format!("oxide_merge_{}", std::process::id()));
+        std::fs::remove_dir_all(&dir).ok();
+        std::fs::create_dir_all(&dir).unwrap();
+        let edited = dir.join("catalog.yaml");
+        let edited = edited.to_str().unwrap().to_string();
+
+        let (addr, server) = sse_server(vec![
+            write_call_body(&edited),
+            answer_body("Upgrade complete."),
+            answer_body("Verified on disk."),
+        ])
+        .await;
+        let config = Config {
+            provider: "deepseek".into(),
+            model: "deepseek-flash".into(),
+            base_url: format!("http://{addr}"),
+            api_key: "sk-test".into(),
+            auto_approve: true,
+            ..Config::default()
+        };
+        let runtime = test_runtime().await;
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+
+        run(
+            config,
+            dir.clone(),
+            vec![Message::user("upgrade the package")],
+            tx,
+            runtime,
+        )
+        .await;
+
+        let mut errors = Vec::new();
+        let mut finished = None;
+        let mut texts = Vec::new();
+        let mut thought_done = Vec::new();
+        let mut usage = Vec::new();
+        let mut index = 0;
+        while let Ok(event) = rx.try_recv() {
+            match event {
+                AgentEvent::Error(message) => errors.push(message),
+                AgentEvent::Finished(messages) => finished = Some(messages),
+                AgentEvent::Text(delta) => {
+                    texts.push((index, delta));
+                    index += 1;
+                }
+                AgentEvent::ThoughtDone { .. } => {
+                    thought_done.push(index);
+                    index += 1;
+                }
+                AgentEvent::Usage { .. } => {
+                    usage.push(index);
+                    index += 1;
+                }
+                _ => {}
+            }
+        }
+        assert!(errors.is_empty(), "{errors:?}");
+        assert_eq!(texts.len(), 2, "both answers streamed: {texts:?}");
+        assert_eq!(texts[0].1, "Upgrade complete.");
+        assert_eq!(texts[1].1, "Verified on disk.");
+        // No step boundary falls between the two answers, so the front-ends
+        // paint one bubble and the re-check's text extends it. The usage event
+        // is a boundary too (the VS Code transcript commits on it), so the held
+        // step must not emit it until the merged answer is committed.
+        assert!(
+            !thought_done
+                .iter()
+                .any(|at| *at > texts[0].0 && *at < texts[1].0),
+            "no step closed between the answers: {thought_done:?}"
+        );
+        assert!(
+            !usage.iter().any(|at| *at > texts[0].0 && *at < texts[1].0),
+            "usage did not commit the held step early: {usage:?}"
+        );
+
+        let finished = finished.expect("the run finished");
+        let summaries: Vec<String> = finished
+            .iter()
+            .filter(|message| message.role == "assistant" && message.tool_calls.is_none())
+            .filter_map(Message::display)
+            .filter(|text| !text.trim().is_empty())
+            .collect();
+        assert_eq!(summaries.len(), 1, "one summary, not two: {summaries:?}");
+        assert!(
+            summaries[0].contains("Upgrade complete."),
+            "{}",
+            summaries[0]
+        );
+        assert!(
+            summaries[0].contains("Verified on disk."),
+            "{}",
+            summaries[0]
+        );
+
+        // The reminder still was the second request.
+        let requests = server.await.unwrap();
+        assert_eq!(requests.len(), 3);
+        assert!(requests[2].contains("Before you finish"), "{}", requests[2]);
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
     #[tokio::test]
     async fn a_diff_of_the_edited_file_skips_the_verification_nudge() {
         let dir = std::env::temp_dir().join(format!("oxide_diff_{}", std::process::id()));
@@ -3193,6 +3484,18 @@ mod tests {
             true,
             &anyhow::anyhow!("provider returned 401")
         ));
+    }
+
+    #[test]
+    fn a_queued_message_keeps_a_held_summary_separate() {
+        // The held summary extends only the answer that immediately follows it
+        // with nothing queued in between. A steering or follow-up message
+        // queued during the re-check commits the summary as its own turn, so
+        // the re-check answer lands after the user's message.
+        assert!(recheck_extends_summary(true, false));
+        assert!(!recheck_extends_summary(true, true));
+        assert!(!recheck_extends_summary(false, false));
+        assert!(!recheck_extends_summary(false, true));
     }
 
     #[test]
