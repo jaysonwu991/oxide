@@ -532,10 +532,27 @@ pub fn clipboard_image() -> Option<ContentPart> {
 /// which is the picture the grab below would take. A Linux or Windows file copy
 /// carries no picture for it to mistake for the file, so the grab stays the
 /// whole story there.
+///
+/// The URL is read out of `NSPasteboard`, not by coercing the clipboard to a
+/// file URL. AppleScript's `the clipboard as «class furl»` turns *any* text on
+/// the clipboard into a path (`/plain text`, `/https/::host/photo.png`) and
+/// only looks at the pasteboard's first item, so an icon sitting ahead of the
+/// file URL failed the coercion and the grab below attached that icon. Reading
+/// the file URLs through AppKit finds the real file wherever it sits and answers
+/// nothing at all when there is none, so the image grab is only reached for a
+/// genuine picture.
 #[cfg(target_os = "macos")]
 fn clipboard_path() -> Option<PathBuf> {
+    const SCRIPT: &str = r#"use framework "AppKit"
+set pb to current application's NSPasteboard's generalPasteboard()
+set urls to pb's readObjectsForClasses:{current application's NSURL} options:(missing value)
+if urls is missing value then return ""
+repeat with u in urls
+if (u's isFileURL()) as boolean then return (u's |path|() as text)
+end repeat
+return """#;
     let output = Command::new("osascript")
-        .args(["-e", "POSIX path of (the clipboard as «class furl»)"])
+        .args(["-e", SCRIPT])
         .output()
         .ok()?;
     if !output.status.success() {
