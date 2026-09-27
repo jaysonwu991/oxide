@@ -33,9 +33,7 @@
   ],
   "main": "./out/extension.js",
   "activationEvents": [
-    "onStartupFinished",
-    "onView:oxide.chat",
-    "onView:oxide.chatSecondary"
+    "onStartupFinished"
   ],
   "capabilities": {
     "untrustedWorkspaces": {

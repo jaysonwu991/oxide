@@ -65,10 +65,16 @@ describe("view contributions", () => {
     }
   });
 
-  it("activates when either pane is revealed", () => {
+  /// The view contributions are what reveals either pane: VS Code generates the
+  /// `onView:` activation events from them, and warns when they are also
+  /// declared here. `onStartupFinished` is the one event nothing generates.
+  it("leaves the pane activation events to VS Code", () => {
+    const contributed = Object.values(manifest.contributes.views).flat().map((view) => view.id);
     for (const id of panes) {
-      assert.ok(manifest.activationEvents.includes(`onView:${id}`), `onView:${id}`);
+      assert.ok(contributed.includes(id), `${id} is contributed`);
+      assert.ok(!manifest.activationEvents.includes(`onView:${id}`), `${id} declares no redundant onView event`);
     }
+    assert.deepEqual(manifest.activationEvents, ["onStartupFinished"]);
   });
 
   it("shows the view-title actions in both panes", () => {
