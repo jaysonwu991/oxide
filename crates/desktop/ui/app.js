@@ -470,6 +470,20 @@ async function loadProjects() {
   }
 }
 
+/// Opens the app on the first project the sidebar shows — a registered folder,
+/// most recently opened first, then one discovered from a session — rather than
+/// on nothing. The composer belongs to a project: with none selected the box
+/// stays disabled, and the path behind it would resolve against whatever
+/// directory the app was launched in ($HOME on one platform, `/` on another),
+/// which is not a folder the user picked. With no project at all the empty
+/// state stays, since there is nothing to run in.
+async function openDefaultProject() {
+  await loadProjects();
+  if (state.project) return;
+  const [first] = state.projects || [];
+  if (first) await selectProject(first);
+}
+
 async function selectProject(project) {
   state.project = project.path;
   state.projectName = project.name;
@@ -2421,7 +2435,7 @@ function init() {
   renderWelcome();
   initEvents();
   loadTheme();
-  loadProjects();
+  openDefaultProject();
 }
 
 init();

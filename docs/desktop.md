@@ -121,9 +121,9 @@ node crates/desktop/ui/check-app.mjs
 
 It covers the `/mcps` listing (including the state colors, a failed probe and a
 toggle), the `/sessions` dialog (this project's threads only, the row that
-resumes one, the empty case, and a store that could not be read), the **Create
-project** dialog, and every
-client command in the catalog —
+resumes one, the empty case, and a store that could not be read), the project it
+opens on (the sidebar's first row, an existing selection, and no project at
+all), the **Create project** dialog, and every client command in the catalog —
 a command the app does not perform has to be answered here rather than sent to
 the model as a prompt. It also reads `ui/index.html` to check what no stub can:
 that both listings are attached to the composer (inside `.composer-wrap`, above
@@ -169,6 +169,15 @@ Each row shows its session count. Clicking a project selects it and reveals its
 sessions nested underneath; clicking a session opens that thread (switching to
 its project first when the selection differs). The transcript is loaded with
 `session_messages` (`SessionLog::open_id`).
+
+The window opens on the first row rather than on nothing: `app.js` selects the
+project the sidebar would show first (a registered folder, most recently opened
+first, else one discovered from a session), so the composer is usable at launch.
+The composer belongs to a project — with none selected the box stays disabled,
+and the path behind it would resolve against the directory the app was launched
+in, which is `$HOME` on one platform and `/` on another, not a folder the user
+picked. With no project at all the empty state stays, since there is nothing to
+run in.
 
 The `✕` on a project row removes an **Added** project from the registry
 (`remove_project`), keeping its sessions; for a **Discovered** project it
