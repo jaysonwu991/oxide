@@ -80,7 +80,10 @@ support for compatibility.
   that tries to finish with unconfirmed edits or unchecked side effects gets one
   hidden reminder to verify before it can summarize; a reminder the provider
   answers with nothing ends the run with the summary the model already wrote,
-  rather than reporting an empty response on top of a finished answer. A
+  rather than reporting an empty response on top of a finished answer. An
+  explicit instruction from the user outranks those checks: ask for a pull
+  request with "no need to check the PR's status" and none of it is run, and the
+  reply says plainly what was left unverified instead. A
   separate Scope rule keeps
   commits limited to the task: blanket staging (`git add -A`, `git commit -a`)
   is held until the model reviews the staged files, so local-only files like

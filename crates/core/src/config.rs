@@ -1248,7 +1248,12 @@ impl Config {
         );
 
         sections.push(
-            "# Definition of Done\nA task is not done until you have verified the outcome, and \
+            "# Definition of Done\nAn explicit instruction from the user outranks every check below: when \
+             they say a check is not needed (\"no need to check the PR's status\", \"skip CI\", \"don't \
+             wait for the build\"), do what they asked and say plainly what you did not verify. Never \
+             treat that instruction as something to override, and do not run the check anyway to be \
+             safe. \
+             A task is not done until you have verified the outcome otherwise, and \
              tool output is the only evidence — a command that failed, printed nothing, or was never \
              run is not proof. After each state-changing action, confirm the result before \
              reporting success, and re-read what you changed. This applies to every kind of work, \
@@ -1350,6 +1355,25 @@ mod tests {
         assert!(prompt.contains("not just code"), "{prompt}");
         assert!(prompt.contains("gh pr checks"), "{prompt}");
         assert!(prompt.contains("deployment"), "{prompt}");
+    }
+
+    #[test]
+    fn system_prompt_lets_an_explicit_user_instruction_outrank_the_checks() {
+        let config = Config::default();
+        let prompt = config.compose_system_prompt();
+        let done = prompt
+            .split("# Definition of Done")
+            .nth(1)
+            .and_then(|rest| rest.split("# ").next())
+            .expect("the section is composed");
+        assert!(
+            done.contains("explicit instruction from the user outranks"),
+            "{done}"
+        );
+        // The example the section has to survive is a user asking for a pull
+        // request without a status check.
+        assert!(done.contains("no need to check the PR's status"), "{done}");
+        assert!(done.contains("do not run the check anyway"), "{done}");
     }
 
     #[test]
