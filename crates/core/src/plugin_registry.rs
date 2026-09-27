@@ -275,11 +275,19 @@ fn installed_plugins_in(root: &Path) -> Vec<InstalledPluginInfo> {
         .plugins
         .values()
         .filter(|installed| installed.path.is_dir())
-        .map(|installed| InstalledPluginInfo {
-            name: installed.name.clone(),
-            description: installed.description.clone(),
-            version: installed.version.clone(),
-            enabled: installed.enabled,
+        .map(|installed| {
+            // The package's own manifest describes what is installed now; the
+            // state file only remembers what was there when it was installed,
+            // so it is the fallback for a package that names neither.
+            let manifest = plugin_manifest(&installed.path).ok();
+            let described = manifest.as_ref().and_then(|m| m.description.clone());
+            let version = manifest.as_ref().and_then(|m| m.version.clone());
+            InstalledPluginInfo {
+                name: installed.name.clone(),
+                description: described.or_else(|| installed.description.clone()),
+                version: version.or_else(|| installed.version.clone()),
+                enabled: installed.enabled,
+            }
         })
         .collect();
     plugins.sort_by(|a, b| b.enabled.cmp(&a.enabled).then_with(|| a.name.cmp(&b.name)));
@@ -974,6 +982,9 @@ mod tests {
         let off = root.join("off");
         std::fs::create_dir_all(&live).unwrap();
         std::fs::create_dir_all(&off).unwrap();
+        // The package's own manifest describes what is installed now; the state
+        // file only remembers what was there when it was installed.
+        write_plugin(&off, "off", serde_json::json!({}));
         let installed = |name: &str, path: PathBuf, enabled: bool, description: Option<&str>| {
             (
                 name.to_string(),
@@ -1004,6 +1015,9 @@ mod tests {
         assert!(plugins[0].enabled);
         assert_eq!(plugins[0].description.as_deref(), Some("does live things"));
         assert!(!plugins[1].enabled);
+        // The manifest wins over the cached description and version.
+        assert_eq!(plugins[1].description.as_deref(), Some("a test plugin"));
+        assert_eq!(plugins[1].version.as_deref(), Some("1.2.3"));
 
         std::fs::remove_dir_all(&root).ok();
     }

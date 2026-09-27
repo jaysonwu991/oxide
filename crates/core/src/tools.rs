@@ -315,7 +315,19 @@ pub fn specs(mcp: &McpRegistry) -> Vec<ToolSpec> {
     ];
     let configured = mcp.configured_servers();
     if !configured.is_empty() {
-        let names: Vec<&str> = configured.iter().map(|(name, _)| name.as_str()).collect();
+        // A server may be asked for by a service it answers to as well as by its
+        // own name, so the schema lists both and `mcp_load` resolves either.
+        let mut names: Vec<String> = configured.iter().map(|(name, _)| name.clone()).collect();
+        for (name, _) in &configured {
+            for alias in mcp.service_names(name) {
+                if !names
+                    .iter()
+                    .any(|existing| existing.eq_ignore_ascii_case(&alias))
+                {
+                    names.push(alias);
+                }
+            }
+        }
         let sources = configured
             .iter()
             .map(|(name, source)| {
@@ -328,14 +340,15 @@ pub fn specs(mcp: &McpRegistry) -> Vec<ToolSpec> {
                 } else {
                     format!(" (domains: {domains})")
                 };
-                let aliases: Vec<String> = crate::ecosystem::service_aliases(name)
+                let aliases: Vec<String> = mcp
+                    .service_names(name)
                     .into_iter()
                     .filter(|alias| !name.eq_ignore_ascii_case(alias))
                     .collect();
                 let alias_hint = if aliases.is_empty() {
                     String::new()
                 } else {
-                    format!(" (also: {})", aliases.join(", "))
+                    format!(" (also answers to: {})", aliases.join(", "))
                 };
                 format!("`{name}`{alias_hint}{domain_hint} ({source})")
             })
@@ -344,7 +357,7 @@ pub fn specs(mcp: &McpRegistry) -> Vec<ToolSpec> {
         specs.push(spec(
             "mcp_load",
             &format!(
-                "Load one configured MCP server on demand and reveal its tools. A server the message names by URL or by service is already loaded before your first step, so use this when the request needs a configured service the message does not name — a document, ticket or other URL identifies it too. Route by URL host first: if a pasted link's domain matches a server's listed domains, call mcp_load for that server instead of webfetch. Configured servers: {sources}"
+                "Load one configured MCP server on demand and reveal its tools. A server the message names by URL or by service is already loaded before your first step, so use this when the request needs a configured service the message does not name — a document, ticket or other URL identifies it too. Route by URL host first: if a pasted link's domain matches a server's listed domains, call mcp_load for that server instead of webfetch. A server may be named by a service it answers to as well as by its own name. Configured servers: {sources}"
             ),
             json!({
                 "type": "object",
@@ -2489,7 +2502,7 @@ mod tests {
         assert!(loader
             .function
             .description
-            .contains("(also: confluence, jira)"));
+            .contains("(also answers to: confluence, jira)"));
         assert!(loader
             .function
             .description
@@ -2498,6 +2511,15 @@ mod tests {
             loader.function.parameters["properties"]["server"]["enum"][0],
             "atlassian"
         );
+        // An advertised alias has to be a value `mcp_load` accepts, not just a
+        // hint in the description.
+        let names: Vec<&str> = loader.function.parameters["properties"]["server"]["enum"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|value| value.as_str().unwrap())
+            .collect();
+        assert_eq!(names, vec!["atlassian", "confluence", "jira"]);
         assert_eq!(mcp.server_count(), 0);
     }
 

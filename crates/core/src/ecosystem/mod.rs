@@ -171,13 +171,54 @@ pub struct McpServer {
 
 impl McpServer {
     /// Effective routing domains: the explicit `domains` config when present,
-    /// otherwise a best-effort guess from well-known server names.
+    /// otherwise the well-known service the server's own name or its endpoint
+    /// belongs to, so a server registered under a name of its own still owns the
+    /// URLs of the service it points at.
     pub fn domains(&self) -> Vec<String> {
-        if self.domains.is_empty() {
-            default_domains(&self.name)
-        } else {
-            self.domains.clone()
+        if !self.domains.is_empty() {
+            return self.domains.clone();
         }
+        let mut domains = default_domains(&self.name);
+        for service in services_in_endpoint(&self.endpoint_text()) {
+            for domain in default_domains(&service) {
+                if !domains.contains(&domain) {
+                    domains.push(domain);
+                }
+            }
+        }
+        domains
+    }
+
+    /// Every name a user may type for this server: its own name, the service its
+    /// name belongs to, and the services its URL or command points at — so a
+    /// server registered as `company-tools` at an Atlassian endpoint answers to
+    /// `confluence` and `jira` as well.
+    pub fn service_names(&self) -> Vec<String> {
+        let mut names = vec![self.name.clone()];
+        for alias in service_aliases(&self.name) {
+            push_service_name(&mut names, alias);
+        }
+        for service in services_in_endpoint(&self.endpoint_text()) {
+            for alias in service_aliases(&service) {
+                push_service_name(&mut names, alias);
+            }
+        }
+        names
+    }
+
+    /// The configured URL or command line, as the text that names the endpoint.
+    pub(crate) fn endpoint_text(&self) -> String {
+        match &self.kind {
+            McpKind::Local { command, .. } => command.join(" "),
+            McpKind::Remote { url, .. } => url.clone(),
+        }
+    }
+}
+
+/// Appends a service name unless the list already carries it either way round.
+fn push_service_name(names: &mut Vec<String>, alias: String) {
+    if !names.iter().any(|name| name.eq_ignore_ascii_case(&alias)) {
+        names.push(alias);
     }
 }
 
@@ -759,6 +800,31 @@ pub fn service_aliases(name: &str) -> Vec<String> {
         .unwrap_or_default()
 }
 
+/// The well-known services a URL or command line points at: `mcp.atlassian.com`
+/// is `atlassian`, `confluence` and `jira`, while `npx -y no-such-service`
+/// names none. A server configured under a name of its own is still recognised
+/// by the service its endpoint belongs to.
+pub fn services_in_endpoint(text: &str) -> Vec<String> {
+    let text = text.to_ascii_lowercase();
+    let mut services: Vec<String> = Vec::new();
+    for (aliases, domains) in SERVICES {
+        let known = domains.iter().any(|domain| {
+            let stem = domain.trim_start_matches("*.").trim_start_matches('.');
+            !stem.is_empty() && text.contains(stem)
+        });
+        if !known {
+            continue;
+        }
+        for alias in aliases.iter() {
+            let alias = (*alias).to_string();
+            if !services.contains(&alias) {
+                services.push(alias);
+            }
+        }
+    }
+    services
+}
+
 pub(crate) fn parse_oauth(value: Option<&Json>) -> Option<McpOAuth> {
     let object = value?.as_object()?;
     let callback_port = object
@@ -1123,6 +1189,34 @@ mod tests {
         assert_eq!(normalize_domain("*.Example.com"), "*.example.com");
         assert!(default_domains("atlassian").contains(&"*.atlassian.net".to_string()));
         assert!(default_domains("unknown-service").is_empty());
+    }
+
+    #[test]
+    fn reads_the_service_a_configured_endpoint_belongs_to() {
+        assert!(
+            services_in_endpoint("https://mcp.atlassian.com/v1/mcp").contains(&"confluence".into())
+        );
+        assert!(
+            services_in_endpoint("mcp-remote https://api.linear.app/mcp")
+                .contains(&"linear".into())
+        );
+        assert!(services_in_endpoint("npx -y no-such-service").is_empty());
+        assert!(services_in_endpoint("https://example.com/mcp").is_empty());
+
+        let server = mcp_from_claude(
+            "company-tools",
+            &serde_json::from_str(r#"{"url":"https://mcp.atlassian.com/v1/mcp"}"#).unwrap(),
+        )
+        .unwrap();
+        // The name belongs to no service, but the endpoint does -- so the URLs of
+        // that service route to this server and its aliases load it.
+        assert!(server.domains().contains(&"*.atlassian.net".to_string()));
+        let mut names = server.service_names();
+        names.sort();
+        assert_eq!(
+            names,
+            vec!["atlassian", "company-tools", "confluence", "jira"]
+        );
     }
 
     #[test]

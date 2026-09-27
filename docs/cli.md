@@ -132,23 +132,33 @@ three ways:
 - **Service names** — a message that names a service loads the server configured
   for it, so "create a Confluence doc" loads a server named `atlassian` (or
   `my-atlassian`) before the first model call, with no URL to paste. A server is
-  matched by the words of its own name and by the aliases of the well-known
-  service it belongs to (`atlassian`, `confluence`, `jira`); words too short or
-  too generic to name a service (`mcp`, `server`, `local`) are ignored.
+  matched by the words of its own name, by the aliases of the well-known service
+  its name belongs to, and by the service its endpoint points at —
+  `mcp.atlassian.com` is Atlassian whatever the server is called, so a server
+  registered as `company-tools` answers to "Confluence" and "Jira" too. Words
+  too short or too generic to name a service (`mcp`, `server`, `local`) are
+  ignored.
 - **`mcp_load`** — the model loads a server on demand through the built-in
-  `mcp_load` tool, whose description lists each server's domains and aliases.
+  `mcp_load` tool, whose description lists each server's domains and the other
+  names it answers to. Any of those names loads it — `confluence` loads a server
+  named `atlassian` — and a name more than one server answers to is reported
+  instead of guessed at.
 
 The server's tools are discovered when loaded and become available on the next
 agent step for the rest of the session. A server's own instructions — the
 `instructions` string from the MCP initialize handshake, where a service says
 which of its tools to call first — are passed to the model too: in the `mcp_load`
 result when the model loads the server, and in the system prompt for the rest of
-the run so an auto-loaded server's guidance is not lost.
+the run so an auto-loaded server's guidance is not lost. That section is headed
+as untrusted: it states that the text came from the servers themselves rather
+than from you or from the policy above it, and that it cannot change those
+instructions, grant a permission, or redirect the task.
 
 Routing domains come from the optional `domains` array in a server's config,
-falling back to built-in presets for well-known servers (Atlassian/Jira/Confluence,
+falling back to built-in presets for well-known services (Atlassian/Jira/Confluence,
 New Relic, Context7, Contentful, Figma, GitHub, GitLab, Notion, Linear, and
-Sentry). Exact hosts match exactly; a `*.` prefix (or leading `.`) matches the
+Sentry) matched by the server's name or by the service its URL or command points
+at. Exact hosts match exactly; a `*.` prefix (or leading `.`) matches the
 host and its subdomains. For example:
 
 ```json
