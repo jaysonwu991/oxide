@@ -24,6 +24,7 @@ const extension = fs.readFileSync(path.join(root, "src", "extension.ts"), "utf8"
 const chat = fs.readFileSync(path.join(root, "src", "chat.ts"), "utf8");
 const chatView = fs.readFileSync(path.join(root, "src", "chatView.ts"), "utf8");
 const renderer = fs.readFileSync(path.join(root, "media", "main.js"), "utf8");
+const dialogs = fs.readFileSync(path.join(root, "src", "core", "dialogs.ts"), "utf8");
 
 describe("command contributions", () => {
   it("registers every command it contributes", () => {
@@ -72,6 +73,40 @@ describe("command contributions", () => {
     for (const kind of kinds) {
       assert.ok(chatView.includes(`case "${kind}":`), `the host handles "${kind}"`);
     }
+  });
+
+  it("handles every action a dialog row can post", () => {
+    // A row carries the action the panel performs for it, and the webview posts
+    // that action back verbatim. An action with no case in the controller is a
+    // button that silently does nothing — which is what a delete that never
+    // deletes, or a session row that never opens, looks like.
+    const actions = new Set<string>();
+    for (const match of dialogs.matchAll(/(?:buttonAction|refreshAction|action): ([A-Z_]+)/g)) {
+      actions.add(match[1]);
+    }
+    assert.ok(actions.size >= 5, `found the dialog actions (${[...actions].join(", ")})`);
+    for (const action of actions) {
+      assert.ok(chat.includes(`case ${action}:`), `${action} is handled by the controller`);
+    }
+    // The confirm row a delete opens has to lead somewhere, too.
+    assert.ok(actions.has("SESSION_DELETE") && actions.has("SESSION_DELETE_CONFIRM"));
+  });
+
+  it("will not delete a thread while the running turn owns its file", () => {
+    // The turn's CLI appends to the session file as it works, so removing it
+    // from here pulls the file out from under the process and the next append
+    // fails with `No such file or directory`. Both the confirmation and the
+    // write itself refuse while a turn is up.
+    const confirm = chat.slice(
+      chat.indexOf("private confirmDeleteSession("),
+      chat.indexOf("private async deleteSession("),
+    );
+    const remove = chat.slice(
+      chat.indexOf("private async deleteSession("),
+      chat.indexOf("private showDialog("),
+    );
+    assert.ok(confirm.includes("if (this.turn)"), "the confirmation checks for a running turn");
+    assert.ok(remove.includes("if (this.turn)"), "the write checks again");
   });
 
   it("answers the client commands in the panel instead of prompting them", () => {

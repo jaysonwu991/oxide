@@ -194,6 +194,64 @@ impl Message {
     }
 }
 
+/// Coerces a history into the call/result sequence every provider requires: an
+/// assistant message that carries tool calls is followed by one tool message
+/// per call, and a tool message never shows up without the call it answers.
+///
+/// A log can fall out of shape without the agent doing anything unusual — a run
+/// killed mid-tool leaves the assistant turn with no results, and a hand-edited
+/// or truncated file can strand one — and a provider that sees it rejects the
+/// whole request (`An assistant message with 'tool_calls' must be followed by
+/// tool messages responding to each 'tool_call_id'`). Repairing the outgoing
+/// view keeps the turn going and keeps every later one from failing against the
+/// same broken log; the stored session is left as it is.
+pub fn repair_tool_pairs(messages: &[Message]) -> Vec<Message> {
+    let mut repaired: Vec<Message> = Vec::with_capacity(messages.len());
+    let mut index = 0;
+    while index < messages.len() {
+        let message = &messages[index];
+        if let Some(calls) = message
+            .tool_calls
+            .as_deref()
+            .filter(|calls| message.role == "assistant" && !calls.is_empty())
+        {
+            repaired.push(message.clone());
+            index += 1;
+            let mut answered: Vec<&str> = Vec::with_capacity(calls.len());
+            // Only the results immediately after the call belong to it; one
+            // left over from an earlier turn would be stranded here.
+            while index < messages.len() && messages[index].role == "tool" {
+                let id = messages[index].tool_call_id.as_deref().unwrap_or_default();
+                if !id.is_empty()
+                    && calls.iter().any(|call| call.id == id)
+                    && !answered.contains(&id)
+                {
+                    repaired.push(messages[index].clone());
+                    answered.push(id);
+                }
+                index += 1;
+            }
+            for call in calls {
+                if !answered.contains(&call.id.as_str()) {
+                    repaired.push(Message::tool(
+                        call.id.clone(),
+                        "error: the run was interrupted before this tool returned a result; run it \
+                         again if the outcome is still needed",
+                    ));
+                }
+            }
+            continue;
+        }
+        // A tool result whose call is gone cannot be placed: the request is
+        // rejected for it, and the call itself is not recoverable.
+        if message.role != "tool" {
+            repaired.push(message.clone());
+        }
+        index += 1;
+    }
+    repaired
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ToolCall {
     pub id: String,
@@ -481,6 +539,65 @@ mod tests {
             back.display().as_deref(),
             Some("attached pdf\n[file: spec.pdf]")
         );
+    }
+
+    fn tool_call(id: &str, name: &str) -> ToolCall {
+        ToolCall {
+            id: id.into(),
+            kind: "function".into(),
+            function: FunctionCall {
+                name: name.into(),
+                arguments: "{}".into(),
+            },
+        }
+    }
+
+    #[test]
+    fn repair_fills_a_missing_tool_result() {
+        // The shape a run killed mid-tool leaves behind: an assistant call with
+        // no result. The repair keeps the call and adds a result the provider
+        // will accept, so the conversation can continue.
+        let messages = vec![
+            Message::user("do it"),
+            Message::assistant("", vec![tool_call("call_1", "read")]),
+            Message::user("again"),
+        ];
+        let repaired = repair_tool_pairs(&messages);
+        assert_eq!(repaired.len(), 4);
+        assert_eq!(repaired[1].role, "assistant");
+        assert_eq!(repaired[2].role, "tool");
+        assert_eq!(repaired[2].tool_call_id.as_deref(), Some("call_1"));
+        assert!(repaired[2].display().unwrap().starts_with("error:"));
+        assert_eq!(repaired[3].role, "user");
+    }
+
+    #[test]
+    fn repair_keeps_a_complete_pair_and_drops_a_stranded_result() {
+        let messages = vec![
+            Message::user("do it"),
+            Message::assistant("", vec![tool_call("call_1", "read")]),
+            Message::tool("call_1", "ok"),
+            Message::tool("call_2", "stray"),
+            Message::assistant("done", vec![]),
+        ];
+        let repaired = repair_tool_pairs(&messages);
+        assert_eq!(repaired.len(), 4);
+        assert_eq!(repaired[2].display().as_deref(), Some("ok"));
+        // The result with no call in front of it cannot be placed and would be
+        // rejected, so it is dropped.
+        assert_eq!(repaired[3].role, "assistant");
+    }
+
+    #[test]
+    fn repair_is_a_no_op_on_a_clean_history() {
+        let messages = vec![
+            Message::user("hi"),
+            Message::assistant("", vec![tool_call("a", "read"), tool_call("b", "ls")]),
+            Message::tool("a", "1"),
+            Message::tool("b", "2"),
+            Message::assistant("done", vec![]),
+        ];
+        assert_eq!(repair_tool_pairs(&messages).len(), messages.len());
     }
 
     #[test]

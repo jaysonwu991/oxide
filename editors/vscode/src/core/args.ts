@@ -58,6 +58,21 @@ export function sessionsListArgs(): string[] {
   return ["sessions", "list"];
 }
 
+/// `oxide sessions show <id> --json`: the stored conversation of one session,
+/// which the panel paints when a thread is resumed. `tail` keeps the answer to
+/// the newest `n` messages, since a long thread's history is bigger than a side
+/// bar can show.
+export function sessionShowArgs(id: string, tail: number): string[] {
+  return ["sessions", "show", id, "--tail", String(tail), "--json"];
+}
+
+/// `oxide sessions delete <id> --force`: one thread, with the confirmation
+/// already taken in the panel's own dialog — the CLI would otherwise ask on
+/// stdin, which a front-end has no channel to answer on.
+export function sessionDeleteArgs(id: string): string[] {
+  return ["sessions", "delete", id, "--force"];
+}
+
 /// Splits a comma-separated tool list the way `--tools` expects, dropping the
 /// empty entries a trailing comma leaves behind.
 export function splitList(value: string): string {

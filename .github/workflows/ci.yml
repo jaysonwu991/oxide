@@ -79,11 +79,19 @@ jobs:
         run: cargo build -p oxide-desktop --features gui --locked
 
   # The extension is a standalone pnpm/TypeScript package, so it is not covered
-  # by the Cargo jobs. Run its type check, unit tests, and a real `vsce package`
-  # so a broken manifest or bundling change fails here.
+  # by the Cargo jobs. Run its type check and unit tests on each platform the
+  # extension is installed on — the resume path, the CLI's path lookup, the
+  # listing readers and the wrapping of a Windows batch shim all have a
+  # per-platform branch, and a suite that only runs on Linux cannot see one —
+  # and a real `vsce package` so a broken manifest or bundling change fails
+  # here.
   vscode:
-    name: vscode
-    runs-on: ubuntu-latest
+    name: vscode (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
     steps:
       - uses: actions/checkout@v4
       - uses: pnpm/action-setup@v4
@@ -105,5 +113,6 @@ jobs:
         working-directory: editors/vscode
         run: pnpm test
       - name: Package
+        if: matrix.os == 'ubuntu-latest'
         working-directory: editors/vscode
         run: pnpm run package

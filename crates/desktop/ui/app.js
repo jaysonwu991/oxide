@@ -2678,6 +2678,12 @@ async function removeProject(project) {
 }
 
 async function removeSession(session) {
+  // A running turn appends to this thread's file as it works, so deleting it
+  // here would leave the process writing into a file that is gone.
+  if (state.busy && state.session === session.id) {
+    setStatus("A turn is running; stop it before deleting this thread.");
+    return;
+  }
   const label = session.name || session.preview || session.id.slice(0, 8);
   const ok = await confirmDialog(
     "Delete thread",

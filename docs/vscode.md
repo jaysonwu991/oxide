@@ -168,10 +168,24 @@ out of the current thread (**New session**, **Continue most recent**); under
 them is every thread stored for the folder, newest first, each named by its
 session name or, unnamed, by the summarized preview `oxide_core::title` gives
 it in the terminal's own picker and the desktop app's sidebar, with how long ago
-it was written and how many messages it holds. Picking one resumes that thread
-here: the CLI is launched with `--session <id>`, and the title in the header
-follows. `/session <id>` is left alone — an argument is the agent's, matching
-`/mcp list`.
+it was written and how many messages it holds. Each row carries a trash button
+that asks to confirm and then deletes the thread through `oxide sessions
+delete <id>`, the way the desktop app's sidebar does; deleting the thread the
+panel is showing starts a new one rather than leaving a thread that is gone from
+the list still on screen. A deletion is refused while a turn is running — the
+turn's CLI appends to that session file as it works, so removing it would pull
+the file out from under the process — and the confirmation says so.
+
+Picking a row resumes that thread here: the CLI is launched with `--session
+<id>`, and the title in the header follows. Resuming also fills the transcript
+with what the thread already said — `oxide sessions show <id> --tail 60 --json`
+is read back through `core/history.ts` and its user and assistant messages are
+painted followed by a note saying the thread was resumed — so a resumed thread
+reads like the thread it is instead of an empty panel that answers nothing. The
+footer's usage line and context gauge come from the same answer's usage totals.
+Only what was said is replayed: the tool steps a stored thread is mostly made of
+would bury the conversation someone reopened it to read. `/session <id>` is left
+alone — an argument is the agent's, matching `/mcp list`.
 
 The listing is unchanged from the native picker it replaces (`core/sessions.ts`
 parses `oxide sessions list`), so the panel and the terminal agree on which
@@ -182,10 +196,12 @@ Both dialogs are composed in the extension host as data
 (`core/dialogs.ts`) — a title, a note for an empty or failed listing, and rows
 where each row carries the action it posts back (`mcpToggle` with the server's
 name, `mcpRefresh`, `openSession` with `new`, `continue` or a session id,
+`sessionDelete` and `sessionDeleteConfirm` for a thread's trash button,
 `dialogClose`) — and the controller holds the open one, so both panes paint the
 same dialog and a pane that attaches afterwards is sent it again. A row's button
-carries the glyph it is painted as (`icon: "power"`) and the words it would
-otherwise show, which become its tooltip and its name for a screen reader. The
+carries the glyph it is painted as (`icon: "power"`, `icon: "trash"`) and the
+words it would otherwise show, which become its tooltip and its name for a
+screen reader. The
 webview only builds the rows and posts the clicked one's action back as a
 `dialogAction`; it decides nothing about what a click means, the same way a
 footer chip posts the control id it carries. Neither dialog covers the panel
@@ -468,8 +484,9 @@ pnpm run package   # vsce package -> oxide-vscode-<version>.vsix
 Press <kbd>F5</kbd> with the folder open to launch an Extension Development
 Host. The tests cover the pure modules only: argv building, prompt assembly and
 `@path` expansion, attachment types and naming, diff and tool previews,
-session-list parsing, config-dir resolution, binary lookup, and the transcript
-state machine — plus, in `test/approvals.test.ts`, the approval request parsing,
+session-list parsing, config-dir resolution, binary lookup and the plan a
+command is started from, and the transcript state machine — plus, in
+`test/approvals.test.ts`, the approval request parsing,
 the titles a card shows and the request frames the CLI reads, in
 `test/views.test.ts`, that the chat view ids the host
 registers match the views `package.json` contributes, in `test/brand.test.ts`,
@@ -496,7 +513,16 @@ command — is covered in `test/mcps.test.ts`, which also holds the controller's
 source-level assertion, because `chat.ts` imports `vscode` and cannot be loaded
 there). What each dialog's rows say — a server's state and the scope its toggle
 writes to, a session's age and size, the rows' own actions — is covered in
-`test/dialogs.test.ts`, which needs neither a webview nor a CLI.
+`test/dialogs.test.ts`, which needs neither a webview nor a CLI. What a resumed
+thread reads back — `oxide sessions show --json` parsed into the messages the
+panel paints and the totals the footer shows, including the output of a CLI that
+answered with nothing — is covered in `test/history.test.ts`.
+
+`pnpm test` runs on Linux, macOS and Windows in CI (`.github/workflows/ci.yml`),
+because the parts of the extension that touch the system have a per-platform
+branch: the binary lookup across `PATH`, `~/.local/bin` and `~/.cargo/bin` with
+`.exe`/`.cmd`/`.bat` candidates, the `cmd.exe` wrapper a batch shim needs, the
+config directory, and the git branch read from the closest `.git/HEAD`.
 
 ## Packaging
 

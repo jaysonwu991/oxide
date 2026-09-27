@@ -8,6 +8,8 @@ import * as vscode from "vscode";
 
 import {
   buildTurnArgs,
+  sessionDeleteArgs,
+  sessionShowArgs,
   sessionsListArgs,
   splitList,
   type TrustSetting,
@@ -31,11 +33,14 @@ import { modelsForProvider } from "./core/config";
 import {
   CLOSE_DIALOG,
   CONTINUE_SESSION,
+  deleteSessionDialog,
   MCP_REFRESH,
   MCP_TOGGLE,
   NEW_SESSION,
   mcpDialog,
   OPEN_SESSION,
+  SESSION_DELETE,
+  SESSION_DELETE_CONFIRM,
   sessionDialog,
   type DialogState,
 } from "./core/dialogs";
@@ -50,6 +55,7 @@ import {
   relativePath,
   type ContextBlock,
 } from "./core/prompt";
+import { HISTORY_MESSAGES, parseSessionHistory } from "./core/history";
 import { isSessionCommand, parseSessionList, type SessionEntry } from "./core/sessions";
 import { toolDiff } from "./core/preview";
 import {
@@ -851,8 +857,10 @@ export class ChatController {
   }
 
   /// A row of the session dialog: one of its own two entries, or the id of a
-  /// session to resume from its stored context.
-  private openSession(value: string): void {
+  /// session to resume from its stored context. Resuming paints the thread's
+  /// stored conversation before anything is sent, so the panel shows what the
+  /// next message continues from rather than an empty transcript.
+  private async openSession(value: string): Promise<void> {
     if (this.turn) {
       // The dialog stays open with the reason in place rather than closing over
       // a notice painted behind it.
@@ -872,13 +880,119 @@ export class ChatController {
     }
     const session = this.sessions.find((entry) => entry.id === value);
     if (!session) return;
+    const label = session.label || value;
     this.transcript.reset();
     this.transcript.sessionId = value;
     this.sessionTitle = session.label || null;
     this.queue = [];
     this.clearChips();
     this.broadcast(this.stateMessage());
-    this.showNotice(`Resuming ${value} — the thread continues from its stored context.`);
+    await this.loadHistory(value, label);
+  }
+
+  /// The stored conversation of the thread being resumed, read by the CLI from
+  /// its own session file (`oxide sessions show --json`) and pushed into the
+  /// transcript as finished items. The totals come with it, so the footer's
+  /// usage line and context gauge describe the thread that was reopened instead
+  /// of starting from zero; the thread is still resumable for sending when the
+  /// history cannot be read, which is why a failure is a warning rather than a
+  /// refused resume.
+  private async loadHistory(id: string, label: string): Promise<void> {
+    const cwd = this.cwd();
+    if (!cwd) return;
+    const result = await runCapture(this.binary(), sessionShowArgs(id, HISTORY_MESSAGES), cwd);
+    if (result.error || result.code !== 0) {
+      const detail = result.error || firstLine(result.stderr) || `exit ${result.code}`;
+      this.showNotice(`${label} is resumed, but its history could not be read: ${detail}`, "warn");
+      return;
+    }
+    const history = parseSessionHistory(result.stdout);
+    if (!history) {
+      this.showNotice(`${label} is resumed, but its history could not be read.`, "warn");
+      return;
+    }
+    for (const message of history.messages) {
+      // Pushed into the transcript without painting each one: the view rebuilds
+      // the whole list from the one `state` message below, so sending a message
+      // per stored turn would repaint the panel sixty times over.
+      if (message.role === "user") this.transcript.pushUser(message.text, []);
+      else this.transcript.pushAssistant(message.text);
+    }
+    this.transcript.usage = history.usage;
+    if (history.name) this.sessionTitle = history.name;
+    this.broadcast(this.stateMessage());
+    const tail =
+      history.shown < history.total
+        ? ` (the newest ${history.shown} of ${history.total} messages)`
+        : "";
+    this.showNotice(
+      `Resumed ${this.threadTitle() || label}${tail} — the next message continues this thread.`,
+    );
+  }
+
+  /// The trash on a session row opens the confirmation rather than deleting: a
+  /// thread's file cannot be recovered once it is gone, and the desktop asks
+  /// the same way.
+  private confirmDeleteSession(id: string): void {
+    // The running turn owns the session file and appends to it as it works, so
+    // deleting it here would pull the file out from under the process — the
+    // next append fails with `No such file or directory` and the turn is lost.
+    if (this.turn) {
+      this.showDialog(
+        sessionDialog(
+          this.sessions,
+          "A turn is running; stop it before deleting a thread.",
+        ),
+      );
+      return;
+    }
+    const session = this.sessions.find((entry) => entry.id === id);
+    if (!session) return;
+    this.showDialog(
+      deleteSessionDialog({
+        id: session.id,
+        label: session.label,
+        detail: `${session.age} · ${session.messages} message${
+          session.messages === 1 ? "" : "s"
+        } · ${session.id}`,
+      }),
+    );
+  }
+
+  /// Deletes one thread through the CLI (`sessions delete --force`, since the
+  /// confirmation was taken here) and paints the listing again. A thread that
+  /// was open in the panel is closed with it: the session file the next turn
+  /// would have continued is gone.
+  private async deleteSession(id: string): Promise<void> {
+    // The confirmation could have been open when a turn started, and a queued
+    // message can begin one between the click and here, so the guard is
+    // repeated at the point that writes.
+    if (this.turn) {
+      this.showNotice("Stop the running turn before deleting a thread.", "warn");
+      return;
+    }
+    const cwd = this.cwd();
+    if (!cwd) {
+      this.showNotice("Open a folder first.", "error");
+      return;
+    }
+    const label = this.sessions.find((entry) => entry.id === id)?.label || id;
+    const result = await runCapture(this.binary(), sessionDeleteArgs(id), cwd);
+    if (result.error || result.code !== 0) {
+      const detail = result.error || firstLine(result.stderr) || `exit ${result.code}`;
+      const failed = `Could not delete ${label}: ${detail}`;
+      this.showNotice(failed, "error");
+      this.showDialog(sessionDialog(this.sessions, failed));
+      return;
+    }
+    if (this.transcript.sessionId === id) {
+      this.transcript.reset();
+      this.sessionTitle = null;
+      this.continueLast = false;
+      this.broadcast(this.stateMessage());
+    }
+    this.showNotice(`Deleted ${label}.`);
+    await this.resumeSession();
   }
 
   // ---------- dialogs ----------
@@ -942,6 +1056,10 @@ export class ChatController {
         return this.toggleMcp(value);
       case OPEN_SESSION:
         return this.openSession(value);
+      case SESSION_DELETE:
+        return this.confirmDeleteSession(value);
+      case SESSION_DELETE_CONFIRM:
+        return this.deleteSession(value);
       case CLOSE_DIALOG:
         return this.closeDialog();
       default:

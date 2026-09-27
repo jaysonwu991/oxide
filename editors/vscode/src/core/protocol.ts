@@ -362,6 +362,16 @@ export class Transcript {
     return [{ k: "push", item }];
   }
 
+  /// A reply pushed whole rather than streamed: the stored conversation of a
+  /// thread the panel is reopening, which arrives already finished.
+  pushAssistant(text: string): ViewMessage[] {
+    this.closeAssistant();
+    this.closeThinking();
+    const item: AssistantItem = { id: this.nextId++, kind: "assistant", text };
+    this.items.push(item);
+    return [{ k: "push", item }];
+  }
+
   /// The current status/footer line. The controller sends this after applying
   /// a batch so the view never sees a stale busy flag or queue count.
   statusMessage(queued: number, footer: FooterState): ViewMessage {

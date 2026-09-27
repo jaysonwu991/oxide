@@ -1217,8 +1217,14 @@ Global ecosystem resources can additionally live under `~/.oxide/` and
 
 Deleting a session file removes that conversation; `/resume` can also delete
 (Ctrl+D) or rename (Ctrl+R) sessions from the picker. `oxide sessions` offers
-non-interactive management: `list` (with `--all` or `--older-than`), `delete`
-(id, `--all`, or `--older-than`), `compact` (summarize older history and keep
-the recent tail), and `merge` (concatenate two sessions, optionally summarizing
-the second first). Deleting `snapshots/` removes undo history; deleting
+non-interactive management: `list` (with `--all` or `--older-than`), `show
+<id>` (print one saved conversation — `--tail <n>` for just its newest
+messages, `--json` for the object a front-end draws: id, name, cwd, path, how
+many messages the thread holds and how many were returned, the messages, and
+the thread's usage totals), `delete` (id, `--all`, or `--older-than`), `compact`
+(summarize older history and keep the recent tail), and `merge` (concatenate two
+sessions, optionally summarizing the second first). An id can be given to `show`
+as the short id a listing prints or as a session file's path, and a project with
+many sessions resolves it from the file name (`<timestamp>_<id>.jsonl`) without
+reading the other threads. Deleting `snapshots/` removes undo history; deleting
 `auth.json` logs you out.

@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import * as path from "node:path";
 import { describe, it } from "node:test";
 
-import { buildTurnArgs, sessionsListArgs, splitList } from "../core/args";
+import { buildTurnArgs, sessionDeleteArgs, sessionShowArgs, sessionsListArgs, splitList } from "../core/args";
 import {
   configDir,
   contextWindow,
@@ -21,7 +21,7 @@ import {
   type AtReferenceSources,
 } from "../core/prompt";
 import { isSessionCommand, parseSessionList, parseVersion } from "../core/sessions";
-import { resolveBinary } from "../cli";
+import { resolveBinary, spawnPlan } from "../cli";
 
 /// One rendered diff row, laid out the way `oxide_core::diff` does it: a
 /// marker, the line number on each side, then the text.
@@ -109,6 +109,25 @@ describe("buildTurnArgs", () => {
 
   it("lists sessions for the project", () => {
     assert.deepEqual(sessionsListArgs(), ["sessions", "list"]);
+  });
+
+  it("reads one session's stored conversation, and deletes one", () => {
+    assert.deepEqual(sessionShowArgs("fe0031b1", 60), [
+      "sessions",
+      "show",
+      "fe0031b1",
+      "--tail",
+      "60",
+      "--json",
+    ]);
+    // The confirmation is the panel's, so the CLI is asked not to ask again on
+    // a stdin this process has no way to answer on.
+    assert.deepEqual(sessionDeleteArgs("fe0031b1"), [
+      "sessions",
+      "delete",
+      "fe0031b1",
+      "--force",
+    ]);
   });
 
   it("normalizes a comma-separated tool list", () => {
@@ -423,6 +442,22 @@ describe("session listing", () => {
     assert.deepEqual(parseSessionList(""), []);
   });
 
+  it("reads a listing that came back with Windows line endings", () => {
+    // The CLI prints `\n` on every platform, but a wrapper that translates
+    // newlines must not make every row unreadable: a listing that parses to
+    // nothing is what a broken resume looks like.
+    const output = [
+      "fe0031b1  just now     195 msg  Create VS Code Extension for Oxide",
+      "7c8031b1  7m ago         2 msg  say hi",
+    ].join("\r\n");
+    assert.deepEqual(parseSessionList(output), [
+      { id: "fe0031b1", age: "just now", messages: 195, label: "Create VS Code Extension for Oxide" },
+      { id: "7c8031b1", age: "7m ago", messages: 2, label: "say hi" },
+    ]);
+    // A missing trailing newline is the ordinary last line.
+    assert.equal(parseSessionList("fe0031b1  7m ago   2 msg  say hi").length, 1);
+  });
+
   it("reads the version out of --version", () => {
     assert.equal(parseVersion("oxide 0.0.0\n"), "0.0.0");
     assert.equal(parseVersion("oxide 1.2.3-beta.1"), "1.2.3-beta.1");
@@ -591,5 +626,70 @@ describe("binary resolution", () => {
   it("falls back to the bare name so the spawn error names the missing binary", () => {
     assert.equal(resolveBinary("oxide", lookup("linux", { PATH: "/usr/bin", HOME: "/home/me" }, [])), "oxide");
     assert.equal(resolveBinary("", lookup("linux", { PATH: "", HOME: "/home/me" }, [])), "oxide");
+  });
+});
+
+describe("command spawning", () => {
+  it("starts oxide itself directly, with no shell in the way", () => {
+    assert.deepEqual(spawnPlan("oxide", ["sessions", "show", "abc123", "--json"], "linux", {}), {
+      file: "oxide",
+      args: ["sessions", "show", "abc123", "--json"],
+      verbatim: false,
+    });
+    // A Windows install runs the same way; only a batch shim needs `cmd.exe`.
+    assert.deepEqual(
+      spawnPlan("C:\\tools\\oxide.exe", ["--mode", "rpc"], "win32", {}),
+      { file: "C:\\tools\\oxide.exe", args: ["--mode", "rpc"], verbatim: false },
+    );
+  });
+
+  it("runs a Windows batch shim through cmd.exe, quoting what cmd would split", () => {
+    // What scoop and `npm -g` leave on PATH: Node refuses to spawn one without
+    // a shell, so the wrapper is the only way to reach the binary behind it.
+    const plan = spawnPlan(
+      "C:\\Users\\John Doe\\scoop\\shims\\oxide.cmd",
+      ["sessions", "show", "abc123", "--json"],
+      "win32",
+      { ComSpec: "C:\\Windows\\system32\\cmd.exe" },
+    );
+    assert.equal(plan.file, "C:\\Windows\\system32\\cmd.exe");
+    assert.equal(plan.verbatim, true, "the quoting is already cmd's own");
+    assert.deepEqual(plan.args.slice(0, 3), ["/d", "/s", "/c"]);
+    assert.equal(
+      plan.args[3],
+      '""C:\\Users\\John Doe\\scoop\\shims\\oxide.cmd" sessions show abc123 --json"',
+    );
+    // Without `ComSpec` set, cmd is named the way Windows itself names it.
+    assert.equal(
+      spawnPlan("oxide.cmd", [], "win32", {}).file,
+      "cmd.exe",
+    );
+  });
+
+  it("quotes an argument cmd would otherwise read as syntax", () => {
+    const plan = spawnPlan(
+      "oxide.cmd",
+      ["-p", "a & b", 'say "hi"', "C:\\my files\\a.png"],
+      "win32",
+      {},
+    );
+    const line = plan.args[3];
+    // The whole command line is wrapped for `/c`, and inside it only the
+    // arguments cmd would split or read as operators are.
+    assert.ok(line.startsWith('"oxide.cmd -p '), line);
+    assert.ok(line.includes('"a & b"'), line);
+    assert.ok(line.includes('"C:\\my files\\a.png"'), line);
+    assert.ok(line.includes('"say \\"hi\\""'), line);
+    assert.ok(line.endsWith('.png""'), line);
+    // A plain argument is left as it is, so a session id cannot be mangled.
+    assert.equal(spawnPlan("oxide.cmd", ["77f032d6"], "win32", {}).args[3], '"oxide.cmd 77f032d6"');
+  });
+
+  it("leaves a batch file alone on a platform that has no cmd.exe", () => {
+    assert.deepEqual(spawnPlan("oxide.cmd", ["sessions", "list"], "darwin", {}), {
+      file: "oxide.cmd",
+      args: ["sessions", "list"],
+      verbatim: false,
+    });
   });
 });

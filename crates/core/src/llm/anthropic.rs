@@ -1,7 +1,7 @@
 use crate::config::{supports_adaptive_thinking, Config, Reasoning};
 use crate::llm::types::{
-    push_thinking, set_thinking_signature, AssistantTurn, ContentPart, FunctionCall, Message,
-    MessageContent, ToolCall, ToolSpec,
+    push_thinking, repair_tool_pairs, set_thinking_signature, AssistantTurn, ContentPart,
+    FunctionCall, Message, MessageContent, ToolCall, ToolSpec,
 };
 use anyhow::{bail, Result};
 use serde_json::{json, Value};
@@ -22,7 +22,10 @@ pub fn request_body(config: &Config, messages: &[Message], tools: &[ToolSpec]) -
     let mut system = String::new();
     let mut converted: Vec<Value> = Vec::new();
 
-    for message in messages {
+    // A call left without its results (a killed run, a truncated log) is
+    // rejected by the API, so the wire copy carries a result for every call.
+    let paired = repair_tool_pairs(messages);
+    for message in &paired {
         match message.role.as_str() {
             "system" => {
                 if let Some(content) = &message.content {
@@ -471,7 +474,7 @@ mod tests {
         let messages = vec![
             Message::system("be helpful"),
             Message::user("first"),
-            Message::assistant("ok", vec![]),
+            Message::assistant("", vec![call("toolu_1", "bash", "{}")]),
             Message::tool("toolu_1", "files"),
         ];
         let body = request_body(&config(), &messages, &[spec("bash"), spec("read")]);
