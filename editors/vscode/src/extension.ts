@@ -77,7 +77,13 @@ export function activate(context: vscode.ExtensionContext): void {
       // The footer's chips read the same settings the status bar does.
       controller.configurationChanged();
     }),
-    vscode.window.onDidChangeActiveTextEditor(() => refreshStatus()),
+    // The composer's chip for the file being edited follows the editor, so the
+    // file the user is working in rides along with the next message without
+    // having to be attached by hand.
+    vscode.window.onDidChangeActiveTextEditor(() => {
+      refreshStatus();
+      controller.syncActiveEditor();
+    }),
     vscode.commands.registerCommand("oxide.openChat", guard(() => focusChat(controller))),
     vscode.commands.registerCommand("oxide.newSession", () => controller.newSession()),
     vscode.commands.registerCommand("oxide.resumeSession", guard(() => controller.resumeSession())),
@@ -141,6 +147,9 @@ export function activate(context: vscode.ExtensionContext): void {
   );
 
   refreshStatus();
+  // A file already open when the window started is tracked from the first
+  // message, which is what the panel paints its chip from.
+  controller.syncActiveEditor();
 }
 
 export function deactivate(): void {

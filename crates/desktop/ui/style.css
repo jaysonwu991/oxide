@@ -935,6 +935,28 @@ body.resizing { cursor: col-resize; user-select: none; }
 .palette-hint { border-top: 1px solid var(--border); color: var(--faint); font-size: 10.5px; padding: 5px 10px; }
 .palette-empty { color: var(--faint); font-size: 12px; padding: 10px; }
 
+/* ---------- `@path` completion ---------- */
+
+/* The same box as the command palette, since it is the same kind of thing: a
+   list hanging off the composer while a reference is typed. */
+.at-row {
+  display: flex;
+  align-items: baseline;
+  gap: 7px;
+  padding: 4px 9px;
+}
+.at-row .at-glyph { flex: none; width: 9px; color: var(--faint); font-size: 11px; }
+.at-row.active .at-glyph { color: var(--accent); }
+.at-row .at-path {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 12.5px;
+  color: var(--text);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.at-row.active .at-path { color: var(--accent); }
+
 /* ---------- create project: typed path ---------- */
 
 .path-row { align-items: center; gap: 8px; margin-top: 8px; }

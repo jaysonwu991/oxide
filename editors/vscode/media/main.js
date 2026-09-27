@@ -27,6 +27,7 @@
   const gaugeFill = $("gauge-fill");
   const metaBox = $("meta");
   const chipBox = $("chips");
+  const atBox = $("at");
   const branchLabel = $("branch");
   const attachButton = $("attach");
   const composer = $("composer");
@@ -1018,6 +1019,12 @@
       case "dialog":
         setDialog(message.dialog);
         return;
+      case "atSuggestions":
+        applyCompletion(message);
+        return;
+      case "paletteRows":
+        applyCompletion(message);
+        return;
       default:
         return;
     }
@@ -1213,17 +1220,22 @@
     return el;
   }
 
+  /// A chip in the strip above the composer. The file the editor has open is
+  /// dashed rather than solid and carries its own glyph: it is tracked, not
+  /// attached, and it comes back when another file is opened.
   function contextNode(chip) {
     const el = document.createElement("div");
-    el.className = "chip context";
+    el.className = chip.auto ? "chip context auto" : "chip context";
     const glyph = document.createElement("span");
     glyph.className = "chip-glyph";
-    glyph.textContent = "❮❯";
+    glyph.textContent = chip.auto ? "✎" : "❮❯";
     const name = document.createElement("span");
     name.className = "chip-name";
     name.textContent = chip.label;
     el.append(glyph, name, removeNode(chip));
-    el.title = `${chip.label} — inlined into the next message`;
+    el.title = chip.auto
+      ? `${chip.label} — the file you are editing, sent with the next message`
+      : `${chip.label} — inlined into the next message`;
     return el;
   }
 
@@ -1232,14 +1244,22 @@
     remove.type = "button";
     remove.className = "chip-remove";
     remove.textContent = "✕";
-    remove.title = "Remove from the next message";
+    remove.title = chip.auto
+      ? "Take this file out of the next message"
+      : "Remove from the next message";
     remove.addEventListener("click", () => vscode.postMessage({ k: "removeChip", id: chip.id }));
     return remove;
   }
 
+  /// What the composer is holding of its own. The chip for the file the editor
+  /// has open rides along with whatever is sent, but it is not something to
+  /// send on its own, so an empty box that only carries it stays empty.
+  function pendingCount() {
+    return attachments.length + chips.filter((chip) => !chip.auto).length;
+  }
+
   function updateSendState() {
-    const pending = chips.length + attachments.length > 0;
-    sendButton.disabled = busy ? false : !input.value.trim() && !pending;
+    sendButton.disabled = busy ? false : !input.value.trim() && pendingCount() === 0;
   }
 
   // ---------- dialogs ----------
@@ -1411,19 +1431,240 @@
 
   function submit() {
     const text = input.value;
-    if (!text.trim() && chips.length + attachments.length === 0) return;
+    if (!text.trim() && pendingCount() === 0) return;
     input.value = "";
+    closeCompletion();
     resizeInput();
     updateSendState();
     vscode.postMessage({ k: "send", text });
   }
 
+  // ---------- `@path` completion and the `/` palette ----------
+
+  /// The rows the host offered, the range of the value they replace, which row
+  /// is highlighted, and the sequence number the answer belongs to. The host
+  /// decides what is being completed and composes the rows (`core/at.ts` for a
+  /// reference, `core/palette.ts` for a slash command); the view splices in the
+  /// row that was taken and never reads a token itself, so a reference and a
+  /// command both complete the way the terminal and the desktop app complete
+  /// them. `kind` is what the answer was for: `path` rows replace an `@path`
+  /// token, `command` rows replace the whole value with `/name`.
+  let rows = [];
+  let rowKind = "path";
+  let rowStart = 0;
+  let rowEnd = 0;
+  let rowIndex = 0;
+  let rowSeq = 0;
+
+  function closeCompletion() {
+    atBox.hidden = true;
+    atBox.innerHTML = "";
+    rows = [];
+    rowIndex = 0;
+    // Closing settles the question that was open, so an answer still on its way
+    // (a walk of the project is not instant) cannot pop the list back up after
+    // Escape, or over a box that has been sent and emptied.
+    rowSeq += 1;
+  }
+
+  /// Asks the host what the composer is completing: a `/name` while a slash
+  /// command is being typed, otherwise an `@path` the caret is sitting in.
+  /// Nothing is asked of a value with neither, which is most of them.
+  function requestCompletion() {
+    if (input.value.startsWith("/")) {
+      rowSeq += 1;
+      vscode.postMessage({ k: "completePalette", text: input.value, seq: rowSeq });
+      return;
+    }
+    if (input.value.indexOf("@") === -1) {
+      closeCompletion();
+      return;
+    }
+    rowSeq += 1;
+    vscode.postMessage({
+      k: "completeAt",
+      text: input.value,
+      caret: input.selectionStart || 0,
+      seq: rowSeq,
+    });
+  }
+
+  function rowNode(row, index) {
+    return rowKind === "command" ? commandRowNode(row, index) : atRowNode(row, index);
+  }
+
+  function atRowNode(row, index) {
+    const el = document.createElement("button");
+    el.type = "button";
+    el.className = index === rowIndex ? "at-row selected" : "at-row";
+    el.setAttribute("role", "option");
+    el.setAttribute("aria-selected", index === rowIndex ? "true" : "false");
+    el.title =
+      row.kind === "folder"
+        ? `${row.label} — a folder in this project`
+        : `${row.label} — inlined into the next message`;
+    const glyph = document.createElement("span");
+    glyph.className = "at-glyph";
+    glyph.textContent = row.kind === "folder" ? "\u25b8" : "\u00b7";
+    const name = document.createElement("span");
+    name.className = "at-path";
+    name.textContent = row.label;
+    el.append(glyph, name);
+    addRowHandlers(el, index);
+    return el;
+  }
+
+  /// One row of the `/` palette: the name it inserts, the arguments it takes,
+  /// what it does and where it came from. A skill is listed under its own name,
+  /// with its description, so taking the row is what loads it.
+  function commandRowNode(row, index) {
+    const el = document.createElement("button");
+    el.type = "button";
+    el.className = index === rowIndex ? "cmd-row selected" : "cmd-row";
+    el.setAttribute("role", "option");
+    el.setAttribute("aria-selected", index === rowIndex ? "true" : "false");
+    el.title = `${row.insert.trim()} — ${row.description}`;
+    const name = document.createElement("span");
+    name.className = "cmd-name";
+    name.textContent = `/${row.name}`;
+    el.appendChild(name);
+    if (row.arguments) {
+      const args = document.createElement("span");
+      args.className = "cmd-args";
+      args.textContent = row.arguments;
+      el.appendChild(args);
+    }
+    const description = document.createElement("span");
+    description.className = "cmd-desc";
+    description.textContent = row.description;
+    el.appendChild(description);
+    // A skill's own kind is worth saying: it is loaded as instructions rather
+    // than run as a command, and the CLI keeps the two apart.
+    const source = document.createElement("span");
+    source.className = "cmd-source";
+    source.textContent = row.kind === "skill" ? "skill" : row.source;
+    el.appendChild(source);
+    addRowHandlers(el, index);
+    return el;
+  }
+
+  /// The click would take the focus out of the message box and drop the caret
+  /// the row is completing, so the press is swallowed and the click still
+  /// arrives.
+  function addRowHandlers(el, index) {
+    el.addEventListener("mousedown", (event) => event.preventDefault());
+    el.addEventListener("click", () => acceptRow(index));
+  }
+
+  function paintCompletion() {
+    atBox.innerHTML = "";
+    atBox.hidden = rows.length === 0;
+    atBox.setAttribute(
+      "aria-label",
+      rowKind === "command" ? "Commands and skills" : "Files and folders",
+    );
+    rows.forEach((row, index) => atBox.appendChild(rowNode(row, index)));
+  }
+
+  /// Takes a row. An `@path` is replaced by what the host said it stands for —
+  /// with a space after a file so the next word can be typed and without one
+  /// after a folder, so the query goes on narrowing inside it — while a command
+  /// replaces the whole value, since that is the message the CLI resolves.
+  function acceptRow(index) {
+    const row = rows[index];
+    if (!row) return;
+    const value = input.value;
+    input.value = value.slice(0, rowStart) + row.insert + value.slice(rowEnd);
+    const caret = rowStart + row.insert.length;
+    input.setSelectionRange(caret, caret);
+    const command = rowKind === "command";
+    closeCompletion();
+    resizeInput();
+    updateSendState();
+    // A folder opens its own list; a file's token is done, and the host answers
+    // that with no rows. A command is left in the box to be sent — and to take
+    // arguments, which is why its row is completed rather than run.
+    if (!command) requestCompletion();
+  }
+
+  function moveRow(step) {
+    if (!rows.length) return;
+    rowIndex = (rowIndex + step + rows.length) % rows.length;
+    paintCompletion();
+    // Only the row is brought into view, and only if it is not already: the
+    // list is its own scroller, so walking it must not drag the transcript.
+    const selected = atBox.children[rowIndex];
+    if (selected && selected.scrollIntoView) {
+      selected.scrollIntoView({ block: "nearest", inline: "nearest" });
+    }
+  }
+
+  function applyCompletion(message) {
+    // A list for a value the reader has already typed past would put its rows
+    // under a caret that has moved, so the sequence number settles it.
+    if (message.seq !== rowSeq) return;
+    if (!message.rows || !message.rows.length) {
+      closeCompletion();
+      return;
+    }
+    rowKind = message.kind === "command" ? "command" : "path";
+    rowStart = message.start;
+    rowEnd = message.end;
+    rows = message.rows;
+    rowIndex = 0;
+    paintCompletion();
+  }
+
+  /// The keys that move the caret without changing the value, so a token the
+  /// caret has been moved into completes too.
+  const CARET_KEYS = new Set([
+    "ArrowLeft",
+    "ArrowRight",
+    "ArrowUp",
+    "ArrowDown",
+    "Home",
+    "End",
+    "PageUp",
+    "PageDown",
+  ]);
+
   input.addEventListener("input", () => {
     resizeInput();
     updateSendState();
+    requestCompletion();
   });
 
+  // The caret moves without the value changing, which a token the caret has
+  // been moved into needs. While the list is up the arrows walk it instead, so
+  // the click is what re-asks from there.
+  input.addEventListener("keyup", (event) => {
+    if (atBox.hidden && CARET_KEYS.has(event.key)) requestCompletion();
+  });
+  input.addEventListener("click", () => requestCompletion());
+
   input.addEventListener("keydown", (event) => {
+    if (!atBox.hidden) {
+      if (event.key === "ArrowDown") {
+        event.preventDefault();
+        moveRow(1);
+        return;
+      }
+      if (event.key === "ArrowUp") {
+        event.preventDefault();
+        moveRow(-1);
+        return;
+      }
+      if (event.key === "Tab" || (event.key === "Enter" && !event.shiftKey)) {
+        event.preventDefault();
+        acceptRow(rowIndex);
+        return;
+      }
+      if (event.key === "Escape") {
+        event.preventDefault();
+        closeCompletion();
+        return;
+      }
+    }
     if (event.key === "Enter" && !event.shiftKey) {
       event.preventDefault();
       submit();

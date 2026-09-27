@@ -82,7 +82,17 @@ The window follows a Codex-style layout:
   data URL can be — so it is not embedded at full size in the request, the
   session and the webview's own message at once. A file past the core's 20 MB
   attachment limit, or of a type no provider takes and no browser can paint, is
-  refused with a status line instead of being read.
+  refused with a status line instead of being read. A message can also name a
+  file or folder with `@path`, which the composer completes: typing `@` offers
+  the project's own paths in the same box the `/` palette uses, `↑`/`↓` walk the
+  rows, `Enter`/`Tab` takes one, `Escape` closes the list, a folder keeps the
+  reference open so the query goes on narrowing inside it (and a folder the
+  reference already spells is left out, so the row taken next walks into it)
+  while a file closes it with a space. The rules are the terminal's own —
+  `oxide_core::at`, the module both composers complete from — and the walk of the
+  project behind them is kept until the project changes. A reference to an image
+  or a PDF is attached to the turn the way the terminal attaches one, with the
+  message text left exactly as it was typed.
 
 ## Running
 
@@ -303,7 +313,11 @@ the **MCP servers** dialog, `/sessions` (`/session`) the **Sessions** dialog,
 do. A project command, a prompt template and a skill are sent on as a normal
 message, so the CLI's own resolution handles them — as is a client command with
 an argument, so `/mcp list` and `/session <id>` reach the agent instead of being
-performed as the bare command would be. A name the app cannot
+performed as the bare command would be. A skill is listed under its own name
+(`/rust-conventions`), with the row marked `skill` and its description beside
+it, so taking the row completes the name and sending it is what loads the skill:
+the CLI resolves the same name the menu lists, and `/skill:<name>` is the
+terminal's other spelling of it. A name the app cannot
 perform — today `/agent`, whose palette of subagents the app does not have yet —
 says so in the transcript rather than reaching the model as the literal text
 `/agent`. With no project selected the project-scoped commands say that first,

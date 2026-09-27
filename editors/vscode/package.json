@@ -305,6 +305,11 @@
           "default": true,
           "description": "Show the model's reasoning in the transcript as a collapsible block."
         },
+        "oxide.autoContext": {
+          "type": "boolean",
+          "default": true,
+          "markdownDescription": "Track the file you are editing as a chip in the composer, sent with the next message as context. The chip is read when the message goes, so unsaved edits are included; its ✕ or **Clear** takes it out for as long as that file is the one being edited, and another file brings it back. Turn this off to attach only what you add by hand."
+        },
         "oxide.askApprovals": {
           "type": "boolean",
           "default": true,

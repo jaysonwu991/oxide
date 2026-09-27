@@ -32,7 +32,13 @@ and MCP servers as the terminal and the desktop app — nothing is reconfigured.
   picker, with **New chat** as its first row to close the thread on screen and
   go back to the new-chat page.
 - **`@path` in a message**: `@src/main.rs` attaches the file's text; an image or
-  PDF becomes a media attachment.
+  PDF becomes a media attachment. Typing `@` completes the project's files and
+  folders, the way the terminal's composer does: the list hangs inside the
+  composer card, the arrows walk it, `Tab`/`Enter` take the highlighted row (a
+  folder stays open so you can narrow inside it) and `Esc` closes it. The list is
+  the workspace's, read once per folder, and only the pane you typed in is
+  answered from it — an answer for a path you have typed past, sent or dismissed
+  is dropped rather than painted under a caret that has moved.
 
 ## Install
 
@@ -80,6 +86,15 @@ Provider logins live in the CLI: run **Oxide: Open Terminal (TUI)** and use
    closes it and starts you on a fresh page.
 6. Click a thumbnail in the attachment strip to see the full-size image before
    it is sent.
+7. The file you are editing is already attached: it shows as a dashed chip with
+   a ✎ above the message box and goes with the next message as context, read
+   when the message is sent so unsaved edits are included. Its ✕ (or **Clear**)
+   takes it out; opening another file brings the chip back. Turn off
+   `oxide.autoContext` to attach only what you add by hand.
+8. Type `@` in the message box to complete a path from the project: the rows
+   appear in the composer, `↑`/`↓` walk them, `Tab` or `Enter` takes the
+   highlighted one, and a folder keeps the `@` open so you can go on narrowing
+   inside it. `Esc` closes the list without clearing the message.
 
 ## Commands
 
@@ -113,6 +128,7 @@ Provider logins live in the CLI: run **Oxide: Open Terminal (TUI)** and use
 | `oxide.excludeTools` | *(empty)* | `--exclude-tools` denylist. |
 | `oxide.additionalArguments` | `[]` | Extra argv appended to every invocation. |
 | `oxide.showThinking` | `true` | Show `✦ Thinking` blocks. |
+| `oxide.autoContext` | `true` | Track the file you are editing as a chip in the composer, sent with the next message as context. The chip is read when the message goes, so unsaved edits are included; its ✕ or **Clear** takes it out for as long as that file is the one being edited, and another file brings it back. |
 | `oxide.askApprovals` | `true` | `--ask-approvals`: ask in the transcript before running a tool a permission rule gates. **Always allow** is remembered per project in the shared `approvals.json`. Off passes `--no-ask-approvals`. Either flag is passed explicitly, so this setting decides for panel runs (the shared `settings.json` key still decides for the terminal). |
 | `oxide.notifyOnFinish` | `true` | Notify when a run finishes while the panel is hidden, naming the thread by its title. |
 

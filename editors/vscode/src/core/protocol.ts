@@ -19,8 +19,10 @@ import {
   type Question,
   type QuestionAnswer,
 } from "./questions";
+import type { AtSuggestion } from "./at";
 import type { DialogState } from "./dialogs";
 import type { FooterState } from "./footer";
+import type { CommandRow } from "./palette";
 
 /// One JSONL line from the agent's stdout. Only `type` is guaranteed.
 export interface WireEvent {
@@ -153,6 +155,10 @@ export type ToolPatch = Partial<
 export interface ContextChip {
   id: number;
   label: string;
+  /// The file the editor has open. The composer tracks it rather than waiting
+  /// to be given it, so the view marks its chip and does not count it as
+  /// something to send: an empty box with only that chip submits nothing.
+  auto?: boolean;
 }
 
 /// An image or PDF the message carries as media (`--image`).
@@ -208,7 +214,33 @@ export type ViewMessage =
   /// the view only paints the rows and posts back the action one carries; the
   /// controller keeps the dialog, so opening it from either pane shows it in
   /// both.
-  | { k: "dialog"; dialog: DialogState | null };
+  | { k: "dialog"; dialog: DialogState | null }
+  /// The composer's `@path` completion: the rows to offer for the token at the
+  /// caret, and the range of the value they replace — or no rows at all, to
+  /// close the list. The host decides both (from the sequence number the view
+  /// posted, so a list for a value that has moved on is dropped); the view only
+  /// splices in the row that was taken.
+  | {
+      k: "atSuggestions";
+      kind: "path";
+      seq: number;
+      start: number;
+      end: number;
+      rows: AtSuggestion[];
+    }
+  /// The composer's `/` palette: the commands, prompt templates and skills the
+  /// CLI lists for this project, for the slash command being typed. The range
+  /// is the whole value, since a palette row replaces it; `kind` is what tells
+  /// the view which renderer and which splice the rows want, the two
+  /// completions sharing one box.
+  | {
+      k: "paletteRows";
+      kind: "command";
+      seq: number;
+      start: number;
+      end: number;
+      rows: CommandRow[];
+    };
 
 /// Splits a chunk into complete lines, returning the unterminated remainder.
 /// Mirrors `oxide_core::llm::drain_lines`: the buffer is compacted once per

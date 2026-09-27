@@ -11,6 +11,7 @@ use oxide_core::llm::Message;
 use oxide_core::llm::{ContentPart, MessageContent};
 use oxide_core::session::{SessionLog, SessionSummary};
 use oxide_core::theme_view;
+use oxide_desktop::at::{AtAnswer, PathCache};
 use oxide_desktop::manager::{expand_project_path, DesktopManager, ProjectView};
 use oxide_desktop::turn::{notify_finished, open_session, start_turn, Turn};
 use serde_json::{json, Value};
@@ -35,12 +36,18 @@ struct RunHandle {
     steering: Steering,
     follow_ups: Steering,
     cancel: Cancel,
+    /// The project the run was started in, so a message steered into it reads
+    /// its own `@path` references against the same directory.
+    cwd: PathBuf,
 }
 
 pub struct DesktopState {
     pub manager: Mutex<DesktopManager>,
     pub approvals: Arc<ApprovalBroker>,
     pub questions: Arc<AskBroker>,
+    /// The `@path` completion's listing of the open project, walked once and
+    /// dropped when a turn ends (see `oxide_desktop::at`).
+    pub at: PathCache,
     runs: Arc<Mutex<HashMap<u64, RunHandle>>>,
     next_run: AtomicU64,
 }
@@ -51,6 +58,7 @@ impl DesktopState {
             manager: Mutex::new(manager),
             approvals: Arc::new(ApprovalBroker::new(app.clone())),
             questions: Arc::new(AskBroker::new(app)),
+            at: PathCache::default(),
             runs: Arc::new(Mutex::new(HashMap::new())),
             next_run: AtomicU64::new(1),
         }
@@ -116,7 +124,16 @@ pub struct AttachmentInput {
 /// A refused attachment fails the send instead of vanishing from the message:
 /// a type neither the provider nor the webview takes, a payload that is not
 /// base64, or one past the limit the core enforces.
-fn attachment_parts(attachments: Option<Vec<AttachmentInput>>) -> Result<Vec<ContentPart>, String> {
+///
+/// An `@path` reference to an image or a PDF that is in the project rides along
+/// the same way, which is what the terminal does with one — the reference stays
+/// in the text either way, so the model sees the path and, where the file is
+/// media, the file itself.
+fn attachment_parts(
+    attachments: Option<Vec<AttachmentInput>>,
+    message: &str,
+    cwd: &Path,
+) -> Result<Vec<ContentPart>, String> {
     let mut parts = Vec::new();
     for attachment in attachments.unwrap_or_default() {
         let name = attachment
@@ -131,6 +148,15 @@ fn attachment_parts(attachments: Option<Vec<AttachmentInput>>) -> Result<Vec<Con
                         "{name} could not be attached: attach a PNG, JPEG, GIF, WebP or BMP image or a PDF of at most {limit} MB"
                     )
                 })?;
+        parts.push(part);
+    }
+    for path in oxide_core::media::referenced_attachments(message, cwd) {
+        let name = path
+            .file_name()
+            .map(|name| name.to_string_lossy().into_owned())
+            .unwrap_or_else(|| path.display().to_string());
+        let part = oxide_core::media::load_attachment(&path)
+            .map_err(|error| format!("{name} could not be attached: {error}"))?;
         parts.push(part);
     }
     Ok(parts)
@@ -446,7 +472,7 @@ pub async fn send_prompt(
             state.runs.clone(),
         )
     };
-    let attachments = attachment_parts(attachments)?;
+    let attachments = attachment_parts(attachments, &prompt, Path::new(&project))?;
     let app = app.clone();
     tauri::async_runtime::spawn(async move {
         let _ = drive_turn(
@@ -510,6 +536,7 @@ async fn drive_turn(
             steering,
             follow_ups,
             cancel,
+            cwd: cwd.clone(),
         },
     );
     let _ = app.emit(
@@ -534,10 +561,13 @@ async fn drive_turn(
     }
 
     runs.lock().await.remove(&run_id);
-    // The turn is over, so any question it left waiting can never be answered:
-    // drop it here rather than letting it sit until its timeout, and before
-    // `agent-end` so the window is never told a turn ended while a request of
-    // its own is still open.
+    // The turn is over, so the files it wrote are on disk: drop the completion's
+    // listing rather than offering paths from before the work. A question it
+    // left waiting can never be answered either: drop it here rather than
+    // letting it sit until its timeout, and before `agent-end` so the window is
+    // never told a turn ended while a request of its own is still open.
+    let state = app.state::<DesktopState>();
+    state.at.clear();
     questions.clear_run(run_id).await;
     let _ = app.emit(
         "agent-end",
@@ -582,7 +612,7 @@ pub async fn steer_run(
         } else {
             &run.steering
         };
-        let parts = attachment_parts(attachments)?;
+        let parts = attachment_parts(attachments, &message, &run.cwd)?;
         queue.push(if parts.is_empty() {
             Message::user(message)
         } else {
@@ -590,6 +620,26 @@ pub async fn steer_run(
         });
     }
     Ok(())
+}
+
+/// Answers the composer's `@path` completion: the project's own files and
+/// folders for the reference at the caret. `text` and `caret` are the message
+/// box's value and caret as the webview counts them, and the returned range is
+/// in those same indices, so the view only ever splices a row in.
+///
+/// An empty answer (`rows` with nothing in it) means there is no reference under
+/// the caret, which is how the composer closes its list.
+#[tauri::command]
+pub async fn at_suggestions(
+    project: String,
+    text: String,
+    caret: usize,
+    state: State<'_, DesktopState>,
+) -> CmdResult<AtAnswer> {
+    let cwd = project_dir(&project)?;
+    Ok(oxide_desktop::at::suggestions(
+        &cwd, &state.at, &text, caret,
+    ))
 }
 
 /// Answers a pending `approval-request`.
@@ -776,10 +826,14 @@ mod tests {
 
     #[test]
     fn a_refused_attachment_names_the_types_and_the_limit() {
-        let refused = attachment_parts(Some(vec![AttachmentInput {
-            data_url: "data:image/tiff;base64,AAAA".to_string(),
-            name: Some("scan.tif".to_string()),
-        }]))
+        let refused = attachment_parts(
+            Some(vec![AttachmentInput {
+                data_url: "data:image/tiff;base64,AAAA".to_string(),
+                name: Some("scan.tif".to_string()),
+            }]),
+            "look at scan.tif",
+            Path::new("."),
+        )
         .expect_err("a TIFF is not attachable");
         assert_eq!(
             refused,

@@ -67,6 +67,8 @@ class StubElement {
     this.offsetParent = {};
     this.scrollHeight = 10;
     this.clientHeight = 10;
+    this.selectionStart = 0;
+    this.selectionEnd = 0;
     this._innerHTML = "";
   }
 
@@ -108,6 +110,12 @@ class StubElement {
   blur() {}
   click() {}
   scrollTo() {}
+  // The message box is the one element whose caret the app reads and moves, so
+  // the stub keeps one the way a text field does.
+  setSelectionRange(start, end) {
+    this.selectionStart = start;
+    this.selectionEnd = end;
+  }
 
   /// The subset of CSS selectors `app.js` asks for: a class, a
   /// `[data-<key>="value"]` attribute and a `:checked` state, in any order.
@@ -205,6 +213,36 @@ const calls = [];
 let mcpsError = null;
 let createError = null;
 
+// What the bridge answers `at_suggestions` with. The token and the rows are the
+// core's own rules (`oxide_core::at`, checked by `cargo test`); this only has to
+// say what the view does with an answer, so it answers the way the host would
+// for the references the checks type — the two rows of a project with one
+// folder in it, in the order the core ranks them.
+let atError = null;
+const atWorkspace = [
+  { label: "src/", kind: "folder", insert: "@src/" },
+  { label: "src/main.rs", kind: "file", insert: "@src/main.rs " },
+];
+let answerAt = (text) => defaultAtAnswer(text);
+function defaultAtAnswer(text) {
+  const start = text.lastIndexOf("@");
+  if (start === -1) return { start: 0, end: 0, rows: [] };
+  const query = text.slice(start + 1).toLowerCase();
+  // A reference that is done (or a word with an `@` in it) has no token open.
+  if (!query || /\s/.test(query)) return { start, end: text.length, rows: [] };
+  return {
+    start,
+    end: text.length,
+    rows: atWorkspace.filter(
+      (row) =>
+        row.label.toLowerCase().includes(query) &&
+        // The host leaves out a folder the reference already spells, so the row
+        // taken next walks into it.
+        !(query.endsWith("/") && row.label.toLowerCase() === query),
+    ),
+  };
+}
+
 // The threads the sidebar groups by project and `/sessions` lists for the one
 // that is selected, newest first, the way the core orders them.
 const existing = [
@@ -296,6 +334,10 @@ const invoke = async (command, args = {}) => {
     case "all_sessions":
       if (threadsError) throw threadsError;
       return threads.map((session) => ({ ...session }));
+    case "at_suggestions":
+      if (atError) throw atError;
+      if (!String(args.project || "").trim()) throw "select a project first";
+      return answerAt(args.text);
     // Everything the rest of `init`/selection asks for; none of it is what this
     // check is about, and all of it stays inside the stub.
     case "list_providers":
@@ -373,8 +415,9 @@ vm.runInThisContext(
   source +
     "\nglobalThis.__app = { send, runSlashCommand, state, createProjectState," +
     " openDefaultProject, openCreateProject, addCreateProjectTypedPath, saveCreateProject," +
-    " refreshPaletteEntries, addAttachment, addAttachmentFiles, el, showQuestion, answerQuestion," +
-    " collectAnswers };\n",
+    " refreshPaletteEntries, paletteMatches, renderPalette, runPaletteEntry," +
+    " addAttachment, addAttachmentFiles, el, showQuestion, answerQuestion," +
+    " collectAnswers, requestAt, acceptAt, moveAt, closeAt, atKey };\n",
 );
 
 const app = globalThis.__app;
@@ -461,6 +504,154 @@ for (const [id, label] of [
     button,
   );
 }
+
+// ---------- `@path` completion ----------
+
+console.log("@path completion");
+const atBox = elementFor("at-list");
+const atRows = elementFor("at-rows");
+const composer = elementFor("prompt");
+const tick = () => new Promise((resolve) => setTimeout(resolve, 0));
+/// Types a value into the composer and asks the host about it the way the input
+/// handler does, with the caret where the text field would have it.
+const typeAt = async (value, caret = null) => {
+  composer.value = value;
+  composer.selectionStart = caret ?? value.length;
+  await app.requestAt();
+};
+
+check(
+  "hung the list off the composer as the palette's own box",
+  /<div id="at-list" class="palette" hidden>/.test(shell) &&
+    /id="at-rows" class="palette-list" role="listbox"/.test(shell),
+  "",
+);
+
+app.state.project = "/Users/jayson/Projects/oxide";
+calls.length = 0;
+await typeAt("review @sr");
+check(
+  "offered the project's own files for the reference",
+  atBox.hidden === false && atRows.children.length === 2,
+  atRows.outline(),
+);
+check(
+  "marked the first row as the one Enter takes",
+  String(atRows.children[0].className).includes("active"),
+  String(atRows.children[0].className),
+);
+check(
+  "drew a folder as a folder and a file as a file",
+  String(atRows.children[0].innerHTML).includes("\u25b8") &&
+    String(atRows.children[1].innerHTML).includes("\u00b7") &&
+    String(atRows.children[1].innerHTML).includes("src/main.rs"),
+  atRows.outline(),
+);
+check(
+  "told the host where the caret is",
+  projectCalls("at_suggestions").at(-1)?.[1]?.caret === 10 &&
+    projectCalls("at_suggestions").at(-1)?.[1]?.text === "review @sr",
+  JSON.stringify(projectCalls("at_suggestions").at(-1)),
+);
+
+app.moveAt(1);
+check(
+  "walked the list with the arrows",
+  String(atRows.children[1].className).includes("active"),
+  String(atRows.children[1].className),
+);
+app.moveAt(-1);
+app.atKey({ key: "Enter" });
+check(
+  "spliced the folder in and left its reference open",
+  composer.value === "review @src/" && composer.selectionStart === 12,
+  `${composer.value} @ ${composer.selectionStart}`,
+);
+await tick();
+check(
+  "offered what is inside the folder next",
+  atBox.hidden === false &&
+    atRows.children.length === 1 &&
+    String(atRows.children[0].innerHTML).includes("src/main.rs"),
+  atRows.outline(),
+);
+app.atKey({ key: "Tab" });
+check(
+  "spliced the file in with a space after it",
+  composer.value === "review @src/main.rs " && composer.selectionStart === 20,
+  `${composer.value} @ ${composer.selectionStart}`,
+);
+await tick();
+check("closed the list once the reference was done", atBox.hidden === true);
+
+await typeAt("review @sr");
+app.atKey({ key: "Escape" });
+check("closed the list on Escape", atBox.hidden === true);
+check("left a key the list does not own alone", app.atKey({ key: "a" }) === false);
+
+// The caret moves without the value changing, so the ask carries wherever it
+// landed rather than the end of the message.
+await typeAt("review @src/main.rs more", 18);
+check(
+  "asked about the caret the reader moved into a reference",
+  projectCalls("at_suggestions").at(-1)?.[1]?.caret === 18,
+  JSON.stringify(projectCalls("at_suggestions").at(-1)),
+);
+
+// An answer that arrives after the value has moved on must not paint its rows
+// under a caret they no longer belong to.
+const held = [];
+answerAt = (text) =>
+  new Promise((resolve) =>
+    held.push(() =>
+      resolve({
+        start: 0,
+        end: 0,
+        rows: [{ label: `from:${text}`, kind: "file", insert: `@${text} ` }],
+      }),
+    ),
+  );
+const firstAsk = app.requestAt();
+composer.value = "review @sr/docs";
+composer.selectionStart = 16;
+const secondAsk = app.requestAt();
+held[1]();
+await secondAsk;
+held[0]();
+await firstAsk;
+check(
+  "painted the answer for the value that is there",
+  String(atRows.children[0]?.innerHTML).includes("from:review @sr/docs"),
+  atRows.outline(),
+);
+answerAt = (text) => defaultAtAnswer(text);
+
+// A host that cannot answer leaves the list closed rather than throwing into
+// the window, and a project that is not selected is not asked about at all.
+atError = "could not read the project";
+await typeAt("review @sr");
+check("closed the list when the host refused", atBox.hidden === true);
+atError = null;
+calls.length = 0;
+const project = app.state.project;
+app.state.project = null;
+await typeAt("review @sr");
+check(
+  "asked for nothing without a project",
+  projectCalls("at_suggestions").length === 0 && atBox.hidden === true,
+);
+app.state.project = project;
+
+// The message is on its way, so the list has nothing left to complete.
+await typeAt("review @sr");
+await app.send(false);
+check(
+  "closed the list when the message went out",
+  atBox.hidden === true && composer.value === "",
+  `${atBox.hidden} / ${composer.value}`,
+);
+app.state.busy = false;
+app.state.runId = null;
 
 // ---------- /mcps ----------
 
@@ -965,6 +1156,69 @@ if (catalogSkipped) {
   }
   if (unperformed.length) {
     console.log(`  note the app answers these with a "not available" note: ${unperformed.join(", ")}`);
+  }
+
+  // The catalog's other half is the project's own commands, prompt templates and
+  // skills. A skill is listed under its own name — the spelling that loads it —
+  // so taking the row is what activates it: the composer is completed with
+  // `/name`, and sending that is the prompt the CLI expands rather than
+  // something the app answers itself.
+  const skills = catalog.filter((entry) => entry.kind === "skill");
+  check(
+    "the catalog offers the project's skills",
+    skills.length > 0,
+    `${catalog.length} entries, none a skill`,
+  );
+  if (skills.length) {
+    const skill = skills[0];
+    elementFor("prompt").value = `/${skill.name.slice(0, 3)}`;
+    const rows = app.paletteMatches() || [];
+    check(
+      `the palette offers /${skill.name} under its own name`,
+      rows.some((entry) => entry.name === skill.name && entry.kind === "skill"),
+      JSON.stringify(rows.map((entry) => entry.name)),
+    );
+
+    // The painted row names the skill, its arguments and what it does, and says
+    // it is a skill rather than where the file came from.
+    app.renderPalette();
+    const painted = elementFor("palette-list").children.find((row) =>
+      String(row.innerHTML).includes(`>/${skill.name}<`),
+    );
+    const markup = String(painted && painted.innerHTML);
+    check(
+      "the row carries the skill's own name, arguments and description",
+      Boolean(painted) &&
+        markup.includes(skill.arguments || "[arguments]") &&
+        markup.includes(skill.description),
+      elementFor("palette-list").outline(),
+    );
+    check("the row says it is a skill", markup.includes('class="source">skill<'), markup);
+
+    // Taking the row completes it, since a skill takes arguments and is the
+    // message the CLI expands rather than a client command.
+    elementFor("prompt").value = `/${skill.name}`;
+    app.runPaletteEntry(skill);
+    check(
+      "taking a skill's row completes it rather than running it",
+      elementFor("prompt").value === `/${skill.name} `,
+      elementFor("prompt").value,
+    );
+
+    // Sending it is a prompt: the CLI resolves the name and loads the skill, so
+    // the agent reads its instructions for this turn.
+    app.state.busy = false;
+    app.state.runId = null;
+    calls.length = 0;
+    await app.send(false);
+    const sent = projectCalls("send_prompt");
+    check(
+      "sending a skill goes to the agent as the prompt the CLI expands",
+      sent.length === 1 && sent[0][1].prompt === `/${skill.name}`,
+      JSON.stringify(sent),
+    );
+    app.state.busy = false;
+    app.state.runId = null;
   }
 }
 

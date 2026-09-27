@@ -912,6 +912,9 @@ async function send(followUp = false) {
   const prompt = textarea.value.trim();
   const attachments = attachmentPayload();
   if (!prompt && attachments.length === 0) return;
+  // The message is on its way, so a list hanging off the reference that was
+  // being typed into it has nothing left to complete.
+  closeAt();
 
   // A leading slash draws the client's own command first: the app answers the
   // ones it owns (the MCP list, a picker, a new thread) instead of sending
@@ -2066,6 +2069,181 @@ async function runSlashCommand(text) {
   }
 }
 
+// ---------- `@path` completion ----------
+
+// The rows the host offered for the reference at the caret, the range of the
+// value they replace, which row is highlighted, and the sequence number the
+// answer belongs to. The host decides the token and the rows (`oxide_core::at`,
+// the same rules the terminal completes with); the view only ever splices in the
+// row that was taken and never reads a token itself.
+let atRows = [];
+let atStart = 0;
+let atEnd = 0;
+let atIndex = 0;
+let atSeq = 0;
+
+/// Closes the list and settles the question that was open, so an answer still
+/// on its way (walking a project is not instant) cannot pop the list back up
+/// after Escape, or over a box that has been sent and emptied.
+function closeAt() {
+  const box = el("at-list");
+  if (box) box.hidden = true;
+  atRows = [];
+  atIndex = 0;
+  atSeq += 1;
+}
+
+function atOpen() {
+  const box = el("at-list");
+  return Boolean(box) && !box.hidden && atRows.length > 0;
+}
+
+/// Asks the host what the caret is sitting in. Nothing is asked of a value with
+/// no `@` in it at all, which is most of them.
+async function requestAt() {
+  const prompt = el("prompt");
+  if (!prompt || !prompt.value.includes("@") || !state.project) {
+    closeAt();
+    return;
+  }
+  const seq = ++atSeq;
+  let answer = null;
+  try {
+    answer = await invoke("at_suggestions", {
+      project: state.project,
+      text: prompt.value,
+      caret: prompt.selectionStart || 0,
+    });
+  } catch (error) {
+    if (seq === atSeq) closeAt();
+    return;
+  }
+  // A list for a value the reader has already typed past would put its rows
+  // under a caret that has moved, so the sequence number settles it.
+  if (seq !== atSeq) return;
+  applyAt(answer);
+}
+
+function applyAt(answer) {
+  const rows = (answer && answer.rows) || [];
+  if (!rows.length) {
+    closeAt();
+    return;
+  }
+  atStart = answer.start;
+  atEnd = answer.end;
+  atRows = rows;
+  atIndex = 0;
+  renderAt();
+}
+
+function renderAt() {
+  const box = el("at-list");
+  const list = el("at-rows");
+  const prompt = el("prompt");
+  if (!box || !list || !prompt) return;
+  if (!atRows.length) {
+    box.hidden = true;
+    return;
+  }
+  // Anchored to the message box the reference is being typed in, growing
+  // upward from it, like the command palette.
+  const rect = prompt.getBoundingClientRect();
+  box.style.left = `${rect.left}px`;
+  box.style.width = `${rect.width}px`;
+  box.style.top = `${Math.max(12, rect.top - 8)}px`;
+  box.style.transform = "translateY(-100%)";
+  box.hidden = false;
+  list.innerHTML = "";
+  atRows.forEach((row, index) => {
+    const item = document.createElement("button");
+    item.type = "button";
+    item.className = "palette-item at-row" + (index === atIndex ? " active" : "");
+    item.setAttribute("role", "option");
+    item.setAttribute("aria-selected", index === atIndex ? "true" : "false");
+    item.title =
+      row.kind === "folder"
+        ? `${row.label} — a folder in this project`
+        : `${row.label} — referenced in this message`;
+    item.innerHTML =
+      `<span class="at-glyph">${row.kind === "folder" ? "\u25b8" : "\u00b7"}</span>` +
+      `<span class="at-path">${escapeHtml(row.label)}</span>`;
+    // The press would take the focus out of the message box and drop the caret
+    // the row is completing, so it is swallowed and the click still arrives.
+    item.addEventListener("mousedown", (event) => event.preventDefault());
+    item.onclick = () => acceptAt(index);
+    list.appendChild(item);
+  });
+}
+
+/// Takes a row: the reference is replaced by what the host said it stands for,
+/// with a space after a file so the next word can be typed and without one after
+/// a folder, so the query goes on narrowing inside it.
+function acceptAt(index) {
+  const row = atRows[index];
+  const prompt = el("prompt");
+  if (!row || !prompt) return;
+  const value = prompt.value;
+  // A range the value has moved out from under would splice the row into the
+  // middle of another word, so a stale list closes instead.
+  if (!value.slice(atStart, atEnd).startsWith("@")) {
+    closeAt();
+    return;
+  }
+  prompt.value = value.slice(0, atStart) + row.insert + value.slice(atEnd);
+  const caret = atStart + row.insert.length;
+  prompt.setSelectionRange(caret, caret);
+  closeAt();
+  prompt.style.height = "auto";
+  prompt.style.height = `${Math.min(prompt.scrollHeight, 220)}px`;
+  updateSendState();
+  // A folder opens its own list; a file's reference is done, which the host
+  // answers with no rows.
+  requestAt();
+}
+
+function moveAt(step) {
+  if (!atRows.length) return;
+  atIndex = (atIndex + step + atRows.length) % atRows.length;
+  renderAt();
+  const selected = el("at-rows").children[atIndex];
+  // Only the row is brought into view, and only if it is not already: the list
+  // is its own scroller.
+  if (selected && selected.scrollIntoView) selected.scrollIntoView({ block: "nearest" });
+}
+
+/// The keys the list owns while it is open, so typing a reference does not send
+/// half of it. Returns true when the key was consumed.
+function atKey(event) {
+  if (!atOpen()) return false;
+  if (event.key === "ArrowDown" || event.key === "ArrowUp") {
+    moveAt(event.key === "ArrowDown" ? 1 : -1);
+    return true;
+  }
+  if (event.key === "Tab" || (event.key === "Enter" && !event.shiftKey)) {
+    acceptAt(atIndex);
+    return true;
+  }
+  if (event.key === "Escape") {
+    closeAt();
+    return true;
+  }
+  return false;
+}
+
+/// The keys that move the caret without changing the value, so a reference the
+/// caret has been moved into completes too.
+const CARET_KEYS = new Set([
+  "ArrowLeft",
+  "ArrowRight",
+  "ArrowUp",
+  "ArrowDown",
+  "Home",
+  "End",
+  "PageUp",
+  "PageDown",
+]);
+
 // ---------- command palette ----------
 
 function openPalette() {
@@ -2128,11 +2306,14 @@ function renderPalette() {
     row.type = "button";
     row.className = "palette-item" + (index === state.paletteIndex ? " active" : "");
     row.setAttribute("role", "option");
+    // A skill's own kind is worth saying: it is loaded as instructions rather
+    // than run as a command, and the CLI keeps the two apart.
+    const badge = entry.kind === "skill" ? "skill" : entry.source;
     row.innerHTML =
       `<span class="cmd">/${escapeHtml(entry.name)}</span>` +
       (entry.arguments ? `<span class="args">${escapeHtml(entry.arguments)}</span>` : "") +
       `<span class="desc">${escapeHtml(entry.description)}</span>` +
-      `<span class="source">${escapeHtml(entry.source)}</span>`;
+      `<span class="source">${escapeHtml(badge)}</span>`;
     row.onclick = () => {
       state.paletteIndex = index;
       runPaletteEntry(entry);
@@ -2481,6 +2662,7 @@ function init() {
     el("prompt").style.height = "auto";
     el("prompt").style.height = `${Math.min(el("prompt").scrollHeight, 220)}px`;
     updateSendState();
+    requestAt();
     // Typing `/` at the start of a message opens the palette; anything with a
     // space in it is arguments, so the menu closes and lets the text through.
     if (el("prompt").value.startsWith("/") && !/\s/.test(el("prompt").value.slice(1))) {
@@ -2495,6 +2677,13 @@ function init() {
       closePalette();
     }
   });
+  // The caret moves without the value changing, which a reference the caret has
+  // been moved into needs. While the list is up the arrows walk it instead, so
+  // the click is what re-asks from there.
+  el("prompt").addEventListener("keyup", (event) => {
+    if (!atOpen() && CARET_KEYS.has(event.key)) requestAt();
+  });
+  el("prompt").addEventListener("click", () => requestAt());
   el("prompt").addEventListener("paste", (event) => {
     // A pasted image becomes an attachment; a text paste keeps its default
     // behavior. The platform's own paste shortcut (⌘V / Ctrl+V) triggers this.
@@ -2518,6 +2707,10 @@ function init() {
   });
   el("image-view-close").onclick = () => (el("image-modal").hidden = true);
   el("prompt").addEventListener("keydown", (event) => {
+    if (atKey(event)) {
+      event.preventDefault();
+      return;
+    }
     if (paletteKey(event)) {
       event.preventDefault();
       return;

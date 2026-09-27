@@ -1679,7 +1679,7 @@ fn help_text(config: &Config) -> String {
         "  /help                 show this help".to_string(),
         "  /hotkeys              show the keyboard shortcuts".to_string(),
         "  /exit                 quit Oxide".to_string(),
-        "  /skill:<name>         load a skill by name".to_string(),
+        "  /<skill>              load a skill by name (also /skill:<name>)".to_string(),
         "  /new                  start a new session".to_string(),
         "  /session              show session file, id, name, and stats".to_string(),
         "  /resume               browse and resume a past session".to_string(),
@@ -3160,20 +3160,18 @@ fn refresh_suggestions(app: &mut App, config: &Config) {
     {
         return;
     }
-    if let Some((_, _, query)) = active_file_query(&app.input, app.input_cursor) {
-        let query = query.to_ascii_lowercase();
+    if let Some(token) = crate::at::token(&app.input, app.input_cursor) {
         let paths = app
             .workspace_paths
             .get_or_insert_with(|| crate::tools::workspace_paths(Path::new(&app.cwd)));
-        app.suggestions = paths
-            .iter()
-            .filter(|path| path.to_ascii_lowercase().contains(&query))
-            .take(200)
-            .map(|path| CommandHint {
-                name: path.clone(),
-                description: String::new(),
-            })
-            .collect();
+        app.suggestions =
+            crate::at::suggestions(paths, Some(&token), crate::at::MAX_AT_SUGGESTIONS)
+                .into_iter()
+                .map(|row| CommandHint {
+                    name: row.label,
+                    description: String::new(),
+                })
+                .collect();
         return;
     }
     let Some(query) = app.input[..app.input_cursor].strip_prefix('/') else {
@@ -3184,6 +3182,9 @@ fn refresh_suggestions(app: &mut App, config: &Config) {
         return;
     }
     let query = query.to_ascii_lowercase();
+    // `/skill:aud` narrows the same list: the prefix is the terminal's other way
+    // of naming a skill, not part of its name.
+    let query = query.strip_prefix("skill:").unwrap_or(&query).to_string();
     let mut hints = builtin_commands();
     for command in &config.ecosystem.commands {
         hints.push(CommandHint {
@@ -3209,8 +3210,12 @@ fn refresh_suggestions(app: &mut App, config: &Config) {
         });
     }
     for skill in &config.ecosystem.skills {
+        // Its own name is what the menu lists a skill under, the way the desktop
+        // app and the extension list one from the shared catalog. The terminal's
+        // `/skill:<name>` is stripped from the query above, so either spelling
+        // narrows to this row and the CLI loads the skill from both.
         hints.push(CommandHint {
-            name: format!("skill:{}", skill.name),
+            name: skill.name.clone(),
             description: skill.description.clone().unwrap_or_default(),
         });
     }
@@ -3218,23 +3223,6 @@ fn refresh_suggestions(app: &mut App, config: &Config) {
         .into_iter()
         .filter(|hint| hint.name.to_ascii_lowercase().starts_with(&query))
         .collect();
-}
-
-/// Returns the byte range and query for the `@path` token at the cursor.
-fn active_file_query(input: &str, cursor: usize) -> Option<(usize, usize, &str)> {
-    let before = input.get(..cursor)?;
-    let start = before
-        .char_indices()
-        .rev()
-        .find_map(|(index, ch)| ch.is_whitespace().then_some(index + ch.len_utf8()))
-        .unwrap_or(0);
-    let query = before.get(start..)?.strip_prefix('@')?;
-    let tail = input.get(cursor..)?;
-    let end = tail
-        .char_indices()
-        .find_map(|(index, ch)| ch.is_whitespace().then_some(cursor + index))
-        .unwrap_or(input.len());
-    Some((start, end, query))
 }
 
 /// Applies the selected command or file suggestion to the input.
@@ -3272,15 +3260,23 @@ fn complete_suggestion(app: &mut App) -> bool {
         }
         app.input.replace_range(..end, &completed);
         app.input_cursor = completed.len();
-    } else if let Some((start, end, _)) = active_file_query(&app.input, app.input_cursor) {
-        let replace_end = if app.input[end..].starts_with(' ') {
-            end + 1
+    } else if let Some(token) = crate::at::token(&app.input, app.input_cursor) {
+        // A folder keeps its token open so the query goes on narrowing inside
+        // it, the way the desktop app and the extension complete one; a file
+        // takes a space, so the next word can be typed after it.
+        let completed = if name.ends_with('/') {
+            format!("@{name}")
         } else {
-            end
+            format!("@{name} ")
         };
-        let completed = format!("@{name} ");
-        app.input.replace_range(start..replace_end, &completed);
-        app.input_cursor = start + completed.len();
+        let replace_end = if app.input[token.end..].starts_with(' ') {
+            token.end + 1
+        } else {
+            token.end
+        };
+        app.input
+            .replace_range(token.start..replace_end, &completed);
+        app.input_cursor = token.start + completed.len();
     } else {
         return false;
     }
@@ -5593,15 +5589,15 @@ mod tests {
             content: String::new(),
         });
         let mut app = test_app();
-        app.set_input("/ski".to_string());
+        app.set_input("/aud".to_string());
         refresh_suggestions(&mut app, &config);
         assert_eq!(app.suggestions.len(), 1);
-        assert_eq!(app.suggestions[0].name, "skill:audit");
+        assert_eq!(app.suggestions[0].name, "audit");
 
-        app.set_input("/skill:".to_string());
+        app.set_input("/skill:aud".to_string());
         refresh_suggestions(&mut app, &config);
         assert_eq!(app.suggestions.len(), 1);
-        assert_eq!(app.suggestions[0].name, "skill:audit");
+        assert_eq!(app.suggestions[0].name, "audit");
     }
 
     #[test]
@@ -5693,14 +5689,22 @@ mod tests {
         assert_eq!(app.suggestions[0].name, "src/main.rs");
         assert!(complete_suggestion(&mut app));
         assert_eq!(app.input, "review @src/main.rs ");
-        assert_eq!(active_file_query(&app.input, app.input_cursor), None);
+        assert!(crate::at::token(&app.input, app.input_cursor).is_none());
 
         app.set_input("review @sr".to_string());
         refresh_suggestions(&mut app, &config);
         assert_eq!(app.suggestions[0].name, "src/");
         assert!(complete_suggestion(&mut app));
-        assert_eq!(app.input, "review @src/ ");
+        // A folder keeps its own token open, so the reference is not closed
+        // with a space and the list that follows offers what is inside it.
+        assert_eq!(app.input, "review @src/");
         assert_eq!(app.input_cursor, app.input.len());
+        refresh_suggestions(&mut app, &config);
+        // The folder the reference already spells is left out, so the row taken
+        // next walks inside it.
+        assert_eq!(app.suggestions[0].name, "src/main.rs");
+        assert!(complete_suggestion(&mut app));
+        assert_eq!(app.input, "review @src/main.rs ");
 
         std::fs::remove_dir_all(&dir).ok();
     }
