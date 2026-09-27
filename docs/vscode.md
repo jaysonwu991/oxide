@@ -140,7 +140,11 @@ same listing from the palette.
 Every server has to be started or reached to learn its state, so the wait is
 announced in the status bar and the listing says **Checking servers…** rather
 than looking like nothing happened; a CLI that does not answer within the
-command timeout is reported as such instead of leaving the listing unopened.
+command timeout is reported as such instead of leaving the listing unopened. A
+**Recheck** clicked while one is already running supersedes it — the listing is
+the controller's, and each probe claims a generation before it runs, so an
+answer that arrives after a newer probe has already been sent is dropped instead
+of repainting the list with the state it replaced.
 
 The listing comes from `oxide mcp list --json` (`core/mcps.ts`), so the
 extension never reads `mcp.json` itself and cannot disagree with the CLI about

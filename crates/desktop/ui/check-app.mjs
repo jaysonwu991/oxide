@@ -201,8 +201,10 @@ const existing = [
 ];
 
 // What the bridge answers `all_sessions` with; the empty case is one assignment
-// away from the project that has threads.
+// away from the project that has threads, and `threadsError` is the store
+// answering nothing at all.
 let threads = existing;
+let threadsError = null;
 
 const invoke = async (command, args = {}) => {
   calls.push([command, args]);
@@ -227,6 +229,7 @@ const invoke = async (command, args = {}) => {
         added: "/tmp/oxide",
       };
     case "all_sessions":
+      if (threadsError) throw threadsError;
       return threads.map((session) => ({ ...session }));
     // Everything the rest of `init`/selection asks for; none of it is what this
     // check is about, and all of it stays inside the stub.
@@ -469,6 +472,12 @@ check(
     listed[1]?.children[0]?.children[1]?.textContent === "3d ago · 1 message",
   elementFor("sessions-list").outline(),
 );
+check(
+  "titled a row with the words it shows rather than its own elements",
+  listed[0]?.title === "Fix the flaky test — 7m ago · 195 messages" &&
+    listed[1]?.title === "say hi — 3d ago · 1 message",
+  String(listed[0]?.title),
+);
 
 // Picking a row opens that thread and closes the dialog; the row is a button so
 // the keyboard reaches it too.
@@ -490,6 +499,19 @@ check(
   elementFor("sessions-list").innerHTML.includes("No threads for this project yet"),
   elementFor("sessions-list").innerHTML,
 );
+
+// A store that cannot be read is not the same as a project with no threads, and
+// saying so is the whole point of a listing opened where it was asked.
+threadsError = "permission denied";
+await app.runSlashCommand("/sessions");
+check(
+  "showed why the thread listing failed instead of an empty one",
+  elementFor("sessions-list").innerHTML.includes("permission denied") &&
+    !elementFor("sessions-list").innerHTML.includes("No threads for this project yet"),
+  elementFor("sessions-list").innerHTML,
+);
+threadsError = null;
+
 threads = existing;
 app.state.sessions = existing;
 elementFor("sessions-modal").hidden = true;

@@ -562,12 +562,17 @@ function updateChips() {
 
 // ---------- threads ----------
 
+/// Loads the shared session store, and reports why it could not be read as its
+/// return value: a caller that just opened a listing can say so instead of
+/// painting an empty one, the same way `loadMcps` does.
 async function loadSessions() {
   try {
     state.sessions = await invoke("all_sessions");
     renderProjectsTree();
+    return "";
   } catch (error) {
     setStatus(`Failed to load threads: ${error}`);
+    return String(error);
   }
 }
 
@@ -1719,7 +1724,14 @@ async function openSessions() {
   closeOverlays("sessions-modal");
   el("sessions-modal").hidden = false;
   el("sessions-list").innerHTML = '<div class="dialog-empty">Loading threads…</div>';
-  await loadSessions();
+  const reason = await loadSessions();
+  if (reason) {
+    // The store could not be read, so the empty listing that would be painted
+    // from no threads is not a fact about this project.
+    el("sessions-list").innerHTML =
+      `<div class="dialog-empty">Could not read this project's threads: ${escapeHtml(reason)}</div>`;
+    return;
+  }
   renderSessions();
 }
 
@@ -1737,19 +1749,24 @@ function renderSessions() {
     row.type = "button";
     row.className = "session-row" + (session.id === state.session ? " active" : "");
 
+    const name = session.name || session.preview || session.id.slice(0, 8);
+    const meta = [sessionAge(session.modified_at), sessionMessages(session.message_count)]
+      .filter(Boolean)
+      .join(" · ");
+
     const main = document.createElement("div");
     main.className = "session-main";
     const label = document.createElement("div");
     label.className = "session-label";
-    label.textContent = session.name || session.preview || session.id.slice(0, 8);
-    const meta = document.createElement("div");
-    meta.className = "session-meta";
-    meta.textContent = [sessionAge(session.modified_at), sessionMessages(session.message_count)]
-      .filter(Boolean)
-      .join(" · ");
-    main.append(label, meta);
+    label.textContent = name;
+    const detail = document.createElement("div");
+    detail.className = "session-meta";
+    detail.textContent = meta;
+    main.append(label, detail);
     row.appendChild(main);
-    row.title = `${label} — ${meta}`;
+    // The strings, not the elements they were written into: a tooltip built
+    // from a node reads as `[object HTMLDivElement]`.
+    row.title = meta ? `${name} — ${meta}` : name;
     row.onclick = () => {
       el("sessions-modal").hidden = true;
       selectSessionFromTree(session);

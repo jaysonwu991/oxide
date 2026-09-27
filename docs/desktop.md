@@ -121,7 +121,8 @@ node crates/desktop/ui/check-app.mjs
 
 It covers the `/mcps` listing (including the state colors, a failed probe and a
 toggle), the `/sessions` dialog (this project's threads only, the row that
-resumes one, and the empty case), the **Create project** dialog, and every
+resumes one, the empty case, and a store that could not be read), the **Create
+project** dialog, and every
 client command in the catalog —
 a command the app does not perform has to be answered here rather than sent to
 the model as a prompt. It also reads `ui/index.html` to check what no stub can:
@@ -305,9 +306,14 @@ The **Sessions** dialog (`/sessions`, alias `/session`) lists this project's
 threads, newest first, from `all_sessions` — the same rows the tree groups under
 the project — each named by its session name or, unnamed, by the summarized
 preview the terminal's picker and the VS Code panel's listing show it under, with how long
-ago it was written and how many messages it holds. Picking one opens that thread
+ago it was written and how many messages it holds, and a row's tooltip is that
+same text rather than the nodes it was written into. Picking one opens that thread
 and closes the listing, and the plus in its header starts a fresh one; the argument form
 `/session <id>` is left to the agent, so the dialog is the bare command's own.
+A store that cannot be read is not a project with no threads: `loadSessions`
+reports why it failed, and the listing says so in place of the empty message the
+same call would otherwise paint — the way the MCP listing already reports a probe
+that could not reach a server.
 
 ## Rendering
 

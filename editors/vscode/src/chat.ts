@@ -129,6 +129,10 @@ export class ChatController {
   /// whichever ones are attached.
   private dialog: DialogState | null = null;
   private servers: McpServerView[] = [];
+  /// The newest `/mcps` probe. A listing opened while an earlier probe is still
+  /// running supersedes it, so an answer that arrives afterwards is dropped
+  /// instead of painting a list the newer probe has already replaced.
+  private mcpProbe = 0;
   private sessions: SessionEntry[] = [];
   /// The name of the thread when the CLI knows one (a resumed session keeps its
   /// picker label); otherwise the header falls back to the first message.
@@ -910,9 +914,14 @@ export class ChatController {
     // Every server is started or reached to learn its state, which is quick
     // when they answer and up to the command timeout when they do not, so the
     // wait is shown rather than looking like nothing happened.
+    const probe = ++this.mcpProbe;
     void vscode.window.setStatusBarMessage("Oxide: checking MCP servers…", 20_000);
     this.showDialog(mcpDialog(this.servers, "Checking servers…"));
     const result = await runCapture(this.binary(), mcpListArgs(), cwd);
+    // Recheck stays available while a probe runs, and a toggle re-lists when it
+    // is done, so two probes can be in flight at once: the older answer is
+    // dropped rather than replacing the state the newer one has already set.
+    if (probe !== this.mcpProbe) return;
     if (result.error || result.code !== 0) {
       const detail = result.error || firstLine(result.stderr) || `exit ${result.code}`;
       const failed = `Could not list MCP servers: ${detail}`;
