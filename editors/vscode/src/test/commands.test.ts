@@ -241,6 +241,11 @@ describe("command contributions", () => {
     assert.ok(walk.includes("vscode.workspace.findFiles("), "the listing is the workspace's");
     assert.ok(walk.includes("this.pathCache = { root, paths"), "and is remembered per folder");
     assert.equal(
+      (walk.match(/this\.folder\(\)\?\.uri\.fsPath !== root/g) ?? []).length,
+      1,
+      "a walk is not answered after the folder it started in has moved on",
+    );
+    assert.equal(
       (chat.match(/this\.pathCache = null;/g) ?? []).length,
       2,
       "a setting change and a finished turn are what re-read it",
@@ -264,12 +269,34 @@ describe("command contributions", () => {
     assert.ok(complete.includes("commandRows("), "and are ranked in the shared module");
     assert.ok(complete.includes('k: "paletteRows"'), "labelled with the question it answers");
 
-    const read = chat.slice(chat.indexOf("private async readCommands("));
+    const load = chat.slice(
+      chat.indexOf("private async commands("),
+      chat.indexOf("private async readCommands("),
+    );
+    assert.ok(load.includes("this.readCommands(root)"), "the palette's read is shared");
+    assert.ok(
+      load.includes("if (this.commandCache?.root === root) return this.commandCache.entries;"),
+      "an answer is kept with the folder it came from, so another one cannot borrow it",
+    );
+
+    const read = chat.slice(
+      chat.indexOf("private async readCommands("),
+      chat.indexOf("private async workspacePathList("),
+    );
     assert.ok(read.includes('["commands", "--json"]'), "the catalog is the CLI's own answer");
     assert.ok(read.includes("parseCommandList("), "parsed into the panel's shape");
-    assert.ok(read.includes("this.commandEntries = entries"), "and remembered per project");
+    assert.ok(read.includes("this.commandCache = { root, entries }"), "and remembered per project");
+    assert.ok(
+      read.includes("this.commandCache = { root, entries: [] }"),
+      "a failed read is remembered too, so a broken CLI is spawned once",
+    );
     assert.equal(
-      (chat.match(/this\.commandEntries = null;/g) ?? []).length,
+      (read.match(/this\.folder\(\)\?\.uri\.fsPath !== root/g) ?? []).length,
+      2,
+      "and an answer that outlived its folder is neither returned nor kept",
+    );
+    assert.equal(
+      (chat.match(/this\.commandCache = null;/g) ?? []).length,
       2,
       "a setting change and a finished turn are what re-read it",
     );

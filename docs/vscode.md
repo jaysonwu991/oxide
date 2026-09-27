@@ -460,15 +460,18 @@ from the transcript; it scrolls its own rows past `30vh`.
 Typing `/` at the start of the composer offers what the CLI itself offers: the
 catalog `oxide commands --json` prints — `oxide_core::commands::palette`, the
 same listing the terminal's `/` menu and the desktop app's palette draw. The host
-reads it once per project through the installed binary rather than walking
-`.oxide/commands`, `.oxide/prompts` and `.oxide/skills` itself, so the panel
-cannot disagree with the CLI about what a project holds, which scope wins a name,
-or which spelling runs what. `core/palette.ts` holds the rules — a row per
-built-in, per project command, per prompt template and per skill, matched by name
+reads it through the installed binary rather than walking `.oxide/commands`,
+`.oxide/prompts` and `.oxide/skills` itself, so the panel cannot disagree with
+the CLI about what a project holds, which scope wins a name, or which spelling
+runs what. It is read once per folder and kept with the folder it came from, so
+moving the active editor to another project cannot answer with the one before it,
+and a read that fails is remembered as an empty catalog rather than respawned on
+every keystroke. `core/palette.ts` holds the rules — a row per built-in, per
+project command, per prompt template and per skill, matched by name
 or alias with a name that starts with the query ranked ahead of one that merely
-mentions it, capped at 50 rows — and the webview only draws the rows it is
-handed, in the same list element as the `@` completion, labelled *Commands and
-skills*.
+mentions it, capped at `MAX_COMMAND_ROWS` (200, the `@` list's own cap) — and the
+webview only draws the rows it is handed, in the same list element as the `@`
+completion, labelled *Commands and skills*.
 
 - A skill is listed under its own name (`/rust-conventions`) with its description
   and a `skill` badge, because it is loaded as instructions rather than run as a

@@ -3213,7 +3213,12 @@ fn refresh_suggestions(app: &mut App, config: &Config) {
         // Its own name is what the menu lists a skill under, the way the desktop
         // app and the extension list one from the shared catalog. The terminal's
         // `/skill:<name>` is stripped from the query above, so either spelling
-        // narrows to this row and the CLI loads the skill from both.
+        // narrows to this row and the CLI loads the skill from both. A built-in,
+        // a command or a prompt template of the name is what `/name` runs — the
+        // catalog drops the skill for one — so it cannot also be a skill row.
+        if hints.iter().any(|hint| hint.name == skill.name) {
+            continue;
+        }
         hints.push(CommandHint {
             name: skill.name.clone(),
             description: skill.description.clone().unwrap_or_default(),
@@ -5598,6 +5603,34 @@ mod tests {
         refresh_suggestions(&mut app, &config);
         assert_eq!(app.suggestions.len(), 1);
         assert_eq!(app.suggestions[0].name, "audit");
+    }
+
+    #[test]
+    fn suggestions_offer_one_row_for_a_name_a_command_and_a_skill_share() {
+        let mut config = Config::default();
+        config.ecosystem.skills.push(crate::ecosystem::Skill {
+            name: "audit".to_string(),
+            description: Some("audit dependencies".to_string()),
+            content: String::new(),
+        });
+        config
+            .ecosystem
+            .commands
+            .push(crate::ecosystem::CommandDef {
+                name: "audit".to_string(),
+                description: Some("audit from the project".to_string()),
+                template: String::new(),
+                agent: None,
+                subtask: false,
+            });
+        let mut app = test_app();
+        app.set_input("/aud".to_string());
+        refresh_suggestions(&mut app, &config);
+        // `/audit` runs the command, as the catalog says it does, so the menu
+        // lists the command once rather than a skill row that resolves elsewhere.
+        assert_eq!(app.suggestions.len(), 1);
+        assert_eq!(app.suggestions[0].name, "audit");
+        assert_eq!(app.suggestions[0].description, "audit from the project");
     }
 
     #[test]

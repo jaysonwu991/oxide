@@ -171,8 +171,10 @@ export class ChatController {
   /// skills. It is what the terminal's `/` menu and the desktop app's palette
   /// are built from, so the panel's palette offers what the CLI resolves, and a
   /// row that is taken is a message the CLI expands rather than a prompt the
-  /// model has to make sense of. `null` before the first read.
-  private commandEntries: CommandEntry[] | null = null;
+  /// model has to make sense of. `null` before the first read, and keyed by the
+  /// folder it was read in, because the active editor decides which project the
+  /// panel is on and one window can hold more than one.
+  private commandCache: { root: string; entries: CommandEntry[] } | null = null;
   private commandLoad: Promise<CommandEntry[]> | null = null;
   private nextChipId = 1;
   private turn: Turn | null = null;
@@ -296,7 +298,7 @@ export class ChatController {
     // The catalog follows the project too: a setting change is the one signal
     // there is that the trust decision or the CLI's configuration may have
     // moved, and a skill the menu lists is loaded by the CLI at the far end.
-    this.commandEntries = null;
+    this.commandCache = null;
     this.syncActiveEditor();
     this.broadcast(this.stateMessage());
   }
@@ -455,15 +457,17 @@ export class ChatController {
     };
   }
 
-  /// The CLI's catalog for this project, read once per project and reused: it
-  /// is the listing a palette row is taken from, so it is the CLI's own answer
+  /// The CLI's catalog for this project's folder, read once and reused: it is
+  /// the listing a palette row is taken from, so it is the CLI's own answer
   /// rather than the extension's guess at what the project holds. A failed read
   /// is remembered as an empty catalog, so a broken CLI spawns once rather than
-  /// on every keystroke; the next setting change or finished turn tries again.
+  /// on every keystroke; the next setting change or finished turn tries again,
+  /// and so does a move to another folder — which is why the answer is kept
+  /// with the root it came from rather than on its own.
   private async commands(): Promise<CommandEntry[]> {
     const root = this.folder()?.uri.fsPath ?? "";
     if (!root) return [];
-    if (this.commandEntries) return this.commandEntries;
+    if (this.commandCache?.root === root) return this.commandCache.entries;
     if (!this.commandLoad) {
       this.commandLoad = this.readCommands(root).finally(() => {
         this.commandLoad = null;
@@ -478,10 +482,16 @@ export class ChatController {
     if (result.error || result.code !== 0) {
       const detail = result.error || firstLine(result.stderr) || `exit ${result.code}`;
       this.output.appendLine(`commands --json failed: ${detail}`);
+      // The empty catalog is this folder's answer, not a miss: a CLI that cannot
+      // answer is asked once, not on every keystroke of `/`.
+      this.commandCache = { root, entries: [] };
       return [];
     }
     const entries = parseCommandList(result.stdout);
-    this.commandEntries = entries;
+    // The folder can move while the CLI runs: an answer for the project the user
+    // has left is not this one's, so it is not returned or kept for it either.
+    if (this.folder()?.uri.fsPath !== root) return [];
+    this.commandCache = { root, entries };
     return entries;
   }
 
@@ -522,6 +532,9 @@ export class ChatController {
         slash = relative.slice(0, slash).lastIndexOf("/");
       }
     }
+    // A walk that outlived the folder it started in answers nothing: the list is
+    // the project's, and the panel is no longer on that project.
+    if (this.folder()?.uri.fsPath !== root) return [];
     this.pathCache = { root, paths: [...paths] };
     return this.pathCache.paths;
   }
@@ -1060,7 +1073,7 @@ export class ChatController {
     // again rather than answering out of what the project held when it started —
     // and the same goes for a command or a skill the agent wrote into `.oxide/`.
     this.pathCache = null;
-    this.commandEntries = null;
+    this.commandCache = null;
     this.broadcastStatus();
     // The view's status-bar spinner is driven by this event, and `handleExit`
     // runs after the last stream event, so refresh it here too.
