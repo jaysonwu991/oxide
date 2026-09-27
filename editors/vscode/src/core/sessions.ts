@@ -37,6 +37,15 @@ export function parseSessionList(output: string): SessionEntry[] {
   return entries;
 }
 
+/// True when a composer line is the bare session command, which the panel
+/// answers by opening the session history instead of sending the text on. The
+/// two names are the CLI catalog's own (`session`, alias `sessions`), so a
+/// client command cannot reach the model as prose. An argument (`/session
+/// <id>`) is left to the prompt path.
+export function isSessionCommand(text: string): boolean {
+  return /^\/(session|sessions)$/i.test(text.trim());
+}
+
 /// The version from `oxide --version` (`oxide 0.1.2`).
 export function parseVersion(output: string): string | null {
   const match = /(\d+\.\d+\.\d+(?:[-+][^\s]+)?)/.exec(output);

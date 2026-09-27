@@ -1295,6 +1295,7 @@ const OVERLAYS = [
   "confirm-modal",
   "rename-modal",
   "image-modal",
+  "sessions-modal",
   "help-modal",
 ];
 
@@ -1691,6 +1692,75 @@ async function toggleMcp(server, button) {
   }
 }
 
+// ---------- sessions ----------
+
+/// The threads stored for this project, newest first: what `/sessions` opens,
+/// and the same list the sidebar draws beside the project. The terminal's
+/// `/resume` picker and the VS Code panel's dialog show the same sessions, so a
+/// thread started in one front-end is reachable from the others.
+async function openSessions() {
+  if (!state.project) {
+    setStatus("Select a project first.");
+    return;
+  }
+  closeOverlays("sessions-modal");
+  el("sessions-modal").hidden = false;
+  el("sessions-list").innerHTML = '<div class="dialog-empty">Loading threads…</div>';
+  await loadSessions();
+  renderSessions();
+}
+
+function renderSessions() {
+  const box = el("sessions-list");
+  box.innerHTML = "";
+  const threads = (state.sessions || []).filter((session) => session.cwd === state.project);
+  if (!threads.length) {
+    box.innerHTML =
+      '<div class="dialog-empty">No threads for this project yet. Send a message to start one.</div>';
+    return;
+  }
+  for (const session of threads) {
+    const row = document.createElement("button");
+    row.type = "button";
+    row.className = "session-row" + (session.id === state.session ? " active" : "");
+
+    const main = document.createElement("div");
+    main.className = "session-main";
+    const label = document.createElement("div");
+    label.className = "session-label";
+    label.textContent = session.name || session.preview || session.id.slice(0, 8);
+    const meta = document.createElement("div");
+    meta.className = "session-meta";
+    meta.textContent = [sessionAge(session.modified_at), sessionMessages(session.message_count)]
+      .filter(Boolean)
+      .join(" · ");
+    main.append(label, meta);
+    row.appendChild(main);
+    row.title = `${label} — ${meta}`;
+    row.onclick = () => {
+      el("sessions-modal").hidden = true;
+      selectSessionFromTree(session);
+    };
+    box.appendChild(row);
+  }
+}
+
+/// How long ago a thread was last written, in the shape the CLI's own picker
+/// uses for the same number.
+function sessionAge(seconds) {
+  if (!seconds) return "";
+  const elapsed = Math.max(0, Math.floor(Date.now() / 1000) - Number(seconds));
+  if (elapsed < 60) return "just now";
+  if (elapsed < 3600) return `${Math.floor(elapsed / 60)}m ago`;
+  if (elapsed < 86400) return `${Math.floor(elapsed / 3600)}h ago`;
+  return `${Math.floor(elapsed / 86400)}d ago`;
+}
+
+function sessionMessages(count) {
+  if (count === undefined || count === null) return "";
+  return `${count} message${Number(count) === 1 ? "" : "s"}`;
+}
+
 // ---------- slash commands ----------
 
 /// Alias → the name the built-ins dispatch on, mirroring
@@ -1792,7 +1862,10 @@ async function runSlashCommand(text) {
       return true;
     }
     case "session":
-      setStatus("Open a thread from the sidebar to resume it.");
+      // Only the bare command is the app's own: `/session <id>` is passed on as
+      // a prompt, the way `/mcp list` is.
+      if (args) return false;
+      await openSessions();
       return true;
     case "new":
       if (!state.project) {
@@ -2201,6 +2274,11 @@ function init() {
   });
   el("mcps-close").onclick = () => (el("mcps-modal").hidden = true);
   el("mcps-refresh").onclick = () => loadMcps();
+  el("sessions-close").onclick = () => (el("sessions-modal").hidden = true);
+  el("sessions-new").onclick = () => {
+    el("sessions-modal").hidden = true;
+    newChat();
+  };
   el("create-project-add-path").onclick = addCreateProjectTypedPath;
   el("create-project-path").addEventListener("keydown", (event) => {
     if (event.key === "Enter") {

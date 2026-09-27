@@ -29,14 +29,17 @@ import { AttachmentStore, previewForDataUrl, previewForFile } from "./attachment
 import { isApprovalDecision, type ApprovalDecision } from "./core/approvals";
 import { modelsForProvider } from "./core/config";
 import {
-  isMcpCommand,
-  mcpAppearance,
-  mcpDescription,
-  mcpListArgs,
-  mcpToggleArgs,
-  parseMcpList,
-  type McpServerView,
-} from "./core/mcps";
+  CLOSE_DIALOG,
+  CONTINUE_SESSION,
+  MCP_REFRESH,
+  MCP_TOGGLE,
+  NEW_SESSION,
+  mcpDialog,
+  OPEN_SESSION,
+  sessionDialog,
+  type DialogState,
+} from "./core/dialogs";
+import { isMcpCommand, mcpListArgs, mcpToggleArgs, parseMcpList, type McpServerView } from "./core/mcps";
 import { footerState, nextReasoning, REASONING_LEVELS, type FooterState } from "./core/footer";
 import { projectInfo, type ProjectDeps, type ProjectInfo } from "./core/project";
 import {
@@ -47,7 +50,7 @@ import {
   relativePath,
   type ContextBlock,
 } from "./core/prompt";
-import { parseSessionList } from "./core/sessions";
+import { isSessionCommand, parseSessionList, type SessionEntry } from "./core/sessions";
 import { toolDiff } from "./core/preview";
 import {
   Transcript,
@@ -120,6 +123,13 @@ export class ChatController {
   private run: RunState | null = null;
   private queue: QueuedMessage[] = [];
   private continueLast = false;
+  /// The dialog the panel paints over the transcript — the MCP server list or
+  /// the session history — and the rows it was composed from. Held here rather
+  /// than in a view: both panes show the same dialog, and a re-listing repaints
+  /// whichever ones are attached.
+  private dialog: DialogState | null = null;
+  private servers: McpServerView[] = [];
+  private sessions: SessionEntry[] = [];
   /// The name of the thread when the CLI knows one (a resumed session keeps its
   /// picker label); otherwise the header falls back to the first message.
   private sessionTitle: string | null = null;
@@ -192,6 +202,13 @@ export class ChatController {
         footer: this.footer(),
       }),
     };
+  }
+
+  /// The dialog the open panes are showing, for one that has just been created:
+  /// a `state` message paints the transcript, this paints the list over it.
+  /// `null` when no dialog is open.
+  dialogMessage(): ViewMessage | null {
+    return this.dialog ? { k: "dialog", dialog: this.dialog } : null;
   }
 
   // ---------- footer ----------
@@ -524,11 +541,15 @@ export class ChatController {
   async send(text: string): Promise<void> {
     const message = text.trim();
     if (!message && !this.contextCount) return;
-    // `/mcps` is the client's own command: it opens the server list here rather
-    // than being shipped to the model as a prompt, the way the terminal and the
-    // desktop app answer it.
+    // `/mcps` and `/session` are the client's own commands: they open a dialog
+    // here rather than being shipped to the model as a prompt, the way the
+    // terminal and the desktop app answer them.
     if (this.contextCount === 0 && isMcpCommand(message)) {
       await this.showMcps();
+      return;
+    }
+    if (this.contextCount === 0 && isSessionCommand(message)) {
+      await this.resumeSession();
       return;
     }
     if (this.turn) {
@@ -773,6 +794,7 @@ export class ChatController {
       this.showNotice("A turn is running; stop it before starting a new session.", "warn");
       return;
     }
+    this.closeDialog();
     this.transcript.reset();
     this.sessionTitle = null;
     this.continueLast = false;
@@ -782,71 +804,31 @@ export class ChatController {
     this.showNotice("New session: the next message starts a fresh thread.");
   }
 
-  /// Resumes a session picked from the CLI's own listing, so the picker and the
-  /// terminal agree on what exists.
+  /// Opens the session history in the panel: the threads the CLI lists for this
+  /// project, so the dialog and the terminal agree on what exists. The listing
+  /// is shown as soon as it arrives; a row either resumes a session or leaves
+  /// the current one behind.
   async resumeSession(): Promise<void> {
-    if (this.turn) {
-      this.showNotice("A turn is running; stop it before switching sessions.", "warn");
-      return;
-    }
     const cwd = this.cwd();
     if (!cwd) {
       this.showNotice("Open a folder first.", "error");
       return;
     }
+    if (this.turn) {
+      this.showNotice("A turn is running; stop it before switching sessions.", "warn");
+      return;
+    }
+    this.showDialog(sessionDialog(this.sessions, "Loading sessions…"));
     const result = await runCapture(this.binary(), sessionsListArgs(), cwd);
     if (result.error || result.code !== 0) {
       const detail = result.error || firstLine(result.stderr) || `exit ${result.code}`;
-      this.showNotice(`Could not list sessions: ${detail}`, "error");
+      const failed = `Could not list sessions: ${detail}`;
+      this.showNotice(failed, "error");
+      this.showDialog(sessionDialog(this.sessions, failed));
       return;
     }
-    const sessions = parseSessionList(result.stdout);
-    type Pick = vscode.QuickPickItem & { sessionId?: string; startNew?: boolean };
-    const items: Pick[] = [
-      {
-        label: "$(add) New session",
-        detail: "Start a fresh thread",
-        startNew: true,
-      },
-      {
-        label: "$(history) Continue most recent session",
-        detail: "Pick up the newest session for this project",
-        sessionId: "continue",
-      },
-      ...sessions.map((session) => ({
-        label: session.label || session.id,
-        description: `${session.age} · ${session.messages} message${session.messages === 1 ? "" : "s"}`,
-        detail: session.id,
-        sessionId: session.id,
-      })),
-    ];
-    const picked = await vscode.window.showQuickPick(items, {
-      title: "Oxide: resume a session",
-      placeHolder: sessions.length
-        ? `${sessions.length} session${sessions.length === 1 ? "" : "s"} in this project`
-        : "No sessions for this project yet",
-    });
-    if (!picked) return;
-    if (picked.startNew) {
-      this.newSession();
-      return;
-    }
-    if (picked.sessionId === "continue") {
-      this.newSession();
-      // `newSession` clears the flag, so set it afterwards.
-      this.continueLast = true;
-      this.showNotice("The next message continues the most recent session.");
-      return;
-    }
-    this.transcript.reset();
-    this.transcript.sessionId = picked.sessionId ?? null;
-    this.sessionTitle = picked.label || null;
-    this.queue = [];
-    this.clearChips();
-    this.broadcast(this.stateMessage());
-    this.showNotice(
-      `Resuming ${picked.sessionId} — the thread continues from its stored context.`,
-    );
+    this.sessions = parseSessionList(result.stdout);
+    this.showDialog(sessionDialog(this.sessions));
   }
 
   continueSession(): void {
@@ -864,12 +846,58 @@ export class ChatController {
     this.showNotice("The next message continues the most recent session.");
   }
 
-  // ---------- MCP servers ----------
+  /// A row of the session dialog: one of its own two entries, or the id of a
+  /// session to resume from its stored context.
+  private openSession(value: string): void {
+    if (this.turn) {
+      // The dialog stays open with the reason in place rather than closing over
+      // a notice painted behind it.
+      this.showDialog(
+        sessionDialog(this.sessions, "A turn is running; stop it before switching sessions."),
+      );
+      return;
+    }
+    this.closeDialog();
+    if (value === NEW_SESSION) {
+      this.newSession();
+      return;
+    }
+    if (value === CONTINUE_SESSION) {
+      this.continueSession();
+      return;
+    }
+    const session = this.sessions.find((entry) => entry.id === value);
+    if (!session) return;
+    this.transcript.reset();
+    this.transcript.sessionId = value;
+    this.sessionTitle = session.label || null;
+    this.queue = [];
+    this.clearChips();
+    this.broadcast(this.stateMessage());
+    this.showNotice(`Resuming ${value} — the thread continues from its stored context.`);
+  }
 
-  /// The `/mcps` list: every configured server with the state the core probed,
-  /// in a QuickPick. Picking one turns it off (or back on) in the file that
-  /// defines it, then the list is shown again with the fresh state — the same
-  /// open, inspect, toggle flow the terminal's `/mcps` and Claude Code's offer.
+  // ---------- dialogs ----------
+
+  /// Paints a dialog in every attached pane. The rows are composed by
+  /// `core/dialogs.ts`, so the view paints them and posts back the action one
+  /// carries; the dialog itself is the controller's.
+  private showDialog(dialog: DialogState): void {
+    this.dialog = dialog;
+    this.broadcast({ k: "dialog", dialog });
+  }
+
+  private closeDialog(): void {
+    if (!this.dialog) return;
+    this.dialog = null;
+    this.broadcast({ k: "dialog", dialog: null });
+  }
+
+  /// The `/mcps` listing: every configured server with the state the core
+  /// probed, painted in the panel's own dialog rather than a QuickPick that
+  /// takes over the window. A row's button turns the server off (or back on) in
+  /// the file that defines it, and the list is painted again from a fresh probe
+  /// — the same open, inspect, toggle flow the terminal's `/mcps` offers.
   async showMcps(): Promise<void> {
     const cwd = this.cwd();
     // The listing and a toggle act on the files that define a project's
@@ -879,55 +907,59 @@ export class ChatController {
       this.showNotice("Open a folder first.", "error");
       return;
     }
-    const binary = this.binary();
-    for (;;) {
-      // Every server is started or reached to learn its state, which is quick
-      // when they answer and up to the command timeout when they do not, so the
-      // wait is shown rather than looking like nothing happened.
-      void vscode.window.setStatusBarMessage("Oxide: checking MCP servers…", 20_000);
-      const result = await runCapture(binary, mcpListArgs(), cwd);
-      if (result.error || result.code !== 0) {
-        const detail = result.error || firstLine(result.stderr) || `exit ${result.code}`;
-        this.showNotice(`Could not list MCP servers: ${detail}`, "error");
-        return;
-      }
-      const servers = parseMcpList(result.stdout);
-      type Pick = vscode.QuickPickItem & { server?: McpServerView; refresh?: boolean };
-      const items: Pick[] = servers.map((server) => ({
-        label: `${mcpAppearance(server.state).icon} ${server.name}`,
-        description: server.enabled ? server.status : "Disabled",
-        detail: mcpDescription(server),
-        server,
-      }));
-      items.push({
-        label: "$(refresh) Recheck",
-        detail: "Probe the servers again",
-        refresh: true,
-      });
-
-      const picked = await vscode.window.showQuickPick(items, {
-        title: `Oxide: MCP servers (${servers.length})`,
-        placeHolder: servers.length
-          ? "Pick a server to connect or disconnect it; it is written to the file that defines it"
-          : "No MCP servers configured — add one with oxide mcp add",
-      });
-      if (!picked) return;
-      if (picked.refresh || !picked.server) continue;
-
-      // A server that cannot be reached is still worth turning over: an
-      // unanswered probe may be exactly why the user opened this list.
-      const server = picked.server;
-      const enabling = !server.enabled;
-      const toggle = await runCapture(binary, mcpToggleArgs(server, enabling), cwd);
-      if (toggle.error || toggle.code !== 0) {
-        const detail = toggle.error || firstLine(toggle.stderr) || `exit ${toggle.code}`;
-        this.showNotice(`Could not ${enabling ? "enable" : "disable"} ${server.name}: ${detail}`, "error");
-        return;
-      }
-      this.showNotice(
-        `${server.name} ${enabling ? "enabled" : "disabled"} in its ${server.source} config.`,
-      );
+    // Every server is started or reached to learn its state, which is quick
+    // when they answer and up to the command timeout when they do not, so the
+    // wait is shown rather than looking like nothing happened.
+    void vscode.window.setStatusBarMessage("Oxide: checking MCP servers…", 20_000);
+    this.showDialog(mcpDialog(this.servers, "Checking servers…"));
+    const result = await runCapture(this.binary(), mcpListArgs(), cwd);
+    if (result.error || result.code !== 0) {
+      const detail = result.error || firstLine(result.stderr) || `exit ${result.code}`;
+      const failed = `Could not list MCP servers: ${detail}`;
+      this.showNotice(failed, "error");
+      this.showDialog(mcpDialog(this.servers, failed));
+      return;
     }
+    this.servers = parseMcpList(result.stdout);
+    this.showDialog(mcpDialog(this.servers));
+  }
+
+  /// A click inside a dialog: the action a row or its trailing button carries.
+  async dialogAction(action: string, value: string): Promise<void> {
+    switch (action) {
+      case MCP_REFRESH:
+        return this.showMcps();
+      case MCP_TOGGLE:
+        return this.toggleMcp(value);
+      case OPEN_SESSION:
+        return this.openSession(value);
+      case CLOSE_DIALOG:
+        return this.closeDialog();
+      default:
+        return;
+    }
+  }
+
+  /// Turns one server off (or back on) in the file that defines it, then paints
+  /// the list again. A server that cannot be reached is still worth turning
+  /// over: an unanswered probe may be exactly why the list was opened.
+  private async toggleMcp(name: string): Promise<void> {
+    const cwd = this.cwd();
+    const server = this.servers.find((entry) => entry.name === name);
+    if (!cwd || !server) return;
+    const enabling = !server.enabled;
+    const result = await runCapture(this.binary(), mcpToggleArgs(server, enabling), cwd);
+    if (result.error || result.code !== 0) {
+      const detail = result.error || firstLine(result.stderr) || `exit ${result.code}`;
+      const failed = `Could not ${enabling ? "enable" : "disable"} ${server.name}: ${detail}`;
+      this.showNotice(failed, "error");
+      this.showDialog(mcpDialog(this.servers, failed));
+      return;
+    }
+    this.showNotice(
+      `${server.name} ${enabling ? "enabled" : "disabled"} in its ${server.source} config.`,
+    );
+    await this.showMcps();
   }
 
   // ---------- settings commands ----------

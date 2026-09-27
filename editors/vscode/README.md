@@ -27,7 +27,8 @@ and MCP servers as the terminal and the desktop app — nothing is reconfigured.
 - **Editor actions**: explain, fix, or ask about a selection; attach a file,
   a selection, or an image to the chat.
 - **Sessions**: continue the project's latest session, or pick one from the
-  CLI's own list with **Oxide: Resume Session…**.
+  CLI's own list with **Oxide: Resume Session…** or `/session` in the message
+  box — the list opens in the panel, not a native picker.
 - **`@path` in a message**: `@src/main.rs` attaches the file's text; an image or
   PDF becomes a media attachment.
 
@@ -65,12 +66,15 @@ Provider logins live in the CLI: run **Oxide: Open Terminal (TUI)** and use
    message.
 4. The chips above the composer are the next turn's settings: click `model: …`
    to switch the model, `thinking: …` to cycle the reasoning level, `agent: …`
-   to pick a subagent, `access: …` for project trust, or `session: …` to resume
-   another session. Under the composer the branch, the context gauge and the
+   to pick a subagent, `access: …` for project trust, or `session: …` to open
+   the session list. Under the composer the branch, the context gauge and the
    usage line match the terminal's footer.
-5. `/mcps` in the message box opens the MCP server list — pick a server to
-   connect or disconnect it (the same list **Oxide: MCP Servers…** opens from
-   the palette).
+5. `/mcps` in the message box opens the MCP server list, and `/session` the
+   project's threads — both inside the panel, with a row's button or the thread
+   it names acting where it was asked (the same lists **Oxide: MCP Servers…**
+   and **Oxide: Resume Session…** open from the palette).
+6. Click a thumbnail in the attachment strip to see the full-size image before
+   it is sent.
 
 ## Commands
 
@@ -78,7 +82,7 @@ Provider logins live in the CLI: run **Oxide: Open Terminal (TUI)** and use
 | --- | --- |
 | **Oxide: Open Chat** | Focus the chat pane (`Ctrl+Alt+O` / `Cmd+Alt+O`): the one already on screen, otherwise the secondary side bar's. |
 | **Oxide: New Session** | Start a fresh thread. |
-| **Oxide: Resume Session…** | Pick from this project's sessions (or continue the latest). |
+| **Oxide: Resume Session…** | Pick from this project's sessions (or continue the latest), in a list inside the panel. |
 | **Oxide: Continue Last Session** | Continue the most recent session on the next message. |
 | **Oxide: Stop** | Cancel the running turn (the session keeps what it has written). |
 | **Oxide: Add File or Selection to Chat** | Attach the selection or the whole file as context (`Ctrl+Alt+A` / `Cmd+Alt+A`); on an image or PDF in the explorer, it attaches the file as media instead. |
@@ -87,7 +91,7 @@ Provider logins live in the CLI: run **Oxide: Open Terminal (TUI)** and use
 | **Oxide: Fix Selection** | Attach the selection and ask for a minimal fix. |
 | **Oxide: Review Working Tree Changes** | Review the uncommitted changes without modifying files. |
 | **Oxide: Open Terminal (TUI)** | Run the interactive `oxide` TUI in a terminal, for `/login` and `/models`. |
-| **Oxide: MCP Servers…** | List the MCP servers this project loads and connect or disconnect them; typing `/mcps` in the composer opens the same picker. |
+| **Oxide: MCP Servers…** | List the MCP servers this project loads and connect or disconnect them; typing `/mcps` in the composer opens the same list in the panel. |
 | **Oxide: Show Output Channel** | The command line, prompt, stderr and event log of each turn. |
 | **Oxide: Set Model…**, **Set Agent…**, **Set Reasoning Effort…**, **Set Project Trust…** | Write the matching workspace setting; the footer's chips are the same actions. |
 

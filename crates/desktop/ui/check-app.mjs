@@ -168,6 +168,42 @@ const calls = [];
 let mcpsError = null;
 let createError = null;
 
+// The threads the sidebar groups by project and `/sessions` lists for the one
+// that is selected, newest first, the way the core orders them.
+const existing = [
+  {
+    id: "fe0031b1",
+    name: "Fix the flaky test",
+    cwd: "/Users/jayson/Projects/oxide",
+    created_at: 1,
+    modified_at: Math.floor(Date.now() / 1000) - 7 * 60,
+    message_count: 195,
+    preview: "the CI job fails one run in ten",
+  },
+  {
+    id: "7c8031b1",
+    name: null,
+    cwd: "/Users/jayson/Projects/oxide",
+    created_at: 1,
+    modified_at: Math.floor(Date.now() / 1000) - 3 * 86400,
+    message_count: 1,
+    preview: "say hi",
+  },
+  {
+    id: "a23031b1",
+    name: "Other project",
+    cwd: "/tmp/elsewhere",
+    created_at: 1,
+    modified_at: Math.floor(Date.now() / 1000),
+    message_count: 4,
+    preview: "a thread in another project",
+  },
+];
+
+// What the bridge answers `all_sessions` with; the empty case is one assignment
+// away from the project that has threads.
+let threads = existing;
+
 const invoke = async (command, args = {}) => {
   calls.push([command, args]);
   switch (command) {
@@ -190,6 +226,8 @@ const invoke = async (command, args = {}) => {
         projects: [{ id: "/tmp/oxide", name: args.name, path: "/tmp/oxide", sessions: 0 }],
         added: "/tmp/oxide",
       };
+    case "all_sessions":
+      return threads.map((session) => ({ ...session }));
     // Everything the rest of `init`/selection asks for; none of it is what this
     // check is about, and all of it stays inside the stub.
     case "list_providers":
@@ -221,6 +259,7 @@ globalThis.window = {
   innerWidth: 1280,
   innerHeight: 900,
   addEventListener: () => {},
+  history: { replaceState: () => {} },
   matchMedia: () => ({ matches: false, addEventListener: () => {} }),
   requestAnimationFrame: (callback) => setTimeout(callback, 0),
   localStorage: { getItem: () => null, setItem: () => {}, removeItem: () => {} },
@@ -350,6 +389,61 @@ check(
 );
 app.state.busy = false;
 app.state.runId = null;
+
+// ---------- /sessions ----------
+
+console.log("/sessions");
+// A command the app performs itself never reaches the model, and the list is
+// drawn in the app rather than handed to the window as a native picker.
+app.state.project = "/Users/jayson/Projects/oxide";
+app.state.projects = [
+  { id: "/Users/jayson/Projects/oxide", name: "oxide", path: "/Users/jayson/Projects/oxide" },
+];
+elementFor("sessions-modal").hidden = true;
+calls.length = 0;
+const handled = await app.runSlashCommand("/sessions");
+check("consumed the command instead of prompting", handled === true && projectCalls("send_prompt").length === 0);
+check("asked the core for the project's threads", projectCalls("all_sessions").length === 1, JSON.stringify(projectCalls("all_sessions")));
+check("opened the dialog", elementFor("sessions-modal").hidden === false);
+
+const listed = elementFor("sessions-list").children;
+check("listed this project's threads only", listed.length === 2, String(listed.length));
+check(
+  "named a thread by its name, and an unnamed one by what was sent",
+  listed[0]?.children[0]?.children[0]?.textContent === "Fix the flaky test" &&
+    listed[1]?.children[0]?.children[0]?.textContent === "say hi",
+  elementFor("sessions-list").outline(),
+);
+check(
+  "said how long ago it was used and how much is in it",
+  listed[0]?.children[0]?.children[1]?.textContent === "7m ago · 195 messages" &&
+    listed[1]?.children[0]?.children[1]?.textContent === "3d ago · 1 message",
+  elementFor("sessions-list").outline(),
+);
+
+// Picking a row opens that thread and closes the dialog; the row is a button so
+// the keyboard reaches it too.
+calls.length = 0;
+check("made each row a button", listed[0]?.tagName.toLowerCase() === "button");
+await listed[0].onclick();
+check("closed the dialog on the pick", elementFor("sessions-modal").hidden === true);
+check(
+  "loaded the thread that was picked",
+  projectCalls("session_messages")[0]?.[1]?.id === "fe0031b1",
+  JSON.stringify(projectCalls("session_messages")),
+);
+check("left `/sessions <id>` to the agent", (await app.runSlashCommand("/session fe0031b1")) === false);
+
+threads = [];
+await app.runSlashCommand("/sessions");
+check(
+  "said so when the project has no threads",
+  elementFor("sessions-list").innerHTML.includes("No threads for this project yet"),
+  elementFor("sessions-list").innerHTML,
+);
+threads = existing;
+app.state.sessions = existing;
+elementFor("sessions-modal").hidden = true;
 
 // ---------- the Add-project dialog ----------
 

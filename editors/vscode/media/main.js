@@ -32,6 +32,16 @@
   const composer = $("composer");
   const dropHint = $("dropzone");
   const titleLabel = $("title");
+  const dialogBox = $("dialog");
+  const dialogTitle = $("dialog-title");
+  const dialogSub = $("dialog-sub");
+  const dialogNote = $("dialog-note");
+  const dialogList = $("dialog-list");
+  const dialogRefresh = $("dialog-refresh");
+  const dialogClose = $("dialog-close");
+  const imageView = $("image-view");
+  const imageViewImage = $("image-view-img");
+  const imageViewClose = $("image-view-close");
 
   const entries = new Map();
   let chips = [];
@@ -842,6 +852,9 @@
       case "context":
         setChips(message.context, message.attachments);
         return;
+      case "dialog":
+        setDialog(message.dialog);
+        return;
       default:
         return;
     }
@@ -999,16 +1012,24 @@
   }
 
   /// An image or PDF the next message will carry: a thumbnail where the host
-  /// could send one, a glyph and the size where it could not.
+  /// could send one, a glyph and the size where it could not. An image's
+  /// thumbnail opens the full-size one — the panel is narrow and the chip is
+  /// small, so the copy on it is not much of a look at what is being sent.
   function attachmentNode(attachment) {
     const el = document.createElement("div");
     el.className = "chip attachment";
     if (attachment.kind === "image" && attachment.preview) {
+      const open = document.createElement("button");
+      open.type = "button";
+      open.className = "chip-open";
+      open.title = "Open the full-size image";
       const image = document.createElement("img");
       image.src = thumbnailFor(attachment);
       image.alt = attachment.label;
       thumbnailNodes.set(String(attachment.id), image);
-      el.appendChild(image);
+      open.appendChild(image);
+      open.addEventListener("click", () => openImage(attachment.preview, attachment.label));
+      el.appendChild(open);
     } else {
       const glyph = document.createElement("span");
       glyph.className = "chip-glyph";
@@ -1057,6 +1078,132 @@
     const pending = chips.length + attachments.length > 0;
     sendButton.disabled = busy ? false : !input.value.trim() && !pending;
   }
+
+  // ---------- dialogs ----------
+
+  /// The dialog the host composes (`src/core/dialogs.ts`): the MCP server list
+  /// and the session history, painted here rather than in a QuickPick — which
+  /// takes over the window, hides the transcript the listing is about, and
+  /// cannot be answered while a turn streams. A row arrives with the action it
+  /// posts, so the view decides nothing about what a click means.
+  function setDialog(dialog) {
+    dialogList.innerHTML = "";
+    if (!dialog) {
+      dialogBox.hidden = true;
+      return;
+    }
+    dialogTitle.textContent = dialog.title || "";
+    dialogSub.textContent = dialog.subtitle || "";
+    dialogSub.hidden = !dialog.subtitle;
+    dialogNote.textContent = dialog.note || "";
+    dialogNote.hidden = !dialog.note;
+    for (const entry of dialog.rows || []) dialogList.appendChild(dialogRow(entry));
+    dialogRefresh.textContent = dialog.refreshLabel || "";
+    dialogRefresh.hidden = !dialog.refreshLabel;
+    dialogRefresh.dataset.action = dialog.refreshAction || "";
+    dialogBox.hidden = false;
+  }
+
+  /// One row: what it is, what it resolves to underneath, a trailing status word
+  /// where one applies, and a button for the rows that turn something over
+  /// instead of opening it.
+  function dialogRow(entry) {
+    const el = document.createElement(entry.action ? "button" : "div");
+    el.className = "dialog-row";
+    if (entry.action) {
+      el.type = "button";
+      el.dataset.action = entry.action;
+      el.dataset.value = entry.value;
+    }
+    const main = document.createElement("div");
+    main.className = "dialog-main";
+    const label = document.createElement("div");
+    label.className = "dialog-label";
+    label.textContent = entry.label;
+    main.appendChild(label);
+    if (entry.detail) {
+      const detail = document.createElement("div");
+      detail.className = "dialog-detail";
+      detail.textContent = entry.detail;
+      main.appendChild(detail);
+    }
+    el.appendChild(main);
+    if (entry.status) {
+      const status = document.createElement("span");
+      status.className = `dialog-status tone-${entry.tone || "muted"}`;
+      status.textContent = entry.status;
+      el.appendChild(status);
+    }
+    if (entry.button) {
+      const button = document.createElement("button");
+      button.type = "button";
+      button.className = "dialog-button";
+      button.dataset.action = entry.buttonAction;
+      button.dataset.value = entry.value;
+      button.textContent = entry.button;
+      el.appendChild(button);
+    }
+    el.title = entry.detail ? `${entry.label} — ${entry.detail}` : entry.label;
+    return el;
+  }
+
+  /// Closing is the host's decision, so it hears about it too: the dialog is the
+  /// controller's state, and whichever pane is attached next would otherwise
+  /// paint it again.
+  function closeDialog() {
+    setDialog(null);
+    vscode.postMessage({ k: "dialogAction", action: "dialogClose", value: "" });
+  }
+
+  /// A click inside a dialog: the nearest element carrying an action posts it
+  /// back — a row, or the button at its end — and a click on the backdrop, like
+  /// Close or Escape, dismisses the dialog.
+  dialogBox.addEventListener("click", (event) => {
+    const target = event.target;
+    if (!(target instanceof Element)) return;
+    const action = target.closest("[data-action]");
+    if (action) {
+      vscode.postMessage({
+        k: "dialogAction",
+        action: action.dataset.action,
+        value: action.dataset.value || "",
+      });
+      return;
+    }
+    if (target === dialogBox) closeDialog();
+  });
+
+  dialogClose.addEventListener("click", () => closeDialog());
+
+  // ---------- image preview ----------
+
+  /// The full-size image behind a chip's thumbnail: a chip only has room for a
+  /// 96px copy, so a click opens what the host actually sent.
+  function openImage(preview, label) {
+    if (!preview) return;
+    imageViewImage.src = preview;
+    imageViewImage.alt = label || "Attachment preview";
+    imageView.hidden = false;
+  }
+
+  imageViewClose.addEventListener("click", () => {
+    imageView.hidden = true;
+  });
+
+  imageView.addEventListener("click", (event) => {
+    if (event.target === imageView) imageView.hidden = true;
+  });
+
+  // Escape closes what is on top — the image first, then the dialog. The
+  // composer's own Escape (stop the running turn) is handled on the textarea.
+  document.addEventListener("keydown", (event) => {
+    if (event.key !== "Escape") return;
+    if (!imageView.hidden) {
+      imageView.hidden = true;
+      return;
+    }
+    if (!dialogBox.hidden) closeDialog();
+  });
 
   // ---------- composer ----------
 

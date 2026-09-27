@@ -64,30 +64,24 @@ function stringOf(value: unknown): string {
   return typeof value === "string" ? value : "";
 }
 
-/// The codicon and label a state is painted with, so the picker reads at a
-/// glance the way the terminal's colored status does.
-export function mcpAppearance(state: string): { icon: string; label: string } {
+/// The word a state is painted with, so the dialog reads at a glance the way the
+/// terminal's colored status does. The webview cannot draw a codicon, so the
+/// state is a label colored by `dialogTone` in the dialog itself.
+export function mcpStateLabel(state: string): string {
   switch (state) {
     case "connected":
-      return { icon: "$(pass-filled)", label: "Connected" };
+      return "Connected";
     case "needs-auth":
-      return { icon: "$(key)", label: "Needs auth" };
+      return "Needs auth";
     case "needs-trust":
-      return { icon: "$(shield)", label: "Needs trust" };
+      return "Needs trust";
     case "disabled":
-      return { icon: "$(circle-slash)", label: "Disabled" };
+      return "Disabled";
     case "error":
-      return { icon: "$(error)", label: "Error" };
+      return "Error";
     default:
-      return { icon: "$(question)", label: state || "Unknown" };
+      return state || "Unknown";
   }
-}
-
-/// The one-line description under a server's name: what it is, which file
-/// defined it, and how it answered.
-export function mcpDescription(server: McpServerView): string {
-  const status = server.enabled ? server.status || mcpAppearance(server.state).label : "Disabled";
-  return [server.transport, server.source, status].filter(Boolean).join(" · ");
 }
 
 /// The arguments that turn a server on or off. The scope pins the change to the
@@ -103,7 +97,7 @@ export function mcpListArgs(): string[] {
   return ["mcp", "list", "--json"];
 }
 
-/// True for the slash command the picker answers, so a typed `/mcps` opens the
+/// True for the slash command the dialog answers, so a typed `/mcps` opens the
 /// list instead of being sent to the model as a prompt. Only the bare command:
 /// the leading slash is required — bare `mcp` is ordinary text — and
 /// `/mcp list` is left to the agent's own resolution.

@@ -803,7 +803,38 @@ body.resizing { cursor: col-resize; user-select: none; }
   word-break: break-word;
 }
 .mcp-source { color: var(--faint); font-size: 11px; }
-.mcp-empty { color: var(--faint); font-size: 12.5px; padding: 6px 2px; }
+.mcp-empty,
+.dialog-empty { color: var(--faint); font-size: 12.5px; padding: 6px 2px; }
+
+/* ---------- sessions ---------- */
+
+/* `/sessions`: the threads stored for this project, the same list the sidebar
+   draws beside the project, reachable from the composer. */
+.session-list { display: flex; flex-direction: column; gap: 2px; max-height: 46vh; overflow-y: auto; }
+.session-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 8px 10px;
+  border: 1px solid transparent;
+  border-radius: 10px;
+  background: none;
+  color: var(--text);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.session-row:hover { background: var(--panel-2); }
+.session-row.active { border-color: var(--border); }
+.session-main { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.session-label {
+  font-size: 12.5px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.session-meta { color: var(--faint); font-size: 11px; }
 
 /* ---------- slash command palette ---------- */
 

@@ -701,6 +701,22 @@ footer {
   display: block;
 }
 
+/* The thumbnail is a button: a chip has no room for more than a 96px copy, so a
+   click opens the full-size image in the preview overlay. */
+.chips .chip .chip-open {
+  display: block;
+  padding: 0;
+  border: none;
+  background: none;
+  border-radius: 4px;
+  line-height: 0;
+}
+
+.chips .chip .chip-open:hover img,
+.chips .chip .chip-open:focus-visible img {
+  border-color: var(--vscode-focusBorder, var(--vscode-charts-blue, #4a9eff));
+}
+
 .chips .chip-glyph {
   display: flex;
   align-items: center;
@@ -908,4 +924,179 @@ footer {
   to {
     transform: rotate(360deg);
   }
+}
+
+/* ---------- dialogs ---------- */
+
+/* The MCP server list and the session history are painted by the panel itself
+   rather than a QuickPick, which takes over the window and hides the transcript
+   the listing is about. Both sit on one overlay, with the dialog's own rows
+   arriving from the host as data. */
+.overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 30;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 8px;
+  background: rgba(0, 0, 0, 0.35);
+}
+
+/* `hidden` is how the renderer shows and hides an overlay, and the flex display
+   above would otherwise win over the attribute. */
+.overlay[hidden] {
+  display: none;
+}
+
+.dialog {
+  display: flex;
+  flex-direction: column;
+  width: min(460px, 100%);
+  max-height: 100%;
+  padding: 12px 12px 10px;
+  border: 1px solid var(--vscode-widget-border, var(--vscode-panel-border, rgba(128, 128, 128, 0.35)));
+  border-radius: 8px;
+  background: var(--vscode-editorWidget-background, var(--vscode-sideBar-background));
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.35);
+}
+
+.dialog h2 {
+  margin: 0;
+  font-size: 1.05em;
+  font-weight: 600;
+}
+
+.dialog-sub {
+  margin: 4px 0 0;
+  color: var(--vscode-descriptionForeground);
+  font-size: 0.85em;
+}
+
+.dialog-note {
+  margin: 6px 0 0;
+  padding: 4px 6px;
+  border-radius: 4px;
+  background: var(--vscode-toolbar-hoverBackground, rgba(128, 128, 128, 0.12));
+  color: var(--vscode-descriptionForeground);
+  font-size: 0.85em;
+}
+
+.dialog-note[hidden] {
+  display: none;
+}
+
+.dialog-list {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  margin: 8px 0;
+  overflow-y: auto;
+  min-height: 0;
+  flex: 1 1 auto;
+}
+
+.dialog-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 6px 8px;
+  border: 1px solid transparent;
+  border-radius: 4px;
+  background: none;
+  color: var(--vscode-foreground);
+  font: inherit;
+  text-align: left;
+}
+
+button.dialog-row:hover,
+button.dialog-row:focus-visible {
+  background: var(--vscode-list-hoverBackground, rgba(128, 128, 128, 0.15));
+  outline: none;
+}
+
+.dialog-main {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  flex: 1 1 auto;
+}
+
+.dialog-label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.dialog-detail {
+  color: var(--vscode-descriptionForeground);
+  font-size: 0.8em;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.dialog-status {
+  flex: 0 0 auto;
+  font-size: 0.8em;
+  color: var(--vscode-descriptionForeground);
+}
+
+.dialog-status.tone-ok {
+  color: var(--vscode-charts-green, #89d185);
+}
+
+.dialog-status.tone-warn {
+  color: var(--vscode-editorWarning-foreground, var(--vscode-charts-orange, #ce9178));
+}
+
+.dialog-status.tone-error {
+  color: var(--vscode-editorError-foreground, var(--vscode-charts-red, #f14c4c));
+}
+
+.dialog-button {
+  flex: 0 0 auto;
+  padding: 2px 8px;
+  border: 1px solid var(--vscode-panel-border, rgba(128, 128, 128, 0.35));
+  border-radius: 4px;
+  background: none;
+  color: var(--vscode-foreground);
+  font: inherit;
+  font-size: 0.8em;
+}
+
+.dialog-button:hover {
+  background: var(--vscode-toolbar-hoverBackground, rgba(128, 128, 128, 0.15));
+}
+
+.dialog-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 6px;
+}
+
+.dialog-actions button[hidden] {
+  display: none;
+}
+
+/* ---------- image preview ---------- */
+
+/* A chip's thumbnail is a 96px copy; this is what the host actually sent. */
+.image-overlay .image-frame {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+  max-width: 100%;
+  max-height: 100%;
+}
+
+.image-frame img {
+  max-width: 100%;
+  max-height: 80vh;
+  object-fit: contain;
+  border-radius: 4px;
+  background: var(--vscode-editor-background);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.4);
 }

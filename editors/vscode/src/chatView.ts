@@ -32,6 +32,10 @@ interface WebviewMessage {
   path?: string;
   line?: number;
   control?: string;
+  /// A click inside a dialog: the action the row or its button carries, and the
+  /// value it is about (a server name, a session id).
+  action?: string;
+  value?: string;
   /// The name and `data:` URL of a pasted or dropped blob.
   name?: string;
   data?: string;
@@ -64,7 +68,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
   private async handle(message: WebviewMessage, view: vscode.WebviewView): Promise<void> {
     switch (message.k) {
       case "ready":
-        await view.webview.postMessage(this.controller.stateMessage());
+        await this.paint(view);
         return;
       case "send":
         await this.controller.send(message.text ?? "");
@@ -106,6 +110,11 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       case "control":
         await this.controller.control(message.control ?? "");
         return;
+      case "dialogAction":
+        // A row of the MCP or session dialog: the host decides what the action
+        // means, so the view never has to know.
+        await this.controller.dialogAction(message.action ?? "", message.value ?? "");
+        return;
       case "openUrl":
         await this.openUrl(message.url ?? "");
         return;
@@ -115,6 +124,15 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       default:
         return;
     }
+  }
+
+  /// The pane asks for everything it needs to paint itself once its script is
+  /// listening, so a repainted panel restores the whole transcript — and a
+  /// dialog the other pane opened, which both panes show.
+  private async paint(view: vscode.WebviewView): Promise<void> {
+    await view.webview.postMessage(this.controller.stateMessage());
+    const dialog = this.controller.dialogMessage();
+    if (dialog) await view.webview.postMessage(dialog);
   }
 
   /// Links in a reply open in the user's browser; a webview cannot navigate.
@@ -204,6 +222,24 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     <span id="branch"></span>
   </div>
 </footer>
+<div id="dialog" class="overlay" hidden>
+  <section class="dialog" role="dialog" aria-modal="true" aria-labelledby="dialog-title">
+    <h2 id="dialog-title"></h2>
+    <p id="dialog-sub" class="dialog-sub"></p>
+    <p id="dialog-note" class="dialog-note" hidden></p>
+    <div id="dialog-list" class="dialog-list"></div>
+    <div class="dialog-actions">
+      <button id="dialog-refresh" class="ghost" hidden></button>
+      <button id="dialog-close" class="ghost">Close</button>
+    </div>
+  </section>
+</div>
+<div id="image-view" class="overlay image-overlay" hidden>
+  <div class="image-frame">
+    <img id="image-view-img" alt="Attachment preview">
+    <button id="image-view-close" class="ghost">Close</button>
+  </div>
+</div>
 <script nonce="${nonce}" src="${script}"></script>
 </body>
 </html>`;

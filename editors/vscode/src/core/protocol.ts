@@ -12,6 +12,7 @@ import {
   approvalTitle,
   type ApprovalDecision,
 } from "./approvals";
+import type { DialogState } from "./dialogs";
 import type { FooterState } from "./footer";
 
 /// One JSONL line from the agent's stdout. Only `type` is guaranteed.
@@ -169,7 +170,13 @@ export type ViewMessage =
   | { k: "usage"; usage: UsageTotals; footer?: FooterState }
   /// The composer's pending context and attachments, which travel together:
   /// one removal message addresses either list by chip id.
-  | { k: "context"; context: ContextChip[]; attachments: AttachmentChip[] };
+  | { k: "context"; context: ContextChip[]; attachments: AttachmentChip[] }
+  /// The dialog the panel paints over the transcript — the MCP server list, the
+  /// session history — or `null` to close it. `core/dialogs.ts` composes it, so
+  /// the view only paints the rows and posts back the action one carries; the
+  /// controller keeps the dialog, so opening it from either pane shows it in
+  /// both.
+  | { k: "dialog"; dialog: DialogState | null };
 
 /// Splits a chunk into complete lines, returning the unterminated remainder.
 /// Mirrors `oxide_core::llm::drain_lines`: the buffer is compacted once per

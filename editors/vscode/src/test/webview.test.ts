@@ -572,14 +572,42 @@ describe("webview composer", () => {
       chips.children.map((chip) => chip.className),
       ["chip attachment", "chip attachment", "chip context", "chip-clear"],
     );
-    assert.equal(chips.children[0].children[0].tagName, "img");
-    assert.equal(chips.children[0].children[0].src, "data:image/png;base64,QUJD");
+    // An image's thumbnail sits in a button: a chip has room for a 96px copy,
+    // so a click opens the full-size image.
+    const open = chips.children[0].children[0];
+    assert.equal(open.tagName, "button");
+    assert.equal(open.className, "chip-open");
+    assert.equal(open.children[0].tagName, "img");
+    assert.equal(open.children[0].src, "data:image/png;base64,QUJD");
     assert.equal(chips.children[0].children[1].children[0].textContent, "shot.png");
     assert.equal(chips.children[0].children[1].children[1].textContent, "12 KB · pasted");
     // A PDF has no thumbnail, so it falls back to its glyph and name.
     assert.equal(chips.children[1].children[0].className, "chip-glyph");
     assert.equal(chips.children[1].children[0].textContent, "▤");
     assert.equal(chips.children[2].children[1].textContent, "src/main.rs");
+  });
+
+  it("opens the full-size image from a thumbnail, and closes it again", () => {
+    const { byId, fireDocument, send } = loadRenderer();
+    const preview = "data:image/png;base64,QUJDRA==";
+    send(
+      stateMessage({
+        attachments: [{ id: 2, label: "shot.png", kind: "image", preview, detail: "12 KB" }],
+      }),
+    );
+    assert.equal(byId.get("image-view")!.hidden, true);
+    byId.get("chips")!.children[0].children[0].fire("click");
+    assert.equal(byId.get("image-view")!.hidden, false);
+    assert.equal(byId.get("image-view-img")!.src, preview);
+    assert.equal(byId.get("image-view-img")!.alt, "shot.png");
+
+    // Clicking the backdrop, then Escape, closes it; the thumbnail itself only
+    // opens it, so a click there while it is open leaves it open.
+    byId.get("image-view")!.fire("click", { target: byId.get("image-view") });
+    assert.equal(byId.get("image-view")!.hidden, true);
+    byId.get("chips")!.children[0].children[0].fire("click");
+    fireDocument("keydown", { key: "Escape" });
+    assert.equal(byId.get("image-view")!.hidden, true);
   });
 
   it("keeps the chip-sized copy of a thumbnail for the repaints", async () => {
@@ -593,7 +621,7 @@ describe("webview composer", () => {
     };
     send(stateMessage({ attachments: [attachment] }));
     // The first paint shows what the host sent, so the chip is never empty...
-    const first = byId.get("chips")!.children[0].children[0];
+    const first = byId.get("chips")!.children[0].children[0].children[0];
     assert.equal(first.src, attachment.preview);
     // ...and the canvas copy it drew in the background replaces it.
     await new Promise((resolve) => setTimeout(resolve, 10));
@@ -601,7 +629,10 @@ describe("webview composer", () => {
     // Every later repaint starts from the small copy instead of decoding the
     // photo-sized one again.
     send(stateMessage({ attachments: [attachment] }));
-    assert.equal(byId.get("chips")!.children[0].children[0].src, "data:image/png;base64,QUJD");
+    assert.equal(
+      byId.get("chips")!.children[0].children[0].children[0].src,
+      "data:image/png;base64,QUJD",
+    );
   });
 
   it("starts one decode when a repaint arrives before the thumbnail is ready", async () => {
@@ -842,6 +873,183 @@ describe("webview composer", () => {
     // The drop ends the drag, so the overlay does not stick.
     assert.equal(byId.get("dropzone")!.hidden, true);
     assert.equal(byId.get("composer")!.classList.contains("dragging"), false);
+  });
+});
+
+describe("webview dialogs", () => {
+  /// The two listings the host composes (`src/core/dialogs.ts`): the MCP servers
+  /// with the button that turns each one over, and the session history with the
+  /// rows that resume one. A row arrives with the action it posts.
+  const mcp = {
+    k: "dialog",
+    dialog: {
+      title: "MCP servers",
+      subtitle: "The servers this project loads, and whether Oxide can reach them.",
+      note: "",
+      rows: [
+        {
+          value: "context7",
+          label: "context7",
+          detail: "http · source: claude (global)",
+          status: "Connected",
+          tone: "ok",
+          action: "",
+          button: "Disable",
+          buttonAction: "mcpToggle",
+        },
+        {
+          value: "sentry",
+          label: "sentry",
+          detail: "stdio · source: project",
+          status: "Disabled",
+          tone: "muted",
+          action: "",
+          button: "Enable",
+          buttonAction: "mcpToggle",
+        },
+      ],
+      refreshLabel: "Recheck",
+      refreshAction: "mcpRefresh",
+    },
+  };
+  const sessions = {
+    k: "dialog",
+    dialog: {
+      title: "Sessions",
+      subtitle: "Threads stored for this project.",
+      note: "",
+      rows: [
+        {
+          value: "new",
+          label: "New session",
+          detail: "Start a fresh thread",
+          status: "",
+          tone: "",
+          action: "openSession",
+          button: "",
+          buttonAction: "",
+        },
+        {
+          value: "fe0031b1",
+          label: "Fix the flaky test",
+          detail: "195 messages",
+          status: "just now",
+          tone: "muted",
+          action: "openSession",
+          button: "",
+          buttonAction: "",
+        },
+      ],
+      refreshLabel: "",
+      refreshAction: "",
+    },
+  };
+
+  it("paints the rows the host composed", () => {
+    const { byId, send } = loadRenderer();
+    assert.equal(byId.get("dialog")!.hidden, true);
+    send(mcp);
+    assert.equal(byId.get("dialog")!.hidden, false);
+    assert.equal(byId.get("dialog-title")!.textContent, "MCP servers");
+    assert.equal(
+      byId.get("dialog-sub")!.textContent,
+      "The servers this project loads, and whether Oxide can reach them.",
+    );
+    assert.equal(byId.get("dialog-note")!.hidden, true);
+
+    const rows = byId.get("dialog-list")!.children;
+    assert.equal(rows.length, 2);
+    assert.equal(rows[0].className, "dialog-row");
+    // The name, what it resolves to, and the state it is in.
+    assert.equal(rows[0].children[0].children[0].textContent, "context7");
+    assert.equal(rows[0].children[0].children[1].textContent, "http · source: claude (global)");
+    assert.equal(rows[0].children[1].className, "dialog-status tone-ok");
+    assert.equal(rows[0].children[1].textContent, "Connected");
+    assert.equal(rows[0].children[2].textContent, "Disable");
+    // `Recheck` is the host's own action, painted as the dialog's trailing one.
+    assert.equal(byId.get("dialog-refresh")!.textContent, "Recheck");
+    assert.equal(byId.get("dialog-refresh")!.hidden, false);
+  });
+
+  it("posts the toggle a row's button carries", () => {
+    const { byId, posted, send } = loadRenderer();
+    send(mcp);
+    // A click on the button bubbles to the overlay the handler is on, which
+    // reads the action off the element around the target.
+    const button = byId.get("dialog-list")!.children[1].children[2];
+    assert.equal(button.dataset.action, "mcpToggle");
+    byId.get("dialog")!.fire("click", { target: button });
+    assert.deepEqual(last(posted), {
+      k: "dialogAction",
+      action: "mcpToggle",
+      value: "sentry",
+    });
+  });
+
+  it("posts the action of the row a click lands in", () => {
+    const { byId, posted, send } = loadRenderer();
+    send(sessions);
+    const rows = byId.get("dialog-list")!.children;
+    // A click inside a row walks up to it, the way an event bubbles.
+    assert.equal(rows[1].tagName, "button");
+    byId.get("dialog")!.fire("click", { target: rows[1].children[0].children[0] });
+    assert.deepEqual(last(posted), {
+      k: "dialogAction",
+      action: "openSession",
+      value: "fe0031b1",
+    });
+    // The two rows the host adds itself post their own values.
+    byId.get("dialog")!.fire("click", { target: rows[0] });
+    assert.deepEqual(last(posted), { k: "dialogAction", action: "openSession", value: "new" });
+    // A session listing has nothing to recheck, so the button is left off.
+    assert.equal(byId.get("dialog-refresh")!.hidden, true);
+  });
+
+  it("closes on the Close button, on the backdrop and on Escape", () => {
+    const { byId, fireDocument, posted, send } = loadRenderer();
+    send(sessions);
+    byId.get("dialog-close")!.fire("click");
+    assert.equal(byId.get("dialog")!.hidden, true);
+    assert.deepEqual(last(posted), { k: "dialogAction", action: "dialogClose", value: "" });
+
+    // The backdrop is the overlay itself; a click inside the panel is not.
+    send(sessions);
+    byId.get("dialog")!.fire("click", { target: byId.get("dialog-list") });
+    assert.equal(byId.get("dialog")!.hidden, false);
+    byId.get("dialog")!.fire("click", { target: byId.get("dialog") });
+    assert.equal(byId.get("dialog")!.hidden, true);
+
+    send(sessions);
+    fireDocument("keydown", { key: "Escape" });
+    assert.equal(byId.get("dialog")!.hidden, true);
+    // The host is told, so the pane that attaches next does not paint it again.
+    assert.equal(last(posted).action, "dialogClose");
+  });
+
+  it("leaves Escape to the composer when no dialog is up", () => {
+    const { byId, fireDocument, posted, send } = loadRenderer();
+    send(stateMessage({ busy: true }));
+    byId.get("input")!.fire("keydown", { key: "Escape", preventDefault: () => {} });
+    fireDocument("keydown", { key: "Escape" });
+    // The turn is stopped once, and nothing is posted about a dialog.
+    assert.deepEqual(last(posted), { k: "stop" });
+  });
+
+  it("clears the dialog when the host closes it", () => {
+    const { byId, send } = loadRenderer();
+    send(mcp);
+    send({ k: "dialog", dialog: null });
+    assert.equal(byId.get("dialog")!.hidden, true);
+    assert.equal(byId.get("dialog-list")!.children.length, 0);
+  });
+
+  it("shows a note where the list has nothing to show", () => {
+    const { byId, send } = loadRenderer();
+    send({ k: "dialog", dialog: { ...mcp.dialog, rows: [], note: "Could not list MCP servers: exit 1" } });
+    assert.equal(byId.get("dialog-note")!.hidden, false);
+    assert.equal(byId.get("dialog-note")!.textContent, "Could not list MCP servers: exit 1");
+    assert.equal(byId.get("dialog-list")!.children.length, 0);
+    assert.equal(byId.get("dialog")!.hidden, false, "the dialog still says what happened");
   });
 });
 
