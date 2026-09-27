@@ -61,6 +61,7 @@ class StubElement {
     this.textContent = "";
     this.className = "";
     this.disabled = false;
+    this.checked = false;
     this.offsetParent = {};
     this.scrollHeight = 10;
     this.clientHeight = 10;
@@ -84,6 +85,11 @@ class StubElement {
     for (const node of nodes) this.appendChild(node);
   }
 
+  replaceChildren(...nodes) {
+    this.children = [];
+    this.append(...nodes);
+  }
+
   appendChild(node) {
     this.children.push(node);
     node.parentNode = this;
@@ -100,11 +106,40 @@ class StubElement {
   blur() {}
   click() {}
   scrollTo() {}
-  querySelector() {
-    return null;
+
+  /// The subset of CSS selectors `app.js` asks for: a class, a
+  /// `[data-<key>="value"]` attribute and a `:checked` state, in any order.
+  matchesSelector(selector) {
+    let rest = String(selector);
+    const checked = rest.endsWith(":checked");
+    if (checked) {
+      if (!this.checked) return false;
+      rest = rest.slice(0, -":checked".length);
+    }
+    const attribute = rest.match(/\[data-([a-z-]+)="([^"]*)"\]/);
+    if (attribute) {
+      const key = attribute[1].replace(/-([a-z])/g, (_, c) => c.toUpperCase());
+      if (String(this.dataset[key]) !== attribute[2]) return false;
+      rest = rest.replace(attribute[0], "");
+    }
+    const classes = String(this.className).split(/\s+/).filter(Boolean);
+    for (const token of rest.match(/\.[A-Za-z0-9_-]+/g) || []) {
+      if (!classes.includes(token.slice(1))) return false;
+    }
+    return true;
   }
-  querySelectorAll() {
-    return [];
+
+  descendants() {
+    const found = [];
+    for (const child of this.children) found.push(child, ...child.descendants());
+    return found;
+  }
+
+  querySelector(selector) {
+    return this.descendants().find((node) => node.matchesSelector(selector)) || null;
+  }
+  querySelectorAll(selector) {
+    return this.descendants().filter((node) => node.matchesSelector(selector));
   }
   closest() {
     return null;
@@ -325,7 +360,8 @@ vm.runInThisContext(
   source +
     "\nglobalThis.__app = { send, runSlashCommand, state, createProjectState," +
     " openDefaultProject, openCreateProject, addCreateProjectTypedPath, saveCreateProject," +
-    " refreshPaletteEntries, addAttachment, addAttachmentFiles, el };\n",
+    " refreshPaletteEntries, addAttachment, addAttachmentFiles, el, showQuestion, answerQuestion," +
+    " collectAnswers };\n",
 );
 
 const app = globalThis.__app;
@@ -703,6 +739,115 @@ check(
   JSON.stringify(app.state.attachments),
 );
 app.state.attachments = [];
+
+// ---------- the question dialog ----------
+
+console.log("questions");
+app.state.project = "/Users/jayson/Projects/oxide";
+app.state.pendingQuestion = null;
+calls.length = 0;
+app.showQuestion({
+  id: 42,
+  questions: [
+    {
+      header: "Database",
+      question: "Which database should the migration target?",
+      options: [
+        { label: "Postgres", description: "The production store" },
+        { label: "SQLite", description: "Local development" },
+      ],
+    },
+    {
+      question: "Which extras?",
+      multiSelect: true,
+      options: [{ label: "Indexes" }, { label: "Fixtures" }],
+    },
+  ],
+});
+const dialog = elementFor("question-body");
+check("opened the question dialog", elementFor("question").hidden === false);
+check(
+  "headed it with the question's own header",
+  elementFor("question-title").textContent === "Database",
+  elementFor("question-title").textContent,
+);
+check(
+  "painted the question text and its options",
+  dialog.outline().includes("Which database should the migration target?") &&
+    dialog.outline().includes("The production store"),
+  dialog.outline(),
+);
+const firstBlock = dialog.children[0];
+const optionRows = firstBlock.children.filter((row) => row.tagName === "LABEL");
+check(
+  "offered a single answer's options as radios",
+  optionRows.length === 2 && optionRows.every((row) => row.children[0].type === "radio"),
+  dialog.outline(),
+);
+check(
+  "preselected a single-answer question's first option",
+  optionRows[0].children[0].checked === true && optionRows[1].children[0].checked === false,
+  dialog.outline(),
+);
+const secondBlock = dialog.children[1];
+check(
+  "offered a multi-select question's options as checkboxes",
+  secondBlock.querySelectorAll(".question-choice").every((input) => input.type === "checkbox"),
+  dialog.outline(),
+);
+// The free-text field answers a question with no options at all, so it is part
+// of every question rather than a fallback for the empty case.
+check(
+  "gave every question a field to type an answer in",
+  dialog.querySelectorAll(".question-free").length === 2,
+  dialog.outline(),
+);
+
+// Pick the second option, add text, tick one box on the multi-select question.
+optionRows[0].children[0].checked = false;
+optionRows[1].children[0].checked = true;
+firstBlock.querySelector(".question-free").value = "temporary";
+secondBlock.querySelectorAll(".question-choice")[1].checked = true;
+await app.answerQuestion(false);
+const answered = calls.find(([name]) => name === "resolve_question");
+check("answered the question over the bridge", Boolean(answered), JSON.stringify(calls));
+check(
+  "sent what was picked and typed against the question it belongs to",
+  answered &&
+    answered[1].id === 42 &&
+    answered[1].answers[0].question === "Which database should the migration target?" &&
+    JSON.stringify(answered[1].answers[0].values) === '["SQLite","temporary"]' &&
+    JSON.stringify(answered[1].answers[1].values) === '["Fixtures"]',
+  JSON.stringify(answered && answered[1]),
+);
+check("closed the dialog once it was answered", elementFor("question").hidden === true);
+
+// Skip answers with nothing, which is how the model is told the question was
+// dismissed instead of never asked.
+calls.length = 0;
+app.showQuestion({
+  id: 43,
+  questions: [{ question: "Proceed?", options: [{ label: "Yes" }, { label: "No" }] }],
+});
+await app.answerQuestion(true);
+const dismissed = calls.find(([name]) => name === "resolve_question");
+check(
+  "dismissed with no answers at all",
+  dismissed && dismissed[1].id === 43 && dismissed[1].answers.length === 0,
+  JSON.stringify(dismissed && dismissed[1]),
+);
+
+// A request with no questions is nothing to paint, and a dialog the app never
+// opened is not answered twice.
+calls.length = 0;
+app.state.pendingQuestion = null;
+app.showQuestion({ id: 44, questions: [] });
+await app.answerQuestion(false);
+check(
+  "ignored a question with nothing in it",
+  elementFor("question").hidden === true && calls.length === 0,
+  JSON.stringify(calls),
+);
 
 // ---------- the / menu ----------
 

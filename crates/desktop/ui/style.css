@@ -551,6 +551,39 @@ body.resizing { cursor: col-resize; user-select: none; }
   font-size: 12px;
 }
 
+.question-body { display: flex; flex-direction: column; gap: 14px; max-height: 380px; overflow: auto; }
+.question { display: flex; flex-direction: column; gap: 6px; }
+.question-header {
+  color: var(--dim);
+  font-size: 11px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+.question-text { margin: 0; font-size: 13.5px; }
+.question-option {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  padding: 7px 9px;
+  border: 1px solid var(--border);
+  border-radius: 9px;
+  cursor: pointer;
+}
+.question-option:hover { border-color: var(--accent); }
+.question-option input { flex: 0 0 auto; margin: 0; accent-color: var(--accent); }
+.question-label { font-size: 13px; }
+.question-detail { color: var(--dim); font-size: 12px; margin-left: auto; }
+.question-free {
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 9px;
+  padding: 8px 10px;
+  color: var(--text);
+  font: inherit;
+  font-size: 13px;
+}
+.question-free:focus { outline: none; border-color: var(--accent); }
+
 .provider-list { display: flex; flex-direction: column; gap: 3px; margin-bottom: 16px; }
 .trust-resources {
   display: flex;

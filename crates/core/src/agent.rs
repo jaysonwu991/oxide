@@ -1,3 +1,4 @@
+use crate::ask::{self, Asker, Question, Reply};
 use crate::config::Config;
 use crate::ecosystem::AgentMode;
 use crate::llm::{FunctionSpec, LlmClient, Message, Retry, StreamHooks, ToolCall, ToolSpec};
@@ -92,6 +93,10 @@ pub struct Runtime {
     pub snapshots: Option<Arc<Snapshots>>,
     pub lsp: Arc<LspManager>,
     pub approve: Approver,
+    /// How the model asks the user a question. `None` leaves the `ask` tool out
+    /// of the tool list entirely, so a run with nobody to answer (a print run)
+    /// never has the model ask and wait.
+    pub ask: Option<Asker>,
     pub steering: Steering,
     pub follow_ups: Steering,
     pub cancel: Cancel,
@@ -107,6 +112,14 @@ pub enum AgentEvent {
         id: u64,
         tool: String,
         detail: String,
+    },
+    /// The model is waiting on the user's answer to a question. The front-end
+    /// answers by id through the question broker; the event carries the
+    /// questions so a view can paint them on its own, and arrives after the
+    /// `ToolCall` it belongs to so a view can pair them.
+    QuestionRequest {
+        id: u64,
+        questions: Vec<Question>,
     },
     Text(String),
     /// A fragment of the model's reasoning, streamed before its answer.
@@ -279,6 +292,12 @@ pub fn run_subagent(
                 // request id is broker-wide, so the answer still lands.
                 AgentEvent::ApprovalRequest { id, tool, detail } => {
                     let _ = tx.send(AgentEvent::ApprovalRequest { id, tool, detail });
+                }
+                // A subagent's question reaches the same front-end the run is
+                // drawn in; the request id is broker-wide, so the answer still
+                // lands.
+                AgentEvent::QuestionRequest { id, questions } => {
+                    let _ = tx.send(AgentEvent::QuestionRequest { id, questions });
                 }
                 AgentEvent::SubagentActivity { agent, tool, args } => {
                     let _ = tx.send(AgentEvent::SubagentActivity { agent, tool, args });
@@ -1089,6 +1108,9 @@ fn build_tool_specs(config: &Config, runtime: &Runtime, depth: usize) -> Vec<Too
     if !config.ecosystem.commands.is_empty() || !config.ecosystem.prompt_templates.is_empty() {
         specs.push(command_spec(config));
     }
+    if runtime.ask.is_some() {
+        specs.push(ask_spec());
+    }
     specs.push(memory_spec());
     specs.push(lsp_spec());
     if config.tool_filter.is_restrictive() {
@@ -1851,6 +1873,7 @@ async fn dispatch(
             .await,
         ),
         "skill" => tools::ToolOutput::text(skill(config, &call.function.arguments)),
+        "ask" => tools::ToolOutput::text(ask(runtime, &call.function.arguments).await),
         "command" => tools::ToolOutput::text(
             command(
                 config,
@@ -1866,6 +1889,22 @@ async fn dispatch(
         "diagnostics" => lsp_diagnostics(runtime, cwd, &call.function.arguments).await,
         _ => tools::execute(call, cwd, &runtime.mcp, progress).await,
     }
+}
+
+/// The `ask` tool: the model's questions reach the user through the runtime's
+/// asker, and the answers come back as the tool result. A run with nobody to ask
+/// is not offered the tool at all, so this reports the absence instead of
+/// pretending the questions were asked.
+async fn ask(runtime: &Runtime, arguments: &str) -> String {
+    let questions = match ask::parse_questions(arguments) {
+        Ok(questions) => questions,
+        Err(err) => return format!("error: {err:#}"),
+    };
+    let Some(ask_user) = &runtime.ask else {
+        return "error: no front-end is listening for a question in this run".to_string();
+    };
+    let reply: Option<Reply> = ask_user(questions.clone()).await;
+    ask::format_reply(&questions, reply)
 }
 
 async fn lsp_diagnostics(runtime: &Runtime, cwd: &Path, arguments: &str) -> tools::ToolOutput {
@@ -1989,6 +2028,9 @@ async fn task_inner(
             // answers it, so the reply reaches the subagent that is waiting.
             AgentEvent::ApprovalRequest { id, tool, detail } => {
                 let _ = events.send(AgentEvent::ApprovalRequest { id, tool, detail });
+            }
+            AgentEvent::QuestionRequest { id, questions } => {
+                let _ = events.send(AgentEvent::QuestionRequest { id, questions });
             }
             // A no-tool step commits here, not at the next tool call.
             AgentEvent::ThoughtDone { .. } => committed = output.len(),
@@ -2246,6 +2288,72 @@ fn skill_spec(config: &Config) -> ToolSpec {
     }
 }
 
+fn ask_spec() -> ToolSpec {
+    ToolSpec {
+        kind: "function",
+        function: FunctionSpec {
+            name: "ask".to_string(),
+            description: concat!(
+                "Ask the user a question when only they can answer it — a choice between options, ",
+                "or a detail you cannot infer from the repository. Use it instead of guessing, and ",
+                "whenever a skill you are following says to confirm with the user. Give each ",
+                "option a short `label` and, when the choice is not obvious, a `description`; set ",
+                "`multiSelect` when any number of them may be chosen; leave `options` out to ask ",
+                "for a typed answer. The answer comes back as this tool's result, and a question ",
+                "nobody answers comes back unanswered — so never wait on it: continue with a ",
+                "sensible default and say what you assumed."
+            )
+            .to_string(),
+            parameters: json!({
+                "type": "object",
+                "properties": {
+                    "questions": {
+                        "type": "array",
+                        "description": "The questions to ask, at most 4, in the order they should be asked",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "question": {
+                                    "type": "string",
+                                    "description": "The question to ask, ending in a question mark"
+                                },
+                                "header": {
+                                    "type": "string",
+                                    "description": "A short label for the question, at most 12 characters"
+                                },
+                                "options": {
+                                    "type": "array",
+                                    "description": "The choices to offer, at most 8. Leave it out to ask for a typed answer",
+                                    "items": {
+                                        "type": "object",
+                                        "properties": {
+                                            "label": {
+                                                "type": "string",
+                                                "description": "The choice, one or two words"
+                                            },
+                                            "description": {
+                                                "type": "string",
+                                                "description": "What choosing it means"
+                                            }
+                                        },
+                                        "required": ["label"]
+                                    }
+                                },
+                                "multiSelect": {
+                                    "type": "boolean",
+                                    "description": "Let the user choose more than one option"
+                                }
+                            },
+                            "required": ["question"]
+                        }
+                    }
+                },
+                "required": ["questions"]
+            }),
+        },
+    }
+}
+
 fn memory(config: &Config, arguments: &str) -> String {
     match memory_inner(config, arguments) {
         Ok(output) => output,
@@ -2455,6 +2563,7 @@ mod tests {
             snapshots: None,
             lsp: Arc::new(LspManager::new()),
             approve: Arc::new(|_, _| Box::pin(async { false })),
+            ask: None,
             steering: Steering::new(),
             follow_ups: Steering::new(),
             cancel: Cancel::new(),
@@ -2616,8 +2725,13 @@ mod tests {
 
     fn bash_call_body(command: &str) -> String {
         let arguments = json!({"command": command}).to_string();
+        tool_call_body("bash", &arguments)
+    }
+
+    /// A tool call whose arguments are already serialized.
+    fn tool_call_body(name: &str, arguments: &str) -> String {
         openai_sse(&[
-            json!({"choices": [{"delta": {"tool_calls": [{"index": 0, "id": "call_1", "function": {"name": "bash", "arguments": arguments}}]}, "finish_reason": null}]}),
+            json!({"choices": [{"delta": {"tool_calls": [{"index": 0, "id": "call_1", "function": {"name": name, "arguments": arguments}}]}, "finish_reason": null}]}),
             json!({"choices": [{"delta": {}, "finish_reason": "tool_calls"}]}),
         ])
     }
@@ -3336,6 +3450,121 @@ mod tests {
         assert!(broker.list(&dir).contains(&"bash".to_string()));
 
         std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// The whole question path: the model's `ask` call surfaces a
+    /// `QuestionRequest` on the run's event stream, the front-end's answer
+    /// releases it, and the answers come back as the tool result the model reads.
+    #[tokio::test]
+    async fn an_ask_call_waits_for_the_front_end_and_returns_its_answers() {
+        let dir = std::env::temp_dir().join(format!("oxide_ask_tool_{}", std::process::id()));
+        std::fs::remove_dir_all(&dir).ok();
+        std::fs::create_dir_all(&dir).unwrap();
+
+        let arguments = json!({
+            "questions": [{
+                "question": "Which database?",
+                "header": "Database",
+                "options": [{"label": "Postgres"}, {"label": "SQLite"}]
+            }]
+        })
+        .to_string();
+        let (addr, server) = sse_server(vec![
+            tool_call_body("ask", &arguments),
+            answer_body("SQLite it is."),
+        ])
+        .await;
+        let config = Config {
+            provider: "deepseek".into(),
+            model: "deepseek-flash".into(),
+            base_url: format!("http://{addr}"),
+            api_key: "sk-test".into(),
+            ..Config::default()
+        };
+
+        let broker = crate::ask::AskBroker::new();
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        let mut runtime = test_runtime().await;
+        runtime.ask = Some(broker.asker(tx.clone()));
+
+        let run_handle = tokio::spawn(run(
+            config,
+            dir.clone(),
+            vec![Message::user("set up the project")],
+            tx,
+            runtime,
+        ));
+
+        let mut asked = Vec::new();
+        let mut result = None;
+        while let Some(event) = rx.recv().await {
+            match event {
+                AgentEvent::QuestionRequest { id, questions } => {
+                    asked.push(questions.clone());
+                    assert!(broker.resolve(
+                        id,
+                        vec![crate::ask::Answer {
+                            question: questions[0].question.clone(),
+                            values: vec!["SQLite".into()],
+                        }]
+                    ));
+                }
+                AgentEvent::ToolResult { name, output, .. } if name == "ask" => {
+                    result = Some(output)
+                }
+                AgentEvent::Finished(_) => break,
+                _ => {}
+            }
+        }
+        run_handle.await.unwrap();
+        let requests = server.await.unwrap();
+        assert_eq!(requests.len(), 2);
+
+        assert_eq!(asked.len(), 1);
+        assert_eq!(asked[0][0].question, "Which database?");
+        assert_eq!(asked[0][0].options.len(), 2);
+        let result = result.expect("the tool result is reported");
+        assert!(result.contains("Which database? = SQLite"), "{result}");
+        // The answer reaches the model in the next request, not just the view.
+        let second = &requests[1];
+        assert!(second.contains("SQLite"), "{second}");
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// A run with nobody to answer is never offered the tool, so the model
+    /// cannot ask and then wait out the timeout.
+    #[tokio::test]
+    async fn ask_is_not_offered_without_an_asker() {
+        let config = Config::default();
+        let runtime = test_runtime().await;
+        let names: Vec<String> = build_tool_specs(&config, &runtime, 0)
+            .into_iter()
+            .map(|spec| spec.function.name)
+            .collect();
+        assert!(!names.contains(&"ask".to_string()), "{names:?}");
+
+        let mut runtime = runtime;
+        runtime.ask = Some(Arc::new(|questions| {
+            Box::pin(async move {
+                Some(Reply::Answers(vec![crate::ask::Answer {
+                    question: questions[0].question.clone(),
+                    values: vec!["yes".into()],
+                }]))
+            })
+        }));
+        let names: Vec<String> = build_tool_specs(&config, &runtime, 0)
+            .into_iter()
+            .map(|spec| spec.function.name)
+            .collect();
+        assert!(names.contains(&"ask".to_string()), "{names:?}");
+
+        // The tool reports the answers a runtime whose asker replies with them,
+        // and refuses a call with no questions rather than asking nothing.
+        let output = ask(&runtime, r#"{"questions":[{"question":"Proceed?"}]}"#).await;
+        assert!(output.contains("Proceed? = yes"), "{output}");
+        let output = ask(&runtime, "{}").await;
+        assert!(output.starts_with("error:"), "{output}");
     }
 
     #[tokio::test]

@@ -1,6 +1,7 @@
 //! Tauri commands backing the desktop UI.
 
 use crate::approval::ApprovalBroker;
+use crate::ask::AskBroker;
 use oxide_core::agent::{AgentEvent, Cancel, Steering};
 use oxide_core::auth::{self, AuthStore};
 use oxide_core::cli::{event_json, session_header};
@@ -39,6 +40,7 @@ struct RunHandle {
 pub struct DesktopState {
     pub manager: Mutex<DesktopManager>,
     pub approvals: Arc<ApprovalBroker>,
+    pub questions: Arc<AskBroker>,
     runs: Arc<Mutex<HashMap<u64, RunHandle>>>,
     next_run: AtomicU64,
 }
@@ -47,7 +49,8 @@ impl DesktopState {
     pub fn new(manager: DesktopManager, app: AppHandle) -> Self {
         Self {
             manager: Mutex::new(manager),
-            approvals: Arc::new(ApprovalBroker::new(app)),
+            approvals: Arc::new(ApprovalBroker::new(app.clone())),
+            questions: Arc::new(AskBroker::new(app)),
             runs: Arc::new(Mutex::new(HashMap::new())),
             next_run: AtomicU64::new(1),
         }
@@ -434,11 +437,12 @@ pub async fn send_prompt(
     reasoning: Option<String>,
     attachments: Option<Vec<AttachmentInput>>,
 ) -> CmdResult<u64> {
-    let (run_id, approvals, runs) = {
+    let (run_id, approvals, questions, runs) = {
         let state = app.state::<DesktopState>();
         (
             state.next_run.fetch_add(1, Ordering::Relaxed),
             state.approvals.clone(),
+            state.questions.clone(),
             state.runs.clone(),
         )
     };
@@ -454,6 +458,7 @@ pub async fn send_prompt(
             reasoning,
             attachments,
             approvals,
+            questions,
             runs,
         )
         .await;
@@ -471,13 +476,24 @@ async fn drive_turn(
     reasoning: Option<String>,
     attachments: Vec<ContentPart>,
     approvals: Arc<ApprovalBroker>,
+    questions: Arc<AskBroker>,
     runs: Arc<Mutex<HashMap<u64, RunHandle>>>,
 ) -> anyhow::Result<()> {
     let cwd = PathBuf::from(project);
     let reference = session.as_deref().unwrap_or("latest");
     let log = open_session(&cwd, reference)?;
     let approver = approvals.approver(cwd.clone());
-    let turn = start_turn(&cwd, &prompt, log, Some(approver), reasoning, attachments).await?;
+    let asker = questions.asker();
+    let turn = start_turn(
+        &cwd,
+        &prompt,
+        log,
+        Some(approver),
+        Some(asker),
+        reasoning,
+        attachments,
+    )
+    .await?;
     let Turn {
         session_id,
         mut events,
@@ -576,6 +592,19 @@ pub async fn steer_run(
 pub async fn resolve_approval(id: u64, decision: String, app: AppHandle) -> CmdResult<()> {
     let approvals = app.state::<DesktopState>().approvals.clone();
     approvals.resolve(id, &decision).await;
+    Ok(())
+}
+
+/// Answers a pending `question-request`. An empty `answers` list is a dismissed
+/// dialog, which the agent reports to the model as unanswered.
+#[tauri::command]
+pub async fn resolve_question(
+    id: u64,
+    answers: Vec<oxide_core::ask::Answer>,
+    app: AppHandle,
+) -> CmdResult<()> {
+    let questions = app.state::<DesktopState>().questions.clone();
+    questions.resolve(id, answers).await;
     Ok(())
 }
 

@@ -30,8 +30,24 @@ const diffRow = (marker: string, old: string, next: string, text: string) =>
 
 describe("buildTurnArgs", () => {
   it("always asks for the request channel, asking before gated tools", () => {
-    assert.deepEqual(buildTurnArgs({}), ["--mode", "rpc", "--ask-approvals"]);
-    assert.deepEqual(buildTurnArgs({ askApprovals: false }), ["--mode", "rpc", "--no-ask-approvals"]);
+    assert.deepEqual(buildTurnArgs({}), [
+      "--mode",
+      "rpc",
+      "--ask-approvals",
+      "--ask-questions",
+    ]);
+    assert.deepEqual(buildTurnArgs({ askApprovals: false }), [
+      "--mode",
+      "rpc",
+      "--no-ask-approvals",
+      "--ask-questions",
+    ]);
+  });
+
+  // A question is answered on the same pipe as an approval (`core/rpc.ts`), so
+  // the panel always asks the CLI to offer the `ask` tool.
+  it("carries the question channel the panel answers on", () => {
+    assert.equal(buildTurnArgs({}).includes("--ask-questions"), true);
   });
 
   it("resumes a session by id, and only one of session/continue", () => {
@@ -39,6 +55,7 @@ describe("buildTurnArgs", () => {
       "--mode",
       "rpc",
       "--ask-approvals",
+      "--ask-questions",
       "--session",
       "abc123",
     ]);
@@ -46,6 +63,7 @@ describe("buildTurnArgs", () => {
       "--mode",
       "rpc",
       "--ask-approvals",
+      "--ask-questions",
       "--continue",
     ]);
   });
@@ -64,6 +82,7 @@ describe("buildTurnArgs", () => {
         "--mode",
         "rpc",
         "--ask-approvals",
+        "--ask-questions",
         "--no-session",
         "--model",
         "glm-5",
@@ -92,9 +111,9 @@ describe("buildTurnArgs", () => {
   });
 
   it("passes the project-trust setting as approve flags", () => {
-    assert.deepEqual(buildTurnArgs({ trust: "always" }).slice(3), ["--approve"]);
-    assert.deepEqual(buildTurnArgs({ trust: "never" }).slice(3), ["--no-approve"]);
-    assert.deepEqual(buildTurnArgs({ trust: "default" }).slice(3), []);
+    assert.deepEqual(buildTurnArgs({ trust: "always" }).slice(4), ["--approve"]);
+    assert.deepEqual(buildTurnArgs({ trust: "never" }).slice(4), ["--no-approve"]);
+    assert.deepEqual(buildTurnArgs({ trust: "default" }).slice(4), []);
   });
 
   it("appends extra arguments and drops blank ones", () => {
@@ -102,6 +121,7 @@ describe("buildTurnArgs", () => {
       "--mode",
       "rpc",
       "--ask-approvals",
+      "--ask-questions",
       "--use-theme",
       "light",
     ]);

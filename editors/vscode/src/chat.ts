@@ -30,6 +30,7 @@ import {
 import { AttachmentStore, previewForDataUrl, previewForFile } from "./attachments";
 import { isApprovalDecision, type ApprovalDecision } from "./core/approvals";
 import { modelsForProvider } from "./core/config";
+import type { QuestionAnswer } from "./core/questions";
 import {
   CLOSE_DIALOG,
   CONTINUE_SESSION,
@@ -691,6 +692,23 @@ export class ChatController {
     this.broadcastStatus();
   }
 
+  /// Answers the question waiting behind `requestId`. The CLI holds the turn
+  /// until it arrives, so this is how an `ask` call finishes; an empty `answers`
+  /// list is a dismissal, which the model is told about rather than being left
+  /// to wait out the timeout.
+  answerQuestion(requestId: number, answers: readonly QuestionAnswer[]): void {
+    const turn = this.turn;
+    if (!turn) {
+      this.showNotice("That question is no longer waiting.", "warn");
+      return;
+    }
+    const messages = this.transcript.answerQuestion(requestId, answers);
+    if (!messages) return;
+    turn.answer(requestId, answers);
+    this.broadcastItem(messages);
+    this.broadcastStatus();
+  }
+
   /// Sends queued follow-ups one at a time, in order.
   private drainQueue(): void {
     const next = this.queue.shift();
@@ -741,6 +759,7 @@ export class ChatController {
     // A card still waiting belongs to a request whose process is gone (a stop,
     // or a crash): leaving its buttons live would offer an answer nobody reads.
     this.broadcastItem(this.transcript.closeApprovals());
+    this.broadcastItem(this.transcript.closeQuestions());
 
     if (run?.cancelled) {
       this.showNotice("Run stopped. The next message continues this session.");

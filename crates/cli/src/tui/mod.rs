@@ -1457,6 +1457,10 @@ fn handle_key(
                 snapshots: snapshots.cloned(),
                 lsp: Arc::clone(lsp),
                 approve,
+                // The terminal answers approvals but not questions, so `ask` is
+                // left out of its tool list rather than offered and then
+                // answered by nobody.
+                ask: None,
                 steering: app.steering.clone(),
                 follow_ups: app.follow_ups.clone(),
                 cancel: crate::agent::Cancel::new(),
@@ -4533,6 +4537,17 @@ fn handle_agent_event(event: AgentEvent, app: &mut App) {
             )));
             app.auto_scroll = true;
             app.pending_approval = Some(PendingApproval { id, tool });
+        }
+        // The terminal is not given an asker, so the model is never offered the
+        // `ask` tool here: the questions are shown for a run that got one from
+        // elsewhere (a client that drives the same loop), which nobody can
+        // answer in this transcript.
+        AgentEvent::QuestionRequest { .. } => {
+            app.status = "waiting for an answer".to_string();
+            app.items.push(ChatItem::Info(
+                "a question arrived that this terminal cannot answer".to_string(),
+            ));
+            app.auto_scroll = true;
         }
         AgentEvent::Text(delta) => {
             app.auto_scroll = true;

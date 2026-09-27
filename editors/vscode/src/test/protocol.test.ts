@@ -589,6 +589,91 @@ describe("Transcript", () => {
     assert.deepEqual(transcript.closeApprovals(), []);
   });
 
+  it("pushes a question card that waits for an answer", () => {
+    const transcript = new Transcript();
+    const messages = transcript.apply({
+      type: "question_request",
+      id: 7,
+      questions: [
+        {
+          question: "Which database?",
+          header: "Database",
+          options: [{ label: "Postgres", description: "Relational" }],
+          multiSelect: false,
+        },
+      ],
+    });
+    const item = push(messages[0]);
+    assert.ok(item.kind === "question");
+    assert.equal(item.requestId, 7);
+    assert.equal(item.title, "Database");
+    assert.equal(item.questions.length, 1);
+    assert.equal(item.questions[0].question, "Which database?");
+    assert.equal(item.state, "pending");
+    assert.equal(item.label, "");
+    assert.equal(transcript.status, "Waiting for your answer…");
+  });
+
+  // The same rule as an approval: a request whose answers could not reach the
+  // broker would hold the turn until it times out.
+  it("ignores a question it could not answer", () => {
+    const transcript = new Transcript();
+    assert.deepEqual(transcript.apply({ type: "question_request", id: 0 }), []);
+    assert.deepEqual(transcript.items, []);
+  });
+
+  it("records the answers on the card they belong to", () => {
+    const transcript = new Transcript();
+    transcript.apply({ type: "question_request", id: 1, questions: [{ question: "Pick" }] });
+    transcript.apply({ type: "question_request", id: 2, questions: [{ question: "Name it" }] });
+    const messages = transcript.answerQuestion(2, [{ question: "Name it", values: ["oxide"] }]);
+    assert.ok(messages);
+    assert.deepEqual(messages[0], {
+      k: "question",
+      id: 2,
+      state: "answered",
+      label: "oxide",
+    });
+    const cards = transcript.items.filter((item) => item.kind === "question");
+    assert.deepEqual(
+      cards.map((entry) => [entry.id, entry.state]),
+      [
+        [1, "pending"],
+        [2, "answered"],
+      ],
+    );
+  });
+
+  it("reads an empty answer as a dismissal", () => {
+    const transcript = new Transcript();
+    const item = push(
+      transcript.apply({ type: "question_request", id: 3, questions: [{ question: "Pick" }] })[0],
+    );
+    assert.deepEqual(transcript.answerQuestion(3, []), [
+      { k: "question", id: item.id, state: "dismissed", label: "Dismissed without an answer" },
+    ]);
+  });
+
+  it("answers a question once", () => {
+    const transcript = new Transcript();
+    transcript.apply({ type: "question_request", id: 5, questions: [{ question: "Pick" }] });
+    assert.ok(transcript.answerQuestion(5, [{ question: "Pick", values: ["a"] }]));
+    assert.equal(transcript.answerQuestion(5, [{ question: "Pick", values: ["b"] }]), null);
+    assert.equal(transcript.answerQuestion(99, []), null);
+  });
+
+  it("settles a question whose run ended before an answer", () => {
+    const transcript = new Transcript();
+    transcript.apply({ type: "question_request", id: 1, questions: [{ question: "Pick" }] });
+    transcript.apply({ type: "agent_end", messages: [] });
+    assert.deepEqual(transcript.closeQuestions(), [
+      { k: "question", id: 1, state: "closed", label: "Not answered" },
+    ]);
+    assert.equal(transcript.answerQuestion(1, []), null);
+    // Nothing is waiting a second time.
+    assert.deepEqual(transcript.closeQuestions(), []);
+  });
+
   it("titles the thread from the first message", () => {
     const transcript = new Transcript();
     assert.equal(transcript.title(), "", "an empty thread has no title");

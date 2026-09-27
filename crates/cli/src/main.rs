@@ -94,6 +94,12 @@ struct Cli {
     #[arg(long = "no-ask-approvals", conflicts_with = "ask_approvals")]
     no_ask_approvals: bool,
 
+    /// Let the model put a question to the user through the `ask` tool, which
+    /// `--mode rpc` answers with a `question` frame. Without it the tool is not
+    /// offered, so a run with nobody to answer never asks
+    #[arg(long = "ask-questions")]
+    ask_questions: bool,
+
     /// Allowlist specific tools (comma-separated); accepts Pi and legacy names
     #[arg(long = "tools", short = 't', value_name = "LIST")]
     tools: Option<String>,
@@ -648,13 +654,14 @@ async fn main() -> Result<()> {
             tool_filter,
             cli.ask_approvals,
             cli.no_ask_approvals,
+            cli.ask_questions,
         )
         .await;
     }
 
-    // Only rpc mode and the interactive TUI can carry an answer; every other
-    // mode has no channel, so the flag would silently run the tool it was meant
-    // to gate.
+    // Only rpc mode and the interactive TUI can carry an approval answer; every
+    // other mode has no channel, so the flag would silently run the tool it was
+    // meant to gate.
     if cli.ask_approvals || cli.no_ask_approvals {
         if explicit_prompt || mode != "print" {
             anyhow::bail!(
@@ -663,6 +670,14 @@ async fn main() -> Result<()> {
         }
         config.auto_approve =
             resolve_auto_approve(cli.ask_approvals, cli.no_ask_approvals, config.auto_approve);
+    }
+    // Questions are answered by a client on the rpc channel, and by nobody else:
+    // the terminal has no dialog for one, so the tool that would ask is not
+    // offered there.
+    if cli.ask_questions {
+        anyhow::bail!(
+            "--ask-questions needs --mode rpc, where the answer travels on the same channel"
+        );
     }
 
     if explicit_prompt {
@@ -759,6 +774,9 @@ async fn run_print(
         command_agent,
         session: log.clone(),
         approve: Some(cli_approver(config.auto_approve)),
+        // A print run has no dialog to answer a question in, so the model is not
+        // offered the tool that would ask one.
+        ask: None,
         steering: Steering::new(),
         follow_ups: Steering::new(),
         cancel: Cancel::new(),
@@ -813,6 +831,9 @@ async fn run_print_text(mut rx: tokio::sync::mpsc::UnboundedReceiver<AgentEvent>
             // Print mode has no way to ask: it always runs a non-interactive
             // approver, so a request here can only be a no-op.
             AgentEvent::ApprovalRequest { .. } => {}
+            // Print mode is given no asker, so `ask` is not offered to the
+            // model and a question cannot arrive.
+            AgentEvent::QuestionRequest { .. } => {}
             AgentEvent::Compaction {
                 summarized,
                 tokens_before,
@@ -907,7 +928,8 @@ fn resolve_auto_approve(ask_approvals: bool, no_ask_approvals: bool, stored: boo
 /// Everything needed to start one agent run is `runner::AgentRun`.
 /// RPC mode: reads JSONL requests from stdin and streams JSONL events to stdout.
 /// Each `prompt` request starts a fresh agent run on the session history, and
-/// an `approval` request answers a tool that is waiting for the user.
+/// an `approval` request answers a tool that is waiting for the user, a
+/// `question` request a question the model asked.
 async fn run_rpc_mode(
     mut config: Config,
     cwd: PathBuf,
@@ -915,6 +937,7 @@ async fn run_rpc_mode(
     tool_filter: cli::ToolFilter,
     ask_approvals: bool,
     no_ask_approvals: bool,
+    ask_questions: bool,
 ) -> Result<()> {
     config.require_api_key()?;
     config.tool_filter = tool_filter;
@@ -935,6 +958,9 @@ async fn run_rpc_mode(
     };
 
     let approvals = asking.then(oxide_core::approval::ApprovalBroker::new);
+    // `--ask-questions` says the client understands `question_request` and will
+    // answer it; without it the `ask` tool is not offered at all.
+    let questions = ask_questions.then(oxide_core::ask::AskBroker::new);
     let (prompt_tx, mut prompt_rx) = tokio::sync::mpsc::unbounded_channel::<RpcRequest>();
     let (event_tx, event_rx) = unbounded_channel();
     let (control_tx, control_rx) = tokio::sync::mpsc::unbounded_channel();
@@ -944,6 +970,7 @@ async fn run_rpc_mode(
     // is busy streaming the turn that is waiting for the answer, so both hold
     // a handle on the same broker.
     let driver_approvals = approvals.clone();
+    let driver_questions = questions.clone();
     let driver = tokio::spawn(async move {
         while let Some(request) = prompt_rx.recv().await {
             let RpcRequest::Prompt { text, images } = request else {
@@ -973,6 +1000,9 @@ async fn run_rpc_mode(
                 Some(broker) => Some(broker.approver(&cwd, run_tx.clone(), steering.clone())),
                 None => Some(cli_approver(config.auto_approve)),
             };
+            let ask = driver_questions
+                .as_ref()
+                .map(|broker| broker.asker(run_tx.clone()));
             let run = runner::AgentRun {
                 config: config.clone(),
                 cwd: cwd.clone(),
@@ -982,6 +1012,7 @@ async fn run_rpc_mode(
                 command_agent,
                 session: log.clone(),
                 approve,
+                ask,
                 steering,
                 follow_ups: Steering::new(),
                 cancel: Cancel::new(),
@@ -1003,7 +1034,7 @@ async fn run_rpc_mode(
         Ok::<(), anyhow::Error>(())
     });
 
-    let result = cli::run_rpc(event_rx, control_rx, prompt_tx, approvals).await;
+    let result = cli::run_rpc(event_rx, control_rx, prompt_tx, approvals, questions).await;
     let _ = driver.await;
     writeln!(out)?;
     result

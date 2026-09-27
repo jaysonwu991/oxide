@@ -703,6 +703,150 @@
     entry.actions.appendChild(hint);
   }
 
+  // ---------- questions ----------
+
+  /// A question the model asked through the `ask` tool: the agent is holding the
+  /// turn until it is answered, which is what a skill does when it needs a
+  /// choice only the user can make. Each question offers its own options —
+  /// radios for one answer, boxes for several — and a field for an answer in the
+  /// user's own words, so a free-text question and a choice are the same card.
+  /// The answers travel to the host, which forwards them over the CLI's request
+  /// channel; the card is repainted from the `k: "question"` update it sends
+  /// back.
+  function questionNode(item) {
+    const wrap = document.createElement("div");
+    wrap.className = "question";
+    const head = document.createElement("div");
+    head.className = "qhead";
+    const mark = document.createElement("span");
+    mark.className = "qmark";
+    mark.textContent = "?";
+    const title = document.createElement("span");
+    title.className = "qtitle";
+    title.textContent = String(item.title || "Question");
+    head.append(mark, title);
+    const body = document.createElement("div");
+    body.className = "qbody";
+    const actions = document.createElement("div");
+    actions.className = "qactions";
+    wrap.append(head, body, actions);
+    return { el: wrap, body, actions };
+  }
+
+  /// One question's own block: its text, its options, and the field for an
+  /// answer of the user's own wording. A single-select question preselects its
+  /// first option, so an answer can never be blank by accident.
+  function questionBlock(question, index) {
+    const block = document.createElement("div");
+    block.className = "qblock";
+    if (question.header) {
+      const header = document.createElement("div");
+      header.className = "qheader";
+      header.textContent = question.header;
+      block.appendChild(header);
+    }
+    const text = document.createElement("p");
+    text.className = "qtext";
+    text.textContent = String(question.question || "");
+    block.appendChild(text);
+    const options = Array.isArray(question.options) ? question.options : [];
+    options.forEach((option, position) => {
+      const row = document.createElement("label");
+      row.className = "qoption";
+      const input = document.createElement("input");
+      input.type = question.multiSelect ? "checkbox" : "radio";
+      input.name = `question-${index}`;
+      input.value = String(option.label || "");
+      input.dataset.question = String(index);
+      // One class for both widgets: the input's own type already says whether
+      // the answer is the checked radio or the checked boxes.
+      input.className = "qchoice";
+      const label = document.createElement("span");
+      label.className = "qlabel";
+      label.textContent = String(option.label || "");
+      row.append(input, label);
+      if (option.description) {
+        const description = document.createElement("span");
+        description.className = "qdetail";
+        description.textContent = option.description;
+        row.appendChild(description);
+      }
+      if (!question.multiSelect && position === 0) input.checked = true;
+      block.appendChild(row);
+    });
+    const free = document.createElement("input");
+    free.className = "qfree";
+    free.type = "text";
+    free.dataset.question = String(index);
+    free.placeholder = options.length ? "Or type an answer…" : "Type an answer…";
+    block.appendChild(free);
+    return block;
+  }
+
+  /// What was ticked and typed, one entry per question, each echoing the
+  /// question it belongs to so the model reads the answers in the terms it asked
+  /// them in.
+  function collectAnswers(entry) {
+    return (entry.item.questions || []).map((question, index) => {
+      const values = [];
+      entry.body
+        .querySelectorAll(`.qchoice[data-question="${index}"]:checked`)
+        .forEach((input) => values.push(input.value));
+      const typed = entry.body.querySelector(`.qfree[data-question="${index}"]`);
+      const text = typed ? String(typed.value || "").trim() : "";
+      if (text) values.push(text);
+      return { question: question.question, values };
+    });
+  }
+
+  /// Paints a card from its item: a waiting one offers the fields, and an
+  /// answered one keeps only what it was answered with.
+  function paintQuestion(entry) {
+    const item = entry.item;
+    const waiting = item.state === "pending";
+    entry.el.classList.toggle("waiting", waiting);
+    entry.el.classList.toggle("answered", item.state === "answered");
+    entry.body.textContent = "";
+    entry.actions.textContent = "";
+    if (!waiting) {
+      const done = document.createElement("span");
+      done.className = "qdone";
+      done.textContent = item.label || "Answered";
+      entry.actions.appendChild(done);
+      return;
+    }
+    for (const [index, question] of (item.questions || []).entries()) {
+      entry.body.appendChild(questionBlock(question, index));
+    }
+    const answer = document.createElement("button");
+    answer.type = "button";
+    answer.className = "primary";
+    answer.textContent = "Answer";
+    answer.title = "Send these answers to the agent";
+    answer.addEventListener("click", () =>
+      vscode.postMessage({
+        k: "question",
+        requestId: item.requestId,
+        answers: collectAnswers(entry),
+      }),
+    );
+    // Skip is a dismissal, not a set of blank answers: the CLI tells the model
+    // nobody answered, so it continues with a default instead of waiting.
+    const skip = document.createElement("button");
+    skip.type = "button";
+    skip.className = "ghost";
+    skip.textContent = "Skip";
+    skip.title = "Answer nothing and let the agent continue with its own default";
+    skip.addEventListener("click", () =>
+      vscode.postMessage({ k: "question", requestId: item.requestId, answers: [] }),
+    );
+    entry.actions.append(answer, skip);
+    const hint = document.createElement("span");
+    hint.className = "awaiting";
+    hint.textContent = "Waiting for your answer…";
+    entry.actions.appendChild(hint);
+  }
+
   // ---------- transcript items ----------
 
   function itemNode(item) {
@@ -746,6 +890,7 @@
       return { el };
     }
     if (item.kind === "approval") return approvalNode(item);
+    if (item.kind === "question") return questionNode(item);
     const card = toolCard(item);
     return { ...card, started: item.running ? Date.now() : 0 };
   }
@@ -779,6 +924,7 @@
     else if (item.kind === "thinking") entry.el.textContent = item.text;
     else if (item.kind === "tool") paintTool(entry);
     else if (item.kind === "approval") paintApproval(entry);
+    else if (item.kind === "question") paintQuestion(entry);
     scrollDown(keepScroll);
     return entry;
   }
@@ -847,6 +993,15 @@
         entry.item.state = message.state;
         entry.item.label = message.label;
         paintApproval(entry);
+        scrollDown(false);
+        return;
+      }
+      case "question": {
+        const entry = entries.get(message.id);
+        if (!entry) return;
+        entry.item.state = message.state;
+        entry.item.label = message.label;
+        paintQuestion(entry);
         scrollDown(false);
         return;
       }
