@@ -31,7 +31,8 @@ pub enum Kind {
     Client,
     /// A configured command or prompt template: send `/name args`.
     Prompt,
-    /// A configured skill: send `/skill:<name>`.
+    /// A configured skill: send `/name`, its own name. The terminal spells it
+    /// `/skill:<name>` and the CLI resolves both.
     Skill,
 }
 
@@ -310,9 +311,16 @@ fn configured(ecosystem: &ecosystem::Ecosystem) -> Vec<CommandEntry> {
         });
     }
     for skill in &ecosystem.skills {
-        let name = format!("skill:{}", skill.name);
+        // A skill is a slash command of its own: `/name` is the spelling a
+        // client's menu lists it under, the way Claude Code lists one. The
+        // terminal's `/skill:<name>` is the same skill and resolves too. A
+        // command or template of the same name is what `/name` runs, so the
+        // skill is not listed under a spelling that would run something else.
+        if entries.iter().any(|entry| entry.name == skill.name) {
+            continue;
+        }
         entries.push(CommandEntry {
-            name,
+            name: skill.name.clone(),
             aliases: Vec::new(),
             description: skill
                 .description
@@ -496,10 +504,7 @@ mod tests {
         assert_eq!(summarize.arguments.as_deref(), Some("path"));
         assert_eq!(summarize.source, "project");
 
-        let skill = entries
-            .iter()
-            .find(|entry| entry.name == "skill:tdd")
-            .unwrap();
+        let skill = entries.iter().find(|entry| entry.name == "tdd").unwrap();
         assert_eq!(skill.kind, "skill");
         assert_eq!(skill.description, "Write the test first");
         // A skill takes a free-form argument, so the entry is completed for
@@ -566,6 +571,34 @@ mod tests {
             "builtin"
         );
         assert!(!names(&entries).contains(&"mcps"));
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn a_skill_a_command_claims_is_listed_once() {
+        let dir = temp_dir("skill_shadow");
+        std::fs::create_dir_all(dir.join(".oxide").join("commands")).unwrap();
+        std::fs::create_dir_all(dir.join(".oxide").join("skills").join("tdd")).unwrap();
+        std::fs::write(
+            dir.join(".oxide").join("commands").join("tdd.md"),
+            "---\ndescription: The project's own test-first command\n---\nWrite the test first.\n",
+        )
+        .unwrap();
+        std::fs::write(
+            dir.join(".oxide")
+                .join("skills")
+                .join("tdd")
+                .join("SKILL.md"),
+            "---\ndescription: A skill named the same\n---\nWrite the test first, too.\n",
+        )
+        .unwrap();
+
+        let entries = palette_with(&dir, true);
+        let rows: Vec<&CommandEntry> = entries.iter().filter(|entry| entry.name == "tdd").collect();
+        // The command is what `/tdd` resolves to, so it is the one row.
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].kind, "prompt");
+        assert_eq!(rows[0].description, "The project's own test-first command");
         std::fs::remove_dir_all(&dir).ok();
     }
 

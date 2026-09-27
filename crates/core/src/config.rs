@@ -1153,7 +1153,8 @@ impl Config {
         if !self.ecosystem.skills.is_empty() {
             let mut list = String::from(
                 "# Available skills\nLoad a skill with the `skill` tool when its description \
-                 matches the task; users can also force one with `/skill:<name>`.",
+                 matches the task; users can also force one by naming it after a slash \
+                 (`/<name>`, which every front-end lists).",
             );
             for skill in &self.ecosystem.skills {
                 let description = skill.description.clone().unwrap_or_default();

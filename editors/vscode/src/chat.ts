@@ -28,6 +28,7 @@ import {
   type AttachmentKind,
 } from "./core/attachments";
 import { AttachmentStore, previewForDataUrl, previewForFile } from "./attachments";
+import { atSuggestions, atToken } from "./core/at";
 import { isApprovalDecision, type ApprovalDecision } from "./core/approvals";
 import { modelsForProvider } from "./core/config";
 import type { QuestionAnswer } from "./core/questions";
@@ -46,6 +47,13 @@ import {
   type DialogState,
 } from "./core/dialogs";
 import { isMcpCommand, mcpListArgs, mcpToggleArgs, parseMcpList, type McpServerView } from "./core/mcps";
+import {
+  commandRows,
+  parseCommandList,
+  routeCommand,
+  type CommandEntry,
+  type PanelAction,
+} from "./core/palette";
 import { footerState, nextReasoning, REASONING_LEVELS, type FooterState } from "./core/footer";
 import { projectInfo, type ProjectDeps, type ProjectInfo } from "./core/project";
 import {
@@ -79,8 +87,30 @@ import {
 /// than this is trimmed rather than shipped to the model in full.
 const MAX_CONTEXT_LINES = 2_000;
 
+/// How many paths the composer's completion walks before it gives up. A very
+/// large project is offered what the search provider returns first rather than
+/// holding the list until the whole tree has been read.
+const MAX_WORKSPACE_PATHS = 10_000;
+
+/// What `/help` says in the panel: the commands it answers itself, since every
+/// other command and skill is one the CLI expands. The terminal and the desktop
+/// app list the whole catalog, which is why this is not built from it.
+const PANEL_HELP =
+  "Panel commands: /model /reasoning /agent /trust (the footer's chips), /mcps, /session, /new, /attach, /usage. " +
+  "A project's commands and skills are completed from `/` and run by the CLI — pick a skill to load its instructions.";
+
 interface Chip extends ContextChip {
   block: ContextBlock;
+}
+
+/// The file the editor has open, tracked as a path rather than as a copy of its
+/// text: a chip that has been sitting in the composer since before the last
+/// save has to send what the buffer says when the message goes, not what it
+/// said when the panel first looked at it.
+interface AutoContext {
+  id: number;
+  /// The absolute path of the file being edited.
+  file: string;
 }
 
 /// An image or PDF the composer is holding. A pasted blob has no path of its
@@ -125,6 +155,27 @@ export class ChatController {
   private readonly store = new AttachmentStore();
   private context: Chip[] = [];
   private attachments: Attachment[] = [];
+  /// The editor's own file chip, and whether the user removed it: a file they
+  /// took out stays out until they open another one.
+  private auto: AutoContext | null = null;
+  private autoHidden = false;
+  /// The project's own paths, for the composer's `@path` completion: every file
+  /// with each directory above it (`oxide_core::tools::workspace_paths`, which
+  /// is what the terminal completes from). Read once per folder and reused,
+  /// because walking a project is not something to repeat per keystroke.
+  private pathCache: { root: string; paths: string[] } | null = null;
+  /// A read already in flight, so a burst of keystrokes shares one walk.
+  private pathLoad: Promise<string[]> | null = null;
+  /// The CLI's own catalog for this project (`oxide commands --json`) — the
+  /// built-in commands and the project's own commands, prompt templates and
+  /// skills. It is what the terminal's `/` menu and the desktop app's palette
+  /// are built from, so the panel's palette offers what the CLI resolves, and a
+  /// row that is taken is a message the CLI expands rather than a prompt the
+  /// model has to make sense of. `null` before the first read, and keyed by the
+  /// folder it was read in, because the active editor decides which project the
+  /// panel is on and one window can hold more than one.
+  private commandCache: { root: string; entries: CommandEntry[] } | null = null;
+  private commandLoad: Promise<CommandEntry[]> | null = null;
   private nextChipId = 1;
   private turn: Turn | null = null;
   private run: RunState | null = null;
@@ -237,8 +288,18 @@ export class ChatController {
   }
 
   /// A setting or the workspace changed: the chips are stale until the shared
-  /// configuration is re-read, which `stateMessage` does.
+  /// configuration is re-read, which `stateMessage` does. `autoContext` is the
+  /// one setting that changes the composer's own chips (it decides whether the
+  /// editor's file is tracked at all), so the chip is brought back in step
+  /// before the state is painted. The completion's own paths follow the
+  /// exclude settings, so the walk is dropped and taken again.
   configurationChanged(): void {
+    this.pathCache = null;
+    // The catalog follows the project too: a setting change is the one signal
+    // there is that the trust decision or the CLI's configuration may have
+    // moved, and a skill the menu lists is loaded by the CLI at the far end.
+    this.commandCache = null;
+    this.syncActiveEditor();
     this.broadcast(this.stateMessage());
   }
 
@@ -361,7 +422,170 @@ export class ChatController {
     return readTextFile(resolved);
   }
 
+  // ---------- `@path` completion ----------
+
+  /// The rows of the composer's `@path` completion for a value and a caret.
+  ///
+  /// Returned rather than broadcast: the rows replace the token in the box the
+  /// caret was read from, so a second pane must not be handed another pane's
+  /// token and splice it into a value of its own. `core/at.ts` decides the token
+  /// and the rows; this supplies the project's paths, which is the one part the
+  /// view cannot know. `seq` comes back with the answer, so a list that arrives
+  /// after the reader has typed on is dropped instead of replacing the rows
+  /// under a caret that has moved.
+  async completeAt(value: string, caret: number, seq: number): Promise<ViewMessage> {
+    const token = atToken(value, caret);
+    if (!token) return { k: "atSuggestions", seq, kind: "path", start: 0, end: 0, rows: [] };
+    const rows = atSuggestions(await this.workspacePathList(), token);
+    return { k: "atSuggestions", seq, kind: "path", start: token.start, end: token.end, rows };
+  }
+
+  /// The rows of the composer's `/` palette for a value: the commands, prompt
+  /// templates and skills the CLI lists for this project, matched the way the
+  /// terminal and the desktop app match them. Returned rather than broadcast,
+  /// for the same reason as the `@path` rows — a palette row replaces the value
+  /// in the box that asked.
+  async completePalette(value: string, seq: number): Promise<ViewMessage> {
+    const answer = commandRows(await this.commands(), value);
+    return {
+      k: "paletteRows",
+      seq,
+      kind: "command",
+      start: answer?.start ?? 0,
+      end: answer?.end ?? 0,
+      rows: answer?.rows ?? [],
+    };
+  }
+
+  /// The CLI's catalog for this project's folder, read once and reused: it is
+  /// the listing a palette row is taken from, so it is the CLI's own answer
+  /// rather than the extension's guess at what the project holds. A failed read
+  /// is remembered as an empty catalog, so a broken CLI spawns once rather than
+  /// on every keystroke; the next setting change or finished turn tries again,
+  /// and so does a move to another folder — which is why the answer is kept
+  /// with the root it came from rather than on its own.
+  private async commands(): Promise<CommandEntry[]> {
+    const root = this.folder()?.uri.fsPath ?? "";
+    if (!root) return [];
+    if (this.commandCache?.root === root) return this.commandCache.entries;
+    if (!this.commandLoad) {
+      this.commandLoad = this.readCommands(root).finally(() => {
+        this.commandLoad = null;
+      });
+    }
+    return this.commandLoad;
+  }
+
+  private async readCommands(root: string): Promise<CommandEntry[]> {
+    if (this.folder()?.uri.fsPath !== root) return [];
+    const result = await runCapture(this.binary(), ["commands", "--json"], root);
+    if (result.error || result.code !== 0) {
+      const detail = result.error || firstLine(result.stderr) || `exit ${result.code}`;
+      this.output.appendLine(`commands --json failed: ${detail}`);
+      // The empty catalog is this folder's answer, not a miss: a CLI that cannot
+      // answer is asked once, not on every keystroke of `/`.
+      this.commandCache = { root, entries: [] };
+      return [];
+    }
+    const entries = parseCommandList(result.stdout);
+    // The folder can move while the CLI runs: an answer for the project the user
+    // has left is not this one's, so it is not returned or kept for it either.
+    if (this.folder()?.uri.fsPath !== root) return [];
+    this.commandCache = { root, entries };
+    return entries;
+  }
+
+  /// The project's paths as the terminal lists them for its own `@` completion:
+  /// every file, plus each directory above it with a trailing `/`, so a folder
+  /// can be completed and the query narrowed inside it. The folders' own files
+  /// come from the search provider, so the exclude settings (and the ignored
+  /// files it knows about) leave build output out.
+  private async workspacePathList(): Promise<string[]> {
+    const root = this.folder()?.uri.fsPath ?? "";
+    if (!root) return [];
+    if (this.pathCache?.root === root) return this.pathCache.paths;
+    if (!this.pathLoad) {
+      this.pathLoad = this.readWorkspacePaths(root).finally(() => {
+        this.pathLoad = null;
+      });
+    }
+    return this.pathLoad;
+  }
+
+  private async readWorkspacePaths(root: string): Promise<string[]> {
+    const folder = this.folder();
+    if (!folder || folder.uri.fsPath !== root) return [];
+    const found = await vscode.workspace.findFiles(
+      new vscode.RelativePattern(folder, "**/*"),
+      "**/{node_modules,.git}/**",
+      MAX_WORKSPACE_PATHS,
+    );
+    const paths = new Set<string>();
+    for (const uri of found) {
+      if (uri.scheme !== "file") continue;
+      const relative = relativePath(root, uri.fsPath);
+      if (!relative || relative.startsWith("..") || relative.startsWith("/")) continue;
+      paths.add(relative);
+      let slash = relative.lastIndexOf("/");
+      while (slash > 0) {
+        paths.add(relative.slice(0, slash + 1));
+        slash = relative.slice(0, slash).lastIndexOf("/");
+      }
+    }
+    // A walk that outlived the folder it started in answers nothing: the list is
+    // the project's, and the panel is no longer on that project.
+    if (this.folder()?.uri.fsPath !== root) return [];
+    this.pathCache = { root, paths: [...paths] };
+    return this.pathCache.paths;
+  }
+
   // ---------- context and attachments ----------
+
+  /// Keeps the composer's chip for the file the editor has open in step with
+  /// the editor. It is the only place the tracked file is set — called when the
+  /// active editor changes, when a setting changes and once at activation — so
+  /// nothing else has to remember to keep it current.
+  syncActiveEditor(): void {
+    const document = vscode.window.activeTextEditor?.document;
+    const file = document && document.uri.scheme === "file" ? document.uri.fsPath : null;
+    const wanted = file && this.setting<boolean>("autoContext", true) ? file : null;
+    if (!wanted) {
+      if (!this.auto) return;
+      this.auto = null;
+      this.autoHidden = false;
+      this.broadcastChips();
+      return;
+    }
+    if (this.auto?.file === wanted) return;
+    // A chip removed for one file comes back with the next one.
+    this.autoHidden = false;
+    this.auto = { id: this.nextChipId++, file: wanted };
+    this.broadcastChips();
+  }
+
+  /// The chip for the file the editor has open, painted after the ones the user
+  /// attached: it is context they did not ask for, and its ✕ takes it out for
+  /// as long as that file is the one being edited.
+  private autoChip(): ContextChip | null {
+    if (!this.auto || this.autoHidden) return null;
+    return { id: this.auto.id, label: this.relativeTo(this.auto.file), auto: true };
+  }
+
+  /// The block the tracked chip stands for. The text is read here rather than
+  /// when the chip was painted, so an unsaved edit is still what the run
+  /// receives; a file too long for a prompt is trimmed like any other block,
+  /// silently, since nothing was attached by hand to report on.
+  private autoBlock(): ContextBlock | null {
+    const auto = this.auto;
+    if (!auto || this.autoHidden) return null;
+    const document = vscode.window.activeTextEditor?.document;
+    const text =
+      document && document.uri.scheme === "file" && document.uri.fsPath === auto.file
+        ? document.getText()
+        : readTextFile(auto.file);
+    if (text === null || text.includes("\u0000")) return null;
+    return trimLines({ path: this.relativeTo(auto.file), text }).block;
+  }
 
   /// A file's text or an editor selection the message carries.
   addContext(block: ContextBlock): ContextChip {
@@ -471,8 +695,15 @@ export class ChatController {
     }
   }
 
-  /// Removes one pending chip, whichever list it is in.
+  /// Removes one pending chip, whichever list it is in. Removing the tracked
+  /// file's chip hides it rather than forgetting it, so it is painted again
+  /// when another file is opened.
   removeChip(id: number): void {
+    if (this.auto?.id === id) {
+      this.autoHidden = true;
+      this.broadcastChips();
+      return;
+    }
     const before = this.context.length + this.attachments.length;
     this.context = this.context.filter((chip) => chip.id !== id);
     this.attachments = this.attachments.filter((chip) => chip.id !== id);
@@ -485,13 +716,27 @@ export class ChatController {
     if (text) this.notice(text, "warn");
   }
 
+  /// Empties the composer. The tracked file goes with the rest — "remove
+  /// everything pending" — and comes back when another file is opened.
   clearChips(): void {
-    if (!this.context.length && !this.attachments.length) return;
+    this.autoHidden = this.auto !== null;
+    this.dropChips();
+  }
+
+  /// Drops the chips the user attached without touching the one for the file
+  /// the editor has open: a new thread or a resumed one is about the
+  /// conversation, not about what is being edited.
+  private dropChips(): void {
+    const tracked = this.auto !== null && !this.autoHidden;
+    if (!this.context.length && !this.attachments.length && !tracked) return;
     this.context = [];
     this.attachments = [];
     this.broadcastChips();
   }
 
+  /// What the composer is holding of its own. The file the editor has open is
+  /// not counted: a run that carries only that has nothing asked of it, so an
+  /// empty message stays empty.
   get contextCount(): number {
     return this.context.length + this.attachments.length;
   }
@@ -533,7 +778,11 @@ export class ChatController {
   }
 
   private chips(): ContextChip[] {
-    return this.context.map((chip) => ({ id: chip.id, label: chip.label }));
+    const tracked = this.autoChip();
+    return [
+      ...this.context.map((chip) => ({ id: chip.id, label: chip.label })),
+      ...(tracked ? [tracked] : []),
+    ];
   }
 
   private attachmentChips(): AttachmentChip[] {
@@ -563,9 +812,27 @@ export class ChatController {
       await this.resumeSession();
       return;
     }
+    // The rest of the built-ins are the panel's own draws too — the footer's
+    // chips under another name — and a client command it has no action for is
+    // answered here rather than shipped to the model as a prompt. A configured
+    // command or a skill is deliberately left alone: the CLI expands it, which
+    // is what loads the skill.
+    if (this.contextCount === 0) {
+      const route = routeCommand(await this.commands(), message);
+      if (route?.kind === "action") {
+        await this.runPanelCommand(route.action);
+        return;
+      }
+      if (route?.kind === "refused") {
+        this.showNotice(`/${route.name} is not one this panel runs — use the terminal.`);
+        return;
+      }
+    }
     if (this.turn) {
-      // Snapshot the chips: the composer stays editable while the turn runs,
-      // so a later chip must not join a message already queued.
+      // Snapshot the chips: the composer stays editable while the turn runs, so
+      // a later chip must not join a message already queued. The file the
+      // editor has open is not snapshotted — the chip stands for what is being
+      // edited, so a queued message goes with whatever is open when it goes.
       this.queue.push({
         text: message,
         context: [...this.context],
@@ -599,14 +866,22 @@ export class ChatController {
     const chips = [...this.context];
     const attached = [...this.attachments];
     const blocks = chips.map((chip) => chip.block);
+    // The tracked file is read now rather than from the copy its chip was
+    // painted with, so the run receives the buffer as it stands — unsaved edits
+    // included. A file the message already carries, attached by hand or named
+    // with `@path`, is not sent twice.
+    const tracked = this.autoBlock();
+    const carried = new Set([...blocks, ...expanded.blocks].map((block) => block.path));
+    const active = tracked && !carried.has(tracked.path) ? tracked : null;
+    const carriedBlocks = active ? [active, ...blocks] : blocks;
     // An `@path` reference to an image or PDF is media, not prompt text — the
     // same split the CLI's own `@file` expansion makes.
-    const referenced = blocks
+    const referenced = carriedBlocks
       .filter((block) => isAttachmentPath(block.path))
       .map((block) => path.resolve(cwd, block.path))
       .concat(expanded.attachments);
     const prompt = buildPrompt(expanded.message, [
-      ...blocks.filter((block) => !isAttachmentPath(block.path)),
+      ...carriedBlocks.filter((block) => !isAttachmentPath(block.path)),
       ...expanded.blocks,
     ]);
     if (!prompt) {
@@ -628,10 +903,12 @@ export class ChatController {
     this.context = [];
     this.attachments = [];
     this.broadcastChips();
-    // The bubble names what was sent: the pending context and attachments plus
-    // whatever `@path` references were resolved out of the message itself.
+    // The bubble names what was sent: the tracked file, the pending context and
+    // attachments, and whatever `@path` references were resolved out of the
+    // message itself.
     this.broadcastItem(
       this.transcript.pushUser(message, [
+        ...(active ? [{ id: 0, label: contextLabel(active) }] : []),
         ...chips.map((chip) => ({ id: chip.id, label: chip.label })),
         ...attached.map((chip) => ({ id: chip.id, label: chip.label })),
         ...expanded.blocks.map((block) => ({ id: 0, label: contextLabel(block) })),
@@ -792,6 +1069,11 @@ export class ChatController {
 
     // The run may have created a branch, committed, or written `.oxide/` files.
     this.refreshProject();
+    // A turn is where files appear, so the completion's list of them is taken
+    // again rather than answering out of what the project held when it started —
+    // and the same goes for a command or a skill the agent wrote into `.oxide/`.
+    this.pathCache = null;
+    this.commandCache = null;
     this.broadcastStatus();
     // The view's status-bar spinner is driven by this event, and `handleExit`
     // runs after the last stream event, so refresh it here too.
@@ -832,7 +1114,7 @@ export class ChatController {
     this.sessionTitle = null;
     this.continueLast = false;
     this.queue = [];
-    this.clearChips();
+    this.dropChips();
     this.broadcast(this.stateMessage());
     this.showNotice("New chat: the next message starts a thread of its own.");
   }
@@ -917,7 +1199,7 @@ export class ChatController {
     this.transcript.sessionId = value;
     this.sessionTitle = session.label || null;
     this.queue = [];
-    this.clearChips();
+    this.dropChips();
     this.broadcast(this.stateMessage());
     await this.loadHistory(value, label);
   }
@@ -1118,8 +1400,9 @@ export class ChatController {
 
   // ---------- settings commands ----------
 
-  /// A click on a footer chip. The chips are the same actions the commands
-  /// expose, so both entry points share one implementation.
+  /// A click on a footer chip, or the command that names the same action. Both
+  /// entry points share one implementation, so a chip and its command cannot
+  /// drift apart.
   async control(id: string): Promise<void> {
     switch (id) {
       case "model":
@@ -1134,6 +1417,38 @@ export class ChatController {
         return this.resumeSession();
       default:
         return;
+    }
+  }
+
+  /// A built-in command the panel answers itself: `/model` and `/trust` are the
+  /// footer's chips, `/mcps`, `/session`, `/new` and `/attach` are the panel's
+  /// own dialogs and pickers, and `/help` and `/usage` are what it can say
+  /// about itself. Anything the panel has no action for (`/permissions`, the
+  /// desktop's own `/theme`) is refused in `send` rather than sent on.
+  private async runPanelCommand(action: PanelAction): Promise<void> {
+    switch (action) {
+      case "help":
+        this.showNotice(PANEL_HELP);
+        return;
+      case "mcp":
+        return this.showMcps();
+      case "session":
+        return this.resumeSession();
+      case "new":
+        return this.newSession();
+      case "attach":
+        return this.pickFiles();
+      case "usage": {
+        const usage = this.footer().usage;
+        this.showNotice(usage || "No usage reported yet — the footer fills in per turn.");
+        return;
+      }
+      case "model":
+      case "reasoning":
+      case "agent":
+        return this.control(action);
+      case "trust":
+        return this.control("access");
     }
   }
 

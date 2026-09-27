@@ -189,7 +189,8 @@ impl Ecosystem {
 
     /// Resolves a leading `/command` into its expanded prompt and the agent
     /// routing (`agent`, `subtask`) declared in the command's frontmatter.
-    /// Prompt templates are expanded as plain prompts (no routing).
+    /// Prompt templates are expanded as plain prompts (no routing), and a skill
+    /// is loaded by its own name.
     pub fn resolve_command(&self, input: &str) -> Option<ResolvedCommand> {
         let trimmed = input.trim();
         let rest = trimmed.strip_prefix('/')?;
@@ -203,25 +204,35 @@ impl Ecosystem {
                 subtask: command.subtask,
             });
         }
-        if let Some(skill_name) = name.strip_prefix("skill:") {
-            let skill = self.skills.iter().find(|skill| skill.name == skill_name)?;
-            let mut prompt = skill.content.clone();
-            if !arguments.is_empty() {
-                prompt.push_str("\n\nUser: ");
-                prompt.push_str(arguments);
-            }
+        if let Some(template) = self.prompt_template(name) {
             return Some(ResolvedCommand {
-                prompt,
+                prompt: template.expand(arguments),
                 agent: None,
                 subtask: false,
             });
         }
-        let template = self.prompt_template(name)?;
+        let skill = self.skill(name)?;
+        let mut prompt = skill.content.clone();
+        if !arguments.is_empty() {
+            prompt.push_str("\n\nUser: ");
+            prompt.push_str(arguments);
+        }
         Some(ResolvedCommand {
-            prompt: template.expand(arguments),
+            prompt,
             agent: None,
             subtask: false,
         })
+    }
+
+    /// The skill a name refers to. A skill is a slash command of its own — the
+    /// spelling a client's `/` menu lists it under — and `/skill:<name>` stays
+    /// the terminal's spelling; both resolve to the same skill. A command or
+    /// prompt template of the same name wins over it, matching the order in
+    /// which [`crate::commands`] lists the two, so the menu and the resolution
+    /// agree on what `/name` runs.
+    fn skill(&self, name: &str) -> Option<&Skill> {
+        let wanted = name.strip_prefix("skill:").unwrap_or(name);
+        self.skills.iter().find(|skill| skill.name == wanted)
     }
 }
 
@@ -1290,13 +1301,66 @@ mod tests {
             content: "Audit the deps.".into(),
         });
 
-        let resolved = ecosystem
-            .resolve_command("/skill:audit the lockfile")
-            .unwrap();
-        assert_eq!(resolved.prompt, "Audit the deps.\n\nUser: the lockfile");
-        assert!(resolved.agent.is_none());
-        assert!(!resolved.subtask);
+        // `/name` is the spelling a client's `/` menu lists a skill under, and
+        // `/skill:<name>` is the terminal's: both load the same skill.
+        for spelling in ["/audit the lockfile", "/skill:audit the lockfile"] {
+            let resolved = ecosystem.resolve_command(spelling).unwrap();
+            assert_eq!(resolved.prompt, "Audit the deps.\n\nUser: the lockfile");
+            assert!(resolved.agent.is_none());
+            assert!(!resolved.subtask);
+        }
+        assert_eq!(
+            ecosystem.resolve_command("/audit").unwrap().prompt,
+            "Audit the deps."
+        );
         assert!(ecosystem.resolve_command("/skill:missing").is_none());
+        assert!(ecosystem.resolve_command("/missing").is_none());
+    }
+
+    #[test]
+    fn a_command_of_the_same_name_wins_over_a_skill() {
+        let mut ecosystem = Ecosystem::default();
+        ecosystem.skills.push(Skill {
+            name: "audit".into(),
+            description: None,
+            content: "Audit the deps.".into(),
+        });
+        ecosystem.commands.push(CommandDef {
+            name: "audit".into(),
+            description: None,
+            template: "Audit with the project's own command.".into(),
+            agent: None,
+            subtask: false,
+        });
+
+        // The catalog drops the skill for a name a command claims, so `/audit`
+        // has to run the command rather than load the skill the menu would
+        // then be hiding.
+        assert_eq!(
+            ecosystem.resolve_command("/audit").unwrap().prompt,
+            "Audit with the project's own command."
+        );
+        // The prefixed spelling still reaches the skill itself.
+        assert_eq!(
+            ecosystem.resolve_command("/skill:audit").unwrap().prompt,
+            "Audit the deps."
+        );
+
+        // A prompt template of the name wins the same way.
+        let mut templated = Ecosystem {
+            skills: ecosystem.skills,
+            ..Default::default()
+        };
+        templated.prompt_templates.push(PromptTemplate {
+            name: "audit".into(),
+            description: None,
+            argument_hint: None,
+            body: "Audit from the template.".into(),
+        });
+        assert_eq!(
+            templated.resolve_command("/audit").unwrap().prompt,
+            "Audit from the template."
+        );
     }
 
     #[test]

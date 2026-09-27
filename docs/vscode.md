@@ -156,11 +156,11 @@ extension never reads `mcp.json` itself and cannot disagree with the CLI about
 which servers a project loads, which scope's definition wins a name, or what
 their state is. A server the project defines is only probed while the project
 is trusted: an untrusted one reports **Needs trust** rather than being
-connected. `/mcps` is the one composer command the panel answers itself: a
-project command, a prompt template or a skill typed with a leading `/` is still
-resolved by the CLI, so the panel and the terminal agree on what exists, and the
-footer chips and the VS Code command palette remain the way to change the model,
-the agent, the reasoning level and the project's trust from here.
+connected. `/mcps` is one of the composer's own commands — *The `/` palette*
+below covers the rest, and how a project command, a prompt template or a skill is
+left to the CLI to resolve, while the footer chips and the VS Code command
+palette remain the way to change the model, the agent, the reasoning level and
+the project's trust from here.
 
 ## Sessions
 
@@ -391,6 +391,111 @@ plugins, then the global directories. The model picker offers only the active
 provider's remembered models: a model id is sent to whichever provider the CLI
 has active, so another provider's would run against the wrong endpoint.
 
+## The file you are editing
+
+The composer tracks the active editor, so the file being worked in rides along
+with the next message without having to be attached by hand. It appears as the
+last chip in the strip, dashed rather than solid and with a ✎, and
+`oxide.autoContext` (on by default) decides whether it is tracked at all.
+
+- It is a *path*, not a copy: the controller remembers the file and reads it when
+  the message goes, so an unsaved edit made while the chip sat in the composer is
+  what the run receives. A file the message already carries — attached by hand,
+  or named with `@path` — is not sent twice.
+- Its ✕ takes it out of the message while leaving the file tracked, so the chip
+  is painted again the moment another file is opened; **Clear** removes it along
+  with everything else pending. A new or resumed thread keeps it, since it is not
+  a chip attached to the conversation on screen.
+- It is not context the reader asked for, so it does not make an empty message
+  sendable: the box still cannot send, and the host refuses a message with no text
+  and no context of its own.
+- Only a file open in a text editor is tracked — an image, a settings tab or an
+  untitled buffer leaves the strip alone — and a file past the block limit is
+  trimmed at the same cap as any other block, silently, since nothing was
+  attached by hand to report on.
+
+## The `@` completion
+
+Typing `@` in the composer offers the project's files and folders: `core/at.ts`
+reads the token at the caret and matches it against the list the terminal's own
+completion filters — `oxide_core::tools::workspace_paths`, one entry per file and
+per folder with a trailing `/` — by a case-insensitive substring, capped at 200
+rows. The rows are ordered by how well each path answers the query (a name that
+starts with it, then a whole path that does, then one that mentions it anywhere),
+the same ranking the terminal asks `oxide_core::at` for: the panel cannot link
+the crate, so it mirrors the module's rules rather than its code.
+
+- The token starts at a word boundary and runs to the next whitespace: an
+  address (`mail me at a@b.com`) names no file, and a caret parked inside a
+  half-typed `@src/ma|in.rs` completes the whole token rather than the part
+  behind it.
+- A file is taken with a trailing space, so the next word can be typed; a folder
+  keeps the token open (`@src/`) so the query goes on narrowing inside it. A
+  folder the reference already spells is left out of the rows — taking it would
+  complete the token to what is already typed — so the row taken next walks
+  *into* that folder.
+- The paths are the workspace's own. The host reads them through the search
+  provider (`vscode.workspace.findFiles`, so the exclude settings leave build
+  output out), once per folder rather than per keystroke — and again when a turn
+  ends, since that is where files appear, or when the exclude settings change —
+  adds each folder above every file with the trailing `/`, and answers out of
+  that list.
+- Only the pane that asked is answered, since the rows replace a token in the box
+  whose caret was read. Every question carries a sequence number and every answer
+  echoes it, so a list for a value the reader has typed past — or dismissed with
+  Escape, or sent — is dropped instead of painted under a moved caret or popping
+  a list back over an empty composer.
+- The arrows walk the rows, Tab and Enter take the highlighted one (a reference
+  midway through a message is not the message), Escape closes the list and leaves
+  the next Escape to a running turn. Taking a row splices in what the host said
+  it stands for — the view never reads a token itself — and asks again, so a
+  folder's own list is already up.
+
+The list is a flex child of the composer card, above the message and the
+attachment strip, so it stays attached to the box it completes and takes its room
+from the transcript; it scrolls its own rows past `30vh`.
+
+## The `/` palette
+
+Typing `/` at the start of the composer offers what the CLI itself offers: the
+catalog `oxide commands --json` prints — `oxide_core::commands::palette`, the
+same listing the terminal's `/` menu and the desktop app's palette draw. The host
+reads it through the installed binary rather than walking `.oxide/commands`,
+`.oxide/prompts` and `.oxide/skills` itself, so the panel cannot disagree with
+the CLI about what a project holds, which scope wins a name, or which spelling
+runs what. It is read once per folder and kept with the folder it came from, so
+moving the active editor to another project cannot answer with the one before it,
+and a read that fails is remembered as an empty catalog rather than respawned on
+every keystroke. `core/palette.ts` holds the rules — a row per built-in, per
+project command, per prompt template and per skill, matched by name
+or alias with a name that starts with the query ranked ahead of one that merely
+mentions it, capped at `MAX_COMMAND_ROWS` (200, the `@` list's own cap) — and the
+webview only draws the rows it is handed, in the same list element as the `@`
+completion, labelled *Commands and skills*.
+
+- A skill is listed under its own name (`/rust-conventions`) with its description
+  and a `skill` badge, because it is loaded as instructions rather than run as a
+  command; taking the row completes the name and leaves it in the box, and
+  sending it is what loads the skill, since the CLI resolves the name the menu
+  lists. `/skill:<name>` is the terminal's other spelling of the same skill, and
+  a command or a template with a skill's name stays the row — the CLI resolves it
+  that way too, so the menu and the run agree.
+- A row is completed rather than run: a command and a skill both take arguments
+  (`/build src`), and the message that goes is what the CLI expands. A client
+  command with no arguments is the exception — the panel performs it on the spot,
+  through the same switch the matching footer chip uses, so a chip and its
+  command cannot drift apart. `/model`, `/reasoning` (`/thinking`), `/agent`,
+  `/trust` (`/access`), `/mcps` (`/mcp`), `/session` (`/sessions`), `/new`,
+  `/attach`, `/usage` (`/cost`) and `/help`.
+- A client command the panel has no action for — `/permissions`, the desktop
+  app's `/theme`, `/connect`, `/logout` — is answered in the transcript rather
+  than sent to the model as the text `/permissions`. Its row is left out of the
+  palette, and the desktop-only names are dropped with it, so a row is only ever
+  offered for something the panel or the CLI can actually do.
+- Arguments after the name are the message, as they are in the terminal:
+  `/session auth is broken` is a prompt the agent has something to say about, not
+  the session listing.
+
 ## Wire protocol
 
 `core/protocol.ts` turns the CLI's Pi-shaped events into view updates. Only
@@ -415,10 +520,15 @@ never leaves an empty block in the transcript. When a stream drops and the CLI
 retries, `auto_retry_start` drops the item the failed attempt was streaming
 into, so the retry's fresh output does not extend the partial reply.
 
-`context` carries the composer's pending context *and* attachments, and the
+`context` carries the composer's pending context *and* attachments — the tracked
+file's chip travels in the same list, marked `auto`, so the view can paint it as
+tracked and leave it out of what counts as something to send — and the
 messages back are `send`, `stop`, `newSession`, `resumeSession`, `attach` (a
 pasted blob as a `data:` URL), `attachFiles` (dropped paths), `pickFiles`,
-`removeChip` (by chip id, either list), `clearChips`, `notice` (something the
+`removeChip` (by chip id, either list), `clearChips`, `completeAt` (what the
+composer holds and where its caret is, numbered, answered with `atSuggestions`:
+the rows and the range of the value they replace, or no rows to close the list),
+`notice` (something the
 view could not do, such as a paste it could not read) and `control`. A
 chip-shaped `control` message is the one that carries the model, agent or trust
 picker's choice back into the same action the matching command runs;
@@ -433,7 +543,8 @@ chip's control id travels.
 
 `core/prompt.ts` builds the prompt the same way the CLI's own `@file` expansion
 reads: each attached block is a `--- path[:range] ---` header plus its text,
-then the message. Images and PDFs (`png`, `jpg`/`jpeg`, `gif`, `webp`, `bmp`)
+then the message. The tracked file's block is built here rather than painted
+into its chip, which is what carries an unsaved edit into the run. Images and PDFs (`png`, `jpg`/`jpeg`, `gif`, `webp`, `bmp`)
 are not inlined; they are attached as media, named in the `prompt` request the
 CLI reads (`images` in `core/rpc.ts`).
 
@@ -441,7 +552,9 @@ Because the prompt is sent on stdin, a message's own `@path` references are
 resolved by the extension instead of the CLI: `@src/main.rs` becomes a context
 block, an image/PDF becomes an attachment, and a reference that does not resolve
 stays in the message. Duplicate references are collapsed, and trailing
-punctuation is not taken as part of the path.
+punctuation is not taken as part of the path. The composer's completion offers
+the paths that will resolve this way — a folder is only a step into one, and a
+reference that resolves to nothing is left for the model to read as text.
 
 ## Diff previews
 
@@ -528,7 +641,8 @@ pnpm run package   # vsce package -> oxide-vscode-<version>.vsix
 
 Press <kbd>F5</kbd> with the folder open to launch an Extension Development
 Host. The tests cover the pure modules only: argv building, prompt assembly and
-`@path` expansion, attachment types and naming, diff and tool previews,
+`@path` expansion, the `@` completion's token and rows (`test/at.test.ts`),
+attachment types and naming, diff and tool previews,
 session-list parsing, config-dir resolution, binary lookup and the plan a
 command is started from, and the transcript state machine — plus, in
 `test/approvals.test.ts`, the approval request parsing,
@@ -546,18 +660,31 @@ answer is routed on to the running turn rather than only settling the card, and 
 header's new-chat button carries the command's own name in its tooltip and
 `aria-label` rather than the name the command had before, and that the session
 listing is composed in exactly one place, which supplies the id of the thread on
-screen, so no redraw can quietly drop the `Current` mark — and in
+screen, so no redraw can quietly drop the `Current` mark, and that the composer's
+chip for the file being edited stays in step with the editor and is read when the
+message goes, and that an `@` completion is answered from the shared core — the
+token and the rows from `core/at.ts`, the paths from the workspace — since the
+renderer never decides what a token is, and that the `/` palette is drawn from
+the CLI's own catalog — the listing `core/palette.ts` parses, the rows it builds
+and the routing that leaves a command or a skill to the CLI while the client
+commands the panel owns are performed (checked against the real catalog in
+`test/palette.test.ts`) — and in
 `test/webview.test.ts`, that `media/main.js` — plain JavaScript with no type
 checking — paints the footer, the chips, the attachment strip, the approval
 card, a question card's options and free-text fields and the answers a click
 posts,
 the `/mcps` and `/sessions` listings (and the full-size image a thumbnail
-opens) and the disabled
+opens), the tracked file's dashed chip and the empty box it cannot send on its
+own, and the rows of the `@` completion with the keys that walk, take and close
+them — the `@` rows and the palette's side by side, since the two share one
+list, and the palette row carries the name, the arguments hint, the description
+and what the row is — and the disabled
 state of Send from its messages when it runs against a DOM stub, and that the
 shell puts the listing under the header, ahead of the transcript, with
 `flex: 0 0 auto` so it cannot be squeezed to a sliver of scrolling rows, turns
 the same element around above the footer for the listing the host pins to that
-edge, and carries icon-only buttons in its own header, and that the welcome page
+edge, and carries icon-only buttons in its own header, and that the completion is
+inside the composer card above the attachment strip, and that the welcome page
 stays up while the page only carries a notice — which is what "New chat" leaves
 behind, since a line about the thread that was closed is not a message in a new
 one. The dialog composition itself — the rows, the status each server is in,

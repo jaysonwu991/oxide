@@ -70,7 +70,6 @@ class StubElement {
   parent: StubElement | null = null;
   hidden = false;
   disabled = false;
-  value = "";
   checked = false;
   title = "";
   type = "";
@@ -80,8 +79,13 @@ class StubElement {
   spellcheck = false;
   rows = 0;
   clientHeight = 0;
+  /// A textarea reports where its caret is; the completion asks for it, so the
+  /// stub tracks it with the value and the selection a row's insert sets.
+  selectionStart = 0;
+  selectionEnd = 0;
   private offset = 0;
   private text = "";
+  private inputValue = "";
 
   constructor(readonly tagName: string, readonly id = "") {}
 
@@ -163,6 +167,25 @@ class StubElement {
 
   setAttribute(name: string, value: string): void {
     this.attributes[name] = value;
+  }
+
+  /// A textarea's value: writing it moves the caret to the end, as it does in
+  /// the DOM, which is where the completion asks for it.
+  get value(): string {
+    return this.inputValue;
+  }
+
+  set value(next: string) {
+    this.inputValue = next;
+    this.selectionStart = next.length;
+    this.selectionEnd = next.length;
+  }
+
+  /// The renderer puts the caret after the row it took; writing the value moves
+  /// the caret to the end, as it does in the DOM.
+  setSelectionRange(start: number, end: number): void {
+    this.selectionStart = start;
+    this.selectionEnd = end;
   }
 
   getAttribute(name: string): string | null {
@@ -442,6 +465,20 @@ function last(posted: Record<string, unknown>[]): Record<string, unknown> {
   return shape(posted[posted.length - 1]);
 }
 
+/// The sequence number of the newest completion the renderer asked for, so a
+/// test answers the question that is live rather than one it guessed the number
+/// of.
+function asked(posted: Record<string, unknown>[]): number {
+  const questions = posted.filter((message) => message.k === "completeAt");
+  return Number(questions[questions.length - 1]?.seq ?? 0);
+}
+
+/// The same, for the `/` palette the renderer asked the host to fill.
+function paletteAsked(posted: Record<string, unknown>[]): number {
+  const questions = posted.filter((message) => message.k === "completePalette");
+  return Number(questions[questions.length - 1]?.seq ?? 0);
+}
+
 describe("webview footer", () => {
   it("paints one chip per footer chip, splitting the key from the value", () => {
     const { byId, send } = loadRenderer();
@@ -553,6 +590,11 @@ describe("webview composer", () => {
       }),
     );
     assert.equal(sendButton.disabled, false);
+
+    // The file the editor has open is context rather than a message: on its own
+    // it leaves the box empty and the button disabled.
+    send(stateMessage({ context: [{ id: 8, label: "src/main.rs", auto: true }] }));
+    assert.equal(sendButton.disabled, true, "a tracked file is not something to send");
   });
 
   it("shows the thread title in the header", () => {
@@ -735,6 +777,65 @@ describe("webview composer", () => {
     );
   });
 
+  it("paints the file the editor has open as a tracked chip", () => {
+    const { byId, posted, send } = loadRenderer();
+    send(
+      stateMessage({
+        context: [
+          { id: 1, label: "src/main.rs" },
+          { id: 2, label: "docs/cli.md", auto: true },
+        ],
+      }),
+    );
+    const chips = byId.get("chips")!;
+    // The tracked chip is painted after the ones the user attached, and reads
+    // as tracked rather than attached: dashed, its own glyph, and a tooltip
+    // that says where it comes from and what takes it away.
+    assert.deepEqual(
+      chips.children.map((chip) => chip.className),
+      ["chip context", "chip context auto", "chip-clear"],
+    );
+    assert.equal(chips.children[0].children[0].textContent, "❮❯");
+    assert.match(chips.children[0].title, /inlined into the next message/);
+    assert.equal(chips.children[1].children[0].textContent, "✎");
+    assert.equal(chips.children[1].children[1].textContent, "docs/cli.md");
+    assert.match(chips.children[1].title, /the file you are editing/);
+    assert.match(chips.children[1].children[2].title, /Take this file out/);
+
+    // Its ✕ is the same message as any other chip's: one id space, one handler.
+    chips.children[1].children[2].fire("click");
+    assert.deepEqual(last(posted), { k: "removeChip", id: 2 });
+  });
+
+  it("keeps the tracked file out of an empty box's send", () => {
+    const { byId, posted, send } = loadRenderer();
+    send(stateMessage({ context: [{ id: 3, label: "src/main.rs", auto: true }] }));
+    // The chip is on show in the strip...
+    assert.equal(byId.get("chips")!.hidden, false);
+    assert.equal(byId.get("chips")!.children.length, 1, "a lone chip brings no Clear");
+    // ...but an empty box still submits nothing: Enter posts no message (the
+    // renderer has already announced it is ready, which is the only thing on
+    // the wire), and the host would have nothing to send either.
+    byId.get("input")!.fire("keydown", { key: "Enter", shiftKey: false, preventDefault: () => {} });
+    assert.deepEqual(last(posted), { k: "ready" });
+
+    // A chip of the user's own is what turns the box live, and what Clear's
+    // count includes.
+    send(
+      stateMessage({
+        context: [
+          { id: 4, label: "notes.md" },
+          { id: 3, label: "src/main.rs", auto: true },
+        ],
+      }),
+    );
+    assert.equal(byId.get("send")!.disabled, false);
+    assert.deepEqual(
+      byId.get("chips")!.children.map((chip) => chip.className),
+      ["chip context", "chip context auto", "chip-clear"],
+    );
+  });
+
   it("sends the message and empties the box", () => {
     const { byId, posted, send } = loadRenderer();
     send(stateMessage());
@@ -745,6 +846,308 @@ describe("webview composer", () => {
     assert.deepEqual(last(posted), { k: "send", text: "explain this repo" });
     assert.equal(input.value, "");
     assert.equal(byId.get("send")!.disabled, true);
+  });
+
+  it("asks the host what the caret is in once an @ is typed", () => {
+    const { byId, posted, send } = loadRenderer();
+    send(stateMessage());
+    const input = byId.get("input")!;
+    // Nothing is asked of a value with no reference in it, which is most of
+    // them: `input` already fired once for `hello` and posted nothing.
+    input.value = "hello";
+    input.fire("input");
+    assert.equal(posted.some((message) => message.k === "completeAt"), false);
+
+    input.value = "look at @sr";
+    input.fire("input");
+    // Every settling of the list takes a number with it — closing it here for
+    // the value with no reference in it — so this is the second question the
+    // renderer has asked. What matters is that each answer says which one it is
+    // answering.
+    assert.deepEqual(last(posted), { k: "completeAt", text: "look at @sr", caret: 11, seq: 2 });
+    assert.equal(byId.get("at")!.hidden, true, "nothing is up until the host answers");
+
+    // A click moves the caret into another token, which is asked about again —
+    // and the answer to the first question is numbered, so it is dropped rather
+    // than painted under a caret that has moved.
+    input.selectionStart = 3;
+    input.fire("click");
+    assert.equal(last(posted).seq, 3);
+    send({ k: "atSuggestions", seq: asked(posted) - 1, start: 0, end: 7, rows: [
+      { label: "src/main.rs", kind: "file", insert: "@src/main.rs " },
+    ] });
+    assert.equal(byId.get("at")!.hidden, true);
+  });
+
+  it("paints the rows the host offered, and takes the one that was clicked", () => {
+    const { byId, posted, send } = loadRenderer();
+    send(stateMessage());
+    const input = byId.get("input")!;
+    input.value = "see @src";
+    input.fire("input");
+    send({ k: "atSuggestions", seq: asked(posted), start: 4, end: 8, rows: [
+      { label: "src/", kind: "folder", insert: "@src/" },
+      { label: "src/main.rs", kind: "file", insert: "@src/main.rs " },
+    ] });
+
+    const at = byId.get("at")!;
+    assert.equal(at.hidden, false);
+    // The first row is the one a keystroke would take, and the glyph says which
+    // rows are folders.
+    assert.deepEqual(
+      at.children.map((row) => row.className),
+      ["at-row selected", "at-row"],
+    );
+    assert.deepEqual(
+      at.children.map((row) => row.children[1].textContent),
+      ["src/", "src/main.rs"],
+    );
+    assert.deepEqual(
+      at.children.map((row) => row.children[0].textContent),
+      ["▸", "·"],
+    );
+    assert.equal(at.children[0].title, "src/ — a folder in this project");
+    assert.equal(at.children[1].title, "src/main.rs — inlined into the next message");
+    assert.deepEqual(
+      at.children.map((row) => row.getAttribute("role")),
+      ["option", "option"],
+    );
+
+    // A click takes the row's own insert: the whole token goes, and a file is
+    // left with a space so the next word can be typed.
+    at.children[1].fire("click");
+    assert.equal(input.value, "see @src/main.rs ");
+    assert.equal(input.selectionStart, input.value.length);
+    assert.equal(at.hidden, true);
+  });
+
+  it("walks the rows with the arrows and takes one with Tab or Enter", () => {
+    const { byId, posted, send } = loadRenderer();
+    send(stateMessage());
+    const input = byId.get("input")!;
+    input.value = "@src";
+    input.fire("input");
+    send({ k: "atSuggestions", seq: asked(posted), start: 0, end: 4, rows: [
+      { label: "src/", kind: "folder", insert: "@src/" },
+      { label: "src/main.rs", kind: "file", insert: "@src/main.rs " },
+    ] });
+    const at = byId.get("at")!;
+    const press = (key: string, shiftKey = false) => {
+      let prevented = false;
+      input.fire("keydown", { key, shiftKey, preventDefault: () => { prevented = true; } });
+      return prevented;
+    };
+
+    assert.equal(press("ArrowDown"), true, "the arrow walks the list, not the caret");
+    assert.deepEqual(
+      at.children.map((row) => row.className),
+      ["at-row", "at-row selected"],
+    );
+    assert.equal(at.children[1].getAttribute("aria-selected"), "true");
+    press("ArrowDown");
+    assert.deepEqual(at.children.map((row) => row.className), ["at-row selected", "at-row"]);
+    press("ArrowUp");
+    assert.deepEqual(at.children.map((row) => row.className), ["at-row", "at-row selected"]);
+
+    // Tab and Enter both take the highlighted row rather than sending: a
+    // reference midway through a message is not the message.
+    assert.equal(press("Enter"), true);
+    assert.equal(input.value, "@src/main.rs ");
+    assert.equal(at.hidden, true);
+
+    input.value = "@docs";
+    input.fire("input");
+    send({ k: "atSuggestions", seq: asked(posted), start: 0, end: 5, rows: [
+      { label: "docs/", kind: "folder", insert: "@docs/" },
+    ] });
+    assert.equal(press("Tab"), true);
+    assert.equal(input.value, "@docs/");
+  });
+
+  it("closes the list on Escape, and leaves the next Escape to the turn", () => {
+    const { byId, posted, send } = loadRenderer();
+    send(stateMessage({ busy: true }));
+    const input = byId.get("input")!;
+    input.value = "@src";
+    input.fire("input");
+    send({ k: "atSuggestions", seq: asked(posted), start: 0, end: 4, rows: [
+      { label: "src/", kind: "folder", insert: "@src/" },
+    ] });
+    const at = byId.get("at")!;
+
+    input.fire("keydown", { key: "Escape", shiftKey: false, preventDefault: () => {} });
+    assert.equal(at.hidden, true);
+    assert.equal(posted.some((message) => message.k === "stop"), false, "a turn goes on running");
+
+    // An answer that was still on its way — a walk of the project is not
+    // instant — cannot pop the list back up after it was dismissed.
+    send({ k: "atSuggestions", seq: asked(posted), start: 0, end: 4, rows: [
+      { label: "src/", kind: "folder", insert: "@src/" },
+    ] });
+    assert.equal(at.hidden, true);
+
+    input.fire("keydown", { key: "Escape", shiftKey: false, preventDefault: () => {} });
+    assert.deepEqual(last(posted), { k: "stop" });
+  });
+
+  it("hides the list when nothing answers the token", () => {
+    const { byId, posted, send } = loadRenderer();
+    send(stateMessage());
+    const input = byId.get("input")!;
+    input.value = "@src";
+    input.fire("input");
+    const at = byId.get("at")!;
+    send({ k: "atSuggestions", seq: asked(posted), start: 0, end: 4, rows: [
+      { label: "src/", kind: "folder", insert: "@src/" },
+    ] });
+    assert.equal(at.hidden, false);
+    // The answer for the request that is live: nothing matches the token, so the
+    // list goes away rather than standing there offering nothing.
+    send({ k: "atSuggestions", seq: asked(posted), start: 0, end: 9, rows: [] });
+    assert.equal(at.hidden, true);
+    assert.equal(at.children.length, 0);
+  });
+
+  it("sends what the box holds with the list out of the way", () => {
+    const { byId, posted, send } = loadRenderer();
+    send(stateMessage());
+    const input = byId.get("input")!;
+    input.value = "read @src/main.rs";
+    input.fire("input");
+    assert.deepEqual(
+      posted.filter((message) => message.k === "send"),
+      [],
+      "a reference is not a send",
+    );
+    byId.get("send")!.fire("click");
+    assert.deepEqual(last(posted), { k: "send", text: "read @src/main.rs" });
+    assert.equal(byId.get("at")!.hidden, true);
+  });
+
+  it("attaches the list to the box it completes, above the chips", () => {
+    // The rows belong to the message box, so the shell puts them inside the
+    // composer card rather than floating them over the panel.
+    const composer = shell.slice(shell.indexOf('<div id="composer">'));
+    const at = composer.indexOf('id="at"');
+    const chips = composer.indexOf('id="chips"');
+    assert.ok(at > 0, "the list is in the composer");
+    assert.match(composer.slice(at, chips), /class="at-list"[^>]*hidden/);
+    assert.ok(chips > at, "the list sits above the attachment strip");
+    assert.match(composer.slice(at, chips), /role="listbox"/);
+    assert.match(style, /\.at-list\[hidden\]/);
+  });
+
+  it("offers the project's commands and skills for a slash command being typed", () => {
+    const { byId, posted, send } = loadRenderer();
+    send(stateMessage());
+    const input = byId.get("input")!;
+    input.value = "/ox";
+    input.fire("input");
+    const at = byId.get("at")!;
+    // The catalog is the host's — the CLI's own — so the view asks for the rows
+    // rather than listing anything of its own.
+    assert.deepEqual(last(posted), {
+      k: "completePalette",
+      text: "/ox",
+      seq: paletteAsked(posted),
+    });
+
+    send({ k: "paletteRows", kind: "command", seq: paletteAsked(posted), start: 0, end: 3, rows: [
+      { name: "oxide-architecture", insert: "/oxide-architecture ", arguments: "[arguments]", description: "Use when navigating the internals", kind: "skill", source: "project" },
+      { name: "build", insert: "/build ", arguments: "arguments", description: "Build the project", kind: "prompt", source: "project" },
+    ] });
+
+    assert.equal(at.hidden, false);
+    assert.deepEqual(
+      at.children.map((row) => row.className),
+      ["cmd-row selected", "cmd-row"],
+    );
+    // A row says the name it inserts, the arguments it takes, what it does and
+    // where it came from — a skill's own kind rather than the scope.
+    assert.deepEqual(
+      at.children.map((row) => row.children.map((child) => child.textContent)),
+      [
+        ["/oxide-architecture", "[arguments]", "Use when navigating the internals", "skill"],
+        ["/build", "arguments", "Build the project", "project"],
+      ],
+    );
+    assert.equal(at.children[0].title, "/oxide-architecture — Use when navigating the internals");
+    assert.equal(at.getAttribute("aria-label"), "Commands and skills");
+
+    // A row is completed rather than run: what goes in the box is the message
+    // the CLI expands, which may take arguments after it.
+    at.children[0].fire("click");
+    assert.equal(input.value, "/oxide-architecture ");
+    assert.equal(input.selectionStart, input.value.length);
+    assert.equal(at.hidden, true);
+    assert.equal(
+      posted.filter((message) => message.k === "completePalette").length,
+      1,
+      "a command is left in the box rather than re-completing",
+    );
+
+    // Enter then sends it, so taking a skill's row is what activates it.
+    input.fire("keydown", { key: "Enter", shiftKey: false, preventDefault: () => {} });
+    assert.deepEqual(last(posted), { k: "send", text: "/oxide-architecture " });
+  });
+
+  it("walks the palette with the arrows and takes a row with Tab", () => {
+    const { byId, posted, send } = loadRenderer();
+    send(stateMessage());
+    const input = byId.get("input")!;
+    input.value = "/";
+    input.fire("input");
+    send({ k: "paletteRows", kind: "command", seq: paletteAsked(posted), start: 0, end: 1, rows: [
+      { name: "help", insert: "/help", arguments: "", description: "List the commands", kind: "client", source: "builtin" },
+      { name: "ship", insert: "/ship ", arguments: "arguments", description: "Open a pull request", kind: "prompt", source: "project" },
+    ] });
+    const at = byId.get("at")!;
+    const press = (key: string) => {
+      let prevented = false;
+      input.fire("keydown", { key, shiftKey: false, preventDefault: () => { prevented = true; } });
+      return prevented;
+    };
+
+    assert.equal(press("ArrowDown"), true, "the arrow walks the palette, not the caret");
+    assert.deepEqual(at.children.map((row) => row.className), ["cmd-row", "cmd-row selected"]);
+    assert.equal(at.children[1].getAttribute("aria-selected"), "true");
+
+    // Tab takes the row and leaves the command in the box: a palette is one
+    // word, so there is no caret inside it to keep completing.
+    assert.equal(press("Tab"), true);
+    assert.equal(input.value, "/ship ");
+    assert.equal(at.hidden, true);
+    assert.equal(posted.some((message) => message.k === "send"), false);
+
+    // Arguments after the name are the message, not a name to complete, and the
+    // host is the one that says so.
+    input.value = "/ship main";
+    input.fire("input");
+    send({ k: "paletteRows", kind: "command", seq: paletteAsked(posted), start: 0, end: 10, rows: [] });
+    assert.equal(at.hidden, true);
+    assert.equal(at.children.length, 0);
+  });
+
+  it("closes the palette on Escape and drops an answer that arrived late", () => {
+    const { byId, posted, send } = loadRenderer();
+    send(stateMessage());
+    const input = byId.get("input")!;
+    input.value = "/si";
+    input.fire("input");
+    send({ k: "paletteRows", kind: "command", seq: paletteAsked(posted), start: 0, end: 3, rows: [
+      { name: "ship", insert: "/ship ", arguments: "arguments", description: "Open a pull request", kind: "prompt", source: "project" },
+    ] });
+    const at = byId.get("at")!;
+    assert.equal(at.hidden, false);
+
+    input.fire("keydown", { key: "Escape", shiftKey: false, preventDefault: () => {} });
+    assert.equal(at.hidden, true);
+    // The catalog crossed the host boundary: an answer for the question that was
+    // cancelled cannot pop the list back up over a box the user moved on from.
+    send({ k: "paletteRows", kind: "command", seq: paletteAsked(posted), start: 0, end: 3, rows: [
+      { name: "ship", insert: "/ship ", arguments: "arguments", description: "Open a pull request", kind: "prompt", source: "project" },
+    ] });
+    assert.equal(at.hidden, true);
   });
 
   it("sends with Enter and keeps the newline with Shift+Enter", () => {

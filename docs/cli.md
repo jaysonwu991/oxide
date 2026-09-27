@@ -360,8 +360,9 @@ Focus: $ARGUMENTS
   `/tree`, `/fork`, `/clone`, `/name`, `/model`, `/thinking`, `/theme`,
   `/trust`, `/export`, `/reload`, `/init`, `/login`, `/logout`, `/models`,
   `/mcps`, `/plugins`, `/marketplaces`, `/notify`, `/approvals`, `/usage`,
-  `/connect`, `/undo`, `/redo`, `/compact`, `/copy`, `/copy all`, and
-  `/skill:<name>`. After a space, the built-in commands autocomplete their fixed
+  `/connect`, `/undo`, `/redo`, `/compact`, `/copy`, `/copy all`, and a skill by
+  its own name (`/rust-conventions`, also spelled `/skill:<name>`). After a
+  space, the built-in commands autocomplete their fixed
   arguments too (`/notify sound`, `/approvals on`, `/usage currency usd`,
   `/plugins marketplace update`, and providers for `/login`); Tab accepts the
   highlighted suggestion.
@@ -369,7 +370,9 @@ Focus: $ARGUMENTS
 - `oxide commands [--json]` prints the catalog a client offers: the built-in
   names with their aliases, their argument hint and their `kind` (`client` for a
   command a front-end answers itself, like `/mcps`; `prompt` for one it runs by
-  sending `/name args`; `skill` for `/skill:<name>`), then the commands, prompt
+  sending `/name args`; `skill` for a skill, which is listed under its own name —
+  sending `/name` loads it, and `/skill:<name>` is the terminal's other
+  spelling), then the commands, prompt
   templates and skills the project and its plugins contribute, each with the
   `source` it was found in (`builtin`, `project` or `global`). A command whose
   frontmatter routes it to an agent or a subtask is one of those `prompt`
@@ -378,8 +381,9 @@ Focus: $ARGUMENTS
   with a picker of the front-end's own (`/agent` in the terminal, `--agent` for
   a run) — so agent files contribute no entry. The desktop app's `/` palette is
   built from the catalog, so its menu and the terminal's autocomplete agree on
-  what exists; the VS Code panel answers `/mcps` from its own detection and
-  leaves the rest of the catalog to the terminal.
+  what exists, and the VS Code panel draws the same catalog in its composer — a
+  skill's own row in either one sends `/name`, which is what loads it; the panel
+  answers the client commands it has an action for from its own code.
 
 ## Prompt templates
 
@@ -418,8 +422,10 @@ Detailed instructions loaded on demand.
 
 - The `description` is listed in the system prompt; the model loads the full
   skill with the `skill` tool when the task matches.
-- Force-load a skill with `/skill:<name> [args]`; extra arguments are appended
-  as `User: <args>`. Skills appear in the `/` autocomplete.
+- Force-load a skill with `/<name> [args]` — its own name, which is what the `/`
+  autocomplete, the desktop app's palette and the VS Code panel all list it
+  under; `/skill:<name>` is the same skill and resolves too. Extra arguments are
+  appended as `User: <args>`.
 - **Remove** a skill by deleting its directory.
 
 ### Questions a skill asks the user
@@ -750,7 +756,13 @@ icon of the file — `@path` names one on disk, and `/attach
 while the agent is busy keeps the attachments it was queued with. In a
 non-interactive run the same parts come from `--image <path>` and from `@path`
 references in the prompt, so `oxide -p "what changed here? @shot.png"` works
-without a terminal.
+without a terminal. The terminal completes a reference as it is typed: the
+project's own files and folders are offered above the composer (`↑`/`↓` walk the
+rows, Tab or Enter takes one, Escape closes the list), a folder keeps its token
+open so the query goes on narrowing inside it, a file closes it with a space, and
+a folder the reference already spells is left out so taking a row walks into it.
+The rules are `oxide_core::at`, the same ones the desktop app's composer
+completes from.
 
 An image is downscaled to a 1568px long edge — the same bound the desktop app
 and the VS Code panel paint their thumbnails at — so a retina screenshot is not

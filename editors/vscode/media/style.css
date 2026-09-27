@@ -679,6 +679,7 @@ footer {
    element has to be turned off explicitly. */
 .usage[hidden],
 .chips[hidden],
+.at-list[hidden],
 .gauge[hidden],
 #status[hidden],
 #elapsed[hidden],
@@ -784,6 +785,112 @@ footer {
   color: var(--vscode-input-placeholderForeground, var(--vscode-descriptionForeground));
 }
 
+/* The `@path` completion and the `/` palette: one list inside the composer
+   card, above the message it completes, so it stays attached to the box being
+   typed into and takes its room from the transcript. It scrolls its own rows
+   once it outgrows them, since a bare `@` in a large project offers a lot of
+   them. */
+.at-list {
+  display: flex;
+  flex-direction: column;
+  max-height: 30vh;
+  overflow-y: auto;
+  margin: 2px 0 4px;
+  padding-bottom: 4px;
+  border-bottom: 1px solid var(--vscode-panel-border, rgba(128, 128, 128, 0.2));
+}
+
+.at-row {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  width: 100%;
+  border: none;
+  background: none;
+  color: var(--vscode-foreground);
+  text-align: left;
+  padding: 2px 6px;
+  border-radius: 4px;
+  font-family: var(--vscode-editor-font-family, monospace);
+  font-size: 0.9em;
+}
+
+.at-row.selected {
+  background: var(--vscode-list-activeSelectionBackground, rgba(128, 128, 128, 0.2));
+  color: var(--vscode-list-activeSelectionForeground, var(--vscode-foreground));
+}
+
+.at-row .at-glyph {
+  flex: 0 0 auto;
+  color: var(--vscode-descriptionForeground);
+}
+
+.at-row.selected .at-glyph {
+  color: inherit;
+}
+
+.at-row .at-path {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* One row of the `/` palette: the name it inserts, its argument hint, its
+   description and where it came from. The description is what makes a skill
+   findable, so it takes the room that is left and is the one part that shrinks
+   — the name stays whole, since that is what the row puts in the box. */
+.cmd-row {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  width: 100%;
+  border: none;
+  background: none;
+  color: var(--vscode-foreground);
+  text-align: left;
+  padding: 3px 6px;
+  border-radius: 4px;
+  font-family: inherit;
+  font-size: inherit;
+  cursor: pointer;
+}
+
+.cmd-row.selected {
+  background: var(--vscode-list-activeSelectionBackground, rgba(128, 128, 128, 0.2));
+  color: var(--vscode-list-activeSelectionForeground, var(--vscode-foreground));
+}
+
+.cmd-row .cmd-name {
+  flex: 0 0 auto;
+}
+
+.cmd-row .cmd-args {
+  flex: 0 0 auto;
+  color: var(--vscode-descriptionForeground);
+  font-size: 0.9em;
+}
+
+.cmd-row .cmd-desc {
+  flex: 1 1 auto;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--vscode-descriptionForeground);
+}
+
+.cmd-row .cmd-source {
+  flex: 0 0 auto;
+  color: var(--vscode-descriptionForeground);
+  font-size: 0.9em;
+}
+
+.cmd-row.selected .cmd-args,
+.cmd-row.selected .cmd-desc,
+.cmd-row.selected .cmd-source {
+  color: inherit;
+  opacity: 0.85;
+}
+
 /* The attachment strip sits inside the card, above the message it belongs to. */
 .chips {
   display: flex;
@@ -807,6 +914,14 @@ footer {
 
 .chips .chip.attachment {
   padding-left: 3px;
+}
+
+/* The file the editor has open rides along with whatever is sent, so its chip
+   is dashed and unfilled: tracked rather than attached, and it comes back when
+   another file is opened. */
+.chips .chip.auto {
+  border-style: dashed;
+  background: none;
 }
 
 .chips .chip img {

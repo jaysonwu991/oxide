@@ -16,6 +16,7 @@ const root = path.join(__dirname, "..", "..");
 interface Manifest {
   contributes: {
     commands: { command: string; title: string; category?: string }[];
+    configuration: { properties: Record<string, { default?: unknown }> };
   };
 }
 
@@ -165,6 +166,174 @@ describe("command contributions", () => {
     );
     assert.ok(confirm.includes("if (this.turn)"), "the confirmation checks for a running turn");
     assert.ok(remove.includes("if (this.turn)"), "the write checks again");
+  });
+
+  it("tracks the file being edited, and reads it when the message goes", () => {
+    // The chip belongs to the editor, so the editor is what keeps it in step: a
+    // subscription that is dropped, or an activation that never syncs, leaves
+    // the panel attributing a file nobody is editing to the next message.
+    const subscription = extension.slice(extension.indexOf("onDidChangeActiveTextEditor"));
+    assert.ok(subscription.includes("controller.syncActiveEditor()"), "the editor keeps it in step");
+    assert.ok(
+      extension
+        .slice(extension.lastIndexOf("refreshStatus();"))
+        .includes("controller.syncActiveEditor()"),
+      "a file already open at activation is tracked too",
+    );
+    assert.ok(chat.includes("this.syncActiveEditor()"), "a setting change re-reads the setting");
+    assert.equal(
+      manifest.contributes.configuration.properties["oxide.autoContext"]?.default,
+      true,
+      "and the setting is the one it reads",
+    );
+
+    // The text is read when the message goes rather than painted into the chip,
+    // so the run receives the buffer, unsaved edits included.
+    const send = chat.slice(
+      chat.indexOf("async send("),
+      chat.indexOf("private ", chat.indexOf("async send(")),
+    );
+    assert.ok(send.includes("this.autoBlock()"), "the tracked file is read at send time");
+    assert.ok(send.includes("carried.has(tracked.path)"), "and a file already carried is not sent twice");
+
+    // The ✕ takes it out of the message without forgetting the file, so the
+    // next one opened brings the chip back...
+    const remove = chat.slice(chat.indexOf("removeChip(id: number)"), chat.indexOf("clearChips(): void"));
+    assert.ok(remove.includes("this.autoHidden = true"), "the ✕ hides the tracked chip");
+    const sync = chat.slice(chat.indexOf("syncActiveEditor()"), chat.indexOf("private autoChip()"));
+    assert.ok(sync.includes("this.autoHidden = false"), "and another file brings it back");
+    // ...while Clear takes it with the rest, and a new or resumed thread keeps
+    // it, since it is not a chip attached to the conversation on screen.
+    assert.ok(chat.includes("this.autoHidden = this.auto !== null;"), "Clear takes it with the rest");
+    assert.ok(
+      (chat.match(/this\.dropChips\(\);/g) ?? []).length >= 3,
+      "a new thread drops only the chips the user attached",
+    );
+  });
+
+  it("completes an @path from the project's own files, in the shared core", () => {
+    // The token and the rows come from `core/at.ts` — the rules the terminal
+    // filters its own list by — so a reference is completed from what the CLI
+    // would offer, and the view only splices in the row it was handed.
+    const complete = chat.slice(
+      chat.indexOf("async completeAt("),
+      chat.indexOf("private async readWorkspacePaths("),
+    );
+    assert.ok(complete.includes("atToken("), "the host reads the token, not the view");
+    assert.ok(complete.includes("atSuggestions("), "and ranks the rows in the shared core");
+    assert.ok(
+      complete.includes("this.workspacePathList()"),
+      "from the project's paths, the one part the view cannot know",
+    );
+    assert.ok(
+      complete.includes('{ k: "atSuggestions", seq,'),
+      "and labels the answer, so a list for a moved caret is dropped",
+    );
+    assert.equal(
+      renderer.includes("atToken"),
+      false,
+      "the renderer never decides what a token is",
+    );
+
+    // The listing is the search provider's, so the exclude settings decide what
+    // is offered, and it is read once per folder rather than per keystroke.
+    const walk = chat.slice(chat.indexOf("private async readWorkspacePaths("));
+    assert.ok(walk.includes("vscode.workspace.findFiles("), "the listing is the workspace's");
+    assert.ok(walk.includes("this.pathCache = { root, paths"), "and is remembered per folder");
+    assert.equal(
+      (walk.match(/this\.folder\(\)\?\.uri\.fsPath !== root/g) ?? []).length,
+      1,
+      "a walk is not answered after the folder it started in has moved on",
+    );
+    assert.equal(
+      (chat.match(/this\.pathCache = null;/g) ?? []).length,
+      2,
+      "a setting change and a finished turn are what re-read it",
+    );
+    assert.ok(
+      chatView.includes('case "completeAt":'),
+      "the webview's question reaches the controller",
+    );
+  });
+
+  it("lists the project's commands and skills from the CLI's own catalog", () => {
+    // The `/` palette is the CLI's listing — the one the terminal's menu and the
+    // desktop app's palette draw — so a skill a project defines is offered with
+    // its description and, once taken, is a message the CLI expands. The panel
+    // does not walk the discovery directories itself.
+    const complete = chat.slice(
+      chat.indexOf("async completePalette("),
+      chat.indexOf("private async readCommands("),
+    );
+    assert.ok(complete.includes("this.commands()"), "the rows come from the catalog");
+    assert.ok(complete.includes("commandRows("), "and are ranked in the shared module");
+    assert.ok(complete.includes('k: "paletteRows"'), "labelled with the question it answers");
+
+    const load = chat.slice(
+      chat.indexOf("private async commands("),
+      chat.indexOf("private async readCommands("),
+    );
+    assert.ok(load.includes("this.readCommands(root)"), "the palette's read is shared");
+    assert.ok(
+      load.includes("if (this.commandCache?.root === root) return this.commandCache.entries;"),
+      "an answer is kept with the folder it came from, so another one cannot borrow it",
+    );
+
+    const read = chat.slice(
+      chat.indexOf("private async readCommands("),
+      chat.indexOf("private async workspacePathList("),
+    );
+    assert.ok(read.includes('["commands", "--json"]'), "the catalog is the CLI's own answer");
+    assert.ok(read.includes("parseCommandList("), "parsed into the panel's shape");
+    assert.ok(read.includes("this.commandCache = { root, entries }"), "and remembered per project");
+    assert.ok(
+      read.includes("this.commandCache = { root, entries: [] }"),
+      "a failed read is remembered too, so a broken CLI is spawned once",
+    );
+    assert.equal(
+      (read.match(/this\.folder\(\)\?\.uri\.fsPath !== root/g) ?? []).length,
+      2,
+      "and an answer that outlived its folder is neither returned nor kept",
+    );
+    assert.equal(
+      (chat.match(/this\.commandCache = null;/g) ?? []).length,
+      2,
+      "a setting change and a finished turn are what re-read it",
+    );
+
+    // The view draws the rows it is handed: it cannot know what the project
+    // holds, and a second copy of the rules there would drift.
+    assert.equal(
+      renderer.includes("parseCommandList"),
+      false,
+      "the renderer never reads the catalog",
+    );
+    assert.ok(
+      renderer.includes('{ k: "completePalette"'),
+      "the view asks for the rows rather than listing its own",
+    );
+    assert.ok(
+      chatView.includes('case "completePalette":'),
+      "the webview's question reaches the controller",
+    );
+
+    // Taking a row is what activates a skill: `/name` is the message the CLI
+    // expands, while a built-in is one the panel performs itself, and one it has
+    // no action for is answered rather than shipped to the model as a prompt.
+    const send = chat.slice(
+      chat.indexOf("async send("),
+      chat.indexOf("private ", chat.indexOf("async send(")),
+    );
+    assert.ok(
+      send.includes("routeCommand(await this.commands(), message)"),
+      "send routes a slash command",
+    );
+    assert.ok(send.includes("runPanelCommand("), "performing a built-in the panel owns");
+    assert.ok(send.includes("is not one this panel runs"), "and saying so for one it cannot");
+    assert.ok(
+      send.indexOf("routeCommand(") < send.indexOf("this.queue.push"),
+      "a built-in is not queued as a prompt either",
+    );
   });
 
   it("answers the client commands in the panel instead of prompting them", () => {

@@ -47,6 +47,10 @@ interface WebviewMessage {
   data?: string;
   /// Absolute paths of dropped or picked files.
   paths?: string[];
+  /// The composer's `@path` completion: what has been typed, where the caret
+  /// is, and the sequence number the answer is labelled with.
+  caret?: number;
+  seq?: number;
 }
 
 export class ChatViewProvider implements vscode.WebviewViewProvider {
@@ -114,6 +118,31 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
           this.controller.answerQuestion(message.requestId, questionAnswers(message.answers));
         }
         return;
+      case "completeAt": {
+        // The view posts what is in the composer and where the caret is; the
+        // host decides what token that is and which paths answer it, so a
+        // reference completes the way it does in the terminal. Only the pane
+        // that asked is answered at all: the rows replace a token in its own
+        // box, not in another one's.
+        const answer = await this.controller.completeAt(
+          message.text ?? "",
+          message.caret ?? 0,
+          message.seq ?? 0,
+        );
+        await view.webview.postMessage(answer);
+        return;
+      }
+      case "completePalette": {
+        // The `/` palette, on the same terms: the host owns the catalog (the
+        // CLI's own) and answers only the pane that asked, because the rows
+        // replace the value in that pane's box.
+        const answer = await this.controller.completePalette(
+          message.text ?? "",
+          message.seq ?? 0,
+        );
+        await view.webview.postMessage(answer);
+        return;
+      }
       case "clearChips":
         this.controller.clearChips();
         return;
@@ -228,6 +257,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
 <footer>
   <div id="meta" class="meta"></div>
   <div id="composer">
+    <div id="at" class="at-list" role="listbox" aria-label="Files and folders" hidden></div>
     <div id="chips" class="chips" hidden></div>
     <textarea id="input" rows="2" spellcheck="false"
       placeholder="Ask Oxide…  Enter to send · Shift+Enter for a newline · paste or drop an image"></textarea>
