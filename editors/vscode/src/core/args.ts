@@ -34,6 +34,10 @@ export interface TurnOptions {
 export function buildTurnArgs(options: TurnOptions): string[] {
   const args = ["--mode", "rpc"];
   args.push(options.askApprovals === false ? "--no-ask-approvals" : "--ask-approvals");
+  // Every rpc client can answer a question: the panel paints the `ask` tool's
+  // `question_request` in the transcript and replies on the same pipe, so the
+  // tool is offered rather than left out of the run.
+  args.push("--ask-questions");
   if (options.session) args.push("--session", options.session);
   else if (options.continueLast) args.push("--continue");
   if (options.ephemeral) args.push("--no-session");

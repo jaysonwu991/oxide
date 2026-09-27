@@ -6,6 +6,7 @@
 
 use crate::agent::AgentEvent;
 use crate::approval::ApprovalBroker;
+use crate::ask::{Answer, AskBroker};
 use crate::session::SessionLog;
 use anyhow::{Context, Result};
 use serde_json::{json, Value};
@@ -123,6 +124,10 @@ pub enum RpcRequest {
         decision: String,
         message: Option<String>,
     },
+    /// Answer a pending question. `answers` answers the questions in the order
+    /// they were asked; an empty list is a dismissal, since the user closed the
+    /// question without answering it.
+    Question { id: u64, answers: Vec<Answer> },
     /// End the session.
     Quit,
 }
@@ -161,6 +166,21 @@ impl RpcRequest {
                     .map(str::to_string),
             }),
             "quit" | "abort" => Some(RpcRequest::Quit),
+            "question" => Some(RpcRequest::Question {
+                id: value.get("id").and_then(Value::as_u64)?,
+                answers: value
+                    .get("answers")
+                    .and_then(Value::as_array)
+                    .map(|values| {
+                        values
+                            .iter()
+                            .filter_map(|value| {
+                                serde_json::from_value::<Answer>(value.clone()).ok()
+                            })
+                            .collect()
+                    })
+                    .unwrap_or_default(),
+            }),
             _ => None,
         }
     }
@@ -188,6 +208,19 @@ pub fn event_json(event: &AgentEvent) -> Option<Value> {
             "id": id,
             "toolName": tool,
             "detail": detail,
+        }),
+        // The model is waiting for an answer. The consumer answers with a
+        // `question` request on the RPC input channel (see [`RpcRequest`]).
+        AgentEvent::QuestionRequest { id, questions } => json!({
+            "type": "question_request",
+            "id": id,
+            "questions": questions,
+        }),
+        // The request timed out with nobody answering, so a client stops
+        // offering an answer for it rather than waiting on one that cannot land.
+        AgentEvent::QuestionClosed { id } => json!({
+            "type": "question_closed",
+            "id": id,
         }),
         AgentEvent::Thought { .. } => json!({ "type": "thinking" }),
         // The model step finished streaming. A consumer that renders the live
@@ -303,18 +336,20 @@ pub async fn run_json(
 /// RPC mode: reads LF-delimited JSONL requests from stdin and writes JSONL
 /// events to stdout. Each request is `{"type":"prompt","message":"..."}`; an
 /// `{"type":"approval","id":1,"decision":"once"}` answers a pending tool
-/// approval, and `quit`/`abort` ends the session.
+/// approval, a `{"type":"question","id":1,"answers":[...]}` answers a pending
+/// question, and `quit`/`abort` ends the session.
 pub async fn run_rpc(
     mut events: tokio::sync::mpsc::UnboundedReceiver<AgentEvent>,
     mut control: tokio::sync::mpsc::UnboundedReceiver<Value>,
     prompts: tokio::sync::mpsc::UnboundedSender<RpcRequest>,
     approvals: Option<Arc<ApprovalBroker>>,
+    questions: Option<Arc<AskBroker>>,
 ) -> Result<()> {
     // Reads LF-delimited JSONL requests until stdin closes or a `quit`/`abort`
     // request arrives. Dropping `prompts` on EOF lets the driver finish and
-    // close the event channel, which ends the loop below. Approvals are
-    // answered straight from this thread, because the driver is busy streaming
-    // the very turn that is waiting for the answer.
+    // close the event channel, which ends the loop below. Approvals and
+    // questions are answered straight from this thread, because the driver is
+    // busy streaming the very turn that is waiting for the answer.
     std::thread::spawn(move || {
         let stdin = std::io::stdin();
         for line in stdin.lock().lines() {
@@ -339,6 +374,11 @@ pub async fn run_rpc(
                 }) => {
                     if let Some(broker) = &approvals {
                         broker.resolve(id, &decision, message.as_deref());
+                    }
+                }
+                Some(RpcRequest::Question { id, answers }) => {
+                    if let Some(broker) = &questions {
+                        broker.resolve(id, answers);
                     }
                 }
                 Some(RpcRequest::Quit) => break,
@@ -448,6 +488,40 @@ mod tests {
         );
 
         assert_eq!(
+            RpcRequest::parse(&json!({
+                "type": "question",
+                "id": 9,
+                "answers": [
+                    {"question": "Which database?", "values": ["SQLite"]},
+                    {"question": "Anything else?", "values": []},
+                ]
+            }))
+            .unwrap(),
+            RpcRequest::Question {
+                id: 9,
+                answers: vec![
+                    Answer {
+                        question: "Which database?".into(),
+                        values: vec!["SQLite".into()],
+                    },
+                    Answer {
+                        question: "Anything else?".into(),
+                        values: Vec::new(),
+                    },
+                ],
+            }
+        );
+        // `answers` is optional: a question answered with nothing on the wire is
+        // the dialog's dismissal.
+        assert_eq!(
+            RpcRequest::parse(&json!({"type": "question", "id": 10})).unwrap(),
+            RpcRequest::Question {
+                id: 10,
+                answers: Vec::new()
+            }
+        );
+
+        assert_eq!(
             RpcRequest::parse(&json!({"type": "quit"})),
             Some(RpcRequest::Quit)
         );
@@ -455,9 +529,14 @@ mod tests {
             RpcRequest::parse(&json!({"type": "abort"})),
             Some(RpcRequest::Quit)
         );
-        // An approval without an id, and an unknown type, are ignored.
+        // An approval without an id, a question without an id, and an unknown
+        // type are ignored.
         assert_eq!(
             RpcRequest::parse(&json!({"type": "approval", "decision": "once"})),
+            None
+        );
+        assert_eq!(
+            RpcRequest::parse(&json!({"type": "question", "answers": []})),
             None
         );
         assert_eq!(RpcRequest::parse(&json!({"type": "telepathy"})), None);
@@ -525,6 +604,30 @@ mod tests {
         assert_eq!(approval["id"], 7);
         assert_eq!(approval["toolName"], "bash");
         assert_eq!(approval["detail"], "rm -rf /");
+
+        let question = event_json(&AgentEvent::QuestionRequest {
+            id: 8,
+            questions: vec![crate::ask::Question {
+                question: "Which database?".into(),
+                header: Some("Database".into()),
+                options: vec![crate::ask::Choice {
+                    label: "SQLite".into(),
+                    description: Some("Embedded".into()),
+                }],
+                multi_select: true,
+            }],
+        })
+        .unwrap();
+        assert_eq!(question["type"], "question_request");
+        assert_eq!(question["id"], 8);
+        assert_eq!(question["questions"][0]["question"], "Which database?");
+        assert_eq!(question["questions"][0]["header"], "Database");
+        assert_eq!(question["questions"][0]["multiSelect"], true);
+        assert_eq!(question["questions"][0]["options"][0]["label"], "SQLite");
+
+        let closed = event_json(&AgentEvent::QuestionClosed { id: 8 }).unwrap();
+        assert_eq!(closed["type"], "question_closed");
+        assert_eq!(closed["id"], 8);
     }
 
     #[test]

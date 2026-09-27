@@ -7,6 +7,7 @@ import * as vscode from "vscode";
 
 import { ChatController } from "./chat";
 import { isApprovalDecision } from "./core/approvals";
+import { questionAnswers } from "./core/questions";
 import { CHAT_VIEW, CHAT_VIEW_SECONDARY } from "./core/views";
 
 /// Inline icons for the view's buttons: the webview cannot load VS Code's
@@ -30,6 +31,9 @@ interface WebviewMessage {
   /// The approval card's own fields: the broker's request id and the answer.
   requestId?: number;
   decision?: string;
+  /// A question card's own field: the answers, each echoing the question it
+  /// belongs to. An empty list is a dismissal.
+  answers?: { question?: string; values?: unknown }[];
   url?: string;
   path?: string;
   line?: number;
@@ -101,6 +105,13 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       case "approval":
         if (typeof message.requestId === "number" && isApprovalDecision(message.decision)) {
           this.controller.approve(message.requestId, message.decision);
+        }
+        return;
+      case "question":
+        // The view sends what the user typed and ticked; anything malformed is
+        // dropped here rather than sent to the CLI as an answer to nothing.
+        if (typeof message.requestId === "number" && Array.isArray(message.answers)) {
+          this.controller.answerQuestion(message.requestId, questionAnswers(message.answers));
         }
         return;
       case "clearChips":

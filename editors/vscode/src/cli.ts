@@ -16,7 +16,8 @@ import * as path from "node:path";
 
 import type { ApprovalDecision } from "./core/approvals";
 import { drainLines, parseEvent, type WireEvent } from "./core/protocol";
-import { approvalFrame, promptFrame, quitFrame } from "./core/rpc";
+import type { QuestionAnswer } from "./core/questions";
+import { approvalFrame, promptFrame, questionFrame, quitFrame } from "./core/rpc";
 
 export interface BinaryLookup {
   env: NodeJS.ProcessEnv;
@@ -197,6 +198,9 @@ export interface Turn {
   /// Answers a waiting tool approval. An unknown id is ignored by the CLI, so a
   /// double answer is harmless.
   approve(requestId: number, decision: ApprovalDecision): void;
+  /// Answers a question the model asked with the `ask` tool. An empty list is a
+  /// dismissal; an unknown id is ignored, like an approval's.
+  answer(requestId: number, answers: readonly QuestionAnswer[]): void;
   /// Stops the process. The session on disk stays intact, so the thread can be
   /// resumed with `--session <id>`.
   cancel(): void;
@@ -290,6 +294,14 @@ export function startTurn(
         child.stdin.write(approvalFrame(requestId, decision));
       } catch {
         // The turn is gone; the approval simply stays unanswered.
+      }
+    },
+    answer(requestId: number, answers: readonly QuestionAnswer[]) {
+      if (exited) return;
+      try {
+        child.stdin.write(questionFrame(requestId, answers));
+      } catch {
+        // The turn is gone; the question simply stays unanswered.
       }
     },
     cancel() {

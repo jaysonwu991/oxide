@@ -12,6 +12,13 @@ import {
   approvalTitle,
   type ApprovalDecision,
 } from "./approvals";
+import {
+  questionLabel,
+  questionRequest,
+  questionTitle,
+  type Question,
+  type QuestionAnswer,
+} from "./questions";
 import type { DialogState } from "./dialogs";
 import type { FooterState } from "./footer";
 
@@ -108,13 +115,35 @@ export interface ApprovalItem {
   label: string;
 }
 
+/// How a question card stands: waiting for the user, answered, or settled
+/// without an answer because the run ended before one arrived.
+export type QuestionState = "pending" | "answered" | "dismissed" | "closed";
+
+/// A question the model asked through the `ask` tool and the agent is holding
+/// until it is answered. The card paints one block per question — its options,
+/// and a field to type a free-text answer in — and the answers travel to the
+/// host, which forwards them over the CLI's request channel.
+export interface QuestionItem {
+  id: number;
+  kind: "question";
+  /// The broker's request id, echoed back in the answer frame.
+  requestId: number;
+  /// The card's heading (`questionTitle`).
+  title: string;
+  questions: Question[];
+  state: QuestionState;
+  /// What an answered card reads; empty while it waits.
+  label: string;
+}
+
 export type Item =
   | UserItem
   | AssistantItem
   | ThinkingItem
   | ToolItem
   | NoticeItem
-  | ApprovalItem;
+  | ApprovalItem
+  | QuestionItem;
 
 export type ToolPatch = Partial<
   Pick<ToolItem, "output" | "diff" | "running" | "isError" | "name" | "args">
@@ -164,6 +193,9 @@ export type ViewMessage =
   /// One approval card's state. It is not a `patch`: a tool card repaints from
   /// the item, while a card that is settled keeps its buttons removed.
   | { k: "approval"; id: number; state: ApprovalState; label: string }
+  /// One question card's state, on the same terms: the answered card keeps only
+  /// what it was answered with instead of the fields it was asked with.
+  | { k: "question"; id: number; state: QuestionState; label: string }
   | { k: "status"; status: string; busy: boolean; queued: number; footer: FooterState }
   /// The footer is attached by the controller (the transcript only knows the
   /// totals), so a usage event repaints the whole footer row.
@@ -468,6 +500,36 @@ export class Transcript {
         this.status = "Waiting for approval…";
         return [{ k: "push", item }];
       }
+      case "question_request": {
+        const request = questionRequest(event);
+        if (!request) return [];
+        // Same ordering as an approval: the `ask` call it belongs to is already
+        // in the transcript, so the step's own text is committed first.
+        this.closeAssistant();
+        this.closeThinking();
+        const item: QuestionItem = {
+          id: this.nextId++,
+          kind: "question",
+          requestId: request.id,
+          title: questionTitle(request.questions),
+          questions: request.questions,
+          state: "pending",
+          label: "",
+        };
+        this.items.push(item);
+        this.status = "Waiting for your answer…";
+        return [{ k: "push", item }];
+      }
+      // The CLI gave up on the request because nobody answered in time. The run
+      // it belongs to may still be going, so the card stops taking an answer
+      // the broker would no longer read, and the status goes back to the work
+      // the turn resumed.
+      case "question_closed": {
+        const item = this.pendingQuestion(num(event.id));
+        if (!item) return [];
+        this.status = "Thinking…";
+        return [this.settleQuestion(item, "closed", "Not answered")];
+      }
       case "compaction":
         return this.notice(
           `Compacted ${num(event.summarized)} earlier messages (~${formatTokens(
@@ -519,6 +581,56 @@ export class Transcript {
     item.state = state;
     item.label = label;
     return { k: "approval", id: item.id, state, label };
+  }
+
+  /// The waiting card for a request id, or `undefined` when none is waiting:
+  /// the id was never painted here, was already answered, or belongs to a
+  /// request the CLI has given up on.
+  private pendingQuestion(requestId: number): QuestionItem | undefined {
+    return this.items.find(
+      (entry): entry is QuestionItem =>
+        entry.kind === "question" && entry.requestId === requestId && entry.state === "pending",
+    );
+  }
+
+  /// Records the user's answers on a waiting question card. `null` when the id
+  /// is not a waiting request (already answered, or from a run that is gone), so
+  /// the controller never sends a second answer for one request. An answer with
+  /// nothing in it is how the card says the question was dismissed.
+  answerQuestion(
+    requestId: number,
+    answers: readonly QuestionAnswer[],
+  ): ViewMessage[] | null {
+    const item = this.pendingQuestion(requestId);
+    if (!item) return null;
+    const answered = answers.some((answer) => answer.values.length > 0);
+    return [
+      this.settleQuestion(item, answered ? "answered" : "dismissed", questionLabel(answers)),
+    ];
+  }
+
+  /// Settles every question still waiting, which is what a run that ended (or
+  /// was stopped, or whose process died) leaves behind: the request it was
+  /// waiting on is gone with the process, so its fields must stop taking an
+  /// answer nobody will read.
+  closeQuestions(): ViewMessage[] {
+    const messages: ViewMessage[] = [];
+    for (const item of [...this.items]) {
+      if (item.kind === "question" && item.state === "pending") {
+        messages.push(this.settleQuestion(item, "closed", "Not answered"));
+      }
+    }
+    return messages;
+  }
+
+  private settleQuestion(
+    item: QuestionItem,
+    state: QuestionState,
+    label: string,
+  ): ViewMessage {
+    item.state = state;
+    item.label = label;
+    return { k: "question", id: item.id, state, label };
   }
 
   /// Drops the assistant or thinking item a failed attempt was still streaming

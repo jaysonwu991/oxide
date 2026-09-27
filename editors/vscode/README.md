@@ -127,8 +127,16 @@ Provider logins live in the CLI: run **Oxide: Open Terminal (TUI)** and use
   the activity-bar copy can be dropped into the secondary side bar (or the panel)
   and the icon hidden with a right-click on the activity bar. Nothing is lost
   either way: sessions live in the CLI's own store.
-- Runs are non-interactive, so there is no approval prompt: a tool the
-  permission rules mark `ask` is decided by Oxide's own `auto_approve` setting.
+- A tool the permission rules mark `ask` comes back as a card in the transcript
+  rather than being run on trust: the panel forwards your answer over the CLI's
+  own channel, and **Always allow** is remembered by the CLI's broker, so the
+  terminal and the desktop app stop asking for that tool in that project too.
+- The model can also ask *you* something mid-turn — typically while following a
+  skill — and the panel answers it in the transcript: pick one option, tick
+  several, or type an answer, then **Answer**, or **Skip** to let it continue
+  with its own default. The panel always passes `--ask-questions`, so a question
+  reaches you instead of the model guessing, and an unanswered card is settled
+  when the run ends.
 - An image or PDF attached from the clipboard is written to a private OS
   temporary directory (`os.tmpdir()`), because the CLI takes attachment *paths*
   (`--image`); the directory is removed when the window closes. Files picked or

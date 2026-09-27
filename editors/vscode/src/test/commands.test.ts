@@ -92,6 +92,18 @@ describe("command contributions", () => {
     assert.ok(actions.has("SESSION_DELETE") && actions.has("SESSION_DELETE_CONFIRM"));
   });
 
+  it("routes a question answer to the running turn", () => {
+    // A question card that settled without a frame would leave the `ask` call
+    // waiting for the answer until the broker's timeout, so the panel shows an
+    // answered card while the agent sits there.
+    const answer = chat.slice(
+      chat.indexOf("answerQuestion(requestId"),
+      chat.indexOf("private drainQueue"),
+    );
+    assert.ok(answer.includes("this.transcript.answerQuestion(requestId, answers)"));
+    assert.ok(answer.includes("turn.answer(requestId, answers)"), "the frame is written too");
+  });
+
   it("names the header's new-chat button the way the command is named", () => {
     // One action, two places that say its name: the palette entry and the
     // button's tooltip, which is also the name a screen reader reads out. The

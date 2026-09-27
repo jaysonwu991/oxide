@@ -422,6 +422,31 @@ Detailed instructions loaded on demand.
   as `User: <args>`. Skills appear in the `/` autocomplete.
 - **Remove** a skill by deleting its directory.
 
+### Questions a skill asks the user
+
+A skill that needs a decision — which database, which name, whether to keep
+something — has the model call the `ask` tool, which puts the question to the
+user in a front-end and returns the answer as the tool's result:
+
+- One call carries 1–4 questions; each is a short `question`, an optional
+  `header` (the dialog's title for it), up to 8 `options`, and `multiSelect` for
+  a list where more than one label may be picked. A question with no options is
+  answered in the user's own words. A `multiSelect` written out as a string
+  (`"true"`) is read as the flag it is rather than failing the call.
+- A question the user dismisses, or one that is never answered, comes back as
+  the tool answering that nobody answered, so the model carries on without it —
+  the request times out after five minutes and the turn never hangs. A front-end
+  that painted the questions is told when the request goes (a `question_closed`
+  event in rpc mode), so a dialog stops offering an answer nothing is waiting
+  for.
+- The tool is only offered when a front-end can answer it: the desktop app
+  (`crates/desktop/src/ask.rs`) and the VS Code panel (which passes
+  `--ask-questions` to `--mode rpc`, answering with a `question` frame). The TUI
+  and `-p`/`--mode json` runs have no dialog for one, so `ask` is not in their
+  tool list and the model asks its question in the reply instead. `--mode rpc`
+  without `--ask-questions` is the same: a client that does not understand the
+  frame is never sent one it cannot answer.
+
 ## Plugins and hooks
 
 ### Hook plugins (single files)
@@ -625,6 +650,10 @@ permission:
   which every front-end reads — the TUI included — so the question does not come
   back for that tool in that repository. An answer that never arrives is denied
   after five minutes so a turn cannot hang.
+
+Questions are the other side of that: the model can ask *you* something through
+the `ask` tool, which the desktop app and the VS Code panel answer with a dialog
+(see [Questions a skill asks the user](#questions-a-skill-asks-the-user)).
 
 There is no permission mode: the rules and `auto_approve` decide every call.
 For a read-only run, allowlist the read tools with `--tools` (e.g.

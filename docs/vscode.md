@@ -23,6 +23,8 @@ editors/vscode/
     core/             pure, webview-free logic (unit tested under node)
       protocol.ts     wire events -> transcript state machine -> view messages
       views.ts        view ids shared by the manifest and the provider
+      approvals.ts    an approval request, its tool titles and its answers
+      questions.ts    a skill's question request, its answers and its label
       args.ts         VS Code settings -> `oxide` argv
       prompt.ts       prompt assembly, @path expansion, attachments
       attachments.ts  attachment types, extensions, naming and data URLs
@@ -260,6 +262,24 @@ with a `quit` frame when `agent_end` arrives, so the process exits on its own.
   The flag is passed explicitly in either direction, so `oxide.askApprovals`
   decides for a panel run; `askApprovals` in the shared `settings.json` still
   decides for the terminal and the desktop app.
+- **Questions** — a turn always starts with `--ask-questions`, so a skill that
+  needs a decision reaches the panel instead of the model guessing. The `ask`
+  tool's request arrives as a `question_request` event and becomes a card in the
+  transcript: one block per question, with a radio group (the first option
+  preselected) or, for a list where several labels may be picked, checkboxes,
+  plus a field for an answer in the user's own words — so a question with no
+  options is still answerable. **Answer** posts what was ticked and typed as a
+  `question` frame (`core/questions.ts`; `chat.ts::answerQuestion` →
+  `cli.ts`), **Skip** answers with nothing at all, which the agent reports to the
+  model as a question nobody answered, and the card then shows the answer it was
+  answered with — a submission with nothing filled in is sent as that same
+  dismissal rather than as a set of blank answers, so both reach the model
+  alike. A card is settled when the CLI gives up on the request (a
+  `question_closed` event, which the CLI sends after its 5-minute timeout while
+  the turn it belongs to keeps running) or when the run ends or is stopped. An
+  answer that would otherwise have ridden on it is never sent. Nothing is
+  remembered between them: unlike an approval, a question is about this
+  conversation only.
 - **Per folder** — sessions are per project, so switching to a different
   workspace folder resets the transcript and starts its own thread.
 - **Usage** — `usage` events accumulate input/output/cache tokens and cost for
@@ -379,7 +399,7 @@ has active, so another provider's would run against the wrong endpoint.
 Events consumed: `session`, `thinking`, `thinking_done`, `message_update`
 (`thinking_delta` / `text_delta`), `tool_call`, `tool_execution_update`,
 `tool_execution_end`, `usage`, `auto_retry_start`, `compaction`, `error`,
-`approval_request`, and `agent_end`. `thinking_done` marks the end of a model step (its `ThoughtDone`
+`approval_request`, `question_request`, `question_closed`, and `agent_end`. `thinking_done` marks the end of a model step (its `ThoughtDone`
 counterpart), so a later step's output does not merge into, and a retry cannot
 discard, a previous step's committed reply.
 
@@ -513,18 +533,25 @@ session-list parsing, config-dir resolution, binary lookup and the plan a
 command is started from, and the transcript state machine — plus, in
 `test/approvals.test.ts`, the approval request parsing,
 the titles a card shows and the request frames the CLI reads, in
+`test/questions.test.ts`, the same for a skill's question — the request a
+`question_request` event becomes, the answers the webview posts back (a blank
+form among them, which is the dismissal Skip posts), the title and settled label
+a card carries, and the frames the CLI reads — in
 `test/views.test.ts`, that the chat view ids the host
 registers match the views `package.json` contributes, in `test/brand.test.ts`,
 that the two icons stay the desktop app's, in `test/commands.test.ts`, that
 every contributed command has a handler, every footer chip has a click handler,
-and every message the webview posts is handled by `chatView.ts` — and that the
+and every message the webview posts is handled by `chatView.ts` — and that an
+answer is routed on to the running turn rather than only settling the card, and that the
 header's new-chat button carries the command's own name in its tooltip and
 `aria-label` rather than the name the command had before, and that the session
 listing is composed in exactly one place, which supplies the id of the thread on
 screen, so no redraw can quietly drop the `Current` mark — and in
 `test/webview.test.ts`, that `media/main.js` — plain JavaScript with no type
 checking — paints the footer, the chips, the attachment strip, the approval
-card, the `/mcps` and `/sessions` listings (and the full-size image a thumbnail
+card, a question card's options and free-text fields and the answers a click
+posts,
+the `/mcps` and `/sessions` listings (and the full-size image a thumbnail
 opens) and the disabled
 state of Send from its messages when it runs against a DOM stub, and that the
 shell puts the listing under the header, ahead of the transcript, with

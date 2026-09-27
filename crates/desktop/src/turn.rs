@@ -7,6 +7,7 @@
 
 use anyhow::{Context, Result};
 use oxide_core::agent::{AgentEvent, Approver, Cancel, Steering};
+use oxide_core::ask::Asker;
 use oxide_core::llm::ContentPart;
 use oxide_core::runner::{self, AgentRun};
 use oxide_core::session::{SessionLog, SessionSummary};
@@ -29,12 +30,15 @@ pub struct Turn {
 /// Starts a turn against `project`. `session` selects which log to continue;
 /// `None` creates a fresh one (or resumes nothing, per `config.ephemeral`).
 /// `approve` is the interactive approval callback; `None` falls back to
-/// `config.auto_approve`. `reasoning` overrides the stored value for this run.
+/// `config.auto_approve`. `ask` is how the model's questions reach the user, and
+/// `None` leaves the `ask` tool out of the run. `reasoning` overrides the stored
+/// value for this run.
 pub async fn start_turn(
     project: &Path,
     prompt: &str,
     session: Option<SessionLog>,
     approve: Option<Approver>,
+    ask: Option<Asker>,
     reasoning: Option<String>,
     inline: Vec<ContentPart>,
 ) -> Result<Turn> {
@@ -68,6 +72,7 @@ pub async fn start_turn(
         command_agent,
         session: log,
         approve,
+        ask,
         steering: steering.clone(),
         follow_ups: follow_ups.clone(),
         cancel: cancel.clone(),

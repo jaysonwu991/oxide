@@ -29,6 +29,7 @@ const state = {
   providerIndex: 0,
   models: null,
   pendingApproval: null,
+  pendingQuestion: null,
   trust: null,
   currentAssistant: null,
   tools: [],
@@ -674,6 +675,10 @@ function resetTurn() {
   state.currentAssistant = null;
   state.tools = [];
   state.currentThinking = null;
+  // A run that ended took its requests with it, so a question it left waiting
+  // is not answerable any more: the dialog goes away, as the extension settles
+  // a card a finished run left behind.
+  closeQuestion();
 }
 
 function updateSendState() {
@@ -1300,12 +1305,128 @@ async function answerApproval(decision) {
   await invoke("resolve_approval", { id, decision });
 }
 
+// ---------- questions ----------
+
+// A skill that needs a decision asks through the `ask` tool, and the answer is
+// painted here: one block per question, each a list of options (radio buttons,
+// or checkboxes when several may be picked) plus a free-text field, so a
+// question with no options is still answerable. The dialog is built from the
+// request's own data, which is also what the model laid out.
+function showQuestion(request) {
+  const questions = Array.isArray(request.questions) ? request.questions : [];
+  if (!questions.length) return;
+  state.pendingQuestion = { id: request.id, questions };
+  // The core's title rule, and the extension's: the *first* question's header,
+  // else that question itself, so both front-ends name the same dialog.
+  const first = questions[0];
+  el("question-title").textContent = first.header || first.question;
+  const body = el("question-body");
+  body.replaceChildren();
+  questions.forEach((question, index) => {
+    const block = document.createElement("div");
+    block.className = "question";
+    if (question.header) {
+      const header = document.createElement("div");
+      header.className = "question-header";
+      header.textContent = question.header;
+      block.appendChild(header);
+    }
+    const text = document.createElement("p");
+    text.className = "question-text";
+    text.textContent = question.question;
+    block.appendChild(text);
+    const options = Array.isArray(question.options) ? question.options : [];
+    const name = `question-${index}`;
+    options.forEach((option, position) => {
+      const row = document.createElement("label");
+      row.className = "question-option";
+      const input = document.createElement("input");
+      input.type = question.multiSelect ? "checkbox" : "radio";
+      input.name = name;
+      input.value = option.label;
+      input.dataset.question = String(index);
+      // Every option carries the same class: a single-select question's answer
+      // is the checked radio, a multi-select one's the checked boxes, and the
+      // widget itself already says which it is.
+      input.className = "question-choice";
+      const label = document.createElement("span");
+      label.className = "question-label";
+      label.textContent = option.label;
+      row.appendChild(input);
+      row.appendChild(label);
+      if (option.description) {
+        const description = document.createElement("span");
+        description.className = "question-detail";
+        description.textContent = option.description;
+        row.appendChild(description);
+      }
+      block.appendChild(row);
+      // A single-select list needs one of its options chosen, never a blank
+      // group the user can submit by accident.
+      if (!question.multiSelect && position === 0) input.checked = true;
+    });
+    const free = document.createElement("input");
+    free.className = "question-free";
+    free.type = "text";
+    free.placeholder = options.length ? "Or type an answer…" : "Type an answer…";
+    free.dataset.question = String(index);
+    block.appendChild(free);
+    body.appendChild(block);
+  });
+  closeOverlays("question");
+  el("question").hidden = false;
+  const focus = body.querySelector(".question-free");
+  if (focus) focus.focus();
+}
+
+// Every answer echoes the question it belongs to, so the model reads them in
+// the terms it asked them in.
+function collectAnswers() {
+  const pending = state.pendingQuestion;
+  if (!pending) return [];
+  return pending.questions.map((question, index) => {
+    const values = [];
+    el("question-body")
+      .querySelectorAll(`.question-choice[data-question="${index}"]:checked`)
+      .forEach((input) => values.push(input.value));
+    const text = el("question-body").querySelector(
+      `.question-free[data-question="${index}"]`,
+    );
+    const typed = text ? text.value.trim() : "";
+    if (typed) values.push(typed);
+    return { question: question.question, values };
+  });
+}
+
+// Hides the question dialog without answering it, for a request that is gone:
+// the run that asked it ended, or it timed out with nobody answering.
+function closeQuestion() {
+  if (!state.pendingQuestion) return;
+  state.pendingQuestion = null;
+  el("question").hidden = true;
+}
+
+// `dismiss` (Skip) answers with nothing, which the agent reports to the model as
+// a question the user did not answer. A submission with nothing filled in is
+// that same dismissal rather than a set of blank answers, so the agent reads it
+// the way the dialog's own Skip does.
+async function answerQuestion(dismiss = false) {
+  const pending = state.pendingQuestion;
+  if (!pending) return;
+  const answers = dismiss
+    ? []
+    : collectAnswers().filter((answer) => answer.values.length > 0);
+  closeQuestion();
+  await invoke("resolve_question", { id: pending.id, answers });
+}
+
 // ---------- providers ----------
 
 // Every panel that can take the window's keyboard: most cover the app, while
 // the MCP and session listings open above the composer instead.
 const OVERLAYS = [
   "approval",
+  "question",
   "connect-modal",
   "create-project-modal",
   "mcps-modal",
@@ -2086,6 +2207,16 @@ async function initEvents() {
     await loadSessions();
   });
   await listen("approval-request", (event) => showApproval(event.payload || {}));
+  await listen("question-request", (event) => showQuestion(event.payload || {}));
+  // The request timed out with nobody answering, while the run it belongs to
+  // may still be going: the dialog goes away so it does not offer an answer that
+  // nothing is waiting for.
+  await listen("question-closed", (event) => {
+    const payload = event.payload || {};
+    if (state.pendingQuestion && state.pendingQuestion.id === payload.id) {
+      closeQuestion();
+    }
+  });
 }
 
 // Create project modal state
@@ -2296,6 +2427,8 @@ function init() {
   el("approval-once").onclick = () => answerApproval("once");
   el("approval-always").onclick = () => answerApproval("always");
   el("approval-deny").onclick = () => answerApproval("deny");
+  el("question-submit").onclick = () => answerQuestion(false);
+  el("question-dismiss").onclick = () => answerQuestion(true);
   el("login-cancel").onclick = () => (el("connect-modal").hidden = true);
   el("login-save").onclick = saveConnect;
   el("models-close").onclick = () => (el("models-modal").hidden = true);
@@ -2403,6 +2536,9 @@ function init() {
     if (event.key === "Escape") {
       if (!el("confirm-modal").hidden) resolveConfirm(false);
       if (!el("rename-modal").hidden) resolveRename(null);
+      // A question dismissed with Escape is answered as unanswered rather than
+      // hidden, so the turn continues instead of waiting out the timeout.
+      if (!el("question").hidden) answerQuestion(true);
       closeOverlays();
       return;
     }

@@ -433,6 +433,122 @@ pre,
   color: var(--vscode-charts-red, #f14c4c);
 }
 
+/* ---------- question card ---------- */
+
+/* The `ask` tool's card: like an approval, it is the one thing on screen that
+   needs the user, on the widget background so it stands out of the transcript. */
+.question {
+  border: 1px solid var(--vscode-panel-border, rgba(128, 128, 128, 0.3));
+  border-left: 3px solid var(--vscode-focusBorder, var(--vscode-charts-blue, #4a9eff));
+  border-radius: 4px;
+  margin: 0 0 10px;
+  background: var(--vscode-editorWidget-background, var(--vscode-editor-background));
+}
+
+.question.answered {
+  border-left-color: var(--vscode-charts-green, #89d185);
+}
+
+.qmark {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 15px;
+  height: 15px;
+  border-radius: 50%;
+  border: 1px solid currentColor;
+  font-size: 0.75em;
+}
+
+.qhead {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 8px 0;
+  font-size: 0.85em;
+  font-weight: 600;
+  color: var(--vscode-focusBorder, var(--vscode-charts-blue, #4a9eff));
+}
+
+.question.answered .qhead {
+  color: var(--vscode-charts-green, #89d185);
+}
+
+.qbody {
+  padding: 2px 8px 0;
+}
+
+.qblock + .qblock {
+  margin-top: 8px;
+}
+
+.qheader {
+  font-size: 0.8em;
+  font-weight: 600;
+  color: var(--vscode-descriptionForeground);
+}
+
+.qtext {
+  margin: 2px 0 4px;
+}
+
+.qoption {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  padding: 2px 0;
+  cursor: pointer;
+}
+
+.qoption:hover .qlabel {
+  color: var(--vscode-textLink-foreground);
+}
+
+.qdetail {
+  font-size: 0.85em;
+  color: var(--vscode-descriptionForeground);
+}
+
+.qfree {
+  width: 100%;
+  box-sizing: border-box;
+  margin-top: 4px;
+  padding: 3px 6px;
+  color: inherit;
+  background: var(--vscode-input-background);
+  border: 1px solid var(--vscode-input-border, transparent);
+  border-radius: 3px;
+  font-family: inherit;
+  font-size: inherit;
+}
+
+.qfree:focus {
+  outline: 1px solid var(--vscode-focusBorder);
+  outline-offset: -1px;
+}
+
+.qactions {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+  padding: 8px;
+}
+
+.qactions .qdone {
+  font-size: 0.85em;
+  color: var(--vscode-descriptionForeground);
+}
+
+.qactions .awaiting {
+  font-size: 0.8em;
+  color: var(--vscode-descriptionForeground);
+}
+
+.question.answered .qdone {
+  color: var(--vscode-charts-green, #89d185);
+}
+
 /* ---------- tool cards ---------- */
 
 .tool {

@@ -35,6 +35,7 @@ crates/desktop/
     manager.rs      project registry + session aggregation (shared, tested)
     turn.rs         starts an agent turn against a project (shared, tested)
     approval.rs     interactive approve/deny broker (uses `oxide_core::approvals`)
+    ask.rs          a skill's question broker (uses `oxide_core::ask`)
     commands.rs     Tauri commands (gui feature)
     main.rs         Tauri entry point (gui feature)
   ui/               front-end: index.html, app.js, style.css
@@ -190,7 +191,7 @@ that directory; it is not a project you added.
 
 ## Agent turns
 
-`turn::start_turn(project, prompt, session, approve, reasoning)` loads the
+`turn::start_turn(project, prompt, session, approve, ask, reasoning, inline)` loads the
 project's config, resolves the session (`new` / `latest` / an id), appends the
 user message through `oxide_core::runner::begin_session`, and spawns the shared
 agent loop with `runner::spawn_agent`, returning a stream of `AgentEvent`s plus
@@ -210,6 +211,22 @@ the run's `Steering` handles and its cooperative `Cancel` flag. The Tauri comman
   that tool — and so the terminal and the VS Code extension honour the same
   rule. The 🔒 dialog lists and clears those rules. An unanswered request denies
   after a 5-minute timeout so a turn cannot hang.
+- **Questions** — `ask.rs` implements the `ask` tool's `Asker`, which the turn
+  always wires up: when a skill needs a decision the model calls `ask`, the
+  broker emits `question-request`, and the UI answers with `resolve_question`.
+  The dialog is one block per question — a radio group (the first option
+  preselected) or checkboxes when several labels may be picked — plus a field
+  for an answer in the user's own words, so a question with no options is still
+  answerable. **Answer** sends what was ticked and typed — a submission with
+  nothing filled in is sent as the same dismissal **Skip** is, so the agent
+  hears one thing — while **Skip** (or <kbd>Esc</kbd>) sends nothing at all,
+  which the agent reports to the model as a question nobody answered. A request
+  that is never answered gives up after the same 5-minute timeout, and the
+  broker then emits `question-closed` so the dialog goes away even though the
+  turn it belongs to is still running; a turn that ends (or is stopped) takes
+  its own requests with it (`AskBroker::clear_run`), and the window closes the
+  dialog with it. Nothing is remembered between questions: an answer is about
+  the turn that asked it.
 - **Cancel / steer** — `send_prompt` returns a run id immediately and runs the
   turn in the background. `cancel_run` sets the run's cooperative `Cancel` flag
   (`oxide_core::agent::Cancel`): the loop finishes the current step — recording
@@ -271,7 +288,7 @@ immediately and persists it.
 | `Ctrl+K` | Model picker |
 | `Ctrl+/` | Shortcut help |
 | `⌘1`…`⌘9` / `Ctrl+1`…`9` | Open the session with that number in the Projects tree |
-| `Escape` | Close any dialog |
+| `Escape` | Close any dialog; a question is dismissed, which the agent is told rather than left waiting |
 
 ## Slash commands
 

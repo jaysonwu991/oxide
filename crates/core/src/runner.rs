@@ -5,6 +5,7 @@
 //! spawns the agent loop with events streamed to a channel.
 
 use crate::agent::{self, AgentEvent, Approver, Cancel, Runtime, Steering};
+use crate::ask::Asker;
 use crate::config::Config;
 use crate::llm::{ContentPart, Message};
 use crate::lsp::LspManager;
@@ -31,6 +32,10 @@ pub struct AgentRun {
     /// Interactive approval callback. When `None`, `config.auto_approve`
     /// decides every `ask` rule.
     pub approve: Option<Approver>,
+    /// How the model's questions reach the user. `None` leaves the `ask` tool
+    /// out of the run entirely, so a front-end that cannot answer one never has
+    /// the model ask and then wait out the timeout.
+    pub ask: Option<Asker>,
     /// Mid-run user messages injected between steps, and follow-ups queued for
     /// after the turn. Callers can share these to steer a running agent.
     pub steering: Steering,
@@ -102,6 +107,7 @@ pub async fn spawn_agent(run: AgentRun, tx: UnboundedSender<AgentEvent>) -> Join
         command_agent,
         session,
         approve,
+        ask,
         steering,
         follow_ups,
         cancel,
@@ -116,6 +122,7 @@ pub async fn spawn_agent(run: AgentRun, tx: UnboundedSender<AgentEvent>) -> Join
         snapshots: Snapshots::open(&cwd).ok().map(Arc::new),
         lsp: Arc::new(LspManager::new()),
         approve: approver,
+        ask,
         steering,
         follow_ups,
         cancel,

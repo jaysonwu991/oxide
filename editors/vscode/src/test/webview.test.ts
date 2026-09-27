@@ -71,6 +71,7 @@ class StubElement {
   hidden = false;
   disabled = false;
   value = "";
+  checked = false;
   title = "";
   type = "";
   src = "";
@@ -170,16 +171,50 @@ class StubElement {
 
   /// Enough of `matches` for the renderer's own selectors: it walks up from a
   /// click target to find `[data-control]`, `[data-path]`, `a[href]`, `.thead`
-  /// or the card a tool row belongs to.
+  /// or the card a tool row belongs to, and the question card reads back the
+  /// answers it painted with a compound of a class, a data attribute with a
+  /// value and `:checked`.
   matches(selector: string): boolean {
-    const attribute = /^\[data-([a-z-]+)\]$/.exec(selector);
-    if (attribute) {
-      const key = attribute[1].replace(/-(\w)/g, (_, letter: string) => letter.toUpperCase());
-      return this.dataset[key] !== undefined;
+    let rest = selector.trim();
+    const tag = /^[a-z]+/.exec(rest);
+    if (tag) {
+      if (this.tagName !== tag[0]) return false;
+      rest = rest.slice(tag[0].length);
     }
-    if (/^\.[\w-]+$/.test(selector)) return this.classList.contains(selector.slice(1));
-    if (selector === "a[href]") return this.tagName === "a" && this.getAttribute("href") !== null;
-    return false;
+    const parts = rest.match(/\.[\w-]+|\[[^\]]+\]|:[\w-]+/g) ?? [];
+    // Anything the loop does not consume (a combinator, an unknown part) is not
+    // a selector the renderer uses.
+    if (parts.join("") !== rest) return false;
+    for (const part of parts) {
+      if (part.startsWith(".")) {
+        if (!this.classList.contains(part.slice(1))) return false;
+      } else if (part === ":checked") {
+        if (!this.checked) return false;
+      } else if (part === "[href]") {
+        if (this.getAttribute("href") === null) return false;
+      } else {
+        const attribute = /^\[data-([a-z-]+)(?:="([^"]*)")?\]$/.exec(part);
+        if (!attribute) return false;
+        const key = attribute[1].replace(/-(\w)/g, (_, letter: string) => letter.toUpperCase());
+        const value = this.dataset[key];
+        if (attribute[2] === undefined ? value === undefined : value !== attribute[2]) return false;
+      }
+    }
+    return true;
+  }
+
+  /// The renderer's one descendant lookup, over the selectors `matches` knows.
+  querySelectorAll(selector: string): StubElement[] {
+    const found: StubElement[] = [];
+    for (const child of this.children) {
+      if (child.matches(selector)) found.push(child);
+      found.push(...child.querySelectorAll(selector));
+    }
+    return found;
+  }
+
+  querySelector(selector: string): StubElement | null {
+    return this.querySelectorAll(selector)[0] ?? null;
   }
 
   closest(selector: string): StubElement | null {
@@ -1336,6 +1371,178 @@ describe("webview approvals", () => {
     send({ k: "approval", id: 9, state: "closed", label: "Not answered" });
     assert.deepEqual(
       find(transcript, "aactions")!.children.map((child) => child.textContent),
+      ["Not answered"],
+    );
+  });
+});
+
+describe("webview questions", () => {
+  /// The card the CLI's `question_request` becomes: one block per question, each
+  /// with its options and a field for an answer of the user's own wording.
+  const pending = {
+    id: 4,
+    kind: "question",
+    requestId: 21,
+    title: "Database",
+    questions: [
+      {
+        question: "Which database?",
+        header: "Database",
+        options: [
+          { label: "Postgres", description: "Relational" },
+          { label: "SQLite", description: "Embedded" },
+        ],
+        multiSelect: false,
+      },
+    ],
+    state: "pending",
+    label: "",
+  };
+
+  /// The card and every answer field in it, in the order they were painted.
+  const fields = (card: StubElement) => card.querySelectorAll(".qchoice");
+
+  it("paints a radio group and a free-text field for a single choice", () => {
+    const { byId, send } = loadRenderer();
+    send(stateMessage());
+    const transcript = byId.get("transcript")!;
+    send({ k: "push", item: pending });
+
+    const card = find(transcript, "question")!;
+    assert.equal(find(card, "qtitle")!.textContent, "Database");
+    assert.equal(find(card, "qtext")!.textContent, "Which database?");
+    const choices = fields(card);
+    assert.deepEqual(
+      choices.map((choice) => [choice.type, choice.value]),
+      [
+        ["radio", "Postgres"],
+        ["radio", "SQLite"],
+      ],
+    );
+    assert.deepEqual(
+      card.querySelectorAll(".qdetail").map((detail) => detail.textContent),
+      ["Relational", "Embedded"],
+    );
+    // A single-select question preselects its first option, so an answer can
+    // never be blank by accident.
+    assert.deepEqual(
+      choices.map((choice) => choice.checked),
+      [true, false],
+    );
+    const free = find(card, "qfree")!;
+    assert.equal(free.placeholder, "Or type an answer…");
+    assert.deepEqual(
+      find(card, "qactions")!.children.map((child) => child.textContent),
+      ["Answer", "Skip", "Waiting for your answer…"],
+    );
+  });
+
+  it("paints boxes and a hint that there is more than one answer", () => {
+    const { byId, send } = loadRenderer();
+    send(stateMessage());
+    const transcript = byId.get("transcript")!;
+    send({
+      k: "push",
+      item: {
+        ...pending,
+        questions: [{ ...pending.questions[0], multiSelect: true }],
+      },
+    });
+    const card = find(transcript, "question")!;
+    assert.deepEqual(
+      fields(card).map((choice) => choice.type),
+      ["checkbox", "checkbox"],
+    );
+    // A multi-select question starts with nothing ticked.
+    assert.deepEqual(
+      fields(card).map((choice) => choice.checked),
+      [false, false],
+    );
+  });
+
+  it("asks for free text where no options are offered", () => {
+    const { byId, send } = loadRenderer();
+    send(stateMessage());
+    const transcript = byId.get("transcript")!;
+    send({
+      k: "push",
+      item: {
+        ...pending,
+        title: "What should it be called?",
+        questions: [{ question: "What should it be called?", header: "", options: [], multiSelect: false }],
+      },
+    });
+    const card = find(transcript, "question")!;
+    assert.deepEqual(fields(card), []);
+    assert.equal(find(card, "qfree")!.placeholder, "Type an answer…");
+    assert.equal(find(card, "qtitle")!.textContent, "What should it be called?");
+  });
+
+  /// The answers are the host's to send: the view names the request and what
+  /// was ticked and typed, and the question each answer belongs to.
+  it("posts the ticks and the typed text as the answers", () => {
+    const { byId, send, posted } = loadRenderer();
+    send(stateMessage());
+    const transcript = byId.get("transcript")!;
+    send({
+      k: "push",
+      item: {
+        ...pending,
+        questions: [
+          { ...pending.questions[0], multiSelect: true },
+          { question: "Anything else?", header: "", options: [], multiSelect: false },
+        ],
+      },
+    });
+    const card = find(transcript, "question")!;
+    const choices = fields(card);
+    choices[1].checked = true;
+    const free = card.querySelectorAll(".qfree");
+    free[0].value = "  and fast  ";
+    free[1].value = "ship it";
+
+    find(card, "qactions")!.children[0].fire("click");
+    assert.deepEqual(shape(posted[posted.length - 1]), {
+      k: "question",
+      requestId: 21,
+      answers: [
+        { question: "Which database?", values: ["SQLite", "and fast"] },
+        { question: "Anything else?", values: ["ship it"] },
+      ],
+    });
+  });
+
+  it("sends an empty answer list for Skip, which is a dismissal", () => {
+    const { byId, send, posted } = loadRenderer();
+    send(stateMessage());
+    const transcript = byId.get("transcript")!;
+    send({ k: "push", item: pending });
+    find(transcript, "qactions")!.children[1].fire("click");
+    assert.deepEqual(shape(posted[posted.length - 1]), {
+      k: "question",
+      requestId: 21,
+      answers: [],
+    });
+  });
+
+  it("replaces the fields with the answers, and repaints it from a state replay", () => {
+    const { byId, send } = loadRenderer();
+    send(stateMessage());
+    const transcript = byId.get("transcript")!;
+    send({ k: "push", item: pending });
+    send({ k: "question", id: 4, state: "answered", label: "Postgres" });
+
+    const card = find(transcript, "question")!;
+    assert.deepEqual(fields(card), []);
+    assert.deepEqual(
+      find(card, "qactions")!.children.map((child) => child.textContent),
+      ["Postgres"],
+    );
+
+    const second = loadRenderer();
+    second.send(stateMessage({ items: [{ ...pending, state: "closed", label: "Not answered" }] }));
+    assert.deepEqual(
+      find(second.byId.get("transcript")!, "qactions")!.children.map((child) => child.textContent),
       ["Not answered"],
     );
   });
