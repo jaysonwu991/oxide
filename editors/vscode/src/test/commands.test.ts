@@ -92,6 +92,52 @@ describe("command contributions", () => {
     assert.ok(actions.has("SESSION_DELETE") && actions.has("SESSION_DELETE_CONFIRM"));
   });
 
+  it("names the header's new-chat button the way the command is named", () => {
+    // One action, two places that say its name: the palette entry and the
+    // button's tooltip, which is also the name a screen reader reads out. The
+    // palette keeps the title case VS Code expects and the panel's own labels
+    // are sentence case, so the two agree on the words rather than the caps —
+    // what must not happen is the button going on offering the old action.
+    const command = manifest.contributes.commands.find(
+      (entry) => entry.command === "oxide.newSession",
+    );
+    assert.equal(command?.title, "New Chat");
+    const at = chatView.indexOf('id="new-session"');
+    const button = chatView.slice(at, chatView.indexOf("</button>", at));
+    for (const attribute of ["title", "aria-label"]) {
+      const value = new RegExp(`${attribute}="([^"]+)"`).exec(button)?.[1];
+      assert.equal(value?.toLowerCase(), command!.title.toLowerCase(), `${attribute} agrees`);
+    }
+    assert.ok(!chatView.includes("New session"), "the old name is gone from the header");
+  });
+
+  it("marks the open thread wherever the session listing is rebuilt", () => {
+    // The listing says which thread you are in and offers to close it, so a
+    // rebuild that composes it without that id — the one after a failed delete
+    // did — drops the mark and turns the first row into one that promises a
+    // fresh thread instead. It is composed in exactly one place, which supplies
+    // it, and every redraw goes through that place.
+    assert.equal(
+      (chat.match(/showDialog\(\s*sessionDialog\(/g) ?? []).length,
+      1,
+      "the session listing is composed in one place",
+    );
+    const helper = chat.slice(
+      chat.indexOf("private showSessions("),
+      chat.indexOf("async resumeSession("),
+    );
+    assert.ok(
+      helper.includes("sessionDialog(this.sessions, this.transcript.sessionId, note)"),
+      "and that place passes the open thread's id",
+    );
+    // The sites that repaint it: the load, its failure, the listing itself, a
+    // row while a turn runs, a delete while a turn runs, and a failed delete.
+    assert.ok(
+      (chat.match(/this\.showSessions\(/g) ?? []).length >= 6,
+      "every redraw uses it rather than composing the dialog again",
+    );
+  });
+
   it("will not delete a thread while the running turn owns its file", () => {
     // The turn's CLI appends to the session file as it works, so removing it
     // from here pulls the file out from under the process and the next append

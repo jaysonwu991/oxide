@@ -192,7 +192,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
 <header id="header">
   <span id="title">New chat</span>
   <div id="actions">
-    <button id="new-session" class="icon" title="New session" aria-label="New session">${ICONS.new}</button>
+    <button id="new-session" class="icon" title="New chat" aria-label="New chat">${ICONS.new}</button>
     <button id="resume-session" class="icon" title="Resume a session" aria-label="Resume a session">${ICONS.resume}</button>
   </div>
 </header>

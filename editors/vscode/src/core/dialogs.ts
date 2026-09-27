@@ -153,11 +153,15 @@ export function mcpDialog(servers: readonly McpServerView[], note = ""): DialogS
 /// `current` is the session the panel has open (its id, from the `session`
 /// header the CLI reported or the id a row resumed), so the list can say which
 /// row is the conversation on screen: closing it is what "New chat" does, and
-/// without the mark there is nothing in the listing that says where you are.
+/// without the mark there is nothing in the listing that says where you are. It
+/// is required rather than defaulted, and it comes before the note, because
+/// every redraw of the listing has to carry it: a rebuild that left it out —
+/// after a failed delete, say — would drop the mark and turn the first row back
+/// into one that promises a fresh thread rather than closing the open one.
 export function sessionDialog(
   sessions: readonly SessionEntry[],
+  current: string | null,
   note = "",
-  current: string | null = null,
 ): DialogState {
   return {
     pin: "header",

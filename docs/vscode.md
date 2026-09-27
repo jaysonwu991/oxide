@@ -75,10 +75,12 @@ activity-bar one when that focus command does not exist.
 The panel's own chrome is icon-first, the way Claude Code's is. The header shows
 the thread's summarized title — the resumed session's name when the dialog knew
 one, else the first message sent condensed to one line (Markdown stripped, cut
-at a word boundary), else **New chat** — next to icon buttons for a new or
-resumed session; the model is the footer's first chip rather than a second line
-under the title, and the composer's **Attach**, **Stop** and **Send** are icons
-too, so the only text in the chrome is the phase and the numbers. The phase
+at a word boundary), else **New chat** — next to icon buttons for a new chat
+and for resuming one, whose tooltips — and `aria-label`s, the names a screen
+reader reads out — say **New chat** and **Resume a session**; the model is the
+footer's first chip rather than a second line under the title, and the
+composer's **Attach**, **Stop** and **Send** are icons too, so the only text in
+the chrome is the phase and the numbers. The phase
 appears while a turn runs (with the elapsed timer) and goes when it does, rather
 than sitting in the toolbar as an idle dot. A turn that finishes while the panel
 is hidden raises a toast naming the thread by that same title; it takes the
@@ -515,7 +517,11 @@ the titles a card shows and the request frames the CLI reads, in
 registers match the views `package.json` contributes, in `test/brand.test.ts`,
 that the two icons stay the desktop app's, in `test/commands.test.ts`, that
 every contributed command has a handler, every footer chip has a click handler,
-and every message the webview posts is handled by `chatView.ts`, and in
+and every message the webview posts is handled by `chatView.ts` — and that the
+header's new-chat button carries the command's own name in its tooltip and
+`aria-label` rather than the name the command had before, and that the session
+listing is composed in exactly one place, which supplies the id of the thread on
+screen, so no redraw can quietly drop the `Current` mark — and in
 `test/webview.test.ts`, that `media/main.js` — plain JavaScript with no type
 checking — paints the footer, the chips, the attachment strip, the approval
 card, the `/mcps` and `/sessions` listings (and the full-size image a thumbnail
