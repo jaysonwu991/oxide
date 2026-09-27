@@ -124,7 +124,10 @@ toggle), the `/sessions` dialog (this project's threads only, the row that
 resumes one, and the empty case), the **Create project** dialog, and every
 client command in the catalog —
 a command the app does not perform has to be answered here rather than sent to
-the model as a prompt.
+the model as a prompt. It also reads `ui/index.html` to check what no stub can:
+that both listings are attached to the composer (inside `.composer-wrap`, above
+`.composer`) instead of floating over the window, and that each header button is
+an icon with a title.
 
 ## Sharing configuration with the CLI
 
@@ -279,23 +282,31 @@ says so in the transcript rather than reaching the model as the literal text
 `/agent`. With no project selected the project-scoped commands say that first,
 so a listing or a toggle cannot land in the app's own directory.
 
+The **MCP servers** listing (`/mcps`, alias `/mcp`) and the **Sessions** listing
+(`/sessions`, alias `/session`) open out of the composer rather than over the
+app: each is a panel of the composer's own column, growing upward from its top
+edge and staying attached to it, with its own scrollbar once the list is longer
+than the space it takes. Nothing is dimmed behind them, so the transcript stays
+readable, and their buttons are icons — a power switch per server, a plus and a
+close in the headers — whose tooltips carry the words. **Escape** closes either.
+
 The **MCP servers** dialog lists every server the project loads, with the state
 the core probed (`Connected`, `Needs Auth`, `Needs Trust`, `Disabled`, or the
 connection error) and a line naming its transport, its endpoint or command line,
-and the file it was defined in. **Disable** / **Enable** writes `enabled` into
+and the file it was defined in. The power switch beside a row writes `enabled` into
 that file — and Claude Code's `disabled`, kept in step, since either harness may
 be the one reading it — without deleting the configuration, **Recheck** probes
 again, and the listing comes from
 `oxide_core::mcp_config::server_views`, so it matches `oxide mcp list --json`
-and the VS Code panel's dialog. A project's own servers report **Needs Trust** rather
+and the VS Code panel's listing. A project's own servers report **Needs Trust** rather
 than being started until the project is trusted.
 
 The **Sessions** dialog (`/sessions`, alias `/session`) lists this project's
 threads, newest first, from `all_sessions` — the same rows the tree groups under
 the project — each named by its session name or, unnamed, by the summarized
-preview the terminal's picker and the VS Code panel's dialog show it under, with how long
+preview the terminal's picker and the VS Code panel's listing show it under, with how long
 ago it was written and how many messages it holds. Picking one opens that thread
-and closes the dialog, and **New thread** starts a fresh one; the argument form
+and closes the listing, and the plus in its header starts a fresh one; the argument form
 `/session <id>` is left to the agent, so the dialog is the bare command's own.
 
 ## Rendering

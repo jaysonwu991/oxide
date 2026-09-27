@@ -297,6 +297,46 @@ const app = globalThis.__app;
 const status = () => String(elementFor("status-text").textContent);
 const projectCalls = (command) => calls.filter(([name]) => name === command);
 
+// ---------- the composer's popovers ----------
+
+// The MCP and session listings are part of the composer rather than windows
+// over the app: each is a sibling above `.composer` inside `.composer-wrap`, so
+// it grows out of the composer's top edge and stays stuck to it.
+console.log("popovers");
+const shell = readFileSync(`${here}index.html`, "utf8");
+const shellAt = (needle) => shell.indexOf(needle);
+const buttonFor = (id) => {
+  const at = shell.indexOf(`id="${id}"`);
+  if (at < 0) return "";
+  return shell.slice(shell.lastIndexOf("<button", at), shell.indexOf("</button>", at));
+};
+check(
+  "attached the MCP and session popovers to the composer",
+  shellAt('class="composer-wrap"') < shellAt('id="mcps-modal"') &&
+    shellAt('id="mcps-modal"') < shellAt('id="sessions-modal"') &&
+    shellAt('id="sessions-modal"') < shellAt('class="composer"'),
+  `${shellAt('id="mcps-modal"')} / ${shellAt('id="sessions-modal"')} / ${shellAt('class="composer"')}`,
+);
+check(
+  "left the popovers out of the overlays",
+  !/<div id="(mcps|sessions)-modal" class="overlay"/.test(shell),
+);
+for (const [id, label] of [
+  ["mcps-refresh", "Recheck the servers"],
+  ["mcps-close", "Close"],
+  ["sessions-new", "New thread"],
+  ["sessions-close", "Close"],
+]) {
+  const button = buttonFor(id);
+  check(
+    `made ${id} an icon-only button`,
+    button.includes(`title="${label}"`) &&
+      button.includes(`aria-label="${label}"`) &&
+      button.includes("<svg"),
+    button,
+  );
+}
+
 // ---------- /mcps ----------
 
 const driveMcps = async () => {
@@ -336,18 +376,25 @@ check(
     opened.includes("http · https://mcp.context7.com/mcp/oauth (oauth)"),
   opened,
 );
-check(
-  "offered Disable for a running server and Enable for a stopped one",
-  opened.includes("mcp-toggle: Disable") && opened.includes("mcp-toggle: Enable"),
-  opened,
-);
-
 // The toggle writes through the core and redraws from its answer.
 const rowFor = (name) =>
   elementFor("mcp-list").children.find((row) =>
     row.children[0].children[0].textContent === name,
   );
 check("a row exposes its name, status and toggle", Boolean(rowFor("filesystem")));
+check(
+  "offered a power switch for a running server and for a stopped one",
+  String(rowFor("filesystem").children[0].children[2].title).startsWith("Disable filesystem") &&
+    String(rowFor("docs").children[0].children[2].title).startsWith("Enable docs"),
+  elementFor("mcp-list").outline(),
+);
+check(
+  "painted each switch as an icon, sized to the row",
+  rowFor("filesystem").children[0].children[2].className === "icon mcp-toggle on" &&
+    rowFor("docs").children[0].children[2].className === "icon mcp-toggle" &&
+    rowFor("filesystem").children[0].children[2].innerHTML.includes("<svg"),
+  elementFor("mcp-list").outline(),
+);
 const toggle = rowFor("filesystem").children[0].children[2];
 calls.length = 0;
 await toggle.onclick();
@@ -360,7 +407,9 @@ check(
 const after = elementFor("mcp-list").outline();
 check(
   "redrew from the core's answer",
-  after.includes("mcp-status state-disabled: Disabled") && after.includes("mcp-toggle: Enable"),
+  rowFor("filesystem").children[0].children[1].textContent === "Disabled" &&
+    String(rowFor("filesystem").children[0].children[2].title).startsWith("Enable filesystem") &&
+    rowFor("filesystem").children[0].children[2].className === "icon mcp-toggle",
   after,
 );
 check("reported the toggle", status() === "Ready", status());

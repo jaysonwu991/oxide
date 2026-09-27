@@ -71,8 +71,9 @@ describe("MCP dialog", () => {
   it("carries what a row toggles, and where the change lands", () => {
     const rows = mcpDialog(parseMcpList(listing)).rows;
     const sentry = rows.find((row) => row.value === "sentry")!;
-    assert.equal(sentry.button, "Enable");
+    assert.equal(sentry.button, "Enable sentry");
     assert.equal(sentry.buttonAction, MCP_TOGGLE);
+    assert.equal(sentry.icon, "power", "the button is one glyph, not a word");
     assert.equal(sentry.detail, "stdio · npx -y @sentry/mcp · source: project");
     // A row opens nothing on its own: the button is the action.
     assert.equal(sentry.action, "");
@@ -80,7 +81,7 @@ describe("MCP dialog", () => {
 
   it("offers Disable for a server that is on", () => {
     const rows = mcpDialog(parseMcpList(listing)).rows;
-    assert.equal(rows.find((row) => row.value === "context7")!.button, "Disable");
+    assert.equal(rows.find((row) => row.value === "context7")!.button, "Disable context7");
   });
 
   it("names a state the core did not spell out, and a switched-off one either way", () => {
@@ -128,6 +129,10 @@ describe("session dialog", () => {
     assert.equal(dialog.refreshLabel, "");
     assert.deepEqual(
       dialog.rows.map((row) => row.button),
+      ["", "", "", ""],
+    );
+    assert.deepEqual(
+      dialog.rows.map((row) => row.icon),
       ["", "", "", ""],
     );
   });

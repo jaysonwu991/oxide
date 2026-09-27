@@ -19,6 +19,11 @@ import type { SessionEntry } from "./sessions";
 /// uses, `muted` for a server that is off or a session's age.
 export type DialogTone = "ok" | "warn" | "error" | "muted" | "";
 
+/// The glyphs a row's own button can be painted with. The webview cannot load
+/// VS Code's codicon font, so the few it needs are named here and inlined as
+/// SVG by the renderer — the words the button carries stay in `button`.
+export type DialogIcon = "power" | "";
+
 export interface DialogRow {
   /// What the row's action posts back — a server name, a session id.
   value: string;
@@ -31,9 +36,13 @@ export interface DialogRow {
   /// The action a click on the row itself posts, or `""` for a row that only
   /// carries a button.
   action: string;
-  /// A button at the row's end: its label and the action it posts.
+  /// A button at the row's end: what it does, in words — its tooltip and its
+  /// label for a screen reader, and its text when `icon` is empty.
   button: string;
   buttonAction: string;
+  /// The glyph the button is painted as, so a narrow pane gets a switch rather
+  /// than a word that would not fit.
+  icon: DialogIcon;
 }
 
 export interface DialogState {
@@ -53,8 +62,8 @@ export interface DialogState {
 export const MCP_TOGGLE = "mcpToggle";
 export const MCP_REFRESH = "mcpRefresh";
 export const OPEN_SESSION = "openSession";
-/// Close, Escape or a click on the backdrop: the view dismisses it and tells the
-/// controller, so the next pane to attach does not paint it again.
+/// Close or Escape: the view dismisses it and tells the controller, so the next
+/// pane to attach does not paint it again.
 export const CLOSE_DIALOG = "dialogClose";
 
 /// The values the session dialog's own two rows carry, so the controller can
@@ -67,7 +76,18 @@ function row(
   label: string,
   rest: Partial<Omit<DialogRow, "value" | "label">> = {},
 ): DialogRow {
-  return { value, label, detail: "", status: "", tone: "", action: "", button: "", buttonAction: "", ...rest };
+  return {
+    value,
+    label,
+    detail: "",
+    status: "",
+    tone: "",
+    action: "",
+    button: "",
+    buttonAction: "",
+    icon: "",
+    ...rest,
+  };
 }
 
 const MCP_TONES: Record<string, DialogTone> = {
@@ -79,7 +99,7 @@ const MCP_TONES: Record<string, DialogTone> = {
 };
 
 /// The `/mcps` dialog: every server this project loads, the state the core
-/// probed, and a button that turns one off or back on in the file that defines
+/// probed, and a switch that turns one off or back on in the file that defines
 /// it. `note` overrides the empty-list message, so a listing that failed can say
 /// so in place where a QuickPick would just vanish.
 export function mcpDialog(servers: readonly McpServerView[], note = ""): DialogState {
@@ -101,8 +121,9 @@ export function mcpDialog(servers: readonly McpServerView[], note = ""): DialogS
         // probe could not reach.
         status: server.enabled ? server.status || mcpStateLabel(server.state) : "Disabled",
         tone: MCP_TONES[server.enabled ? server.state : "disabled"] ?? "",
-        button: server.enabled ? "Disable" : "Enable",
+        button: server.enabled ? `Disable ${server.name}` : `Enable ${server.name}`,
         buttonAction: MCP_TOGGLE,
+        icon: "power",
       }),
     ),
     refreshLabel: "Recheck",

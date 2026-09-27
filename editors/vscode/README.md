@@ -28,7 +28,8 @@ and MCP servers as the terminal and the desktop app — nothing is reconfigured.
   a selection, or an image to the chat.
 - **Sessions**: continue the project's latest session, or pick one from the
   CLI's own list with **Oxide: Resume Session…** or `/session` in the message
-  box — the list opens in the panel, not a native picker.
+  box — the list opens in the panel, growing out of the footer, not a native
+  picker.
 - **`@path` in a message**: `@src/main.rs` attaches the file's text; an image or
   PDF becomes a media attachment.
 
@@ -70,9 +71,10 @@ Provider logins live in the CLI: run **Oxide: Open Terminal (TUI)** and use
    the session list. Under the composer the branch, the context gauge and the
    usage line match the terminal's footer.
 5. `/mcps` in the message box opens the MCP server list, and `/session` the
-   project's threads — both inside the panel, with a row's button or the thread
-   it names acting where it was asked (the same lists **Oxide: MCP Servers…**
-   and **Oxide: Resume Session…** open from the palette).
+   project's threads — both out of the footer, inside the panel, with a
+   server's power switch or the thread a row names acting where it was asked
+   (the same lists **Oxide: MCP Servers…** and **Oxide: Resume Session…** open
+   from the palette).
 6. Click a thumbnail in the attachment strip to see the full-size image before
    it is sent.
 

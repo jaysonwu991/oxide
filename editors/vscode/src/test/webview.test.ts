@@ -894,8 +894,9 @@ describe("webview dialogs", () => {
           status: "Connected",
           tone: "ok",
           action: "",
-          button: "Disable",
+          button: "Disable context7",
           buttonAction: "mcpToggle",
+          icon: "power",
         },
         {
           value: "sentry",
@@ -904,8 +905,9 @@ describe("webview dialogs", () => {
           status: "Disabled",
           tone: "muted",
           action: "",
-          button: "Enable",
+          button: "Enable sentry",
           buttonAction: "mcpToggle",
+          icon: "power",
         },
       ],
       refreshLabel: "Recheck",
@@ -928,6 +930,7 @@ describe("webview dialogs", () => {
           action: "openSession",
           button: "",
           buttonAction: "",
+          icon: "",
         },
         {
           value: "fe0031b1",
@@ -938,6 +941,7 @@ describe("webview dialogs", () => {
           action: "openSession",
           button: "",
           buttonAction: "",
+          icon: "",
         },
       ],
       refreshLabel: "",
@@ -965,17 +969,41 @@ describe("webview dialogs", () => {
     assert.equal(rows[0].children[0].children[1].textContent, "http · source: claude (global)");
     assert.equal(rows[0].children[1].className, "dialog-status tone-ok");
     assert.equal(rows[0].children[1].textContent, "Connected");
-    assert.equal(rows[0].children[2].textContent, "Disable");
-    // `Recheck` is the host's own action, painted as the dialog's trailing one.
-    assert.equal(byId.get("dialog-refresh")!.textContent, "Recheck");
+    // The `Recheck` button is an icon the shell carries, so what the host sent
+    // is its tooltip and its name for a screen reader.
+    assert.equal(byId.get("dialog-refresh")!.textContent, "");
+    assert.equal(byId.get("dialog-refresh")!.title, "Recheck");
+    assert.equal(byId.get("dialog-refresh")!.dataset.action, "mcpRefresh");
     assert.equal(byId.get("dialog-refresh")!.hidden, false);
+  });
+
+  /// A row's own button carries a switch rather than a word, so it is one glyph
+  /// wide and says what it does in its tooltip — the panel is a narrow side bar,
+  /// and `Disable` on every row is a column of text where a switch will do.
+  it("paints a row's button as an icon with the host's label on it", () => {
+    const { byId, send } = loadRenderer();
+    send(mcp);
+
+    const button = byId.get("dialog-list")!.children[0].children[2];
+    assert.equal(button.className, "dialog-button icon-power tone-ok");
+    // The stub keeps markup as text, so the SVG it was painted with is what its
+    // content reads as; the words the host sent are on the button, not in it.
+    assert.ok(button.innerHTML.includes("<svg"), button.innerHTML);
+    assert.equal(button.title, "Disable context7");
+    assert.equal(button.dataset.action, "mcpToggle");
+    assert.equal(button.dataset.value, "context7");
+
+    // A server that is off carries the same switch in the muted tone.
+    const off = byId.get("dialog-list")!.children[1].children[2];
+    assert.equal(off.className, "dialog-button icon-power tone-muted");
+    assert.equal(off.title, "Enable sentry");
   });
 
   it("posts the toggle a row's button carries", () => {
     const { byId, posted, send } = loadRenderer();
     send(mcp);
-    // A click on the button bubbles to the overlay the handler is on, which
-    // reads the action off the element around the target.
+    // A click on the button bubbles to the dialog the handler is on, which reads
+    // the action off the element around the target.
     const button = byId.get("dialog-list")!.children[1].children[2];
     assert.equal(button.dataset.action, "mcpToggle");
     byId.get("dialog")!.fire("click", { target: button });
@@ -1005,19 +1033,22 @@ describe("webview dialogs", () => {
     assert.equal(byId.get("dialog-refresh")!.hidden, true);
   });
 
-  it("closes on the Close button, on the backdrop and on Escape", () => {
+  it("closes on the Close button and on Escape", () => {
     const { byId, fireDocument, posted, send } = loadRenderer();
     send(sessions);
     byId.get("dialog-close")!.fire("click");
     assert.equal(byId.get("dialog")!.hidden, true);
     assert.deepEqual(last(posted), { k: "dialogAction", action: "dialogClose", value: "" });
 
-    // The backdrop is the overlay itself; a click inside the panel is not.
+    // The listing grows out of the footer rather than covering the panel, so a
+    // click inside it — or on the padding around its rows — keeps it up: closing
+    // it is the Close button, Escape, or picking a row.
     send(sessions);
     byId.get("dialog")!.fire("click", { target: byId.get("dialog-list") });
     assert.equal(byId.get("dialog")!.hidden, false);
     byId.get("dialog")!.fire("click", { target: byId.get("dialog") });
-    assert.equal(byId.get("dialog")!.hidden, true);
+    assert.equal(byId.get("dialog")!.hidden, false);
+    assert.deepEqual(last(posted), { k: "dialogAction", action: "dialogClose", value: "" });
 
     send(sessions);
     fireDocument("keydown", { key: "Escape" });
@@ -1050,6 +1081,32 @@ describe("webview dialogs", () => {
     assert.equal(byId.get("dialog-note")!.textContent, "Could not list MCP servers: exit 1");
     assert.equal(byId.get("dialog-list")!.children.length, 0);
     assert.equal(byId.get("dialog")!.hidden, false, "the dialog still says what happened");
+  });
+
+  /// The listing is part of the panel's own column rather than a window over it:
+  /// it sits between the transcript and the footer, which is what makes it grow
+  /// out of the footer and stay attached to it, with a row list that scrolls.
+  it("anchors the dialog to the footer and gives its buttons icons", () => {
+    const at = (needle: string) => shell.indexOf(needle);
+    assert.ok(at('id="transcript"') < at('id="dialog"'), "the dialog comes after the transcript");
+    assert.ok(at('id="dialog"') < at("<footer>"), "and before the footer");
+    assert.ok(
+      shell.includes('<section id="dialog" class="popover"'),
+      "it is a popover, not an overlay",
+    );
+    // Icon-only, with the words as the tooltip and the accessible name: the
+    // shell paints each one from its own `ICONS` map.
+    for (const [id, label, icon] of [
+      ["dialog-refresh", "Recheck", "refresh"],
+      ["dialog-close", "Close", "close"],
+    ]) {
+      const start = at(`id="${id}"`);
+      const button = shell.slice(shell.lastIndexOf("<button", start), shell.indexOf("</button>", start));
+      assert.ok(button.includes(`title="${label}"`), button);
+      assert.ok(button.includes(`aria-label="${label}"`), button);
+      assert.ok(button.includes(`\${ICONS.${icon}}`), button);
+      assert.match(shell, new RegExp(`${icon}: ` + "`<svg"), `${icon} is drawn in ICONS`);
+    }
   });
 });
 

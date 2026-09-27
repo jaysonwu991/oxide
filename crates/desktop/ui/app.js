@@ -1283,6 +1283,8 @@ async function answerApproval(decision) {
 
 // ---------- providers ----------
 
+// Every panel that can take the window's keyboard: most cover the app, while
+// the MCP and session listings open above the composer instead.
 const OVERLAYS = [
   "approval",
   "connect-modal",
@@ -1609,6 +1611,14 @@ async function clearApprovals() {
 
 // ---------- MCP servers ----------
 
+/// The one icon the app builds in JavaScript: the power switch beside a server,
+/// which no character renders the same way everywhere. The popover's Recheck and
+/// Close are in `index.html`, and every other button is words.
+const ICONS = {
+  power:
+    '<svg viewBox="0 0 24 24" width="14" height="14" aria-hidden="true"><path d="M18.36 6.64a9 9 0 1 1-12.73 0" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/><path d="M12 2v10" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>',
+};
+
 /// The servers this project loads, with the state the core reports: the same
 /// listing `oxide mcp list` prints and the terminal's `/mcps` shows.
 async function openMcps() {
@@ -1651,11 +1661,14 @@ function renderMcps() {
     status.textContent = server.status;
     const toggle = document.createElement("button");
     toggle.type = "button";
-    toggle.className = "ghost small mcp-toggle";
-    toggle.textContent = server.enabled ? "Disable" : "Enable";
+    // Icon-only: the listing is a row per server, so the switch is sized to the
+    // row and its meaning is in the tooltip and the accessible name.
+    toggle.className = `icon mcp-toggle${server.enabled ? " on" : ""}`;
+    toggle.innerHTML = ICONS.power;
     toggle.title = server.enabled
-      ? "Turn this server off in the file that defines it"
-      : "Turn this server back on";
+      ? `Disable ${server.name}: turn it off in the file that defines it`
+      : `Enable ${server.name}: turn it back on`;
+    toggle.setAttribute("aria-label", toggle.title);
     toggle.onclick = () => toggleMcp(server, toggle);
     head.append(name, status, toggle);
 

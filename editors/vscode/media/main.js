@@ -1081,11 +1081,19 @@
 
   // ---------- dialogs ----------
 
+  /// The one icon a dialog's own rows need: the power switch beside a server,
+  /// which no character renders the same way everywhere. The header's Recheck
+  /// and Close come from the shell, and every other row is words.
+  const POWER_ICON =
+    '<svg viewBox="0 0 24 24" width="14" height="14" aria-hidden="true"><path d="M18.36 6.64a9 9 0 1 1-12.73 0" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/><path d="M12 2v10" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>';
+  const DIALOG_ICONS = { power: POWER_ICON };
+
   /// The dialog the host composes (`src/core/dialogs.ts`): the MCP server list
   /// and the session history, painted here rather than in a QuickPick — which
   /// takes over the window, hides the transcript the listing is about, and
-  /// cannot be answered while a turn streams. A row arrives with the action it
-  /// posts, so the view decides nothing about what a click means.
+  /// cannot be answered while a turn streams. It opens out of the footer
+  /// (`#dialog` sits above it in the panel's own flow), and a row arrives with
+  /// the action it posts, so the view decides nothing about what a click means.
   function setDialog(dialog) {
     dialogList.innerHTML = "";
     if (!dialog) {
@@ -1098,8 +1106,11 @@
     dialogNote.textContent = dialog.note || "";
     dialogNote.hidden = !dialog.note;
     for (const entry of dialog.rows || []) dialogList.appendChild(dialogRow(entry));
-    dialogRefresh.textContent = dialog.refreshLabel || "";
+    // The button is an icon with the host's words for a tooltip and for a
+    // screen reader, so the shell's own markup is left alone.
     dialogRefresh.hidden = !dialog.refreshLabel;
+    dialogRefresh.title = dialog.refreshLabel || "Recheck";
+    dialogRefresh.setAttribute("aria-label", dialogRefresh.title);
     dialogRefresh.dataset.action = dialog.refreshAction || "";
     dialogBox.hidden = false;
   }
@@ -1137,10 +1148,19 @@
     if (entry.button) {
       const button = document.createElement("button");
       button.type = "button";
-      button.className = "dialog-button";
+      // A button at the row's end is icon-only: it is sized for the glyph it
+      // carries, and the words the host sent become its tooltip.
+      button.className = entry.icon ? `dialog-button icon-${entry.icon}` : "dialog-button";
       button.dataset.action = entry.buttonAction;
       button.dataset.value = entry.value;
-      button.textContent = entry.button;
+      if (entry.icon) {
+        button.innerHTML = DIALOG_ICONS[entry.icon] || "";
+        button.classList.add(`tone-${entry.tone || "muted"}`);
+      } else {
+        button.textContent = entry.button;
+      }
+      button.title = entry.button;
+      button.setAttribute("aria-label", entry.button);
       el.appendChild(button);
     }
     el.title = entry.detail ? `${entry.label} — ${entry.detail}` : entry.label;
@@ -1156,21 +1176,19 @@
   }
 
   /// A click inside a dialog: the nearest element carrying an action posts it
-  /// back — a row, or the button at its end — and a click on the backdrop, like
-  /// Close or Escape, dismisses the dialog.
+  /// back — a row, or the power switch at its end. Nothing else dismisses the
+  /// dialog, which is why the panel behind it stays readable: Close and Escape
+  /// are how it goes away.
   dialogBox.addEventListener("click", (event) => {
     const target = event.target;
     if (!(target instanceof Element)) return;
     const action = target.closest("[data-action]");
-    if (action) {
-      vscode.postMessage({
-        k: "dialogAction",
-        action: action.dataset.action,
-        value: action.dataset.value || "",
-      });
-      return;
-    }
-    if (target === dialogBox) closeDialog();
+    if (!action) return;
+    vscode.postMessage({
+      k: "dialogAction",
+      action: action.dataset.action,
+      value: action.dataset.value || "",
+    });
   });
 
   dialogClose.addEventListener("click", () => closeDialog());
