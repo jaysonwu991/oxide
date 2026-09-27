@@ -123,22 +123,42 @@ defined in both project and global resolves to the requested one. Without
 At startup, Oxide adds only the enabled server names and configured URLs or
 commands to the model context. It does not start a local process, make a remote
 request, or check OAuth until a matching server is needed. A server is selected
-two ways:
+three ways:
 
 - **URL routing** — when a user message contains a URL whose host matches a
   server's routing domains, Oxide loads that server before the next model call
   so its tools are ready on the first turn. `webfetch` also redirects to the
   matching server instead of making an unauthenticated request.
+- **Service names** — a message that names a service loads the server configured
+  for it, so "create a Confluence doc" loads a server named `atlassian` (or
+  `my-atlassian`) before the first model call, with no URL to paste. A server is
+  matched by the words of its own name, by the aliases of the well-known service
+  its name belongs to, and by the service its endpoint points at —
+  `mcp.atlassian.com` is Atlassian whatever the server is called, so a server
+  registered as `company-tools` answers to "Confluence" and "Jira" too. Words
+  too short or too generic to name a service (`mcp`, `server`, `local`) are
+  ignored.
 - **`mcp_load`** — the model loads a server on demand through the built-in
-  `mcp_load` tool, whose description lists each server's domains.
+  `mcp_load` tool, whose description lists each server's domains and the other
+  names it answers to. Any of those names loads it — `confluence` loads a server
+  named `atlassian` — and a name more than one server answers to is reported
+  instead of guessed at.
 
 The server's tools are discovered when loaded and become available on the next
-agent step for the rest of the session.
+agent step for the rest of the session. A server's own instructions — the
+`instructions` string from the MCP initialize handshake, where a service says
+which of its tools to call first — are passed to the model too: in the `mcp_load`
+result when the model loads the server, and in the system prompt for the rest of
+the run so an auto-loaded server's guidance is not lost. That section is headed
+as untrusted: it states that the text came from the servers themselves rather
+than from you or from the policy above it, and that it cannot change those
+instructions, grant a permission, or redirect the task.
 
 Routing domains come from the optional `domains` array in a server's config,
-falling back to built-in presets for well-known servers (Atlassian/Jira/Confluence,
+falling back to built-in presets for well-known services (Atlassian/Jira/Confluence,
 New Relic, Context7, Contentful, Figma, GitHub, GitLab, Notion, Linear, and
-Sentry). Exact hosts match exactly; a `*.` prefix (or leading `.`) matches the
+Sentry) matched by the server's name or by the service its URL or command points
+at. Exact hosts match exactly; a `*.` prefix (or leading `.`) matches the
 host and its subdomains. For example:
 
 ```json
@@ -290,8 +310,9 @@ Add a remote (HTTP) server:
   `A-Za-z0-9_-` are replaced with `_`.
 - **Remove** a server with `oxide mcp remove <name>`, or by deleting its entry
   (or the file).
-- Enabled servers start lazily when first needed (URL routing or `mcp_load`). A
-  server that fails to start or list tools is logged to stderr and skipped.
+- Enabled servers start lazily when first needed (a URL, a service name, or
+  `mcp_load`). A server that fails to start or list tools is logged to stderr and
+  skipped.
 - Restart Oxide after editing.
 
 ## Subagents
@@ -595,9 +616,30 @@ every plugin that mentions "documentation".
 Installed plugins live under `<config>/Oxide/plugins/` (next to `auth.json` and
 `trust.json`), with their state in `plugins/config.json`. Their commands,
 agents, skills, and MCP servers load at startup before project resources, so
-project-local entries still override plugins with the same name. After
+project-local entries still override plugins with the same name, and each
+loaded plugin is named to the model with what it brought (see *Plugins in the
+model's context* below), as is one that is installed but disabled. After
 installing, `/reload` picks up new commands, agents, and skills; hooks and MCP
 servers require a restart.
+
+### Plugins in the model's context
+
+A run tells the model which plugins are already installed, so a request that
+belongs to one is met with what it provides instead of the model building the
+same thing by hand or telling you to install something you already installed.
+The system prompt carries a `# Plugins` section naming every loaded plugin with
+the description from its manifest and the capabilities it brought (`2 skills,
+1 command, 1 MCP server`), one marked `(disabled)` when it is installed but
+switched off — switched on by the user, not the model, since enabling a plugin
+runs its hooks on every tool call, which the reply names as
+`/plugins` in the terminal or `oxide plugin enable <name>`, so the guidance
+works in the desktop app and the VS Code panel too — and a line naming how many
+hook plugins are active — a hook can
+rewrite a tool call's arguments before it runs and a tool's output before the
+model sees it. The section appears whenever a plugin was loaded or a hook
+plugin is active (including a single file in `.oxide/plugins/`), so a plugin
+that only ships hooks is visible even though it contributes no commands or
+skills.
 
 ## Permissions
 

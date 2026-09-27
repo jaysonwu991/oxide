@@ -251,6 +251,49 @@ pub fn enabled_plugins() -> Vec<EnabledPlugin> {
     plugins
 }
 
+/// An installed plugin as a listing needs it, whether or not it is enabled.
+#[derive(Debug, Clone, Default)]
+pub struct InstalledPluginInfo {
+    pub name: String,
+    pub description: Option<String>,
+    pub version: Option<String>,
+    pub enabled: bool,
+}
+
+/// Every installed plugin whose directory still exists, enabled ones first and
+/// then by name — so a run can name what is already there instead of telling
+/// the user to install it again. Broken entries are skipped.
+pub fn installed_plugins() -> Vec<InstalledPluginInfo> {
+    installed_plugins_in(&install_root())
+}
+
+fn installed_plugins_in(root: &Path) -> Vec<InstalledPluginInfo> {
+    let Ok(state) = load_state_in(root) else {
+        return Vec::new();
+    };
+    let mut plugins: Vec<InstalledPluginInfo> = state
+        .plugins
+        .values()
+        .filter(|installed| installed.path.is_dir())
+        .map(|installed| {
+            // The package's own manifest describes what is installed now; the
+            // state file only remembers what was there when it was installed,
+            // so it is the fallback for a package that names neither.
+            let manifest = plugin_manifest(&installed.path).ok();
+            let described = manifest.as_ref().and_then(|m| m.description.clone());
+            let version = manifest.as_ref().and_then(|m| m.version.clone());
+            InstalledPluginInfo {
+                name: installed.name.clone(),
+                description: described.or_else(|| installed.description.clone()),
+                version: version.or_else(|| installed.version.clone()),
+                enabled: installed.enabled,
+            }
+        })
+        .collect();
+    plugins.sort_by(|a, b| b.enabled.cmp(&a.enabled).then_with(|| a.name.cmp(&b.name)));
+    plugins
+}
+
 // ---------------------------------------------------------------------------
 // Source resolution
 // ---------------------------------------------------------------------------
@@ -930,6 +973,53 @@ mod tests {
             serde_json::to_string_pretty(&manifest).unwrap(),
         )
         .unwrap();
+    }
+
+    #[test]
+    fn lists_installed_plugins_with_their_enabled_state() {
+        let root = temp_dir("installed");
+        let live = root.join("live");
+        let off = root.join("off");
+        std::fs::create_dir_all(&live).unwrap();
+        std::fs::create_dir_all(&off).unwrap();
+        // The package's own manifest describes what is installed now; the state
+        // file only remembers what was there when it was installed.
+        write_plugin(&off, "off", serde_json::json!({}));
+        let installed = |name: &str, path: PathBuf, enabled: bool, description: Option<&str>| {
+            (
+                name.to_string(),
+                InstalledPlugin {
+                    name: name.to_string(),
+                    marketplace: None,
+                    description: description.map(|text| text.to_string()),
+                    version: None,
+                    enabled,
+                    path,
+                },
+            )
+        };
+        let state = PluginState {
+            marketplaces: BTreeMap::new(),
+            plugins: BTreeMap::from([
+                installed("live", live.clone(), true, Some("does live things")),
+                installed("off", off.clone(), false, Some("turned off")),
+                // An uninstalled directory cannot be offered to the model.
+                installed("gone", root.join("gone"), true, None),
+            ]),
+        };
+        save_state_in(&root, &state).unwrap();
+
+        let plugins = installed_plugins_in(&root);
+        let names: Vec<&str> = plugins.iter().map(|plugin| plugin.name.as_str()).collect();
+        assert_eq!(names, vec!["live", "off"]);
+        assert!(plugins[0].enabled);
+        assert_eq!(plugins[0].description.as_deref(), Some("does live things"));
+        assert!(!plugins[1].enabled);
+        // The manifest wins over the cached description and version.
+        assert_eq!(plugins[1].description.as_deref(), Some("a test plugin"));
+        assert_eq!(plugins[1].version.as_deref(), Some("1.2.3"));
+
+        std::fs::remove_dir_all(&root).ok();
     }
 
     #[test]

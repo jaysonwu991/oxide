@@ -23,9 +23,9 @@ pub struct Ecosystem {
     /// Single-file JS/TS hook plugins (`.oxide/plugins/*.ts`) and generated
     /// hook shims, run by the hook host.
     pub hooks: Vec<PathBuf>,
-    /// Names of the enabled Claude Code-style plugin packages loaded into the
-    /// ecosystem (see `plugin_registry`).
-    pub plugins: Vec<String>,
+    /// Every plugin the run knows about: each installed package that was loaded
+    /// and each one installed but disabled (see `plugin_registry`).
+    pub plugins: Vec<PluginSummary>,
     /// Context files that were loaded (`AGENTS.md`/`CLAUDE.md`/overrides),
     /// kept so the TUI can show them in the startup welcome area.
     pub context_files: Vec<PathBuf>,
@@ -33,6 +33,53 @@ pub struct Ecosystem {
     pub system_prompt: Option<String>,
     /// Appended to the default system prompt (`.oxide/APPEND_SYSTEM.md`).
     pub append_system_prompt: Vec<String>,
+}
+
+/// A plugin the run knows about, described by what the plugin itself says: an
+/// installed package that was loaded, with the capabilities it contributes, or
+/// one installed but disabled. Both reach the model, so a request that matches
+/// a plugin is answered with what it provides rather than something built by
+/// hand — and a disabled one is not mistaken for something to install.
+#[derive(Debug, Clone, Default)]
+pub struct PluginSummary {
+    pub name: String,
+    pub description: Option<String>,
+    pub version: Option<String>,
+    pub enabled: bool,
+    pub agents: usize,
+    pub commands: usize,
+    pub skills: usize,
+    pub mcp: usize,
+    pub hooks: usize,
+}
+
+/// What one plugin directory contributed, counted as it was loaded.
+#[derive(Debug, Clone, Default)]
+struct Contribution {
+    agents: usize,
+    commands: usize,
+    skills: usize,
+    mcp: usize,
+    hooks: usize,
+}
+
+impl PluginSummary {
+    /// The capability kinds the plugin brings (`2 agents, 1 skill`), empty when
+    /// it brings nothing and is listed only for its disabled state.
+    pub fn capabilities(&self) -> String {
+        [
+            (self.agents, "agent"),
+            (self.commands, "command"),
+            (self.skills, "skill"),
+            (self.mcp, "MCP server"),
+            (self.hooks, "hook"),
+        ]
+        .into_iter()
+        .filter(|(count, _)| *count > 0)
+        .map(|(count, noun)| counted(count, noun))
+        .collect::<Vec<_>>()
+        .join(", ")
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -124,13 +171,54 @@ pub struct McpServer {
 
 impl McpServer {
     /// Effective routing domains: the explicit `domains` config when present,
-    /// otherwise a best-effort guess from well-known server names.
+    /// otherwise the well-known service the server's own name or its endpoint
+    /// belongs to, so a server registered under a name of its own still owns the
+    /// URLs of the service it points at.
     pub fn domains(&self) -> Vec<String> {
-        if self.domains.is_empty() {
-            default_domains(&self.name)
-        } else {
-            self.domains.clone()
+        if !self.domains.is_empty() {
+            return self.domains.clone();
         }
+        let mut domains = default_domains(&self.name);
+        for service in services_in_endpoint(&self.endpoint_text()) {
+            for domain in default_domains(&service) {
+                if !domains.contains(&domain) {
+                    domains.push(domain);
+                }
+            }
+        }
+        domains
+    }
+
+    /// Every name a user may type for this server: its own name, the service its
+    /// name belongs to, and the services its URL or command points at — so a
+    /// server registered as `company-tools` at an Atlassian endpoint answers to
+    /// `confluence` and `jira` as well.
+    pub fn service_names(&self) -> Vec<String> {
+        let mut names = vec![self.name.clone()];
+        for alias in service_aliases(&self.name) {
+            push_service_name(&mut names, alias);
+        }
+        for service in services_in_endpoint(&self.endpoint_text()) {
+            for alias in service_aliases(&service) {
+                push_service_name(&mut names, alias);
+            }
+        }
+        names
+    }
+
+    /// The configured URL or command line, as the text that names the endpoint.
+    pub(crate) fn endpoint_text(&self) -> String {
+        match &self.kind {
+            McpKind::Local { command, .. } => command.join(" "),
+            McpKind::Remote { url, .. } => url.clone(),
+        }
+    }
+}
+
+/// Appends a service name unless the list already carries it either way round.
+fn push_service_name(names: &mut Vec<String>, alias: String) {
+    if !names.iter().any(|name| name.eq_ignore_ascii_case(&alias)) {
+        names.push(alias);
     }
 }
 
@@ -168,7 +256,10 @@ impl Ecosystem {
             counted(self.skills.len(), "skill"),
             counted(self.mcp.len(), "MCP server"),
             counted(self.hooks.len(), "hook"),
-            counted(self.plugins.len(), "plugin"),
+            counted(
+                self.plugins.iter().filter(|plugin| plugin.enabled).count(),
+                "plugin",
+            ),
         ]
         .join(" · ")
     }
@@ -379,10 +470,50 @@ fn load_claude_dir(ecosystem: &mut Ecosystem, dir: &Path) {
 /// and manifest-declared hooks, and is loaded before project resources so
 /// project-local entries still override plugins with the same name.
 fn load_enabled_plugins(ecosystem: &mut Ecosystem) {
-    for plugin in crate::plugin_registry::enabled_plugins() {
-        ecosystem.plugins.push(plugin.name.clone());
-        load_plugin_dir(ecosystem, &plugin.name, &plugin.path, &plugin.manifest);
+    load_plugins(
+        ecosystem,
+        crate::plugin_registry::enabled_plugins(),
+        crate::plugin_registry::installed_plugins(),
+    );
+}
+
+/// Loads the enabled plugins' resources and records every plugin the run knows
+/// about. A plugin is described by what it shipped rather than by its name
+/// alone, so the model can meet a request that belongs to it with the plugin's
+/// own capabilities instead of asking the user for what it already provides;
+/// a plugin that is installed but disabled is named too, so a request is not
+/// answered with an install the user has already done.
+fn load_plugins(
+    ecosystem: &mut Ecosystem,
+    enabled: Vec<crate::plugin_registry::EnabledPlugin>,
+    installed: Vec<crate::plugin_registry::InstalledPluginInfo>,
+) {
+    let mut summaries = Vec::new();
+    for plugin in enabled {
+        let contribution = load_plugin_dir(ecosystem, &plugin.name, &plugin.path, &plugin.manifest);
+        summaries.push(PluginSummary {
+            name: plugin.name,
+            description: plugin.manifest.description,
+            version: plugin.manifest.version,
+            enabled: true,
+            agents: contribution.agents,
+            commands: contribution.commands,
+            skills: contribution.skills,
+            mcp: contribution.mcp,
+            hooks: contribution.hooks,
+        });
     }
+    for plugin in installed.into_iter().filter(|plugin| !plugin.enabled) {
+        summaries.push(PluginSummary {
+            name: plugin.name,
+            description: plugin.description,
+            version: plugin.version,
+            enabled: false,
+            ..Default::default()
+        });
+    }
+    summaries.sort_by(|a, b| a.name.cmp(&b.name));
+    ecosystem.plugins = summaries;
 }
 
 /// Formats a count with its noun, singular for one entry (`1 agent`) and
@@ -423,37 +554,45 @@ fn load_plugin_dir(
     name: &str,
     dir: &Path,
     manifest: &crate::plugin_registry::PluginManifest,
-) {
+) -> Contribution {
+    let mut contribution = Contribution::default();
     for file in markdown_files(&dir.join("commands")) {
         if let Some(command) = command_from_markdown(&file) {
             upsert_command(ecosystem, command);
+            contribution.commands += 1;
         }
     }
     for file in markdown_files(&dir.join("agents")) {
         if let Some(agent) = agent_from_markdown(&file) {
             upsert_agent(ecosystem, agent);
+            contribution.agents += 1;
         }
     }
-    scan_skills(ecosystem, &dir.join("skills"));
+    contribution.skills = scan_skills(ecosystem, &dir.join("skills"));
 
     if let Some(servers) = manifest.mcp_servers.as_ref().and_then(Json::as_object) {
         for (server_name, config) in servers {
             if let Some(server) = mcp_from_claude(server_name, config) {
                 upsert_mcp(ecosystem, server);
+                contribution.mcp += 1;
             }
         }
     }
     // Claude Code plugins may also ship MCP servers as a `.mcp.json` at the
     // plugin root instead of listing them in the manifest.
-    load_mcp(ecosystem, &dir.join(".mcp.json"));
+    contribution.mcp += load_mcp(ecosystem, &dir.join(".mcp.json"));
 
     // JS/TS hook files shipped inside the plugin package.
-    ecosystem.hooks.extend(hook_files(&dir.join("plugins")));
+    let hooks = hook_files(&dir.join("plugins"));
+    contribution.hooks += hooks.len();
+    ecosystem.hooks.extend(hooks);
     // Claude Code command hooks declared in the plugin manifest are translated
     // into a generated JS shim run by the existing hook host.
     if let Some(path) = crate::plugin_registry::hook_shim_path(name, manifest) {
         ecosystem.hooks.push(path);
+        contribution.hooks += 1;
     }
+    contribution
 }
 
 fn load_layout(ecosystem: &mut Ecosystem, dir: &Path, memory_file: &str) {
@@ -482,18 +621,23 @@ fn load_layout(ecosystem: &mut Ecosystem, dir: &Path, memory_file: &str) {
     ecosystem.hooks.extend(hook_files(&dir.join("plugins")));
 }
 
-fn load_mcp(ecosystem: &mut Ecosystem, path: &Path) {
-    let Some(json) = read_json(path) else { return };
+fn load_mcp(ecosystem: &mut Ecosystem, path: &Path) -> usize {
+    let Some(json) = read_json(path) else {
+        return 0;
+    };
     let servers = json
         .get("mcpServers")
         .and_then(Json::as_object)
         .or_else(|| bare_mcp_servers(&json));
-    let Some(servers) = servers else { return };
+    let Some(servers) = servers else { return 0 };
+    let mut loaded = 0;
     for (name, config) in servers {
         if let Some(server) = mcp_from_claude(name, config) {
             upsert_mcp(ecosystem, server);
+            loaded += 1;
         }
     }
+    loaded
 }
 
 /// A plugin `.mcp.json` may list servers directly at the root
@@ -575,17 +719,13 @@ fn normalize_domain(domain: &str) -> String {
     host
 }
 
-/// Well-known routing domains for popular MCP servers. Users can override these
-/// with the `domains` key in their server config; this map only fills the gap so
-/// pasted URLs (Confluence pages, tickets, ...) route without setup.
-pub fn default_domains(name: &str) -> Vec<String> {
-    let key = name
-        .chars()
-        .filter(|ch| ch.is_ascii_alphanumeric())
-        .collect::<String>()
-        .to_ascii_lowercase();
-    let domains: &[&str] = match key.as_str() {
-        "atlassian" | "confluence" | "jira" => &[
+/// Well-known services: the names a user may type for a service, and the routing
+/// domains that identify it. A server is recognised by any of its names, so a
+/// server named `atlassian` also answers to `confluence` and `jira`.
+const SERVICES: &[(&[&str], &[&str])] = &[
+    (
+        &["atlassian", "confluence", "jira"],
+        &[
             "atlassian.net",
             "*.atlassian.net",
             "jira.com",
@@ -593,34 +733,96 @@ pub fn default_domains(name: &str) -> Vec<String> {
             "atlassian.com",
             "*.atlassian.com",
         ],
-        "newrelic" | "newrelicone" | "nr" => &[
+    ),
+    (
+        &["newrelic", "newrelicone", "nr"],
+        &[
             "newrelic.com",
             "*.newrelic.com",
             "one.newrelic.com",
             "nr-assets.net",
             "*.nr-assets.net",
         ],
-        "context7" => &["context7.com", "*.context7.com"],
-        "contentful" => &[
+    ),
+    (&["context7"], &["context7.com", "*.context7.com"]),
+    (
+        &["contentful"],
+        &[
             "contentful.com",
             "*.contentful.com",
             "ctfassets.net",
             "*.ctfassets.net",
         ],
-        "figma" => &["figma.com", "*.figma.com"],
-        "github" => &[
+    ),
+    (&["figma"], &["figma.com", "*.figma.com"]),
+    (
+        &["github"],
+        &[
             "github.com",
             "*.github.com",
             "githubusercontent.com",
             "*.githubusercontent.com",
         ],
-        "gitlab" => &["gitlab.com", "*.gitlab.com"],
-        "notion" => &["notion.so", "*.notion.so"],
-        "linear" => &["linear.app", "*.linear.app"],
-        "sentry" => &["sentry.io", "*.sentry.io"],
-        _ => &[],
-    };
-    domains.iter().map(|domain| (*domain).to_string()).collect()
+    ),
+    (&["gitlab"], &["gitlab.com", "*.gitlab.com"]),
+    (&["notion"], &["notion.so", "*.notion.so"]),
+    (&["linear"], &["linear.app", "*.linear.app"]),
+    (&["sentry"], &["sentry.io", "*.sentry.io"]),
+];
+
+/// The service a configured server name belongs to, matched with the same
+/// normalization used for its routing domains.
+fn service_entry(name: &str) -> Option<(&'static [&'static str], &'static [&'static str])> {
+    let key = name
+        .chars()
+        .filter(|ch| ch.is_ascii_alphanumeric())
+        .collect::<String>()
+        .to_ascii_lowercase();
+    SERVICES
+        .iter()
+        .find(|(aliases, _)| aliases.contains(&key.as_str()))
+        .copied()
+}
+
+/// Well-known routing domains for popular MCP servers. Users can override these
+/// with the `domains` key in their server config; this map only fills the gap so
+/// pasted URLs (Confluence pages, tickets, ...) route without setup.
+pub fn default_domains(name: &str) -> Vec<String> {
+    service_entry(name)
+        .map(|(_, domains)| domains.iter().map(|domain| (*domain).to_string()).collect())
+        .unwrap_or_default()
+}
+
+/// Every name a user may type for the service a configured server belongs to.
+pub fn service_aliases(name: &str) -> Vec<String> {
+    service_entry(name)
+        .map(|(aliases, _)| aliases.iter().map(|alias| (*alias).to_string()).collect())
+        .unwrap_or_default()
+}
+
+/// The well-known services a URL or command line points at: `mcp.atlassian.com`
+/// is `atlassian`, `confluence` and `jira`, while `npx -y no-such-service`
+/// names none. A server configured under a name of its own is still recognised
+/// by the service its endpoint belongs to.
+pub fn services_in_endpoint(text: &str) -> Vec<String> {
+    let text = text.to_ascii_lowercase();
+    let mut services: Vec<String> = Vec::new();
+    for (aliases, domains) in SERVICES {
+        let known = domains.iter().any(|domain| {
+            let stem = domain.trim_start_matches("*.").trim_start_matches('.');
+            !stem.is_empty() && text.contains(stem)
+        });
+        if !known {
+            continue;
+        }
+        for alias in aliases.iter() {
+            let alias = (*alias).to_string();
+            if !services.contains(&alias) {
+                services.push(alias);
+            }
+        }
+    }
+    services
 }
 
 pub(crate) fn parse_oauth(value: Option<&Json>) -> Option<McpOAuth> {
@@ -816,8 +1018,8 @@ fn expand_braced(chars: &[char], args: &[&str], joined: &str) -> (String, usize)
     }
 }
 
-fn push_skill(ecosystem: &mut Ecosystem, path: &Path) {
-    let Some(raw) = read(path) else { return };
+fn push_skill(ecosystem: &mut Ecosystem, path: &Path) -> bool {
+    let Some(raw) = read(path) else { return false };
     let front = frontmatter::parse(&raw);
     let name = front
         .get_str("name")
@@ -828,6 +1030,7 @@ fn push_skill(ecosystem: &mut Ecosystem, path: &Path) {
         description: front.get_str("description"),
         content: front.body,
     });
+    true
 }
 
 fn push_memory(ecosystem: &mut Ecosystem, path: &Path) {
@@ -871,17 +1074,21 @@ fn upsert_mcp(ecosystem: &mut Ecosystem, server: McpServer) {
     ecosystem.mcp.push(server);
 }
 
-fn scan_skills(ecosystem: &mut Ecosystem, dir: &Path) {
-    push_skill(ecosystem, &dir.join("SKILL.md"));
+fn scan_skills(ecosystem: &mut Ecosystem, dir: &Path) -> usize {
+    let mut loaded = 0;
+    if push_skill(ecosystem, &dir.join("SKILL.md")) {
+        loaded += 1;
+    }
     let Ok(entries) = std::fs::read_dir(dir) else {
-        return;
+        return loaded;
     };
     for entry in entries.flatten() {
         let path = entry.path();
-        if path.is_dir() {
-            push_skill(ecosystem, &path.join("SKILL.md"));
+        if path.is_dir() && push_skill(ecosystem, &path.join("SKILL.md")) {
+            loaded += 1;
         }
     }
+    loaded
 }
 
 fn markdown_files(dir: &Path) -> Vec<PathBuf> {
@@ -982,6 +1189,34 @@ mod tests {
         assert_eq!(normalize_domain("*.Example.com"), "*.example.com");
         assert!(default_domains("atlassian").contains(&"*.atlassian.net".to_string()));
         assert!(default_domains("unknown-service").is_empty());
+    }
+
+    #[test]
+    fn reads_the_service_a_configured_endpoint_belongs_to() {
+        assert!(
+            services_in_endpoint("https://mcp.atlassian.com/v1/mcp").contains(&"confluence".into())
+        );
+        assert!(
+            services_in_endpoint("mcp-remote https://api.linear.app/mcp")
+                .contains(&"linear".into())
+        );
+        assert!(services_in_endpoint("npx -y no-such-service").is_empty());
+        assert!(services_in_endpoint("https://example.com/mcp").is_empty());
+
+        let server = mcp_from_claude(
+            "company-tools",
+            &serde_json::from_str(r#"{"url":"https://mcp.atlassian.com/v1/mcp"}"#).unwrap(),
+        )
+        .unwrap();
+        // The name belongs to no service, but the endpoint does -- so the URLs of
+        // that service route to this server and its aliases load it.
+        assert!(server.domains().contains(&"*.atlassian.net".to_string()));
+        let mut names = server.service_names();
+        names.sort();
+        assert_eq!(
+            names,
+            vec!["atlassian", "company-tools", "confluence", "jira"]
+        );
     }
 
     #[test]
@@ -1394,12 +1629,81 @@ mod tests {
 
         let manifest = crate::plugin_registry::plugin_manifest(&pkg).unwrap();
         let mut ecosystem = Ecosystem::default();
-        load_plugin_dir(&mut ecosystem, "pkg", &pkg, &manifest);
+        let contribution = load_plugin_dir(&mut ecosystem, "pkg", &pkg, &manifest);
 
+        assert_eq!(contribution.commands, 1);
+        assert_eq!(contribution.agents, 1);
+        assert_eq!(contribution.skills, 1);
+        assert_eq!(contribution.mcp, 1);
+        assert_eq!(contribution.hooks, 0);
         assert!(ecosystem.command("build").is_some());
         assert!(ecosystem.agent("planner").is_some());
         assert!(ecosystem.skills.iter().any(|skill| skill.name == "audit"));
         assert!(ecosystem.mcp.iter().any(|server| server.name == "fs"));
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn records_what_each_plugin_brings_and_names_the_disabled_ones() {
+        let dir = temp_dir("plugin_summary");
+        let pkg = dir.join("pkg");
+        std::fs::create_dir_all(pkg.join("commands")).unwrap();
+        std::fs::create_dir_all(pkg.join("skills/audit")).unwrap();
+        std::fs::create_dir_all(pkg.join(".claude-plugin")).unwrap();
+        std::fs::write(
+            pkg.join("commands/build.md"),
+            "---\ndescription: build it\n---\nRun cargo build",
+        )
+        .unwrap();
+        std::fs::write(
+            pkg.join("skills/audit/SKILL.md"),
+            "---\nname: audit\n---\nAudit.",
+        )
+        .unwrap();
+        std::fs::write(
+            pkg.join(".claude-plugin/plugin.json"),
+            r#"{"name":"pkg","version":"1.0.0","description":"builds things","mcpServers":{"fs":{"command":"npx"}}}"#,
+        )
+        .unwrap();
+
+        let manifest = crate::plugin_registry::plugin_manifest(&pkg).unwrap();
+        let installed = |name: &str, enabled: bool| crate::plugin_registry::InstalledPluginInfo {
+            name: name.to_string(),
+            description: Some("builds things".to_string()),
+            version: Some("1.0.0".to_string()),
+            enabled,
+        };
+        let mut ecosystem = Ecosystem::default();
+        load_plugins(
+            &mut ecosystem,
+            vec![crate::plugin_registry::EnabledPlugin {
+                name: "pkg".to_string(),
+                path: pkg.clone(),
+                manifest,
+            }],
+            // The enabled plugin is also installed; it must not be listed twice.
+            vec![installed("off-tool", false), installed("pkg", true)],
+        );
+
+        let names: Vec<&str> = ecosystem
+            .plugins
+            .iter()
+            .map(|plugin| plugin.name.as_str())
+            .collect();
+        assert_eq!(names, vec!["off-tool", "pkg"]);
+        let loaded = &ecosystem.plugins[1];
+        assert!(loaded.enabled);
+        assert_eq!(loaded.description.as_deref(), Some("builds things"));
+        assert_eq!(loaded.capabilities(), "1 command, 1 skill, 1 MCP server");
+        // A disabled plugin is named for the user's benefit but loads nothing.
+        assert!(!ecosystem.plugins[0].enabled);
+        assert_eq!(ecosystem.plugins[0].capabilities(), "");
+        assert!(ecosystem.command("build").is_some());
+        assert_eq!(
+            ecosystem.summary(),
+            "0 agents · 1 command · 1 skill · 1 MCP server · 0 hooks · 1 plugin"
+        );
 
         std::fs::remove_dir_all(&dir).ok();
     }
@@ -1413,7 +1717,22 @@ mod tests {
         );
 
         ecosystem.hooks.push(PathBuf::from("hook.ts"));
-        ecosystem.plugins.push("demo".to_string());
+        ecosystem.plugins.push(PluginSummary {
+            name: "demo".to_string(),
+            enabled: true,
+            ..Default::default()
+        });
+        assert_eq!(
+            ecosystem.summary(),
+            "0 agents · 0 commands · 0 skills · 0 MCP servers · 1 hook · 1 plugin"
+        );
+
+        // A disabled plugin is not loaded, so it is not counted as one.
+        ecosystem.plugins.push(PluginSummary {
+            name: "off".to_string(),
+            enabled: false,
+            ..Default::default()
+        });
         assert_eq!(
             ecosystem.summary(),
             "0 agents · 0 commands · 0 skills · 0 MCP servers · 1 hook · 1 plugin"

@@ -11,34 +11,40 @@ use ratatui::text::{Line, Span};
 
 use crate::theme::Theme;
 
-/// Renders `text` as styled lines that fit `width` columns.
-pub(crate) fn render(text: &str, width: usize, theme: &Theme) -> Vec<Line<'static>> {
-    let palette = Palette::new(theme);
+/// Renders `text` as styled lines that fit `width` columns, keeping `indent`
+/// columns free on the first line for a prefix that shares it.
+fn render_body(text: &str, width: usize, indent: usize, palette: &Palette) -> Vec<Line<'static>> {
     let text = crate::tools::sanitize_terminal_output(text);
-    let blocks = parse_blocks(&text, &palette);
-    let mut renderer = Renderer::new(width, &palette);
+    let blocks = parse_blocks(&text, palette);
+    let mut renderer = Renderer::new(width, palette);
+    renderer.first_width = Some(width.saturating_sub(indent));
     renderer.render_blocks(&blocks, &[], true);
     renderer.finish()
 }
 
-/// Renders `text` and places a speaker `prefix` inline on the first line,
-/// re-wrapping that line so the prefix never overflows `width`.
+/// Renders `text` and places a speaker `prefix` inline on the first line.
+///
+/// The prefix shares the first line, so that line is wrapped to what is left of
+/// `width` and the rest of the body flows at the full width. Wrapping the body
+/// first and re-wrapping only its first line would break the paragraph a second
+/// time and leave an orphaned line behind.
 pub(crate) fn render_with_prefix(
     text: &str,
     width: usize,
     prefix: Vec<Span<'static>>,
     theme: &Theme,
 ) -> Vec<Line<'static>> {
-    let mut lines = render(text, width, theme);
+    let indent: usize = prefix.iter().map(|span| span.content.chars().count()).sum();
+    let palette = Palette::new(theme);
+    let mut lines = render_body(text, width, indent, &palette);
     if lines.is_empty() {
         return vec![Line::from(prefix)];
     }
     let first = lines.remove(0);
     let mut spans = prefix;
     spans.extend(first.spans);
-    let mut merged = wrap_spans(&spans, width);
-    merged.extend(lines);
-    merged
+    lines.insert(0, Line::from(spans));
+    lines
 }
 
 /// Colors and modifiers the renderer draws from, derived from the active theme.
@@ -165,9 +171,12 @@ fn spans_text(spans: &[Span<'static>]) -> String {
 }
 
 /// Word-wraps a flat sequence of styled characters, collapsing runs of
-/// whitespace and hard-splitting words that are wider than the line.
-fn wrap_chars(chars: &[StyledChar], width: usize) -> Vec<Vec<Span<'static>>> {
+/// whitespace and hard-splitting words that are wider than the line. The first
+/// line may be given a narrower `first_width`, for content that shares it with
+/// a prefix that is not part of `chars`.
+fn wrap_chars(chars: &[StyledChar], width: usize, first_width: usize) -> Vec<Vec<Span<'static>>> {
     let width = width.max(1);
+    let mut limit = first_width.max(1);
     let mut lines: Vec<Vec<Span<'static>>> = Vec::new();
     let mut current: Vec<StyledChar> = Vec::new();
     let mut pending_space = false;
@@ -178,6 +187,7 @@ fn wrap_chars(chars: &[StyledChar], width: usize) -> Vec<Vec<Span<'static>>> {
             lines.push(coalesce(&current));
             current.clear();
             pending_space = false;
+            limit = width;
             i += 1;
             continue;
         }
@@ -195,19 +205,21 @@ fn wrap_chars(chars: &[StyledChar], width: usize) -> Vec<Vec<Span<'static>>> {
         }
         let word = &chars[start..i];
         let space = usize::from(pending_space && !current.is_empty());
-        if !current.is_empty() && current.len() + space + word.len() > width {
+        if !current.is_empty() && current.len() + space + word.len() > limit {
             lines.push(coalesce(&current));
             current.clear();
             pending_space = false;
+            limit = width;
         }
-        if current.is_empty() && word.len() > width {
+        if current.is_empty() && word.len() > limit {
             let mut offset = 0;
             while offset < word.len() {
-                let take = (word.len() - offset).min(width);
+                let take = (word.len() - offset).min(limit);
                 current.extend_from_slice(&word[offset..offset + take]);
                 if offset + take < word.len() {
                     lines.push(coalesce(&current));
                     current.clear();
+                    limit = width;
                 }
                 offset += take;
             }
@@ -228,18 +240,13 @@ fn wrap_chars(chars: &[StyledChar], width: usize) -> Vec<Vec<Span<'static>>> {
     lines
 }
 
-fn wrap_spans(spans: &[Span<'static>], width: usize) -> Vec<Line<'static>> {
-    let chars = flatten(spans);
-    wrap_chars(&chars, width)
-        .into_iter()
-        .map(Line::from)
-        .collect()
-}
-
 struct Renderer<'a> {
     width: usize,
     palette: &'a Palette,
     lines: Vec<Line<'static>>,
+    /// Width budget for the first line this renderer emits, for a speaker prefix
+    /// that shares it. Consumed by the first line actually wrapped.
+    first_width: Option<usize>,
 }
 
 impl<'a> Renderer<'a> {
@@ -248,6 +255,17 @@ impl<'a> Renderer<'a> {
             width: width.max(1),
             palette,
             lines: Vec::new(),
+            first_width: None,
+        }
+    }
+
+    /// The content width for the line about to be wrapped, and for the lines
+    /// after it. `first_width` is the width of the first *line*, which a speaker
+    /// prefix shares, so the indent that line already carries comes off it.
+    fn take_first(&mut self, available: usize, indent: usize) -> (usize, usize) {
+        match self.first_width.take() {
+            Some(first) => (first.saturating_sub(indent).clamp(1, available), available),
+            None => (available, available),
         }
     }
 
@@ -279,7 +297,12 @@ impl<'a> Renderer<'a> {
     fn wrap(&mut self, spans: &[Span<'static>], ambient: &[Span<'static>]) {
         let width = self.available(ambient);
         let chars = flatten(spans);
-        for line in wrap_chars(&chars, width) {
+        let (first, rest) = if chars.is_empty() {
+            (width, width)
+        } else {
+            self.take_first(width, indent_width(ambient))
+        };
+        for line in wrap_chars(&chars, rest, first) {
             let mut spans = ambient.to_vec();
             spans.extend(line);
             self.push(spans);
@@ -306,8 +329,9 @@ impl<'a> Renderer<'a> {
             Block::Code(lines) => self.render_code(lines, ambient),
             Block::Rule => {
                 let width = self.available(ambient);
+                let (first, _) = self.take_first(width, indent_width(ambient));
                 let mut spans = ambient.to_vec();
-                spans.push(Span::styled("─".repeat(width), self.palette.rule));
+                spans.push(Span::styled("─".repeat(first), self.palette.rule));
                 self.push(spans);
             }
             Block::Quote(inner) => {
@@ -326,9 +350,11 @@ impl<'a> Renderer<'a> {
 
     fn render_code(&mut self, lines: &[String], ambient: &[Span<'static>]) {
         let width = self.available(ambient);
+        let (first, rest) = self.take_first(width, indent_width(ambient));
+        let mut limit = first;
         if lines.is_empty() {
             let mut spans = ambient.to_vec();
-            spans.push(Span::styled(" ".repeat(width), self.palette.code_block));
+            spans.push(Span::styled(" ".repeat(limit), self.palette.code_block));
             self.push(spans);
             return;
         }
@@ -336,19 +362,24 @@ impl<'a> Renderer<'a> {
             let chars: Vec<char> = raw.chars().collect();
             if chars.is_empty() {
                 let mut spans = ambient.to_vec();
-                spans.push(Span::styled(" ".repeat(width), self.palette.code_block));
+                spans.push(Span::styled(" ".repeat(limit), self.palette.code_block));
                 self.push(spans);
+                limit = rest;
                 continue;
             }
-            for piece in chars.chunks(width) {
-                let text: String = piece.iter().collect();
-                let padding = width - piece.len();
+            let mut offset = 0;
+            while offset < chars.len() {
+                let take = (chars.len() - offset).min(limit);
+                let text: String = chars[offset..offset + take].iter().collect();
+                let padding = limit - take;
                 let mut spans = ambient.to_vec();
                 spans.push(Span::styled(
                     format!("{text}{}", " ".repeat(padding)),
                     self.palette.code_block,
                 ));
                 self.push(spans);
+                limit = rest;
+                offset += take;
             }
         }
     }
@@ -371,13 +402,16 @@ impl<'a> Renderer<'a> {
             cont.push(Span::raw(" ".repeat(marker_width)));
 
             let mut sub = Renderer::new(self.width, self.palette);
+            sub.first_width = self.first_width.take();
             sub.render_blocks(blocks, &cont, false);
+            let pending = sub.first_width.take();
             let mut item_lines = sub.finish();
 
             if item_lines.is_empty() {
                 let mut spans = ambient.to_vec();
                 spans.push(Span::styled(marker, self.palette.bullet));
                 self.push(spans);
+                self.first_width = pending;
                 continue;
             }
             let first = item_lines.remove(0);
@@ -403,6 +437,10 @@ impl<'a> Renderer<'a> {
             return;
         }
         let avail = self.available(ambient);
+        // A table is laid out as one block, so the narrower budget of a first
+        // line shared with a prefix applies to all of its rows.
+        let (first, rest) = self.take_first(avail, indent_width(ambient));
+        let avail = first.min(rest);
         let mut widths = vec![1usize; cols];
         for (index, cell) in header.iter().enumerate() {
             widths[index] = widths[index].max(span_width(cell));
@@ -1015,6 +1053,10 @@ fn looks_like_tag(text: &str) -> bool {
 mod tests {
     use super::*;
 
+    fn render(markdown: &str, width: usize, theme: &Theme) -> Vec<Line<'static>> {
+        render_with_prefix(markdown, width, Vec::new(), theme)
+    }
+
     fn text(lines: &[Line]) -> String {
         lines
             .iter()
@@ -1030,6 +1072,67 @@ mod tests {
 
     fn render_text(markdown: &str, width: usize) -> String {
         text(&render(markdown, width, &Theme::dark()))
+    }
+
+    fn speaker_prefix() -> Vec<Span<'static>> {
+        vec![Span::styled(
+            "\u{25c6} Oxide ".to_string(),
+            Style::default().add_modifier(Modifier::BOLD),
+        )]
+    }
+
+    fn line_width(line: &Line) -> usize {
+        line.spans
+            .iter()
+            .map(|span| span.content.chars().count())
+            .sum()
+    }
+
+    #[test]
+    fn a_reply_that_fills_the_first_line_reflows_instead_of_orphaning_a_tail() {
+        let body = "**Short answer: no code change is needed in either, but both do get the new behavior \u{2014} and I found one real asymmetry while checking, which I fixed.**";
+        let lines = render_with_prefix(body, 137, speaker_prefix(), &Theme::dark());
+        let rendered: Vec<String> = lines
+            .iter()
+            .map(|line| text(std::slice::from_ref(line)))
+            .collect();
+
+        assert_eq!(
+            rendered,
+            vec![
+                "\u{25c6} Oxide Short answer: no code change is needed in either, but both do get the new behavior \u{2014} and I found one real asymmetry while".to_string(),
+                "checking, which I fixed.".to_string(),
+            ]
+        );
+        assert!(line_width(&lines[0]) <= 137);
+    }
+
+    #[test]
+    fn a_speaker_prefix_never_widens_a_line_past_the_pane() {
+        let bodies = [
+            "a paragraph long enough that it has to wrap more than once across the pane",
+            "## A heading that runs on for long enough to wrap",
+            "- a bullet whose text is long enough to wrap onto another line\n- a second bullet",
+            "1. an ordered item that also wraps when the pane is narrow\n2. another",
+            "> a quoted paragraph that wraps across several lines of the pane",
+            "```\nlet value = \"a code line long enough that it has to be chunked\";\n```",
+            "| column one | column two |\n| --- | --- |\n| a long cell value | another long cell value |",
+            "---",
+            "`inline code` and **bold** and a tail of words that keeps going",
+        ];
+
+        for width in [16usize, 24, 40, 61, 80] {
+            for body in bodies {
+                let lines = render_with_prefix(body, width, speaker_prefix(), &Theme::dark());
+                for line in &lines {
+                    let rendered = text(std::slice::from_ref(line));
+                    assert!(
+                        line_width(line) <= width,
+                        "{width} cells wide: {rendered:?}"
+                    );
+                }
+            }
+        }
     }
 
     #[test]
@@ -1129,7 +1232,7 @@ mod tests {
     }
 
     #[test]
-    fn prefix_lands_inline_and_is_rewrapped() {
+    fn prefix_lands_inline_on_the_first_line() {
         let theme = Theme::dark();
         let prefix = vec![Span::raw("◆ oxide ")];
         let lines = render_with_prefix("## Summary", 40, prefix, &theme);
