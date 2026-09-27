@@ -1296,6 +1296,22 @@ mod tests {
     }
 
     #[test]
+    fn a_preview_reads_as_a_title_rather_than_raw_markdown() {
+        let dir = temp_dir("preview_title");
+        let cwd = temp_dir("preview_title_proj");
+        let log = SessionLog::create_in(&dir, &cwd).unwrap();
+        log.append(&Message::user("### Fix the **flaky** test"))
+            .unwrap();
+        let sessions = SessionLog::list_in(&dir).unwrap();
+        // The name a picker row, the desktop's sidebar and the panel's header
+        // all show for the first message of the conversation.
+        assert_eq!(sessions[0].preview, "Fix the flaky test");
+
+        std::fs::remove_dir_all(&dir).ok();
+        std::fs::remove_dir_all(&cwd).ok();
+    }
+
+    #[test]
     fn append_recovers_from_partial_trailing_line() {
         let dir = temp_dir("partial");
         let cwd = temp_dir("partial_proj");
