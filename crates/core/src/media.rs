@@ -522,8 +522,8 @@ fn clipboard_file(path: Option<PathBuf>) -> Option<PathBuf> {
 }
 
 /// Best-effort clipboard image grab. On macOS this asks the pasteboard through
-/// AppKit for the type it advertises, coercing the clipboard with `osascript`
-/// when that finds none, and takes `pngpaste`'s answer when it is installed; on
+/// AppKit for the type it advertises, then takes `pngpaste`'s answer when it is
+/// installed and coerces the clipboard with `osascript` when that finds none; on
 /// Linux it needs `wl-paste` or `xclip`.
 pub fn clipboard_image() -> Option<ContentPart> {
     let bytes = clipboard_bytes()?;
@@ -592,8 +592,8 @@ fn clipboard_path_from(path: &str) -> Option<PathBuf> {
 
 #[cfg(target_os = "macos")]
 fn clipboard_bytes() -> Option<Vec<u8>> {
-    run_stdout("pngpaste", &["-"])
-        .or_else(clipboard_bytes_appkit)
+    clipboard_bytes_appkit()
+        .or_else(|| run_stdout("pngpaste", &["-"]))
         .or_else(clipboard_bytes_osascript)
 }
 
@@ -604,6 +604,11 @@ fn clipboard_bytes() -> Option<Vec<u8>> {
 /// `pngpaste` does, and it is the read that is worth making on a pasteboard
 /// whose bytes are not on this machine yet: a copy that arrived from another one
 /// over the network is fetched by the pasteboard server for it.
+///
+/// It is asked first, so the read this crate controls decides what is on the
+/// pasteboard — `pngpaste` and the coercion are then answers for a machine
+/// where that read found nothing, rather than gates the new types have to get
+/// past.
 ///
 /// A TIFF is turned into a PNG, since that is the type providers take.
 #[cfg(target_os = "macos")]
