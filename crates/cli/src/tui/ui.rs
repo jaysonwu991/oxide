@@ -4640,6 +4640,41 @@ mod tests {
     }
 
     #[test]
+    fn assistant_reply_reflows_around_its_speaker_prefix() {
+        use crate::config::Reasoning;
+        use ratatui::backend::TestBackend;
+        use ratatui::Terminal;
+
+        // The transcript is inset by a column on each side, so a 139-column
+        // terminal wraps a reply at the 137 the pane showed.
+        let body = "**Short answer: no code change is needed in either, but both do get the new behavior \u{2014} and I found one real asymmetry while checking, which I fixed.**";
+        let mut app = App::new("model".into(), "/tmp/project".into(), Reasoning::Auto);
+        app.items.push(ChatItem::Assistant(body.into()));
+        let mut terminal = Terminal::new(TestBackend::new(139, 24)).unwrap();
+        terminal.draw(|frame| draw(frame, &mut app)).unwrap();
+        let buffer = terminal.backend().buffer().clone();
+
+        let row_of_text = |needle: &str| {
+            let row = row_of(&buffer, needle)?;
+            let line: String = (0..buffer.area.width)
+                .map(|x| buffer[(x, row)].symbol())
+                .collect();
+            Some(line)
+        };
+
+        let head = row_of_text("\u{25c6} Oxide").expect("speaker label");
+        assert!(
+            head.contains("asymmetry while"),
+            "the label line carries the first words: {head}"
+        );
+        let tail = row_of_text("checking,").expect("tail of the reply");
+        assert!(
+            tail.contains("checking, which I fixed."),
+            "the tail continues on the same line instead of orphaning: {tail}"
+        );
+    }
+
+    #[test]
     fn footer_stacks_project_above_stats_and_right_aligned_model() {
         use crate::config::Reasoning;
         use ratatui::backend::TestBackend;
