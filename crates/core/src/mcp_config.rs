@@ -466,9 +466,40 @@ pub fn add_json(cwd: &Path, scope: Option<String>, name: String, raw: &str) -> R
     Ok(())
 }
 
-pub async fn list(cwd: &Path) -> Result<()> {
-    let mut merged: BTreeMap<String, (String, Value)> = BTreeMap::new();
-    for source in sources(cwd) {
+/// One configured server as a front-end lists it: what it is, where it was
+/// defined, and whether it answers.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct ServerView {
+    pub name: String,
+    /// `http`, `stdio`, or `unknown` for a config a client could not read.
+    pub transport: String,
+    /// The URL (with `(oauth)` when one is configured) or the command line.
+    pub detail: String,
+    /// The scope label of the file that defines it, e.g. `global` or `project`.
+    pub source: String,
+    /// The scope in the vocabulary `--scope` accepts (`project` or `global`),
+    /// so a client can pin a change to the file that defines the server.
+    pub scope: String,
+    /// Whether the runtime connects it: `enabled: false` (or the Claude Code
+    /// `disabled: true`) turns a server off without deleting its config.
+    pub enabled: bool,
+    /// Machine-readable state: `connected`, `needs-auth`, `needs-trust`,
+    /// `disabled`, or `error`.
+    pub state: String,
+    /// Display form: `Connected`, `Needs Auth`, or `Error: <detail>`.
+    pub status: String,
+}
+
+/// Whether a project's own resources (and so its trust-gated MCP servers) load.
+fn project_trusted(cwd: &Path) -> bool {
+    crate::trust::project_trusted(cwd)
+}
+
+/// The merged servers of `sources`, probed in parallel. Later sources override
+/// earlier ones by name, so this is what the runtime would load for `cwd`.
+async fn views_for(sources: Vec<Source>, project_trusted: bool) -> Vec<ServerView> {
+    let mut merged: BTreeMap<String, (String, Scope, Value)> = BTreeMap::new();
+    for source in sources {
         let Ok(root) = read_file(&source.path) else {
             continue;
         };
@@ -476,25 +507,23 @@ pub async fn list(cwd: &Path) -> Result<()> {
             continue;
         };
         for (name, config) in servers {
-            merged.insert(name.clone(), (source.label.clone(), config.clone()));
+            merged.insert(
+                name.clone(),
+                (source.label.clone(), source.scope, config.clone()),
+            );
         }
-    }
-    if merged.is_empty() {
-        println!("no MCP servers configured");
-        return Ok(());
     }
 
     let mut statuses = BTreeMap::new();
     let mut probes = tokio::task::JoinSet::new();
-    let project_trusted = crate::trust::resolve(
-        &crate::trust::TrustStore::load().unwrap_or_default(),
-        cwd,
-        None,
-        crate::config::load_default_project_trust(),
-    )
-    .is_trusted();
-    for (name, (source, config)) in &merged {
-        if source.contains("project") && !project_trusted {
+    for (name, (_, scope, config)) in &merged {
+        // A server turned off is reported as off wherever it lives: its state is
+        // about the machine, not about whether the project was trusted.
+        if !enabled_in(config) {
+            statuses.insert(name.clone(), crate::mcp::McpStatus::Disabled);
+            continue;
+        }
+        if *scope == Scope::Project && !project_trusted {
             statuses.insert(name.clone(), crate::mcp::McpStatus::NeedsTrust);
             continue;
         }
@@ -517,17 +546,55 @@ pub async fn list(cwd: &Path) -> Result<()> {
         }
     }
 
-    println!("MCP servers ({}):", merged.len());
-    for (name, (source, config)) in &merged {
-        let (transport, detail) = describe(config);
-        let status = statuses
-            .get(name)
-            .cloned()
-            .unwrap_or_else(|| crate::mcp::McpStatus::Error("status check failed".to_string()));
-        println!("  {name} [{transport}] {status}");
-        println!("      {detail}");
-        println!("      source: {source}");
+    merged
+        .iter()
+        .map(|(name, (source, scope, config))| {
+            let (transport, detail) = describe(config);
+            let status = statuses
+                .get(name)
+                .cloned()
+                .unwrap_or_else(|| crate::mcp::McpStatus::Error("status check failed".to_string()));
+            ServerView {
+                name: name.clone(),
+                transport: transport.to_string(),
+                detail,
+                source: source.clone(),
+                scope: scope.label().to_string(),
+                enabled: enabled_in(config),
+                state: status.state().to_string(),
+                status: status.to_string(),
+            }
+        })
+        .collect()
+}
+
+/// Every MCP server visible from `cwd`, in name order.
+pub async fn server_views(cwd: &Path) -> Vec<ServerView> {
+    views_for(sources(cwd), project_trusted(cwd)).await
+}
+
+pub async fn list(cwd: &Path) -> Result<()> {
+    let views = server_views(cwd).await;
+    if views.is_empty() {
+        println!("no MCP servers configured");
+        return Ok(());
     }
+
+    println!("MCP servers ({}):", views.len());
+    for view in &views {
+        println!("  {} [{}] {}", view.name, view.transport, view.status);
+        println!("      {}", view.detail);
+        println!("      source: {}", view.source);
+    }
+    Ok(())
+}
+
+/// The same listing as JSON, for a front-end that draws its own list.
+pub async fn list_json(cwd: &Path) -> Result<()> {
+    println!(
+        "{}",
+        serde_json::to_string_pretty(&server_views(cwd).await)?
+    );
     Ok(())
 }
 
@@ -582,6 +649,98 @@ fn try_remove(path: &Path, name: &str) -> Result<bool> {
     }
     write_file(path, &root)?;
     Ok(true)
+}
+
+/// Turns a server off (or back on) in the file that defines it, so the runtime
+/// stops connecting it without its configuration being deleted — the toggle
+/// behind a front-end's server list. A disabled server keeps its command, URL,
+/// headers and OAuth settings, so enabling it again needs no re-entry.
+pub fn set_enabled(cwd: &Path, scope: Option<String>, name: String, enabled: bool) -> Result<()> {
+    let scope = explicit_scope(scope.as_deref())?;
+    let verb = if enabled { "enabled" } else { "disabled" };
+    match set_enabled_first(&candidates(sources(cwd), scope), &name, enabled)? {
+        Some((path, label)) => {
+            println!("{verb} MCP server `{name}` in {} ({label})", path.display())
+        }
+        None => println!("no MCP server named `{name}`"),
+    }
+    Ok(())
+}
+
+fn set_enabled_first(
+    sources: &[Source],
+    name: &str,
+    enabled: bool,
+) -> Result<Option<(PathBuf, String)>> {
+    let mut broken = Vec::new();
+    for source in sources {
+        let Ok(root) = read_file(&source.path) else {
+            // The listing skips a file it cannot parse, so a name that is not in
+            // it cannot be toggled there either; a broken file the server does
+            // live in is reported instead of being passed over silently.
+            broken.push(source.path.clone());
+            continue;
+        };
+        if try_set_enabled(&source.path, &root, name, enabled)? {
+            return Ok(Some((source.path.clone(), source.label.clone())));
+        }
+        if holds_name(&root, name) {
+            bail!(
+                "`{name}` in {} is not a server object; fix the file, then toggle it",
+                source.path.display()
+            );
+        }
+    }
+    if let Some(path) = broken.first() {
+        bail!("cannot read {} to toggle `{name}`", path.display());
+    }
+    Ok(None)
+}
+
+/// Whether a file names `name`, whatever its entry holds — a malformed one is
+/// not treated as absent, which would move the change to another file.
+fn holds_name(root: &Value, name: &str) -> bool {
+    root.get("mcpServers")
+        .and_then(Value::as_object)
+        .is_some_and(|servers| servers.contains_key(name))
+}
+
+fn try_set_enabled(path: &Path, root: &Value, name: &str, enabled: bool) -> Result<bool> {
+    let mut root = root.clone();
+    let Some(config) = root
+        .get_mut("mcpServers")
+        .and_then(Value::as_object_mut)
+        .and_then(|servers| servers.get_mut(name))
+        .and_then(Value::as_object_mut)
+    else {
+        return Ok(false);
+    };
+    // Both keys are written so the file keeps saying the same thing to the
+    // harnesses that read it: `enabled` is oxide's and `disabled` the Claude
+    // Code spelling, and a reader that prefers one still sees the other agree.
+    config.insert("enabled".to_string(), json!(enabled));
+    if enabled {
+        config.remove("disabled");
+    } else {
+        config.insert("disabled".to_string(), json!(true));
+    }
+    write_file(path, &root)?;
+    Ok(true)
+}
+
+/// Whether an entry is turned on, mirroring how
+/// [`crate::ecosystem::mcp_from_claude`] reads the same keys: `enabled` when
+/// present, otherwise `disabled` inverted.
+fn enabled_in(config: &Value) -> bool {
+    config
+        .get("enabled")
+        .and_then(Value::as_bool)
+        .unwrap_or_else(|| {
+            !config
+                .get("disabled")
+                .and_then(Value::as_bool)
+                .unwrap_or(false)
+        })
 }
 
 fn describe(config: &Value) -> (&'static str, String) {
@@ -728,6 +887,132 @@ mod tests {
         assert_eq!(Scope::parse(Some("user")).unwrap(), Scope::Global);
         assert_eq!(Scope::parse(Some("global")).unwrap(), Scope::Global);
         assert!(Scope::parse(Some("bogus")).is_err());
+    }
+
+    #[test]
+    fn toggling_a_server_keeps_its_configuration() {
+        let dir = temp_dir("toggle");
+        let root = dir.join("repo");
+        std::fs::create_dir_all(root.join(".oxide")).unwrap();
+        let path = root.join(".oxide").join("mcp.json");
+        std::fs::write(
+            &path,
+            r#"{"mcpServers":{"docs":{"command":"npx","args":["-y","docs-server"],"disabled":true}}}"#,
+        )
+        .unwrap();
+
+        let sources = sources_for(None, None, &root);
+        let toggled = set_enabled_first(&candidates(sources.clone(), None), "docs", true)
+            .unwrap()
+            .unwrap();
+        assert_eq!(toggled.0, path);
+        let written: Value =
+            serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        let entry = &written["mcpServers"]["docs"];
+        assert_eq!(entry["enabled"], json!(true));
+        // The legacy key is dropped so it cannot override the new state.
+        assert!(entry.get("disabled").is_none());
+        assert_eq!(entry["command"], json!("npx"));
+        assert_eq!(entry["args"], json!(["-y", "docs-server"]));
+        assert!(enabled_in(entry));
+
+        set_enabled_first(&candidates(sources.clone(), None), "docs", false).unwrap();
+        let written: Value =
+            serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        let entry = &written["mcpServers"]["docs"];
+        assert_eq!(entry["enabled"], json!(false));
+        // The Claude Code spelling is written too, so a reader that only knows
+        // `disabled` does not keep connecting a server this turned off.
+        assert_eq!(entry["disabled"], json!(true));
+        assert!(!enabled_in(entry));
+
+        assert!(
+            set_enabled_first(&candidates(sources, None), "absent", false)
+                .unwrap()
+                .is_none()
+        );
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn toggling_reports_a_server_that_is_not_an_object() {
+        let dir = temp_dir("toggle_broken");
+        let root = dir.join("repo");
+        std::fs::create_dir_all(root.join(".oxide")).unwrap();
+        let path = root.join(".oxide").join("mcp.json");
+        std::fs::write(&path, r#"{"mcpServers":{"docs":true}}"#).unwrap();
+
+        // The name is in this file, so the change must not land in another one
+        // without a word: the file is named instead.
+        let error = set_enabled_first(
+            &candidates(sources_for(None, None, &root), None),
+            "docs",
+            false,
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(error.contains("not a server object"), "{error}");
+        assert!(error.contains("mcp.json"), "{error}");
+        assert_eq!(
+            std::fs::read_to_string(&path).unwrap(),
+            r#"{"mcpServers":{"docs":true}}"#
+        );
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn toggling_skips_a_file_it_cannot_parse() {
+        let dir = temp_dir("toggle_unreadable");
+        let root = dir.join("repo");
+        std::fs::create_dir_all(root.join(".oxide")).unwrap();
+        std::fs::write(root.join(".oxide").join("mcp.json"), "{ not json").unwrap();
+
+        // A broken project file does not hide a global server the listing shows.
+        let global = dir.join("oxide-home").join("mcp.json");
+        std::fs::create_dir_all(global.parent().unwrap()).unwrap();
+        std::fs::write(&global, r#"{"mcpServers":{"docs":{"command":"npx"}}}"#).unwrap();
+        let sources = vec![
+            Source {
+                label: "global".to_string(),
+                scope: Scope::Global,
+                path: global.clone(),
+            },
+            Source {
+                label: "project".to_string(),
+                scope: Scope::Project,
+                path: root.join(".oxide").join("mcp.json"),
+            },
+        ];
+        let toggled = set_enabled_first(&candidates(sources, None), "docs", false)
+            .unwrap()
+            .unwrap();
+        assert_eq!(toggled.0, global);
+        let written: Value =
+            serde_json::from_str(&std::fs::read_to_string(&global).unwrap()).unwrap();
+        assert_eq!(written["mcpServers"]["docs"]["enabled"], json!(false));
+
+        // Nothing anywhere, and one file broken: say which file could not be read.
+        // The name is one no real config can hold, so the search never reaches a
+        // file outside the temp directory.
+        let error = set_enabled_first(
+            &candidates(sources_for(None, None, &root), None),
+            "oxide-test-unlisted-server",
+            false,
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(error.contains("cannot read"), "{error}");
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn a_view_reports_whether_a_server_is_turned_on() {
+        assert!(enabled_in(&json!({"command":"npx"})));
+        assert!(enabled_in(&json!({"command":"npx", "enabled":true})));
+        assert!(!enabled_in(&json!({"command":"npx", "enabled":false})));
+        assert!(!enabled_in(&json!({"command":"npx", "disabled":true})));
+        // `enabled` wins over the legacy `disabled` when both are present.
+        assert!(enabled_in(&json!({"enabled":true, "disabled":true})));
     }
 
     #[test]
@@ -922,6 +1207,92 @@ mod tests {
         std::fs::create_dir_all(dir.join(".git")).unwrap();
         assert!(add_json(&dir, None, "bad".to_string(), "{}").is_err());
         assert!(add_json(&dir, None, "good".to_string(), r#"{"command":"npx"}"#).is_ok());
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// The structured listing the desktop app and the VS Code panel draw: the
+    /// transport, the endpoint, the file it came from, and a state a front-end
+    /// can color without parsing the display string.
+    #[tokio::test]
+    async fn views_report_transport_detail_source_and_state() {
+        let dir = temp_dir("views");
+        let home = dir.join("home");
+        let root = dir.join("repo");
+        std::fs::create_dir_all(home.join(".oxide")).unwrap();
+        std::fs::create_dir_all(root.join(".oxide")).unwrap();
+        std::fs::write(
+            home.join(".oxide").join("mcp.json"),
+            r#"{"mcpServers":{"remote":{"type":"http","url":"http://127.0.0.1:1/mcp"}}}"#,
+        )
+        .unwrap();
+        std::fs::write(
+            root.join(".oxide").join("mcp.json"),
+            r#"{"mcpServers":{"local":{"command":"oxide-views-missing","args":["--serve"]},"off":{"command":"oxide-views-missing","enabled":false}}}"#,
+        )
+        .unwrap();
+
+        let sources = sources_for(Some(&home), None, &root);
+        // The http server has no OAuth block but is unreachable, so the state
+        // depends on the probe; the project servers are gated before any probe,
+        // except the one that is turned off: that is off whatever the trust
+        // decision says.
+        let views = views_for(sources, false).await;
+        assert_eq!(
+            views
+                .iter()
+                .map(|view| view.name.as_str())
+                .collect::<Vec<_>>(),
+            vec!["local", "off", "remote"]
+        );
+        assert_eq!(views[0].state, "needs-trust");
+        assert_eq!(views[0].status, "Needs Trust");
+        assert_eq!(views[0].transport, "stdio");
+        assert_eq!(views[0].detail, "oxide-views-missing --serve");
+        assert_eq!(views[0].source, "project");
+        assert_eq!(views[0].scope, "project");
+        assert_eq!(views[1].state, "disabled");
+        assert_eq!(views[1].status, "Disabled");
+        assert!(!views[1].enabled);
+        assert_eq!(views[2].transport, "http");
+        assert_eq!(views[2].detail, "http://127.0.0.1:1/mcp");
+        assert_eq!(views[2].source, "global");
+        assert_eq!(views[2].scope, "global");
+        assert_eq!(views[2].state, "error");
+        assert!(
+            views[2].status.starts_with("Error: "),
+            "{}",
+            views[2].status
+        );
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[tokio::test]
+    async fn views_probe_a_trusted_project_server() {
+        let dir = temp_dir("trusted_views");
+        let home = dir.join("home");
+        let root = dir.join("repo");
+        std::fs::create_dir_all(home.join(".oxide")).unwrap();
+        std::fs::create_dir_all(root.join(".oxide")).unwrap();
+        std::fs::write(
+            home.join(".oxide").join("mcp.json"),
+            r#"{"mcpServers":{"shared":{"command":"oxide-views-global"}}}"#,
+        )
+        .unwrap();
+        std::fs::write(
+            root.join(".oxide").join("mcp.json"),
+            r#"{"mcpServers":{"shared":{"command":"oxide-views-project"}}}"#,
+        )
+        .unwrap();
+
+        // A trusted project is probed, and its definition of a shared name wins.
+        let views = views_for(sources_for(Some(&home), None, &root), true).await;
+        assert_eq!(views.len(), 1);
+        assert_eq!(views[0].detail, "oxide-views-project");
+        assert_eq!(views[0].source, "project");
+        assert_eq!(views[0].scope, "project");
+        assert_eq!(views[0].state, "error");
+
         std::fs::remove_dir_all(&dir).ok();
     }
 }

@@ -68,6 +68,9 @@ Provider logins live in the CLI: run **Oxide: Open Terminal (TUI)** and use
    to pick a subagent, `access: …` for project trust, or `session: …` to resume
    another session. Under the composer the branch, the context gauge and the
    usage line match the terminal's footer.
+5. `/mcps` in the message box opens the MCP server list — pick a server to
+   connect or disconnect it (the same list **Oxide: MCP Servers…** opens from
+   the palette).
 
 ## Commands
 
@@ -84,6 +87,7 @@ Provider logins live in the CLI: run **Oxide: Open Terminal (TUI)** and use
 | **Oxide: Fix Selection** | Attach the selection and ask for a minimal fix. |
 | **Oxide: Review Working Tree Changes** | Review the uncommitted changes without modifying files. |
 | **Oxide: Open Terminal (TUI)** | Run the interactive `oxide` TUI in a terminal, for `/login` and `/models`. |
+| **Oxide: MCP Servers…** | List the MCP servers this project loads and connect or disconnect them; typing `/mcps` in the composer opens the same picker. |
 | **Oxide: Show Output Channel** | The command line, prompt, stderr and event log of each turn. |
 | **Oxide: Set Model…**, **Set Agent…**, **Set Reasoning Effort…**, **Set Project Trust…** | Write the matching workspace setting; the footer's chips are the same actions. |
 

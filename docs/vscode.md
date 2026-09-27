@@ -110,6 +110,33 @@ Provider logins stay in the CLI: run **Oxide: Open Terminal (TUI)** and `/login`
 there. The status bar reads `config.json` only to label the active
 provider/model.
 
+## MCP servers
+
+The composer answers `/mcps` (alias `/mcp`) itself, the way the terminal's
+`/mcps` and Claude Code's `/mcp` do: the message is not sent to the model but
+opens a QuickPick of the configured servers, each with the codicon and the
+status the core reported (`Connected`, `Needs auth`, `Needs trust`, `Disabled`,
+`Error`) and a line naming its transport, the file that defined it and its
+state. Picking a server turns it off, or back on, in the file that defines it —
+`oxide mcp disable|enable <name> --scope project|global` — and the list is
+reopened on the fresh state, so a toggle is answered in the same place it was
+asked. **Recheck** probes again without changing anything. **Oxide: MCP
+Servers…** runs the same picker from the palette. Every server has to be started
+or reached to learn its state, so the wait is announced in the status bar rather
+than looking like nothing happened; a CLI that does not answer within the
+command timeout is reported as such instead of leaving the picker unopened.
+
+The listing comes from `oxide mcp list --json` (`core/mcps.ts`), so the
+extension never reads `mcp.json` itself and cannot disagree with the CLI about
+which servers a project loads, which scope's definition wins a name, or what
+their state is. A server the project defines is only probed while the project
+is trusted: an untrusted one reports **Needs trust** rather than being
+connected. `/mcps` is the one composer command the panel answers itself: a
+project command, a prompt template or a skill typed with a leading `/` is still
+resolved by the CLI, so the panel and the terminal agree on what exists, and the
+footer chips and the VS Code command palette remain the way to change the model,
+the agent, the reasoning level and the project's trust from here.
+
 ## Agent turns
 
 Each turn is one process: `oxide --mode rpc` with the prompt written to stdin
@@ -375,7 +402,12 @@ readers are covered one file each: `test/settings.test.ts`, `test/trust.test.ts`
 `test/git.test.ts`, `test/agents.test.ts`, `test/plugins.test.ts`,
 `test/project.test.ts` (the five together, against an injected file map, with the
 untrusted and plugin-agent cases spelled out) and `test/footer.test.ts` (the
-labels, the usage line and the gauge).
+labels, the usage line and the gauge). The `/mcps` picker's own parsing — the
+server listing, the per-state codicons, the toggle arguments and the bare slash
+command — is covered in `test/mcps.test.ts`, which also holds the controller's
+`send` to answering that command before a message is queued or prompted (a
+source-level assertion, because `chat.ts` imports `vscode` and cannot be loaded
+there).
 
 ## Packaging
 

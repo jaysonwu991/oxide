@@ -214,6 +214,23 @@
       </div>
     </div>
 
+    <div id="mcps-modal" class="overlay" hidden>
+      <div class="dialog">
+        <h2>MCP servers</h2>
+        <p class="dialog-sub">The servers this project loads, and whether Oxide can reach them. They come from the same <code>mcp.json</code> files the CLI reads, and turning one off writes to the file that defines it.</p>
+        <div id="mcp-list" class="mcp-list"></div>
+        <div class="dialog-actions">
+          <button id="mcps-refresh" class="ghost">Recheck</button>
+          <button id="mcps-close" class="ghost">Close</button>
+        </div>
+      </div>
+    </div>
+
+    <div id="command-palette" class="palette" hidden>
+      <div id="palette-list" class="palette-list" role="listbox" aria-label="Slash commands"></div>
+      <div class="palette-hint">↑↓ choose · Enter run · Esc close</div>
+    </div>
+
     <div id="create-project-modal" class="overlay" hidden>
       <div class="dialog">
         <h2>Create project</h2>
@@ -225,6 +242,16 @@
           <label>Source folders</label>
           <div id="create-project-folders" class="folder-list"></div>
           <button id="create-project-add-folder" class="ghost small">+ Add a folder</button>
+          <div class="field-row path-row">
+            <input
+              id="create-project-path"
+              class="path-input"
+              placeholder="Or type a path, e.g. ~/Projects/app"
+              spellcheck="false"
+              autocomplete="off"
+            />
+            <button id="create-project-add-path" class="ghost small">Add path</button>
+          </div>
         </div>
         <div id="create-project-error" class="add-error" hidden></div>
         <div class="dialog-actions">

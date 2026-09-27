@@ -91,6 +91,26 @@ Status checks never open a browser or execute untrusted project servers; use
 `oxide mcp auth <name>` for a server that needs OAuth. The TUI `/mcps` command
 performs the same check.
 
+```sh
+oxide mcp list --json      # the same listing for a front-end: name, transport,
+                           # detail, source, scope, enabled, state, status
+oxide mcp disable filesystem --scope project   # keep the config, stop loading it
+oxide mcp enable filesystem                    # back on, in whichever file defines it
+```
+
+`--json` is what the desktop app's **MCP servers** dialog and the VS Code
+panel's `/mcps` picker read: the `state` field is one of `connected`,
+`needs-auth`, `needs-trust`, `disabled`, `error`, so a client colors and groups
+without parsing the display string, and `scope` is the `project` / `global`
+value `--scope` accepts for a toggle that lands in the file the listing came
+from. A server a project defines and `enabled: false` (or Claude Code's
+`disabled: true`) is left out of the runtime and reported as `Disabled` —
+turning it off never deletes its configuration. A toggle writes both spellings,
+`enabled` and `disabled`, so a file that a Claude Code reader also loads says the
+same thing to either harness; a name whose entry is not a server object, or that
+is nowhere while one of the searched files cannot be parsed, is reported instead
+of being passed over or written into a different file.
+
 Options may appear before or after the server name. `oxide mcp auth` and
 `oxide mcp remove` treat `--scope` as a boundary rather than just a file: a
 pinned `--scope project` searches `<root>/.oxide/mcp.json` then
@@ -346,6 +366,20 @@ Focus: $ARGUMENTS
   `/plugins marketplace update`, and providers for `/login`); Tab accepts the
   highlighted suggestion.
 - **Remove** a command by deleting its file.
+- `oxide commands [--json]` prints the catalog a client offers: the built-in
+  names with their aliases, their argument hint and their `kind` (`client` for a
+  command a front-end answers itself, like `/mcps`; `prompt` for one it runs by
+  sending `/name args`; `skill` for `/skill:<name>`), then the commands, prompt
+  templates and skills the project and its plugins contribute, each with the
+  `source` it was found in (`builtin`, `project` or `global`). A command whose
+  frontmatter routes it to an agent or a subtask is one of those `prompt`
+  entries: the CLI applies the routing when it runs the `/name` prompt, so a
+  client only has to send it. An agent is not a slash command — it is selected
+  with a picker of the front-end's own (`/agent` in the terminal, `--agent` for
+  a run) — so agent files contribute no entry. The desktop app's `/` palette is
+  built from the catalog, so its menu and the terminal's autocomplete agree on
+  what exists; the VS Code panel answers `/mcps` from its own detection and
+  leaves the rest of the catalog to the terminal.
 
 ## Prompt templates
 
