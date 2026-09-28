@@ -4935,10 +4935,10 @@ mod tests {
 
         let mut app = App::new("gpt-4o".into(), "/tmp/project".into(), Reasoning::Auto);
         app.marketplaces = Some(MarketplacesState::ready(vec![MarketplaceOverview {
-            name: "skyscanner".into(),
-            source: "https://github.com/Skyscanner/plugins".into(),
-            path: "/tmp/marketplaces/skyscanner".into(),
-            owner: Some("Skyscanner".into()),
+            name: "team-plugins".into(),
+            source: "https://github.com/acme/team-plugins".into(),
+            path: "/tmp/marketplaces/team-plugins".into(),
+            owner: Some("acme".into()),
             plugins: vec![
                 MarketplacePluginOverview {
                     name: "onboarding-guide".into(),
@@ -4962,7 +4962,7 @@ mod tests {
         terminal.draw(|frame| draw(frame, &mut app)).unwrap();
         let buffer = terminal.backend().buffer();
         assert!(row_of(buffer, "marketplaces").is_some(), "title");
-        assert!(row_of(buffer, "skyscanner").is_some(), "marketplace row");
+        assert!(row_of(buffer, "team-plugins").is_some(), "marketplace row");
         assert!(row_of(buffer, "Plugins").is_some(), "plugins header");
         assert!(
             row_of(buffer, "onboarding-guide").is_some(),

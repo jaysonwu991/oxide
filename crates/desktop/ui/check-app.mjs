@@ -249,7 +249,7 @@ const existing = [
   {
     id: "fe0031b1",
     name: "Fix the flaky test",
-    cwd: "/Users/jayson/Projects/oxide",
+    cwd: "/home/dev/Projects/oxide",
     created_at: 1,
     modified_at: Math.floor(Date.now() / 1000) - 7 * 60,
     message_count: 195,
@@ -258,7 +258,7 @@ const existing = [
   {
     id: "7c8031b1",
     name: null,
-    cwd: "/Users/jayson/Projects/oxide",
+    cwd: "/home/dev/Projects/oxide",
     created_at: 1,
     modified_at: Math.floor(Date.now() / 1000) - 3 * 86400,
     message_count: 1,
@@ -286,8 +286,8 @@ let threadsError = null;
 // opens on the first of them, so the stub carries two.
 let projectRows = [
   {
-    id: "/Users/jayson/Projects/oxide",
-    path: "/Users/jayson/Projects/oxide",
+    id: "/home/dev/Projects/oxide",
+    path: "/home/dev/Projects/oxide",
     name: "oxide",
     registered: true,
     exists: true,
@@ -527,7 +527,7 @@ check(
   "",
 );
 
-app.state.project = "/Users/jayson/Projects/oxide";
+app.state.project = "/home/dev/Projects/oxide";
 calls.length = 0;
 await typeAt("review @sr");
 check(
@@ -672,7 +672,7 @@ check("said a project is needed", status() === "Select a project first.", status
 check("left the dialog closed", elementFor("mcps-modal").hidden === true);
 check("painted nothing", opened.trim() === "", opened);
 
-app.state.project = "/Users/jayson/Projects/oxide";
+app.state.project = "/home/dev/Projects/oxide";
 calls.length = 0;
 opened = await driveMcps();
 check("asked for this project's servers", projectCalls("mcp_servers")[0]?.[1]?.project === app.state.project);
@@ -760,9 +760,9 @@ app.state.runId = null;
 console.log("/sessions");
 // A command the app performs itself never reaches the model, and the list is
 // drawn in the app rather than handed to the window as a native picker.
-app.state.project = "/Users/jayson/Projects/oxide";
+app.state.project = "/home/dev/Projects/oxide";
 app.state.projects = [
-  { id: "/Users/jayson/Projects/oxide", name: "oxide", path: "/Users/jayson/Projects/oxide" },
+  { id: "/home/dev/Projects/oxide", name: "oxide", path: "/home/dev/Projects/oxide" },
 ];
 elementFor("sessions-modal").hidden = true;
 calls.length = 0;
@@ -951,7 +951,7 @@ app.state.attachments = [];
 // ---------- the question dialog ----------
 
 console.log("questions");
-app.state.project = "/Users/jayson/Projects/oxide";
+app.state.project = "/home/dev/Projects/oxide";
 app.state.pendingQuestion = null;
 calls.length = 0;
 app.showQuestion({
@@ -1273,7 +1273,7 @@ if (catalogSkipped) {
 } else {
   const client = catalog.filter((entry) => entry.kind === "client");
   check("the catalog offers client commands", client.length > 0);
-  app.state.project = "/Users/jayson/Projects/oxide";
+  app.state.project = "/home/dev/Projects/oxide";
   // The `/` menu loads the catalog as it opens; a command the app cannot
   // perform is named from it rather than sent on to the model.
   await app.refreshPaletteEntries();
