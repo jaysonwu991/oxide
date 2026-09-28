@@ -3053,28 +3053,23 @@ mod tests {
 
     #[test]
     fn forge_hint_routes_work_items_to_their_cli() {
-        let (route, item) =
-            forge_route("https://github.com/Skyscanner/landing-pages-api/pull/848").unwrap();
+        let (route, item) = forge_route("https://github.com/acme/landing-pages/pull/848").unwrap();
         let pr = forge_hint(
             route,
             item,
-            "https://github.com/Skyscanner/landing-pages-api/pull/848",
+            "https://github.com/acme/landing-pages/pull/848",
         );
         assert!(pr.contains("GitHub pull request"), "{pr}");
         assert!(
-            pr.contains(
-                "gh pr view --comments https://github.com/Skyscanner/landing-pages-api/pull/848"
-            ),
+            pr.contains("gh pr view --comments https://github.com/acme/landing-pages/pull/848"),
             "{pr}"
         );
         assert!(
-            pr.contains("gh pr diff https://github.com/Skyscanner/landing-pages-api/pull/848"),
+            pr.contains("gh pr diff https://github.com/acme/landing-pages/pull/848"),
             "{pr}"
         );
         assert!(
-            pr.contains(
-                "gh pr comment https://github.com/Skyscanner/landing-pages-api/pull/848 --body"
-            ),
+            pr.contains("gh pr comment https://github.com/acme/landing-pages/pull/848 --body"),
             "{pr}"
         );
 

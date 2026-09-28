@@ -1053,8 +1053,8 @@ mod tests {
     #[test]
     fn expands_github_shorthand_and_leaves_paths_alone() {
         assert_eq!(
-            expand_source("Skyscanner/skyscanner-claude-plugins"),
-            "https://github.com/Skyscanner/skyscanner-claude-plugins.git"
+            expand_source("acme/team-plugins"),
+            "https://github.com/acme/team-plugins.git"
         );
         assert_eq!(
             expand_source("https://github.com/a/b.git"),
@@ -1071,7 +1071,7 @@ mod tests {
     #[tokio::test]
     async fn install_names_an_unconfigured_marketplace() {
         let root = temp_dir("missing-mp");
-        let err = install_in(&root, "hello", Some("skyscanner-claude-plugins"))
+        let err = install_in(&root, "hello", Some("team-plugins"))
             .await
             .unwrap_err();
         let text = format!("{err:#}");

@@ -751,6 +751,16 @@ only. The global `~/.oxide/AGENTS.md` is loaded first (lowest precedence).
   `SYSTEM.md` remains the higher-precedence replacement.
 - The startup welcome area lists loaded context files, and `/reload` re-reads them.
 
+The composed prompt carries a `# Workspaces` section naming the working
+directory and the other folders added to Oxide (the desktop's project list,
+`desktop/projects.json`), each with its path, so a repository elsewhere on the
+machine is found from that list instead of a `find ~` that reads every unrelated
+file before the command times out. It says the file tools take absolute paths,
+so a file in a sibling project can be read, searched, and edited from the run,
+while `bash` still starts in the current project's root. The section is present
+in every front-end — the terminal, the desktop app, and the VS Code panel —
+since it is composed by the shared core.
+
 ## Ecosystem
 
 Oxide discovers configuration from the project root (the nearest ancestor

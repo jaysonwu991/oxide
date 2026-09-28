@@ -1058,14 +1058,9 @@ mod tests {
 
     #[test]
     fn marketplaces_are_nested_under_plugin() {
-        let cli = Cli::try_parse_from([
-            "oxide",
-            "plugin",
-            "marketplace",
-            "add",
-            "Skyscanner/skyscanner-claude-plugins",
-        ])
-        .unwrap();
+        let cli =
+            Cli::try_parse_from(["oxide", "plugin", "marketplace", "add", "acme/team-plugins"])
+                .unwrap();
         assert!(matches!(
             cli.command,
             Some(Command::Plugin {
