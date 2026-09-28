@@ -45,25 +45,32 @@ impl Workspaces {
     /// one. A registry that is missing, unreadable or malformed leaves the run
     /// knowing nothing but its own directory.
     pub fn load_from(cwd: &Path, registry: &Path) -> Self {
+        // `-C .` hands the run a relative path while the desktop recorded the
+        // project at its full one, so the run's directory is resolved before
+        // anything is compared with it.
+        let current = normalize(cwd);
         let mut workspaces = Self {
-            current: cwd.to_path_buf(),
+            current: current.clone(),
             ..Self::default()
         };
         let Some(registry) = Registry::load(registry) else {
             return workspaces;
         };
 
-        let parent = cwd.parent();
+        let parent = current.parent().map(Path::to_path_buf);
         let mut rows: Vec<(bool, u64, Project)> = Vec::new();
         for entry in registry.projects {
             // A folder that is gone — a removed checkout, an unmounted volume —
             // has no place in a list that says where the projects are.
-            if !entry.path.is_dir() || entry.path.components().eq(cwd.components()) {
+            if !entry.path.is_dir() || same_dir(&entry.path, &current) {
                 continue;
             }
             let name = entry.name.trim();
             rows.push((
-                parent.is_some_and(|parent| entry.path.parent() == Some(parent)),
+                parent
+                    .as_deref()
+                    .zip(entry.path.parent())
+                    .is_some_and(|(parent, entry_parent)| same_dir(entry_parent, parent)),
                 entry.last_opened_at.unwrap_or(0),
                 Project {
                     name: if name.is_empty() {
@@ -177,6 +184,39 @@ impl Registry {
     }
 }
 
+/// The run's own directory as the machine names it: a relative `-C .` or
+/// `-C ../oxide` is resolved against the process's working directory, and the
+/// result is resolved once more where the filesystem can, so a symlinked
+/// checkout answers to the path the desktop recorded. An empty path stays
+/// empty — a hand-built [`Workspaces`] has no directory to name.
+fn normalize(path: &Path) -> PathBuf {
+    if path.as_os_str().is_empty() {
+        return path.to_path_buf();
+    }
+    let absolute = if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        match std::env::current_dir() {
+            Ok(dir) => dir.join(path),
+            Err(_) => return path.to_path_buf(),
+        }
+    };
+    std::fs::canonicalize(&absolute).unwrap_or(absolute)
+}
+
+/// Whether two paths name the same directory. The registry and the run can
+/// spell one path differently — through a symlink, or with a `..` the kernel
+/// resolved — so the filesystem's own answer decides when it has one.
+fn same_dir(a: &Path, b: &Path) -> bool {
+    if a.components().eq(b.components()) {
+        return true;
+    }
+    match (std::fs::canonicalize(a), std::fs::canonicalize(b)) {
+        (Ok(a), Ok(b)) => a == b,
+        _ => false,
+    }
+}
+
 fn display_name(path: &Path) -> String {
     path.file_name()
         .and_then(|name| name.to_str())
@@ -198,6 +238,16 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         dir
+    }
+
+    /// A path as the filesystem resolves it, which is how the section prints
+    /// the run's own directory: a macOS temp directory is reached through
+    /// `/var`, and the kernel names the same directory `/private/var`.
+    fn canonical(path: &Path) -> String {
+        std::fs::canonicalize(path)
+            .unwrap_or_else(|_| path.to_path_buf())
+            .to_string_lossy()
+            .to_string()
     }
 
     /// A registry with one entry per `(name, path, last_opened_at)`, written
@@ -247,7 +297,7 @@ mod tests {
 
         let section = workspaces.section().unwrap();
         assert!(section.contains("# Workspaces"));
-        assert!(section.contains(&here.to_string_lossy().to_string()));
+        assert!(section.contains(&canonical(&here)));
         assert!(section.contains("absolute paths"), "{section}");
         assert!(section.contains("find ~"), "{section}");
         assert!(section.contains(&sibling.to_string_lossy().to_string()));
@@ -298,7 +348,7 @@ mod tests {
         // A run whose only project is its own still says where it is and how to
         // find another repository.
         let section = workspaces.section().unwrap();
-        assert!(section.contains(&here.to_string_lossy().to_string()));
+        assert!(section.contains(&canonical(&here)));
         assert!(section.contains("only folder Oxide has"), "{section}");
 
         std::fs::remove_dir_all(&root).ok();
@@ -317,7 +367,10 @@ mod tests {
         std::fs::write(&store, "{ not json").unwrap();
         let workspaces = Workspaces::load_from(&here, &store);
         assert!(workspaces.others().is_empty());
-        assert_eq!(workspaces.current(), here);
+        assert_eq!(
+            std::fs::canonicalize(workspaces.current()).unwrap(),
+            std::fs::canonicalize(&here).unwrap()
+        );
         // Well-formed but empty, and an entry with no path at all.
         std::fs::write(&store, "{\"projects\":[{\"name\":\"nameless\"}]}").unwrap();
         assert!(Workspaces::load_from(&here, &store).others().is_empty());
@@ -329,6 +382,45 @@ mod tests {
     fn an_unknown_directory_says_nothing() {
         let workspaces = Workspaces::default();
         assert_eq!(workspaces.section(), None);
+    }
+
+    #[test]
+    fn a_relative_run_directory_is_the_project_it_names() {
+        // `oxide -C .` hands the run a relative path while the desktop recorded
+        // the project at its full one: the run must not be listed beside itself.
+        let root = temp_dir("relative");
+        let here = std::env::current_dir().unwrap();
+        let store = registry(&root, &[("here", &here, 1)]);
+
+        let workspaces = Workspaces::load_from(Path::new("."), &store);
+        assert!(workspaces.others().is_empty(), "{:?}", workspaces.others());
+        assert!(workspaces.current().is_absolute());
+        assert_eq!(
+            std::fs::canonicalize(workspaces.current()).unwrap(),
+            std::fs::canonicalize(&here).unwrap()
+        );
+        let section = workspaces.section().unwrap();
+        assert!(section.contains("only folder Oxide has"), "{section}");
+
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_symlinked_spelling_of_this_project_is_not_a_second_one() {
+        let root = temp_dir("symlink");
+        let real = root.join("Projects/site");
+        std::fs::create_dir_all(&real).unwrap();
+        let link = root.join("shortcut");
+        std::os::unix::fs::symlink(&real, &link).unwrap();
+        // The run is in the project through the link, and the registry names it
+        // by its real path: one project, not two.
+        let store = registry(&root, &[("site", &real, 1)]);
+
+        let workspaces = Workspaces::load_from(&link, &store);
+        assert!(workspaces.others().is_empty(), "{:?}", workspaces.others());
+
+        std::fs::remove_dir_all(&root).ok();
     }
 
     #[test]
