@@ -1352,6 +1352,13 @@ check(
   editCard.diffEl.hidden === true && editCard.pre.hidden === true,
   `diff hidden: ${editCard.diffEl.hidden}, body hidden: ${editCard.pre.hidden}`,
 );
+// Its diff is what it folds, so it is a fold even though no lines were held
+// back: the two handles are buttons a keyboard can reach.
+check(
+  "made the diff card a fold a keyboard can work",
+  editCard.head.tabIndex === 0 && editCard.hint.tabIndex === 0,
+  `head tabIndex: ${editCard.head.tabIndex}, hint tabIndex: ${editCard.hint.tabIndex}`,
+);
 // A card for a call that changed no file is not the one-line form: it keeps the
 // preview of what it printed, so the treatment above is only for a diff.
 const plainCard = app.startTool("bash", JSON.stringify({ command: "cargo test" }));
@@ -1391,6 +1398,38 @@ check(
     !plainCard.pre.textContent.includes("line four") &&
     !String(plainCard.block.className).includes("expanded"),
   `hint hidden: ${plainCard.hint.hidden}, body: ${JSON.stringify(plainCard.pre.textContent)}`,
+);
+// "Click to expand" is one way in, not the only one: the card is a fold, so
+// both of its handles take Enter and Space, and a key the card does not own is
+// left to whatever else is listening.
+plainCard.hint.onkeydown?.({ key: "Enter", preventDefault() {} });
+check(
+  "expanded the output with Enter on the hint",
+  plainCard.pre.textContent.includes("line four") &&
+    plainCard.hint.tabIndex === 0 &&
+    String(plainCard.block.className).includes("expanded"),
+  `body: ${JSON.stringify(plainCard.pre.textContent)}, tabIndex: ${plainCard.hint.tabIndex}`,
+);
+plainCard.head.onkeydown?.({ key: " ", preventDefault() {} });
+check(
+  "folded it away again with Space on the head row",
+  plainCard.hint.hidden === false &&
+    !String(plainCard.block.className).includes("expanded"),
+  `hint hidden: ${plainCard.hint.hidden}`,
+);
+let cardPrevented = false;
+plainCard.head.onkeydown?.({ key: "a", preventDefault: () => (cardPrevented = true) });
+check(
+  "left a key the card does not own alone",
+  !cardPrevented && plainCard.hint.hidden === false,
+  `prevented: ${cardPrevented}, hint hidden: ${plainCard.hint.hidden}`,
+);
+const shortCard = app.startTool("bash", JSON.stringify({ command: "true" }));
+app.finishTool(shortCard, "one line\n", { elapsed: 4 });
+check(
+  "left a card with nothing behind it as text, not a button",
+  shortCard.hint.tabIndex === -1 && shortCard.head.tabIndex === -1,
+  `hint tabIndex: ${shortCard.hint.tabIndex}, head tabIndex: ${shortCard.head.tabIndex}`,
 );
 
 // ---------- a finished turn's changes ----------

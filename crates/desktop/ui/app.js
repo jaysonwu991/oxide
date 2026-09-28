@@ -1150,6 +1150,7 @@ function createToolCard(name, args) {
   const tool = {
     name,
     block,
+    head,
     pre,
     hint,
     tstate,
@@ -1160,10 +1161,18 @@ function createToolCard(name, args) {
     started: performance.now(),
     timer: null,
   };
-  head.onclick = () => toggleTool(tool);
   // The hint is the card's own "click to expand": a reader who clicks it is
-  // asking for the output the card folded away, so it expands the card too.
-  hint.onclick = () => toggleTool(tool);
+  // asking for the output the card folded away, so it toggles the card exactly
+  // as the head row does. Both take Enter or Space the way a button does, so
+  // the fold is not a mouse-only gesture.
+  for (const toggle of [head, hint]) {
+    toggle.onclick = () => toggleTool(tool);
+    toggle.onkeydown = (event) => {
+      if (event.key !== "Enter" && event.key !== " ") return;
+      event.preventDefault();
+      toggleTool(tool);
+    };
+  }
   block.append(head, pre, hint);
   return tool;
 }
@@ -1247,12 +1256,14 @@ function paintTool(tool) {
     tool.pre.textContent = tool.full;
     tool.hint.hidden = true;
     tool.block.classList.add("expanded");
+    markToolToggle(tool, true);
     return;
   }
   tool.block.classList.remove("expanded");
   if (tool.inline) {
     tool.pre.hidden = true;
     tool.hint.hidden = true;
+    markToolToggle(tool, true);
     return;
   }
   tool.pre.hidden = false;
@@ -1260,6 +1271,20 @@ function paintTool(tool) {
   tool.pre.textContent = text;
   tool.hint.hidden = more === 0;
   tool.hint.textContent = `⋯ ${more} more line${more === 1 ? "" : "s"} · click to expand`;
+  markToolToggle(tool, more > 0);
+}
+
+/// A card's two handles are buttons only while it has output to fold: once
+/// marked, they are reachable with Tab and toggle with Enter or Space, and a
+/// card that shows everything it has stays the text it looks like. A card can
+/// only gain output to fold, so the marks are never taken back.
+function markToolToggle(tool, expandable) {
+  for (const toggle of [tool.head, tool.hint]) {
+    toggle.tabIndex = expandable ? 0 : -1;
+    if (!expandable) continue;
+    toggle.setAttribute("role", "button");
+    toggle.setAttribute("aria-expanded", tool.expanded ? "true" : "false");
+  }
 }
 
 function toggleTool(tool) {
