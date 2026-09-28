@@ -866,26 +866,63 @@ mod tests {
 
     #[tokio::test]
     async fn spend_queries_both_windows_concurrently() {
+        use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+        use std::sync::Arc;
         use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
-        // Two connections, each answered after a delay. Sequentially the two
-        // windows cost two delays; concurrently they cost one.
+        // A window is answered only once both have asked, so the server can
+        // report whether the two requests were in flight together — the
+        // property itself, rather than a wall-clock bound that a loaded machine
+        // can trip while the client is perfectly concurrent.
+        const RENDEZVOUS: std::time::Duration = std::time::Duration::from_secs(5);
+        // Arrivals only ever go up, so a window that asked first sees the second
+        // one however quickly the second is answered.
+        let arrived = Arc::new(AtomicUsize::new(0));
+        let inflight = Arc::new(AtomicUsize::new(0));
+        let overlapping = Arc::new(AtomicBool::new(false));
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
-        let server = tokio::spawn(async move {
-            for _ in 0..2 {
-                let (mut socket, _) = listener.accept().await.unwrap();
-                tokio::spawn(async move {
-                    let mut buffer = vec![0u8; 4096];
-                    let _ = socket.read(&mut buffer).await;
-                    tokio::time::sleep(std::time::Duration::from_millis(600)).await;
-                    let body = r#"{"summary":{"total":100}}"#;
-                    let response = format!(
-                        "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",
-                        body.len()
-                    );
-                    let _ = socket.write_all(response.as_bytes()).await;
-                });
+        let server = tokio::spawn({
+            let arrived = arrived.clone();
+            let inflight = inflight.clone();
+            let overlapping = overlapping.clone();
+            async move {
+                for _ in 0..2 {
+                    let (mut socket, _) = listener.accept().await.unwrap();
+                    let arrived = arrived.clone();
+                    let inflight = inflight.clone();
+                    let overlapping = overlapping.clone();
+                    tokio::spawn(async move {
+                        let mut buffer = vec![0u8; 4096];
+                        let _ = socket.read(&mut buffer).await;
+                        // One window asking while the other is still in flight is
+                        // the concurrency itself: a serial `spend` answers the
+                        // first request before it sends the second.
+                        if inflight.fetch_add(1, Ordering::SeqCst) >= 1 {
+                            overlapping.store(true, Ordering::SeqCst);
+                        }
+                        arrived.fetch_add(1, Ordering::SeqCst);
+                        // Hold the response until both have asked, so the first
+                        // one cannot answer while the second is on its way. A
+                        // serial `spend` never sends it: this waits out the
+                        // rendezvous and answers anyway, leaving `overlapping`
+                        // false for the assertion below to report.
+                        let deadline = std::time::Instant::now() + RENDEZVOUS;
+                        while arrived.load(Ordering::SeqCst) < 2
+                            && std::time::Instant::now() < deadline
+                        {
+                            tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+                        }
+                        let body = r#"{"summary":{"total":100}}"#;
+                        let response = format!(
+                            "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",
+                            body.len()
+                        );
+                        let _ = socket.write_all(response.as_bytes()).await;
+                        // Answered, so no longer one of the windows in flight.
+                        inflight.fetch_sub(1, Ordering::SeqCst);
+                    });
+                }
             }
         });
 
@@ -894,15 +931,13 @@ mod tests {
             base_url: format!("http://{addr}"),
             ..UsageSettings::default()
         };
-        let start = std::time::Instant::now();
         let snapshot = spend(&settings, "pk-test").await.unwrap();
-        let elapsed = start.elapsed();
         assert_eq!(snapshot.today, 1.0);
         assert_eq!(snapshot.month, 1.0);
-        assert!(
-            elapsed < std::time::Duration::from_millis(1000),
-            "spend took {elapsed:?}; the windows were not queried concurrently"
-        );
         server.await.unwrap();
+        assert!(
+            overlapping.load(Ordering::SeqCst),
+            "the second window was asked for only after the first was answered"
+        );
     }
 }
