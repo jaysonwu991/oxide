@@ -1,17 +1,17 @@
-//! macOS spends the press that activates an inactive app on the activation
-//! itself, and only hands a press to the view under the pointer when the view
+//! macOS spends the first click on a window that is not key by activating the
+//! app, and only hands that press to the view under the pointer when the view
 //! declares `acceptsFirstMouse`. That part is wired up: the window config's
 //! `acceptFirstMouse` becomes `WebviewAttributes::accept_first_mouse`, and wry's
 //! web view answers `acceptsFirstMouse:` with it. What an activation still
 //! decides is the moment the press arrives — AppKit will not dispatch a press to
 //! a window it is in the middle of making key — so the monitor below runs ahead
 //! of that dispatch, activating the app and making the window under the pointer
-//! key first, which leaves the press delivered as the click it was made to be.
+//! key first, which leaves the press delivered as the click the page answers.
 //!
-//! An activation that this monitor has already done is what keeps the press a
-//! click; a press that still arrives as the one that takes focus, with no click
-//! behind it, is answered by the control it landed on (`pressActivated` in
-//! `ui/app.js`), as a press that starts a drag is.
+//! A window keeps its key status while the app is in the background, which is
+//! why this reads the app rather than the window: a press back into Oxide is
+//! otherwise spent bringing it forward, and the control under the pointer needs
+//! a second click.
 
 use std::ptr::NonNull;
 
