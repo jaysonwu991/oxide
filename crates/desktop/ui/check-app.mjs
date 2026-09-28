@@ -1892,6 +1892,21 @@ check(
   elementFor("thread-title").textContent,
 );
 
+// A thread with nothing to be named after — no stored name, and a first message
+// the title rules make no prose of — is listed under its id, so the header says
+// the same thing rather than going blank the moment the listing arrives.
+const untitled = { ...running, id: "0f1e2d3c", name: null, preview: "" };
+threads = [untitled, ...existing];
+await app.loadSessions();
+await app.openSession(untitled);
+await new Promise((resolve) => setTimeout(resolve, 0));
+check(
+  "named a thread the sidebar calls by its id the same way",
+  elementFor("thread-title").textContent === "0f1e2d3c" &&
+    elementFor("projects-tree").outline().includes("0f1e2d3c"),
+  `${elementFor("thread-title").textContent} / ${elementFor("projects-tree").outline()}`,
+);
+
 // ---------- one action in the composer's corner ----------
 
 console.log("composer action");

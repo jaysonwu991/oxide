@@ -117,8 +117,7 @@ function sessionById(id) {
 /// never disagree; until that listing has it, the run's own title does.
 function refreshThreadTitle() {
   const session = sessionById(state.session);
-  const titled = session && (session.name || session.preview);
-  setThreadTitle(titled || state.runTitle);
+  setThreadTitle(session ? sessionLabel(session) : state.runTitle);
 }
 
 // ---------- markdown ----------
