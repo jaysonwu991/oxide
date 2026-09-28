@@ -1059,7 +1059,16 @@
       total.textContent = item.totals;
       head.appendChild(total);
     }
-    if ((item.rows || []).length) {
+    // What a card says instead of its action once the turn has been put back,
+    // and the action itself: both are painted from the item's own state, so a
+    // card a newer turn took the Undo away from says nothing and offers nothing.
+    const note = document.createElement("span");
+    note.className = "changes-note";
+    note.textContent = "Undone";
+    note.hidden = true;
+    head.appendChild(note);
+    const rows = item.rows || [];
+    if (rows.length) {
       const review = document.createElement("button");
       review.type = "button";
       review.className = "changes-review";
@@ -1067,13 +1076,22 @@
       review.title = "Walk this turn's files, each in VS Code's diff editor";
       review.setAttribute("aria-label", review.title);
       review.addEventListener("click", () => openReview(item));
-      head.appendChild(review);
+      const undo = document.createElement("button");
+      undo.type = "button";
+      undo.className = "changes-undo";
+      undo.textContent = "Undo";
+      undo.title = "Put this turn's files back to how the run found them";
+      undo.setAttribute("aria-label", undo.title);
+      undo.addEventListener("click", () => {
+        vscode.postMessage({ k: "undoChanges", id: item.id });
+      });
+      head.append(review, undo);
     }
     wrap.appendChild(head);
 
     const list = document.createElement("div");
     list.className = "changes-list";
-    for (const row of item.rows || []) {
+    for (const row of rows) {
       const el = document.createElement("button");
       el.type = "button";
       el.className = "change-row";
@@ -1093,7 +1111,41 @@
       list.appendChild(el);
     }
     wrap.appendChild(list);
+    // A long listing folds away behind one row, as the desktop app's card does:
+    // the rows past it are the view's to hide, and the words the row reads with
+    // — including the way back — are the host's.
+    if (item.more) {
+      const more = item.more;
+      let all = false;
+      const toggle = document.createElement("button");
+      toggle.type = "button";
+      toggle.className = "changes-more";
+      toggle.dataset.action = "changesMore";
+      toggle.textContent = more.closed;
+      toggle.addEventListener("click", () => {
+        all = !all;
+        for (const [index, row] of [...list.children].entries()) {
+          row.hidden = !all && index >= more.visible;
+        }
+        toggle.textContent = all ? more.open : more.closed;
+      });
+      for (const [index, row] of [...list.children].entries()) {
+        if (index >= more.visible) row.hidden = true;
+      }
+      wrap.appendChild(toggle);
+    }
     return { el: wrap };
+  }
+
+  /// A change card's own state, from the item it was built with: its Undo is
+  /// offered only while its turn is the newest one — an older restore would take
+  /// the newer turn's work with it — and a card that has been put back says so
+  /// instead of offering the same thing again.
+  function paintChanges(entry) {
+    const undo = entry.el.querySelector(".changes-undo");
+    if (undo) undo.hidden = entry.item.undone || !entry.item.undoable;
+    const note = entry.el.querySelector(".changes-note");
+    if (note) note.hidden = !entry.item.undone;
   }
 
   function itemNode(item) {
@@ -1173,6 +1225,7 @@
     else if (item.kind === "tool") paintTool(entry);
     else if (item.kind === "approval") paintApproval(entry);
     else if (item.kind === "question") paintQuestion(entry);
+    else if (item.kind === "changes") paintChanges(entry);
     scrollDown(keepScroll);
     return entry;
   }
@@ -1253,6 +1306,15 @@
         entry.item.state = message.state;
         entry.item.label = message.label;
         paintQuestion(entry);
+        scrollDown(false);
+        return;
+      }
+      case "changes": {
+        const entry = entries.get(message.id);
+        if (!entry || entry.item.kind !== "changes") return;
+        entry.item.undoable = message.undoable;
+        entry.item.undone = message.undone;
+        paintChanges(entry);
         scrollDown(false);
         return;
       }

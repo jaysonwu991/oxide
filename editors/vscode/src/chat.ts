@@ -33,6 +33,7 @@ import { isApprovalDecision, type ApprovalDecision } from "./core/approvals";
 import { modelsForProvider } from "./core/config";
 import type { QuestionAnswer } from "./core/questions";
 import {
+  CHANGES_UNDO_CONFIRM,
   CLOSE_DIALOG,
   CONTINUE_SESSION,
   deleteSessionDialog,
@@ -44,11 +45,12 @@ import {
   SESSION_DELETE,
   SESSION_DELETE_CONFIRM,
   sessionDialog,
+  undoChangesDialog,
   type DialogState,
   type LiveSession,
 } from "./core/dialogs";
 import { isMcpCommand, mcpListArgs, mcpToggleArgs, parseMcpList, type McpServerView } from "./core/mcps";
-import { changeArgs, diffPlan, type DiffPlan } from "./core/changes";
+import { changeArgs, diffPlan, undoArgs, type DiffPlan } from "./core/changes";
 import {
   commandRows,
   parseCommandList,
@@ -1435,6 +1437,72 @@ export class ChatController {
     return this.transcript.changes(id);
   }
 
+  /// The Undo under a card: it asks first, since what it takes away is the
+  /// turn's own work, and the dialog names what the turn wrote. The restore
+  /// itself is the confirmation's row, so nothing is put back by a stray click.
+  undoChanges(id: number): void {
+    const card = this.transcript.changes(id);
+    if (!card || card.undone || !card.undoable) return;
+    // A running turn owns the files an undo would move under it — the same
+    // reason a thread cannot be deleted mid-turn — so it is refused rather than
+    // racing the run's own writes.
+    if (this.turn) {
+      this.showNotice("Stop the running turn before undoing a turn.", "warn");
+      return;
+    }
+    if (!card.baseline) return;
+    this.showDialog(
+      undoChangesDialog({
+        id,
+        detail: [card.title, card.totals].filter(Boolean).join(" · "),
+      }),
+    );
+  }
+
+  /// Puts a turn back through the CLI's own restore (`changes undo`), which is
+  /// the snapshot the desktop app's Undo and the terminal's `/undo` use, and
+  /// reports the card as undone. A refusal — a change made after the turn — is
+  /// the CLI's answer rather than a silent no-op, so it is shown.
+  private async restoreTurn(id: string): Promise<void> {
+    const card = this.transcript.changes(Number(id));
+    if (!card || card.undone) return;
+    if (this.turn) {
+      this.closeDialog();
+      this.showNotice("Stop the running turn before undoing a turn.", "warn");
+      return;
+    }
+    const root = card.project || this.folder()?.uri.fsPath;
+    const cwd = this.cwd();
+    if (!root || !cwd) {
+      this.closeDialog();
+      this.showNotice("Open a folder before undoing a turn.", "error");
+      return;
+    }
+    const result = await runCapture(
+      this.binary(),
+      undoArgs(root, card.baseline, card.after),
+      cwd,
+    );
+    if (result.error || result.code !== 0) {
+      const detail = firstLine(result.stderr) || result.error || `exit ${result.code}`;
+      this.closeDialog();
+      this.showNotice(`Could not undo the turn: ${detail}`, "error");
+      return;
+    }
+    this.closeDialog();
+    this.settleUndone(Number(id));
+  }
+
+  /// Marks one card undone and says so, which is what a click on its Undo does
+  /// once the restore has landed: the card stays as the listing of what the turn
+  /// did, with the action it already paid spent.
+  private settleUndone(id: number): void {
+    const messages = this.transcript.markUndone(id);
+    if (!messages) return;
+    for (const message of messages) this.broadcast(message);
+    this.showNotice("Put the turn's files back.");
+  }
+
   /// One file as the run's baseline recorded it, read by the CLI out of the
   /// project's shadow snapshot — the left side of a diff, which is the one side
   /// that is nowhere on disk. `project` is the folder the card's run started in
@@ -1467,6 +1535,8 @@ export class ChatController {
         return this.confirmDeleteSession(value);
       case SESSION_DELETE_CONFIRM:
         return this.deleteSession(value);
+      case CHANGES_UNDO_CONFIRM:
+        return this.restoreTurn(value);
       case CLOSE_DIALOG:
         return this.closeDialog();
       default:

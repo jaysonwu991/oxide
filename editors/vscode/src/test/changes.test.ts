@@ -11,10 +11,12 @@ import { describe, it } from "node:test";
 
 import {
   CHANGE_SCHEME,
+  CHANGES_VISIBLE,
   changeArgs,
   changeDetail,
   changeLetter,
   changeRows,
+  changesMore,
   changesTitle,
   changesTotals,
   diffPlan,
@@ -22,9 +24,26 @@ import {
   parseSnapshotQuery,
   snapshotQuery,
   turnChanges,
+  undoArgs,
   type ChangedFile,
 } from "../core/changes";
 import { Transcript, type WireEvent } from "../core/protocol";
+
+const noState = {
+  queued: 0,
+  context: [],
+  attachments: [],
+  title: "oxide",
+  binary: "oxide",
+  showThinking: true,
+  footer: {
+    chips: [],
+    info: "",
+    usage: "",
+    percent: 0,
+    level: "ok" as const,
+  },
+};
 
 function file(over: Partial<ChangedFile> = {}): ChangedFile {
   return {
@@ -37,8 +56,13 @@ function file(over: Partial<ChangedFile> = {}): ChangedFile {
   };
 }
 
-function frame(changes: unknown, baseline = "abc123", project = "/tmp/project"): WireEvent {
-  return { type: "turn_changes", baseline, project, changes };
+function frame(
+  changes: unknown,
+  baseline = "abc123",
+  project = "/tmp/project",
+  after = "def456",
+): WireEvent {
+  return { type: "turn_changes", baseline, project, after, changes };
 }
 
 describe("a turn's changed files", () => {
@@ -145,6 +169,17 @@ describe("what a change row says", () => {
     assert.equal(changesTitle(3), "Edited 3 files");
   });
 
+  it("folds a listing longer than the card shows behind one row", () => {
+    // Every file fits, so there is nothing to fold away.
+    assert.equal(changesMore(CHANGES_VISIBLE), null);
+    assert.equal(changesMore(0), null);
+    const six = changesMore(CHANGES_VISIBLE + 1);
+    assert.deepEqual(six, { visible: CHANGES_VISIBLE, closed: "+1 more file", open: "Show less" });
+    // Singular where it should be, which is the row's own words rather than the
+    // view's.
+    assert.equal(changesMore(CHANGES_VISIBLE + 4)?.closed, "+4 more files");
+  });
+
   it("leaves the total blank for a turn that changed no lines", () => {
     assert.equal(changesTotals(12, 3), "+12 −3");
     assert.equal(changesTotals(0, 4), "−4");
@@ -214,6 +249,29 @@ describe("opening a change in VS Code's diff editor", () => {
     assert.equal(CHANGE_SCHEME, "oxide-changes");
   });
 
+  it("puts a turn back through the CLI's own restore", () => {
+    assert.deepEqual(undoArgs("/tmp/project", "abc123", "def456"), [
+      "changes",
+      "undo",
+      "--baseline",
+      "abc123",
+      "--project",
+      "/tmp/project",
+      "--after",
+      "def456",
+    ]);
+    // A CLI too old to report the state it left behind still restores, taken at
+    // its word rather than refusing every card.
+    assert.deepEqual(undoArgs("/tmp/project", "abc123", ""), [
+      "changes",
+      "undo",
+      "--baseline",
+      "abc123",
+      "--project",
+      "/tmp/project",
+    ]);
+  });
+
   // The provider is handed the URI alone, so the project and revision have to
   // survive the round trip through its query: a card opened in a window that has
   // moved to another root still reads the snapshot its own run started from.
@@ -258,6 +316,45 @@ describe("the change card in the transcript", () => {
       "M",
       "D",
     ]);
+    // The newest turn's card is the one that may be put back, and it carries the
+    // state it left so the CLI can refuse a card the work tree has moved past.
+    assert.equal(message.item.after, "def456");
+    assert.equal(message.item.undoable, true);
+    assert.equal(message.item.undone, false);
+    // Two files fit, so nothing folds away behind a row of its own.
+    assert.equal(message.item.more, null);
+  });
+
+  it("takes the Undo away from the cards a newer turn came after", () => {
+    const transcript = new Transcript();
+    const first = transcript.apply(frame(listing))[0] as unknown as { k: string; item: { id: number } };
+    const messages = transcript.apply(frame(listing));
+    // The new card is pushed, and every card before it is told it is no longer
+    // the newest — an older restore would take this turn's work with it.
+    assert.deepEqual(
+      messages.map((message) => message.k),
+      ["changes", "push"],
+    );
+    const settled = messages[0] as unknown as { id: number; undoable: boolean; undone: boolean };
+    assert.equal(settled.id, first.item.id);
+    assert.equal(settled.undoable, false);
+    assert.equal(settled.undone, false, "it was not undone, it can no longer be");
+  });
+
+  it("settles a card whose turn was put back, and only once", () => {
+    const transcript = new Transcript();
+    transcript.apply(frame(listing));
+    const card = transcript.items[0] as { id: number };
+    assert.deepEqual(transcript.markUndone(card.id), [
+      { k: "changes", id: card.id, undoable: false, undone: true },
+    ]);
+    // A card already put back is settled again without a second restore, which
+    // is what a click from the other pane sends after the first one landed.
+    assert.deepEqual(transcript.markUndone(card.id), [
+      { k: "changes", id: card.id, undoable: false, undone: true },
+    ]);
+    // A card the transcript no longer holds is a stale click, not a restore.
+    assert.equal(transcript.markUndone(card.id + 7), null);
   });
 
   it("pushes nothing for a turn that changed no files", () => {
@@ -277,21 +374,7 @@ describe("the change card in the transcript", () => {
   it("replays the card into a pane that attaches later", () => {
     const transcript = new Transcript();
     transcript.apply(frame(listing));
-    const state = transcript.state({
-      queued: 0,
-      context: [],
-      attachments: [],
-      title: "oxide",
-      binary: "oxide",
-      showThinking: true,
-      footer: {
-        chips: [],
-        info: "",
-        usage: "",
-        percent: 0,
-        level: "ok",
-      },
-    });
+    const state = transcript.state(noState);
     assert.deepEqual(
       state.items.map((item) => item.kind),
       ["changes"],

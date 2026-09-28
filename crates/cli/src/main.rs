@@ -220,6 +220,19 @@ enum ChangesAction {
         #[arg(long)]
         project: Option<PathBuf>,
     },
+    /// Put a project back to the state a run started from
+    Undo {
+        /// The revision the run started from, as `agent_end` reported it
+        #[arg(long)]
+        baseline: String,
+        /// The revision the run left, as `agent_end` reported it: the work tree
+        /// must still hold it, or a change made since would go too
+        #[arg(long)]
+        after: Option<String>,
+        /// Project directory (defaults to the current one)
+        #[arg(long)]
+        project: Option<PathBuf>,
+    },
 }
 
 #[derive(Subcommand, Debug)]
@@ -603,6 +616,23 @@ async fn main() -> Result<()> {
                     let snapshots = snapshots::Snapshots::open(&cwd)?;
                     let content = snapshots.content_at(&baseline, &path)?;
                     io::stdout().write_all(&content)?;
+                    Ok(())
+                }
+                ChangesAction::Undo {
+                    baseline,
+                    after,
+                    project,
+                } => {
+                    let cwd = match project {
+                        Some(path) => path,
+                        None => std::env::current_dir().context("resolving current directory")?,
+                    };
+                    let snapshots = snapshots::Snapshots::open(&cwd)?;
+                    snapshots.restore_turn(&baseline, after.as_deref())?;
+                    // Said on stdout, since it is the command's result rather
+                    // than progress: a front-end that only wanted the restore
+                    // done reads the exit code and says its own piece.
+                    println!("restored {} to {}", cwd.display(), baseline);
                     Ok(())
                 }
             },
@@ -1139,13 +1169,22 @@ async fn turn_changes(
 ) -> Option<serde_json::Value> {
     let (snapshots, base) = baseline.clone()?;
     let marked = base.clone();
-    let changes = tokio::task::spawn_blocking(move || snapshots.changes_since(&marked))
+    let listed = snapshots.clone();
+    let changes = tokio::task::spawn_blocking(move || listed.changes_since(&marked))
         .await
         .ok()?
         .ok()?;
     if changes.is_empty() {
         return None;
     }
+    // The state the turn left behind, which the client's own Undo checks the
+    // work tree still holds before it puts anything back (see
+    // `Snapshots::restore_turn`). Read after the listing, so both describe the
+    // same state.
+    let after = tokio::task::spawn_blocking(move || snapshots.mark_named("turn").ok())
+        .await
+        .ok()
+        .flatten();
     Some(json!({
         "type": "turn_changes",
         // The folder the run started in, so a client that has moved on since —
@@ -1153,13 +1192,17 @@ async fn turn_changes(
         // opens a row against the file and the snapshot the listing names.
         "project": project,
         "baseline": base,
+        "after": after,
         "changes": changes,
     }))
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{parse_mode, resolve_auto_approve, Cli, Command, MarketplaceAction, PluginAction};
+    use super::{
+        parse_mode, resolve_auto_approve, turn_changes, Cli, Command, MarketplaceAction,
+        PluginAction,
+    };
     use clap::Parser;
 
     #[test]
@@ -1170,6 +1213,47 @@ mod tests {
         assert_eq!(parse_mode(Some("print")).unwrap(), "print");
         assert!(parse_mode(Some("plan")).is_err());
         assert!(parse_mode(Some("auto-edit")).is_err());
+    }
+
+    /// The listing a client draws a change card from carries the state the turn
+    /// left (`after`), which its own Undo checks the work tree still holds: a
+    /// client that could not undo the newest turn would offer the button and be
+    /// refused every time.
+    #[tokio::test]
+    async fn a_turn_listing_carries_the_state_the_turn_left() {
+        use oxide_core::snapshots::Snapshots;
+
+        let root = std::env::temp_dir().join(format!("oxide_cli_turn_{}", std::process::id()));
+        std::fs::remove_dir_all(&root).ok();
+        let work = root.join("work");
+        std::fs::create_dir_all(&work).unwrap();
+        std::fs::write(work.join("a.txt"), "one\n").unwrap();
+        let snapshots = Snapshots::at(root.join("shadow"), work.clone()).unwrap();
+        let base = snapshots.mark().unwrap();
+
+        // A turn that wrote one file, and so has a card.
+        std::fs::write(work.join("a.txt"), "two\n").unwrap();
+        let frame = turn_changes(&work, &Some((snapshots.clone(), base.clone())))
+            .await
+            .unwrap();
+        assert_eq!(frame["baseline"], serde_json::json!(base));
+        assert_eq!(frame["project"], serde_json::json!(work));
+        assert_eq!(frame["changes"]["files"][0]["path"], "a.txt");
+
+        // The state it left is the work tree as it stands, so undoing this
+        // turn is allowed and a second change afterwards is not.
+        let after = frame["after"].as_str().unwrap().to_string();
+        assert!(snapshots.unchanged_since(&after).unwrap());
+        std::fs::write(work.join("a.txt"), "three\n").unwrap();
+        assert!(!snapshots.unchanged_since(&after).unwrap());
+
+        // A turn that changed nothing says nothing (no card to carry one).
+        let settled = snapshots.mark_named("turn").unwrap();
+        assert!(turn_changes(&work, &Some((snapshots, settled)))
+            .await
+            .is_none());
+
+        std::fs::remove_dir_all(&root).ok();
     }
 
     #[test]
