@@ -140,8 +140,8 @@ describe("command contributions", () => {
       chat.indexOf("async resumeSession("),
     );
     assert.ok(
-      helper.includes("sessionDialog(this.sessions, this.transcript.sessionId, note)"),
-      "and that place passes the open thread's id",
+      helper.includes("sessionDialog(this.sessions, this.transcript.sessionId, note, this.liveSession())"),
+      "and that place passes the open thread's id and its live stand-in",
     );
     // The sites that repaint it: the load, its failure, the listing itself, a
     // row while a turn runs, a delete while a turn runs, and a failed delete.
@@ -149,6 +149,40 @@ describe("command contributions", () => {
       (chat.match(/this\.showSessions\(/g) ?? []).length >= 6,
       "every redraw uses it rather than composing the dialog again",
     );
+  });
+
+  it("keeps an open session listing in step with the store it lists", () => {
+    // The store catches up to a thread while its turn runs, so a listing left
+    // open has to be read again: without it the thread on screen is missing
+    // from the list of threads until the listing is closed and opened again.
+    const sync = chat.slice(
+      chat.indexOf("private async syncSessions("),
+      chat.indexOf("async resumeSession("),
+    );
+    assert.ok(
+      sync.includes('this.dialog?.kind !== "sessions"'),
+      "only a session listing is repainted",
+    );
+    assert.ok(
+      sync.includes("parseSessionList(result.stdout)"),
+      "and it is read the way the listing opened with it",
+    );
+    assert.ok(sync.includes("this.showSessions()"), "through the one place that composes it");
+    assert.equal(
+      (sync.match(/this\.dialog\?\.kind !== "sessions"/g) ?? []).length,
+      2,
+      "and a listing closed while the read was in flight is left closed",
+    );
+
+    // The two moments a session is written: the header naming the thread, and
+    // the turn ending.
+    const events = chat.slice(
+      chat.indexOf("private handleEvent("),
+      chat.indexOf("private handleExit("),
+    );
+    assert.match(events, /if \(this\.transcript\.sessionId !== id\) void this\.syncSessions\(\)/);
+    const exit = chat.slice(chat.indexOf("private handleExit("), chat.indexOf("async resumeSession("));
+    assert.ok(exit.includes("void this.syncSessions()"), "and so does a finished turn");
   });
 
   it("will not delete a thread while the running turn owns its file", () => {

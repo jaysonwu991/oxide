@@ -16,10 +16,10 @@ mod commands;
 mod first_click;
 
 use commands::{
-    add_project, all_sessions, at_suggestions, cancel_run, clear_approvals, create_project,
-    delete_session, list_approvals, list_commands, list_models, list_projects, list_providers,
-    list_sessions, list_themes, login, logout, mcp_servers, open_url, pick_folder, project_info,
-    remove_project, rename_session, resolve_approval, resolve_question, send_prompt,
+    add_project, all_sessions, at_suggestions, cancel_run, change_sides, clear_approvals,
+    create_project, delete_session, list_approvals, list_commands, list_models, list_projects,
+    list_providers, list_sessions, list_themes, login, logout, mcp_servers, open_url, pick_folder,
+    project_info, remove_project, rename_session, resolve_approval, resolve_question, send_prompt,
     session_messages, set_mcp_server, set_model, set_project_trust, set_theme, steer_run,
     theme_colors, undo_turn, DesktopState,
 };
@@ -60,6 +60,7 @@ fn main() {
             cancel_run,
             steer_run,
             undo_turn,
+            change_sides,
             resolve_approval,
             resolve_question,
             list_approvals,

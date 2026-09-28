@@ -1,46 +1,77 @@
-//! Line-oriented diff previews for file edits, rendered compactly for the TUI.
-//!
-//! The output is a unified-style listing with old and new line numbers and a
-//! leading ` `/`-`/`+` marker per line. Gaps between changed regions are marked
-//! with `⋯` so long files stay readable.
+//! Line-oriented diffs for file edits: the same alignment rendered compactly
+//! for the TUI (a unified-style listing with old and new line numbers, a leading
+//! ` `/`-`/`+` marker per line, and `⋯` for the gaps between changed regions)
+//! and as the lines themselves, which a front-end that paints both sides of a
+//! change reads.
 
 const CONTEXT: usize = 3;
 const MAX_DIFF_LINES: usize = 2_000;
 
-#[derive(Clone, Copy, PartialEq)]
-enum Kind {
+/// What one line of a change is: text both sides have, or text only one does.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum LineKind {
     Context,
     Add,
     Remove,
 }
 
-struct Op {
-    kind: Kind,
-    old: Option<usize>,
-    new: Option<usize>,
-    text: String,
+/// One aligned line of a change. The side it is missing from carries no number,
+/// which is the empty cell a split view paints for it.
+#[derive(Debug)]
+pub struct Line {
+    pub kind: LineKind,
+    pub old: Option<usize>,
+    pub new: Option<usize>,
+    pub text: String,
+}
+
+/// The aligned lines of `old` → `new`, or why there are none to paint: two
+/// identical sides, or one too large to align line by line.
+pub enum Diff {
+    Same,
+    Omitted { old: usize, new: usize },
+    Lines(Vec<Line>),
+}
+
+/// Aligns two texts line by line. A caller that paints a diff of its own — the
+/// desktop's review, which shows both sides of a file rather than the hunks a
+/// preview keeps — reads this; [`preview`] renders the same alignment compactly
+/// for the terminal.
+pub fn lines(old: &str, new: &str) -> Diff {
+    if old == new {
+        return Diff::Same;
+    }
+    let old_lines: Vec<&str> = old.lines().collect();
+    let new_lines: Vec<&str> = new.lines().collect();
+    if old_lines.len() > MAX_DIFF_LINES || new_lines.len() > MAX_DIFF_LINES {
+        return Diff::Omitted {
+            old: old_lines.len(),
+            new: new_lines.len(),
+        };
+    }
+    Diff::Lines(align(&old_lines, &new_lines))
 }
 
 /// Render a preview of the change from `old` to `new`, or `None` when the two
 /// are identical. Oversized inputs fall back to a one-line summary.
 pub fn preview(old: &str, new: &str) -> Option<String> {
-    if old == new {
-        return None;
+    match lines(old, new) {
+        Diff::Same => None,
+        Diff::Omitted { old, new } => Some(format!("(diff omitted: {old} -> {new} lines)")),
+        Diff::Lines(lines) => {
+            // A numbered line reaches the length of its side, so the widest
+            // number is the longer side's line count either way.
+            let total = lines
+                .iter()
+                .filter_map(|line| line.old.max(line.new))
+                .max()
+                .unwrap_or(0);
+            Some(render(&lines, total))
+        }
     }
-    let old_lines: Vec<&str> = old.lines().collect();
-    let new_lines: Vec<&str> = new.lines().collect();
-    if old_lines.len() > MAX_DIFF_LINES || new_lines.len() > MAX_DIFF_LINES {
-        return Some(format!(
-            "(diff omitted: {} -> {} lines)",
-            old_lines.len(),
-            new_lines.len()
-        ));
-    }
-    let ops = diff_ops(&old_lines, &new_lines);
-    Some(render(&ops, old_lines.len().max(new_lines.len())))
 }
 
-fn diff_ops(old: &[&str], new: &[&str]) -> Vec<Op> {
+fn align(old: &[&str], new: &[&str]) -> Vec<Line> {
     let n = old.len();
     let m = new.len();
     let mut dp = vec![vec![0u32; m + 1]; n + 1];
@@ -58,8 +89,8 @@ fn diff_ops(old: &[&str], new: &[&str]) -> Vec<Op> {
     let (mut i, mut j) = (0, 0);
     while i < n && j < m {
         if old[i] == new[j] {
-            ops.push(Op {
-                kind: Kind::Context,
+            ops.push(Line {
+                kind: LineKind::Context,
                 old: Some(i + 1),
                 new: Some(j + 1),
                 text: old[i].to_string(),
@@ -67,16 +98,16 @@ fn diff_ops(old: &[&str], new: &[&str]) -> Vec<Op> {
             i += 1;
             j += 1;
         } else if dp[i + 1][j] >= dp[i][j + 1] {
-            ops.push(Op {
-                kind: Kind::Remove,
+            ops.push(Line {
+                kind: LineKind::Remove,
                 old: Some(i + 1),
                 new: None,
                 text: old[i].to_string(),
             });
             i += 1;
         } else {
-            ops.push(Op {
-                kind: Kind::Add,
+            ops.push(Line {
+                kind: LineKind::Add,
                 old: None,
                 new: Some(j + 1),
                 text: new[j].to_string(),
@@ -85,8 +116,8 @@ fn diff_ops(old: &[&str], new: &[&str]) -> Vec<Op> {
         }
     }
     while i < n {
-        ops.push(Op {
-            kind: Kind::Remove,
+        ops.push(Line {
+            kind: LineKind::Remove,
             old: Some(i + 1),
             new: None,
             text: old[i].to_string(),
@@ -94,8 +125,8 @@ fn diff_ops(old: &[&str], new: &[&str]) -> Vec<Op> {
         i += 1;
     }
     while j < m {
-        ops.push(Op {
-            kind: Kind::Add,
+        ops.push(Line {
+            kind: LineKind::Add,
             old: None,
             new: Some(j + 1),
             text: new[j].to_string(),
@@ -105,11 +136,11 @@ fn diff_ops(old: &[&str], new: &[&str]) -> Vec<Op> {
     ops
 }
 
-fn render(ops: &[Op], total: usize) -> String {
+fn render(ops: &[Line], total: usize) -> String {
     let width = total.to_string().len().max(3);
     let mut keep = vec![false; ops.len()];
     for (index, op) in ops.iter().enumerate() {
-        if op.kind == Kind::Context {
+        if op.kind == LineKind::Context {
             continue;
         }
         let start = index.saturating_sub(CONTEXT);
@@ -135,13 +166,13 @@ fn render(ops: &[Op], total: usize) -> String {
     out.join("\n")
 }
 
-fn format_op(op: &Op, width: usize) -> String {
+fn format_op(op: &Line, width: usize) -> String {
     let old = op.old.map(|n| n.to_string()).unwrap_or_default();
     let new = op.new.map(|n| n.to_string()).unwrap_or_default();
     let marker = match op.kind {
-        Kind::Context => ' ',
-        Kind::Add => '+',
-        Kind::Remove => '-',
+        LineKind::Context => ' ',
+        LineKind::Add => '+',
+        LineKind::Remove => '-',
     };
     format!("{marker}{old:>width$} {new:>width$}  {}", op.text)
 }
@@ -179,5 +210,47 @@ mod tests {
         let diff = preview("", "one\ntwo\n").unwrap();
         assert!(diff.contains("+      1  one"), "{diff}");
         assert!(diff.contains("+      2  two"), "{diff}");
+    }
+
+    #[test]
+    fn aligned_lines_carry_the_number_of_each_side() {
+        let Diff::Lines(lines) = lines("a\nb\n", "a\nc\n") else {
+            panic!("expected an alignment");
+        };
+        assert_eq!(lines.len(), 3);
+        assert_eq!(lines[0].kind, LineKind::Context);
+        assert_eq!((lines[0].old, lines[0].new), (Some(1), Some(1)));
+        assert_eq!(lines[0].text, "a");
+        // The removed side has no number on the new side, and the other way
+        // round, which is the empty cell a split view paints.
+        assert_eq!(lines[1].kind, LineKind::Remove);
+        assert_eq!((lines[1].old, lines[1].new), (Some(2), None));
+        assert_eq!(lines[2].kind, LineKind::Add);
+        assert_eq!((lines[2].old, lines[2].new), (None, Some(2)));
+        assert_eq!(lines[2].text, "c");
+    }
+
+    #[test]
+    fn identical_sides_have_nothing_to_paint() {
+        assert!(matches!(lines("a\nb\n", "a\nb\n"), Diff::Same));
+    }
+
+    #[test]
+    fn an_oversized_side_is_reported_rather_than_aligned() {
+        let old: String = (0..MAX_DIFF_LINES + 1)
+            .map(|n| format!("line {n}\n"))
+            .collect();
+        assert!(matches!(
+            lines(&old, "one line\n"),
+            Diff::Omitted { old: 2_001, new: 1 }
+        ));
+    }
+
+    #[test]
+    fn the_preview_keeps_the_width_of_the_longer_side() {
+        // Three lines on one side and one on the other still pad to three
+        // digits, which is what the terminal's columns are aligned by.
+        let diff = preview("a\nb\nc\n", "a\n").unwrap();
+        assert!(diff.contains("-  2      b"), "{diff}");
     }
 }

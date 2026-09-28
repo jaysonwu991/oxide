@@ -1,16 +1,17 @@
-//! macOS spends the first click on a window that is not key by activating the
-//! app, and only hands that press to the view under the pointer when the view
+//! macOS spends the press that activates an inactive app on the activation
+//! itself, and only hands a press to the view under the pointer when the view
 //! declares `acceptsFirstMouse`. That part is wired up: the window config's
 //! `acceptFirstMouse` becomes `WebviewAttributes::accept_first_mouse`, and wry's
 //! web view answers `acceptsFirstMouse:` with it. What an activation still
 //! decides is the moment the press arrives — AppKit will not dispatch a press to
 //! a window it is in the middle of making key — so the monitor below runs ahead
-//! of that dispatch and makes the window under the pointer key first, which
-//! leaves it key by the time the press is delivered.
+//! of that dispatch, activating the app and making the window under the pointer
+//! key first, which leaves the press delivered as the click it was made to be.
 //!
-//! Every control in the page answers the gesture for itself (`pressActivated` in
-//! `ui/app.js`): a first press can still arrive as the one that takes focus, with
-//! no click behind it, and a press that starts a drag loses its click too.
+//! An activation that this monitor has already done is what keeps the press a
+//! click; a press that still arrives as the one that takes focus, with no click
+//! behind it, is answered by the control it landed on (`pressActivated` in
+//! `ui/app.js`), as a press that starts a drag is.
 
 use std::ptr::NonNull;
 
@@ -33,11 +34,16 @@ pub fn install() {
         let press = unsafe { event.as_ref() };
         if let Some(mtm) = MainThreadMarker::new() {
             if let Some(window) = press.window(mtm) {
-                // Only an activation can change whether this press is delivered:
-                // the view already accepts a first mouse, so a press into a
-                // window of the active app lands as it stands, and taking the key
-                // away from whatever holds it mid-press is what would drop it.
-                if !window.isKeyWindow() && !NSApplication::sharedApplication(mtm).isActive() {
+                // Every press that arrives while the app is not active is spent by
+                // macOS on activating it unless the activation has already
+                // happened: the window keeps its key status while the app is in
+                // the background, so a press back into it is read as the press
+                // that brings Oxide forward rather than as a click, and the button
+                // under the pointer needs a second one. A press into a window of
+                // the active app lands as it stands — the view already accepts a
+                // first mouse — and taking the key away from whatever holds it
+                // mid-press is what would drop that click, so it is left alone.
+                if !NSApplication::sharedApplication(mtm).isActive() {
                     take_key(&window, mtm);
                 }
             }

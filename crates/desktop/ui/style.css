@@ -468,8 +468,45 @@ body.resizing { cursor: col-resize; user-select: none; }
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
   font-size: 12px;
 }
-.review-diff .diff { margin-top: 0; border-top: 0; padding-top: 0; }
-.review-diff .diff pre { max-height: none; }
+/* The review's diff: both sides of one file, each line on the side that holds it
+   with that side's own number. One grid whose rows are its contents, so every
+   row's columns line up with the next one's however a line wraps. */
+.split {
+  display: grid;
+  grid-template-columns: max-content minmax(0, 1fr) max-content minmax(0, 1fr);
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 11.5px;
+  line-height: 1.6;
+}
+.split-row { display: contents; }
+.split-num {
+  padding: 0 8px 0 2px;
+  color: var(--faint);
+  text-align: right;
+  user-select: none;
+}
+/* The divider belongs to the newer side, so the two columns stay apart as the
+   eye crosses a row where one of them is empty. */
+.split-row > :nth-child(3) { border-left: 1px solid var(--border); padding-left: 8px; }
+.split-text { padding-right: 14px; white-space: pre-wrap; overflow-wrap: anywhere; }
+.split-row.add .split-num, .split-row.add .split-text { background: rgba(120, 211, 138, 0.1); }
+.split-row.remove .split-num, .split-row.remove .split-text { background: rgba(240, 138, 130, 0.1); }
+.split-row.add .split-text { color: var(--success); }
+.split-row.remove .split-text { color: var(--error); }
+
+/* A stretch neither side changed, folded behind its count across both columns:
+   clicking it opens the stretch where it sits. */
+.unmodified {
+  grid-column: 1 / -1;
+  padding: 3px 10px;
+  color: var(--faint);
+  font-size: 11px;
+  text-align: left;
+  border-radius: 0;
+  background: var(--panel);
+}
+.unmodified:hover { color: var(--text); background: var(--panel-2); }
+.review-note { color: var(--faint); font-size: 12px; }
 
 .thinking {
   max-width: 760px;

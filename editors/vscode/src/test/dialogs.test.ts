@@ -215,6 +215,57 @@ describe("session dialog", () => {
     assert.equal(dialog.rows[0].detail, "Close this thread and start a fresh one");
     assert.equal(dialog.rows[2].status, "Current");
   });
+
+  /// A session file is written as its first turn runs, so the listing can be read
+  /// before the row it belongs to exists — the store is what catches up to the
+  /// thread, not the other way round. The thread the panel is in stands in for
+  /// itself until then, so the list never shows a thread you are in as one you
+  /// are not.
+  it("lists the thread the panel is in before the store has a row for it", () => {
+    const dialog = sessionDialog([], "9f00c0de", "", { id: "9f00c0de", label: "Fix the flaky test" });
+    assert.deepEqual(
+      dialog.rows.map((row) => row.value),
+      [NEW_SESSION, CONTINUE_SESSION, "9f00c0de"],
+    );
+    const live = dialog.rows[2];
+    assert.equal(live.label, "Fix the flaky test");
+    assert.equal(live.status, "Current");
+    assert.match(live.detail, /the store has no file for it yet/);
+    assert.equal(live.button, "", "there is no file to delete yet");
+    // A listing with a thread in it is not an empty one, so it says nothing
+    // about the next message starting the project's first thread.
+    assert.equal(dialog.note, "");
+  });
+
+  it("leaves a live thread to its own row once the store has one", () => {
+    const stored = parseSessionList("fe0031b1  just now  2 msg  Fix the flaky test\n");
+    const dialog = sessionDialog(stored, "fe0031b1", "", {
+      id: "fe0031b1",
+      label: "Fix the flaky test",
+    });
+    assert.deepEqual(
+      dialog.rows.map((row) => row.value),
+      [NEW_SESSION, CONTINUE_SESSION, "fe0031b1"],
+      "the row is the store's, listed once",
+    );
+    assert.equal(dialog.rows[2].buttonAction, SESSION_DELETE, "and it can be deleted");
+  });
+
+  it("names an unnamed row after the thread the panel is showing", () => {
+    // The store lists a thread whose first message it has no name for; the
+    // panel's own header already has one, so the row reads like the header
+    // rather than as a bare id.
+    const stored = parseSessionList("fe0031b1  just now  2 msg  \n");
+    const dialog = sessionDialog(stored, "fe0031b1", "", {
+      id: "fe0031b1",
+      label: "Fix the flaky test",
+    });
+    assert.equal(dialog.rows[2].label, "Fix the flaky test");
+    // A live thread for another id is not this listing's business, so nothing
+    // of it reaches the rows.
+    const other = sessionDialog(stored, "7c8031b1", "", { id: "9f00c0de", label: "elsewhere" });
+    assert.ok(other.rows.every((row) => row.label !== "elsewhere"));
+  });
 });
 
 describe("delete-thread confirmation", () => {

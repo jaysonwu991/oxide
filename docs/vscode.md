@@ -207,6 +207,19 @@ parses `oxide sessions list`), so the panel and the terminal agree on which
 threads exist and what they are called. Sessions are per project: the dialog
 lists the folder that is open.
 
+The thread the panel is in stands in for itself while the store has not written
+it yet: `sessionDialog` is handed the open thread as a `LiveSession` (its id and
+the title the header shows), so a thread that is running — or one whose first
+message has not been flushed — is listed under the name the header carries
+instead of missing from the list, and the store catching up replaces the row
+rather than adding a second one. For the same reason the listing is read again
+while it is open, at the two moments a session is written: when the `session`
+header names the thread, and when the turn ends. Only a session listing is
+re-read — `chat.ts::syncSessions` returns early for a confirmation or the MCP
+list, and again for a listing closed while the read was in flight — and the
+repaint goes through `showSessions`, which is the one place the dialog is
+composed.
+
 Both dialogs are composed in the extension host as data (`core/dialogs.ts`) — a
 title, the panel edge it hangs from (`pin`), a note for an empty or failed
 listing, and rows where each row carries the action it posts back (`mcpToggle`
@@ -229,9 +242,12 @@ open: it is dismissed by its Close icon, by <kbd>Esc</kbd>, or by picking a row.
 ## Image previews
 
 A thumbnail in the attachment strip is a button: clicking it opens the full-size
-image the host sent, in an overlay on the panel, and **Close**, <kbd>Esc</kbd> or
-a click on the backdrop closes it. A chip has room for a 96px copy, so without
-this the only look at what is being sent was too small to check.
+image the host sent, in an overlay on the panel, and the overlay's ✕,
+<kbd>Esc</kbd> or a click on the backdrop closes it. A chip has room for a 96px
+copy, so without this the only look at what is being sent was too small to check.
+The way out is the desktop app's: an icon in a head row above the picture —
+outside the image it closes — in the error color, rather than a text button under
+it.
 
 ## Agent turns
 
@@ -317,9 +333,12 @@ it.
   toolbar inside one bordered block. It starts two rows tall (`rows="2"`) and
   grows with the message up to 200px, where it scrolls instead.
 - **Toolbar** — the **Attach** icon (the file picker), the live phase with an
-  elapsed timer while a turn runs, and the **Stop** and **Send** icons (**Send**
-  reads as **Queue** while a turn is running). The primary action never moves,
-  because it is anchored to the right of the same row.
+  elapsed timer while a turn runs, and one action in the corner that swaps
+  rather than sitting beside a second button: **Stop** while a turn runs with
+  nothing to say, **Send** — which reads as **Queue** — the moment the box holds
+  something. The desktop app swaps the same two the same way, so the button the
+  reader is aiming at does not move as the box is typed into; an attachment is
+  something to send too, while a context chip on its own is not.
 - **Branch** — the repository the folder sits in, read from `.git/HEAD` rather
   than through the Git extension, so it needs no other extension installed; a
   worktree's or submodule's `gitdir:` pointer is followed to the real HEAD.
@@ -615,6 +634,24 @@ takes — `[label, original, modified]`, where the label is the file's own URI �
 and its last two entries are the `[left, right]` pair `vscode.diff` is given off
 the same triple for a single row.
 
+A card also carries **Review**, which opens the turn's files over the panel
+without leaving the chat. It is the card's own rows again — the badge, path and
+`+`/`−` detail — with the arrows walking them with wraparound, and <kbd>Esc</kbd>
+or the ✕ closing it, so the review and the listing behind it cannot disagree
+about what a turn changed. The diff is not painted there: the row it lands on
+opens that file in VS Code's own diff editor, which already draws both sides with
+per-side line numbers and word-level marks. The panel's rows are therefore not a
+second listing to keep in step, and nothing in the webview renders a diff of its
+own.
+
+A review opens its file as a *preview* and without taking the keyboard
+(`preview` and `preserveFocus` on the `vscode.diff` options), since walking on
+replaces the one tab rather than leaving a turn's worth of them behind, and the
+arrows keep working while the editor holds it. A click on a row of the card
+itself is neither: it opens a tab of its own and focuses it, because the reader
+asked for that one file. A rebuilt transcript closes a review left open, since
+the card it was opened from is gone with it.
+
 A project does not have to be a git clone for any of that: the snapshot is
 oxide's own bare repository under the config directory, so a plain folder is
 recorded the same way. What is refused is a directory that must not be walked —
@@ -726,7 +763,10 @@ answer is routed on to the running turn rather than only settling the card, and 
 header's new-chat button carries the command's own name in its tooltip and
 `aria-label` rather than the name the command had before, and that the session
 listing is composed in exactly one place, which supplies the id of the thread on
-screen, so no redraw can quietly drop the `Current` mark, and that the composer's
+screen, so no redraw can quietly drop the `Current` mark, and that an open
+session listing is read again when the `session` header names the thread and when
+a turn ends — through `showSessions`, and only for a session listing — and that
+the composer's
 chip for the file being edited stays in step with the editor and is read when the
 message goes, and that an `@` completion is answered from the shared core — the
 token and the rows from `core/at.ts`, the paths from the workspace — since the
@@ -740,14 +780,18 @@ checking — paints the footer, the chips, the attachment strip, the approval
 card, a question card's steps, options and free-text fields and the answers a
 click posts,
 the change card and the diff a row or its header opens (against the CLI's own
-listing, which the host composed),
+listing, which the host composed), and the review it opens — its rows, no diff of
+its own, the file each row and each arrow names to the editor, the arrows walking
+them with wraparound, and the ✕ or a rebuilt transcript closing it —
 the `/mcps` and `/sessions` listings (and the full-size image a thumbnail
-opens), the tracked file's dashed chip and the empty box it cannot send on its
+opens, from the ✕ in its head row, the backdrop or <kbd>Esc</kbd>), the tracked file's dashed chip and the empty box it cannot send on its
 own, and the rows of the `@` completion with the keys that walk, take and close
 them — the `@` rows and the palette's side by side, since the two share one
 list, and the palette row carries the name, the arguments hint, the description
 and what the row is — and the disabled
 state of Send from its messages when it runs against a DOM stub, and that the
+composer's corner holds one action that swaps between Send and Stop rather than
+two visible buttons, and that the
 shell puts the listing under the header, ahead of the transcript, with
 `flex: 0 0 auto` so it cannot be squeezed to a sliver of scrolling rows, turns
 the same element around above the footer for the listing the host pins to that

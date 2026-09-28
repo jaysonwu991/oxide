@@ -27,7 +27,14 @@ import {
 import { Transcript, type WireEvent } from "../core/protocol";
 
 function file(over: Partial<ChangedFile> = {}): ChangedFile {
-  return { path: "src/main.rs", status: "modified", added: 3, removed: 1, binary: false, ...over };
+  return {
+    path: "src/main.rs",
+    status: "modified",
+    added: 3,
+    removed: 1,
+    binary: false,
+    ...over,
+  };
 }
 
 function frame(changes: unknown, baseline = "abc123", project = "/tmp/project"): WireEvent {
@@ -67,6 +74,31 @@ describe("a turn's changed files", () => {
     );
     assert.equal(changes?.added, 2);
     assert.equal(changes?.removed, 5);
+  });
+
+  it("ignores the preview a frame carries, since the diff drawn is VS Code's", () => {
+    // The frame brings the CLI's own per-file preview along, which the desktop
+    // card paints. This panel does not: its review opens the file in the
+    // editor's diff, so the listing keeps only what a row says.
+    const changes = turnChanges(
+      frame({
+        files: [
+          {
+            path: "src/main.rs",
+            status: "modified",
+            added: 1,
+            removed: 1,
+            binary: false,
+            diff: "   1   1  fn main() {\n-  2      old();\n+  2   2  new();",
+          },
+          { path: "logo.png", status: "added", added: 0, removed: 0, binary: true, diff: "" },
+        ],
+      }),
+    );
+    assert.deepEqual(changes?.files, [
+      { path: "src/main.rs", status: "modified", added: 1, removed: 1, binary: false },
+      { path: "logo.png", status: "added", added: 0, removed: 0, binary: true },
+    ]);
   });
 
   it("names a file whose kind it does not know as modified", () => {
@@ -122,7 +154,7 @@ describe("what a change row says", () => {
   it("composes the rows the webview paints, index and words included", () => {
     const rows = changeRows([
       file({ path: "src/main.rs", status: "modified", added: 2, removed: 1 }),
-      file({ path: "docs/new.md", status: "added", added: 5, removed: 0 }),
+      file({ path: "docs/new.md", status: "added", added: 5, removed: 0, binary: true }),
     ]);
     assert.deepEqual(rows, [
       {
@@ -137,7 +169,7 @@ describe("what a change row says", () => {
         path: "docs/new.md",
         status: "added",
         letter: "A",
-        detail: "+5",
+        detail: "binary",
         title: "Show docs/new.md in VS Code's diff editor",
         index: 1,
       },

@@ -97,6 +97,12 @@ button.icon svg {
   display: block;
 }
 
+/* Stop: dim like every other icon, red on hover, the way the desktop app's
+   composer colors it. */
+button.icon.danger:hover:not(:disabled) {
+  color: var(--vscode-errorForeground, #f14c4c);
+}
+
 #actions {
   display: flex;
   align-items: center;
@@ -773,6 +779,26 @@ pre,
   color: var(--vscode-descriptionForeground);
 }
 
+/* Reads the turn's diffs here, one file at a time, instead of handing the file
+   to VS Code's diff editor — the one place the panel paints a diff of its own,
+   and the counterpart of the desktop app's Review button. */
+.changes-review {
+  flex: 0 0 auto;
+  padding: 1px 7px;
+  border: 1px solid var(--vscode-panel-border, rgba(128, 128, 128, 0.35));
+  border-radius: 3px;
+  color: var(--vscode-descriptionForeground);
+  background: none;
+  font: inherit;
+  font-size: 0.9em;
+  cursor: pointer;
+}
+
+.changes-review:hover {
+  color: var(--vscode-foreground);
+  background: var(--vscode-toolbar-hoverBackground, rgba(128, 128, 128, 0.15));
+}
+
 .changes-list {
   border-top: 1px solid var(--vscode-panel-border, rgba(128, 128, 128, 0.25));
   max-height: 30vh;
@@ -1137,6 +1163,7 @@ footer {
   background: none;
   border-radius: 4px;
   line-height: 0;
+  cursor: zoom-in;
 }
 
 .chips .chip .chip-open:hover img,
@@ -1603,16 +1630,100 @@ button.dialog-row:focus-visible {
   display: flex;
   flex-direction: column;
   align-items: center;
-  gap: 8px;
   max-width: 100%;
   max-height: 100%;
 }
 
+/* The ✕ sits in a head row above the picture — outside the image it closes —
+   rather than riding the picture's own corner, and takes the error color the
+   desktop app's does so it reads as the way out. */
+.image-head {
+  display: flex;
+  justify-content: flex-end;
+  align-self: stretch;
+  margin-bottom: 8px;
+}
+
+#image-view-close {
+  color: var(--vscode-errorForeground, #f14c4c);
+}
+
 .image-frame img {
   max-width: 100%;
-  max-height: 80vh;
+  max-height: 78vh;
   object-fit: contain;
-  border-radius: 4px;
+  border-radius: 12px;
   background: var(--vscode-editor-background);
-  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.4);
+  box-shadow: 0 18px 44px rgba(0, 0, 0, 0.6);
+}
+
+/* ---------- review ---------- */
+
+/* The turn's changes over the panel: the card's own rows, walked with the
+   arrows. The diff itself is VS Code's, opened in the editor beside the panel as
+   the reader walks, so this is a listing rather than a second diff view — a
+   sheet that hugs its rows rather than a pane that fills the panel. */
+.review-overlay {
+  align-items: flex-start;
+  justify-content: center;
+  padding: 8px;
+}
+
+.review-sheet {
+  display: flex;
+  flex: 0 1 auto;
+  flex-direction: column;
+  width: 100%;
+  max-width: 420px;
+  max-height: 80%;
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+  border: 1px solid var(--vscode-panel-border, rgba(128, 128, 128, 0.35));
+  border-radius: 6px;
+  background: var(--vscode-editor-background);
+  box-shadow: 0 12px 32px rgba(0, 0, 0, 0.45);
+}
+
+.review-head {
+  display: flex;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 8px;
+  border-bottom: 1px solid var(--vscode-panel-border, rgba(128, 128, 128, 0.35));
+}
+
+.review-head h2 {
+  margin: 0;
+  font-size: 0.95em;
+  font-weight: 600;
+}
+
+.review-total {
+  color: var(--vscode-descriptionForeground);
+  font-family: var(--vscode-editor-font-family, monospace);
+  font-size: 0.85em;
+}
+
+.review-hint {
+  margin-left: auto;
+  color: var(--vscode-descriptionForeground);
+  font-size: 0.8em;
+  opacity: 0.8;
+}
+
+.review-files {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: auto;
+}
+
+.review-files .change-row {
+  width: 100%;
+}
+
+.review-files .change-row.active {
+  background: var(--vscode-list-activeSelectionBackground, rgba(128, 128, 128, 0.25));
+  color: var(--vscode-list-activeSelectionForeground, inherit);
 }

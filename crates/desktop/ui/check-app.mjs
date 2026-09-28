@@ -382,6 +382,51 @@ let projectRows = [
   },
 ];
 
+// What the bridge answers `change_sides` with: the two sides of one changed
+// file as the core aligns them — each line with the number it holds on the side
+// it sits on — or a refusal. The checks read what the view paints from an
+// answer, so every file the card below lists is given the answer its own check
+// needs, and one of them is a file the host can no longer read.
+const changeSides = new Map([
+  [
+    "src/agent.rs",
+    {
+      lines: [
+        { kind: "context", old: 1, new: 1, text: "fn main() {" },
+        { kind: "remove", old: 2, new: null, text: "    old();" },
+        { kind: "add", old: null, new: 2, text: "    new();" },
+      ],
+    },
+  ],
+  [
+    "src/tools.rs",
+    {
+      lines: [
+        { kind: "context", old: 1, new: 1, text: "use std::io;" },
+        { kind: "context", old: 2, new: 2, text: "use std::path;" },
+        { kind: "context", old: 3, new: 3, text: "use std::fs;" },
+        // Nine lines neither side touched: longer than the reach the review
+        // keeps, so the middle of the stretch folds behind its count.
+        ...[4, 5, 6, 7, 8, 9, 10, 11, 12].map((line) => ({
+          kind: "context",
+          old: line,
+          new: line,
+          text: `    step_${line}();`,
+        })),
+        { kind: "remove", old: 13, new: null, text: "    gone();" },
+        { kind: "add", old: null, new: 13, text: "    here();" },
+        { kind: "context", old: 14, new: 14, text: "}" },
+      ],
+    },
+  ],
+  ["assets/logo.png", { binary: true, omitted: false, lines: [] }],
+  ["notes.md", { binary: false, omitted: true, lines: [] }],
+  ["docs/guide.md", { binary: false, omitted: false, lines: [] }],
+]);
+const changeSidesError = new Map([
+  ["design.md", "the file is no longer in the snapshot"],
+]);
+
 const invoke = async (command, args = {}) => {
   calls.push([command, args]);
   switch (command) {
@@ -419,6 +464,11 @@ const invoke = async (command, args = {}) => {
         messages: [],
         usage: null,
       };
+    }
+    case "change_sides": {
+      const failure = changeSidesError.get(args.path);
+      if (failure) throw failure;
+      return changeSides.get(args.path) || { binary: false, omitted: false, lines: [] };
     }
     case "at_suggestions":
       if (atError) throw atError;
@@ -1673,6 +1723,8 @@ await emit("agent-end", {
       file("src/tools.rs", "modified", 3, 1, "-  4  4  gone\n+     4  here"),
       file("assets/logo.png", "modified", 0, 0, null, true),
       file("notes.md", "added", 1, 0),
+      file("docs/guide.md", "modified", 0, 0),
+      file("design.md", "modified", 2, 2),
     ],
   },
 });
@@ -1683,7 +1735,7 @@ const head = card.children[0];
 const list = card.children[1];
 check(
   "named the card after what it lists",
-  head.children[1].textContent === "Edited 4 files",
+  head.children[1].textContent === "Edited 6 files",
   head.children[1].textContent,
 );
 check(
@@ -1691,7 +1743,12 @@ check(
   head.children[2].innerHTML.includes("+12") && head.children[2].innerHTML.includes("−3"),
   head.children[2].innerHTML,
 );
-check("listed one row per changed file", list.children.length === 4, String(list.children.length));
+check("listed one row per changed file", list.children.length === 6, String(list.children.length));
+check(
+  "folded the rows past what the card shows behind their count",
+  card.children[2].hidden === false && card.children[2].textContent === "+1 more file",
+  card.children[2].textContent,
+);
 const changedRow = list.children[0];
 check(
   "badged the row with its status and counted its lines",
@@ -1722,48 +1779,107 @@ check(
 changedRow.onclick();
 check(
   "closed the diff again",
-  changedRow.diffPanel === null && list.children.length === 4,
+  changedRow.diffPanel === null && list.children.length === 6,
   String(list.children.length),
 );
 
-// The review is the card's own listing beside the selected file's diff.
+// The review is the card's own listing beside whichever file is selected, whose
+// two sides — what the run found, out of the project's shadow snapshot, and what
+// is on disk now — the host hands over one file at a time.
+const reviewTick = () => new Promise((resolve) => setTimeout(resolve, 0));
+const reviewParts = () => elementFor("review-diff").children;
+const reviewRows = () => reviewParts()[1]?.children || [];
+const splitCells = (row) => row.children.map((cell) => cell.textContent);
 head.children[4].children[0].onclick({ stopPropagation() {} });
 check("opened the review", elementFor("review-modal").hidden === false);
 check(
   "headed it with the card's own title and totals",
-  elementFor("review-title").textContent === "Edited 4 files" &&
+  elementFor("review-title").textContent === "Edited 6 files" &&
     elementFor("review-total").innerHTML.includes("+12"),
   `${elementFor("review-title").textContent} / ${elementFor("review-total").innerHTML}`,
 );
 check(
-  "listed every file the card lists",
-  elementFor("review-files").children.length === 4,
+  "listed every file the card lists, the rows its own listing folds included",
+  elementFor("review-files").children.length === 6,
   String(elementFor("review-files").children.length),
 );
 check(
-  "showed the first file's diff",
-  elementFor("review-diff").innerHTML.includes("src/agent.rs") &&
-    elementFor("review-diff").innerHTML.includes("dline add"),
-  elementFor("review-diff").innerHTML,
+  "named the file it was opened on",
+  reviewParts()[0].innerHTML.includes("src/agent.rs") &&
+    reviewParts()[0].innerHTML.includes("change-status modified"),
+  reviewParts()[0].innerHTML,
+);
+check(
+  "asked the host for that file's sides at the turn's own baseline",
+  calls.some(
+    ([name, args]) =>
+      name === "change_sides" &&
+      args.path === "src/agent.rs" &&
+      args.baseline === "9f1c0d2" &&
+      args.project === app.state.project,
+  ),
+  JSON.stringify(calls.at(-1)),
+);
+await reviewTick();
+check(
+  "painted both sides, each line with the number it holds there",
+  reviewRows().length === 3 &&
+    reviewRows()[0].className.includes("split-row context") &&
+    JSON.stringify(splitCells(reviewRows()[0])) ===
+      JSON.stringify(["1", "fn main() {", "1", "fn main() {"]),
+  JSON.stringify(reviewRows().map(splitCells)),
+);
+check(
+  "left the side a line is missing from empty",
+  reviewRows()[1].className.includes("remove") &&
+    JSON.stringify(splitCells(reviewRows()[1])) === JSON.stringify(["2", "    old();", "", ""]) &&
+    reviewRows()[2].className.includes("add") &&
+    JSON.stringify(splitCells(reviewRows()[2])) === JSON.stringify(["", "", "2", "    new();"]),
+  JSON.stringify(reviewRows().map(splitCells)),
 );
 elementFor("review-files").children[1].onclick();
+await reviewTick();
 check(
   "showed the file that was clicked",
-  elementFor("review-diff").innerHTML.includes("src/tools.rs"),
-  elementFor("review-diff").innerHTML,
+  reviewParts()[0].innerHTML.includes("src/tools.rs"),
+  reviewParts()[0].innerHTML,
+);
+check(
+  "read only the file it is showing",
+  calls.filter(([name, args]) => name === "change_sides" && args.path === "src/tools.rs").length ===
+    1,
+  JSON.stringify(calls.map(([name, args]) => [name, args.path])),
+);
+const gap = reviewRows().find((row) => row.classList.contains("unmodified"));
+check(
+  "folded the stretch neither side changed behind its count",
+  Boolean(gap) && gap.textContent === "6 unmodified lines",
+  gap ? gap.textContent : "no fold",
+);
+const folded = reviewRows().length;
+gap.onclick({ stopPropagation() {} });
+check(
+  "opened the folded stretch where it sits",
+  reviewRows().length > folded &&
+    !reviewRows().some((row) => row.classList.contains("unmodified")),
+  `${folded} -> ${reviewRows().length}`,
 );
 const reviewKey = (key) => elementFor("review-modal").onkeydown({ key, preventDefault() {} });
 reviewKey("ArrowDown");
+await reviewTick();
 check(
   "walked on with the arrow keys, naming a file with no text to show",
-  elementFor("review-diff").innerHTML.includes("Binary file"),
-  elementFor("review-diff").innerHTML,
+  reviewParts()[0].innerHTML.includes("assets/logo.png") &&
+    reviewParts()[1].textContent.includes("Binary file"),
+  reviewParts()[1].textContent,
 );
 reviewKey("ArrowDown");
+await reviewTick();
 check(
-  "showed the next file",
-  elementFor("review-diff").innerHTML.includes("notes.md"),
-  elementFor("review-diff").innerHTML,
+  "said a change too large to align is one rather than painting it",
+  reviewParts()[0].innerHTML.includes("notes.md") &&
+    reviewParts()[1].textContent.includes("too large"),
+  reviewParts()[1].textContent,
 );
 check(
   "marked the row the review is showing",
@@ -1771,12 +1887,28 @@ check(
     !elementFor("review-files").children[0].classList.contains("active"),
   String(elementFor("review-files").children[3].className),
 );
+reviewKey("ArrowDown");
+await reviewTick();
+check(
+  "said a file with nothing textual in it has nothing to paint",
+  reviewParts()[1].textContent.includes("No textual changes"),
+  reviewParts()[1].textContent,
+);
+reviewKey("ArrowDown");
+await reviewTick();
+check(
+  "reported a file it could not read instead of showing an empty one",
+  reviewParts()[1].textContent.includes("no longer in the snapshot"),
+  reviewParts()[1].textContent,
+);
 elementFor("review-files").children[0].onclick();
+await reviewTick();
 reviewKey("ArrowUp");
+await reviewTick();
 check(
   "wrapped around from the first file",
-  elementFor("review-diff").innerHTML.includes("notes.md"),
-  elementFor("review-diff").innerHTML,
+  reviewParts()[0].innerHTML.includes("design.md"),
+  reviewParts()[0].innerHTML,
 );
 
 // Undo puts the project back to the run's own baseline, which the payload

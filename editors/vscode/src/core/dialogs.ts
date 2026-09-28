@@ -51,7 +51,14 @@ export interface DialogRow {
 /// that opened it was typed.
 export type DialogPin = "header" | "footer";
 
+/// Which dialog is open. Carried rather than inferred from the pin and the rows,
+/// because the controller has to know what it is looking at: the session listing
+/// is painted again from a fresh read when a turn ends, and a confirmation must
+/// not be swapped for a listing the moment it appears.
+export type DialogKind = "mcp" | "sessions" | "delete";
+
 export interface DialogState {
+  kind: DialogKind;
   /// The edge it hangs from, painted by the renderer as the sheet's shape: the
   /// one it is attached to has no border, since that edge is the panel's own.
   pin: DialogPin;
@@ -118,6 +125,7 @@ const MCP_TONES: Record<string, DialogTone> = {
 /// so in place where a QuickPick would just vanish.
 export function mcpDialog(servers: readonly McpServerView[], note = ""): DialogState {
   return {
+    kind: "mcp",
     pin: "footer",
     title: "MCP servers",
     subtitle:
@@ -146,6 +154,17 @@ export function mcpDialog(servers: readonly McpServerView[], note = ""): DialogS
   };
 }
 
+/// The thread the panel has open, as the listing needs it when the store has no
+/// row (or no name) for it yet: a session file is written as its first turn
+/// runs, so the listing can be read before the row it belongs to exists.
+export interface LiveSession {
+  /// The thread's id, the one the `session` header reported.
+  id: string;
+  /// The title the header shows it under, empty for a thread with nothing said
+  /// in it yet.
+  label: string;
+}
+
 /// The session history: the threads stored for this project, newest first as the
 /// CLI lists them, with the thread the panel is showing marked and the two ways
 /// out of it — a fresh chat, and the newest thread this project has.
@@ -158,19 +177,31 @@ export function mcpDialog(servers: readonly McpServerView[], note = ""): DialogS
 /// every redraw of the listing has to carry it: a rebuild that left it out —
 /// after a failed delete, say — would drop the mark and turn the first row back
 /// into one that promises a fresh thread rather than closing the open one.
+///
+/// `live` is that same thread when the panel knows more about it than the store
+/// does — a run that has not been written yet, or a file whose thread is still
+/// unnamed. It stands in for itself: a row of its own ahead of the store's when
+/// there is no row there, and its title where the store's row has none.
 export function sessionDialog(
   sessions: readonly SessionEntry[],
   current: string | null,
   note = "",
+  live: LiveSession | null = null,
 ): DialogState {
+  const open = live && live.id === current ? live : null;
+  const file = open ? sessions.find((session) => session.id === open.id) : undefined;
+  const title = open?.label.trim() || "";
   return {
+    kind: "sessions",
     pin: "header",
     title: "Sessions",
     subtitle:
       "Threads stored for this project. Resuming one continues from its stored context, the way --continue does in the terminal.",
     note:
       note ||
-      (sessions.length ? "" : "No sessions for this project yet — the next message starts one."),
+      (sessions.length || open
+        ? ""
+        : "No sessions for this project yet — the next message starts one."),
     rows: [
       row(NEW_SESSION, "New chat", {
         // On a fresh page there is nothing to close, and saying otherwise would
@@ -182,14 +213,25 @@ export function sessionDialog(
         detail: "Pick up the newest session for this project",
         action: OPEN_SESSION,
       }),
+      ...(open && !file
+        ? [
+            row(open.id, title || open.id, {
+              detail: "Open in this panel — the store has no file for it yet",
+              status: "Current",
+              tone: "muted" as DialogTone,
+              action: OPEN_SESSION,
+            }),
+          ]
+        : []),
       ...sessions.map((session) => {
-        const open = session.id === current;
-        return row(session.id, session.label || session.id, {
+        const marked = session.id === current;
+        const name = session.label || (marked ? title : "") || session.id;
+        return row(session.id, name, {
           detail: `${session.messages} message${session.messages === 1 ? "" : "s"}`,
-          status: open ? "Current" : session.age,
+          status: marked ? "Current" : session.age,
           tone: "muted",
           action: OPEN_SESSION,
-          button: `Delete ${session.label || session.id}`,
+          button: `Delete ${name}`,
           buttonAction: SESSION_DELETE,
           icon: "trash",
         });
@@ -214,6 +256,7 @@ export function deleteSessionDialog(session: {
 }): DialogState {
   const label = session.label || session.id;
   return {
+    kind: "delete",
     pin: "header",
     title: "Delete thread",
     subtitle: `“${label}” and its stored conversation are removed from this project.`,

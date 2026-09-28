@@ -54,6 +54,9 @@ interface WebviewMessage {
   seq?: number;
   /// A change card's own field: which row of the listing was clicked.
   index?: number;
+  /// Whether that click came from a review walking the listing, which opens the
+  /// file in a preview tab beside the panel instead of a tab of its own.
+  review?: boolean;
 }
 
 export class ChatViewProvider implements vscode.WebviewViewProvider {
@@ -161,11 +164,11 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         await this.controller.dialogAction(message.action ?? "", message.value ?? "");
         return;
       case "openChangeDiff":
-        // A row of a turn's change card. VS Code's own diff editor is what draws
-        // it, against the baseline the run recorded, so the panel renders no
-        // diff format of its own.
+        // A row of a turn's change card, or one the review walked to. VS Code's
+        // own diff editor is what draws it, against the baseline the run
+        // recorded, so the panel renders no diff format of its own.
         if (typeof message.id === "number") {
-          await this.openChange(message.id, message.index ?? 0);
+          await this.openChange(message.id, message.index ?? 0, message.review === true);
         }
         return;
       case "openAllChanges":
@@ -189,7 +192,12 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
   /// right side is the file on disk — or an empty side for a file the run
   /// removed. With no row it is the whole turn, which VS Code draws as one
   /// multi-file diff whose rows are the listing the card just showed.
-  private async openChange(id: number, index?: number): Promise<void> {
+  ///
+  /// A review walks its listing with the arrows, so its files open in the same
+  /// preview tab, replaced as the reader walks on — one tab for the turn rather
+  /// than one per file — and without taking the keyboard, since the reader is
+  /// walking the listing in the panel.
+  private async openChange(id: number, index?: number, reviewed = false): Promise<void> {
     const card = this.controller.changeCard(id);
     if (!card) {
       this.controller.warn("That turn's changes are no longer in the transcript.");
@@ -210,7 +218,10 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     const plan = this.controller.changeTarget(id, index);
     if (!plan) return;
     const [, baseline, current] = this.changeUris(root, card.project, plan);
-    await vscode.commands.executeCommand("vscode.diff", baseline, current, plan.title);
+    await vscode.commands.executeCommand("vscode.diff", baseline, current, plan.title, {
+      preview: reviewed,
+      preserveFocus: reviewed,
+    });
   }
 
   /// What the diff editors want for one file, as the triple `vscode.changes`
@@ -328,7 +339,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       <span id="status" hidden></span>
       <span id="elapsed" hidden></span>
       <span class="spacer"></span>
-      <button id="stop" class="icon" hidden title="Stop the running turn (Esc)" aria-label="Stop">${ICONS.stop}</button>
+      <button id="stop" class="icon danger" hidden title="Stop the running turn (Esc)" aria-label="Stop">${ICONS.stop}</button>
       <button id="send" class="icon primary" disabled title="Send (Enter)" aria-label="Send">${ICONS.send}</button>
     </div>
     <div id="dropzone" hidden><span>Drop files to attach</span></div>
@@ -341,8 +352,21 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
 </footer>
 <div id="image-view" class="overlay image-overlay" hidden>
   <div class="image-frame">
+    <div class="image-head">
+      <button id="image-view-close" class="icon danger" title="Close (Esc)" aria-label="Close">✕</button>
+    </div>
     <img id="image-view-img" alt="Attachment preview">
-    <button id="image-view-close" class="ghost">Close</button>
+  </div>
+</div>
+<div id="review" class="overlay review-overlay" role="dialog" aria-labelledby="review-title" hidden>
+  <div class="review-sheet">
+    <div class="review-head">
+      <h2 id="review-title">Changes</h2>
+      <span id="review-total" class="review-total"></span>
+      <span class="review-hint">↑↓ walk the files · each opens in VS Code's diff editor</span>
+      <button id="review-close" class="icon" title="Close (Esc)" aria-label="Close">${ICONS.close}</button>
+    </div>
+    <div id="review-files" class="review-files" role="listbox" aria-label="Changed files"></div>
   </div>
 </div>
 <script nonce="${nonce}" src="${script}"></script>
