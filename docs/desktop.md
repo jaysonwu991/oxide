@@ -58,11 +58,23 @@ The window follows a Codex-style layout:
   theme, tool approvals, and help. The tree groups each project's sessions
   under it, and every project and session row carries a `✕` that removes it
   (see [Multiple projects](#multiple-projects-cross-repo)); hovering a session
-  shows its `⌘1`…`⌘9` shortcut. The **+ New** button in the Projects header
+  shows its `⌘1`…`⌘9` shortcut. The active project and the active thread both
+  carry the accent bar, so which one is on screen reads the same in either
+  list, and a thread is listed — under the summarized title of its first
+  message — as soon as its turn starts rather than once it ends. The **+ New**
+  button in the Projects header
   opens the **Create project** dialog: pick one or more source folders and the
   **Project name** defaults to the first folder's basename (still editable), so
   creating a project never requires typing a name.
-- **Top bar** — the current thread title and the active provider.
+- **Top bar** — the open thread's title: the same label its sidebar row shows,
+  and a running turn's own summarized title (sent with `agent-start`) before
+  the listing has it. A new task carries no placeholder, and the provider is
+  not repeated here because the composer's model chip already names it; the
+  right side says only what has to be acted on (`no API key`, `project
+  resources off`). The window is created with `acceptFirstMouse`, and the window
+  under the pointer is made key before a press is dispatched, so the first click
+  after the app loses focus is the click the user meant rather than one spent
+  focusing the window.
 - **Conversation** — a centered 760px column. User messages are right-aligned
   bubbles; assistant replies render Markdown and links open in the system
   browser (see [Rendering](#rendering)). Tool calls are compact cards
@@ -70,7 +82,9 @@ The window follows a Codex-style layout:
   diffs and errors and can be clicked open/closed. `write`/`edit` results get a
   colored diff.
 - **Composer** — a floating rounded box with the attach, model, and reasoning
-  chips on the left and the send/stop controls on the right; the status and
+  chips on the left and one action on the right, which swaps rather than
+  sitting beside a second button: **Stop** while a turn runs and there is
+  nothing to say, **Send**/**Steer** the moment there is. The status and
   token/cost usage sit just below it. The 📎 button (or a pasted clipboard
   image) attaches images/PDFs, shown above the input as thumbnails that open a
   full preview when clicked (or focused and opened with Enter/Space) and can be

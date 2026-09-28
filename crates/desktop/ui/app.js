@@ -23,6 +23,9 @@ const state = {
   sessions: [],
   busy: false,
   runId: null,
+  // What the running turn titled itself: the header names the thread by this
+  // until the sidebar's own listing carries it.
+  runTitle: "",
   reasoning: "auto",
   contextWindow: 0,
   providers: [],
@@ -95,7 +98,26 @@ function setUsage({
 }
 
 function setThreadTitle(text) {
-  el("thread-title").textContent = text || "New task";
+  el("thread-title").textContent = text || "";
+}
+
+/// The label a thread is known by, held once: the sidebar row, the header and
+/// the sessions list all name the open thread the same way.
+function sessionLabel(session) {
+  return session.name || session.preview || session.id.slice(0, 8);
+}
+
+function sessionById(id) {
+  if (!id) return null;
+  return (state.sessions || []).find((session) => session.id === id) || null;
+}
+
+/// The header names the thread on screen — the one that was resumed, or the one
+/// this window started — by what the sidebar's own listing calls it, so the two
+/// never disagree; until that listing has it, the run's own title does.
+function refreshThreadTitle() {
+  const session = sessionById(state.session);
+  setThreadTitle(session ? sessionLabel(session) : state.runTitle);
 }
 
 // ---------- markdown ----------
@@ -531,15 +553,22 @@ async function loadInfo() {
   } catch (error) {
     if (project !== state.project) return;
     el("project-meta").textContent = String(error);
+    el("project-meta").hidden = false;
   }
 }
 
+/// The model the composer's own chip names, and the little the header adds: the
+/// provider is already that chip, so only what the user has to act on — a
+/// missing key, project resources left off — is written beside the title.
 function renderProjectMeta(info) {
-  const off =
-    info.trust && info.trust.required && !info.trust.trusted ? " · project resources off" : "";
   el("model").textContent = info.model;
-  el("project-meta").textContent =
-    info.provider + (info.hasKey ? "" : " · no API key") + off;
+  const notes = [];
+  if (!info.hasKey) notes.push("no API key");
+  if (info.trust && info.trust.required && !info.trust.trusted) {
+    notes.push("project resources off");
+  }
+  el("project-meta").textContent = notes.join(" · ");
+  el("project-meta").hidden = notes.length === 0;
 }
 
 function updateTrustButton() {
@@ -597,6 +626,7 @@ async function loadSessions() {
   try {
     state.sessions = await invoke("all_sessions");
     renderProjectsTree();
+    refreshThreadTitle();
     return "";
   } catch (error) {
     setStatus(`Failed to load threads: ${error}`);
@@ -606,13 +636,14 @@ async function loadSessions() {
 
 async function openSession(session) {
   state.session = session.id;
+  state.runTitle = "";
   try {
     const data = await invoke("session_messages", { project: state.project, id: session.id });
     const transcript = el("transcript");
     transcript.innerHTML = "";
     renderStoredTranscript(transcript, data.messages);
     scrollDown();
-    setThreadTitle(session.name || session.preview || session.id.slice(0, 8));
+    setThreadTitle(sessionLabel(session));
     if (data.usage) {
       setUsage({
         input: data.usage.input,
@@ -630,11 +661,12 @@ async function openSession(session) {
 
 function resetTranscript() {
   state.session = null;
+  state.runTitle = "";
   state.changes = [];
   closeReview();
   el("transcript").innerHTML = "";
   el("usage").textContent = "";
-  setThreadTitle("New task");
+  setThreadTitle("");
   renderWelcome();
 }
 
@@ -696,24 +728,28 @@ function resetTurn() {
   closeQuestion();
 }
 
+/// The composer's one action: while a turn runs the corner holds Stop, and the
+/// moment there is something to say it holds Send/Steer instead. Showing both
+/// reads as two ways to do the same thing, and invites a click on the one that
+/// does nothing.
 function updateSendState() {
   const hasText =
     el("prompt").value.trim().length > 0 || state.attachments.length > 0;
   el("send").classList.toggle("enabled", hasText);
   el("send").disabled = !hasText;
+  el("send").hidden = state.busy && !hasText;
+  el("stop").hidden = !state.busy || hasText;
+  el("send").title = state.busy ? "Steer (Enter)" : "Send (Enter)";
 }
 
 function setBusy() {
   state.busy = true;
-  el("stop").hidden = false;
-  el("send").title = "Steer (Enter)";
+  updateSendState();
 }
 
 function setIdle() {
   state.busy = false;
   state.runId = null;
-  el("stop").hidden = true;
-  el("send").title = "Send (Enter)";
   updateSendState();
 }
 
@@ -1114,6 +1150,7 @@ function createToolCard(name, args) {
   const tool = {
     name,
     block,
+    head,
     pre,
     hint,
     tstate,
@@ -1124,7 +1161,18 @@ function createToolCard(name, args) {
     started: performance.now(),
     timer: null,
   };
-  head.onclick = () => toggleTool(tool);
+  // The hint is the card's own "click to expand": a reader who clicks it is
+  // asking for the output the card folded away, so it toggles the card exactly
+  // as the head row does. Both take Enter or Space the way a button does, so
+  // the fold is not a mouse-only gesture.
+  for (const toggle of [head, hint]) {
+    toggle.onclick = () => toggleTool(tool);
+    toggle.onkeydown = (event) => {
+      if (event.key !== "Enter" && event.key !== " ") return;
+      event.preventDefault();
+      toggleTool(tool);
+    };
+  }
   block.append(head, pre, hint);
   return tool;
 }
@@ -1208,12 +1256,14 @@ function paintTool(tool) {
     tool.pre.textContent = tool.full;
     tool.hint.hidden = true;
     tool.block.classList.add("expanded");
+    markToolToggle(tool, true);
     return;
   }
   tool.block.classList.remove("expanded");
   if (tool.inline) {
     tool.pre.hidden = true;
     tool.hint.hidden = true;
+    markToolToggle(tool, true);
     return;
   }
   tool.pre.hidden = false;
@@ -1221,6 +1271,20 @@ function paintTool(tool) {
   tool.pre.textContent = text;
   tool.hint.hidden = more === 0;
   tool.hint.textContent = `⋯ ${more} more line${more === 1 ? "" : "s"} · click to expand`;
+  markToolToggle(tool, more > 0);
+}
+
+/// A card's two handles are buttons only while it has output to fold: once
+/// marked, they are reachable with Tab and toggle with Enter or Space, and a
+/// card that shows everything it has stays the text it looks like. A card can
+/// only gain output to fold, so the marks are never taken back.
+function markToolToggle(tool, expandable) {
+  for (const toggle of [tool.head, tool.hint]) {
+    toggle.tabIndex = expandable ? 0 : -1;
+    if (!expandable) continue;
+    toggle.setAttribute("role", "button");
+    toggle.setAttribute("aria-expanded", tool.expanded ? "true" : "false");
+  }
 }
 
 function toggleTool(tool) {
@@ -2789,11 +2853,17 @@ function cycleReasoning() {
 }
 
 async function initEvents() {
-  await listen("agent-start", (event) => {
+  await listen("agent-start", async (event) => {
     const payload = event.payload || {};
     if (payload.runId != null) state.runId = payload.runId;
-    if (payload.sessionId) state.session = payload.sessionId;
+    state.session = payload.sessionId || null;
+    // A turn titles its thread the moment it starts, so the header names it now
+    // and the sidebar lists it — with the same label — without waiting for the
+    // turn to end. The session is on disk from here, so the listing has it.
+    state.runTitle = payload.title || "";
     resetTurn();
+    refreshThreadTitle();
+    await loadSessions();
   });
   await listen("agent-event", (event) => handleEvent(event.payload || {}));
   await listen("agent-end", async (event) => {
@@ -3298,7 +3368,7 @@ async function renderProjectsTree() {
       const sessionItem = document.createElement("div");
       sessionItem.className = "session-item" + (session.id === state.session ? " active" : "");
 
-      const label = session.name || session.preview || session.id.slice(0, 8);
+      const label = sessionLabel(session);
       const sessionName = document.createElement("div");
       sessionName.className = "name";
       sessionName.textContent = label;

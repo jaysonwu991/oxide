@@ -362,6 +362,14 @@ const invoke = async (command, args = {}) => {
     case "all_sessions":
       if (threadsError) throw threadsError;
       return threads.map((session) => ({ ...session }));
+    case "session_messages": {
+      const target = (threads || []).find((session) => session.id === args.id);
+      return {
+        header: { id: args.id, name: target?.name || null },
+        messages: [],
+        usage: null,
+      };
+    }
     case "at_suggestions":
       if (atError) throw atError;
       if (!String(args.project || "").trim()) throw "select a project first";
@@ -447,6 +455,7 @@ vm.runInThisContext(
     " addAttachment, addAttachmentFiles, el, showQuestion, showQuestionStep, questionNext," +
     " answerQuestion, collectAnswers, requestAt, acceptAt, moveAt, closeAt, atKey," +
     " resetTranscript, renderChanges, closeReview, undoChanges," +
+    " loadSessions, openSession, renderProjectMeta, updateSendState, setBusy, setIdle," +
     " startTool, finishTool, toggleTool };\n",
 );
 
@@ -1343,6 +1352,13 @@ check(
   editCard.diffEl.hidden === true && editCard.pre.hidden === true,
   `diff hidden: ${editCard.diffEl.hidden}, body hidden: ${editCard.pre.hidden}`,
 );
+// Its diff is what it folds, so it is a fold even though no lines were held
+// back: the two handles are buttons a keyboard can reach.
+check(
+  "made the diff card a fold a keyboard can work",
+  editCard.head.tabIndex === 0 && editCard.hint.tabIndex === 0,
+  `head tabIndex: ${editCard.head.tabIndex}, hint tabIndex: ${editCard.hint.tabIndex}`,
+);
 // A card for a call that changed no file is not the one-line form: it keeps the
 // preview of what it printed, so the treatment above is only for a diff.
 const plainCard = app.startTool("bash", JSON.stringify({ command: "cargo test" }));
@@ -1356,6 +1372,64 @@ check(
   `body hidden: ${plainCard.pre.hidden}, diff: ${Boolean(plainCard.diffEl)}, hint hidden: ${
     plainCard.hint.hidden
   }, state: ${plainCard.tstate.textContent}`,
+);
+check(
+  "cut the preview to the first lines with the rest behind the hint",
+  plainCard.pre.textContent === "ok\nline two\nline three" &&
+    plainCard.hint.textContent === "⋯ 1 more line · click to expand",
+  JSON.stringify([plainCard.pre.textContent, plainCard.hint.textContent]),
+);
+// The hint reads "click to expand", so that click is the one a reader makes:
+// it has to be the card's other handle on the output, not a label that ignores
+// the pointer over it.
+plainCard.hint.onclick?.();
+check(
+  "expanded the output from the hint that offers it",
+  plainCard.pre.hidden === false &&
+    plainCard.hint.hidden === true &&
+    plainCard.pre.textContent.includes("line four") &&
+    String(plainCard.block.className).includes("expanded"),
+  `body: ${JSON.stringify(plainCard.pre.textContent)}, hint hidden: ${plainCard.hint.hidden}`,
+);
+plainCard.hint.onclick?.();
+check(
+  "folded it away again from the same hint",
+  plainCard.hint.hidden === false &&
+    !plainCard.pre.textContent.includes("line four") &&
+    !String(plainCard.block.className).includes("expanded"),
+  `hint hidden: ${plainCard.hint.hidden}, body: ${JSON.stringify(plainCard.pre.textContent)}`,
+);
+// "Click to expand" is one way in, not the only one: the card is a fold, so
+// both of its handles take Enter and Space, and a key the card does not own is
+// left to whatever else is listening.
+plainCard.hint.onkeydown?.({ key: "Enter", preventDefault() {} });
+check(
+  "expanded the output with Enter on the hint",
+  plainCard.pre.textContent.includes("line four") &&
+    plainCard.hint.tabIndex === 0 &&
+    String(plainCard.block.className).includes("expanded"),
+  `body: ${JSON.stringify(plainCard.pre.textContent)}, tabIndex: ${plainCard.hint.tabIndex}`,
+);
+plainCard.head.onkeydown?.({ key: " ", preventDefault() {} });
+check(
+  "folded it away again with Space on the head row",
+  plainCard.hint.hidden === false &&
+    !String(plainCard.block.className).includes("expanded"),
+  `hint hidden: ${plainCard.hint.hidden}`,
+);
+let cardPrevented = false;
+plainCard.head.onkeydown?.({ key: "a", preventDefault: () => (cardPrevented = true) });
+check(
+  "left a key the card does not own alone",
+  !cardPrevented && plainCard.hint.hidden === false,
+  `prevented: ${cardPrevented}, hint hidden: ${plainCard.hint.hidden}`,
+);
+const shortCard = app.startTool("bash", JSON.stringify({ command: "true" }));
+app.finishTool(shortCard, "one line\n", { elapsed: 4 });
+check(
+  "left a card with nothing behind it as text, not a button",
+  shortCard.hint.tabIndex === -1 && shortCard.head.tabIndex === -1,
+  `hint tabIndex: ${shortCard.hint.tabIndex}, head tabIndex: ${shortCard.head.tabIndex}`,
 );
 
 // ---------- a finished turn's changes ----------
@@ -1756,6 +1830,167 @@ if (catalogSkipped) {
     app.state.runId = null;
   }
 }
+
+// ---------- the thread on screen has a name ----------
+
+console.log("thread title");
+// The shell ships the header empty: a thread has no title until a turn has one,
+// and "New task" was a name the sidebar never used for it.
+check(
+  "shipped the header with no placeholder title",
+  /id="thread-title"[^>]*>\s*<\/div>/.test(shell),
+  shell.slice(Math.max(0, shellAt('id="thread-title"') - 60), shellAt('id="thread-title"') + 60),
+);
+
+// The provider is the composer's own chip, so the header carries only what the
+// user has to act on.
+app.renderProjectMeta({
+  model: "deepseek-flash",
+  provider: "deepseek",
+  hasKey: true,
+  trust: null,
+});
+check(
+  "left the provider out of the header",
+  elementFor("project-meta").textContent === "" && elementFor("project-meta").hidden === true,
+  elementFor("project-meta").textContent,
+);
+check(
+  "kept the model on the composer's chip",
+  elementFor("model").textContent === "deepseek-flash",
+  elementFor("model").textContent,
+);
+app.renderProjectMeta({
+  model: "deepseek-flash",
+  provider: "deepseek",
+  hasKey: false,
+  trust: { required: true, trusted: false },
+});
+check(
+  "named what the user has to fix instead",
+  elementFor("project-meta").textContent === "no API key · project resources off" &&
+    elementFor("project-meta").hidden === false,
+  elementFor("project-meta").textContent,
+);
+
+// A turn titles its thread while it runs: the sidebar lists it then, and the
+// header names it by the label that row shows.
+threadsError = null;
+app.resetTranscript();
+check(
+  "left a new task without a title",
+  elementFor("thread-title").textContent === "",
+  elementFor("thread-title").textContent,
+);
+const running = {
+  id: "bb22cc33",
+  name: null,
+  // The project the app has open, since the sidebar groups a thread under it.
+  cwd: (app.state.projects[0] || projectRows[0]).path,
+  created_at: 2,
+  modified_at: Math.floor(Date.now() / 1000),
+  message_count: 1,
+  preview: "rename the update command",
+};
+threads = [running, ...existing];
+await emit("agent-start", {
+  runId: 41,
+  sessionId: running.id,
+  title: "rename the update command",
+});
+check(
+  "listed the running thread in the sidebar",
+  elementFor("projects-tree").outline().includes("rename the update command"),
+  elementFor("projects-tree").outline(),
+);
+check(
+  "named the header after the same label the sidebar row shows",
+  elementFor("thread-title").textContent === "rename the update command",
+  elementFor("thread-title").textContent,
+);
+check(
+  "took the session the turn is writing to",
+  app.state.session === running.id,
+  String(app.state.session),
+);
+
+// A thread the user named is listed under that name in both places, and a
+// resumed thread is named from the row that was opened.
+threads = [{ ...running, name: "Rename oxide update" }, ...existing];
+await app.loadSessions();
+check(
+  "named a renamed thread the same way in both places",
+  elementFor("thread-title").textContent === "Rename oxide update",
+  elementFor("thread-title").textContent,
+);
+await app.openSession(existing[0]);
+await new Promise((resolve) => setTimeout(resolve, 0));
+check(
+  "named a resumed thread the way its sidebar row does",
+  elementFor("thread-title").textContent === "Fix the flaky test",
+  elementFor("thread-title").textContent,
+);
+
+// A thread with nothing to be named after — no stored name, and a first message
+// the title rules make no prose of — is listed under its id, so the header says
+// the same thing rather than going blank the moment the listing arrives.
+const untitled = { ...running, id: "0f1e2d3c", name: null, preview: "" };
+threads = [untitled, ...existing];
+await app.loadSessions();
+await app.openSession(untitled);
+await new Promise((resolve) => setTimeout(resolve, 0));
+check(
+  "named a thread the sidebar calls by its id the same way",
+  elementFor("thread-title").textContent === "0f1e2d3c" &&
+    elementFor("projects-tree").outline().includes("0f1e2d3c"),
+  `${elementFor("thread-title").textContent} / ${elementFor("projects-tree").outline()}`,
+);
+
+// ---------- one action in the composer's corner ----------
+
+console.log("composer action");
+// Stop and Send/Steer are one button that swaps: Stop while a turn runs with
+// nothing to say, Steer the moment there is something to send.
+app.state.attachments = [];
+app.setIdle();
+elementFor("prompt").value = "";
+app.updateSendState();
+check(
+  "offered Send with nothing typed",
+  elementFor("send").hidden === false && elementFor("stop").hidden === true,
+  `send ${elementFor("send").hidden} / stop ${elementFor("stop").hidden}`,
+);
+app.setBusy();
+check(
+  "offered Stop alone while a turn runs with an empty box",
+  elementFor("stop").hidden === false && elementFor("send").hidden === true,
+  `send ${elementFor("send").hidden} / stop ${elementFor("stop").hidden}`,
+);
+elementFor("prompt").value = "keep going";
+app.updateSendState();
+check(
+  "swapped in Steer once there was something to say",
+  elementFor("send").hidden === false &&
+    elementFor("send").disabled === false &&
+    elementFor("stop").hidden === true &&
+    elementFor("send").title === "Steer (Enter)",
+  `${elementFor("send").title} / send ${elementFor("send").hidden} / stop ${elementFor("stop").hidden}`,
+);
+elementFor("prompt").value = "";
+app.updateSendState();
+check(
+  "went back to Stop when the box was emptied again",
+  elementFor("stop").hidden === false && elementFor("send").hidden === true,
+  `send ${elementFor("send").hidden} / stop ${elementFor("stop").hidden}`,
+);
+app.setIdle();
+check(
+  "gave Send back, alone, when the turn ended",
+  elementFor("send").hidden === false &&
+    elementFor("stop").hidden === true &&
+    elementFor("send").title === "Send (Enter)",
+  `${elementFor("send").title} / stop ${elementFor("stop").hidden}`,
+);
 
 console.log(failures.length ? `\n${failures.length} failed` : "\nall checks passed");
 process.exit(failures.length ? 1 : 0);

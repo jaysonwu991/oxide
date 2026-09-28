@@ -19,6 +19,10 @@ use tokio::task::JoinHandle;
 /// front-end can abort it, and the steering queues so it can be nudged mid-run.
 pub struct Turn {
     pub session_id: Option<String>,
+    /// The thread's summarized title, by the same rules the session store lists
+    /// it under ([`oxide_core::title`]), so a front-end can name the running
+    /// thread before the turn ends rather than only in the listing after it.
+    pub title: String,
     pub events: UnboundedReceiver<AgentEvent>,
     pub handle: JoinHandle<()>,
     pub steering: Steering,
@@ -56,6 +60,7 @@ pub async fn start_turn(
     let subtask = resolved.subtask;
 
     let ephemeral = config.ephemeral;
+    let title = oxide_core::title::summarize(&prompt, oxide_core::title::TITLE_LIMIT);
     let (history, log) = runner::begin_session(project, session, ephemeral, &prompt, &[], &inline)?;
     let session_id = log.as_ref().map(|entry| entry.id().to_string());
 
@@ -80,6 +85,7 @@ pub async fn start_turn(
     let handle = runner::spawn_agent(run, tx).await;
     Ok(Turn {
         session_id,
+        title,
         events: rx,
         handle,
         steering,
