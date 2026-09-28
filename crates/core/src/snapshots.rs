@@ -232,6 +232,39 @@ impl Snapshots {
         self.git_bytes(&["show", &format!("{revision}:{path}")])
     }
 
+    /// The same read, with a path the revision does not hold answering `None`
+    /// rather than an error: a file the run added is not in its baseline at all,
+    /// and that is the one side that reads as empty. A revision the repo no
+    /// longer has — a shadow repo that was pruned, a card from another project —
+    /// is still an error, so a front-end can tell an absent side from one it
+    /// could not read instead of painting both as an empty file.
+    pub fn content_at_opt(&self, revision: &str, path: &str) -> Result<Option<Vec<u8>>> {
+        let err = match self.content_at(revision, path) {
+            Ok(bytes) => return Ok(Some(bytes)),
+            Err(err) => err,
+        };
+        // `git show` fails the same way for a path the revision does not hold
+        // and for a revision that is not there, so the revision is asked about
+        // on its own before the path is read as absent.
+        if self.has_revision(revision) {
+            Ok(None)
+        } else {
+            Err(err)
+        }
+    }
+
+    /// Whether the shadow repo has this revision as a commit — what tells a path
+    /// that is missing from a baseline apart from a baseline that is missing.
+    fn has_revision(&self, revision: &str) -> bool {
+        self.git(&[
+            "rev-parse",
+            "--verify",
+            "--quiet",
+            &format!("{revision}^{{commit}}"),
+        ])
+        .is_ok()
+    }
+
     /// Puts the work tree back to `base`, discarding everything a run wrote
     /// since it. Untracked files that were never staged are left alone, so a
     /// front-end can offer this as the inverse of a listed change without it
@@ -522,6 +555,37 @@ mod tests {
         assert!(!work.join("new.txt").exists());
         assert!(!work.join("logo.bin").exists());
         assert!(snapshots.changes_since(&base).unwrap().is_empty());
+
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn an_absent_side_is_none_and_a_missing_revision_is_an_error() {
+        let root = std::env::temp_dir().join(format!("oxide_snap_opt_{}", std::process::id()));
+        std::fs::remove_dir_all(&root).ok();
+        let work = root.join("work");
+        std::fs::create_dir_all(&work).unwrap();
+
+        let snapshots = Snapshots {
+            git_dir: root.join("shadow"),
+            work_tree: work.clone(),
+        };
+        snapshots.ensure_repo().unwrap();
+
+        std::fs::write(work.join("a.txt"), "one\n").unwrap();
+        let base = snapshots.mark().unwrap();
+
+        assert_eq!(
+            snapshots.content_at_opt(&base, "a.txt").unwrap(),
+            Some(b"one\n".to_vec())
+        );
+        // The file the run added is not in the baseline at all, which is the one
+        // absence that reads as an empty side.
+        std::fs::write(work.join("b.txt"), "new\n").unwrap();
+        assert_eq!(snapshots.content_at_opt(&base, "b.txt").unwrap(), None);
+        // A baseline the repo does not have is not an absent file: the caller is
+        // told rather than handed an empty side to paint.
+        assert!(snapshots.content_at_opt("0000000", "a.txt").is_err());
 
         std::fs::remove_dir_all(&root).ok();
     }

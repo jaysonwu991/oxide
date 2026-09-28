@@ -328,10 +328,16 @@ card at all.
 totals; each row carries the `A`/`M`/`D` badge, the path and its own counts. Five
 rows are shown with a `+N more files` button for the rest, and the header's
 caret collapses the card.
-- **Review** — opens the turn over the whole window: its files on the left, the
-selected file's diff on the right, built from the same `oxide_core::diff`
-preview the tool cards use, so there is no second diff format. The arrow keys
-walk the files and <kbd>Esc</kbd> closes it.
+- **Review** — opens the turn over the whole window: its files on the left, and
+on the right the selected file's two sides — the state the run found, read out
+of the snapshot at the card's own baseline, against what is on disk now, aligned
+by `oxide_core::diff::lines` with the number each line holds on the side it sits
+on and long unchanged stretches folded behind their count. A file that is not
+text on either side reads as **Binary file — no text diff.**, the same verdict
+the card's row carries (a NUL makes a file binary even when its bytes are valid
+UTF-8), a side that is not there reads as empty, and one that could not be read
+is reported as a failure rather than as an unchanged file. The arrow keys walk
+the files and <kbd>Esc</kbd> closes it.
 - **Undo** — asks to confirm and then calls `undo_turn(project, baseline)`,
 which puts the project back to the run's own baseline
 (`oxide_core::snapshots::Snapshots::restore`): files the run created are

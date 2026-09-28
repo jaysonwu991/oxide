@@ -2,10 +2,12 @@
 
 use crate::approval::ApprovalBroker;
 use crate::ask::AskBroker;
+use anyhow::Context;
 use oxide_core::agent::{AgentEvent, Cancel, Steering};
 use oxide_core::auth::{self, AuthStore};
 use oxide_core::cli::{event_json, session_header};
 use oxide_core::config::Config;
+use oxide_core::diff::{Diff, LineKind};
 use oxide_core::llm::LlmClient;
 use oxide_core::llm::Message;
 use oxide_core::llm::{ContentPart, MessageContent};
@@ -658,6 +660,95 @@ fn restore_turn(snapshots: &Snapshots, baseline: &str, after: Option<&str>) -> a
     snapshots.restore(baseline)
 }
 
+/// The two sides of one changed file at the baseline a card carries: what the run
+/// found — read out of the project's shadow snapshot, since that state is nowhere
+/// on disk — and what is on the disk now, as the aligned lines the review paints.
+/// A card's rows carry the compact preview instead, so listing what a turn
+/// touched never carries every file's whole diff; the review asks for the one file
+/// it is showing.
+#[tauri::command]
+pub async fn change_sides(project: String, baseline: String, path: String) -> CmdResult<Value> {
+    let root = PathBuf::from(project);
+    tokio::task::spawn_blocking(move || -> anyhow::Result<Value> {
+        let snapshots = Snapshots::open(&root)?;
+        read_sides(&snapshots, &root, &baseline, &path)
+    })
+    .await
+    .map_err(err)?
+    .map_err(err)
+}
+
+/// Both sides of one file: what the baseline recorded, read out of the snapshot
+/// repo, and what is on the disk now. A side that is not there — a file the run
+/// added or deleted — reads as empty; a side that is not text makes the whole
+/// file binary, which is the one answer that cannot be painted line by line. A
+/// side that could not be read at all is an error rather than an empty one, so a
+/// baseline the snapshot no longer holds is reported instead of the review
+/// painting an unchanged file.
+fn read_sides(
+    snapshots: &Snapshots,
+    work_tree: &Path,
+    baseline: &str,
+    path: &str,
+) -> anyhow::Result<Value> {
+    let old = snapshots
+        .content_at_opt(baseline, path)
+        .with_context(|| format!("reading {path} as the baseline recorded it"))?;
+    let new = match std::fs::read(work_tree.join(path)) {
+        Ok(bytes) => Some(bytes),
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => None,
+        Err(err) => return Err(err).with_context(|| format!("reading {path}")),
+    };
+    let (Some(old), Some(new)) = (side_text(old), side_text(new)) else {
+        return Ok(json!({ "binary": true, "omitted": false, "lines": [] }));
+    };
+    Ok(review_sides(&old, &new))
+}
+
+/// One side as text, or `None` for one that cannot be painted line by line:
+/// bytes that are not UTF-8, or that hold a NUL — the same reading
+/// [`changes::file_change`](oxide_core::changes::file_change) takes, so a file a
+/// card's row calls binary is not diffed here as text. An absent side (`None`) is
+/// empty text, so an added file reads as all additions and a deleted one as all
+/// removals.
+fn side_text(side: Option<Vec<u8>>) -> Option<String> {
+    let bytes = match side {
+        None => return Some(String::new()),
+        Some(bytes) => bytes,
+    };
+    if oxide_core::changes::is_binary(&bytes) {
+        return None;
+    }
+    String::from_utf8(bytes).ok()
+}
+
+/// The shape the window paints a review's diff from: one entry per aligned line,
+/// each naming the number it holds on each side (the side it is missing from
+/// carries none), or why there is nothing to paint.
+fn review_sides(old: &str, new: &str) -> Value {
+    match oxide_core::diff::lines(old, new) {
+        Diff::Same => json!({ "binary": false, "omitted": false, "lines": [] }),
+        Diff::Omitted { .. } => json!({ "binary": false, "omitted": true, "lines": [] }),
+        Diff::Lines(lines) => json!({
+            "binary": false,
+            "omitted": false,
+            "lines": lines
+                .iter()
+                .map(|line| json!({
+                    "kind": match line.kind {
+                        LineKind::Context => "context",
+                        LineKind::Add => "add",
+                        LineKind::Remove => "remove",
+                    },
+                    "old": line.old,
+                    "new": line.new,
+                    "text": line.text,
+                }))
+                .collect::<Vec<_>>(),
+        }),
+    }
+}
+
 /// Asks a running turn to stop. The loop finishes the in-flight step (so the
 /// session stays a valid call/result sequence) and then ends; if it is still
 /// running after a grace period it is force-aborted.
@@ -964,6 +1055,61 @@ mod tests {
             std::fs::read_to_string(work.join("a.txt")).unwrap(),
             "one\n"
         );
+
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn the_review_reads_both_sides_out_of_the_snapshot() {
+        let root = std::env::temp_dir().join(format!("oxide_sides_{}", std::process::id()));
+        std::fs::remove_dir_all(&root).ok();
+        let work = root.join("work");
+        std::fs::create_dir_all(&work).unwrap();
+        let snapshots = Snapshots::at(root.join("shadow"), work.clone()).unwrap();
+
+        std::fs::write(work.join("a.txt"), "one\ntwo\n").unwrap();
+        // A file git calls binary — valid UTF-8, with a NUL in it — so the side
+        // the review reads has to be refused lines the same way the row is.
+        std::fs::write(work.join("nul.txt"), "a\u{0}b\n").unwrap();
+        let baseline = snapshots.mark().unwrap();
+        std::fs::write(work.join("a.txt"), "one\nthree\n").unwrap();
+        std::fs::write(work.join("nul.txt"), "a\u{0}c\n").unwrap();
+        // A file the run added has nothing behind it, and one that is not text
+        // has nothing to align either.
+        std::fs::write(work.join("b.txt"), "new\n").unwrap();
+        std::fs::write(work.join("png"), [0x89, 0xff, 0xfe, 0x00]).unwrap();
+
+        let changed = read_sides(&snapshots, &work, &baseline, "a.txt").unwrap();
+        let kinds: Vec<&str> = changed["lines"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|line| line["kind"].as_str().unwrap())
+            .collect();
+        assert_eq!(kinds, ["context", "remove", "add"]);
+        // The side a line is missing from carries no number, and the numbers
+        // come from the side it sits on.
+        assert_eq!(changed["lines"][1]["old"], json!(2));
+        assert_eq!(changed["lines"][1]["new"], Value::Null);
+        assert_eq!(changed["lines"][2]["text"], json!("three"));
+
+        let added = read_sides(&snapshots, &work, &baseline, "b.txt").unwrap();
+        assert_eq!(added["lines"][0]["kind"], json!("add"));
+        assert_eq!(added["lines"][0]["old"], Value::Null);
+        assert_eq!(added["lines"][0]["new"], json!(1));
+
+        let binary = read_sides(&snapshots, &work, &baseline, "png").unwrap();
+        assert_eq!(binary["binary"], json!(true));
+        assert!(binary["lines"].as_array().unwrap().is_empty());
+        assert_eq!(
+            read_sides(&snapshots, &work, &baseline, "nul.txt").unwrap()["binary"],
+            json!(true)
+        );
+
+        // A baseline the snapshot no longer holds is reported rather than read
+        // as a file with nothing on either side.
+        let gone = read_sides(&snapshots, &work, "0000000", "a.txt").unwrap_err();
+        assert!(gone.to_string().contains("reading a.txt"), "{gone}");
 
         std::fs::remove_dir_all(&root).ok();
     }

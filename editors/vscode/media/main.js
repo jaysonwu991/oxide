@@ -43,6 +43,11 @@
   const imageView = $("image-view");
   const imageViewImage = $("image-view-img");
   const imageViewClose = $("image-view-close");
+  const reviewBox = $("review");
+  const reviewTitle = $("review-title");
+  const reviewTotal = $("review-total");
+  const reviewFiles = $("review-files");
+  const reviewClose = $("review-close");
 
   const entries = new Map();
   let chips = [];
@@ -57,6 +62,10 @@
   let elapsedTimer = 0;
   let dirty = new Set();
   let frame = 0;
+  /// The change card a review is open on and the file it is showing. The listing
+  /// is the card's own, so a review never disagrees with the rows behind it.
+  let reviewItem = null;
+  let reviewIndex = 0;
 
   // ---------- helpers ----------
 
@@ -493,18 +502,28 @@
     return { text: split.slice(split.length - lines).join("\n"), more: split.length - lines };
   }
 
-  function renderDiff(target, diff) {
-    const body = String(diff || "")
+  /// What a preview line's own marker means: an addition, a removal, a hunk
+  /// header, or context. The CLI renders one file's preview as
+  /// `+/-/  <old> <new>  <text>`, so the marker is the first character.
+  function diffClass(line) {
+    if (line.startsWith("@@")) return "hunk";
+    if (line.startsWith("+")) return "add";
+    if (line.startsWith("-")) return "del";
+    return "";
+  }
+
+  /// One file's preview as the lines of a `.diff` block, which is what the tool
+  /// cards paint: the CLI's own compact, line-numbered render of the call's
+  /// change.
+  function diffLines(diff) {
+    return String(diff || "")
       .split("\n")
-      .map((line) => {
-        let cls = "";
-        if (line.startsWith("@@")) cls = "hunk";
-        else if (line.startsWith("+")) cls = "add";
-        else if (line.startsWith("-")) cls = "del";
-        return `<span class="dline ${cls}">${escapeHtml(line)}</span>`;
-      })
+      .map((line) => `<span class="dline ${diffClass(line)}">${escapeHtml(line)}</span>`)
       .join("");
-    return `<div class="diff"><div class="diff-path">${escapeHtml(target || "diff")}</div><pre>${body}</pre></div>`;
+  }
+
+  function renderDiff(target, diff) {
+    return `<div class="diff"><div class="diff-path">${escapeHtml(target || "diff")}</div><pre>${diffLines(diff)}</pre></div>`;
   }
 
   function toolCard(item) {
@@ -1014,6 +1033,10 @@
   /// side out of the snapshot) and the header opens the whole turn in the
   /// multi-file diff, so the panel carries no diff format of its own. What each
   /// row says, and how it is badged, is composed by the host.
+  ///
+  /// **Review** opens the turn's files over the panel, one row at a time, so the
+  /// reader can walk a turn without leaving the chat: each row it lands on opens
+  /// that file in VS Code's diff editor, which is where the two sides are drawn.
   function changesCard(item) {
     const wrap = document.createElement("div");
     wrap.className = "changes";
@@ -1035,6 +1058,16 @@
       total.className = "changes-total";
       total.textContent = item.totals;
       head.appendChild(total);
+    }
+    if ((item.rows || []).length) {
+      const review = document.createElement("button");
+      review.type = "button";
+      review.className = "changes-review";
+      review.textContent = "Review";
+      review.title = "Walk this turn's files, each in VS Code's diff editor";
+      review.setAttribute("aria-label", review.title);
+      review.addEventListener("click", () => openReview(item));
+      head.appendChild(review);
     }
     wrap.appendChild(head);
 
@@ -1159,6 +1192,9 @@
     following = atBottom();
     switch (message.k) {
       case "state": {
+        // The transcript is rebuilt from scratch, so the card a review was
+        // opened from may be gone with it.
+        closeReview();
         entries.clear();
         transcript.innerHTML = "";
         transcript.appendChild(empty);
@@ -1257,9 +1293,6 @@
     statusLabel.textContent = label;
     statusLabel.classList.toggle("busy", busy);
     statusLabel.title = busy ? "Oxide is working" : "Ready for the next message";
-    stopButton.hidden = !busy;
-    sendButton.title = busy ? "Queue for after this turn (Alt+Enter)" : "Send (Enter)";
-    sendButton.setAttribute("aria-label", busy ? "Queue" : "Send");
     updateElapsed();
     updateSendState();
   }
@@ -1407,6 +1440,7 @@
       open.type = "button";
       open.className = "chip-open";
       open.title = "Open the full-size image";
+      open.setAttribute("aria-label", `Open ${attachment.label || "the image"}`);
       const image = document.createElement("img");
       image.src = thumbnailFor(attachment);
       image.alt = attachment.label;
@@ -1472,8 +1506,19 @@
     return attachments.length + chips.filter((chip) => !chip.auto).length;
   }
 
+  /// The corner of the composer holds one action rather than two buttons side by
+  /// side: while a turn runs with nothing to say it is Stop, and the moment the
+  /// box holds something it is Send — which the host queues for after the turn,
+  /// since the CLI is asked for a follow-up turn rather than steering the one in
+  /// flight. The desktop app swaps the same two the same way, so the button the
+  /// reader is aiming at does not move as the box is typed into.
   function updateSendState() {
-    sendButton.disabled = busy ? false : !input.value.trim() && pendingCount() === 0;
+    const hasText = Boolean(input.value.trim()) || pendingCount() > 0;
+    sendButton.disabled = !hasText;
+    sendButton.hidden = busy && !hasText;
+    stopButton.hidden = !busy || hasText;
+    sendButton.title = busy ? "Queue for after this turn (Enter)" : "Send (Enter)";
+    sendButton.setAttribute("aria-label", busy ? "Queue" : "Send");
   }
 
   // ---------- dialogs ----------
@@ -1626,10 +1671,101 @@
     if (event.target === imageView) imageView.hidden = true;
   });
 
-  // Escape closes what is on top — the image first, then the dialog. The
-  // composer's own Escape (stop the running turn) is handled on the textarea.
+  // ---------- review ----------
+
+  /// A turn's changes over the panel: the card's own rows, walked with the arrow
+  /// keys. The diff itself is VS Code's — taking a row, which is what walking to
+  /// one does, opens that file in the editor's own diff view, and does it as a
+  /// preview without taking the keyboard, so walking on replaces the same tab
+  /// rather than leaving a turn's worth of them behind. The rows are the card's,
+  /// so the review and the card behind it cannot disagree about the turn.
+  function openReview(item) {
+    if (!item || !item.rows || !item.rows.length) return;
+    reviewItem = item;
+    reviewIndex = 0;
+    // Shown before it is painted: the row it opens on takes the focus, and one
+    // inside a hidden sheet cannot.
+    reviewBox.hidden = false;
+    paintReview();
+    openReviewFile(reviewIndex);
+  }
+
+  function closeReview() {
+    reviewItem = null;
+    reviewBox.hidden = true;
+  }
+
+  /// Takes the row at `index`, wrapping at either end: walking and clicking are
+  /// the same act, which is what shows the file the reader is on.
+  function selectReview(index) {
+    if (!reviewItem) return;
+    const count = reviewItem.rows.length;
+    reviewIndex = ((index % count) + count) % count;
+    paintReview();
+    openReviewFile(reviewIndex);
+  }
+
+  function openReviewFile(index) {
+    if (!reviewItem) return;
+    vscode.postMessage({ k: "openChangeDiff", id: reviewItem.id, index, review: true });
+  }
+
+  function paintReview() {
+    const item = reviewItem;
+    if (!item) return;
+    reviewTitle.textContent = item.title || "Changes";
+    reviewTotal.textContent = item.totals || "";
+    reviewTotal.hidden = !item.totals;
+    reviewFiles.innerHTML = "";
+    let on = null;
+    item.rows.forEach((row, index) => {
+      const active = index === reviewIndex;
+      const node = document.createElement("button");
+      node.type = "button";
+      node.className = active ? "change-row active" : "change-row";
+      node.setAttribute("role", "option");
+      node.setAttribute("aria-selected", active ? "true" : "false");
+      node.title = row.title || row.path;
+      const badge = document.createElement("span");
+      badge.className = `change-badge change-${row.status}`;
+      badge.textContent = row.letter || "M";
+      const name = document.createElement("span");
+      name.className = "change-path";
+      name.textContent = row.path;
+      const detail = document.createElement("span");
+      detail.className = "change-detail";
+      detail.textContent = row.detail || "";
+      node.append(badge, name, detail);
+      node.addEventListener("click", () => selectReview(index));
+      reviewFiles.appendChild(node);
+      if (active) on = node;
+    });
+    // The row the reader is on holds the focus, so Enter opens it again — and a
+    // long listing is scrolled to it rather than left where it was.
+    if (on) on.focus();
+  }
+
+  reviewClose.addEventListener("click", () => closeReview());
+
+  // The files are walked with the arrows, the way a changes view is. The diff
+  // opens beside the panel rather than in front of it, so the caret stays in the
+  // composer and the next arrow walks on.
+  document.addEventListener("keydown", (event) => {
+    if (reviewBox.hidden) return;
+    const step = event.key === "ArrowDown" ? 1 : event.key === "ArrowUp" ? -1 : 0;
+    if (!step) return;
+    event.preventDefault();
+    selectReview(reviewIndex + step);
+  });
+
+  // Escape closes what is on top — the review, then the image, then the dialog.
+  // The composer's own Escape (stop the running turn) is handled on the textarea.
   document.addEventListener("keydown", (event) => {
     if (event.key !== "Escape") return;
+    if (!reviewBox.hidden) {
+      closeReview();
+      return;
+    }
     if (!imageView.hidden) {
       imageView.hidden = true;
       return;

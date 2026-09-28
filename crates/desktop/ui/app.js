@@ -1582,12 +1582,19 @@ async function undoChanges(card) {
 
 // ---------- review ----------
 
-// The card a review is open on, and the file it is showing. The listing is the
-// card's own, so the review never disagrees with the rows behind it.
+// The card a review is open on, the file it is showing, and the sides each file
+// was read at — asked for once per file, so walking a listing back and forth
+// does not read the same file again. The listing is the card's own, so the
+// review never disagrees with the rows behind it.
 let reviewState = null;
 
+// Unchanged lines kept around a change before the rest of a stretch folds behind
+// its count: the same reach the terminal's preview keeps, and enough to place a
+// change in the file it belongs to.
+const REVIEW_CONTEXT = 3;
+
 function openReview(card) {
-  reviewState = { card, index: 0 };
+  reviewState = { card, index: 0, sides: new Map(), expanded: new Set() };
   el("review-title").textContent = card.title.textContent;
   el("review-total").innerHTML = statsHtml(card.added, card.removed);
   closeOverlays("review-modal");
@@ -1601,6 +1608,7 @@ function closeReview() {
   el("review-modal").hidden = true;
 }
 
+/// Paints the card's own listing and the file the review is showing.
 function paintReview() {
   if (!reviewState) return;
   const { card } = reviewState;
@@ -1615,28 +1623,169 @@ function paintReview() {
     };
     list.appendChild(row);
   });
-  const file = card.files[reviewState.index];
+  paintReviewFile(card.files[reviewState.index]);
+}
+
+/// Paints one file's two sides. They come from the project's shadow snapshot —
+/// the state the run found is nowhere on disk — so a file reads as a whole diff,
+/// both sides with their own line numbers, rather than as the few hunks a row's
+/// preview keeps. The answer is kept per path, and one for a file the reader has
+/// already walked off is dropped rather than painted under the wrong name.
+function paintReviewFile(file) {
+  if (!reviewState) return;
+  const target = el("review-diff");
+  const showing = () =>
+    reviewState && reviewState.card.files[reviewState.index] === file;
+  const sides = reviewState.sides.get(file.path);
+  if (sides !== undefined) {
+    target.replaceChildren(reviewFileHead(file), ...reviewBody(file, sides));
+    scrollReview();
+    return;
+  }
+  target.replaceChildren(reviewFileHead(file), reviewNote("Reading the change⋯"));
+  invoke("change_sides", {
+    project: reviewState.card.project,
+    baseline: reviewState.card.baseline,
+    path: file.path,
+  })
+    .then((read) => {
+      if (!showing()) return;
+      reviewState.sides.set(file.path, read);
+      paintReviewFile(file);
+    })
+    .catch((error) => {
+      if (!showing()) return;
+      // A failure is kept as its own answer, so walking away and back reports
+      // it rather than asking again in a loop.
+      const sides = { failed: String(error) };
+      reviewState.sides.set(file.path, sides);
+      paintReviewFile(file);
+    });
+}
+
+function reviewFileHead(file) {
+  const head = document.createElement("div");
+  head.className = "review-file";
   // The same words a card's row uses, so a binary or mode-only file reads the
   // same in both listings rather than as an empty column.
   const stats = file.binary
     ? "binary"
     : statsHtml(file.added, file.removed) || "no line changes";
-  el("review-diff").innerHTML =
-    `<div class="review-file">${statusBadge(file.status)}` +
+  head.innerHTML =
+    statusBadge(file.status) +
     `<span class="change-path">${escapeHtml(file.path)}</span>` +
-    `<span class="change-stats">${stats}</span></div>` +
-    changeDiffHtml(file);
+    `<span class="change-stats">${stats}</span>`;
+  return head;
 }
 
-/// Walks the review with the arrow keys, the way a changes view does.
+function reviewNote(text) {
+  const note = document.createElement("div");
+  note.className = "review-note";
+  note.textContent = text;
+  return note;
+}
+
+/// What stands in for a diff that cannot be painted, in the words the row's own
+/// diff uses.
+function reviewBody(file, sides) {
+  if (sides.failed) return [reviewNote(sides.failed)];
+  if (sides.binary) return [reviewNote("Binary file — no text diff.")];
+  if (sides.omitted) return [reviewNote("File too large to diff line by line.")];
+  const lines = sides.lines || [];
+  if (!lines.length) return [reviewNote("No textual changes.")];
+  return [reviewSplit(file, lines)];
+}
+
+/// Both sides of the change: each line on the side it holds, with the number it
+/// has there, and a long stretch neither side changed folded behind its count —
+/// a reader sees where a change lands without scrolling past a file's whole
+/// length. Every folded stretch of a file stays where it was put.
+function reviewSplit(file, lines) {
+  const split = document.createElement("div");
+  split.className = "split";
+  let index = 0;
+  while (index < lines.length) {
+    if (lines[index].kind !== "context") {
+      split.appendChild(splitRow(lines[index]));
+      index += 1;
+      continue;
+    }
+    let end = index;
+    while (end < lines.length && lines[end].kind === "context") end += 1;
+    const open = reviewState.expanded.has(`${file.path}:${index}`);
+    if (open || end - index <= REVIEW_CONTEXT * 2 + 1) {
+      for (let at = index; at < end; at += 1) split.appendChild(splitRow(lines[at]));
+    } else {
+      for (let at = index; at < index + REVIEW_CONTEXT; at += 1) {
+        split.appendChild(splitRow(lines[at]));
+      }
+      split.appendChild(unmodifiedBar(file, index, end - index - REVIEW_CONTEXT * 2));
+      for (let at = end - REVIEW_CONTEXT; at < end; at += 1) {
+        split.appendChild(splitRow(lines[at]));
+      }
+    }
+    index = end;
+  }
+  return split;
+}
+
+/// The count a folded stretch shows. Clicking it opens that stretch in place,
+/// which the review paints again from the sides it already holds.
+function unmodifiedBar(file, start, hidden) {
+  const bar = document.createElement("button");
+  bar.type = "button";
+  bar.className = "unmodified";
+  bar.textContent = `${hidden} unmodified line${hidden === 1 ? "" : "s"}`;
+  bar.onclick = () => {
+    reviewState.expanded.add(`${file.path}:${start}`);
+    paintReview();
+  };
+  return bar;
+}
+
+/// One line of the split: the number it has on each side and the text that side
+/// holds, so a removed line leaves the new column empty and an added one leaves
+/// the old column empty.
+function splitRow(line) {
+  const row = document.createElement("div");
+  row.className = `split-row ${line.kind}`;
+  const side = (number, text) => {
+    const cell = document.createElement("span");
+    cell.className = "split-num";
+    cell.textContent = number == null ? "" : String(number);
+    const body = document.createElement("span");
+    body.className = "split-text";
+    body.textContent = text;
+    return [cell, body];
+  };
+  row.append(
+    ...side(line.old, line.kind === "add" ? "" : line.text),
+    ...side(line.new, line.kind === "remove" ? "" : line.text),
+  );
+  return row;
+}
+
+/// Opens a file on its first change rather than on whatever its top happens to
+/// be, since a long file would otherwise show the reader its unchanged head.
+function scrollReview() {
+  const row = el("review-diff").querySelector?.(".split-row.add, .split-row.remove");
+  if (row && row.scrollIntoView) row.scrollIntoView({ block: "center" });
+}
+
+/// Walks the review's files, the way a changes view does.
+function walkReview(step) {
+  if (!reviewState) return;
+  const count = reviewState.card.files.length;
+  reviewState.index = (reviewState.index + step + count) % count;
+  paintReview();
+}
+
 function reviewKey(event) {
   if (!reviewState) return;
   const step = event.key === "ArrowDown" ? 1 : event.key === "ArrowUp" ? -1 : 0;
   if (!step) return;
   event.preventDefault();
-  const count = reviewState.card.files.length;
-  reviewState.index = (reviewState.index + step + count) % count;
-  paintReview();
+  walkReview(step);
 }
 
 /// The still-running card a tool event belongs to. Results are emitted in call
@@ -3183,6 +3332,8 @@ function init() {
   });
   el("help-close").onclick = () => (el("help-modal").hidden = true);
   el("review-close").onclick = closeReview;
+  el("review-prev").onclick = () => walkReview(-1);
+  el("review-next").onclick = () => walkReview(1);
 
   // The webview cannot navigate to a remote page, so a link click opens the
   // platform browser through the host instead of reloading the app window.

@@ -45,6 +45,7 @@ import {
   SESSION_DELETE_CONFIRM,
   sessionDialog,
   type DialogState,
+  type LiveSession,
 } from "./core/dialogs";
 import { isMcpCommand, mcpListArgs, mcpToggleArgs, parseMcpList, type McpServerView } from "./core/mcps";
 import { changeArgs, diffPlan, type DiffPlan } from "./core/changes";
@@ -194,6 +195,12 @@ export class ChatController {
   /// instead of painting a list the newer probe has already replaced.
   private mcpProbe = 0;
   private sessions: SessionEntry[] = [];
+  /// The newest session listing asked for. The store gains a thread as the turn
+  /// it belongs to runs, so the same listing is read twice — once when the run
+  /// names its session, again when it ends — and the two reads overlap. The
+  /// earlier one can answer last (it started before the file was written), so it
+  /// is dropped rather than repainting the rows the newer read has replaced.
+  private sessionsSync = 0;
   /// The name of the thread when the CLI knows one (a resumed session keeps its
   /// picker label); otherwise the header falls back to the first message.
   private sessionTitle: string | null = null;
@@ -1030,9 +1037,14 @@ export class ChatController {
   private handleEvent(event: WireEvent): void {
     if (!this.run) return;
     this.run.sawEvent = true;
+    const id = this.transcript.sessionId;
     const messages = this.transcript.apply(event);
     this.broadcastItem(messages);
     this.broadcastStatus();
+    // A session is written as the turn it belongs to runs, so the listing gains
+    // its row when the header arrives rather than when the turn ends: a reader
+    // who opened it while the run was starting sees the thread it is about.
+    if (this.transcript.sessionId !== id) void this.syncSessions();
     this.onDidChange.fire();
   }
 
@@ -1087,6 +1099,9 @@ export class ChatController {
     // The view's status-bar spinner is driven by this event, and `handleExit`
     // runs after the last stream event, so refresh it here too.
     this.onDidChange.fire();
+    // The run's own session is now in the store (or has just grown a message),
+    // so a listing left open is painted again from it.
+    void this.syncSessions();
     this.drainQueue();
   }
 
@@ -1136,7 +1151,40 @@ export class ChatController {
   /// missing from a rebuild — closing the open thread is only safe to offer
   /// while the listing knows which one that is.
   private showSessions(note = ""): void {
-    this.showDialog(sessionDialog(this.sessions, this.transcript.sessionId, note));
+    this.showDialog(
+      sessionDialog(this.sessions, this.transcript.sessionId, note, this.liveSession()),
+    );
+  }
+
+  /// The thread the panel has open, as the listing needs it: the title the
+  /// header shows, so a session the store has not named yet is not the one row
+  /// written as a bare id.
+  private liveSession(): LiveSession | null {
+    const id = this.transcript.sessionId;
+    return id ? { id, label: this.threadTitle() } : null;
+  }
+
+  /// The session listing painted again from a fresh read, without the note a
+  /// listing that was asked for carries. A turn is where a thread is written, so
+  /// the list the reader is looking at when one ends is repainted from what the
+  /// store now holds — otherwise the thread that just finished is missing from
+  /// it until the listing is closed and opened again. Only the session listing is
+  /// repainted: a confirmation or the MCP list is not about threads.
+  private async syncSessions(): Promise<void> {
+    if (this.dialog?.kind !== "sessions") return;
+    const cwd = this.cwd();
+    if (!cwd) return;
+    const sync = ++this.sessionsSync;
+    const result = await runCapture(this.binary(), sessionsListArgs(), cwd);
+    if (result.error || result.code !== 0) return;
+    // A read that started earlier can answer later — the header's, taken before
+    // the store had the thread, against the exit's, taken after — and painting it
+    // would put the just-created row back out of the listing. Only the newest
+    // read is applied, and only for the folder it was taken in.
+    if (sync !== this.sessionsSync || cwd !== this.cwd()) return;
+    this.sessions = parseSessionList(result.stdout);
+    if (this.dialog?.kind !== "sessions") return;
+    this.showSessions();
   }
 
   /// Opens the session history in the panel: the threads the CLI lists for this
@@ -1154,7 +1202,12 @@ export class ChatController {
       return;
     }
     this.showSessions("Loading sessions…");
+    const sync = ++this.sessionsSync;
     const result = await runCapture(this.binary(), sessionsListArgs(), cwd);
+    // A read that started earlier — the refresh a turn's own start or end asked
+    // for — is superseded by this one, and a project that changed under the read
+    // is no longer the one it was about, so neither paints.
+    if (sync !== this.sessionsSync || cwd !== this.cwd()) return;
     if (result.error || result.code !== 0) {
       const detail = result.error || firstLine(result.stderr) || `exit ${result.code}`;
       const failed = `Could not list sessions: ${detail}`;

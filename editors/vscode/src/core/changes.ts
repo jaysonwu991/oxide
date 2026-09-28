@@ -5,7 +5,8 @@
 // a shell command, a formatter or an MCP server wrote is listed the same as an
 // edited one. This module turns it into the rows the webview paints and the
 // diff plan VS Code's own diff editor opens, which is how the panel shows a
-// change: it never renders a second diff format of its own.
+// change: it never renders a second diff format of its own, not even in its own
+// review, which walks these rows and opens each file in that editor.
 
 import type { WireEvent } from "./protocol";
 
