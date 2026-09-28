@@ -8,9 +8,9 @@
 //! of that dispatch and makes the window under the pointer key first, which
 //! leaves it key by the time the press is delivered.
 //!
-//! The page answers the gesture for the two controls a half-written message
-//! reaches for either way (`pressActivated` in `ui/app.js`): a first press can
-//! still arrive as the one that takes focus, with no click behind it.
+//! Every control in the page answers the gesture for itself (`pressActivated` in
+//! `ui/app.js`): a first press can still arrive as the one that takes focus, with
+//! no click behind it, and a press that starts a drag loses its click too.
 
 use std::ptr::NonNull;
 

@@ -509,11 +509,11 @@ function renderWelcome() {
       ${suggestions}
     </div>`;
   el("transcript").querySelectorAll(".suggestions button").forEach((button) => {
-    button.onclick = () => {
+    pressActivated(button, () => {
       el("prompt").value = button.dataset.prompt;
       el("prompt").focus();
       updateSendState();
-    };
+    });
   });
 }
 
@@ -927,9 +927,21 @@ async function addAttachmentFiles(files) {
 /// element still be under the pointer by then. A press dragged off the control
 /// does nothing, and a keyboard activation — a click with no press behind it —
 /// still runs the action once.
+///
+/// Every control the page wires up answers the press this way, because a control
+/// left out of it is a button the reader has to press twice. The one inside
+/// another — a thread's ✕ in the row around it — answers and the outer one
+/// declines, the way the click would have gone to the inner control alone.
 function pressActivated(node, run) {
+  // A control that is wired again — a dialog's own button, bound afresh for each
+  // dialog — keeps the listeners it has and runs the newest action, rather than
+  // answering one release with every action it was ever given.
+  node.pressRun = run;
+  if (node.answersPress) return;
   let pressed = false;
   let answered = false;
+  let startedOn = null;
+  node.answersPress = true;
   // The drag is refused before it can start, here and on the picture itself
   // (`openableImage`): a drag session takes the release with it, so the gesture
   // would never be answered no matter how long the reader held the press.
@@ -937,11 +949,18 @@ function pressActivated(node, run) {
   node.addEventListener("dragstart", refuseDrag);
   node.addEventListener("mousedown", refuseDrag);
   node.onclick = (event) => {
-    if (!answered || event.detail === 0) run(event);
+    const mine = !answered || (event && event.detail === 0);
     answered = false;
+    if (!mine) return;
+    // A click that started on a control inside this one belongs to that control
+    // (`pressOwner`), which is what keeps a row from acting on a press its own
+    // ✕ has already answered.
+    if (pressOwner((event && event.target) || node) !== node) return;
+    node.pressRun(event);
   };
   node.addEventListener("pointerdown", (event) => {
     if (event.button) return;
+    startedOn = event.target || node;
     pressed = true;
     answered = false;
     node.setPointerCapture?.(event.pointerId);
@@ -952,17 +971,27 @@ function pressActivated(node, run) {
   const release = (event) => {
     if (!pressed) return;
     pressed = false;
+    if (pressOwner(startedOn || node) !== node) return;
     if (!insideBox(node, event)) return;
     // The click WebKit still sends after this one has been answered is the
     // duplicate that `onclick` drops.
     answered = true;
-    run(event);
+    node.pressRun(event);
   };
   node.addEventListener("pointerup", release);
   node.addEventListener("mouseup", release);
   node.addEventListener("pointercancel", () => {
     pressed = false;
   });
+}
+
+/// The innermost control a press began on — the one that answers its release,
+/// and the one a click over it belongs to.
+function pressOwner(target) {
+  for (let node = target; node; node = node.parentNode) {
+    if (node.answersPress) return node;
+  }
+  return null;
 }
 
 /// Whether a pointer event happened inside `node`: a captured press that came up
@@ -1000,11 +1029,11 @@ function renderAttachments() {
     remove.className = "att-remove";
     remove.textContent = "×";
     remove.title = "Remove attachment";
-    remove.onclick = () => {
+    pressActivated(remove, () => {
       state.attachments.splice(index, 1);
       renderAttachments();
       updateSendState();
-    };
+    });
     chip.appendChild(remove);
     box.appendChild(chip);
   });
@@ -1260,7 +1289,7 @@ function createToolCard(name, args) {
   // as the head row does. Both take Enter or Space the way a button does, so
   // the fold is not a mouse-only gesture.
   for (const toggle of [head, hint]) {
-    toggle.onclick = () => toggleTool(tool);
+    pressActivated(toggle, () => toggleTool(tool));
     toggle.onkeydown = (event) => {
       if (event.key !== "Enter" && event.key !== " ") return;
       event.preventDefault();
@@ -1490,7 +1519,7 @@ function changeRow(file) {
     `<span class="change-path">${escapeHtml(file.path)}</span>` +
     `<span class="change-stats">${file.binary ? "binary" : statsHtml(file.added, file.removed) || "no line changes"}</span>` +
     `<span class="change-chev">▸</span>`;
-  row.onclick = () => toggleChangeDiff(row, file);
+  pressActivated(row, () => toggleChangeDiff(row, file));
   return row;
 }
 
@@ -1534,18 +1563,18 @@ function changesCard(card) {
   review.type = "button";
   review.className = "ghost small";
   review.textContent = "Review";
-  review.onclick = (event) => {
+  pressActivated(review, (event) => {
     event.stopPropagation();
     openReview(card);
-  };
+  });
   const undo = document.createElement("button");
   undo.type = "button";
   undo.className = "ghost small";
   undo.textContent = "Undo";
-  undo.onclick = (event) => {
+  pressActivated(undo, (event) => {
     event.stopPropagation();
     undoChanges(card);
-  };
+  });
   actions.append(review, undo);
 
   const list = document.createElement("div");
@@ -1555,10 +1584,10 @@ function changesCard(card) {
   more.className = "changes-more";
 
   head.append(caret, title, total, note, actions);
-  head.onclick = () => {
+  pressActivated(head, () => {
     card.collapsed = !card.collapsed;
     paintChanges(card);
-  };
+  });
   block.append(head, list, more);
 
   card.block = block;
@@ -1573,11 +1602,11 @@ function changesCard(card) {
     card.rows.push({ file, row });
     list.appendChild(row);
   }
-  more.onclick = (event) => {
+  pressActivated(more, (event) => {
     event.stopPropagation();
     card.all = !card.all;
     paintChanges(card);
-  };
+  });
   paintChanges(card);
   return block;
 }
@@ -1659,10 +1688,10 @@ function paintReview() {
   card.files.forEach((file, index) => {
     const row = changeRow(file);
     row.classList.toggle("active", index === reviewState.index);
-    row.onclick = () => {
+    pressActivated(row, () => {
       reviewState.index = index;
       paintReview();
-    };
+    });
     list.appendChild(row);
   });
   const file = card.files[reviewState.index];
@@ -2029,16 +2058,19 @@ function closeOverlays(except) {
 // macOS's WKWebView does not implement `window.confirm`/`window.prompt`, so
 // destructive and rename actions go through these in-app dialogs instead.
 let confirmResolution = null;
+// What the open confirm dialog offers beside Confirm, so its second button is
+// wired once rather than per dialog.
+let confirmAlt = null;
 let renameResolution = null;
 
 function confirmDialog(title, message, confirmLabel = "Confirm", alt = null) {
   el("confirm-title").textContent = title;
   el("confirm-message").textContent = message;
   el("confirm-ok").textContent = confirmLabel;
+  confirmAlt = alt;
   const altButton = el("confirm-alt");
   altButton.hidden = !alt;
   altButton.textContent = alt ? alt.label : "";
-  altButton.onclick = alt ? () => resolveConfirm(alt.value) : null;
   closeOverlays("confirm-modal");
   el("confirm-modal").hidden = false;
   el("confirm-ok").focus();
@@ -2050,6 +2082,7 @@ function confirmDialog(title, message, confirmLabel = "Confirm", alt = null) {
 function resolveConfirm(value) {
   const resolve = confirmResolution;
   confirmResolution = null;
+  confirmAlt = null;
   el("confirm-modal").hidden = true;
   if (resolve) resolve(value);
 }
@@ -2094,10 +2127,10 @@ function renderProviders() {
       `<span class="p-name">${escapeHtml(provider.label)}</span>` +
       `<span class="p-desc">${escapeHtml(provider.description)}</span>` +
       (provider.stored ? '<span class="badge">stored</span>' : "");
-    row.onclick = () => {
+    pressActivated(row, () => {
       state.providerIndex = index;
       renderProviders();
-    };
+    });
     box.appendChild(row);
   });
 }
@@ -2153,11 +2186,11 @@ function renderModels() {
       const row = document.createElement("button");
       row.className = "model" + (model === provider.current ? " active" : "");
       row.textContent = model;
-      row.onclick = async () => {
+      pressActivated(row, async () => {
         await invoke("set_model", { provider: provider.provider, model });
         el("models-modal").hidden = true;
         await loadInfo();
-      };
+      });
       box.appendChild(row);
     }
   }
@@ -2231,7 +2264,7 @@ function renderThemes(entries, current) {
     check.textContent = name === current ? "✓" : "";
     row.appendChild(check);
 
-    row.onclick = () => selectTheme(name, row);
+    pressActivated(row, () => selectTheme(name, row));
     box.appendChild(row);
   }
 }
@@ -2385,7 +2418,7 @@ function renderMcps() {
       ? `Disable ${server.name}: turn it off in the file that defines it`
       : `Enable ${server.name}: turn it back on`;
     toggle.setAttribute("aria-label", toggle.title);
-    toggle.onclick = () => toggleMcp(server, toggle);
+    pressActivated(toggle, () => toggleMcp(server, toggle));
     head.append(name, status, toggle);
 
     const detail = document.createElement("div");
@@ -2478,10 +2511,10 @@ function renderSessions() {
     // The strings, not the elements they were written into: a tooltip built
     // from a node reads as `[object HTMLDivElement]`.
     row.title = meta ? `${name} — ${meta}` : name;
-    row.onclick = () => {
+    pressActivated(row, () => {
       el("sessions-modal").hidden = true;
       selectSessionFromTree(session);
-    };
+    });
     box.appendChild(row);
   }
 }
@@ -2744,7 +2777,7 @@ function renderAt() {
     // The press would take the focus out of the message box and drop the caret
     // the row is completing, so it is swallowed and the click still arrives.
     item.addEventListener("mousedown", (event) => event.preventDefault());
-    item.onclick = () => acceptAt(index);
+    pressActivated(item, () => acceptAt(index));
     list.appendChild(item);
   });
 }
@@ -2887,10 +2920,10 @@ function renderPalette() {
       (entry.arguments ? `<span class="args">${escapeHtml(entry.arguments)}</span>` : "") +
       `<span class="desc">${escapeHtml(entry.description)}</span>` +
       `<span class="source">${escapeHtml(badge)}</span>`;
-    row.onclick = () => {
+    pressActivated(row, () => {
       state.paletteIndex = index;
       runPaletteEntry(entry);
-    };
+    });
     list.appendChild(row);
   });
 }
@@ -3053,7 +3086,7 @@ function renderCreateProjectFolders() {
     const removeBtn = document.createElement("button");
     removeBtn.className = "folder-item-remove ghost small";
     removeBtn.textContent = "Remove";
-    removeBtn.onclick = () => removeCreateProjectFolder(folder);
+    pressActivated(removeBtn, () => removeCreateProjectFolder(folder));
     item.appendChild(pathEl);
     item.appendChild(removeBtn);
     container.appendChild(item);
@@ -3172,72 +3205,103 @@ function initSidebarResize() {
 function init() {
   initSidebarResize();
   const createBtnTree = el("create-project-btn-tree");
-  if (createBtnTree) createBtnTree.onclick = openCreateProject;
-  el("create-project-add-folder").onclick = addCreateProjectFolder;
-  el("create-project-cancel").onclick = () => (el("create-project-modal").hidden = true);
-  el("create-project-save").onclick = saveCreateProject;
+  if (createBtnTree) pressActivated(createBtnTree, openCreateProject);
+  pressActivated(el("create-project-add-folder"), addCreateProjectFolder);
+  pressActivated(el("create-project-cancel"), () => (el("create-project-modal").hidden = true));
+  pressActivated(el("create-project-save"), saveCreateProject);
 
-  el("reasoning").onclick = cycleReasoning;
-  el("model").onclick = openModels;
-  el("theme").onclick = openThemes;
-  el("permissions").onclick = openPermissions;
-  el("help").onclick = toggleHelp;
-  el("connect").onclick = openConnect;
+  pressActivated(el("reasoning"), cycleReasoning);
+  pressActivated(el("model"), openModels);
+  pressActivated(el("theme"), openThemes);
+  pressActivated(el("permissions"), openPermissions);
+  pressActivated(el("help"), toggleHelp);
+  pressActivated(el("connect"), openConnect);
 
   pressActivated(el("send"), () => send(false));
   pressActivated(el("stop"), stop);
-  el("approval-once").onclick = () => answerApproval("once");
-  el("approval-always").onclick = () => answerApproval("always");
-  el("approval-deny").onclick = () => answerApproval("deny");
-  el("question-submit").onclick = () => questionNext();
-  el("question-back").onclick = () => showQuestionStep((state.pendingQuestion?.index ?? 0) - 1);
-  el("question-dismiss").onclick = () => answerQuestion(true);
-  el("login-cancel").onclick = () => (el("connect-modal").hidden = true);
-  el("login-save").onclick = saveConnect;
-  el("models-close").onclick = () => (el("models-modal").hidden = true);
+  pressActivated(el("approval-once"), () => answerApproval("once"));
+  pressActivated(el("approval-always"), () => answerApproval("always"));
+  pressActivated(el("approval-deny"), () => answerApproval("deny"));
+  pressActivated(el("question-submit"), () => questionNext());
+  pressActivated(el("question-back"), () => showQuestionStep((state.pendingQuestion?.index ?? 0) - 1));
+  pressActivated(el("question-dismiss"), () => answerQuestion(true));
+  pressActivated(el("login-cancel"), () => (el("connect-modal").hidden = true));
+  pressActivated(el("login-save"), saveConnect);
+  pressActivated(el("models-close"), () => (el("models-modal").hidden = true));
   el("model-filter").addEventListener("input", renderModels);
-  el("themes-close").onclick = () => (el("themes-modal").hidden = true);
-  el("permissions-close").onclick = () => (el("permissions-modal").hidden = true);
-  el("permissions-clear").onclick = clearApprovals;
-  el("trust").onclick = () => state.trust && showTrust(state.trust);
-  el("trust-allow").onclick = () => answerTrust(true);
-  el("trust-deny").onclick = () => answerTrust(false);
-  el("confirm-cancel").onclick = () => resolveConfirm(false);
-  el("confirm-ok").onclick = () => resolveConfirm(true);
-  el("rename-cancel").onclick = () => resolveRename(null);
-  el("rename-save").onclick = () => resolveRename(el("rename-input").value.trim());
+  pressActivated(el("themes-close"), () => (el("themes-modal").hidden = true));
+  pressActivated(el("permissions-close"), () => (el("permissions-modal").hidden = true));
+  pressActivated(el("permissions-clear"), clearApprovals);
+  pressActivated(el("trust"), () => state.trust && showTrust(state.trust));
+  pressActivated(el("trust-allow"), () => answerTrust(true));
+  pressActivated(el("trust-deny"), () => answerTrust(false));
+  pressActivated(el("confirm-cancel"), () => resolveConfirm(false));
+  pressActivated(el("confirm-ok"), () => resolveConfirm(true));
+  pressActivated(el("confirm-alt"), () => confirmAlt && resolveConfirm(confirmAlt.value));
+  pressActivated(el("rename-cancel"), () => resolveRename(null));
+  pressActivated(el("rename-save"), () => resolveRename(el("rename-input").value.trim()));
   el("rename-input").addEventListener("keydown", (event) => {
     if (event.key === "Enter") {
       event.preventDefault();
       resolveRename(el("rename-input").value.trim());
     }
   });
-  el("mcps-close").onclick = () => (el("mcps-modal").hidden = true);
-  el("mcps-refresh").onclick = () => loadMcps();
-  el("sessions-close").onclick = () => (el("sessions-modal").hidden = true);
-  el("sessions-new").onclick = () => {
+  pressActivated(el("mcps-close"), () => (el("mcps-modal").hidden = true));
+  pressActivated(el("mcps-refresh"), () => loadMcps());
+  pressActivated(el("sessions-close"), () => (el("sessions-modal").hidden = true));
+  pressActivated(el("sessions-new"), () => {
     el("sessions-modal").hidden = true;
     newChat();
-  };
-  el("create-project-add-path").onclick = addCreateProjectTypedPath;
+  });
+  pressActivated(el("create-project-add-path"), addCreateProjectTypedPath);
   el("create-project-path").addEventListener("keydown", (event) => {
     if (event.key === "Enter") {
       event.preventDefault();
       addCreateProjectTypedPath();
     }
   });
-  el("help-close").onclick = () => (el("help-modal").hidden = true);
+  pressActivated(el("help-close"), () => (el("help-modal").hidden = true));
+  pressActivated(el("review-close"), closeReview);
 
   // The webview cannot navigate to a remote page, so a link click opens the
-  // platform browser through the host instead of reloading the app window.
-  document.addEventListener("click", (event) => {
-    const target = event.target;
-    const link = target instanceof Element ? target.closest("a[href]") : null;
+  // platform browser through the host instead of reloading the app window. A
+  // link answers a press the way a control answers for itself, since a first
+  // press can arrive without a click behind it.
+  let linkAnswered = false;
+  let linkPressed = null;
+  const linkUnder = (event) => event.target?.closest?.("a[href]") || null;
+  const openLink = (event) => {
+    const link = linkUnder(event);
     if (!link) return;
     event.preventDefault();
     invoke("open_url", { url: link.getAttribute("href") }).catch((error) =>
       setStatus(`Could not open link: ${error}`),
     );
+  };
+  document.addEventListener("pointerdown", (event) => {
+    linkAnswered = false;
+    linkPressed = event.button ? null : linkUnder(event);
+  });
+  const releaseLink = (event) => {
+    const link = linkPressed;
+    linkPressed = null;
+    if (!link || link !== linkUnder(event) || !insideBox(link, event)) return;
+    // The click the page still sends after this one has been answered is the
+    // duplicate that the click handler drops.
+    linkAnswered = true;
+    openLink(event);
+  };
+  document.addEventListener("pointerup", releaseLink);
+  document.addEventListener("mouseup", releaseLink);
+  document.addEventListener("pointercancel", () => {
+    linkPressed = null;
+  });
+  document.addEventListener("click", (event) => {
+    if (linkAnswered) {
+      linkAnswered = false;
+      return;
+    }
+    openLink(event);
   });
 
   el("prompt").addEventListener("input", () => {
@@ -3282,12 +3346,12 @@ function init() {
       addAttachmentFiles(files);
     }
   });
-  el("attach").onclick = () => el("attach-input").click();
+  pressActivated(el("attach"), () => el("attach-input").click());
   el("attach-input").addEventListener("change", async (event) => {
     await addAttachmentFiles(Array.from(event.target.files || []));
     event.target.value = "";
   });
-  el("image-view-close").onclick = () => (el("image-modal").hidden = true);
+  pressActivated(el("image-view-close"), () => (el("image-modal").hidden = true));
   el("prompt").addEventListener("keydown", (event) => {
     if (atKey(event)) {
       event.preventDefault();
@@ -3427,10 +3491,10 @@ async function renderProjectsTree() {
     newTaskBtn.className = "row-add";
     newTaskBtn.title = `New task in ${project.name}`;
     newTaskBtn.textContent = "＋";
-    newTaskBtn.onclick = (event) => {
+    pressActivated(newTaskBtn, (event) => {
       event.stopPropagation();
       newTaskIn(project);
-    };
+    });
     projectItem.appendChild(newTaskBtn);
 
     const removeProjectBtn = document.createElement("button");
@@ -3440,15 +3504,15 @@ async function renderProjectsTree() {
       ? "Remove or delete project…"
       : "Delete project…";
     removeProjectBtn.textContent = "✕";
-    removeProjectBtn.onclick = (event) => {
+    pressActivated(removeProjectBtn, (event) => {
       event.stopPropagation();
       removeProject(project);
-    };
+    });
     projectItem.appendChild(removeProjectBtn);
     
-    projectItem.onclick = () => {
+    pressActivated(projectItem, () => {
       selectProject(project);
-    };
+    });
     
     projectGroup.appendChild(projectItem);
     
@@ -3480,15 +3544,15 @@ async function renderProjectsTree() {
       removeSessionBtn.className = "row-remove";
       removeSessionBtn.title = "Delete thread";
       removeSessionBtn.textContent = "✕";
-      removeSessionBtn.onclick = (event) => {
+      pressActivated(removeSessionBtn, (event) => {
         event.stopPropagation();
         removeSession(session);
-      };
+      });
       sessionItem.appendChild(removeSessionBtn);
 
-      sessionItem.onclick = () => {
+      pressActivated(sessionItem, () => {
         selectSessionFromTree(session);
-      };
+      });
 
       sessionsContainer.appendChild(sessionItem);
     }

@@ -137,9 +137,11 @@ class StubElement {
   }
   setPointerCapture() {}
   releasePointerCapture() {}
-  setAttribute() {}
-  getAttribute() {
-    return null;
+  setAttribute(name, value) {
+    (this.attributes ||= {})[name] = String(value);
+  }
+  getAttribute(name) {
+    return (this.attributes || {})[name] ?? null;
   }
   focus() {}
   blur() {}
@@ -171,6 +173,15 @@ class StubElement {
     for (const token of rest.match(/\.[A-Za-z0-9_-]+/g) || []) {
       if (!classes.includes(token.slice(1))) return false;
     }
+    // A `[name]` reads as "this attribute is set", and a leading tag name as the
+    // tag itself, which is what `closest("a[href]")` asks for.
+    const present = rest.match(/\[([a-zA-Z-]+)\]/);
+    if (present) {
+      if (this.getAttribute(present[1]) == null) return false;
+      rest = rest.replace(present[0], "");
+    }
+    const tag = rest.match(/^[a-z]+/);
+    if (tag && this.tagName !== tag[0].toUpperCase()) return false;
     return true;
   }
 
@@ -186,7 +197,10 @@ class StubElement {
   querySelectorAll(selector) {
     return this.descendants().filter((node) => node.matchesSelector(selector));
   }
-  closest() {
+  closest(selector) {
+    for (let node = this; node; node = node.parentNode) {
+      if (node.matchesSelector(selector)) return node;
+    }
     return null;
   }
 
@@ -223,6 +237,8 @@ const press = (over = {}) => ({
   pointerId: 1,
   clientX: 10,
   clientY: 10,
+  // A control inside another one stops the press there, as it does a click.
+  stopPropagation() {},
   // A check that cares whether the page refused a default action reads this
   // back: the drag a press would start is refused by hand (and by the picture's
   // own markup), so the press that opens a thumbnail is never a drag.
@@ -393,6 +409,9 @@ const invoke = async (command, args = {}) => {
     case "all_sessions":
       if (threadsError) throw threadsError;
       return threads.map((session) => ({ ...session }));
+    case "remove_project":
+      projectRows = projectRows.filter((row) => row.id !== args.id);
+      return projectRows.map((row) => ({ ...row }));
     case "session_messages": {
       const target = (threads || []).find((session) => session.id === args.id);
       return {
@@ -425,7 +444,15 @@ const document = {
   createElement: (tag) => new StubElement(tag),
   querySelector: () => null,
   querySelectorAll: () => [],
-  addEventListener: () => {},
+  // The page closes over the document, so the listeners it puts there are kept
+  // too: a link answers a press the way a control answers for itself.
+  addEventListener(type, handler) {
+    (this.listeners[type] ||= []).push(handler);
+  },
+  fire(type, event) {
+    for (const handler of this.listeners[type] || []) handler(event);
+  },
+  listeners: {},
   body: new StubElement("body"),
   documentElement: new StubElement("html"),
 };
@@ -654,6 +681,20 @@ check(
 );
 await tick();
 check("closed the list once the reference was done", atBox.hidden === true);
+
+// A row answers a press the way it answers a key — that is the gesture the
+// reader's hand makes — while the press is refused so the caret stays in the
+// message box it is completing into.
+await typeAt("review @sr");
+const atPress = press();
+atRows.children[0].fire("mousedown", atPress);
+atRows.children[0].fire("pointerdown", atPress);
+atRows.children[0].fire("pointerup", atPress);
+check(
+  "took the row a press landed on, with the caret still in the message box",
+  composer.value === "review @src/" && composer.selectionStart === 12 && atPress.refused === true,
+  `${composer.value} @ ${composer.selectionStart} / refused ${atPress.refused}`,
+);
 
 await typeAt("review @sr");
 app.atKey({ key: "Escape" });
@@ -972,11 +1013,22 @@ check(
   buttonFor("image-view-close"),
 );
 check(
-  "put that icon on the picture's top-right corner, in the error color",
-  /class="image-frame"[\s\S]*id="image-view-close"/.test(shell) &&
-    /\.image-frame \{ position: relative;[^}]*\}/.test(sheet) &&
-    /#image-view-close \{[^}]*position: absolute;[^}]*top: 10px;[^}]*right: 10px;[^}]*color: var\(--error\);[^}]*\}/.test(sheet),
-  `${shellAt("class=\"image-frame\"")} / ${sheet.indexOf("#image-view-close {")}`,
+  "put that icon outside the picture, in the preview's own head row",
+  /class="image-head"[\s\S]*id="image-view-close"[\s\S]*id="image-view-img"/.test(shell) &&
+    /\.image-view \{[^}]*flex-direction: column;[^}]*\}/.test(sheet) &&
+    !/class="image-frame"/.test(shell) &&
+    !/#image-view-close \{[^}]*position: absolute;[^}]*\}/.test(sheet) &&
+    /#image-view-close \{ color: var\(--error\); \}/.test(sheet),
+  `${shellAt("class=\"image-head\"")} / ${sheet.indexOf("#image-view-close {")}`,
+);
+// A control left out of that is one the reader has to press twice, so every
+// button the shell declares answers its press.
+const shellButtons = [...shell.matchAll(/<button[^>]*\bid="([^"]+)"/g)].map((m) => m[1]);
+const unwiredButtons = shellButtons.filter((id) => !elementFor(id).answersPress);
+check(
+  "wired every button the shell declares to answer its press",
+  shellButtons.length > 0 && unwiredButtons.length === 0,
+  unwiredButtons.join(", "),
 );
 // The thumbnail is an image, and WebKit drags an image by default: the drag
 // session would take the release that opens the preview with it, so neither the
@@ -1088,7 +1140,63 @@ check(
 );
 app.state.attachments = [];
 
-// ---------- the question dialog ----------
+// Every control answers its press, not only the two in the composer's corner: a
+// button left out of it is one the reader has to press twice. The control the
+// press began on is the one that answers — a chip's ✕ removes the chip, and the
+// picture it sits in does not open over the same gesture.
+app.addAttachment("shot.png", shot);
+const chipOpen = chips()[0].querySelector(".att-open");
+const chipRemove = chips()[0].querySelector(".att-remove");
+const chipPress = press({ target: chipRemove });
+chipOpen.fire("pointerdown", chipPress);
+chipRemove.fire("pointerdown", chipPress);
+chipRemove.fire("pointerup", chipPress);
+chipOpen.fire("pointerup", chipPress);
+check(
+  "answered a press on a chip's ✕, without opening the picture around it",
+  app.state.attachments.length === 0 && elementFor("image-modal").hidden === true,
+  `${app.state.attachments.length} / ${elementFor("image-modal").hidden}`,
+);
+elementFor("help-modal").hidden = false;
+const helpPress = press();
+elementFor("help-close").fire("pointerdown", helpPress);
+elementFor("help-close").fire("pointerup", helpPress);
+check(
+  "answered a dialog button's press itself",
+  elementFor("help-modal").hidden === true,
+  String(elementFor("help-modal").hidden),
+);
+
+// A link opens from the press too, and the click that trails it is the
+// duplicate: one gesture opens the page once.
+const link = new StubElement("a");
+link.setAttribute("href", "https://example.com/docs");
+elementFor("transcript").appendChild(link);
+const openedLinks = () => calls.filter(([name]) => name === "open_url");
+calls.length = 0;
+const linkPress = press({ target: link });
+document.fire("pointerdown", linkPress);
+document.fire("pointerup", linkPress);
+check(
+  "opened a link from the press, with no click behind it",
+  openedLinks().length === 1 && openedLinks()[0][1]?.url === "https://example.com/docs",
+  JSON.stringify(calls),
+);
+document.fire("click", press({ target: link }));
+check(
+  "dropped the click that trailed the press",
+  openedLinks().length === 1,
+  JSON.stringify(calls),
+);
+calls.length = 0;
+document.fire("click", press({ target: link }));
+check(
+  "opened a link from a click with no press behind it",
+  openedLinks().length === 1,
+  JSON.stringify(calls),
+);
+link.remove();
+calls.length = 0;
 
 console.log("questions");
 app.state.project = "/home/dev/Projects/oxide";
@@ -2226,6 +2334,54 @@ check(
   "stopped standing in once the store listed it",
   elementFor("projects-tree").outline().split("Fix the sidebar").length - 1 === 1,
   elementFor("projects-tree").outline(),
+);
+
+console.log("removing a project");
+// A row's ✕ is inside the row it removes, so the press it takes is the ✕'s and
+// not the row's, and the dialog that opens answers with the choice it was
+// opened with.
+const removeTarget = {
+  id: "/home/dev/Projects/oxide",
+  path: "/home/dev/Projects/oxide",
+  name: "oxide",
+  registered: true,
+  exists: true,
+  session_count: 2,
+};
+app.state.projects = [removeTarget];
+app.state.sessions = [
+  { id: "a1", cwd: removeTarget.path, name: "One" },
+  { id: "a2", cwd: removeTarget.path, name: "Two" },
+];
+app.state.project = null;
+await app.renderProjectsTree();
+const removeRow = elementFor("projects-tree").children[0].children[0];
+const removeButton = removeRow.children.find((node) => String(node.className).includes("row-remove"));
+calls.length = 0;
+const removePress = press({ target: removeButton });
+removeButton.fire("pointerdown", removePress);
+removeButton.fire("pointerup", removePress);
+await nextTick();
+check(
+  "opened the confirm from the row's own ✕, not the row",
+  elementFor("confirm-modal").hidden === false && app.state.project === null,
+  `${elementFor("confirm-modal").hidden} / ${app.state.project}`,
+);
+check(
+  "offered the second choice because the project has threads",
+  elementFor("confirm-alt").hidden === false &&
+    /Delete 2 threads/.test(elementFor("confirm-alt").textContent),
+  `${elementFor("confirm-alt").hidden} / ${elementFor("confirm-alt").textContent}`,
+);
+calls.length = 0;
+const altPress = press({ target: elementFor("confirm-alt") });
+elementFor("confirm-alt").fire("pointerdown", altPress);
+elementFor("confirm-alt").fire("pointerup", altPress);
+await nextTick();
+check(
+  "answered with that dialog's own choice",
+  calls.filter(([name]) => name === "delete_session").length === 2,
+  JSON.stringify(calls.map(([name]) => name)),
 );
 
 console.log(failures.length ? `\n${failures.length} failed` : "\nall checks passed");

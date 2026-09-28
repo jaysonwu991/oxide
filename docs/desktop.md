@@ -81,8 +81,8 @@ The window follows a Codex-style layout:
   window under the pointer is made key ahead of the dispatch when the app is not
   active, so the first click after the app loses focus is the click the user
   meant rather than one spent focusing the window. A press that still arrives as
-  that focus press, with no click behind it, is answered by the controls a
-  half-written message reaches for (see **Composer**).
+  that focus press, with no click behind it, is answered by the control it landed
+  on, whatever that control is (see **Composer**).
 - **Conversation** — a centered 760px column. User messages are right-aligned
   bubbles; assistant replies render Markdown and links open in the system
   browser (see [Rendering](#rendering)). Tool calls are compact cards
@@ -92,22 +92,29 @@ The window follows a Codex-style layout:
 - **Composer** — a floating rounded box with the attach, model, and reasoning
   chips on the left and one action on the right, which swaps rather than
   sitting beside a second button: **Stop** while a turn runs and there is
-  nothing to say, **Send**/**Steer** the moment there is. **Send**/**Stop** and
-  an attachment thumbnail answer the press itself — the press is captured where
-  it began and finishes on the release, as a click does but without needing the
-  same element under the pointer by then — because a first press can arrive as
-  the one that takes focus, and a press on a draggable image starts the drag
+  nothing to say, **Send**/**Steer** the moment there is. Every control answers
+  the press itself — each button the app wires up, each row of a sidebar, list
+  or change card, and the thumbnail in the attachment strip — because a control
+  left out of it is one the reader has to press twice: the press is captured
+  where it began and finishes on the release, as a click does but without
+  needing the same element under the pointer by then. That is what a thumbnail
+  needs for its own reason too — a press on a draggable image starts the drag
   WebKit withholds the click for, which is why a thumbnail's image is marked
   undraggable and both the drag and the press's default action are refused; the
   release is answered whichever stream carries it, so a canceled pointer
   sequence still finishes on the mouse one, and either way exactly once. A press
   dragged off the control sends nothing, and a
-  keyboard activation still runs it once. The status and
+  keyboard activation still runs it once. A control inside another answers the
+  press and the one around it declines — a thread's ✕ removes the thread rather
+  than selecting the row, and a chip's ✕ removes the chip rather than opening
+  the picture — just as the click would have gone to the inner one alone. The
+  status and
   token/cost usage sit just below it. The 📎 button (or a pasted clipboard
   image) attaches images/PDFs, shown above the input as thumbnails that open a
   full preview when clicked (or focused and opened with Enter/Space) — the
-  preview is closed by the ✕ icon button its siblings carry, which rides the
-  picture's own top-right corner in the error color — and can be
+  preview is closed by the ✕ icon button its siblings carry, which sits in a
+  head row above the picture rather than on it, so what closes the overlay is
+  never painted over the image it shows, and carries the error color — and can be
   removed before sending; a message queued while busy carries the same
   attachments, and reopening a stored thread restores their thumbnails. Pasted and picked images are
   downscaled to a 1568px long edge in the webview before they are sent, and an

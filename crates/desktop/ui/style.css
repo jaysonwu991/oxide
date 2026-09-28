@@ -574,32 +574,29 @@ body.resizing { cursor: col-resize; user-select: none; }
   border-radius: 8px;
   cursor: zoom-in;
 }
-/* The preview's ✕ rides the picture's own top-right corner, so it reads as
-   belonging to the image rather than to the overlay behind it. */
+/* The preview's ✕ sits in a head row above the picture — outside the image it
+   closes — rather than riding the picture's own corner. */
 .image-view {
   display: flex;
+  flex-direction: column;
   align-items: center;
   max-width: 90vw;
   max-height: 90vh;
 }
-.image-frame { position: relative; display: inline-flex; }
+.image-head {
+  display: flex;
+  justify-content: flex-end;
+  align-self: stretch;
+  margin-bottom: 8px;
+}
 .image-view img {
   max-width: 88vw;
-  max-height: 80vh;
+  max-height: 78vh;
   border-radius: 12px;
   box-shadow: 0 18px 44px rgba(0, 0, 0, 0.6);
 }
-#image-view-close {
-  position: absolute;
-  top: 10px;
-  right: 10px;
-  color: var(--error);
-  background: rgba(0, 0, 0, 0.55);
-}
-#image-view-close:hover {
-  color: var(--error);
-  background: rgba(0, 0, 0, 0.78);
-}
+#image-view-close { color: var(--error); }
+#image-view-close:hover { color: var(--error); }
 .composer-bar { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
 /* Stop and Send/Steer share this corner, so they share its box: the button that
    is showing does not move as the composer is typed into. */
