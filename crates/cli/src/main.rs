@@ -1,6 +1,8 @@
+mod install;
 mod theme;
 mod tui;
 mod uninstall;
+mod update;
 
 // The shared agent core (config, providers, tools, MCP, sessions, snapshots,
 // plugins, agent loop) is re-exported at the crate root so existing `crate::`
@@ -167,6 +169,18 @@ enum Command {
         #[arg(long)]
         dry_run: bool,
         /// Skip the confirmation prompt
+        #[arg(short = 'f', long)]
+        force: bool,
+    },
+    /// Update the CLI to the latest release
+    Update {
+        /// Report the newest release without installing it
+        #[arg(long)]
+        check: bool,
+        /// Install a specific version (a tag like v0.26.0, or a bare 0.26.0)
+        #[arg(long, value_name = "VERSION")]
+        version: Option<String>,
+        /// Install even when the running version is already current
         #[arg(short = 'f', long)]
         force: bool,
     },
@@ -492,6 +506,18 @@ async fn main() -> Result<()> {
                 dry_run,
                 force,
             }),
+            Command::Update {
+                check,
+                version,
+                force,
+            } => {
+                update::run(update::Options {
+                    check,
+                    version,
+                    force,
+                })
+                .await
+            }
             Command::Sessions { action } => {
                 let current_dir = std::env::current_dir().context("resolving current directory")?;
                 match action {
@@ -1192,6 +1218,30 @@ mod tests {
         // Not asking wins over a stored denial, which is the case the flag was
         // silently losing before.
         assert!(resolve_auto_approve(false, true, false));
+    }
+
+    #[test]
+    fn parses_update_options() {
+        let cli = Cli::try_parse_from(["oxide", "update", "--check"]).unwrap();
+        assert!(matches!(
+            cli.command,
+            Some(Command::Update {
+                check: true,
+                version: None,
+                force: false,
+            })
+        ));
+
+        let cli =
+            Cli::try_parse_from(["oxide", "update", "--version", "0.25.0", "--force"]).unwrap();
+        assert!(matches!(
+            cli.command,
+            Some(Command::Update {
+                check: false,
+                version: Some(version),
+                force: true,
+            }) if version == "0.25.0"
+        ));
     }
 
     #[test]

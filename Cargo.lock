@@ -2469,10 +2469,13 @@ dependencies = [
  "crossterm",
  "dirs 5.0.1",
  "futures",
+ "getrandom 0.2.17",
  "oxide-core",
  "ratatui",
+ "reqwest 0.12.28",
  "serde",
  "serde_json",
+ "sha2",
  "tokio",
 ]
 

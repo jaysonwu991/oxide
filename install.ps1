@@ -240,6 +240,18 @@
             & chmod 0755 $dest
         }
 
+        # A file beside the binary naming the install, so `oxide update`
+        # recognizes a released install whatever OXIDE_INSTALL_DIR put it in.
+        # The version is read back from the binary that was just installed.
+        $installedVersion = ""
+        try {
+            $parts = (& $dest --version 2>$null) -split "\s+"
+            if ($parts.Count -ge 2) { $installedVersion = $parts[1] }
+        } catch {
+        }
+        $markerPath = Join-Path $installDir ".oxide-install"
+        [System.IO.File]::WriteAllText($markerPath, "source $Repo`nversion $installedVersion`n")
+
         Write-Info "installed Oxide to $dest"
         Test-PathWarning $installDir $platform
     } finally {
