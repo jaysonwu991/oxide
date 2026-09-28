@@ -56,12 +56,20 @@ The window follows a Codex-style layout:
 - **Sidebar** — the `Oxide` brand, a **New task** button, the **Projects**
   tree, and a footer pinned to the bottom with **Connect**, project trust,
   theme, tool approvals, and help. The tree groups each project's sessions
-  under it, and every project and session row carries a `✕` that removes it
-  (see [Multiple projects](#multiple-projects-cross-repo)); hovering a session
+  under it, and every project and stored session row carries a `✕` that removes
+  it (see [Multiple projects](#multiple-projects-cross-repo)); hovering a session
   shows its `⌘1`…`⌘9` shortcut. The active project and the active thread both
   carry the accent bar, so which one is on screen reads the same in either
   list, and a thread is listed — under the summarized title of its first
-  message — as soon as its turn starts rather than once it ends. The **+ New**
+  message — as soon as its turn starts rather than once it ends: the thread the
+  window is in stands in for itself in the tree, in that project's session
+  count and in the `/sessions` list until the store has written it, keyed by
+  the same id so it is never listed twice. Its row is the window's own while no
+  file stands behind it, so selecting it leaves the thread on screen as it is
+  and it is offered no `✕` — there is nothing stored to delete. A window with
+  no thread on screen is
+  starting one, so its next message opens a thread of its own instead of being
+  appended to whichever thread was used last. The **+ New**
   button in the Projects header
   opens the **Create project** dialog: pick one or more source folders and the
   **Project name** defaults to the first folder's basename (still editable), so
@@ -71,10 +79,13 @@ The window follows a Codex-style layout:
   the listing has it. A new task carries no placeholder, and the provider is
   not repeated here because the composer's model chip already names it; the
   right side says only what has to be acted on (`no API key`, `project
-  resources off`). The window is created with `acceptFirstMouse`, and the window
-  under the pointer is made key before a press is dispatched, so the first click
-  after the app loses focus is the click the user meant rather than one spent
-  focusing the window.
+  resources off`). The window is created with `acceptFirstMouse`, which reaches
+  the webview (tauri's window config maps onto `WebviewAttributes`), and the
+  window under the pointer is made key ahead of the dispatch when the app is not
+  active, so the first click after the app loses focus is the click the user
+  meant rather than one spent focusing the window. A press that still arrives as
+  that focus press, with no click behind it, is answered by the control it landed
+  on, whatever that control is (see **Composer**).
 - **Conversation** — a centered 760px column. User messages are right-aligned
   bubbles; assistant replies render Markdown and links open in the system
   browser (see [Rendering](#rendering)). Tool calls are compact cards
@@ -84,10 +95,29 @@ The window follows a Codex-style layout:
 - **Composer** — a floating rounded box with the attach, model, and reasoning
   chips on the left and one action on the right, which swaps rather than
   sitting beside a second button: **Stop** while a turn runs and there is
-  nothing to say, **Send**/**Steer** the moment there is. The status and
+  nothing to say, **Send**/**Steer** the moment there is. Every control answers
+  the press itself — each button the app wires up, each row of a sidebar, list
+  or change card, and the thumbnail in the attachment strip — because a control
+  left out of it is one the reader has to press twice: the press is captured
+  where it began and finishes on the release, as a click does but without
+  needing the same element under the pointer by then. That is what a thumbnail
+  needs for its own reason too — a press on a draggable image starts the drag
+  WebKit withholds the click for, which is why a thumbnail's image is marked
+  undraggable and both the drag and the press's default action are refused; the
+  release is answered whichever stream carries it, so a canceled pointer
+  sequence still finishes on the mouse one, and either way exactly once. A press
+  dragged off the control sends nothing, and a
+  keyboard activation still runs it once. A control inside another answers the
+  press and the one around it declines — a thread's ✕ removes the thread rather
+  than selecting the row, and a chip's ✕ removes the chip rather than opening
+  the picture — just as the click would have gone to the inner one alone. The
+  status and
   token/cost usage sit just below it. The 📎 button (or a pasted clipboard
   image) attaches images/PDFs, shown above the input as thumbnails that open a
-  full preview when clicked (or focused and opened with Enter/Space) and can be
+  full preview when clicked (or focused and opened with Enter/Space) — the
+  preview is closed by the ✕ icon button its siblings carry, which sits in a
+  head row above the picture rather than on it, so what closes the overlay is
+  never painted over the image it shows, and carries the error color — and can be
   removed before sending; a message queued while busy carries the same
   attachments, and reopening a stored thread restores their thumbnails. Pasted and picked images are
   downscaled to a 1568px long edge in the webview before they are sent, and an

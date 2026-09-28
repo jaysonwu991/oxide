@@ -81,6 +81,7 @@ class StubElement {
     this.clientHeight = 10;
     this.selectionStart = 0;
     this.selectionEnd = 0;
+    this.listeners = {};
     this._innerHTML = "";
   }
 
@@ -94,7 +95,7 @@ class StubElement {
   }
 
   getBoundingClientRect() {
-    return { left: 0, top: 0, width: 300, height: 40, bottom: 40 };
+    return { left: 0, top: 0, right: 300, width: 300, height: 40, bottom: 40 };
   }
 
   append(...nodes) {
@@ -121,11 +122,26 @@ class StubElement {
     node.parentNode = parent;
   }
 
-  addEventListener() {}
-  removeEventListener() {}
-  setAttribute() {}
-  getAttribute() {
-    return null;
+  // Listeners are kept so a check can drive the gesture the app answers — a
+  // press that only becomes an action on the release — which a synthesized
+  // `click` cannot stand in for.
+  addEventListener(type, handler) {
+    (this.listeners[type] ||= []).push(handler);
+  }
+  removeEventListener(type, handler) {
+    const list = this.listeners[type];
+    if (list) this.listeners[type] = list.filter((each) => each !== handler);
+  }
+  fire(type, event) {
+    for (const handler of this.listeners[type] || []) handler(event);
+  }
+  setPointerCapture() {}
+  releasePointerCapture() {}
+  setAttribute(name, value) {
+    (this.attributes ||= {})[name] = String(value);
+  }
+  getAttribute(name) {
+    return (this.attributes || {})[name] ?? null;
   }
   focus() {}
   blur() {}
@@ -157,6 +173,15 @@ class StubElement {
     for (const token of rest.match(/\.[A-Za-z0-9_-]+/g) || []) {
       if (!classes.includes(token.slice(1))) return false;
     }
+    // A `[name]` reads as "this attribute is set", and a leading tag name as the
+    // tag itself, which is what `closest("a[href]")` asks for.
+    const present = rest.match(/\[([a-zA-Z-]+)\]/);
+    if (present) {
+      if (this.getAttribute(present[1]) == null) return false;
+      rest = rest.replace(present[0], "");
+    }
+    const tag = rest.match(/^[a-z]+/);
+    if (tag && this.tagName !== tag[0].toUpperCase()) return false;
     return true;
   }
 
@@ -172,7 +197,10 @@ class StubElement {
   querySelectorAll(selector) {
     return this.descendants().filter((node) => node.matchesSelector(selector));
   }
-  closest() {
+  closest(selector) {
+    for (let node = this; node; node = node.parentNode) {
+      if (node.matchesSelector(selector)) return node;
+    }
     return null;
   }
 
@@ -201,6 +229,25 @@ const elementFor = (id) => {
   if (!elements.has(id)) elements.set(id, new StubElement("div", id));
   return elements.get(id);
 };
+/// A press as WebKit delivers it, and the release that follows it: the controls
+/// the composer reaches for answer the gesture rather than the click, so a check
+/// drives both halves itself.
+const press = (over = {}) => ({
+  button: 0,
+  pointerId: 1,
+  clientX: 10,
+  clientY: 10,
+  // A control inside another one stops the press there, as it does a click.
+  stopPropagation() {},
+  // A check that cares whether the page refused a default action reads this
+  // back: the drag a press would start is refused by hand (and by the picture's
+  // own markup), so the press that opens a thumbnail is never a drag.
+  preventDefault() {
+    this.refused = true;
+  },
+  ...over,
+});
+const nextTick = () => new Promise((resolve) => setTimeout(resolve, 0));
 
 // ---------- the fixture the bridge answers with ----------
 
@@ -362,6 +409,9 @@ const invoke = async (command, args = {}) => {
     case "all_sessions":
       if (threadsError) throw threadsError;
       return threads.map((session) => ({ ...session }));
+    case "remove_project":
+      projectRows = projectRows.filter((row) => row.id !== args.id);
+      return projectRows.map((row) => ({ ...row }));
     case "session_messages": {
       const target = (threads || []).find((session) => session.id === args.id);
       return {
@@ -394,7 +444,15 @@ const document = {
   createElement: (tag) => new StubElement(tag),
   querySelector: () => null,
   querySelectorAll: () => [],
-  addEventListener: () => {},
+  // The page closes over the document, so the listeners it puts there are kept
+  // too: a link answers a press the way a control answers for itself.
+  addEventListener(type, handler) {
+    (this.listeners[type] ||= []).push(handler);
+  },
+  fire(type, event) {
+    for (const handler of this.listeners[type] || []) handler(event);
+  },
+  listeners: {},
   body: new StubElement("body"),
   documentElement: new StubElement("html"),
 };
@@ -455,7 +513,8 @@ vm.runInThisContext(
     " addAttachment, addAttachmentFiles, el, showQuestion, showQuestionStep, questionNext," +
     " answerQuestion, collectAnswers, requestAt, acceptAt, moveAt, closeAt, atKey," +
     " resetTranscript, renderChanges, closeReview, undoChanges," +
-    " loadSessions, openSession, renderProjectMeta, updateSendState, setBusy, setIdle," +
+    " loadSessions, renderProjectsTree, renderSessions, openSession, renderProjectMeta, updateSendState, setBusy, setIdle," +
+    " listedSessions, selectSessionFromTree, removeSession," +
     " startTool, finishTool, toggleTool };\n",
 );
 
@@ -511,6 +570,7 @@ await app.openDefaultProject();
 // it grows out of the composer's top edge and stays stuck to it.
 console.log("popovers");
 const shell = readFileSync(`${here}index.html`, "utf8");
+const sheet = readFileSync(`${here}style.css`, "utf8");
 const shellAt = (needle) => shell.indexOf(needle);
 const buttonFor = (id) => {
   const at = shell.indexOf(`id="${id}"`);
@@ -622,6 +682,20 @@ check(
 );
 await tick();
 check("closed the list once the reference was done", atBox.hidden === true);
+
+// A row answers a press the way it answers a key — that is the gesture the
+// reader's hand makes — while the press is refused so the caret stays in the
+// message box it is completing into.
+await typeAt("review @sr");
+const atPress = press();
+atRows.children[0].fire("mousedown", atPress);
+atRows.children[0].fire("pointerdown", atPress);
+atRows.children[0].fire("pointerup", atPress);
+check(
+  "took the row a press landed on, with the caret still in the message box",
+  composer.value === "review @src/" && composer.selectionStart === 12 && atPress.refused === true,
+  `${composer.value} @ ${composer.selectionStart} / refused ${atPress.refused}`,
+);
 
 await typeAt("review @sr");
 app.atKey({ key: "Escape" });
@@ -845,12 +919,17 @@ check(
 check("left `/sessions <id>` to the agent", (await app.runSlashCommand("/session fe0031b1")) === false);
 
 threads = [];
+// With no thread open either: the thread the window is in is listed even when
+// the store has none, so an empty listing is the case with nothing open at all.
+const openThread = app.state.session;
+app.state.session = null;
 await app.runSlashCommand("/sessions");
 check(
   "said so when the project has no threads",
   elementFor("sessions-list").innerHTML.includes("No threads for this project yet"),
   elementFor("sessions-list").innerHTML,
 );
+app.state.session = openThread;
 
 // A store that cannot be read is not the same as a project with no threads, and
 // saying so is the whole point of a listing opened where it was asked.
@@ -929,6 +1008,81 @@ check(
 );
 elementFor("image-view-close").onclick();
 check("closed it again", elementFor("image-modal").hidden === true);
+check(
+  "gave the preview an icon to close it with",
+  /id="image-view-close"[^>]*aria-label="Close"[^>]*>✕$/.test(buttonFor("image-view-close")),
+  buttonFor("image-view-close"),
+);
+check(
+  "put that icon outside the picture, in the preview's own head row",
+  /class="image-head"[\s\S]*id="image-view-close"[\s\S]*id="image-view-img"/.test(shell) &&
+    /\.image-view \{[^}]*flex-direction: column;[^}]*\}/.test(sheet) &&
+    !/class="image-frame"/.test(shell) &&
+    !/#image-view-close \{[^}]*position: absolute;[^}]*\}/.test(sheet) &&
+    /#image-view-close \{ color: var\(--error\); \}/.test(sheet),
+  `${shellAt("class=\"image-head\"")} / ${sheet.indexOf("#image-view-close {")}`,
+);
+// A control left out of that is one the reader has to press twice, so every
+// button the shell declares answers its press.
+const shellButtons = [...shell.matchAll(/<button[^>]*\bid="([^"]+)"/g)].map((m) => m[1]);
+const unwiredButtons = shellButtons.filter((id) => !elementFor(id).answersPress);
+check(
+  "wired every button the shell declares to answer its press",
+  shellButtons.length > 0 && unwiredButtons.length === 0,
+  unwiredButtons.join(", "),
+);
+// The thumbnail is an image, and WebKit drags an image by default: the drag
+// session would take the release that opens the preview with it, so neither the
+// gesture nor the picture is allowed to become one.
+check(
+  "let a thumbnail not be dragged out of the composer",
+  opener?.children[0]?.draggable === false &&
+    /\.att-open img \{ -webkit-user-drag: none;[^}]*\}/.test(sheet),
+  String(opener?.children[0]?.draggable),
+);
+const dragPress = press();
+opener.fire("dragstart", dragPress);
+check("refused the drag a press would start", dragPress.refused === true);
+// The release is what the app answers, and either stream may be the one that
+// carries it, so a pointer press that was canceled still answers on the mouse
+// stream — and it is answered once.
+const mousePress = press();
+const answeredOnce = [];
+opener.fire("pointerdown", mousePress);
+opener.fire("pointercancel", mousePress);
+opener.fire("mouseup", mousePress);
+answeredOnce.push(elementFor("image-modal").hidden);
+check("left a canceled press alone", answeredOnce[0] === true, String(answeredOnce[0]));
+opener.fire("pointerdown", mousePress);
+opener.fire("mouseup", mousePress);
+const mouseReleased = elementFor("image-modal").hidden === false;
+opener.fire("mouseup", mousePress);
+check(
+  "answered the release on the mouse stream, and only once",
+  mouseReleased && elementFor("image-view-img").src === shot,
+  String(mouseReleased),
+);
+elementFor("image-view-close").onclick();
+opener.fire("pointerdown", mousePress);
+opener.fire("pointerup", mousePress);
+opener.fire("mouseup", mousePress);
+check(
+  "and answered a second release only once",
+  elementFor("image-modal").hidden === false,
+  String(elementFor("image-modal").hidden),
+);
+elementFor("image-view-close").onclick();
+// The thumbnail is a draggable image, so the press that opens the preview is the
+// one whose click WebKit withholds; the release is what the app answers.
+elementFor("image-modal").hidden = true;
+opener.fire("pointerdown", press());
+opener.fire("pointerup", press());
+check(
+  "opened the preview from the press itself",
+  elementFor("image-view-img").src === shot && elementFor("image-modal").hidden === false,
+  String(elementFor("image-modal").hidden),
+);
+elementFor("image-view-close").onclick();
 
 check("kept a PDF attachment", app.addAttachment("report.pdf", "data:application/pdf;base64,AA") === true);
 const pdf = chips()[1];
@@ -987,7 +1141,63 @@ check(
 );
 app.state.attachments = [];
 
-// ---------- the question dialog ----------
+// Every control answers its press, not only the two in the composer's corner: a
+// button left out of it is one the reader has to press twice. The control the
+// press began on is the one that answers — a chip's ✕ removes the chip, and the
+// picture it sits in does not open over the same gesture.
+app.addAttachment("shot.png", shot);
+const chipOpen = chips()[0].querySelector(".att-open");
+const chipRemove = chips()[0].querySelector(".att-remove");
+const chipPress = press({ target: chipRemove });
+chipOpen.fire("pointerdown", chipPress);
+chipRemove.fire("pointerdown", chipPress);
+chipRemove.fire("pointerup", chipPress);
+chipOpen.fire("pointerup", chipPress);
+check(
+  "answered a press on a chip's ✕, without opening the picture around it",
+  app.state.attachments.length === 0 && elementFor("image-modal").hidden === true,
+  `${app.state.attachments.length} / ${elementFor("image-modal").hidden}`,
+);
+elementFor("help-modal").hidden = false;
+const helpPress = press();
+elementFor("help-close").fire("pointerdown", helpPress);
+elementFor("help-close").fire("pointerup", helpPress);
+check(
+  "answered a dialog button's press itself",
+  elementFor("help-modal").hidden === true,
+  String(elementFor("help-modal").hidden),
+);
+
+// A link opens from the press too, and the click that trails it is the
+// duplicate: one gesture opens the page once.
+const link = new StubElement("a");
+link.setAttribute("href", "https://example.com/docs");
+elementFor("transcript").appendChild(link);
+const openedLinks = () => calls.filter(([name]) => name === "open_url");
+calls.length = 0;
+const linkPress = press({ target: link });
+document.fire("pointerdown", linkPress);
+document.fire("pointerup", linkPress);
+check(
+  "opened a link from the press, with no click behind it",
+  openedLinks().length === 1 && openedLinks()[0][1]?.url === "https://example.com/docs",
+  JSON.stringify(calls),
+);
+document.fire("click", press({ target: link }));
+check(
+  "dropped the click that trailed the press",
+  openedLinks().length === 1,
+  JSON.stringify(calls),
+);
+calls.length = 0;
+document.fire("click", press({ target: link }));
+check(
+  "opened a link from a click with no press behind it",
+  openedLinks().length === 1,
+  JSON.stringify(calls),
+);
+link.remove();
+calls.length = 0;
 
 console.log("questions");
 app.state.project = "/home/dev/Projects/oxide";
@@ -1990,6 +2200,236 @@ check(
     elementFor("stop").hidden === true &&
     elementFor("send").title === "Send (Enter)",
   `${elementFor("send").title} / stop ${elementFor("stop").hidden}`,
+);
+
+// A press can lose its click: the first press on a window that has just come
+// forward is the one that takes focus, and a press that starts a drag loses it
+// the same way. The two controls a half-written message reaches for answer the
+// gesture itself — the press is captured where it began and finishes on the
+// release, which is what a click is — and the click that may still trail the
+// press is the duplicate to drop.
+calls.length = 0;
+elementFor("prompt").value = "keep going";
+app.setIdle();
+app.updateSendState();
+elementFor("send").onclick({ detail: 0 });
+await nextTick();
+const keyboardSend = calls.map(([name]) => name);
+check("sent from a keyboard activation, which has no press", keyboardSend.length > 0, JSON.stringify(calls));
+
+calls.length = 0;
+elementFor("prompt").value = "keep going";
+app.setIdle();
+app.updateSendState();
+elementFor("send").fire("pointerdown", press());
+elementFor("send").fire("pointerup", press());
+await nextTick();
+check(
+  "sent on a press that never became a click",
+  String(calls.map(([name]) => name)) === String(keyboardSend),
+  JSON.stringify(calls),
+);
+const sentCalls = calls.length;
+elementFor("send").onclick({ detail: 1 });
+await nextTick();
+check("dropped the click that trailed the press", calls.length === sentCalls, JSON.stringify(calls));
+
+calls.length = 0;
+elementFor("prompt").value = "not yet";
+app.setIdle();
+app.updateSendState();
+elementFor("send").fire("pointerdown", press());
+elementFor("send").fire("pointerup", press({ clientX: 400 }));
+await nextTick();
+check("left a press that came up off the button alone", calls.length === 0, JSON.stringify(calls));
+app.setIdle();
+elementFor("send").onclick({ detail: 1 });
+await nextTick();
+check("and still acted on the click after it", calls.length > 0, JSON.stringify(calls));
+
+// Both streams deliver the release of one press, and the action they share is
+// the one that must not run twice.
+calls.length = 0;
+app.state.session = null;
+elementFor("prompt").value = "just the once";
+app.setIdle();
+app.updateSendState();
+elementFor("send").fire("pointerdown", press());
+elementFor("send").fire("pointerup", press());
+elementFor("send").fire("mouseup", press());
+await nextTick();
+const sends = () => calls.filter(([name]) => name === "send_prompt");
+check("sent once when both streams carried the release", sends().length === 1, JSON.stringify(calls));
+// A window with no thread on screen is starting one: sending `latest` would
+// append this message to whichever thread was used last, which is not the
+// thread the reader is looking at and not one the sidebar would gain.
+check(
+  "opened a thread of its own when the window had none",
+  sends()[0]?.[1]?.session === "new",
+  JSON.stringify(sends()[0]?.[1]),
+);
+app.state.session = "cafe0000cafe0000";
+calls.length = 0;
+elementFor("prompt").value = "carry on";
+app.setIdle();
+app.updateSendState();
+elementFor("send").onclick({ detail: 0 });
+await nextTick();
+check(
+  "kept sending into the thread on screen",
+  sends()[0]?.[1]?.session === "cafe0000cafe0000",
+  JSON.stringify(sends()[0]?.[1]),
+);
+app.state.session = null;
+
+console.log("a thread that is not stored yet");
+// `all_sessions` lists what is on disk, and a thread that was just started has
+// not written its first entry: every listing — the sidebar's tree, its count for
+// the project and the sessions list — stands it in until the store catches up.
+app.setIdle();
+app.state.projects = [{ name: "oxide", path: "/tmp/oxide", registered: false }];
+app.state.project = "/tmp/oxide";
+app.state.projectName = "oxide";
+app.state.sessions = [
+  {
+    id: "1111111111111111",
+    name: "An older thread",
+    cwd: "/tmp/oxide",
+    created_at: 1,
+    modified_at: 2,
+    message_count: 4,
+    preview: "",
+    path: "/tmp/sessions/older.jsonl",
+  },
+];
+app.state.session = "6f3031b2beef";
+app.state.runTitle = "Fix the sidebar";
+await app.renderProjectsTree();
+const tree = elementFor("projects-tree").outline();
+check(
+  "listed the thread the window is in beside the stored ones",
+  tree.includes("Fix the sidebar") && tree.includes("An older thread"),
+  tree,
+);
+const group = elementFor("projects-tree").children[0];
+check(
+  "counted it for its project",
+  group?.children[0]?.children[2]?.textContent === 2,
+  String(group?.children[0]?.children[2]?.textContent),
+);
+check(
+  "marked it as the thread on screen",
+  String(group?.children[1]?.children[0]?.className).includes("active"),
+  String(group?.children[1]?.children[0]?.className),
+);
+app.renderSessions();
+const sessionRows = elementFor("sessions-list").outline();
+check(
+  "listed it in the project's session list too",
+  sessionRows.includes("Fix the sidebar") && sessionRows.includes("An older thread"),
+  sessionRows,
+);
+// It is the window's own row while the store has no file behind it, so it is
+// stamped in the store's unit — Unix seconds, the number `sessionAge` subtracts
+// from `Date.now() / 1000` — and neither listing routes it through the commands
+// that read a session off disk.
+const synthetic = app.listedSessions().find((session) => session.id === "6f3031b2beef");
+check(
+  "stamped it in the unit the store reports",
+  Number.isInteger(synthetic.modified_at) &&
+    synthetic.created_at === synthetic.modified_at &&
+    synthetic.modified_at <= Date.now() / 1000 &&
+    synthetic.modified_at > Date.now() / 1000 - 5,
+  `${synthetic.created_at} / ${synthetic.modified_at}`,
+);
+const syntheticRow = group?.children[1]?.children[0];
+calls.length = 0;
+const selectPress = press({ target: syntheticRow });
+syntheticRow.fire("pointerdown", selectPress);
+syntheticRow.fire("pointerup", selectPress);
+await nextTick();
+check(
+  "selected the thread already on screen without reading a file",
+  calls.every(([name]) => name !== "session_messages") && app.state.runTitle === "Fix the sidebar",
+  `${JSON.stringify(calls.map(([name]) => name))} / ${app.state.runTitle}`,
+);
+const listedRow = elementFor("sessions-list").children[0];
+calls.length = 0;
+const rowPress = press({ target: listedRow });
+listedRow.fire("pointerdown", rowPress);
+listedRow.fire("pointerup", rowPress);
+await nextTick();
+check(
+  "opened that thread from the sessions list the same way",
+  calls.every(([name]) => name !== "session_messages") && app.state.session === "6f3031b2beef",
+  `${JSON.stringify(calls.map(([name]) => name))} / ${app.state.session}`,
+);
+check(
+  "offered no ✕ on a thread with nothing stored",
+  !syntheticRow.children.some((node) => String(node.className).includes("row-remove")),
+  syntheticRow.children.map((node) => String(node.className)).join(","),
+);
+calls.length = 0;
+await app.removeSession(synthetic);
+check(
+  "deleted nothing for a thread the store has not written",
+  !calls.length && app.state.session === "6f3031b2beef",
+  JSON.stringify(calls.map(([name]) => name)),
+);
+app.state.sessions.unshift({ ...app.state.sessions[0], id: "6f3031b2beef", name: "Fix the sidebar" });
+await app.renderProjectsTree();
+check(
+  "stopped standing in once the store listed it",
+  elementFor("projects-tree").outline().split("Fix the sidebar").length - 1 === 1,
+  elementFor("projects-tree").outline(),
+);
+
+console.log("removing a project");
+// A row's ✕ is inside the row it removes, so the press it takes is the ✕'s and
+// not the row's, and the dialog that opens answers with the choice it was
+// opened with.
+const removeTarget = {
+  id: "/home/dev/Projects/oxide",
+  path: "/home/dev/Projects/oxide",
+  name: "oxide",
+  registered: true,
+  exists: true,
+  session_count: 2,
+};
+app.state.projects = [removeTarget];
+app.state.sessions = [
+  { id: "a1", cwd: removeTarget.path, name: "One" },
+  { id: "a2", cwd: removeTarget.path, name: "Two" },
+];
+app.state.project = null;
+await app.renderProjectsTree();
+const removeRow = elementFor("projects-tree").children[0].children[0];
+const removeButton = removeRow.children.find((node) => String(node.className).includes("row-remove"));
+calls.length = 0;
+const removePress = press({ target: removeButton });
+removeButton.fire("pointerdown", removePress);
+removeButton.fire("pointerup", removePress);
+await nextTick();
+check(
+  "opened the confirm from the row's own ✕, not the row",
+  elementFor("confirm-modal").hidden === false && app.state.project === null,
+  `${elementFor("confirm-modal").hidden} / ${app.state.project}`,
+);
+check(
+  "offered the second choice because the project has threads",
+  elementFor("confirm-alt").hidden === false &&
+    /Delete 2 threads/.test(elementFor("confirm-alt").textContent),
+  `${elementFor("confirm-alt").hidden} / ${elementFor("confirm-alt").textContent}`,
+);
+calls.length = 0;
+const altPress = press({ target: elementFor("confirm-alt") });
+elementFor("confirm-alt").fire("pointerdown", altPress);
+elementFor("confirm-alt").fire("pointerup", altPress);
+await nextTick();
+check(
+  "answered with that dialog's own choice",
+  calls.filter(([name]) => name === "delete_session").length === 2,
+  JSON.stringify(calls.map(([name]) => name)),
 );
 
 console.log(failures.length ? `\n${failures.length} failed` : "\nall checks passed");

@@ -1,12 +1,16 @@
 //! macOS spends the first click on a window that is not key by activating the
 //! app, and only hands that press to the view under the pointer when the view
-//! declares `acceptsFirstMouse`. Wry does declare it, and the desktop's window
-//! config asks for it, so the press is still eaten before the page sees it: a
-//! click aimed at the composer, a sidebar row or an attachment thumbnail has to
-//! be made twice whenever another app had focus. A window that is already key
-//! never takes that path, so the press is spent making it key before AppKit
-//! dispatches it — the monitor below runs ahead of the dispatch, and the click
-//! then lands on what the pointer was aimed at.
+//! declares `acceptsFirstMouse`. That part is wired up: the window config's
+//! `acceptFirstMouse` becomes `WebviewAttributes::accept_first_mouse`, and wry's
+//! web view answers `acceptsFirstMouse:` with it. What an activation still
+//! decides is the moment the press arrives — AppKit will not dispatch a press to
+//! a window it is in the middle of making key — so the monitor below runs ahead
+//! of that dispatch and makes the window under the pointer key first, which
+//! leaves it key by the time the press is delivered.
+//!
+//! Every control in the page answers the gesture for itself (`pressActivated` in
+//! `ui/app.js`): a first press can still arrive as the one that takes focus, with
+//! no click behind it, and a press that starts a drag loses its click too.
 
 use std::ptr::NonNull;
 
@@ -15,8 +19,9 @@ use objc2::runtime::NSObjectProtocol;
 use objc2::{sel, MainThreadMarker};
 use objc2_app_kit::{NSApplication, NSEvent, NSEventMask, NSWindow};
 
-/// Make the window under the pointer key before a press reaches it, so the press
-/// is delivered rather than consumed by activating the app.
+/// Make the window under the pointer key — activating the app if it is not
+/// active — before a press reaches it, so the press is delivered rather than
+/// consumed by activating the app.
 pub fn install() {
     // The block's return type is the binding's own — `Fn(NonNull<NSEvent>) ->
     // *mut NSEvent`, whose doc reads "block's return must be a valid pointer or
@@ -28,7 +33,11 @@ pub fn install() {
         let press = unsafe { event.as_ref() };
         if let Some(mtm) = MainThreadMarker::new() {
             if let Some(window) = press.window(mtm) {
-                if !window.isKeyWindow() {
+                // Only an activation can change whether this press is delivered:
+                // the view already accepts a first mouse, so a press into a
+                // window of the active app lands as it stands, and taking the key
+                // away from whatever holds it mid-press is what would drop it.
+                if !window.isKeyWindow() && !NSApplication::sharedApplication(mtm).isActive() {
                     take_key(&window, mtm);
                 }
             }
@@ -55,11 +64,14 @@ pub fn install() {
 fn take_key(window: &NSWindow, mtm: MainThreadMarker) {
     let app = NSApplication::sharedApplication(mtm);
     if !app.isActive() {
+        // The press being answered is still in flight, so the activation has to
+        // have happened by the time AppKit decides whether to hand that press to
+        // the view: `activate` may be deferred to the next pass of the event
+        // loop, and the call it replaced took effect at once.
+        #[allow(deprecated)]
+        app.activateIgnoringOtherApps(true);
         if app.respondsToSelector(sel!(activate)) {
             app.activate();
-        } else {
-            #[allow(deprecated)]
-            app.activateIgnoringOtherApps(true);
         }
     }
     window.makeKeyAndOrderFront(None);
