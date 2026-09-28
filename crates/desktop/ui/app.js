@@ -989,6 +989,10 @@ function openableImage(dataUrl, name) {
   const img = document.createElement("img");
   img.src = dataUrl;
   img.alt = name || "attachment";
+  // WebKit drags a picture out of the page by default, and a drag that starts
+  // on it takes the click that opens the preview with it, so the press lands on
+  // an image that never answers. An image is draggable unless it says otherwise.
+  img.draggable = false;
   button.appendChild(img);
   button.onclick = () => openImage(dataUrl);
   return button;

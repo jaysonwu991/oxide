@@ -80,9 +80,18 @@ The window follows a Codex-style layout:
   not repeated here because the composer's model chip already names it; the
   right side says only what has to be acted on (`no API key`, `project
   resources off`). The window is created with `acceptFirstMouse`, which reaches
-  the webview (tauri's window config maps onto `WebviewAttributes`), so the
-  first click after the app loses focus is the click the user meant rather than
-  one spent focusing the window.
+  the webview (tauri's window config maps onto `WebviewAttributes`), and
+  `src/first_click.rs` runs a local `leftMouseDown`/`rightMouseDown` monitor that,
+  for a press into a window while the app itself is not active, activates the app
+  at once — the window keeps its key status in the background, so reading the
+  window rather than the app left the press to be spent bringing Oxide forward —
+  and makes that window key before AppKit dispatches the press, because AppKit
+  will not hand a press to a window it is still making key. A press into a window
+  of the active app is left alone, since taking the key away from whatever holds
+  it mid-press is what would drop the click. The block and the monitor AppKit
+  returns are kept for the life of the process, since releasing the returned
+  object removes the monitor. The first click after the app loses focus is then
+  the click the user meant rather than one spent focusing the window.
 - **Conversation** — a centered 760px column. User messages are right-aligned
   bubbles; assistant replies render Markdown and links open in the system
   browser (see [Rendering](#rendering)). Tool calls are compact cards
@@ -97,7 +106,10 @@ The window follows a Codex-style layout:
   or change card, and the thumbnail in the attachment strip — and a control
   inside another stops its click from reaching the row around it, so a thread's
   ✕ removes the thread rather than selecting the row and a chip's ✕ removes the
-  chip rather than opening the picture. The
+  chip rather than opening the picture — and a thumbnail's picture is undraggable
+  (`-webkit-user-drag: none` in the stylesheet as well), so the gesture on it
+  stays the click that opens the preview instead of starting the drag WebKit
+  withholds it for. The
   status and
   token/cost usage sit just below it. The 📎 button (or a pasted clipboard
   image) attaches images/PDFs, shown above the input as thumbnails that open a

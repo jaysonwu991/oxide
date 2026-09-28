@@ -1002,6 +1002,15 @@ check(
   elementFor("attachments").outline(),
 );
 check("named the attachment", chip?.children[1]?.textContent === "shot.png", chip?.children[1]?.textContent);
+// WebKit drags a picture out of the page by default, and a drag started on the
+// thumbnail is the one gesture whose click is withheld, so the picture is not
+// allowed to become one in the first place.
+check(
+  "let a thumbnail not be dragged out of the composer",
+  opener?.children[0]?.draggable === false &&
+    /\.att-open img \{ -webkit-user-drag: none;[^}]*\}/.test(sheet),
+  String(opener?.children[0]?.draggable),
+);
 opener.onclick();
 check(
   "opened the full-size preview",
