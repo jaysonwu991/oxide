@@ -913,14 +913,19 @@ mod tests {
                         {
                             tokio::time::sleep(std::time::Duration::from_millis(5)).await;
                         }
+                        // Cleared before the answer goes out: a window counts as
+                        // in flight from asking until it is answered, so a
+                        // sequential `spend` — which reads the first answer
+                        // before it sends the second request — cannot meet a
+                        // stale count and pass. A concurrent one has already set
+                        // `overlapping` by arrival.
+                        inflight.fetch_sub(1, Ordering::SeqCst);
                         let body = r#"{"summary":{"total":100}}"#;
                         let response = format!(
                             "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",
                             body.len()
                         );
                         let _ = socket.write_all(response.as_bytes()).await;
-                        // Answered, so no longer one of the windows in flight.
-                        inflight.fetch_sub(1, Ordering::SeqCst);
                     });
                 }
             }
