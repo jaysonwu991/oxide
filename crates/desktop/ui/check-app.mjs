@@ -514,6 +514,7 @@ vm.runInThisContext(
     " answerQuestion, collectAnswers, requestAt, acceptAt, moveAt, closeAt, atKey," +
     " resetTranscript, renderChanges, closeReview, undoChanges," +
     " loadSessions, renderProjectsTree, renderSessions, openSession, renderProjectMeta, updateSendState, setBusy, setIdle," +
+    " listedSessions, selectSessionFromTree, removeSession," +
     " startTool, finishTool, toggleTool };\n",
 );
 
@@ -2327,6 +2328,53 @@ check(
   "listed it in the project's session list too",
   sessionRows.includes("Fix the sidebar") && sessionRows.includes("An older thread"),
   sessionRows,
+);
+// It is the window's own row while the store has no file behind it, so it is
+// stamped in the store's unit — Unix seconds, the number `sessionAge` subtracts
+// from `Date.now() / 1000` — and neither listing routes it through the commands
+// that read a session off disk.
+const synthetic = app.listedSessions().find((session) => session.id === "6f3031b2beef");
+check(
+  "stamped it in the unit the store reports",
+  Number.isInteger(synthetic.modified_at) &&
+    synthetic.created_at === synthetic.modified_at &&
+    synthetic.modified_at <= Date.now() / 1000 &&
+    synthetic.modified_at > Date.now() / 1000 - 5,
+  `${synthetic.created_at} / ${synthetic.modified_at}`,
+);
+const syntheticRow = group?.children[1]?.children[0];
+calls.length = 0;
+const selectPress = press({ target: syntheticRow });
+syntheticRow.fire("pointerdown", selectPress);
+syntheticRow.fire("pointerup", selectPress);
+await nextTick();
+check(
+  "selected the thread already on screen without reading a file",
+  calls.every(([name]) => name !== "session_messages") && app.state.runTitle === "Fix the sidebar",
+  `${JSON.stringify(calls.map(([name]) => name))} / ${app.state.runTitle}`,
+);
+const listedRow = elementFor("sessions-list").children[0];
+calls.length = 0;
+const rowPress = press({ target: listedRow });
+listedRow.fire("pointerdown", rowPress);
+listedRow.fire("pointerup", rowPress);
+await nextTick();
+check(
+  "opened that thread from the sessions list the same way",
+  calls.every(([name]) => name !== "session_messages") && app.state.session === "6f3031b2beef",
+  `${JSON.stringify(calls.map(([name]) => name))} / ${app.state.session}`,
+);
+check(
+  "offered no ✕ on a thread with nothing stored",
+  !syntheticRow.children.some((node) => String(node.className).includes("row-remove")),
+  syntheticRow.children.map((node) => String(node.className)).join(","),
+);
+calls.length = 0;
+await app.removeSession(synthetic);
+check(
+  "deleted nothing for a thread the store has not written",
+  !calls.length && app.state.session === "6f3031b2beef",
+  JSON.stringify(calls.map(([name]) => name)),
 );
 app.state.sessions.unshift({ ...app.state.sessions[0], id: "6f3031b2beef", name: "Fix the sidebar" });
 await app.renderProjectsTree();

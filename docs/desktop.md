@@ -56,15 +56,18 @@ The window follows a Codex-style layout:
 - **Sidebar** — the `Oxide` brand, a **New task** button, the **Projects**
   tree, and a footer pinned to the bottom with **Connect**, project trust,
   theme, tool approvals, and help. The tree groups each project's sessions
-  under it, and every project and session row carries a `✕` that removes it
-  (see [Multiple projects](#multiple-projects-cross-repo)); hovering a session
+  under it, and every project and stored session row carries a `✕` that removes
+  it (see [Multiple projects](#multiple-projects-cross-repo)); hovering a session
   shows its `⌘1`…`⌘9` shortcut. The active project and the active thread both
   carry the accent bar, so which one is on screen reads the same in either
   list, and a thread is listed — under the summarized title of its first
   message — as soon as its turn starts rather than once it ends: the thread the
   window is in stands in for itself in the tree, in that project's session
   count and in the `/sessions` list until the store has written it, keyed by
-  the same id so it is never listed twice. A window with no thread on screen is
+  the same id so it is never listed twice. Its row is the window's own while no
+  file stands behind it, so selecting it leaves the thread on screen as it is
+  and it is offered no `✕` — there is nothing stored to delete. A window with
+  no thread on screen is
   starting one, so its next message opens a thread of its own instead of being
   appended to whichever thread was used last. The **+ New**
   button in the Projects header

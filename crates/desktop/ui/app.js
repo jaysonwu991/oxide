@@ -119,16 +119,25 @@ function listedSessions() {
   const listed = state.sessions || [];
   if (!state.session || !state.project) return listed;
   if (listed.some((session) => session.id === state.session)) return listed;
+  // The timestamps are the store's own unit — Unix seconds, which `sessionAge`
+  // subtracts from `Date.now() / 1000` — rather than milliseconds, which would
+  // read as a thread written in the future and be reported as `just now` for as
+  // long as the store has not written it.
+  const seconds = Math.floor(Date.now() / 1000);
   return [
     {
       id: state.session,
       name: state.runTitle || null,
       cwd: state.project,
-      created_at: Date.now(),
-      modified_at: Date.now(),
+      created_at: seconds,
+      modified_at: seconds,
       message_count: 0,
       preview: "",
       path: "",
+      // A thread the store has not written has no file, so the commands that read
+      // one off disk have nothing to answer for it: its rows are handled in the
+      // window instead of through `session_messages` or `delete_session`.
+      unstored: true,
     },
     ...listed,
   ];
@@ -3539,16 +3548,20 @@ async function renderProjectsTree() {
         sessionItem.appendChild(shortcut);
       }
 
-      const removeSessionBtn = document.createElement("button");
-      removeSessionBtn.type = "button";
-      removeSessionBtn.className = "row-remove";
-      removeSessionBtn.title = "Delete thread";
-      removeSessionBtn.textContent = "✕";
-      pressActivated(removeSessionBtn, (event) => {
-        event.stopPropagation();
-        removeSession(session);
-      });
-      sessionItem.appendChild(removeSessionBtn);
+      // A thread the store has not written has no file to remove, so its row
+      // carries no ✕: leaving it is what starting a new thread does.
+      if (!session.unstored) {
+        const removeSessionBtn = document.createElement("button");
+        removeSessionBtn.type = "button";
+        removeSessionBtn.className = "row-remove";
+        removeSessionBtn.title = "Delete thread";
+        removeSessionBtn.textContent = "✕";
+        pressActivated(removeSessionBtn, (event) => {
+          event.stopPropagation();
+          removeSession(session);
+        });
+        sessionItem.appendChild(removeSessionBtn);
+      }
 
       pressActivated(sessionItem, () => {
         selectSessionFromTree(session);
@@ -3565,6 +3578,12 @@ async function renderProjectsTree() {
 
 async function selectSessionFromTree(session) {
   if (!session) return;
+
+  // The thread on screen whose store entry has not been written yet is the one
+  // already being shown, with its title already in the header: there is no file
+  // to read back, and asking for one would clear the title the row stands in
+  // under. Selecting it leaves the window as it is.
+  if (session.unstored) return;
 
   // Switch to the session's project first if different, so `session_messages`
   // is queried against the right project and the composer is enabled.
@@ -3651,6 +3670,8 @@ async function removeProject(project) {
 }
 
 async function removeSession(session) {
+  // Nothing on disk to remove for a thread the store has not written yet.
+  if (!session || session.unstored) return;
   // A running turn appends to this thread's file as it works, so deleting it
   // here would leave the process writing into a file that is gone.
   if (state.busy && state.session === session.id) {
