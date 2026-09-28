@@ -251,6 +251,9 @@ Overrides:
 | `OXIDE_INSTALL_DIR` | Install directory. Defaults to `%LOCALAPPDATA%\Programs\Oxide` on Windows, `$HOME/.local/bin` elsewhere. |
 | `OXIDE_REPO` | GitHub repo slug. Defaults to `jaysonwu991/oxide`. |
 
+A prebuilt install can keep itself current with `oxide update` (see
+[CLI](#cli)).
+
 ### Supported platforms
 
 | Platform | Rust target | Archive |
@@ -450,6 +453,7 @@ oxide mcp <COMMAND>
 oxide plugin <COMMAND>
 oxide sessions <COMMAND>
 oxide uninstall [--keep-config] [--keep-data] [--dry-run] [--force]
+oxide update [--check] [--version <VERSION>] [--force]
 ```
 
 | Flag | Description |
@@ -523,6 +527,26 @@ oxide sessions merge <a> <b> --summarize   # summarize the second session first
 `delete` is token-free. `compact` and `merge --summarize` make one LLM
 summarization pass per session so a stale session resumes from a small summary
 plus its most recent messages instead of replaying the full transcript.
+
+Update Oxide in place:
+
+```sh
+oxide update                    # install the newest CLI release
+oxide update --check            # report the newest release without installing it
+oxide update --version 0.26.0   # install (or roll back to) a specific version
+oxide update --force            # reinstall even when already current
+```
+
+`oxide update` reads the release manifest the installers use, so a release that
+belongs to the desktop app or the VS Code extension is never installed as the
+CLI, and verifies the archive's SHA-256 checksum (warning when a release carries
+none). It replaces the running binary only after the unpacked one reports its
+version, so a truncated download or a wrong-platform archive is refused instead
+of taking the place of a working binary. `--version` takes a tag or a bare
+version, with or without a leading `v`, and resolves without asking GitHub
+anything. A Homebrew install is left to `brew upgrade oxide`, and a binary that
+is not at a released location — a `target/debug` build — needs `--force` before
+it is replaced. Restart `oxide` to run the new version.
 
 Uninstall Oxide and its related files:
 

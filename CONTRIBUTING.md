@@ -50,8 +50,8 @@ macOS, and Windows.
 
 The repository is a Cargo workspace with three Cargo packages: `oxide-core`
 (`crates/core`, shared agent core), `oxide` (`crates/cli`, the terminal binary:
-`main.rs`, `tui/`, `theme.rs`, `uninstall.rs`), and `oxide-desktop`
-(`crates/desktop`, the Tauri app, documented in
+`main.rs`, `tui/`, `theme.rs`, `install.rs`, `update.rs`, `uninstall.rs`), and
+`oxide-desktop` (`crates/desktop`, the Tauri app, documented in
 [`docs/desktop.md`](docs/desktop.md)). The VS Code extension under
 `editors/vscode` is a separate pnpm/TypeScript package, not a Cargo workspace
 member, documented in [`docs/vscode.md`](docs/vscode.md). Every path below is
@@ -59,7 +59,7 @@ relative to the repository root.
 
 | Path | Responsibility |
 | --- | --- |
-| `crates/cli/src/main.rs` | CLI entry (clap), non-interactive `-p/--print`, `--mode json`, and `--mode rpc` modes, TUI dispatch, and the `mcp`, `sessions`, `plugin`, and `uninstall` subcommands. |
+| `crates/cli/src/main.rs` | CLI entry (clap), non-interactive `-p/--print`, `--mode json`, and `--mode rpc` modes, TUI dispatch, and the `mcp`, `sessions`, `plugin`, `update`, and `uninstall` subcommands. |
 | `crates/core/src/cli.rs` | Non-interactive surface: `@file` expansion, tool filtering, JSON/RPC event framing. |
 | `crates/core/src/config.rs` | Config loading, provider presets, per-provider model memory (`provider_models`), the `Reasoning` level, system prompt composition, `defaultProjectTrust`, context-compaction settings, and the context window. |
 | `crates/core/src/auth.rs` | Multi-provider credential store backing the TUI `/login`, `/logout`, and `/connect` commands, with canonical provider names and aliases. |
@@ -90,7 +90,9 @@ relative to the repository root.
 | `crates/core/src/notify.rs` | Best-effort desktop toast for a finished turn (Notification Center/`notify-send`/WinRT), with `notifyOnComplete`/`notifySound` settings. |
 | `crates/core/src/runner.rs` | Shared `AgentRun` + `spawn_agent`: wires the runtime (MCP, plugins, session, snapshots, LSP), resolves attachments, and starts the agent loop for both the CLI and desktop. |
 | `crates/core/src/theme_view.rs` | Built-in Dark/Light palettes (surface + semantic slots) plus `.oxide/themes/<name>.json` overrides, resolved to `#rrggbb` for the desktop front-end. |
-| `crates/cli/src/uninstall.rs` | `oxide uninstall` install detection and cleanup. |
+| `crates/cli/src/install.rs` | How the running binary was installed (Cargo, Homebrew, prebuilt, unknown), shared by `oxide update` and `oxide uninstall`. |
+| `crates/cli/src/update.rs` | `oxide update`: resolves the newest CLI release from the release manifest, verifies and unpacks its archive, and swaps the binary in place. |
+| `crates/cli/src/uninstall.rs` | `oxide uninstall` cleanup, using the shared install detection. |
 | `crates/core/src/portkey_usage.rs` | Portkey spend status bar behind `/usage`: settings in `portkey-usage.json`, spend from the Portkey analytics API. The TUI `/usage` dialog edits these settings in place. |
 | `crates/cli/src/tui/` | ratatui + crossterm interface with incremental rendering, a stacked welcome banner (block-letter `OXIDE` wordmark above the ecosystem summary), a live state row, a Pi-style footer (path/branch/session, cumulative tokens with cache and cost, context `%`/window, model/thinking, and plugin statuses), a growing editor, background-filled tool panels (Ctrl+O collapses; state-colored with hanging-indented wrapped output, blank line before the body and `Took`), reasoning blocks (Ctrl+T collapses them to `✦ Thought for 1.4s`), inline user/assistant labels, `read` bodies, colored edit diffs, a dim `ChatItem::Status` tip line for idle feedback (copies, toggles), structured `ChatItem::Listing` blocks for `/mcps` and `/plugins`, modal dialogs (provider login, `/usage`, model/session pickers, marketplaces) that place a terminal cursor at the end of each input, Shift+Tab reasoning cycling, Alt+Enter follow-ups with `Alt+Up` to pull queued messages back into the editor, theme-aware project-trust/provider dialogs, and mid-run steering. |
 | `crates/desktop/src/manager.rs` | Desktop multi-project state: the project registry (`desktop/projects.json`), session aggregation across projects, and the shared CLI config/trust loader. |

@@ -1,3 +1,4 @@
+use crate::install::{detect_install_method, InstallMethod};
 use anyhow::{Context, Result};
 use std::fs;
 use std::io::{self, IsTerminal, Write};
@@ -10,25 +11,6 @@ pub struct Options {
     pub keep_data: bool,
     pub dry_run: bool,
     pub force: bool,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum InstallMethod {
-    Cargo,
-    Homebrew,
-    Prebuilt,
-    Unknown,
-}
-
-impl InstallMethod {
-    fn label(self) -> &'static str {
-        match self {
-            Self::Cargo => "cargo",
-            Self::Homebrew => "homebrew",
-            Self::Prebuilt => "prebuilt binary",
-            Self::Unknown => "unknown",
-        }
-    }
 }
 
 #[derive(Debug)]
@@ -207,24 +189,6 @@ fn confirm() -> Result<bool> {
     ))
 }
 
-fn detect_install_method(executable: &Path) -> InstallMethod {
-    let text = executable.to_string_lossy().replace('\\', "/");
-    if text.contains("/Cellar/oxide/") {
-        return InstallMethod::Homebrew;
-    }
-    if text.ends_with("/.cargo/bin/oxide") || text.ends_with("/.cargo/bin/oxide.exe") {
-        return InstallMethod::Cargo;
-    }
-    if text.ends_with("/.local/bin/oxide")
-        || text
-            .to_ascii_lowercase()
-            .ends_with("/programs/oxide/oxide.exe")
-    {
-        return InstallMethod::Prebuilt;
-    }
-    InstallMethod::Unknown
-}
-
 fn run_package_uninstall(program: &str, args: &[&str]) {
     println!();
     println!("Running {program} {}...", args.join(" "));
@@ -319,26 +283,6 @@ mod tests {
             dry_run: false,
             force: true,
         }
-    }
-
-    #[test]
-    fn detects_supported_install_methods() {
-        assert_eq!(
-            detect_install_method(Path::new("/Users/me/.cargo/bin/oxide")),
-            InstallMethod::Cargo
-        );
-        assert_eq!(
-            detect_install_method(Path::new("/opt/homebrew/Cellar/oxide/1.0/bin/oxide")),
-            InstallMethod::Homebrew
-        );
-        assert_eq!(
-            detect_install_method(Path::new("/Users/me/.local/bin/oxide")),
-            InstallMethod::Prebuilt
-        );
-        assert_eq!(
-            detect_install_method(Path::new("/workspace/target/debug/oxide")),
-            InstallMethod::Unknown
-        );
     }
 
     #[test]
