@@ -426,8 +426,9 @@ async fn run_loop(
 
     // Set once a file edit succeeds and cleared when a later tool call could
     // confirm it. If a run tries to finish while an edit is unconfirmed, the
-    // model gets one hidden reminder to verify before its summary.
-    let mut verification = VerificationState::default();
+    // model gets one hidden reminder to verify before its summary. A file
+    // written outside the run's directory is not part of that delivery.
+    let mut verification = VerificationState::new(&cwd);
     let mut verification_reminder: Option<String> = None;
     // Verification commands already run this turn, so an exact repeat can be
     // flagged instead of silently re-run (a slow build or test suite).
@@ -1335,6 +1336,11 @@ const DONE_RULES: &[DoneRule] = &[
 /// finish anyway is asked to verify first.
 #[derive(Default)]
 struct VerificationState {
+    /// The run's own directory, resolved so an edited path can be judged
+    /// against it. A state built through [`Default`] leaves it empty — every
+    /// path starts with an empty one — which tracks every edit, the behavior
+    /// of a caller with no run directory to judge against.
+    cwd: PathBuf,
     edited: BTreeSet<String>,
     pending: BTreeSet<&'static str>,
     nudged: bool,
@@ -1347,6 +1353,36 @@ struct VerificationState {
 }
 
 impl VerificationState {
+    /// Tracks the work of a run in `cwd`, which is what tells an edit of the
+    /// project from a file written beside it.
+    fn new(cwd: &Path) -> Self {
+        Self {
+            cwd: std::fs::canonicalize(cwd).unwrap_or_else(|_| cwd.to_path_buf()),
+            ..Self::default()
+        }
+    }
+
+    /// Whether an edited path lies in the run's own directory — the only files
+    /// a push can deliver. A file written elsewhere (`/tmp/reply.md`, a report
+    /// under the home directory, a scratch script) is not on the branch under
+    /// review, so it must not hold a reply. A relative path is the run's own,
+    /// the way the file tools read it.
+    fn inside_directory(&self, path: &str) -> bool {
+        let path = Path::new(path);
+        let candidate = if path.is_absolute() {
+            path.to_path_buf()
+        } else {
+            self.cwd.join(path)
+        };
+        // The run's directory and the path a tool was handed can spell one
+        // place differently — `/var` for `/private/var` on macOS, a symlinked
+        // home — so an existing file is resolved before it is judged. A file the
+        // run just wrote exists; one that does not keeps the name it was given.
+        std::fs::canonicalize(&candidate)
+            .unwrap_or(candidate)
+            .starts_with(&self.cwd)
+    }
+
     /// Records one tool result. A successful edit adds its path; reading,
     /// diffing or type-checking that path confirms it, and a build/test/lint
     /// command confirms everything at once. Side-effecting shell commands add a
@@ -1357,10 +1393,18 @@ impl VerificationState {
         match canonical {
             "write_file" | "edit" | "patch" => {
                 if !output_failed(output) {
-                    if let Some(path) = path.filter(|path| !path.is_empty()) {
-                        self.edited.insert(path.to_string());
+                    // A write outside the run's directory is not part of the
+                    // branch under review, so it neither waits on a push nor is
+                    // reported back as an unconfirmed edit of the project. A
+                    // call with no path to judge is treated as an edit of it.
+                    match path.filter(|path| !path.is_empty()) {
+                        Some(path) if self.inside_directory(path) => {
+                            self.edited.insert(path.to_string());
+                            self.edited_since_push = true;
+                        }
+                        Some(_) => {}
+                        None => self.edited_since_push = true,
                     }
-                    self.edited_since_push = true;
                 }
             }
             "read_file" | "diagnostics" => {
@@ -4000,6 +4044,48 @@ for line in sys.stdin:
         );
         let reminder = state.reminder().unwrap_or_default();
         assert!(!reminder.contains("git push"), "{reminder}");
+    }
+
+    #[test]
+    fn a_write_outside_the_run_directory_is_not_a_delivery() {
+        let root = std::env::temp_dir().join(format!(
+            "oxide_verify_scope_{}_{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        let _ = std::fs::remove_dir_all(&root);
+        let project = root.join("project");
+        std::fs::create_dir_all(project.join("src")).unwrap();
+        std::fs::write(root.join("reply.md"), "reply").unwrap();
+        std::fs::write(project.join("src/b.rs"), "fn b() {}\n").unwrap();
+
+        // A scratch file written beside the project — the body of a review
+        // reply, a report, a script — is not on the branch under review, so it
+        // neither holds the reply nor asks to be confirmed.
+        let mut state = VerificationState::new(&project);
+        state.record(
+            "write_file",
+            &json!({ "path": root.join("reply.md").to_string_lossy() }),
+            "wrote 640 bytes",
+        );
+        assert!(!state.blocks_review_reply(
+            "gh api -X POST repos/o/r/pulls/5/comments/1/replies -f body=x",
+            false
+        ));
+        assert!(state.reminder().is_none(), "{:?}", state.reminder());
+
+        // The project's own files still are: relative, and by absolute path.
+        state.record("write_file", &json!({ "path": "src/a.rs" }), "ok");
+        assert!(state.blocks_review_reply("gh pr comment 5 --body fixed", false));
+        state.record("bash", &json!({ "command": "git push" }), "[exit: 0]");
+        state.record(
+            "edit",
+            &json!({ "path": project.join("src/b.rs").to_string_lossy() }),
+            "ok",
+        );
+        assert!(state.blocks_review_reply("gh pr comment 5 --body fixed", false));
+
+        std::fs::remove_dir_all(&root).ok();
     }
 
     #[test]
