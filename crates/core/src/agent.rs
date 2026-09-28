@@ -426,8 +426,9 @@ async fn run_loop(
 
     // Set once a file edit succeeds and cleared when a later tool call could
     // confirm it. If a run tries to finish while an edit is unconfirmed, the
-    // model gets one hidden reminder to verify before its summary.
-    let mut verification = VerificationState::default();
+    // model gets one hidden reminder to verify before its summary. A file
+    // written outside the run's directory is not part of that delivery.
+    let mut verification = VerificationState::new(&cwd);
     let mut verification_reminder: Option<String> = None;
     // Verification commands already run this turn, so an exact repeat can be
     // flagged instead of silently re-run (a slow build or test suite).
@@ -1335,6 +1336,19 @@ const DONE_RULES: &[DoneRule] = &[
 /// finish anyway is asked to verify first.
 #[derive(Default)]
 struct VerificationState {
+    /// The run's own directory, which a relative path a tool was given is
+    /// resolved against.
+    cwd: PathBuf,
+    /// The directory a push from this run delivers: the repository the run
+    /// works in, found the way git finds it, or the run's own directory when it
+    /// is in none. An edit inside it is on the branch under review, whatever
+    /// directory of the repository it lands in; an edit outside it
+    /// (`/tmp/reply.md`, a report under the home directory, a scratch script)
+    /// is on no branch at all and must not hold a reply. A state built through
+    /// [`Default`] leaves it empty — every path starts with an empty one —
+    /// which tracks every edit, the behavior of a caller with nothing to judge
+    /// against.
+    delivery: PathBuf,
     edited: BTreeSet<String>,
     pending: BTreeSet<&'static str>,
     nudged: bool,
@@ -1346,7 +1360,52 @@ struct VerificationState {
     edited_since_push: bool,
 }
 
+/// The directory a push from `cwd` delivers: the closest enclosing repository,
+/// or `cwd` itself when there is none. This is the boundary
+/// [`repo_has_pending_delivery`] reads with `git status`, so a file edited
+/// beside the run's directory and one edited through a tracked tool are judged
+/// by the same rule.
+fn delivery_root(cwd: &Path) -> PathBuf {
+    cwd.ancestors()
+        .find(|dir| dir.join(".git").exists())
+        .map(Path::to_path_buf)
+        .unwrap_or_else(|| cwd.to_path_buf())
+}
+
 impl VerificationState {
+    /// Tracks the work of a run started in `cwd`, judging its edits against what
+    /// a push from there delivers.
+    fn new(cwd: &Path) -> Self {
+        let cwd = std::fs::canonicalize(cwd).unwrap_or_else(|_| cwd.to_path_buf());
+        Self {
+            delivery: delivery_root(&cwd),
+            cwd,
+            ..Self::default()
+        }
+    }
+
+    /// Whether an edited path lies inside what a push from this run delivers.
+    /// The boundary is the repository, not the run's own directory, because a
+    /// push delivers the whole branch: an edit beside the run's directory is the
+    /// same tracked modification `git status` reports to the other half of the
+    /// reply guard. A relative path is the run's own, the way the file tools
+    /// read it.
+    fn inside_delivery(&self, path: &str) -> bool {
+        let path = Path::new(path);
+        let candidate = if path.is_absolute() {
+            path.to_path_buf()
+        } else {
+            self.cwd.join(path)
+        };
+        // The delivered directory and the path a tool was handed can spell one
+        // place differently — `/var` for `/private/var` on macOS, a symlinked
+        // home — so an existing file is resolved before it is judged. A file the
+        // run just wrote exists; one that does not keeps the name it was given.
+        std::fs::canonicalize(&candidate)
+            .unwrap_or(candidate)
+            .starts_with(&self.delivery)
+    }
+
     /// Records one tool result. A successful edit adds its path; reading,
     /// diffing or type-checking that path confirms it, and a build/test/lint
     /// command confirms everything at once. Side-effecting shell commands add a
@@ -1357,10 +1416,18 @@ impl VerificationState {
         match canonical {
             "write_file" | "edit" | "patch" => {
                 if !output_failed(output) {
-                    if let Some(path) = path.filter(|path| !path.is_empty()) {
-                        self.edited.insert(path.to_string());
+                    // A write outside the repository the run works in is not on
+                    // the branch under review, so it neither waits on a push nor
+                    // is reported back as an unconfirmed edit of the project. A
+                    // call with no path to judge is treated as an edit of it.
+                    match path.filter(|path| !path.is_empty()) {
+                        Some(path) if self.inside_delivery(path) => {
+                            self.edited.insert(path.to_string());
+                            self.edited_since_push = true;
+                        }
+                        Some(_) => {}
+                        None => self.edited_since_push = true,
                     }
-                    self.edited_since_push = true;
                 }
             }
             "read_file" | "diagnostics" => {
@@ -4000,6 +4067,86 @@ for line in sys.stdin:
         );
         let reminder = state.reminder().unwrap_or_default();
         assert!(!reminder.contains("git push"), "{reminder}");
+    }
+
+    #[test]
+    fn a_write_beside_the_run_directory_is_still_the_repository() {
+        let root = std::env::temp_dir().join(format!(
+            "oxide_verify_beside_{}_{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        let _ = std::fs::remove_dir_all(&root);
+        let repo = root.join("repo");
+        std::fs::create_dir_all(repo.join(".git")).unwrap();
+        let run = repo.join("crates/core");
+        std::fs::create_dir_all(&run).unwrap();
+        std::fs::write(repo.join("docs.md"), "docs").unwrap();
+        std::fs::write(root.join("scratch.md"), "scratch").unwrap();
+
+        // The run's directory is a subdirectory of the repository. A file edited
+        // beside it is the tracked modification `git status` reports to the
+        // other half of the guard, so a push delivers it and the reply waits.
+        let mut state = VerificationState::new(&run);
+        state.record(
+            "write_file",
+            &json!({ "path": repo.join("docs.md").to_string_lossy() }),
+            "wrote 4 bytes",
+        );
+        assert!(state.blocks_review_reply("gh pr comment 5 --body fixed", false));
+
+        // Outside the repository is still nothing a push delivers.
+        state.record("bash", &json!({ "command": "git push" }), "[exit: 0]");
+        state.record(
+            "write_file",
+            &json!({ "path": root.join("scratch.md").to_string_lossy() }),
+            "wrote 7 bytes",
+        );
+        assert!(!state.blocks_review_reply("gh pr comment 5 --body fixed", false));
+
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn a_write_outside_the_run_directory_is_not_a_delivery() {
+        let root = std::env::temp_dir().join(format!(
+            "oxide_verify_scope_{}_{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        let _ = std::fs::remove_dir_all(&root);
+        let project = root.join("project");
+        std::fs::create_dir_all(project.join("src")).unwrap();
+        std::fs::write(root.join("reply.md"), "reply").unwrap();
+        std::fs::write(project.join("src/b.rs"), "fn b() {}\n").unwrap();
+
+        // A scratch file written beside the project — the body of a review
+        // reply, a report, a script — is not on the branch under review, so it
+        // neither holds the reply nor asks to be confirmed.
+        let mut state = VerificationState::new(&project);
+        state.record(
+            "write_file",
+            &json!({ "path": root.join("reply.md").to_string_lossy() }),
+            "wrote 640 bytes",
+        );
+        assert!(!state.blocks_review_reply(
+            "gh api -X POST repos/o/r/pulls/5/comments/1/replies -f body=x",
+            false
+        ));
+        assert!(state.reminder().is_none(), "{:?}", state.reminder());
+
+        // The project's own files still are: relative, and by absolute path.
+        state.record("write_file", &json!({ "path": "src/a.rs" }), "ok");
+        assert!(state.blocks_review_reply("gh pr comment 5 --body fixed", false));
+        state.record("bash", &json!({ "command": "git push" }), "[exit: 0]");
+        state.record(
+            "edit",
+            &json!({ "path": project.join("src/b.rs").to_string_lossy() }),
+            "ok",
+        );
+        assert!(state.blocks_review_reply("gh pr comment 5 --body fixed", false));
+
+        std::fs::remove_dir_all(&root).ok();
     }
 
     #[test]
