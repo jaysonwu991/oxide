@@ -362,6 +362,14 @@ const invoke = async (command, args = {}) => {
     case "all_sessions":
       if (threadsError) throw threadsError;
       return threads.map((session) => ({ ...session }));
+    case "session_messages": {
+      const target = (threads || []).find((session) => session.id === args.id);
+      return {
+        header: { id: args.id, name: target?.name || null },
+        messages: [],
+        usage: null,
+      };
+    }
     case "at_suggestions":
       if (atError) throw atError;
       if (!String(args.project || "").trim()) throw "select a project first";
@@ -447,6 +455,7 @@ vm.runInThisContext(
     " addAttachment, addAttachmentFiles, el, showQuestion, showQuestionStep, questionNext," +
     " answerQuestion, collectAnswers, requestAt, acceptAt, moveAt, closeAt, atKey," +
     " resetTranscript, renderChanges, closeReview, undoChanges," +
+    " loadSessions, openSession, renderProjectMeta, updateSendState, setBusy, setIdle," +
     " startTool, finishTool, toggleTool };\n",
 );
 
@@ -1756,6 +1765,152 @@ if (catalogSkipped) {
     app.state.runId = null;
   }
 }
+
+// ---------- the thread on screen has a name ----------
+
+console.log("thread title");
+// The shell ships the header empty: a thread has no title until a turn has one,
+// and "New task" was a name the sidebar never used for it.
+check(
+  "shipped the header with no placeholder title",
+  /id="thread-title"[^>]*>\s*<\/div>/.test(shell),
+  shell.slice(Math.max(0, shellAt('id="thread-title"') - 60), shellAt('id="thread-title"') + 60),
+);
+
+// The provider is the composer's own chip, so the header carries only what the
+// user has to act on.
+app.renderProjectMeta({
+  model: "deepseek-flash",
+  provider: "deepseek",
+  hasKey: true,
+  trust: null,
+});
+check(
+  "left the provider out of the header",
+  elementFor("project-meta").textContent === "" && elementFor("project-meta").hidden === true,
+  elementFor("project-meta").textContent,
+);
+check(
+  "kept the model on the composer's chip",
+  elementFor("model").textContent === "deepseek-flash",
+  elementFor("model").textContent,
+);
+app.renderProjectMeta({
+  model: "deepseek-flash",
+  provider: "deepseek",
+  hasKey: false,
+  trust: { required: true, trusted: false },
+});
+check(
+  "named what the user has to fix instead",
+  elementFor("project-meta").textContent === "no API key · project resources off" &&
+    elementFor("project-meta").hidden === false,
+  elementFor("project-meta").textContent,
+);
+
+// A turn titles its thread while it runs: the sidebar lists it then, and the
+// header names it by the label that row shows.
+threadsError = null;
+app.resetTranscript();
+check(
+  "left a new task without a title",
+  elementFor("thread-title").textContent === "",
+  elementFor("thread-title").textContent,
+);
+const running = {
+  id: "bb22cc33",
+  name: null,
+  // The project the app has open, since the sidebar groups a thread under it.
+  cwd: (app.state.projects[0] || projectRows[0]).path,
+  created_at: 2,
+  modified_at: Math.floor(Date.now() / 1000),
+  message_count: 1,
+  preview: "rename the update command",
+};
+threads = [running, ...existing];
+await emit("agent-start", {
+  runId: 41,
+  sessionId: running.id,
+  title: "rename the update command",
+});
+check(
+  "listed the running thread in the sidebar",
+  elementFor("projects-tree").outline().includes("rename the update command"),
+  elementFor("projects-tree").outline(),
+);
+check(
+  "named the header after the same label the sidebar row shows",
+  elementFor("thread-title").textContent === "rename the update command",
+  elementFor("thread-title").textContent,
+);
+check(
+  "took the session the turn is writing to",
+  app.state.session === running.id,
+  String(app.state.session),
+);
+
+// A thread the user named is listed under that name in both places, and a
+// resumed thread is named from the row that was opened.
+threads = [{ ...running, name: "Rename oxide update" }, ...existing];
+await app.loadSessions();
+check(
+  "named a renamed thread the same way in both places",
+  elementFor("thread-title").textContent === "Rename oxide update",
+  elementFor("thread-title").textContent,
+);
+await app.openSession(existing[0]);
+await new Promise((resolve) => setTimeout(resolve, 0));
+check(
+  "named a resumed thread the way its sidebar row does",
+  elementFor("thread-title").textContent === "Fix the flaky test",
+  elementFor("thread-title").textContent,
+);
+
+// ---------- one action in the composer's corner ----------
+
+console.log("composer action");
+// Stop and Send/Steer are one button that swaps: Stop while a turn runs with
+// nothing to say, Steer the moment there is something to send.
+app.state.attachments = [];
+app.setIdle();
+elementFor("prompt").value = "";
+app.updateSendState();
+check(
+  "offered Send with nothing typed",
+  elementFor("send").hidden === false && elementFor("stop").hidden === true,
+  `send ${elementFor("send").hidden} / stop ${elementFor("stop").hidden}`,
+);
+app.setBusy();
+check(
+  "offered Stop alone while a turn runs with an empty box",
+  elementFor("stop").hidden === false && elementFor("send").hidden === true,
+  `send ${elementFor("send").hidden} / stop ${elementFor("stop").hidden}`,
+);
+elementFor("prompt").value = "keep going";
+app.updateSendState();
+check(
+  "swapped in Steer once there was something to say",
+  elementFor("send").hidden === false &&
+    elementFor("send").disabled === false &&
+    elementFor("stop").hidden === true &&
+    elementFor("send").title === "Steer (Enter)",
+  `${elementFor("send").title} / send ${elementFor("send").hidden} / stop ${elementFor("stop").hidden}`,
+);
+elementFor("prompt").value = "";
+app.updateSendState();
+check(
+  "went back to Stop when the box was emptied again",
+  elementFor("stop").hidden === false && elementFor("send").hidden === true,
+  `send ${elementFor("send").hidden} / stop ${elementFor("stop").hidden}`,
+);
+app.setIdle();
+check(
+  "gave Send back, alone, when the turn ended",
+  elementFor("send").hidden === false &&
+    elementFor("stop").hidden === true &&
+    elementFor("send").title === "Send (Enter)",
+  `${elementFor("send").title} / stop ${elementFor("stop").hidden}`,
+);
 
 console.log(failures.length ? `\n${failures.length} failed` : "\nall checks passed");
 process.exit(failures.length ? 1 : 0);

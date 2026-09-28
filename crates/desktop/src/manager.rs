@@ -662,4 +662,24 @@ mod tests {
         assert_eq!(trust.default, "always");
         std::fs::remove_dir_all(&dir).ok();
     }
+
+    /// macOS sends the first click on an unfocused window to the window rather
+    /// than to the control under the pointer, so a button in the app reads as
+    /// one that needs pressing twice; accepting first mouse is what makes that
+    /// click the one the user meant.
+    #[test]
+    fn the_window_accepts_the_first_click_after_it_loses_focus() {
+        let raw = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/tauri.conf.json"))
+            .expect("read tauri.conf.json");
+        let config: serde_json::Value = serde_json::from_str(&raw).expect("decode tauri.conf.json");
+        let main = config["app"]["windows"]
+            .as_array()
+            .and_then(|windows| windows.iter().find(|window| window["label"] == "main"))
+            .expect("the main window in tauri.conf.json");
+        assert_eq!(
+            main["acceptFirstMouse"].as_bool(),
+            Some(true),
+            "the first click on an unfocused window is swallowed without this"
+        );
+    }
 }

@@ -530,6 +530,7 @@ async fn drive_turn(
     .await?;
     let Turn {
         session_id,
+        title,
         mut events,
         handle,
         steering,
@@ -549,7 +550,7 @@ async fn drive_turn(
     );
     let _ = app.emit(
         "agent-start",
-        json!({ "runId": run_id, "sessionId": session_id }),
+        json!({ "runId": run_id, "sessionId": session_id, "title": title }),
     );
 
     while let Some(event) = events.recv().await {
