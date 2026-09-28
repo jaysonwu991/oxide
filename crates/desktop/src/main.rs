@@ -12,8 +12,6 @@
 mod approval;
 mod ask;
 mod commands;
-#[cfg(target_os = "macos")]
-mod first_click;
 
 use commands::{
     add_project, all_sessions, at_suggestions, cancel_run, clear_approvals, create_project,
@@ -30,8 +28,6 @@ fn main() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .setup(|app| {
-            #[cfg(target_os = "macos")]
-            first_click::install();
             let manager = DesktopManager::load_lossy();
             app.manage(DesktopState::new(manager, app.handle().clone()));
             Ok(())
