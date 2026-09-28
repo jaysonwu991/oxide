@@ -71,8 +71,9 @@ The window follows a Codex-style layout:
   the listing has it. A new task carries no placeholder, and the provider is
   not repeated here because the composer's model chip already names it; the
   right side says only what has to be acted on (`no API key`, `project
-  resources off`). The window is created with `acceptFirstMouse`, so the first
-  click after it loses focus is the click the user meant rather than one spent
+  resources off`). The window is created with `acceptFirstMouse`, and the window
+  under the pointer is made key before a press is dispatched, so the first click
+  after the app loses focus is the click the user meant rather than one spent
   focusing the window.
 - **Conversation** — a centered 760px column. User messages are right-aligned
   bubbles; assistant replies render Markdown and links open in the system
