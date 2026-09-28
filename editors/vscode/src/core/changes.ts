@@ -37,15 +37,47 @@ export interface ChangeRow extends ChangeLike {
   index: number;
 }
 
+/// How many rows a card shows before the rest fold away behind one, as the
+/// desktop app's card does.
+export const CHANGES_VISIBLE = 5;
+
+/// The row under a listing longer than the card shows, or `null` when every file
+/// fits: how many rows are painted while the rest are folded away, and the words
+/// the row reads with while they are. Composed here, since the count is the
+/// listing's and the webview only paints what it is handed.
+export interface ChangesMore {
+  visible: number;
+  closed: string;
+  open: string;
+}
+
 /// The turn's listing, with the baseline each file's diff is drawn against and
 /// the folder the run was in — its paths are relative to that project, and its
 /// baseline is read out of that project's shadow snapshot.
 export interface TurnChanges {
   project: string;
   baseline: string;
+  /// The state the turn left behind, which its own undo checks the work tree
+  /// still holds: a card that cannot be undone (a turn that came after it, an
+  /// edit made since) is refused rather than taking the change with it. Empty
+  /// for a frame from a CLI too old to report one.
+  after: string;
   files: ChangedFile[];
   added: number;
   removed: number;
+}
+
+/// The row under a card's listing, or `null` when every file fits in it.
+/// Singular where it should be, as the desktop app's card reads, and `open` is
+/// the way back to the whole listing.
+export function changesMore(count: number): ChangesMore | null {
+  const hidden = count - CHANGES_VISIBLE;
+  if (hidden <= 0) return null;
+  return {
+    visible: CHANGES_VISIBLE,
+    closed: `+${hidden} more file${hidden === 1 ? "" : "s"}`,
+    open: "Show less",
+  };
 }
 
 /// The `+N`/`−N` a row shows, or what a file with no lines to count says.
@@ -128,6 +160,17 @@ export function changeArgs(path: string, baseline: string, project: string): str
   return ["changes", "show", path, "--baseline", baseline, "--project", project];
 }
 
+/// The CLI put-back behind a card's Undo: the project is restored to the state
+/// the turn found, through the same core restore the desktop app's Undo and the
+/// terminal's `/undo` perform. `after` is the state the turn left, so the CLI
+/// refuses a card whose turn is not the newest one instead of taking a later
+/// change with it.
+export function undoArgs(project: string, baseline: string, after: string): string[] {
+  const args = ["changes", "undo", "--baseline", baseline, "--project", project];
+  if (after) args.push("--after", after);
+  return args;
+}
+
 /// The query a snapshot URI carries: the project the file is relative to and the
 /// revision to read it at. Both travel in the URI because the content provider is
 /// handed the URI alone, and the folder a card belongs to is not necessarily the
@@ -147,7 +190,12 @@ export function parseSnapshotQuery(query: string): { project: string; revision: 
 /// are not objects, yields nothing rather than half a card.
 export function turnChanges(event: WireEvent): TurnChanges | null {
   if (event.type !== "turn_changes") return null;
-  return parseChanges(event.changes, text(event.baseline), text(event.project));
+  return parseChanges(
+    event.changes,
+    text(event.baseline),
+    text(event.project),
+    text(event.after),
+  );
 }
 
 /// The listing inside a payload, with a baseline to diff against and the folder
@@ -157,6 +205,7 @@ export function parseChanges(
   payload: unknown,
   baseline: string,
   project: string,
+  after = "",
 ): TurnChanges | null {
   if (!payload || typeof payload !== "object") return null;
   const record = payload as Record<string, unknown>;
@@ -179,6 +228,7 @@ export function parseChanges(
   return {
     project,
     baseline,
+    after,
     files,
     added: files.reduce((total, file) => total + file.added, 0),
     removed: files.reduce((total, file) => total + file.removed, 0),

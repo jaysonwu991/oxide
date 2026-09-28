@@ -6,6 +6,7 @@ import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 
 import {
+  CHANGES_UNDO_CONFIRM,
   CLOSE_DIALOG,
   CONTINUE_SESSION,
   deleteSessionDialog,
@@ -16,6 +17,7 @@ import {
   SESSION_DELETE,
   SESSION_DELETE_CONFIRM,
   sessionDialog,
+  undoChangesDialog,
 } from "../core/dialogs";
 import { parseMcpList } from "../core/mcps";
 import { parseSessionList } from "../core/sessions";
@@ -301,5 +303,40 @@ describe("delete-thread confirmation", () => {
   it("falls back to the id for a thread that was never named", () => {
     const dialog = deleteSessionDialog({ id: "abc123", label: "", detail: "" });
     assert.match(dialog.subtitle, /abc123/);
+  });
+});
+
+describe("undo-turn confirmation", () => {
+  const card = { id: 4, detail: "Edited 3 files · +12 −4" };
+
+  it("asks before it puts a turn back, with the restore in a row of its own", () => {
+    const dialog = undoChangesDialog(card);
+    assert.equal(dialog.title, "Undo turn");
+    // It answers the card it was opened from, so it opens on that card's end of
+    // the panel rather than the composer's.
+    assert.equal(dialog.pin, "header");
+    assert.match(dialog.subtitle, /back to how the run found them/);
+    // What it would refuse, rather than a promise the CLI may not keep.
+    assert.match(dialog.note, /refused rather than undone/);
+    assert.deepEqual(
+      dialog.rows.map((row) => row.label),
+      ["Undo changes", "Cancel"],
+    );
+    assert.deepEqual(
+      dialog.rows.map((row) => row.action),
+      [CHANGES_UNDO_CONFIRM, CLOSE_DIALOG],
+    );
+    // The row carries the card the restore acts on, and is the second to it
+    // rather than a second Undo: the card's own button only opens this.
+    assert.equal(dialog.rows[0].value, "4");
+    assert.equal(dialog.rows[0].tone, "warn");
+    assert.equal(dialog.rows[0].detail, card.detail);
+    assert.equal(dialog.refreshLabel, "");
+
+    // Cancel keeps the turn, and is the one row that is not an action on it.
+    const cancel = dialog.rows[1];
+    assert.match(cancel.detail, /Keep/);
+    assert.equal(cancel.tone, "");
+    assert.equal(cancel.value, "");
   });
 });

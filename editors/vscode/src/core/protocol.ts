@@ -20,7 +20,7 @@ import {
   type QuestionAnswer,
 } from "./questions";
 import type { AtSuggestion } from "./at";
-import { changesTitle, changesTotals, changeRows, turnChanges, type ChangeRow } from "./changes";
+import { changesTitle, changesTotals, changeRows, changesMore, turnChanges, type ChangeRow, type ChangesMore } from "./changes";
 import type { DialogState } from "./dialogs";
 import type { FooterState } from "./footer";
 import type { CommandRow } from "./palette";
@@ -162,6 +162,11 @@ export interface ChangesItem {
   totals: string;
   /// The revision every file's diff is drawn against.
   baseline: string;
+  /// The state the turn left behind, which the CLI's undo checks the work tree
+  /// still holds before it puts anything back — so an older card is refused
+  /// rather than taking a newer turn's work with it. Empty for a CLI too old to
+  /// report one, which is taken at its word.
+  after: string;
   /// The folder the run started in, which `rows`' paths are relative to and
   /// `baseline` is read out of. Carried with the card rather than looked up when
   /// a row is clicked: a multi-root window can move the active editor to
@@ -169,6 +174,15 @@ export interface ChangesItem {
   /// to the run, not to whatever folder is active now. Empty when the frame did
   /// not name one, which falls back to the active folder.
   project: string;
+  /// The row that folds the rest of a long listing away, or `null` when every
+  /// file fits (`changesMore`).
+  more: ChangesMore | null;
+  /// Whether this card's Undo is offered: only the newest turn's is, since an
+  /// older one's restore would take the newer turn's work with it.
+  undoable: boolean;
+  /// Set once the turn has been put back, which the card reports instead of
+  /// offering the same Undo again.
+  undone: boolean;
   rows: ChangeRow[];
 }
 
@@ -215,6 +229,11 @@ export interface TranscriptState {
   footer: FooterState;
 }
 
+/// One change card's state after it was undone, or after a newer card took the
+/// Undo away from it. Not a `patch`: a card keeps its listing (what the turn
+/// did is still what it did), so only the action under it changes.
+export type ChangesState = { k: "changes"; id: number; undoable: boolean; undone: boolean };
+
 export type ViewMessage =
   | ({ k: "state" } & TranscriptState)
   | { k: "push"; item: Item }
@@ -227,6 +246,8 @@ export type ViewMessage =
   /// One question card's state, on the same terms: the answered card keeps only
   /// what it was answered with instead of the fields it was asked with.
   | { k: "question"; id: number; state: QuestionState; label: string }
+  /// One change card's state: undone, or no longer the newest turn's.
+  | ChangesState
   | { k: "status"; status: string; busy: boolean; queued: number; footer: FooterState }
   /// The footer is attached by the controller (the transcript only knows the
   /// totals), so a usage event repaints the whole footer row.
@@ -616,10 +637,25 @@ export class Transcript {
           totals: changesTotals(changes.added, changes.removed),
           baseline: changes.baseline,
           project: changes.project,
+          after: changes.after,
+          more: changesMore(changes.files.length),
+          // Only the newest turn can be put back: an earlier card's restore
+          // would take this one's work with it, so this card takes the Undo
+          // away from every card before it.
+          undoable: true,
+          undone: false,
           rows: changeRows(changes.files),
         };
+        const messages: ViewMessage[] = [];
+        for (const entry of this.items) {
+          if (entry.kind === "changes" && entry.undoable) {
+            entry.undoable = false;
+            messages.push({ k: "changes", id: entry.id, undoable: false, undone: entry.undone });
+          }
+        }
         this.items.push(item);
-        return [{ k: "push", item }];
+        messages.push({ k: "push", item });
+        return messages;
       }
       default:
         return [];
@@ -645,6 +681,19 @@ export class Transcript {
       (entry): entry is ChangesItem => entry.kind === "changes" && entry.id === id,
     );
     return item ?? null;
+  }
+
+  /// Records that a card's turn has been put back, which leaves the card as the
+  /// listing of what that turn did with its Undo spent. `null` for a card the
+  /// transcript no longer holds, so a stale click from the other pane does
+  /// nothing; a card already undone is settled without a second restore.
+  markUndone(id: number): ViewMessage[] | null {
+    const item = this.changes(id);
+    if (!item) return null;
+    if (item.undone) return [{ k: "changes", id, undoable: false, undone: true }];
+    item.undone = true;
+    item.undoable = false;
+    return [{ k: "changes", id, undoable: false, undone: true }];
   }
 
   /// Settles every card still waiting, which is what a run that ended (or was
