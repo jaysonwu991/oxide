@@ -640,24 +640,14 @@ pub async fn undo_turn(project: String, baseline: String, after: Option<String>)
     let cwd = PathBuf::from(project);
     tokio::task::spawn_blocking(move || -> anyhow::Result<()> {
         let snapshots = Snapshots::open(&cwd)?;
-        restore_turn(&snapshots, &baseline, after.as_deref())
+        // The restore itself, and the check an older card is refused by, are the
+        // core's — a front-end that has no snapshot repo of its own (the CLI's
+        // `changes undo`, which the VS Code extension runs) takes the same path.
+        snapshots.restore_turn(&baseline, after.as_deref())
     })
     .await
     .map_err(err)?
     .map_err(err)
-}
-
-/// The restore itself: the baseline a card carries, once the work tree is known
-/// to still hold what that turn left (see [`undo_turn`]). A card without a
-/// marker — one a front-end built before the marker existed — is taken at its
-/// word, which is what the undo meant before there was one.
-fn restore_turn(snapshots: &Snapshots, baseline: &str, after: Option<&str>) -> anyhow::Result<()> {
-    if let Some(after) = after {
-        if !snapshots.unchanged_since(after)? {
-            anyhow::bail!("the project has changed since that turn — undo the newest turn first");
-        }
-    }
-    snapshots.restore(baseline)
 }
 
 /// The two sides of one changed file at the baseline a card carries: what the run
@@ -1031,7 +1021,7 @@ mod tests {
         // edit — is not this card's to take with it, so the undo is refused and
         // the file is left alone.
         std::fs::write(work.join("a.txt"), "three\n").unwrap();
-        let refused = restore_turn(&snapshots, &baseline, Some(&after)).unwrap_err();
+        let refused = snapshots.restore_turn(&baseline, Some(&after)).unwrap_err();
         assert_eq!(
             refused.to_string(),
             "the project has changed since that turn — undo the newest turn first"
@@ -1044,13 +1034,13 @@ mod tests {
         // With the state the turn left still on disk it puts the baseline back,
         // and a card that carries no marker is taken at its word.
         std::fs::write(work.join("a.txt"), "two\n").unwrap();
-        restore_turn(&snapshots, &baseline, Some(&after)).unwrap();
+        snapshots.restore_turn(&baseline, Some(&after)).unwrap();
         assert_eq!(
             std::fs::read_to_string(work.join("a.txt")).unwrap(),
             "one\n"
         );
         std::fs::write(work.join("a.txt"), "two\n").unwrap();
-        restore_turn(&snapshots, &baseline, None).unwrap();
+        snapshots.restore_turn(&baseline, None).unwrap();
         assert_eq!(
             std::fs::read_to_string(work.join("a.txt")).unwrap(),
             "one\n"

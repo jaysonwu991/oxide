@@ -689,6 +689,11 @@ describe("webview composer", () => {
     );
     assert.equal(byId.get("send")!.hidden, false);
     assert.equal(byId.get("stop")!.hidden, true);
+
+    // Hiding one of them is only half of the swap: the icon buttons are laid
+    // out as inline-flex, which the UA's `[hidden]` rule cannot beat, so both
+    // actions would sit in the corner at once.
+    assert.match(style, /button\.icon\[hidden\],[\s\S]*?\{[^}]*display: none/s);
   });
 
   it("renders a thumbnail for an image and a glyph for a PDF", () => {
@@ -2148,6 +2153,11 @@ describe("webview change cards", () => {
     title: "Edited 2 files",
     totals: "+2 −9",
     baseline: "abc123",
+    after: "def456",
+    project: "/w",
+    more: null,
+    undoable: true,
+    undone: false,
     rows: [
       {
         path: "src/main.rs",
@@ -2240,6 +2250,95 @@ describe("webview change cards", () => {
     send({ k: "push", item: { ...card, totals: "", rows: [{ ...card.rows[1], detail: "binary" }] } });
     assert.equal(find(transcript, "changes-total"), null);
     assert.equal(find(transcript, "change-detail")!.textContent, "binary");
+  });
+
+  it("offers Undo, which is the host's to confirm and the CLI's to do", () => {
+    const { byId, send, posted } = loadRenderer();
+    send(stateMessage());
+    const transcript = byId.get("transcript")!;
+    send({ k: "push", item: card });
+
+    const undo = find(transcript, "changes-undo")!;
+    assert.equal(undo.textContent, "Undo");
+    assert.equal(undo.hidden, false, "the newest turn's card offers it");
+    assert.equal(find(transcript, "changes-note")!.hidden, true);
+    undo.fire("click");
+    // Names the card rather than restoring: the host asks first, and the
+    // restore itself is the confirmation's row.
+    assert.deepEqual(last(posted), { k: "undoChanges", id: 4 });
+  });
+
+  it("takes the Undo away from a card a newer turn came after", () => {
+    const { byId, send } = loadRenderer();
+    send(stateMessage());
+    const transcript = byId.get("transcript")!;
+    send({ k: "push", item: card });
+    send({ k: "changes", id: 4, undoable: false, undone: false });
+    assert.equal(find(transcript, "changes-undo")!.hidden, true);
+    assert.equal(find(transcript, "changes-note")!.hidden, true);
+
+    // A pane that attaches later replays the same state, so the card it paints
+    // offers nothing even though its listing is the same.
+    const replayed = loadRenderer();
+    replayed.send(stateMessage({ items: [{ ...card, undoable: false }] }));
+    assert.equal(find(replayed.byId.get("transcript")!, "changes-undo")!.hidden, true);
+  });
+
+  it("says Undone once the turn has been put back", () => {
+    const { byId, send } = loadRenderer();
+    send(stateMessage());
+    const transcript = byId.get("transcript")!;
+    send({ k: "push", item: card });
+    send({ k: "changes", id: 4, undoable: false, undone: true });
+
+    const note = find(transcript, "changes-note")!;
+    assert.equal(note.textContent, "Undone");
+    assert.equal(note.hidden, false);
+    assert.equal(find(transcript, "changes-undo")!.hidden, true);
+    // The listing stays: what the turn did is still what it did.
+    assert.equal(find(transcript, "changes")!.querySelectorAll(".change-row").length, 2);
+  });
+
+  it("folds a listing longer than the card shows behind one row", () => {
+    const { byId, send } = loadRenderer();
+    send(stateMessage());
+    const transcript = byId.get("transcript")!;
+    const rows = Array.from({ length: 7 }, (_, index) => ({
+      path: `src/file${index}.rs`,
+      status: "modified",
+      letter: "M",
+      detail: "+1 −1",
+      title: `Show src/file${index}.rs in VS Code's diff editor`,
+      index,
+    }));
+    send({
+      k: "push",
+      item: {
+        ...card,
+        title: "Edited 7 files",
+        more: { visible: 5, closed: "+2 more files", open: "Show less" },
+        rows,
+      },
+    });
+
+    const listing = find(transcript, "changes")!.querySelectorAll(".change-row");
+    assert.deepEqual(
+      listing.map((row) => row.hidden),
+      [false, false, false, false, false, true, true],
+    );
+    const more = find(transcript, "changes-more")!;
+    assert.equal(more.textContent, "+2 more files");
+    more.fire("click");
+    assert.deepEqual(listing.map((row) => row.hidden).every((hidden) => !hidden), true);
+    assert.equal(more.textContent, "Show less");
+    more.fire("click");
+    assert.equal(listing[6].hidden, true);
+    assert.equal(more.textContent, "+2 more files");
+
+    // A card whose listing fits has no such row at all.
+    const small = loadRenderer();
+    small.send(stateMessage({ items: [card] }));
+    assert.equal(find(small.byId.get("transcript")!, "changes-more"), null);
   });
 });
 

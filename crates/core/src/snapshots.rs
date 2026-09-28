@@ -225,6 +225,24 @@ impl Snapshots {
         Ok(listed.is_empty())
     }
 
+    /// Puts the work tree back to `base` — the state a run started from — once
+    /// it is known to still hold what `after` recorded. `after` is the state
+    /// that run left behind, so the restore cannot also take a change made
+    /// since, including one from a later run whose own baseline is the one to
+    /// restore; an older run is refused with the reason rather than silently
+    /// done. `None` is a caller with no marker to check (a front-end built
+    /// before they existed), which is taken at its word.
+    pub fn restore_turn(&self, base: &str, after: Option<&str>) -> Result<()> {
+        if let Some(after) = after {
+            if !self.unchanged_since(after)? {
+                anyhow::bail!(
+                    "the project has changed since that turn — undo the newest turn first"
+                );
+            }
+        }
+        self.restore(base)
+    }
+
     /// One file's content at `revision`, as it stands in the shadow repo rather
     /// than as the work tree has it now — what a front-end draws on the left of
     /// a diff against what is on disk.
@@ -695,6 +713,56 @@ mod tests {
         snapshots.restore(&base).unwrap();
         std::fs::write(work.join("new.txt"), "new\n").unwrap();
         assert!(!snapshots.unchanged_since(&base).unwrap());
+
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn restores_a_turn_only_while_nothing_came_after_it() {
+        let root = std::env::temp_dir().join(format!("oxide_snap7_{}", std::process::id()));
+        std::fs::remove_dir_all(&root).ok();
+        let work = root.join("work");
+        std::fs::create_dir_all(&work).unwrap();
+
+        let snapshots = Snapshots {
+            git_dir: root.join("shadow"),
+            work_tree: work.clone(),
+        };
+        snapshots.ensure_repo().unwrap();
+
+        // A run: the state it found, what it wrote, and the state it left.
+        std::fs::write(work.join("a.txt"), "one\n").unwrap();
+        let base = snapshots.mark().unwrap();
+        std::fs::write(work.join("a.txt"), "two\n").unwrap();
+        std::fs::write(work.join("b.txt"), "new\n").unwrap();
+        let after = snapshots.mark_named("turn").unwrap();
+
+        // An edit of the reader's own is not this turn's to discard.
+        std::fs::write(work.join("a.txt"), "three\n").unwrap();
+        let refused = snapshots.restore_turn(&base, Some(&after)).unwrap_err();
+        assert!(refused.to_string().contains("changed since that turn"));
+        assert_eq!(
+            std::fs::read_to_string(work.join("a.txt")).unwrap(),
+            "three\n"
+        );
+
+        // The newest turn's own undo puts back what it wrote and takes away what
+        // it created.
+        let after = snapshots.mark_named("turn").unwrap();
+        snapshots.restore_turn(&base, Some(&after)).unwrap();
+        assert_eq!(
+            std::fs::read_to_string(work.join("a.txt")).unwrap(),
+            "one\n"
+        );
+        assert!(!work.join("b.txt").exists());
+
+        // A card with no marker is taken at its word, as it was before one.
+        std::fs::write(work.join("a.txt"), "four\n").unwrap();
+        snapshots.restore_turn(&base, None).unwrap();
+        assert_eq!(
+            std::fs::read_to_string(work.join("a.txt")).unwrap(),
+            "one\n"
+        );
 
         std::fs::remove_dir_all(&root).ok();
     }

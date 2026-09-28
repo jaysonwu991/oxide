@@ -605,11 +605,11 @@ for a file inside the workspace, so the panel cannot be used to read outside it.
 
 VS Code's own diff editor draws a finished turn's changes; the panel renders no
 diff of its own. The CLI emits `turn_changes` when a run ends — the folder it
-ran in, the revision it started from and the files it changed, the same listing
-the desktop app's change card shows and `oxide changes show` reads, built from
-the project's shadow snapshot so a file a shell command or a formatter wrote is
-listed beside the ones a tool call named. A run that changed nothing sends no
-frame.
+ran in, the revision it started from, the state it left behind and the files it
+changed, the same listing the desktop app's change card shows and `oxide changes
+show` reads, built from the project's shadow snapshot so a file a shell command
+or a formatter wrote is listed beside the ones a tool call named. A run that
+changed nothing sends no frame.
 
 `core/changes.ts` reads that frame and composes the card as data: the title and
 the turn's `+`/`−` totals, the folder the run was in, and a row per file with its
@@ -655,6 +655,27 @@ arrows keep working while the editor holds it. A click on a row of the card
 itself is neither: it opens a tab of its own and focuses it, because the reader
 asked for that one file. A rebuilt transcript closes a review left open, since
 the card it was opened from is gone with it.
+
+A listing longer than five files folds the rest away behind one row (`+N more
+files`, and `Show less` back), as the desktop app's card does. The count and both
+sets of words are composed by `core/changes.ts`; the webview only hides the rows
+past `visible`, so a fold cannot disagree with the listing it folds.
+
+A card also carries **Undo**, which puts the turn's files back to how the run
+found them. It asks first, in the panel's own dialog: `undoChangesDialog`
+composes a row naming the card and a row that keeps it, and only the first of
+them restores. The restore is the CLI's — `oxide changes undo --baseline <rev>
+--after <after> --project <root>` — which is the same `Snapshots::restore` the
+desktop app's Undo and the terminal's `/undo` perform, so the panel needs no
+snapshot code of its own. `--after` is the state the turn left, which the CLI
+checks the work tree still holds before it puts anything back: an older card's
+restore cannot take a newer turn's work with it, and what it refused is reported
+in the panel rather than failing silently. So only the newest turn's card offers
+the Undo — a card a later turn came after has it taken away, by the `{k:
+"changes"}` message that newer card's own push returns — and a card whose turn
+was put back says `Undone` and offers nothing further, since the listing is still
+what that turn did. An Undo clicked while a turn is running is refused the way a
+thread delete is, because the run owns the files a restore would move under it.
 
 A project does not have to be a git clone for any of that: the snapshot is
 oxide's own bare repository under the config directory, so a plain folder is
@@ -706,7 +727,11 @@ room from the transcript rather than from the end it is attached to. It is also
 the one child of that column that does not shrink — the transcript is a scroll
 container whose content is what its base size is measured from, so a dialog that
 may shrink opens a couple of rows tall with the rest of the list scrolling
-inside a sliver.
+inside a sliver. A hidden icon button is turned off explicitly
+(`button.icon[hidden] { display: none }`) rather than left to the attribute's
+own rule, since the `display` an icon button is laid out with beats it — which
+is what the composer's corner depends on to show Stop and Send one at a time,
+and what keeps a dialog's **Recheck** from appearing before the host offers one.
 Nothing there writes to disk: a pasted blob goes back to
 the host as a `data:` URL, and the host is what decides which file to write and
 which path to send.

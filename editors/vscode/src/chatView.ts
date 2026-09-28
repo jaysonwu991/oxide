@@ -174,6 +174,11 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       case "openAllChanges":
         if (typeof message.id === "number") await this.openChange(message.id);
         return;
+      case "undoChanges":
+        // The Undo under a change card: the host asks before it restores, and
+        // the restore itself is the CLI's (`changes undo`).
+        if (typeof message.id === "number") this.controller.undoChanges(message.id);
+        return;
       case "openUrl":
         await this.openUrl(message.url ?? "");
         return;

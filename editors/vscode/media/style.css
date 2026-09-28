@@ -103,6 +103,19 @@ button.icon.danger:hover:not(:disabled) {
   color: var(--vscode-errorForeground, #f14c4c);
 }
 
+/* The `hidden` attribute has to beat the `display` an icon button is laid out
+   with, since the composer's corner swaps Stop for Send by hiding one of them
+   and a dialog's Recheck is hidden until the host offers a label. Without this
+   both of the corner's actions would sit side by side. A change card's folded
+   rows and Undo are hidden the same way, from the same kind of `display`. */
+button.icon[hidden],
+.change-row[hidden],
+.changes-more[hidden],
+.changes-undo[hidden],
+.changes-note[hidden] {
+  display: none;
+}
+
 #actions {
   display: flex;
   align-items: center;
@@ -782,8 +795,10 @@ pre,
 /* Walks the turn's files over the panel, one row at a time: the row it lands on
    opens that file in VS Code's diff editor, which is where the two sides are
    drawn, so nothing here paints a diff of its own — the counterpart of the
-   desktop app's Review button. */
-.changes-review {
+   desktop app's Review button. Undo, beside it, is its counterpart of that
+   card's Undo: it puts the turn back through the CLI's own restore. */
+.changes-review,
+.changes-undo {
   flex: 0 0 auto;
   padding: 1px 7px;
   border: 1px solid var(--vscode-panel-border, rgba(128, 128, 128, 0.35));
@@ -795,7 +810,37 @@ pre,
   cursor: pointer;
 }
 
-.changes-review:hover {
+.changes-review:hover,
+.changes-undo:hover {
+  color: var(--vscode-foreground);
+  background: var(--vscode-toolbar-hoverBackground, rgba(128, 128, 128, 0.15));
+}
+
+/* What a card reads instead of offering its Undo again, which the host sets
+   once the turn has been put back. */
+.changes-note {
+  flex: 0 0 auto;
+  font-size: 0.9em;
+  color: var(--vscode-descriptionForeground);
+}
+
+/* The row under a listing longer than the card shows, painted with the words
+   the host composed and folding the rows past it away. */
+.changes-more {
+  display: block;
+  width: 100%;
+  padding: 3px 8px;
+  border: none;
+  border-top: 1px solid var(--vscode-panel-border, rgba(128, 128, 128, 0.25));
+  background: none;
+  color: var(--vscode-descriptionForeground);
+  font: inherit;
+  font-size: 0.85em;
+  text-align: left;
+  cursor: pointer;
+}
+
+.changes-more:hover {
   color: var(--vscode-foreground);
   background: var(--vscode-toolbar-hoverBackground, rgba(128, 128, 128, 0.15));
 }

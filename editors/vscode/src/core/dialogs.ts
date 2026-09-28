@@ -55,7 +55,7 @@ export type DialogPin = "header" | "footer";
 /// because the controller has to know what it is looking at: the session listing
 /// is painted again from a fresh read when a turn ends, and a confirmation must
 /// not be swapped for a listing the moment it appears.
-export type DialogKind = "mcp" | "sessions" | "delete";
+export type DialogKind = "mcp" | "sessions" | "delete" | "undo";
 
 export interface DialogState {
   kind: DialogKind;
@@ -83,6 +83,10 @@ export const OPEN_SESSION = "openSession";
 export const SESSION_DELETE = "sessionDelete";
 /// The confirmation's own row, which does the deletion.
 export const SESSION_DELETE_CONFIRM = "sessionDeleteConfirm";
+/// The confirmation a change card's Undo opens, and the row that does the
+/// restore. The Undo under the card itself posts its own view message, since it
+/// is a transcript control rather than a row of a dialog.
+export const CHANGES_UNDO_CONFIRM = "changesUndoConfirm";
 /// Close or Escape: the view dismisses it and tells the controller, so the next
 /// pane to attach does not paint it again.
 export const CLOSE_DIALOG = "dialogClose";
@@ -268,6 +272,32 @@ export function deleteSessionDialog(session: {
         action: SESSION_DELETE_CONFIRM,
       }),
       row("", "Cancel", { detail: "Keep the thread", action: CLOSE_DIALOG }),
+    ],
+    refreshLabel: "",
+    refreshAction: "",
+  };
+}
+
+/// The confirmation a change card's Undo opens: what the turn wrote, and the
+/// restore as the row rather than a second button. It is a panel dialog for the
+/// same reason the one above is, and the desktop app asks before it puts a turn
+/// back the same way. What it puts back is the whole turn, so the note says what
+/// a later edit would mean for it — the CLI reports that rather than folding it
+/// into the restore.
+export function undoChangesDialog(card: { id: number; detail: string }): DialogState {
+  return {
+    kind: "undo",
+    pin: "header",
+    title: "Undo turn",
+    subtitle: "Put this turn's files back to how the run found them.",
+    note: "An edit made since the turn is refused rather than undone.",
+    rows: [
+      row(String(card.id), "Undo changes", {
+        detail: card.detail,
+        tone: "warn",
+        action: CHANGES_UNDO_CONFIRM,
+      }),
+      row("", "Cancel", { detail: "Keep the turn's files", action: CLOSE_DIALOG }),
     ],
     refreshLabel: "",
     refreshAction: "",
