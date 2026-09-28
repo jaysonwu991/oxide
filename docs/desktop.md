@@ -80,12 +80,18 @@ The window follows a Codex-style layout:
   not repeated here because the composer's model chip already names it; the
   right side says only what has to be acted on (`no API key`, `project
   resources off`). The window is created with `acceptFirstMouse`, which reaches
-  the webview (tauri's window config maps onto `WebviewAttributes`), and the
-  window under the pointer is made key ahead of the dispatch when the app is not
-  active, so the first click after the app loses focus is the click the user
-  meant rather than one spent focusing the window. A press that still arrives as
-  that focus press, with no click behind it, is answered by the control it landed
-  on, whatever that control is (see **Composer**).
+  the webview (tauri's window config maps onto `WebviewAttributes`), and
+  `src/first_click.rs` runs a local `leftMouseDown`/`rightMouseDown` monitor that,
+  for a press into a window while the app itself is not active, activates the app
+  at once — the window keeps its key status in the background, so reading the
+  window rather than the app left the press to be spent bringing Oxide forward —
+  and makes that window key before AppKit dispatches the press, because AppKit
+  will not hand a press to a window it is still making key. A press into a window
+  of the active app is left alone, since taking the key away from whatever holds
+  it mid-press is what would drop the click. The block and the monitor AppKit
+  returns are kept for the life of the process, since releasing the returned
+  object removes the monitor. The first click after the app loses focus is then
+  the click the user meant rather than one spent focusing the window.
 - **Conversation** — a centered 760px column. User messages are right-aligned
   bubbles; assistant replies render Markdown and links open in the system
   browser (see [Rendering](#rendering)). Tool calls are compact cards
@@ -95,22 +101,15 @@ The window follows a Codex-style layout:
 - **Composer** — a floating rounded box with the attach, model, and reasoning
   chips on the left and one action on the right, which swaps rather than
   sitting beside a second button: **Stop** while a turn runs and there is
-  nothing to say, **Send**/**Steer** the moment there is. Every control answers
-  the press itself — each button the app wires up, each row of a sidebar, list
-  or change card, and the thumbnail in the attachment strip — because a control
-  left out of it is one the reader has to press twice: the press is captured
-  where it began and finishes on the release, as a click does but without
-  needing the same element under the pointer by then. That is what a thumbnail
-  needs for its own reason too — a press on a draggable image starts the drag
-  WebKit withholds the click for, which is why a thumbnail's image is marked
-  undraggable and both the drag and the press's default action are refused; the
-  release is answered whichever stream carries it, so a canceled pointer
-  sequence still finishes on the mouse one, and either way exactly once. A press
-  dragged off the control sends nothing, and a
-  keyboard activation still runs it once. A control inside another answers the
-  press and the one around it declines — a thread's ✕ removes the thread rather
-  than selecting the row, and a chip's ✕ removes the chip rather than opening
-  the picture — just as the click would have gone to the inner one alone. The
+  nothing to say, **Send**/**Steer** the moment there is. Every control is wired
+  to a plain click — each button the app wires up, each row of a sidebar, list
+  or change card, and the thumbnail in the attachment strip — and a control
+  inside another stops its click from reaching the row around it, so a thread's
+  ✕ removes the thread rather than selecting the row and a chip's ✕ removes the
+  chip rather than opening the picture — and a thumbnail's picture is undraggable
+  (`-webkit-user-drag: none` in the stylesheet as well), so the gesture on it
+  stays the click that opens the preview instead of starting the drag WebKit
+  withholds it for. The
   status and
   token/cost usage sit just below it. The 📎 button (or a pasted clipboard
   image) attaches images/PDFs, shown above the input as thumbnails that open a

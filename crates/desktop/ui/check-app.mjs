@@ -122,9 +122,9 @@ class StubElement {
     node.parentNode = parent;
   }
 
-  // Listeners are kept so a check can drive the gesture the app answers — a
-  // press that only becomes an action on the release — which a synthesized
-  // `click` cannot stand in for.
+  // Listeners are kept so a check can drive the events the app listens for
+  // itself — the document's own click, a row's `mousedown` — which a control's
+  // own handler cannot stand in for.
   addEventListener(type, handler) {
     (this.listeners[type] ||= []).push(handler);
   }
@@ -229,19 +229,18 @@ const elementFor = (id) => {
   if (!elements.has(id)) elements.set(id, new StubElement("div", id));
   return elements.get(id);
 };
-/// A press as WebKit delivers it, and the release that follows it: the controls
-/// the composer reaches for answer the gesture rather than the click, so a check
-/// drives both halves itself.
+/// A click as the browser delivers it to the control it landed on, which a
+/// check hands to that control's own handler.
 const press = (over = {}) => ({
   button: 0,
   pointerId: 1,
   clientX: 10,
   clientY: 10,
-  // A control inside another one stops the press there, as it does a click.
+  // A control inside another one stops the click there, as the browser would
+  // have delivered it to the inner one alone.
   stopPropagation() {},
   // A check that cares whether the page refused a default action reads this
-  // back: the drag a press would start is refused by hand (and by the picture's
-  // own markup), so the press that opens a thumbnail is never a drag.
+  // back: a row of the `@` list refuses the press so the caret stays put.
   preventDefault() {
     this.refused = true;
   },
@@ -683,18 +682,21 @@ check(
 await tick();
 check("closed the list once the reference was done", atBox.hidden === true);
 
-// A row answers a press the way it answers a key — that is the gesture the
-// reader's hand makes — while the press is refused so the caret stays in the
-// message box it is completing into.
+// A row of the list is clicked like anything else, while the press is refused
+// so the caret stays in the message box it is completing into.
 await typeAt("review @sr");
 const atPress = press();
 atRows.children[0].fire("mousedown", atPress);
-atRows.children[0].fire("pointerdown", atPress);
-atRows.children[0].fire("pointerup", atPress);
 check(
-  "took the row a press landed on, with the caret still in the message box",
-  composer.value === "review @src/" && composer.selectionStart === 12 && atPress.refused === true,
-  `${composer.value} @ ${composer.selectionStart} / refused ${atPress.refused}`,
+  "kept the caret in the message box when a row is clicked",
+  atPress.refused === true,
+  String(atPress.refused),
+);
+atRows.children[0].onclick(atPress);
+check(
+  "took the row a click landed on",
+  composer.value === "review @src/" && composer.selectionStart === 12,
+  `${composer.value} @ ${composer.selectionStart}`,
 );
 
 await typeAt("review @sr");
@@ -1000,6 +1002,15 @@ check(
   elementFor("attachments").outline(),
 );
 check("named the attachment", chip?.children[1]?.textContent === "shot.png", chip?.children[1]?.textContent);
+// WebKit drags a picture out of the page by default, and a drag started on the
+// thumbnail is the one gesture whose click is withheld, so the picture is not
+// allowed to become one in the first place.
+check(
+  "let a thumbnail not be dragged out of the composer",
+  opener?.children[0]?.draggable === false &&
+    /\.att-open img \{ -webkit-user-drag: none;[^}]*\}/.test(sheet),
+  String(opener?.children[0]?.draggable),
+);
 opener.onclick();
 check(
   "opened the full-size preview",
@@ -1022,63 +1033,20 @@ check(
     /#image-view-close \{ color: var\(--error\); \}/.test(sheet),
   `${shellAt("class=\"image-head\"")} / ${sheet.indexOf("#image-view-close {")}`,
 );
-// A control left out of that is one the reader has to press twice, so every
-// button the shell declares answers its press.
+// Every button the shell declares is wired to an action of its own.
 const shellButtons = [...shell.matchAll(/<button[^>]*\bid="([^"]+)"/g)].map((m) => m[1]);
-const unwiredButtons = shellButtons.filter((id) => !elementFor(id).answersPress);
+const unwiredButtons = shellButtons.filter((id) => typeof elementFor(id).onclick !== "function");
 check(
-  "wired every button the shell declares to answer its press",
+  "wired every button the shell declares to an action",
   shellButtons.length > 0 && unwiredButtons.length === 0,
   unwiredButtons.join(", "),
 );
-// The thumbnail is an image, and WebKit drags an image by default: the drag
-// session would take the release that opens the preview with it, so neither the
-// gesture nor the picture is allowed to become one.
-check(
-  "let a thumbnail not be dragged out of the composer",
-  opener?.children[0]?.draggable === false &&
-    /\.att-open img \{ -webkit-user-drag: none;[^}]*\}/.test(sheet),
-  String(opener?.children[0]?.draggable),
-);
-const dragPress = press();
-opener.fire("dragstart", dragPress);
-check("refused the drag a press would start", dragPress.refused === true);
-// The release is what the app answers, and either stream may be the one that
-// carries it, so a pointer press that was canceled still answers on the mouse
-// stream — and it is answered once.
-const mousePress = press();
-const answeredOnce = [];
-opener.fire("pointerdown", mousePress);
-opener.fire("pointercancel", mousePress);
-opener.fire("mouseup", mousePress);
-answeredOnce.push(elementFor("image-modal").hidden);
-check("left a canceled press alone", answeredOnce[0] === true, String(answeredOnce[0]));
-opener.fire("pointerdown", mousePress);
-opener.fire("mouseup", mousePress);
-const mouseReleased = elementFor("image-modal").hidden === false;
-opener.fire("mouseup", mousePress);
-check(
-  "answered the release on the mouse stream, and only once",
-  mouseReleased && elementFor("image-view-img").src === shot,
-  String(mouseReleased),
-);
-elementFor("image-view-close").onclick();
-opener.fire("pointerdown", mousePress);
-opener.fire("pointerup", mousePress);
-opener.fire("mouseup", mousePress);
-check(
-  "and answered a second release only once",
-  elementFor("image-modal").hidden === false,
-  String(elementFor("image-modal").hidden),
-);
-elementFor("image-view-close").onclick();
-// The thumbnail is a draggable image, so the press that opens the preview is the
-// one whose click WebKit withholds; the release is what the app answers.
+// The thumbnail is an ordinary button, so a keyboard activation fires the same
+// click a mouse does: the picture never becomes a drag instead.
 elementFor("image-modal").hidden = true;
-opener.fire("pointerdown", press());
-opener.fire("pointerup", press());
+opener.onclick({ detail: 0 });
 check(
-  "opened the preview from the press itself",
+  "opened the preview from the thumbnail's click",
   elementFor("image-view-img").src === shot && elementFor("image-modal").hidden === false,
   String(elementFor("image-modal").hidden),
 );
@@ -1141,59 +1109,43 @@ check(
 );
 app.state.attachments = [];
 
-// Every control answers its press, not only the two in the composer's corner: a
-// button left out of it is one the reader has to press twice. The control the
-// press began on is the one that answers — a chip's ✕ removes the chip, and the
-// picture it sits in does not open over the same gesture.
+// A chip is [thumbnail, name, remove]: each button is clicked on its own, and
+// the browser delivers the click to the one under the pointer rather than to
+// the chip around it.
 app.addAttachment("shot.png", shot);
-const chipOpen = chips()[0].querySelector(".att-open");
 const chipRemove = chips()[0].querySelector(".att-remove");
-const chipPress = press({ target: chipRemove });
-chipOpen.fire("pointerdown", chipPress);
-chipRemove.fire("pointerdown", chipPress);
-chipRemove.fire("pointerup", chipPress);
-chipOpen.fire("pointerup", chipPress);
+chipRemove.onclick(press({ target: chipRemove }));
 check(
-  "answered a press on a chip's ✕, without opening the picture around it",
+  "removed the chip from its own ✕, without opening the picture beside it",
   app.state.attachments.length === 0 && elementFor("image-modal").hidden === true,
   `${app.state.attachments.length} / ${elementFor("image-modal").hidden}`,
 );
 elementFor("help-modal").hidden = false;
-const helpPress = press();
-elementFor("help-close").fire("pointerdown", helpPress);
-elementFor("help-close").fire("pointerup", helpPress);
+elementFor("help-close").onclick(press());
 check(
-  "answered a dialog button's press itself",
+  "closed a dialog from its own button",
   elementFor("help-modal").hidden === true,
   String(elementFor("help-modal").hidden),
 );
 
-// A link opens from the press too, and the click that trails it is the
-// duplicate: one gesture opens the page once.
+// A link opens once per click, and through the host, because the webview cannot
+// navigate to a remote page itself.
 const link = new StubElement("a");
 link.setAttribute("href", "https://example.com/docs");
 elementFor("transcript").appendChild(link);
 const openedLinks = () => calls.filter(([name]) => name === "open_url");
 calls.length = 0;
-const linkPress = press({ target: link });
-document.fire("pointerdown", linkPress);
-document.fire("pointerup", linkPress);
+document.fire("click", press({ target: link }));
 check(
-  "opened a link from the press, with no click behind it",
+  "opened a link from a click, through the host",
   openedLinks().length === 1 && openedLinks()[0][1]?.url === "https://example.com/docs",
   JSON.stringify(calls),
 );
-document.fire("click", press({ target: link }));
-check(
-  "dropped the click that trailed the press",
-  openedLinks().length === 1,
-  JSON.stringify(calls),
-);
 calls.length = 0;
-document.fire("click", press({ target: link }));
+document.fire("click", press({ target: elementFor("transcript") }));
 check(
-  "opened a link from a click with no press behind it",
-  openedLinks().length === 1,
+  "left a click that landed on no link alone",
+  openedLinks().length === 0,
   JSON.stringify(calls),
 );
 link.remove();
@@ -2202,12 +2154,8 @@ check(
   `${elementFor("send").title} / stop ${elementFor("stop").hidden}`,
 );
 
-// A press can lose its click: the first press on a window that has just come
-// forward is the one that takes focus, and a press that starts a drag loses it
-// the same way. The two controls a half-written message reaches for answer the
-// gesture itself — the press is captured where it began and finishes on the
-// release, which is what a click is — and the click that may still trail the
-// press is the duplicate to drop.
+// The corner action is an ordinary button: the click it gets, whether the
+// browser calls it a mouse click or a keyboard activation, sends the message.
 calls.length = 0;
 elementFor("prompt").value = "keep going";
 app.setIdle();
@@ -2215,51 +2163,29 @@ app.updateSendState();
 elementFor("send").onclick({ detail: 0 });
 await nextTick();
 const keyboardSend = calls.map(([name]) => name);
-check("sent from a keyboard activation, which has no press", keyboardSend.length > 0, JSON.stringify(calls));
+check("sent from a keyboard activation", keyboardSend.length > 0, JSON.stringify(calls));
 
 calls.length = 0;
 elementFor("prompt").value = "keep going";
 app.setIdle();
 app.updateSendState();
-elementFor("send").fire("pointerdown", press());
-elementFor("send").fire("pointerup", press());
+elementFor("send").onclick({ detail: 1 });
 await nextTick();
 check(
-  "sent on a press that never became a click",
-  String(calls.map(([name]) => name)) === String(keyboardSend),
+  "sent on the click a mouse produces as well",
+  JSON.stringify(calls.map(([name]) => name)) === JSON.stringify(keyboardSend),
   JSON.stringify(calls),
 );
-const sentCalls = calls.length;
-elementFor("send").onclick({ detail: 1 });
-await nextTick();
-check("dropped the click that trailed the press", calls.length === sentCalls, JSON.stringify(calls));
 
-calls.length = 0;
-elementFor("prompt").value = "not yet";
-app.setIdle();
-app.updateSendState();
-elementFor("send").fire("pointerdown", press());
-elementFor("send").fire("pointerup", press({ clientX: 400 }));
-await nextTick();
-check("left a press that came up off the button alone", calls.length === 0, JSON.stringify(calls));
-app.setIdle();
-elementFor("send").onclick({ detail: 1 });
-await nextTick();
-check("and still acted on the click after it", calls.length > 0, JSON.stringify(calls));
-
-// Both streams deliver the release of one press, and the action they share is
-// the one that must not run twice.
 calls.length = 0;
 app.state.session = null;
 elementFor("prompt").value = "just the once";
 app.setIdle();
 app.updateSendState();
-elementFor("send").fire("pointerdown", press());
-elementFor("send").fire("pointerup", press());
-elementFor("send").fire("mouseup", press());
+elementFor("send").onclick({ detail: 1 });
 await nextTick();
 const sends = () => calls.filter(([name]) => name === "send_prompt");
-check("sent once when both streams carried the release", sends().length === 1, JSON.stringify(calls));
+check("sent once from one click", sends().length === 1, JSON.stringify(calls));
 // A window with no thread on screen is starting one: sending `latest` would
 // append this message to whichever thread was used last, which is not the
 // thread the reader is looking at and not one the sidebar would gain.
@@ -2345,8 +2271,7 @@ check(
 const syntheticRow = group?.children[1]?.children[0];
 calls.length = 0;
 const selectPress = press({ target: syntheticRow });
-syntheticRow.fire("pointerdown", selectPress);
-syntheticRow.fire("pointerup", selectPress);
+syntheticRow.onclick(selectPress);
 await nextTick();
 check(
   "selected the thread already on screen without reading a file",
@@ -2356,8 +2281,7 @@ check(
 const listedRow = elementFor("sessions-list").children[0];
 calls.length = 0;
 const rowPress = press({ target: listedRow });
-listedRow.fire("pointerdown", rowPress);
-listedRow.fire("pointerup", rowPress);
+listedRow.onclick(rowPress);
 await nextTick();
 check(
   "opened that thread from the sessions list the same way",
@@ -2406,14 +2330,26 @@ await app.renderProjectsTree();
 const removeRow = elementFor("projects-tree").children[0].children[0];
 const removeButton = removeRow.children.find((node) => String(node.className).includes("row-remove"));
 calls.length = 0;
-const removePress = press({ target: removeButton });
-removeButton.fire("pointerdown", removePress);
-removeButton.fire("pointerup", removePress);
+// The ✕ sits in the row that selects the project, so it stops the click there
+// rather than letting both act on one gesture.
+let stoppedAtTheRow = false;
+const removePress = press({
+  target: removeButton,
+  stopPropagation() {
+    stoppedAtTheRow = true;
+  },
+});
+removeButton.onclick(removePress);
 await nextTick();
 check(
   "opened the confirm from the row's own ✕, not the row",
   elementFor("confirm-modal").hidden === false && app.state.project === null,
   `${elementFor("confirm-modal").hidden} / ${app.state.project}`,
+);
+check(
+  "kept that click from reaching the row around it",
+  stoppedAtTheRow === true,
+  String(stoppedAtTheRow),
 );
 check(
   "offered the second choice because the project has threads",
@@ -2422,9 +2358,7 @@ check(
   `${elementFor("confirm-alt").hidden} / ${elementFor("confirm-alt").textContent}`,
 );
 calls.length = 0;
-const altPress = press({ target: elementFor("confirm-alt") });
-elementFor("confirm-alt").fire("pointerdown", altPress);
-elementFor("confirm-alt").fire("pointerup", altPress);
+elementFor("confirm-alt").onclick(press({ target: elementFor("confirm-alt") }));
 await nextTick();
 check(
   "answered with that dialog's own choice",

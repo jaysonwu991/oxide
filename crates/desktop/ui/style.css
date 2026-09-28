@@ -537,7 +537,7 @@ body.resizing { cursor: col-resize; user-select: none; }
 }
 .att-open:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 /* WebKit drags a picture out of the page by default, and the drag session takes
-   the press that opens the preview with it. */
+   the click that opens the preview with it. */
 .att-open img { -webkit-user-drag: none; user-select: none; }
 .msg .msg-attachments .att-open { border-radius: 8px; }
 .attachment .att-file {
