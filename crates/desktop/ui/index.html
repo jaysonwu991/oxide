@@ -251,6 +251,21 @@
       </div>
     </div>
 
+    <div id="review-modal" class="overlay" hidden>
+      <div class="dialog review-dialog">
+        <div class="review-head">
+          <h2 id="review-title">Changes</h2>
+          <span id="review-total" class="review-total"></span>
+          <span class="review-hint">↑↓ walk the files</span>
+          <button id="review-close" class="ghost small" title="Close (Esc)" aria-label="Close">✕</button>
+        </div>
+        <div class="review-body">
+          <div id="review-files" class="review-files"></div>
+          <div id="review-diff" class="review-diff"></div>
+        </div>
+      </div>
+    </div>
+
     <div id="help-modal" class="overlay" hidden>
       <div class="dialog">
         <h2>Keyboard shortcuts</h2>
@@ -262,6 +277,7 @@
           <tr><td>Shift+Tab / Ctrl+R</td><td>Cycle reasoning</td></tr>
           <tr><td>Ctrl+K</td><td>Open the model picker</td></tr>
           <tr><td>Ctrl+/</td><td>Toggle this help</td></tr>
+          <tr><td>↑ / ↓</td><td>Walk a change review's files</td></tr>
           <tr><td>Escape</td><td>Close any dialog</td></tr>
         </table>
         <div class="dialog-actions">

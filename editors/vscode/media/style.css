@@ -704,6 +704,12 @@ pre,
   display: none;
 }
 
+/* A card that changed a file is one line until it is expanded, so its body and
+   its diff stay hidden (an author `display` would beat the UA's `[hidden]`). */
+.tool .tbody[hidden] {
+  display: none;
+}
+
 .thint {
   padding: 0 8px 6px;
   font-size: 0.8em;
@@ -719,6 +725,115 @@ pre,
   font-size: 0.8em;
   color: var(--vscode-descriptionForeground);
   padding: 4px 8px 0;
+}
+
+/* ---------- a turn's changed files ---------- */
+
+.changes {
+  border: 1px solid var(--vscode-panel-border, rgba(128, 128, 128, 0.3));
+  border-left: 3px solid var(--vscode-charts-purple, #c586c0);
+  border-radius: 4px;
+  margin: 0 0 10px;
+  background: var(--vscode-editor-background);
+  overflow: hidden;
+}
+
+.changes-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 8px;
+  font-size: 0.85em;
+}
+
+.changes-open {
+  display: inline-flex;
+  align-items: center;
+  padding: 2px;
+  border: none;
+  border-radius: 3px;
+  color: var(--vscode-descriptionForeground);
+  background: none;
+  cursor: pointer;
+}
+
+.changes-open:hover {
+  color: var(--vscode-foreground);
+  background: var(--vscode-toolbar-hoverBackground, rgba(128, 128, 128, 0.15));
+}
+
+.changes-title {
+  font-weight: 600;
+}
+
+.changes-total {
+  margin-left: auto;
+  font-family: var(--vscode-editor-font-family, monospace);
+  font-size: 0.9em;
+  color: var(--vscode-descriptionForeground);
+}
+
+.changes-list {
+  border-top: 1px solid var(--vscode-panel-border, rgba(128, 128, 128, 0.25));
+  max-height: 30vh;
+  overflow-y: auto;
+}
+
+.change-row {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  width: 100%;
+  padding: 3px 8px;
+  border: none;
+  background: none;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.change-row:hover,
+.change-row:focus-visible {
+  background: var(--vscode-toolbar-hoverBackground, rgba(128, 128, 128, 0.15));
+}
+
+.change-badge {
+  flex: 0 0 auto;
+  font-family: var(--vscode-editor-font-family, monospace);
+  font-size: 0.75em;
+  font-weight: 700;
+  padding: 0 3px;
+  border-radius: 3px;
+  background: var(--vscode-textCodeBlock-background, rgba(128, 128, 128, 0.17));
+}
+
+.change-badge.change-added {
+  color: var(--vscode-charts-green, #89d185);
+}
+
+.change-badge.change-deleted {
+  color: var(--vscode-charts-red, #f14c4c);
+}
+
+.change-badge.change-modified {
+  color: var(--vscode-charts-blue, #4a9eff);
+}
+
+.change-path {
+  flex: 1 1 auto;
+  font-family: var(--vscode-editor-font-family, monospace);
+  font-size: 0.85em;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.change-detail {
+  flex: 0 0 auto;
+  font-family: var(--vscode-editor-font-family, monospace);
+  font-size: 0.8em;
+  color: var(--vscode-descriptionForeground);
 }
 
 .diff pre {

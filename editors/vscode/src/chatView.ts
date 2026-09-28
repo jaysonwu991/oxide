@@ -7,6 +7,7 @@ import * as vscode from "vscode";
 
 import { ChatController } from "./chat";
 import { isApprovalDecision } from "./core/approvals";
+import { CHANGE_SCHEME, diffPlan, type DiffPlan } from "./core/changes";
 import { questionAnswers } from "./core/questions";
 import { CHAT_VIEW, CHAT_VIEW_SECONDARY } from "./core/views";
 
@@ -51,6 +52,8 @@ interface WebviewMessage {
   /// is, and the sequence number the answer is labelled with.
   caret?: number;
   seq?: number;
+  /// A change card's own field: which row of the listing was clicked.
+  index?: number;
 }
 
 export class ChatViewProvider implements vscode.WebviewViewProvider {
@@ -157,6 +160,17 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         // means, so the view never has to know.
         await this.controller.dialogAction(message.action ?? "", message.value ?? "");
         return;
+      case "openChangeDiff":
+        // A row of a turn's change card. VS Code's own diff editor is what draws
+        // it, against the baseline the run recorded, so the panel renders no
+        // diff format of its own.
+        if (typeof message.id === "number") {
+          await this.openChange(message.id, message.index ?? 0);
+        }
+        return;
+      case "openAllChanges":
+        if (typeof message.id === "number") await this.openChange(message.id);
+        return;
       case "openUrl":
         await this.openUrl(message.url ?? "");
         return;
@@ -166,6 +180,43 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       default:
         return;
     }
+  }
+
+  /// A click on a turn's change card, opened in VS Code's own diff editor. The
+  /// panel holds no diff of its own: the left side is the file as the run found
+  /// it, which exists only in the project's shadow snapshot, so it is served by
+  /// the `CHANGE_SCHEME` content provider out of the CLI's own read, and the
+  /// right side is the file on disk — or an empty side for a file the run
+  /// removed. With no row it is the whole turn, which VS Code draws as one
+  /// multi-file diff whose rows are the listing the card just showed.
+  private async openChange(id: number, index?: number): Promise<void> {
+    const card = this.controller.changeCard(id);
+    if (!card) {
+      this.controller.warn("That turn's changes are no longer in the transcript.");
+      return;
+    }
+    const root = this.controller.workspaceRoot();
+    if (!root || !card.rows.length) return;
+    if (index === undefined) {
+      const resources = card.rows.map((row) => this.changeUris(root, diffPlan(card.baseline, row)));
+      await vscode.commands.executeCommand("vscode.changes", card.title, resources);
+      return;
+    }
+    const plan = this.controller.changeTarget(id, index);
+    if (!plan) return;
+    const [, baseline, current] = this.changeUris(root, plan);
+    await vscode.commands.executeCommand("vscode.diff", baseline, current, plan.title);
+  }
+
+  /// What the changes editor wants for one file: the resource the row is named
+  /// and opened by, the baseline side, and the side the file is in now.
+  private changeUris(root: string, plan: DiffPlan): [vscode.Uri, vscode.Uri, vscode.Uri] {
+    const current = vscode.Uri.file(path.join(root, plan.path));
+    return [current, this.baselineUri(plan), plan.present ? current : snapshotUri(plan.path, null)];
+  }
+
+  private baselineUri(plan: DiffPlan): vscode.Uri {
+    return snapshotUri(plan.path, plan.baseline);
   }
 
   /// The pane asks for everything it needs to paint itself once its script is
@@ -287,6 +338,14 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
 </body>
 </html>`;
   }
+}
+
+/// The URI the baseline side of a diff is served by: the provider registered for
+/// `CHANGE_SCHEME` reads the file out of the project's shadow snapshot, keyed by
+/// the revision in the query. An empty query is a side with no content — a file
+/// the run added, or one it removed.
+function snapshotUri(file: string, revision: string | null): vscode.Uri {
+  return vscode.Uri.from({ scheme: CHANGE_SCHEME, path: `/${file}`, query: revision ?? "" });
 }
 
 function nonceValue(): string {

@@ -389,25 +389,35 @@ pub async fn run_rpc(
 
     let mut stdout = std::io::stdout();
     let mut control_open = true;
-    loop {
+    let mut events_open = true;
+    // Runs until both channels close, so a host message still queued when the
+    // last event was written is not lost with the run that produced it.
+    while events_open || control_open {
+        // Biased, with the host's own messages ahead of the event stream: the
+        // driver queues a run's change listing before it hands over that run's
+        // last event, so a client draws the listing where the turn ended rather
+        // than after the first tokens of a follow-up prompt. Control frames are
+        // rare, so the event stream is never held up by one.
         tokio::select! {
-            event = events.recv() => match event {
-                Some(event) => {
-                    if let Some(value) = event_json(&event) {
-                        writeln!(stdout, "{value}")?;
-                        stdout.flush()?;
-                    }
-                }
-                None => break,
-            },
+            biased;
             // Host messages interleaved with the event stream: the session
-            // header, and anything else the driver needs to say.
+            // header, a finished turn's change listing, and anything else the
+            // driver needs to say.
             message = control.recv(), if control_open => match message {
                 Some(value) => {
                     writeln!(stdout, "{value}")?;
                     stdout.flush()?;
                 }
                 None => control_open = false,
+            },
+            event = events.recv(), if events_open => match event {
+                Some(event) => {
+                    if let Some(value) = event_json(&event) {
+                        writeln!(stdout, "{value}")?;
+                        stdout.flush()?;
+                    }
+                }
+                None => events_open = false,
             },
         }
     }

@@ -8,6 +8,21 @@ use std::time::Duration;
 /// that no live process can still be holding it.
 const STALE_LOCK_AGE: Duration = Duration::from_secs(300);
 
+/// Directories a shadow snapshot never records: build output and dependency
+/// trees are both huge and useless to diff. Written to the shadow repo's
+/// `info/exclude`, and skipped when a folder that is not a git work tree is
+/// measured (see `work_tree_is_bounded`), since such a folder may have no
+/// `.gitignore` to say so.
+const EXCLUDED_DIRS: &[&str] = &["target", "node_modules", ".venv", "dist", "build"];
+
+/// How much a snapshot may record of a directory that is not inside a git work
+/// tree. There, git has no `.gitignore` to leave noise out of `add -A`, so a
+/// folder that is not a project — a downloads directory, a media library — is
+/// measured before a shadow repo is made for it. Inside a git work tree the
+/// project's own ignores bound the work, so nothing is measured.
+const MAX_UNTRACKED_FILES: usize = 20_000;
+const MAX_UNTRACKED_BYTES: u64 = 512 * 1024 * 1024;
+
 #[derive(Debug, Clone)]
 pub struct Snapshots {
     git_dir: PathBuf,
@@ -18,7 +33,7 @@ impl Snapshots {
     pub fn open(cwd: &Path) -> Result<Self> {
         if !snapshot_scope_is_safe(cwd) {
             anyhow::bail!(
-                "snapshots disabled: {} is not inside a bounded git work tree",
+                "snapshots disabled: {} is not a project directory",
                 cwd.display()
             );
         }
@@ -44,7 +59,10 @@ impl Snapshots {
                 .output()
                 .context("running git init")?;
         }
-        let exclude = "target/\nnode_modules/\n.venv/\ndist/\nbuild/\n";
+        let exclude: String = EXCLUDED_DIRS
+            .iter()
+            .map(|dir| format!("{dir}/\n"))
+            .collect();
         std::fs::write(self.git_dir.join("info/exclude"), exclude)?;
         if self.git(&["rev-parse", "HEAD"]).is_err() {
             self.git(&["commit", "--quiet", "--allow-empty", "-m", "initial"])?;
@@ -52,7 +70,7 @@ impl Snapshots {
         Ok(())
     }
 
-    fn git(&self, args: &[&str]) -> Result<String> {
+    fn git_bytes(&self, args: &[&str]) -> Result<Vec<u8>> {
         let output = Command::new("git")
             .args([
                 "-c",
@@ -74,7 +92,13 @@ impl Snapshots {
                 String::from_utf8_lossy(&output.stderr).trim()
             );
         }
-        Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
+        Ok(output.stdout)
+    }
+
+    fn git(&self, args: &[&str]) -> Result<String> {
+        Ok(String::from_utf8_lossy(&self.git_bytes(args)?)
+            .trim()
+            .to_string())
     }
 
     pub fn commit(&self, label: &str) -> Result<Option<String>> {
@@ -84,6 +108,77 @@ impl Snapshots {
         }
         self.git(&["commit", "--quiet", "-m", label])?;
         Ok(Some(self.git(&["rev-parse", "HEAD"])?))
+    }
+
+    /// The state a run starts from: the project's work tree as it stands,
+    /// recorded in the shadow repo so a front-end can list the files the run
+    /// changes — including ones no tool call named, like a formatter's or a
+    /// shell command's — and put them back. `None` when the project must not be
+    /// snapshotted (see [`snapshot_scope_is_safe`]), which is a run without a
+    /// change listing rather than a failed run. A project that is not a git
+    /// clone is snapshotted all the same.
+    pub fn baseline(cwd: &Path) -> Option<(Snapshots, String)> {
+        let snapshots = Snapshots::open(cwd).ok()?;
+        let base = snapshots.mark().ok()?;
+        Some((snapshots, base))
+    }
+
+    /// Records the work tree as it stands and returns the commit a run's own
+    /// changes are compared against: a fresh commit when anything is different
+    /// from the previous state, otherwise the current `HEAD` — so two runs in a
+    /// row with nothing changed between them still start from what is on disk.
+    pub fn mark(&self) -> Result<String> {
+        if let Some(commit) = self.commit("baseline")? {
+            return Ok(commit);
+        }
+        self.git(&["rev-parse", "HEAD"])
+    }
+
+    /// The files that changed since `base`, one entry per path, each with the
+    /// line counts and the preview `crate::diff` renders. The work tree is
+    /// staged first so a file a run deleted reads as deleted rather than as an
+    /// unstaged removal.
+    pub fn changes_since(&self, base: &str) -> Result<crate::changes::TurnChanges> {
+        use crate::changes::ChangeStatus;
+
+        self.git(&["add", "-A"])?;
+        let status = self.git(&[
+            "diff",
+            "--cached",
+            "--no-renames",
+            "--name-status",
+            "-z",
+            base,
+        ])?;
+        let mut files = Vec::new();
+        for (status, path) in crate::changes::parse_name_status(&status) {
+            let old = match status {
+                ChangeStatus::Added => None,
+                _ => self.content_at(base, &path).ok(),
+            };
+            let new = match status {
+                ChangeStatus::Deleted => None,
+                _ => std::fs::read(self.work_tree.join(&path)).ok(),
+            };
+            files.push(crate::changes::file_change(status, path, old, new));
+        }
+        Ok(crate::changes::summarize(files))
+    }
+
+    /// One file's content at `revision`, as it stands in the shadow repo rather
+    /// than as the work tree has it now — what a front-end draws on the left of
+    /// a diff against what is on disk.
+    pub fn content_at(&self, revision: &str, path: &str) -> Result<Vec<u8>> {
+        self.git_bytes(&["show", &format!("{revision}:{path}")])
+    }
+
+    /// Puts the work tree back to `base`, discarding everything a run wrote
+    /// since it. Untracked files that were never staged are left alone, so a
+    /// front-end can offer this as the inverse of a listed change without it
+    /// reaching further than what was listed.
+    pub fn restore(&self, base: &str) -> Result<()> {
+        self.git(&["reset", "--hard", "--quiet", base])?;
+        Ok(())
     }
 
     pub fn undo(&self) -> Result<bool> {
@@ -133,15 +228,29 @@ impl Snapshots {
 /// Snapshots hash every file in the work tree with `git add -A`, so they are
 /// only safe for a bounded project. Refuse the user's home directory and its
 /// ancestors (running oxide in `$HOME` otherwise indexes the entire home
-/// folder, which can take minutes and gigabytes) and anything that is not
-/// inside a git work tree.
+/// folder, which can take minutes and gigabytes), anything that holds the
+/// config directory — where the shadow repos themselves live — and a folder
+/// that is neither a git work tree nor project-sized. What is left is a
+/// project, whether or not it is a git clone.
 fn snapshot_scope_is_safe(cwd: &Path) -> bool {
+    if !cwd.is_dir() {
+        return false;
+    }
+    // A volume root, or any ancestor of the home directory, holds everything.
+    if cwd.parent().is_none() {
+        return false;
+    }
     if let Some(home) = dirs::home_dir() {
         if cwd == home || home.starts_with(cwd) {
             return false;
         }
     }
-    inside_git_work_tree(cwd)
+    if let Some(config) = crate::config::config_dir() {
+        if config.starts_with(cwd) {
+            return false;
+        }
+    }
+    inside_git_work_tree(cwd) || work_tree_is_bounded(cwd)
 }
 
 fn inside_git_work_tree(path: &Path) -> bool {
@@ -155,9 +264,51 @@ fn inside_git_work_tree(path: &Path) -> bool {
     false
 }
 
+/// Whether a directory that is not a git work tree is small enough to record.
+fn work_tree_is_bounded(cwd: &Path) -> bool {
+    bounded_within(cwd, MAX_UNTRACKED_FILES, MAX_UNTRACKED_BYTES)
+}
+
+/// Walks `cwd` until it is known to be over one of the bounds, skipping the
+/// directories the shadow repo excludes and never following a symlink (git
+/// records the link itself, so what it points at is not part of the tree).
+fn bounded_within(cwd: &Path, max_files: usize, max_bytes: u64) -> bool {
+    let mut files = 0usize;
+    let mut bytes = 0u64;
+    let mut pending = vec![cwd.to_path_buf()];
+    while let Some(dir) = pending.pop() {
+        let Ok(entries) = std::fs::read_dir(&dir) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            let Ok(kind) = entry.file_type() else {
+                continue;
+            };
+            if kind.is_symlink() {
+                continue;
+            }
+            if kind.is_dir() {
+                let name = entry.file_name();
+                let name = name.to_string_lossy();
+                if name != ".git" && !EXCLUDED_DIRS.contains(&name.as_ref()) {
+                    pending.push(entry.path());
+                }
+                continue;
+            }
+            files += 1;
+            bytes += entry.metadata().map(|meta| meta.len()).unwrap_or(0);
+            if files > max_files || bytes > max_bytes {
+                return false;
+            }
+        }
+    }
+    true
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::changes::ChangeStatus;
 
     #[test]
     fn commits_and_undoes_changes() {
@@ -192,21 +343,150 @@ mod tests {
     }
 
     #[test]
-    fn refuses_home_directory_and_non_git_trees() {
+    fn refuses_volume_roots_home_and_the_config_directory() {
         assert!(!snapshot_scope_is_safe(Path::new("/")));
+        assert!(!snapshot_scope_is_safe(Path::new("")));
+        let missing = std::env::temp_dir().join(format!("oxide_snap_gone_{}", std::process::id()));
+        assert!(!snapshot_scope_is_safe(&missing));
         if let Some(home) = dirs::home_dir() {
             assert!(!snapshot_scope_is_safe(&home));
             if let Some(parent) = home.parent() {
                 assert!(!snapshot_scope_is_safe(parent));
             }
+            // The shadow repos live under the config directory, so a work tree
+            // holding it would index its own snapshots.
+            if let Some(config) = crate::config::config_dir().filter(|dir| dir.exists()) {
+                if let Some(parent) = config.parent().filter(|dir| dir.is_dir()) {
+                    assert!(!snapshot_scope_is_safe(parent));
+                }
+                assert!(!snapshot_scope_is_safe(&config));
+            }
         }
+    }
 
+    #[test]
+    fn accepts_a_git_work_tree_and_a_plain_project_directory() {
         let root = std::env::temp_dir().join(format!("oxide_snap_scope_{}", std::process::id()));
         std::fs::remove_dir_all(&root).ok();
         std::fs::create_dir_all(&root).unwrap();
-        assert!(!snapshot_scope_is_safe(&root));
+        // A folder that is not a clone is a project like any other: the shadow
+        // repo is oxide's own, so a turn's changes are listed there too.
+        assert!(snapshot_scope_is_safe(&root));
         std::fs::create_dir_all(root.join(".git")).unwrap();
         assert!(snapshot_scope_is_safe(&root));
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn measures_a_directory_that_is_not_a_git_work_tree() {
+        let root = std::env::temp_dir().join(format!("oxide_snap_size_{}", std::process::id()));
+        std::fs::remove_dir_all(&root).ok();
+        std::fs::create_dir_all(root.join("src")).unwrap();
+        std::fs::write(root.join("src/main.rs"), "fn main() {}\n").unwrap();
+        std::fs::write(root.join("README.md"), "# Readme\n").unwrap();
+
+        assert!(bounded_within(&root, 2, 4096));
+        assert!(!bounded_within(&root, 1, 4096));
+        assert!(!bounded_within(&root, 2, 4));
+
+        // Build output and dependencies are left out of the shadow repo, so a
+        // project that keeps them there is still measured as project-sized.
+        std::fs::create_dir_all(root.join("node_modules/pkg")).unwrap();
+        for index in 0..20 {
+            std::fs::write(
+                root.join("node_modules/pkg").join(format!("f{index}.js")),
+                "x",
+            )
+            .unwrap();
+        }
+        std::fs::remove_file(root.join("README.md")).unwrap();
+        assert!(bounded_within(&root, 2, 4096));
+
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn lists_what_changed_since_a_baseline() {
+        let root = std::env::temp_dir().join(format!("oxide_snap3_{}", std::process::id()));
+        std::fs::remove_dir_all(&root).ok();
+        let work = root.join("work");
+        std::fs::create_dir_all(&work).unwrap();
+
+        let snapshots = Snapshots {
+            git_dir: root.join("shadow"),
+            work_tree: work.clone(),
+        };
+        snapshots.ensure_repo().unwrap();
+
+        std::fs::write(work.join("keep.txt"), "one\ntwo\n").unwrap();
+        std::fs::write(work.join("gone.txt"), "bye\n").unwrap();
+        let base = snapshots.mark().unwrap();
+        // Nothing has happened yet, so a run that does nothing lists nothing.
+        assert!(snapshots.changes_since(&base).unwrap().is_empty());
+
+        std::fs::write(work.join("keep.txt"), "one\nTWO\n").unwrap();
+        std::fs::write(work.join("new.txt"), "hello\n").unwrap();
+        std::fs::remove_file(work.join("gone.txt")).unwrap();
+        // A file a shell command wrote is listed the same as an edited one.
+        std::fs::write(work.join("logo.bin"), [0x00, 0xff, 0x01]).unwrap();
+
+        let changes = snapshots.changes_since(&base).unwrap();
+        let listed: Vec<(&str, ChangeStatus)> = changes
+            .files
+            .iter()
+            .map(|file| (file.path.as_str(), file.status))
+            .collect();
+        assert_eq!(
+            listed,
+            vec![
+                ("gone.txt", ChangeStatus::Deleted),
+                ("keep.txt", ChangeStatus::Modified),
+                ("logo.bin", ChangeStatus::Added),
+                ("new.txt", ChangeStatus::Added),
+            ]
+        );
+        assert_eq!(changes.added, 2);
+        assert_eq!(changes.removed, 2);
+        let keep = changes.files.iter().find(|f| f.path == "keep.txt").unwrap();
+        assert!(keep.diff.contains("one"), "{}", keep.diff);
+        assert!(changes.files.iter().any(|f| f.binary));
+
+        // Undoing the run puts every file back, including the removed one, and
+        // takes away the files the run created.
+        snapshots.restore(&base).unwrap();
+        assert_eq!(
+            std::fs::read_to_string(work.join("keep.txt")).unwrap(),
+            "one\ntwo\n"
+        );
+        assert!(work.join("gone.txt").exists());
+        assert!(!work.join("new.txt").exists());
+        assert!(!work.join("logo.bin").exists());
+        assert!(snapshots.changes_since(&base).unwrap().is_empty());
+
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn marks_the_state_a_run_starts_from() {
+        let root = std::env::temp_dir().join(format!("oxide_snap4_{}", std::process::id()));
+        std::fs::remove_dir_all(&root).ok();
+        let work = root.join("work");
+        std::fs::create_dir_all(&work).unwrap();
+
+        let snapshots = Snapshots {
+            git_dir: root.join("shadow"),
+            work_tree: work.clone(),
+        };
+        snapshots.ensure_repo().unwrap();
+
+        std::fs::write(work.join("a.txt"), "one\n").unwrap();
+        let first = snapshots.mark().unwrap();
+        // A second mark with nothing changed between them is the same commit,
+        // so a later turn is still compared against the state on disk.
+        assert_eq!(snapshots.mark().unwrap(), first);
+        std::fs::write(work.join("a.txt"), "two\n").unwrap();
+        assert_ne!(snapshots.mark().unwrap(), first);
+
         std::fs::remove_dir_all(&root).ok();
     }
 

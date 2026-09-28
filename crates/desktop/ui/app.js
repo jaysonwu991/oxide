@@ -39,6 +39,9 @@ const state = {
   palette: [],
   paletteIndex: 0,
   paletteOpen: false,
+  // One card per finished turn that changed something, in the order the turns
+  // ran, so a review opened from an older card still reads its own files.
+  changes: [],
 };
 
 // ---------- helpers ----------
@@ -416,8 +419,10 @@ function renderMarkdown(text) {
   return out.join("");
 }
 
-function renderDiff(diff) {
-  const body = String(diff.text || "")
+/// One rendered diff: every line marked by its own first character, so a line's
+/// text can never be mistaken for a `+`/`-` marker.
+function diffLines(text) {
+  return String(text || "")
     .split("\n")
     .map((line) => {
       let cls = "";
@@ -427,7 +432,15 @@ function renderDiff(diff) {
       return `<span class="dline ${cls}">${escapeHtml(line)}</span>`;
     })
     .join("");
-  return `<div class="diff"><div class="diff-path">${escapeHtml(diff.path || "diff")}</div><pre>${body}</pre></div>`;
+}
+
+function diffBlock(diff) {
+  const el = document.createElement("div");
+  el.className = "diff";
+  el.innerHTML = `<div class="diff-path">${escapeHtml(diff.path || "diff")}</div><pre>${diffLines(
+    diff.text,
+  )}</pre>`;
+  return el;
 }
 
 // ---------- welcome ----------
@@ -617,6 +630,8 @@ async function openSession(session) {
 
 function resetTranscript() {
   state.session = null;
+  state.changes = [];
+  closeReview();
   el("transcript").innerHTML = "";
   el("usage").textContent = "";
   setThreadTitle("New task");
@@ -1139,8 +1154,24 @@ function startToolTimer(tool) {
   if (tool.timer && typeof tool.timer.unref === "function") tool.timer.unref();
 }
 
-/// Marks a card finished and paints the collapsed preview (or the full result
-/// when it carries a diff). Shared by the live stream and the stored transcript.
+/// The added and removed line counts a card's one-line header shows, counted
+/// from the `+`/`-` markers the same way `oxide_core::changes` counts them, so
+/// a call's numbers agree with the change listing's.
+function diffCounts(text) {
+  let added = 0;
+  let removed = 0;
+  for (const line of String(text || "").split("\n")) {
+    if (line.startsWith("+")) added += 1;
+    else if (line.startsWith("-")) removed += 1;
+  }
+  if (!added && !removed) return "";
+  return `+${added} −${removed}`;
+}
+
+/// Marks a card finished. A call that changed a file reads as the one line its
+/// header builds — the path, and how many lines moved — and keeps its own diff
+/// for the reader who expands the card: the turn's changes are listed together
+/// by the change card, so the same diff is not painted twice.
 function finishTool(tool, output, { isError = false, diff = null, elapsed = 0 } = {}) {
   if (tool.timer) {
     clearInterval(tool.timer);
@@ -1148,32 +1179,48 @@ function finishTool(tool, output, { isError = false, diff = null, elapsed = 0 } 
   }
   tool.done = true;
   tool.full = output || "";
-  tool.expanded = Boolean(diff);
   tool.block.classList.remove("running");
   if (isError) tool.block.classList.add("error");
-  tool.tstate.textContent = `${isError ? "✖" : "✔"}${elapsed ? ` ${formatDuration(elapsed)}` : ""}`;
-  if (diff) tool.block.insertAdjacentHTML("beforeend", renderDiff(diff));
+  const counts = diff ? diffCounts(diff.text) : "";
+  tool.tstate.textContent = `${isError ? "✖" : "✔"}${counts ? ` ${counts}` : ""}${
+    elapsed ? ` ${formatDuration(elapsed)}` : ""
+  }`;
+  if (diff) {
+    tool.diffEl = diffBlock(diff);
+    tool.diffEl.hidden = true;
+    tool.block.appendChild(tool.diffEl);
+  }
+  tool.inline = Boolean(diff);
   paintTool(tool);
 }
 
 /// Collapsed cards show the first lines of output plus how much was hidden;
-/// clicking swaps in the full result.
+/// clicking swaps in the full result. A card carrying a diff is one line until
+/// it is expanded, so an edit does not repeat the turn's change listing.
 function paintTool(tool) {
   if (!tool.done) {
     tool.pre.textContent = tool.live;
     return;
   }
+  if (tool.diffEl) tool.diffEl.hidden = !tool.expanded;
   if (tool.expanded) {
+    tool.pre.hidden = false;
     tool.pre.textContent = tool.full;
     tool.hint.hidden = true;
     tool.block.classList.add("expanded");
     return;
   }
+  tool.block.classList.remove("expanded");
+  if (tool.inline) {
+    tool.pre.hidden = true;
+    tool.hint.hidden = true;
+    return;
+  }
+  tool.pre.hidden = false;
   const { text, more } = previewText(tool.full, 3);
   tool.pre.textContent = text;
   tool.hint.hidden = more === 0;
   tool.hint.textContent = `⋯ ${more} more line${more === 1 ? "" : "s"} · click to expand`;
-  tool.block.classList.remove("expanded");
 }
 
 function toggleTool(tool) {
@@ -1206,6 +1253,248 @@ function renderStoredTranscript(container, messages) {
       }
     }
   }
+}
+
+// ---------- turn changes ----------
+
+// Rows a card shows before the rest are folded behind a "+N more files" button.
+const CHANGES_VISIBLE = 5;
+
+// The badge per status, spelling the core's `ChangeStatus`.
+const CHANGE_LETTERS = { added: "A", modified: "M", deleted: "D" };
+
+/// The card a finished turn leaves: every file the run changed, with the totals
+/// its header shows. The listing comes from the turn's own snapshot, so a file a
+/// formatter, a shell command or an MCP server wrote is listed beside the ones a
+/// tool call named.
+function renderChanges(payload) {
+  const changes = payload && payload.changes;
+  if (!changes || !Array.isArray(changes.files) || !changes.files.length) return;
+  const card = {
+    files: changes.files,
+    added: changes.added || 0,
+    removed: changes.removed || 0,
+    baseline: payload.baseline || null,
+    collapsed: false,
+    all: false,
+    undone: false,
+    rows: [],
+  };
+  state.changes.push(card);
+  el("transcript").appendChild(changesCard(card));
+  scrollDown();
+}
+
+/// `+12 −3`, shared by a card's header and its rows.
+function statsHtml(added, removed) {
+  const del = removed ? `<span class="stats-del">−${removed}</span>` : "";
+  return `<span class="stats-add">+${added}</span>${del}`;
+}
+
+function statusBadge(status) {
+  const key = CHANGE_LETTERS[status] ? status : "modified";
+  return `<span class="change-status ${key}" title="${key}">${CHANGE_LETTERS[key]}</span>`;
+}
+
+/// The diff a row opens: the same preview the tool cards paint, without their
+/// path header, since the row above it already names the file.
+function changeDiffHtml(file) {
+  if (file.binary) return `<div class="diff"><pre>Binary file — no text diff.</pre></div>`;
+  if (!file.diff) return `<div class="diff"><pre>No textual changes.</pre></div>`;
+  return `<div class="diff"><pre>${diffLines(file.diff)}</pre></div>`;
+}
+
+function changeRow(file) {
+  const row = document.createElement("button");
+  row.type = "button";
+  row.className = "change-row";
+  row.innerHTML =
+    statusBadge(file.status) +
+    `<span class="change-path">${escapeHtml(file.path)}</span>` +
+    `<span class="change-stats">${file.binary ? "binary" : statsHtml(file.added, file.removed)}</span>` +
+    `<span class="change-chev">▸</span>`;
+  row.onclick = () => toggleChangeDiff(row, file);
+  return row;
+}
+
+/// A row swaps its own diff in and out, so reading one file does not disturb
+/// the rest of the listing.
+function toggleChangeDiff(row, file) {
+  if (row.diffPanel) {
+    row.diffPanel.remove();
+    row.diffPanel = null;
+    row.classList.remove("open");
+    return;
+  }
+  const panel = document.createElement("div");
+  panel.className = "change-diff";
+  panel.innerHTML = changeDiffHtml(file);
+  row.after(panel);
+  row.diffPanel = panel;
+  row.classList.add("open");
+}
+
+function changesCard(card) {
+  const block = document.createElement("div");
+  block.className = "changes";
+
+  const head = document.createElement("div");
+  head.className = "changes-head";
+  const caret = document.createElement("span");
+  caret.className = "changes-caret";
+  caret.textContent = "▾";
+  const title = document.createElement("span");
+  title.className = "changes-title";
+  const total = document.createElement("span");
+  total.className = "changes-total";
+  const note = document.createElement("span");
+  note.className = "changes-note";
+  note.hidden = true;
+
+  const actions = document.createElement("div");
+  actions.className = "changes-actions";
+  const review = document.createElement("button");
+  review.type = "button";
+  review.className = "ghost small";
+  review.textContent = "Review";
+  review.onclick = (event) => {
+    event.stopPropagation();
+    openReview(card);
+  };
+  const undo = document.createElement("button");
+  undo.type = "button";
+  undo.className = "ghost small";
+  undo.textContent = "Undo";
+  undo.onclick = (event) => {
+    event.stopPropagation();
+    undoChanges(card);
+  };
+  actions.append(review, undo);
+
+  const list = document.createElement("div");
+  list.className = "changes-list";
+  const more = document.createElement("button");
+  more.type = "button";
+  more.className = "changes-more";
+
+  head.append(caret, title, total, note, actions);
+  head.onclick = () => {
+    card.collapsed = !card.collapsed;
+    paintChanges(card);
+  };
+  block.append(head, list, more);
+
+  card.block = block;
+  card.list = list;
+  card.more = more;
+  card.note = note;
+  card.undo = undo;
+  card.title = title;
+  card.total = total;
+  for (const file of card.files) {
+    const row = changeRow(file);
+    card.rows.push({ file, row });
+    list.appendChild(row);
+  }
+  more.onclick = (event) => {
+    event.stopPropagation();
+    card.all = !card.all;
+    paintChanges(card);
+  };
+  paintChanges(card);
+  return block;
+}
+
+function paintChanges(card) {
+  const count = card.files.length;
+  card.title.textContent = `Edited ${count} file${count === 1 ? "" : "s"}`;
+  card.total.innerHTML = statsHtml(card.added, card.removed);
+  card.block.classList.toggle("collapsed", card.collapsed);
+  const shown = card.all ? card.rows : card.rows.slice(0, CHANGES_VISIBLE);
+  const visible = new Set(shown);
+  for (const entry of card.rows) entry.row.hidden = !visible.has(entry);
+  const hidden = count - shown.length;
+  card.more.hidden = card.collapsed || (hidden <= 0 && !card.all);
+  card.more.textContent = card.all ? "Show less" : `+${hidden} more file${hidden === 1 ? "" : "s"}`;
+}
+
+/// Puts the project back to the state the turn started from. The baseline is
+/// the snapshot the run was marked against, so this reaches exactly what the
+/// card lists rather than the repository's last commit.
+async function undoChanges(card) {
+  if (!card.baseline || card.undone) return;
+  const count = card.files.length;
+  const ok = await confirmDialog(
+    "Undo changes",
+    `Put ${count} file${count === 1 ? "" : "s"} back to how ${count === 1 ? "it was" : "they were"} before this turn?`,
+    "Undo changes",
+  );
+  if (!ok) return;
+  try {
+    await invoke("undo_turn", { project: state.project, baseline: card.baseline });
+  } catch (error) {
+    setStatus(`Could not undo: ${error}`);
+    return;
+  }
+  card.undone = true;
+  card.note.textContent = "Undone";
+  card.note.hidden = false;
+  card.undo.hidden = true;
+  setStatus("Put the turn's files back");
+}
+
+// ---------- review ----------
+
+// The card a review is open on, and the file it is showing. The listing is the
+// card's own, so the review never disagrees with the rows behind it.
+let reviewState = null;
+
+function openReview(card) {
+  reviewState = { card, index: 0 };
+  el("review-title").textContent = card.title.textContent;
+  el("review-total").innerHTML = statsHtml(card.added, card.removed);
+  closeOverlays("review-modal");
+  el("review-modal").hidden = false;
+  paintReview();
+  el("review-close").focus();
+}
+
+function closeReview() {
+  reviewState = null;
+  el("review-modal").hidden = true;
+}
+
+function paintReview() {
+  if (!reviewState) return;
+  const { card } = reviewState;
+  const list = el("review-files");
+  list.innerHTML = "";
+  card.files.forEach((file, index) => {
+    const row = changeRow(file);
+    row.classList.toggle("active", index === reviewState.index);
+    row.onclick = () => {
+      reviewState.index = index;
+      paintReview();
+    };
+    list.appendChild(row);
+  });
+  const file = card.files[reviewState.index];
+  el("review-diff").innerHTML =
+    `<div class="review-file">${statusBadge(file.status)}` +
+    `<span class="change-path">${escapeHtml(file.path)}</span>` +
+    `<span class="change-stats">${file.binary ? "binary" : statsHtml(file.added, file.removed)}</span></div>` +
+    changeDiffHtml(file);
+}
+
+/// Walks the review with the arrow keys, the way a changes view does.
+function reviewKey(event) {
+  if (!reviewState) return;
+  const step = event.key === "ArrowDown" ? 1 : event.key === "ArrowUp" ? -1 : 0;
+  if (!step) return;
+  event.preventDefault();
+  const count = reviewState.card.files.length;
+  reviewState.index = (reviewState.index + step + count) % count;
+  paintReview();
 }
 
 /// The still-running card a tool event belongs to. Results are emitted in call
@@ -1529,6 +1818,7 @@ const OVERLAYS = [
   "rename-modal",
   "image-modal",
   "sessions-modal",
+  "review-modal",
   "help-modal",
 ];
 
@@ -1536,6 +1826,9 @@ function closeOverlays(except) {
   for (const id of OVERLAYS) {
     if (id !== except) el(id).hidden = true;
   }
+  // The review's state is its card and the file it is showing, so closing the
+  // panel drops it along with the markup rather than leaving it half-open.
+  if (except !== "review-modal") reviewState = null;
   // The palette lives above the composer rather than in an overlay, but any
   // dialog that opens takes the keyboard with it.
   if (except !== "command-palette") closePalette();
@@ -2469,12 +2762,14 @@ async function initEvents() {
     resetTurn();
   });
   await listen("agent-event", (event) => handleEvent(event.payload || {}));
-  await listen("agent-end", async () => {
+  await listen("agent-end", async (event) => {
     setIdle();
     setStatus("Ready");
+    renderChanges(event.payload || {});
     resetTurn();
     await loadSessions();
   });
+  el("review-modal").onkeydown = reviewKey;
   await listen("approval-request", (event) => showApproval(event.payload || {}));
   await listen("question-request", (event) => showQuestion(event.payload || {}));
   // The request timed out with nobody answering, while the run it belongs to

@@ -50,18 +50,30 @@ class StubElement {
     this.tagName = tag.toUpperCase();
     this.id = id;
     this.children = [];
-    this.classList = {
-      add() {},
-      remove() {},
-      toggle() {},
-      contains: () => false,
-    };
     this.style = {};
     this.dataset = {};
     this.hidden = true;
     this.value = "";
     this.textContent = "";
     this.className = "";
+    // Classes are kept on `className`, so a state the app toggles (a collapsed
+    // listing, the active row of a review) is what the checks read back.
+    const classes = () => String(this.className).split(/\s+/).filter(Boolean);
+    this.classList = {
+      add: (token) => {
+        if (!classes().includes(token)) this.className = `${this.className} ${token}`.trim();
+      },
+      remove: (token) => {
+        this.className = classes().filter((name) => name !== token).join(" ");
+      },
+      toggle: (token, force) => {
+        const on = force === undefined ? !classes().includes(token) : Boolean(force);
+        if (on) this.classList.add(token);
+        else this.classList.remove(token);
+        return on;
+      },
+      contains: (token) => classes().includes(token),
+    };
     this.disabled = false;
     this.checked = false;
     this.offsetParent = {};
@@ -98,6 +110,15 @@ class StubElement {
     this.children.push(node);
     node.parentNode = this;
     return node;
+  }
+
+  // A change row puts its diff directly beneath itself, and takes it out again.
+  after(node) {
+    const parent = this.parentNode;
+    if (!parent) return;
+    const index = parent.children.indexOf(this);
+    parent.children.splice(index + 1, 0, node);
+    node.parentNode = parent;
   }
 
   addEventListener() {}
@@ -154,7 +175,14 @@ class StubElement {
   closest() {
     return null;
   }
-  remove() {}
+
+  remove() {
+    const parent = this.parentNode;
+    if (!parent) return;
+    const index = parent.children.indexOf(this);
+    if (index >= 0) parent.children.splice(index, 1);
+    this.parentNode = null;
+  }
 
   /// The element's own text and markup, then its children, one line each, so a
   /// failure names what was painted.
@@ -417,7 +445,9 @@ vm.runInThisContext(
     " openDefaultProject, openCreateProject, addCreateProjectTypedPath, saveCreateProject," +
     " refreshPaletteEntries, paletteMatches, renderPalette, runPaletteEntry," +
     " addAttachment, addAttachmentFiles, el, showQuestion, showQuestionStep, questionNext," +
-    " answerQuestion, collectAnswers, requestAt, acceptAt, moveAt, closeAt, atKey };\n",
+    " answerQuestion, collectAnswers, requestAt, acceptAt, moveAt, closeAt, atKey," +
+    " resetTranscript, renderChanges, closeReview, undoChanges," +
+    " startTool, finishTool, toggleTool };\n",
 );
 
 const app = globalThis.__app;
@@ -1262,6 +1292,282 @@ check(
   "sent nothing for a question a finished run left waiting",
   !calls.some(([name]) => name === "resolve_question"),
   JSON.stringify(calls),
+);
+
+// ---------- an edited file's own card ----------
+
+// A call that changed a file reads as one line — the path, and how many lines
+// moved — because the turn's changes are listed together by the card above; the
+// diff it kept is there for the reader who clicks the card.
+console.log("an edit tool's card");
+const editCard = app.startTool(
+  "edit",
+  JSON.stringify({ path: "src/main.rs", edits: [{ oldText: "a", newText: "b" }] }),
+);
+app.finishTool(editCard, "Successfully replaced 1 block(s) in src/main.rs.", {
+  diff: { path: "src/main.rs", text: "-  1      a\n+      1  b" },
+  elapsed: 12,
+});
+check(
+  "counted the lines the call moved beside its state",
+  editCard.tstate.textContent.includes("+1 −1"),
+  editCard.tstate.textContent,
+);
+check(
+  "kept the card to a single line",
+  editCard.pre.hidden === true && editCard.hint.hidden === true,
+  `body hidden: ${editCard.pre.hidden}, hint hidden: ${editCard.hint.hidden}`,
+);
+check(
+  "held the diff back until it is asked for",
+  Boolean(editCard.diffEl) && editCard.diffEl.hidden === true,
+  String(editCard.diffEl && editCard.diffEl.hidden),
+);
+check(
+  "painted the diff under the file it changed",
+  editCard.diffEl.innerHTML.includes("src/main.rs") &&
+    editCard.diffEl.innerHTML.includes("dline add"),
+  editCard.diffEl.innerHTML,
+);
+app.toggleTool(editCard);
+check(
+  "showed the call's own diff when the card is expanded",
+  editCard.diffEl.hidden === false &&
+    editCard.pre.hidden === false &&
+    editCard.pre.textContent.includes("Successfully replaced 1 block(s)"),
+  `diff hidden: ${editCard.diffEl.hidden}, body hidden: ${editCard.pre.hidden}`,
+);
+app.toggleTool(editCard);
+check(
+  "folded it away again",
+  editCard.diffEl.hidden === true && editCard.pre.hidden === true,
+  `diff hidden: ${editCard.diffEl.hidden}, body hidden: ${editCard.pre.hidden}`,
+);
+// A card for a call that changed no file is not the one-line form: it keeps the
+// preview of what it printed, so the treatment above is only for a diff.
+const plainCard = app.startTool("bash", JSON.stringify({ command: "cargo test" }));
+app.finishTool(plainCard, "ok\nline two\nline three\nline four\n", { elapsed: 30 });
+check(
+  "left a call that changed nothing reading as before",
+  plainCard.pre.hidden === false &&
+    !plainCard.diffEl &&
+    plainCard.hint.hidden === false &&
+    plainCard.tstate.textContent.startsWith("✔"),
+  `body hidden: ${plainCard.pre.hidden}, diff: ${Boolean(plainCard.diffEl)}, hint hidden: ${
+    plainCard.hint.hidden
+  }, state: ${plainCard.tstate.textContent}`,
+);
+
+// ---------- a finished turn's changes ----------
+
+console.log("turn changes");
+app.state.project = "/home/dev/Projects/oxide";
+const transcriptCards = () =>
+  elementFor("transcript").children.filter((node) => String(node.className).includes("changes"));
+const file = (path, status, added, removed, diff = null, binary = false) => ({
+  path,
+  status,
+  added,
+  removed,
+  binary,
+  diff: diff || `${status === "added" ? "+" : "-"}     1  ${path}`,
+});
+
+// The card a run leaves when it ends: the files the turn's snapshot lists, with
+// the totals its header shows. A file a shell command wrote rides along because
+// the listing is the work tree's diff rather than the tools' arguments.
+await emit("agent-end", {
+  runId: 1,
+  baseline: "9f1c0d2",
+  changes: {
+    added: 12,
+    removed: 3,
+    files: [
+      file("src/agent.rs", "modified", 8, 2, "-  1  1  old\n+     1  new"),
+      file("src/tools.rs", "modified", 3, 1, "-  4  4  gone\n+     4  here"),
+      file("assets/logo.png", "modified", 0, 0, null, true),
+      file("notes.md", "added", 1, 0),
+    ],
+  },
+});
+const cards = transcriptCards();
+check("left a card for the files the turn changed", cards.length === 1, String(cards.length));
+const card = cards[0];
+const head = card.children[0];
+const list = card.children[1];
+check(
+  "named the card after what it lists",
+  head.children[1].textContent === "Edited 4 files",
+  head.children[1].textContent,
+);
+check(
+  "counted the turn's additions and deletions",
+  head.children[2].innerHTML.includes("+12") && head.children[2].innerHTML.includes("−3"),
+  head.children[2].innerHTML,
+);
+check("listed one row per changed file", list.children.length === 4, String(list.children.length));
+const changedRow = list.children[0];
+check(
+  "badged the row with its status and counted its lines",
+  changedRow.innerHTML.includes("change-status modified") &&
+    changedRow.innerHTML.includes(">M<") &&
+    changedRow.innerHTML.includes("src/agent.rs") &&
+    changedRow.innerHTML.includes("+8") &&
+    changedRow.innerHTML.includes("−2"),
+  changedRow.innerHTML,
+);
+check(
+  "said a binary file has no lines to count",
+  list.children[2].innerHTML.includes("binary"),
+  list.children[2].innerHTML,
+);
+
+// A row opens its own diff where it sits, so reading one file leaves the rest of
+// the listing alone, and closes it again on a second click.
+changedRow.onclick();
+check(
+  "opened the row's diff beneath it",
+  changedRow.diffPanel &&
+    changedRow.diffPanel.innerHTML.includes("dline del") &&
+    changedRow.diffPanel.innerHTML.includes("dline add") &&
+    list.children[1] === changedRow.diffPanel,
+  changedRow.diffPanel && changedRow.diffPanel.innerHTML,
+);
+changedRow.onclick();
+check(
+  "closed the diff again",
+  changedRow.diffPanel === null && list.children.length === 4,
+  String(list.children.length),
+);
+
+// The review is the card's own listing beside the selected file's diff.
+head.children[4].children[0].onclick({ stopPropagation() {} });
+check("opened the review", elementFor("review-modal").hidden === false);
+check(
+  "headed it with the card's own title and totals",
+  elementFor("review-title").textContent === "Edited 4 files" &&
+    elementFor("review-total").innerHTML.includes("+12"),
+  `${elementFor("review-title").textContent} / ${elementFor("review-total").innerHTML}`,
+);
+check(
+  "listed every file the card lists",
+  elementFor("review-files").children.length === 4,
+  String(elementFor("review-files").children.length),
+);
+check(
+  "showed the first file's diff",
+  elementFor("review-diff").innerHTML.includes("src/agent.rs") &&
+    elementFor("review-diff").innerHTML.includes("dline add"),
+  elementFor("review-diff").innerHTML,
+);
+elementFor("review-files").children[1].onclick();
+check(
+  "showed the file that was clicked",
+  elementFor("review-diff").innerHTML.includes("src/tools.rs"),
+  elementFor("review-diff").innerHTML,
+);
+const reviewKey = (key) => elementFor("review-modal").onkeydown({ key, preventDefault() {} });
+reviewKey("ArrowDown");
+check(
+  "walked on with the arrow keys, naming a file with no text to show",
+  elementFor("review-diff").innerHTML.includes("Binary file"),
+  elementFor("review-diff").innerHTML,
+);
+reviewKey("ArrowDown");
+check(
+  "showed the next file",
+  elementFor("review-diff").innerHTML.includes("notes.md"),
+  elementFor("review-diff").innerHTML,
+);
+check(
+  "marked the row the review is showing",
+  elementFor("review-files").children[3].classList.contains("active") &&
+    !elementFor("review-files").children[0].classList.contains("active"),
+  String(elementFor("review-files").children[3].className),
+);
+elementFor("review-files").children[0].onclick();
+reviewKey("ArrowUp");
+check(
+  "wrapped around from the first file",
+  elementFor("review-diff").innerHTML.includes("notes.md"),
+  elementFor("review-diff").innerHTML,
+);
+
+// Undo puts the project back to the run's own baseline, which the payload
+// carried, rather than to the repository's last commit.
+calls.length = 0;
+head.children[4].children[1].onclick({ stopPropagation() {} });
+elementFor("confirm-ok").onclick();
+await new Promise((resolve) => setTimeout(resolve, 0));
+const undone = calls.find(([name]) => name === "undo_turn");
+check(
+  "put the files back through the turn's baseline",
+  undone && undone[1].baseline === "9f1c0d2" && undone[1].project === app.state.project,
+  JSON.stringify(undone),
+);
+check(
+  "said the card was undone",
+  head.children[3].textContent === "Undone" &&
+    head.children[3].hidden === false &&
+    head.children[4].children[1].hidden === true,
+  `${head.children[3].textContent} / ${head.children[3].hidden}`,
+);
+
+// A listing longer than the card shows folds the rest behind a button rather
+// than pushing the transcript away.
+await emit("agent-end", {
+  runId: 2,
+  baseline: "aa11bb2",
+  changes: {
+    added: 7,
+    removed: 0,
+    files: ["a.js", "b.js", "c.js", "d.js", "e.js", "f.js", "g.js"].map((path) =>
+      file(path, "modified", 1, 0),
+    ),
+  },
+});
+const longCard = transcriptCards().at(-1);
+const longList = longCard.children[1];
+const more = longCard.children[2];
+check(
+  "showed the first rows and folded the rest",
+  longList.children.filter((row) => !row.hidden).length === 5 &&
+    more.hidden === false &&
+    more.textContent === "+2 more files",
+  `${longList.children.filter((row) => !row.hidden).length} rows / ${more.textContent}`,
+);
+more.onclick({ stopPropagation() {} });
+check(
+  "revealed the rest when asked",
+  longList.children.every((row) => !row.hidden) && more.textContent === "Show less",
+  `${more.textContent}`,
+);
+longCard.children[0].onclick();
+check(
+  "collapsed the whole listing from its header",
+  String(longCard.className).includes("collapsed"),
+  String(longCard.className),
+);
+
+// A turn that changed nothing — or a backend that could not take a baseline —
+// leaves no card rather than an empty one.
+await emit("agent-end", { runId: 3, baseline: "cc22dd3", changes: { files: [], added: 0, removed: 0 } });
+await emit("agent-end", { runId: 4 });
+check(
+  "left no card for a turn that changed nothing",
+  transcriptCards().length === 2,
+  String(transcriptCards().length),
+);
+
+// A new chat drops the transcript's cards along with it, and the review it may
+// have open with them.
+app.resetTranscript();
+check(
+  "dropped the cards when the thread was reset",
+  transcriptCards().length === 0 &&
+    app.state.changes.length === 0 &&
+    elementFor("review-modal").hidden === true,
+  `${transcriptCards().length} cards / ${app.state.changes.length} kept`,
 );
 
 // ---------- the / menu ----------

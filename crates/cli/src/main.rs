@@ -17,6 +17,7 @@ use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
 use cli::RpcRequest;
 use config::Config;
+use serde_json::json;
 use session::SessionLog;
 use std::io::{self, IsTerminal, Read, Write};
 use std::path::{Path, PathBuf};
@@ -184,6 +185,26 @@ enum Command {
         /// Print the listing as JSON
         #[arg(long)]
         json: bool,
+    },
+    /// Read the files a run changed, from its shadow snapshots
+    Changes {
+        #[command(subcommand)]
+        action: ChangesAction,
+    },
+}
+
+#[derive(Subcommand, Debug)]
+enum ChangesAction {
+    /// Print one file as a run's baseline recorded it
+    Show {
+        /// Path relative to the project
+        path: String,
+        /// The revision the run started from, as `agent_end` reported it
+        #[arg(long)]
+        baseline: String,
+        /// Project directory (defaults to the current one)
+        #[arg(long)]
+        project: Option<PathBuf>,
     },
 }
 
@@ -543,6 +564,22 @@ async fn main() -> Result<()> {
                 let current_dir = std::env::current_dir().context("resolving current directory")?;
                 commands::list(&current_dir, json)
             }
+            Command::Changes { action } => match action {
+                ChangesAction::Show {
+                    path,
+                    baseline,
+                    project,
+                } => {
+                    let cwd = match project {
+                        Some(path) => path,
+                        None => std::env::current_dir().context("resolving current directory")?,
+                    };
+                    let snapshots = snapshots::Snapshots::open(&cwd)?;
+                    let content = snapshots.content_at(&baseline, &path)?;
+                    io::stdout().write_all(&content)?;
+                    Ok(())
+                }
+            },
         };
     }
     let cwd = match &cli.cwd {
@@ -993,6 +1030,9 @@ async fn run_rpc_mode(
             }
             history.push(user);
             let (run_tx, mut run_rx) = unbounded_channel();
+            // The state the run starts from, so the client can list the files it
+            // changes and draw a diff against what is on disk now.
+            let baseline = mark_baseline(&cwd).await;
             // The broker and the run share one steering queue, so a denial's
             // message is drained by the agent it was meant to steer (a fresh
             // queue here would swallow the guidance and let it retry blind).
@@ -1023,6 +1063,9 @@ async fn run_rpc_mode(
                 let finished = matches!(event, AgentEvent::Finished(_));
                 if let AgentEvent::Finished(messages) = &event {
                     history = messages.clone();
+                    if let Some(frame) = turn_changes(&baseline).await {
+                        let _ = control_tx.send(frame);
+                    }
                 }
                 if event_tx.send(event).is_err() {
                     break;
@@ -1039,6 +1082,40 @@ async fn run_rpc_mode(
     let _ = driver.await;
     writeln!(out)?;
     result
+}
+
+/// The state a run starts from, recorded in the project's shadow snapshot repo
+/// (see [`snapshots::Snapshots::baseline`]). `None` when it cannot be taken,
+/// which is a turn without a change listing rather than a failed turn.
+async fn mark_baseline(cwd: &Path) -> Option<(snapshots::Snapshots, String)> {
+    let cwd = cwd.to_path_buf();
+    tokio::task::spawn_blocking(move || snapshots::Snapshots::baseline(&cwd))
+        .await
+        .ok()
+        .flatten()
+}
+
+/// The files a finished turn changed, as the control frame a client draws them
+/// from: the baseline it diffs a file against, the listing, and the `+`/`-`
+/// totals a header shows. `None` for a run that has no baseline, and for one
+/// that changed nothing — a turn that only read files says nothing.
+async fn turn_changes(
+    baseline: &Option<(snapshots::Snapshots, String)>,
+) -> Option<serde_json::Value> {
+    let (snapshots, base) = baseline.clone()?;
+    let marked = base.clone();
+    let changes = tokio::task::spawn_blocking(move || snapshots.changes_since(&marked))
+        .await
+        .ok()?
+        .ok()?;
+    if changes.is_empty() {
+        return None;
+    }
+    Some(json!({
+        "type": "turn_changes",
+        "baseline": base,
+        "changes": changes,
+    }))
 }
 
 #[cfg(test)]

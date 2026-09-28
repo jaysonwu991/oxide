@@ -10,6 +10,7 @@ use oxide_core::llm::LlmClient;
 use oxide_core::llm::Message;
 use oxide_core::llm::{ContentPart, MessageContent};
 use oxide_core::session::{SessionLog, SessionSummary};
+use oxide_core::snapshots::Snapshots;
 use oxide_core::theme_view;
 use oxide_desktop::at::{AtAnswer, PathCache};
 use oxide_desktop::manager::{expand_project_path, DesktopManager, ProjectView};
@@ -508,6 +509,13 @@ async fn drive_turn(
     let cwd = PathBuf::from(project);
     let reference = session.as_deref().unwrap_or("latest");
     let log = open_session(&cwd, reference)?;
+    // The state the run starts from, so the files it changes can be listed and
+    // undone once it ends. `None` when the project must not be snapshotted — a
+    // directory that holds everything (the home directory or an ancestor of it,
+    // the config directory) or one too large to hash — in which case the window
+    // shows no change card for the turn rather than failing to start it. A
+    // project that is not a git clone is snapshotted all the same.
+    let baseline = mark_baseline(&cwd).await;
     let approver = approvals.approver(cwd.clone());
     let asker = questions.asker_for(run_id);
     let turn = start_turn(
@@ -569,12 +577,56 @@ async fn drive_turn(
     let state = app.state::<DesktopState>();
     state.at.clear();
     questions.clear_run(run_id).await;
+    let (baseline, changes) = match baseline {
+        Some((snapshots, base)) => {
+            let listed = tokio::task::spawn_blocking({
+                let base = base.clone();
+                move || snapshots.changes_since(&base).ok()
+            })
+            .await
+            .ok()
+            .flatten();
+            (Some(base), listed)
+        }
+        None => (None, None),
+    };
     let _ = app.emit(
         "agent-end",
-        json!({ "runId": run_id, "sessionId": session_id }),
+        json!({
+            "runId": run_id,
+            "sessionId": session_id,
+            "baseline": baseline,
+            "changes": changes,
+        }),
     );
     notify_finished(&cwd, session_id.as_deref(), stopped.is_cancelled());
     Ok(())
+}
+
+/// The state a run starts from: the project's work tree as it stands, recorded
+/// in the shadow snapshot repo `/undo` uses, so a front-end can list the files
+/// the run changed — including ones no tool call named, like a formatter's or a
+/// shell command's — and put them back. `None` when the snapshot cannot be
+/// taken, which is a turn without a change card rather than a failed turn.
+async fn mark_baseline(cwd: &Path) -> Option<(Snapshots, String)> {
+    let cwd = cwd.to_path_buf();
+    tokio::task::spawn_blocking(move || Snapshots::baseline(&cwd))
+        .await
+        .ok()
+        .flatten()
+}
+
+/// Puts the project back to the state a run started from — the inverse of the
+/// change card the run's end emitted — discarding what the run wrote.
+#[tauri::command]
+pub async fn undo_turn(project: String, baseline: String) -> CmdResult<()> {
+    let cwd = PathBuf::from(project);
+    tokio::task::spawn_blocking(move || -> anyhow::Result<()> {
+        Snapshots::open(&cwd)?.restore(&baseline)
+    })
+    .await
+    .map_err(err)?
+    .map_err(err)
 }
 
 /// Asks a running turn to stop. The loop finishes the in-flight step (so the

@@ -47,6 +47,7 @@ import {
   type DialogState,
 } from "./core/dialogs";
 import { isMcpCommand, mcpListArgs, mcpToggleArgs, parseMcpList, type McpServerView } from "./core/mcps";
+import { changeArgs, diffPlan, type DiffPlan } from "./core/changes";
 import {
   commandRows,
   parseCommandList,
@@ -70,6 +71,7 @@ import { toolDiff } from "./core/preview";
 import {
   Transcript,
   type AttachmentChip,
+  type ChangesItem,
   type ContextChip,
   type ViewMessage,
   type WireEvent,
@@ -408,6 +410,12 @@ export class ChatController {
   relativeTo(file: string): string {
     const folder = this.folder();
     return folder ? relativePath(folder.uri.fsPath, file) : file;
+  }
+
+  /// The folder a turn runs in, which is what a change card's paths are relative
+  /// to: the active editor's folder, else the first one.
+  workspaceRoot(): string | null {
+    return this.folder()?.uri.fsPath ?? null;
   }
 
   /// A file read for a diff preview: inside the workspace, text, and small.
@@ -1354,6 +1362,36 @@ export class ChatController {
     }
     this.servers = parseMcpList(result.stdout);
     this.showDialog(mcpDialog(this.servers));
+  }
+
+  // ---------- changes ----------
+
+  /// One row of a turn's change card, as VS Code's diff editor needs it: the
+  /// file in the project and the revision its left side is read from. `null`
+  /// for a card or a row the transcript no longer holds, so a stale click from
+  /// the other pane opens nothing.
+  changeTarget(id: number, index: number): DiffPlan | null {
+    const card = this.transcript.changes(id);
+    const row = card?.rows[index];
+    return card && row ? diffPlan(card.baseline, row) : null;
+  }
+
+  /// The whole card, for the multi-file diff VS Code draws from the turn.
+  changeCard(id: number): ChangesItem | null {
+    return this.transcript.changes(id);
+  }
+
+  /// One file as the run's baseline recorded it, read by the CLI out of the
+  /// project's shadow snapshot — the left side of a diff, which is the one side
+  /// that is nowhere on disk. `null` when there is no workspace, no baseline, or
+  /// the read fails, which leaves the diff editor's side empty rather than
+  /// failing the open.
+  async baselineText(file: string, baseline: string): Promise<string | null> {
+    const root = this.folder()?.uri.fsPath;
+    if (!root || !file || !baseline) return null;
+    const result = await runCapture(this.binary(), changeArgs(file, baseline, root), root);
+    if (result.error || result.code !== 0) return null;
+    return result.stdout;
   }
 
   /// A click inside a dialog: the action a row or its trailing button carries.

@@ -20,6 +20,7 @@ import {
   type QuestionAnswer,
 } from "./questions";
 import type { AtSuggestion } from "./at";
+import { changesTitle, changesTotals, changeRows, turnChanges, type ChangeRow } from "./changes";
 import type { DialogState } from "./dialogs";
 import type { FooterState } from "./footer";
 import type { CommandRow } from "./palette";
@@ -145,7 +146,24 @@ export type Item =
   | ToolItem
   | NoticeItem
   | ApprovalItem
-  | QuestionItem;
+  | QuestionItem
+  | ChangesItem;
+
+/// The files a finished turn changed, as the CLI's own `turn_changes` frame
+/// reports them. The card is a listing rather than a diff: a row opens VS Code's
+/// own diff editor (see `chatView`), against the baseline the frame names, so
+/// the panel never renders a second diff format of its own.
+export interface ChangesItem {
+  id: number;
+  kind: "changes";
+  /// The header, e.g. `Edited 3 files`.
+  title: string;
+  /// The turn's own `+N −N`, or empty when nothing counted.
+  totals: string;
+  /// The revision every file's diff is drawn against.
+  baseline: string;
+  rows: ChangeRow[];
+}
 
 export type ToolPatch = Partial<
   Pick<ToolItem, "output" | "diff" | "running" | "isError" | "name" | "args">
@@ -575,6 +593,26 @@ export class Transcript {
         this.closeThinking();
         this.status = "Done";
         return [];
+      // The files the turn changed, from the run's own shadow snapshot: the
+      // controller does not have to know about them, and the frame can arrive
+      // just before or just after `agent_end` (the CLI writes it on a second
+      // channel), so the card lands at the end of the turn either way.
+      case "turn_changes": {
+        const changes = turnChanges(event);
+        if (!changes) return [];
+        this.closeAssistant();
+        this.closeThinking();
+        const item: ChangesItem = {
+          id: this.nextId++,
+          kind: "changes",
+          title: changesTitle(changes.files.length),
+          totals: changesTotals(changes.added, changes.removed),
+          baseline: changes.baseline,
+          rows: changeRows(changes.files),
+        };
+        this.items.push(item);
+        return [{ k: "push", item }];
+      }
       default:
         return [];
     }
@@ -590,6 +628,15 @@ export class Transcript {
     );
     if (!item) return null;
     return [this.settleApproval(item, decision, approvalLabel(decision))];
+  }
+
+  /// The change card a view is asking about, or `null` for one the transcript no
+  /// longer holds (a card from a thread the panel has left).
+  changes(id: number): ChangesItem | null {
+    const item = this.items.find(
+      (entry): entry is ChangesItem => entry.kind === "changes" && entry.id === id,
+    );
+    return item ?? null;
   }
 
   /// Settles every card still waiting, which is what a run that ended (or was
@@ -791,12 +838,24 @@ export class Transcript {
     if (result) tool.output = result;
     tool.running = false;
     tool.isError = isError;
+    // The diff was built from the call's own arguments, before it ran, so a call
+    // that failed never made that change: dropping it leaves the card showing
+    // what went wrong instead of counting lines that are not on disk. A call
+    // that changed a file reads as one line and keeps its diff for the reader
+    // who unfolds it, since the turn's change card already lists it.
+    const dropped = isError && tool.diff !== null;
+    if (dropped) tool.diff = null;
     this.status = "Thinking…";
     return [
       {
         k: "patch",
         id: tool.id,
-        patch: { output: tool.output, running: false, isError },
+        patch: {
+          output: tool.output,
+          running: false,
+          isError,
+          ...(dropped ? { diff: null } : {}),
+        },
       },
     ];
   }

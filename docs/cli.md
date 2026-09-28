@@ -1289,6 +1289,41 @@ override the path with `OXIDE_USAGE_FILE`); they are never written to a project
 scope. When a request fails, the bar keeps the last known amounts and appends
 the error message after a `|`.
 
+## A turn's changes
+
+Every interactive front-end shows what a turn changed, from one listing: the
+project's shadow snapshot (the bare git repo under `snapshots/` in the config
+directory) records the state a run starts from, and when the run finishes its
+work tree is diffed against that baseline — so a file a shell command, a
+formatter or an MCP server wrote is listed beside the ones a tool call named.
+Each entry carries the status (`A`/`M`/`D`), the added and removed line counts,
+and the same compact line-numbered preview the `write`/`edit` cards paint; a
+binary file is named rather than counted, and a mode-only change is listed with
+nothing to count.
+
+- The desktop app paints a card per finished turn (with **Review** and **Undo**)
+  and the VS Code panel opens a file in VS Code's own diff editor, both from the
+  same listing.
+- A front-end that draws its own diff reads the left side through the CLI, since
+  the file as the run found it exists only in the snapshot:
+
+  ```sh
+  oxide changes show src/main.rs --baseline <rev> --project <root>
+  ```
+
+  `--baseline` is the revision the run reported when it finished, and `--project`
+  defaults to the current directory. The file is printed as the baseline recorded
+  it — alongside whatever the work tree holds now — so a front-end can diff the
+  two.
+- A turn that changed nothing has nothing to show and no revision to read.
+- A project does not have to be a git clone: the snapshot is oxide's own repo, so
+  a plain folder is recorded too. The shadow snapshot is refused for a directory
+  that must not be walked — the home directory or an ancestor of it, anything
+  holding the config directory, and a directory that is neither inside a git work
+  tree nor project-sized (over 20,000 files or 512 MB, counted without the build
+  directories the snapshot excludes). Where it is refused there is simply no
+  listing for the turn, and the run itself is unaffected.
+
 ## Data locations and reset
 
 Runtime state lives under the platform Oxide config directory:
@@ -1298,7 +1333,11 @@ Runtime state lives under the platform Oxide config directory:
 - `model-cache.json` — provider model lists (refreshed after 24 hours)
 - `mcp-oauth/<server>.json` — OAuth tokens for remote MCP servers (mode `0600`)
 - `sessions/<project>/<timestamp>_<id>.jsonl` — Pi-style session entry trees
-- `snapshots/<project>/` — shadow-git snapshots for `/undo` and `/redo`; only created when the working directory is inside a git work tree (never the home directory, which would index the whole folder)
+- `snapshots/<project>/` — shadow-git snapshots for `/undo` and `/redo`, and for
+  the change listing a turn leaves; created for any project directory — a git
+  work tree or a plain folder — but never the home directory or an ancestor of it
+  (which would index the whole folder), a directory holding the config directory,
+  or a directory that is neither a git work tree nor project-sized
 - `memory/` — persistent memory entries
 - `trust.json` — saved project trust decisions
 - `settings.json` — global settings such as `defaultProjectTrust`, `compaction`, `modelPrices`, `hideThinkingBlock`, `notifyOnComplete`, and `notifySound`
