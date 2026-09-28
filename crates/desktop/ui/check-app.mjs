@@ -1686,19 +1686,36 @@ const card = cards[0];
 const head = card.children[0];
 const list = card.children[1];
 check(
+  "led with a file tile, and offered Undo before Review",
+  String(head.children[0].className) === "changes-icon" &&
+    head.children[0].innerHTML.includes("<svg") &&
+    head.children[5].children[0].textContent === "Undo" &&
+    head.children[5].children[1].textContent === "Review",
+  `${head.children[0].className} / ${head.children[5].children.map((b) => b.textContent).join(", ")}`,
+);
+// The transcript is a flex column and the card hides its own overflow, which
+// together let a flex item shrink below the rows it holds: without its own
+// height the card collapses to nothing in a long conversation, leaving no card
+// on screen while the node is still in the transcript.
+check(
+  "kept the card's own height so a busy transcript cannot squeeze it away",
+  /\.changes \{[^}]*flex: none;[^}]*\}/.test(sheet),
+  `${sheet.indexOf(".changes {")}`,
+);
+check(
   "named the card after what it lists",
-  head.children[1].textContent === "Edited 6 files",
-  head.children[1].textContent,
+  head.children[2].textContent === "Edited 6 files",
+  head.children[2].textContent,
 );
 check(
   "counted the turn's additions and deletions",
-  head.children[2].innerHTML.includes("+12") && head.children[2].innerHTML.includes("−3"),
-  head.children[2].innerHTML,
+  head.children[3].innerHTML.includes("+12") && head.children[3].innerHTML.includes("−3"),
+  head.children[3].innerHTML,
 );
 check("listed one row per changed file", list.children.length === 6, String(list.children.length));
 check(
   "folded the rows past what the card shows behind their count",
-  card.children[2].hidden === false && card.children[2].textContent === "+1 more file",
+  card.children[2].hidden === false && card.children[2].textContent === "Show 1 more file",
   card.children[2].textContent,
 );
 const changedRow = list.children[0];
@@ -1742,7 +1759,7 @@ const reviewTick = () => new Promise((resolve) => setTimeout(resolve, 0));
 const reviewParts = () => elementFor("review-diff").children;
 const reviewRows = () => reviewParts()[1]?.children || [];
 const splitCells = (row) => row.children.map((cell) => cell.textContent);
-head.children[4].children[0].onclick({ stopPropagation() {} });
+head.children[5].children[1].onclick({ stopPropagation() {} });
 check("opened the review", elementFor("review-modal").hidden === false);
 check(
   "headed it with the card's own title and totals",
@@ -1866,7 +1883,7 @@ check(
 // Undo puts the project back to the run's own baseline, which the payload
 // carried, rather than to the repository's last commit.
 calls.length = 0;
-head.children[4].children[1].onclick({ stopPropagation() {} });
+head.children[5].children[0].onclick({ stopPropagation() {} });
 elementFor("confirm-ok").onclick();
 await new Promise((resolve) => setTimeout(resolve, 0));
 const undone = calls.find(([name]) => name === "undo_turn");
@@ -1881,10 +1898,10 @@ check(
 );
 check(
   "said the card was undone",
-  head.children[3].textContent === "Undone" &&
-    head.children[3].hidden === false &&
-    head.children[4].children[1].hidden === true,
-  `${head.children[3].textContent} / ${head.children[3].hidden}`,
+  head.children[4].textContent === "Undone" &&
+    head.children[4].hidden === false &&
+    head.children[5].children[0].hidden === true,
+  `${head.children[4].textContent} / ${head.children[4].hidden}`,
 );
 
 // A listing longer than the card shows folds the rest behind a button rather
@@ -1909,7 +1926,7 @@ check(
   "showed the first rows and folded the rest",
   longList.children.filter((row) => !row.hidden).length === 5 &&
     more.hidden === false &&
-    more.textContent === "+2 more files",
+    more.textContent === "Show 2 more files",
   `${longList.children.filter((row) => !row.hidden).length} rows / ${more.textContent}`,
 );
 more.onclick({ stopPropagation() {} });
@@ -1926,9 +1943,9 @@ check(
 );
 check(
   "left out a side with nothing to count",
-  longCard.children[0].children[2].innerHTML.includes("+7") &&
-    !longCard.children[0].children[2].innerHTML.includes("−0"),
-  longCard.children[0].children[2].innerHTML,
+  longCard.children[0].children[3].innerHTML.includes("+7") &&
+    !longCard.children[0].children[3].innerHTML.includes("−0"),
+  longCard.children[0].children[3].innerHTML,
 );
 
 // Only the newest turn can be put back: an older card's baseline is the state
@@ -1952,9 +1969,9 @@ await emit("agent-end", {
 const newest = transcriptCards().at(-1);
 check(
   "offered Undo on the newest turn alone",
-  newest.children[0].children[4].children[1].hidden === false &&
-    longCard.children[0].children[4].children[1].hidden === true,
-  `${newest.children[0].children[4].children[1].hidden} / ${longCard.children[0].children[4].children[1].hidden}`,
+  newest.children[0].children[5].children[0].hidden === false &&
+    longCard.children[0].children[5].children[0].hidden === true,
+  `${newest.children[0].children[5].children[0].hidden} / ${longCard.children[0].children[5].children[0].hidden}`,
 );
 check(
   "said a row with no lines moved has none to count",
@@ -1980,8 +1997,8 @@ check(
 );
 check(
   "kept the newest card's Undo when that turn was dropped",
-  newest.children[0].children[4].children[1].hidden === false,
-  `${newest.children[0].children[4].children[1].hidden}`,
+  newest.children[0].children[5].children[0].hidden === false,
+  `${newest.children[0].children[5].children[0].hidden}`,
 );
 
 // A turn that moved no lines at all — a binary file rewritten, a mode change —
@@ -2001,9 +2018,9 @@ await emit("agent-end", {
 const quiet = transcriptCards().at(-1);
 check(
   "left a turn that moved no lines with no total to show",
-  quiet.children[0].children[2].innerHTML === "" &&
+  quiet.children[0].children[3].innerHTML === "" &&
     quiet.children[1].children[0].innerHTML.includes("binary"),
-  `${quiet.children[0].children[2].innerHTML} / ${quiet.children[1].children[0].innerHTML}`,
+  `${quiet.children[0].children[3].innerHTML} / ${quiet.children[1].children[0].innerHTML}`,
 );
 
 // A turn that changed nothing — or a backend that could not take a baseline —
