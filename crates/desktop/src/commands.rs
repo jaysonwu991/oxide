@@ -10,6 +10,7 @@ use oxide_core::llm::LlmClient;
 use oxide_core::llm::Message;
 use oxide_core::llm::{ContentPart, MessageContent};
 use oxide_core::session::{SessionLog, SessionSummary};
+use oxide_core::snapshots::Snapshots;
 use oxide_core::theme_view;
 use oxide_desktop::at::{AtAnswer, PathCache};
 use oxide_desktop::manager::{expand_project_path, DesktopManager, ProjectView};
@@ -508,6 +509,13 @@ async fn drive_turn(
     let cwd = PathBuf::from(project);
     let reference = session.as_deref().unwrap_or("latest");
     let log = open_session(&cwd, reference)?;
+    // The state the run starts from, so the files it changes can be listed and
+    // undone once it ends. `None` when the project must not be snapshotted — a
+    // directory that holds everything (the home directory or an ancestor of it,
+    // the config directory) or one too large to hash — in which case the window
+    // shows no change card for the turn rather than failing to start it. A
+    // project that is not a git clone is snapshotted all the same.
+    let baseline = mark_baseline(&cwd).await;
     let approver = approvals.approver(cwd.clone());
     let asker = questions.asker_for(run_id);
     let turn = start_turn(
@@ -569,12 +577,84 @@ async fn drive_turn(
     let state = app.state::<DesktopState>();
     state.at.clear();
     questions.clear_run(run_id).await;
+    // The listing, and the state the turn left behind: the project it belongs to
+    // travels with both, so a window that switched projects mid-turn can tell
+    // the card is not its own and an undo can check nothing came after it.
+    let (baseline, after, changes) = match baseline {
+        Some((snapshots, base)) => {
+            let listed = tokio::task::spawn_blocking({
+                let base = base.clone();
+                let snapshots = snapshots.clone();
+                move || snapshots.changes_since(&base).ok()
+            })
+            .await
+            .ok()
+            .flatten();
+            let after = tokio::task::spawn_blocking(move || snapshots.mark_named("turn").ok())
+                .await
+                .ok()
+                .flatten();
+            (Some(base), after, listed)
+        }
+        None => (None, None, None),
+    };
     let _ = app.emit(
         "agent-end",
-        json!({ "runId": run_id, "sessionId": session_id }),
+        json!({
+            "runId": run_id,
+            "sessionId": session_id,
+            "project": cwd.to_string_lossy(),
+            "baseline": baseline,
+            "after": after,
+            "changes": changes,
+        }),
     );
     notify_finished(&cwd, session_id.as_deref(), stopped.is_cancelled());
     Ok(())
+}
+
+/// The state a run starts from: the project's work tree as it stands, recorded
+/// in the shadow snapshot repo `/undo` uses, so a front-end can list the files
+/// the run changed — including ones no tool call named, like a formatter's or a
+/// shell command's — and put them back. `None` when the snapshot cannot be
+/// taken, which is a turn without a change card rather than a failed turn.
+async fn mark_baseline(cwd: &Path) -> Option<(Snapshots, String)> {
+    let cwd = cwd.to_path_buf();
+    tokio::task::spawn_blocking(move || Snapshots::baseline(&cwd))
+        .await
+        .ok()
+        .flatten()
+}
+
+/// Puts the project back to the state a run started from — the inverse of the
+/// change card the run's end emitted — discarding what the run wrote. `after` is
+/// the state that turn left behind (the `agent-end` payload's own revision): the
+/// work tree still has to hold it, or the restore would also take a change made
+/// after the turn — including one from a later turn whose own card is the one to
+/// undo. An older card is refused with the reason rather than silently doing it.
+#[tauri::command]
+pub async fn undo_turn(project: String, baseline: String, after: Option<String>) -> CmdResult<()> {
+    let cwd = PathBuf::from(project);
+    tokio::task::spawn_blocking(move || -> anyhow::Result<()> {
+        let snapshots = Snapshots::open(&cwd)?;
+        restore_turn(&snapshots, &baseline, after.as_deref())
+    })
+    .await
+    .map_err(err)?
+    .map_err(err)
+}
+
+/// The restore itself: the baseline a card carries, once the work tree is known
+/// to still hold what that turn left (see [`undo_turn`]). A card without a
+/// marker — one a front-end built before the marker existed — is taken at its
+/// word, which is what the undo meant before there was one.
+fn restore_turn(snapshots: &Snapshots, baseline: &str, after: Option<&str>) -> anyhow::Result<()> {
+    if let Some(after) = after {
+        if !snapshots.unchanged_since(after)? {
+            anyhow::bail!("the project has changed since that turn — undo the newest turn first");
+        }
+    }
+    snapshots.restore(baseline)
 }
 
 /// Asks a running turn to stop. The loop finishes the in-flight step (so the
@@ -840,6 +920,51 @@ mod tests {
             "scan.tif could not be attached: attach a PNG, JPEG, GIF, WebP or BMP image or a PDF \
              of at most 20 MB"
         );
+    }
+
+    #[test]
+    fn an_undo_holds_until_the_work_tree_still_has_that_turn() {
+        let root = std::env::temp_dir().join(format!("oxide_undo_{}", std::process::id()));
+        std::fs::remove_dir_all(&root).ok();
+        let work = root.join("work");
+        std::fs::create_dir_all(&work).unwrap();
+        let snapshots = Snapshots::at(root.join("shadow"), work.clone()).unwrap();
+
+        std::fs::write(work.join("a.txt"), "one\n").unwrap();
+        let baseline = snapshots.mark().unwrap();
+        std::fs::write(work.join("a.txt"), "two\n").unwrap();
+        let after = snapshots.mark_named("turn").unwrap();
+
+        // A change made after the turn — a later turn's work, or the user's own
+        // edit — is not this card's to take with it, so the undo is refused and
+        // the file is left alone.
+        std::fs::write(work.join("a.txt"), "three\n").unwrap();
+        let refused = restore_turn(&snapshots, &baseline, Some(&after)).unwrap_err();
+        assert_eq!(
+            refused.to_string(),
+            "the project has changed since that turn — undo the newest turn first"
+        );
+        assert_eq!(
+            std::fs::read_to_string(work.join("a.txt")).unwrap(),
+            "three\n"
+        );
+
+        // With the state the turn left still on disk it puts the baseline back,
+        // and a card that carries no marker is taken at its word.
+        std::fs::write(work.join("a.txt"), "two\n").unwrap();
+        restore_turn(&snapshots, &baseline, Some(&after)).unwrap();
+        assert_eq!(
+            std::fs::read_to_string(work.join("a.txt")).unwrap(),
+            "one\n"
+        );
+        std::fs::write(work.join("a.txt"), "two\n").unwrap();
+        restore_turn(&snapshots, &baseline, None).unwrap();
+        assert_eq!(
+            std::fs::read_to_string(work.join("a.txt")).unwrap(),
+            "one\n"
+        );
+
+        std::fs::remove_dir_all(&root).ok();
     }
 
     #[test]

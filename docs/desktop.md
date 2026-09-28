@@ -268,6 +268,49 @@ the run's `Steering` handles and its cooperative `Cancel` flag. The Tauri comman
   the sidebar shows it under — and stays quiet for a turn the user stopped
   themselves, which has no outcome to announce.
 
+## What a turn changed
+
+A finished turn leaves a card in the transcript listing the files it changed.
+The listing is not the run's tool calls: the project is recorded in its shadow
+snapshot when the prompt is sent (`mark_baseline`), the state that run started
+from travels out with `agent-end` (`{runId, sessionId, baseline, changes}`), and
+the files are what a diff of the whole work tree against that baseline finds —
+so a file a formatter, a shell command or an MCP server wrote is listed beside
+the ones a tool call named. `oxide_core::changes` builds each entry (status, the
+added/removed line counts, a binary file named rather than counted, and the same
+compact preview the tool cards paint), and a turn that changed nothing paints no
+card at all.
+
+- **The card** — the header says `Edited N files` with the turn's `+`/`−`
+totals; each row carries the `A`/`M`/`D` badge, the path and its own counts. Five
+rows are shown with a `+N more files` button for the rest, and the header's
+caret collapses the card.
+- **Review** — opens the turn over the whole window: its files on the left, the
+selected file's diff on the right, built from the same `oxide_core::diff`
+preview the tool cards use, so there is no second diff format. The arrow keys
+walk the files and <kbd>Esc</kbd> closes it.
+- **Undo** — asks to confirm and then calls `undo_turn(project, baseline)`,
+which puts the project back to the run's own baseline
+(`oxide_core::snapshots::Snapshots::restore`): files the run created are
+removed, the ones it edited are put back, and the ones it deleted return. It
+reaches exactly what the card lists rather than the repository's last commit.
+The card then reads **Undone** instead of offering it again.
+
+A project does not have to be a git clone for any of this: the snapshot is
+oxide's own bare repository (`snapshots/<project>/` in the config directory), so
+a plain folder is recorded too. `snapshot_scope_is_safe` refuses only what must
+not be walked — the volume root, the home directory or any ancestor of it,
+anything holding the config directory, and a directory that is neither inside a
+git work tree nor project-sized (over 20,000 files or 512 MB, counted without
+the excluded build directories). Where the snapshot is refused, `mark_baseline`
+returns `None`, the run goes ahead, `agent-end` carries no `changes`, and the
+turn simply leaves no card.
+
+Because the call's own diff is already in that listing, a tool card that changed
+a file (`write`, `edit`, `patch`) reads as one line — its header carries the path
+and its state the `+`/`−` counts — and keeps its own diff for the reader who
+clicks it, so the same change is not painted twice.
+
 ## Models and reasoning
 
 The top bar exposes the same controls the CLI has:

@@ -196,8 +196,12 @@ class StubElement {
   /// click target to find `[data-control]`, `[data-path]`, `a[href]`, `.thead`
   /// or the card a tool row belongs to, and the question card reads back the
   /// answers it painted with a compound of a class, a data attribute with a
-  /// value and `:checked`.
+  /// value and `:checked`. A selector list (`.change-row, .changes-open`) asks
+  /// for whichever of its parts matches.
   matches(selector: string): boolean {
+    if (selector.includes(",")) {
+      return selector.split(",").some((part) => this.matches(part));
+    }
     let rest = selector.trim();
     const tag = /^[a-z]+/.exec(rest);
     if (tag) {
@@ -2066,6 +2070,111 @@ describe("webview questions", () => {
   });
 });
 
+describe("webview change cards", () => {
+  /// The card a turn's `turn_changes` frame becomes: what the run changed, the
+  /// rows the host composed, and the baseline every diff is drawn against. The
+  /// view paints it and nothing else — a click only names the card and the row.
+  const card = {
+    id: 4,
+    kind: "changes",
+    title: "Edited 2 files",
+    totals: "+2 −9",
+    baseline: "abc123",
+    rows: [
+      {
+        path: "src/main.rs",
+        status: "modified",
+        letter: "M",
+        detail: "+2 −1",
+        title: "Show src/main.rs in VS Code's diff editor",
+        index: 0,
+      },
+      {
+        path: "docs/old.md",
+        status: "deleted",
+        letter: "D",
+        detail: "−8",
+        title: "Show docs/old.md in VS Code's diff editor",
+        index: 1,
+      },
+    ],
+  };
+
+  it("lists the turn's files with the badge, path and detail the host sent", () => {
+    const { byId, send } = loadRenderer();
+    send(stateMessage());
+    const transcript = byId.get("transcript")!;
+    send({ k: "push", item: card });
+
+    const box = find(transcript, "changes")!;
+    assert.equal(find(box, "changes-title")!.textContent, "Edited 2 files");
+    assert.equal(find(box, "changes-total")!.textContent, "+2 −9");
+    const rows = box.querySelectorAll(".change-row");
+    assert.equal(rows.length, 2);
+    assert.deepEqual(
+      rows.map((row) => row.children.map((child) => child.textContent)),
+      [
+        ["M", "src/main.rs", "+2 −1"],
+        ["D", "docs/old.md", "−8"],
+      ],
+    );
+    // The badge is coloured by the status, and each row says what it opens.
+    assert.equal(rows[1].children[0].className, "change-badge change-deleted");
+    assert.equal(rows[0].title, "Show src/main.rs in VS Code's diff editor");
+  });
+
+  it("opens VS Code's diff editor for the row that was clicked", () => {
+    const { byId, send, posted } = loadRenderer();
+    send(stateMessage());
+    const transcript = byId.get("transcript")!;
+    send({ k: "push", item: card });
+
+    const rows = find(transcript, "changes")!.querySelectorAll(".change-row");
+    // A click that lands on the badge still belongs to the row it sits in.
+    transcript.fire("click", { target: rows[1].children[0] });
+    assert.deepEqual(last(posted), { k: "openChangeDiff", id: 4, index: 1 });
+    transcript.fire("click", { target: rows[0] });
+    assert.deepEqual(last(posted), { k: "openChangeDiff", id: 4, index: 0 });
+  });
+
+  it("opens the whole turn from the card's own icon", () => {
+    const { byId, send, posted } = loadRenderer();
+    send(stateMessage());
+    const transcript = byId.get("transcript")!;
+    send({ k: "push", item: card });
+
+    const open = find(transcript, "changes-open")!;
+    assert.equal(open.title, "Open every file in VS Code's diff editor");
+    assert.equal(open.getAttribute("aria-label"), open.title);
+    transcript.fire("click", { target: open });
+    assert.deepEqual(last(posted), { k: "openAllChanges", id: 4 });
+
+    // The header itself is words, so a click beside the icon is not a click on
+    // it: nothing is opened by reading the listing.
+    const before = posted.length;
+    transcript.fire("click", { target: find(transcript, "changes-title")! });
+    assert.equal(posted.length, before);
+  });
+
+  it("paints the card a pane that attaches later replays", () => {
+    const { byId, send } = loadRenderer();
+    send(stateMessage({ items: [card] }));
+    const box = find(byId.get("transcript")!, "changes")!;
+    assert.equal(box.querySelectorAll(".change-row").length, 2);
+    // The card is a reply, so it takes the welcome page down with it.
+    assert.equal(byId.get("empty")!.hidden, true);
+  });
+
+  it("leaves the total out when the turn changed no lines", () => {
+    const { byId, send } = loadRenderer();
+    send(stateMessage());
+    const transcript = byId.get("transcript")!;
+    send({ k: "push", item: { ...card, totals: "", rows: [{ ...card.rows[1], detail: "binary" }] } });
+    assert.equal(find(transcript, "changes-total"), null);
+    assert.equal(find(transcript, "change-detail")!.textContent, "binary");
+  });
+});
+
 describe("webview scrolling", () => {
   /// A reply arrives as a delta per model chunk and is painted on the next
   /// animation frame, so the view has to follow the height the paint adds rather
@@ -2144,6 +2253,9 @@ describe("webview scrolling", () => {
         running: false,
       },
     });
+    // An edit card is the one line it reads as until it is asked for, so it is
+    // clicked before its output is on screen at all.
+    transcript.fire("click", { target: find(transcript, "thead")! });
     const body = find(transcript, "tbody")!;
     body.clientHeight = 60;
     // Expanding a card is a request to read it from the beginning.
@@ -2178,6 +2290,85 @@ describe("webview scrolling", () => {
     transcript.clientHeight = 60;
     resize();
     assert.equal(transcript.scrollTop, 0);
+  });
+});
+
+/// The call that changed a file reads as one line — the path in its header, the
+/// counts beside it — because the turn's changes are listed together by the
+/// change card at the end of the run. Its own diff is kept for the reader who
+/// clicks the card, and never painted twice.
+describe("webview tool card", () => {
+  const editCard = (over: Record<string, unknown> = {}) => ({
+    k: "push",
+    item: {
+      id: 4,
+      kind: "tool",
+      name: "edit",
+      args: JSON.stringify({ path: "src/main.rs" }),
+      output: "Successfully replaced 1 block(s) in src/main.rs.",
+      diff: "@@ -1 +1 @@\n-old\n+new\n+another",
+      running: false,
+      ...over,
+    },
+  });
+
+  it("shows an edited file as one line with its counts", () => {
+    const { byId, send } = loadRenderer();
+    send(stateMessage());
+    const transcript = byId.get("transcript")!;
+    send(editCard());
+
+    const card = find(transcript, "tool")!;
+    assert.equal(card.querySelector(".targ")!.textContent, "src/main.rs");
+    assert.equal(card.querySelector(".tstate")!.textContent, "✔ +2 −1");
+    assert.equal(card.querySelector(".tbody")!.hidden, true, "the body stays folded");
+    assert.equal(card.querySelector(".thint")!.hidden, true, "there is nothing hidden but the diff");
+    const diff = card.children[card.children.length - 1]!;
+    assert.equal(diff.hidden, true, "the diff is held back");
+    assert.match(diff.textContent, /src\/main\.rs/);
+  });
+
+  it("shows the call's own diff when the card is clicked, and folds it again", () => {
+    const { byId, send } = loadRenderer();
+    send(stateMessage());
+    const transcript = byId.get("transcript")!;
+    send(editCard());
+    const card = find(transcript, "tool")!;
+    const diff = card.children[card.children.length - 1]!;
+    const head = card.querySelector(".thead")!;
+
+    transcript.fire("click", { target: head });
+    assert.equal(diff.hidden, false, "the diff is what the card was asked for");
+    assert.equal(card.querySelector(".tbody")!.hidden, false, "and the result comes back with it");
+    assert.equal(head.getAttribute("aria-expanded"), "true");
+
+    transcript.fire("click", { target: head });
+    assert.equal(diff.hidden, true, "clicking again folds it away");
+    assert.equal(card.querySelector(".tbody")!.hidden, true);
+  });
+
+  it("leaves a call that changed nothing reading as before", () => {
+    const { byId, send } = loadRenderer();
+    send(stateMessage());
+    const transcript = byId.get("transcript")!;
+    send({
+      k: "push",
+      item: {
+        id: 5,
+        kind: "tool",
+        name: "read",
+        args: JSON.stringify({ path: "src/main.rs" }),
+        output: Array.from({ length: 30 }, (_, line) => `line ${line}`).join("\n"),
+        running: false,
+      },
+    });
+
+    const card = find(transcript, "tool")!;
+    const body = card.querySelector(".tbody")!;
+    assert.equal(body.hidden, false, "a plain result keeps its preview");
+    assert.match(body.textContent, /line 0/);
+    assert.equal(card.querySelector(".thint")!.hidden, false);
+    assert.equal(card.querySelector(".tstate")!.textContent, "✔");
   });
 });
 

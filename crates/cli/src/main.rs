@@ -17,6 +17,7 @@ use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
 use cli::RpcRequest;
 use config::Config;
+use serde_json::json;
 use session::SessionLog;
 use std::io::{self, IsTerminal, Read, Write};
 use std::path::{Path, PathBuf};
@@ -184,6 +185,26 @@ enum Command {
         /// Print the listing as JSON
         #[arg(long)]
         json: bool,
+    },
+    /// Read the files a run changed, from its shadow snapshots
+    Changes {
+        #[command(subcommand)]
+        action: ChangesAction,
+    },
+}
+
+#[derive(Subcommand, Debug)]
+enum ChangesAction {
+    /// Print one file as a run's baseline recorded it
+    Show {
+        /// Path relative to the project
+        path: String,
+        /// The revision the run started from, as `agent_end` reported it
+        #[arg(long)]
+        baseline: String,
+        /// Project directory (defaults to the current one)
+        #[arg(long)]
+        project: Option<PathBuf>,
     },
 }
 
@@ -543,6 +564,22 @@ async fn main() -> Result<()> {
                 let current_dir = std::env::current_dir().context("resolving current directory")?;
                 commands::list(&current_dir, json)
             }
+            Command::Changes { action } => match action {
+                ChangesAction::Show {
+                    path,
+                    baseline,
+                    project,
+                } => {
+                    let cwd = match project {
+                        Some(path) => path,
+                        None => std::env::current_dir().context("resolving current directory")?,
+                    };
+                    let snapshots = snapshots::Snapshots::open(&cwd)?;
+                    let content = snapshots.content_at(&baseline, &path)?;
+                    io::stdout().write_all(&content)?;
+                    Ok(())
+                }
+            },
         };
     }
     let cwd = match &cli.cwd {
@@ -963,8 +1000,11 @@ async fn run_rpc_mode(
     // answer it; without it the `ask` tool is not offered at all.
     let questions = ask_questions.then(oxide_core::ask::AskBroker::new);
     let (prompt_tx, mut prompt_rx) = tokio::sync::mpsc::unbounded_channel::<RpcRequest>();
-    let (event_tx, event_rx) = unbounded_channel();
-    let (control_tx, control_rx) = tokio::sync::mpsc::unbounded_channel();
+    // One channel carries everything written to the client — the run's own
+    // events, the session header and a finished turn's change listing — so the
+    // frames leave in the order they were queued and a client never has to
+    // guess which turn a listing belongs to.
+    let (frame_tx, frame_rx) = tokio::sync::mpsc::unbounded_channel::<serde_json::Value>();
     let mut out = io::stdout();
 
     // `run_rpc` answers approvals from its stdin thread while the driver below
@@ -981,7 +1021,7 @@ async fn run_rpc_mode(
                 log = Some(SessionLog::create(&cwd)?);
             }
             if let Some(log) = &log {
-                let _ = control_tx.send(cli::session_header(log));
+                let _ = frame_tx.send(cli::session_header(log));
             }
             let resolved = runner::resolve_command(&config, &text);
             let prompt = resolved.text;
@@ -993,6 +1033,9 @@ async fn run_rpc_mode(
             }
             history.push(user);
             let (run_tx, mut run_rx) = unbounded_channel();
+            // The state the run starts from, so the client can list the files it
+            // changes and draw a diff against what is on disk now.
+            let baseline = mark_baseline(&cwd).await;
             // The broker and the run share one steering queue, so a denial's
             // message is drained by the agent it was meant to steer (a fresh
             // queue here would swallow the guidance and let it retry blind).
@@ -1024,10 +1067,17 @@ async fn run_rpc_mode(
                 if let AgentEvent::Finished(messages) = &event {
                     history = messages.clone();
                 }
-                if event_tx.send(event).is_err() {
-                    break;
+                if let Some(frame) = cli::event_json(&event) {
+                    if frame_tx.send(frame).is_err() {
+                        break;
+                    }
                 }
                 if finished {
+                    // Queued behind the turn's own last event, so the listing
+                    // reaches the client after the run it belongs to.
+                    if let Some(frame) = turn_changes(&cwd, &baseline).await {
+                        let _ = frame_tx.send(frame);
+                    }
                     break;
                 }
             }
@@ -1035,10 +1085,50 @@ async fn run_rpc_mode(
         Ok::<(), anyhow::Error>(())
     });
 
-    let result = cli::run_rpc(event_rx, control_rx, prompt_tx, approvals, questions).await;
+    let result = cli::run_rpc(frame_rx, prompt_tx, approvals, questions).await;
     let _ = driver.await;
     writeln!(out)?;
     result
+}
+
+/// The state a run starts from, recorded in the project's shadow snapshot repo
+/// (see [`snapshots::Snapshots::baseline`]). `None` when it cannot be taken,
+/// which is a turn without a change listing rather than a failed turn.
+async fn mark_baseline(cwd: &Path) -> Option<(snapshots::Snapshots, String)> {
+    let cwd = cwd.to_path_buf();
+    tokio::task::spawn_blocking(move || snapshots::Snapshots::baseline(&cwd))
+        .await
+        .ok()
+        .flatten()
+}
+
+/// The files a finished turn changed, as the control frame a client draws them
+/// from: the project the run was in — which its paths are relative to and its
+/// baseline is read out of — the baseline it diffs a file against, the listing,
+/// and the `+`/`-` totals a header shows. `None` for a run that has no baseline,
+/// and for one that changed nothing — a turn that only read files says nothing.
+async fn turn_changes(
+    project: &Path,
+    baseline: &Option<(snapshots::Snapshots, String)>,
+) -> Option<serde_json::Value> {
+    let (snapshots, base) = baseline.clone()?;
+    let marked = base.clone();
+    let changes = tokio::task::spawn_blocking(move || snapshots.changes_since(&marked))
+        .await
+        .ok()?
+        .ok()?;
+    if changes.is_empty() {
+        return None;
+    }
+    Some(json!({
+        "type": "turn_changes",
+        // The folder the run started in, so a client that has moved on since —
+        // another root in a multi-root window, an editor opened elsewhere —
+        // opens a row against the file and the snapshot the listing names.
+        "project": project,
+        "baseline": base,
+        "changes": changes,
+    }))
 }
 
 #[cfg(test)]

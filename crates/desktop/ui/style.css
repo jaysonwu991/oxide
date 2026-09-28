@@ -351,6 +351,126 @@ body.resizing { cursor: col-resize; user-select: none; }
 .diff .dline.del { color: var(--error); }
 .diff .dline.hunk { color: var(--accent); }
 
+/* ---------- turn changes ---------- */
+
+.changes {
+  max-width: 760px;
+  width: 100%;
+  margin: 10px auto 0;
+  background: var(--tool-bg);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  overflow: hidden;
+  font-size: 12.5px;
+}
+.changes-head { display: flex; align-items: center; gap: 8px; padding: 9px 12px; cursor: pointer; }
+.changes-head:hover { background: var(--panel-2); }
+.changes-caret { flex: none; color: var(--faint); font-size: 10px; transition: transform 0.1s; }
+.changes.collapsed .changes-caret { transform: rotate(-90deg); }
+.changes-title { flex: none; color: var(--text); font-weight: 500; }
+.changes-total { flex: none; display: inline-flex; gap: 6px; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 11.5px; }
+.changes-note { flex: none; color: var(--faint); font-size: 11px; }
+.changes-actions { margin-left: auto; flex: none; display: flex; gap: 4px; }
+.stats-add { color: var(--success); }
+.stats-del { color: var(--error); }
+.changes-list { border-top: 1px solid var(--border); }
+.changes.collapsed .changes-list,
+.changes.collapsed .changes-more { display: none; }
+.change-row {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  width: 100%;
+  padding: 6px 12px;
+  border: 0;
+  border-top: 1px solid var(--border);
+  border-radius: 0;
+  text-align: left;
+}
+.change-row:first-child { border-top: 0; }
+.change-row.active { background: var(--panel-2); box-shadow: inset 2px 0 0 var(--accent); }
+.change-status {
+  flex: none;
+  width: 17px;
+  height: 17px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 10px;
+  font-weight: 600;
+}
+.change-status.added { color: var(--success); }
+.change-status.modified { color: var(--tool); }
+.change-status.deleted { color: var(--error); }
+.change-path {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 11.5px;
+}
+.change-stats {
+  flex: none;
+  display: inline-flex;
+  gap: 6px;
+  color: var(--faint);
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 11px;
+}
+.change-chev { flex: none; color: var(--faint); font-size: 10px; transition: transform 0.1s; }
+.change-row.open .change-chev { transform: rotate(90deg); }
+.change-diff { background: var(--bg); padding: 2px 12px 8px; }
+.change-diff .diff { margin-top: 0; border-top: 0; padding-top: 0; }
+.change-diff .diff pre { max-height: 320px; }
+.changes-more {
+  display: block;
+  width: 100%;
+  padding: 6px 12px;
+  border: 0;
+  border-top: 1px solid var(--border);
+  border-radius: 0;
+  color: var(--dim);
+  font-size: 11.5px;
+  text-align: left;
+}
+
+.review-dialog {
+  width: 1080px;
+  max-width: calc(100vw - 60px);
+  padding: 0;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+}
+.review-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 14px 18px;
+  border-bottom: 1px solid var(--border);
+}
+.review-head h2 { margin: 0; font-size: 15px; }
+.review-total { flex: none; display: inline-flex; gap: 6px; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 11.5px; }
+.review-hint { margin-left: auto; color: var(--faint); font-size: 11px; }
+.review-body { display: flex; min-height: 0; height: min(72vh, 620px); }
+.review-files { flex: 0 0 300px; overflow: auto; border-right: 1px solid var(--border); }
+.review-diff { flex: 1 1 auto; min-width: 0; overflow: auto; padding: 14px 18px; background: var(--bg); }
+.review-file {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  margin-bottom: 10px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 12px;
+}
+.review-diff .diff { margin-top: 0; border-top: 0; padding-top: 0; }
+.review-diff .diff pre { max-height: none; }
+
 .thinking {
   max-width: 760px;
   width: 100%;

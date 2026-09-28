@@ -8,6 +8,7 @@ import * as vscode from "vscode";
 
 import { ChatController } from "./chat";
 import { ChatViewProvider } from "./chatView";
+import { CHANGE_SCHEME, parseSnapshotQuery } from "./core/changes";
 import { isFile, exists, listMarkdown, readTextFile, realPath, resolveBinary } from "./cli";
 import { configDir, parseConfigSummary } from "./core/config";
 import type { ProjectDeps } from "./core/project";
@@ -31,6 +32,20 @@ export function activate(context: vscode.ExtensionContext): void {
       chatView,
       webviewOptions,
     ),
+    // The baseline side of a change's diff. VS Code's diff editor asks for it by
+    // URI, and the revision it names exists only inside the project's shadow
+    // snapshot, so the controller reads it back through the CLI; the URI carries
+    // the folder that project is (the card's own run root, which the window's
+    // active folder need not be), and a URI with no revision is a side with no
+    // content at all.
+    vscode.workspace.registerTextDocumentContentProvider(CHANGE_SCHEME, {
+      provideTextDocumentContent: async (uri) => {
+        const { project, revision } = parseSnapshotQuery(uri.query);
+        if (!revision) return "";
+        const file = uri.path.startsWith("/") ? uri.path.slice(1) : uri.path;
+        return (await controller.baselineText(file, revision, project || null)) ?? "";
+      },
+    }),
   );
 
   const status = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Right, 90);

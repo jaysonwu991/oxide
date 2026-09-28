@@ -338,9 +338,14 @@ pub async fn run_json(
 /// `{"type":"approval","id":1,"decision":"once"}` answers a pending tool
 /// approval, a `{"type":"question","id":1,"answers":[...]}` answers a pending
 /// question, and `quit`/`abort` ends the session.
+///
+/// Everything written to stdout comes off one channel, in the order it was
+/// queued: the run's own events, the session header, and the change listing a
+/// finished turn leaves. A second channel would let a listing overtake the
+/// events of the turn it belongs to (or of the next prompt), so a client could
+/// not tell which turn a card was drawn for.
 pub async fn run_rpc(
-    mut events: tokio::sync::mpsc::UnboundedReceiver<AgentEvent>,
-    mut control: tokio::sync::mpsc::UnboundedReceiver<Value>,
+    mut frames: tokio::sync::mpsc::UnboundedReceiver<Value>,
     prompts: tokio::sync::mpsc::UnboundedSender<RpcRequest>,
     approvals: Option<Arc<ApprovalBroker>>,
     questions: Option<Arc<AskBroker>>,
@@ -388,28 +393,9 @@ pub async fn run_rpc(
     });
 
     let mut stdout = std::io::stdout();
-    let mut control_open = true;
-    loop {
-        tokio::select! {
-            event = events.recv() => match event {
-                Some(event) => {
-                    if let Some(value) = event_json(&event) {
-                        writeln!(stdout, "{value}")?;
-                        stdout.flush()?;
-                    }
-                }
-                None => break,
-            },
-            // Host messages interleaved with the event stream: the session
-            // header, and anything else the driver needs to say.
-            message = control.recv(), if control_open => match message {
-                Some(value) => {
-                    writeln!(stdout, "{value}")?;
-                    stdout.flush()?;
-                }
-                None => control_open = false,
-            },
-        }
+    while let Some(frame) = frames.recv().await {
+        writeln!(stdout, "{frame}")?;
+        stdout.flush()?;
     }
     Ok(())
 }

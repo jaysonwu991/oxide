@@ -227,6 +227,23 @@ describe("Transcript", () => {
     assert.equal(card(transcript).output, "exit status 1");
   });
 
+  it("drops the diff a failed call was never going to make", () => {
+    const transcript = new Transcript((name) => (name === "edit" ? "diff-text" : null));
+    transcript.apply({ type: "tool_call", toolName: "edit", arguments: '{"path":"src/a.rs"}' });
+    assert.equal(card(transcript).diff, "diff-text");
+    const ended = transcript.apply({
+      type: "tool_execution_end",
+      toolName: "edit",
+      result: "no match for oldText",
+      isError: true,
+    });
+    // The diff comes from the call's own arguments, so a call that failed never
+    // made that change: the card shows the error instead of counting lines.
+    assert.equal(card(transcript).diff, null);
+    assert.equal(ended.length, 1);
+    assert.equal((ended[0] as { patch: { diff: null } }).patch.diff, null);
+  });
+
   it("matches parallel results to the call with the same name", () => {
     const transcript = new Transcript();
     transcript.apply({ type: "tool_call", toolName: "read", arguments: '{"path":"a"}' });

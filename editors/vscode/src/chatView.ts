@@ -7,6 +7,7 @@ import * as vscode from "vscode";
 
 import { ChatController } from "./chat";
 import { isApprovalDecision } from "./core/approvals";
+import { CHANGE_SCHEME, diffPlan, snapshotQuery, type DiffPlan } from "./core/changes";
 import { questionAnswers } from "./core/questions";
 import { CHAT_VIEW, CHAT_VIEW_SECONDARY } from "./core/views";
 
@@ -51,6 +52,8 @@ interface WebviewMessage {
   /// is, and the sequence number the answer is labelled with.
   caret?: number;
   seq?: number;
+  /// A change card's own field: which row of the listing was clicked.
+  index?: number;
 }
 
 export class ChatViewProvider implements vscode.WebviewViewProvider {
@@ -157,6 +160,17 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         // means, so the view never has to know.
         await this.controller.dialogAction(message.action ?? "", message.value ?? "");
         return;
+      case "openChangeDiff":
+        // A row of a turn's change card. VS Code's own diff editor is what draws
+        // it, against the baseline the run recorded, so the panel renders no
+        // diff format of its own.
+        if (typeof message.id === "number") {
+          await this.openChange(message.id, message.index ?? 0);
+        }
+        return;
+      case "openAllChanges":
+        if (typeof message.id === "number") await this.openChange(message.id);
+        return;
       case "openUrl":
         await this.openUrl(message.url ?? "");
         return;
@@ -166,6 +180,54 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       default:
         return;
     }
+  }
+
+  /// A click on a turn's change card, opened in VS Code's own diff editor. The
+  /// panel holds no diff of its own: the left side is the file as the run found
+  /// it, which exists only in the project's shadow snapshot, so it is served by
+  /// the `CHANGE_SCHEME` content provider out of the CLI's own read, and the
+  /// right side is the file on disk — or an empty side for a file the run
+  /// removed. With no row it is the whole turn, which VS Code draws as one
+  /// multi-file diff whose rows are the listing the card just showed.
+  private async openChange(id: number, index?: number): Promise<void> {
+    const card = this.controller.changeCard(id);
+    if (!card) {
+      this.controller.warn("That turn's changes are no longer in the transcript.");
+      return;
+    }
+    // The folder the card's run started in, not the active one: a multi-root
+    // window can move the active editor to another root while the card stays in
+    // the transcript, and the card's paths and baseline belong to the run.
+    const root = card.project || this.controller.workspaceRoot();
+    if (!root || !card.rows.length) return;
+    if (index === undefined) {
+      const resources = card.rows.map((row) =>
+        this.changeUris(root, card.project, diffPlan(card.baseline, row)),
+      );
+      await vscode.commands.executeCommand("vscode.changes", card.title, resources);
+      return;
+    }
+    const plan = this.controller.changeTarget(id, index);
+    if (!plan) return;
+    const [, baseline, current] = this.changeUris(root, card.project, plan);
+    await vscode.commands.executeCommand("vscode.diff", baseline, current, plan.title);
+  }
+
+  /// What the diff editors want for one file, as the triple `vscode.changes`
+  /// destructures — `[label, original, modified]`, the file's own URI first, then
+  /// the side the run found and the side it is on now (`[left, right]`, which is
+  /// the pair `vscode.diff` takes off the same triple). An added file has no left
+  /// side and a deleted one no right, so that side is an empty document rather
+  /// than a path that is not there.
+  private changeUris(
+    root: string,
+    project: string,
+    plan: DiffPlan,
+  ): [vscode.Uri, vscode.Uri, vscode.Uri] {
+    const current = vscode.Uri.file(path.join(root, plan.path));
+    const baseline = snapshotUri(plan.path, plan.baseline, project);
+    const empty = snapshotUri(plan.path, null, project);
+    return [current, baseline, plan.present ? current : empty];
   }
 
   /// The pane asks for everything it needs to paint itself once its script is
@@ -287,6 +349,18 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
 </body>
 </html>`;
   }
+}
+
+/// The URI the baseline side of a diff is served by: the provider registered for
+/// `CHANGE_SCHEME` reads the file out of the project's shadow snapshot, keyed by
+/// the project and revision in the query (`snapshotQuery`). No revision is a side
+/// with no content — a file the run added, or one it removed.
+function snapshotUri(file: string, revision: string | null, project: string): vscode.Uri {
+  return vscode.Uri.from({
+    scheme: CHANGE_SCHEME,
+    path: `/${file}`,
+    query: snapshotQuery(project, revision),
+  });
 }
 
 function nonceValue(): string {

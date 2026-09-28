@@ -560,18 +560,36 @@
     return String(parseArgs(entry.item.args).path || "");
   }
 
-  /// Paints a tool card from its item. `running` cards show the live output.
-  /// Replace a streaming body without losing the reader's place. Writing the
+  /// The line counts a card's one-line header shows, counted from the `+`/`-`
+  /// markers the way `oxide_core::changes` counts them, so a call's numbers
+  /// agree with the change listing's.
+  function diffCounts(diff) {
+    let added = 0;
+    let removed = 0;
+    for (const line of String(diff || "").split("\n")) {
+      if (line.startsWith("+")) added += 1;
+      else if (line.startsWith("-")) removed += 1;
+    }
+    if (!added && !removed) return "";
+    return `+${added} −${removed}`;
+  }
+
+  /// Replace a streaming body without losing the reader's place: writing the
   /// text of a scroll container back resets it to the top, so a running command
-  /// would keep showing its first line instead of its latest; a body that was
-  /// already at its bottom is put back there. Output that has finished is left at
-  /// the top, since expanding a card is a request to read it from the beginning.
+  /// would keep showing its first line instead of its latest, and a body that
+  /// was already at its bottom is put back there. Output that has finished is
+  /// left at the top, since expanding a card is a request to read it from the
+  /// beginning.
   function setOutput(el, text, running) {
     const follow = running && el.scrollHeight - el.scrollTop - el.clientHeight < 4;
     el.textContent = text;
     if (follow) el.scrollTop = el.scrollHeight;
   }
 
+  /// Paints a tool card from its item. A call that changed a file reads as one
+  /// line — the path, and how many lines moved — with its own diff kept for the
+  /// reader who clicks the card, since the turn's changes are listed together by
+  /// the change card at the end of the run. `running` cards show the live output.
   function paintTool(entry) {
     const item = entry.item;
     entry.el.classList.toggle("running", item.running);
@@ -584,15 +602,23 @@
       entry.hint.hidden = true;
       return;
     }
-    entry.state.textContent = item.isError ? "✖" : "✔";
+    const counts = item.diff ? diffCounts(item.diff) : "";
+    entry.state.textContent = `${item.isError ? "✖" : "✔"}${counts ? ` ${counts}` : ""}`;
+    entry.inline = Boolean(item.diff);
     if (item.diff && !entry.diffEl) {
       entry.diffEl = document.createElement("div");
       entry.diffEl.innerHTML = renderDiff(diffTarget(entry), item.diff);
       entry.el.appendChild(entry.diffEl);
-      entry.expanded = true;
     }
+    if (entry.diffEl) entry.diffEl.hidden = !entry.expanded;
     if (entry.expanded) {
+      entry.pre.hidden = false;
       setOutput(entry.pre, item.output, false);
+      entry.hint.hidden = true;
+      return;
+    }
+    entry.pre.hidden = entry.inline;
+    if (entry.inline) {
       entry.hint.hidden = true;
       return;
     }
@@ -981,6 +1007,62 @@
 
   // ---------- transcript items ----------
 
+  /// The files a finished turn changed, which the CLI reports from the run's own
+  /// shadow snapshot — so a file a shell command or a formatter wrote is listed
+  /// the same as an edited one. The card is a listing rather than a diff: a row
+  /// opens VS Code's own diff editor for that file (the host serves the baseline
+  /// side out of the snapshot) and the header opens the whole turn in the
+  /// multi-file diff, so the panel carries no diff format of its own. What each
+  /// row says, and how it is badged, is composed by the host.
+  function changesCard(item) {
+    const wrap = document.createElement("div");
+    wrap.className = "changes";
+    const head = document.createElement("div");
+    head.className = "changes-head";
+    const open = document.createElement("button");
+    open.type = "button";
+    open.className = "changes-open";
+    open.dataset.action = "openAllChanges";
+    open.innerHTML = CHANGES_ICON;
+    open.title = "Open every file in VS Code's diff editor";
+    open.setAttribute("aria-label", open.title);
+    const label = document.createElement("span");
+    label.className = "changes-title";
+    label.textContent = item.title || `Edited ${(item.rows || []).length} files`;
+    head.append(open, label);
+    if (item.totals) {
+      const total = document.createElement("span");
+      total.className = "changes-total";
+      total.textContent = item.totals;
+      head.appendChild(total);
+    }
+    wrap.appendChild(head);
+
+    const list = document.createElement("div");
+    list.className = "changes-list";
+    for (const row of item.rows || []) {
+      const el = document.createElement("button");
+      el.type = "button";
+      el.className = "change-row";
+      el.dataset.index = String(row.index);
+      el.dataset.action = "openChangeDiff";
+      const badge = document.createElement("span");
+      badge.className = `change-badge change-${row.status || "modified"}`;
+      badge.textContent = row.letter || "M";
+      const name = document.createElement("span");
+      name.className = "change-path";
+      name.textContent = row.path;
+      const detail = document.createElement("span");
+      detail.className = "change-detail";
+      detail.textContent = row.detail;
+      el.append(badge, name, detail);
+      el.title = row.title || row.path;
+      list.appendChild(el);
+    }
+    wrap.appendChild(list);
+    return { el: wrap };
+  }
+
   function itemNode(item) {
     if (item.kind === "user") {
       const wrap = document.createElement("div");
@@ -1023,6 +1105,7 @@
     }
     if (item.kind === "approval") return approvalNode(item);
     if (item.kind === "question") return questionNode(item);
+    if (item.kind === "changes") return changesCard(item);
     const card = toolCard(item);
     return { ...card, started: item.running ? Date.now() : 0 };
   }
@@ -1404,6 +1487,12 @@
   const TRASH_ICON =
     '<svg viewBox="0 0 24 24" width="14" height="14" aria-hidden="true"><path d="M4 7h16M10 11v6M14 11v6M6 7l1 13h10l1-13M9 7V4h6v3" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>';
   const DIALOG_ICONS = { power: POWER_ICON, trash: TRASH_ICON };
+
+  /// The change card's own glyph: a split view with a file on each side, which
+  /// is what a click there opens. It is drawn in the card's header beside the
+  /// listing's name, so the whole-turn action reads as the header itself.
+  const CHANGES_ICON =
+    '<svg viewBox="0 0 24 24" width="14" height="14" aria-hidden="true"><path d="M12 3v18" fill="none" stroke="currentColor" stroke-width="1.6"/><path d="M4 7h5M4 11h6M20 13h-5M20 17h-6" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>';
 
   /// The dialog the host composes (`src/core/dialogs.ts`): the MCP server list
   /// and the session history, painted here rather than in a QuickPick — which
@@ -1989,6 +2078,25 @@
         line: Number(pathEl.dataset.line) || 0,
       });
       return;
+    }
+    // A change card's row (or its header) asks the host for VS Code's own diff
+    // editor; the view knows only which row was clicked, and the host looks the
+    // turn's baseline up in the transcript it owns.
+    const change = target.closest(".change-row, .changes-open");
+    if (change) {
+      const entry = entryOf(change);
+      if (entry && entry.item.kind === "changes") {
+        if (change.classList.contains("change-row")) {
+          vscode.postMessage({
+            k: "openChangeDiff",
+            id: entry.item.id,
+            index: Number(change.dataset.index) || 0,
+          });
+        } else {
+          vscode.postMessage({ k: "openAllChanges", id: entry.item.id });
+        }
+        return;
+      }
     }
     const entry = entryOf(target);
     if (entry && target.closest(".thead")) toggleTool(entry);

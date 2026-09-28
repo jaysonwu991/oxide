@@ -599,7 +599,7 @@ fn handle_key(
                     }
                     None => {
                         app.items.push(ChatItem::Error(
-                            "snapshots unavailable (git required)".to_string(),
+                            "snapshots unavailable (this directory is not snapshotted)".to_string(),
                         ));
                         return;
                     }
