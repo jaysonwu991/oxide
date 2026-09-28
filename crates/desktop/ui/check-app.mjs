@@ -1366,6 +1366,32 @@ check(
     plainCard.hint.hidden
   }, state: ${plainCard.tstate.textContent}`,
 );
+check(
+  "cut the preview to the first lines with the rest behind the hint",
+  plainCard.pre.textContent === "ok\nline two\nline three" &&
+    plainCard.hint.textContent === "⋯ 1 more line · click to expand",
+  JSON.stringify([plainCard.pre.textContent, plainCard.hint.textContent]),
+);
+// The hint reads "click to expand", so that click is the one a reader makes:
+// it has to be the card's other handle on the output, not a label that ignores
+// the pointer over it.
+plainCard.hint.onclick?.();
+check(
+  "expanded the output from the hint that offers it",
+  plainCard.pre.hidden === false &&
+    plainCard.hint.hidden === true &&
+    plainCard.pre.textContent.includes("line four") &&
+    String(plainCard.block.className).includes("expanded"),
+  `body: ${JSON.stringify(plainCard.pre.textContent)}, hint hidden: ${plainCard.hint.hidden}`,
+);
+plainCard.hint.onclick?.();
+check(
+  "folded it away again from the same hint",
+  plainCard.hint.hidden === false &&
+    !plainCard.pre.textContent.includes("line four") &&
+    !String(plainCard.block.className).includes("expanded"),
+  `hint hidden: ${plainCard.hint.hidden}, body: ${JSON.stringify(plainCard.pre.textContent)}`,
+);
 
 // ---------- a finished turn's changes ----------
 

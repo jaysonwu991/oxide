@@ -1162,6 +1162,9 @@ function createToolCard(name, args) {
     timer: null,
   };
   head.onclick = () => toggleTool(tool);
+  // The hint is the card's own "click to expand": a reader who clicks it is
+  // asking for the output the card folded away, so it expands the card too.
+  hint.onclick = () => toggleTool(tool);
   block.append(head, pre, hint);
   return tool;
 }
