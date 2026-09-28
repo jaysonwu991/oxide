@@ -283,10 +283,22 @@ fn new_id() -> String {
     format!("{:x}{:04x}", nanos, COUNTER.fetch_add(1, Ordering::Relaxed))
 }
 
+/// The id of a project for stores that may be *shared* between checkouts: a
+/// memory entry and a session are about the repository, so two clones of one
+/// remote name the same one.
 pub(crate) fn project_id(cwd: &Path) -> String {
     if let Some(url) = git_remote(cwd) {
         return format!("{:016x}", fnv1a(url.as_bytes()));
     }
+    local_project_id(cwd)
+}
+
+/// The id of the *local* project: where it sits rather than what it is a clone
+/// of. Anything that reaches into the work tree — the shadow snapshot a run's
+/// changes are diffed and undone from — has to be keyed by that instead: two
+/// clones of one remote are the same repository but not the same files, so a
+/// baseline taken in one must not be restorable into the other.
+pub(crate) fn local_project_id(cwd: &Path) -> String {
     let root = crate::ecosystem::project_root(cwd).unwrap_or_else(|| cwd.to_path_buf());
     let canonical = root.canonicalize().unwrap_or(root);
     format!("{:016x}", fnv1a(canonical.to_string_lossy().as_bytes()))
@@ -406,5 +418,49 @@ mod tests {
         let cwd = temp_dir("stable");
         assert_eq!(project_id(&cwd), project_id(&cwd));
         std::fs::remove_dir_all(&cwd).ok();
+    }
+
+    #[test]
+    fn two_clones_of_one_remote_share_an_id_but_not_their_snapshots() {
+        let root = temp_dir("clones");
+        let clone = |name: &str| {
+            let dir = root.join(name);
+            std::fs::create_dir_all(&dir).unwrap();
+            for args in [
+                vec!["init", "--quiet"],
+                vec![
+                    "remote",
+                    "add",
+                    "origin",
+                    "https://github.com/example/oxide.git",
+                ],
+            ] {
+                let status = std::process::Command::new("git")
+                    .arg("-C")
+                    .arg(&dir)
+                    .args(&args)
+                    .output()
+                    .unwrap()
+                    .status;
+                assert!(status.success(), "git {args:?} in {}", dir.display());
+            }
+            dir
+        };
+        let one = clone("one");
+        let two = clone("two");
+
+        // One repository, so the memory store and the sessions are shared...
+        assert_eq!(project_id(&one), project_id(&two));
+        // ...but two work trees, so a run's shadow snapshot is not: a baseline
+        // taken in one checkout must never be restored into the other.
+        assert_ne!(local_project_id(&one), local_project_id(&two));
+
+        // A folder that is not a clone has no remote to be named by, so both
+        // ids agree on where it is.
+        let plain = temp_dir("clones_plain");
+        assert_eq!(project_id(&plain), local_project_id(&plain));
+
+        std::fs::remove_dir_all(&root).ok();
+        std::fs::remove_dir_all(&plain).ok();
     }
 }

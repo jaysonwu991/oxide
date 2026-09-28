@@ -1,11 +1,12 @@
-//! The `--mode rpc` tool-approval contract.
+//! The `--mode rpc` contracts a client drives oxide through.
 //!
-//! The VS Code extension drives `oxide --mode rpc` and has to be able to ask the
-//! user for permission mid-turn: the CLI emits an `approval_request` event while
-//! a tool waits, and the client answers with an `approval` request on the same
-//! stdin channel. This test runs the real binary against a scripted model, so a
-//! change to the framing (the event fields, the answer shape, the flag that
-//! turns prompting on) fails here instead of in the editor.
+//! The VS Code extension runs `oxide --mode rpc` and depends on both of these:
+//! the CLI emits an `approval_request` mid-turn and reads the answer off the same
+//! stdin channel, and it writes a finished turn's change listing behind that
+//! turn's own last event. This test runs the real binary against a scripted
+//! model, so a change to the framing (the event fields, the answer shape, the
+//! flag that turns prompting on, the order the frames leave in) fails here
+//! instead of in the editor.
 
 use serde_json::{json, Value};
 use std::io::{BufRead, BufReader, Write};
@@ -336,6 +337,63 @@ fn a_denial_message_reaches_the_model() {
         guided,
         "the denial's guidance is in the next request: {}",
         bodies[1]
+    );
+}
+
+/// A finished turn's change listing travels on the same channel as the run's own
+/// events, and behind them: a client draws a card for the turn it belongs to, so
+/// a listing that overtook the turn's last event (or the events of a prompt sent
+/// afterwards) could be painted against the wrong run.
+#[test]
+fn a_turn_change_listing_follows_the_run_that_produced_it() {
+    let project = TempDir::new("project_changes");
+    let config_home = TempDir::new("config_changes");
+    let target = project.path().join("changed.txt").display().to_string();
+    let (base_url, server) = serve(vec![write_call_body(&target), answer_body("Done.")]);
+
+    let mut rpc = start(config_home.path(), project.path(), &base_url, false);
+    rpc.send(json!({"type": "prompt", "message": "write the file"}));
+    let mut types = Vec::new();
+    loop {
+        let event = rpc.event();
+        types.push(event["type"].as_str().unwrap_or("?").to_string());
+        if event["type"] != "turn_changes" {
+            continue;
+        }
+        // The listing names the file the turn wrote, against a baseline a
+        // client can read that file's left side from.
+        assert!(
+            event["changes"]["files"]
+                .as_array()
+                .is_some_and(|files| files.iter().any(|file| file["path"] == "changed.txt")),
+            "the listing names the file the turn wrote: {event}"
+        );
+        assert!(
+            event["baseline"]
+                .as_str()
+                .is_some_and(|base| !base.is_empty()),
+            "the listing carries the baseline: {event}"
+        );
+        // The folder the run was in travels with the listing: a client that has
+        // moved to another root since reads the file and the snapshot from it.
+        let named = std::fs::canonicalize(event["project"].as_str().unwrap_or_default())
+            .expect("the listing names the project");
+        assert_eq!(
+            named,
+            std::fs::canonicalize(project.path()).unwrap(),
+            "the listing names the run's own project: {event}"
+        );
+        break;
+    }
+    assert_eq!(
+        types.as_slice()[types.len().saturating_sub(2)..],
+        ["agent_end", "turn_changes"],
+        "the listing came behind the turn's own last event: {types:?}"
+    );
+    assert_eq!(
+        server.join().unwrap().len(),
+        2,
+        "both model steps were served"
     );
 }
 

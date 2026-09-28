@@ -19,6 +19,8 @@ import {
   changesTotals,
   diffPlan,
   parseChanges,
+  parseSnapshotQuery,
+  snapshotQuery,
   turnChanges,
   type ChangedFile,
 } from "../core/changes";
@@ -28,8 +30,8 @@ function file(over: Partial<ChangedFile> = {}): ChangedFile {
   return { path: "src/main.rs", status: "modified", added: 3, removed: 1, binary: false, ...over };
 }
 
-function frame(changes: unknown, baseline = "abc123"): WireEvent {
-  return { type: "turn_changes", baseline, changes };
+function frame(changes: unknown, baseline = "abc123", project = "/tmp/project"): WireEvent {
+  return { type: "turn_changes", baseline, project, changes };
 }
 
 describe("a turn's changed files", () => {
@@ -44,6 +46,9 @@ describe("a turn's changed files", () => {
     );
     assert.ok(changes);
     assert.equal(changes.baseline, "abc123");
+    // The folder the run was in travels with the listing, so a row opened later
+    // reads its file and its snapshot from the project it belongs to.
+    assert.equal(changes.project, "/tmp/project");
     assert.deepEqual(changes.files.map((entry) => entry.path), ["src/main.rs", "docs/new.md"]);
     // The card's own total is the listing's, not a count of files.
     assert.equal(changes.added, 52);
@@ -58,13 +63,14 @@ describe("a turn's changed files", () => {
         files: [file({ added: 2, removed: 0 }), file({ path: "b.rs", added: 0, removed: 5 })],
       },
       "head",
+      "/tmp/project",
     );
     assert.equal(changes?.added, 2);
     assert.equal(changes?.removed, 5);
   });
 
   it("names a file whose kind it does not know as modified", () => {
-    const changes = parseChanges({ files: [{ path: "a.rs", status: "renamed" }] }, "head");
+    const changes = parseChanges({ files: [{ path: "a.rs", status: "renamed" }] }, "head", "");
     assert.deepEqual(changes?.files[0], {
       path: "a.rs",
       status: "modified",
@@ -83,7 +89,7 @@ describe("a turn's changed files", () => {
   });
 
   it("drops an entry with no path instead of half a row", () => {
-    const changes = parseChanges({ files: [{ status: "added" }, file()] }, "head");
+    const changes = parseChanges({ files: [{ status: "added" }, file()] }, "head", "");
     assert.equal(changes?.files.length, 1);
   });
 });
@@ -175,6 +181,24 @@ describe("opening a change in VS Code's diff editor", () => {
     // the plan's URIs are built with.
     assert.equal(CHANGE_SCHEME, "oxide-changes");
   });
+
+  // The provider is handed the URI alone, so the project and revision have to
+  // survive the round trip through its query: a card opened in a window that has
+  // moved to another root still reads the snapshot its own run started from.
+  it("round trips the project and revision a snapshot URI carries", () => {
+    const query = snapshotQuery("/tmp/my project", "abc123");
+    assert.deepEqual(parseSnapshotQuery(query), {
+      project: "/tmp/my project",
+      revision: "abc123",
+    });
+    assert.deepEqual(parseSnapshotQuery(snapshotQuery("/tmp/p", null)), {
+      project: "/tmp/p",
+      revision: "",
+    });
+    // A query that is not ours reads as a side with no content.
+    assert.deepEqual(parseSnapshotQuery("abc123"), { project: "", revision: "" });
+    assert.deepEqual(parseSnapshotQuery(""), { project: "", revision: "" });
+  });
 });
 
 describe("the change card in the transcript", () => {
@@ -195,6 +219,9 @@ describe("the change card in the transcript", () => {
     assert.equal(message.item.title, "Edited 2 files");
     assert.equal(message.item.totals, "+2 −9");
     assert.equal(message.item.baseline, "abc123");
+    // The card carries the folder its run started in, so a row clicked after the
+    // window moved to another root opens the right file and snapshot.
+    assert.equal(message.item.project, "/tmp/project");
     assert.deepEqual((message.item.rows as { letter: string }[]).map((row) => row.letter), [
       "M",
       "D",

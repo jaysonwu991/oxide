@@ -36,8 +36,11 @@ export interface ChangeRow extends ChangeLike {
   index: number;
 }
 
-/// The turn's listing, with the baseline each file's diff is drawn against.
+/// The turn's listing, with the baseline each file's diff is drawn against and
+/// the folder the run was in — its paths are relative to that project, and its
+/// baseline is read out of that project's shadow snapshot.
 export interface TurnChanges {
+  project: string;
   baseline: string;
   files: ChangedFile[];
   added: number;
@@ -124,16 +127,36 @@ export function changeArgs(path: string, baseline: string, project: string): str
   return ["changes", "show", path, "--baseline", baseline, "--project", project];
 }
 
+/// The query a snapshot URI carries: the project the file is relative to and the
+/// revision to read it at. Both travel in the URI because the content provider is
+/// handed the URI alone, and the folder a card belongs to is not necessarily the
+/// one the window has active when a row is clicked.
+export function snapshotQuery(project: string, revision: string | null): string {
+  return new URLSearchParams({ project, revision: revision ?? "" }).toString();
+}
+
+/// The two parts of that query as the provider reads them. Both empty for a query
+/// that is not one of ours, which is a side with no content.
+export function parseSnapshotQuery(query: string): { project: string; revision: string } {
+  const params = new URLSearchParams(query);
+  return { project: params.get("project") ?? "", revision: params.get("revision") ?? "" };
+}
+
 /// Parses the frame's payload. A frame without a listing, or one whose entries
 /// are not objects, yields nothing rather than half a card.
 export function turnChanges(event: WireEvent): TurnChanges | null {
   if (event.type !== "turn_changes") return null;
-  return parseChanges(event.changes, text(event.baseline));
+  return parseChanges(event.changes, text(event.baseline), text(event.project));
 }
 
-/// The listing inside a payload, with a baseline to diff against. `null` when
-/// the payload names no files: a turn that only read files draws no card.
-export function parseChanges(payload: unknown, baseline: string): TurnChanges | null {
+/// The listing inside a payload, with a baseline to diff against and the folder
+/// it belongs to. `null` when the payload names no files: a turn that only read
+/// files draws no card.
+export function parseChanges(
+  payload: unknown,
+  baseline: string,
+  project: string,
+): TurnChanges | null {
   if (!payload || typeof payload !== "object") return null;
   const record = payload as Record<string, unknown>;
   const raw = Array.isArray(record.files) ? record.files : [];
@@ -153,6 +176,7 @@ export function parseChanges(payload: unknown, baseline: string): TurnChanges | 
   }
   if (!files.length) return null;
   return {
+    project,
     baseline,
     files,
     added: files.reduce((total, file) => total + file.added, 0),

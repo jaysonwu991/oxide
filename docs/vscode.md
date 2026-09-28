@@ -513,10 +513,11 @@ Events consumed: `session`, `thinking`, `thinking_done`, `message_update`
 `approval_request`, `question_request`, `question_closed`, `turn_changes`, and
 `agent_end`. `thinking_done` marks the end of a model step (its `ThoughtDone`
 counterpart), so a later step's output does not merge into, and a retry cannot
-discard, a previous step's committed reply. `turn_changes` carries the files a
-finished run changed and the revision it started from; the CLI writes it ahead
-of that run's `agent_end`, so the card lands where the turn ended even when the
-next prompt was already queued.
+discard, a previous step's committed reply. `turn_changes` carries the folder
+that run was in, the files it changed and the revision it started from; the CLI
+writes it behind that run's `agent_end` on the same channel — the listing can
+neither overtake the turn it belongs to nor the events of a prompt sent after it
+— so the card lands where the turn ended.
 
 The transcript is a list of items (`user`, `assistant`, `thinking`, `tool`,
 `notice`). The view applies small deltas: `push` a new item, `remove` a
@@ -580,30 +581,39 @@ for a file inside the workspace, so the panel cannot be used to read outside it.
 ## Changes a turn made
 
 VS Code's own diff editor draws a finished turn's changes; the panel renders no
-diff of its own. The CLI emits `turn_changes` when a run ends — the revision it
-started from and the files it changed, the same listing the desktop app's change
-card shows and `oxide changes show` reads, built from the project's shadow
-snapshot so a file a shell command or a formatter wrote is listed beside the
-ones a tool call named. A run that changed nothing sends no frame.
+diff of its own. The CLI emits `turn_changes` when a run ends — the folder it
+ran in, the revision it started from and the files it changed, the same listing
+the desktop app's change card shows and `oxide changes show` reads, built from
+the project's shadow snapshot so a file a shell command or a formatter wrote is
+listed beside the ones a tool call named. A run that changed nothing sends no
+frame.
 
 `core/changes.ts` reads that frame and composes the card as data: the title and
-the turn's `+`/`−` totals, and a row per file with its `A`/`M`/`D` badge, path
-and detail (`+12 −3`, `−4`, `no line changes`, `binary`). `media/main.js` only
-paints the rows — a click posts back the card's id and the row's index, and the
-header's icon opens the turn as a whole — so the webview decides nothing about
-what a change is. The whole turn goes to `vscode.changes`, which VS Code draws
-as one multi-file diff whose rows are the listing the card just showed; a row
-goes to `vscode.diff`, on that one file.
+the turn's `+`/`−` totals, the folder the run was in, and a row per file with its
+`A`/`M`/`D` badge, path and detail (`+12 −3`, `−4`, `no line changes`, `binary`).
+`media/main.js` only paints the rows — a click posts back the card's id and the
+row's index, and the header's icon opens the turn as a whole — so the webview
+decides nothing about what a change is. The whole turn goes to `vscode.changes`,
+which VS Code draws as one multi-file diff whose rows are the listing the card
+just showed; a row goes to `vscode.diff`, on that one file.
 
 The left side of a diff is the file as the run found it, which is nowhere on
 disk: it is read out of the shadow snapshot by the CLI's own read —
 `oxide changes show <path> --baseline <rev> --project <root>` — and served to
 VS Code by a content provider registered for the `oxide-changes` scheme, with
-the revision in the URI's query. A file the run added has no such revision, so
-its left side is empty; one it removed has no right side, and the diff shows the
-deletion. Both are best effort: a read that fails leaves that side empty rather
-than failing the open, and a card whose turn has already left the transcript
-opens nothing at all.
+the project and the revision in the URI's query (`snapshotQuery`, since the
+provider is handed the URI alone). Both sides therefore come from the card's own
+run rather than from whatever folder is active when a row is clicked: a
+multi-root window can move the active editor elsewhere while the card stays in
+the transcript. A file the run added has no such revision, so its left side is
+empty; one it removed has no right side, and the diff shows the deletion. Both
+are best effort: a read that fails leaves that side empty rather than failing the
+open, and a card whose turn has already left the transcript opens nothing at all.
+
+The triple each file is passed to `vscode.changes` as is the shape that command
+takes — `[label, original, modified]`, where the label is the file's own URI —
+and its last two entries are the `[left, right]` pair `vscode.diff` is given off
+the same triple for a single row.
 
 A project does not have to be a git clone for any of that: the snapshot is
 oxide's own bare repository under the config directory, so a plain folder is

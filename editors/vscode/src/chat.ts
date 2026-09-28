@@ -412,8 +412,9 @@ export class ChatController {
     return folder ? relativePath(folder.uri.fsPath, file) : file;
   }
 
-  /// The folder a turn runs in, which is what a change card's paths are relative
-  /// to: the active editor's folder, else the first one.
+  /// The folder a turn runs in. The change card carries the folder its own run
+  /// started in (see `ChangesItem.project`), so this is the fallback: the active
+  /// editor's folder, else the first one.
   workspaceRoot(): string | null {
     return this.folder()?.uri.fsPath ?? null;
   }
@@ -1383,11 +1384,17 @@ export class ChatController {
 
   /// One file as the run's baseline recorded it, read by the CLI out of the
   /// project's shadow snapshot — the left side of a diff, which is the one side
-  /// that is nowhere on disk. `null` when there is no workspace, no baseline, or
-  /// the read fails, which leaves the diff editor's side empty rather than
-  /// failing the open.
-  async baselineText(file: string, baseline: string): Promise<string | null> {
-    const root = this.folder()?.uri.fsPath;
+  /// that is nowhere on disk. `project` is the folder the card's run started in
+  /// (the frame names it), so a window that has moved the active editor to
+  /// another root since still reads the snapshot the card belongs to. `null`
+  /// when there is no project, no baseline, or the read fails, which leaves the
+  /// diff editor's side empty rather than failing the open.
+  async baselineText(
+    file: string,
+    baseline: string,
+    project?: string | null,
+  ): Promise<string | null> {
+    const root = project ?? this.folder()?.uri.fsPath;
     if (!root || !file || !baseline) return null;
     const result = await runCapture(this.binary(), changeArgs(file, baseline, root), root);
     if (result.error || result.code !== 0) return null;

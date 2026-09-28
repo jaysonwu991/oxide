@@ -1291,30 +1291,34 @@ the error message after a `|`.
 
 ## A turn's changes
 
-Every interactive front-end shows what a turn changed, from one listing: the
-project's shadow snapshot (the bare git repo under `snapshots/` in the config
-directory) records the state a run starts from, and when the run finishes its
-work tree is diffed against that baseline — so a file a shell command, a
-formatter or an MCP server wrote is listed beside the ones a tool call named.
-Each entry carries the status (`A`/`M`/`D`), the added and removed line counts,
-and the same compact line-numbered preview the `write`/`edit` cards paint; a
-binary file is named rather than counted, and a mode-only change is listed with
-nothing to count.
+A finished turn can say what it changed, from one listing: the project's shadow
+snapshot (the bare git repo under `snapshots/` in the config directory) records
+the state a run starts from, and when the run finishes its work tree is diffed
+against that baseline — so a file a shell command, a formatter or an MCP server
+wrote is listed beside the ones a tool call named. Each entry carries the status
+(`A`/`M`/`D`), the added and removed line counts, and the same compact
+line-numbered preview the `write`/`edit` cards paint; a binary file is named
+rather than counted, and a mode-only change is listed with nothing to count.
 
-- The desktop app paints a card per finished turn (with **Review** and **Undo**)
-  and the VS Code panel opens a file in VS Code's own diff editor, both from the
-  same listing.
-- A front-end that draws its own diff reads the left side through the CLI, since
-  the file as the run found it exists only in the snapshot:
+Two front-ends draw it: the desktop app paints a card per finished turn (with
+**Review** and **Undo**) and the VS Code panel opens a file in VS Code's own diff
+editor. A client on the RPC channel gets the same listing as a `turn_changes`
+frame — `{project, baseline, changes}`, written after the turn's own last event
+— and draws whatever it likes from it. The terminal is not one of them: its
+`/undo` and `/redo` restore the shadow snapshot, but a finished turn leaves no
+change card in the transcript.
 
   ```sh
   oxide changes show src/main.rs --baseline <rev> --project <root>
   ```
 
-  `--baseline` is the revision the run reported when it finished, and `--project`
-  defaults to the current directory. The file is printed as the baseline recorded
-  it — alongside whatever the work tree holds now — so a front-end can diff the
-  two.
+- A front-end that draws its own diff reads the left side through the CLI, since
+  the file as the run found it exists only in the snapshot. `--baseline` is the
+  revision the run reported when it finished, and `--project` is the project the
+  listing named — its own frame carries it, so a client that has moved to another
+  folder since still reads the snapshot the turn belongs to; it defaults to the
+  current directory. The file is printed as the baseline recorded it — alongside
+  whatever the work tree holds now — so a front-end can diff the two.
 - A turn that changed nothing has nothing to show and no revision to read.
 - A project does not have to be a git clone: the snapshot is oxide's own repo, so
   a plain folder is recorded too. The shadow snapshot is refused for a directory

@@ -165,6 +165,52 @@ pub fn parse_name_status(output: &str) -> Vec<(ChangeStatus, String)> {
     entries
 }
 
+/// One path's line counts as `git diff --numstat` reports them, in the two
+/// columns git prints. A binary file has no lines to count, which git says with
+/// a `-` in each column.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Numstat {
+    pub added: usize,
+    pub removed: usize,
+    pub binary: bool,
+}
+
+/// The entries of `git diff --numstat -z`, keyed by path in the order git
+/// listed them. `git` counts the lines that moved, which the preview cannot
+/// always do: a change too large to render is a one-line summary with no `+`/`-`
+/// lines in it (see [`diff::preview`]), so counting the preview would report a
+/// real change as none. A rename carries both names in the fields after the
+/// counts (only when a caller asks for renames), and the new name is the file
+/// to show, as in [`parse_name_status`].
+pub fn parse_numstat(output: &str) -> Vec<(String, Numstat)> {
+    let mut entries = Vec::new();
+    let mut fields = output.split('\0').filter(|field| !field.is_empty());
+    while let Some(record) = fields.next() {
+        let mut columns = record.splitn(3, '\t');
+        let added = columns.next().unwrap_or("");
+        let removed = columns.next().unwrap_or("");
+        let path = columns.next().unwrap_or("");
+        let path = if path.is_empty() {
+            fields.next();
+            match fields.next() {
+                Some(path) => path.to_string(),
+                None => break,
+            }
+        } else {
+            path.to_string()
+        };
+        entries.push((
+            path,
+            Numstat {
+                added: added.parse().unwrap_or(0),
+                removed: removed.parse().unwrap_or(0),
+                binary: added == "-" || removed == "-",
+            },
+        ));
+    }
+    entries
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -188,6 +234,44 @@ mod tests {
         );
         assert!(parse_name_status("").is_empty());
         assert_eq!(ChangeStatus::Added.letter(), 'A');
+    }
+
+    #[test]
+    fn numstat_is_read_per_path() {
+        assert_eq!(
+            parse_numstat("8\t2\tsrc/agent.rs\0-\t-\tlogo.png\0"),
+            vec![
+                (
+                    "src/agent.rs".to_string(),
+                    Numstat {
+                        added: 8,
+                        removed: 2,
+                        binary: false,
+                    }
+                ),
+                (
+                    "logo.png".to_string(),
+                    Numstat {
+                        added: 0,
+                        removed: 0,
+                        binary: true,
+                    }
+                ),
+            ]
+        );
+        // A rename's two names follow an empty path field.
+        assert_eq!(
+            parse_numstat("0\t0\t\0old.rs\0new.rs\0"),
+            vec![(
+                "new.rs".to_string(),
+                Numstat {
+                    added: 0,
+                    removed: 0,
+                    binary: false,
+                }
+            )]
+        );
+        assert!(parse_numstat("").is_empty());
     }
 
     #[test]

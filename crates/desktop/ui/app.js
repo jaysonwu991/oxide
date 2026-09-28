@@ -1270,7 +1270,17 @@ const CHANGE_LETTERS = { added: "A", modified: "M", deleted: "D" };
 function renderChanges(payload) {
   const changes = payload && payload.changes;
   if (!changes || !Array.isArray(changes.files) || !changes.files.length) return;
+  // A turn that ran in another project — the window switched while it was still
+  // going — is not this project's work: its card would sit under the wrong
+  // transcript and its Undo would reach into the wrong work tree, so the payload
+  // is dropped rather than painted.
+  const project = payload.project || state.project;
+  if (project !== state.project) return;
   const card = {
+    project,
+    // The state this turn left behind, which its own Undo checks the work tree
+    // still holds (see `undoChanges`).
+    after: payload.after || null,
     files: changes.files,
     added: changes.added || 0,
     removed: changes.removed || 0,
@@ -1280,15 +1290,24 @@ function renderChanges(payload) {
     undone: false,
     rows: [],
   };
+  // Only the newest turn can be put back: an older card's baseline is the state
+  // before *that* turn, so restoring it would take every change made since with
+  // it, including the turns whose cards follow it.
   state.changes.push(card);
+  for (const older of state.changes) {
+    if (older !== card) paintChanges(older);
+  }
   el("transcript").appendChild(changesCard(card));
   scrollDown();
 }
 
-/// `+12 −3`, shared by a card's header and its rows.
+/// `+12 −3`, shared by a card's header and its rows. A side with nothing to
+/// count is left out, as the CLI's own listing spells it, so a turn that only
+/// removed lines reads as `−3` rather than `+0 −3`.
 function statsHtml(added, removed) {
+  const add = added ? `<span class="stats-add">+${added}</span>` : "";
   const del = removed ? `<span class="stats-del">−${removed}</span>` : "";
-  return `<span class="stats-add">+${added}</span>${del}`;
+  return add + del;
 }
 
 function statusBadge(status) {
@@ -1311,7 +1330,7 @@ function changeRow(file) {
   row.innerHTML =
     statusBadge(file.status) +
     `<span class="change-path">${escapeHtml(file.path)}</span>` +
-    `<span class="change-stats">${file.binary ? "binary" : statsHtml(file.added, file.removed)}</span>` +
+    `<span class="change-stats">${file.binary ? "binary" : statsHtml(file.added, file.removed) || "no line changes"}</span>` +
     `<span class="change-chev">▸</span>`;
   row.onclick = () => toggleChangeDiff(row, file);
   return row;
@@ -1409,6 +1428,9 @@ function paintChanges(card) {
   const count = card.files.length;
   card.title.textContent = `Edited ${count} file${count === 1 ? "" : "s"}`;
   card.total.innerHTML = statsHtml(card.added, card.removed);
+  // An undo restores the state before its own turn, so it is only offered while
+  // that turn is the newest one: anything made after it would go too.
+  card.undo.hidden = card.undone || state.changes[state.changes.length - 1] !== card;
   card.block.classList.toggle("collapsed", card.collapsed);
   const shown = card.all ? card.rows : card.rows.slice(0, CHANGES_VISIBLE);
   const visible = new Set(shown);
@@ -1420,7 +1442,10 @@ function paintChanges(card) {
 
 /// Puts the project back to the state the turn started from. The baseline is
 /// the snapshot the run was marked against, so this reaches exactly what the
-/// card lists rather than the repository's last commit.
+/// card lists rather than the repository's last commit — and the turn's own
+/// project and post-turn state travel with it, so the restore lands in the work
+/// tree the card came from and is refused once anything has changed there since
+/// the turn ended.
 async function undoChanges(card) {
   if (!card.baseline || card.undone) return;
   const count = card.files.length;
@@ -1431,7 +1456,11 @@ async function undoChanges(card) {
   );
   if (!ok) return;
   try {
-    await invoke("undo_turn", { project: state.project, baseline: card.baseline });
+    await invoke("undo_turn", {
+      project: card.project || state.project,
+      baseline: card.baseline,
+      after: card.after,
+    });
   } catch (error) {
     setStatus(`Could not undo: ${error}`);
     return;
@@ -1479,10 +1508,15 @@ function paintReview() {
     list.appendChild(row);
   });
   const file = card.files[reviewState.index];
+  // The same words a card's row uses, so a binary or mode-only file reads the
+  // same in both listings rather than as an empty column.
+  const stats = file.binary
+    ? "binary"
+    : statsHtml(file.added, file.removed) || "no line changes";
   el("review-diff").innerHTML =
     `<div class="review-file">${statusBadge(file.status)}` +
     `<span class="change-path">${escapeHtml(file.path)}</span>` +
-    `<span class="change-stats">${file.binary ? "binary" : statsHtml(file.added, file.removed)}</span></div>` +
+    `<span class="change-stats">${stats}</span></div>` +
     changeDiffHtml(file);
 }
 

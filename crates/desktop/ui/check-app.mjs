@@ -1378,7 +1378,9 @@ const file = (path, status, added, removed, diff = null, binary = false) => ({
 // the listing is the work tree's diff rather than the tools' arguments.
 await emit("agent-end", {
   runId: 1,
+  project: app.state.project,
   baseline: "9f1c0d2",
+  after: "5e0aa91",
   changes: {
     added: 12,
     removed: 3,
@@ -1501,8 +1503,12 @@ elementFor("confirm-ok").onclick();
 await new Promise((resolve) => setTimeout(resolve, 0));
 const undone = calls.find(([name]) => name === "undo_turn");
 check(
-  "put the files back through the turn's baseline",
-  undone && undone[1].baseline === "9f1c0d2" && undone[1].project === app.state.project,
+  "put the files back through the turn's own baseline and project",
+  undone &&
+    undone[1].baseline === "9f1c0d2" &&
+    undone[1].project === app.state.project &&
+    // The state the turn left, which the restore checks the work tree still has.
+    undone[1].after === "5e0aa91",
   JSON.stringify(undone),
 );
 check(
@@ -1517,7 +1523,9 @@ check(
 // than pushing the transcript away.
 await emit("agent-end", {
   runId: 2,
+  project: app.state.project,
   baseline: "aa11bb2",
+  after: "b3c4d5e",
   changes: {
     added: 7,
     removed: 0,
@@ -1548,6 +1556,87 @@ check(
   String(longCard.className).includes("collapsed"),
   String(longCard.className),
 );
+check(
+  "left out a side with nothing to count",
+  longCard.children[0].children[2].innerHTML.includes("+7") &&
+    !longCard.children[0].children[2].innerHTML.includes("−0"),
+  longCard.children[0].children[2].innerHTML,
+);
+
+// Only the newest turn can be put back: an older card's baseline is the state
+// before that turn, so its own Undo would take every change made since with it.
+await emit("agent-end", {
+  runId: 5,
+  project: app.state.project,
+  baseline: "77aa44c",
+  after: "1c9f2ee",
+  changes: {
+    added: 2,
+    removed: 1,
+    files: [
+      file("src/main.rs", "modified", 2, 1),
+      // A rename or a mode change moves no lines, which its row says rather
+      // than counting zero to zero.
+      file("docs/moved.md", "modified", 0, 0, "-  1  1  old\n+     1  new"),
+    ],
+  },
+});
+const newest = transcriptCards().at(-1);
+check(
+  "offered Undo on the newest turn alone",
+  newest.children[0].children[4].children[1].hidden === false &&
+    longCard.children[0].children[4].children[1].hidden === true,
+  `${newest.children[0].children[4].children[1].hidden} / ${longCard.children[0].children[4].children[1].hidden}`,
+);
+check(
+  "said a row with no lines moved has none to count",
+  newest.children[1].children[1].innerHTML.includes("no line changes"),
+  newest.children[1].children[1].innerHTML,
+);
+
+// A turn that ran in another project — the window switched while it was still
+// going — leaves no card here: it would sit under the wrong transcript, and its
+// Undo would reach into the wrong work tree.
+await emit("agent-end", {
+  runId: 6,
+  project: "/home/dev/other-project",
+  baseline: "0123abc",
+  after: "456def0",
+  changes: { added: 1, removed: 0, files: [file("other.rs", "added", 1, 0)] },
+});
+check(
+  "dropped a card for a turn in another project",
+  transcriptCards().length === 3 &&
+    !transcriptCards().some((node) => String(node.innerHTML).includes("other.rs")),
+  String(transcriptCards().length),
+);
+check(
+  "kept the newest card's Undo when that turn was dropped",
+  newest.children[0].children[4].children[1].hidden === false,
+  `${newest.children[0].children[4].children[1].hidden}`,
+);
+
+// A turn that moved no lines at all — a binary file rewritten, a mode change —
+// leaves its rows to say so and a header with no total, rather than a `+0 −0`
+// beside them.
+await emit("agent-end", {
+  runId: 7,
+  project: app.state.project,
+  baseline: "beef123",
+  after: "cafe456",
+  changes: {
+    added: 0,
+    removed: 0,
+    files: [file("assets/logo.png", "modified", 0, 0, null, true)],
+  },
+});
+const quiet = transcriptCards().at(-1);
+check(
+  "left a turn that moved no lines with no total to show",
+  quiet.children[0].children[2].innerHTML === "" &&
+    quiet.children[1].children[0].innerHTML.includes("binary"),
+  `${quiet.children[0].children[2].innerHTML} / ${quiet.children[1].children[0].innerHTML}`,
+);
 
 // A turn that changed nothing — or a backend that could not take a baseline —
 // leaves no card rather than an empty one.
@@ -1555,7 +1644,7 @@ await emit("agent-end", { runId: 3, baseline: "cc22dd3", changes: { files: [], a
 await emit("agent-end", { runId: 4 });
 check(
   "left no card for a turn that changed nothing",
-  transcriptCards().length === 2,
+  transcriptCards().length === 4,
   String(transcriptCards().length),
 );
 

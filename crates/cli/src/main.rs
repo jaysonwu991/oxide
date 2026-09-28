@@ -1000,8 +1000,11 @@ async fn run_rpc_mode(
     // answer it; without it the `ask` tool is not offered at all.
     let questions = ask_questions.then(oxide_core::ask::AskBroker::new);
     let (prompt_tx, mut prompt_rx) = tokio::sync::mpsc::unbounded_channel::<RpcRequest>();
-    let (event_tx, event_rx) = unbounded_channel();
-    let (control_tx, control_rx) = tokio::sync::mpsc::unbounded_channel();
+    // One channel carries everything written to the client — the run's own
+    // events, the session header and a finished turn's change listing — so the
+    // frames leave in the order they were queued and a client never has to
+    // guess which turn a listing belongs to.
+    let (frame_tx, frame_rx) = tokio::sync::mpsc::unbounded_channel::<serde_json::Value>();
     let mut out = io::stdout();
 
     // `run_rpc` answers approvals from its stdin thread while the driver below
@@ -1018,7 +1021,7 @@ async fn run_rpc_mode(
                 log = Some(SessionLog::create(&cwd)?);
             }
             if let Some(log) = &log {
-                let _ = control_tx.send(cli::session_header(log));
+                let _ = frame_tx.send(cli::session_header(log));
             }
             let resolved = runner::resolve_command(&config, &text);
             let prompt = resolved.text;
@@ -1063,14 +1066,18 @@ async fn run_rpc_mode(
                 let finished = matches!(event, AgentEvent::Finished(_));
                 if let AgentEvent::Finished(messages) = &event {
                     history = messages.clone();
-                    if let Some(frame) = turn_changes(&baseline).await {
-                        let _ = control_tx.send(frame);
+                }
+                if let Some(frame) = cli::event_json(&event) {
+                    if frame_tx.send(frame).is_err() {
+                        break;
                     }
                 }
-                if event_tx.send(event).is_err() {
-                    break;
-                }
                 if finished {
+                    // Queued behind the turn's own last event, so the listing
+                    // reaches the client after the run it belongs to.
+                    if let Some(frame) = turn_changes(&cwd, &baseline).await {
+                        let _ = frame_tx.send(frame);
+                    }
                     break;
                 }
             }
@@ -1078,7 +1085,7 @@ async fn run_rpc_mode(
         Ok::<(), anyhow::Error>(())
     });
 
-    let result = cli::run_rpc(event_rx, control_rx, prompt_tx, approvals, questions).await;
+    let result = cli::run_rpc(frame_rx, prompt_tx, approvals, questions).await;
     let _ = driver.await;
     writeln!(out)?;
     result
@@ -1096,10 +1103,12 @@ async fn mark_baseline(cwd: &Path) -> Option<(snapshots::Snapshots, String)> {
 }
 
 /// The files a finished turn changed, as the control frame a client draws them
-/// from: the baseline it diffs a file against, the listing, and the `+`/`-`
-/// totals a header shows. `None` for a run that has no baseline, and for one
-/// that changed nothing — a turn that only read files says nothing.
+/// from: the project the run was in — which its paths are relative to and its
+/// baseline is read out of — the baseline it diffs a file against, the listing,
+/// and the `+`/`-` totals a header shows. `None` for a run that has no baseline,
+/// and for one that changed nothing — a turn that only read files says nothing.
 async fn turn_changes(
+    project: &Path,
     baseline: &Option<(snapshots::Snapshots, String)>,
 ) -> Option<serde_json::Value> {
     let (snapshots, base) = baseline.clone()?;
@@ -1113,6 +1122,10 @@ async fn turn_changes(
     }
     Some(json!({
         "type": "turn_changes",
+        // The folder the run started in, so a client that has moved on since —
+        // another root in a multi-root window, an editor opened elsewhere —
+        // opens a row against the file and the snapshot the listing names.
+        "project": project,
         "baseline": base,
         "changes": changes,
     }))

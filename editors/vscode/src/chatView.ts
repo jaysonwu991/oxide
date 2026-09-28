@@ -7,7 +7,7 @@ import * as vscode from "vscode";
 
 import { ChatController } from "./chat";
 import { isApprovalDecision } from "./core/approvals";
-import { CHANGE_SCHEME, diffPlan, type DiffPlan } from "./core/changes";
+import { CHANGE_SCHEME, diffPlan, snapshotQuery, type DiffPlan } from "./core/changes";
 import { questionAnswers } from "./core/questions";
 import { CHAT_VIEW, CHAT_VIEW_SECONDARY } from "./core/views";
 
@@ -195,28 +195,39 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       this.controller.warn("That turn's changes are no longer in the transcript.");
       return;
     }
-    const root = this.controller.workspaceRoot();
+    // The folder the card's run started in, not the active one: a multi-root
+    // window can move the active editor to another root while the card stays in
+    // the transcript, and the card's paths and baseline belong to the run.
+    const root = card.project || this.controller.workspaceRoot();
     if (!root || !card.rows.length) return;
     if (index === undefined) {
-      const resources = card.rows.map((row) => this.changeUris(root, diffPlan(card.baseline, row)));
+      const resources = card.rows.map((row) =>
+        this.changeUris(root, card.project, diffPlan(card.baseline, row)),
+      );
       await vscode.commands.executeCommand("vscode.changes", card.title, resources);
       return;
     }
     const plan = this.controller.changeTarget(id, index);
     if (!plan) return;
-    const [, baseline, current] = this.changeUris(root, plan);
+    const [, baseline, current] = this.changeUris(root, card.project, plan);
     await vscode.commands.executeCommand("vscode.diff", baseline, current, plan.title);
   }
 
-  /// What the changes editor wants for one file: the resource the row is named
-  /// and opened by, the baseline side, and the side the file is in now.
-  private changeUris(root: string, plan: DiffPlan): [vscode.Uri, vscode.Uri, vscode.Uri] {
+  /// What the diff editors want for one file, as the triple `vscode.changes`
+  /// destructures — `[label, original, modified]`, the file's own URI first, then
+  /// the side the run found and the side it is on now (`[left, right]`, which is
+  /// the pair `vscode.diff` takes off the same triple). An added file has no left
+  /// side and a deleted one no right, so that side is an empty document rather
+  /// than a path that is not there.
+  private changeUris(
+    root: string,
+    project: string,
+    plan: DiffPlan,
+  ): [vscode.Uri, vscode.Uri, vscode.Uri] {
     const current = vscode.Uri.file(path.join(root, plan.path));
-    return [current, this.baselineUri(plan), plan.present ? current : snapshotUri(plan.path, null)];
-  }
-
-  private baselineUri(plan: DiffPlan): vscode.Uri {
-    return snapshotUri(plan.path, plan.baseline);
+    const baseline = snapshotUri(plan.path, plan.baseline, project);
+    const empty = snapshotUri(plan.path, null, project);
+    return [current, baseline, plan.present ? current : empty];
   }
 
   /// The pane asks for everything it needs to paint itself once its script is
@@ -342,10 +353,14 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
 
 /// The URI the baseline side of a diff is served by: the provider registered for
 /// `CHANGE_SCHEME` reads the file out of the project's shadow snapshot, keyed by
-/// the revision in the query. An empty query is a side with no content — a file
-/// the run added, or one it removed.
-function snapshotUri(file: string, revision: string | null): vscode.Uri {
-  return vscode.Uri.from({ scheme: CHANGE_SCHEME, path: `/${file}`, query: revision ?? "" });
+/// the project and revision in the query (`snapshotQuery`). No revision is a side
+/// with no content — a file the run added, or one it removed.
+function snapshotUri(file: string, revision: string | null, project: string): vscode.Uri {
+  return vscode.Uri.from({
+    scheme: CHANGE_SCHEME,
+    path: `/${file}`,
+    query: snapshotQuery(project, revision),
+  });
 }
 
 function nonceValue(): string {

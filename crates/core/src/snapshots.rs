@@ -1,4 +1,5 @@
 use anyhow::{Context, Result};
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::Duration;
@@ -30,6 +31,16 @@ pub struct Snapshots {
 }
 
 impl Snapshots {
+    /// A handle on the shadow repo at an explicit pair of paths, created when it
+    /// is not there yet: [`open`](Self::open) resolves the paths from a project,
+    /// and a caller that owns both — a front-end keeping the repo somewhere of
+    /// its own, a test — can name them.
+    pub fn at(git_dir: PathBuf, work_tree: PathBuf) -> Result<Self> {
+        let snapshots = Self { git_dir, work_tree };
+        snapshots.ensure_repo()?;
+        Ok(snapshots)
+    }
+
     pub fn open(cwd: &Path) -> Result<Self> {
         if !snapshot_scope_is_safe(cwd) {
             anyhow::bail!(
@@ -37,16 +48,15 @@ impl Snapshots {
                 cwd.display()
             );
         }
+        // Keyed by where the project is rather than by the remote it is a clone
+        // of (`memory::local_project_id`): the shadow repo reaches into the work
+        // tree, so a baseline taken in one checkout must never be restored into
+        // another clone of the same remote.
         let git_dir = crate::config::config_dir()
             .context("no config directory")?
             .join("snapshots")
-            .join(crate::memory::project_id(cwd));
-        let snapshots = Self {
-            git_dir,
-            work_tree: cwd.to_path_buf(),
-        };
-        snapshots.ensure_repo()?;
-        Ok(snapshots)
+            .join(crate::memory::local_project_id(cwd));
+        Self::at(git_dir, cwd.to_path_buf())
     }
 
     fn ensure_repo(&self) -> Result<()> {
@@ -128,7 +138,14 @@ impl Snapshots {
     /// from the previous state, otherwise the current `HEAD` — so two runs in a
     /// row with nothing changed between them still start from what is on disk.
     pub fn mark(&self) -> Result<String> {
-        if let Some(commit) = self.commit("baseline")? {
+        self.mark_named("baseline")
+    }
+
+    /// The same, under a message: the state a run starts from (`mark`) or the
+    /// state a finished turn left, which a later
+    /// [`unchanged_since`](Self::unchanged_since) compares against.
+    pub fn mark_named(&self, message: &str) -> Result<String> {
+        if let Some(commit) = self.commit(message)? {
             return Ok(commit);
         }
         self.git(&["rev-parse", "HEAD"])
@@ -150,6 +167,15 @@ impl Snapshots {
             "-z",
             base,
         ])?;
+        // The counts come from git rather than from the rendered preview: a
+        // change too large to preview is a one-line summary with no `+`/`-`
+        // lines to count, so counting the preview would report a real change as
+        // none.
+        let numstat = self.git(&["diff", "--cached", "--no-renames", "--numstat", "-z", base])?;
+        let counts: HashMap<String, crate::changes::Numstat> =
+            crate::changes::parse_numstat(&numstat)
+                .into_iter()
+                .collect();
         let mut files = Vec::new();
         for (status, path) in crate::changes::parse_name_status(&status) {
             let old = match status {
@@ -160,9 +186,43 @@ impl Snapshots {
                 ChangeStatus::Deleted => None,
                 _ => std::fs::read(self.work_tree.join(&path)).ok(),
             };
-            files.push(crate::changes::file_change(status, path, old, new));
+            let mut change = crate::changes::file_change(status, path, old, new);
+            match counts.get(&change.path) {
+                // git's own verdict on a file it will not diff (a NUL in it),
+                // which is what the front-ends paint the row from.
+                Some(count) if count.binary => {
+                    change.binary = true;
+                    change.diff = String::new();
+                    change.added = 0;
+                    change.removed = 0;
+                }
+                Some(count) if !change.binary => {
+                    change.added = count.added;
+                    change.removed = count.removed;
+                }
+                _ => {}
+            }
+            files.push(change);
         }
         Ok(crate::changes::summarize(files))
+    }
+
+    /// Whether the work tree still holds what `revision` recorded — the guard an
+    /// undo takes before it puts the whole work tree back to a run's baseline,
+    /// so restoring an older turn cannot discard what came after it. Staged
+    /// first, exactly as [`changes_since`](Self::changes_since) stages, so a file
+    /// the run created counts as a difference rather than being left aside.
+    pub fn unchanged_since(&self, revision: &str) -> Result<bool> {
+        self.git(&["add", "-A"])?;
+        let listed = self.git(&[
+            "diff",
+            "--cached",
+            "--no-renames",
+            "--name-only",
+            "-z",
+            revision,
+        ])?;
+        Ok(listed.is_empty())
     }
 
     /// One file's content at `revision`, as it stands in the shadow repo rather
@@ -503,6 +563,74 @@ mod tests {
         };
         snapshots.ensure_repo().unwrap();
         assert!(snapshots.commit("turn").unwrap().is_none());
+
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn counts_a_change_too_large_to_preview() {
+        let root = std::env::temp_dir().join(format!("oxide_snap5_{}", std::process::id()));
+        std::fs::remove_dir_all(&root).ok();
+        let work = root.join("work");
+        std::fs::create_dir_all(&work).unwrap();
+
+        let snapshots = Snapshots {
+            git_dir: root.join("shadow"),
+            work_tree: work.clone(),
+        };
+        snapshots.ensure_repo().unwrap();
+
+        let over = |lines: usize| {
+            (0..lines)
+                .map(|n| format!("line {n}\n"))
+                .collect::<String>()
+        };
+        std::fs::write(work.join("big.txt"), over(2_100)).unwrap();
+        let base = snapshots.mark().unwrap();
+        let mut grown = over(2_100);
+        grown.push_str("added\n");
+        std::fs::write(work.join("big.txt"), grown).unwrap();
+
+        // The preview is a one-line summary with no `+`/`-` line in it, so the
+        // counts have to come from git rather than from counting the preview —
+        // otherwise a file this size reads as a change with nothing in it.
+        let changes = snapshots.changes_since(&base).unwrap();
+        assert_eq!(changes.files.len(), 1);
+        assert!(
+            changes.files[0].diff.starts_with("(diff omitted"),
+            "{}",
+            changes.files[0].diff
+        );
+        assert_eq!((changes.files[0].added, changes.files[0].removed), (1, 0));
+        assert_eq!((changes.added, changes.removed), (1, 0));
+
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn tells_whether_the_work_tree_still_holds_a_revision() {
+        let root = std::env::temp_dir().join(format!("oxide_snap6_{}", std::process::id()));
+        std::fs::remove_dir_all(&root).ok();
+        let work = root.join("work");
+        std::fs::create_dir_all(&work).unwrap();
+
+        let snapshots = Snapshots {
+            git_dir: root.join("shadow"),
+            work_tree: work.clone(),
+        };
+        snapshots.ensure_repo().unwrap();
+
+        std::fs::write(work.join("a.txt"), "one\n").unwrap();
+        let base = snapshots.mark().unwrap();
+        assert!(snapshots.unchanged_since(&base).unwrap());
+
+        // An edit after the revision is a difference, and so is a file the
+        // revision never saw — both are what an undo would discard.
+        std::fs::write(work.join("a.txt"), "two\n").unwrap();
+        assert!(!snapshots.unchanged_since(&base).unwrap());
+        snapshots.restore(&base).unwrap();
+        std::fs::write(work.join("new.txt"), "new\n").unwrap();
+        assert!(!snapshots.unchanged_since(&base).unwrap());
 
         std::fs::remove_dir_all(&root).ok();
     }

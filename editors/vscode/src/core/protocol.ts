@@ -162,6 +162,13 @@ export interface ChangesItem {
   totals: string;
   /// The revision every file's diff is drawn against.
   baseline: string;
+  /// The folder the run started in, which `rows`' paths are relative to and
+  /// `baseline` is read out of. Carried with the card rather than looked up when
+  /// a row is clicked: a multi-root window can move the active editor to
+  /// another root while the card stays in the transcript, and the card belongs
+  /// to the run, not to whatever folder is active now. Empty when the frame did
+  /// not name one, which falls back to the active folder.
+  project: string;
   rows: ChangeRow[];
 }
 
@@ -594,9 +601,9 @@ export class Transcript {
         this.status = "Done";
         return [];
       // The files the turn changed, from the run's own shadow snapshot: the
-      // controller does not have to know about them, and the frame can arrive
-      // just before or just after `agent_end` (the CLI writes it on a second
-      // channel), so the card lands at the end of the turn either way.
+      // controller does not have to know about them. The CLI writes it behind
+      // that run's `agent_end` on the same channel, so the card lands at the end
+      // of the turn it belongs to.
       case "turn_changes": {
         const changes = turnChanges(event);
         if (!changes) return [];
@@ -608,6 +615,7 @@ export class Transcript {
           title: changesTitle(changes.files.length),
           totals: changesTotals(changes.added, changes.removed),
           baseline: changes.baseline,
+          project: changes.project,
           rows: changeRows(changes.files),
         };
         this.items.push(item);
