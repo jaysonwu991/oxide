@@ -218,7 +218,11 @@ header names the thread, and when the turn ends. Only a session listing is
 re-read — `chat.ts::syncSessions` returns early for a confirmation or the MCP
 list, and again for a listing closed while the read was in flight — and the
 repaint goes through `showSessions`, which is the one place the dialog is
-composed.
+composed. The two reads overlap (the header's starts before the store has the
+file, the exit's after it) and either can answer first, so each takes the next
+`sessionsSync` token and only the newest one, for the folder it was read in, is
+applied: a listing that started earlier and lands later is dropped instead of
+putting the just-created row back out of the list.
 
 Both dialogs are composed in the extension host as data (`core/dialogs.ts`) — a
 title, the panel edge it hangs from (`pin`), a note for an empty or failed

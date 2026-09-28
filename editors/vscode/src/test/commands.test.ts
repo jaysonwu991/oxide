@@ -174,6 +174,19 @@ describe("command contributions", () => {
       "and a listing closed while the read was in flight is left closed",
     );
 
+    // The two reads overlap — the header's, taken before the store has the
+    // thread, and the exit's, taken after — so each takes the next token and
+    // only the newest, for the folder it was taken in, is applied. Without it
+    // the older answer can land last and hide the row again.
+    assert.ok(
+      sync.includes("const sync = ++this.sessionsSync"),
+      "a refresh takes the next token",
+    );
+    assert.ok(
+      sync.includes("if (sync !== this.sessionsSync || cwd !== this.cwd()) return;"),
+      "and a superseded answer is dropped",
+    );
+
     // The two moments a session is written: the header naming the thread, and
     // the turn ending.
     const events = chat.slice(
@@ -183,6 +196,19 @@ describe("command contributions", () => {
     assert.match(events, /if \(this\.transcript\.sessionId !== id\) void this\.syncSessions\(\)/);
     const exit = chat.slice(chat.indexOf("private handleExit("), chat.indexOf("async resumeSession("));
     assert.ok(exit.includes("void this.syncSessions()"), "and so does a finished turn");
+
+    // Opening the listing is the same read, so it takes the next token too: one
+    // still in flight from a turn that just ended is dropped instead of painting
+    // over the rows the reader asked for.
+    const opened = chat.slice(
+      chat.indexOf("async resumeSession("),
+      chat.indexOf("continueSession("),
+    );
+    assert.ok(opened.includes("++this.sessionsSync"), "the listing supersedes an older read");
+    assert.ok(
+      opened.includes("sync !== this.sessionsSync || cwd !== this.cwd()"),
+      "and is dropped when it is superseded itself",
+    );
   });
 
   it("will not delete a thread while the running turn owns its file", () => {

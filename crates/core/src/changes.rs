@@ -69,7 +69,7 @@ impl TurnChanges {
 
 /// The file and the counts it carries, given the two sides of the change
 /// (`None` for a side that does not exist: a file the run added or removed).
-/// A side that is not valid UTF-8 makes the change binary.
+/// A side that is not text makes the change binary.
 pub fn file_change(
     status: ChangeStatus,
     path: impl Into<String>,
@@ -100,11 +100,23 @@ pub fn file_change(
     }
 }
 
+/// Git's own test for a file it will not diff, and the one its `--numstat`
+/// reports as `-`: a NUL among the first bytes. Bytes that are valid UTF-8 but
+/// hold one are still binary to git — and to every listing drawn from it — so a
+/// side of such a file has to be refused lines here too, or a review would paint
+/// contents the row beside it calls binary.
+pub fn is_binary(bytes: &[u8]) -> bool {
+    const FIRST_FEW_BYTES: usize = 8000;
+    bytes.iter().take(FIRST_FEW_BYTES).any(|byte| *byte == 0)
+}
+
 /// `None` (a file that is not there) reads as empty text, so an added file
-/// diffs as all additions and a deleted one as all removals.
+/// diffs as all additions and a deleted one as all removals. So does a side no
+/// line printer can show.
 fn utf8(bytes: Option<Vec<u8>>) -> Option<String> {
     match bytes {
         None => Some(String::new()),
+        Some(bytes) if is_binary(&bytes) => None,
         Some(bytes) => String::from_utf8(bytes).ok(),
     }
 }
@@ -311,6 +323,27 @@ mod tests {
         assert!(change.binary);
         assert!(change.diff.is_empty());
         assert_eq!((change.added, change.removed), (0, 0));
+    }
+
+    #[test]
+    fn a_nul_makes_a_text_file_binary_the_way_git_reads_it() {
+        // Valid UTF-8, so it decodes — but git reports it as binary, and the row
+        // a card paints says so, so the preview has to agree instead of diffing
+        // a file the row beside it calls binary.
+        let change = file_change(
+            ChangeStatus::Modified,
+            "utf16-ish.txt",
+            Some(b"a\x00b\n".to_vec()),
+            Some(b"a\x00c\n".to_vec()),
+        );
+        assert!(is_binary(b"a\x00b\n"));
+        assert!(change.binary);
+        assert!(change.diff.is_empty());
+        // A NUL past the bytes git reads is not its answer, so a file that is
+        // text to git stays text here.
+        let mut late = vec![b'x'; 9000];
+        late.push(0);
+        assert!(!is_binary(&late));
     }
 
     #[test]

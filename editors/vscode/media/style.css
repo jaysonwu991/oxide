@@ -779,9 +779,10 @@ pre,
   color: var(--vscode-descriptionForeground);
 }
 
-/* Reads the turn's diffs here, one file at a time, instead of handing the file
-   to VS Code's diff editor — the one place the panel paints a diff of its own,
-   and the counterpart of the desktop app's Review button. */
+/* Walks the turn's files over the panel, one row at a time: the row it lands on
+   opens that file in VS Code's diff editor, which is where the two sides are
+   drawn, so nothing here paints a diff of its own — the counterpart of the
+   desktop app's Review button. */
 .changes-review {
   flex: 0 0 auto;
   padding: 1px 7px;

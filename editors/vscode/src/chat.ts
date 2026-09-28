@@ -195,6 +195,12 @@ export class ChatController {
   /// instead of painting a list the newer probe has already replaced.
   private mcpProbe = 0;
   private sessions: SessionEntry[] = [];
+  /// The newest session listing asked for. The store gains a thread as the turn
+  /// it belongs to runs, so the same listing is read twice — once when the run
+  /// names its session, again when it ends — and the two reads overlap. The
+  /// earlier one can answer last (it started before the file was written), so it
+  /// is dropped rather than repainting the rows the newer read has replaced.
+  private sessionsSync = 0;
   /// The name of the thread when the CLI knows one (a resumed session keeps its
   /// picker label); otherwise the header falls back to the first message.
   private sessionTitle: string | null = null;
@@ -1168,8 +1174,14 @@ export class ChatController {
     if (this.dialog?.kind !== "sessions") return;
     const cwd = this.cwd();
     if (!cwd) return;
+    const sync = ++this.sessionsSync;
     const result = await runCapture(this.binary(), sessionsListArgs(), cwd);
     if (result.error || result.code !== 0) return;
+    // A read that started earlier can answer later — the header's, taken before
+    // the store had the thread, against the exit's, taken after — and painting it
+    // would put the just-created row back out of the listing. Only the newest
+    // read is applied, and only for the folder it was taken in.
+    if (sync !== this.sessionsSync || cwd !== this.cwd()) return;
     this.sessions = parseSessionList(result.stdout);
     if (this.dialog?.kind !== "sessions") return;
     this.showSessions();
@@ -1190,7 +1202,12 @@ export class ChatController {
       return;
     }
     this.showSessions("Loading sessions…");
+    const sync = ++this.sessionsSync;
     const result = await runCapture(this.binary(), sessionsListArgs(), cwd);
+    // A read that started earlier — the refresh a turn's own start or end asked
+    // for — is superseded by this one, and a project that changed under the read
+    // is no longer the one it was about, so neither paints.
+    if (sync !== this.sessionsSync || cwd !== this.cwd()) return;
     if (result.error || result.code !== 0) {
       const detail = result.error || firstLine(result.stderr) || `exit ${result.code}`;
       const failed = `Could not list sessions: ${detail}`;
