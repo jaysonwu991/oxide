@@ -18,7 +18,11 @@ use objc2_app_kit::{NSApplication, NSEvent, NSEventMask, NSWindow};
 /// Make the window under the pointer key before a press reaches it, so the press
 /// is delivered rather than consumed by activating the app.
 pub fn install() {
-    let handler = RcBlock::new(|event: NonNull<NSEvent>| {
+    // The block's return type is the binding's own — `Fn(NonNull<NSEvent>) ->
+    // *mut NSEvent`, whose doc reads "block's return must be a valid pointer or
+    // null": a pointer keeps the event, and null would swallow it. This monitor
+    // hands every press back.
+    let handler = RcBlock::new(|event: NonNull<NSEvent>| -> *mut NSEvent {
         // SAFETY: AppKit hands the block a live event for the duration of the
         // call, and the pointer is only read while it is valid.
         let press = unsafe { event.as_ref() };
