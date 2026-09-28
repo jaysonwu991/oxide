@@ -64,7 +64,9 @@ The window follows a Codex-style layout:
   message — as soon as its turn starts rather than once it ends: the thread the
   window is in stands in for itself in the tree, in that project's session
   count and in the `/sessions` list until the store has written it, keyed by
-  the same id so it is never listed twice. The **+ New**
+  the same id so it is never listed twice. A window with no thread on screen is
+  starting one, so its next message opens a thread of its own instead of being
+  appended to whichever thread was used last. The **+ New**
   button in the Projects header
   opens the **Create project** dialog: pick one or more source folders and the
   **Project name** defaults to the first folder's basename (still editable), so
@@ -94,13 +96,18 @@ The window follows a Codex-style layout:
   an attachment thumbnail answer the press itself — the press is captured where
   it began and finishes on the release, as a click does but without needing the
   same element under the pointer by then — because a first press can arrive as
-  the one that takes focus and a press on a thumbnail starts the drag WebKit
-  withholds the click for; a press dragged off the control sends nothing, and a
+  the one that takes focus, and a press on a draggable image starts the drag
+  WebKit withholds the click for, which is why a thumbnail's image is marked
+  undraggable and both the drag and the press's default action are refused; the
+  release is answered whichever stream carries it, so a canceled pointer
+  sequence still finishes on the mouse one, and either way exactly once. A press
+  dragged off the control sends nothing, and a
   keyboard activation still runs it once. The status and
   token/cost usage sit just below it. The 📎 button (or a pasted clipboard
   image) attaches images/PDFs, shown above the input as thumbnails that open a
   full preview when clicked (or focused and opened with Enter/Space) — the
-  preview is closed by the ✕ icon button its siblings carry — and can be
+  preview is closed by the ✕ icon button its siblings carry, which rides the
+  picture's own top-right corner in the error color — and can be
   removed before sending; a message queued while busy carries the same
   attachments, and reopening a stored thread restores their thumbnails. Pasted and picked images are
   downscaled to a 1568px long edge in the webview before they are sent, and an

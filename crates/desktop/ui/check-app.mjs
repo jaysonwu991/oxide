@@ -223,7 +223,12 @@ const press = (over = {}) => ({
   pointerId: 1,
   clientX: 10,
   clientY: 10,
-  preventDefault() {},
+  // A check that cares whether the page refused a default action reads this
+  // back: the drag a press would start is refused by hand (and by the picture's
+  // own markup), so the press that opens a thumbnail is never a drag.
+  preventDefault() {
+    this.refused = true;
+  },
   ...over,
 });
 const nextTick = () => new Promise((resolve) => setTimeout(resolve, 0));
@@ -537,6 +542,7 @@ await app.openDefaultProject();
 // it grows out of the composer's top edge and stays stuck to it.
 console.log("popovers");
 const shell = readFileSync(`${here}index.html`, "utf8");
+const sheet = readFileSync(`${here}style.css`, "utf8");
 const shellAt = (needle) => shell.indexOf(needle);
 const buttonFor = (id) => {
   const at = shell.indexOf(`id="${id}"`);
@@ -965,6 +971,54 @@ check(
   /id="image-view-close"[^>]*aria-label="Close"[^>]*>✕$/.test(buttonFor("image-view-close")),
   buttonFor("image-view-close"),
 );
+check(
+  "put that icon on the picture's top-right corner, in the error color",
+  /class="image-frame"[\s\S]*id="image-view-close"/.test(shell) &&
+    /\.image-frame \{ position: relative;[^}]*\}/.test(sheet) &&
+    /#image-view-close \{[^}]*position: absolute;[^}]*top: 10px;[^}]*right: 10px;[^}]*color: var\(--error\);[^}]*\}/.test(sheet),
+  `${shellAt("class=\"image-frame\"")} / ${sheet.indexOf("#image-view-close {")}`,
+);
+// The thumbnail is an image, and WebKit drags an image by default: the drag
+// session would take the release that opens the preview with it, so neither the
+// gesture nor the picture is allowed to become one.
+check(
+  "let a thumbnail not be dragged out of the composer",
+  opener?.children[0]?.draggable === false &&
+    /\.att-open img \{ -webkit-user-drag: none;[^}]*\}/.test(sheet),
+  String(opener?.children[0]?.draggable),
+);
+const dragPress = press();
+opener.fire("dragstart", dragPress);
+check("refused the drag a press would start", dragPress.refused === true);
+// The release is what the app answers, and either stream may be the one that
+// carries it, so a pointer press that was canceled still answers on the mouse
+// stream — and it is answered once.
+const mousePress = press();
+const answeredOnce = [];
+opener.fire("pointerdown", mousePress);
+opener.fire("pointercancel", mousePress);
+opener.fire("mouseup", mousePress);
+answeredOnce.push(elementFor("image-modal").hidden);
+check("left a canceled press alone", answeredOnce[0] === true, String(answeredOnce[0]));
+opener.fire("pointerdown", mousePress);
+opener.fire("mouseup", mousePress);
+const mouseReleased = elementFor("image-modal").hidden === false;
+opener.fire("mouseup", mousePress);
+check(
+  "answered the release on the mouse stream, and only once",
+  mouseReleased && elementFor("image-view-img").src === shot,
+  String(mouseReleased),
+);
+elementFor("image-view-close").onclick();
+opener.fire("pointerdown", mousePress);
+opener.fire("pointerup", mousePress);
+opener.fire("mouseup", mousePress);
+check(
+  "and answered a second release only once",
+  elementFor("image-modal").hidden === false,
+  String(elementFor("image-modal").hidden),
+);
+elementFor("image-view-close").onclick();
 // The thumbnail is a draggable image, so the press that opens the preview is the
 // one whose click WebKit withholds; the release is what the app answers.
 elementFor("image-modal").hidden = true;
@@ -2083,6 +2137,41 @@ app.setIdle();
 elementFor("send").onclick({ detail: 1 });
 await nextTick();
 check("and still acted on the click after it", calls.length > 0, JSON.stringify(calls));
+
+// Both streams deliver the release of one press, and the action they share is
+// the one that must not run twice.
+calls.length = 0;
+app.state.session = null;
+elementFor("prompt").value = "just the once";
+app.setIdle();
+app.updateSendState();
+elementFor("send").fire("pointerdown", press());
+elementFor("send").fire("pointerup", press());
+elementFor("send").fire("mouseup", press());
+await nextTick();
+const sends = () => calls.filter(([name]) => name === "send_prompt");
+check("sent once when both streams carried the release", sends().length === 1, JSON.stringify(calls));
+// A window with no thread on screen is starting one: sending `latest` would
+// append this message to whichever thread was used last, which is not the
+// thread the reader is looking at and not one the sidebar would gain.
+check(
+  "opened a thread of its own when the window had none",
+  sends()[0]?.[1]?.session === "new",
+  JSON.stringify(sends()[0]?.[1]),
+);
+app.state.session = "cafe0000cafe0000";
+calls.length = 0;
+elementFor("prompt").value = "carry on";
+app.setIdle();
+app.updateSendState();
+elementFor("send").onclick({ detail: 0 });
+await nextTick();
+check(
+  "kept sending into the thread on screen",
+  sends()[0]?.[1]?.session === "cafe0000cafe0000",
+  JSON.stringify(sends()[0]?.[1]),
+);
+app.state.session = null;
 
 console.log("a thread that is not stored yet");
 // `all_sessions` lists what is on disk, and a thread that was just started has

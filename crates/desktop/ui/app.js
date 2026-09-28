@@ -919,16 +919,23 @@ async function addAttachmentFiles(files) {
 
 /// A press that never became a click: the first press on a window that has just
 /// come forward can reach the page as the one that takes focus, and a press that
-/// starts a drag — a pasted thumbnail is a draggable image — loses its click the
-/// same way. The controls a reader reaches for with a message half written are
-/// the ones this is worst for, so they answer the gesture itself: the press is
-/// captured where it began and finishes on the release, which is what a click is,
-/// minus the requirement that the same element still be under the pointer by
-/// then. A press dragged off the control does nothing, and a keyboard activation
-/// — a click with no press behind it — still runs the action once.
+/// starts a drag — a pasted thumbnail is an image, and WebKit drags an image by
+/// default — loses its click the same way. The controls a reader reaches for
+/// with a message half written are the ones this is worst for, so they answer
+/// the gesture itself: the press is captured where it began and finishes on the
+/// release, which is what a click is, minus the requirement that the same
+/// element still be under the pointer by then. A press dragged off the control
+/// does nothing, and a keyboard activation — a click with no press behind it —
+/// still runs the action once.
 function pressActivated(node, run) {
   let pressed = false;
   let answered = false;
+  // The drag is refused before it can start, here and on the picture itself
+  // (`openableImage`): a drag session takes the release with it, so the gesture
+  // would never be answered no matter how long the reader held the press.
+  const refuseDrag = (event) => event.preventDefault();
+  node.addEventListener("dragstart", refuseDrag);
+  node.addEventListener("mousedown", refuseDrag);
   node.onclick = (event) => {
     if (!answered || event.detail === 0) run(event);
     answered = false;
@@ -938,10 +945,11 @@ function pressActivated(node, run) {
     pressed = true;
     answered = false;
     node.setPointerCapture?.(event.pointerId);
-    // The drag the press would start is what took the click with it.
-    event.preventDefault();
   });
-  node.addEventListener("pointerup", (event) => {
+  // Whichever stream carries the release answers it — a press that is a click
+  // everywhere else still delivers one of the two — and `pressed` is what keeps
+  // the pair from running the action twice.
+  const release = (event) => {
     if (!pressed) return;
     pressed = false;
     if (!insideBox(node, event)) return;
@@ -949,7 +957,9 @@ function pressActivated(node, run) {
     // duplicate that `onclick` drops.
     answered = true;
     run(event);
-  });
+  };
+  node.addEventListener("pointerup", release);
+  node.addEventListener("mouseup", release);
   node.addEventListener("pointercancel", () => {
     pressed = false;
   });
@@ -1030,6 +1040,9 @@ function openableImage(dataUrl, name) {
   const img = document.createElement("img");
   img.src = dataUrl;
   img.alt = name || "attachment";
+  // An image is draggable unless it says otherwise, and the drag would take the
+  // press that opens the preview with it.
+  img.draggable = false;
   button.appendChild(img);
   pressActivated(button, () => openImage(dataUrl));
   return button;
@@ -1089,7 +1102,11 @@ async function send(followUp = false) {
     state.runId = await invoke("send_prompt", {
       project: state.project,
       prompt,
-      session: state.session || "latest",
+      // No thread on screen means the reader is starting one: `new` has the core
+      // create it. `latest` would append this message to whichever thread was
+      // used last, which is a thread they never chose — and one the sidebar
+      // would go on listing unchanged.
+      session: state.session || "new",
       reasoning: state.reasoning,
       attachments: attachments.length ? attachments : null,
     });
