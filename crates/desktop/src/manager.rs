@@ -409,12 +409,10 @@ fn now_secs() -> u64 {
 }
 
 /// `<config>/Oxide/desktop/projects.json`, alongside the CLI's `config.json`.
+/// The path is `oxide_core::workspaces`': the same registry that module reads
+/// into a run's `# Workspaces` section, so the two cannot drift apart.
 pub fn default_store_path() -> Result<PathBuf> {
-    let config = Config::config_path();
-    let dir = config
-        .parent()
-        .context("resolving the Oxide config directory")?;
-    Ok(dir.join("desktop/projects.json"))
+    Ok(oxide_core::workspaces::registry_path())
 }
 
 #[cfg(test)]

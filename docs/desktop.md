@@ -199,6 +199,18 @@ project's last session drops its row on the next refresh. A stray discovered row
 such as `oxide-old` simply means a session was recorded while the CLI ran in
 that directory; it is not a project you added.
 
+A run is told about those projects, not just the one it starts in: the shared
+core reads the same `desktop/projects.json` into the `# Workspaces` section of
+the system prompt (`oxide_core::workspaces`), which names the project the turn
+is in and, beside it, every other folder added to Oxide with its path — the
+sibling of the current project first, then the most recently opened, capped at
+24. When the user asks whether the agent can reach another repository, the
+answer is in the prompt instead of a `find ~` that reads every unrelated file on
+the machine until the command times out, and the section says the file tools
+take absolute paths, so a file in a sibling project can be read, searched and
+edited from the turn. The section is composed in `oxide-core`, so a turn started
+from the terminal is told the same thing.
+
 ## Agent turns
 
 `turn::start_turn(project, prompt, session, approve, ask, reasoning, inline)` loads the

@@ -870,6 +870,15 @@ Persistent cross-session memory is managed by the `memory` tool and stored under
 the system prompt automatically. Use the `memory` tool to add, search, or forget
 entries.
 
+The prompt also carries a `# Workspaces` section naming the working directory
+and the other folders added to Oxide — the desktop's project list, read from
+`desktop/projects.json` — with their paths, so a question about a repository
+elsewhere on the machine ("can you reach the `api-service` repo?") is answered
+from the list instead of a `find ~` that reads every unrelated project before
+the command times out. It says the file tools take absolute paths, so a file
+in a sibling project can be read, searched, and edited from the run, while
+`bash` still starts in the current project's root.
+
 ## Project trust
 
 Project-local resources that can change behavior or execute code (agents,

@@ -429,6 +429,11 @@ pub struct Config {
     pub default_project_trust: crate::trust::DefaultTrust,
     #[serde(skip)]
     pub trusted: bool,
+    /// The local projects this run can reach, named in the system prompt so a
+    /// repository elsewhere on the machine is found from the list instead of a
+    /// scan of the home directory.
+    #[serde(skip)]
+    pub workspaces: crate::workspaces::Workspaces,
 }
 
 fn default_provider() -> String {
@@ -534,6 +539,7 @@ impl Default for Config {
             load_context_files: true,
             default_project_trust: crate::trust::DefaultTrust::default(),
             trusted: true,
+            workspaces: crate::workspaces::Workspaces::default(),
         }
     }
 }
@@ -702,6 +708,7 @@ impl Config {
         }
 
         config.default_project_trust = load_default_project_trust();
+        config.workspaces = crate::workspaces::Workspaces::load(cwd);
         config.ecosystem = ecosystem::load(cwd);
         config.memory = MemoryStore::load(cwd);
         config.compaction = crate::compact::load_config(cwd);
@@ -1135,6 +1142,10 @@ impl Config {
             ));
         }
 
+        if let Some(section) = self.workspaces.section() {
+            sections.push(section);
+        }
+
         let remembered = self.memory.recent(8);
         if !remembered.is_empty() {
             let mut list = String::from(
@@ -1280,7 +1291,9 @@ impl Config {
              threads, while a shell search reads every build artifact — and a `| grep -v` filter \
              after it cannot give back the time already spent. Scope a shell search to one \
              directory and reserve it for a command's own output (`git log | grep`); never sweep \
-             the whole filesystem with `find /`. Keep each `bash` command focused on one task \
+             the whole filesystem with `find /`, or the home directory with `find ~`, which reads \
+             every unrelated project on the machine before the command times out. Keep each \
+             `bash` command focused on one task \
              instead of chaining unrelated commands with `;` or `&&`. `read`, `ls`, `find`, and \
              `grep` accept absolute paths, so you do not need a shell to inspect files outside \
              the project, and `bash` already starts in the project root, so run a command \
@@ -1465,6 +1478,51 @@ mod tests {
         assert!(prompt.contains("`gh` and `glab`"), "{prompt}");
         assert!(prompt.contains("inside their existing threads"), "{prompt}");
         assert!(prompt.contains("/replies"), "{prompt}");
+    }
+
+    #[test]
+    fn system_prompt_names_the_local_projects() {
+        let root = std::env::temp_dir().join(format!("oxide_ws_prompt_{}", std::process::id()));
+        let here = root.join("Projects/site");
+        let other = root.join("Projects/api-service");
+        std::fs::create_dir_all(&here).unwrap();
+        std::fs::create_dir_all(&other).unwrap();
+        let store = root.join("projects.json");
+        std::fs::write(
+            &store,
+            format!(
+                "{{\"projects\":[{{\"path\":\"{}\",\"name\":\"api-service\"}}]}}",
+                other.display()
+            ),
+        )
+        .unwrap();
+
+        let config = Config {
+            workspaces: crate::workspaces::Workspaces::load_from(&here, &store),
+            ..Config::default()
+        };
+        let prompt = config.compose_system_prompt();
+        assert!(prompt.contains("# Workspaces"), "{prompt}");
+        assert!(prompt.contains("This run is in"), "{prompt}");
+        assert!(
+            prompt.contains(&other.to_string_lossy().to_string()),
+            "{prompt}"
+        );
+        // A machine with nothing else added is still told where it is and to
+        // look beside itself rather than scan the home directory.
+        let alone = Config {
+            workspaces: crate::workspaces::Workspaces::load_from(&here, &root.join("missing.json")),
+            ..Config::default()
+        };
+        let prompt = alone.compose_system_prompt();
+        assert!(prompt.contains("# Workspaces"), "{prompt}");
+        assert!(prompt.contains("only folder Oxide has"), "{prompt}");
+        // A hand-built config has no directory to name.
+        assert!(!Config::default()
+            .compose_system_prompt()
+            .contains("# Workspaces"));
+
+        std::fs::remove_dir_all(&root).ok();
     }
 
     #[test]
