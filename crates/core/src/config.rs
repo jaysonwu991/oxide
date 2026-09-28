@@ -1488,14 +1488,13 @@ mod tests {
         std::fs::create_dir_all(&here).unwrap();
         std::fs::create_dir_all(&other).unwrap();
         let store = root.join("projects.json");
-        std::fs::write(
-            &store,
-            format!(
-                "{{\"projects\":[{{\"path\":\"{}\",\"name\":\"api-service\"}}]}}",
-                other.display()
-            ),
-        )
-        .unwrap();
+        // Written through serde, as the desktop does: a Windows path's
+        // backslashes would not survive a hand-built JSON string.
+        let text = serde_json::json!({
+            "projects": [{ "path": other.to_string_lossy(), "name": "api-service" }],
+        })
+        .to_string();
+        std::fs::write(&store, text).unwrap();
 
         let config = Config {
             workspaces: crate::workspaces::Workspaces::load_from(&here, &store),

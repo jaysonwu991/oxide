@@ -200,20 +200,25 @@ mod tests {
         dir
     }
 
-    /// A registry with one entry per `(name, path, last_opened_at)`.
+    /// A registry with one entry per `(name, path, last_opened_at)`, written
+    /// through serde the way the desktop writes it: a Windows path is full of
+    /// backslashes, so a hand-built JSON string would not parse on Windows.
     fn registry(root: &Path, entries: &[(&str, &Path, u64)]) -> PathBuf {
-        let projects: Vec<String> = entries
+        let projects: Vec<serde_json::Value> = entries
             .iter()
             .map(|(name, path, opened)| {
-                format!(
-                    "{{\"id\":\"{path}\",\"path\":\"{path}\",\"name\":\"{name}\",\
-                     \"last_opened_at\":{opened}}}",
-                    path = path.display()
-                )
+                let path = path.to_string_lossy();
+                serde_json::json!({
+                    "id": path,
+                    "path": path,
+                    "name": name,
+                    "last_opened_at": opened,
+                })
             })
             .collect();
         let path = root.join("projects.json");
-        std::fs::write(&path, format!("{{\"projects\":[{}]}}", projects.join(","))).unwrap();
+        let text = serde_json::json!({ "projects": projects }).to_string();
+        std::fs::write(&path, text).unwrap();
         path
     }
 
@@ -334,14 +339,11 @@ mod tests {
         std::fs::create_dir_all(&here).unwrap();
         std::fs::create_dir_all(&other).unwrap();
         let store = root.join("projects.json");
-        std::fs::write(
-            &store,
-            format!(
-                "{{\"projects\":[{{\"path\":\"{}\",\"name\":\"  \"}}]}}",
-                other.display()
-            ),
-        )
-        .unwrap();
+        let text = serde_json::json!({
+            "projects": [{ "path": other.to_string_lossy(), "name": "  " }],
+        })
+        .to_string();
+        std::fs::write(&store, text).unwrap();
 
         let workspaces = Workspaces::load_from(&here, &store);
         assert_eq!(workspaces.others()[0].name, "data-pipeline");
