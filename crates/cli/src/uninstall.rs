@@ -1,4 +1,4 @@
-use crate::install::{detect_install_method, InstallMethod};
+use crate::install::{detect_install_method, marker, InstallMethod};
 use anyhow::{Context, Result};
 use std::fs;
 use std::io::{self, IsTerminal, Write};
@@ -206,12 +206,23 @@ fn run_package_uninstall(program: &str, args: &[&str]) {
 }
 
 fn print_binary_removal(executable: &Path) {
+    let mut paths = vec![executable.to_path_buf()];
+    // The marker an installer left beside the binary goes with it.
+    let install_marker = marker(executable);
+    if install_marker.is_file() {
+        paths.push(install_marker);
+    }
+    let quoted = paths
+        .iter()
+        .map(|path| format!("\"{}\"", path.display()))
+        .collect::<Vec<_>>()
+        .join(" ");
     println!();
     println!("To finish removing the binary after this command exits, run:");
     #[cfg(windows)]
-    println!(" Remove-Item \"{}\"", executable.display());
+    println!(" Remove-Item {quoted}");
     #[cfg(not(windows))]
-    println!(" rm \"{}\"", executable.display());
+    println!(" rm {quoted}");
 }
 
 fn remove_path(path: &Path) -> Result<()> {

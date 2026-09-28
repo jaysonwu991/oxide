@@ -17,6 +17,9 @@ INSTALL_DIR="${OXIDE_INSTALL_DIR:-$HOME/.local/bin}"
 BASE_URL="https://github.com/${REPO}"
 MANIFEST_NAME="Oxide-manifest"
 LEGACY_MANIFEST_NAME="oxide-manifest"
+# A file beside the binary naming the install, so `oxide update` recognizes a
+# released install whatever OXIDE_INSTALL_DIR put it in.
+MARKER_NAME=".oxide-install"
 
 err() {
     printf 'oxide-install: error: %s\n' "$*" >&2
@@ -188,6 +191,13 @@ main() {
     mkdir -p "$INSTALL_DIR"
     mv -f "${tmp}/oxide" "${INSTALL_DIR}/oxide"
     chmod 0755 "${INSTALL_DIR}/oxide"
+
+    # The version is read back from the binary that was just installed, so the
+    # marker names what is here rather than what was asked for.
+    installed_version="$("${INSTALL_DIR}/oxide" --version 2>/dev/null | awk '{print $2}')" \
+        || installed_version=""
+    printf 'source %s\nversion %s\n' "$REPO" "$installed_version" \
+        > "${INSTALL_DIR}/${MARKER_NAME}"
 
     info "installed Oxide to ${INSTALL_DIR}/oxide"
 

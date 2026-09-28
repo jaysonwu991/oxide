@@ -1,4 +1,4 @@
-use crate::install::{detect_install_method, InstallMethod};
+use crate::install::{self, detect_install_method, InstallMethod};
 use anyhow::{bail, Context, Result};
 use reqwest::StatusCode;
 use sha2::{Digest, Sha256};
@@ -107,10 +107,11 @@ async fn run_for(options: Options, executable: &Path, repo: &str) -> Result<()> 
             .with_context(|| format!("making {} executable", staged.display()))?;
     }
     let reported = staged_version(&staged)?;
-    if reported != release.version {
-        println!("Warning: {} reports version {reported}", release.asset);
-    }
+    refuse_version_mismatch(&release.asset, &reported, &release.version)?;
     replace_binary(&staged, executable)?;
+    if !matches!(method, InstallMethod::Cargo | InstallMethod::Homebrew) {
+        record_install(executable, repo, &release.version);
+    }
 
     println!("Updated {} to {}", executable.display(), release.tag);
     if matches!(method, InstallMethod::Cargo) {
@@ -326,23 +327,60 @@ struct Version {
     major: u64,
     minor: u64,
     patch: u64,
-    pre: Option<String>,
+    pre: Vec<Identifier>,
+}
+
+/// One dot-separated pre-release identifier, ordered the way SemVer orders
+/// them: a numeric identifier compares as a number and always ranks below an
+/// alphanumeric one, which compares in ASCII order.
+#[derive(Debug, PartialEq, Eq, PartialOrd, Ord)]
+enum Identifier {
+    Numeric(u64),
+    Text(String),
 }
 
 fn parse_version(text: &str) -> Option<Version> {
     let text = version_of(text);
-    let (core, pre) = match text.find(['-', '+']) {
-        Some(index) => (&text[..index], Some(text[index + 1..].to_string())),
-        None => (text.as_str(), None),
+    // Build metadata carries no precedence — two releases that differ only in
+    // it are the same version — and a pre-release may itself hold a `-`, so the
+    // metadata comes off before the pre-release is read.
+    let (text, _build) = text.split_once('+').unwrap_or((text.as_str(), ""));
+    let (core, pre) = match text.split_once('-') {
+        Some((core, pre)) => (core, Some(pre)),
+        None => (text, None),
     };
     let mut parts = core.split('.');
     let version = Version {
         major: parts.next()?.parse().ok()?,
         minor: parts.next().unwrap_or("0").parse().ok()?,
         patch: parts.next().unwrap_or("0").parse().ok()?,
-        pre,
+        pre: match pre {
+            Some(pre) => pre_identifiers(pre)?,
+            None => Vec::new(),
+        },
     };
     parts.next().is_none().then_some(version)
+}
+
+fn pre_identifiers(pre: &str) -> Option<Vec<Identifier>> {
+    if pre.is_empty() {
+        return None;
+    }
+    pre.split('.')
+        .map(|part| {
+            let alphanumeric = part
+                .bytes()
+                .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-');
+            if !alphanumeric {
+                return None;
+            }
+            if part.bytes().all(|byte| byte.is_ascii_digit()) {
+                part.parse().ok().map(Identifier::Numeric)
+            } else {
+                Some(Identifier::Text(part.to_string()))
+            }
+        })
+        .collect()
 }
 
 /// A release outranks its own pre-releases, so `1.0.0` is newer than
@@ -350,11 +388,11 @@ fn parse_version(text: &str) -> Option<Version> {
 fn compare(latest: &Version, current: &Version) -> std::cmp::Ordering {
     (latest.major, latest.minor, latest.patch)
         .cmp(&(current.major, current.minor, current.patch))
-        .then_with(|| match (&latest.pre, &current.pre) {
-            (None, Some(_)) => std::cmp::Ordering::Greater,
-            (Some(_), None) => std::cmp::Ordering::Less,
-            (Some(latest), Some(current)) => latest.cmp(current),
-            (None, None) => std::cmp::Ordering::Equal,
+        .then_with(|| match (latest.pre.is_empty(), current.pre.is_empty()) {
+            (true, true) => std::cmp::Ordering::Equal,
+            (true, false) => std::cmp::Ordering::Greater,
+            (false, true) => std::cmp::Ordering::Less,
+            (false, false) => latest.pre.cmp(&current.pre),
         })
 }
 
@@ -527,6 +565,33 @@ fn staged_version(staged: &Path) -> Result<String> {
     Ok(version.to_string())
 }
 
+/// The unpacked binary has to be the release it was unpacked for. One that
+/// reports another version is a stale manifest or the wrong asset, and putting
+/// it in place would leave the user on a version they did not ask for while
+/// the command reported the tag they did.
+fn refuse_version_mismatch(asset: &str, reported: &str, expected: &str) -> Result<()> {
+    if reported != expected {
+        bail!(
+            "{asset} reports version {reported}, not {expected}; leaving the installed binary in \
+             place"
+        );
+    }
+    Ok(())
+}
+
+/// Records the released install beside the binary, so the next update
+/// recognizes it wherever it was put: a custom `OXIDE_INSTALL_DIR`, or a path
+/// `--force` allowed. A Cargo or Homebrew install keeps the location the
+/// detector knows by name, so neither is marked.
+fn record_install(executable: &Path, repo: &str, version: &str) {
+    if let Err(error) = install::record(executable, version, repo) {
+        println!(
+            "Warning: could not record the installation beside {}: {error}",
+            executable.display()
+        );
+    }
+}
+
 /// Puts `staged` in the destination's place. The file is copied next to the
 /// destination first, so the last step is a rename within one filesystem, and a
 /// running Windows binary is moved aside first (Windows refuses to overwrite a
@@ -681,6 +746,62 @@ mod tests {
         // A version that does not parse is offered an update.
         assert!(is_newer("0.26.0", "nightly"));
         assert_eq!(version_of("cli-v1.2.3"), "1.2.3");
+    }
+
+    #[test]
+    fn pre_release_identifiers_are_ordered_the_way_semver_orders_them() {
+        // Build metadata carries no precedence, so the two are one version.
+        assert_eq!(parse_version("1.2.3+build.5"), parse_version("1.2.3"));
+        assert!(!is_newer("1.2.3+build.5", "1.2.3"));
+        assert!(is_newer("1.2.3+build.5", "1.2.3-pre"));
+        // Metadata after a pre-release, and a `-` inside either one.
+        assert_eq!(
+            parse_version("1.2.3-rc.1+build-2"),
+            parse_version("1.2.3-rc.1")
+        );
+        assert_eq!(parse_version("1.2.3+build-2"), parse_version("1.2.3"));
+        // A numeric identifier compares as a number, not as text.
+        assert!(is_newer("1.2.3-rc.10", "1.2.3-rc.2"));
+        assert!(!is_newer("1.2.3-rc.2", "1.2.3-rc.10"));
+        // An alphanumeric identifier outranks a numeric one.
+        assert!(is_newer("1.2.3-rc.alpha", "1.2.3-rc.1"));
+        assert!(!is_newer("1.2.3-rc.1", "1.2.3-rc.alpha"));
+        // More identifiers outrank a version that is a prefix of them.
+        assert!(is_newer("1.2.3-rc.1.1", "1.2.3-rc.1"));
+        assert!(!is_newer("1.2.3-rc.1", "1.2.3-rc.1.1"));
+        // Junk after the core names no version at all, so the update is offered.
+        assert!(parse_version("1.2.3-").is_none());
+        assert!(parse_version("1.2.3-rc..1").is_none());
+    }
+
+    #[test]
+    fn a_stale_asset_is_refused_before_it_replaces_the_binary() {
+        let asset = "Oxide-v0.27.0-linux-x64.tar.gz";
+        refuse_version_mismatch(asset, "0.27.0", "0.27.0").unwrap();
+        let error = refuse_version_mismatch(asset, "0.26.0", "0.27.0").unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("reports version 0.26.0, not 0.27.0"),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn a_replaced_binary_is_recorded_beside_itself() {
+        let dir = temp_dir("record");
+        let executable = dir.join("bin/oxide");
+        fs::create_dir_all(executable.parent().unwrap()).unwrap();
+        assert!(!install::is_released(&executable));
+
+        record_install(&executable, "jaysonwu991/oxide", "0.27.0");
+
+        assert!(install::is_released(&executable));
+        assert_eq!(
+            fs::read_to_string(install::marker(&executable)).unwrap(),
+            "source jaysonwu991/oxide\nversion 0.27.0\n"
+        );
+        fs::remove_dir_all(dir).unwrap();
     }
 
     #[test]

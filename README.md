@@ -542,11 +542,16 @@ belongs to the desktop app or the VS Code extension is never installed as the
 CLI, and verifies the archive's SHA-256 checksum (warning when a release carries
 none). It replaces the running binary only after the unpacked one reports its
 version, so a truncated download or a wrong-platform archive is refused instead
-of taking the place of a working binary. `--version` takes a tag or a bare
-version, with or without a leading `v`, and resolves without asking GitHub
+of taking the place of a working binary — as is an archive that reports a
+version other than the release it was unpacked for, rather than replacing a
+working binary and then claiming the requested tag. `--version` takes a tag or a
+bare version, with or without a leading `v`, and resolves without asking GitHub
 anything. A Homebrew install is left to `brew upgrade oxide`, and a binary that
 is not at a released location — a `target/debug` build — needs `--force` before
-it is replaced. Restart `oxide` to run the new version.
+it is replaced. Both installers leave a `.oxide-install` file beside the binary
+they unpack, and `oxide update` writes the same marker when it replaces one, so
+a custom `OXIDE_INSTALL_DIR` is recognized as a released install rather than
+needing `--force`. Restart `oxide` to run the new version.
 
 Uninstall Oxide and its related files:
 
