@@ -81,6 +81,7 @@ class StubElement {
     this.clientHeight = 10;
     this.selectionStart = 0;
     this.selectionEnd = 0;
+    this.listeners = {};
     this._innerHTML = "";
   }
 
@@ -94,7 +95,7 @@ class StubElement {
   }
 
   getBoundingClientRect() {
-    return { left: 0, top: 0, width: 300, height: 40, bottom: 40 };
+    return { left: 0, top: 0, right: 300, width: 300, height: 40, bottom: 40 };
   }
 
   append(...nodes) {
@@ -121,8 +122,21 @@ class StubElement {
     node.parentNode = parent;
   }
 
-  addEventListener() {}
-  removeEventListener() {}
+  // Listeners are kept so a check can drive the gesture the app answers — a
+  // press that only becomes an action on the release — which a synthesized
+  // `click` cannot stand in for.
+  addEventListener(type, handler) {
+    (this.listeners[type] ||= []).push(handler);
+  }
+  removeEventListener(type, handler) {
+    const list = this.listeners[type];
+    if (list) this.listeners[type] = list.filter((each) => each !== handler);
+  }
+  fire(type, event) {
+    for (const handler of this.listeners[type] || []) handler(event);
+  }
+  setPointerCapture() {}
+  releasePointerCapture() {}
   setAttribute() {}
   getAttribute() {
     return null;
@@ -201,6 +215,18 @@ const elementFor = (id) => {
   if (!elements.has(id)) elements.set(id, new StubElement("div", id));
   return elements.get(id);
 };
+/// A press as WebKit delivers it, and the release that follows it: the controls
+/// the composer reaches for answer the gesture rather than the click, so a check
+/// drives both halves itself.
+const press = (over = {}) => ({
+  button: 0,
+  pointerId: 1,
+  clientX: 10,
+  clientY: 10,
+  preventDefault() {},
+  ...over,
+});
+const nextTick = () => new Promise((resolve) => setTimeout(resolve, 0));
 
 // ---------- the fixture the bridge answers with ----------
 
@@ -455,7 +481,7 @@ vm.runInThisContext(
     " addAttachment, addAttachmentFiles, el, showQuestion, showQuestionStep, questionNext," +
     " answerQuestion, collectAnswers, requestAt, acceptAt, moveAt, closeAt, atKey," +
     " resetTranscript, renderChanges, closeReview, undoChanges," +
-    " loadSessions, openSession, renderProjectMeta, updateSendState, setBusy, setIdle," +
+    " loadSessions, renderProjectsTree, renderSessions, openSession, renderProjectMeta, updateSendState, setBusy, setIdle," +
     " startTool, finishTool, toggleTool };\n",
 );
 
@@ -845,12 +871,17 @@ check(
 check("left `/sessions <id>` to the agent", (await app.runSlashCommand("/session fe0031b1")) === false);
 
 threads = [];
+// With no thread open either: the thread the window is in is listed even when
+// the store has none, so an empty listing is the case with nothing open at all.
+const openThread = app.state.session;
+app.state.session = null;
 await app.runSlashCommand("/sessions");
 check(
   "said so when the project has no threads",
   elementFor("sessions-list").innerHTML.includes("No threads for this project yet"),
   elementFor("sessions-list").innerHTML,
 );
+app.state.session = openThread;
 
 // A store that cannot be read is not the same as a project with no threads, and
 // saying so is the whole point of a listing opened where it was asked.
@@ -929,6 +960,22 @@ check(
 );
 elementFor("image-view-close").onclick();
 check("closed it again", elementFor("image-modal").hidden === true);
+check(
+  "gave the preview an icon to close it with",
+  /id="image-view-close"[^>]*aria-label="Close"[^>]*>✕$/.test(buttonFor("image-view-close")),
+  buttonFor("image-view-close"),
+);
+// The thumbnail is a draggable image, so the press that opens the preview is the
+// one whose click WebKit withholds; the release is what the app answers.
+elementFor("image-modal").hidden = true;
+opener.fire("pointerdown", press());
+opener.fire("pointerup", press());
+check(
+  "opened the preview from the press itself",
+  elementFor("image-view-img").src === shot && elementFor("image-modal").hidden === false,
+  String(elementFor("image-modal").hidden),
+);
+elementFor("image-view-close").onclick();
 
 check("kept a PDF attachment", app.addAttachment("report.pdf", "data:application/pdf;base64,AA") === true);
 const pdf = chips()[1];
@@ -1990,6 +2037,106 @@ check(
     elementFor("stop").hidden === true &&
     elementFor("send").title === "Send (Enter)",
   `${elementFor("send").title} / stop ${elementFor("stop").hidden}`,
+);
+
+// A press can lose its click: the first press on a window that has just come
+// forward is the one that takes focus, and a press that starts a drag loses it
+// the same way. The two controls a half-written message reaches for answer the
+// gesture itself — the press is captured where it began and finishes on the
+// release, which is what a click is — and the click that may still trail the
+// press is the duplicate to drop.
+calls.length = 0;
+elementFor("prompt").value = "keep going";
+app.setIdle();
+app.updateSendState();
+elementFor("send").onclick({ detail: 0 });
+await nextTick();
+const keyboardSend = calls.map(([name]) => name);
+check("sent from a keyboard activation, which has no press", keyboardSend.length > 0, JSON.stringify(calls));
+
+calls.length = 0;
+elementFor("prompt").value = "keep going";
+app.setIdle();
+app.updateSendState();
+elementFor("send").fire("pointerdown", press());
+elementFor("send").fire("pointerup", press());
+await nextTick();
+check(
+  "sent on a press that never became a click",
+  String(calls.map(([name]) => name)) === String(keyboardSend),
+  JSON.stringify(calls),
+);
+const sentCalls = calls.length;
+elementFor("send").onclick({ detail: 1 });
+await nextTick();
+check("dropped the click that trailed the press", calls.length === sentCalls, JSON.stringify(calls));
+
+calls.length = 0;
+elementFor("prompt").value = "not yet";
+app.setIdle();
+app.updateSendState();
+elementFor("send").fire("pointerdown", press());
+elementFor("send").fire("pointerup", press({ clientX: 400 }));
+await nextTick();
+check("left a press that came up off the button alone", calls.length === 0, JSON.stringify(calls));
+app.setIdle();
+elementFor("send").onclick({ detail: 1 });
+await nextTick();
+check("and still acted on the click after it", calls.length > 0, JSON.stringify(calls));
+
+console.log("a thread that is not stored yet");
+// `all_sessions` lists what is on disk, and a thread that was just started has
+// not written its first entry: every listing — the sidebar's tree, its count for
+// the project and the sessions list — stands it in until the store catches up.
+app.setIdle();
+app.state.projects = [{ name: "oxide", path: "/tmp/oxide", registered: false }];
+app.state.project = "/tmp/oxide";
+app.state.projectName = "oxide";
+app.state.sessions = [
+  {
+    id: "1111111111111111",
+    name: "An older thread",
+    cwd: "/tmp/oxide",
+    created_at: 1,
+    modified_at: 2,
+    message_count: 4,
+    preview: "",
+    path: "/tmp/sessions/older.jsonl",
+  },
+];
+app.state.session = "6f3031b2beef";
+app.state.runTitle = "Fix the sidebar";
+await app.renderProjectsTree();
+const tree = elementFor("projects-tree").outline();
+check(
+  "listed the thread the window is in beside the stored ones",
+  tree.includes("Fix the sidebar") && tree.includes("An older thread"),
+  tree,
+);
+const group = elementFor("projects-tree").children[0];
+check(
+  "counted it for its project",
+  group?.children[0]?.children[2]?.textContent === 2,
+  String(group?.children[0]?.children[2]?.textContent),
+);
+check(
+  "marked it as the thread on screen",
+  String(group?.children[1]?.children[0]?.className).includes("active"),
+  String(group?.children[1]?.children[0]?.className),
+);
+app.renderSessions();
+const sessionRows = elementFor("sessions-list").outline();
+check(
+  "listed it in the project's session list too",
+  sessionRows.includes("Fix the sidebar") && sessionRows.includes("An older thread"),
+  sessionRows,
+);
+app.state.sessions.unshift({ ...app.state.sessions[0], id: "6f3031b2beef", name: "Fix the sidebar" });
+await app.renderProjectsTree();
+check(
+  "stopped standing in once the store listed it",
+  elementFor("projects-tree").outline().split("Fix the sidebar").length - 1 === 1,
+  elementFor("projects-tree").outline(),
 );
 
 console.log(failures.length ? `\n${failures.length} failed` : "\nall checks passed");

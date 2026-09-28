@@ -107,9 +107,36 @@ function sessionLabel(session) {
   return session.name || session.preview || session.id.slice(0, 8);
 }
 
+/// The threads every listing reads — the sidebar's tree and its per-project
+/// children, the header and the sessions list: what the store returned, with the
+/// thread this window is in standing in for itself until the store has it.
+/// `all_sessions` lists what is already on disk, and a thread that was just
+/// started has not written its first entry yet, so a new thread used to be
+/// missing from every one of those lists until its first turn ended — the one
+/// thread the reader was looking at. The entry drops out again as soon as the
+/// store lists that id, since a row is keyed by it.
+function listedSessions() {
+  const listed = state.sessions || [];
+  if (!state.session || !state.project) return listed;
+  if (listed.some((session) => session.id === state.session)) return listed;
+  return [
+    {
+      id: state.session,
+      name: state.runTitle || null,
+      cwd: state.project,
+      created_at: Date.now(),
+      modified_at: Date.now(),
+      message_count: 0,
+      preview: "",
+      path: "",
+    },
+    ...listed,
+  ];
+}
+
 function sessionById(id) {
   if (!id) return null;
-  return (state.sessions || []).find((session) => session.id === id) || null;
+  return listedSessions().find((session) => session.id === id) || null;
 }
 
 /// The header names the thread on screen — the one that was resumed, or the one
@@ -890,6 +917,56 @@ async function addAttachmentFiles(files) {
   }
 }
 
+/// A press that never became a click: the first press on a window that has just
+/// come forward can reach the page as the one that takes focus, and a press that
+/// starts a drag — a pasted thumbnail is a draggable image — loses its click the
+/// same way. The controls a reader reaches for with a message half written are
+/// the ones this is worst for, so they answer the gesture itself: the press is
+/// captured where it began and finishes on the release, which is what a click is,
+/// minus the requirement that the same element still be under the pointer by
+/// then. A press dragged off the control does nothing, and a keyboard activation
+/// — a click with no press behind it — still runs the action once.
+function pressActivated(node, run) {
+  let pressed = false;
+  let answered = false;
+  node.onclick = (event) => {
+    if (!answered || event.detail === 0) run(event);
+    answered = false;
+  };
+  node.addEventListener("pointerdown", (event) => {
+    if (event.button) return;
+    pressed = true;
+    answered = false;
+    node.setPointerCapture?.(event.pointerId);
+    // The drag the press would start is what took the click with it.
+    event.preventDefault();
+  });
+  node.addEventListener("pointerup", (event) => {
+    if (!pressed) return;
+    pressed = false;
+    if (!insideBox(node, event)) return;
+    // The click WebKit still sends after this one has been answered is the
+    // duplicate that `onclick` drops.
+    answered = true;
+    run(event);
+  });
+  node.addEventListener("pointercancel", () => {
+    pressed = false;
+  });
+}
+
+/// Whether a pointer event happened inside `node`: a captured press that came up
+/// somewhere else is not a click and must not act.
+function insideBox(node, event) {
+  const box = node.getBoundingClientRect();
+  return (
+    event.clientX >= box.left &&
+    event.clientX <= box.right &&
+    event.clientY >= box.top &&
+    event.clientY <= box.bottom
+  );
+}
+
 function renderAttachments() {
   const box = el("attachments");
   box.innerHTML = "";
@@ -954,7 +1031,7 @@ function openableImage(dataUrl, name) {
   img.src = dataUrl;
   img.alt = name || "attachment";
   button.appendChild(img);
-  button.onclick = () => openImage(dataUrl);
+  pressActivated(button, () => openImage(dataUrl));
   return button;
 }
 
@@ -2355,7 +2432,7 @@ async function openSessions() {
 function renderSessions() {
   const box = el("sessions-list");
   box.innerHTML = "";
-  const threads = (state.sessions || []).filter((session) => session.cwd === state.project);
+  const threads = listedSessions().filter((session) => session.cwd === state.project);
   if (!threads.length) {
     box.innerHTML =
       '<div class="dialog-empty">No threads for this project yet. Send a message to start one.</div>';
@@ -3090,8 +3167,8 @@ function init() {
   el("help").onclick = toggleHelp;
   el("connect").onclick = openConnect;
 
-  el("send").onclick = () => send(false);
-  el("stop").onclick = stop;
+  pressActivated(el("send"), () => send(false));
+  pressActivated(el("stop"), stop);
   el("approval-once").onclick = () => answerApproval("once");
   el("approval-always").onclick = () => answerApproval("always");
   el("approval-deny").onclick = () => answerApproval("deny");
@@ -3266,7 +3343,7 @@ init();
 function orderedSessions() {
   const byProject = new Map();
   for (const project of state.projects) byProject.set(project.path, []);
-  for (const session of state.sessions || []) {
+  for (const session of listedSessions()) {
     const list = byProject.get(session.cwd);
     if (list) list.push(session);
   }
@@ -3292,11 +3369,9 @@ async function renderProjectsTree() {
     sessionsByProject[project.path] = [];
   }
   
-  if (state.sessions && state.sessions.length) {
-    for (const session of state.sessions) {
-      if (sessionsByProject[session.cwd]) {
-        sessionsByProject[session.cwd].push(session);
-      }
+  for (const session of listedSessions()) {
+    if (sessionsByProject[session.cwd]) {
+      sessionsByProject[session.cwd].push(session);
     }
   }
   

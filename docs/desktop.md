@@ -61,7 +61,10 @@ The window follows a Codex-style layout:
   shows its `⌘1`…`⌘9` shortcut. The active project and the active thread both
   carry the accent bar, so which one is on screen reads the same in either
   list, and a thread is listed — under the summarized title of its first
-  message — as soon as its turn starts rather than once it ends. The **+ New**
+  message — as soon as its turn starts rather than once it ends: the thread the
+  window is in stands in for itself in the tree, in that project's session
+  count and in the `/sessions` list until the store has written it, keyed by
+  the same id so it is never listed twice. The **+ New**
   button in the Projects header
   opens the **Create project** dialog: pick one or more source folders and the
   **Project name** defaults to the first folder's basename (still editable), so
@@ -71,10 +74,13 @@ The window follows a Codex-style layout:
   the listing has it. A new task carries no placeholder, and the provider is
   not repeated here because the composer's model chip already names it; the
   right side says only what has to be acted on (`no API key`, `project
-  resources off`). The window is created with `acceptFirstMouse`, and the window
-  under the pointer is made key before a press is dispatched, so the first click
-  after the app loses focus is the click the user meant rather than one spent
-  focusing the window.
+  resources off`). The window is created with `acceptFirstMouse`, which reaches
+  the webview (tauri's window config maps onto `WebviewAttributes`), and the
+  window under the pointer is made key ahead of the dispatch when the app is not
+  active, so the first click after the app loses focus is the click the user
+  meant rather than one spent focusing the window. A press that still arrives as
+  that focus press, with no click behind it, is answered by the controls a
+  half-written message reaches for (see **Composer**).
 - **Conversation** — a centered 760px column. User messages are right-aligned
   bubbles; assistant replies render Markdown and links open in the system
   browser (see [Rendering](#rendering)). Tool calls are compact cards
@@ -84,10 +90,17 @@ The window follows a Codex-style layout:
 - **Composer** — a floating rounded box with the attach, model, and reasoning
   chips on the left and one action on the right, which swaps rather than
   sitting beside a second button: **Stop** while a turn runs and there is
-  nothing to say, **Send**/**Steer** the moment there is. The status and
+  nothing to say, **Send**/**Steer** the moment there is. **Send**/**Stop** and
+  an attachment thumbnail answer the press itself — the press is captured where
+  it began and finishes on the release, as a click does but without needing the
+  same element under the pointer by then — because a first press can arrive as
+  the one that takes focus and a press on a thumbnail starts the drag WebKit
+  withholds the click for; a press dragged off the control sends nothing, and a
+  keyboard activation still runs it once. The status and
   token/cost usage sit just below it. The 📎 button (or a pasted clipboard
   image) attaches images/PDFs, shown above the input as thumbnails that open a
-  full preview when clicked (or focused and opened with Enter/Space) and can be
+  full preview when clicked (or focused and opened with Enter/Space) — the
+  preview is closed by the ✕ icon button its siblings carry — and can be
   removed before sending; a message queued while busy carries the same
   attachments, and reopening a stored thread restores their thumbnails. Pasted and picked images are
   downscaled to a 1568px long edge in the webview before they are sent, and an
