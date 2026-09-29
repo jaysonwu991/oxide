@@ -205,12 +205,18 @@ counted in those stored messages, so reopening a long thread shows several of it
 turns rather than its last reply only. A replayed card carries the change its own
 arguments describe — an `edit`'s replacements, a `patch`'s diff — rather than one
 built against the file as it stands, which is no longer the state the call found;
-a `write` names only what it wrote, so its state is nowhere on disk and its card
-shows the call and its result instead. No replayed card reads as a failure
-either, since the store does not record whether the call applied, so the result
-text is what says what happened. The footer's usage line
-and context gauge come from the same answer's usage totals. `/session <id>` is
-left alone — an argument is the agent's, matching `/mcp list`.
+an `edit`'s replacements are previewed one block each, separated by the same `⋯`
+the preview draws between hunks, since joining them into one pair of sides could
+align a line of one replacement with a line of the next, or cancel the two out;
+and a `write` names only what it wrote, so its state is nowhere on disk and its
+card shows the call and its result instead. A replayed card claims no state at
+all: the store does not record whether the call applied, so a call that failed is
+stored exactly like one that landed, and the card marks it as unrecorded (`•`,
+with its own tooltip) instead of the green `✔` of a landed call or the red `✖` of
+a failed one — the result text it replayed is what says what happened. The
+footer's usage line and context gauge come from the same answer's usage totals.
+`/session <id>` is left alone — an argument is the agent's, matching `/mcp
+list`.
 
 The listing is unchanged from the native picker it replaces (`core/sessions.ts`
 parses `oxide sessions list`), so the panel and the terminal agree on which
@@ -714,10 +720,12 @@ and elapsed time while running, a short per-tool output preview that expands on
 click, and a colored diff for `write` / `edit` / `patch`. A card whose output was
 cut carries the words offering the rest — `Show 36 more lines` — as a second
 handle under the preview it kept, which opens and closes the card the same way
-the header does and keeps that count off the body it stands for; the header's
-caret is drawn only while there is something behind it, so a call that already
-shows everything it has reads as a plain result rather than as a fold that does
-nothing. Reasoning renders as a muted thinking block that
+the header does and keeps that count off the body it stands for. The header is
+that handle only while something is behind it: a card with a rest to show is a
+control — a caret pointing at the output, a tab stop, and the state a screen
+reader asks a fold for — while a call that already shows everything it has is
+plain text, with no caret, no tab stop and no button that reveals nothing when
+it is pressed. Reasoning renders as a muted thinking block that
 `oxide.showThinking` can hide.
 
 Monospace output — a tool's body, code blocks, the diff — is set at

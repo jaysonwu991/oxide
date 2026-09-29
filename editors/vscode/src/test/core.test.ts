@@ -460,6 +460,30 @@ describe("tool diff", () => {
     assert.equal(change.diff, [diffRow("-", "1", "", "b"), diffRow("+", "", "1", "x")].join("\n"));
   });
 
+  it("keeps a call's replacements apart instead of aligning them into each other", () => {
+    const change = argumentDiff("edit", {
+      path: "a.rs",
+      edits: [
+        { oldText: "a", newText: "a\nb" },
+        { oldText: "b", newText: "" },
+      ],
+    });
+    // Joined into one pair of sides these two replacements cancel out — the `b`
+    // one block adds is the `b` the next one removes — although two places in
+    // the file changed. Each block is previewed on its own instead, at one
+    // column width, with the `⋯` row the preview uses for what it does not show.
+    assert.ok(change);
+    assert.equal(
+      change.diff,
+      [
+        diffRow(" ", "1", "1", "a"),
+        diffRow("+", "", "2", "b"),
+        diffRow(" ", "", "", "⋯"),
+        diffRow("-", "1", "", "b"),
+      ].join("\n"),
+    );
+  });
+
   it("previews a patch and its own diff, for a replayed card", () => {
     const patch = "--- a/a.rs\n+++ b/a.rs\n@@ -1 +1 @@\n-old\n+new";
     assert.deepEqual(argumentDiff("patch", { path: "a.rs", diff: patch }), {

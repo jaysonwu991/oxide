@@ -91,6 +91,9 @@ export interface ToolItem {
   diff: string | null;
   running: boolean;
   isError: boolean;
+  /// A card replayed out of a stored thread: the thread does not record how the
+  /// call ended, so its state is claimed by neither `isError` nor a success.
+  unknown?: boolean;
 }
 
 export interface NoticeItem {
@@ -524,10 +527,11 @@ export class Transcript {
   /// A tool call pushed whole, as a stored thread records it: finished, with the
   /// result the thread stored beside it. It carries the diff its own arguments
   /// describe — the replacements an `edit` made, a `patch`'s own diff — rather
-  /// than one built against the file as it stands, and it never reads as a
-  /// failure: the store records neither the file the call found nor whether it
-  /// applied, so the card shows the call and its result and lets that result say
-  /// what happened.
+  /// than one built against the file as it stands.
+  ///
+  /// Its state is left unknown: the store records neither the file the call found
+  /// nor whether the tool applied, so a call that failed reads exactly like one
+  /// that landed, and the card claims neither.
   private pushTool(name: string, args: string, output: string): void {
     this.closeAssistant();
     this.closeThinking();
@@ -540,6 +544,7 @@ export class Transcript {
       diff: argumentDiff(name, parseArgs(args))?.diff ?? null,
       running: false,
       isError: false,
+      unknown: true,
     };
     this.items.push(item);
   }

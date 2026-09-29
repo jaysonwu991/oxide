@@ -531,11 +531,8 @@
     wrap.className = "tool";
     const head = document.createElement("div");
     head.className = "thead";
-    // A real button control: focusable and keyboard-activatable, so the
-    // collapsible tool output is reachable without a mouse.
-    head.setAttribute("role", "button");
-    head.tabIndex = 0;
-    head.setAttribute("aria-expanded", "false");
+    // Whether the header is a control is decided per paint, once the card knows
+    // what it holds: only a card with something behind it is a button.
     const name = document.createElement("span");
     name.className = "tname";
     name.textContent = String(item.name || "tool");
@@ -611,17 +608,38 @@
     if (follow) el.scrollTop = el.scrollHeight;
   }
 
+  /// Gives the header the fold's own semantics, or takes them away. A header is
+  /// a button — a tab stop, a fold handle, something a screen reader announces —
+  /// only while the card has a rest behind it: a card already showing everything
+  /// it has is plain text, so a press on it would reveal nothing.
+  function setFold(entry, foldable) {
+    entry.el.classList.toggle("foldable", foldable);
+    entry.head.tabIndex = foldable ? 0 : -1;
+    if (foldable) {
+      entry.head.setAttribute("role", "button");
+      entry.head.setAttribute("aria-expanded", String(Boolean(entry.expanded)));
+    } else {
+      entry.head.removeAttribute("role");
+      entry.head.removeAttribute("aria-expanded");
+    }
+  }
+
   /// Paints a tool card from its item. A call that changed a file reads as one
   /// line — the path, and how many lines moved — with its own diff kept for the
   /// reader who clicks the card, since the turn's changes are listed together by
   /// the change card at the end of the run. `running` cards show the live output.
   function paintTool(entry) {
     const item = entry.item;
-    entry.el.classList.toggle("running", item.running);
-    entry.el.classList.toggle("done", !item.running && !item.isError);
-    entry.el.classList.toggle("error", !item.running && item.isError);
+    entry.el.classList.toggle("running", Boolean(item.running));
+    // Each state is named as a boolean: `classList.toggle` with an absent force
+    // is a plain toggle, so an item that omits one would otherwise flip a class
+    // on (`error`, for a replayed card, whose `isError` is not set).
+    entry.el.classList.toggle("done", Boolean(!item.running && !item.isError && !item.unknown));
+    entry.el.classList.toggle("error", Boolean(!item.running && item.isError));
+    entry.el.classList.toggle("unknown", Boolean(!item.running && item.unknown));
     entry.el.classList.toggle("expanded", Boolean(entry.expanded));
     if (item.running) {
+      setFold(entry, false);
       const elapsed = entry.started ? Date.now() - entry.started : 0;
       entry.state.innerHTML = `<span class="spinner"></span>${elapsed > 1000 ? formatDuration(elapsed) : ""}`;
       setOutput(entry.pre, item.output, true);
@@ -629,7 +647,12 @@
       return;
     }
     const counts = item.diff ? diffCounts(item.diff) : "";
-    entry.state.textContent = `${item.isError ? "✖" : "✔"}${counts ? ` ${counts}` : ""}`;
+    // A call replayed out of a stored thread has no state to paint: the store
+    // did not record whether it landed, so the card marks the call as unrecorded
+    // rather than claiming the success (`✔`) or the failure (`✖`) it cannot know.
+    const mark = item.unknown ? "•" : item.isError ? "✖" : "✔";
+    entry.state.textContent = `${mark}${counts ? ` ${counts}` : ""}`;
+    entry.state.title = item.unknown ? "Resumed thread: how this call ended was not recorded" : "";
     entry.inline = Boolean(item.diff);
     if (item.diff && !entry.diffEl) {
       entry.diffEl = document.createElement("div");
@@ -663,14 +686,16 @@
         preview.more === 1 ? "" : "s"
       }`;
     }
-    // The header's caret is only an offer while something is behind it: a call
-    // that already shows everything it has reads as plain text, so it cannot
-    // look like a fold that does nothing.
-    entry.el.classList.toggle("foldable", Boolean(entry.inline || entry.folded));
+    // The header is the card's fold handle only while something is behind it:
+    // anything else is plain text, with no caret, no tab stop and no button.
+    setFold(entry, Boolean(entry.inline || entry.folded));
   }
 
   function toggleTool(entry) {
     if (!entry.item || entry.item.running) return;
+    // A card showing everything it has has no second state to move to, so a
+    // press on it does nothing rather than opening a fold with nothing in it.
+    if (!entry.inline && !entry.folded) return;
     entry.expanded = !entry.expanded;
     const expanded = String(entry.expanded);
     if (entry.head) entry.head.setAttribute("aria-expanded", expanded);

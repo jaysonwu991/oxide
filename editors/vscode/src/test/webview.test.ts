@@ -172,6 +172,12 @@ class StubElement {
     this.attributes[name] = value;
   }
 
+  /// What `removeAttribute` leaves behind: no attribute at all, so a card that
+  /// turned its header back into plain text reports no role and no state.
+  removeAttribute(name: string): void {
+    delete this.attributes[name];
+  }
+
   /// A textarea's value: writing it moves the caret to the end, as it does in
   /// the DOM, which is where the completion asks for it.
   get value(): string {
@@ -2674,6 +2680,10 @@ describe("webview tool card", () => {
     const card = find(transcript, "tool")!;
     const diff = card.children[card.children.length - 1]!;
     const head = card.querySelector(".thead")!;
+    // A card with a diff has one line to unfold, so its header is the control
+    // that opens it.
+    assert.equal(head.getAttribute("role"), "button");
+    assert.equal(head.tabIndex, 0);
 
     transcript.fire("click", { target: head });
     assert.equal(diff.hidden, false, "the diff is what the card was asked for");
@@ -2802,14 +2812,38 @@ describe("webview tool card", () => {
     });
 
     const card = find(transcript, "tool")!;
+    const head = card.querySelector(".thead")!;
     assert.equal(card.querySelector(".tbody")!.textContent, " M src/main.rs");
     assert.equal(card.querySelector(".thint")!.hidden, true);
-    // Nothing behind the header, so the header offers no caret that moves and
-    // does nothing when it is clicked.
+    // Nothing behind the header, so it is not a control at all: no caret, no tab
+    // stop, and no button for a screen reader to be told about.
     assert.equal(card.classList.contains("foldable"), false);
-    transcript.fire("click", { target: card.querySelector(".thead")! });
+    assert.equal(head.getAttribute("role"), null);
+    assert.equal(head.getAttribute("aria-expanded"), null);
+    assert.equal(head.tabIndex, -1);
+    transcript.fire("click", { target: head });
     assert.equal(card.classList.contains("foldable"), false);
+    assert.equal(card.classList.contains("expanded"), false, "nothing to open");
     assert.equal(card.querySelector(".tbody")!.textContent, " M src/main.rs");
+  });
+
+  it("marks a card replayed from a stored thread as unrecorded, not successful", () => {
+    const { byId, send } = loadRenderer();
+    send(stateMessage());
+    const transcript = byId.get("transcript")!;
+    send(editCard({ unknown: true, output: "oldText not found in src/main.rs" }));
+
+    const card = find(transcript, "tool")!;
+    const state = card.querySelector(".tstate")!;
+    // A stored thread records neither the file the call found nor whether it
+    // applied, so the card claims no state: not the green of one that landed.
+    assert.equal(state.textContent, "• +2 −1");
+    assert.equal(card.classList.contains("done"), false);
+    assert.equal(card.classList.contains("error"), false, "a failure reads the same as a success");
+    assert.equal(card.classList.contains("unknown"), true);
+    assert.match(state.title, /not recorded/);
+    // The change it asked for is still what the card unfolds.
+    assert.equal(card.classList.contains("foldable"), true);
   });
 });
 

@@ -687,15 +687,27 @@ pre,
   border-left-color: var(--vscode-charts-green, #89d185);
 }
 
-/* The header is the card's fold handle, and says so: the caret turns to point
-   at the output it opens, and the row itself takes the pointer. */
+/* A card replayed out of a stored thread: the run that made it did not record
+   whether the call applied, so its edge claims no state at all — not the blue of
+   one still running, nor the green of one that landed. */
+.tool.unknown {
+  border-left-color: var(--vscode-panel-border, rgba(128, 128, 128, 0.5));
+}
+
+/* The header is the card's fold handle, and says so — but only while the card
+   has something behind it: the caret turns to point at the output it opens and
+   the row itself takes the pointer, and a card showing everything it has keeps
+   neither. */
 .thead {
   display: flex;
   align-items: baseline;
   gap: 6px;
   padding: 5px 8px;
-  cursor: pointer;
   overflow: hidden;
+}
+
+.tool.foldable .thead {
+  cursor: pointer;
 }
 
 .thead::before {
@@ -716,11 +728,11 @@ pre,
   transform: rotate(90deg);
 }
 
-.thead:hover {
+.tool.foldable .thead:hover {
   background: var(--vscode-toolbar-hoverBackground, rgba(128, 128, 128, 0.12));
 }
 
-.thead:hover .targ {
+.tool.foldable .thead:hover .targ {
   color: var(--vscode-foreground);
 }
 

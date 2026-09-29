@@ -555,6 +555,7 @@ describe("Transcript", () => {
         diff: null,
         running: false,
         isError: false,
+        unknown: true,
       },
       { id: 3, kind: "assistant", text: "it polls the clock" },
     ]);
@@ -584,6 +585,11 @@ describe("Transcript", () => {
     for (const item of [edit, write]) {
       assert.equal(item.running, false);
       assert.equal(item.isError, false, "the store does not say whether it applied");
+      assert.equal(
+        item.unknown,
+        true,
+        "a replayed call claims no state: a failed call stores what a landed one does",
+      );
     }
   });
 
