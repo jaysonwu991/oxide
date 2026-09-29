@@ -20,7 +20,7 @@ import {
   type QuestionAnswer,
 } from "./questions";
 import type { AtSuggestion } from "./at";
-import { changesTitle, changesTotals, changeRows, changesMore, turnChanges, type ChangeRow, type ChangesMore } from "./changes";
+import { changesTitle, changesTotals, changeRows, changesMore, turnChanges, mergeChanges, type ChangeRow, type ChangesMore, type ChangedFile } from "./changes";
 import type { DialogState } from "./dialogs";
 import type { FooterState } from "./footer";
 import type { CommandRow } from "./palette";
@@ -184,6 +184,9 @@ export interface ChangesItem {
   /// offering the same Undo again.
   undone: boolean;
   rows: ChangeRow[];
+  /// The raw listing behind `rows`, kept so a later turn can merge its files
+  /// into this card's and repaint one cumulative listing.
+  files: ChangedFile[];
 }
 
 export type ToolPatch = Partial<
@@ -648,21 +651,33 @@ export class Transcript {
         if (!changes) return [];
         this.closeAssistant();
         this.closeThinking();
+        // A card lists the whole session, not only its own turn, so a later
+        // turn merges its files into the newest card before that card is drawn.
+        const previous = this.items
+          .filter((entry): entry is ChangesItem => entry.kind === "changes")
+          .at(-1);
+        const merged = previous
+          ? mergeChanges(
+              { project: previous.project, baseline: previous.baseline, after: previous.after, files: previous.files },
+              changes,
+            )
+          : changes;
         const item: ChangesItem = {
           id: this.nextId++,
           kind: "changes",
-          title: changesTitle(changes.files.length),
-          totals: changesTotals(changes.added, changes.removed),
-          baseline: changes.baseline,
-          project: changes.project,
-          after: changes.after,
-          more: changesMore(changes.files.length),
+          title: changesTitle(merged.files.length),
+          totals: changesTotals(merged.added, merged.removed),
+          baseline: merged.baseline,
+          project: merged.project,
+          after: merged.after,
+          more: changesMore(merged.files.length),
           // Only the newest turn can be put back: an earlier card's restore
           // would take this one's work with it, so this card takes the Undo
           // away from every card before it.
           undoable: true,
           undone: false,
-          rows: changeRows(changes.files),
+          rows: changeRows(merged.files),
+          files: merged.files,
         };
         const messages: ViewMessage[] = [];
         for (const entry of this.items) {
@@ -807,22 +822,32 @@ export class Transcript {
     switch (str(delta.type)) {
       case "thinking_delta": {
         if (!text) return [];
-        // A delta that opens a block has to push it before appending, or the
-        // view has no entry for the id and drops the text.
+        // A delta that opens a block has to push an empty block before
+        // appending, or the view has no entry for the id and drops the text.
+        // The pushed item must not carry the delta, because the `append` that
+        // follows it already does: sending both would paint the first fragment
+        // twice.
         const created = this.currentThinking === null;
         const item = this.ensureThinking();
         item.text += text;
-        const messages: ViewMessage[] = created ? [{ k: "push", item }] : [];
+        const messages: ViewMessage[] = created
+          ? [{ k: "push", item: { ...item, text: "" } }]
+          : [];
         messages.push({ k: "append", id: item.id, field: "text", delta: text });
         return messages;
       }
       case "text_delta": {
         if (!text) return [];
+        // The same empty-push rule as the reasoning delta: the `push` only
+        // creates the bubble, and the `append` carries the first fragment, so
+        // the fragment is painted once rather than by both messages.
         const created = this.currentAssistant === null;
         const item = this.ensureAssistant();
         item.text += text;
         this.status = "Writing…";
-        const messages: ViewMessage[] = created ? [{ k: "push", item }] : [];
+        const messages: ViewMessage[] = created
+          ? [{ k: "push", item: { ...item, text: "" } }]
+          : [];
         messages.push({ k: "append", id: item.id, field: "text", delta: text });
         return messages;
       }

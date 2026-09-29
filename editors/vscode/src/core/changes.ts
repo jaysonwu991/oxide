@@ -198,6 +198,29 @@ export function turnChanges(event: WireEvent): TurnChanges | null {
   );
 }
 
+/// Merges a later turn's listing into the session's running card, since a card
+/// shows the whole session rather than only the newest turn. The first turn's
+/// baseline is what every diff and the card's Undo use; the newest turn's
+/// `after` is the state that Undo checks is still on disk. Files are the union
+/// across turns, a file changed again taking the later turn's status and counts.
+export function mergeChanges(
+  previous: Pick<TurnChanges, "project" | "baseline" | "after" | "files">,
+  next: TurnChanges,
+): TurnChanges {
+  const files = new Map<string, ChangedFile>();
+  for (const file of previous.files) files.set(file.path, file);
+  for (const file of next.files) files.set(file.path, file);
+  const merged = [...files.values()];
+  return {
+    project: next.project || previous.project,
+    baseline: previous.baseline || next.baseline,
+    after: next.after,
+    files: merged,
+    added: merged.reduce((total, file) => total + file.added, 0),
+    removed: merged.reduce((total, file) => total + file.removed, 0),
+  };
+}
+
 /// The listing inside a payload, with a baseline to diff against and the folder
 /// it belongs to. `null` when the payload names no files: a turn that only read
 /// files draws no card.
