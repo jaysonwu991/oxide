@@ -36,6 +36,9 @@ pub struct LlmClient {
     /// OpenAI, `x-session-id` for gateways). `None` disables the hint, as for
     /// one-off catalog and compaction requests.
     session_id: Option<String>,
+    /// Recognized image text, so retries and later agent steps do not re-run
+    /// the OCR script for the same payload.
+    image_text_cache: crate::image_recognition::ImageTextCache,
 }
 
 /// The provider finished a turn without an answer: it either emitted nothing at
@@ -136,6 +139,7 @@ impl LlmClient {
             http,
             config,
             session_id: None,
+            image_text_cache: crate::image_recognition::ImageTextCache::default(),
         }
     }
 
@@ -353,7 +357,32 @@ impl LlmClient {
         let url = format!("{}/chat/completions", self.config.base_url);
         let mut config = self.config.clone();
         config.max_tokens = max_tokens;
-        let request = openai_request(&config, messages, tools, self.session_id.as_deref());
+        // A text-only model cannot see image parts, so turn each attached image
+        // into its recognized text before the request is built. The session log
+        // keeps the image; only this outgoing copy is rewritten.
+        let converted_messages;
+        let outgoing: &[Message] = if config.supports_images()
+            || !crate::image_recognition::messages_have_images(messages)
+        {
+            messages
+        } else {
+            converted_messages = tokio::task::spawn_blocking({
+                let messages = messages.to_vec();
+                let script = config.image_script().map(str::to_string);
+                let cache = self.image_text_cache.clone();
+                move || {
+                    crate::image_recognition::messages_with_image_text(
+                        &messages,
+                        script.as_deref(),
+                        &cache,
+                    )
+                }
+            })
+            .await
+            .unwrap_or_else(|_| messages.to_vec());
+            &converted_messages
+        };
+        let request = openai_request(&config, outgoing, tools, self.session_id.as_deref());
 
         let mut builder = self.authenticate_openai(self.http.post(&url))?;
         if let Some(session) = self.session_id.as_deref() {

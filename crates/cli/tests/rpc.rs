@@ -172,6 +172,24 @@ impl Drop for TempDir {
 }
 
 fn start(config_home: &PathBuf, cwd: &PathBuf, base_url: &str, ask: bool) -> Rpc {
+    start_as(
+        config_home,
+        cwd,
+        base_url,
+        ask,
+        "deepseek",
+        "deepseek-flash",
+    )
+}
+
+fn start_as(
+    config_home: &PathBuf,
+    cwd: &PathBuf,
+    base_url: &str,
+    ask: bool,
+    provider: &str,
+    model: &str,
+) -> Rpc {
     // A private config directory keeps the test away from the developer's own
     // credentials, settings and MCP servers, whatever platform this runs on.
     let mut command = Command::new(env!("CARGO_BIN_EXE_oxide"));
@@ -189,8 +207,8 @@ fn start(config_home: &PathBuf, cwd: &PathBuf, base_url: &str, ask: bool) -> Rpc
         .env("XDG_CONFIG_HOME", config_home)
         .env("APPDATA", config_home)
         .env("LOCALAPPDATA", config_home)
-        .env("OXIDE_PROVIDER", "deepseek")
-        .env("OXIDE_MODEL", "deepseek-flash")
+        .env("OXIDE_PROVIDER", provider)
+        .env("OXIDE_MODEL", model)
         .env("OXIDE_BASE_URL", base_url)
         .env("OXIDE_API_KEY", "sk-test")
         .env_remove("OXIDE_SETTINGS_FILE")
@@ -408,7 +426,16 @@ fn an_rpc_prompt_carries_its_images() {
     std::fs::write(&shot, PNG_1X1).expect("a writable attachment");
     let (base_url, server) = serve(vec![answer_body("Seen it.")]);
 
-    let mut rpc = start(config_home.path(), project.path(), &base_url, true);
+    // A vision-capable provider keeps the image native; the text-only
+    // DeepSeek conversion is covered by the core's own tests.
+    let mut rpc = start_as(
+        config_home.path(),
+        project.path(),
+        &base_url,
+        true,
+        "openai",
+        "gpt-4o-mini",
+    );
     rpc.send(json!({
         "type": "prompt",
         "message": "what is in this screenshot?",
