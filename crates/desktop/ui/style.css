@@ -354,6 +354,7 @@ body.resizing { cursor: col-resize; user-select: none; }
 /* ---------- turn changes ---------- */
 
 .changes {
+  flex: none;
   max-width: 760px;
   width: 100%;
   margin: 10px auto 0;
@@ -365,6 +366,18 @@ body.resizing { cursor: col-resize; user-select: none; }
 }
 .changes-head { display: flex; align-items: center; gap: 8px; padding: 9px 12px; cursor: pointer; }
 .changes-head:hover { background: var(--panel-2); }
+.changes-icon {
+  flex: none;
+  width: 26px;
+  height: 26px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--panel-2);
+  color: var(--dim);
+}
 .changes-caret { flex: none; color: var(--faint); font-size: 10px; transition: transform 0.1s; }
 .changes.collapsed .changes-caret { transform: rotate(-90deg); }
 .changes-title { flex: none; color: var(--text); font-weight: 500; }

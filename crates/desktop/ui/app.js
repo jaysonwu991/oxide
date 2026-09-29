@@ -1467,6 +1467,13 @@ function changesCard(card) {
 
   const head = document.createElement("div");
   head.className = "changes-head";
+  const icon = document.createElement("span");
+  icon.className = "changes-icon";
+  icon.setAttribute("aria-hidden", "true");
+  icon.innerHTML =
+    '<svg viewBox="0 0 24 24" width="14" height="14" aria-hidden="true">' +
+    '<path d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8z" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/>' +
+    '<path d="M14 3v5h5" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>';
   const caret = document.createElement("span");
   caret.className = "changes-caret";
   caret.textContent = "▾";
@@ -1496,7 +1503,7 @@ function changesCard(card) {
     event.stopPropagation();
     undoChanges(card);
   };
-  actions.append(review, undo);
+  actions.append(undo, review);
 
   const list = document.createElement("div");
   list.className = "changes-list";
@@ -1504,7 +1511,7 @@ function changesCard(card) {
   more.type = "button";
   more.className = "changes-more";
 
-  head.append(caret, title, total, note, actions);
+  head.append(icon, caret, title, total, note, actions);
   head.onclick = () => {
     card.collapsed = !card.collapsed;
     paintChanges(card);
@@ -1545,7 +1552,7 @@ function paintChanges(card) {
   for (const entry of card.rows) entry.row.hidden = !visible.has(entry);
   const hidden = count - shown.length;
   card.more.hidden = card.collapsed || (hidden <= 0 && !card.all);
-  card.more.textContent = card.all ? "Show less" : `+${hidden} more file${hidden === 1 ? "" : "s"}`;
+  card.more.textContent = card.all ? "Show less" : `Show ${hidden} more file${hidden === 1 ? "" : "s"}`;
 }
 
 /// Puts the project back to the state the turn started from. The baseline is
