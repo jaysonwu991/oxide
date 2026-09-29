@@ -2,7 +2,7 @@
   "name": "oxide-vscode",
   "displayName": "Oxide",
   "description": "The Oxide coding agent inside VS Code: a chat panel and editor actions backed by the oxide CLI.",
-  "version": "0.0.0",
+  "version": "0.0.2",
   "publisher": "jaysonwu991",
   "icon": "media/icon.png",
   "license": "MIT",
@@ -83,6 +83,17 @@
       {
         "command": "oxide.openChat",
         "title": "Open Chat",
+        "category": "Oxide",
+        "icon": "media/oxide.svg"
+      },
+      {
+        "command": "oxide.focusInput",
+        "title": "Focus Input",
+        "category": "Oxide"
+      },
+      {
+        "command": "oxide.insertReference",
+        "title": "Insert File Reference",
         "category": "Oxide"
       },
       {
@@ -93,7 +104,7 @@
       },
       {
         "command": "oxide.resumeSession",
-        "title": "Resume Session...",
+        "title": "Session History",
         "category": "Oxide",
         "icon": "$(history)"
       },
@@ -172,6 +183,13 @@
       }
     ],
     "menus": {
+      "editor/title": [
+        {
+          "command": "oxide.openChat",
+          "when": "resourceScheme == file",
+          "group": "navigation@9"
+        }
+      ],
       "editor/context": [
         {
           "command": "oxide.askAboutSelection",
@@ -235,6 +253,17 @@
         "key": "ctrl+alt+a",
         "mac": "cmd+alt+a",
         "when": "editorHasSelection"
+      },
+      {
+        "command": "oxide.focusInput",
+        "key": "ctrl+escape",
+        "mac": "cmd+escape"
+      },
+      {
+        "command": "oxide.insertReference",
+        "key": "alt+k",
+        "mac": "alt+k",
+        "when": "editorTextFocus"
       }
     ],
     "configuration": {
