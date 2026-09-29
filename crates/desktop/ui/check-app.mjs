@@ -224,9 +224,19 @@ class StubElement {
   }
 }
 
+// The element kind the page's own markup gives these ids: the page reads a tag
+// when it decides what a press is for — a button, a link or a row — so a stub
+// standing in for an element `index.html` defines has to be the element the page
+// makes it. Everything else the app asks for is a stub of its own.
+const pageTags = new Map();
+for (const [, tag, id] of readFileSync(`${here}index.html`, "utf8").matchAll(
+  /<(input|textarea|select)\b[^>]*\bid="([^"]+)"/g,
+)) {
+  pageTags.set(id, tag);
+}
 const elements = new Map();
 const elementFor = (id) => {
-  if (!elements.has(id)) elements.set(id, new StubElement("div", id));
+  if (!elements.has(id)) elements.set(id, new StubElement(pageTags.get(id) || "div", id));
   return elements.get(id);
 };
 /// A click as the browser delivers it to the control it landed on, which a
@@ -563,7 +573,7 @@ vm.runInThisContext(
     " addAttachment, addAttachmentFiles, el, showQuestion, showQuestionStep, questionNext," +
     " answerQuestion, collectAnswers, requestAt, acceptAt, moveAt, closeAt, atKey," +
     " resetTranscript, renderChanges, closeReview, undoChanges," +
-    " loadSessions, renderProjectsTree, renderSessions, openSession, renderProjectMeta, updateSendState, setBusy, setIdle," +
+    " loadSessions, renderProjectsTree, renderSessions, renderMcps, openSession, renderProjectMeta, updateSendState, setBusy, setIdle," +
     " listedSessions, selectSessionFromTree, removeSession," +
     " startTool, finishTool, toggleTool };\n",
 );
@@ -795,6 +805,60 @@ check(
   idlePress.refused !== true,
   String(idlePress.refused),
 );
+// A press the page never sees released would hold the listings' repaints, so
+// every press the checks above made is released here.
+document.fire("mouseup", press({ target: composerButton }));
+await nextTick();
+
+// The other half of the same problem: a repaint that replaces the row under the
+// pointer before the press is over leaves the webview with a down on one row and
+// an up on another, and it dispatches no click at all — which is the first click
+// of the two a user makes on a sidebar row. The sidebar is rebuilt from the read
+// a previous click started, so a repaint asked for mid-press is held until the
+// press is over and the click it was going to deliver has arrived. Each listing
+// is painted into an element of its own so the page's own lists are left alone.
+for (const [name, listId, paint] of [
+  ["sidebar", "projects-tree", app.renderProjectsTree],
+  ["sessions", "sessions-list", app.renderSessions],
+  ["MCP", "mcp-list", app.renderMcps],
+]) {
+  const page = elementFor(listId);
+  const list = new StubElement("div", listId);
+  elements.set(listId, list);
+  await paint();
+  const painted = list.outline();
+  list.innerHTML = "";
+  document.fire("mousedown", press({ target: composerButton }));
+  await paint();
+  check(
+    `held the ${name} listing a press was inside of`,
+    list.outline() === "",
+    list.outline() || "painted the listing while the press was still down",
+  );
+  document.fire("mouseup", press({ target: composerButton }));
+  await nextTick();
+  check(
+    `painted the ${name} listing once the press was over`,
+    list.outline() === painted,
+    list.outline(),
+  );
+  elements.set(listId, page);
+}
+
+// Only the message box's caret is what the swallow is for, so a press while some
+// other control holds the focus keeps being taken by that control as it was.
+document.activeElement = composerButton;
+const focusPress = press({ target: composerRow });
+document.fire("mousedown", focusPress);
+check(
+  "left a press alone while a control rather than the message box held the focus",
+  focusPress.refused !== true,
+  String(focusPress.refused),
+);
+document.activeElement = null;
+elementFor("create-project-modal").hidden = true;
+document.fire("mouseup", press({ target: composerButton }));
+await nextTick();
 
 await typeAt("review @sr");
 app.atKey({ key: "Escape" });

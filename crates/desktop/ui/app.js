@@ -2465,6 +2465,10 @@ async function loadMcps() {
 }
 
 function renderMcps() {
+  if (pressed) {
+    heldRepaints.push(renderMcps);
+    return;
+  }
   const box = el("mcp-list");
   box.innerHTML = "";
   const servers = state.mcps || [];
@@ -2557,6 +2561,10 @@ async function openSessions() {
 }
 
 function renderSessions() {
+  if (pressed) {
+    heldRepaints.push(renderSessions);
+    return;
+  }
   const box = el("sessions-list");
   box.innerHTML = "";
   const threads = listedSessions().filter((session) => session.cwd === state.project);
@@ -3279,6 +3287,27 @@ function initSidebarResize() {
   });
 }
 
+// A repaint that replaces the row under the pointer before the press is over
+// costs that press its click: the down landed on the row that was there and the
+// up on the row that replaced it, so the webview dispatches no click at all and
+// the control the press landed on never answers — the user clicks a second time.
+// The sidebar is rebuilt from the read a *previous* click started, which lands
+// exactly while the next press is already in flight, so a repaint asked for
+// mid-press is held and run once the press is over.
+let pressed = false;
+let heldRepaints = [];
+
+function endPress() {
+  if (!pressed) return;
+  pressed = false;
+  const held = heldRepaints;
+  heldRepaints = [];
+  // A press dispatches its click after this handler returns, so the held repaint
+  // waits for the next task: running it here would replace the row the click is
+  // about to be delivered to.
+  if (held.length) setTimeout(() => held.forEach((paint) => paint()), 0);
+}
+
 function init() {
   initSidebarResize();
   const createBtnTree = el("create-project-btn-tree");
@@ -3363,6 +3392,18 @@ function init() {
     },
     true,
   );
+
+  // What the held repaints key on: the press is over once the pointer is
+  // released, whether or not it was released inside the window.
+  document.addEventListener(
+    "mousedown",
+    () => {
+      pressed = true;
+    },
+    true,
+  );
+  document.addEventListener("mouseup", endPress, true);
+  window.addEventListener("blur", endPress);
 
   // The webview cannot navigate to a remote page, so a link click opens the
   // platform browser through the host instead of reloading the app window.
@@ -3505,6 +3546,10 @@ function orderedSessions() {
 }
 
 async function renderProjectsTree() {
+  if (pressed) {
+    heldRepaints.push(renderProjectsTree);
+    return;
+  }
   const container = el("projects-tree");
   if (!container) return;
   
