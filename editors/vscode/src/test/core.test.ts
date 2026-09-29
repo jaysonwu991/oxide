@@ -233,6 +233,10 @@ describe("@ references", () => {
   it("turns a reference into a context block and drops it from the message", () => {
     const result = expandAtReferences("why does @src/a.rs do nothing?", sources);
     assert.equal(result.message, "why does do nothing?");
+    assert.equal(
+      result.inlined,
+      "why does\n\n--- src/a.rs ---\nfn a() {}\ndo nothing?",
+    );
     assert.deepEqual(result.blocks, [{ path: "src/a.rs", text: "fn a() {}\n" }]);
     assert.deepEqual(result.attachments, []);
   });
@@ -276,8 +280,20 @@ describe("@ references", () => {
       message: "@",
       blocks: [],
       attachments: [],
+      inlined: "@",
     });
     assert.equal(expandAtReferences("mail me at a@src/a.rs", sources).message, "mail me at a@src/a.rs");
+  });
+
+  it("keeps an inlined block where the reference sat", () => {
+    assert.equal(
+      expandAtReferences("before @src/a.rs after", sources).inlined,
+      "before\n\n--- src/a.rs ---\nfn a() {}\nafter",
+    );
+    assert.equal(
+      expandAtReferences("@notes.md what now", sources).inlined,
+      "--- notes.md ---\n# notes\nwhat now",
+    );
   });
 
   it("collapses the blank a removed reference leaves behind", () => {

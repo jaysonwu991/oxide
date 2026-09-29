@@ -248,7 +248,17 @@ export type ViewMessage =
   | { k: "question"; id: number; state: QuestionState; label: string }
   /// One change card's state: undone, or no longer the newest turn's.
   | ChangesState
-  | { k: "status"; status: string; busy: boolean; queued: number; footer: FooterState }
+  | {
+      k: "status";
+      status: string;
+      busy: boolean;
+      queued: number;
+      footer: FooterState;
+      /// The thread's summarized title. It changes the moment the first message
+      /// is sent, before a `state` message repaints the view, so the header's
+      /// title follows the send without waiting for one.
+      title?: string;
+    }
   /// The footer is attached by the controller (the transcript only knows the
   /// totals), so a usage event repaints the whole footer row.
   | { k: "usage"; usage: UsageTotals; footer?: FooterState }
