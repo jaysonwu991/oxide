@@ -20,7 +20,6 @@ import {
   changesTitle,
   changesTotals,
   diffPlan,
-  mergeChanges,
   parseChanges,
   parseSnapshotQuery,
   snapshotQuery,
@@ -99,40 +98,6 @@ describe("a turn's changed files", () => {
     );
     assert.equal(changes?.added, 2);
     assert.equal(changes?.removed, 5);
-  });
-
-  it("merges a later turn's files into the session's card", () => {
-    const first = parseChanges(
-      {
-        files: [file({ path: "a.rs", added: 2, removed: 1 })],
-      },
-      "session",
-      "/tmp/project",
-      "after-one",
-    )!;
-    const second = parseChanges(
-      {
-        files: [
-          file({ path: "b.rs", added: 3, removed: 0 }),
-          file({ path: "a.rs", added: 5, removed: 2 }),
-        ],
-      },
-      "turn-two",
-      "/tmp/project",
-      "after-two",
-    )!;
-    const merged = mergeChanges(first, second);
-    // The baseline stays the session's first, and `after` follows the newest
-    // turn, so the card's Undo puts the whole session back.
-    assert.equal(merged.baseline, "session");
-    assert.equal(merged.after, "after-two");
-    // A file changed in both turns appears once, with the later turn's counts.
-    assert.deepEqual(merged.files, [
-      file({ path: "a.rs", added: 5, removed: 2 }),
-      file({ path: "b.rs", added: 3, removed: 0 }),
-    ]);
-    assert.equal(merged.added, 8);
-    assert.equal(merged.removed, 2);
   });
 
   it("ignores the preview a frame carries, since the diff drawn is VS Code's", () => {
@@ -374,34 +339,6 @@ describe("the change card in the transcript", () => {
     assert.equal(settled.id, first.item.id);
     assert.equal(settled.undoable, false);
     assert.equal(settled.undone, false, "it was not undone, it can no longer be");
-  });
-
-  it("lists the whole session on a later turn's card", () => {
-    const transcript = new Transcript();
-    transcript.apply(
-      frame({
-        files: [
-          { path: "first.rs", status: "modified", added: 1, removed: 0, binary: false },
-        ],
-      }),
-    );
-    const messages = transcript.apply(
-      frame({
-        files: [
-          { path: "second.rs", status: "modified", added: 2, removed: 0, binary: false },
-        ],
-      }),
-    );
-    const pushed = messages.find((message) => message.k === "push") as {
-      k: "push";
-      item: { title: string; baseline: string; rows: { path: string }[] };
-    };
-    assert.equal(pushed.item.title, "Edited 2 files");
-    assert.equal(pushed.item.baseline, "abc123");
-    assert.deepEqual(
-      pushed.item.rows.map((row) => row.path),
-      ["first.rs", "second.rs"],
-    );
   });
 
   it("settles a card whose turn was put back, and only once", () => {

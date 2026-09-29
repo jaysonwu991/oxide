@@ -29,10 +29,6 @@ use tokio::task::AbortHandle;
 
 type CmdResult<T> = Result<T, String>;
 
-/// A session's first snapshot baseline: `None` for a project that must not be
-/// snapshotted (see [`Snapshots::baseline`]), so a turn there has no change card.
-type SessionBaseline = Option<(Snapshots, String)>;
-
 fn err(error: impl std::fmt::Display) -> String {
     error.to_string()
 }
@@ -57,10 +53,6 @@ pub struct DesktopState {
     pub at: PathCache,
     runs: Arc<Mutex<HashMap<u64, RunHandle>>>,
     next_run: AtomicU64,
-    /// The first baseline of each open session, so a later turn's change card
-    /// lists the whole session's files together and its Undo puts the session
-    /// back rather than only the latest turn.
-    session_baselines: Arc<Mutex<HashMap<String, SessionBaseline>>>,
 }
 
 impl DesktopState {
@@ -72,7 +64,6 @@ impl DesktopState {
             at: PathCache::default(),
             runs: Arc::new(Mutex::new(HashMap::new())),
             next_run: AtomicU64::new(1),
-            session_baselines: Arc::new(Mutex::new(HashMap::new())),
         }
     }
 }
@@ -520,22 +511,13 @@ async fn drive_turn(
     let cwd = PathBuf::from(project);
     let reference = session.as_deref().unwrap_or("latest");
     let log = open_session(&cwd, reference)?;
-    // The state this run starts from, which decides whether the turn changed
-    // anything. The first run of a session also records the baseline its cards
-    // diff against, so a later turn lists the whole session's files together.
-    let turn_baseline = mark_baseline(&cwd).await;
-    let session_key = log
-        .as_ref()
-        .map(|log| log.id().to_string())
-        .unwrap_or_else(|| cwd.to_string_lossy().into_owned());
-    let session_baseline = {
-        let state = app.state::<DesktopState>();
-        let mut baselines = state.session_baselines.lock().await;
-        baselines
-            .entry(session_key)
-            .or_insert_with(|| turn_baseline.clone())
-            .clone()
-    };
+    // The state the run starts from, so the files it changes can be listed and
+    // undone once it ends. `None` when the project must not be snapshotted — a
+    // directory that holds everything (the home directory or an ancestor of it,
+    // the config directory) or one too large to hash — in which case the window
+    // shows no change card for the turn rather than failing to start it. A
+    // project that is not a git clone is snapshotted all the same.
+    let baseline = mark_baseline(&cwd).await;
     let approver = approvals.approver(cwd.clone());
     let asker = questions.asker_for(run_id);
     let turn = start_turn(
@@ -600,12 +582,23 @@ async fn drive_turn(
     questions.clear_run(run_id).await;
     // The listing, and the state the turn left behind: the project it belongs to
     // travels with both, so a window that switched projects mid-turn can tell
-    // the card is not its own and an undo can check nothing came after it. The
-    // listing diffs against the session's first baseline — so a later turn lists
-    // the whole session's files — while the turn's own baseline only decides
-    // whether the turn changed anything at all.
-    let (baseline, after, changes) = match turn_changes(session_baseline, turn_baseline).await {
-        Some((base, after, listed)) => (Some(base), after, Some(listed)),
+    // the card is not its own and an undo can check nothing came after it.
+    let (baseline, after, changes) = match baseline {
+        Some((snapshots, base)) => {
+            let listed = tokio::task::spawn_blocking({
+                let base = base.clone();
+                let snapshots = snapshots.clone();
+                move || snapshots.changes_since(&base).ok()
+            })
+            .await
+            .ok()
+            .flatten();
+            let after = tokio::task::spawn_blocking(move || snapshots.mark_named("turn").ok())
+                .await
+                .ok()
+                .flatten();
+            (Some(base), after, listed)
+        }
         None => (None, None, None),
     };
     let _ = app.emit(
@@ -634,36 +627,6 @@ async fn mark_baseline(cwd: &Path) -> Option<(Snapshots, String)> {
         .await
         .ok()
         .flatten()
-}
-
-/// The card a finished turn carries: the session's first baseline, the state the
-/// turn left behind, and the files changed since that first baseline. `None`
-/// when the project has no snapshot, or when this turn changed nothing — a turn
-/// that only read files says nothing even though the session already has changes.
-async fn turn_changes(
-    session_baseline: Option<(Snapshots, String)>,
-    turn_baseline: Option<(Snapshots, String)>,
-) -> Option<(String, Option<String>, oxide_core::changes::TurnChanges)> {
-    let (turn_snapshots, turn_base) = turn_baseline?;
-    let unchanged = tokio::task::spawn_blocking(move || turn_snapshots.unchanged_since(&turn_base))
-        .await
-        .ok()?
-        .ok()?;
-    if unchanged {
-        return None;
-    }
-    let (snapshots, base) = session_baseline?;
-    let listed = snapshots.clone();
-    let marked = base.clone();
-    let changes = tokio::task::spawn_blocking(move || listed.changes_since(&marked))
-        .await
-        .ok()?
-        .ok()?;
-    let after = tokio::task::spawn_blocking(move || snapshots.mark_named("turn").ok())
-        .await
-        .ok()
-        .flatten();
-    Some((base, after, changes))
 }
 
 /// Puts the project back to the state a run started from — the inverse of the
@@ -1082,43 +1045,6 @@ mod tests {
             std::fs::read_to_string(work.join("a.txt")).unwrap(),
             "one\n"
         );
-
-        std::fs::remove_dir_all(&root).ok();
-    }
-
-    #[tokio::test]
-    async fn a_later_turn_lists_the_sessions_files_together() {
-        let root = std::env::temp_dir().join(format!("oxide_session_{}", std::process::id()));
-        std::fs::remove_dir_all(&root).ok();
-        let work = root.join("work");
-        std::fs::create_dir_all(&work).unwrap();
-        std::fs::write(work.join("a.txt"), "one\n").unwrap();
-        std::fs::write(work.join("b.txt"), "one\n").unwrap();
-        let snapshots = Snapshots::at(root.join("shadow"), work.clone()).unwrap();
-
-        // The first turn's baseline is the session's baseline; the first turn
-        // changes a.txt and leaves its state committed behind it.
-        let session = snapshots.mark().unwrap();
-        std::fs::write(work.join("a.txt"), "two\n").unwrap();
-        snapshots.mark_named("turn").unwrap();
-
-        // The second turn starts from that state and changes b.txt; its card
-        // still diffs against the session's first baseline.
-        let turn = snapshots.mark().unwrap();
-        std::fs::write(work.join("b.txt"), "two\n").unwrap();
-        let (baseline, _after, changes) = turn_changes(
-            Some((snapshots.clone(), session.clone())),
-            Some((snapshots, turn)),
-        )
-        .await
-        .unwrap();
-        assert_eq!(baseline, session);
-        let paths: Vec<&str> = changes
-            .files
-            .iter()
-            .map(|file| file.path.as_str())
-            .collect();
-        assert_eq!(paths, vec!["a.txt", "b.txt"]);
 
         std::fs::remove_dir_all(&root).ok();
     }
