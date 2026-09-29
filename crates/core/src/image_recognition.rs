@@ -9,11 +9,30 @@
 //! `image_url` part it rejects.
 
 use crate::llm::{ContentPart, ImageUrl, Message, MessageContent};
+use std::collections::HashMap;
+use std::io::Read;
 use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::process::{Command, Stdio};
+use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 
 /// The placeholder a configured command may use for the image file path.
 const FILE_PLACEHOLDER: &str = "{file}";
+/// Cap for one recognition command, so a hung script, Tesseract process, or
+/// Swift script cannot stall a turn forever. The child is killed on expiry and
+/// the caller falls back to the marker.
+const RECOGNITION_TIMEOUT: Duration = Duration::from_secs(30);
+const POLL_INTERVAL: Duration = Duration::from_millis(25);
+
+/// Per-`LlmClient` memoization of recognized image text. OCR is slow and a
+/// text-only provider can replay the same image-bearing history on every
+/// retry and every later agent step, so each payload is recognized once per
+/// turn. The cache lives on the client (not globally) so a configured
+/// `image_script`, which may have side effects, is only reused within one run.
+#[derive(Clone, Default)]
+pub struct ImageTextCache {
+    entries: Arc<Mutex<HashMap<String, Option<String>>>>,
+}
 
 /// Whether any message carries an image part, so the caller can skip the
 /// conversion pass entirely when there is nothing to convert.
@@ -29,7 +48,11 @@ pub fn messages_have_images(messages: &[Message]) -> bool {
 /// Replaces every image part in `messages` with its recognized text. Messages
 /// without images are cloned unchanged; the stored session log is never
 /// modified. Only the outgoing request copy is rewritten.
-pub fn messages_with_image_text(messages: &[Message], script: Option<&str>) -> Vec<Message> {
+pub fn messages_with_image_text(
+    messages: &[Message],
+    script: Option<&str>,
+    cache: &ImageTextCache,
+) -> Vec<Message> {
     let mut out = Vec::with_capacity(messages.len());
     for message in messages {
         let Some(content) = message.content.as_ref() else {
@@ -51,12 +74,11 @@ pub fn messages_with_image_text(messages: &[Message], script: Option<&str>) -> V
         for part in parts {
             match part {
                 ContentPart::ImageUrl { image_url } => {
-                    let text = image_text(image_url, script)
+                    let text = image_text(image_url, script, cache)
                         .map(|text| format!("[image content]\n{text}"))
                         .unwrap_or_else(|| {
-                            "[image attached, but this model cannot see images and no image \
-                             recognition tool was available (install `tesseract` or set \
-                             `image_script`)]"
+                            "[image attached, but this model cannot see images and the image \
+                             could not be recognized]"
                                 .to_string()
                         });
                     new_parts.push(ContentPart::Text { text });
@@ -72,8 +94,22 @@ pub fn messages_with_image_text(messages: &[Message], script: Option<&str>) -> V
 }
 
 /// Recognizes one image and returns the text on its stdout (trimmed), or
-/// `None` when no recognizer could read it.
-pub fn image_text(image: &ImageUrl, script: Option<&str>) -> Option<String> {
+/// `None` when no recognizer could read it. Results are cached by payload so a
+/// replayed history does not re-run the recognizer.
+fn image_text(image: &ImageUrl, script: Option<&str>, cache: &ImageTextCache) -> Option<String> {
+    let mut entries = cache
+        .entries
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    if let Some(cached) = entries.get(&image.url) {
+        return cached.clone();
+    }
+    let recognized = recognize_image(image, script);
+    entries.insert(image.url.clone(), recognized.clone());
+    recognized
+}
+
+fn recognize_image(image: &ImageUrl, script: Option<&str>) -> Option<String> {
     let (bytes, extension) = image_payload(&image.url)?;
     let temp = TempImageFile::new(extension)?;
     temp.write(&bytes)?;
@@ -104,16 +140,15 @@ fn image_payload(url: &str) -> Option<(Vec<u8>, &'static str)> {
 }
 
 fn ocr_default(path: &Path) -> Option<String> {
-    run_stdout("tesseract", &[path_str(path)?, "stdout"]).or_else(|| {
-        #[cfg(target_os = "macos")]
-        {
-            macos_vision(path)
-        }
-        #[cfg(not(target_os = "macos"))]
-        {
-            None
-        }
-    })
+    let text = run_stdout("tesseract", &[path_str(path)?, "stdout"]);
+    #[cfg(target_os = "macos")]
+    {
+        text.or_else(|| macos_vision(path))
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        text
+    }
 }
 
 /// Runs a user-supplied `imageScript`. `{file}` is replaced with the image
@@ -145,40 +180,81 @@ fn shell_quote(path: &str) -> String {
 }
 
 fn run_stdout(program: &str, args: &[&str]) -> Option<String> {
-    let output = Command::new(program).args(args).output().ok()?;
-    if output.status.success() {
-        let text = String::from_utf8(output.stdout).ok()?;
-        (!text.trim().is_empty()).then_some(text)
-    } else {
-        None
-    }
+    run_command(Command::new(program).args(args))
 }
 
 #[cfg(unix)]
 fn run_shell(command: &str) -> Option<String> {
-    let output = Command::new("sh").arg("-c").arg(command).output().ok()?;
-    if output.status.success() {
-        let text = String::from_utf8(output.stdout).ok()?;
-        (!text.trim().is_empty()).then_some(text)
-    } else {
-        None
-    }
+    run_command(Command::new("sh").arg("-c").arg(command))
 }
 
 #[cfg(windows)]
 fn run_shell(command: &str) -> Option<String> {
-    let output = Command::new("cmd").args(["/C", command]).output().ok()?;
-    if output.status.success() {
-        let text = String::from_utf8(output.stdout).ok()?;
-        (!text.trim().is_empty()).then_some(text)
-    } else {
-        None
-    }
+    run_command(Command::new("cmd").args(["/C", command]))
 }
 
 #[cfg(not(any(unix, windows)))]
 fn run_shell(_command: &str) -> Option<String> {
     None
+}
+
+/// Runs `command`, bounded by `RECOGNITION_TIMEOUT`, and returns its trimmed
+/// non-empty stdout when it exits successfully. The child runs in its own
+/// process group on Unix so a shell pipeline can be terminated as a whole.
+fn run_command(command: &mut Command) -> Option<String> {
+    run_command_with_timeout(command, RECOGNITION_TIMEOUT)
+}
+
+fn run_command_with_timeout(command: &mut Command, timeout: Duration) -> Option<String> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt;
+        command.process_group(0);
+    }
+    let mut child = command
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .ok()?;
+    let deadline = Instant::now() + timeout;
+    let status = loop {
+        match child.try_wait() {
+            Ok(Some(status)) => break Some(status),
+            Ok(None) => {}
+            Err(_) => return None,
+        }
+        if Instant::now() >= deadline {
+            terminate_process_tree(&mut child);
+            return None;
+        }
+        std::thread::sleep(POLL_INTERVAL);
+    };
+    let status = status?;
+    let mut stdout = Vec::new();
+    child.stdout.take()?.read_to_end(&mut stdout).ok()?;
+    if status.success() {
+        String::from_utf8(stdout)
+            .ok()
+            .filter(|text| !text.trim().is_empty())
+    } else {
+        None
+    }
+}
+
+fn terminate_process_tree(child: &mut std::process::Child) {
+    #[cfg(windows)]
+    {
+        let pid = child.id().to_string();
+        let _ = Command::new("taskkill")
+            .args(["/T", "/F", "/PID", pid.as_str()])
+            .output();
+    }
+    #[cfg(unix)]
+    unsafe {
+        libc::killpg(child.id() as libc::pid_t, libc::SIGKILL);
+    }
+    let _ = child.kill();
+    let _ = child.wait();
 }
 
 fn path_str(path: &Path) -> Option<&str> {
@@ -220,16 +296,7 @@ for case let observation as VNRecognizedTextObservation in request.results ?? []
     dir.write(SCRIPT.as_bytes())?;
     let script_path = dir.path().to_str()?;
     let image = path.to_str()?;
-    let output = Command::new("swift")
-        .args([script_path, image])
-        .output()
-        .ok()?;
-    if output.status.success() {
-        let text = String::from_utf8(output.stdout).ok()?;
-        (!text.trim().is_empty()).then_some(text)
-    } else {
-        None
-    }
+    run_command(Command::new("swift").args([script_path, image]))
 }
 
 /// A private, randomly named temporary file for one image recognition. The
@@ -246,13 +313,15 @@ impl TempImageFile {
         getrandom::getrandom(&mut random).ok()?;
         let name: String = random.iter().map(|byte| format!("{byte:02x}")).collect();
         let dir = std::env::temp_dir().join(format!("oxide-image-text-{name}"));
-        let mut builder = std::fs::DirBuilder::new();
         #[cfg(unix)]
         {
             use std::os::unix::fs::DirBuilderExt;
-            builder.mode(0o700);
+            std::fs::DirBuilder::new().mode(0o700).create(&dir).ok()?;
         }
-        builder.create(&dir).ok()?;
+        #[cfg(not(unix))]
+        {
+            std::fs::DirBuilder::new().create(&dir).ok()?;
+        }
         let path = dir.join(format!("image.{extension}"));
         Some(Self { dir, path })
     }
@@ -319,7 +388,7 @@ mod tests {
     #[test]
     fn leaves_messages_without_images_alone() {
         let messages = vec![Message::user("hi")];
-        let converted = messages_with_image_text(&messages, None);
+        let converted = messages_with_image_text(&messages, None, &ImageTextCache::default());
         assert_eq!(converted.len(), 1);
         assert_eq!(converted[0].display().as_deref(), Some("hi"));
     }
@@ -330,7 +399,8 @@ mod tests {
             "look at this",
             vec![image("data:image/png;base64,AAAA")],
         )];
-        let converted = messages_with_image_text(&messages, Some("printf 'ocr text'"));
+        let converted =
+            messages_with_image_text(&messages, Some("echo ocr text"), &ImageTextCache::default());
         let text = converted[0].display().unwrap();
         assert!(
             !text.contains("image_url"),
@@ -348,7 +418,8 @@ mod tests {
             "look at this",
             vec![image("data:image/png;base64,AAAA")],
         )];
-        let converted = messages_with_image_text(&messages, Some("true"));
+        let converted =
+            messages_with_image_text(&messages, Some("true"), &ImageTextCache::default());
         let text = converted[0].display().unwrap();
         assert!(
             !text.contains("image_url"),
@@ -357,6 +428,46 @@ mod tests {
         assert!(
             text.contains("image attached"),
             "marker should explain the image"
+        );
+    }
+
+    #[test]
+    fn caches_recognized_text_by_payload() {
+        let cache = ImageTextCache::default();
+        let messages = vec![Message::user_parts(
+            "look at this",
+            vec![image("data:image/png;base64,AAAA")],
+        )];
+        let first = messages_with_image_text(&messages, Some("echo once"), &cache);
+        let second = messages_with_image_text(&messages, Some("echo twice"), &cache);
+        let first_text = first[0].display().unwrap();
+        let second_text = second[0].display().unwrap();
+        assert!(first_text.contains("once"), "first run should recognize");
+        assert!(
+            second_text.contains("once"),
+            "second run must reuse the cached text instead of re-running the script"
+        );
+    }
+
+    #[test]
+    fn recognizer_timeout_returns_none() {
+        #[cfg(unix)]
+        let mut command = {
+            let mut command = Command::new("sh");
+            command.arg("-c").arg("sleep 10");
+            command
+        };
+        #[cfg(windows)]
+        let mut command = {
+            let mut command = Command::new("cmd");
+            command.args(["/C", "timeout /t 10 /nobreak"]);
+            command
+        };
+        let started = Instant::now();
+        assert!(run_command_with_timeout(&mut command, Duration::from_millis(100)).is_none());
+        assert!(
+            started.elapsed() < Duration::from_secs(2),
+            "a hung recognizer must be killed promptly"
         );
     }
 }

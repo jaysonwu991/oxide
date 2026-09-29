@@ -36,6 +36,9 @@ pub struct LlmClient {
     /// OpenAI, `x-session-id` for gateways). `None` disables the hint, as for
     /// one-off catalog and compaction requests.
     session_id: Option<String>,
+    /// Recognized image text, so retries and later agent steps do not re-run
+    /// the OCR script for the same payload.
+    image_text_cache: crate::image_recognition::ImageTextCache,
 }
 
 /// The provider finished a turn without an answer: it either emitted nothing at
@@ -136,6 +139,7 @@ impl LlmClient {
             http,
             config,
             session_id: None,
+            image_text_cache: crate::image_recognition::ImageTextCache::default(),
         }
     }
 
@@ -365,8 +369,13 @@ impl LlmClient {
             converted_messages = tokio::task::spawn_blocking({
                 let messages = messages.to_vec();
                 let script = config.image_script().map(str::to_string);
+                let cache = self.image_text_cache.clone();
                 move || {
-                    crate::image_recognition::messages_with_image_text(&messages, script.as_deref())
+                    crate::image_recognition::messages_with_image_text(
+                        &messages,
+                        script.as_deref(),
+                        &cache,
+                    )
                 }
             })
             .await
