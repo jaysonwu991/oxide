@@ -10,7 +10,7 @@ import {
   modelsForProvider,
   parseConfigSummary,
 } from "../core/config";
-import { canonicalTool, diffPreview, toolDiff } from "../core/preview";
+import { argumentDiff, canonicalTool, diffPreview, toolDiff } from "../core/preview";
 import {
   buildPrompt,
   contextHeader,
@@ -445,6 +445,62 @@ describe("tool diff", () => {
   it("knows which tools change files", () => {
     assert.equal(toolDiff("read", { path: "a.rs" }, reader("x")), null);
     assert.equal(toolDiff("bash", { command: "sed -i s/a/b/ a.rs" }, reader("x")), null);
+  });
+
+  it("previews an edit from its own arguments, for a replayed card", () => {
+    const change = argumentDiff("edit", {
+      path: "a.rs",
+      edits: [{ oldText: "b", newText: "x" }],
+    });
+    assert.ok(change);
+    assert.equal(change.path, "a.rs");
+    // Both sides of the replacement came with the call, so the diff is the same
+    // change the live card showed — without the file's own lines around it,
+    // which the call never carried, and without asking what the file holds now.
+    assert.equal(change.diff, [diffRow("-", "1", "", "b"), diffRow("+", "", "1", "x")].join("\n"));
+  });
+
+  it("keeps a call's replacements apart instead of aligning them into each other", () => {
+    const change = argumentDiff("edit", {
+      path: "a.rs",
+      edits: [
+        { oldText: "a", newText: "a\nb" },
+        { oldText: "b", newText: "" },
+      ],
+    });
+    // Joined into one pair of sides these two replacements cancel out — the `b`
+    // one block adds is the `b` the next one removes — although two places in
+    // the file changed. Each block is previewed on its own instead, at one
+    // column width, with the `⋯` row the preview uses for what it does not show.
+    assert.ok(change);
+    assert.equal(
+      change.diff,
+      [
+        diffRow(" ", "1", "1", "a"),
+        diffRow("+", "", "2", "b"),
+        diffRow(" ", "", "", "⋯"),
+        diffRow("-", "1", "", "b"),
+      ].join("\n"),
+    );
+  });
+
+  it("previews a patch and its own diff, for a replayed card", () => {
+    const patch = "--- a/a.rs\n+++ b/a.rs\n@@ -1 +1 @@\n-old\n+new";
+    assert.deepEqual(argumentDiff("patch", { path: "a.rs", diff: patch }), {
+      path: "a.rs",
+      diff: patch,
+    });
+    assert.equal(argumentDiff("patch", { diff: "  " }), null);
+  });
+
+  it("leaves a write to the file it no longer holds", () => {
+    // A `write` says only what it wrote: the state it replaced is nowhere on
+    // disk, so there is no diff to show rather than one against today's file.
+    assert.equal(argumentDiff("write", { path: "a.rs", content: "x\n" }), null);
+    assert.equal(argumentDiff("edit", { path: "a.rs" }), null);
+    assert.equal(argumentDiff("edit", { path: "a.rs", edits: [] }), null);
+    assert.equal(argumentDiff("read", { path: "a.rs" }), null);
+    assert.equal(argumentDiff("bash", { command: "sed -i s/a/b/ a.rs" }), null);
   });
 
   it("maps the Pi and legacy tool names onto one canonical name", () => {

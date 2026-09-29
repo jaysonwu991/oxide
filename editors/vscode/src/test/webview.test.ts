@@ -71,6 +71,9 @@ class StubElement {
   hidden = false;
   disabled = false;
   checked = false;
+  /// What the DOM reports for an element that is not focusable, which is what
+  /// the renderer's own handles are before they are made buttons.
+  tabIndex = -1;
   title = "";
   type = "";
   src = "";
@@ -167,6 +170,12 @@ class StubElement {
 
   setAttribute(name: string, value: string): void {
     this.attributes[name] = value;
+  }
+
+  /// What `removeAttribute` leaves behind: no attribute at all, so a card that
+  /// turned its header back into plain text reports no role and no state.
+  removeAttribute(name: string): void {
+    delete this.attributes[name];
   }
 
   /// A textarea's value: writing it moves the caret to the end, as it does in
@@ -2671,6 +2680,10 @@ describe("webview tool card", () => {
     const card = find(transcript, "tool")!;
     const diff = card.children[card.children.length - 1]!;
     const head = card.querySelector(".thead")!;
+    // A card with a diff has one line to unfold, so its header is the control
+    // that opens it.
+    assert.equal(head.getAttribute("role"), "button");
+    assert.equal(head.tabIndex, 0);
 
     transcript.fire("click", { target: head });
     assert.equal(diff.hidden, false, "the diff is what the card was asked for");
@@ -2680,6 +2693,81 @@ describe("webview tool card", () => {
     transcript.fire("click", { target: head });
     assert.equal(diff.hidden, true, "clicking again folds it away");
     assert.equal(card.querySelector(".tbody")!.hidden, true);
+  });
+
+  it("opens a folded result from the row that offers it, and folds it back", () => {
+    const { byId, send } = loadRenderer();
+    send(stateMessage());
+    const transcript = byId.get("transcript")!;
+    send({
+      k: "push",
+      item: {
+        id: 6,
+        kind: "tool",
+        name: "bash",
+        args: JSON.stringify({ command: "cargo test" }),
+        output: Array.from({ length: 40 }, (_, line) => `line ${line}`).join("\n"),
+        running: false,
+      },
+    });
+
+    const card = find(transcript, "tool")!;
+    const body = card.querySelector(".tbody")!;
+    const hint = card.querySelector(".thint")!;
+    const preview = body.textContent;
+    assert.equal(hint.textContent, "Show 35 earlier lines");
+    assert.equal(hint.getAttribute("aria-expanded"), "false");
+
+    // The words offering the rest of the command are the same handle as the
+    // header's caret, so clicking them is what opens the card.
+    transcript.fire("click", { target: hint });
+    assert.equal(hint.textContent, "Show less", "the row offers the fold back where the output ends");
+    assert.equal(hint.getAttribute("aria-expanded"), "true");
+    assert.equal(card.classList.contains("expanded"), true);
+    assert.match(body.textContent, /^line 0/, "the whole result, from its first line");
+    assert.ok(body.textContent.length > preview.length);
+
+    transcript.fire("click", { target: hint });
+    assert.equal(hint.textContent, "Show 35 earlier lines", "the same row folds it away again");
+    assert.equal(card.classList.contains("expanded"), false);
+    assert.equal(body.textContent, preview);
+
+    // The body is the output itself, selected and copied rather than clicked.
+    transcript.fire("click", { target: body });
+    assert.equal(body.textContent, preview, "a click in the output folds nothing");
+  });
+
+  it("toggles a folded card from its handle with the keyboard", () => {
+    const { byId, send } = loadRenderer();
+    send(stateMessage());
+    const transcript = byId.get("transcript")!;
+    send({
+      k: "push",
+      item: {
+        id: 7,
+        kind: "tool",
+        name: "read",
+        args: JSON.stringify({ path: "src/main.rs" }),
+        output: Array.from({ length: 30 }, (_, line) => `line ${line}`).join("\n"),
+        running: false,
+      },
+    });
+
+    const card = find(transcript, "tool")!;
+    const hint = card.querySelector(".thint")!;
+    assert.equal(hint.textContent, "Show 20 more lines");
+    assert.equal(hint.getAttribute("role"), "button", "the handle is reachable with Tab");
+    assert.equal(hint.tabIndex, 0);
+
+    let prevented = false;
+    transcript.fire("keydown", { key: "Enter", target: hint, preventDefault: () => { prevented = true; } });
+    assert.equal(prevented, true, "a handled key does not also act on the page");
+    assert.equal(hint.textContent, "Show less");
+    transcript.fire("keydown", { key: " ", target: hint, preventDefault: () => { prevented = true; } });
+    assert.equal(hint.textContent, "Show 20 more lines");
+    // Any other key is left alone, so the panel keeps its own shortcuts.
+    transcript.fire("keydown", { key: "a", target: hint, preventDefault: () => { prevented = true; } });
+    assert.equal(hint.textContent, "Show 20 more lines");
   });
 
   it("leaves a call that changed nothing reading as before", () => {
@@ -2704,6 +2792,58 @@ describe("webview tool card", () => {
     assert.match(body.textContent, /line 0/);
     assert.equal(card.querySelector(".thint")!.hidden, false);
     assert.equal(card.querySelector(".tstate")!.textContent, "✔");
+    assert.equal(card.classList.contains("foldable"), true, "there is a rest to open");
+  });
+
+  it("draws no fold on a card that already shows everything it has", () => {
+    const { byId, send } = loadRenderer();
+    send(stateMessage());
+    const transcript = byId.get("transcript")!;
+    send({
+      k: "push",
+      item: {
+        id: 8,
+        kind: "tool",
+        name: "bash",
+        args: JSON.stringify({ command: "git status --short" }),
+        output: " M src/main.rs",
+        running: false,
+      },
+    });
+
+    const card = find(transcript, "tool")!;
+    const head = card.querySelector(".thead")!;
+    assert.equal(card.querySelector(".tbody")!.textContent, " M src/main.rs");
+    assert.equal(card.querySelector(".thint")!.hidden, true);
+    // Nothing behind the header, so it is not a control at all: no caret, no tab
+    // stop, and no button for a screen reader to be told about.
+    assert.equal(card.classList.contains("foldable"), false);
+    assert.equal(head.getAttribute("role"), null);
+    assert.equal(head.getAttribute("aria-expanded"), null);
+    assert.equal(head.tabIndex, -1);
+    transcript.fire("click", { target: head });
+    assert.equal(card.classList.contains("foldable"), false);
+    assert.equal(card.classList.contains("expanded"), false, "nothing to open");
+    assert.equal(card.querySelector(".tbody")!.textContent, " M src/main.rs");
+  });
+
+  it("marks a card replayed from a stored thread as unrecorded, not successful", () => {
+    const { byId, send } = loadRenderer();
+    send(stateMessage());
+    const transcript = byId.get("transcript")!;
+    send(editCard({ unknown: true, output: "oldText not found in src/main.rs" }));
+
+    const card = find(transcript, "tool")!;
+    const state = card.querySelector(".tstate")!;
+    // A stored thread records neither the file the call found nor whether it
+    // applied, so the card claims no state: not the green of one that landed.
+    assert.equal(state.textContent, "• +2 −1");
+    assert.equal(card.classList.contains("done"), false);
+    assert.equal(card.classList.contains("error"), false, "a failure reads the same as a success");
+    assert.equal(card.classList.contains("unknown"), true);
+    assert.match(state.title, /not recorded/);
+    // The change it asked for is still what the card unfolds.
+    assert.equal(card.classList.contains("foldable"), true);
   });
 });
 

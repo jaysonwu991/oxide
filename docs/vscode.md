@@ -193,14 +193,30 @@ from under the process — and the confirmation says so.
 
 Picking a row resumes that thread here: the CLI is launched with `--session
 <id>`, and the title in the header follows. Resuming also fills the transcript
-with what the thread already said — `oxide sessions show <id> --tail 60 --json`
-is read back through `core/history.ts` and its user and assistant messages are
-painted followed by a note saying the thread was resumed — so a resumed thread
-reads like the thread it is instead of an empty panel that answers nothing. The
+with what the thread already holds — `oxide sessions show <id> --tail 60 --json`
+is read back through `core/history.ts` and its turns are painted followed by a
+note saying the thread was resumed — so a resumed thread reads like the thread it
+is instead of an empty panel that answers nothing. A turn is what was said and
+what was called, and a stored thread is mostly the second: an assistant step that
+only dispatched tools paints no bubble, each call it made paints the same tool
+card the live turn painted, and the result the CLI stores as a message of its own
+is folded into the card it answers rather than shown beside it. The tail is
+counted in those stored messages, so reopening a long thread shows several of its
+turns rather than its last reply only. A replayed card carries the change its own
+arguments describe — an `edit`'s replacements, a `patch`'s diff — rather than one
+built against the file as it stands, which is no longer the state the call found;
+an `edit`'s replacements are previewed one block each, separated by the same `⋯`
+the preview draws between hunks, since joining them into one pair of sides could
+align a line of one replacement with a line of the next, or cancel the two out;
+and a `write` names only what it wrote, so its state is nowhere on disk and its
+card shows the call and its result instead. A replayed card claims no state at
+all: the store does not record whether the call applied, so a call that failed is
+stored exactly like one that landed, and the card marks it as unrecorded (`•`,
+with its own tooltip) instead of the green `✔` of a landed call or the red `✖` of
+a failed one — the result text it replayed is what says what happened. The
 footer's usage line and context gauge come from the same answer's usage totals.
-Only what was said is replayed: the tool steps a stored thread is mostly made of
-would bury the conversation someone reopened it to read. `/session <id>` is left
-alone — an argument is the agent's, matching `/mcp list`.
+`/session <id>` is left alone — an argument is the agent's, matching `/mcp
+list`.
 
 The listing is unchanged from the native picker it replaces (`core/sessions.ts`
 parses `oxide sessions list`), so the panel and the terminal agree on which
@@ -701,8 +717,16 @@ Assistant replies are Markdown (headings, lists, tables, fenced code with
 lightweight syntax highlighting, inline emphasis/code/links, and auto-linked
 bare URLs). Tool calls are collapsible cards colored by state, with a spinner
 and elapsed time while running, a short per-tool output preview that expands on
-click, and a colored diff for `write` / `edit` / `patch`. Reasoning renders as a
-muted thinking block that `oxide.showThinking` can hide.
+click, and a colored diff for `write` / `edit` / `patch`. A card whose output was
+cut carries the words offering the rest — `Show 36 more lines` — as a second
+handle under the preview it kept, which opens and closes the card the same way
+the header does and keeps that count off the body it stands for. The header is
+that handle only while something is behind it: a card with a rest to show is a
+control — a caret pointing at the output, a tab stop, and the state a screen
+reader asks a fold for — while a call that already shows everything it has is
+plain text, with no caret, no tab stop and no button that reveals nothing when
+it is pressed. Reasoning renders as a muted thinking block that
+`oxide.showThinking` can hide.
 
 Monospace output — a tool's body, code blocks, the diff — is set at
 `--code-size`: the panel's own text size or the editor's `editor.fontSize`,
@@ -812,6 +836,9 @@ the change card and the diff a row or its header opens (against the CLI's own
 listing, which the host composed), and the review it opens — its rows, no diff of
 its own, the file each row and each arrow names to the editor, the arrows walking
 them with wraparound, and the ✕ or a rebuilt transcript closing it —
+the output of a tool card folding from the row that offers the rest of it as
+well as from its header, and a card that already shows everything it has
+offering no fold and no caret —
 the `/mcps` and `/sessions` listings (and the full-size image a thumbnail
 opens, from the ✕ in its head row, the backdrop or <kbd>Esc</kbd>), the tracked file's dashed chip and the empty box it cannot send on its
 own, and the rows of the `@` completion with the keys that walk, take and close
@@ -845,9 +872,10 @@ writes to, a session's age and size, the row that closes the open thread and the
 `Current` mark on it, the panel edge each listing opens on, the rows' own
 actions — is covered in
 `test/dialogs.test.ts`, which needs neither a webview nor a CLI. What a resumed
-thread reads back — `oxide sessions show --json` parsed into the messages the
-panel paints and the totals the footer shows, including the output of a CLI that
-answered with nothing — is covered in `test/history.test.ts`.
+thread reads back — `oxide sessions show --json` parsed into the turns the panel
+replays, a call paired with the result that answered it, and the totals the
+footer shows, including the output of a CLI that answered with nothing — is
+covered in `test/history.test.ts`.
 
 `pnpm test` runs on Linux, macOS and Windows in CI (`.github/workflows/ci.yml`),
 because the parts of the extension that touch the system have a per-platform

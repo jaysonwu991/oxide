@@ -21,6 +21,7 @@ import {
 } from "./questions";
 import type { AtSuggestion } from "./at";
 import { changesTitle, changesTotals, changeRows, changesMore, turnChanges, type ChangeRow, type ChangesMore } from "./changes";
+import { argumentDiff } from "./preview";
 import type { DialogState } from "./dialogs";
 import type { FooterState } from "./footer";
 import type { CommandRow } from "./palette";
@@ -90,6 +91,9 @@ export interface ToolItem {
   diff: string | null;
   running: boolean;
   isError: boolean;
+  /// A card replayed out of a stored thread: the thread does not record how the
+  /// call ended, so its state is claimed by neither `isError` nor a success.
+  unknown?: boolean;
 }
 
 export interface NoticeItem {
@@ -189,6 +193,16 @@ export interface ChangesItem {
 export type ToolPatch = Partial<
   Pick<ToolItem, "output" | "diff" | "running" | "isError" | "name" | "args">
 >;
+
+/// One turn of a stored thread, as `oxide sessions show --json` reports it and
+/// as the transcript replays it (`core/history.ts` reads that answer into
+/// these). A reopened thread is shown as the thread it is: the calls it made
+/// are as much of it as what was said, and a thread whose tail is mostly tool
+/// steps would otherwise replay as a bubble or two.
+export type ReplayEntry =
+  | { kind: "user"; text: string }
+  | { kind: "assistant"; text: string }
+  | { kind: "tool"; name: string; args: string; output: string };
 
 /// A file or selection that is inlined into the prompt.
 export interface ContextChip {
@@ -498,6 +512,41 @@ export class Transcript {
     const item: AssistantItem = { id: this.nextId++, kind: "assistant", text };
     this.items.push(item);
     return [{ k: "push", item }];
+  }
+
+  /// A stored thread's turns, pushed whole rather than streamed. The caller
+  /// sends one `state` message afterwards, so nothing is painted per entry.
+  replay(entries: ReplayEntry[]): void {
+    for (const entry of entries) {
+      if (entry.kind === "user") this.pushUser(entry.text, []);
+      else if (entry.kind === "assistant") this.pushAssistant(entry.text);
+      else this.pushTool(entry.name, entry.args, entry.output);
+    }
+  }
+
+  /// A tool call pushed whole, as a stored thread records it: finished, with the
+  /// result the thread stored beside it. It carries the diff its own arguments
+  /// describe — the replacements an `edit` made, a `patch`'s own diff — rather
+  /// than one built against the file as it stands.
+  ///
+  /// Its state is left unknown: the store records neither the file the call found
+  /// nor whether the tool applied, so a call that failed reads exactly like one
+  /// that landed, and the card claims neither.
+  private pushTool(name: string, args: string, output: string): void {
+    this.closeAssistant();
+    this.closeThinking();
+    const item: ToolItem = {
+      id: this.nextId++,
+      kind: "tool",
+      name,
+      args,
+      output,
+      diff: argumentDiff(name, parseArgs(args))?.diff ?? null,
+      running: false,
+      isError: false,
+      unknown: true,
+    };
+    this.items.push(item);
   }
 
   /// The current status/footer line. The controller sends this after applying

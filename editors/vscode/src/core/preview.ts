@@ -21,14 +21,11 @@ interface Op {
 /// A line diff of `old` -> `new`, or `null` when the two are identical.
 /// Oversized inputs fall back to a one-line summary instead of a huge diff.
 export function diffPreview(oldText: string, newText: string): string | null {
+  // The same text is the one case that needs no table built for it.
   if (oldText === newText) return null;
   const oldLines = splitLines(oldText);
   const newLines = splitLines(newText);
-  if (oldLines.length > MAX_DIFF_LINES || newLines.length > MAX_DIFF_LINES) {
-    return `(diff omitted: ${oldLines.length} -> ${newLines.length} lines)`;
-  }
-  const ops = diffOps(oldLines, newLines);
-  return render(ops, Math.max(oldLines.length, newLines.length));
+  return block(oldLines, newLines, widthFor([oldLines.length, newLines.length]));
 }
 
 /// `str::lines()`: no trailing empty element for text ending in a newline.
@@ -80,8 +77,13 @@ function diffOps(oldLines: string[], newLines: string[]): Op[] {
   return ops;
 }
 
-function render(ops: Op[], total: number): string {
-  const width = Math.max(3, String(total).length);
+/// The row drawn between two stretches a preview does not show, in the same
+/// columns a diff row uses.
+function gap(width: number): string {
+  return ` ${"".padStart(width)} ${"".padStart(width)}  ⋯`;
+}
+
+function render(ops: Op[], width: number): string {
   const keep = new Array<boolean>(ops.length).fill(false);
   ops.forEach((op, index) => {
     if (op.kind === "context") return;
@@ -98,7 +100,7 @@ function render(ops: Op[], total: number): string {
       return;
     }
     if (!previous && out.length > 0) {
-      out.push(` ${"".padStart(width)} ${"".padStart(width)}  ⋯`);
+      out.push(gap(width));
     }
     out.push(formatOp(op, width));
     previous = true;
@@ -111,6 +113,25 @@ function formatOp(op: Op, width: number): string {
   const old = op.old === null ? "" : String(op.old);
   const next = op.next === null ? "" : String(op.next);
   return `${marker}${old.padStart(width)} ${next.padStart(width)}  ${op.text}`;
+}
+
+/// The column width line numbers are padded to, shared by every block of one
+/// preview so their numbers line up under each other.
+function widthFor(counts: number[]): number {
+  return Math.max(3, String(Math.max(0, ...counts)).length);
+}
+
+/// One block of a preview — a file's two sides, or one of the replacements a
+/// call made — rendered at a width its sibling blocks share. `null` when the
+/// two sides say the same thing, and a summary when they are too long to
+/// render.
+function block(oldLines: string[], newLines: string[], width: number): string | null {
+  if (oldLines.length > MAX_DIFF_LINES || newLines.length > MAX_DIFF_LINES) {
+    return `(diff omitted: ${oldLines.length} -> ${newLines.length} lines)`;
+  }
+  const ops = diffOps(oldLines, newLines);
+  if (ops.every((op) => op.kind === "context")) return null;
+  return render(ops, width);
 }
 
 export interface ToolDiff {
@@ -298,6 +319,47 @@ function applyEdits(content: string, edits: Edit[]): string | null {
     base = base.slice(0, located.start) + next + base.slice(located.end);
   }
   return base;
+}
+
+/// A call's replacements as one block each, joined by the same `⋯` row the
+/// preview draws between hunks: every replacement is its own change, and the
+/// file between two of them is not part of the call.
+function editBlocks(edits: Edit[]): string {
+  const sides = edits.map((edit) => [splitLines(edit.old), splitLines(edit.next)] as const);
+  const width = widthFor(sides.flatMap(([oldLines, newLines]) => [oldLines.length, newLines.length]));
+  return sides
+    .map(([oldLines, newLines]) => block(oldLines, newLines, width))
+    .filter((rendered): rendered is string => rendered !== null)
+    .join(`\n${gap(width)}\n`);
+}
+
+/// The diff a call describes in its own arguments, for a card replayed from a
+/// stored thread: `patch` states its change outright and an `edit` gives both
+/// sides of every replacement it made, so both can be shown later without
+/// asking the file what it holds now.
+///
+/// A `write` is left out rather than previewed against the file as it stands:
+/// it names only the content it wrote, so the state it replaced is nowhere on
+/// disk any more, and a diff built from today's file would be the difference
+/// between then and now rather than the change the call made.
+export function argumentDiff(name: string, args: unknown): ToolDiff | null {
+  const parsed = record(args);
+  const canonical = canonicalTool(name);
+  if (canonical === "patch") {
+    const diff = text(parsed.diff).trim();
+    return diff ? { path: text(parsed.path) || "patch", diff } : null;
+  }
+  if (canonical !== "edit") return null;
+  const path = text(parsed.path);
+  const edits = parseEdits(parsed);
+  if (!path || edits.length === 0) return null;
+  // The blocks as the call wrote them: an edit's own old and new text, which is
+  // what the card showed when it ran. The file's lines around them are not here
+  // — the call did not carry them — so each replacement is previewed on its own
+  // rather than joined into one pair of sides: joined, `a` -> `a\nb` and `b` ->
+  // `""` would align into a change that never happened, or into no change.
+  const diff = editBlocks(edits);
+  return diff ? { path, diff } : null;
 }
 
 /// The diff to show for a tool call, or `null` when the call does not change a

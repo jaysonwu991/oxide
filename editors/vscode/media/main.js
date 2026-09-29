@@ -531,11 +531,8 @@
     wrap.className = "tool";
     const head = document.createElement("div");
     head.className = "thead";
-    // A real button control: focusable and keyboard-activatable, so the
-    // collapsible tool output is reachable without a mouse.
-    head.setAttribute("role", "button");
-    head.tabIndex = 0;
-    head.setAttribute("aria-expanded", "false");
+    // Whether the header is a control is decided per paint, once the card knows
+    // what it holds: only a card with something behind it is a button.
     const name = document.createElement("span");
     name.className = "tname";
     name.textContent = String(item.name || "tool");
@@ -559,9 +556,15 @@
     head.append(name, arg, state);
     const pre = document.createElement("pre");
     pre.className = "tbody";
+    // The card's second fold handle, under the output it kept: the words that
+    // offer the rest of a command are the same gesture as the header's caret,
+    // and after a long result they are the closer one to the reader.
     const hint = document.createElement("div");
     hint.className = "thint";
     hint.hidden = true;
+    hint.setAttribute("role", "button");
+    hint.tabIndex = 0;
+    hint.setAttribute("aria-expanded", "false");
     wrap.append(head, pre, hint);
     return { el: wrap, pre, hint, state, head, summary };
   }
@@ -605,16 +608,38 @@
     if (follow) el.scrollTop = el.scrollHeight;
   }
 
+  /// Gives the header the fold's own semantics, or takes them away. A header is
+  /// a button — a tab stop, a fold handle, something a screen reader announces —
+  /// only while the card has a rest behind it: a card already showing everything
+  /// it has is plain text, so a press on it would reveal nothing.
+  function setFold(entry, foldable) {
+    entry.el.classList.toggle("foldable", foldable);
+    entry.head.tabIndex = foldable ? 0 : -1;
+    if (foldable) {
+      entry.head.setAttribute("role", "button");
+      entry.head.setAttribute("aria-expanded", String(Boolean(entry.expanded)));
+    } else {
+      entry.head.removeAttribute("role");
+      entry.head.removeAttribute("aria-expanded");
+    }
+  }
+
   /// Paints a tool card from its item. A call that changed a file reads as one
   /// line — the path, and how many lines moved — with its own diff kept for the
   /// reader who clicks the card, since the turn's changes are listed together by
   /// the change card at the end of the run. `running` cards show the live output.
   function paintTool(entry) {
     const item = entry.item;
-    entry.el.classList.toggle("running", item.running);
-    entry.el.classList.toggle("done", !item.running && !item.isError);
-    entry.el.classList.toggle("error", !item.running && item.isError);
+    entry.el.classList.toggle("running", Boolean(item.running));
+    // Each state is named as a boolean: `classList.toggle` with an absent force
+    // is a plain toggle, so an item that omits one would otherwise flip a class
+    // on (`error`, for a replayed card, whose `isError` is not set).
+    entry.el.classList.toggle("done", Boolean(!item.running && !item.isError && !item.unknown));
+    entry.el.classList.toggle("error", Boolean(!item.running && item.isError));
+    entry.el.classList.toggle("unknown", Boolean(!item.running && item.unknown));
+    entry.el.classList.toggle("expanded", Boolean(entry.expanded));
     if (item.running) {
+      setFold(entry, false);
       const elapsed = entry.started ? Date.now() - entry.started : 0;
       entry.state.innerHTML = `<span class="spinner"></span>${elapsed > 1000 ? formatDuration(elapsed) : ""}`;
       setOutput(entry.pre, item.output, true);
@@ -622,7 +647,12 @@
       return;
     }
     const counts = item.diff ? diffCounts(item.diff) : "";
-    entry.state.textContent = `${item.isError ? "✖" : "✔"}${counts ? ` ${counts}` : ""}`;
+    // A call replayed out of a stored thread has no state to paint: the store
+    // did not record whether it landed, so the card marks the call as unrecorded
+    // rather than claiming the success (`✔`) or the failure (`✖`) it cannot know.
+    const mark = item.unknown ? "•" : item.isError ? "✖" : "✔";
+    entry.state.textContent = `${mark}${counts ? ` ${counts}` : ""}`;
+    entry.state.title = item.unknown ? "Resumed thread: how this call ended was not recorded" : "";
     entry.inline = Boolean(item.diff);
     if (item.diff && !entry.diffEl) {
       entry.diffEl = document.createElement("div");
@@ -633,34 +663,43 @@
     if (entry.expanded) {
       entry.pre.hidden = false;
       setOutput(entry.pre, item.output, false);
+      // A card with something folded offers the fold back where the output
+      // ends, so a long result can be closed from under it as well.
+      entry.hint.hidden = !entry.folded;
+      entry.hint.textContent = "Show less";
+    } else if (entry.inline) {
+      entry.folded = false;
+      entry.pre.hidden = true;
       entry.hint.hidden = true;
-      return;
+    } else {
+      const budget = previewLines(item.name);
+      const useTail = item.name === "bash";
+      const preview = useTail
+        ? previewTail(item.output, budget)
+        : previewText(item.output, budget);
+      setOutput(entry.pre, preview.text, false);
+      entry.folded = preview.more > 0;
+      entry.hint.hidden = !entry.folded;
+      // The line the card kept is counted where the reader would look for it,
+      // rather than twice: as a marker in the body and again as this handle.
+      entry.hint.textContent = `Show ${preview.more} ${useTail ? "earlier" : "more"} line${
+        preview.more === 1 ? "" : "s"
+      }`;
     }
-    entry.pre.hidden = entry.inline;
-    if (entry.inline) {
-      entry.hint.hidden = true;
-      return;
-    }
-    const budget = previewLines(item.name);
-    const useTail = item.name === "bash";
-    const preview = useTail
-      ? previewTail(item.output, budget)
-      : previewText(item.output, budget);
-    setOutput(
-      entry.pre,
-      preview.more > 0 && useTail ? `… ${preview.more} earlier lines\n${preview.text}` : preview.text,
-      false,
-    );
-    entry.hint.hidden = preview.more === 0;
-    entry.hint.textContent = `⋯ ${preview.more} ${useTail ? "earlier" : "more"} line${
-      preview.more === 1 ? "" : "s"
-    } · click to expand`;
+    // The header is the card's fold handle only while something is behind it:
+    // anything else is plain text, with no caret, no tab stop and no button.
+    setFold(entry, Boolean(entry.inline || entry.folded));
   }
 
   function toggleTool(entry) {
     if (!entry.item || entry.item.running) return;
+    // A card showing everything it has has no second state to move to, so a
+    // press on it does nothing rather than opening a fold with nothing in it.
+    if (!entry.inline && !entry.folded) return;
     entry.expanded = !entry.expanded;
-    if (entry.head) entry.head.setAttribute("aria-expanded", String(entry.expanded));
+    const expanded = String(entry.expanded);
+    if (entry.head) entry.head.setAttribute("aria-expanded", expanded);
+    if (entry.hint) entry.hint.setAttribute("aria-expanded", expanded);
     paintTool(entry);
   }
 
@@ -2300,13 +2339,13 @@
       }
     }
     const entry = entryOf(target);
-    if (entry && target.closest(".thead")) toggleTool(entry);
+    if (entry && target.closest(".thead, .thint")) toggleTool(entry);
   });
 
   transcript.addEventListener("keydown", (event) => {
     if (event.key !== "Enter" && event.key !== " ") return;
     const target = event.target;
-    if (!(target instanceof Element) || !target.closest(".thead")) return;
+    if (!(target instanceof Element) || !target.closest(".thead, .thint")) return;
     const entry = entryOf(target);
     if (!entry) return;
     event.preventDefault();
