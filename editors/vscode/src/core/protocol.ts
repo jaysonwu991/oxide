@@ -807,22 +807,32 @@ export class Transcript {
     switch (str(delta.type)) {
       case "thinking_delta": {
         if (!text) return [];
-        // A delta that opens a block has to push it before appending, or the
-        // view has no entry for the id and drops the text.
+        // A delta that opens a block has to push an empty block before
+        // appending, or the view has no entry for the id and drops the text.
+        // The pushed item must not carry the delta, because the `append` that
+        // follows it already does: sending both would paint the first fragment
+        // twice.
         const created = this.currentThinking === null;
         const item = this.ensureThinking();
         item.text += text;
-        const messages: ViewMessage[] = created ? [{ k: "push", item }] : [];
+        const messages: ViewMessage[] = created
+          ? [{ k: "push", item: { ...item, text: "" } }]
+          : [];
         messages.push({ k: "append", id: item.id, field: "text", delta: text });
         return messages;
       }
       case "text_delta": {
         if (!text) return [];
+        // The same empty-push rule as the reasoning delta: the `push` only
+        // creates the bubble, and the `append` carries the first fragment, so
+        // the fragment is painted once rather than by both messages.
         const created = this.currentAssistant === null;
         const item = this.ensureAssistant();
         item.text += text;
         this.status = "Writing…";
-        const messages: ViewMessage[] = created ? [{ k: "push", item }] : [];
+        const messages: ViewMessage[] = created
+          ? [{ k: "push", item: { ...item, text: "" } }]
+          : [];
         messages.push({ k: "append", id: item.id, field: "text", delta: text });
         return messages;
       }

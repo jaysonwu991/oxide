@@ -9,9 +9,11 @@
 //! key first, which leaves the press delivered as the click the page answers.
 //!
 //! A window keeps its key status while the app is in the background, which is
-//! why this reads the app rather than the window: a press back into Oxide is
-//! otherwise spent bringing it forward, and the control under the pointer needs
-//! a second click.
+//! why the inactive case reads the app rather than the window: a press back
+//! into Oxide is otherwise spent bringing it forward, and the control under
+//! the pointer needs a second click. The same press is spent when the app is
+//! already active but the window under the pointer is not key, so that case is
+//! made key as well.
 
 use std::ptr::NonNull;
 
@@ -39,12 +41,19 @@ pub fn install() {
                 // happened: the window keeps its key status while the app is in
                 // the background, so a press back into it is read as the press
                 // that brings Oxide forward rather than as a click, and the button
-                // under the pointer needs a second one. A press into a window of
-                // the active app lands as it stands — the view already accepts a
-                // first mouse — and taking the key away from whatever holds it
-                // mid-press is what would drop that click, so it is left alone.
-                if !NSApplication::sharedApplication(mtm).isActive() {
+                // under the pointer needs a second one. A press into the key
+                // window of the active app lands as it stands — the view already
+                // accepts a first mouse — and taking the key away from whatever
+                // holds it mid-press is what would drop that click, so it is left
+                // alone. The window that is not key even while the app is active
+                // (a native panel just closed, say) is the same first-click case:
+                // AppKit spends that press making the window key, so it is made
+                // key first rather than left to be swallowed.
+                let app = NSApplication::sharedApplication(mtm);
+                if !app.isActive() {
                     take_key(&window, mtm);
+                } else if !window.isKeyWindow() {
+                    window.makeKeyAndOrderFront(None);
                 }
             }
         }

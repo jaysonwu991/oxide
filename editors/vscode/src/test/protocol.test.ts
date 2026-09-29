@@ -144,6 +144,22 @@ describe("Transcript", () => {
     assert.equal(transcript.status, "Writing…");
   });
 
+  it("pushes an empty bubble before the first text delta so it is not painted twice", () => {
+    const transcript = new Transcript();
+    const messages = transcript.apply({
+      type: "message_update",
+      assistantMessageEvent: { type: "text_delta", delta: "Still" },
+    });
+    const pushed = push(messages[0]);
+    assert.ok(pushed.kind === "assistant");
+    assert.equal(pushed.text, "");
+    appended(messages[1]);
+    assert.deepEqual(
+      transcript.items.map((item) => (item.kind === "assistant" ? item.text : "")),
+      ["Still"],
+    );
+  });
+
   it("leaves no empty thinking block when a turn reasons without a delta", () => {
     const transcript = new Transcript();
     transcript.apply({ type: "thinking" });
@@ -391,15 +407,19 @@ describe("Transcript", () => {
     assert.equal(transcript.items.length, 0);
     // The retry streams fresh: new text opens a new item rather than extending
     // the discarded one.
-    const fresh = push(
-      transcript.apply({
-        type: "message_update",
-        assistantMessageEvent: { type: "text_delta", delta: "done" },
-      })[0],
-    );
+    const freshMessages = transcript.apply({
+      type: "message_update",
+      assistantMessageEvent: { type: "text_delta", delta: "done" },
+    });
+    const fresh = push(freshMessages[0]);
     assert.equal(fresh.kind, "assistant");
     assert.notEqual(fresh.id, partial.id);
-    assert.equal((fresh as AssistantItem).text, "done");
+    // The pushed item only creates the bubble; the first delta rides on the
+    // append that follows it.
+    assert.equal((fresh as AssistantItem).text, "");
+    appended(freshMessages[1]);
+    const freshItem = transcript.items.find((item) => item.id === fresh.id) as AssistantItem;
+    assert.equal(freshItem.text, "done");
   });
 
   it("keeps a committed step when a later step retries", () => {
