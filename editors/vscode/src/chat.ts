@@ -66,7 +66,10 @@ import {
   expandAtReferences,
   isAttachmentPath,
   relativePath,
+  selectionLines,
+  sliceLines,
   type ContextBlock,
+  type LineRange,
 } from "./core/prompt";
 import { HISTORY_MESSAGES, parseSessionHistory } from "./core/history";
 import { isSessionCommand, parseSessionList, type SessionEntry } from "./core/sessions";
@@ -116,6 +119,16 @@ interface AutoContext {
   id: number;
   /// The absolute path of the file being edited.
   file: string;
+  /// The lines selected in it, when the reader has some: what is attached is
+  /// the selection rather than the whole file, and the chip says which lines.
+  selection: LineRange | null;
+}
+
+/// Whether two tracked selections are the same lines: the caret moving inside
+/// one is not something the composer has to repaint for.
+function sameRange(a: LineRange | null, b: LineRange | null): boolean {
+  if (!a || !b) return a === b;
+  return a.start === b.start && a.end === b.end;
 }
 
 /// An image or PDF the composer is holding. A pasted blob has no path of its
@@ -208,6 +221,11 @@ export class ChatController {
   /// instead of painting a list the newer probe has already replaced.
   private mcpProbe = 0;
   private sessions: SessionEntry[] = [];
+  /// The filter the open session listing is showing. The rows are the store's
+  /// own answer, so the search box only decides which of them are painted —
+  /// typing never spawns the CLI again — and the value is held here so a redraw
+  /// under the reader (a store resync while a turn runs) keeps their filter.
+  private sessionQuery = "";
   /// The newest session listing asked for. The store gains a thread as the turn
   /// it belongs to runs, so the same listing is read twice — once when the run
   /// names its session, again when it ends — and the two reads overlap. The
@@ -218,6 +236,16 @@ export class ChatController {
   /// picker label); otherwise the header falls back to the first message.
   private sessionTitle: string | null = null;
   private activeFolder: string | null = null;
+  /// The pane the caret is in, if any. The chat has a pane in the activity bar
+  /// and one in the secondary side bar, and each holds its own composer — the
+  /// text in the box belongs to the view, not to the controller — so a message
+  /// that is about the composer goes only to the pane being typed in.
+  private focusedView: vscode.WebviewView | null = null;
+  /// A pane that has asked for state, so its listener is up. A webview is built
+  /// asynchronously, and a message posted into one still being built is dropped.
+  private readonly readyViews = new Set<vscode.WebviewView>();
+  /// Messages about the composer that arrived before any pane was listening.
+  private pendingComposer: ViewMessage[] = [];
   /// The shared on-disk state the footer reports. Re-read when something the
   /// user or the agent could have changed it happens — not per stream event,
   /// which would stat a dozen files for every token.
@@ -247,7 +275,39 @@ export class ChatController {
     this.views.add(view);
     // The webview asks for state once its script is listening (`ready`), so a
     // repainted panel always restores the whole transcript.
-    view.onDidDispose(() => this.views.delete(view));
+    view.onDidDispose(() => {
+      this.views.delete(view);
+      this.readyViews.delete(view);
+      if (this.focusedView === view) this.focusedView = null;
+    });
+  }
+
+  /// Whether the caret is in the chat. The editor's focus shortcut toggles
+  /// between the editor and the composer, so it has to know which side it is
+  /// on: the panel reports its own window focus either way.
+  get chatFocused(): boolean {
+    return this.focusedView !== null;
+  }
+
+  /// The pane with `focus` took the keyboard, or the one with `blur` gave it
+  /// up — which is also what clicking back into the editor does.
+  noteViewFocus(view: vscode.WebviewView, focused: boolean): void {
+    if (focused) this.focusedView = view;
+    else if (this.focusedView === view) this.focusedView = null;
+  }
+
+  /// Puts the caret in the composer of the pane being looked at, which is what
+  /// bringing the chat forward should leave behind.
+  focusComposer(): void {
+    this.postToPanel({ k: "focusComposer" });
+  }
+
+  /// Writes an `@path` reference into the composer at the caret — the file and
+  /// selection the editor's insert shortcut read, in the shape `core/prompt.ts`
+  /// resolves back into a context block.
+  insertReference(reference: string): void {
+    if (!reference) return;
+    this.postToPanel({ k: "insert", text: reference });
   }
 
   /// The type of the chat view the user is looking at, if any. The chat has a
@@ -262,6 +322,34 @@ export class ChatController {
 
   private broadcast(message: ViewMessage): void {
     for (const view of this.views) void this.push(view, message);
+  }
+
+  /// A message about the composer rather than the transcript: the pane with the
+  /// caret, else the pane on screen — and only one that is listening, since what
+  /// is posted into a webview still being built is dropped (a shortcut can open
+  /// the chat and post into it in the same breath). Anything else waits for the
+  /// first pane to say it is ready. The transcript itself is broadcast, since
+  /// both panes show the same thread.
+  private postToPanel(message: ViewMessage): void {
+    const listening = (view: vscode.WebviewView) => this.readyViews.has(view);
+    const target =
+      this.focusedView && listening(this.focusedView)
+        ? this.focusedView
+        : [...this.views].find((view) => view.visible && listening(view));
+    if (!target) {
+      this.pendingComposer.push(message);
+      return;
+    }
+    void this.push(target, message);
+  }
+
+  /// A pane is listening: what was asked for while the panel was still being
+  /// built goes to it now, in the order it was asked for.
+  noteReady(view: vscode.WebviewView): void {
+    this.readyViews.add(view);
+    const pending = this.pendingComposer;
+    this.pendingComposer = [];
+    for (const message of pending) void this.push(view, message);
   }
 
   private async push(view: vscode.WebviewView, message: ViewMessage): Promise<void> {
@@ -571,11 +659,13 @@ export class ChatController {
   // ---------- context and attachments ----------
 
   /// Keeps the composer's chip for the file the editor has open in step with
-  /// the editor. It is the only place the tracked file is set — called when the
-  /// active editor changes, when a setting changes and once at activation — so
-  /// nothing else has to remember to keep it current.
+  /// the editor — the file and the lines selected in it. It is the only place
+  /// the tracked file is set — called when the active editor changes, when the
+  /// selection does, when a setting changes and once at activation — so nothing
+  /// else has to remember to keep it current.
   syncActiveEditor(): void {
-    const document = vscode.window.activeTextEditor?.document;
+    const editor = vscode.window.activeTextEditor;
+    const document = editor?.document;
     const file = document && document.uri.scheme === "file" ? document.uri.fsPath : null;
     const wanted = file && this.setting<boolean>("autoContext", true) ? file : null;
     if (!wanted) {
@@ -585,25 +675,41 @@ export class ChatController {
       this.broadcastChips();
       return;
     }
-    if (this.auto?.file === wanted) return;
-    // A chip removed for one file comes back with the next one.
+    const selection = editor ? selectionLines(editor.selection) : null;
+    if (this.auto?.file === wanted && sameRange(this.auto.selection, selection)) return;
+    // A chip removed for one file — or for one selection — comes back with the
+    // next one.
     this.autoHidden = false;
-    this.auto = { id: this.nextChipId++, file: wanted };
+    this.auto = { id: this.nextChipId++, file: wanted, selection };
     this.broadcastChips();
   }
 
   /// The chip for the file the editor has open, painted after the ones the user
   /// attached: it is context they did not ask for, and its ✕ takes it out for
-  /// as long as that file is the one being edited.
+  /// as long as that file is the one being edited. A selection is named by the
+  /// lines it covers — the chip is the only place the reader can see what the
+  /// next message will carry — and the tooltip it carries says the same thing
+  /// in words, since a hyphenated range is not what a screen reader reads out.
   private autoChip(): ContextChip | null {
     if (!this.auto || this.autoHidden) return null;
-    return { id: this.auto.id, label: this.relativeTo(this.auto.file), auto: true };
+    const path = this.relativeTo(this.auto.file);
+    if (!this.auto.selection) return { id: this.auto.id, label: path, auto: true };
+    const { start, end } = this.auto.selection;
+    const lines = end > start ? `${end - start + 1} lines` : "1 line";
+    return {
+      id: this.auto.id,
+      label: contextLabel({ path, text: "", startLine: start, endLine: end }),
+      auto: true,
+      detail: `${lines} selected — sent with the next message`,
+    };
   }
 
   /// The block the tracked chip stands for. The text is read here rather than
   /// when the chip was painted, so an unsaved edit is still what the run
   /// receives; a file too long for a prompt is trimmed like any other block,
-  /// silently, since nothing was attached by hand to report on.
+  /// silently, since nothing was attached by hand to report on. A selection is
+  /// sent as the lines it names and nothing else, the same slice a ranged `@`
+  /// reference inlines.
   private autoBlock(): ContextBlock | null {
     const auto = this.auto;
     if (!auto || this.autoHidden) return null;
@@ -613,7 +719,14 @@ export class ChatController {
         ? document.getText()
         : readTextFile(auto.file);
     if (text === null || text.includes("\u0000")) return null;
-    return trimLines({ path: this.relativeTo(auto.file), text }).block;
+    const path = this.relativeTo(auto.file);
+    if (!auto.selection) return trimLines({ path, text }).block;
+    const { start, end } = auto.selection;
+    const slice = sliceLines(text, start, end);
+    // A file that no longer holds those lines sends nothing rather than sending
+    // something other than what the chip says it will.
+    if (slice === null) return null;
+    return trimLines({ path, text: slice, startLine: start, endLine: end }).block;
   }
 
   /// A file's text or an editor selection the message carries.
@@ -838,7 +951,7 @@ export class ChatController {
       return;
     }
     if (this.contextCount === 0 && isSessionCommand(message)) {
-      await this.resumeSession();
+      await this.openSessions();
       return;
     }
     // The rest of the built-ins are the panel's own draws too — the footer's
@@ -1187,7 +1300,13 @@ export class ChatController {
   /// while the listing knows which one that is.
   private showSessions(note = ""): void {
     this.showDialog(
-      sessionDialog(this.sessions, this.transcript.sessionId, note, this.liveSession()),
+      sessionDialog(
+        this.sessions,
+        this.transcript.sessionId,
+        note,
+        this.liveSession(),
+        this.sessionQuery,
+      ),
     );
   }
 
@@ -1222,20 +1341,39 @@ export class ChatController {
     this.showSessions();
   }
 
-  /// Opens the session history in the panel: the threads the CLI lists for this
-  /// project, so the dialog and the terminal agree on what exists. The listing
-  /// is shown as soon as it arrives; a row either resumes a session, leaves the
-  /// current one for a fresh chat, or continues the newest thread.
+  /// The header's history button and the footer's session chip: one action that
+  /// swaps rather than a second button beside the first. A listing already up is
+  /// what it closes — the click that opened it closes it, which is what the
+  /// button's own `aria-expanded` says — and otherwise it opens, so the panel's
+  /// history control is a toggle that always has something to toggle.
   async resumeSession(): Promise<void> {
+    if (this.dialog?.kind === "sessions") {
+      this.closeDialog();
+      return;
+    }
+    await this.openSessions();
+  }
+
+  /// Opens the session history in the panel, or paints it again from a fresh
+  /// read if it is already up: the threads the CLI lists for this project, so the
+  /// dialog and the terminal agree on what exists. The listing is shown as soon
+  /// as it arrives; a row either resumes a session, leaves the current one for a
+  /// fresh chat, or continues the newest thread. `/session` comes here rather
+  /// than through the toggle above, because a command that *asks* for the
+  /// listing should not answer by closing it.
+  ///
+  /// Reading the store is all this does — switching threads is the rows' own
+  /// action, and each of those refuses while a turn runs — so a listing opened
+  /// mid-turn is something to read rather than a switch waiting to be taken.
+  async openSessions(): Promise<void> {
     const cwd = this.cwd();
     if (!cwd) {
       this.showNotice("Open a folder first.", "error");
       return;
     }
-    if (this.turn) {
-      this.showNotice("A turn is running; stop it before switching sessions.", "warn");
-      return;
-    }
+    // The listing being opened starts unfiltered: the query belongs to the one
+    // that was on screen, not to the next one.
+    this.sessionQuery = "";
     this.showSessions("Loading sessions…");
     const sync = ++this.sessionsSync;
     const result = await runCapture(this.binary(), sessionsListArgs(), cwd);
@@ -1243,6 +1381,9 @@ export class ChatController {
     // for — is superseded by this one, and a project that changed under the read
     // is no longer the one it was about, so neither paints.
     if (sync !== this.sessionsSync || cwd !== this.cwd()) return;
+    // Closed while the read was in flight: the button toggles, so the answer is
+    // dropped rather than reopening the listing the reader put away.
+    if (this.dialog?.kind !== "sessions") return;
     if (result.error || result.code !== 0) {
       const detail = result.error || firstLine(result.stderr) || `exit ${result.code}`;
       const failed = `Could not list sessions: ${detail}`;
@@ -1251,6 +1392,16 @@ export class ChatController {
       return;
     }
     this.sessions = parseSessionList(result.stdout);
+    this.showSessions();
+  }
+
+  /// The listing's search box: the query narrows the rows the store has already
+  /// answered, so typing filters the list without spawning the CLI again. The
+  /// redraw goes through `showSessions` like every other, which is what keeps
+  /// the count beside the title and the empty-list note in step with it.
+  searchSessions(text: string): void {
+    if (this.dialog?.kind !== "sessions" || text === this.sessionQuery) return;
+    this.sessionQuery = text;
     this.showSessions();
   }
 
@@ -1397,7 +1548,7 @@ export class ChatController {
       this.broadcast(this.stateMessage());
     }
     this.showNotice(`Deleted ${label}.`);
-    await this.resumeSession();
+    await this.openSessions();
   }
 
   // ---------- dialogs ----------
@@ -1633,7 +1784,10 @@ export class ChatController {
       case "mcp":
         return this.showMcps();
       case "session":
-        return this.resumeSession();
+        // Opens rather than toggles: the header's button is the control that
+        // swaps, and a command that names the history should not answer by
+        // taking it away.
+        return this.openSessions();
       case "new":
         return this.newSession();
       case "attach":
@@ -1698,11 +1852,10 @@ export class ChatController {
   }
 
   /// Cycles the reasoning level the way the terminal's Shift+Tab and the
-  /// desktop composer chip do.
+  /// desktop composer chip do. The chip is the feedback — its label is the new
+  /// level — so the switch writes no line into the transcript.
   async cycleReasoning(): Promise<void> {
-    const next = nextReasoning(this.setting<string>("reasoning", "auto"));
-    await this.updateSetting("reasoning", next);
-    this.showNotice(next === "auto" ? "Reasoning: auto (provider native)" : `Reasoning: ${next}`);
+    await this.updateSetting("reasoning", nextReasoning(this.setting<string>("reasoning", "auto")));
   }
 
   /// Picks the agent a chat runs with from the ones discovered on disk, which

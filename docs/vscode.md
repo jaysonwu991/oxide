@@ -93,6 +93,31 @@ the terminal's and the desktop app's). The view-title actions (`oxide.newSession
 `oxide.resumeSession`) carry the codicon `$(add)` and `$(history)` for the same
 reason, so VS Code draws them as icons instead of inline text.
 
+`oxide.openChat` also sits on the editor's own toolbar: the manifest contributes
+it to `editor/title` (`resourceScheme == file`, since an output or diff tab has
+nothing to go with it), so the mark at the top right of a file's tab brings the
+panel forward without leaving the editor. Bringing it forward leaves the caret in
+the composer — focusing a webview view does not focus its own DOM — through the
+`focusComposer` message the pane applies. A webview is built asynchronously, so
+anything meant for the composer goes only to a pane that has asked for state;
+what arrives while the panel is still being built waits, and goes to the first
+pane that says it is ready. A shortcut that opens the chat on a cold window
+therefore still leaves the caret in the box, and an inserted reference still
+lands rather than being posted into a webview that had no listener yet.
+
+`oxide.focusInput` is the caret toggle that goes with it (`Cmd+Esc`, `Ctrl+Esc`
+elsewhere): from the editor it raises the panel and puts the caret in the message
+box, and from the composer it hands the caret back to the editor group. Which
+side it is on is the controller's to know, not something a command can read off
+the screen: each pane reports its own window `focus`/`blur` (`noteViewFocus`),
+because each holds its own composer and only one of them is being typed in. That
+is also why a message about the composer goes to the pane with the caret — else
+the pane on screen — while the transcript is broadcast to both.
+
+An Escape is VS Code's when it carries a modifier: `Cmd+Esc`/`Ctrl+Esc` reaches
+the composer as an Escape on its way to the keybinding, so only a plain one
+closes the completion list or stops a turn.
+
 ## Brand assets
 
 Both icons are the desktop app's: `media/oxide.svg` redraws the mark inside
@@ -164,12 +189,21 @@ the project's trust from here.
 
 ## Sessions
 
-The header's history icon, the `session: <short id>` footer chip, **Oxide:
-Resume Session**, and `/session` (alias `/sessions`) in the composer all open
-the panel's **Sessions** listing — the listing `oxide sessions list` prints,
-painted in the panel rather than in a QuickPick. It hangs from the header
-rather than from the composer the way the MCP servers listing does: it is about
-the thread the header names, and its first row is about leaving it.
+The header's history icon is the one control for it, and it is a toggle: the
+click that opens the listing is the click that closes it, which is what the
+button's own `aria-expanded` says — the panel is part of the column rather than a
+window over it, so it is opened and put away the same way. Reading the store is
+all opening does: the rows that switch threads refuse while a turn owns the
+session file, so the listing itself can be read mid-turn. The `session: <short
+id>` footer chip, **Oxide: Session History**, and `/session` (alias `/sessions`)
+in the composer reach the same listing — the listing `oxide sessions list`
+prints, painted in the panel rather than in a QuickPick. The chip and the command
+are the button's own control under another name, so they toggle with it, while
+`/session` typed in the composer opens the listing (or repaints it if it is
+already up) rather than closing it: a command that names the history should not
+answer by taking it away. It hangs from the header rather than from the composer
+the way the MCP servers listing does: it is about the thread the header names, and
+its first row is about leaving it.
 
 Its first two rows are the way out of the thread the panel has open. **New
 chat** closes it and puts the panel back on the new-chat page it starts on —
@@ -181,15 +215,30 @@ and, with nothing open to close, the row settles for "start a fresh thread".
 Under them is every thread stored for the folder, newest first, each named by
 its session name or, unnamed, by the summarized preview `oxide_core::title`
 gives it in the terminal's own picker and the desktop app's sidebar, with how
-long ago it was written and how many messages it holds; the row the panel is
-showing carries **Current** where the others carry their age, since "close this
-thread" would otherwise name nothing. Each row carries a trash button that asks
-to confirm and then deletes the thread through `oxide sessions delete <id>`, the
-way the desktop app's sidebar does; deleting the thread the panel is showing
-starts a new one rather than leaving a thread that is gone from the list still
-on screen. A deletion is refused while a turn is running — the turn's CLI
-appends to that session file as it works, so removing it would pull the file out
-from under the process — and the confirmation says so.
+long ago it was written and how many messages it holds; the title carries the
+number of threads listed beside it, and the row the panel is showing carries
+**Current** where the others carry their age (on the selection background a
+selected row gets, so it is marked without being moved out of the order it is
+being read in), since "close this thread" would otherwise name nothing. Each row
+carries a trash button that appears on the row the pointer is on — the same
+bargain VS Code makes for a tab's close — asks to confirm, and then deletes the
+thread through `oxide sessions delete <id>`, the way the desktop app's sidebar
+does; deleting the thread the panel is showing starts a new one rather than
+leaving a thread that is gone from the list still on screen. A deletion is
+refused while a turn is running — the turn's CLI appends to that session file as
+it works, so removing it would pull the file out from under the process — and the
+confirmation says so.
+
+A project can hold hundreds of threads, so the listing carries a search box
+above the rows. It filters what the store already answered rather than reading it
+again — typing never spawns the CLI — and it is the host that filters: the view
+posts the box's text as `dialogSearch`, the host narrows the rows, the count and
+the note together (`filterSessions` matches the title and the id,
+case-insensitively), and the narrowed listing is painted back with the query
+echoed in it, so a repaint under a reader keeps their filter (`syncSessions`
+while a turn runs) and never takes the box away from the middle of a word. A
+query nothing matches leaves the two rows that are ways out of the listing and
+says so; the box's own ✕ clears it.
 
 Picking a row resumes that thread here: the CLI is launched with `--session
 <id>`, and the title in the header follows. Resuming also fills the transcript
@@ -241,12 +290,23 @@ applied: a listing that started earlier and lands later is dropped instead of
 putting the just-created row back out of the list.
 
 Both dialogs are composed in the extension host as data (`core/dialogs.ts`) — a
-title, the panel edge it hangs from (`pin`), a note for an empty or failed
-listing, and rows where each row carries the action it posts back (`mcpToggle`
-with the server's name, `mcpRefresh`, `openSession` with `new`, `continue` or a
-session id, `sessionDelete` and `sessionDeleteConfirm` for a thread's trash
-button, `dialogClose`) — and the controller holds the open one, so both panes
-paint the same dialog and a pane that attaches afterwards is sent it again.
+kind, a title, the panel edge it hangs from (`pin`), the number of rows being
+listed and whether the head carries a search box (`count`, `search`, and the
+`query` that composed them), a note for an empty or failed listing, and rows
+where each row carries the action it posts back (`mcpToggle` with the server's
+name, `mcpRefresh`, `openSession` with `new`, `continue` or a session id,
+`sessionDelete` and `sessionDeleteConfirm` for a thread's trash button,
+`dialogClose`) — and the controller holds the open one, so both panes paint the
+same dialog and a pane that attaches afterwards is sent it again. A row also
+carries what it is (`kind`: `action` for the listing's own ways out, `thread` for
+one of the threads it lists, empty for an ordinary row), which is the only thing
+the renderer needs to paint a thread apart from a way out of the listing, and
+`current` for the thread the panel has open — the mark the listing puts on the
+conversation on screen, sent rather than read off the row's status word, which
+is a word to paint. `kind: "sessions"` is also the only state the header's own
+button has to agree with, since it is that listing which puts the button's
+`aria-expanded` up.
+
 Nothing about where it opens is left to the renderer either: the MCP list is
 pinned to the footer, above the composer it was asked for in, the session
 history to the header that names the thread it lists, and the webview only
@@ -458,6 +518,18 @@ last chip in the strip, dashed rather than solid and with a ✎, and
   untitled buffer leaves the strip alone — and a file past the block limit is
   trimmed at the same cap as any other block, silently, since nothing was
   attached by hand to report on.
+- A selection in that file is what the chip holds: it names the lines
+  (`src/app.ts:12-15`) and sends those lines under the range's own header instead
+  of the whole file, so a question about four lines does not carry four hundred.
+  The lines are the 1-based ones a reader would count, and a drag that stopped at
+  the start of a line does not take that line with it. Letting the selection go —
+  or selecting elsewhere — returns the chip to the whole file, and its tooltip
+  says in words what it is holding (`4 lines selected — sent with the next
+  message`), since a hyphenated range is not what a screen reader reads out. The
+  text is sliced out of the buffer when the message goes, like the whole file was,
+  so an unsaved edit inside the selection is what the run receives; a file that no
+  longer holds those lines sends nothing rather than something other than what the
+  chip says.
 
 ## The `@` completion
 
@@ -499,6 +571,17 @@ the crate, so it mirrors the module's rules rather than its code.
 The list is a flex child of the composer card, above the message and the
 attachment strip, so it stays attached to the box it completes and takes its room
 from the transcript; it scrolls its own rows past `30vh`.
+
+The same reference can be written from the editor instead of typed:
+`oxide.insertReference` (`Option+K` / `Alt+K`, the key Claude Code's extension
+uses) reads the file the editor has open — or the selection in it — and splices
+`@src/app.ts`, or `@src/app.ts#5-10` for a selection, into the box at the caret,
+with a one-line selection written as the one number it is (`fileReference` in
+`core/prompt.ts`, the module that resolves it back into context). The host reads
+the editor, the renderer only splices what it is handed, and the reference is
+kept off the words around it with the caret left after it, so it can be followed
+by a question. It is offered wherever a file is open, since what it writes is
+about that file.
 
 ## The `/` palette
 
@@ -573,7 +656,9 @@ into, so the retry's fresh output does not extend the partial reply.
 `context` carries the composer's pending context *and* attachments — the tracked
 file's chip travels in the same list, marked `auto`, so the view can paint it as
 tracked and leave it out of what counts as something to send — and the
-messages back are `send`, `stop`, `newSession`, `resumeSession`, `attach` (a
+messages back are `send`, `stop`, `newSession`, `resumeSession`, `dialogSearch`
+(the session listing's search box, which the host answers with the narrowed
+listing), `attach` (a
 pasted blob as a `data:` URL), `attachFiles` (dropped paths), `pickFiles`,
 `removeChip` (by chip id, either list), `clearChips`, `completeAt` (what the
 composer holds and where its caret is, numbered, answered with `atSuggestions`:
@@ -605,6 +690,17 @@ stays in the message. Duplicate references are collapsed, and trailing
 punctuation is not taken as part of the path. The composer's completion offers
 the paths that will resolve this way — a folder is only a step into one, and a
 reference that resolves to nothing is left for the model to read as text.
+
+A reference may also name a line range, which is what the editor's insert
+shortcut writes for a selection: `@src/app.ts#5-10` becomes a block holding those
+lines under the range's own header (`--- src/app.ts:5-10 ---`), so a selection
+arrives as the lines that were selected rather than as the whole file. A range
+that starts past the end of the file is left in the message as typed instead of
+being sent as a block with nothing in it — a file edited between the shortcut and
+the send would otherwise read as an empty file — a range that runs past the last
+line stops there, two ranges of one file are two blocks, and a range written
+after an image or PDF is ignored, since an attachment travels whole rather than
+being read as text.
 
 ## Diff previews
 
@@ -777,11 +873,12 @@ otherwise reset it to the top.
 ## Commands and settings
 
 The manifest defines the two view containers (activity bar and secondary side
-bar), the commands and keybindings, and the `oxide.*` settings. See the
-[extension README](../editors/vscode/README.md) for the user-facing tables. The
-footer's chips are shortcuts into the same actions: `setModel`, `setAgent`,
-`cycleReasoning`, `setProjectTrust` and `resumeSession` are reached from a chip
-click and from the palette, so the two entry points never drift.
+bar), the editor toolbar entry, the commands and keybindings, and the `oxide.*`
+settings. See the [extension README](../editors/vscode/README.md) for the
+user-facing tables. The footer's chips are shortcuts into the same actions:
+`setModel`, `setAgent`, `cycleReasoning`, `setProjectTrust` and `resumeSession`
+are reached from a chip click and from the palette, so the two entry points never
+drift.
 
 ## Development and testing
 
@@ -795,7 +892,9 @@ pnpm run package   # vsce package -> oxide-vscode-<version>.vsix
 
 Press <kbd>F5</kbd> with the folder open to launch an Extension Development
 Host. The tests cover the pure modules only: argv building, prompt assembly and
-`@path` expansion, the `@` completion's token and rows (`test/at.test.ts`),
+`@path` expansion (a reference's line range among them, down to the lines its
+block carries and the range a file that shrank leaves in the message), the `@`
+completion's token and rows (`test/at.test.ts`),
 attachment types and naming, diff and tool previews, the change listing, its rows
 and the diff plan a click opens (`test/changes.test.ts`),
 session-list parsing, config-dir resolution, binary lookup and the plan a
@@ -813,6 +912,11 @@ that the two icons stay the desktop app's, in `test/commands.test.ts`, that
 every contributed command has a handler, every footer chip has a click handler,
 and every message the webview posts is handled by `chatView.ts` — and that an
 answer is routed on to the running turn rather than only settling the card, and that the
+editor's own chrome agrees with the host: the toolbar entry and the icon it
+needs, the two keybindings, the caret toggle asking the controller which side it
+is on rather than assuming, and the insert shortcut reading the editor in the
+host and handing over a reference the renderer only splices — and that the
+composer's own messages have a case in the renderer, and that the
 header's new-chat button carries the command's own name in its tooltip and
 `aria-label` rather than the name the command had before, and that the session
 listing is composed in exactly one place, which supplies the id of the thread on
@@ -831,7 +935,10 @@ commands the panel owns are performed (checked against the real catalog in
 `test/webview.test.ts`, that `media/main.js` — plain JavaScript with no type
 checking — paints the footer, the chips, the attachment strip, the approval
 card, a question card's steps, options and free-text fields and the answers a
-click posts,
+click posts, splices the host's reference into the box at the caret and leaves
+it there for the next thing typed, tells the host when the pane takes the
+keyboard and when it gives it up, and leaves a modified Escape (the host's own
+keybinding) to the editor,
 the change card and the diff a row or its header opens (against the CLI's own
 listing, which the host composed), and the review it opens — its rows, no diff of
 its own, the file each row and each arrow names to the editor, the arrows walking

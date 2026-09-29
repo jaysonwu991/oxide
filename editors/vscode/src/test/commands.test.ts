@@ -15,7 +15,9 @@ const root = path.join(__dirname, "..", "..");
 
 interface Manifest {
   contributes: {
-    commands: { command: string; title: string; category?: string }[];
+    commands: { command: string; title: string; category?: string; icon?: string }[];
+    menus: Record<string, { command: string; when?: string; group?: string }[]>;
+    keybindings: { command: string; key: string; mac?: string; when?: string }[];
     configuration: { properties: Record<string, { default?: unknown }> };
   };
 }
@@ -74,6 +76,87 @@ describe("command contributions", () => {
     for (const kind of kinds) {
       assert.ok(chatView.includes(`case "${kind}":`), `the host handles "${kind}"`);
     }
+  });
+
+  it("handles every message the host sends into the composer", () => {
+    // The other direction of the same bargain: a host message with no case in
+    // the renderer is an insert that silently never happens.
+    for (const kind of ["insert", "focusComposer"]) {
+      assert.ok(renderer.includes(`case "${kind}":`), `the view handles "${kind}"`);
+    }
+  });
+
+  it("offers the editor's own chrome: the toolbar, the caret toggle and the insert key", () => {
+    // Claude Code's editor chrome, in oxide's own words: the panel's icon on
+    // the editor toolbar, a key that toggles the caret between the editor and
+    // the composer, and a key that writes the file and the selection into the
+    // composer as the `@path` reference the CLI expands.
+    const open = manifest.contributes.commands.find((entry) => entry.command === "oxide.openChat");
+    assert.ok(open?.icon, "Open Chat carries the icon a toolbar draws");
+    const toolbar = manifest.contributes.menus["editor/title"] ?? [];
+    assert.ok(
+      toolbar.some(
+        (entry) => entry.command === "oxide.openChat" && entry.when === "resourceScheme == file",
+      ),
+      "the editor toolbar offers it",
+    );
+
+    const bindings = new Map(
+      manifest.contributes.keybindings.map((entry) => [entry.command, entry] as const),
+    );
+    assert.deepEqual(
+      { key: bindings.get("oxide.focusInput")?.key, mac: bindings.get("oxide.focusInput")?.mac },
+      { key: "ctrl+escape", mac: "cmd+escape" },
+    );
+    assert.deepEqual(
+      {
+        key: bindings.get("oxide.insertReference")?.key,
+        when: bindings.get("oxide.insertReference")?.when,
+      },
+      { key: "alt+k", when: "editorTextFocus" },
+    );
+  });
+
+  it("toggles the caret from what the pane reported, not from what is on screen", () => {
+    // The composer's own text belongs to the pane, and there is a pane in the
+    // activity bar and one in the secondary side bar: `Cmd+Esc` has to know
+    // which side the caret is on, and the panel is the only thing that knows.
+    const toggle = extension.slice(
+      extension.indexOf('"oxide.focusInput"'),
+      extension.indexOf('"oxide.insertReference"'),
+    );
+    assert.ok(toggle.includes("controller.chatFocused"), "it asks the controller");
+    assert.ok(toggle.includes('"workbench.action.focusActiveEditorGroup"'), "and hands the caret back");
+    assert.ok(toggle.includes("controller.focusComposer()"), "and puts it in the box");
+    assert.ok(
+      chat.includes('{ k: "focusComposer" }'),
+      "the controller asks the pane it belongs to, since focusing a pane is not focusing its box",
+    );
+    // A pane that is still being built has no listener yet, so what was asked
+    // for waits for the `ready` that says one is there.
+    assert.ok(chat.includes("noteReady"), "the request is kept until a pane is listening");
+    assert.ok(chatView.includes("this.controller.noteReady(view)"), "and applied then");
+    assert.ok(
+      /readyViews\.has\(view\)/.test(chat),
+      "and only a pane that has said so is posted into at all",
+    );
+    assert.ok(chat.includes("this.pendingComposer.push(message)"), "the insert waits with it");
+    assert.ok(chatView.includes('this.controller.noteViewFocus(view, true)'), "the pane reports `focus`");
+    assert.ok(chatView.includes('this.controller.noteViewFocus(view, false)'), "and `blur`");
+  });
+
+  it("reads the file and the selection in the host, and only splices in the view", () => {
+    const insert = extension.slice(
+      extension.indexOf('"oxide.insertReference"'),
+      extension.indexOf('"oxide.newSession"'),
+    );
+    assert.ok(insert.includes("vscode.window.activeTextEditor"), "the host reads the editor");
+    assert.ok(insert.includes("fileReference("), "and builds the reference");
+    assert.ok(insert.includes("controller.insertReference(reference)"), "and hands it over");
+    assert.ok(
+      chat.includes('{ k: "insert", text: reference }'),
+      "the controller sends the reference, not the file's text",
+    );
   });
 
   it("handles every action a dialog row can post", () => {
@@ -140,14 +223,117 @@ describe("command contributions", () => {
       chat.indexOf("async resumeSession("),
     );
     assert.ok(
-      helper.includes("sessionDialog(this.sessions, this.transcript.sessionId, note, this.liveSession())"),
-      "and that place passes the open thread's id and its live stand-in",
+      helper.replace(/\s+/g, " ").includes(
+        "sessionDialog( this.sessions, this.transcript.sessionId, note, this.liveSession(), this.sessionQuery, )",
+      ),
+      "and that place passes the open thread's id, its live stand-in and the filter",
     );
     // The sites that repaint it: the load, its failure, the listing itself, a
-    // row while a turn runs, a delete while a turn runs, and a failed delete.
+    // row while a turn runs, a delete while a turn runs, a failed delete and a
+    // keystroke in the search box.
     assert.ok(
       (chat.match(/this\.showSessions\(/g) ?? []).length >= 6,
       "every redraw uses it rather than composing the dialog again",
+    );
+  });
+
+  it("toggles the session history from the header", () => {
+    // One button for the listing the command names: the click that opens it is
+    // the click that closes it, which is the one thing the header can offer
+    // without a state for the button to contradict — so the panel's own history
+    // control is a toggle rather than a button that reopens what is already up.
+    const command = manifest.contributes.commands.find(
+      (entry) => entry.command === "oxide.resumeSession",
+    );
+    assert.equal(command?.title, "Session History");
+    const at = chatView.indexOf('id="resume-session"');
+    const button = chatView.slice(at, chatView.indexOf("</button>", at));
+    const label = "Session history";
+    for (const attribute of ["title", "aria-label"]) {
+      const value = new RegExp(`${attribute}="([^"]+)"`).exec(button)?.[1];
+      assert.equal(value, label, `${attribute} names the button`);
+    }
+    // The panel and the palette name it with the same words — the palette title
+    // case like the manifest's other entries, the panel sentence case like its
+    // own chrome — so a reader who asked for one finds the other.
+    assert.equal(label.toLowerCase(), command!.title.toLowerCase());
+    // The state lives in the markup, and the element it acts on is named, so a
+    // screen reader reads the same toggle the panel paints.
+    assert.ok(button.includes('aria-expanded="false"'), "it says whether the listing is up");
+    assert.ok(button.includes('aria-controls="dialog"'), "and which element it shows");
+    assert.ok(
+      renderer.includes(
+        'historyButton.setAttribute("aria-expanded", dialog && dialog.kind === "sessions"',
+      ),
+      "the renderer keeps that state in step with what it paints",
+    );
+
+    const toggle = chat.slice(
+      chat.indexOf("async resumeSession("),
+      chat.indexOf("async openSessions("),
+    );
+    assert.ok(
+      toggle.includes('if (this.dialog?.kind === "sessions")'),
+      "a listing already up is what the click closes",
+    );
+    assert.ok(toggle.includes("this.closeDialog()"));
+    assert.ok(toggle.includes("await this.openSessions()"), "and otherwise it opens");
+    // Reading the store is all opening does: the rows refuse to switch threads
+    // while a turn owns the session file, so the listing itself can be read
+    // mid-turn rather than being a button that answers with a notice.
+    const open = chat.slice(chat.indexOf("async openSessions("), chat.indexOf("searchSessions("));
+    assert.equal(open.includes("this.turn"), false, "a listing is readable while a turn runs");
+    assert.ok(
+      open.includes('if (this.dialog?.kind !== "sessions") return;'),
+      "and an answer to a listing closed while it was read is dropped",
+    );
+    // `/session` asks for the listing rather than toggling it, in both places it
+    // is reached from: a command that names the history should not answer by
+    // closing it.
+    assert.equal(
+      /isSessionCommand\(message\)\s*\)\s*\{\s*await this\.openSessions\(\)/.test(chat),
+      true,
+      "the command typed in the composer opens the history",
+    );
+    assert.equal(
+      /isSessionCommand\(message\)\s*\)\s*\{\s*await this\.resumeSession\(\)/.test(chat),
+      false,
+      "and never the toggle",
+    );
+    const panel = chat.slice(
+      chat.indexOf("private async runPanelCommand("),
+      chat.indexOf('case "new":'),
+    );
+    assert.ok(
+      panel.includes("return this.openSessions();"),
+      "the palette's own `/session` row opens it too",
+    );
+  });
+
+  it("filters the session listing in the host rather than the webview", () => {
+    // The rows are the store's own answer, so the query is applied where they
+    // are: the view asks, the host composes the narrowed listing — count and
+    // note together — and the renderer never decides which thread matches.
+    assert.ok(renderer.includes('vscode.postMessage({ k: "dialogSearch"'), "the box asks");
+    assert.ok(
+      chatView.includes('case "dialogSearch":'),
+      "and the question reaches the controller",
+    );
+    const search = chat.slice(
+      chat.indexOf("searchSessions(text: string)"),
+      chat.indexOf("private async continueSession("),
+    );
+    assert.ok(search.includes("this.sessionQuery = text"), "the filter is the controller's");
+    assert.ok(search.includes("this.showSessions()"), "and the redraw goes through one place");
+    assert.ok(
+      search.includes('this.dialog?.kind !== "sessions"'),
+      "a keystroke that outlived its listing does nothing",
+    );
+    assert.ok(dialogs.includes("filterSessions(sessions, query)"), "filtered where the rows are");
+    assert.equal(
+      renderer.includes("filterSessions"),
+      false,
+      "the renderer never filters rows of its own",
     );
   });
 
@@ -271,6 +457,39 @@ describe("command contributions", () => {
     assert.ok(
       (chat.match(/this\.dropChips\(\);/g) ?? []).length >= 3,
       "a new thread drops only the chips the user attached",
+    );
+  });
+
+  it("narrows the tracked chip to a selection, and sends those lines", () => {
+    // A selection is context the reader made, so the same chip follows it —
+    // which needs the selection subscription, or the panel would go on holding
+    // a whole file after the reader had selected three lines of it.
+    assert.ok(
+      extension
+        .slice(extension.indexOf("onDidChangeTextEditorSelection"))
+        .includes("controller.syncActiveEditor()"),
+      "the selection keeps the chip in step too",
+    );
+    const sync = chat.slice(chat.indexOf("syncActiveEditor()"), chat.indexOf("private autoChip()"));
+    assert.ok(sync.includes("selectionLines("), "the tracked state carries the lines");
+    assert.ok(
+      sync.includes("sameRange("),
+      "and moving the caret inside them is not a change worth repainting for",
+    );
+
+    // The chip is the only place the reader can see what the next message will
+    // carry, so it names the lines and says them in words as well.
+    const chip = chat.slice(chat.indexOf("private autoChip()"), chat.indexOf("private autoBlock()"));
+    assert.ok(chip.includes("contextLabel("), "the label is the same path:5-10 spelling");
+    assert.ok(chip.includes("selected — sent with the next message"), "with the words behind it");
+
+    // And what goes is the slice the label named — the same rule a ranged `@`
+    // reference inlines — not the whole file the lines came out of.
+    const block = chat.slice(chat.indexOf("private autoBlock()"));
+    assert.ok(block.includes("sliceLines(text, start, end)"), "the block is the selection");
+    assert.ok(
+      block.includes("startLine: start, endLine: end"),
+      "under the range's own header, so the model is told which lines it read",
     );
   });
 

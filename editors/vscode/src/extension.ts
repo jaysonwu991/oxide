@@ -11,6 +11,7 @@ import { ChatViewProvider } from "./chatView";
 import { CHANGE_SCHEME, parseSnapshotQuery } from "./core/changes";
 import { isFile, exists, listMarkdown, readTextFile, realPath, resolveBinary } from "./cli";
 import { configDir, parseConfigSummary } from "./core/config";
+import { fileReference } from "./core/prompt";
 import type { ProjectDeps } from "./core/project";
 import type { ContextChip } from "./core/protocol";
 
@@ -99,7 +100,45 @@ export function activate(context: vscode.ExtensionContext): void {
       refreshStatus();
       controller.syncActiveEditor();
     }),
+    // A selection is context too: the same chip narrows to the lines the reader
+    // selected, and back to the whole file when they let it go.
+    vscode.window.onDidChangeTextEditorSelection(() => controller.syncActiveEditor()),
     vscode.commands.registerCommand("oxide.openChat", guard(() => focusChat(controller))),
+    // The editor's own focus toggle: from the editor the caret goes to the
+    // composer, and from the composer back to the editor it came from.
+    vscode.commands.registerCommand(
+      "oxide.focusInput",
+      guard(async () => {
+        if (controller.chatFocused) {
+          await vscode.commands.executeCommand("workbench.action.focusActiveEditorGroup");
+          return;
+        }
+        await focusChat(controller);
+        controller.focusComposer();
+      }),
+    ),
+    // The file the editor has open, or the selection in it, as an `@path`
+    // reference in the composer — the same reference the `@` completion writes,
+    // with the lines it was read from when there was a selection.
+    vscode.commands.registerCommand(
+      "oxide.insertReference",
+      guard(async () => {
+        const editor = vscode.window.activeTextEditor;
+        if (!editor || editor.document.uri.scheme !== "file") {
+          void vscode.window.showInformationMessage("Oxide: open a file first.");
+          return;
+        }
+        const selection = editor.selection;
+        const reference = fileReference(
+          controller.relativeTo(editor.document.uri.fsPath),
+          selection.isEmpty
+            ? undefined
+            : { start: selection.start.line + 1, end: selection.end.line + 1 },
+        );
+        await focusChat(controller);
+        controller.insertReference(reference);
+      }),
+    ),
     vscode.commands.registerCommand("oxide.newSession", () => controller.newSession()),
     vscode.commands.registerCommand("oxide.resumeSession", guard(() => controller.resumeSession())),
     vscode.commands.registerCommand("oxide.continueSession", () => controller.continueSession()),

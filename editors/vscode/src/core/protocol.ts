@@ -212,6 +212,10 @@ export interface ContextChip {
   /// to be given it, so the view marks its chip and does not count it as
   /// something to send: an empty box with only that chip submits nothing.
   auto?: boolean;
+  /// What the chip is holding where the label cannot say it — the lines a
+  /// selection covers, and that they are what goes with the next message. The
+  /// renderer paints it as the chip's tooltip rather than deciding any of it.
+  detail?: string;
 }
 
 /// An image or PDF the message carries as media (`--image`).
@@ -310,7 +314,14 @@ export type ViewMessage =
       start: number;
       end: number;
       rows: CommandRow[];
-    };
+    }
+  /// A reference the editor's insert shortcut built (`@src/app.ts#5-10`), to be
+  /// written into the composer at the caret. The host reads the file and the
+  /// selection; the view only splices what it is handed.
+  | { k: "insert"; text: string }
+  /// The caret goes in the composer — what bringing the chat forward leaves
+  /// behind, since focusing the view does not focus its message box.
+  | { k: "focusComposer" };
 
 /// Splits a chunk into complete lines, returning the unterminated remainder.
 /// Mirrors `oxide_core::llm::drain_lines`: the buffer is compacted once per

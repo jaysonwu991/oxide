@@ -85,6 +85,17 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     switch (message.k) {
       case "ready":
         await this.paint(view);
+        // A shortcut may have opened the chat and asked for something in the
+        // composer before this pane had anything listening.
+        this.controller.noteReady(view);
+        return;
+      case "focus":
+        // The pane took the keyboard, which is what the editor's focus shortcut
+        // toggles away from; `blur` is clicking back into the editor.
+        this.controller.noteViewFocus(view, true);
+        return;
+      case "blur":
+        this.controller.noteViewFocus(view, false);
         return;
       case "send":
         await this.controller.send(message.text ?? "");
@@ -162,6 +173,12 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         // A row of the MCP or session dialog: the host decides what the action
         // means, so the view never has to know.
         await this.controller.dialogAction(message.action ?? "", message.value ?? "");
+        return;
+      case "dialogSearch":
+        // The session listing's search box. The rows are the host's, so the
+        // filter is applied there and the narrowed listing is painted back —
+        // the view never decides which of them match.
+        this.controller.searchSessions(message.text ?? "");
         return;
       case "openChangeDiff":
         // A row of a turn's change card, or one the review walked to. VS Code's
@@ -311,16 +328,21 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
   <span id="title">New chat</span>
   <div id="actions">
     <button id="new-session" class="icon" title="New chat" aria-label="New chat">${ICONS.new}</button>
-    <button id="resume-session" class="icon" title="Resume a session" aria-label="Resume a session">${ICONS.resume}</button>
+    <button id="resume-session" class="icon" title="Session history" aria-label="Session history" aria-expanded="false" aria-controls="dialog">${ICONS.resume}</button>
   </div>
 </header>
 <section id="dialog" class="popover" hidden aria-labelledby="dialog-title">
   <div class="popover-head">
     <h2 id="dialog-title"></h2>
+    <span id="dialog-count" class="popover-count" hidden></span>
     <div class="popover-actions">
       <button id="dialog-refresh" class="icon" hidden title="Recheck" aria-label="Recheck">${ICONS.refresh}</button>
       <button id="dialog-close" class="icon" title="Close" aria-label="Close">${ICONS.close}</button>
     </div>
+  </div>
+  <div id="dialog-search" class="popover-search" hidden>
+    <input id="dialog-search-input" type="search" spellcheck="false" autocomplete="off" placeholder="Search sessions…" aria-label="Search sessions">
+    <button id="dialog-search-clear" class="icon" hidden title="Clear the search" aria-label="Clear the search">${ICONS.close}</button>
   </div>
   <p id="dialog-sub" class="popover-sub"></p>
   <p id="dialog-note" class="popover-note" hidden></p>

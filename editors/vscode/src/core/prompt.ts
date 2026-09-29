@@ -13,6 +13,12 @@ export interface ContextBlock {
   text: string;
 }
 
+/// 1-based inclusive line range.
+export interface LineRange {
+  start: number;
+  end: number;
+}
+
 export function contextHeader(block: ContextBlock): string {
   const range =
     block.startLine && block.endLine
@@ -49,6 +55,52 @@ export function isAttachmentPath(path: string): boolean {
   const dot = name.lastIndexOf(".");
   if (dot <= 0) return false;
   return ATTACHMENT_EXTENSIONS.has(name.slice(dot + 1).toLowerCase());
+}
+
+/// The lines an editor selection covers, 1-based and inclusive, or null for a
+/// caret with nothing selected — which is the whole file rather than line 1.
+/// A selection ending where a line starts does not include that line, since the
+/// reader stopped at the newline before it: dragging down a line gives one line,
+/// not the two a raw `end.line` would name.
+export function selectionLines(selection: {
+  isEmpty: boolean;
+  start: { line: number };
+  end: { line: number; character: number };
+}): LineRange | null {
+  if (selection.isEmpty) return null;
+  const endsAtLineStart =
+    selection.end.character === 0 && selection.end.line > selection.start.line;
+  return {
+    start: selection.start.line + 1,
+    end: endsAtLineStart ? selection.end.line : selection.end.line + 1,
+  };
+}
+
+/// The `@path` reference the editor's insert shortcut writes, in the shape
+/// Claude Code's uses: `@src/app.ts#5-10` for a selection, `@src/app.ts` for a
+/// whole file, and a one-line range as the single number it is.
+export function fileReference(path: string, lines?: LineRange): string {
+  if (!lines || lines.start <= 0) return `@${path}`;
+  const range = lines.end > lines.start ? `${lines.start}-${lines.end}` : `${lines.start}`;
+  return `@${path}#${range}`;
+}
+
+/// The line range a reference names, or null when it names the whole file.
+function referenceLines(reference: string): { path: string; start: number; end: number } | null {
+  const match = /^(.*)#(\d+)(?:-(\d+))?$/.exec(reference);
+  if (!match) return null;
+  const start = Number(match[2]);
+  const end = match[3] ? Number(match[3]) : start;
+  if (!match[1] || start < 1 || end < start) return null;
+  return { path: match[1], start, end };
+}
+
+/// The lines a range named. A range that starts past the end of the file reads
+/// as unresolved rather than as an empty block.
+export function sliceLines(text: string, start: number, end: number): string | null {
+  const lines = text.split("\n");
+  if (start > lines.length) return null;
+  return lines.slice(start - 1, Math.min(end, lines.length)).join("\n");
 }
 
 /// A workspace-relative path for display and for the model's context header.
@@ -101,7 +153,9 @@ export interface AtExpansion {
 /// but a prompt sent on stdin is never scanned for them — so the extension
 /// resolves them here instead, and a message reads the same either way. A
 /// reference that does not resolve is left in the text rather than failing the
-/// send, so a typo costs a round trip and not the message.
+/// send, so a typo costs a round trip and not the message. A reference may name
+/// a line range (`@src/app.ts#5-10`, what the editor's own shortcut inserts),
+/// which is inlined as that slice under the range's header.
 export function expandAtReferences(message: string, sources: AtReferenceSources): AtExpansion {
   const gone = "\u0000";
   const blockMark = "\u0001";
@@ -127,8 +181,12 @@ export function expandAtReferences(message: string, sources: AtReferenceSources)
       inline.push(part);
       continue;
     }
-    const absolute = sources.resolve(reference);
-    if (!absolute || seen.has(absolute)) {
+    const lines = referenceLines(reference);
+    const absolute = sources.resolve(lines ? lines.path : reference);
+    // One file at two ranges is two blocks, so a reference's identity carries
+    // the range it named.
+    const key = absolute ? `${absolute}${lines ? `#${lines.start}-${lines.end}` : ""}` : "";
+    if (!absolute || seen.has(key)) {
       if (absolute) {
         kept.push(gone + tail);
         inline.push(gone + tail);
@@ -146,14 +204,19 @@ export function expandAtReferences(message: string, sources: AtReferenceSources)
       continue;
     }
     const text = sources.read(absolute);
-    if (text === null) {
+    const slice = text === null ? null : lines ? sliceLines(text, lines.start, lines.end) : text;
+    if (slice === null) {
       kept.push(part);
       inline.push(part);
       continue;
     }
-    seen.add(absolute);
+    seen.add(key);
     const index = blocks.length;
-    blocks.push({ path: sources.label(absolute), text });
+    blocks.push({
+      path: sources.label(absolute),
+      text: slice,
+      ...(lines ? { startLine: lines.start, endLine: lines.end } : {}),
+    });
     kept.push(gone + tail);
     inline.push(`${blockMark}${index}${blockMark}${tail}`);
   }

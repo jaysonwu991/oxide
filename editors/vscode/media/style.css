@@ -1596,6 +1596,102 @@ footer {
   font-size: 1em;
   font-weight: 600;
   min-width: 0;
+  /* The count and the buttons are the head's fixed parts; a long title gives up
+     its own room rather than pushing them out of the sheet. */
+  flex: 0 1 auto;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* How many rows the listing holds: a number a narrow pane cannot read off a
+   scrollbar, and the one that moves as a search narrows the list. */
+.popover-count {
+  flex: 0 0 auto;
+  padding: 1px 6px;
+  border-radius: 999px;
+  background: var(--vscode-badge-background, rgba(128, 128, 128, 0.25));
+  color: var(--vscode-badge-foreground, var(--vscode-foreground));
+  font-size: 0.75em;
+  font-variant-numeric: tabular-nums;
+}
+
+.popover-count[hidden] {
+  display: none;
+}
+
+/* The search box of a listing long enough to need one. The sheet carries it
+   rather than the panel: it filters what is under it, and it is the host's
+   rows that are being filtered. */
+.popover-search {
+  position: relative;
+  display: flex;
+  align-items: center;
+  margin: 8px 6px 0;
+}
+
+.popover-search[hidden] {
+  display: none;
+}
+
+#dialog-search-input {
+  width: 100%;
+  box-sizing: border-box;
+  appearance: none;
+  padding: 3px 22px 3px 7px;
+  border: 1px solid var(--vscode-input-border, transparent);
+  border-radius: 4px;
+  background: var(--vscode-input-background);
+  color: var(--vscode-input-foreground, var(--vscode-foreground));
+  font: inherit;
+  font-size: 0.9em;
+}
+
+/* The native search affordances — the clear button and macOS's inner shadow —
+   are turned off: the shell draws the one clear button, and a themed input is
+   not a native one. */
+#dialog-search-input::-webkit-search-cancel-button,
+#dialog-search-input::-webkit-search-decoration {
+  appearance: none;
+  display: none;
+}
+
+#dialog-search-input::placeholder {
+  color: var(--vscode-input-placeholderForeground, var(--vscode-descriptionForeground));
+}
+
+#dialog-search-input:focus {
+  outline: 1px solid var(--vscode-focusBorder);
+  outline-offset: -1px;
+  border-color: var(--vscode-focusBorder);
+}
+
+/* The box's own ✕, which appears once there is something to clear: the same
+   icon-only treatment as the sheet's other buttons, sized for the field — and the
+   field's own is turned off, so there is exactly one way to clear it. */
+#dialog-search-clear {
+  position: absolute;
+  right: 2px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  padding: 0;
+  border: none;
+  border-radius: 3px;
+  background: none;
+  color: var(--vscode-descriptionForeground);
+  font: inherit;
+}
+
+#dialog-search-clear:hover {
+  color: var(--vscode-foreground);
+  background: var(--vscode-toolbar-hoverBackground, rgba(128, 128, 128, 0.15));
+}
+
+#dialog-search-clear[hidden] {
+  display: none;
 }
 
 .popover-actions {
@@ -1736,6 +1832,57 @@ button.dialog-row:focus-visible {
 
 .dialog-button.tone-error {
   color: var(--vscode-editorError-foreground, var(--vscode-charts-red, #f14c4c));
+}
+
+/* A row that is a way out of the listing rather than one of the things it
+   holds: it says so with a card of its own, and the gap after the group is what
+   tells the threads apart from it — the actions are what you can do with the
+   list, the threads are the list. */
+.dialog-row.action {
+  background: var(--vscode-toolbar-hoverBackground, rgba(128, 128, 128, 0.1));
+}
+
+.dialog-row.action .dialog-label {
+  font-weight: 500;
+}
+
+.dialog-row.action:hover,
+.dialog-row.action:focus-visible {
+  background: var(--vscode-list-hoverBackground, rgba(128, 128, 128, 0.18));
+}
+
+.dialog-row.action + .dialog-row.thread {
+  margin-top: 8px;
+}
+
+/* A thread: the title the sidebar-style listing is scanned by is a shade
+   brighter than the actions', and its age and message count are the line under
+   it. The trash only takes room in the row the pointer is on, so a column of
+   threads is not a column of delete buttons — the same bargain VS Code makes
+   everywhere else. */
+.dialog-row.thread .dialog-label {
+  font-weight: 500;
+}
+
+.dialog-row.thread .dialog-button {
+  opacity: 0;
+}
+
+.dialog-row.thread:hover .dialog-button,
+.dialog-row.thread:focus-within .dialog-button {
+  opacity: 1;
+}
+
+/* The thread the header names, left in its own place in the list: it is marked
+   the way a selected row is marked everywhere else in VS Code rather than moved
+   out of the order it is being read in. */
+.dialog-row.current,
+.dialog-row.current:hover {
+  background: var(
+    --vscode-list-activeSelectionBackground,
+    var(--vscode-list-hoverBackground, rgba(128, 128, 128, 0.18))
+  );
+  color: var(--vscode-list-activeSelectionForeground, var(--vscode-foreground));
 }
 
 /* ---------- image preview ---------- */

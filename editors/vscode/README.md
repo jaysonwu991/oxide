@@ -88,19 +88,29 @@ Provider logins live in the CLI: run **Oxide: Open Terminal (TUI)** and use
    it is sent.
 7. The file you are editing is already attached: it shows as a dashed chip with
    a ✎ above the message box and goes with the next message as context, read
-   when the message is sent so unsaved edits are included. Its ✕ (or **Clear**)
-   takes it out; opening another file brings the chip back. Turn off
-   `oxide.autoContext` to attach only what you add by hand.
+   when the message is sent so unsaved edits are included. Select part of it and
+   the same chip narrows to those lines — `src/app.ts:12-15`, sent as the lines
+   it names rather than the whole file — and letting the selection go widens it
+   back. Its ✕ (or **Clear**) takes it out; opening another file brings the chip
+   back. Turn off `oxide.autoContext` to attach only what you add by hand.
 8. Type `@` in the message box to complete a path from the project: the rows
    appear in the composer, `↑`/`↓` walk them, `Tab` or `Enter` takes the
    highlighted one, and a folder keeps the `@` open so you can go on narrowing
-   inside it. `Esc` closes the list without clearing the message.
+   inside it. `Esc` closes the list without clearing the message. `Alt+K` in the
+   editor writes the file you have open into the box instead — `@src/app.ts`, or
+   `@src/app.ts#5-10` for a selection, which sends just those lines.
+9. The mark on the editor's toolbar brings the panel forward and leaves the
+   caret in the message box; `Cmd+Esc` (`Ctrl+Esc` elsewhere) toggles the caret
+   between the editor and the box, so a question about the file you are looking
+   at can be typed and sent without reaching for the mouse.
 
 ## Commands
 
 | Command | What it does |
 | --- | --- |
-| **Oxide: Open Chat** | Focus the chat pane (`Ctrl+Alt+O` / `Cmd+Alt+O`): the one already on screen, otherwise the secondary side bar's. |
+| **Oxide: Open Chat** | Focus the chat pane (`Ctrl+Alt+O` / `Cmd+Alt+O`): the one already on screen, otherwise the secondary side bar's. Also the mark on the editor toolbar, which brings the panel forward and puts the caret in the message box. |
+| **Oxide: Focus Input** | Move the caret between the editor and the message box (`Ctrl+Esc` / `Cmd+Esc`). |
+| **Oxide: Insert File Reference** | Write the file you have open — or the selection in it — into the message box as an `@path` reference (`Alt+K`). |
 | **Oxide: New Chat** | Close the thread on screen and go back to the new-chat page; the next message starts a thread of its own. |
 | **Oxide: Resume Session…** | Pick from this project's sessions (or continue the latest), in a list inside the panel. |
 | **Oxide: Continue Last Session** | Continue the most recent session on the next message. |
@@ -128,7 +138,7 @@ Provider logins live in the CLI: run **Oxide: Open Terminal (TUI)** and use
 | `oxide.excludeTools` | *(empty)* | `--exclude-tools` denylist. |
 | `oxide.additionalArguments` | `[]` | Extra argv appended to every invocation. |
 | `oxide.showThinking` | `true` | Show `✦ Thinking` blocks. |
-| `oxide.autoContext` | `true` | Track the file you are editing as a chip in the composer, sent with the next message as context. The chip is read when the message goes, so unsaved edits are included; its ✕ or **Clear** takes it out for as long as that file is the one being edited, and another file brings it back. |
+| `oxide.autoContext` | `true` | Track the file you are editing as a chip in the composer, sent with the next message as context. The chip follows the file and the lines selected in it, and both are read when the message goes, so unsaved edits are included and a selection sends just the lines it names; its ✕ or **Clear** takes it out for as long as that file is the one being edited, and another file brings it back. |
 | `oxide.askApprovals` | `true` | `--ask-approvals`: ask in the transcript before running a tool a permission rule gates. **Always allow** is remembered per project in the shared `approvals.json`. Off passes `--no-ask-approvals`. Either flag is passed explicitly, so this setting decides for panel runs (the shared `settings.json` key still decides for the terminal). |
 | `oxide.notifyOnFinish` | `true` | Notify when a run finishes while the panel is hidden, naming the thread by its title. |
 
@@ -173,6 +183,11 @@ Provider logins live in the CLI: run **Oxide: Open Terminal (TUI)** and use
   file viewer.
 - Links in a reply open in your browser; a path in a tool card opens in the
   editor, but only inside the workspace.
+- A message's `@path` references are the panel's own: the prompt goes to the CLI
+  on stdin, so the extension resolves them itself, which is why `@src/app.ts#5-10`
+  sends those lines. A reference it cannot resolve — a range past the end of the
+  file, a path that is not there — is left in the message as typed, and the CLI's
+  own `@file` arguments take a whole path.
 
 ## Development
 

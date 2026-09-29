@@ -38,8 +38,13 @@
   const dialogSub = $("dialog-sub");
   const dialogNote = $("dialog-note");
   const dialogList = $("dialog-list");
+  const dialogCount = $("dialog-count");
+  const dialogSearch = $("dialog-search");
+  const dialogSearchInput = $("dialog-search-input");
+  const dialogSearchClear = $("dialog-search-clear");
   const dialogRefresh = $("dialog-refresh");
   const dialogClose = $("dialog-close");
+  const historyButton = $("resume-session");
   const imageView = $("image-view");
   const imageViewImage = $("image-view-img");
   const imageViewClose = $("image-view-close");
@@ -1379,6 +1384,12 @@
       case "paletteRows":
         applyCompletion(message);
         return;
+      case "insert":
+        insertReference(message.text || "");
+        return;
+      case "focusComposer":
+        focusComposer();
+        return;
       default:
         return;
     }
@@ -1585,9 +1596,15 @@
     name.className = "chip-name";
     name.textContent = chip.label;
     el.append(glyph, name, removeNode(chip));
-    el.title = chip.auto
-      ? `${chip.label} — the file you are editing, sent with the next message`
-      : `${chip.label} — inlined into the next message`;
+    // The label and the tooltip say the same thing: a chip that says which lines
+    // it holds is only readable if the words around it say so too.
+    const what = chip.detail
+      ? chip.detail
+      : chip.auto
+        ? "the file you are editing, sent with the next message"
+        : "inlined into the next message";
+    el.title = `${chip.label} — ${what}`;
+    el.setAttribute("aria-label", el.title);
     return el;
   }
 
@@ -1643,6 +1660,12 @@
   const CHANGES_ICON =
     '<svg viewBox="0 0 24 24" width="14" height="14" aria-hidden="true"><path d="M12 3v18" fill="none" stroke="currentColor" stroke-width="1.6"/><path d="M4 7h5M4 11h6M20 13h-5M20 17h-6" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>';
 
+  /// The box's own ✕ appears once there is something to clear: it is the field's
+  /// affordance rather than the host's, so it is the field it reads.
+  function syncSearchClear() {
+    dialogSearchClear.hidden = !dialogSearchInput.value;
+  }
+
   /// The dialog the host composes (`src/core/dialogs.ts`): the MCP server list
   /// and the session history, painted here rather than in a QuickPick — which
   /// takes over the window, hides the transcript the listing is about, and
@@ -1653,17 +1676,42 @@
   /// composer block the `/mcps` was typed in while the session list keeps
   /// dropping from the header it is about. A row arrives with the action it
   /// posts, so the view decides nothing about what a click means.
+  ///
+  /// Two fields are the head's: the count beside the title — how many rows the
+  /// listing holds, which is a number a narrow pane cannot read off a scrollbar
+  /// and what a search narrows — and whether the listing carries a search box.
+  /// Only the host knows whether filtering is worth offering, and only it has
+  /// the rows the filter applies to, so the box asks it and the answer comes
+  /// back as a whole new dialog.
   function setDialog(dialog) {
     dialogList.innerHTML = "";
+    // The header's own button is the same state: it says whether the history is
+    // on screen, so the two can never disagree about which click closes it.
+    historyButton.setAttribute("aria-expanded", dialog && dialog.kind === "sessions" ? "true" : "false");
     if (!dialog) {
       // The class is dropped with it: a hidden element's siblings would still be
       // ordered around it, and the next listing says which end it wants.
       dialogBox.classList.remove("pin-footer");
       dialogBox.hidden = true;
+      dialogSearch.hidden = true;
+      dialogSearchInput.value = "";
+      syncSearchClear();
       return;
     }
     dialogBox.classList.toggle("pin-footer", dialog.pin === "footer");
     dialogTitle.textContent = dialog.title || "";
+    const count = dialog.count || 0;
+    dialogCount.textContent = count ? String(count) : "";
+    dialogCount.hidden = !count;
+    // The box is the host's, not a filter the view keeps: it is shown when the
+    // host says the listing can be filtered, and put back to the filter that
+    // listing was composed with — unless the caret is in it, since a repaint
+    // under a reader who is typing would take the text away from them.
+    dialogSearch.hidden = dialog.search !== true;
+    if (dialog.search === true && document.activeElement !== dialogSearchInput) {
+      dialogSearchInput.value = dialog.query || "";
+    }
+    syncSearchClear();
     dialogSub.textContent = dialog.subtitle || "";
     dialogSub.hidden = !dialog.subtitle;
     dialogNote.textContent = dialog.note || "";
@@ -1680,10 +1728,16 @@
 
   /// One row: what it is, what it resolves to underneath, a trailing status word
   /// where one applies, and a button for the rows that turn something over
-  /// instead of opening it.
+  /// instead of opening it. The kind the host sent is the row's class, which is
+  /// the only thing that tells a thread apart from a way out of the listing:
+  /// both are buttons, and both say what they do in words.
   function dialogRow(entry) {
     const el = document.createElement(entry.action ? "button" : "div");
-    el.className = "dialog-row";
+    el.className = entry.kind ? `dialog-row ${entry.kind}` : "dialog-row";
+    // The thread the panel has open, marked by the host: the row keeps its place
+    // in the list, and the mark is what says which one it is — so the listing
+    // never loses the thread the header names.
+    if (entry.current) el.classList.add("current");
     if (entry.action) {
       el.type = "button";
       el.dataset.action = entry.action;
@@ -1755,6 +1809,23 @@
   });
 
   dialogClose.addEventListener("click", () => closeDialog());
+
+  /// The listing's search box. The rows are the host's, so every keystroke asks
+  /// it for the listing that filter leaves rather than hiding rows here: the
+  /// count beside the title and the note a search with no matches carries are
+  /// the host's too, and a view that filtered its own rows would say something
+  /// different from the one in the pane beside it.
+  dialogSearchInput.addEventListener("input", () => {
+    syncSearchClear();
+    vscode.postMessage({ k: "dialogSearch", text: dialogSearchInput.value });
+  });
+
+  dialogSearchClear.addEventListener("click", () => {
+    dialogSearchInput.value = "";
+    syncSearchClear();
+    dialogSearchInput.focus();
+    vscode.postMessage({ k: "dialogSearch", text: "" });
+  });
 
   // ---------- image preview ----------
 
@@ -2047,6 +2118,39 @@
     if (!command) requestCompletion();
   }
 
+  /// Writes a reference the host built — the editor's insert shortcut read the
+  /// file and the selection — into the box at the caret, keeping it off the
+  /// words around it the way a typed reference sits, and leaves the caret after
+  /// it so the question goes on being typed. What is replaced is whatever was
+  /// selected, as a paste would replace it.
+  function insertReference(text) {
+    const value = input.value;
+    const start = input.selectionStart ?? value.length;
+    const end = input.selectionEnd ?? start;
+    const before = value.slice(0, start);
+    const after = value.slice(end);
+    const lead = before && !/\s$/.test(before) ? " " : "";
+    const tail = after && !/^\s/.test(after) ? " " : "";
+    const inserted = `${lead}${text}${tail}`;
+    const caret = before.length + inserted.length;
+    input.value = before + inserted + after;
+    input.setSelectionRange(caret, caret);
+    // The reference is complete as written, so a list left open belongs to a
+    // value the caret has moved out of.
+    closeCompletion();
+    resizeInput();
+    updateSendState();
+    input.focus();
+  }
+
+  /// Where bringing the chat forward leaves the caret. Focusing the pane does
+  /// not focus its message box, so the host asks for it.
+  function focusComposer() {
+    const end = input.value.length;
+    input.focus();
+    input.setSelectionRange(end, end);
+  }
+
   function moveRow(step) {
     if (!rows.length) return;
     rowIndex = (rowIndex + step + rows.length) % rows.length;
@@ -2119,7 +2223,7 @@
         acceptRow(rowIndex);
         return;
       }
-      if (event.key === "Escape") {
+      if (event.key === "Escape" && !event.metaKey && !event.ctrlKey && !event.altKey) {
         event.preventDefault();
         closeCompletion();
         return;
@@ -2130,7 +2234,9 @@
       submit();
       return;
     }
-    if (event.key === "Escape" && busy) {
+    // A modified Escape is VS Code's (`Cmd+Esc` toggles the caret between the
+    // editor and the panel), so only a plain one stops the turn.
+    if (event.key === "Escape" && busy && !event.metaKey && !event.ctrlKey && !event.altKey) {
       event.preventDefault();
       vscode.postMessage({ k: "stop" });
     }
@@ -2287,7 +2393,7 @@
   sendButton.addEventListener("click", () => submit());
   stopButton.addEventListener("click", () => vscode.postMessage({ k: "stop" }));
   $("new-session").addEventListener("click", () => vscode.postMessage({ k: "newSession" }));
-  $("resume-session").addEventListener("click", () => vscode.postMessage({ k: "resumeSession" }));
+  historyButton.addEventListener("click", () => vscode.postMessage({ k: "resumeSession" }));
 
   // The footer's chips are the extension's own commands: each one opens a picker
   // or cycles a setting, and the host re-sends the footer afterwards.
@@ -2367,6 +2473,11 @@
   }
 
   window.addEventListener("message", (event) => apply(event.data));
+  // The host toggles the caret between the editor and the chat, so it has to
+  // know which side it is on: the pane's own window focus follows the caret in
+  // and out of it.
+  window.addEventListener("focus", () => vscode.postMessage({ k: "focus" }));
+  window.addEventListener("blur", () => vscode.postMessage({ k: "blur" }));
   resizeInput();
   updateSendState();
   vscode.postMessage({ k: "ready" });
