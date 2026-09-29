@@ -677,10 +677,17 @@ export class ChatController {
     }
     const selection = editor ? selectionLines(editor.selection) : null;
     if (this.auto?.file === wanted && sameRange(this.auto.selection, selection)) return;
-    // A chip removed for one file — or for one selection — comes back with the
-    // next one.
-    this.autoHidden = false;
-    this.auto = { id: this.nextChipId++, file: wanted, selection };
+    // A chip is for one file: the next one opened brings the chip back, under an
+    // id of its own, since the ✕ that took the last one out answered for it.
+    if (this.auto?.file !== wanted) {
+      this.autoHidden = false;
+      this.auto = { id: this.nextChipId++, file: wanted, selection };
+    } else {
+      // The file already tracked, narrowed to different lines: the same chip
+      // following the reader's selection, and one that was taken out of the
+      // message stays out — moving the caret is not opening another file.
+      this.auto.selection = selection;
+    }
     this.broadcastChips();
   }
 

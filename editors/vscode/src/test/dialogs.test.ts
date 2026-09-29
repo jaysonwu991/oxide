@@ -332,6 +332,25 @@ describe("session dialog", () => {
     assert.equal(sessionDialog([], null, "", null, "nope").count, 0);
     assert.match(sessionDialog([], null, "", null, "nope").note, /No sessions for this project yet/);
   });
+
+  /// A search matches what the listing paints rather than what the store happened
+  /// to hold: the thread on screen is named by the panel's own header while the
+  /// store has no name for it, so a search for that name finds the row showing it
+  /// — a row that vanishes from a search for its own title reads as a thread that
+  /// is not there.
+  it("filters the thread on screen under the title it is painted with", () => {
+    const stored = parseSessionList("fe0031b1  just now  2 msg  \n");
+    const live = { id: "fe0031b1", label: "Fix the flaky test" };
+    const found = sessionDialog(stored, "fe0031b1", "", live, "flaky");
+    assert.equal(found.count, 1);
+    assert.equal(found.rows[2].label, "Fix the flaky test");
+    assert.equal(found.rows[2].current, true, "and it is still the thread on screen");
+    assert.equal(
+      sessionDialog(stored, "fe0031b1", "", live, "nope").count,
+      0,
+      "a query the title does not match still leaves nothing",
+    );
+  });
 });
 
 describe("delete-thread confirmation", () => {

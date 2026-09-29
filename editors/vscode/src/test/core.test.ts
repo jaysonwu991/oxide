@@ -413,6 +413,27 @@ describe("@ references", () => {
       });
       assert.deepEqual(result.attachments, ["/w/shot.png"]);
     });
+
+    it("attaches one image once, however many ranges named it", () => {
+      // Ranges are ignored for media — an image travels whole — so a reference
+      // to it is the same attachment whichever lines were written after it, and
+      // the same bytes do not ride on the message twice.
+      const images: Record<string, string | null> = { "shot.png": null };
+      const at: AtReferenceSources = {
+        resolve: (reference) => (reference in images ? `/w/${reference}` : null),
+        read: () => null,
+        label: (absolute) => absolute.slice(3),
+      };
+      assert.deepEqual(
+        expandAtReferences("@shot.png#1 and @shot.png#2", at).attachments,
+        ["/w/shot.png"],
+      );
+      assert.deepEqual(
+        expandAtReferences("@shot.png and @shot.png#3-4", at).attachments,
+        ["/w/shot.png"],
+        "whichever order the two come in",
+      );
+    });
   });
 });
 

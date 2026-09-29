@@ -229,7 +229,16 @@ export function sessionDialog(
   const open = live && live.id === current ? live : null;
   const file = open ? sessions.find((session) => session.id === open.id) : undefined;
   const title = open?.label.trim() || "";
-  const filtered = filterSessions(sessions, query);
+  // The thread on screen is painted under the header's title where the store has
+  // none for it yet, so the rows are named before anything reads them: the name
+  // a search is matched against is the name the row shows, and a query for what
+  // the listing displays cannot miss the row it displays it on.
+  const named = open
+    ? sessions.map((session) =>
+        session.id === open.id && !session.label ? { ...session, label: title } : session,
+      )
+    : sessions;
+  const filtered = filterSessions(named, query);
   // The thread on screen is filtered like any other row, so a search never
   // leaves a row behind that the query does not match.
   const stand: SessionEntry | null =
@@ -280,7 +289,7 @@ export function sessionDialog(
         : []),
       ...filtered.map((session) => {
         const marked = session.id === current;
-        const name = session.label || (marked ? title : "") || session.id;
+        const name = session.label || session.id;
         return row(session.id, name, {
           detail: `${session.messages} message${session.messages === 1 ? "" : "s"}`,
           status: marked ? "Current" : session.age,

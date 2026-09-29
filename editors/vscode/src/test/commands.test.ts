@@ -117,6 +117,17 @@ describe("command contributions", () => {
     );
   });
 
+  it("leaves the caret in the composer when the panel is brought forward", () => {
+    // The toolbar mark, the status bar and the palette are one command, and a
+    // click to chat is a click to type: focusing a webview view does not focus
+    // its own DOM, so the caret has to be sent separately.
+    const open = extension.slice(extension.indexOf('"oxide.openChat",'));
+    assert.ok(
+      open.slice(0, open.indexOf("oxide.newSession")).includes("controller.focusComposer()"),
+      "raising the panel puts the caret in the message box",
+    );
+  });
+
   it("toggles the caret from what the pane reported, not from what is on screen", () => {
     // The composer's own text belongs to the pane, and there is a pane in the
     // activity bar and one in the secondary side bar: `Cmd+Esc` has to know
@@ -329,7 +340,7 @@ describe("command contributions", () => {
       search.includes('this.dialog?.kind !== "sessions"'),
       "a keystroke that outlived its listing does nothing",
     );
-    assert.ok(dialogs.includes("filterSessions(sessions, query)"), "filtered where the rows are");
+    assert.ok(dialogs.includes("filterSessions(named, query)"), "filtered where the rows are");
     assert.equal(
       renderer.includes("filterSessions"),
       false,
@@ -476,6 +487,23 @@ describe("command contributions", () => {
       sync.includes("sameRange("),
       "and moving the caret inside them is not a change worth repainting for",
     );
+    // The reference the insert shortcut writes is read by the same rule, so a
+    // drag that stopped where a line starts does not name that line in either.
+    const insert = extension.slice(
+      extension.indexOf('"oxide.insertReference",'),
+      extension.indexOf("oxide.newSession"),
+    );
+    assert.ok(insert.includes("selectionLines("), "the shortcut reads a selection the same way");
+
+    // A chip removed for the file already tracked stays out: narrowing to a new
+    // selection in it is the same chip following the reader, not the next file
+    // the ✕ did not answer for, so it keeps its id and its hidden state.
+    const same = sync.slice(sync.indexOf("this.auto?.file !== wanted"));
+    assert.ok(
+      same.indexOf("this.autoHidden = false") < same.indexOf("} else {"),
+      "only another file brings the removed chip back",
+    );
+    assert.ok(same.includes("this.auto.selection = selection"), "and the chip keeps its id");
 
     // The chip is the only place the reader can see what the next message will
     // carry, so it names the lines and says them in words as well.

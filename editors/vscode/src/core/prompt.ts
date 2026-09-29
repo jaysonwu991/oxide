@@ -183,9 +183,14 @@ export function expandAtReferences(message: string, sources: AtReferenceSources)
     }
     const lines = referenceLines(reference);
     const absolute = sources.resolve(lines ? lines.path : reference);
-    // One file at two ranges is two blocks, so a reference's identity carries
-    // the range it named.
-    const key = absolute ? `${absolute}${lines ? `#${lines.start}-${lines.end}` : ""}` : "";
+    // One text file at two ranges is two blocks, so a text reference's identity
+    // carries the range it named — while an image or PDF travels whole whatever
+    // follows its name, so two ranges of one attachment are one attachment.
+    const key = absolute
+      ? isAttachmentPath(absolute) || !lines
+        ? absolute
+        : `${absolute}#${lines.start}-${lines.end}`
+      : "";
     if (!absolute || seen.has(key)) {
       if (absolute) {
         kept.push(gone + tail);
@@ -197,12 +202,13 @@ export function expandAtReferences(message: string, sources: AtReferenceSources)
       continue;
     }
     if (isAttachmentPath(absolute)) {
-      seen.add(absolute);
+      seen.add(key);
       attachments.push(absolute);
       kept.push(gone + tail);
       inline.push(gone + tail);
       continue;
     }
+
     const text = sources.read(absolute);
     const slice = text === null ? null : lines ? sliceLines(text, lines.start, lines.end) : text;
     if (slice === null) {

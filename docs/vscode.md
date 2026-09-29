@@ -577,11 +577,13 @@ The same reference can be written from the editor instead of typed:
 uses) reads the file the editor has open — or the selection in it — and splices
 `@src/app.ts`, or `@src/app.ts#5-10` for a selection, into the box at the caret,
 with a one-line selection written as the one number it is (`fileReference` in
-`core/prompt.ts`, the module that resolves it back into context). The host reads
-the editor, the renderer only splices what it is handed, and the reference is
-kept off the words around it with the caret left after it, so it can be followed
-by a question. It is offered wherever a file is open, since what it writes is
-about that file.
+`core/prompt.ts`, the module that resolves it back into context). The lines are
+the ones `selectionLines` reads, the same rule the tracked chip follows, so a
+drag that stopped where a line starts does not name that line in either. The
+host reads the editor, the renderer only splices what it is handed, and the
+reference is kept off the words around it with the caret left after it, so it
+can be followed by a question. It is offered wherever a file is open, since
+what it writes is about that file.
 
 ## The `/` palette
 
@@ -700,7 +702,8 @@ being sent as a block with nothing in it — a file edited between the shortcut 
 the send would otherwise read as an empty file — a range that runs past the last
 line stops there, two ranges of one file are two blocks, and a range written
 after an image or PDF is ignored, since an attachment travels whole rather than
-being read as text.
+being read as text — which also makes two ranges of one image one attachment,
+not the same bytes riding on the message twice.
 
 ## Diff previews
 
