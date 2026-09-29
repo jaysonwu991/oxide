@@ -493,6 +493,7 @@ const document = {
   createElement: (tag) => new StubElement(tag),
   querySelector: () => null,
   querySelectorAll: () => [],
+  activeElement: null,
   // The page closes over the document, so the listeners it puts there are kept
   // too: a link answers a press the way a control answers for itself.
   addEventListener(type, handler) {
@@ -747,6 +748,52 @@ check(
   "took the row a click landed on",
   composer.value === "review @src/" && composer.selectionStart === 12,
   `${composer.value} @ ${composer.selectionStart}`,
+);
+
+// The same press on any control is swallowed while the caret is in the message
+// box, so the control answers the first click instead of the box's focus change
+// eating it; a press elsewhere, or while the box is not focused, is left alone.
+const composerButton = new StubElement("button", "composer-button");
+const composerRow = new StubElement("div", "composer-row");
+composerRow.onclick = () => {};
+const composerLink = new StubElement("a", "composer-link");
+composerLink.setAttribute("href", "https://example.com/docs");
+document.activeElement = elementFor("prompt");
+const buttonPress = press({ target: composerButton });
+document.fire("mousedown", buttonPress);
+check(
+  "swallowed a button press while the message box had the caret",
+  buttonPress.refused === true,
+  String(buttonPress.refused),
+);
+const composerRowPress = press({ target: composerRow });
+document.fire("mousedown", composerRowPress);
+check(
+  "swallowed a row press while the message box had the caret",
+  composerRowPress.refused === true,
+  String(composerRowPress.refused),
+);
+const composerLinkPress = press({ target: composerLink });
+document.fire("mousedown", composerLinkPress);
+check(
+  "swallowed a link press while the message box had the caret",
+  composerLinkPress.refused === true,
+  String(composerLinkPress.refused),
+);
+const promptPress = press({ target: elementFor("prompt") });
+document.fire("mousedown", promptPress);
+check(
+  "left the message box's own press alone",
+  promptPress.refused !== true,
+  String(promptPress.refused),
+);
+document.activeElement = null;
+const idlePress = press({ target: composerButton });
+document.fire("mousedown", idlePress);
+check(
+  "left a button press alone once the caret left the message box",
+  idlePress.refused !== true,
+  String(idlePress.refused),
 );
 
 await typeAt("review @sr");
