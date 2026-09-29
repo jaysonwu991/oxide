@@ -1303,11 +1303,13 @@ export class ChatController {
 
   /// The stored conversation of the thread being resumed, read by the CLI from
   /// its own session file (`oxide sessions show --json`) and pushed into the
-  /// transcript as finished items. The totals come with it, so the footer's
-  /// usage line and context gauge describe the thread that was reopened instead
-  /// of starting from zero; the thread is still resumable for sending when the
-  /// history cannot be read, which is why a failure is a warning rather than a
-  /// refused resume.
+  /// transcript as finished items — what was said, and the calls the thread
+  /// made with the results that answered them, so a thread that is mostly tool
+  /// steps does not reopen as a bubble or two. The totals come with it, so the
+  /// footer's usage line and context gauge describe the thread that was reopened
+  /// instead of starting from zero; the thread is still resumable for sending
+  /// when the history cannot be read, which is why a failure is a warning rather
+  /// than a refused resume.
   private async loadHistory(id: string, label: string): Promise<void> {
     const cwd = this.cwd();
     if (!cwd) return;
@@ -1322,13 +1324,10 @@ export class ChatController {
       this.showNotice(`${label} is resumed, but its history could not be read.`, "warn");
       return;
     }
-    for (const message of history.messages) {
-      // Pushed into the transcript without painting each one: the view rebuilds
-      // the whole list from the one `state` message below, so sending a message
-      // per stored turn would repaint the panel sixty times over.
-      if (message.role === "user") this.transcript.pushUser(message.text, []);
-      else this.transcript.pushAssistant(message.text);
-    }
+    // Pushed into the transcript without painting each one: the view rebuilds
+    // the whole list from the one `state` message below, so sending a message
+    // per stored turn would repaint the panel sixty times over.
+    this.transcript.replay(history.entries);
     this.transcript.usage = history.usage;
     if (history.name) this.sessionTitle = history.name;
     this.broadcast(this.stateMessage());

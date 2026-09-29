@@ -34,26 +34,87 @@ const payload = {
 };
 
 describe("stored session history", () => {
-  it("reads what was said, oldest first", () => {
+  it("reads what was said and what was called, oldest first", () => {
     const history = parseSessionHistory(JSON.stringify(payload));
     assert.ok(history);
     assert.equal(history.id, "fe0031b1");
     assert.equal(history.name, "Fix the flaky test");
-    assert.deepEqual(history.messages, [
-      { role: "user", text: "why is the test flaky?" },
-      { role: "assistant", text: "it polls the clock" },
+    assert.deepEqual(history.entries, [
+      { kind: "user", text: "why is the test flaky?" },
+      { kind: "tool", name: "read", args: "{}", output: "fn test() {}" },
+      { kind: "assistant", text: "it polls the clock" },
     ]);
     assert.equal(history.total, 4);
     assert.equal(history.shown, 4);
   });
 
-  it("leaves out the parts of a thread that are not the conversation", () => {
-    const history = parseSessionHistory(JSON.stringify(payload));
+  it("pairs each call with the result that answered it", () => {
+    const history = parseSessionHistory(
+      JSON.stringify({
+        ...payload,
+        messages: [
+          {
+            role: "assistant",
+            content: "reading both",
+            toolCalls: [
+              { id: "c1", name: "read", arguments: '{"path":"a.rs"}' },
+              { id: "c2", name: "grep", arguments: '{"pattern":"x"}' },
+            ],
+          },
+          { role: "tool", content: "first", toolCallId: "c1" },
+          { role: "tool", content: "second", toolCallId: "c2" },
+        ],
+      }),
+    );
     assert.ok(history);
-    // The tool result and the tool-only assistant step are not painted: they
-    // would bury what the thread was about.
-    assert.equal(history.messages.length, 2);
-    assert.ok(!history.messages.some((message) => message.text.includes("fn test")));
+    // Text first, then the calls it made, each carrying its own result rather
+    // than a card per stored message.
+    assert.deepEqual(history.entries, [
+      { kind: "assistant", text: "reading both" },
+      { kind: "tool", name: "read", args: '{"path":"a.rs"}', output: "first" },
+      { kind: "tool", name: "grep", args: '{"pattern":"x"}', output: "second" },
+    ]);
+  });
+
+  it("drops a result whose call the tail left out", () => {
+    const history = parseSessionHistory(
+      JSON.stringify({
+        id: "abc123",
+        name: null,
+        messageCount: 12,
+        shown: 1,
+        messages: [{ role: "tool", content: "output", toolCallId: "gone" }],
+        usage: {},
+      }),
+    );
+    assert.ok(history);
+    // Nothing names the tool or holds its arguments, so there is no card.
+    assert.deepEqual(history.entries, []);
+    // The size still comes from the session, not from what was returned.
+    assert.equal(history.total, 12);
+    assert.equal(history.shown, 1, "the CLI sent one message, whatever it was");
+    assert.equal(history.usage.contextTokens, 0);
+    assert.equal(history.usage.cacheHit, null);
+  });
+
+  it("keeps a thread whose tail holds nothing paintable", () => {
+    const history = parseSessionHistory(
+      JSON.stringify({
+        id: "abc123",
+        name: null,
+        messageCount: 4,
+        shown: 2,
+        messages: [
+          { role: "assistant", content: "   ", toolCalls: [] },
+          { role: "system", content: "note to self" },
+        ],
+        usage: {},
+      }),
+    );
+    assert.ok(history);
+    assert.deepEqual(history.entries, [], "an empty step and a system note paint nothing");
+    assert.equal(history.total, 4);
+    assert.equal(history.shown, 2);
   });
 
   it("carries the totals the footer shows, so a resumed thread is not zeroed", () => {
@@ -80,26 +141,6 @@ describe("stored session history", () => {
     assert.equal(history.name, "");
   });
 
-  it("keeps a thread whose tail holds nothing paintable", () => {
-    const history = parseSessionHistory(
-      JSON.stringify({
-        id: "abc123",
-        name: null,
-        messageCount: 12,
-        shown: 1,
-        messages: [{ role: "tool", content: "output" }],
-        usage: {},
-      }),
-    );
-    assert.ok(history);
-    assert.deepEqual(history.messages, [], "a tool result is not painted");
-    // The size still comes from the session, not from what was returned.
-    assert.equal(history.total, 12);
-    assert.equal(history.shown, 1, "the CLI sent one message, whatever it was");
-    assert.equal(history.usage.contextTokens, 0);
-    assert.equal(history.usage.cacheHit, null);
-  });
-
   it("returns nothing for output that is not a session", () => {
     assert.equal(parseSessionHistory(""), null);
     assert.equal(parseSessionHistory("no session `x` for this project"), null);
@@ -111,9 +152,10 @@ describe("stored session history", () => {
     const crlf = `${JSON.stringify(payload, null, 2).replace(/\n/g, "\r\n")}\r\n`;
     const history = parseSessionHistory(crlf);
     assert.ok(history);
-    assert.deepEqual(history.messages, [
-      { role: "user", text: "why is the test flaky?" },
-      { role: "assistant", text: "it polls the clock" },
+    assert.deepEqual(history.entries, [
+      { kind: "user", text: "why is the test flaky?" },
+      { kind: "tool", name: "read", args: "{}", output: "fn test() {}" },
+      { kind: "assistant", text: "it polls the clock" },
     ]);
   });
 

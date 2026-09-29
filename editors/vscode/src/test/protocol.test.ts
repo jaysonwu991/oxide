@@ -535,6 +535,58 @@ describe("Transcript", () => {
     });
   });
 
+  it("replays a stored thread's turns as finished items", () => {
+    const transcript = new Transcript();
+    transcript.replay([
+      { kind: "user", text: "why is the test flaky?" },
+      { kind: "tool", name: "read", args: '{"path":"src/a.rs"}', output: "fn test() {}" },
+      { kind: "assistant", text: "it polls the clock" },
+    ]);
+    // No message per entry: the controller repaints the whole list from one
+    // `state` afterwards, so replaying forty stored turns is one paint.
+    assert.deepEqual(transcript.items, [
+      { id: 1, kind: "user", text: "why is the test flaky?", context: [] },
+      {
+        id: 2,
+        kind: "tool",
+        name: "read",
+        args: '{"path":"src/a.rs"}',
+        output: "fn test() {}",
+        diff: null,
+        running: false,
+        isError: false,
+      },
+      { id: 3, kind: "assistant", text: "it polls the clock" },
+    ]);
+  });
+
+  it("replays an edit with the change its own arguments describe", () => {
+    const transcript = new Transcript(() => "a diff built from the file on disk now");
+    transcript.replay([
+      {
+        kind: "tool",
+        name: "edit",
+        args: '{"path":"src/a.rs","edits":[{"oldText":"b","newText":"x"}]}',
+        output: "Successfully replaced 1 block(s)",
+      },
+      { kind: "tool", name: "write", args: '{"path":"src/a.rs","content":"x"}', output: "Wrote" },
+    ]);
+    const [edit, write] = transcript.items;
+    assert.ok(edit.kind === "tool" && write.kind === "tool");
+    // Both sides of the replacement came with the call, so the card keeps the
+    // change it made; the file as it stands now is never asked, since it is no
+    // longer the state the call found.
+    assert.match(edit.diff ?? "", /-\s+1\s+b/);
+    assert.match(edit.diff ?? "", /\+\s+1\s+x/);
+    // A `write` names only what it wrote, so that state is nowhere on disk any
+    // more and the card shows the call and its result instead.
+    assert.equal(write.diff, null);
+    for (const item of [edit, write]) {
+      assert.equal(item.running, false);
+      assert.equal(item.isError, false, "the store does not say whether it applied");
+    }
+  });
+
   it("starts a fresh thread when reset", () => {
     const transcript = new Transcript();
     transcript.apply({ type: "session", id: "s" });

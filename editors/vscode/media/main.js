@@ -559,9 +559,15 @@
     head.append(name, arg, state);
     const pre = document.createElement("pre");
     pre.className = "tbody";
+    // The card's second fold handle, under the output it kept: the words that
+    // offer the rest of a command are the same gesture as the header's caret,
+    // and after a long result they are the closer one to the reader.
     const hint = document.createElement("div");
     hint.className = "thint";
     hint.hidden = true;
+    hint.setAttribute("role", "button");
+    hint.tabIndex = 0;
+    hint.setAttribute("aria-expanded", "false");
     wrap.append(head, pre, hint);
     return { el: wrap, pre, hint, state, head, summary };
   }
@@ -614,6 +620,7 @@
     entry.el.classList.toggle("running", item.running);
     entry.el.classList.toggle("done", !item.running && !item.isError);
     entry.el.classList.toggle("error", !item.running && item.isError);
+    entry.el.classList.toggle("expanded", Boolean(entry.expanded));
     if (item.running) {
       const elapsed = entry.started ? Date.now() - entry.started : 0;
       entry.state.innerHTML = `<span class="spinner"></span>${elapsed > 1000 ? formatDuration(elapsed) : ""}`;
@@ -633,34 +640,41 @@
     if (entry.expanded) {
       entry.pre.hidden = false;
       setOutput(entry.pre, item.output, false);
+      // A card with something folded offers the fold back where the output
+      // ends, so a long result can be closed from under it as well.
+      entry.hint.hidden = !entry.folded;
+      entry.hint.textContent = "Show less";
+    } else if (entry.inline) {
+      entry.folded = false;
+      entry.pre.hidden = true;
       entry.hint.hidden = true;
-      return;
+    } else {
+      const budget = previewLines(item.name);
+      const useTail = item.name === "bash";
+      const preview = useTail
+        ? previewTail(item.output, budget)
+        : previewText(item.output, budget);
+      setOutput(entry.pre, preview.text, false);
+      entry.folded = preview.more > 0;
+      entry.hint.hidden = !entry.folded;
+      // The line the card kept is counted where the reader would look for it,
+      // rather than twice: as a marker in the body and again as this handle.
+      entry.hint.textContent = `Show ${preview.more} ${useTail ? "earlier" : "more"} line${
+        preview.more === 1 ? "" : "s"
+      }`;
     }
-    entry.pre.hidden = entry.inline;
-    if (entry.inline) {
-      entry.hint.hidden = true;
-      return;
-    }
-    const budget = previewLines(item.name);
-    const useTail = item.name === "bash";
-    const preview = useTail
-      ? previewTail(item.output, budget)
-      : previewText(item.output, budget);
-    setOutput(
-      entry.pre,
-      preview.more > 0 && useTail ? `… ${preview.more} earlier lines\n${preview.text}` : preview.text,
-      false,
-    );
-    entry.hint.hidden = preview.more === 0;
-    entry.hint.textContent = `⋯ ${preview.more} ${useTail ? "earlier" : "more"} line${
-      preview.more === 1 ? "" : "s"
-    } · click to expand`;
+    // The header's caret is only an offer while something is behind it: a call
+    // that already shows everything it has reads as plain text, so it cannot
+    // look like a fold that does nothing.
+    entry.el.classList.toggle("foldable", Boolean(entry.inline || entry.folded));
   }
 
   function toggleTool(entry) {
     if (!entry.item || entry.item.running) return;
     entry.expanded = !entry.expanded;
-    if (entry.head) entry.head.setAttribute("aria-expanded", String(entry.expanded));
+    const expanded = String(entry.expanded);
+    if (entry.head) entry.head.setAttribute("aria-expanded", expanded);
+    if (entry.hint) entry.hint.setAttribute("aria-expanded", expanded);
     paintTool(entry);
   }
 
@@ -2300,13 +2314,13 @@
       }
     }
     const entry = entryOf(target);
-    if (entry && target.closest(".thead")) toggleTool(entry);
+    if (entry && target.closest(".thead, .thint")) toggleTool(entry);
   });
 
   transcript.addEventListener("keydown", (event) => {
     if (event.key !== "Enter" && event.key !== " ") return;
     const target = event.target;
-    if (!(target instanceof Element) || !target.closest(".thead")) return;
+    if (!(target instanceof Element) || !target.closest(".thead, .thint")) return;
     const entry = entryOf(target);
     if (!entry) return;
     event.preventDefault();

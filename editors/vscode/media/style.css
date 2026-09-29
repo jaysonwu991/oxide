@@ -160,7 +160,7 @@ pre,
   min-height: 0;
   overflow-y: auto;
   overflow-x: hidden;
-  padding: 10px;
+  padding: 12px 10px 4px;
   outline: none;
 }
 
@@ -168,9 +168,18 @@ pre,
   display: none;
 }
 
+/* The page a new thread starts on: one paragraph about what Oxide does and one
+   about how this panel runs it, held in the middle of the room it has. */
 .empty {
   color: var(--vscode-descriptionForeground);
+  max-width: 32em;
+  margin: 10vh auto 0;
+  text-align: center;
   line-height: 1.5;
+}
+
+.empty p {
+  margin: 0 0 12px;
 }
 
 .empty .hint {
@@ -184,7 +193,7 @@ pre,
 }
 
 .msg {
-  margin: 0 0 12px;
+  margin: 0 0 14px;
 }
 
 .msg.user {
@@ -197,8 +206,8 @@ pre,
 .msg.user .bubble {
   background: var(--vscode-input-background, rgba(128, 128, 128, 0.15));
   border: 1px solid var(--vscode-input-border, transparent);
-  border-radius: 6px;
-  padding: 6px 9px;
+  border-radius: 8px;
+  padding: 6px 10px;
   white-space: pre-wrap;
   overflow-wrap: anywhere;
   max-width: 100%;
@@ -230,8 +239,14 @@ pre,
 
 .assistant .body p,
 .assistant .body li {
-  line-height: 1.5;
+  line-height: 1.55;
   overflow-wrap: anywhere;
+}
+
+/* The gaps a reply's own blocks leave: the browser default is a full line, and
+   a Markdown answer reads better with its paragraphs closer than that. */
+.assistant .body p {
+  margin: 8px 0;
 }
 
 .assistant .body h1,
@@ -349,11 +364,12 @@ pre,
 /* ---------- approval card ---------- */
 
 .approval {
-  border: 1px solid var(--vscode-panel-border, rgba(128, 128, 128, 0.3));
+  border: 1px solid var(--vscode-panel-border, rgba(128, 128, 128, 0.28));
   border-left: 3px solid var(--vscode-editorWarning-foreground, var(--vscode-charts-orange, #d18616));
-  border-radius: 4px;
+  border-radius: 8px;
   margin: 0 0 10px;
-  background: var(--vscode-editor-background);
+  background: var(--vscode-editorWidget-background, var(--vscode-sideBar-background));
+  overflow: hidden;
 }
 
 .approval.allowed {
@@ -457,10 +473,11 @@ pre,
 /* The `ask` tool's card: like an approval, it is the one thing on screen that
    needs the user, on the widget background so it stands out of the transcript. */
 .question {
-  border: 1px solid var(--vscode-panel-border, rgba(128, 128, 128, 0.3));
+  border: 1px solid var(--vscode-panel-border, rgba(128, 128, 128, 0.28));
   border-left: 3px solid var(--vscode-focusBorder, var(--vscode-charts-blue, #4a9eff));
-  border-radius: 4px;
+  border-radius: 8px;
   margin: 0 0 10px;
+  overflow: hidden;
   background: var(--vscode-editorWidget-background, var(--vscode-editor-background));
 }
 
@@ -650,12 +667,16 @@ pre,
 
 /* ---------- tool cards ---------- */
 
+/* A card is its own surface — the widget background off the panel's — with the
+   state of the call on its left edge: blue while it runs, green when it landed,
+   red when it failed. */
 .tool {
-  border: 1px solid var(--vscode-panel-border, rgba(128, 128, 128, 0.3));
+  border: 1px solid var(--vscode-panel-border, rgba(128, 128, 128, 0.28));
   border-left: 3px solid var(--vscode-charts-blue, #4a9eff);
-  border-radius: 4px;
+  border-radius: 8px;
   margin: 0 0 10px;
-  background: var(--vscode-editor-background);
+  background: var(--vscode-editorWidget-background, var(--vscode-sideBar-background));
+  overflow: hidden;
 }
 
 .tool.error {
@@ -666,6 +687,8 @@ pre,
   border-left-color: var(--vscode-charts-green, #89d185);
 }
 
+/* The header is the card's fold handle, and says so: the caret turns to point
+   at the output it opens, and the row itself takes the pointer. */
 .thead {
   display: flex;
   align-items: baseline;
@@ -673,6 +696,37 @@ pre,
   padding: 5px 8px;
   cursor: pointer;
   overflow: hidden;
+}
+
+.thead::before {
+  content: "";
+  flex: 0 0 auto;
+  color: var(--vscode-descriptionForeground);
+}
+
+/* A caret is drawn only for a header that opens something, so a card showing
+   everything it has does not offer a fold that does nothing. */
+.tool.foldable .thead::before {
+  content: "\25B8";
+  font-size: 0.7em;
+  transition: transform 0.1s ease;
+}
+
+.tool.expanded .thead::before {
+  transform: rotate(90deg);
+}
+
+.thead:hover {
+  background: var(--vscode-toolbar-hoverBackground, rgba(128, 128, 128, 0.12));
+}
+
+.thead:hover .targ {
+  color: var(--vscode-foreground);
+}
+
+.thead:focus-visible {
+  outline: 1px solid var(--vscode-focusBorder);
+  outline-offset: -1px;
 }
 
 .tname {
@@ -729,10 +783,30 @@ pre,
   display: none;
 }
 
+/* The card's second fold handle, under the output it kept: the words say what
+   is left to see, so the row itself is what offers it — the same treatment the
+   change card's fold row gets. */
 .thint {
-  padding: 0 8px 6px;
-  font-size: 0.8em;
+  display: block;
+  padding: 3px 8px;
+  font-size: 0.85em;
   color: var(--vscode-descriptionForeground);
+  cursor: pointer;
+  user-select: none;
+}
+
+.tool .thint[hidden] {
+  display: none;
+}
+
+.thint:hover {
+  color: var(--vscode-foreground);
+  background: var(--vscode-toolbar-hoverBackground, rgba(128, 128, 128, 0.15));
+}
+
+.thint:focus-visible {
+  outline: 1px solid var(--vscode-focusBorder);
+  outline-offset: -1px;
 }
 
 .tool .diff {
@@ -749,11 +823,11 @@ pre,
 /* ---------- a turn's changed files ---------- */
 
 .changes {
-  border: 1px solid var(--vscode-panel-border, rgba(128, 128, 128, 0.3));
+  border: 1px solid var(--vscode-panel-border, rgba(128, 128, 128, 0.28));
   border-left: 3px solid var(--vscode-charts-purple, #c586c0);
-  border-radius: 4px;
+  border-radius: 8px;
   margin: 0 0 10px;
-  background: var(--vscode-editor-background);
+  background: var(--vscode-editorWidget-background, var(--vscode-sideBar-background));
   overflow: hidden;
 }
 

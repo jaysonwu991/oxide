@@ -300,6 +300,35 @@ function applyEdits(content: string, edits: Edit[]): string | null {
   return base;
 }
 
+/// The diff a call describes in its own arguments, for a card replayed from a
+/// stored thread: `patch` states its change outright and an `edit` gives both
+/// sides of every replacement it made, so both can be shown later without
+/// asking the file what it holds now.
+///
+/// A `write` is left out rather than previewed against the file as it stands:
+/// it names only the content it wrote, so the state it replaced is nowhere on
+/// disk any more, and a diff built from today's file would be the difference
+/// between then and now rather than the change the call made.
+export function argumentDiff(name: string, args: unknown): ToolDiff | null {
+  const parsed = record(args);
+  const canonical = canonicalTool(name);
+  if (canonical === "patch") {
+    const diff = text(parsed.diff).trim();
+    return diff ? { path: text(parsed.path) || "patch", diff } : null;
+  }
+  if (canonical !== "edit") return null;
+  const path = text(parsed.path);
+  const edits = parseEdits(parsed);
+  if (!path || edits.length === 0) return null;
+  // The blocks as the call wrote them: an edit's own old and new text, which is
+  // what the card showed when it ran. The file's surrounding lines are not here
+  // — the call did not carry them — so the diff is the replacement itself.
+  const before = edits.map((edit) => edit.old).join("\n");
+  const after = edits.map((edit) => edit.next).join("\n");
+  const diff = diffPreview(before, after);
+  return diff ? { path, diff } : null;
+}
+
 /// The diff to show for a tool call, or `null` when the call does not change a
 /// file. `readFile` returns the current file content, or `null` when it cannot
 /// be read (a new file, a binary, a path outside the workspace).
