@@ -756,6 +756,8 @@ check(
 const composerButton = new StubElement("button", "composer-button");
 const composerRow = new StubElement("div", "composer-row");
 composerRow.onclick = () => {};
+const composerLink = new StubElement("a", "composer-link");
+composerLink.setAttribute("href", "https://example.com/docs");
 document.activeElement = elementFor("prompt");
 const buttonPress = press({ target: composerButton });
 document.fire("mousedown", buttonPress);
@@ -770,6 +772,13 @@ check(
   "swallowed a row press while the message box had the caret",
   composerRowPress.refused === true,
   String(composerRowPress.refused),
+);
+const composerLinkPress = press({ target: composerLink });
+document.fire("mousedown", composerLinkPress);
+check(
+  "swallowed a link press while the message box had the caret",
+  composerLinkPress.refused === true,
+  String(composerLinkPress.refused),
 );
 const promptPress = press({ target: elementFor("prompt") });
 document.fire("mousedown", promptPress);

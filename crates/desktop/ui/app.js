@@ -3345,17 +3345,17 @@ function init() {
   // A control pressed while the caret is in the message box spends that press on
   // taking the focus out of the box, and the click the control answers does not
   // arrive — the same press an `@` row swallows one at a time. Swallow it once
-  // here for every control, so a button or row beside the composer answers the
-  // first click while the caret stays put.
+  // here for every control, so a button, link or row beside the composer answers
+  // the first click while the caret stays put.
   document.addEventListener(
     "mousedown",
     (event) => {
       if (event.button !== 0) return;
       if (document.activeElement !== el("prompt")) return;
-      // A button is focusable and always takes the press; anything else is only
-      // a control when the page has wired a click handler to it.
+      // A button and a link are focusable and always take the press; anything
+      // else is only a control when the page has wired a click handler to it.
       for (let node = event.target; node && node !== document.body; node = node.parentNode) {
-        if (node.tagName === "BUTTON" || node.onclick) {
+        if (node.tagName === "BUTTON" || node.tagName === "A" || node.onclick) {
           event.preventDefault();
           return;
         }
