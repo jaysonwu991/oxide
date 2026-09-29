@@ -39,6 +39,11 @@ const state = {
   currentThinking: null,
   attachments: [],
   mcps: null,
+  // Why the last read of the servers or of the threads failed, kept until the
+  // next read answers so the listing's own render paints it — a failure painted
+  // straight from the await lands under a press like any other repaint.
+  mcpError: "",
+  sessionsError: "",
   palette: [],
   paletteIndex: 0,
   paletteOpen: false,
@@ -655,17 +660,20 @@ function updateChips() {
 
 // ---------- threads ----------
 
-/// Loads the shared session store, and reports why it could not be read as its
-/// return value: a caller that just opened a listing can say so instead of
-/// painting an empty one, the same way `loadMcps` does.
+/// Loads the shared session store, keeping why it could not be read for the
+/// listing's own render to paint — a failure painted from the await lands under
+/// a press like any other repaint, the same way `loadMcps` does — and returns
+/// the same reason.
 async function loadSessions() {
   try {
     state.sessions = await invoke("all_sessions");
+    state.sessionsError = "";
     renderProjectsTree();
     refreshThreadTitle();
     return "";
   } catch (error) {
     setStatus(`Failed to load threads: ${error}`);
+    state.sessionsError = String(error);
     return String(error);
   }
 }
@@ -2457,11 +2465,11 @@ async function openMcps() {
 async function loadMcps() {
   try {
     state.mcps = await invoke("mcp_servers", { project: state.project || "" });
-    renderMcps();
+    state.mcpError = "";
   } catch (error) {
-    el("mcp-list").innerHTML =
-      `<div class="mcp-empty">Could not list MCP servers: ${escapeHtml(String(error))}</div>`;
+    state.mcpError = String(error);
   }
+  renderMcps();
 }
 
 function renderMcps() {
@@ -2471,6 +2479,10 @@ function renderMcps() {
   }
   const box = el("mcp-list");
   box.innerHTML = "";
+  if (state.mcpError) {
+    box.innerHTML = `<div class="mcp-empty">Could not list MCP servers: ${escapeHtml(state.mcpError)}</div>`;
+    return;
+  }
   const servers = state.mcps || [];
   if (!servers.length) {
     box.innerHTML =
@@ -2527,6 +2539,7 @@ async function toggleMcp(server, button) {
       name: server.name,
       enabled: !server.enabled,
     });
+    state.mcpError = "";
     renderMcps();
     setStatus("Ready");
   } catch (error) {
@@ -2549,14 +2562,7 @@ async function openSessions() {
   closeOverlays("sessions-modal");
   el("sessions-modal").hidden = false;
   el("sessions-list").innerHTML = '<div class="dialog-empty">Loading threads…</div>';
-  const reason = await loadSessions();
-  if (reason) {
-    // The store could not be read, so the empty listing that would be painted
-    // from no threads is not a fact about this project.
-    el("sessions-list").innerHTML =
-      `<div class="dialog-empty">Could not read this project's threads: ${escapeHtml(reason)}</div>`;
-    return;
-  }
+  await loadSessions();
   renderSessions();
 }
 
@@ -2567,6 +2573,12 @@ function renderSessions() {
   }
   const box = el("sessions-list");
   box.innerHTML = "";
+  // The store could not be read, so the empty listing that would be painted
+  // from no threads is not a fact about this project.
+  if (state.sessionsError) {
+    box.innerHTML = `<div class="dialog-empty">Could not read this project's threads: ${escapeHtml(state.sessionsError)}</div>`;
+    return;
+  }
   const threads = listedSessions().filter((session) => session.cwd === state.project);
   if (!threads.length) {
     box.innerHTML =

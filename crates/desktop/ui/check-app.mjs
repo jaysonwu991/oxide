@@ -574,6 +574,7 @@ vm.runInThisContext(
     " answerQuestion, collectAnswers, requestAt, acceptAt, moveAt, closeAt, atKey," +
     " resetTranscript, renderChanges, closeReview, undoChanges," +
     " loadSessions, renderProjectsTree, renderSessions, renderMcps, openSession, renderProjectMeta, updateSendState, setBusy, setIdle," +
+    " loadMcps, openSessions," +
     " listedSessions, selectSessionFromTree, removeSession," +
     " startTool, finishTool, toggleTool };\n",
 );
@@ -844,6 +845,56 @@ for (const [name, listId, paint] of [
   );
   elements.set(listId, page);
 }
+
+// A read that fails is the same repaint, from the same await: a Recheck that
+// fails while a toggle is pressed, or the thread listing opened while the store
+// cannot be read, would otherwise drop the failure into the list under the
+// pointer and cost the press its click.
+for (const [name, listId, breakRead, read] of [
+  [
+    "MCP",
+    "mcp-list",
+    () => {
+      mcpsError = "connection refused";
+    },
+    app.loadMcps,
+  ],
+  [
+    "sessions",
+    "sessions-list",
+    () => {
+      threadsError = "permission denied";
+    },
+    app.openSessions,
+  ],
+]) {
+  const page = elementFor(listId);
+  const list = new StubElement("div", listId);
+  elements.set(listId, list);
+  list.innerHTML = "";
+  breakRead();
+  document.fire("mousedown", press({ target: composerButton }));
+  await read();
+  check(
+    `held the ${name} listing a failed read asked to repaint`,
+    !list.outline().includes("Could not"),
+    list.outline(),
+  );
+  document.fire("mouseup", press({ target: composerButton }));
+  await nextTick();
+  check(
+    `painted the ${name} failure once the press was over`,
+    list.outline().includes("Could not"),
+    list.outline() || "painted no failure",
+  );
+  elements.set(listId, page);
+}
+mcpsError = null;
+threadsError = null;
+elementFor("mcps-modal").hidden = true;
+elementFor("sessions-modal").hidden = true;
+await app.loadMcps();
+await app.loadSessions();
 
 // Only the message box's caret is what the swallow is for, so a press while some
 // other control holds the focus keeps being taken by that control as it was.
