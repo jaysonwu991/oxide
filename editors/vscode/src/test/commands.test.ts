@@ -249,12 +249,15 @@ describe("command contributions", () => {
 
     // The text is read when the message goes rather than painted into the chip,
     // so the run receives the buffer, unsaved edits included.
-    const send = chat.slice(
-      chat.indexOf("async send("),
-      chat.indexOf("private ", chat.indexOf("async send(")),
+    const prepare = chat.slice(
+      chat.indexOf("private prepareSend("),
+      chat.indexOf("private ", chat.indexOf("private prepareSend(") + 1),
     );
-    assert.ok(send.includes("this.autoBlock()"), "the tracked file is read at send time");
-    assert.ok(send.includes("carried.has(tracked.path)"), "and a file already carried is not sent twice");
+    assert.ok(prepare.includes("this.autoBlock()"), "the tracked file is read at send time");
+    assert.ok(
+      prepare.includes("carried.has(tracked.path)"),
+      "and a file already carried is not sent twice",
+    );
 
     // The ✕ takes it out of the message without forgetting the file, so the
     // next one opened brings the chip back...
@@ -408,5 +411,63 @@ describe("command contributions", () => {
         `${command} is answered before a message is queued or prompted`,
       );
     }
+  });
+
+  it("sends an image on its own, and a queued message keeps its own chips", () => {
+    // An image with no question is still a message the CLI accepts (`@shot.png`
+    // with nothing typed is media, not an empty prompt), so the host must not
+    // refuse it; it is only empty when there is neither text nor media.
+    const prepare = chat.slice(
+      chat.indexOf("private prepareSend("),
+      chat.indexOf("private ", chat.indexOf("private prepareSend(") + 1),
+    );
+    assert.ok(
+      prepare.includes("buildPrompt(expanded.inlined, carriedBlocks.filter("),
+      "@path blocks land where they were typed, not above the message",
+    );
+    assert.ok(
+      prepare.includes("if (!prompt && images.length === 0)"),
+      "a message is only empty when it has neither prompt text nor media",
+    );
+
+    // A message queued while a turn runs snapshots its own chips before the
+    // composer is cleared, so the image it carried is consumed, not left in the
+    // box to be sent twice.
+    const send = chat.slice(
+      chat.indexOf("async send("),
+      chat.indexOf("private ", chat.indexOf("async send(")),
+    );
+    assert.ok(
+      send.indexOf("this.queue.push(prepared)") < send.indexOf("this.dropComposerChips()"),
+      "a queued message is snapshotted before the composer is cleared",
+    );
+    assert.ok(send.includes("this.startTurn(prepared, true)"), "an idle send starts its own turn");
+    assert.ok(
+      send.includes("this.showNotice(`Queued:"),
+      "a queued message is announced without closing the assistant still streaming",
+    );
+    assert.ok(
+      !send.includes("broadcastItem(this.transcript.pushUser(prepared.message"),
+      "and its bubble waits for the turn to start",
+    );
+
+    const drain = chat.slice(chat.indexOf("private drainQueue()"), chat.indexOf("stop():"));
+    assert.ok(
+      drain.includes("this.startTurn(next, true)"),
+      "the queued bubble is pushed when its turn starts, not while one is streaming",
+    );
+  });
+
+  it("names the thread as soon as the first message is sent", () => {
+    // The header's title is computed from the first message, so it has to
+    // travel with the status line the send emits: the next full `state`
+    // message would repaint the whole view, and the header would lag behind
+    // the bubble until then.
+    const status = chat.slice(chat.indexOf("private broadcastStatus()"), chat.indexOf("get running"));
+    assert.ok(status.includes("title: this.threadTitle()"), "the status carries the title");
+    assert.ok(
+      renderer.includes('titleLabel.textContent = message.title || "New chat"'),
+      "and the webview paints it over the placeholder",
+    );
   });
 });

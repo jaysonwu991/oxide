@@ -1321,6 +1321,9 @@
       case "status":
         setStatus(message.status, message.busy, message.queued);
         setFooter(message.footer);
+        // The title changes when the first message is sent, before the next
+        // `state` message repaints the view, so the header follows the send.
+        titleLabel.textContent = message.title || "New chat";
         return;
       case "usage":
         if (message.footer) setFooter(message.footer);

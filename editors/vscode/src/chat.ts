@@ -145,13 +145,24 @@ interface RunState {
   attachments: Attachment[];
 }
 
-/// A follow-up queued while a turn runs. The context chips and attachments are
-/// snapshotted at queue time so later edits to the composer cannot change what
-/// the queued message sends.
-interface QueuedMessage {
-  text: string;
+/// One message assembled from the composer, ready to run: the prompt text, the
+/// media paths, the chips that name what it carries, and the raw chips a failed
+/// start restores. A follow-up queued while a turn runs keeps its own copy, so
+/// the composer can be cleared and edited while the turn runs and the queued
+/// message still goes with what it was queued with.
+interface PreparedSend {
+  /// The trimmed message text, for the transcript bubble.
+  message: string;
+  /// The full prompt, context blocks included.
+  prompt: string;
+  /// Absolute image/PDF paths carried in the RPC frame.
+  images: string[];
+  /// The chips the user bubble names under the message.
+  labels: ContextChip[];
+  /// The raw context chips and attachments, restored if the turn fails to start.
   context: Chip[];
   attachments: Attachment[];
+  cwd: string;
 }
 
 export class ChatController {
@@ -184,7 +195,7 @@ export class ChatController {
   private nextChipId = 1;
   private turn: Turn | null = null;
   private run: RunState | null = null;
-  private queue: QueuedMessage[] = [];
+  private queue: PreparedSend[] = [];
   private continueLast = false;
   /// The dialog the panel paints over the transcript — the MCP server list or
   /// the session history — and the rows it was composed from. Held here rather
@@ -846,23 +857,34 @@ export class ChatController {
         return;
       }
     }
+
+    const prepared = this.prepareSend(message);
+    if (!prepared) return;
     if (this.turn) {
-      // Snapshot the chips: the composer stays editable while the turn runs, so
-      // a later chip must not join a message already queued. The file the
-      // editor has open is not snapshotted — the chip stands for what is being
-      // edited, so a queued message goes with whatever is open when it goes.
-      this.queue.push({
-        text: message,
-        context: [...this.context],
-        attachments: [...this.attachments],
-      });
-      this.showNotice(`Queued: ${firstLine(message)}`);
+      // The message is queued as it was composed: its prompt, media and chips
+      // are all snapshotted, so the composer can be cleared and typed into
+      // while the turn runs without changing what was queued. The bubble waits
+      // for the turn to start: pushing it now would close the assistant still
+      // streaming below it and split that response in two.
+      this.queue.push(prepared);
+      this.dropComposerChips();
+      this.showNotice(`Queued: ${firstLine(prepared.message) || "an attachment"}`);
+      this.broadcastStatus();
       return;
     }
+    this.dropComposerChips();
+    this.startTurn(prepared, true);
+  }
+
+  /// Assembles one message from the composer into everything the turn needs.
+  /// Returns `null` after reporting when there is no folder, or when there is
+  /// neither prompt text nor media to send — a truly empty message — so an
+  /// empty send is refused here rather than queued and then refused later.
+  private prepareSend(message: string): PreparedSend | null {
     const cwd = this.cwd();
     if (!cwd) {
       this.showNotice("Open a folder to run Oxide: sessions and context are per project.", "error");
-      return;
+      return null;
     }
     // The agent may have written `.oxide/` files, committed, or the user may
     // have changed a setting since the panel was painted.
@@ -898,18 +920,35 @@ export class ChatController {
       .filter((block) => isAttachmentPath(block.path))
       .map((block) => path.resolve(cwd, block.path))
       .concat(expanded.attachments);
-    const prompt = buildPrompt(expanded.message, [
-      ...carriedBlocks.filter((block) => !isAttachmentPath(block.path)),
-      ...expanded.blocks,
-    ]);
-    if (!prompt) {
+    const prompt = buildPrompt(expanded.inlined, carriedBlocks.filter((block) => !isAttachmentPath(block.path)));
+    const images = [...attached.map((chip) => chip.path), ...referenced];
+    if (!prompt && images.length === 0) {
       this.showNotice(
         "The message is empty once its references are attached; add a question next to them.",
         "warn",
       );
-      return;
+      return null;
     }
+    return {
+      message,
+      prompt,
+      images,
+      labels: [
+        ...(active ? [{ id: 0, label: contextLabel(active) }] : []),
+        ...chips.map((chip) => ({ id: chip.id, label: chip.label })),
+        ...attached.map((chip) => ({ id: chip.id, label: chip.label })),
+        ...expanded.blocks.map((block) => ({ id: 0, label: contextLabel(block) })),
+      ],
+      context: chips,
+      attachments: attached,
+      cwd,
+    };
+  }
 
+  /// Starts the CLI turn for an assembled message. When the message was queued
+  /// while a turn ran, its bubble is already in the transcript and the composer
+  /// is already clear, so `showUser` is false and the composer is left alone.
+  private startTurn(prepared: PreparedSend, showUser: boolean): void {
     const folder = this.folder();
     const args = buildTurnArgs({
       ...this.turnOptions(),
@@ -918,25 +957,14 @@ export class ChatController {
     });
     this.continueLast = false;
 
-    this.context = [];
-    this.attachments = [];
-    this.broadcastChips();
-    // The bubble names what was sent: the tracked file, the pending context and
-    // attachments, and whatever `@path` references were resolved out of the
-    // message itself.
-    this.broadcastItem(
-      this.transcript.pushUser(message, [
-        ...(active ? [{ id: 0, label: contextLabel(active) }] : []),
-        ...chips.map((chip) => ({ id: chip.id, label: chip.label })),
-        ...attached.map((chip) => ({ id: chip.id, label: chip.label })),
-        ...expanded.blocks.map((block) => ({ id: 0, label: contextLabel(block) })),
-      ]),
-    );
+    if (showUser) {
+      this.broadcastItem(this.transcript.pushUser(prepared.message, prepared.labels));
+    }
 
     const command = this.binary();
     this.output.appendLine(`\n$ ${command} ${args.join(" ")}`);
     if (folder) this.output.appendLine(`  cwd ${folder.uri.fsPath}`);
-    this.output.appendLine(`  prompt:\n${indent(prompt)}`);
+    this.output.appendLine(`  prompt:\n${indent(prepared.prompt)}`);
 
     this.transcript.busy = true;
     this.transcript.status = "Thinking…";
@@ -944,18 +972,18 @@ export class ChatController {
       cancelled: false,
       sawEvent: false,
       stderr: [],
-      context: chips,
-      attachments: attached,
+      context: prepared.context,
+      attachments: prepared.attachments,
     };
     this.turn = startTurn(
       command,
       args,
-      cwd,
+      prepared.cwd,
       {
-        prompt,
+        prompt: prepared.prompt,
         // The paths travel with the prompt instead of in `--image` flags: in
         // rpc mode the prompt itself is a request frame.
-        images: [...attached.map((chip) => chip.path), ...referenced],
+        images: prepared.images,
       },
       {
         onEvent: (event) => this.handleEvent(event),
@@ -967,6 +995,14 @@ export class ChatController {
       },
     );
     this.broadcastStatus();
+  }
+
+  /// Clears the chips the user attached from the composer. The tracked file's
+  /// chip stays: it is the editor's, not something the message consumed.
+  private dropComposerChips(): void {
+    this.context = [];
+    this.attachments = [];
+    this.broadcastChips();
   }
 
   /// Answers the tool approval waiting behind `requestId`. The CLI holds the
@@ -1004,16 +1040,13 @@ export class ChatController {
     this.broadcastStatus();
   }
 
-  /// Sends queued follow-ups one at a time, in order.
+  /// Sends queued follow-ups one at a time, in order. The composer is left
+  /// alone: its current chips belong to the next message, not the queued one
+  /// (which already took its own when it was queued).
   private drainQueue(): void {
     const next = this.queue.shift();
     if (next === undefined) return;
-    // Restore the chips the message was queued with, not whatever the composer
-    // holds now.
-    this.context = next.context;
-    this.attachments = next.attachments;
-    this.broadcastChips();
-    void this.send(next.text);
+    this.startTurn(next, true);
   }
 
   stop(): void {
@@ -1757,7 +1790,11 @@ export class ChatController {
   }
 
   private broadcastStatus(): void {
-    this.broadcast(this.transcript.statusMessage(this.queue.length, this.footer()));
+    const status = this.transcript.statusMessage(this.queue.length, this.footer()) as Extract<
+      ViewMessage,
+      { k: "status" }
+    >;
+    this.broadcast({ ...status, title: this.threadTitle() });
   }
 
   get running(): boolean {

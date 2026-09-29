@@ -82,12 +82,17 @@ export interface AtReferenceSources {
 }
 
 export interface AtExpansion {
-  /// The message with resolved references removed.
+  /// The message with resolved references removed, for the transcript bubble
+  /// and for building a prompt without the resolved blocks.
   message: string;
   /// Files inlined as context.
   blocks: ContextBlock[];
   /// Images and PDFs passed as `--image`.
   attachments: string[];
+  /// The message with each resolved block written in place, the way the CLI's
+  /// `@file` expansion writes it: a reference in the middle of a sentence stays
+  /// in the middle, rather than every file being moved above the question.
+  inlined: string;
 }
 
 /// Expands the `@path` references in a message.
@@ -99,15 +104,18 @@ export interface AtExpansion {
 /// send, so a typo costs a round trip and not the message.
 export function expandAtReferences(message: string, sources: AtReferenceSources): AtExpansion {
   const gone = "\u0000";
+  const blockMark = "\u0001";
   const blocks: ContextBlock[] = [];
   const attachments: string[] = [];
   const seen = new Set<string>();
   const parts = message.split(/(\s+)/);
   const kept: string[] = [];
+  const inline: string[] = [];
 
   for (const part of parts) {
     if (!part || /^\s+$/.test(part)) {
       kept.push(part);
+      inline.push(part);
       continue;
     }
     // Trailing punctuation is not part of a path: `see @a.rs, it …`.
@@ -116,28 +124,38 @@ export function expandAtReferences(message: string, sources: AtReferenceSources)
     const tail = match ? match[2] : "";
     if (!part.startsWith("@") || !reference) {
       kept.push(part);
+      inline.push(part);
       continue;
     }
     const absolute = sources.resolve(reference);
     if (!absolute || seen.has(absolute)) {
-      if (absolute) kept.push(gone + tail);
-      else kept.push(part);
+      if (absolute) {
+        kept.push(gone + tail);
+        inline.push(gone + tail);
+      } else {
+        kept.push(part);
+        inline.push(part);
+      }
       continue;
     }
     if (isAttachmentPath(absolute)) {
       seen.add(absolute);
       attachments.push(absolute);
       kept.push(gone + tail);
+      inline.push(gone + tail);
       continue;
     }
     const text = sources.read(absolute);
     if (text === null) {
       kept.push(part);
+      inline.push(part);
       continue;
     }
     seen.add(absolute);
+    const index = blocks.length;
     blocks.push({ path: sources.label(absolute), text });
     kept.push(gone + tail);
+    inline.push(`${blockMark}${index}${blockMark}${tail}`);
   }
 
   return {
@@ -148,5 +166,15 @@ export function expandAtReferences(message: string, sources: AtReferenceSources)
       .trim(),
     blocks,
     attachments,
+    inlined: inline
+      .join("")
+      .replace(/[ \t]*\u0001(\d+)\u0001[ \t]*/g, (_all, index: string) => {
+        const block = blocks[Number(index)];
+        const body = block.text.endsWith("\n") ? block.text : `${block.text}\n`;
+        return `\n\n${contextHeader(block)}\n${body}`;
+      })
+      .replace(/[ \t]*\u0000[ \t]*/g, " ")
+      .replace(/[ \t]+([,.!?;:)])/g, "$1")
+      .trim(),
   };
 }
