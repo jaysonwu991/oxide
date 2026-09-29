@@ -13,11 +13,17 @@
 // the listing is about, and cannot be answered while a turn streams.
 
 import { mcpStateLabel, type McpServerView } from "./mcps";
-import type { SessionEntry } from "./sessions";
+import { filterSessions, type SessionEntry } from "./sessions";
 
 /// How a row's status is colored: the green/amber/red the terminal's `/mcps`
 /// uses, `muted` for a server that is off or a session's age.
 export type DialogTone = "ok" | "warn" | "error" | "muted" | "";
+
+/// What a row is, so the renderer can paint the shapes a listing is made of
+/// without reading its labels: a way out of the listing (`action` — the session
+/// history's two rows), one of the things it lists (`thread`), or an ordinary
+/// row (""), which is what a server and a confirmation's rows are.
+export type DialogRowKind = "action" | "thread" | "";
 
 /// The glyphs a row's own button can be painted with. The webview cannot load
 /// VS Code's codicon font, so the few it needs are named here and inlined as
@@ -43,6 +49,12 @@ export interface DialogRow {
   /// The glyph the button is painted as, so a narrow pane gets a switch rather
   /// than a word that would not fit.
   icon: DialogIcon;
+  /// What the row is, for the listing's own styling.
+  kind: DialogRowKind;
+  /// Whether this is the thread the panel has open. Carried rather than read off
+  /// `status`, which is a word to paint: the mark is state, and a listing whose
+  /// open thread is not in it marks nothing.
+  current: boolean;
 }
 
 /// Which edge of the panel a dialog is attached to. The session history drops
@@ -68,6 +80,16 @@ export interface DialogState {
   /// that the last listing failed.
   note: string;
   rows: DialogRow[];
+  /// How many of the rows are the things being listed — threads, servers — for
+  /// the count the head carries beside the title. 0 for a dialog whose rows are
+  /// answers rather than a listing, and 0 hides it.
+  count: number;
+  /// Whether the head carries a search box, and the filter that was applied to
+  /// the rows, echoed back so a redraw keeps what the reader typed rather than
+  /// clearing it under them. The panel filters what the store already answered,
+  /// which is why the query is only ever applied to rows that are here.
+  search: boolean;
+  query: string;
   /// A trailing action beside Close (`Recheck`), and the action it posts.
   refreshLabel: string;
   refreshAction: string;
@@ -111,6 +133,8 @@ function row(
     button: "",
     buttonAction: "",
     icon: "",
+    kind: "",
+    current: false,
     ...rest,
   };
 }
@@ -139,6 +163,9 @@ export function mcpDialog(servers: readonly McpServerView[], note = ""): DialogS
       (servers.length
         ? ""
         : "No MCP servers configured for this project. Add one with oxide mcp add, or an .mcp.json in the project."),
+    count: servers.length,
+    search: false,
+    query: "",
     rows: servers.map((server) =>
       row(server.name, server.name, {
         detail: [server.transport, server.detail, `source: ${server.source}`]
@@ -186,50 +213,83 @@ export interface LiveSession {
 /// does — a run that has not been written yet, or a file whose thread is still
 /// unnamed. It stands in for itself: a row of its own ahead of the store's when
 /// there is no row there, and its title where the store's row has none.
+///
+/// `query` is the search box's own value — the listing is long enough to be
+/// worth filtering — and the rows are narrowed by it before they are painted.
+/// It is echoed back so a redraw under a typed-in filter keeps the filter, and
+/// the count in the head is what the filter left, so narrowing the list is
+/// visible as a number rather than only as a shorter list.
 export function sessionDialog(
   sessions: readonly SessionEntry[],
   current: string | null,
   note = "",
   live: LiveSession | null = null,
+  query = "",
 ): DialogState {
   const open = live && live.id === current ? live : null;
   const file = open ? sessions.find((session) => session.id === open.id) : undefined;
   const title = open?.label.trim() || "";
+  // The thread on screen is painted under the header's title where the store has
+  // none for it yet, so the rows are named before anything reads them: the name
+  // a search is matched against is the name the row shows, and a query for what
+  // the listing displays cannot miss the row it displays it on.
+  const named = open
+    ? sessions.map((session) =>
+        session.id === open.id && !session.label ? { ...session, label: title } : session,
+      )
+    : sessions;
+  const filtered = filterSessions(named, query);
+  // The thread on screen is filtered like any other row, so a search never
+  // leaves a row behind that the query does not match.
+  const stand: SessionEntry | null =
+    open && !file ? { id: open.id, label: title, age: "", messages: 0 } : null;
+  const standing = stand ? filterSessions([stand], query) : [];
+  const threads = standing.length + filtered.length;
+  // The note is the host's when it has one to give (the read failed, the store
+  // is not there yet); otherwise a listing says why it is showing no threads,
+  // which is either nothing stored yet or a filter that left none.
+  const empty = sessions.length || open
+    ? query.trim() && !threads
+      ? `No thread matches “${query.trim()}”.`
+      : ""
+    : "No sessions for this project yet — the next message starts one.";
   return {
     kind: "sessions",
     pin: "header",
     title: "Sessions",
-    subtitle:
-      "Threads stored for this project. Resuming one continues from its stored context, the way --continue does in the terminal.",
-    note:
-      note ||
-      (sessions.length || open
-        ? ""
-        : "No sessions for this project yet — the next message starts one."),
+    // No subtitle: the count beside the title and the rows themselves are the
+    // whole story, and a line of prose above them only pushed the list down in a
+    // side bar that is already narrow.
+    subtitle: "",
+    note: note || empty,
     rows: [
       row(NEW_SESSION, "New chat", {
         // On a fresh page there is nothing to close, and saying otherwise would
         // be a row describing a thread the project does not have.
         detail: current ? "Close this thread and start a fresh one" : "Start a fresh thread",
         action: OPEN_SESSION,
+        kind: "action",
       }),
       row(CONTINUE_SESSION, "Continue most recent session", {
         detail: "Pick up the newest session for this project",
         action: OPEN_SESSION,
+        kind: "action",
       }),
-      ...(open && !file
+      ...(stand && standing.length
         ? [
-            row(open.id, title || open.id, {
+            row(stand.id, title || stand.id, {
               detail: "Open in this panel — the store has no file for it yet",
               status: "Current",
               tone: "muted" as DialogTone,
               action: OPEN_SESSION,
+              kind: "thread",
+              current: true,
             }),
           ]
         : []),
-      ...sessions.map((session) => {
+      ...filtered.map((session) => {
         const marked = session.id === current;
-        const name = session.label || (marked ? title : "") || session.id;
+        const name = session.label || session.id;
         return row(session.id, name, {
           detail: `${session.messages} message${session.messages === 1 ? "" : "s"}`,
           status: marked ? "Current" : session.age,
@@ -238,9 +298,14 @@ export function sessionDialog(
           button: `Delete ${name}`,
           buttonAction: SESSION_DELETE,
           icon: "trash",
+          kind: "thread",
+          current: marked,
         });
       }),
     ],
+    count: threads,
+    search: true,
+    query,
     refreshLabel: "",
     refreshAction: "",
   };
@@ -273,6 +338,9 @@ export function deleteSessionDialog(session: {
       }),
       row("", "Cancel", { detail: "Keep the thread", action: CLOSE_DIALOG }),
     ],
+    count: 0,
+    search: false,
+    query: "",
     refreshLabel: "",
     refreshAction: "",
   };
@@ -299,6 +367,9 @@ export function undoChangesDialog(card: { id: number; detail: string }): DialogS
       }),
       row("", "Cancel", { detail: "Keep the turn's files", action: CLOSE_DIALOG }),
     ],
+    count: 0,
+    search: false,
+    query: "",
     refreshLabel: "",
     refreshAction: "",
   };

@@ -83,6 +83,17 @@
       {
         "command": "oxide.openChat",
         "title": "Open Chat",
+        "category": "Oxide",
+        "icon": "media/oxide.svg"
+      },
+      {
+        "command": "oxide.focusInput",
+        "title": "Focus Input",
+        "category": "Oxide"
+      },
+      {
+        "command": "oxide.insertReference",
+        "title": "Insert File Reference",
         "category": "Oxide"
       },
       {
@@ -93,7 +104,7 @@
       },
       {
         "command": "oxide.resumeSession",
-        "title": "Resume Session...",
+        "title": "Session History",
         "category": "Oxide",
         "icon": "$(history)"
       },
@@ -172,6 +183,13 @@
       }
     ],
     "menus": {
+      "editor/title": [
+        {
+          "command": "oxide.openChat",
+          "when": "resourceScheme == file",
+          "group": "navigation@9"
+        }
+      ],
       "editor/context": [
         {
           "command": "oxide.askAboutSelection",
@@ -235,6 +253,17 @@
         "key": "ctrl+alt+a",
         "mac": "cmd+alt+a",
         "when": "editorHasSelection"
+      },
+      {
+        "command": "oxide.focusInput",
+        "key": "ctrl+escape",
+        "mac": "cmd+escape"
+      },
+      {
+        "command": "oxide.insertReference",
+        "key": "alt+k",
+        "mac": "alt+k",
+        "when": "editorTextFocus"
       }
     ],
     "configuration": {

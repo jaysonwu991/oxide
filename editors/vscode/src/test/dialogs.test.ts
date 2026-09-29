@@ -113,6 +113,17 @@ describe("MCP dialog", () => {
     const dialog = mcpDialog([], "Could not list MCP servers: exit 1");
     assert.equal(dialog.note, "Could not list MCP servers: exit 1");
   });
+
+  it("counts what it lists, and is not a listing to search", () => {
+    const dialog = mcpDialog(parseMcpList(listing));
+    assert.equal(dialog.count, 3, "the head says how many servers are listed");
+    assert.equal(dialog.search, false, "a handful of servers needs no search box");
+    assert.equal(dialog.query, "");
+    assert.ok(
+      dialog.rows.every((row) => row.kind === ""),
+      "a server row is an ordinary one",
+    );
+  });
 });
 
 describe("session dialog", () => {
@@ -267,6 +278,78 @@ describe("session dialog", () => {
     // of it reaches the rows.
     const other = sessionDialog(stored, "7c8031b1", "", { id: "9f00c0de", label: "elsewhere" });
     assert.ok(other.rows.every((row) => row.label !== "elsewhere"));
+  });
+
+  /// The listing is the one with a box to filter it: a project can hold
+  /// hundreds of threads, and the rows that are the things being listed are
+  /// told apart from the rows that are ways out of the list, so the panel can
+  /// paint the two shapes without reading their words.
+  it("is a listing to search, and counts what it lists", () => {
+    const dialog = sessionDialog(sessions, "fe0031b1");
+    assert.equal(dialog.search, true);
+    assert.equal(dialog.count, 2, "the threads, not the two ways out of them");
+    assert.equal(dialog.query, "", "nothing is filtered until it is asked for");
+    assert.deepEqual(
+      dialog.rows.map((row) => row.kind),
+      ["action", "action", "thread", "thread"],
+    );
+    // The thread on screen stands in for itself, and is a thread row too.
+    const live = sessionDialog([], "9f00c0de", "", { id: "9f00c0de", label: "Fix it" });
+    assert.equal(live.count, 1);
+    assert.deepEqual(
+      live.rows.map((row) => row.kind),
+      ["action", "action", "thread"],
+    );
+  });
+
+  /// The search box is the host's filter over the rows it already has: the
+  /// listing is the store's own answer, so typing narrows it without a second
+  /// read, and what is left is counted the same way an unfiltered listing is.
+  it("narrows its rows to the query, and says so when nothing is left", () => {
+    const filtered = sessionDialog(sessions, null, "", null, "say");
+    assert.deepEqual(
+      filtered.rows.map((row) => row.value),
+      [NEW_SESSION, CONTINUE_SESSION, "7c8031b1"],
+    );
+    assert.equal(filtered.count, 1, "the count is what the filter left");
+    assert.equal(filtered.query, "say", "echoed, so a redraw keeps the box");
+    assert.equal(filtered.note, "");
+    // The ways out of the listing survive every search: they are what you can do
+    // with the list, not something in it.
+    assert.equal(filtered.rows[0].kind, "action");
+
+    const nothing = sessionDialog(sessions, null, "", null, "nope");
+    assert.deepEqual(
+      nothing.rows.map((row) => row.value),
+      [NEW_SESSION, CONTINUE_SESSION],
+    );
+    assert.equal(nothing.count, 0);
+    assert.equal(nothing.note, "No thread matches “nope”.");
+
+    // A blank query is not a query, and an empty listing keeps saying what it
+    // says rather than blaming a search nobody made.
+    assert.equal(sessionDialog(sessions, null, "", null, "  ").count, 2);
+    assert.equal(sessionDialog([], null, "", null, "nope").count, 0);
+    assert.match(sessionDialog([], null, "", null, "nope").note, /No sessions for this project yet/);
+  });
+
+  /// A search matches what the listing paints rather than what the store happened
+  /// to hold: the thread on screen is named by the panel's own header while the
+  /// store has no name for it, so a search for that name finds the row showing it
+  /// — a row that vanishes from a search for its own title reads as a thread that
+  /// is not there.
+  it("filters the thread on screen under the title it is painted with", () => {
+    const stored = parseSessionList("fe0031b1  just now  2 msg  \n");
+    const live = { id: "fe0031b1", label: "Fix the flaky test" };
+    const found = sessionDialog(stored, "fe0031b1", "", live, "flaky");
+    assert.equal(found.count, 1);
+    assert.equal(found.rows[2].label, "Fix the flaky test");
+    assert.equal(found.rows[2].current, true, "and it is still the thread on screen");
+    assert.equal(
+      sessionDialog(stored, "fe0031b1", "", live, "nope").count,
+      0,
+      "a query the title does not match still leaves nothing",
+    );
   });
 });
 

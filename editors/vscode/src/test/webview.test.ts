@@ -60,6 +60,13 @@ class StubClassList {
   }
 }
 
+/// The element the document reports as `document.activeElement`. The renderer
+/// asks for it once — whether the caret is in the session listing's search box,
+/// since a repaint that took the text away mid-word would be the listing typing
+/// over the reader. A real webview's focus is whatever the browser moved it to;
+/// here it is what a test focused last, and `blur` takes it away.
+let activeElement: StubElement | null = null;
+
 class StubElement {
   readonly children: StubElement[] = [];
   readonly classList = new StubClassList();
@@ -262,9 +269,14 @@ class StubElement {
     return null;
   }
 
-  focus(): void {}
+  focus(): void {
+    activeElement = this;
+  }
 
   fire(kind: string, event: unknown = {}): void {
+    // Losing the caret is what a blur is, and the document reports it: an
+    // element that is blurred is no longer the one being typed into.
+    if (kind === "blur" && activeElement === this) activeElement = null;
     for (const handler of this.listeners.get(kind) ?? []) handler(event);
   }
 }
@@ -345,7 +357,10 @@ interface Harness {
   byId: Map<string, StubElement>;
   posted: Record<string, unknown>[];
   send(message: unknown): void;
-  fireDocument(kind: string, event: unknown): void;
+  fireDocument(kind: string, event?: unknown): void;
+  /// The element the document reports as focused, which is what the host's own
+  /// focus is told apart from by.
+  active(): StubElement | null;
   /// The canvas the last downscale drew on, if any.
   readable(): { image: StubImage; canvas: StubCanvas | null };
   /// A change to the pane's own size, which the renderer observes.
@@ -364,6 +379,7 @@ function find(node: StubElement, className: string): StubElement | null {
 }
 
 function loadRenderer(options: { image?: StubImage } = {}): Harness {
+  activeElement = null;
   const byId = new Map<string, StubElement>();
   for (const { id, hidden } of shellElements()) {
     const element = new StubElement("div", id);
@@ -377,6 +393,9 @@ function loadRenderer(options: { image?: StubImage } = {}): Harness {
 
   const document = {
     getElementById: (id: string) => byId.get(id) ?? null,
+    get activeElement(): StubElement | null {
+      return activeElement;
+    },
     createElement: (tagName: string) => {
       if (tagName === "canvas") {
         canvas = new StubCanvas();
@@ -425,6 +444,7 @@ function loadRenderer(options: { image?: StubImage } = {}): Harness {
     fireDocument: (kind, event) => {
       for (const handler of documentListeners.get(kind) ?? []) handler(event);
     },
+    active: () => activeElement,
     readable: () => ({ image, canvas }),
     resize: () => {
       for (const observer of StubResizeObserver.observers) observer.resize();
@@ -703,6 +723,43 @@ describe("webview composer", () => {
     // out as inline-flex, which the UA's `[hidden]` rule cannot beat, so both
     // actions would sit in the corner at once.
     assert.match(style, /button\.icon\[hidden\],[\s\S]*?\{[^}]*display: none/s);
+  });
+
+  it("names the lines a tracked selection holds, in the label and in words", () => {
+    // The chip is the only place the reader can see what the next message will
+    // carry, so a selection is spelled out where it sits — and the tooltip says
+    // the same thing in words, since `src/app.ts:12-15` is not what a screen
+    // reader reads out.
+    const { byId, send } = loadRenderer();
+    send(
+      stateMessage({
+        context: [
+          {
+            id: 4,
+            label: "src/app.ts:12-15",
+            auto: true,
+            detail: "4 lines selected — sent with the next message",
+          },
+          { id: 5, label: "src/other.rs", auto: true },
+        ],
+      }),
+    );
+    const chips = byId.get("chips")!;
+    const selected = chips.children[0];
+    assert.equal(selected.className, "chip context auto", "still the tracked chip");
+    assert.equal(selected.children[1].textContent, "src/app.ts:12-15");
+    assert.equal(
+      selected.title,
+      "src/app.ts:12-15 — 4 lines selected — sent with the next message",
+    );
+    assert.equal(
+      selected.getAttribute("aria-label"),
+      selected.title,
+      "the tooltip and the name a screen reader reads agree word for word",
+    );
+    // A whole file says what it always did.
+    const whole = chips.children[1];
+    assert.equal(whole.title, "src/other.rs — the file you are editing, sent with the next message");
   });
 
   it("renders a thumbnail for an image and a glyph for a PDF", () => {
@@ -1267,6 +1324,79 @@ describe("webview composer", () => {
     assert.equal(last(posted).k, "stop");
   });
 
+  it("leaves a modified Escape to the host's own keybinding", () => {
+    // The editor's focus shortcut is Cmd/Ctrl+Esc, which the browser delivers
+    // to the box as an Escape: swallowing it would take the caret out of the
+    // panel's hands and never bring it back.
+    const { byId, posted, send } = loadRenderer();
+    send(stateMessage({ busy: true }));
+    const input = byId.get("input")!;
+    let prevented = false;
+    input.fire("keydown", {
+      key: "Escape",
+      metaKey: true,
+      preventDefault: () => {
+        prevented = true;
+      },
+    });
+    assert.equal(prevented, false);
+    assert.equal(posted.some((message) => message.k === "stop"), false);
+
+    input.fire("keydown", { key: "Escape", preventDefault: () => {} });
+    assert.equal(last(posted).k, "stop");
+  });
+
+  it("writes the host's reference into the box at the caret", () => {
+    // The editor's insert shortcut: the host reads the file and the selection
+    // and hands over the reference, and the view splices it where the caret is
+    // — kept off the words around it the way a typed reference sits, with the
+    // caret left after it so the question goes on.
+    const { byId, send, active } = loadRenderer();
+    send(stateMessage());
+    const input = byId.get("input")!;
+    input.value = "why does this loop spin";
+    input.setSelectionRange(9, 9);
+
+    send({ k: "insert", text: "@src/app.ts#5-10" });
+    assert.equal(input.value, "why does @src/app.ts#5-10 this loop spin");
+    assert.equal(input.selectionStart, 26);
+    assert.equal(input.selectionEnd, 26);
+    assert.equal(active(), input, "the caret is in the box to go on typing");
+  });
+
+  it("replaces what was selected with the host's reference, as a paste would", () => {
+    const { byId, send } = loadRenderer();
+    send(stateMessage());
+    const input = byId.get("input")!;
+    input.value = "check @old.rs please";
+    input.setSelectionRange(6, 13);
+
+    send({ k: "insert", text: "@src/new.rs" });
+    assert.equal(input.value, "check @src/new.rs please");
+  });
+
+  it("puts the caret in the box when the host brings the chat forward", () => {
+    const { byId, send, active } = loadRenderer();
+    send(stateMessage());
+    const input = byId.get("input")!;
+    input.value = "half a question";
+    input.setSelectionRange(0, 0);
+
+    send({ k: "focusComposer" });
+    assert.equal(active(), input);
+    assert.equal(input.selectionStart, input.value.length);
+  });
+
+  it("tells the host when the pane takes the keyboard, and when it gives it up", () => {
+    // The host toggles the caret between the editor and the composer, so it has
+    // to know which side it is on.
+    const { posted, fireDocument } = loadRenderer();
+    fireDocument("focus");
+    assert.deepEqual(last(posted), { k: "focus" });
+    fireDocument("blur");
+    assert.deepEqual(last(posted), { k: "blur" });
+  });
+
   it("asks for the file picker from the Attach button", () => {
     const { byId, posted, send } = loadRenderer();
     send(stateMessage());
@@ -1408,10 +1538,14 @@ describe("webview dialogs", () => {
   const mcp = {
     k: "dialog",
     dialog: {
+      kind: "mcp",
       pin: "footer",
       title: "MCP servers",
       subtitle: "The servers this project loads, and whether Oxide can reach them.",
       note: "",
+      count: 2,
+      search: false,
+      query: "",
       rows: [
         {
           value: "context7",
@@ -1423,6 +1557,7 @@ describe("webview dialogs", () => {
           button: "Disable context7",
           buttonAction: "mcpToggle",
           icon: "power",
+          kind: "",
         },
         {
           value: "sentry",
@@ -1434,6 +1569,7 @@ describe("webview dialogs", () => {
           button: "Enable sentry",
           buttonAction: "mcpToggle",
           icon: "power",
+          kind: "",
         },
       ],
       refreshLabel: "Recheck",
@@ -1443,10 +1579,14 @@ describe("webview dialogs", () => {
   const sessions = {
     k: "dialog",
     dialog: {
+      kind: "sessions",
       pin: "header",
       title: "Sessions",
-      subtitle: "Threads stored for this project.",
+      subtitle: "",
       note: "",
+      count: 1,
+      search: true,
+      query: "",
       rows: [
         {
           value: "new",
@@ -1458,6 +1598,7 @@ describe("webview dialogs", () => {
           button: "",
           buttonAction: "",
           icon: "",
+          kind: "action",
         },
         {
           value: "fe0031b1",
@@ -1469,6 +1610,8 @@ describe("webview dialogs", () => {
           button: "Delete Fix the flaky test",
           buttonAction: "sessionDelete",
           icon: "trash",
+          kind: "thread",
+          current: true,
         },
       ],
       refreshLabel: "",
@@ -1479,10 +1622,14 @@ describe("webview dialogs", () => {
   const confirmDelete = {
     k: "dialog",
     dialog: {
+      kind: "delete",
       pin: "header",
       title: "Delete thread",
       subtitle: "“Fix the flaky test” and its stored conversation are removed.",
       note: "This cannot be undone.",
+      count: 0,
+      search: false,
+      query: "",
       rows: [
         {
           value: "fe0031b1",
@@ -1494,6 +1641,7 @@ describe("webview dialogs", () => {
           button: "",
           buttonAction: "",
           icon: "",
+          kind: "",
         },
         {
           value: "",
@@ -1505,6 +1653,7 @@ describe("webview dialogs", () => {
           button: "",
           buttonAction: "",
           icon: "",
+          kind: "",
         },
       ],
       refreshLabel: "",
@@ -1537,6 +1686,123 @@ describe("webview dialogs", () => {
     assert.equal(byId.get("dialog-refresh")!.title, "Recheck");
     assert.equal(byId.get("dialog-refresh")!.dataset.action, "mcpRefresh");
     assert.equal(byId.get("dialog-refresh")!.hidden, false);
+  });
+
+  /// The head carries how many rows the listing holds — a number a narrow pane
+  /// cannot read off a scrollbar — and a listing long enough to need one carries
+  /// a box to filter it. Both are the host's: only it knows how many threads the
+  /// store gave it and which of them the query left.
+  it("counts the listing, and offers the box the host asked for", () => {
+    const { byId, posted, send } = loadRenderer();
+    send(mcp);
+    assert.equal(byId.get("dialog-count")!.hidden, false);
+    assert.equal(byId.get("dialog-count")!.textContent, "2");
+    assert.equal(byId.get("dialog-search")!.hidden, true, "a server list is not searched");
+
+    send(sessions);
+    assert.equal(byId.get("dialog-count")!.textContent, "1", "the threads, not the ways out of them");
+    assert.equal(byId.get("dialog-search")!.hidden, false);
+    assert.equal(byId.get("dialog-search-clear")!.hidden, true, "nothing to clear yet");
+
+    // Typing asks the host rather than hiding rows here: the rows, the count and
+    // the note a search with no matches carries are all composed where they are.
+    const input = byId.get("dialog-search-input")!;
+    input.value = "flaky";
+    input.fire("input");
+    assert.deepEqual(last(posted), { k: "dialogSearch", text: "flaky" });
+    assert.equal(byId.get("dialog-search-clear")!.hidden, false);
+
+    // The host echoes the filter back with the narrowed rows, so a repaint keeps
+    // the reader's text in the box.
+    send({ k: "dialog", dialog: { ...sessions.dialog, query: "flaky" } });
+    assert.equal(input.value, "flaky");
+    assert.equal(byId.get("dialog-search-clear")!.hidden, false);
+
+    // The box's own ✕ clears it in one click, and says so to the host.
+    byId.get("dialog-search-clear")!.fire("click");
+    assert.equal(input.value, "");
+    assert.equal(byId.get("dialog-search-clear")!.hidden, true);
+    assert.deepEqual(last(posted), { k: "dialogSearch", text: "" });
+
+    // A listing with no count hides it rather than showing a zero, and closing
+    // the listing takes the box — and what was typed in it — with it.
+    send(confirmDelete);
+    assert.equal(byId.get("dialog-count")!.hidden, true);
+    assert.equal(byId.get("dialog-search")!.hidden, true);
+    send(sessions);
+    input.value = "flaky";
+    send({ k: "dialog", dialog: null });
+    assert.equal(input.value, "", "the filter belongs to the listing, not the panel");
+    assert.equal(byId.get("dialog-search-clear")!.hidden, true);
+  });
+
+  /// A repaint under a reader who is mid-word must not take the box away from
+  /// them: the answer in flight was composed with the filter the host had when
+  /// the keystroke arrived, so painting it back would undo the last one.
+  it("leaves the search box alone while it is being typed in", () => {
+    const { byId, posted, send } = loadRenderer();
+    send(sessions);
+    const input = byId.get("dialog-search-input")!;
+    input.focus();
+    input.value = "flak";
+    input.fire("input");
+    assert.deepEqual(last(posted), { k: "dialogSearch", text: "flak" });
+
+    // The store catches up — the read a turn's own end asks for — and its answer
+    // carries no filter, which is not the answer to paint into a box being typed
+    // in.
+    send({ k: "dialog", dialog: { ...sessions.dialog, query: "" } });
+    assert.equal(input.value, "flak", "the half-typed filter is not thrown away");
+
+    // With the caret elsewhere the host's listing is painted as it was composed.
+    input.fire("blur");
+    send({ k: "dialog", dialog: { ...sessions.dialog, query: "" } });
+    assert.equal(input.value, "");
+  });
+
+  /// The listing is made of two kinds of row, and the host says which is which:
+  /// a way out of the listing, or one of the threads it lists. The view paints
+  /// the difference rather than reading the labels to guess it.
+  it("paints a way out of the listing apart from the threads it lists", () => {
+    const { byId, send } = loadRenderer();
+    send(sessions);
+    const rows = byId.get("dialog-list")!.children;
+    assert.equal(rows[0].className, "dialog-row action");
+    assert.equal(rows[1].className, "dialog-row thread current", "the open thread is marked");
+    // The mark is the host's own flag rather than a word it painted, so a row
+    // that is not the open thread carries none of it — and a row of a listing
+    // that is not a list of threads (a confirmation's) is neither.
+    send({
+      k: "dialog",
+      dialog: {
+        ...sessions.dialog,
+        rows: [{ ...sessions.dialog.rows[1], status: "7m ago", current: false }],
+      },
+    });
+    assert.equal(byId.get("dialog-list")!.children[0].className, "dialog-row thread");
+    send(confirmDelete);
+    assert.equal(byId.get("dialog-list")!.children[0].className, "dialog-row");
+  });
+
+  /// The header's history button is the listing's own state: it says whether the
+  /// history is on screen, so the click that opened it is the one that closes it
+  /// and the button never offers an action it has no state for.
+  it("says on the header's button whether the history is up", () => {
+    const { byId, send } = loadRenderer();
+    // The shell carries the resting state (`aria-expanded="false"` in the
+    // markup, which the host's own test pins), and the renderer keeps it in step
+    // with what it paints from here.
+    send(mcp);
+    assert.equal(byId.get("resume-session")!.getAttribute("aria-expanded"), "false");
+    send(sessions);
+    assert.equal(byId.get("resume-session")!.getAttribute("aria-expanded"), "true");
+    // Whatever else the panel is showing, only the history is what that button
+    // is about.
+    send(mcp);
+    assert.equal(byId.get("resume-session")!.getAttribute("aria-expanded"), "false");
+    send(sessions);
+    send({ k: "dialog", dialog: null });
+    assert.equal(byId.get("resume-session")!.getAttribute("aria-expanded"), "false");
   });
 
   /// A row's own button carries a switch rather than a word, so it is one glyph

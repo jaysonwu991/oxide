@@ -16,11 +16,13 @@ import {
   contextHeader,
   contextLabel,
   expandAtReferences,
+  fileReference,
   isAttachmentPath,
   relativePath,
+  selectionLines,
   type AtReferenceSources,
 } from "../core/prompt";
-import { isSessionCommand, parseSessionList, parseVersion } from "../core/sessions";
+import { filterSessions, isSessionCommand, parseSessionList, parseVersion } from "../core/sessions";
 import { resolveBinary, spawnPlan } from "../cli";
 
 /// One rendered diff row, laid out the way `oxide_core::diff` does it: a
@@ -301,6 +303,138 @@ describe("@ references", () => {
     assert.equal(expandAtReferences("@notes.md", sources).message, "");
     assert.equal(expandAtReferences("  @notes.md  ", sources).message, "");
   });
+
+  describe("a line range", () => {
+    const ranged: Record<string, string | null> = {
+      "src/long.rs": "one\ntwo\nthree\nfour\nfive\n",
+    };
+    const at: AtReferenceSources = {
+      resolve: (reference) => (reference in ranged ? `/w/${reference}` : null),
+      read: (absolute) => ranged[absolute.slice(3)] ?? null,
+      label: (absolute) => absolute.slice(3),
+    };
+
+    it("reads an editor selection as the lines it covers", () => {
+      assert.deepEqual(
+        selectionLines({
+          isEmpty: false,
+          start: { line: 4 },
+          end: { line: 9, character: 12 },
+        }),
+        { start: 5, end: 10 },
+        "a selection ending mid-line includes that line",
+      );
+      assert.deepEqual(
+        selectionLines({
+          isEmpty: false,
+          start: { line: 4 },
+          end: { line: 5, character: 0 },
+        }),
+        { start: 5, end: 5 },
+        "one dragged down a line stops at the newline, rather than taking the line after it",
+      );
+      assert.deepEqual(
+        selectionLines({ isEmpty: false, start: { line: 0 }, end: { line: 0, character: 3 } }),
+        { start: 1, end: 1 },
+        "and a few characters of one line are that line",
+      );
+      assert.equal(
+        selectionLines({ isEmpty: true, start: { line: 4 }, end: { line: 4, character: 0 } }),
+        null,
+        "a caret with nothing selected is the whole file, not line 5",
+      );
+    });
+
+    it("writes the reference the editor's insert shortcut builds", () => {
+      assert.equal(fileReference("src/app.ts"), "@src/app.ts");
+      assert.equal(fileReference("src/app.ts", { start: 5, end: 10 }), "@src/app.ts#5-10");
+      assert.equal(fileReference("src/app.ts", { start: 5, end: 5 }), "@src/app.ts#5");
+      assert.equal(
+        fileReference("src/app.ts", { start: 0, end: 0 }),
+        "@src/app.ts",
+        "a caret with no selection is the whole file",
+      );
+    });
+
+    it("inlines only the lines it named, under the range's header", () => {
+      const result = expandAtReferences("see @src/long.rs#2-4", at);
+      assert.equal(result.message, "see");
+      assert.deepEqual(result.blocks, [
+        { path: "src/long.rs", text: "two\nthree\nfour", startLine: 2, endLine: 4 },
+      ]);
+      assert.equal(result.inlined, "see\n\n--- src/long.rs:2-4 ---\ntwo\nthree\nfour");
+    });
+
+    it("reads a one-line range as that line", () => {
+      const result = expandAtReferences("@src/long.rs#3", at);
+      assert.deepEqual(result.blocks, [
+        { path: "src/long.rs", text: "three", startLine: 3, endLine: 3 },
+      ]);
+      assert.equal(result.inlined, "--- src/long.rs:3 ---\nthree");
+    });
+
+    it("clamps a range that runs past the last line", () => {
+      const result = expandAtReferences("@src/long.rs#4-99", at);
+      assert.deepEqual(result.blocks, [
+        { path: "src/long.rs", text: "four\nfive\n", startLine: 4, endLine: 99 },
+      ]);
+    });
+
+    it("keeps a range that starts past the end of the file as typed", () => {
+      // A file edited between the shortcut and the send would otherwise arrive
+      // as a context block with nothing in it, which reads as an answer that
+      // the file is empty.
+      const result = expandAtReferences("what is @src/long.rs#9-12", at);
+      assert.equal(result.message, "what is @src/long.rs#9-12");
+      assert.deepEqual(result.blocks, []);
+    });
+
+    it("reads two ranges of one file apart", () => {
+      const result = expandAtReferences("@src/long.rs#1 and @src/long.rs#5", at);
+      assert.deepEqual(
+        result.blocks.map((block) => block.text),
+        ["one", "five"],
+      );
+    });
+
+    it("reads a whole file and a range of it as two blocks", () => {
+      const result = expandAtReferences("@src/long.rs then @src/long.rs#2", at);
+      assert.equal(result.blocks.length, 2);
+      assert.equal(result.blocks[0].startLine, undefined);
+      assert.equal(result.blocks[1].startLine, 2);
+    });
+
+    it("still attaches an image whole, range or not", () => {
+      const images: Record<string, string | null> = { "shot.png": null };
+      const result = expandAtReferences("@shot.png#3-4", {
+        resolve: (reference) => (reference in images ? `/w/${reference}` : null),
+        read: () => null,
+        label: (absolute) => absolute.slice(3),
+      });
+      assert.deepEqual(result.attachments, ["/w/shot.png"]);
+    });
+
+    it("attaches one image once, however many ranges named it", () => {
+      // Ranges are ignored for media — an image travels whole — so a reference
+      // to it is the same attachment whichever lines were written after it, and
+      // the same bytes do not ride on the message twice.
+      const images: Record<string, string | null> = { "shot.png": null };
+      const at: AtReferenceSources = {
+        resolve: (reference) => (reference in images ? `/w/${reference}` : null),
+        read: () => null,
+        label: (absolute) => absolute.slice(3),
+      };
+      assert.deepEqual(
+        expandAtReferences("@shot.png#1 and @shot.png#2", at).attachments,
+        ["/w/shot.png"],
+      );
+      assert.deepEqual(
+        expandAtReferences("@shot.png and @shot.png#3-4", at).attachments,
+        ["/w/shot.png"],
+        "whichever order the two come in",
+      );
+    });
+  });
 });
 
 describe("diff preview", () => {
@@ -564,6 +698,38 @@ describe("session listing", () => {
     assert.ok(!isSessionCommand("/session fe0031b1"));
     assert.ok(!isSessionCommand("list the sessions"));
     assert.ok(!isSessionCommand(""));
+  });
+
+  /// The panel's search box filters the answer the store already gave, so what
+  /// it keeps is the listing's own order and its own rows: a query narrows the
+  /// list, it never re-reads it, and a title and an id are both worth matching
+  /// since a thread whose first message said nothing is listed under its id.
+  it("narrows a listing to a query", () => {
+    const listing = parseSessionList(
+      [
+        "fe0031b1  just now     195 msg  Create VS Code Extension for Oxide",
+        "7c8031b1  7m ago         2 msg  say hi",
+        "a23031b1  9h ago       752 msg  Can we has two release-drafters?",
+      ].join("\n"),
+    );
+    assert.deepEqual(
+      filterSessions(listing, "extension").map((entry) => entry.id),
+      ["fe0031b1"],
+      "a word in the middle of a title still matches",
+    );
+    assert.deepEqual(
+      filterSessions(listing, "SAY").map((entry) => entry.id),
+      ["7c8031b1"],
+      "and the match is case-insensitive",
+    );
+    assert.deepEqual(filterSessions(listing, "a230").map((entry) => entry.id), ["a23031b1"]);
+    assert.equal(filterSessions(listing, "nope").length, 0);
+    // An empty query is not a query, and the rows themselves are not the
+    // filter's to reorder or mutate.
+    assert.equal(filterSessions(listing, "   ").length, 3);
+    assert.equal(filterSessions(listing, "").length, 3);
+    assert.equal(listing.length, 3);
+    assert.deepEqual(listing.map((entry) => entry.id), ["fe0031b1", "7c8031b1", "a23031b1"]);
   });
 });
 
