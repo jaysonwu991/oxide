@@ -720,6 +720,18 @@ describe("Transcript", () => {
     assert.equal(transcript.title(), "Fix the build", "the first message keeps the title");
   });
 
+  it("names a media-only first message from its attachment", () => {
+    const transcript = new Transcript();
+    transcript.pushUser("", [{ id: 1, label: "screenshot.png" }]);
+    assert.equal(transcript.title(), "screenshot.png", "an image-only send names the file");
+    transcript.pushUser("Explain this diagram", []);
+    assert.equal(
+      transcript.title(),
+      "Explain this diagram",
+      "the first message with prose names the thread",
+    );
+  });
+
   it("keeps a long title to one truncated line", () => {
     const transcript = new Transcript();
     transcript.pushUser("x".repeat(200), []);

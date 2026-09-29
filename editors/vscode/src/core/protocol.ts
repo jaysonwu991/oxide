@@ -456,11 +456,19 @@ export class Transcript {
 
   /// The thread's summarized title: a one-line summary of the first thing the
   /// user sent, so a pasted or multi-line message does not fill the header.
+  /// A message that carried only media has no prose to summarize, so its first
+  /// attachment label names the thread until a later message with text arrives.
   /// Empty for a thread that has not been written to yet, which the host leaves
   /// to the view's neutral placeholder.
   title(): string {
-    const first = this.items.find((item): item is UserItem => item.kind === "user");
-    return first ? summarizeTitle(first.text) : "";
+    let fallback = "";
+    for (const item of this.items) {
+      if (item.kind !== "user") continue;
+      const text = summarizeTitle(item.text);
+      if (text) return text;
+      if (!fallback) fallback = item.context.find((label) => label.trim()) ?? "";
+    }
+    return fallback;
   }
 
   pushUser(text: string, context: ContextChip[]): ViewMessage[] {

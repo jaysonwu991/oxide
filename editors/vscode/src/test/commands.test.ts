@@ -442,6 +442,20 @@ describe("command contributions", () => {
       "a queued message is snapshotted before the composer is cleared",
     );
     assert.ok(send.includes("this.startTurn(prepared, true)"), "an idle send starts its own turn");
+    assert.ok(
+      send.includes("this.showNotice(`Queued:"),
+      "a queued message is announced without closing the assistant still streaming",
+    );
+    assert.ok(
+      !send.includes("broadcastItem(this.transcript.pushUser(prepared.message"),
+      "and its bubble waits for the turn to start",
+    );
+
+    const drain = chat.slice(chat.indexOf("private drainQueue()"), chat.indexOf("stop():"));
+    assert.ok(
+      drain.includes("this.startTurn(next, true)"),
+      "the queued bubble is pushed when its turn starts, not while one is streaming",
+    );
   });
 
   it("names the thread as soon as the first message is sent", () => {

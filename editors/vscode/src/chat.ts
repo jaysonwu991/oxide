@@ -863,10 +863,12 @@ export class ChatController {
     if (this.turn) {
       // The message is queued as it was composed: its prompt, media and chips
       // are all snapshotted, so the composer can be cleared and typed into
-      // while the turn runs without changing what was queued.
+      // while the turn runs without changing what was queued. The bubble waits
+      // for the turn to start: pushing it now would close the assistant still
+      // streaming below it and split that response in two.
       this.queue.push(prepared);
       this.dropComposerChips();
-      this.broadcastItem(this.transcript.pushUser(prepared.message, prepared.labels));
+      this.showNotice(`Queued: ${firstLine(prepared.message) || "an attachment"}`);
       this.broadcastStatus();
       return;
     }
@@ -875,10 +877,9 @@ export class ChatController {
   }
 
   /// Assembles one message from the composer into everything the turn needs.
-  /// Returns `null` after reporting when there is no folder, or when the prompt
-  /// is empty once its references are attached — an image with no question, for
-  /// example — so an empty message is refused here rather than queued and then
-  /// refused later.
+  /// Returns `null` after reporting when there is no folder, or when there is
+  /// neither prompt text nor media to send — a truly empty message — so an
+  /// empty send is refused here rather than queued and then refused later.
   private prepareSend(message: string): PreparedSend | null {
     const cwd = this.cwd();
     if (!cwd) {
@@ -1045,7 +1046,7 @@ export class ChatController {
   private drainQueue(): void {
     const next = this.queue.shift();
     if (next === undefined) return;
-    this.startTurn(next, false);
+    this.startTurn(next, true);
   }
 
   stop(): void {
