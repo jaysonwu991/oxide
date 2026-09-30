@@ -11,7 +11,7 @@ import {
   approvalTitle,
   isApprovalDecision,
 } from "../core/approvals";
-import { approvalFrame, promptFrame, quitFrame } from "../core/rpc";
+import { approvalFrame, promptFrame, quitFrame, steerFrame } from "../core/rpc";
 
 describe("approvalRequest", () => {
   it("reads the id, tool and detail the CLI emits", () => {
@@ -103,6 +103,15 @@ describe("rpc frames", () => {
       type: "prompt",
       message: "hello",
       images: [],
+    });
+  });
+
+  it("steers the active turn with its attachments", () => {
+    assert.deepEqual(parsed(steerFrame("use the new API", ["/tmp/diagram.png"])), {
+      type: "steer",
+      message: "use the new API",
+      images: ["/tmp/diagram.png"],
+      follow_up: false,
     });
   });
 

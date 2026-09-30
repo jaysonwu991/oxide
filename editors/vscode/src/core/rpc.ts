@@ -15,6 +15,21 @@ export function promptFrame(prompt: string, images: readonly string[] = []): str
   return `${JSON.stringify({ type: "prompt", message: prompt, images: [...images] })}\n`;
 }
 
+/// Adds context to the process's in-flight turn. `followUp` uses the agent's
+/// after-response queue; false steers before its next model step.
+export function steerFrame(
+  prompt: string,
+  images: readonly string[] = [],
+  followUp = false,
+): string {
+  return `${JSON.stringify({
+    type: "steer",
+    message: prompt,
+    images: [...images],
+    follow_up: followUp,
+  })}\n`;
+}
+
 /// `{"type":"approval","id":…,"decision":…}` answers the request with that id.
 /// An answer for an unknown id is ignored by the CLI.
 export function approvalFrame(id: number, decision: ApprovalDecision): string {

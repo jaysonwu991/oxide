@@ -19,6 +19,7 @@
   const input = $("input");
   const sendButton = $("send");
   const stopButton = $("stop");
+  const busyModeButton = $("busy-message-mode");
   const statusLabel = $("status");
   const elapsedLabel = $("elapsed");
   const usageRow = $("usage");
@@ -47,6 +48,7 @@
   const historyButton = $("resume-session");
   const imageView = $("image-view");
   const imageViewImage = $("image-view-img");
+  const imageViewName = $("image-view-name");
   const imageViewClose = $("image-view-close");
   const reviewBox = $("review");
   const reviewTitle = $("review-title");
@@ -62,6 +64,7 @@
   const thumbnails = new Map();
   const thumbnailNodes = new Map();
   let busy = false;
+  let busyMessageMode = "queue";
   let queued = 0;
   let startedAt = 0;
   let elapsedTimer = 0;
@@ -1399,6 +1402,7 @@
 
   function setStatus(text, isBusy, queuedCount) {
     busy = Boolean(isBusy);
+    if (!busy) busyMessageMode = "queue";
     queued = queuedCount || 0;
     const label = queued > 0 ? `${text} · ${queued} queued` : text;
     // The phase is only worth a line while there is one: the TUI reserves its
@@ -1638,8 +1642,14 @@
     sendButton.disabled = !hasText;
     sendButton.hidden = busy && !hasText;
     stopButton.hidden = !busy || hasText;
-    sendButton.title = busy ? "Queue for after this turn (Enter)" : "Send (Enter)";
-    sendButton.setAttribute("aria-label", busy ? "Queue" : "Send");
+    busyModeButton.hidden = !busy || !hasText;
+    busyModeButton.textContent = busyMessageMode === "steer" ? "Steer" : "Queue";
+    busyModeButton.title = busyMessageMode === "steer"
+      ? "Steer the active response; click to queue instead"
+      : "Queue for after the current response; click to steer instead";
+    const action = busyMessageMode === "steer" ? "Steer the active response" : "Queue for after this turn";
+    sendButton.title = busy ? `${action} (Enter)` : "Send (Enter)";
+    sendButton.setAttribute("aria-label", busy ? busyMessageMode === "steer" ? "Steer" : "Queue" : "Send");
   }
 
   // ---------- dialogs ----------
@@ -1835,6 +1845,8 @@
     if (!preview) return;
     imageViewImage.src = preview;
     imageViewImage.alt = label || "Attachment preview";
+    imageViewImage.title = label || "Attachment preview";
+    imageViewName.textContent = label || "Attachment preview";
     imageView.hidden = false;
   }
 
@@ -1963,11 +1975,13 @@
   function submit() {
     const text = input.value;
     if (!text.trim() && pendingCount() === 0) return;
+    const mode = busy ? busyMessageMode : "queue";
     input.value = "";
+    busyMessageMode = "queue";
     closeCompletion();
     resizeInput();
     updateSendState();
-    vscode.postMessage({ k: "send", text });
+    vscode.postMessage(busy ? { k: "send", text, mode } : { k: "send", text });
   }
 
   // ---------- `@path` completion and the `/` palette ----------
@@ -2391,6 +2405,10 @@
   });
 
   sendButton.addEventListener("click", () => submit());
+  busyModeButton.addEventListener("click", () => {
+    busyMessageMode = busyMessageMode === "queue" ? "steer" : "queue";
+    updateSendState();
+  });
   stopButton.addEventListener("click", () => vscode.postMessage({ k: "stop" }));
   $("new-session").addEventListener("click", () => vscode.postMessage({ k: "newSession" }));
   historyButton.addEventListener("click", () => vscode.postMessage({ k: "resumeSession" }));

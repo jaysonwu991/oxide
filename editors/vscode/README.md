@@ -2,13 +2,14 @@
 
 Drive the [Oxide](https://github.com/jaysonwu991/oxide) coding agent from inside
 VS Code. The extension runs your installed `oxide` binary as a subprocess
-(`oxide --mode json -p`), so it uses the same provider logins, `config.json`,
+(`oxide --mode rpc`), so it uses the same provider logins, `config.json`,
 `settings.json`, project trust, sessions, `AGENTS.md`, agents, skills, plugins
 and MCP servers as the terminal and the desktop app — nothing is reconfigured.
 
 - **Chat panel**: streaming replies rendered as Markdown, `✦ Thinking`
   blocks, tool cards with file diffs, token/cost usage, and a composer that
-  queues follow-ups while a turn runs. It is contributed twice — an **Oxide**
+  offers the same explicit **Queue** / **Steer** choice as the desktop while a
+  turn runs. It is contributed twice — an **Oxide**
   icon in the activity bar and a **Chat** pane in the secondary side bar, the
   strip Copilot Chat lives in — and both panes show the same thread. Its icons
   are the desktop app's: the cyan diamond mark and, in the Extensions view, the
@@ -68,8 +69,9 @@ Provider logins live in the CLI: run **Oxide: Open Terminal (TUI)** and use
 2. If the workspace has its own `.oxide/` resources, decide on project trust
    with **Oxide: Set Project Trust…** (untrusted runs simply skip them).
 3. Type a message. Tool calls appear as coloured panels with a diff preview for
-   file changes; `Enter` sends, `Shift+Enter` adds a newline, and `Alt+Enter`
-   queues a follow-up for after the current turn. Paste an image, drop files on
+   file changes; `Enter` sends and `Shift+Enter` adds a newline. While a response
+   runs, **Queue** is the safe default and **Steer** deliberately redirects the
+   active response before its next model step. Paste an image, drop files on
    the composer, or click **Attach** to add images, PDFs and text files to the
    message.
 4. The chips above the composer are the next turn's settings: click `model: …`
@@ -144,8 +146,9 @@ Provider logins live in the CLI: run **Oxide: Open Terminal (TUI)** and use
 
 ## Notes and limits
 
-- One turn at a time per window; a message sent while a turn runs is queued and
-  shown in the transcript. **Stop** terminates the process — the session on disk
+- One turn at a time per window; a message sent while a turn runs is either
+  queued behind the current response or steers it, and is shown in the transcript.
+  **Stop** terminates the process — the session on disk
   keeps everything up to that point, so the next message continues the thread.
 - The two chat panes are the same conversation: either can be used, both stream
   a turn, and **Oxide: Open Chat** raises whichever one is on screen. VS Code can

@@ -1,5 +1,5 @@
-// The chat controller: it owns the transcript, the running turn, the queued
-// follow-ups and the editor context, and broadcasts view updates to every
+// The chat controller: it owns the transcript, the running turn and the editor
+// context, and broadcasts view updates to every
 // attached webview. All CLI contact goes through here.
 
 import * as fs from "node:fs";
@@ -160,9 +160,9 @@ interface RunState {
 
 /// One message assembled from the composer, ready to run: the prompt text, the
 /// media paths, the chips that name what it carries, and the raw chips a failed
-/// start restores. A follow-up queued while a turn runs keeps its own copy, so
-/// the composer can be cleared and edited while the turn runs and the queued
-/// message still goes with what it was queued with.
+/// start restores. A message queued or steered while a turn runs keeps its own
+/// assembled copy, so clearing the composer cannot change the context/media
+/// already handed to the active RPC process.
 interface PreparedSend {
   /// The trimmed message text, for the transcript bubble.
   message: string;
@@ -208,7 +208,6 @@ export class ChatController {
   private nextChipId = 1;
   private turn: Turn | null = null;
   private run: RunState | null = null;
-  private queue: PreparedSend[] = [];
   private continueLast = false;
   /// The dialog the panel paints over the transcript — the MCP server list or
   /// the session history — and the rows it was composed from. Held here rather
@@ -365,7 +364,7 @@ export class ChatController {
     return {
       k: "state",
       ...this.transcript.state({
-        queued: this.queue.length,
+        queued: 0,
         context: this.chips(),
         attachments: this.attachmentChips(),
         title: this.threadTitle(),
@@ -946,8 +945,8 @@ export class ChatController {
 
   // ---------- turns ----------
 
-  /// Sends a message, starting a turn or queueing a follow-up while one runs.
-  async send(text: string): Promise<void> {
+  /// Sends a message, starting a turn or choosing how it joins a running one.
+  async send(text: string, busyMode: "queue" | "steer" = "queue"): Promise<void> {
     const message = text.trim();
     if (!message && !this.contextCount) return;
     // `/mcps` and `/session` are the client's own commands: they open a dialog
@@ -981,14 +980,17 @@ export class ChatController {
     const prepared = this.prepareSend(message);
     if (!prepared) return;
     if (this.turn) {
-      // The message is queued as it was composed: its prompt, media and chips
-      // are all snapshotted, so the composer can be cleared and typed into
-      // while the turn runs without changing what was queued. The bubble waits
-      // for the turn to start: pushing it now would close the assistant still
-      // streaming below it and split that response in two.
-      this.queue.push(prepared);
+      const followUp = busyMode === "queue";
+      // The active RPC process owns both queues, like the desktop and terminal:
+      // a follow-up waits for the current answer, while steering is read before
+      // the next model step. Keeping both in this process also preserves its
+      // in-memory tool and verification state.
+      this.turn.steer(prepared.prompt, prepared.images, followUp);
       this.dropComposerChips();
-      this.showNotice(`Queued: ${firstLine(prepared.message) || "an attachment"}`);
+      this.broadcastItem(this.transcript.pushUser(prepared.message, prepared.labels));
+      this.showNotice(
+        `${followUp ? "Queued" : "Steering"}: ${firstLine(prepared.message) || "an attachment"}`,
+      );
       this.broadcastStatus();
       return;
     }
@@ -1160,15 +1162,6 @@ export class ChatController {
     this.broadcastStatus();
   }
 
-  /// Sends queued follow-ups one at a time, in order. The composer is left
-  /// alone: its current chips belong to the next message, not the queued one
-  /// (which already took its own when it was queued).
-  private drainQueue(): void {
-    const next = this.queue.shift();
-    if (next === undefined) return;
-    this.startTurn(next, true);
-  }
-
   stop(): void {
     if (!this.turn) {
       this.showNotice("Nothing is running.");
@@ -1257,7 +1250,6 @@ export class ChatController {
     // The run's own session is now in the store (or has just grown a message),
     // so a listing left open is painted again from it.
     void this.syncSessions();
-    this.drainQueue();
   }
 
   /// A turn that finishes while the chat view is hidden is worth a toast — the
@@ -1292,7 +1284,6 @@ export class ChatController {
     this.transcript.reset();
     this.sessionTitle = null;
     this.continueLast = false;
-    this.queue = [];
     this.dropChips();
     this.broadcast(this.stateMessage());
     this.showNotice("New chat: the next message starts a thread of its own.");
@@ -1453,7 +1444,6 @@ export class ChatController {
     this.transcript.reset();
     this.transcript.sessionId = value;
     this.sessionTitle = session.label || null;
-    this.queue = [];
     this.dropChips();
     this.broadcast(this.stateMessage());
     await this.loadHistory(value, label);
@@ -1949,7 +1939,7 @@ export class ChatController {
   }
 
   private broadcastStatus(): void {
-    const status = this.transcript.statusMessage(this.queue.length, this.footer()) as Extract<
+    const status = this.transcript.statusMessage(0, this.footer()) as Extract<
       ViewMessage,
       { k: "status" }
     >;

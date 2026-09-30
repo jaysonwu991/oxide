@@ -17,7 +17,7 @@ import * as path from "node:path";
 import type { ApprovalDecision } from "./core/approvals";
 import { drainLines, parseEvent, type WireEvent } from "./core/protocol";
 import type { QuestionAnswer } from "./core/questions";
-import { approvalFrame, promptFrame, questionFrame, quitFrame } from "./core/rpc";
+import { approvalFrame, promptFrame, questionFrame, quitFrame, steerFrame } from "./core/rpc";
 
 export interface BinaryLookup {
   env: NodeJS.ProcessEnv;
@@ -195,6 +195,9 @@ export interface TurnInput {
 }
 
 export interface Turn {
+  /// Adds context to the running response. A follow-up waits for the response;
+  /// ordinary steering is read before the next model step.
+  steer(prompt: string, images?: readonly string[], followUp?: boolean): void;
   /// Answers a waiting tool approval. An unknown id is ignored by the CLI, so a
   /// double answer is harmless.
   approve(requestId: number, decision: ApprovalDecision): void;
@@ -288,6 +291,14 @@ export function startTurn(
   }
 
   return {
+    steer(prompt: string, images: readonly string[] = [], followUp = false) {
+      if (exited) return;
+      try {
+        child.stdin.write(steerFrame(prompt, images, followUp));
+      } catch {
+        // The turn is gone; its exit handler owns the visible error.
+      }
+    },
     approve(requestId: number, decision: ApprovalDecision) {
       if (exited) return;
       try {

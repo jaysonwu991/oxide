@@ -1372,6 +1372,22 @@ footer {
   padding: 2px 0 2px;
 }
 
+.busy-message-mode {
+  min-width: 52px;
+  height: 26px;
+  padding: 0 9px;
+  border: 1px solid var(--vscode-button-secondaryBackground, var(--vscode-panel-border));
+  border-radius: 999px;
+  color: var(--vscode-descriptionForeground);
+  background: transparent;
+  font-size: 11px;
+}
+
+.busy-message-mode:hover {
+  color: var(--vscode-foreground);
+  border-color: var(--vscode-focusBorder);
+}
+
 /* Attach, stop and send are icon-only; their shape comes from `button.icon`. */
 
 #status {
@@ -1897,7 +1913,8 @@ button.dialog-row:focus-visible {
   align-items: center;
   justify-content: center;
   padding: 8px;
-  background: rgba(0, 0, 0, 0.35);
+  background: rgba(0, 0, 0, 0.48);
+  backdrop-filter: blur(3px);
 }
 
 .overlay[hidden] {
@@ -1911,6 +1928,11 @@ button.dialog-row:focus-visible {
   align-items: center;
   max-width: 100%;
   max-height: 100%;
+  padding: 8px;
+  border: 1px solid var(--vscode-panel-border, rgba(128, 128, 128, 0.35));
+  border-radius: 12px;
+  background: var(--vscode-editor-background);
+  box-shadow: 0 24px 70px rgba(0, 0, 0, 0.55);
 }
 
 /* The ✕ sits in a head row above the picture — outside the image it closes —
@@ -1923,6 +1945,18 @@ button.dialog-row:focus-visible {
   margin-bottom: 8px;
 }
 
+.image-name {
+  min-width: 0;
+  margin-right: auto;
+  align-self: center;
+  padding: 0 8px;
+  color: var(--vscode-descriptionForeground);
+  font-size: 0.85em;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 #image-view-close {
   color: var(--vscode-errorForeground, #f14c4c);
 }
@@ -1931,9 +1965,11 @@ button.dialog-row:focus-visible {
   max-width: 100%;
   max-height: 78vh;
   object-fit: contain;
-  border-radius: 12px;
-  background: var(--vscode-editor-background);
-  box-shadow: 0 18px 44px rgba(0, 0, 0, 0.6);
+  border-radius: 8px;
+  background-color: var(--vscode-editor-background);
+  background-image: linear-gradient(45deg, var(--vscode-sideBar-background) 25%, transparent 25%), linear-gradient(-45deg, var(--vscode-sideBar-background) 25%, transparent 25%), linear-gradient(45deg, transparent 75%, var(--vscode-sideBar-background) 75%), linear-gradient(-45deg, transparent 75%, var(--vscode-sideBar-background) 75%);
+  background-size: 16px 16px;
+  background-position: 0 0, 0 8px, 8px -8px, -8px 0;
 }
 
 /* ---------- review ---------- */
@@ -1953,13 +1989,13 @@ button.dialog-row:focus-visible {
   flex: 0 1 auto;
   flex-direction: column;
   width: 100%;
-  max-width: 420px;
-  max-height: 80%;
+  max-width: 520px;
+  max-height: calc(100vh - 16px);
   min-width: 0;
   min-height: 0;
   overflow: hidden;
   border: 1px solid var(--vscode-panel-border, rgba(128, 128, 128, 0.35));
-  border-radius: 6px;
+  border-radius: 10px;
   background: var(--vscode-editor-background);
   box-shadow: 0 12px 32px rgba(0, 0, 0, 0.45);
 }
@@ -1969,7 +2005,7 @@ button.dialog-row:focus-visible {
   flex: 0 0 auto;
   align-items: center;
   gap: 8px;
-  padding: 6px 8px;
+  padding: 9px 10px;
   border-bottom: 1px solid var(--vscode-panel-border, rgba(128, 128, 128, 0.35));
 }
 
@@ -2003,6 +2039,166 @@ button.dialog-row:focus-visible {
 }
 
 .review-files .change-row.active {
+  position: relative;
+  box-shadow: inset 3px 0 0 var(--vscode-focusBorder);
   background: var(--vscode-list-activeSelectionBackground, rgba(128, 128, 128, 0.25));
   color: var(--vscode-list-activeSelectionForeground, inherit);
+}
+
+/* ---------- desktop visual parity ---------- */
+
+/* Keep VS Code's colors and accessibility modes, but use the desktop app's
+   spacing, surfaces and radii so moving between the two clients feels like the
+   same product rather than two unrelated renderers. */
+#header {
+  min-height: 48px;
+  padding: 0 14px;
+  background: var(--vscode-editor-background);
+}
+
+#title {
+  font-size: 0.95em;
+  font-weight: 600;
+}
+
+#transcript {
+  padding: 18px 20px 10px;
+  background: var(--vscode-editor-background);
+}
+
+.msg,
+.tool,
+.changes,
+.thinking,
+.approval,
+.question {
+  width: 100%;
+  max-width: 760px;
+  margin-left: auto;
+  margin-right: auto;
+}
+
+.msg {
+  margin-bottom: 16px;
+}
+
+.msg.user {
+  width: auto;
+  max-width: min(78%, 620px);
+  margin-right: max(0px, calc((100% - 760px) / 2));
+}
+
+.msg.user .bubble {
+  padding: 9px 13px;
+  border: 0;
+  border-radius: 14px;
+  background: var(--vscode-input-background, rgba(128, 128, 128, 0.14));
+}
+
+.assistant .body pre {
+  border: 1px solid var(--vscode-panel-border, rgba(128, 128, 128, 0.28));
+  border-radius: 10px;
+  padding: 12px 14px;
+}
+
+.tool,
+.changes,
+.approval,
+.question {
+  border: 1px solid var(--vscode-panel-border, rgba(128, 128, 128, 0.28));
+  border-left-width: 1px;
+  border-radius: 12px;
+  background: var(--vscode-editorWidget-background, var(--vscode-input-background));
+}
+
+.tool.error {
+  border-color: var(--vscode-editorError-foreground, var(--vscode-charts-red, #f14c4c));
+}
+
+.tool.running:not(.error) {
+  border-color: var(--vscode-descriptionForeground);
+}
+
+.thead {
+  min-height: 38px;
+  padding: 8px 11px;
+}
+
+.tbody {
+  padding: 0 11px 9px;
+}
+
+.changes-head {
+  min-height: 42px;
+  padding: 8px 11px;
+}
+
+.changes-review,
+.changes-undo {
+  padding: 3px 8px;
+  border-radius: 7px;
+}
+
+footer {
+  padding: 10px 20px 8px;
+  border-top: 0;
+  background: var(--vscode-editor-background);
+}
+
+.meta,
+#composer,
+#footline {
+  width: 100%;
+  max-width: 760px;
+  margin-left: auto;
+  margin-right: auto;
+}
+
+.meta {
+  margin-bottom: 6px;
+}
+
+#composer {
+  padding: 8px 10px 6px;
+  border-radius: 16px;
+  background: var(--vscode-input-background);
+  box-shadow: 0 1px 0 rgba(255, 255, 255, 0.025) inset;
+}
+
+#input {
+  min-height: 40px;
+  padding: 4px 2px 7px;
+}
+
+button.icon {
+  width: 30px;
+  height: 30px;
+  border-radius: 9px;
+}
+
+.chips {
+  gap: 8px;
+  padding-bottom: 7px;
+}
+
+.chips .chip {
+  border-radius: 10px;
+  padding: 3px 5px;
+}
+
+.meta-chip,
+.busy-message-mode {
+  border-radius: 999px;
+}
+
+#footline {
+  margin-top: 6px;
+  padding: 0 4px;
+}
+
+@media (max-width: 520px) {
+  #transcript { padding: 14px 10px 8px; }
+  footer { padding: 8px 10px 6px; }
+  .msg.user { max-width: 88%; margin-right: 0; }
+  .review-hint { display: none; }
 }

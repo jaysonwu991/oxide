@@ -999,8 +999,11 @@ function clearAttachments() {
   updateSendState();
 }
 
-function openImage(dataUrl) {
+function openImage(dataUrl, name = "Attachment preview") {
   el("image-view-img").src = dataUrl;
+  el("image-view-img").alt = name || "Attachment preview";
+  el("image-view-img").title = name || "Attachment preview";
+  el("image-view-name").textContent = name || "Attachment preview";
   closeOverlays("image-modal");
   el("image-modal").hidden = false;
 }
@@ -1021,7 +1024,7 @@ function openableImage(dataUrl, name) {
   // an image that never answers. An image is draggable unless it says otherwise.
   img.draggable = false;
   button.appendChild(img);
-  button.onclick = () => openImage(dataUrl);
+  button.onclick = () => openImage(dataUrl, name);
   return button;
 }
 
@@ -3548,6 +3551,9 @@ function init() {
     event.target.value = "";
   });
   el("image-view-close").onclick = () => (el("image-modal").hidden = true);
+  el("image-modal").onclick = (event) => {
+    if (event.target === el("image-modal")) el("image-modal").hidden = true;
+  };
   el("prompt").addEventListener("keydown", (event) => {
     if (atKey(event)) {
       event.preventDefault();

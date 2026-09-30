@@ -19,9 +19,9 @@ export function activate(context: vscode.ExtensionContext): void {
   const output = vscode.window.createOutputChannel("Oxide");
   const controller = new ChatController(output, projectDeps());
 
-  // One provider serves both panes: the transcript, the running turn and the
-  // queued follow-ups live in the controller, which broadcasts to every
-  // attached view.
+  // One provider serves both panes: the transcript and running turn live in the
+  // controller, which broadcasts to every attached view. Queue/Steer messages
+  // travel into that same turn over its RPC channel.
   const chatView = new ChatViewProvider(context.extensionUri, controller);
   const webviewOptions = { webviewOptions: { retainContextWhenHidden: true } };
   context.subscriptions.push(

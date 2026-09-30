@@ -1069,7 +1069,15 @@ async fn run_rpc_mode(
     let driver_approvals = approvals.clone();
     let driver_questions = questions.clone();
     let driver = tokio::spawn(async move {
-        while let Some(request) = prompt_rx.recv().await {
+        let mut pending_prompt = None;
+        loop {
+            let request = match pending_prompt.take() {
+                Some(request) => request,
+                None => match prompt_rx.recv().await {
+                    Some(request) => request,
+                    None => break,
+                },
+            };
             let RpcRequest::Prompt { text, images } = request else {
                 continue;
             };
@@ -1096,6 +1104,7 @@ async fn run_rpc_mode(
             // message is drained by the agent it was meant to steer (a fresh
             // queue here would swallow the guidance and let it retry blind).
             let steering = Steering::new();
+            let follow_ups = Steering::new();
             let approve = match &driver_approvals {
                 Some(broker) => Some(broker.approver(&cwd, run_tx.clone(), steering.clone())),
                 None => Some(cli_approver(config.auto_approve)),
@@ -1113,28 +1122,55 @@ async fn run_rpc_mode(
                 session: log.clone(),
                 approve,
                 ask,
-                steering,
-                follow_ups: Steering::new(),
+                steering: steering.clone(),
+                follow_ups: follow_ups.clone(),
                 cancel: Cancel::new(),
             };
             runner::spawn_agent(run, run_tx).await;
-            while let Some(event) = run_rx.recv().await {
-                let finished = matches!(event, AgentEvent::Finished(_));
-                if let AgentEvent::Finished(messages) = &event {
-                    history = messages.clone();
-                }
-                if let Some(frame) = cli::event_json(&event) {
-                    if frame_tx.send(frame).is_err() {
-                        break;
+            let mut input_open = true;
+            loop {
+                tokio::select! {
+                    event = run_rx.recv() => {
+                        let Some(event) = event else { break };
+                        let finished = matches!(event, AgentEvent::Finished(_));
+                        if let AgentEvent::Finished(messages) = &event {
+                            history = messages.clone();
+                        }
+                        if let Some(frame) = cli::event_json(&event) {
+                            if frame_tx.send(frame).is_err() {
+                                break;
+                            }
+                        }
+                        if finished {
+                            // Queued behind the turn's own last event, so the listing
+                            // reaches the client after the run it belongs to.
+                            if let Some(frame) = turn_changes(&cwd, &baseline).await {
+                                let _ = frame_tx.send(frame);
+                            }
+                            break;
+                        }
                     }
-                }
-                if finished {
-                    // Queued behind the turn's own last event, so the listing
-                    // reaches the client after the run it belongs to.
-                    if let Some(frame) = turn_changes(&cwd, &baseline).await {
-                        let _ = frame_tx.send(frame);
+                    request = prompt_rx.recv(), if input_open && pending_prompt.is_none() => {
+                        match request {
+                            Some(RpcRequest::Steer { text, images, follow_up }) => {
+                                if let Ok(message) = runner::build_user_message(&text, &cwd, &images, &[]) {
+                                    if follow_up {
+                                        follow_ups.push(message);
+                                    } else {
+                                        steering.push(message);
+                                    }
+                                }
+                            }
+                            // A prompt is a new turn, not mid-turn context. Keep
+                            // one pending until this run finishes, matching the
+                            // RPC driver's original sequential prompt behavior.
+                            Some(request @ RpcRequest::Prompt { .. }) => {
+                                pending_prompt = Some(request);
+                            }
+                            Some(_) => {}
+                            None => input_open = false,
+                        }
                     }
-                    break;
                 }
             }
         }

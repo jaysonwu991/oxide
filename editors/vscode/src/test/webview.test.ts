@@ -703,6 +703,11 @@ describe("webview composer", () => {
     assert.equal(byId.get("send")!.hidden, false);
     assert.equal(byId.get("send")!.disabled, false);
     assert.equal(byId.get("send")!.getAttribute("aria-label"), "Queue");
+    assert.equal(byId.get("busy-message-mode")!.hidden, false);
+    assert.equal(byId.get("busy-message-mode")!.textContent, "Queue");
+    byId.get("busy-message-mode")!.fire("click");
+    assert.equal(byId.get("busy-message-mode")!.textContent, "Steer");
+    assert.equal(byId.get("send")!.getAttribute("aria-label"), "Steer");
     byId.get("input")!.value = "";
     byId.get("input")!.fire("input");
     assert.equal(byId.get("send")!.hidden, true, "and the empty box offers Stop again");
@@ -989,6 +994,21 @@ describe("webview composer", () => {
     assert.deepEqual(last(posted), { k: "send", text: "explain this repo" });
     assert.equal(input.value, "");
     assert.equal(byId.get("send")!.disabled, true);
+  });
+
+  it("sends the selected busy behavior and returns to Queue", () => {
+    const { byId, posted, send } = loadRenderer();
+    send(stateMessage({ busy: true, status: "Thinking…" }));
+    const input = byId.get("input")!;
+    input.value = "use the new API";
+    input.fire("input");
+    byId.get("busy-message-mode")!.fire("click");
+    byId.get("send")!.fire("click");
+    assert.deepEqual(last(posted), { k: "send", text: "use the new API", mode: "steer" });
+
+    input.value = "one more thing";
+    input.fire("input");
+    assert.equal(byId.get("busy-message-mode")!.textContent, "Queue");
   });
 
   it("asks the host what the caret is in once an @ is typed", () => {
