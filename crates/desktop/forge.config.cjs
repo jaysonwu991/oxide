@@ -6,6 +6,10 @@ const host = process.env.OXIDE_DESKTOP_HOST
   ? path.resolve(process.env.OXIDE_DESKTOP_HOST)
   : path.resolve(__dirname, "..", "..", "target", "release", hostName);
 const signingIdentity = process.env.APPLE_SIGNING_IDENTITY || "-";
+// Forge packages the app under `executableName`, while the Linux makers look for
+// a binary named after the npm package and default `bin` to it, so both makers
+// have to be told the name the packaged binary actually carries.
+const executableName = "Oxide";
 
 const notarize = (() => {
   if (process.env.APPLE_API_KEY_PATH && process.env.APPLE_API_KEY && process.env.APPLE_API_ISSUER) {
@@ -28,7 +32,7 @@ const notarize = (() => {
 module.exports = {
   packagerConfig: {
     name: "Oxide",
-    executableName: "Oxide",
+    executableName,
     appBundleId: "dev.oxide.desktop",
     appCategoryType: "public.app-category.developer-tools",
     asar: true,
@@ -55,7 +59,7 @@ module.exports = {
     { name: "@electron-forge/maker-dmg", platforms: ["darwin"], config: { icon: path.join(__dirname, "icons", "icon.icns") } },
     { name: "@electron-forge/maker-zip", platforms: ["darwin", "win32"] },
     { name: "@electron-forge/maker-squirrel", platforms: ["win32"], config: { name: "oxide_desktop", setupIcon: path.join(__dirname, "icons", "icon.ico") } },
-    { name: "@electron-forge/maker-deb", platforms: ["linux"], config: { options: { maintainer: "Oxide", homepage: "https://github.com/jaysonwu991/oxide", icon: path.join(__dirname, "icons", "icon.png") } } },
-    { name: "@electron-forge/maker-rpm", platforms: ["linux"], config: { options: { homepage: "https://github.com/jaysonwu991/oxide", icon: path.join(__dirname, "icons", "icon.png") } } },
+    { name: "@electron-forge/maker-deb", platforms: ["linux"], config: { options: { bin: executableName, maintainer: "Oxide", homepage: "https://github.com/jaysonwu991/oxide", icon: path.join(__dirname, "icons", "icon.png") } } },
+    { name: "@electron-forge/maker-rpm", platforms: ["linux"], config: { options: { bin: executableName, homepage: "https://github.com/jaysonwu991/oxide", icon: path.join(__dirname, "icons", "icon.png") } } },
   ],
 };

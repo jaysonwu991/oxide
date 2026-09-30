@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import fs from "node:fs";
 import path from "node:path";
+import { createRequire } from "node:module";
 import { fileURLToPath } from "node:url";
 
 const electronDir = path.dirname(fileURLToPath(import.meta.url));
@@ -128,6 +129,23 @@ assert.match(index, /img-src 'self' data: blob:/);
 assert.match(forge, /extraResource: \[host\]/);
 for (const maker of ["maker-dmg", "maker-zip", "maker-squirrel", "maker-deb", "maker-rpm"]) {
   assert.ok(forge.includes(maker), `missing ${maker}`);
+}
+
+// Forge packages the app under `executableName`, while the Linux makers look for
+// a binary named after the npm package (`oxide-desktop`) and fail the whole
+// `make` when it is not there, so each has to be told the name the packaged
+// binary actually carries.
+const config = createRequire(import.meta.url)(path.join(desktopDir, "forge.config.cjs"));
+const executableName = config.packagerConfig.executableName;
+assert.ok(executableName, "packagerConfig must name the packaged executable");
+for (const name of ["@electron-forge/maker-deb", "@electron-forge/maker-rpm"]) {
+  const maker = config.makers.find((entry) => entry.name === name);
+  assert.ok(maker, `missing ${name}`);
+  assert.equal(
+    maker.config?.options?.bin,
+    executableName,
+    `${name} must point \`bin\` at the packaged executable (${executableName})`,
+  );
 }
 assert.doesNotMatch(cargo, /tauri/i);
 assert.equal(fs.existsSync(path.join(desktopDir, "tauri.conf.json")), false);
