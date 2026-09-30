@@ -81,6 +81,7 @@ class StubElement {
     this.clientHeight = 10;
     this.selectionStart = 0;
     this.selectionEnd = 0;
+    this.tabIndex = -1;
     this.listeners = {};
     this._innerHTML = "";
   }
@@ -241,7 +242,7 @@ class StubElement {
 // makes it. Everything else the app asks for is a stub of its own.
 const pageTags = new Map();
 for (const [, tag, id] of readFileSync(`${here}index.html`, "utf8").matchAll(
-  /<(input|textarea|select)\b[^>]*\bid="([^"]+)"/g,
+  /<(button|input|textarea|select)\b[^>]*\bid="([^"]+)"/g,
 )) {
   pageTags.set(id, tag);
 }
@@ -513,7 +514,12 @@ const document = {
   getElementById: elementFor,
   createElement: (tag) => new StubElement(tag),
   querySelector: () => null,
-  querySelectorAll: () => [],
+  querySelectorAll: (selector) => {
+    if (selector !== "button") return [];
+    return [...pageTags.entries()]
+      .filter(([, tag]) => tag === "button")
+      .map(([id]) => elementFor(id));
+  },
   activeElement: null,
   // The page closes over the document, so the listeners it puts there are kept
   // too: a link answers a press the way a control answers for itself.
@@ -772,194 +778,52 @@ check(
   `${composer.value} @ ${composer.selectionStart}`,
 );
 
-// Every primary press on an actionable control is tracked until mouseup. If the
-// webview does not follow it with a click, the page supplies one on the next
-// task; if the native click arrives, it is not answered twice. The path is the
-// same regardless of which element owns focus.
+// WebKit follows the native mouse-focusable path only when a form control's
+// tabindex was author-specified. Static and generated buttons both carry that
+// semantic; the page does not synthesize a second activation as a fallback.
 const composerButton = new StubElement("button", "composer-button");
 let composerButtonClicks = 0;
 composerButton.onclick = () => composerButtonClicks++;
-const composerRow = new StubElement("div", "composer-row");
-let composerRowClicks = 0;
-composerRow.onclick = () => composerRowClicks++;
-const composerLink = new StubElement("a", "composer-link");
-composerLink.setAttribute("href", "https://example.com/docs");
-let composerLinkClicks = 0;
-composerLink.onclick = () => composerLinkClicks++;
 document.activeElement = elementFor("prompt");
 const buttonPress = press({ target: composerButton });
 document.fire("mousedown", buttonPress);
 check(
-  "left a control press native while the message box had the caret",
+  "left button activation entirely native while the message box had the caret",
   buttonPress.refused !== true,
   String(buttonPress.refused),
 );
 document.fire("mouseup", press({ target: composerButton }));
 await nextTick();
 check(
-  "supplied an omitted click while the message box had the caret",
-  composerButtonClicks === 1,
+  "did not synthesize a click the webview omitted",
+  composerButtonClicks === 0,
   String(composerButtonClicks),
 );
-
-document.activeElement = null;
-const ordinaryButtonPress = press({ target: composerButton });
-document.fire("mousedown", ordinaryButtonPress);
-check(
-  "left an ordinary control press native while still tracking its activation",
-  ordinaryButtonPress.refused !== true,
-  String(ordinaryButtonPress.refused),
+composerButton.onclick(buttonPress);
+check("accepted the one native click", composerButtonClicks === 1, String(composerButtonClicks));
+const staticButtons = [...shell.matchAll(/<button[^>]*\bid="([^"]+)"/g)].map((match) =>
+  elementFor(match[1]),
 );
-document.fire("mouseup", ordinaryButtonPress);
-document.fire("click", ordinaryButtonPress);
-composerButton.onclick(ordinaryButtonPress);
-await nextTick();
 check(
-  "kept a native click from being supplied a second time",
-  composerButtonClicks === 2,
-  String(composerButtonClicks),
+  "made every static button explicitly mouse-focusable",
+  staticButtons.length > 0 && staticButtons.every((button) => button.tabIndex === 0),
+  staticButtons.filter((button) => button.tabIndex !== 0).map((button) => button.id).join(", "),
 );
-
-document.activeElement = null;
-const omittedOrdinaryPress = press({ target: composerButton });
-document.fire("mousedown", omittedOrdinaryPress);
-document.fire("mouseup", omittedOrdinaryPress);
-await nextTick();
 check(
-  "supplied an omitted click without relying on an input's focus state",
-  composerButtonClicks === 3,
-  String(composerButtonClicks),
+  "built every generated button through the focusable helper",
+  (source.match(/document\.createElement\("button"\)/g) || []).length === 1,
+  String((source.match(/document\.createElement\("button"\)/g) || []).length),
 );
-
-const chordButton = new StubElement("button", "chord-button");
-let chordButtonClicks = 0;
-chordButton.onclick = () => chordButtonClicks++;
-const chordPress = press({ target: chordButton });
-document.fire("mousedown", chordPress);
-document.fire("mouseup", press({ target: chordButton, button: 2 }));
-await nextTick();
+const generatedButtons = [
+  ...elementFor("projects-tree").querySelectorAll("button"),
+  ...elementFor("sessions-list").querySelectorAll("button"),
+  ...elementFor("mcp-list").querySelectorAll("button"),
+];
 check(
-  "ignored a non-primary release during a tracked primary press",
-  chordButtonClicks === 0,
-  String(chordButtonClicks),
+  "made every generated button explicitly mouse-focusable",
+  generatedButtons.length > 0 && generatedButtons.every((button) => button.tabIndex === 0),
+  generatedButtons.filter((button) => button.tabIndex !== 0).map((button) => button.className).join(", "),
 );
-document.fire("mouseup", chordPress);
-await nextTick();
-check(
-  "completed that press only when its primary button was released",
-  chordButtonClicks === 1,
-  String(chordButtonClicks),
-);
-
-document.activeElement = elementFor("prompt");
-document.fire("mousedown", press({ target: composerButton }));
-document.fire("mouseup", press({ target: new StubElement("div", "away") }));
-await nextTick();
-check(
-  "left a press released away from its control alone",
-  composerButtonClicks === 3,
-  String(composerButtonClicks),
-);
-
-document.activeElement = elementFor("model-filter");
-const filterButtonPress = press({ target: composerButton });
-document.fire("mousedown", filterButtonPress);
-check(
-  "used the same native press path while a dialog text field had the caret",
-  filterButtonPress.refused !== true,
-  String(filterButtonPress.refused),
-);
-document.fire("mouseup", filterButtonPress);
-await nextTick();
-check(
-  "supplied an omitted click while a dialog text field had the caret",
-  composerButtonClicks === 4,
-  String(composerButtonClicks),
-);
-
-const disabledButton = new StubElement("button", "disabled-button");
-disabledButton.disabled = true;
-let disabledButtonClicks = 0;
-disabledButton.onclick = () => disabledButtonClicks++;
-document.activeElement = null;
-const disabledButtonPress = press({ target: disabledButton });
-document.fire("mousedown", disabledButtonPress);
-document.fire("mouseup", disabledButtonPress);
-await nextTick();
-check(
-  "did not synthesize activation for a disabled control",
-  disabledButtonClicks === 0,
-  String(disabledButtonClicks),
-);
-
-const otherField = new StubElement("input", "other-field");
-document.activeElement = elementFor("prompt");
-const fieldPress = press({ target: otherField });
-document.fire("mousedown", fieldPress);
-check(
-  "left text-field focus behavior to the browser",
-  otherField.focused !== true && fieldPress.refused !== true,
-  `${otherField.focused} / ${fieldPress.refused}`,
-);
-document.fire("mouseup", fieldPress);
-
-const checkbox = new StubElement("input", "checkbox");
-checkbox.setAttribute("type", "checkbox");
-document.activeElement = checkbox;
-const checkboxButtonPress = press({ target: composerButton });
-document.fire("mousedown", checkboxButtonPress);
-check(
-  "left a press alone while a non-text input held the focus",
-  checkboxButtonPress.refused !== true,
-  String(checkboxButtonPress.refused),
-);
-document.fire("mouseup", checkboxButtonPress);
-document.fire("click", checkboxButtonPress);
-composerButton.onclick(checkboxButtonPress);
-
-document.activeElement = elementFor("prompt");
-const composerRowPress = press({ target: composerRow });
-document.fire("mousedown", composerRowPress);
-check(
-  "left a row press native while the message box had the caret",
-  composerRowPress.refused !== true,
-  String(composerRowPress.refused),
-);
-document.fire("mouseup", composerRowPress);
-await nextTick();
-check("supplied an omitted row click", composerRowClicks === 1, String(composerRowClicks));
-
-const composerLinkPress = press({ target: composerLink });
-document.fire("mousedown", composerLinkPress);
-check(
-  "left a link press native while the message box had the caret",
-  composerLinkPress.refused !== true,
-  String(composerLinkPress.refused),
-);
-document.fire("mouseup", composerLinkPress);
-await nextTick();
-check("supplied an omitted link click", composerLinkClicks === 1, String(composerLinkClicks));
-
-const promptPress = press({ target: elementFor("prompt") });
-document.fire("mousedown", promptPress);
-check(
-  "left the message box's own press alone",
-  promptPress.refused !== true,
-  String(promptPress.refused),
-);
-document.fire("mouseup", promptPress);
-document.activeElement = null;
-const idlePress = press({ target: composerButton });
-document.fire("mousedown", idlePress);
-check(
-  "kept an idle button press native",
-  idlePress.refused !== true,
-  String(idlePress.refused),
-);
-document.fire("mouseup", press({ target: composerButton }));
-document.fire("click", idlePress);
-composerButton.onclick(idlePress);
-await nextTick();
 
 // The other half of the same problem: a repaint that replaces the row under the
 // pointer before the press is over leaves the webview with a down on one row and
@@ -985,6 +849,13 @@ for (const [name, listId, paint] of [
     `held the ${name} listing a press was inside of`,
     list.outline() === "",
     list.outline() || "painted the listing while the press was still down",
+  );
+  document.fire("mouseup", press({ target: composerButton, button: 2 }));
+  await nextTick();
+  check(
+    `kept the ${name} listing held after a non-primary release`,
+    list.outline() === "",
+    list.outline() || "painted the listing before the primary press ended",
   );
   document.fire("mouseup", press({ target: composerButton }));
   await nextTick();
@@ -1046,20 +917,7 @@ elementFor("sessions-modal").hidden = true;
 await app.loadMcps();
 await app.loadSessions();
 
-// Only the message box's caret is what the swallow is for, so a press while some
-// other control holds the focus keeps being taken by that control as it was.
-document.activeElement = composerButton;
-const focusPress = press({ target: composerRow });
-document.fire("mousedown", focusPress);
-check(
-  "left a press alone while a control rather than the message box held the focus",
-  focusPress.refused !== true,
-  String(focusPress.refused),
-);
-document.activeElement = null;
 elementFor("create-project-modal").hidden = true;
-document.fire("mouseup", press({ target: composerButton }));
-await nextTick();
 
 await typeAt("review @sr");
 app.atKey({ key: "Escape" });
@@ -1616,24 +1474,12 @@ check(
   firstBlock.outline(),
 );
 
-// Native choice controls use the same exact-once activation contract. A press
-// on a label resolves to its radio, so a webview that consumes the label click
-// while ending the free-text edit still gets the intended choice once.
-const secondRadio = optionRows[1].control;
-let radioActivations = 0;
-secondRadio.click = () => {
-  radioActivations++;
-  secondRadio.checked = true;
-};
-document.activeElement = firstBlock.querySelector(".question-free");
-const radioLabelPress = press({ target: optionRows[1] });
-document.fire("mousedown", radioLabelPress);
-document.fire("mouseup", radioLabelPress);
-await nextTick();
+// Choice controls take the same WebKit mouse-focusable route as buttons, so the
+// page explicitly opts each one into it and leaves activation to the browser.
 check(
-  "supplied an omitted radio activation through its label",
-  radioActivations === 1 && secondRadio.checked === true,
-  `${radioActivations} / ${secondRadio.checked}`,
+  "made every radio explicitly mouse-focusable",
+  optionRows.every((row) => row.control.tabIndex === 0),
+  optionRows.map((row) => row.control.tabIndex).join(","),
 );
 check(
   "left the counter and Back out of the first step",
@@ -1682,23 +1528,11 @@ check(
   secondBlock.querySelectorAll(".question-choice").every((input) => input.type === "checkbox"),
   secondBlock.outline(),
 );
-const firstCheckbox = secondBlock.querySelectorAll(".question-choice")[0];
-let checkboxActivations = 0;
-firstCheckbox.click = () => {
-  checkboxActivations++;
-  firstCheckbox.checked = !firstCheckbox.checked;
-};
-document.activeElement = secondBlock.querySelector(".question-free");
-const checkboxPress = press({ target: firstCheckbox });
-document.fire("mousedown", checkboxPress);
-document.fire("mouseup", checkboxPress);
-await nextTick();
 check(
-  "supplied an omitted checkbox activation from the native input",
-  checkboxActivations === 1 && firstCheckbox.checked === true,
-  `${checkboxActivations} / ${firstCheckbox.checked}`,
+  "made every checkbox explicitly mouse-focusable",
+  secondBlock.querySelectorAll(".question-choice").every((input) => input.tabIndex === 0),
+  secondBlock.querySelectorAll(".question-choice").map((input) => input.tabIndex).join(","),
 );
-firstCheckbox.checked = false;
 check(
   "named a multi-select question's hint",
   elementFor("question-hint").textContent === "Select all that apply",
