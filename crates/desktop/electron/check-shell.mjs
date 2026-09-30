@@ -62,6 +62,20 @@ for (const allowed of ["electron-winstaller", "fs-xattr", "macos-alias"]) {
   );
 }
 
+// pnpm refuses a lockfile whose packages are younger than its release-age
+// window unless they are exempted here, so an install from this lockfile fails
+// where the store is cold — CI — while succeeding on the machine that wrote it.
+assert.match(workspace, /^minimumReleaseAgeExclude:$/m);
+for (const name of ["electron", "@electron-forge/cli"]) {
+  const version = manifest.devDependencies[name];
+  const escaped = name.replace(/\./g, "\\.");
+  assert.match(
+    workspace,
+    new RegExp(`^\\s+- '?${escaped}@${version.replace(/\./g, "\\.")}'?$`, "m"),
+    `pnpm-workspace.yaml must keep ${name}@${version} exempt from pnpm's minimum release age`,
+  );
+}
+
 for (const setting of [
   "contextIsolation: true",
   "sandbox: true",

@@ -54,11 +54,12 @@ Rust workspace nor the VS Code extension shares its dependencies. CI installs it
 with `pnpm install --frozen-lockfile` from `pnpm-lock.yaml`, and
 `pnpm-workspace.yaml` records which dependencies pnpm may run build scripts for —
 the Windows installer maker, and the two native modules the macOS DMG maker loads,
-which pnpm skips by default and the maker would then find missing. `.npmrc` pins
-the public registry so the lockfile never resolves against a mirror only its
-author can reach, and asks pnpm for the hoisted `node_modules` layout Electron
-Forge expects (it loads its makers and the Electron binary from a flat tree, and
-refuses to start on pnpm's isolated one).
+which pnpm skips by default and the maker would then find missing. It also
+carries pnpm's own settings: the hoisted `node_modules` layout Electron Forge
+expects (it loads its makers and the Electron binary from a flat tree, and refuses
+to start on pnpm's isolated one), and the exemptions from pnpm's minimum release
+age that let CI install this lockfile at all. `.npmrc` pins the public registry so
+the lockfile never resolves against a mirror only its author can reach.
 
 The Rust package builds `oxide-desktop-host`; it has no GUI framework dependency.
 Electron starts that host and exchanges newline-delimited JSON over private
