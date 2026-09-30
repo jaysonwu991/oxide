@@ -61,22 +61,26 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           key: desktop
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 11.23.0
+          run_install: false
       - uses: actions/setup-node@v4
         with:
           node-version: 22
-          cache: npm
-          cache-dependency-path: crates/desktop/package-lock.json
+          cache: pnpm
+          cache-dependency-path: crates/desktop/pnpm-lock.yaml
       - name: Install desktop dependencies
         working-directory: crates/desktop
-        run: npm ci
+        run: pnpm install --frozen-lockfile
       - name: Lint the desktop app
         run: cargo clippy -p oxide-desktop --all-targets --locked -- -D warnings
       - name: Check the renderer and host bridge
         working-directory: crates/desktop
-        run: npm run check
+        run: pnpm run check
       - name: Package the desktop app
         working-directory: crates/desktop
-        run: npm run package
+        run: pnpm run package
 
   # The extension is a standalone pnpm/TypeScript package, so it is not covered
   # by the Cargo jobs. Run its type check and unit tests on each platform the

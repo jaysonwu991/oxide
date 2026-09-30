@@ -49,6 +49,17 @@ crates/desktop/
   icons/            app icons (PNG, .icns, .ico)
 ```
 
+pnpm is the desktop's package manager: it is a package of its own, so neither the
+Rust workspace nor the VS Code extension shares its dependencies. CI installs it
+with `pnpm install --frozen-lockfile` from `pnpm-lock.yaml`, and
+`pnpm-workspace.yaml` records which dependencies pnpm may run build scripts for —
+the Windows installer maker, and the two native modules the macOS DMG maker loads,
+which pnpm skips by default and the maker would then find missing. `.npmrc` pins
+the public registry so the lockfile never resolves against a mirror only its
+author can reach, and asks pnpm for the hoisted `node_modules` layout Electron
+Forge expects (it loads its makers and the Electron binary from a flat tree, and
+refuses to start on pnpm's isolated one).
+
 The Rust package builds `oxide-desktop-host`; it has no GUI framework dependency.
 Electron starts that host and exchanges newline-delimited JSON over private
 stdin/stdout pipes. The renderer receives only an allowlisted API from the
@@ -151,13 +162,15 @@ The window follows a Codex-style layout:
 
 ## Running
 
+The desktop package is a pnpm project of its own, so install it with `pnpm`:
+
 ```sh
 cd crates/desktop
-npm install
-npm start
+pnpm install
+pnpm start
 ```
 
-`npm start` builds `oxide-desktop-host` and launches Electron Forge in development
+`pnpm start` builds `oxide-desktop-host` and launches Electron Forge in development
 mode. Renderer files are loaded from `ui/`; restart Electron after changing the
 main process or preload.
 
@@ -166,10 +179,10 @@ build a bundle, replace it, and ad-hoc sign it if macOS complains:
 
 ```sh
 # quickest test
-npm start
+pnpm start
 
 # to refresh the installed .app
-npm run package
+pnpm run package
 # quit Oxide, then:
 cp -R out/Oxide-darwin-*/Oxide.app /Applications/Oxide.app
 codesign --force --deep --sign - /Applications/Oxide.app   # only if macOS complains
@@ -181,7 +194,7 @@ test can reach:
 
 ```sh
 cd crates/desktop
-npm run check
+pnpm run check
 ```
 
 It covers the `/mcps` listing (including the state colors, a failed probe and a
@@ -196,8 +209,9 @@ the model as a prompt. It also reads `ui/index.html` to check what no stub can:
 that both listings are attached to the composer (inside `.composer-wrap`, above
 `.composer`) instead of floating over the window, and that each header button is
 an icon with a title. The shell check additionally pins the window/host lifetime
-above and reads `package-lock.json` to confirm every tarball resolves to the
-public npm registry, since CI and every clean contributor install from it.
+above, reads `pnpm-lock.yaml` to confirm every tarball resolves to the public npm
+registry — since CI and every clean contributor install from it — and holds
+`pnpm-workspace.yaml` to the dependency build scripts the Forge makers need.
 
 ## Sharing configuration with the CLI
 
@@ -500,8 +514,8 @@ Icons are checked in (`icons/`). Build a bundle or native installer with
 Electron Forge:
 
 ```sh
-npm run package   # unpacked app for the current platform
-npm run make      # native installers for the current platform
+pnpm run package   # unpacked app for the current platform
+pnpm run make      # native installers for the current platform
 ```
 
 Forge produces `.app`/`.dmg`/`.zip` on macOS, Squirrel `.exe`/`.zip` on

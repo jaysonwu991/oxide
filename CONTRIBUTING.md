@@ -39,8 +39,8 @@ cargo run -- -p "summarize this repository"
 | `cargo clippy --all-targets -- -D warnings` | Lint; warnings are errors. |
 | `cargo fmt` | Format the code. |
 | `cargo build -p oxide-desktop` | Desktop Rust host. |
-| `cd crates/desktop && npm run check` | Electron shell, live host protocol, and renderer checks. |
-| `cd crates/desktop && npm start` | Build the host and launch the desktop app. |
+| `cd crates/desktop && pnpm run check` | Electron shell, live host protocol, and renderer checks. |
+| `cd crates/desktop && pnpm start` | Build the host and launch the desktop app. |
 | `cd editors/vscode && pnpm test` | VS Code extension tests (`tsc -p .` then `node --test out/test/`). |
 
 Before opening a pull request, make sure `cargo fmt`, `cargo clippy`, and

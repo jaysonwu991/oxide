@@ -389,8 +389,8 @@ dialogs, and renderer; `oxide-desktop-host` owns the Rust application state:
 
 ```sh
 cd crates/desktop
-npm install
-npm start
+pnpm install
+pnpm start
 ```
 
 It also has an interactive approval prompt for `ask` rules (shown while
@@ -404,7 +404,7 @@ token/cost usage in the footer, and built-in Dark/Light themes (default Dark)
 that read the same `.oxide/themes` files as the CLI. Prebuilt bundles are
 drafted under `desktop-v*` releases on the
 [releases page](https://github.com/jaysonwu991/oxide/releases); to build from
-source, bundle it with `npm run make`. See
+source, bundle it with `pnpm run make`. See
 [docs/desktop.md](docs/desktop.md) for the full layout, shortcuts, signing, and
 packaging details.
 
@@ -1073,13 +1073,13 @@ cargo fmt
 The workspace members are `crates/core` (shared agent core),
 `crates/cli` (the `oxide` terminal binary), and `crates/desktop`.
 The desktop Rust host is a workspace member; the Electron shell is a separate
-npm package in the same directory:
+pnpm package in the same directory:
 
 ```sh
 cd crates/desktop
-npm install
-npm run check
-npm start
+pnpm install
+pnpm run check
+pnpm start
 ```
 
 The VS Code extension is a separate pnpm package under `editors/vscode` and is

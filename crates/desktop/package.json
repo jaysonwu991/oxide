@@ -10,14 +10,15 @@
   "engines": {
     "node": ">=22.13.0"
   },
+  "packageManager": "pnpm@11.23.0",
   "main": "electron/main.cjs",
   "scripts": {
     "host:debug": "cargo build --package oxide-desktop --bin oxide-desktop-host",
     "host:release": "cargo build --release --package oxide-desktop --bin oxide-desktop-host",
-    "start": "npm run host:debug && electron-forge start",
-    "package": "npm run host:release && electron-forge package",
-    "make": "npm run host:release && electron-forge make",
-    "check": "npm run host:debug && node electron/check-shell.mjs && node electron/check-host.mjs && node ui/check-app.mjs"
+    "start": "pnpm run host:debug && electron-forge start",
+    "package": "pnpm run host:release && electron-forge package",
+    "make": "pnpm run host:release && electron-forge make",
+    "check": "pnpm run host:debug && node electron/check-shell.mjs && node electron/check-host.mjs && node ui/check-app.mjs"
   },
   "devDependencies": {
     "@electron-forge/cli": "8.0.1",

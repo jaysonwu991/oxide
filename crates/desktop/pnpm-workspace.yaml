@@ -1,0 +1,5 @@
+nodeLinker: hoisted
+allowBuilds:
+  electron-winstaller: true
+  fs-xattr: true
+  macos-alias: true

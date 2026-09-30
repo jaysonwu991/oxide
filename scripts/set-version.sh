@@ -4,8 +4,9 @@
 # The repository keeps a placeholder version (`0.0.0`); release CI calls this
 # with the pushed tag so the built CLI binary and desktop bundle report the tag
 # version. Patches the workspace version in `Cargo.toml` and the Electron
-# `package.json` (and lockfile when present), then it is up to the caller to
-# refresh `Cargo.lock` (e.g. `cargo update --workspace`).
+# `package.json` (the pnpm lockfile records no version for a private package,
+# so nothing there has to follow), then it is up to the caller to refresh
+# `Cargo.lock` (e.g. `cargo update --workspace`).
 #
 # A tag may carry a component prefix so each component releases independently:
 # `v1.2.3` / `cli-v1.2.3` for the CLI, `desktop-v1.2.3` for the desktop app,
@@ -108,19 +109,6 @@ package["version"] = version
 with open(package_path, "w", encoding="utf-8") as handle:
     json.dump(package, handle, indent=2)
     handle.write("\n")
-
-lock_path = f"{root}/crates/desktop/package-lock.json"
-try:
-    with open(lock_path, encoding="utf-8") as handle:
-        lock = json.load(handle)
-except FileNotFoundError:
-    pass
-else:
-    lock["version"] = version
-    lock["packages"][""]["version"] = version
-    with open(lock_path, "w", encoding="utf-8") as handle:
-        json.dump(lock, handle, indent=2)
-        handle.write("\n")
 
 print(f"set version to {version}")
 PY

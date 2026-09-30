@@ -24,25 +24,43 @@ function stringSet(source, declaration) {
 assert.equal(manifest.main, "electron/main.cjs");
 assert.match(manifest.devDependencies.electron, /^\d+\.\d+\.\d+$/);
 assert.match(manifest.devDependencies["@electron-forge/cli"], /^\d+\.\d+\.\d+$/);
+assert.match(manifest.packageManager || "", /^pnpm@\d+\.\d+\.\d+$/);
 
 // CI and every clean contributor install from this lockfile, so each tarball has
 // to come from the public registry: a mirror baked in by whoever regenerated it
 // would make the build depend on a registry nobody else can reach. `.npmrc`
 // pins that registry so regenerating the lockfile behind a corporate mirror
-// does not quietly reintroduce one.
+// does not quietly reintroduce one, and pnpm writes a `tarball:` URL only when
+// it is not that registry, so anything but the public one is a mirror.
+assert.equal(fs.existsSync(path.join(desktopDir, "package-lock.json")), false);
 assert.match(read(".npmrc"), /^registry=https:\/\/registry\.npmjs\.org\/$/m);
-const lockfile = JSON.parse(read("package-lock.json"));
-const registries = new Set(
-  Object.values(lockfile.packages || {})
-    .map((entry) => entry.resolved)
-    .filter(Boolean)
-    .map((url) => new URL(url).origin),
-);
+const lockfile = read("pnpm-lock.yaml");
+const foreign = [...lockfile.matchAll(/https?:\/\/[^\s,'"}]+/g)]
+  .map((match) => match[0])
+  .filter((url) => new URL(url).origin !== "https://registry.npmjs.org");
 assert.deepEqual(
-  [...registries],
-  ["https://registry.npmjs.org"],
-  `package-lock.json resolves tarballs outside the public registry: ${[...registries].join(", ")}`,
+  foreign,
+  [],
+  `pnpm-lock.yaml resolves tarballs outside the public registry: ${foreign.join(", ")}`,
 );
+
+// pnpm runs no dependency build scripts it was not allowed to, and the Forge
+// makers need theirs: Windows' installer maker selects its 7-Zip binary, and the
+// macOS DMG maker loads two native modules. Allowed scripts are recorded in
+// `pnpm-workspace.yaml`, so dropping an entry there breaks packaging rather than
+// the install that follows it. The same file asks for the hoisted node_modules
+// layout: Electron Forge loads its makers and the electron binary out of a flat
+// tree and refuses to start on pnpm's isolated one, reading the setting back
+// through `pnpm config get node-linker`.
+const workspace = read("pnpm-workspace.yaml");
+assert.match(workspace, /^nodeLinker: hoisted$/m);
+for (const allowed of ["electron-winstaller", "fs-xattr", "macos-alias"]) {
+  assert.match(
+    workspace,
+    new RegExp(`^\\s+${allowed}: true$`, "m"),
+    `pnpm-workspace.yaml must allow ${allowed} to run its build script`,
+  );
+}
 
 for (const setting of [
   "contextIsolation: true",

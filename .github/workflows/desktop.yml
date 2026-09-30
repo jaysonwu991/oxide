@@ -56,11 +56,16 @@ jobs:
         with:
           key: desktop-${{ matrix.rust_target }}
 
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 11.23.0
+          run_install: false
+
       - uses: actions/setup-node@v4
         with:
           node-version: 22
-          cache: npm
-          cache-dependency-path: crates/desktop/package-lock.json
+          cache: pnpm
+          cache-dependency-path: crates/desktop/pnpm-lock.yaml
 
       - name: Install Linux package tools
         if: matrix.platform == 'linux'
@@ -70,7 +75,7 @@ jobs:
 
       - name: Install Electron dependencies
         working-directory: crates/desktop
-        run: npm ci
+        run: pnpm install --frozen-lockfile
 
       - name: Set version from tag
         if: startsWith(github.ref, 'refs/tags/desktop-v')
@@ -140,7 +145,7 @@ jobs:
         shell: bash
         env:
           OXIDE_DESKTOP_HOST: ${{ github.workspace }}/target/${{ matrix.rust_target }}/release/${{ matrix.host }}
-        run: npx electron-forge make --platform=${{ matrix.platform }} --arch=${{ matrix.arch }}
+        run: pnpm exec electron-forge make --platform=${{ matrix.platform }} --arch=${{ matrix.arch }}
 
       - uses: actions/upload-artifact@v4
         with:

@@ -168,8 +168,8 @@ the picked label answers — so it holds the question being asked until
 - `cargo fmt`
 - `cargo build -p oxide-desktop` (desktop Rust host)
 - `cargo test -p oxide-desktop` (desktop manager, turn, command, and bridge tests)
-- `cd crates/desktop && npm run check` (secure Electron shell, live Rust-host protocol, and renderer behavior)
-- `cd crates/desktop && npm start` (build and launch the development app)
+- `cd crates/desktop && pnpm run check` (secure Electron shell, live Rust-host protocol, and renderer behavior)
+- `cd crates/desktop && pnpm start` (build and launch the development app)
 - `cd editors/vscode && pnpm test` (VS Code extension; `tsc -p .` then `node --test out/test/`)
 
 ## Conventions
