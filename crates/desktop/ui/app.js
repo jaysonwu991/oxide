@@ -3310,34 +3310,6 @@ let pressed = false;
 let heldRepaints = [];
 let controlPress = null;
 
-/// The editable text control at or above `node`. WebKit can spend the first
-/// press outside one of these on ending its editing session; a press into a
-/// second field can be spent without putting the caret in that field either.
-function textEntry(node) {
-  for (; node && node !== document.body; node = node.parentNode) {
-    if (node.isContentEditable || node.tagName === "TEXTAREA") return node;
-    if (node.tagName !== "INPUT") continue;
-    const type = String(node.type || node.getAttribute?.("type") || "text").toLowerCase();
-    if (
-      ![
-        "button",
-        "checkbox",
-        "color",
-        "file",
-        "hidden",
-        "image",
-        "radio",
-        "range",
-        "reset",
-        "submit",
-      ].includes(type)
-    ) {
-      return node;
-    }
-  }
-  return null;
-}
-
 /// The innermost control a press belongs to. Buttons and links are controls by
 /// their element kind; the page's rows become controls when it gives them an
 /// `onclick` handler.
@@ -3355,12 +3327,9 @@ function finishControlPress(event) {
     controlPress = null;
     return;
   }
-  // A native click follows mouseup before the next task. Give WebKit that
-  // chance first, then supply the click when it omits one. Every primary press
-  // is tracked, not only one whose focus state happened to be observable: some
-  // WebKit versions end a field's editing session before dispatching mousedown,
-  // and others replace the control under the pointer without emitting click.
-  // Keyboard activation remains native, and a press dragged away still cancels.
+  // A native click follows mouseup before the next task. Give the webview that
+  // chance first, then supply the click when the webview omits one. Keyboard
+  // activation remains native, and a press dragged away still cancels.
   setTimeout(() => {
     if (controlPress === press) controlPress = null;
     if (!press.clicked && !press.control.disabled) press.control.click();
@@ -3442,26 +3411,16 @@ function init() {
   el("review-next").onclick = () => walkReview(1);
 
   // Treat a primary press that starts and ends on the same control as exactly
-  // one activation. Native click stays authoritative when WebKit emits it; the
-  // next task supplies one only when WebKit did not. Tracking every actionable
-  // press makes this independent of when a platform ends a text field's editing
-  // session, while preventing the default only when a field still owns focus
-  // keeps its caret in place for composer/list interactions.
+  // one activation. Native click stays authoritative when the webview emits it;
+  // the next task supplies one only when it did not. This path deliberately
+  // ignores focus and platform: fields keep their normal browser behavior, and
+  // every actionable control follows the same activation contract.
   document.addEventListener(
     "mousedown",
     (event) => {
       if (event.button !== 0) return;
-      const activeEntry = textEntry(document.activeElement);
-      const targetEntry = textEntry(event.target);
-      if (targetEntry) {
-        // End the old editing session before WebKit's default handler has to do
-        // it. Leaving the press native still puts the caret where it landed.
-        if (activeEntry && targetEntry !== activeEntry) targetEntry.focus();
-        return;
-      }
       const control = pressedControl(event.target);
       if (!control) return;
-      if (activeEntry) event.preventDefault();
       controlPress = { control, clicked: false };
     },
     true,

@@ -765,53 +765,33 @@ check(
   `${composer.value} @ ${composer.selectionStart}`,
 );
 
-// Every primary press on an actionable control is tracked until mouseup. If
-// WebKit does not follow it with a click, the page supplies one on the next
-// task; if the native click arrives, it is not answered twice. This is global
-// rather than conditional on focus because WebKit versions disagree about
-// whether they clear activeElement before or after dispatching mousedown.
+// Every primary press on an actionable control is tracked until mouseup. If the
+// webview does not follow it with a click, the page supplies one on the next
+// task; if the native click arrives, it is not answered twice. The path is the
+// same regardless of which element owns focus.
 const composerButton = new StubElement("button", "composer-button");
 let composerButtonClicks = 0;
 composerButton.onclick = () => composerButtonClicks++;
 const composerRow = new StubElement("div", "composer-row");
-composerRow.onclick = () => {};
+let composerRowClicks = 0;
+composerRow.onclick = () => composerRowClicks++;
 const composerLink = new StubElement("a", "composer-link");
 composerLink.setAttribute("href", "https://example.com/docs");
+let composerLinkClicks = 0;
+composerLink.onclick = () => composerLinkClicks++;
 document.activeElement = elementFor("prompt");
 const buttonPress = press({ target: composerButton });
 document.fire("mousedown", buttonPress);
 check(
-  "swallowed a button press while the message box had the caret",
-  buttonPress.refused === true,
+  "left a control press native while the message box had the caret",
+  buttonPress.refused !== true,
   String(buttonPress.refused),
 );
 document.fire("mouseup", press({ target: composerButton }));
 await nextTick();
 check(
-  "supplied the click WebKit omitted while ending the message box's editing session",
+  "supplied an omitted click while the message box had the caret",
   composerButtonClicks === 1,
-  String(composerButtonClicks),
-);
-
-// Some WebKit releases end the field's editing session before they dispatch
-// mousedown, so activeElement is already empty and no focus-based workaround
-// can see what happened. The global activation contract still supplies the
-// omitted click.
-document.activeElement = elementFor("prompt");
-document.fire("focusout", press({ target: elementFor("prompt") }));
-document.activeElement = null;
-const preBlurredButtonPress = press({ target: composerButton });
-document.fire("mousedown", preBlurredButtonPress);
-check(
-  "tracked a press WebKit dispatched after it had already blurred the message box",
-  preBlurredButtonPress.refused !== true,
-  String(preBlurredButtonPress.refused),
-);
-document.fire("mouseup", preBlurredButtonPress);
-await nextTick();
-check(
-  "supplied the click omitted after WebKit's early editor blur",
-  composerButtonClicks === 2,
   String(composerButtonClicks),
 );
 
@@ -829,7 +809,7 @@ composerButton.onclick(ordinaryButtonPress);
 await nextTick();
 check(
   "kept a native click from being supplied a second time",
-  composerButtonClicks === 3,
+  composerButtonClicks === 2,
   String(composerButtonClicks),
 );
 
@@ -840,7 +820,7 @@ document.fire("mouseup", omittedOrdinaryPress);
 await nextTick();
 check(
   "supplied an omitted click without relying on an input's focus state",
-  composerButtonClicks === 4,
+  composerButtonClicks === 3,
   String(composerButtonClicks),
 );
 
@@ -850,7 +830,7 @@ document.fire("mouseup", press({ target: new StubElement("div", "away") }));
 await nextTick();
 check(
   "left a press released away from its control alone",
-  composerButtonClicks === 4,
+  composerButtonClicks === 3,
   String(composerButtonClicks),
 );
 
@@ -858,15 +838,15 @@ document.activeElement = elementFor("model-filter");
 const filterButtonPress = press({ target: composerButton });
 document.fire("mousedown", filterButtonPress);
 check(
-  "swallowed a button press while a dialog text field had the caret",
-  filterButtonPress.refused === true,
+  "used the same native press path while a dialog text field had the caret",
+  filterButtonPress.refused !== true,
   String(filterButtonPress.refused),
 );
 document.fire("mouseup", filterButtonPress);
 await nextTick();
 check(
-  "supplied the click WebKit omitted while ending a dialog field's editing session",
-  composerButtonClicks === 5,
+  "supplied an omitted click while a dialog text field had the caret",
+  composerButtonClicks === 4,
   String(composerButtonClicks),
 );
 
@@ -890,8 +870,8 @@ document.activeElement = elementFor("prompt");
 const fieldPress = press({ target: otherField });
 document.fire("mousedown", fieldPress);
 check(
-  "moved the caret into another text field before WebKit could spend its press",
-  otherField.focused === true && fieldPress.refused !== true,
+  "left text-field focus behavior to the browser",
+  otherField.focused !== true && fieldPress.refused !== true,
   `${otherField.focused} / ${fieldPress.refused}`,
 );
 document.fire("mouseup", fieldPress);
@@ -914,17 +894,25 @@ document.activeElement = elementFor("prompt");
 const composerRowPress = press({ target: composerRow });
 document.fire("mousedown", composerRowPress);
 check(
-  "swallowed a row press while the message box had the caret",
-  composerRowPress.refused === true,
+  "left a row press native while the message box had the caret",
+  composerRowPress.refused !== true,
   String(composerRowPress.refused),
 );
+document.fire("mouseup", composerRowPress);
+await nextTick();
+check("supplied an omitted row click", composerRowClicks === 1, String(composerRowClicks));
+
 const composerLinkPress = press({ target: composerLink });
 document.fire("mousedown", composerLinkPress);
 check(
-  "swallowed a link press while the message box had the caret",
-  composerLinkPress.refused === true,
+  "left a link press native while the message box had the caret",
+  composerLinkPress.refused !== true,
   String(composerLinkPress.refused),
 );
+document.fire("mouseup", composerLinkPress);
+await nextTick();
+check("supplied an omitted link click", composerLinkClicks === 1, String(composerLinkClicks));
+
 const promptPress = press({ target: elementFor("prompt") });
 document.fire("mousedown", promptPress);
 check(
@@ -932,6 +920,7 @@ check(
   promptPress.refused !== true,
   String(promptPress.refused),
 );
+document.fire("mouseup", promptPress);
 document.activeElement = null;
 const idlePress = press({ target: composerButton });
 document.fire("mousedown", idlePress);

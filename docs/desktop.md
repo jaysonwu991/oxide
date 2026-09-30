@@ -97,16 +97,12 @@ The window follows a Codex-style layout:
   to a plain click — each button the app wires up, each row of a sidebar, list
   or change card, and the thumbnail in the attachment strip — behind one
   exact-once activation controller. Every primary press that begins and ends on
-  the same actionable control is tracked whether or not a field appears focused:
-  WebKit's native click remains authoritative when it arrives, and the page
-  supplies it on the next task when WebKit omits it. That invariant covers both
-  known event orders — a field can lose `activeElement` before `mousedown` or
-  after it — without inferring which WebKit version is running. When a field
-  still owns the caret, the down event is prevented so ending its editing
-  session cannot consume the activation; a press into another text field moves
-  the caret there before WebKit can spend that press on ending the earlier field.
-  Keyboard activation stays native, a disabled control is never synthesized,
-  and a press released away from its starting control is cancelled. A
+  the same actionable control is tracked without inspecting focus or the host
+  platform. The webview's native click remains authoritative when it arrives,
+  and the page supplies it on the next task when the webview omits it. Text
+  fields keep their normal browser focus behavior, keyboard activation stays
+  native, a disabled control is never synthesized, and a press released away
+  from its starting control is cancelled. A
   control inside another stops its click from reaching the row around it, so a
   thread's ✕ removes the thread rather than selecting the row and a chip's ✕
   removes the chip rather than opening the picture — and a thumbnail's picture
