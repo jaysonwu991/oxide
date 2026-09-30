@@ -23,6 +23,9 @@ const state = {
   sessions: [],
   busy: false,
   runId: null,
+  // New context sent during a run waits by default. Steering is a deliberate
+  // choice because it changes the work already in progress.
+  busyMessageMode: "queue",
   // What the running turn titled itself: the header names the thread by this
   // until the sidebar's own listing carries it.
   runTitle: "",
@@ -772,22 +775,38 @@ function resetTurn() {
   closeQuestion();
 }
 
-/// The composer's one action: while a turn runs the corner holds Stop, and the
-/// moment there is something to say it holds Send/Steer instead. Showing both
-/// reads as two ways to do the same thing, and invites a click on the one that
-/// does nothing.
+/// The composer's action while idle is Send. During a run it holds Stop until
+/// there is new context, then shows Send beside an explicit Queue/Steer choice.
 function updateSendState() {
   const hasText =
     el("prompt").value.trim().length > 0 || state.attachments.length > 0;
+  const hasBusyMessage = state.busy && hasText;
+  const mode = el("busy-message-mode");
   el("send").classList.toggle("enabled", hasText);
   el("send").disabled = !hasText;
   el("send").hidden = state.busy && !hasText;
   el("stop").hidden = !state.busy || hasText;
-  el("send").title = state.busy ? "Steer (Enter)" : "Send (Enter)";
+  mode.hidden = !hasBusyMessage;
+  mode.textContent = state.busyMessageMode === "steer" ? "Steer" : "Queue";
+  mode.title = state.busyMessageMode === "steer"
+    ? "Steer the active response; click to queue instead"
+    : "Queue for after the current response; click to steer instead";
+  mode.setAttribute("aria-label", mode.title);
+  el("send").title = hasBusyMessage
+    ? state.busyMessageMode === "steer"
+      ? "Steer the active response (Enter)"
+      : "Queue for after the current response (Enter)"
+    : "Send (Enter)";
+}
+
+function toggleBusyMessageMode() {
+  state.busyMessageMode = state.busyMessageMode === "queue" ? "steer" : "queue";
+  updateSendState();
 }
 
 function setBusy() {
   state.busy = true;
+  state.busyMessageMode = "queue";
   updateSendState();
 }
 
@@ -1031,6 +1050,9 @@ async function send(followUp = false) {
 
   if (state.busy) {
     if (state.runId == null) return;
+    // An explicit shortcut can always queue; the ordinary Send action follows
+    // the visible choice beside it.
+    followUp = followUp || state.busyMessageMode === "queue";
     textarea.value = "";
     clearAttachments();
     clearWelcome();
@@ -1044,6 +1066,9 @@ async function send(followUp = false) {
       followUp,
       attachments: attachments.length ? attachments : null,
     });
+    state.busyMessageMode = "queue";
+    updateSendState();
+    setStatus(followUp ? "Queued for the next response." : "Steering the active response…");
     return;
   }
 
@@ -3308,75 +3333,43 @@ function initSidebarResize() {
 // mid-press is held and run once the press is over.
 let pressed = false;
 let heldRepaints = [];
-let editingControlPress = null;
-let justBlurredTextEntry = null;
-
-/// The editable text control at or above `node`. WebKit can spend the first
-/// press outside one of these on ending its editing session; a press into a
-/// second field can be spent without putting the caret in that field either.
-function textEntry(node) {
-  for (; node && node !== document.body; node = node.parentNode) {
-    if (node.isContentEditable || node.tagName === "TEXTAREA") return node;
-    if (node.tagName !== "INPUT") continue;
-    const type = String(node.type || node.getAttribute?.("type") || "text").toLowerCase();
-    if (
-      ![
-        "button",
-        "checkbox",
-        "color",
-        "file",
-        "hidden",
-        "image",
-        "radio",
-        "range",
-        "reset",
-        "submit",
-      ].includes(type)
-    ) {
-      return node;
-    }
-  }
-  return null;
-}
+let controlPress = null;
 
 /// The innermost control a press belongs to. Buttons and links are controls by
-/// their element kind; the page's rows become controls when it gives them an
+/// their element kind; native choices resolve through their label to the input
+/// they operate, and the page's rows become controls when it gives them an
 /// `onclick` handler.
 function pressedControl(target) {
   for (let node = target; node && node !== document.body; node = node.parentNode) {
+    if (node.tagName === "INPUT" && ["checkbox", "radio"].includes(node.type)) {
+      return node;
+    }
+    if (
+      node.tagName === "LABEL" &&
+      node.control?.tagName === "INPUT" &&
+      ["checkbox", "radio"].includes(node.control.type)
+    ) {
+      return node.control;
+    }
     if (node.tagName === "BUTTON" || node.tagName === "A" || node.onclick) return node;
   }
   return null;
 }
 
-function finishEditingControlPress(event) {
-  const press = editingControlPress;
+function finishControlPress(event) {
+  if (event.button !== 0) return;
+  const press = controlPress;
   if (!press) return;
   if (pressedControl(event.target) !== press.control) {
-    editingControlPress = null;
+    controlPress = null;
     return;
   }
-  // A native click follows mouseup before the next task. Give WebKit that
-  // chance first, then supply the click only when ending the textarea's editing
-  // session consumed it. This keeps keyboard and ordinary mouse clicks native,
-  // and does not turn a press dragged off a control into a click.
+  // A native click follows mouseup before the next task. Give the webview that
+  // chance first, then supply the click when the webview omits one. Keyboard
+  // activation remains native, and a press dragged away still cancels.
   setTimeout(() => {
-    if (editingControlPress === press) editingControlPress = null;
-    if (!press.clicked) press.control.click();
-  }, 0);
-}
-
-/// Remember an editor WebKit ended immediately before dispatching the press
-/// that ended it. Some macOS WebKit versions update `activeElement` before the
-/// page sees `mousedown`, so reading `activeElement` alone misses the press and
-/// lets WebKit spend it without producing a click. The memory lasts only for
-/// the current task: a later, unrelated press remains completely native.
-function rememberBlurredTextEntry(event) {
-  const entry = textEntry(event.target);
-  if (!entry) return;
-  justBlurredTextEntry = entry;
-  setTimeout(() => {
-    if (justBlurredTextEntry === entry) justBlurredTextEntry = null;
+    if (controlPress === press) controlPress = null;
+    if (!press.clicked && !press.control.disabled) press.control.click();
   }, 0);
 }
 
@@ -3407,6 +3400,7 @@ function init() {
   el("connect").onclick = openConnect;
 
   el("send").onclick = () => send(false);
+  el("busy-message-mode").onclick = toggleBusyMessageMode;
   el("stop").onclick = stop;
   el("approval-once").onclick = () => answerApproval("once");
   el("approval-always").onclick = () => answerApproval("always");
@@ -3454,45 +3448,31 @@ function init() {
   el("review-prev").onclick = () => walkReview(-1);
   el("review-next").onclick = () => walkReview(1);
 
-  document.addEventListener("focusout", rememberBlurredTextEntry, true);
-
-  // A control pressed while a text field owns the caret can spend that press on
-  // ending the field's editing session. Depending on the WebKit version, the
-  // field is either still `activeElement` here or its `focusout` ran just before
-  // this event. Refuse the focus change, then remember the control until
-  // mouseup: most WebKit versions still deliver the ordinary click, while the
-  // versions that omit it get one on the next task.
+  // Treat a primary press that starts and ends on the same control as exactly
+  // one activation. Native click stays authoritative when the webview emits it;
+  // the next task supplies one only when it did not. This path deliberately
+  // ignores focus and platform: fields keep their normal browser behavior, and
+  // every actionable control follows the same activation contract.
   document.addEventListener(
     "mousedown",
     (event) => {
       if (event.button !== 0) return;
-      const activeEntry = textEntry(document.activeElement) || justBlurredTextEntry;
-      justBlurredTextEntry = null;
-      if (!activeEntry) return;
-      const targetEntry = textEntry(event.target);
-      if (targetEntry) {
-        // End the old editing session before WebKit's default handler has to do
-        // it. Leaving the press native still puts the caret where it landed.
-        if (targetEntry !== activeEntry) targetEntry.focus();
-        return;
-      }
       const control = pressedControl(event.target);
       if (!control) return;
-      event.preventDefault();
-      editingControlPress = { control, clicked: false };
+      controlPress = { control, clicked: false };
     },
     true,
   );
   document.addEventListener(
     "click",
     (event) => {
-      if (editingControlPress && pressedControl(event.target) === editingControlPress.control) {
-        editingControlPress.clicked = true;
+      if (controlPress && pressedControl(event.target) === controlPress.control) {
+        controlPress.clicked = true;
       }
     },
     true,
   );
-  document.addEventListener("mouseup", finishEditingControlPress, true);
+  document.addEventListener("mouseup", finishControlPress, true);
 
   // What the held repaints key on: the press is over once the pointer is
   // released, whether or not it was released inside the window.
@@ -3505,7 +3485,7 @@ function init() {
   );
   document.addEventListener("mouseup", endPress, true);
   window.addEventListener("blur", () => {
-    editingControlPress = null;
+    controlPress = null;
     endPress();
   });
 

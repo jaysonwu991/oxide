@@ -104,6 +104,12 @@
             </div>
             <div class="composer-right">
               <button id="stop" class="icon danger" hidden title="Stop">■</button>
+              <button
+                id="busy-message-mode"
+                class="chip busy-message-mode"
+                hidden
+                title="Queue this message for after the current response"
+              >Queue</button>
               <button id="send" class="send" disabled title="Send (Enter)">↑</button>
             </div>
           </div>
@@ -272,9 +278,9 @@
       <div class="dialog">
         <h2>Keyboard shortcuts</h2>
         <table class="shortcuts">
-          <tr><td>Enter</td><td>Send; while busy, steer the running turn</td></tr>
+          <tr><td>Enter</td><td>Send with the selected Queue or Steer behavior</td></tr>
           <tr><td>Shift+Enter</td><td>Newline</td></tr>
-          <tr><td>Alt+Enter</td><td>Queue a follow-up</td></tr>
+          <tr><td>Alt+Enter</td><td>Queue a follow-up while busy</td></tr>
           <tr><td>⌘V / Ctrl+V</td><td>Attach a clipboard image</td></tr>
           <tr><td>Shift+Tab / Ctrl+R</td><td>Cycle reasoning</td></tr>
           <tr><td>Ctrl+K</td><td>Open the model picker</td></tr>

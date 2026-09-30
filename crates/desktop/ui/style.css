@@ -648,9 +648,13 @@ body.resizing { cursor: col-resize; user-select: none; }
 #image-view-close { color: var(--error); }
 #image-view-close:hover { color: var(--error); }
 .composer-bar { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
-/* Stop and Send/Steer share this corner, so they share its box: the button that
-   is showing does not move as the composer is typed into. */
-.composer-right { display: flex; align-items: center; justify-content: flex-end; }
+/* Stop and the message action share this corner. While work is running, the
+   Queue/Steer choice appears beside Send only when there is context to send. */
+.composer-right { display: flex; align-items: center; justify-content: flex-end; gap: 6px; }
+.busy-message-mode {
+  min-width: 54px;
+  text-align: center;
+}
 #stop {
   width: 30px;
   height: 30px;

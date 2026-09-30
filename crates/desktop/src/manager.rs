@@ -663,10 +663,9 @@ mod tests {
         std::fs::remove_dir_all(&dir).ok();
     }
 
-    /// macOS sends the first click on an unfocused window to the window rather
-    /// than to the control under the pointer, so a button in the app reads as
-    /// one that needs pressing twice; accepting first mouse is what makes that
-    /// click the one the user meant.
+    /// Tauri's supported first-mouse setting asks the platform webview to pass
+    /// an unfocused-window press through to the page. The page's activation
+    /// controller can then guarantee one action without a native event monitor.
     #[test]
     fn the_window_accepts_the_first_click_after_it_loses_focus() {
         let raw = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/tauri.conf.json"))

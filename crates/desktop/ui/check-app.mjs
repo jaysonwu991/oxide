@@ -110,6 +110,12 @@ class StubElement {
   appendChild(node) {
     this.children.push(node);
     node.parentNode = this;
+    // Browsers expose the form control wrapped by a label through `.control`.
+    // Keep that relationship so activation checks can follow the label exactly
+    // as the desktop webview does.
+    if (this.tagName === "LABEL" && ["INPUT", "BUTTON", "SELECT", "TEXTAREA"].includes(node.tagName)) {
+      this.control = node;
+    }
     return node;
   }
 
@@ -577,7 +583,7 @@ vm.runInThisContext(
     " addAttachment, addAttachmentFiles, el, showQuestion, showQuestionStep, questionNext," +
     " answerQuestion, collectAnswers, requestAt, acceptAt, moveAt, closeAt, atKey," +
     " resetTranscript, renderChanges, closeReview, undoChanges," +
-    " loadSessions, renderProjectsTree, renderSessions, renderMcps, openSession, renderProjectMeta, updateSendState, setBusy, setIdle," +
+    " loadSessions, renderProjectsTree, renderSessions, renderMcps, openSession, renderProjectMeta, updateSendState, toggleBusyMessageMode, setBusy, setIdle," +
     " loadMcps, openSessions," +
     " listedSessions, selectSessionFromTree, removeSession," +
     " startTool, finishTool, toggleTool };\n",
@@ -765,77 +771,83 @@ check(
   `${composer.value} @ ${composer.selectionStart}`,
 );
 
-// The same press on any control is swallowed while the caret is in the message
-// box. If WebKit does not follow its mouseup with a click, the page supplies one
-// on the next task; if the native click arrives, it is not answered twice.
+// Every primary press on an actionable control is tracked until mouseup. If the
+// webview does not follow it with a click, the page supplies one on the next
+// task; if the native click arrives, it is not answered twice. The path is the
+// same regardless of which element owns focus.
 const composerButton = new StubElement("button", "composer-button");
 let composerButtonClicks = 0;
 composerButton.onclick = () => composerButtonClicks++;
 const composerRow = new StubElement("div", "composer-row");
-composerRow.onclick = () => {};
+let composerRowClicks = 0;
+composerRow.onclick = () => composerRowClicks++;
 const composerLink = new StubElement("a", "composer-link");
 composerLink.setAttribute("href", "https://example.com/docs");
+let composerLinkClicks = 0;
+composerLink.onclick = () => composerLinkClicks++;
 document.activeElement = elementFor("prompt");
 const buttonPress = press({ target: composerButton });
 document.fire("mousedown", buttonPress);
 check(
-  "swallowed a button press while the message box had the caret",
-  buttonPress.refused === true,
+  "left a control press native while the message box had the caret",
+  buttonPress.refused !== true,
   String(buttonPress.refused),
 );
 document.fire("mouseup", press({ target: composerButton }));
 await nextTick();
 check(
-  "supplied the click WebKit omitted while ending the message box's editing session",
+  "supplied an omitted click while the message box had the caret",
   composerButtonClicks === 1,
   String(composerButtonClicks),
 );
 
-// Older WebKit ends the field's editing session before it dispatches mousedown,
-// so `activeElement` is already empty when the page first sees the press. The
-// preceding focusout keeps that press associated with the editor for one task.
-document.activeElement = elementFor("prompt");
-document.fire("focusout", press({ target: elementFor("prompt") }));
 document.activeElement = null;
-const preBlurredButtonPress = press({ target: composerButton });
-document.fire("mousedown", preBlurredButtonPress);
+const ordinaryButtonPress = press({ target: composerButton });
+document.fire("mousedown", ordinaryButtonPress);
 check(
-  "kept a press WebKit dispatched after it had already blurred the message box",
-  preBlurredButtonPress.refused === true,
-  String(preBlurredButtonPress.refused),
+  "left an ordinary control press native while still tracking its activation",
+  ordinaryButtonPress.refused !== true,
+  String(ordinaryButtonPress.refused),
 );
-document.fire("mouseup", preBlurredButtonPress);
+document.fire("mouseup", ordinaryButtonPress);
+document.fire("click", ordinaryButtonPress);
+composerButton.onclick(ordinaryButtonPress);
 await nextTick();
 check(
-  "supplied the click omitted after WebKit's early editor blur",
+  "kept a native click from being supplied a second time",
   composerButtonClicks === 2,
   String(composerButtonClicks),
 );
 
-document.activeElement = elementFor("prompt");
-document.fire("focusout", press({ target: elementFor("prompt") }));
 document.activeElement = null;
-await nextTick();
-const laterButtonPress = press({ target: composerButton });
-document.fire("mousedown", laterButtonPress);
-check(
-  "forgot an ended editing session before a later unrelated press",
-  laterButtonPress.refused !== true,
-  String(laterButtonPress.refused),
-);
-document.fire("mouseup", laterButtonPress);
-
-document.activeElement = elementFor("prompt");
-const nativeButtonPress = press({ target: composerButton });
-document.fire("mousedown", nativeButtonPress);
-document.fire("mouseup", nativeButtonPress);
-document.fire("click", nativeButtonPress);
-composerButton.onclick(nativeButtonPress);
+const omittedOrdinaryPress = press({ target: composerButton });
+document.fire("mousedown", omittedOrdinaryPress);
+document.fire("mouseup", omittedOrdinaryPress);
 await nextTick();
 check(
-  "kept a native click from being supplied a second time",
+  "supplied an omitted click without relying on an input's focus state",
   composerButtonClicks === 3,
   String(composerButtonClicks),
+);
+
+const chordButton = new StubElement("button", "chord-button");
+let chordButtonClicks = 0;
+chordButton.onclick = () => chordButtonClicks++;
+const chordPress = press({ target: chordButton });
+document.fire("mousedown", chordPress);
+document.fire("mouseup", press({ target: chordButton, button: 2 }));
+await nextTick();
+check(
+  "ignored a non-primary release during a tracked primary press",
+  chordButtonClicks === 0,
+  String(chordButtonClicks),
+);
+document.fire("mouseup", chordPress);
+await nextTick();
+check(
+  "completed that press only when its primary button was released",
+  chordButtonClicks === 1,
+  String(chordButtonClicks),
 );
 
 document.activeElement = elementFor("prompt");
@@ -852,16 +864,31 @@ document.activeElement = elementFor("model-filter");
 const filterButtonPress = press({ target: composerButton });
 document.fire("mousedown", filterButtonPress);
 check(
-  "swallowed a button press while a dialog text field had the caret",
-  filterButtonPress.refused === true,
+  "used the same native press path while a dialog text field had the caret",
+  filterButtonPress.refused !== true,
   String(filterButtonPress.refused),
 );
 document.fire("mouseup", filterButtonPress);
 await nextTick();
 check(
-  "supplied the click WebKit omitted while ending a dialog field's editing session",
+  "supplied an omitted click while a dialog text field had the caret",
   composerButtonClicks === 4,
   String(composerButtonClicks),
+);
+
+const disabledButton = new StubElement("button", "disabled-button");
+disabledButton.disabled = true;
+let disabledButtonClicks = 0;
+disabledButton.onclick = () => disabledButtonClicks++;
+document.activeElement = null;
+const disabledButtonPress = press({ target: disabledButton });
+document.fire("mousedown", disabledButtonPress);
+document.fire("mouseup", disabledButtonPress);
+await nextTick();
+check(
+  "did not synthesize activation for a disabled control",
+  disabledButtonClicks === 0,
+  String(disabledButtonClicks),
 );
 
 const otherField = new StubElement("input", "other-field");
@@ -869,8 +896,8 @@ document.activeElement = elementFor("prompt");
 const fieldPress = press({ target: otherField });
 document.fire("mousedown", fieldPress);
 check(
-  "moved the caret into another text field before WebKit could spend its press",
-  otherField.focused === true && fieldPress.refused !== true,
+  "left text-field focus behavior to the browser",
+  otherField.focused !== true && fieldPress.refused !== true,
   `${otherField.focused} / ${fieldPress.refused}`,
 );
 document.fire("mouseup", fieldPress);
@@ -886,22 +913,32 @@ check(
   String(checkboxButtonPress.refused),
 );
 document.fire("mouseup", checkboxButtonPress);
+document.fire("click", checkboxButtonPress);
+composerButton.onclick(checkboxButtonPress);
 
 document.activeElement = elementFor("prompt");
 const composerRowPress = press({ target: composerRow });
 document.fire("mousedown", composerRowPress);
 check(
-  "swallowed a row press while the message box had the caret",
-  composerRowPress.refused === true,
+  "left a row press native while the message box had the caret",
+  composerRowPress.refused !== true,
   String(composerRowPress.refused),
 );
+document.fire("mouseup", composerRowPress);
+await nextTick();
+check("supplied an omitted row click", composerRowClicks === 1, String(composerRowClicks));
+
 const composerLinkPress = press({ target: composerLink });
 document.fire("mousedown", composerLinkPress);
 check(
-  "swallowed a link press while the message box had the caret",
-  composerLinkPress.refused === true,
+  "left a link press native while the message box had the caret",
+  composerLinkPress.refused !== true,
   String(composerLinkPress.refused),
 );
+document.fire("mouseup", composerLinkPress);
+await nextTick();
+check("supplied an omitted link click", composerLinkClicks === 1, String(composerLinkClicks));
+
 const promptPress = press({ target: elementFor("prompt") });
 document.fire("mousedown", promptPress);
 check(
@@ -909,17 +946,18 @@ check(
   promptPress.refused !== true,
   String(promptPress.refused),
 );
+document.fire("mouseup", promptPress);
 document.activeElement = null;
 const idlePress = press({ target: composerButton });
 document.fire("mousedown", idlePress);
 check(
-  "left a button press alone once the caret left the message box",
+  "kept an idle button press native",
   idlePress.refused !== true,
   String(idlePress.refused),
 );
-// A press the page never sees released would hold the listings' repaints, so
-// every press the checks above made is released here.
 document.fire("mouseup", press({ target: composerButton }));
+document.fire("click", idlePress);
+composerButton.onclick(idlePress);
 await nextTick();
 
 // The other half of the same problem: a repaint that replaces the row under the
@@ -1554,6 +1592,26 @@ check(
     firstBlock.querySelector(".question-free").placeholder === "Type your answer…",
   firstBlock.outline(),
 );
+
+// Native choice controls use the same exact-once activation contract. A press
+// on a label resolves to its radio, so a webview that consumes the label click
+// while ending the free-text edit still gets the intended choice once.
+const secondRadio = optionRows[1].control;
+let radioActivations = 0;
+secondRadio.click = () => {
+  radioActivations++;
+  secondRadio.checked = true;
+};
+document.activeElement = firstBlock.querySelector(".question-free");
+const radioLabelPress = press({ target: optionRows[1] });
+document.fire("mousedown", radioLabelPress);
+document.fire("mouseup", radioLabelPress);
+await nextTick();
+check(
+  "supplied an omitted radio activation through its label",
+  radioActivations === 1 && secondRadio.checked === true,
+  `${radioActivations} / ${secondRadio.checked}`,
+);
 check(
   "left the counter and Back out of the first step",
   elementFor("question-back").hidden === true &&
@@ -1601,6 +1659,23 @@ check(
   secondBlock.querySelectorAll(".question-choice").every((input) => input.type === "checkbox"),
   secondBlock.outline(),
 );
+const firstCheckbox = secondBlock.querySelectorAll(".question-choice")[0];
+let checkboxActivations = 0;
+firstCheckbox.click = () => {
+  checkboxActivations++;
+  firstCheckbox.checked = !firstCheckbox.checked;
+};
+document.activeElement = secondBlock.querySelector(".question-free");
+const checkboxPress = press({ target: firstCheckbox });
+document.fire("mousedown", checkboxPress);
+document.fire("mouseup", checkboxPress);
+await nextTick();
+check(
+  "supplied an omitted checkbox activation from the native input",
+  checkboxActivations === 1 && firstCheckbox.checked === true,
+  `${checkboxActivations} / ${firstCheckbox.checked}`,
+);
+firstCheckbox.checked = false;
 check(
   "named a multi-select question's hint",
   elementFor("question-hint").textContent === "Select all that apply",
@@ -2530,11 +2605,11 @@ check(
   `${elementFor("thread-title").textContent} / ${elementFor("projects-tree").outline()}`,
 );
 
-// ---------- one action in the composer's corner ----------
+// ---------- running-turn context in the composer's corner ----------
 
 console.log("composer action");
-// Stop and Send/Steer are one button that swaps: Stop while a turn runs with
-// nothing to say, Steer the moment there is something to send.
+// Stop and Send swap as the box gains text. New context waits by default; the
+// user can deliberately switch it to steering the active response.
 app.state.attachments = [];
 app.setIdle();
 elementFor("prompt").value = "";
@@ -2547,34 +2622,82 @@ check(
 app.setBusy();
 check(
   "offered Stop alone while a turn runs with an empty box",
-  elementFor("stop").hidden === false && elementFor("send").hidden === true,
-  `send ${elementFor("send").hidden} / stop ${elementFor("stop").hidden}`,
+  elementFor("stop").hidden === false &&
+    elementFor("send").hidden === true &&
+    elementFor("busy-message-mode").hidden === true,
+  `send ${elementFor("send").hidden} / stop ${elementFor("stop").hidden} / mode ${elementFor("busy-message-mode").hidden}`,
 );
 elementFor("prompt").value = "keep going";
 app.updateSendState();
 check(
-  "swapped in Steer once there was something to say",
+  "offered Queue by default once there was new context",
   elementFor("send").hidden === false &&
     elementFor("send").disabled === false &&
     elementFor("stop").hidden === true &&
-    elementFor("send").title === "Steer (Enter)",
-  `${elementFor("send").title} / send ${elementFor("send").hidden} / stop ${elementFor("stop").hidden}`,
+    elementFor("busy-message-mode").hidden === false &&
+    elementFor("busy-message-mode").textContent === "Queue" &&
+    elementFor("send").title === "Queue for after the current response (Enter)",
+  `${elementFor("busy-message-mode").textContent} / ${elementFor("send").title}`,
+);
+elementFor("busy-message-mode").onclick();
+check(
+  "made steering a deliberate visible choice",
+  elementFor("busy-message-mode").textContent === "Steer" &&
+    elementFor("send").title === "Steer the active response (Enter)",
+  `${elementFor("busy-message-mode").textContent} / ${elementFor("send").title}`,
 );
 elementFor("prompt").value = "";
 app.updateSendState();
 check(
   "went back to Stop when the box was emptied again",
-  elementFor("stop").hidden === false && elementFor("send").hidden === true,
-  `send ${elementFor("send").hidden} / stop ${elementFor("stop").hidden}`,
+  elementFor("stop").hidden === false &&
+    elementFor("send").hidden === true &&
+    elementFor("busy-message-mode").hidden === true,
+  `send ${elementFor("send").hidden} / stop ${elementFor("stop").hidden} / mode ${elementFor("busy-message-mode").hidden}`,
 );
 app.setIdle();
 check(
   "gave Send back, alone, when the turn ended",
   elementFor("send").hidden === false &&
     elementFor("stop").hidden === true &&
+    elementFor("busy-message-mode").hidden === true &&
     elementFor("send").title === "Send (Enter)",
   `${elementFor("send").title} / stop ${elementFor("stop").hidden}`,
 );
+
+calls.length = 0;
+app.setBusy();
+app.state.runId = 42;
+elementFor("prompt").value = "run this after your current answer";
+app.updateSendState();
+elementFor("send").onclick({ detail: 1 });
+await nextTick();
+let runningMessage = projectCalls("steer_run").at(-1);
+check(
+  "queued new context for the next response by default",
+  runningMessage?.[1]?.followUp === true,
+  JSON.stringify(runningMessage),
+);
+check(
+  "returned to the safe Queue default after sending",
+  app.state.busyMessageMode === "queue",
+  app.state.busyMessageMode,
+);
+
+calls.length = 0;
+elementFor("prompt").value = "change direction now";
+app.updateSendState();
+elementFor("busy-message-mode").onclick();
+elementFor("send").onclick({ detail: 1 });
+await nextTick();
+runningMessage = projectCalls("steer_run").at(-1);
+check(
+  "steered the active response when that choice was selected",
+  runningMessage?.[1]?.followUp === false,
+  JSON.stringify(runningMessage),
+);
+app.setIdle();
+app.state.runId = null;
 
 // The corner action is an ordinary button: the click it gets, whether the
 // browser calls it a mouse click or a keyboard activation, sends the message.
