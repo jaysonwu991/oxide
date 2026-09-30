@@ -3308,6 +3308,34 @@ function initSidebarResize() {
 // mid-press is held and run once the press is over.
 let pressed = false;
 let heldRepaints = [];
+let focusedControlPress = null;
+
+/// The innermost control a press belongs to. Buttons and links are controls by
+/// their element kind; the page's rows become controls when it gives them an
+/// `onclick` handler.
+function pressedControl(target) {
+  for (let node = target; node && node !== document.body; node = node.parentNode) {
+    if (node.tagName === "BUTTON" || node.tagName === "A" || node.onclick) return node;
+  }
+  return null;
+}
+
+function finishFocusedControlPress(event) {
+  const press = focusedControlPress;
+  if (!press) return;
+  if (pressedControl(event.target) !== press.control) {
+    focusedControlPress = null;
+    return;
+  }
+  // A native click follows mouseup before the next task. Give WebKit that
+  // chance first, then supply the click only when ending the textarea's editing
+  // session consumed it. This keeps keyboard and ordinary mouse clicks native,
+  // and does not turn a press dragged off a control into a click.
+  setTimeout(() => {
+    if (focusedControlPress === press) focusedControlPress = null;
+    if (!press.clicked) press.control.click();
+  }, 0);
+}
 
 function endPress() {
   if (!pressed) return;
@@ -3383,27 +3411,32 @@ function init() {
   el("review-prev").onclick = () => walkReview(-1);
   el("review-next").onclick = () => walkReview(1);
 
-  // A control pressed while the caret is in the message box spends that press on
-  // taking the focus out of the box, and the click the control answers does not
-  // arrive — the same press an `@` row swallows one at a time. Swallow it once
-  // here for every control, so a button, link or row beside the composer answers
-  // the first click while the caret stays put.
+  // A control pressed while the caret is in the message box can spend that
+  // press on ending the box's editing session. Refuse the focus change, then
+  // remember the control until mouseup: most WebKit versions still deliver the
+  // ordinary click, while the versions that omit it get one on the next task.
   document.addEventListener(
     "mousedown",
     (event) => {
       if (event.button !== 0) return;
       if (document.activeElement !== el("prompt")) return;
-      // A button and a link are focusable and always take the press; anything
-      // else is only a control when the page has wired a click handler to it.
-      for (let node = event.target; node && node !== document.body; node = node.parentNode) {
-        if (node.tagName === "BUTTON" || node.tagName === "A" || node.onclick) {
-          event.preventDefault();
-          return;
-        }
+      const control = pressedControl(event.target);
+      if (!control) return;
+      event.preventDefault();
+      focusedControlPress = { control, clicked: false };
+    },
+    true,
+  );
+  document.addEventListener(
+    "click",
+    (event) => {
+      if (focusedControlPress && pressedControl(event.target) === focusedControlPress.control) {
+        focusedControlPress.clicked = true;
       }
     },
     true,
   );
+  document.addEventListener("mouseup", finishFocusedControlPress, true);
 
   // What the held repaints key on: the press is over once the pointer is
   // released, whether or not it was released inside the window.
@@ -3415,7 +3448,10 @@ function init() {
     true,
   );
   document.addEventListener("mouseup", endPress, true);
-  window.addEventListener("blur", endPress);
+  window.addEventListener("blur", () => {
+    focusedControlPress = null;
+    endPress();
+  });
 
   // The webview cannot navigate to a remote page, so a link click opens the
   // platform browser through the host instead of reloading the app window.

@@ -104,7 +104,11 @@ The window follows a Codex-style layout:
   nothing to say, **Send**/**Steer** the moment there is. Every control is wired
   to a plain click — each button the app wires up, each row of a sidebar, list
   or change card, and the thumbnail in the attachment strip — and a control
-  inside another stops its click from reaching the row around it, so a thread's
+  pressed while the composer has the caret keeps its native click; if WebKit
+  consumes that click while ending the textarea's editing session, the page
+  supplies it after mouseup rather than making the control wait for a second
+  press. A control inside another stops its click from reaching the row around
+  it, so a thread's
   ✕ removes the thread rather than selecting the row and a chip's ✕ removes the
   chip rather than opening the picture — and a thumbnail's picture is undraggable
   (`-webkit-user-drag: none` in the stylesheet as well), so the gesture on it
