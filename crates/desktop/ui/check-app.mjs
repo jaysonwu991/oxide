@@ -145,7 +145,9 @@ class StubElement {
   }
   focus() {}
   blur() {}
-  click() {}
+  click() {
+    this.onclick?.(press({ target: this, detail: 0 }));
+  }
   scrollTo() {}
   // The message box is the one element whose caret the app reads and moves, so
   // the stub keeps one the way a text field does.
@@ -762,9 +764,11 @@ check(
 );
 
 // The same press on any control is swallowed while the caret is in the message
-// box, so the control answers the first click instead of the box's focus change
-// eating it; a press elsewhere, or while the box is not focused, is left alone.
+// box. If WebKit does not follow its mouseup with a click, the page supplies one
+// on the next task; if the native click arrives, it is not answered twice.
 const composerButton = new StubElement("button", "composer-button");
+let composerButtonClicks = 0;
+composerButton.onclick = () => composerButtonClicks++;
 const composerRow = new StubElement("div", "composer-row");
 composerRow.onclick = () => {};
 const composerLink = new StubElement("a", "composer-link");
@@ -776,6 +780,36 @@ check(
   "swallowed a button press while the message box had the caret",
   buttonPress.refused === true,
   String(buttonPress.refused),
+);
+document.fire("mouseup", press({ target: composerButton }));
+await nextTick();
+check(
+  "supplied the click WebKit omitted while ending the message box's editing session",
+  composerButtonClicks === 1,
+  String(composerButtonClicks),
+);
+
+document.activeElement = elementFor("prompt");
+const nativeButtonPress = press({ target: composerButton });
+document.fire("mousedown", nativeButtonPress);
+document.fire("mouseup", nativeButtonPress);
+document.fire("click", nativeButtonPress);
+composerButton.onclick(nativeButtonPress);
+await nextTick();
+check(
+  "kept a native click from being supplied a second time",
+  composerButtonClicks === 2,
+  String(composerButtonClicks),
+);
+
+document.activeElement = elementFor("prompt");
+document.fire("mousedown", press({ target: composerButton }));
+document.fire("mouseup", press({ target: new StubElement("div", "away") }));
+await nextTick();
+check(
+  "left a press released away from its control alone",
+  composerButtonClicks === 2,
+  String(composerButtonClicks),
 );
 const composerRowPress = press({ target: composerRow });
 document.fire("mousedown", composerRowPress);
