@@ -1,8 +1,7 @@
-// Oxide desktop front-end. Talks to the Rust core over Tauri commands; the
-// project/session/config data is the same store the CLI uses.
+// Oxide desktop front-end. Electron's isolated preload forwards this narrow
+// bridge to the Rust host; the project/session/config stores are the CLI's.
 
-const { invoke } = window.__TAURI__.core;
-const { listen } = window.__TAURI__.event;
+const { invoke, listen } = window.__OXIDE__;
 
 const el = (id) => document.getElementById(id);
 
@@ -43,8 +42,7 @@ const state = {
   attachments: [],
   mcps: null,
   // Why the last read of the servers or of the threads failed, kept until the
-  // next read answers so the listing's own render paints it — a failure painted
-  // straight from the await lands under a press like any other repaint.
+  // next read answers so the listing's own render paints it.
   mcpError: "",
   sessionsError: "",
   palette: [],
@@ -814,6 +812,19 @@ function setIdle() {
   state.busy = false;
   state.runId = null;
   updateSendState();
+}
+
+/// The host process is gone, so the run it was carrying is over whether or not
+/// it said so: nothing will send `agent-end`, no invoke is left to reject, and a
+/// request it was waiting on can never be answered. The turn state is let go
+/// here — the busy flag and Stop with it, the approval and question dialogs, and
+/// the per-tool timers `resetTurn` clears — so the window reads as idle instead
+/// of offering to act on a process that is not there.
+function hostStopped() {
+  state.pendingApproval = null;
+  el("approval").hidden = true;
+  setIdle();
+  resetTurn();
 }
 
 // ---------- attachments ----------
@@ -2513,10 +2524,6 @@ async function loadMcps() {
 }
 
 function renderMcps() {
-  if (pressed) {
-    heldRepaints.push(renderMcps);
-    return;
-  }
   const box = el("mcp-list");
   box.innerHTML = "";
   if (state.mcpError) {
@@ -2607,10 +2614,6 @@ async function openSessions() {
 }
 
 function renderSessions() {
-  if (pressed) {
-    heldRepaints.push(renderSessions);
-    return;
-  }
   const box = el("sessions-list");
   box.innerHTML = "";
   // The store could not be read, so the empty listing that would be painted
@@ -3117,6 +3120,16 @@ function cycleReasoning() {
 }
 
 async function initEvents() {
+  await listen("host-error", (event) => {
+    const payload = event.payload || {};
+    setStatus(payload.message || "Desktop host stopped");
+    // A fatal error means the host is gone: no `agent-end` can arrive, no
+    // pending invoke is left to reject, and an approval or a question it was
+    // waiting on can no longer be answered. The run state is let go so Stop and
+    // the dialogs do not sit there forever offering to act on a dead process.
+    // A recoverable protocol warning (a frame we could not parse) leaves it be.
+    if (payload.fatal) hostStopped();
+  });
   await listen("agent-start", async (event) => {
     const payload = event.payload || {};
     if (payload.runId != null) state.runId = payload.runId;
@@ -3339,66 +3352,6 @@ function initSidebarResize() {
   });
 }
 
-// A repaint that replaces the row under the pointer before the press is over
-// costs that press its click: the down landed on the row that was there and the
-// up on the row that replaced it, so the webview dispatches no click at all and
-// the control the press landed on never answers — the user clicks a second time.
-// The sidebar is rebuilt from the read a *previous* click started, which lands
-// exactly while the next press is already in flight, so a repaint asked for
-// mid-press is held and run once the press is over.
-let pressed = false;
-let heldRepaints = [];
-let controlPress = null;
-
-/// The innermost control a press belongs to. Buttons and links are controls by
-/// their element kind; native choices resolve through their label to the input
-/// they operate, and the page's rows become controls when it gives them an
-/// `onclick` handler.
-function pressedControl(target) {
-  for (let node = target; node && node !== document.body; node = node.parentNode) {
-    if (node.tagName === "INPUT" && ["checkbox", "radio"].includes(node.type)) {
-      return node;
-    }
-    if (
-      node.tagName === "LABEL" &&
-      node.control?.tagName === "INPUT" &&
-      ["checkbox", "radio"].includes(node.control.type)
-    ) {
-      return node.control;
-    }
-    if (node.tagName === "BUTTON" || node.tagName === "A" || node.onclick) return node;
-  }
-  return null;
-}
-
-function finishControlPress(event) {
-  if (event.button !== 0) return;
-  const press = controlPress;
-  if (!press) return;
-  if (pressedControl(event.target) !== press.control) {
-    controlPress = null;
-    return;
-  }
-  // A native click follows mouseup before the next task. Give the webview that
-  // chance first, then supply the click when the webview omits one. Keyboard
-  // activation remains native, and a press dragged away still cancels.
-  setTimeout(() => {
-    if (controlPress === press) controlPress = null;
-    if (!press.clicked && !press.control.disabled) press.control.click();
-  }, 0);
-}
-
-function endPress() {
-  if (!pressed) return;
-  pressed = false;
-  const held = heldRepaints;
-  heldRepaints = [];
-  // A press dispatches its click after this handler returns, so the held repaint
-  // waits for the next task: running it here would replace the row the click is
-  // about to be delivered to.
-  if (held.length) setTimeout(() => held.forEach((paint) => paint()), 0);
-}
-
 function init() {
   initSidebarResize();
   const createBtnTree = el("create-project-btn-tree");
@@ -3463,48 +3416,7 @@ function init() {
   el("review-prev").onclick = () => walkReview(-1);
   el("review-next").onclick = () => walkReview(1);
 
-  // Treat a primary press that starts and ends on the same control as exactly
-  // one activation. Native click stays authoritative when the webview emits it;
-  // the next task supplies one only when it did not. This path deliberately
-  // ignores focus and platform: fields keep their normal browser behavior, and
-  // every actionable control follows the same activation contract.
-  document.addEventListener(
-    "mousedown",
-    (event) => {
-      if (event.button !== 0) return;
-      const control = pressedControl(event.target);
-      if (!control) return;
-      controlPress = { control, clicked: false };
-    },
-    true,
-  );
-  document.addEventListener(
-    "click",
-    (event) => {
-      if (controlPress && pressedControl(event.target) === controlPress.control) {
-        controlPress.clicked = true;
-      }
-    },
-    true,
-  );
-  document.addEventListener("mouseup", finishControlPress, true);
-
-  // What the held repaints key on: the press is over once the pointer is
-  // released, whether or not it was released inside the window.
-  document.addEventListener(
-    "mousedown",
-    () => {
-      pressed = true;
-    },
-    true,
-  );
-  document.addEventListener("mouseup", endPress, true);
-  window.addEventListener("blur", () => {
-    controlPress = null;
-    endPress();
-  });
-
-  // The webview cannot navigate to a remote page, so a link click opens the
+  // The renderer cannot navigate to a remote page, so a link click opens the
   // platform browser through the host instead of reloading the app window.
   document.addEventListener("click", (event) => {
     const link = event.target?.closest?.("a[href]") || null;
@@ -3654,10 +3566,6 @@ function orderedSessions() {
 }
 
 async function renderProjectsTree() {
-  if (pressed) {
-    heldRepaints.push(renderProjectsTree);
-    return;
-  }
   const container = el("projects-tree");
   if (!container) return;
   

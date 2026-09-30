@@ -1,6 +1,6 @@
 # Desktop app
 
-The `oxide-desktop` package (`crates/desktop`) is a Tauri v2 front-end for the
+The `oxide-desktop` package (`crates/desktop`) is an Electron front-end for the
 same agent the terminal CLI runs. The goal is one configuration and one session
 store shared by every front-end (the CLI, the desktop app, and the VS Code
 extension), with a GUI that can manage **multiple projects** (cross-repo) and
@@ -31,23 +31,56 @@ see [docs/vscode.md](vscode.md)) is a separate pnpm package that drives the
 ```
 crates/desktop/
   src/
-    lib.rs          re-exports the GUI-free library
+    lib.rs          re-exports the Rust host library
     manager.rs      project registry + session aggregation (shared, tested)
     turn.rs         starts an agent turn against a project (shared, tested)
     approval.rs     interactive approve/deny broker (uses `oxide_core::approvals`)
     ask.rs          a skill's question broker (uses `oxide_core::ask`)
-    commands.rs     Tauri commands (gui feature)
-    main.rs         Tauri entry point (gui feature)
+    bridge.rs       JSON-lines events and responses
+    commands.rs     stable renderer command dispatcher
+    main.rs         Rust sidecar entry point
+  electron/
+    main.cjs        secure BrowserWindow, native dialogs, host lifecycle
+    preload.cjs     allowlisted command/event bridge
+    host-client.cjs JSON-lines sidecar client
   ui/               front-end: index.html, app.js, style.css
-  capabilities/     Tauri capability (core:default, for events; dialog:default, for the folder picker)
-  tauri.conf.json   window + bundle config
-  entitlements.plist  macOS signing entitlements
+  forge.config.cjs  cross-platform packaging configuration
+  package.json      Electron/Forge scripts and pinned dependencies
   icons/            app icons (PNG, .icns, .ico)
 ```
 
-The `gui` feature is **off by default** so `cargo build` / `cargo test` /
-`cargo clippy` stay free of the Tauri dependency tree. The manager and turn
-logic build and test without it.
+pnpm is the desktop's package manager: it is a package of its own, so neither the
+Rust workspace nor the VS Code extension shares its dependencies. CI installs it
+with `pnpm install --frozen-lockfile` from `pnpm-lock.yaml`, and
+`pnpm-workspace.yaml` records which dependencies pnpm may run build scripts for —
+the Windows installer maker, and the two native modules the macOS DMG maker loads,
+which pnpm skips by default and the maker would then find missing. It also
+carries pnpm's own settings: the hoisted `node_modules` layout Electron Forge
+expects (it loads its makers and the Electron binary from a flat tree, and refuses
+to start on pnpm's isolated one), and the exemptions from pnpm's minimum release
+age that let CI install this lockfile at all. `.npmrc` pins the public registry so
+the lockfile never resolves against a mirror only its author can reach.
+
+The Rust package builds `oxide-desktop-host`; it has no GUI framework dependency.
+Electron starts that host and exchanges newline-delimited JSON over private
+stdin/stdout pipes. The renderer receives only an allowlisted API from the
+sandboxed preload.
+
+The window and the host share one lifetime. A run can only be watched, answered
+or stopped from the window that started it — the host's events carry no state a
+fresh renderer could be rebuilt from — so closing the last window quits the app
+on every platform, including macOS, and `before-quit` stops the host, which ends
+the run with it. That is deliberately not the usual macOS "stay resident"
+behavior: leaving the app running with no window would leave a turn streaming
+into nothing, with its approval and question requests unanswerable.
+
+The other direction is the `host-error` event, which says whether it is fatal.
+The host exiting or failing to spawn is (`fatal: true`): every pending call is
+rejected, and the renderer lets go of the run — the busy state and **Stop**, the
+approval dialog and the question dialog — because no `agent-end` can arrive from
+a process that is gone. A frame the bridge could not parse is not (`fatal:
+false`): it is one lost line, the host is still running, and the run on screen
+keeps going with the reason shown in the status line.
 
 ## Interface
 
@@ -79,11 +112,8 @@ The window follows a Codex-style layout:
   the listing has it. A new task carries no placeholder, and the provider is
   not repeated here because the composer's model chip already names it; the
   right side says only what has to be acted on (`no API key`, `project
-  resources off`). The window is created with `acceptFirstMouse`, which reaches
-  the webview through Tauri's supported window configuration. The app installs
-  no AppKit event monitor and links no Objective-C runtime directly; window
-  activation belongs to Tauri/wry, while page-control activation is handled by
-  the cross-platform exact-once controller described below.
+  resources off`). The Electron window uses `acceptFirstMouse`; no AppKit event
+  monitor, Objective-C hook, or platform-specific input path is installed.
 - **Conversation** — a centered 760px column. User messages are right-aligned
   bubbles; assistant replies render Markdown and links open in the system
   browser (see [Rendering](#rendering)). Tool calls are compact cards
@@ -94,17 +124,10 @@ The window follows a Codex-style layout:
   chips on the left and one action on the right, which swaps rather than
   sitting beside a second button: **Stop** while a turn runs and there is
   nothing to say, **Send** beside **Queue**/**Steer** the moment there is. Every
-  control is wired to a plain click — each button the app wires up, each native
-  radio/checkbox (including its label), each row of a sidebar, list or change
-  card, and the thumbnail in the attachment strip — behind one exact-once
-  activation controller. Every primary press that begins and ends on the same
-  actionable control is tracked without inspecting focus or the host platform;
-  another mouse button cannot finish it. The webview's native click remains
-  authoritative when it arrives,
-  and the page supplies it on the next task when the webview omits it. Text
-  fields keep their normal browser focus behavior, keyboard activation stays
-  native, a disabled control is never synthesized, and a press released away
-  from its starting control is cancelled. A
+  control is wired to a plain `click` — each button, native radio/checkbox,
+  sidebar/list row, change card, and attachment thumbnail. Chromium owns focus,
+  pointer, keyboard, and activation semantics; the page neither synthesizes nor
+  suppresses control clicks. A
   control inside another stops its click from reaching the row around it, so a
   thread's ✕ removes the thread rather than selecting the row and a chip's ✕
   removes the chip rather than opening the picture — and a thumbnail's picture
@@ -120,11 +143,11 @@ The window follows a Codex-style layout:
   never painted over the image it shows, and carries the error color — and can be
   removed before sending; a message queued while busy carries the same
   attachments, and reopening a stored thread restores their thumbnails. Pasted and picked images are
-  downscaled to a 1568px long edge in the webview before they are sent, and an
+  downscaled to a 1568px long edge in the renderer before they are sent, and an
   image a paste handed over at full resolution is downscaled again by
   `oxide_core::media::optimize_image` when the turn is built — the one place a
   data URL can be — so it is not embedded at full size in the request, the
-  session and the webview's own message at once. A file past the core's 20 MB
+  session and the renderer's own message at once. A file past the core's 20 MB
   attachment limit, or of a type no provider takes and no browser can paint, is
   refused with a status line instead of being read. A message can also name a
   file or folder with `@path`, which the composer completes: typing `@` offers
@@ -140,50 +163,56 @@ The window follows a Codex-style layout:
 
 ## Running
 
+The desktop package is a pnpm project of its own, so install it with `pnpm`:
+
 ```sh
-cargo run -p oxide-desktop --features gui
-# or run the binary directly
-./target/debug/oxide-desktop
+cd crates/desktop
+pnpm install
+pnpm start
 ```
 
-The front-end (`ui/`) is embedded into the binary at compile time, so editing
-`crates/desktop/ui/app.js`, `style.css`, or `index.html` requires a **rebuild**
-before the change appears — a running app is never hot-reloaded. `tauri-build`
-emits `rerun-if-changed` for the `ui/` directory, so a UI edit marks
-`oxide-desktop` dirty and the next `cargo build` re-embeds the assets.
+`pnpm start` builds `oxide-desktop-host` and launches Electron Forge in development
+mode. Renderer files are loaded from `ui/`; restart Electron after changing the
+main process or preload.
 
 To refresh the app you launch from `/Applications` (or any installed bundle),
 build a bundle, replace it, and ad-hoc sign it if macOS complains:
 
 ```sh
-# quickest test — rebuilds and runs the dev binary
-cargo run -p oxide-desktop --features gui
+# quickest test
+pnpm start
 
 # to refresh the installed .app
-npx @tauri-apps/cli@^2 build --features gui --debug   # faster, unsigned dev bundle
+pnpm run package
 # quit Oxide, then:
-cp -R target/debug/bundle/macos/oxide.app /Applications/Oxide.app
+cp -R out/Oxide-darwin-*/Oxide.app /Applications/Oxide.app
 codesign --force --deep --sign - /Applications/Oxide.app   # only if macOS complains
 ```
 
-The front-end has a headless check of its own, which loads `ui/app.js` against a
-stubbed DOM and Tauri bridge and drives the dialogs no Rust test can reach:
+The desktop check validates the secure Electron shell, talks to the real Rust
+host, and loads `ui/app.js` against a stubbed DOM to drive the dialogs no Rust
+test can reach:
 
 ```sh
-cargo build -p oxide              # the catalog and MCP state are read from the CLI
-node crates/desktop/ui/check-app.mjs
+cd crates/desktop
+pnpm run check
 ```
 
 It covers the `/mcps` listing (including the state colors, a failed probe and a
 toggle), the `/sessions` dialog (this project's threads only, the row that
 resumes one, the empty case, and a store that could not be read), the project it
 opens on (the sidebar's first row, an existing selection, and no project at
-all), the **Create project** dialog, and every client command in the catalog —
+all), the **Create project** dialog, a host that stopped under a run (the turn
+and its dialogs let go for a fatal error, and kept for a recoverable protocol
+warning), and every client command in the catalog —
 a command the app does not perform has to be answered here rather than sent to
 the model as a prompt. It also reads `ui/index.html` to check what no stub can:
 that both listings are attached to the composer (inside `.composer-wrap`, above
 `.composer`) instead of floating over the window, and that each header button is
-an icon with a title.
+an icon with a title. The shell check additionally pins the window/host lifetime
+above, reads `pnpm-lock.yaml` to confirm every tarball resolves to the public npm
+registry — since CI and every clean contributor install from it — and holds
+`pnpm-workspace.yaml` to the dependency build scripts the Forge makers need.
 
 ## Sharing configuration with the CLI
 
@@ -261,7 +290,7 @@ from the terminal is told the same thing.
 project's config, resolves the session (`new` / `latest` / an id), appends the
 user message through `oxide_core::runner::begin_session`, and spawns the shared
 agent loop with `runner::spawn_agent`, returning a stream of `AgentEvent`s plus
-the run's `Steering` handles and its cooperative `Cancel` flag. The Tauri command serializes events with
+the run's `Steering` handles and its cooperative `Cancel` flag. The Rust host serializes events with
 `oxide_core::cli::event_json` (the same Pi-shaped JSON the CLI emits in
 `--mode json`), attaches any `DiffPreview`, and forwards them over
 `agent-event` tagged with a run id.
@@ -476,32 +505,33 @@ Assistant replies render as Markdown: headings, ordered/unordered lists
 (including `- [ ]` tasks), blockquotes, rules, pipe tables, fenced code with
 lightweight syntax highlighting (Rust, JS/TS, Python, Go, Bash, JSON), and
 inline emphasis/code/links. Bare `http(s)://` URLs are auto-linked too, and
-clicking any link opens it in the system browser — the Tauri webview cannot
-navigate to a remote page itself. Tool results render as panels; `write`/`edit`
+clicking any link opens it in the system browser — navigation is denied inside
+the application window. Tool results render as panels; `write`/`edit`
 results include a colored diff.
 
 ## Packaging
 
-Icons are checked in (`icons/`). Build a bundle with the Tauri CLI:
+Icons are checked in (`icons/`). Build a bundle or native installer with
+Electron Forge:
 
 ```sh
-npx @tauri-apps/cli@^2 build --features gui          # release
-npx @tauri-apps/cli@^2 build --features gui --debug  # faster, unsigned dev bundle
+pnpm run package   # unpacked app for the current platform
+pnpm run make      # native installers for the current platform
 ```
 
-`bundle.targets` is `all`, so each platform gets its native formats (`.app` /
-`.dmg`, `.msi` / NSIS `.exe`, `.deb` / `.rpm` / AppImage). The macOS build uses
-`entitlements.plist` (JIT for the WebView, outbound network). Signing and
-notarization are automatic when the usual Developer ID variables are set:
+Forge produces `.app`/`.dmg`/`.zip` on macOS, Squirrel `.exe`/`.zip` on
+Windows, and `.deb`/`.rpm` on Linux. Signing and notarization are automatic when
+the Developer ID variables are set:
 
 - **macOS**: `APPLE_CERTIFICATE`, `APPLE_CERTIFICATE_PASSWORD`,
   `APPLE_SIGNING_IDENTITY`, `APPLE_ID`, `APPLE_PASSWORD`, `APPLE_TEAM_ID`.
-- **Windows**: the Authenticode certificate variables for `tauri-action`.
-- **Linux**: no signing; `.deb`/`.rpm`/AppImage as-is.
+- **Windows**: unsigned by default; Squirrel accepts signing options in
+  `forge.config.cjs` when a certificate is configured.
+- **Linux**: no signing; `.deb`/`.rpm` as-is.
 
 Without a Developer ID, `.github/workflows/desktop.yml` — which builds macOS
 (arm64 + x64), Linux, and Windows on a `desktop-v*` tag push and drafts a
-release — sets `APPLE_SIGNING_IDENTITY=-`, so Tauri **ad-hoc signs** the macOS
+release — sets `APPLE_SIGNING_IDENTITY=-`, so Electron Forge **ad-hoc signs** the macOS
 bundle. The signature is valid, but the app is not notarized and macOS
 quarantines the download, so the first launch must be approved in **System
 Settings → Privacy & Security → Open Anyway**, or the app moved to
@@ -545,7 +575,7 @@ there is nothing to sign with and the ad-hoc fallback is the only option.
 Then either use your **Apple ID**, or an **App Store Connect API key**, for
 notarization — not both.
 
-**Apple ID** (`tauri-action` notarizes and staples automatically):
+**Apple ID** (Electron Forge notarizes and staples automatically):
 
 | Secret | Value |
 | --- | --- |
@@ -568,20 +598,6 @@ App Store Connect API*, role *Admin* or *App Manager*):
 The workflow decodes `APPLE_API_KEY_P8` to `$RUNNER_TEMP/AuthKey.p8` and sets
 `APPLE_API_KEY_PATH`; the `.p8` can only be downloaded once, so store it
 somewhere safe.
-
-### Tauri updater keys
-
-Only needed if Tauri's updater is enabled — the app does not ship update
-artifacts yet. Generate a key pair and keep the private half backed up (losing
-it means existing installs can never accept an update):
-
-```sh
-npx @tauri-apps/cli@^2 signer generate -w ~/.tauri/oxide.key
-```
-
-Put the key text in `TAURI_SIGNING_PRIVATE_KEY`, its password in
-`TAURI_SIGNING_PRIVATE_KEY_PASSWORD`, and the printed public key in
-`tauri.conf.json` as `plugins.updater.pubkey`.
 
 ### From the CLI
 

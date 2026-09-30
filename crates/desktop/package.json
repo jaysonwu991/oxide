@@ -1,0 +1,32 @@
+{
+  "name": "oxide-desktop",
+  "productName": "Oxide",
+  "version": "0.0.0",
+  "description": "Cross-platform desktop client for the Oxide coding agent",
+  "author": "Oxide contributors",
+  "repository": "https://github.com/jaysonwu991/oxide",
+  "license": "MIT",
+  "private": true,
+  "engines": {
+    "node": ">=22.13.0"
+  },
+  "packageManager": "pnpm@12.8.1",
+  "main": "electron/main.cjs",
+  "scripts": {
+    "host:debug": "cargo build --package oxide-desktop --bin oxide-desktop-host",
+    "host:release": "cargo build --release --package oxide-desktop --bin oxide-desktop-host",
+    "start": "pnpm run host:debug && electron-forge start",
+    "package": "pnpm run host:release && electron-forge package",
+    "make": "pnpm run host:release && electron-forge make",
+    "check": "pnpm run host:debug && node electron/check-shell.mjs && node electron/check-host.mjs && node ui/check-app.mjs"
+  },
+  "devDependencies": {
+    "@electron-forge/cli": "8.0.1",
+    "@electron-forge/maker-deb": "8.0.1",
+    "@electron-forge/maker-dmg": "8.0.1",
+    "@electron-forge/maker-rpm": "8.0.1",
+    "@electron-forge/maker-squirrel": "8.0.1",
+    "@electron-forge/maker-zip": "8.0.1",
+    "electron": "44.5.1"
+  }
+}

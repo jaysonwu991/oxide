@@ -15,12 +15,12 @@
 //! to age out against the cap.
 
 use oxide_core::ask::{Answer, Asker, Question, Reply};
+use oxide_desktop::bridge::EventSink;
 use serde_json::json;
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
-use tauri::{AppHandle, Emitter};
 use tokio::sync::{oneshot, Mutex};
 
 const ASK_TIMEOUT: Duration = Duration::from_secs(300);
@@ -38,15 +38,15 @@ struct Pending {
 }
 
 pub struct AskBroker {
-    app: AppHandle,
+    events: EventSink,
     pending: Mutex<HashMap<u64, Pending>>,
     next: AtomicU64,
 }
 
 impl AskBroker {
-    pub fn new(app: AppHandle) -> Self {
+    pub fn new(events: EventSink) -> Self {
         Self {
-            app,
+            events,
             pending: Mutex::new(HashMap::new()),
             next: AtomicU64::new(1),
         }
@@ -76,7 +76,7 @@ impl AskBroker {
             pending.insert(id, Pending { run, sender: tx });
         }
         if self
-            .app
+            .events
             .emit(
                 "question-request",
                 json!({ "id": id, "questions": questions }),
@@ -94,7 +94,7 @@ impl AskBroker {
             // request is gone either way.
             Err(_) => {
                 self.pending.lock().await.remove(&id);
-                let _ = self.app.emit("question-closed", json!({ "id": id }));
+                let _ = self.events.emit("question-closed", json!({ "id": id }));
                 None
             }
             // The sender was dropped by a turn that ended, which already told

@@ -10,13 +10,13 @@
 
 use oxide_core::agent::Approver;
 use oxide_core::approvals::ApprovalStore;
+use oxide_desktop::bridge::EventSink;
 use serde_json::json;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
-use tauri::{AppHandle, Emitter};
 use tokio::sync::{oneshot, Mutex};
 
 const APPROVAL_TIMEOUT: Duration = Duration::from_secs(300);
@@ -28,16 +28,16 @@ struct Pending {
 }
 
 pub struct ApprovalBroker {
-    app: AppHandle,
+    events: EventSink,
     pending: Mutex<HashMap<u64, Pending>>,
     store: Mutex<ApprovalStore>,
     next: AtomicU64,
 }
 
 impl ApprovalBroker {
-    pub fn new(app: AppHandle) -> Self {
+    pub fn new(events: EventSink) -> Self {
         Self {
-            app,
+            events,
             pending: Mutex::new(HashMap::new()),
             store: Mutex::new(ApprovalStore::load()),
             next: AtomicU64::new(1),
@@ -69,7 +69,7 @@ impl ApprovalBroker {
                 tool: tool.clone(),
             },
         );
-        let _ = self.app.emit(
+        let _ = self.events.emit(
             "approval-request",
             json!({ "id": id, "tool": tool, "detail": detail }),
         );
@@ -97,7 +97,7 @@ impl ApprovalBroker {
                 .await
                 .allow(&pending.project, &pending.tool)
             {
-                let _ = self.app.emit(
+                let _ = self.events.emit(
                     "agent-event",
                     json!({ "type": "error", "message": format!("could not save approval rule: {err}") }),
                 );

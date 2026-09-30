@@ -1,4 +1,4 @@
-//! Tauri commands backing the desktop UI.
+//! Commands backing the Electron desktop UI.
 
 use crate::approval::ApprovalBroker;
 use crate::ask::AskBroker;
@@ -15,15 +15,15 @@ use oxide_core::session::{SessionLog, SessionSummary};
 use oxide_core::snapshots::Snapshots;
 use oxide_core::theme_view;
 use oxide_desktop::at::{AtAnswer, PathCache};
+use oxide_desktop::bridge::EventSink;
 use oxide_desktop::manager::{expand_project_path, DesktopManager, ProjectView};
 use oxide_desktop::turn::{notify_finished, open_session, start_turn, Turn};
+use serde::{de::DeserializeOwned, Serialize};
 use serde_json::{json, Value};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
-use tauri::{AppHandle, Emitter, Manager, State};
-use tauri_plugin_dialog::DialogExt;
 use tokio::sync::Mutex;
 use tokio::task::AbortHandle;
 
@@ -53,17 +53,19 @@ pub struct DesktopState {
     pub at: PathCache,
     runs: Arc<Mutex<HashMap<u64, RunHandle>>>,
     next_run: AtomicU64,
+    events: EventSink,
 }
 
 impl DesktopState {
-    pub fn new(manager: DesktopManager, app: AppHandle) -> Self {
+    pub fn new(manager: DesktopManager, events: EventSink) -> Self {
         Self {
             manager: Mutex::new(manager),
-            approvals: Arc::new(ApprovalBroker::new(app.clone())),
-            questions: Arc::new(AskBroker::new(app)),
+            approvals: Arc::new(ApprovalBroker::new(events.clone())),
+            questions: Arc::new(AskBroker::new(events.clone())),
             at: PathCache::default(),
             runs: Arc::new(Mutex::new(HashMap::new())),
             next_run: AtomicU64::new(1),
+            events,
         }
     }
 }
@@ -166,16 +168,11 @@ fn attachment_parts(
 }
 
 /// Every project: folders added here plus ones discovered from sessions.
-#[tauri::command]
-pub async fn list_projects(state: State<'_, DesktopState>) -> CmdResult<Vec<ProjectView>> {
+pub async fn list_projects(state: &DesktopState) -> CmdResult<Vec<ProjectView>> {
     state.manager.lock().await.overview().map_err(err)
 }
 
-#[tauri::command]
-pub async fn add_project(
-    path: String,
-    state: State<'_, DesktopState>,
-) -> CmdResult<AddProjectResult> {
+pub async fn add_project(path: String, state: &DesktopState) -> CmdResult<AddProjectResult> {
     let mut manager = state.manager.lock().await;
     let project = manager
         .add_project(&expand_project_path(&path))
@@ -195,69 +192,7 @@ pub struct AddProjectResult {
     pub added: String,
 }
 
-/// Opens the platform folder chooser. Used by the desktop's **Add** button when
-/// the path field is empty, so adding a project does not require typing an
-/// absolute path from memory.
-///
-/// The panel is the app's own (the dialog plugin's `NSOpenPanel`/GTK/Windows
-/// equivalent), not a chooser shelled out to `osascript`/`zenity`: a child
-/// process's panel opens as a background app, which can put it behind the
-/// window — or never show it at all where the platform refuses the request —
-/// and the user is left with a button that appears to do nothing.
-#[tauri::command]
-pub async fn pick_folder(app: AppHandle) -> CmdResult<Option<String>> {
-    let (tx, rx) = tokio::sync::oneshot::channel();
-    app.dialog()
-        .file()
-        .set_title("Add a project to Oxide")
-        .pick_folder(move |path| {
-            let _ = tx.send(path.map(|path| path.to_string()));
-        });
-    rx.await.map_err(err)
-}
-
-/// Opens an external link in the platform browser. The transcript renders
-/// URLs as anchors, but the webview cannot navigate to a remote page, so a
-/// click is routed here instead of relying on `target="_blank"`.
-#[tauri::command]
-pub fn open_url(url: String) -> CmdResult<()> {
-    let url = url.trim();
-    if !is_openable_url(url) {
-        return Err("Only http(s) links can be opened".to_string());
-    }
-    open_in_browser(url).map_err(err)
-}
-
-fn is_openable_url(url: &str) -> bool {
-    let scheme = url.to_ascii_lowercase();
-    scheme.starts_with("https://") || scheme.starts_with("http://")
-}
-
-fn open_in_browser(url: &str) -> std::io::Result<()> {
-    #[cfg(target_os = "macos")]
-    let spawned = std::process::Command::new("open").arg(url).spawn();
-    // `cmd /C start` would let a URL with quotes or shell metacharacters be
-    // read as command text, so hand the URL to a handler that takes it as a
-    // plain argument instead.
-    #[cfg(target_os = "windows")]
-    let spawned = std::process::Command::new("rundll32")
-        .args(["url.dll,FileProtocolHandler", url])
-        .spawn();
-    #[cfg(all(unix, not(target_os = "macos")))]
-    let spawned = std::process::Command::new("xdg-open").arg(url).spawn();
-    #[cfg(not(any(unix, target_os = "windows")))]
-    let spawned: std::io::Result<std::process::Child> = Err(std::io::Error::new(
-        std::io::ErrorKind::Unsupported,
-        "opening links is not supported on this platform",
-    ));
-    spawned.map(|_| ())
-}
-
-#[tauri::command]
-pub async fn remove_project(
-    id: String,
-    state: State<'_, DesktopState>,
-) -> CmdResult<Vec<ProjectView>> {
+pub async fn remove_project(id: String, state: &DesktopState) -> CmdResult<Vec<ProjectView>> {
     let mut manager = state.manager.lock().await;
     manager.remove_project(&id).map_err(err)?;
     manager.overview().map_err(err)
@@ -265,8 +200,7 @@ pub async fn remove_project(
 
 /// Provider/model resolved from the same `config.json` the CLI uses, plus the
 /// project's trust state so the UI can prompt before loading project resources.
-#[tauri::command]
-pub async fn project_info(project: String, state: State<'_, DesktopState>) -> CmdResult<Value> {
+pub async fn project_info(project: String, state: &DesktopState) -> CmdResult<Value> {
     let manager = state.manager.lock().await;
     let path = PathBuf::from(&project);
     let config = manager.config_for(&path).map_err(err)?;
@@ -275,11 +209,10 @@ pub async fn project_info(project: String, state: State<'_, DesktopState>) -> Cm
 
 /// Saves a trust decision for a project (the desktop equivalent of the CLI's
 /// `/trust`) and returns the refreshed project info.
-#[tauri::command]
 pub async fn set_project_trust(
     project: String,
     trusted: bool,
-    state: State<'_, DesktopState>,
+    state: &DesktopState,
 ) -> CmdResult<Value> {
     let path = PathBuf::from(&project);
     oxide_desktop::manager::set_project_trust(&path, trusted).map_err(err)?;
@@ -306,7 +239,6 @@ fn project_info_value(config: &Config, project: &Path) -> Value {
 /// The MCP servers visible from `project` with their connection state: what
 /// `/mcps` lists. The view is the same one the CLI prints and the VS Code
 /// extension draws, so all three agree on names, transports and statuses.
-#[tauri::command]
 pub async fn mcp_servers(project: String) -> CmdResult<Vec<oxide_core::mcp_config::ServerView>> {
     let cwd = project_dir(&project)?;
     Ok(oxide_core::mcp_config::server_views(&cwd).await)
@@ -314,7 +246,6 @@ pub async fn mcp_servers(project: String) -> CmdResult<Vec<oxide_core::mcp_confi
 
 /// Turns an MCP server off (or back on) in the file that defines it, then
 /// returns the re-probed list so the modal can redraw from one round trip.
-#[tauri::command]
 pub async fn set_mcp_server(
     project: String,
     name: String,
@@ -330,7 +261,6 @@ pub async fn set_mcp_server(
 /// The `/` palette: the built-in client commands plus the agents, commands and
 /// skills this project loads. Draws the same catalog the CLI's autocomplete and
 /// the extension's menu do, from the shared `oxide_core::commands`.
-#[tauri::command]
 pub async fn list_commands(project: String) -> CmdResult<Vec<oxide_core::commands::CommandEntry>> {
     Ok(oxide_core::commands::palette(&project_dir(&project)?))
 }
@@ -348,10 +278,9 @@ fn project_dir(project: &str) -> Result<PathBuf, String> {
 
 // ---------- sessions ----------
 
-#[tauri::command]
 pub async fn list_sessions(
     project: String,
-    state: State<'_, DesktopState>,
+    state: &DesktopState,
 ) -> CmdResult<Vec<SessionSummary>> {
     state
         .manager
@@ -362,13 +291,11 @@ pub async fn list_sessions(
 }
 
 /// Sessions across every project, newest first (the cross-repo view).
-#[tauri::command]
-pub async fn all_sessions(state: State<'_, DesktopState>) -> CmdResult<Vec<SessionSummary>> {
+pub async fn all_sessions(state: &DesktopState) -> CmdResult<Vec<SessionSummary>> {
     state.manager.lock().await.all_sessions().map_err(err)
 }
 
 /// The stored transcript for one session.
-#[tauri::command]
 pub async fn session_messages(project: String, id: String) -> CmdResult<Value> {
     let cwd = PathBuf::from(project);
     let log = SessionLog::open_ref(&cwd, &id).map_err(err)?;
@@ -389,12 +316,10 @@ pub async fn session_messages(project: String, id: String) -> CmdResult<Value> {
     }))
 }
 
-#[tauri::command]
 pub async fn rename_session(project: String, id: String, name: String) -> CmdResult<()> {
     SessionLog::rename(&PathBuf::from(project), &id, &name).map_err(err)
 }
 
-#[tauri::command]
 pub async fn delete_session(project: String, id: String) -> CmdResult<()> {
     SessionLog::delete(&PathBuf::from(project), &id).map_err(err)
 }
@@ -402,7 +327,6 @@ pub async fn delete_session(project: String, id: String) -> CmdResult<()> {
 // ---------- providers ----------
 
 /// Known providers with their stored-credential state.
-#[tauri::command]
 pub async fn list_providers() -> CmdResult<Vec<Value>> {
     let stored = auth::stored_providers();
     Ok(auth::KNOWN_PROVIDERS
@@ -421,7 +345,6 @@ pub async fn list_providers() -> CmdResult<Vec<Value>> {
 
 /// Stores (or reuses) a provider credential and persists the selection in the
 /// same `auth.json` / `config.json` the CLI uses.
-#[tauri::command]
 pub async fn login(
     provider: String,
     key: Option<String>,
@@ -445,7 +368,6 @@ pub async fn login(
     Ok(json!({ "provider": name, "model": config.model }))
 }
 
-#[tauri::command]
 pub async fn logout(provider: String) -> CmdResult<bool> {
     let mut store = AuthStore::load().map_err(err)?;
     let removed = store.remove(&provider);
@@ -457,38 +379,25 @@ pub async fn logout(provider: String) -> CmdResult<bool> {
 
 /// Starts a turn in the background and returns its run id immediately, so the
 /// UI can cancel or steer it while it streams.
-#[tauri::command]
 pub async fn send_prompt(
-    app: AppHandle,
+    state: Arc<DesktopState>,
     project: String,
     prompt: String,
     session: Option<String>,
     reasoning: Option<String>,
     attachments: Option<Vec<AttachmentInput>>,
 ) -> CmdResult<u64> {
-    let (run_id, approvals, questions, runs) = {
-        let state = app.state::<DesktopState>();
-        (
-            state.next_run.fetch_add(1, Ordering::Relaxed),
-            state.approvals.clone(),
-            state.questions.clone(),
-            state.runs.clone(),
-        )
-    };
+    let run_id = state.next_run.fetch_add(1, Ordering::Relaxed);
     let attachments = attachment_parts(attachments, &prompt, Path::new(&project))?;
-    let app = app.clone();
-    tauri::async_runtime::spawn(async move {
+    tokio::spawn(async move {
         let _ = drive_turn(
-            app,
+            state,
             run_id,
             project,
             prompt,
             session,
             reasoning,
             attachments,
-            approvals,
-            questions,
-            runs,
         )
         .await;
     });
@@ -497,16 +406,13 @@ pub async fn send_prompt(
 
 #[allow(clippy::too_many_arguments)]
 async fn drive_turn(
-    app: AppHandle,
+    state: Arc<DesktopState>,
     run_id: u64,
     project: String,
     prompt: String,
     session: Option<String>,
     reasoning: Option<String>,
     attachments: Vec<ContentPart>,
-    approvals: Arc<ApprovalBroker>,
-    questions: Arc<AskBroker>,
-    runs: Arc<Mutex<HashMap<u64, RunHandle>>>,
 ) -> anyhow::Result<()> {
     let cwd = PathBuf::from(project);
     let reference = session.as_deref().unwrap_or("latest");
@@ -518,8 +424,8 @@ async fn drive_turn(
     // shows no change card for the turn rather than failing to start it. A
     // project that is not a git clone is snapshotted all the same.
     let baseline = mark_baseline(&cwd).await;
-    let approver = approvals.approver(cwd.clone());
-    let asker = questions.asker_for(run_id);
+    let approver = state.approvals.approver(cwd.clone());
+    let asker = state.questions.asker_for(run_id);
     let turn = start_turn(
         &cwd,
         &prompt,
@@ -540,7 +446,7 @@ async fn drive_turn(
         cancel,
     } = turn;
     let stopped = cancel.clone();
-    runs.lock().await.insert(
+    state.runs.lock().await.insert(
         run_id,
         RunHandle {
             abort: handle.abort_handle(),
@@ -550,7 +456,7 @@ async fn drive_turn(
             cwd: cwd.clone(),
         },
     );
-    let _ = app.emit(
+    let _ = state.events.emit(
         "agent-start",
         json!({ "runId": run_id, "sessionId": session_id, "title": title }),
     );
@@ -564,22 +470,21 @@ async fn drive_turn(
                 value["diff"] = serde_json::to_value(diff)?;
             }
             value["runId"] = json!(run_id);
-            let _ = app.emit("agent-event", value);
+            let _ = state.events.emit("agent-event", value);
         }
         if matches!(event, AgentEvent::Finished(_)) {
             break;
         }
     }
 
-    runs.lock().await.remove(&run_id);
+    state.runs.lock().await.remove(&run_id);
     // The turn is over, so the files it wrote are on disk: drop the completion's
     // listing rather than offering paths from before the work. A question it
     // left waiting can never be answered either: drop it here rather than
     // letting it sit until its timeout, and before `agent-end` so the window is
     // never told a turn ended while a request of its own is still open.
-    let state = app.state::<DesktopState>();
     state.at.clear();
-    questions.clear_run(run_id).await;
+    state.questions.clear_run(run_id).await;
     // The listing, and the state the turn left behind: the project it belongs to
     // travels with both, so a window that switched projects mid-turn can tell
     // the card is not its own and an undo can check nothing came after it.
@@ -601,7 +506,7 @@ async fn drive_turn(
         }
         None => (None, None, None),
     };
-    let _ = app.emit(
+    let _ = state.events.emit(
         "agent-end",
         json!({
             "runId": run_id,
@@ -635,7 +540,6 @@ async fn mark_baseline(cwd: &Path) -> Option<(Snapshots, String)> {
 /// work tree still has to hold it, or the restore would also take a change made
 /// after the turn — including one from a later turn whose own card is the one to
 /// undo. An older card is refused with the reason rather than silently doing it.
-#[tauri::command]
 pub async fn undo_turn(project: String, baseline: String, after: Option<String>) -> CmdResult<()> {
     let cwd = PathBuf::from(project);
     tokio::task::spawn_blocking(move || -> anyhow::Result<()> {
@@ -656,7 +560,6 @@ pub async fn undo_turn(project: String, baseline: String, after: Option<String>)
 /// A card's rows carry the compact preview instead, so listing what a turn
 /// touched never carries every file's whole diff; the review asks for the one file
 /// it is showing.
-#[tauri::command]
 pub async fn change_sides(project: String, baseline: String, path: String) -> CmdResult<Value> {
     let root = PathBuf::from(project);
     tokio::task::spawn_blocking(move || -> anyhow::Result<Value> {
@@ -742,13 +645,12 @@ fn review_sides(old: &str, new: &str) -> Value {
 /// Asks a running turn to stop. The loop finishes the in-flight step (so the
 /// session stays a valid call/result sequence) and then ends; if it is still
 /// running after a grace period it is force-aborted.
-#[tauri::command]
-pub async fn cancel_run(run_id: u64, app: AppHandle) -> CmdResult<()> {
-    let runs = app.state::<DesktopState>().runs.clone();
+pub async fn cancel_run(run_id: u64, state: &DesktopState) -> CmdResult<()> {
+    let runs = state.runs.clone();
     if let Some(run) = runs.lock().await.remove(&run_id) {
         run.cancel.cancel();
         let abort = run.abort;
-        tauri::async_runtime::spawn(async move {
+        tokio::spawn(async move {
             tokio::time::sleep(std::time::Duration::from_secs(5)).await;
             abort.abort();
         });
@@ -758,15 +660,14 @@ pub async fn cancel_run(run_id: u64, app: AppHandle) -> CmdResult<()> {
 
 /// Queues a message into a running turn: interleaved guidance, or a follow-up
 /// for after the current turn finishes.
-#[tauri::command]
 pub async fn steer_run(
     run_id: u64,
     message: String,
     follow_up: Option<bool>,
     attachments: Option<Vec<AttachmentInput>>,
-    app: AppHandle,
+    state: &DesktopState,
 ) -> CmdResult<()> {
-    let runs = app.state::<DesktopState>().runs.clone();
+    let runs = state.runs.clone();
     let runs = runs.lock().await;
     if let Some(run) = runs.get(&run_id) {
         let queue = if follow_up.unwrap_or(false) {
@@ -791,12 +692,11 @@ pub async fn steer_run(
 ///
 /// An empty answer (`rows` with nothing in it) means there is no reference under
 /// the caret, which is how the composer closes its list.
-#[tauri::command]
 pub async fn at_suggestions(
     project: String,
     text: String,
     caret: usize,
-    state: State<'_, DesktopState>,
+    state: &DesktopState,
 ) -> CmdResult<AtAnswer> {
     let cwd = project_dir(&project)?;
     Ok(oxide_desktop::at::suggestions(
@@ -805,45 +705,40 @@ pub async fn at_suggestions(
 }
 
 /// Answers a pending `approval-request`.
-#[tauri::command]
-pub async fn resolve_approval(id: u64, decision: String, app: AppHandle) -> CmdResult<()> {
-    let approvals = app.state::<DesktopState>().approvals.clone();
+pub async fn resolve_approval(id: u64, decision: String, state: &DesktopState) -> CmdResult<()> {
+    let approvals = state.approvals.clone();
     approvals.resolve(id, &decision).await;
     Ok(())
 }
 
 /// Answers a pending `question-request`. An empty `answers` list is a dismissed
 /// dialog, which the agent reports to the model as unanswered.
-#[tauri::command]
 pub async fn resolve_question(
     id: u64,
     answers: Vec<oxide_core::ask::Answer>,
-    app: AppHandle,
+    state: &DesktopState,
 ) -> CmdResult<()> {
-    let questions = app.state::<DesktopState>().questions.clone();
+    let questions = state.questions.clone();
     questions.resolve(id, answers).await;
     Ok(())
 }
 
 /// Tools that will be auto-approved for a project without prompting again.
-#[tauri::command]
-pub async fn list_approvals(project: String, app: AppHandle) -> CmdResult<Vec<String>> {
-    let approvals = app.state::<DesktopState>().approvals.clone();
+pub async fn list_approvals(project: String, state: &DesktopState) -> CmdResult<Vec<String>> {
+    let approvals = state.approvals.clone();
     Ok(approvals.list(Path::new(&project)).await)
 }
 
 /// Forgets the saved approval rules for a project.
-#[tauri::command]
-pub async fn clear_approvals(project: String, app: AppHandle) -> CmdResult<()> {
-    let approvals = app.state::<DesktopState>().approvals.clone();
+pub async fn clear_approvals(project: String, state: &DesktopState) -> CmdResult<()> {
+    let approvals = state.approvals.clone();
     approvals.clear(Path::new(&project)).await
 }
 
 // ---------- models ----------
 
 /// Model catalogs for every logged-in provider, plus the active selection.
-#[tauri::command]
-pub async fn list_models(project: String, state: State<'_, DesktopState>) -> CmdResult<Value> {
+pub async fn list_models(project: String, state: &DesktopState) -> CmdResult<Value> {
     let config = {
         let manager = state.manager.lock().await;
         manager.config_for(&PathBuf::from(&project)).map_err(err)?
@@ -871,7 +766,6 @@ pub async fn list_models(project: String, state: State<'_, DesktopState>) -> Cmd
 }
 
 /// Switches the active model (and provider, if needed) in `config.json`.
-#[tauri::command]
 pub async fn set_model(provider: String, model: String) -> CmdResult<()> {
     let mut config = Config::load(Path::new("."), None, None, None, None).map_err(err)?;
     let name = auth::canonical_provider(&provider);
@@ -892,7 +786,6 @@ pub async fn set_model(provider: String, model: String) -> CmdResult<()> {
 // ---------- themes ----------
 
 /// Theme names available for a project, plus the selected one from `config.json`.
-#[tauri::command]
 pub async fn list_themes(project: String) -> CmdResult<Value> {
     Ok(json!({
         "current": current_theme_name(),
@@ -901,14 +794,12 @@ pub async fn list_themes(project: String) -> CmdResult<Value> {
 }
 
 /// Resolves a theme to CSS-ready colors (the same files the CLI reads).
-#[tauri::command]
 pub async fn theme_colors(project: String, name: String) -> CmdResult<Value> {
     let theme = theme_view::load(Path::new(&project), &name);
     Ok(json!({ "name": theme.name, "colors": theme.colors }))
 }
 
 /// Persists a theme choice and returns its colors.
-#[tauri::command]
 pub async fn set_theme(project: String, name: String) -> CmdResult<Value> {
     Config::set_theme_at(&Config::config_path(), &name).map_err(err)?;
     let theme = theme_view::load(Path::new(&project), &name);
@@ -917,11 +808,10 @@ pub async fn set_theme(project: String, name: String) -> CmdResult<Value> {
 
 /// Creates a new project with the given name and adds it to the registry.
 /// Optionally accepts source folders to add.
-#[tauri::command]
 pub async fn create_project(
     name: String,
     folders: Option<Vec<String>>,
-    state: State<'_, DesktopState>,
+    state: &DesktopState,
 ) -> CmdResult<AddProjectResult> {
     if name.trim().is_empty() {
         return Err("Project name cannot be empty".to_string());
@@ -971,20 +861,151 @@ fn current_theme_name() -> String {
         .unwrap_or_else(|| "dark".to_string())
 }
 
+fn arg<T: DeserializeOwned>(args: &Value, name: &str) -> CmdResult<T> {
+    let value = args
+        .get(name)
+        .cloned()
+        .ok_or_else(|| format!("missing `{name}`"))?;
+    serde_json::from_value(value).map_err(|error| format!("invalid `{name}`: {error}"))
+}
+
+fn optional_arg<T: DeserializeOwned>(args: &Value, name: &str) -> CmdResult<Option<T>> {
+    match args.get(name) {
+        None | Some(Value::Null) => Ok(None),
+        Some(value) => serde_json::from_value(value.clone())
+            .map(Some)
+            .map_err(|error| format!("invalid `{name}`: {error}")),
+    }
+}
+
+fn command_value<T: Serialize>(result: CmdResult<T>) -> CmdResult<Value> {
+    result.and_then(|value| serde_json::to_value(value).map_err(err))
+}
+
+/// Dispatches the stable command contract used by the renderer. Electron owns
+/// the two operating-system-only calls (`pick_folder` and `open_url`); every
+/// command that touches Oxide state stays in this Rust process.
+pub async fn dispatch(state: Arc<DesktopState>, command: &str, args: Value) -> CmdResult<Value> {
+    match command {
+        "list_projects" => command_value(list_projects(&state).await),
+        "add_project" => command_value(add_project(arg(&args, "path")?, &state).await),
+        "create_project" => command_value(
+            create_project(arg(&args, "name")?, optional_arg(&args, "folders")?, &state).await,
+        ),
+        "remove_project" => command_value(remove_project(arg(&args, "id")?, &state).await),
+        "list_sessions" => command_value(list_sessions(arg(&args, "project")?, &state).await),
+        "all_sessions" => command_value(all_sessions(&state).await),
+        "project_info" => command_value(project_info(arg(&args, "project")?, &state).await),
+        "set_project_trust" => command_value(
+            set_project_trust(arg(&args, "project")?, arg(&args, "trusted")?, &state).await,
+        ),
+        "mcp_servers" => command_value(mcp_servers(arg(&args, "project")?).await),
+        "set_mcp_server" => command_value(
+            set_mcp_server(
+                arg(&args, "project")?,
+                arg(&args, "name")?,
+                arg(&args, "enabled")?,
+            )
+            .await,
+        ),
+        "list_commands" => command_value(list_commands(arg(&args, "project")?).await),
+        "at_suggestions" => command_value(
+            at_suggestions(
+                arg(&args, "project")?,
+                arg(&args, "text")?,
+                arg(&args, "caret")?,
+                &state,
+            )
+            .await,
+        ),
+        "session_messages" => {
+            command_value(session_messages(arg(&args, "project")?, arg(&args, "id")?).await)
+        }
+        "rename_session" => command_value(
+            rename_session(
+                arg(&args, "project")?,
+                arg(&args, "id")?,
+                arg(&args, "name")?,
+            )
+            .await,
+        ),
+        "delete_session" => {
+            command_value(delete_session(arg(&args, "project")?, arg(&args, "id")?).await)
+        }
+        "list_providers" => command_value(list_providers().await),
+        "login" => command_value(
+            login(
+                arg(&args, "provider")?,
+                optional_arg(&args, "key")?,
+                optional_arg(&args, "model")?,
+                optional_arg(&args, "baseUrl")?,
+            )
+            .await,
+        ),
+        "logout" => command_value(logout(arg(&args, "provider")?).await),
+        "send_prompt" => command_value(
+            send_prompt(
+                state,
+                arg(&args, "project")?,
+                arg(&args, "prompt")?,
+                optional_arg(&args, "session")?,
+                optional_arg(&args, "reasoning")?,
+                optional_arg(&args, "attachments")?,
+            )
+            .await,
+        ),
+        "cancel_run" => command_value(cancel_run(arg(&args, "runId")?, &state).await),
+        "steer_run" => command_value(
+            steer_run(
+                arg(&args, "runId")?,
+                arg(&args, "message")?,
+                optional_arg(&args, "followUp")?,
+                optional_arg(&args, "attachments")?,
+                &state,
+            )
+            .await,
+        ),
+        "undo_turn" => command_value(
+            undo_turn(
+                arg(&args, "project")?,
+                arg(&args, "baseline")?,
+                optional_arg(&args, "after")?,
+            )
+            .await,
+        ),
+        "change_sides" => command_value(
+            change_sides(
+                arg(&args, "project")?,
+                arg(&args, "baseline")?,
+                arg(&args, "path")?,
+            )
+            .await,
+        ),
+        "resolve_approval" => command_value(
+            resolve_approval(arg(&args, "id")?, arg(&args, "decision")?, &state).await,
+        ),
+        "resolve_question" => {
+            command_value(resolve_question(arg(&args, "id")?, arg(&args, "answers")?, &state).await)
+        }
+        "list_approvals" => command_value(list_approvals(arg(&args, "project")?, &state).await),
+        "clear_approvals" => command_value(clear_approvals(arg(&args, "project")?, &state).await),
+        "list_models" => command_value(list_models(arg(&args, "project")?, &state).await),
+        "set_model" => {
+            command_value(set_model(arg(&args, "provider")?, arg(&args, "model")?).await)
+        }
+        "list_themes" => command_value(list_themes(arg(&args, "project")?).await),
+        "theme_colors" => {
+            command_value(theme_colors(arg(&args, "project")?, arg(&args, "name")?).await)
+        }
+        "set_theme" => command_value(set_theme(arg(&args, "project")?, arg(&args, "name")?).await),
+        _ => Err(format!("unknown desktop command `{command}`")),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use oxide_core::llm::{FunctionCall, ToolCall};
-
-    #[test]
-    fn open_url_only_accepts_web_links() {
-        assert!(is_openable_url("https://github.com/o/r/pull/7"));
-        assert!(is_openable_url("http://localhost:3000"));
-        assert!(is_openable_url("HTTPS://example.com"));
-        assert!(!is_openable_url("file:///etc/passwd"));
-        assert!(!is_openable_url("javascript:alert(1)"));
-        assert!(!is_openable_url(""));
-    }
 
     #[test]
     fn a_refused_attachment_names_the_types_and_the_limit() {
@@ -1059,11 +1080,13 @@ mod tests {
 
         std::fs::write(work.join("a.txt"), "one\ntwo\n").unwrap();
         // A file git calls binary — valid UTF-8, with a NUL in it — so the side
-        // the review reads has to be refused lines the same way the row is.
-        std::fs::write(work.join("nul.txt"), "a\u{0}b\n").unwrap();
+        // the review reads has to be refused lines the same way the row is. The
+        // name may not be a Windows device name (`nul`, whatever its extension),
+        // which git refuses to add at all.
+        std::fs::write(work.join("zeroed.txt"), "a\u{0}b\n").unwrap();
         let baseline = snapshots.mark().unwrap();
         std::fs::write(work.join("a.txt"), "one\nthree\n").unwrap();
-        std::fs::write(work.join("nul.txt"), "a\u{0}c\n").unwrap();
+        std::fs::write(work.join("zeroed.txt"), "a\u{0}c\n").unwrap();
         // A file the run added has nothing behind it, and one that is not text
         // has nothing to align either.
         std::fs::write(work.join("b.txt"), "new\n").unwrap();
@@ -1092,7 +1115,7 @@ mod tests {
         assert_eq!(binary["binary"], json!(true));
         assert!(binary["lines"].as_array().unwrap().is_empty());
         assert_eq!(
-            read_sides(&snapshots, &work, &baseline, "nul.txt").unwrap()["binary"],
+            read_sides(&snapshots, &work, &baseline, "zeroed.txt").unwrap()["binary"],
             json!(true)
         );
 
