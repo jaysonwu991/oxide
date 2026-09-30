@@ -110,6 +110,12 @@ class StubElement {
   appendChild(node) {
     this.children.push(node);
     node.parentNode = this;
+    // Browsers expose the form control wrapped by a label through `.control`.
+    // Keep that relationship so activation checks can follow the label exactly
+    // as the desktop webview does.
+    if (this.tagName === "LABEL" && ["INPUT", "BUTTON", "SELECT", "TEXTAREA"].includes(node.tagName)) {
+      this.control = node;
+    }
     return node;
   }
 
@@ -822,6 +828,26 @@ check(
   "supplied an omitted click without relying on an input's focus state",
   composerButtonClicks === 3,
   String(composerButtonClicks),
+);
+
+const chordButton = new StubElement("button", "chord-button");
+let chordButtonClicks = 0;
+chordButton.onclick = () => chordButtonClicks++;
+const chordPress = press({ target: chordButton });
+document.fire("mousedown", chordPress);
+document.fire("mouseup", press({ target: chordButton, button: 2 }));
+await nextTick();
+check(
+  "ignored a non-primary release during a tracked primary press",
+  chordButtonClicks === 0,
+  String(chordButtonClicks),
+);
+document.fire("mouseup", chordPress);
+await nextTick();
+check(
+  "completed that press only when its primary button was released",
+  chordButtonClicks === 1,
+  String(chordButtonClicks),
 );
 
 document.activeElement = elementFor("prompt");
@@ -1566,6 +1592,26 @@ check(
     firstBlock.querySelector(".question-free").placeholder === "Type your answer…",
   firstBlock.outline(),
 );
+
+// Native choice controls use the same exact-once activation contract. A press
+// on a label resolves to its radio, so a webview that consumes the label click
+// while ending the free-text edit still gets the intended choice once.
+const secondRadio = optionRows[1].control;
+let radioActivations = 0;
+secondRadio.click = () => {
+  radioActivations++;
+  secondRadio.checked = true;
+};
+document.activeElement = firstBlock.querySelector(".question-free");
+const radioLabelPress = press({ target: optionRows[1] });
+document.fire("mousedown", radioLabelPress);
+document.fire("mouseup", radioLabelPress);
+await nextTick();
+check(
+  "supplied an omitted radio activation through its label",
+  radioActivations === 1 && secondRadio.checked === true,
+  `${radioActivations} / ${secondRadio.checked}`,
+);
 check(
   "left the counter and Back out of the first step",
   elementFor("question-back").hidden === true &&
@@ -1613,6 +1659,23 @@ check(
   secondBlock.querySelectorAll(".question-choice").every((input) => input.type === "checkbox"),
   secondBlock.outline(),
 );
+const firstCheckbox = secondBlock.querySelectorAll(".question-choice")[0];
+let checkboxActivations = 0;
+firstCheckbox.click = () => {
+  checkboxActivations++;
+  firstCheckbox.checked = !firstCheckbox.checked;
+};
+document.activeElement = secondBlock.querySelector(".question-free");
+const checkboxPress = press({ target: firstCheckbox });
+document.fire("mousedown", checkboxPress);
+document.fire("mouseup", checkboxPress);
+await nextTick();
+check(
+  "supplied an omitted checkbox activation from the native input",
+  checkboxActivations === 1 && firstCheckbox.checked === true,
+  `${checkboxActivations} / ${firstCheckbox.checked}`,
+);
+firstCheckbox.checked = false;
 check(
   "named a multi-select question's hint",
   elementFor("question-hint").textContent === "Select all that apply",

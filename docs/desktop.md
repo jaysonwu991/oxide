@@ -93,12 +93,14 @@ The window follows a Codex-style layout:
 - **Composer** — a floating rounded box with the attach, model, and reasoning
   chips on the left and one action on the right, which swaps rather than
   sitting beside a second button: **Stop** while a turn runs and there is
-  nothing to say, **Send**/**Steer** the moment there is. Every control is wired
-  to a plain click — each button the app wires up, each row of a sidebar, list
-  or change card, and the thumbnail in the attachment strip — behind one
-  exact-once activation controller. Every primary press that begins and ends on
-  the same actionable control is tracked without inspecting focus or the host
-  platform. The webview's native click remains authoritative when it arrives,
+  nothing to say, **Send** beside **Queue**/**Steer** the moment there is. Every
+  control is wired to a plain click — each button the app wires up, each native
+  radio/checkbox (including its label), each row of a sidebar, list or change
+  card, and the thumbnail in the attachment strip — behind one exact-once
+  activation controller. Every primary press that begins and ends on the same
+  actionable control is tracked without inspecting focus or the host platform;
+  another mouse button cannot finish it. The webview's native click remains
+  authoritative when it arrives,
   and the page supplies it on the next task when the webview omits it. Text
   fields keep their normal browser focus behavior, keyboard activation stays
   native, a disabled control is never synthesized, and a press released away

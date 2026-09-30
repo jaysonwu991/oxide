@@ -3336,16 +3336,28 @@ let heldRepaints = [];
 let controlPress = null;
 
 /// The innermost control a press belongs to. Buttons and links are controls by
-/// their element kind; the page's rows become controls when it gives them an
+/// their element kind; native choices resolve through their label to the input
+/// they operate, and the page's rows become controls when it gives them an
 /// `onclick` handler.
 function pressedControl(target) {
   for (let node = target; node && node !== document.body; node = node.parentNode) {
+    if (node.tagName === "INPUT" && ["checkbox", "radio"].includes(node.type)) {
+      return node;
+    }
+    if (
+      node.tagName === "LABEL" &&
+      node.control?.tagName === "INPUT" &&
+      ["checkbox", "radio"].includes(node.control.type)
+    ) {
+      return node.control;
+    }
     if (node.tagName === "BUTTON" || node.tagName === "A" || node.onclick) return node;
   }
   return null;
 }
 
 function finishControlPress(event) {
+  if (event.button !== 0) return;
   const press = controlPress;
   if (!press) return;
   if (pressedControl(event.target) !== press.control) {
