@@ -3308,7 +3308,35 @@ function initSidebarResize() {
 // mid-press is held and run once the press is over.
 let pressed = false;
 let heldRepaints = [];
-let focusedControlPress = null;
+let editingControlPress = null;
+
+/// The editable text control at or above `node`. WebKit can spend the first
+/// press outside one of these on ending its editing session; a press into a
+/// second field can be spent without putting the caret in that field either.
+function textEntry(node) {
+  for (; node && node !== document.body; node = node.parentNode) {
+    if (node.isContentEditable || node.tagName === "TEXTAREA") return node;
+    if (node.tagName !== "INPUT") continue;
+    const type = String(node.type || node.getAttribute?.("type") || "text").toLowerCase();
+    if (
+      ![
+        "button",
+        "checkbox",
+        "color",
+        "file",
+        "hidden",
+        "image",
+        "radio",
+        "range",
+        "reset",
+        "submit",
+      ].includes(type)
+    ) {
+      return node;
+    }
+  }
+  return null;
+}
 
 /// The innermost control a press belongs to. Buttons and links are controls by
 /// their element kind; the page's rows become controls when it gives them an
@@ -3320,11 +3348,11 @@ function pressedControl(target) {
   return null;
 }
 
-function finishFocusedControlPress(event) {
-  const press = focusedControlPress;
+function finishEditingControlPress(event) {
+  const press = editingControlPress;
   if (!press) return;
   if (pressedControl(event.target) !== press.control) {
-    focusedControlPress = null;
+    editingControlPress = null;
     return;
   }
   // A native click follows mouseup before the next task. Give WebKit that
@@ -3332,7 +3360,7 @@ function finishFocusedControlPress(event) {
   // session consumed it. This keeps keyboard and ordinary mouse clicks native,
   // and does not turn a press dragged off a control into a click.
   setTimeout(() => {
-    if (focusedControlPress === press) focusedControlPress = null;
+    if (editingControlPress === press) editingControlPress = null;
     if (!press.clicked) press.control.click();
   }, 0);
 }
@@ -3411,32 +3439,40 @@ function init() {
   el("review-prev").onclick = () => walkReview(-1);
   el("review-next").onclick = () => walkReview(1);
 
-  // A control pressed while the caret is in the message box can spend that
-  // press on ending the box's editing session. Refuse the focus change, then
-  // remember the control until mouseup: most WebKit versions still deliver the
-  // ordinary click, while the versions that omit it get one on the next task.
+  // A control pressed while a text field owns the caret can spend that press on
+  // ending the field's editing session. Refuse the focus change, then remember
+  // the control until mouseup: most WebKit versions still deliver the ordinary
+  // click, while the versions that omit it get one on the next task.
   document.addEventListener(
     "mousedown",
     (event) => {
       if (event.button !== 0) return;
-      if (document.activeElement !== el("prompt")) return;
+      const activeEntry = textEntry(document.activeElement);
+      if (!activeEntry) return;
+      const targetEntry = textEntry(event.target);
+      if (targetEntry) {
+        // End the old editing session before WebKit's default handler has to do
+        // it. Leaving the press native still puts the caret where it landed.
+        if (targetEntry !== activeEntry) targetEntry.focus();
+        return;
+      }
       const control = pressedControl(event.target);
       if (!control) return;
       event.preventDefault();
-      focusedControlPress = { control, clicked: false };
+      editingControlPress = { control, clicked: false };
     },
     true,
   );
   document.addEventListener(
     "click",
     (event) => {
-      if (focusedControlPress && pressedControl(event.target) === focusedControlPress.control) {
-        focusedControlPress.clicked = true;
+      if (editingControlPress && pressedControl(event.target) === editingControlPress.control) {
+        editingControlPress.clicked = true;
       }
     },
     true,
   );
-  document.addEventListener("mouseup", finishFocusedControlPress, true);
+  document.addEventListener("mouseup", finishEditingControlPress, true);
 
   // What the held repaints key on: the press is over once the pointer is
   // released, whether or not it was released inside the window.
@@ -3449,7 +3485,7 @@ function init() {
   );
   document.addEventListener("mouseup", endPress, true);
   window.addEventListener("blur", () => {
-    focusedControlPress = null;
+    editingControlPress = null;
     endPress();
   });
 

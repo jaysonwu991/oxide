@@ -143,7 +143,9 @@ class StubElement {
   getAttribute(name) {
     return (this.attributes || {})[name] ?? null;
   }
-  focus() {}
+  focus() {
+    this.focused = true;
+  }
   blur() {}
   click() {
     this.onclick?.(press({ target: this, detail: 0 }));
@@ -811,6 +813,47 @@ check(
   composerButtonClicks === 2,
   String(composerButtonClicks),
 );
+
+document.activeElement = elementFor("model-filter");
+const filterButtonPress = press({ target: composerButton });
+document.fire("mousedown", filterButtonPress);
+check(
+  "swallowed a button press while a dialog text field had the caret",
+  filterButtonPress.refused === true,
+  String(filterButtonPress.refused),
+);
+document.fire("mouseup", filterButtonPress);
+await nextTick();
+check(
+  "supplied the click WebKit omitted while ending a dialog field's editing session",
+  composerButtonClicks === 3,
+  String(composerButtonClicks),
+);
+
+const otherField = new StubElement("input", "other-field");
+document.activeElement = elementFor("prompt");
+const fieldPress = press({ target: otherField });
+document.fire("mousedown", fieldPress);
+check(
+  "moved the caret into another text field before WebKit could spend its press",
+  otherField.focused === true && fieldPress.refused !== true,
+  `${otherField.focused} / ${fieldPress.refused}`,
+);
+document.fire("mouseup", fieldPress);
+
+const checkbox = new StubElement("input", "checkbox");
+checkbox.setAttribute("type", "checkbox");
+document.activeElement = checkbox;
+const checkboxButtonPress = press({ target: composerButton });
+document.fire("mousedown", checkboxButtonPress);
+check(
+  "left a press alone while a non-text input held the focus",
+  checkboxButtonPress.refused !== true,
+  String(checkboxButtonPress.refused),
+);
+document.fire("mouseup", checkboxButtonPress);
+
+document.activeElement = elementFor("prompt");
 const composerRowPress = press({ target: composerRow });
 document.fire("mousedown", composerRowPress);
 check(
