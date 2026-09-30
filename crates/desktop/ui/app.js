@@ -3309,6 +3309,7 @@ function initSidebarResize() {
 let pressed = false;
 let heldRepaints = [];
 let editingControlPress = null;
+let justBlurredTextEntry = null;
 
 /// The editable text control at or above `node`. WebKit can spend the first
 /// press outside one of these on ending its editing session; a press into a
@@ -3362,6 +3363,20 @@ function finishEditingControlPress(event) {
   setTimeout(() => {
     if (editingControlPress === press) editingControlPress = null;
     if (!press.clicked) press.control.click();
+  }, 0);
+}
+
+/// Remember an editor WebKit ended immediately before dispatching the press
+/// that ended it. Some macOS WebKit versions update `activeElement` before the
+/// page sees `mousedown`, so reading `activeElement` alone misses the press and
+/// lets WebKit spend it without producing a click. The memory lasts only for
+/// the current task: a later, unrelated press remains completely native.
+function rememberBlurredTextEntry(event) {
+  const entry = textEntry(event.target);
+  if (!entry) return;
+  justBlurredTextEntry = entry;
+  setTimeout(() => {
+    if (justBlurredTextEntry === entry) justBlurredTextEntry = null;
   }, 0);
 }
 
@@ -3439,15 +3454,20 @@ function init() {
   el("review-prev").onclick = () => walkReview(-1);
   el("review-next").onclick = () => walkReview(1);
 
+  document.addEventListener("focusout", rememberBlurredTextEntry, true);
+
   // A control pressed while a text field owns the caret can spend that press on
-  // ending the field's editing session. Refuse the focus change, then remember
-  // the control until mouseup: most WebKit versions still deliver the ordinary
-  // click, while the versions that omit it get one on the next task.
+  // ending the field's editing session. Depending on the WebKit version, the
+  // field is either still `activeElement` here or its `focusout` ran just before
+  // this event. Refuse the focus change, then remember the control until
+  // mouseup: most WebKit versions still deliver the ordinary click, while the
+  // versions that omit it get one on the next task.
   document.addEventListener(
     "mousedown",
     (event) => {
       if (event.button !== 0) return;
-      const activeEntry = textEntry(document.activeElement);
+      const activeEntry = textEntry(document.activeElement) || justBlurredTextEntry;
+      justBlurredTextEntry = null;
       if (!activeEntry) return;
       const targetEntry = textEntry(event.target);
       if (targetEntry) {
