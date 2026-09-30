@@ -151,6 +151,7 @@ class StubElement {
   }
   focus() {
     this.focused = true;
+    document.activeElement = this;
   }
   blur() {}
   click() {
@@ -1372,14 +1373,36 @@ check(
     /\.att-open img \{ -webkit-user-drag: none;[^}]*\}/.test(sheet),
   String(opener?.children[0]?.draggable),
 );
+document.activeElement = opener;
+opener.focused = false;
+elementFor("image-view-close").focused = false;
 opener.onclick();
 check(
   "opened the full-size preview",
   elementFor("image-view-img").src === shot && elementFor("image-modal").hidden === false,
   String(elementFor("image-modal").hidden),
 );
+check(
+  "moved focus into the full-size preview",
+  document.activeElement === elementFor("image-view-close"),
+  document.activeElement?.id,
+);
+let trappedPreviewTab = false;
+elementFor("image-modal").fire("keydown", {
+  key: "Tab",
+  preventDefault() { trappedPreviewTab = true; },
+});
+check(
+  "kept keyboard focus inside the full-size preview",
+  trappedPreviewTab && document.activeElement === elementFor("image-view-close"),
+  `${trappedPreviewTab} / ${document.activeElement?.id}`,
+);
 elementFor("image-view-close").onclick();
-check("closed it again", elementFor("image-modal").hidden === true);
+check(
+  "closed it again and returned focus to its thumbnail",
+  elementFor("image-modal").hidden === true && document.activeElement === opener,
+  `${elementFor("image-modal").hidden} / ${document.activeElement?.id}`,
+);
 check(
   "gave the preview an icon to close it with",
   /id="image-view-close"[^>]*aria-label="Close"[^>]*>✕$/.test(buttonFor("image-view-close")),

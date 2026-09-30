@@ -193,7 +193,7 @@ describe("command contributions", () => {
     // answered card while the agent sits there.
     const answer = chat.slice(
       chat.indexOf("answerQuestion(requestId"),
-      chat.indexOf("private drainQueue"),
+      chat.indexOf("stop():"),
     );
     assert.ok(answer.includes("this.transcript.answerQuestion(requestId, answers)"));
     assert.ok(answer.includes("turn.answer(requestId, answers)"), "the frame is written too");
@@ -641,8 +641,8 @@ describe("command contributions", () => {
     assert.ok(send.includes("runPanelCommand("), "performing a built-in the panel owns");
     assert.ok(send.includes("is not one this panel runs"), "and saying so for one it cannot");
     assert.ok(
-      send.indexOf("routeCommand(") < send.indexOf("this.queue.push"),
-      "a built-in is not queued as a prompt either",
+      send.indexOf("routeCommand(") < send.indexOf("this.turn.steer"),
+      "a built-in is not queued or steered as a prompt either",
     );
   });
 
@@ -654,13 +654,13 @@ describe("command contributions", () => {
     for (const command of ["isMcpCommand", "isSessionCommand"]) {
       assert.ok(send.includes(`${command}(message)`), `send consults ${command}`);
       assert.ok(
-        send.indexOf(`${command}(message)`) < send.indexOf("this.queue.push"),
-        `${command} is answered before a message is queued or prompted`,
+        send.indexOf(`${command}(message)`) < send.indexOf("this.turn.steer"),
+        `${command} is answered before a message is queued, steered or prompted`,
       );
     }
   });
 
-  it("sends an image on its own, and a queued message keeps its own chips", () => {
+  it("sends an image on its own, and a busy message keeps its own chips", () => {
     // An image with no question is still a message the CLI accepts (`@shot.png`
     // with nothing typed is media, not an empty prompt), so the host must not
     // refuse it; it is only empty when there is neither text nor media.
@@ -677,32 +677,35 @@ describe("command contributions", () => {
       "a message is only empty when it has neither prompt text nor media",
     );
 
-    // A message queued while a turn runs snapshots its own chips before the
-    // composer is cleared, so the image it carried is consumed, not left in the
-    // box to be sent twice.
+    // A message sent while a turn runs hands its assembled prompt and media to
+    // that RPC process before clearing the composer, so it keeps its chips and
+    // the image is not left in the box to be sent twice.
     const send = chat.slice(
       chat.indexOf("async send("),
       chat.indexOf("private ", chat.indexOf("async send(")),
     );
     assert.ok(
-      send.indexOf("this.queue.push(prepared)") < send.indexOf("this.dropComposerChips()"),
-      "a queued message is snapshotted before the composer is cleared",
+      send.indexOf("this.turn.steer(prepared.prompt, prepared.images, followUp)") <
+        send.indexOf("this.dropComposerChips()"),
+      "a busy message is handed to the active turn before the composer is cleared",
+    );
+    assert.ok(
+      send.includes("const accepted = await this.turn.steer") &&
+        send.includes("if (!accepted)") &&
+        send.includes("this.queue.push(prepared)"),
+      "a busy message is retained when the active process cannot acknowledge delivery",
     );
     assert.ok(send.includes("this.startTurn(prepared, true)"), "an idle send starts its own turn");
     assert.ok(
-      send.includes("this.showNotice(`Queued:"),
-      "a queued message is announced without closing the assistant still streaming",
+      send.includes('`${followUp ? "Queued" : "Steering"}:'),
+      "the selected busy behavior is announced",
     );
     assert.ok(
-      !send.includes("broadcastItem(this.transcript.pushUser(prepared.message"),
-      "and its bubble waits for the turn to start",
+      send.includes("broadcastItem(this.transcript.pushUser(prepared.message"),
+      "and its bubble appears while the active turn owns it",
     );
 
-    const drain = chat.slice(chat.indexOf("private drainQueue()"), chat.indexOf("stop():"));
-    assert.ok(
-      drain.includes("this.startTurn(next, true)"),
-      "the queued bubble is pushed when its turn starts, not while one is streaming",
-    );
+    assert.ok(send.includes('const followUp = busyMode === "queue"'));
   });
 
   it("names the thread as soon as the first message is sent", () => {

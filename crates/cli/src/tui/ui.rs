@@ -2445,6 +2445,9 @@ fn busy_status_text(app: &App) -> String {
             crate::tui::dequeue_key_label()
         ));
     }
+    if !app.input.trim().is_empty() || !app.attachments.is_empty() {
+        text.push_str(" · Enter queue · Alt+Enter steer");
+    }
     text.push_str(" · Esc clear · /exit quit ");
     text
 }

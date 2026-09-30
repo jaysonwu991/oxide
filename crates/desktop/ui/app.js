@@ -999,10 +999,25 @@ function clearAttachments() {
   updateSendState();
 }
 
-function openImage(dataUrl) {
+let imageReturnFocus = null;
+
+function openImage(dataUrl, name = "Attachment preview") {
+  imageReturnFocus = document.activeElement || null;
   el("image-view-img").src = dataUrl;
+  el("image-view-img").alt = name || "Attachment preview";
+  el("image-view-img").title = name || "Attachment preview";
+  el("image-view-name").textContent = name || "Attachment preview";
   closeOverlays("image-modal");
   el("image-modal").hidden = false;
+  el("image-view-close").focus();
+}
+
+function closeImage() {
+  if (el("image-modal").hidden) return;
+  el("image-modal").hidden = true;
+  const target = imageReturnFocus;
+  imageReturnFocus = null;
+  target?.focus?.();
 }
 
 /// A thumbnail that opens the full preview. A real button makes it focusable
@@ -1021,7 +1036,7 @@ function openableImage(dataUrl, name) {
   // an image that never answers. An image is draggable unless it says otherwise.
   img.draggable = false;
   button.appendChild(img);
-  button.onclick = () => openImage(dataUrl);
+  button.onclick = () => openImage(dataUrl, name);
   return button;
 }
 
@@ -3547,7 +3562,15 @@ function init() {
     await addAttachmentFiles(Array.from(event.target.files || []));
     event.target.value = "";
   });
-  el("image-view-close").onclick = () => (el("image-modal").hidden = true);
+  el("image-view-close").onclick = closeImage;
+  el("image-modal").onclick = (event) => {
+    if (event.target === el("image-modal")) closeImage();
+  };
+  el("image-modal").addEventListener("keydown", (event) => {
+    if (event.key !== "Tab") return;
+    event.preventDefault();
+    el("image-view-close").focus();
+  });
   el("prompt").addEventListener("keydown", (event) => {
     if (atKey(event)) {
       event.preventDefault();
@@ -3569,6 +3592,7 @@ function init() {
 
   document.addEventListener("keydown", (event) => {
     if (event.key === "Escape") {
+      closeImage();
       if (!el("confirm-modal").hidden) resolveConfirm(false);
       if (!el("rename-modal").hidden) resolveRename(null);
       // A question dismissed with Escape is answered as unanswered rather than

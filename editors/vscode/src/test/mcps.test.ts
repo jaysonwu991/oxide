@@ -130,7 +130,7 @@ describe("MCP server listing", () => {
     const send = chat.slice(chat.indexOf("async send("), chat.indexOf("private ", chat.indexOf("async send(")));
     assert.ok(send.includes("isMcpCommand(message)"), "send consults the command");
     assert.ok(
-      send.indexOf("isMcpCommand(message)") < send.indexOf("this.queue.push"),
+      send.indexOf("isMcpCommand(message)") < send.indexOf("this.turn.steer"),
       "the command is answered before a message is queued or prompted",
     );
   });

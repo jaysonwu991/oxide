@@ -574,7 +574,9 @@ fn handle_key(
             }
             if app.busy {
                 let raw = app.input.trim().to_string();
-                queue_while_busy(app, &raw, cwd, key.modifiers.contains(KeyModifiers::ALT));
+                // Match the desktop composer: Queue is the safe default and
+                // steering the active response is a deliberate alternate.
+                queue_while_busy(app, &raw, cwd, !key.modifiers.contains(KeyModifiers::ALT));
                 return;
             }
             let raw = app.input.trim().to_string();
@@ -1710,7 +1712,7 @@ fn help_text(config: &Config) -> String {
         "  /copy                 copy the last assistant message".to_string(),
         "  /copy all             copy the whole transcript".to_string(),
         format!(
-            "keys: Enter send/guide · Shift+Enter newline · Alt+Enter follow-up while busy · {} edit queued · Shift+Tab/Ctrl+R reasoning · Ctrl+O tool details · Ctrl+T thinking · Ctrl+V image · Ctrl+A/E message start/end · ↑/↓ history · PgUp/PgDn/wheel scroll · Ctrl+U/D half page · drag to select and copy · Ctrl+C copy selection/quit",
+            "keys: Enter send/queue · Shift+Enter newline · Alt+Enter steer while busy · {} edit queued · Shift+Tab/Ctrl+R reasoning · Ctrl+O tool details · Ctrl+T thinking · Ctrl+V image · Ctrl+A/E message start/end · ↑/↓ history · PgUp/PgDn/wheel scroll · Ctrl+U/D half page · drag to select and copy · Ctrl+C copy selection/quit",
             dequeue_key_label()
         ),
     ];
@@ -2333,9 +2335,9 @@ fn mask(key: &str) -> String {
 fn hotkeys_text() -> String {
     [
         "keyboard shortcuts:".to_string(),
-        "  Enter                 send (queues steering while busy)".to_string(),
+        "  Enter                 send (queues a follow-up while busy)".to_string(),
         "  Shift+Enter           insert a newline".to_string(),
-        "  Alt+Enter             queue a follow-up while busy".to_string(),
+        "  Alt+Enter             steer the active response while busy".to_string(),
         format!(
             "  {:<22}pull queued messages back into the editor",
             dequeue_key_label()
@@ -4089,7 +4091,7 @@ fn queue_while_busy(app: &mut App, raw: &str, cwd: &Path, follow_up: bool) {
         app.status = "queued follow-up...".to_string();
     } else {
         app.steering.push(message);
-        app.status = "queued guidance...".to_string();
+        app.status = "steering active response...".to_string();
     }
 }
 

@@ -28,6 +28,7 @@ const ICONS = {
 interface WebviewMessage {
   k?: string;
   text?: string;
+  mode?: "queue" | "steer";
   id?: number;
   /// The approval card's own fields: the broker's request id and the answer.
   requestId?: number;
@@ -98,7 +99,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         this.controller.noteViewFocus(view, false);
         return;
       case "send":
-        await this.controller.send(message.text ?? "");
+        await this.controller.send(message.text ?? "", message.mode);
         return;
       case "stop":
         this.controller.stop();
@@ -367,6 +368,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       <span id="elapsed" hidden></span>
       <span class="spacer"></span>
       <button id="stop" class="icon danger" hidden title="Stop the running turn (Esc)" aria-label="Stop">${ICONS.stop}</button>
+      <button id="busy-message-mode" class="busy-message-mode" hidden title="Queue for after the current response">Queue</button>
       <button id="send" class="icon primary" disabled title="Send (Enter)" aria-label="Send">${ICONS.send}</button>
     </div>
     <div id="dropzone" hidden><span>Drop files to attach</span></div>
@@ -377,15 +379,16 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     <span id="branch"></span>
   </div>
 </footer>
-<div id="image-view" class="overlay image-overlay" hidden>
+<div id="image-view" class="overlay image-overlay" role="dialog" aria-modal="true" aria-label="Image preview" hidden>
   <div class="image-frame">
     <div class="image-head">
+      <span id="image-view-name" class="image-name"></span>
       <button id="image-view-close" class="icon danger" title="Close (Esc)" aria-label="Close">✕</button>
     </div>
     <img id="image-view-img" alt="Attachment preview">
   </div>
 </div>
-<div id="review" class="overlay review-overlay" role="dialog" aria-labelledby="review-title" hidden>
+<div id="review" class="overlay review-overlay" role="dialog" aria-modal="true" aria-labelledby="review-title" hidden>
   <div class="review-sheet">
     <div class="review-head">
       <h2 id="review-title">Changes</h2>

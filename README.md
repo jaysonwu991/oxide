@@ -66,9 +66,8 @@ support for compatibility.
   `/marketplaces`.
 - Agent-harness niceties: read-only tool calls in a batch run in parallel while
   preserving model order, `bash` output streams into the UI as it arrives, and
-  typing while the agent works steers it between steps. Enter queues a steering
-  message while busy; Alt+Enter queues a follow-up delivered after all work
-  finishes.
+  typing while the agent works can queue or steer it between steps. Enter safely
+  queues a follow-up while busy; Alt+Enter deliberately steers the active response.
 - Evidence-based completion: the system prompt's Definition of Done requires the
   model to confirm the outcome of any state-changing action before claiming
   success — edits on disk and builds/tests, a pull request's CI and
@@ -305,9 +304,9 @@ present).
 
 | Key | Action |
 | --- | --- |
-| Enter | Send a message; while the agent is busy, queue guidance for its next step. |
+| Enter | Send a message; while the agent is busy, queue a follow-up after the current response. |
 | Shift+Enter | Insert a newline without sending. |
-| Alt+Enter | While busy, queue a follow-up to run after the current work finishes. |
+| Alt+Enter | While busy, steer the active response before its next model step. |
 | Alt+Up / Option+Up | Pull every queued message back into the message box to edit or extend it (`Alt+Q` on Windows and WSL, where the terminal owns `Alt+Up`). |
 | Esc | Clear the input, or refuse a tool waiting for an approval. In dialogs, cancel or close. |
 | `/` | Open slash-command autocomplete. |

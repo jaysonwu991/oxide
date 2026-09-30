@@ -17,7 +17,7 @@ import * as path from "node:path";
 import type { ApprovalDecision } from "./core/approvals";
 import { drainLines, parseEvent, type WireEvent } from "./core/protocol";
 import type { QuestionAnswer } from "./core/questions";
-import { approvalFrame, promptFrame, questionFrame, quitFrame } from "./core/rpc";
+import { approvalFrame, promptFrame, questionFrame, quitFrame, steerFrame } from "./core/rpc";
 
 export interface BinaryLookup {
   env: NodeJS.ProcessEnv;
@@ -195,6 +195,9 @@ export interface TurnInput {
 }
 
 export interface Turn {
+  /// Adds context to the running response. A follow-up waits for the response;
+  /// ordinary steering is read before the next model step.
+  steer(prompt: string, images?: readonly string[], followUp?: boolean): Promise<boolean>;
   /// Answers a waiting tool approval. An unknown id is ignored by the CLI, so a
   /// double answer is harmless.
   approve(requestId: number, decision: ApprovalDecision): void;
@@ -219,6 +222,8 @@ export function startTurn(
   let stdoutBuffer = "";
   let stderrBuffer = "";
   let exited = false;
+  let nextSteerId = 1;
+  const pendingSteers = new Map<number, (accepted: boolean) => void>();
 
   child.stdout.setEncoding("utf8");
   child.stderr.setEncoding("utf8");
@@ -236,14 +241,27 @@ export function startTurn(
     }
   };
 
+  const handleWireEvent = (event: WireEvent): void => {
+    if (event.type === "steer_ack") {
+      const id = typeof event.id === "number" ? event.id : 0;
+      const resolve = pendingSteers.get(id);
+      if (resolve) {
+        pendingSteers.delete(id);
+        resolve(event.accepted === true);
+      }
+      return;
+    }
+    if (event.type === "agent_end") quit();
+    callbacks.onEvent(event);
+  };
+
   child.stdout.on("data", (chunk: string) => {
     const { lines, rest } = drainLines(stdoutBuffer, chunk);
     stdoutBuffer = rest;
     for (const line of lines) {
       const event = parseEvent(line);
       if (!event) continue;
-      if (event.type === "agent_end") quit();
-      callbacks.onEvent(event);
+      handleWireEvent(event);
     }
   });
 
@@ -261,6 +279,8 @@ export function startTurn(
   const exit = (result: { code: number | null; signal: string | null; error?: string }): void => {
     if (exited) return;
     exited = true;
+    for (const resolve of pendingSteers.values()) resolve(false);
+    pendingSteers.clear();
     callbacks.onExit(result);
   };
 
@@ -271,7 +291,7 @@ export function startTurn(
   child.on("close", (code: number | null, signal: NodeJS.Signals | null) => {
     if (stdoutBuffer.trim()) {
       const event = parseEvent(stdoutBuffer);
-      if (event) callbacks.onEvent(event);
+      if (event) handleWireEvent(event);
     }
     if (stderrBuffer.trim()) callbacks.onStderr(stderrBuffer);
     exit({ code, signal, error: undefined });
@@ -288,6 +308,19 @@ export function startTurn(
   }
 
   return {
+    steer(prompt: string, images: readonly string[] = [], followUp = false) {
+      if (exited) return Promise.resolve(false);
+      const id = nextSteerId++;
+      return new Promise<boolean>((resolve) => {
+        pendingSteers.set(id, resolve);
+        try {
+          child.stdin.write(steerFrame(id, prompt, images, followUp));
+        } catch {
+          pendingSteers.delete(id);
+          resolve(false);
+        }
+      });
+    },
     approve(requestId: number, decision: ApprovalDecision) {
       if (exited) return;
       try {

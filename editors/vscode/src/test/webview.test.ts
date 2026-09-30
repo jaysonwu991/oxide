@@ -703,6 +703,11 @@ describe("webview composer", () => {
     assert.equal(byId.get("send")!.hidden, false);
     assert.equal(byId.get("send")!.disabled, false);
     assert.equal(byId.get("send")!.getAttribute("aria-label"), "Queue");
+    assert.equal(byId.get("busy-message-mode")!.hidden, false);
+    assert.equal(byId.get("busy-message-mode")!.textContent, "Queue");
+    byId.get("busy-message-mode")!.fire("click");
+    assert.equal(byId.get("busy-message-mode")!.textContent, "Steer");
+    assert.equal(byId.get("send")!.getAttribute("aria-label"), "Steer");
     byId.get("input")!.value = "";
     byId.get("input")!.fire("input");
     assert.equal(byId.get("send")!.hidden, true, "and the empty box offers Stop again");
@@ -802,7 +807,7 @@ describe("webview composer", () => {
   });
 
   it("opens the full-size image from a thumbnail, and closes it again", () => {
-    const { byId, fireDocument, send } = loadRenderer();
+    const { active, byId, fireDocument, send } = loadRenderer();
     const preview = "data:image/png;base64,QUJDRA==";
     send(
       stateMessage({
@@ -813,15 +818,26 @@ describe("webview composer", () => {
     const open = byId.get("chips")!.children[0].children[0];
     assert.equal(open.title, "Open the full-size image");
     assert.equal(open.getAttribute("aria-label"), "Open shot.png");
+    open.focus();
     open.fire("click");
     assert.equal(byId.get("image-view")!.hidden, false);
     assert.equal(byId.get("image-view-img")!.src, preview);
     assert.equal(byId.get("image-view-img")!.alt, "shot.png");
+    assert.equal(active(), byId.get("image-view-close"));
+
+    let trapped = false;
+    byId.get("image-view")!.fire("keydown", {
+      key: "Tab",
+      preventDefault: () => { trapped = true; },
+    });
+    assert.equal(trapped, true);
+    assert.equal(active(), byId.get("image-view-close"));
 
     // Clicking the backdrop, then Escape, closes it; the thumbnail itself only
     // opens it, so a click there while it is open leaves it open.
     byId.get("image-view")!.fire("click", { target: byId.get("image-view") });
     assert.equal(byId.get("image-view")!.hidden, true);
+    assert.equal(active(), open);
     open.fire("click");
     fireDocument("keydown", { key: "Escape" });
     assert.equal(byId.get("image-view")!.hidden, true);
@@ -989,6 +1005,21 @@ describe("webview composer", () => {
     assert.deepEqual(last(posted), { k: "send", text: "explain this repo" });
     assert.equal(input.value, "");
     assert.equal(byId.get("send")!.disabled, true);
+  });
+
+  it("sends the selected busy behavior and returns to Queue", () => {
+    const { byId, posted, send } = loadRenderer();
+    send(stateMessage({ busy: true, status: "Thinking…" }));
+    const input = byId.get("input")!;
+    input.value = "use the new API";
+    input.fire("input");
+    byId.get("busy-message-mode")!.fire("click");
+    byId.get("send")!.fire("click");
+    assert.deepEqual(last(posted), { k: "send", text: "use the new API", mode: "steer" });
+
+    input.value = "one more thing";
+    input.fire("input");
+    assert.equal(byId.get("busy-message-mode")!.textContent, "Queue");
   });
 
   it("asks the host what the caret is in once an @ is typed", () => {
