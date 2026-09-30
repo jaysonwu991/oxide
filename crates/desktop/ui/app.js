@@ -3308,8 +3308,7 @@ function initSidebarResize() {
 // mid-press is held and run once the press is over.
 let pressed = false;
 let heldRepaints = [];
-let editingControlPress = null;
-let justBlurredTextEntry = null;
+let controlPress = null;
 
 /// The editable text control at or above `node`. WebKit can spend the first
 /// press outside one of these on ending its editing session; a press into a
@@ -3349,34 +3348,22 @@ function pressedControl(target) {
   return null;
 }
 
-function finishEditingControlPress(event) {
-  const press = editingControlPress;
+function finishControlPress(event) {
+  const press = controlPress;
   if (!press) return;
   if (pressedControl(event.target) !== press.control) {
-    editingControlPress = null;
+    controlPress = null;
     return;
   }
   // A native click follows mouseup before the next task. Give WebKit that
-  // chance first, then supply the click only when ending the textarea's editing
-  // session consumed it. This keeps keyboard and ordinary mouse clicks native,
-  // and does not turn a press dragged off a control into a click.
+  // chance first, then supply the click when it omits one. Every primary press
+  // is tracked, not only one whose focus state happened to be observable: some
+  // WebKit versions end a field's editing session before dispatching mousedown,
+  // and others replace the control under the pointer without emitting click.
+  // Keyboard activation remains native, and a press dragged away still cancels.
   setTimeout(() => {
-    if (editingControlPress === press) editingControlPress = null;
-    if (!press.clicked) press.control.click();
-  }, 0);
-}
-
-/// Remember an editor WebKit ended immediately before dispatching the press
-/// that ended it. Some macOS WebKit versions update `activeElement` before the
-/// page sees `mousedown`, so reading `activeElement` alone misses the press and
-/// lets WebKit spend it without producing a click. The memory lasts only for
-/// the current task: a later, unrelated press remains completely native.
-function rememberBlurredTextEntry(event) {
-  const entry = textEntry(event.target);
-  if (!entry) return;
-  justBlurredTextEntry = entry;
-  setTimeout(() => {
-    if (justBlurredTextEntry === entry) justBlurredTextEntry = null;
+    if (controlPress === press) controlPress = null;
+    if (!press.clicked && !press.control.disabled) press.control.click();
   }, 0);
 }
 
@@ -3454,45 +3441,41 @@ function init() {
   el("review-prev").onclick = () => walkReview(-1);
   el("review-next").onclick = () => walkReview(1);
 
-  document.addEventListener("focusout", rememberBlurredTextEntry, true);
-
-  // A control pressed while a text field owns the caret can spend that press on
-  // ending the field's editing session. Depending on the WebKit version, the
-  // field is either still `activeElement` here or its `focusout` ran just before
-  // this event. Refuse the focus change, then remember the control until
-  // mouseup: most WebKit versions still deliver the ordinary click, while the
-  // versions that omit it get one on the next task.
+  // Treat a primary press that starts and ends on the same control as exactly
+  // one activation. Native click stays authoritative when WebKit emits it; the
+  // next task supplies one only when WebKit did not. Tracking every actionable
+  // press makes this independent of when a platform ends a text field's editing
+  // session, while preventing the default only when a field still owns focus
+  // keeps its caret in place for composer/list interactions.
   document.addEventListener(
     "mousedown",
     (event) => {
       if (event.button !== 0) return;
-      const activeEntry = textEntry(document.activeElement) || justBlurredTextEntry;
-      justBlurredTextEntry = null;
-      if (!activeEntry) return;
+      const activeEntry = textEntry(document.activeElement);
       const targetEntry = textEntry(event.target);
       if (targetEntry) {
         // End the old editing session before WebKit's default handler has to do
         // it. Leaving the press native still puts the caret where it landed.
-        if (targetEntry !== activeEntry) targetEntry.focus();
+        if (activeEntry && targetEntry !== activeEntry) targetEntry.focus();
         return;
       }
       const control = pressedControl(event.target);
       if (!control) return;
-      event.preventDefault();
-      editingControlPress = { control, clicked: false };
+      if (activeEntry) event.preventDefault();
+      controlPress = { control, clicked: false };
     },
     true,
   );
   document.addEventListener(
     "click",
     (event) => {
-      if (editingControlPress && pressedControl(event.target) === editingControlPress.control) {
-        editingControlPress.clicked = true;
+      if (controlPress && pressedControl(event.target) === controlPress.control) {
+        controlPress.clicked = true;
       }
     },
     true,
   );
-  document.addEventListener("mouseup", finishEditingControlPress, true);
+  document.addEventListener("mouseup", finishControlPress, true);
 
   // What the held repaints key on: the press is over once the pointer is
   // released, whether or not it was released inside the window.
@@ -3505,7 +3488,7 @@ function init() {
   );
   document.addEventListener("mouseup", endPress, true);
   window.addEventListener("blur", () => {
-    editingControlPress = null;
+    controlPress = null;
     endPress();
   });
 

@@ -80,18 +80,10 @@ The window follows a Codex-style layout:
   not repeated here because the composer's model chip already names it; the
   right side says only what has to be acted on (`no API key`, `project
   resources off`). The window is created with `acceptFirstMouse`, which reaches
-  the webview (tauri's window config maps onto `WebviewAttributes`), and
-  `src/first_click.rs` runs a local `leftMouseDown`/`rightMouseDown` monitor that,
-  for a press into a window while the app itself is not active, activates the app
-  at once — the window keeps its key status in the background, so reading the
-  window rather than the app left the press to be spent bringing Oxide forward —
-  and makes that window key before AppKit dispatches the press, because AppKit
-  will not hand a press to a window it is still making key. A press into a window
-  of the active app is left alone, since taking the key away from whatever holds
-  it mid-press is what would drop the click. The block and the monitor AppKit
-  returns are kept for the life of the process, since releasing the returned
-  object removes the monitor. The first click after the app loses focus is then
-  the click the user meant rather than one spent focusing the window.
+  the webview through Tauri's supported window configuration. The app installs
+  no AppKit event monitor and links no Objective-C runtime directly; window
+  activation belongs to Tauri/wry, while page-control activation is handled by
+  the cross-platform exact-once controller described below.
 - **Conversation** — a centered 760px column. User messages are right-aligned
   bubbles; assistant replies render Markdown and links open in the system
   browser (see [Rendering](#rendering)). Tool calls are compact cards
@@ -103,14 +95,18 @@ The window follows a Codex-style layout:
   sitting beside a second button: **Stop** while a turn runs and there is
   nothing to say, **Send**/**Steer** the moment there is. Every control is wired
   to a plain click — each button the app wires up, each row of a sidebar, list
-  or change card, and the thumbnail in the attachment strip — and a control
-  pressed while an editable text field has the caret keeps its native click; if
-  WebKit consumes that click while ending the field's editing session, the page
-  supplies it after mouseup rather than making the control wait for a second
-  press. This also covers WebKit versions that report the field's `focusout`
-  before the page receives `mousedown`: the ended editor is remembered for that
-  one event-loop task, then forgotten. A press into another text field moves the
-  caret there before WebKit can spend that press on ending the earlier field. A
+  or change card, and the thumbnail in the attachment strip — behind one
+  exact-once activation controller. Every primary press that begins and ends on
+  the same actionable control is tracked whether or not a field appears focused:
+  WebKit's native click remains authoritative when it arrives, and the page
+  supplies it on the next task when WebKit omits it. That invariant covers both
+  known event orders — a field can lose `activeElement` before `mousedown` or
+  after it — without inferring which WebKit version is running. When a field
+  still owns the caret, the down event is prevented so ending its editing
+  session cannot consume the activation; a press into another text field moves
+  the caret there before WebKit can spend that press on ending the earlier field.
+  Keyboard activation stays native, a disabled control is never synthesized,
+  and a press released away from its starting control is cancelled. A
   control inside another stops its click from reaching the row around it, so a
   thread's ✕ removes the thread rather than selecting the row and a chip's ✕
   removes the chip rather than opening the picture — and a thumbnail's picture

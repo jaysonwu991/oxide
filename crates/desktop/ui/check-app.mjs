@@ -765,9 +765,11 @@ check(
   `${composer.value} @ ${composer.selectionStart}`,
 );
 
-// The same press on any control is swallowed while the caret is in the message
-// box. If WebKit does not follow its mouseup with a click, the page supplies one
-// on the next task; if the native click arrives, it is not answered twice.
+// Every primary press on an actionable control is tracked until mouseup. If
+// WebKit does not follow it with a click, the page supplies one on the next
+// task; if the native click arrives, it is not answered twice. This is global
+// rather than conditional on focus because WebKit versions disagree about
+// whether they clear activeElement before or after dispatching mousedown.
 const composerButton = new StubElement("button", "composer-button");
 let composerButtonClicks = 0;
 composerButton.onclick = () => composerButtonClicks++;
@@ -791,17 +793,18 @@ check(
   String(composerButtonClicks),
 );
 
-// Older WebKit ends the field's editing session before it dispatches mousedown,
-// so `activeElement` is already empty when the page first sees the press. The
-// preceding focusout keeps that press associated with the editor for one task.
+// Some WebKit releases end the field's editing session before they dispatch
+// mousedown, so activeElement is already empty and no focus-based workaround
+// can see what happened. The global activation contract still supplies the
+// omitted click.
 document.activeElement = elementFor("prompt");
 document.fire("focusout", press({ target: elementFor("prompt") }));
 document.activeElement = null;
 const preBlurredButtonPress = press({ target: composerButton });
 document.fire("mousedown", preBlurredButtonPress);
 check(
-  "kept a press WebKit dispatched after it had already blurred the message box",
-  preBlurredButtonPress.refused === true,
+  "tracked a press WebKit dispatched after it had already blurred the message box",
+  preBlurredButtonPress.refused !== true,
   String(preBlurredButtonPress.refused),
 );
 document.fire("mouseup", preBlurredButtonPress);
@@ -812,29 +815,32 @@ check(
   String(composerButtonClicks),
 );
 
-document.activeElement = elementFor("prompt");
-document.fire("focusout", press({ target: elementFor("prompt") }));
 document.activeElement = null;
-await nextTick();
-const laterButtonPress = press({ target: composerButton });
-document.fire("mousedown", laterButtonPress);
+const ordinaryButtonPress = press({ target: composerButton });
+document.fire("mousedown", ordinaryButtonPress);
 check(
-  "forgot an ended editing session before a later unrelated press",
-  laterButtonPress.refused !== true,
-  String(laterButtonPress.refused),
+  "left an ordinary control press native while still tracking its activation",
+  ordinaryButtonPress.refused !== true,
+  String(ordinaryButtonPress.refused),
 );
-document.fire("mouseup", laterButtonPress);
-
-document.activeElement = elementFor("prompt");
-const nativeButtonPress = press({ target: composerButton });
-document.fire("mousedown", nativeButtonPress);
-document.fire("mouseup", nativeButtonPress);
-document.fire("click", nativeButtonPress);
-composerButton.onclick(nativeButtonPress);
+document.fire("mouseup", ordinaryButtonPress);
+document.fire("click", ordinaryButtonPress);
+composerButton.onclick(ordinaryButtonPress);
 await nextTick();
 check(
   "kept a native click from being supplied a second time",
   composerButtonClicks === 3,
+  String(composerButtonClicks),
+);
+
+document.activeElement = null;
+const omittedOrdinaryPress = press({ target: composerButton });
+document.fire("mousedown", omittedOrdinaryPress);
+document.fire("mouseup", omittedOrdinaryPress);
+await nextTick();
+check(
+  "supplied an omitted click without relying on an input's focus state",
+  composerButtonClicks === 4,
   String(composerButtonClicks),
 );
 
@@ -844,7 +850,7 @@ document.fire("mouseup", press({ target: new StubElement("div", "away") }));
 await nextTick();
 check(
   "left a press released away from its control alone",
-  composerButtonClicks === 3,
+  composerButtonClicks === 4,
   String(composerButtonClicks),
 );
 
@@ -860,8 +866,23 @@ document.fire("mouseup", filterButtonPress);
 await nextTick();
 check(
   "supplied the click WebKit omitted while ending a dialog field's editing session",
-  composerButtonClicks === 4,
+  composerButtonClicks === 5,
   String(composerButtonClicks),
+);
+
+const disabledButton = new StubElement("button", "disabled-button");
+disabledButton.disabled = true;
+let disabledButtonClicks = 0;
+disabledButton.onclick = () => disabledButtonClicks++;
+document.activeElement = null;
+const disabledButtonPress = press({ target: disabledButton });
+document.fire("mousedown", disabledButtonPress);
+document.fire("mouseup", disabledButtonPress);
+await nextTick();
+check(
+  "did not synthesize activation for a disabled control",
+  disabledButtonClicks === 0,
+  String(disabledButtonClicks),
 );
 
 const otherField = new StubElement("input", "other-field");
@@ -886,6 +907,8 @@ check(
   String(checkboxButtonPress.refused),
 );
 document.fire("mouseup", checkboxButtonPress);
+document.fire("click", checkboxButtonPress);
+composerButton.onclick(checkboxButtonPress);
 
 document.activeElement = elementFor("prompt");
 const composerRowPress = press({ target: composerRow });
@@ -913,13 +936,13 @@ document.activeElement = null;
 const idlePress = press({ target: composerButton });
 document.fire("mousedown", idlePress);
 check(
-  "left a button press alone once the caret left the message box",
+  "kept an idle button press native",
   idlePress.refused !== true,
   String(idlePress.refused),
 );
-// A press the page never sees released would hold the listings' repaints, so
-// every press the checks above made is released here.
 document.fire("mouseup", press({ target: composerButton }));
+document.fire("click", idlePress);
+composerButton.onclick(idlePress);
 await nextTick();
 
 // The other half of the same problem: a repaint that replaces the row under the
