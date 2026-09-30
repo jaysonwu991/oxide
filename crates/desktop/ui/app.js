@@ -6,16 +6,6 @@ const { listen } = window.__TAURI__.event;
 
 const el = (id) => document.getElementById(id);
 
-// WebKit only treats form controls as mouse-focusable when the page sets a
-// tabindex explicitly. Build every dynamic button through this helper so a
-// press that leaves a text field remains one native click on every platform.
-function buttonElement() {
-  const button = document.createElement("button");
-  button.type = "button";
-  button.tabIndex = 0;
-  return button;
-}
-
 const REASONING = ["auto", "off", "low", "medium", "high"];
 
 const SUGGESTIONS = [
@@ -75,6 +65,30 @@ function escapeHtml(text) {
     '"': "&quot;",
     "'": "&#39;",
   })[c]);
+}
+
+const EDITABLE_INPUT_TYPES = new Set([
+  "text",
+  "search",
+  "email",
+  "url",
+  "tel",
+  "password",
+  "number",
+  "date",
+  "datetime-local",
+  "month",
+  "time",
+  "week",
+]);
+
+function isTextEditor(node) {
+  if (!node) return false;
+  if (node.isContentEditable || node.tagName === "TEXTAREA") return true;
+  return (
+    node.tagName === "INPUT" &&
+    EDITABLE_INPUT_TYPES.has(String(node.type || "text").toLowerCase())
+  );
 }
 
 function formatTime(secs) {
@@ -525,8 +539,7 @@ function renderWelcome() {
   const project = state.project;
   const suggestions = project
     ? `<div class="suggestions">${SUGGESTIONS.map(
-        (text) =>
-          `<button type="button" tabindex="0" data-prompt="${escapeHtml(text)}">${escapeHtml(text)}</button>`,
+        (text) => `<button data-prompt="${escapeHtml(text)}">${escapeHtml(text)}</button>`,
       ).join("")}</div>`
     : "";
   el("transcript").innerHTML = `
@@ -983,7 +996,7 @@ function renderAttachments() {
     label.className = "att-name";
     label.textContent = attachment.name;
     chip.appendChild(label);
-    const remove = buttonElement();
+    const remove = document.createElement("button");
     remove.className = "att-remove";
     remove.textContent = "×";
     remove.title = "Remove attachment";
@@ -1034,7 +1047,8 @@ function closeImage() {
 /// A thumbnail that opens the full preview. A real button makes it focusable
 /// and activatable with Enter/Space, without extra key handling.
 function openableImage(dataUrl, name) {
-  const button = buttonElement();
+  const button = document.createElement("button");
+  button.type = "button";
   button.className = "att-open";
   button.title = "Open preview";
   button.setAttribute("aria-label", name ? `Open ${name}` : "Open image preview");
@@ -1490,7 +1504,7 @@ function changeDiffHtml(file) {
 }
 
 function changeRow(file) {
-  const row = buttonElement();
+  const row = document.createElement("button");
   row.type = "button";
   row.className = "change-row";
   row.innerHTML =
@@ -1545,7 +1559,7 @@ function changesCard(card) {
 
   const actions = document.createElement("div");
   actions.className = "changes-actions";
-  const review = buttonElement();
+  const review = document.createElement("button");
   review.type = "button";
   review.className = "ghost small";
   review.textContent = "Review";
@@ -1553,7 +1567,7 @@ function changesCard(card) {
     event.stopPropagation();
     openReview(card);
   };
-  const undo = buttonElement();
+  const undo = document.createElement("button");
   undo.type = "button";
   undo.className = "ghost small";
   undo.textContent = "Undo";
@@ -1565,7 +1579,7 @@ function changesCard(card) {
 
   const list = document.createElement("div");
   list.className = "changes-list";
-  const more = buttonElement();
+  const more = document.createElement("button");
   more.type = "button";
   more.className = "changes-more";
 
@@ -1797,7 +1811,7 @@ function reviewSplit(file, lines) {
 /// The count a folded stretch shows. Clicking it opens that stretch in place,
 /// which the review paints again from the sides it already holds.
 function unmodifiedBar(file, start, hidden) {
-  const bar = buttonElement();
+  const bar = document.createElement("button");
   bar.type = "button";
   bar.className = "unmodified";
   bar.textContent = `${hidden} unmodified line${hidden === 1 ? "" : "s"}`;
@@ -1990,7 +2004,6 @@ function questionBlock(question, index) {
     row.className = "question-option";
     const input = document.createElement("input");
     input.type = question.multiSelect ? "checkbox" : "radio";
-    input.tabIndex = 0;
     input.name = name;
     input.value = option.label;
     input.dataset.question = String(index);
@@ -2023,7 +2036,6 @@ function questionBlock(question, index) {
     row.className = "question-option question-own";
     const own = document.createElement("input");
     own.type = "radio";
-    own.tabIndex = 0;
     own.name = name;
     // The row's own value is empty, so the collector never sends its label as
     // an answer: choosing it is what lets the typed text answer instead.
@@ -2257,7 +2269,7 @@ function renderProviders() {
   const box = el("provider-list");
   box.innerHTML = "";
   state.providers.forEach((provider, index) => {
-    const row = buttonElement();
+    const row = document.createElement("button");
     row.type = "button";
     row.className = "provider" + (index === state.providerIndex ? " active" : "");
     row.innerHTML =
@@ -2320,7 +2332,7 @@ function renderModels() {
     header.textContent = provider.provider + (provider.active ? " (active)" : "");
     box.appendChild(header);
     for (const model of models) {
-      const row = buttonElement();
+      const row = document.createElement("button");
       row.className = "model" + (model === provider.current ? " active" : "");
       row.textContent = model;
       row.onclick = async () => {
@@ -2377,7 +2389,7 @@ function renderThemes(entries, current) {
     return;
   }
   for (const { name, colors } of entries) {
-    const row = buttonElement();
+    const row = document.createElement("button");
     row.type = "button";
     row.className = "theme-option" + (name === current ? " active" : "");
 
@@ -2553,7 +2565,8 @@ function renderMcps() {
     const status = document.createElement("span");
     status.className = `mcp-status state-${server.state}`;
     status.textContent = server.status;
-    const toggle = buttonElement();
+    const toggle = document.createElement("button");
+    toggle.type = "button";
     // Icon-only: the listing is a row per server, so the switch is sized to the
     // row and its meaning is in the tooltip and the accessible name.
     toggle.className = `icon mcp-toggle${server.enabled ? " on" : ""}`;
@@ -2637,7 +2650,8 @@ function renderSessions() {
     return;
   }
   for (const session of threads) {
-    const row = buttonElement();
+    const row = document.createElement("button");
+    row.type = "button";
     row.className = "session-row" + (session.id === state.session ? " active" : "");
 
     const name = session.name || session.preview || session.id.slice(0, 8);
@@ -2909,7 +2923,7 @@ function renderAt() {
   box.hidden = false;
   list.innerHTML = "";
   atRows.forEach((row, index) => {
-    const item = buttonElement();
+    const item = document.createElement("button");
     item.type = "button";
     item.className = "palette-item at-row" + (index === atIndex ? " active" : "");
     item.setAttribute("role", "option");
@@ -3055,7 +3069,7 @@ function renderPalette() {
   }
   state.paletteIndex = Math.min(state.paletteIndex, matches.length - 1);
   matches.forEach((entry, index) => {
-    const row = buttonElement();
+    const row = document.createElement("button");
     row.type = "button";
     row.className = "palette-item" + (index === state.paletteIndex ? " active" : "");
     row.setAttribute("role", "option");
@@ -3230,7 +3244,7 @@ function renderCreateProjectFolders() {
     const pathEl = document.createElement("span");
     pathEl.className = "folder-item-path";
     pathEl.textContent = folder;
-    const removeBtn = buttonElement();
+    const removeBtn = document.createElement("button");
     removeBtn.className = "folder-item-remove ghost small";
     removeBtn.textContent = "Remove";
     removeBtn.onclick = () => removeCreateProjectFolder(folder);
@@ -3372,9 +3386,6 @@ function endPress() {
 
 function init() {
   initSidebarResize();
-  // Setting the property makes the tabindex author-specified, which is the
-  // distinction WebKit uses when deciding whether a button is mouse-focusable.
-  document.querySelectorAll("button").forEach((button) => (button.tabIndex = 0));
   const createBtnTree = el("create-project-btn-tree");
   if (createBtnTree) createBtnTree.onclick = openCreateProject;
   el("create-project-add-folder").onclick = addCreateProjectFolder;
@@ -3436,6 +3447,27 @@ function init() {
   el("review-close").onclick = closeReview;
   el("review-prev").onclick = () => walkReview(-1);
   el("review-next").onclick = () => walkReview(1);
+
+  // WebKit can spend the first press after editing only moving focus to a
+  // button, withholding its click until the next press. Keep the editor as
+  // first responder through mousedown so the browser completes that same
+  // native click. Question choices use labels around their native controls and
+  // need the same treatment. Keyboard focus and activation remain untouched.
+  document.addEventListener(
+    "mousedown",
+    (event) => {
+      if (
+        event.button !== 0 ||
+        !event.target?.closest?.("button, .question-option")
+      ) {
+        return;
+      }
+      if (isTextEditor(document.activeElement)) {
+        event.preventDefault();
+      }
+    },
+    true,
+  );
 
   // What the held repaints key on: the press is over once the pointer is
   // released, whether or not it was released inside the window.
@@ -3662,7 +3694,8 @@ async function renderProjectsTree() {
     count.textContent = sessionsForProject.length;
     projectItem.appendChild(count);
 
-    const newTaskBtn = buttonElement();
+    const newTaskBtn = document.createElement("button");
+    newTaskBtn.type = "button";
     newTaskBtn.className = "row-add";
     newTaskBtn.title = `New task in ${project.name}`;
     newTaskBtn.textContent = "＋";
@@ -3672,7 +3705,8 @@ async function renderProjectsTree() {
     };
     projectItem.appendChild(newTaskBtn);
 
-    const removeProjectBtn = buttonElement();
+    const removeProjectBtn = document.createElement("button");
+    removeProjectBtn.type = "button";
     removeProjectBtn.className = "row-remove";
     removeProjectBtn.title = project.registered
       ? "Remove or delete project…"
@@ -3716,7 +3750,8 @@ async function renderProjectsTree() {
       // A thread the store has not written has no file to remove, so its row
       // carries no ✕: leaving it is what starting a new thread does.
       if (!session.unstored) {
-        const removeSessionBtn = buttonElement();
+        const removeSessionBtn = document.createElement("button");
+        removeSessionBtn.type = "button";
         removeSessionBtn.className = "row-remove";
         removeSessionBtn.title = "Delete thread";
         removeSessionBtn.textContent = "✕";

@@ -81,7 +81,6 @@ class StubElement {
     this.clientHeight = 10;
     this.selectionStart = 0;
     this.selectionEnd = 0;
-    this.tabIndex = -1;
     this.listeners = {};
     this._innerHTML = "";
   }
@@ -146,6 +145,7 @@ class StubElement {
   releasePointerCapture() {}
   setAttribute(name, value) {
     (this.attributes ||= {})[name] = String(value);
+    if (name === "type") this.type = String(value);
   }
   getAttribute(name) {
     return (this.attributes || {})[name] ?? null;
@@ -197,6 +197,12 @@ class StubElement {
     return true;
   }
 
+  matches(selector) {
+    return String(selector)
+      .split(",")
+      .some((part) => this.matchesSelector(part.trim()));
+  }
+
   descendants() {
     const found = [];
     for (const child of this.children) found.push(child, ...child.descendants());
@@ -211,7 +217,7 @@ class StubElement {
   }
   closest(selector) {
     for (let node = this; node; node = node.parentNode) {
-      if (node.matchesSelector(selector)) return node;
+      if (node.matches(selector)) return node;
     }
     return null;
   }
@@ -242,7 +248,7 @@ class StubElement {
 // makes it. Everything else the app asks for is a stub of its own.
 const pageTags = new Map();
 for (const [, tag, id] of readFileSync(`${here}index.html`, "utf8").matchAll(
-  /<(button|input|textarea|select)\b[^>]*\bid="([^"]+)"/g,
+  /<(input|textarea|select)\b[^>]*\bid="([^"]+)"/g,
 )) {
   pageTags.set(id, tag);
 }
@@ -514,12 +520,7 @@ const document = {
   getElementById: elementFor,
   createElement: (tag) => new StubElement(tag),
   querySelector: () => null,
-  querySelectorAll: (selector) => {
-    if (selector !== "button") return [];
-    return [...pageTags.entries()]
-      .filter(([, tag]) => tag === "button")
-      .map(([id]) => elementFor(id));
-  },
+  querySelectorAll: () => [],
   activeElement: null,
   // The page closes over the document, so the listeners it puts there are kept
   // too: a link answers a press the way a control answers for itself.
@@ -778,52 +779,93 @@ check(
   `${composer.value} @ ${composer.selectionStart}`,
 );
 
-// WebKit follows the native mouse-focusable path only when a form control's
-// tabindex was author-specified. Static and generated buttons both carry that
-// semantic; the page does not synthesize a second activation as a fallback.
+// WebKit may spend the first press after editing only moving focus to a button,
+// withholding the click until the next press. The page prevents that focus
+// default while an editor is active and leaves the one native click in charge.
 const composerButton = new StubElement("button", "composer-button");
 let composerButtonClicks = 0;
 composerButton.onclick = () => composerButtonClicks++;
+const composerRow = new StubElement("div", "composer-row");
+const composerLink = new StubElement("a", "composer-link");
+composerLink.setAttribute("href", "https://example.com/docs");
 document.activeElement = elementFor("prompt");
 const buttonPress = press({ target: composerButton });
 document.fire("mousedown", buttonPress);
 check(
-  "left button activation entirely native while the message box had the caret",
-  buttonPress.refused !== true,
+  "kept the editor as first responder while a button was pressed",
+  buttonPress.refused === true,
   String(buttonPress.refused),
 );
+composerButton.onclick(buttonPress);
 document.fire("mouseup", press({ target: composerButton }));
 await nextTick();
 check(
-  "did not synthesize a click the webview omitted",
-  composerButtonClicks === 0,
+  "handled one native click exactly once",
+  composerButtonClicks === 1,
   String(composerButtonClicks),
 );
-composerButton.onclick(buttonPress);
-check("accepted the one native click", composerButtonClicks === 1, String(composerButtonClicks));
-const staticButtons = [...shell.matchAll(/<button[^>]*\bid="([^"]+)"/g)].map((match) =>
-  elementFor(match[1]),
-);
+
+document.activeElement = elementFor("model-filter");
+const filterButtonPress = press({ target: composerButton });
+document.fire("mousedown", filterButtonPress);
 check(
-  "made every static button explicitly mouse-focusable",
-  staticButtons.length > 0 && staticButtons.every((button) => button.tabIndex === 0),
-  staticButtons.filter((button) => button.tabIndex !== 0).map((button) => button.id).join(", "),
+  "kept a dialog editor as first responder through a button press",
+  filterButtonPress.refused === true,
+  String(filterButtonPress.refused),
 );
+document.fire("mouseup", press({ target: composerButton }));
+
+document.activeElement = null;
+const ordinaryButtonPress = press({ target: composerButton });
+document.fire("mousedown", ordinaryButtonPress);
 check(
-  "built every generated button through the focusable helper",
-  (source.match(/document\.createElement\("button"\)/g) || []).length === 1,
-  String((source.match(/document\.createElement\("button"\)/g) || []).length),
+  "left a button's ordinary focus behavior alone when no editor was active",
+  ordinaryButtonPress.refused !== true,
+  String(ordinaryButtonPress.refused),
 );
-const generatedButtons = [
-  ...elementFor("projects-tree").querySelectorAll("button"),
-  ...elementFor("sessions-list").querySelectorAll("button"),
-  ...elementFor("mcp-list").querySelectorAll("button"),
-];
+document.fire("mouseup", ordinaryButtonPress);
+
+const otherField = new StubElement("input", "other-field");
+document.activeElement = elementFor("prompt");
+const fieldPress = press({ target: otherField });
+document.fire("mousedown", fieldPress);
 check(
-  "made every generated button explicitly mouse-focusable",
-  generatedButtons.length > 0 && generatedButtons.every((button) => button.tabIndex === 0),
-  generatedButtons.filter((button) => button.tabIndex !== 0).map((button) => button.className).join(", "),
+  "left another text field's focus behavior to the browser",
+  fieldPress.refused !== true,
+  String(fieldPress.refused),
 );
+document.fire("mouseup", fieldPress);
+
+const checkbox = new StubElement("input", "checkbox");
+checkbox.setAttribute("type", "checkbox");
+document.activeElement = checkbox;
+const checkboxButtonPress = press({ target: composerButton });
+document.fire("mousedown", checkboxButtonPress);
+check(
+  "left a button press alone while a non-editor input held focus",
+  checkboxButtonPress.refused !== true,
+  String(checkboxButtonPress.refused),
+);
+document.fire("mouseup", checkboxButtonPress);
+
+document.activeElement = elementFor("prompt");
+const composerRowPress = press({ target: composerRow });
+document.fire("mousedown", composerRowPress);
+check(
+  "left a non-button row press native while the editor had the caret",
+  composerRowPress.refused !== true,
+  String(composerRowPress.refused),
+);
+document.fire("mouseup", composerRowPress);
+
+const composerLinkPress = press({ target: composerLink });
+document.fire("mousedown", composerLinkPress);
+check(
+  "left a link press native while the editor had the caret",
+  composerLinkPress.refused !== true,
+  String(composerLinkPress.refused),
+);
+document.fire("mouseup", composerLinkPress);
 
 // The other half of the same problem: a repaint that replaces the row under the
 // pointer before the press is over leaves the webview with a down on one row and
@@ -917,7 +959,20 @@ elementFor("sessions-modal").hidden = true;
 await app.loadMcps();
 await app.loadSessions();
 
+// The focus guard applies only while a text editor owns the caret, so a press
+// while another control is focused keeps its ordinary browser behavior.
+document.activeElement = composerButton;
+const focusPress = press({ target: composerRow });
+document.fire("mousedown", focusPress);
+check(
+  "left a press alone while a control rather than the message box held the focus",
+  focusPress.refused !== true,
+  String(focusPress.refused),
+);
+document.activeElement = null;
 elementFor("create-project-modal").hidden = true;
+document.fire("mouseup", press({ target: composerButton }));
+await nextTick();
 
 await typeAt("review @sr");
 app.atKey({ key: "Escape" });
@@ -1474,12 +1529,29 @@ check(
   firstBlock.outline(),
 );
 
-// Choice controls take the same WebKit mouse-focusable route as buttons, so the
-// page explicitly opts each one into it and leaves activation to the browser.
+// A choice row keeps the editor focused through mousedown for the same WebKit
+// reason as a button, then its one native click activates the input it labels.
+const secondRadio = optionRows[1].control;
+let radioActivations = 0;
+secondRadio.click = () => {
+  radioActivations++;
+  secondRadio.checked = true;
+};
+document.activeElement = firstBlock.querySelector(".question-free");
+const radioLabelPress = press({ target: optionRows[1] });
+document.fire("mousedown", radioLabelPress);
 check(
-  "made every radio explicitly mouse-focusable",
-  optionRows.every((row) => row.control.tabIndex === 0),
-  optionRows.map((row) => row.control.tabIndex).join(","),
+  "kept the question editor focused while a radio row was pressed",
+  radioLabelPress.refused === true,
+  String(radioLabelPress.refused),
+);
+secondRadio.click();
+document.fire("mouseup", radioLabelPress);
+await nextTick();
+check(
+  "handled the radio row's native activation once",
+  radioActivations === 1 && secondRadio.checked === true,
+  `${radioActivations} / ${secondRadio.checked}`,
 );
 check(
   "left the counter and Back out of the first step",
@@ -1528,11 +1600,29 @@ check(
   secondBlock.querySelectorAll(".question-choice").every((input) => input.type === "checkbox"),
   secondBlock.outline(),
 );
+const firstCheckbox = secondBlock.querySelectorAll(".question-choice")[0];
+let checkboxActivations = 0;
+firstCheckbox.click = () => {
+  checkboxActivations++;
+  firstCheckbox.checked = !firstCheckbox.checked;
+};
+document.activeElement = secondBlock.querySelector(".question-free");
+const checkboxPress = press({ target: firstCheckbox });
+document.fire("mousedown", checkboxPress);
 check(
-  "made every checkbox explicitly mouse-focusable",
-  secondBlock.querySelectorAll(".question-choice").every((input) => input.tabIndex === 0),
-  secondBlock.querySelectorAll(".question-choice").map((input) => input.tabIndex).join(","),
+  "kept the question editor focused while a checkbox was pressed",
+  checkboxPress.refused === true,
+  String(checkboxPress.refused),
 );
+firstCheckbox.click();
+document.fire("mouseup", checkboxPress);
+await nextTick();
+check(
+  "handled the checkbox's native activation once",
+  checkboxActivations === 1 && firstCheckbox.checked === true,
+  `${checkboxActivations} / ${firstCheckbox.checked}`,
+);
+firstCheckbox.checked = false;
 check(
   "named a multi-select question's hint",
   elementFor("question-hint").textContent === "Select all that apply",
