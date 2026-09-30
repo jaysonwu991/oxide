@@ -48,7 +48,9 @@ class RustHost extends EventEmitter {
     try {
       frame = JSON.parse(line);
     } catch {
-      this.emit("host-error", { message: `Desktop host wrote invalid JSON: ${line}` });
+      // A line we cannot parse is one lost frame, not a dead host: the process
+      // is still running and every pending call can still be answered.
+      this.emit("host-error", { message: `Desktop host wrote invalid JSON: ${line}`, fatal: false });
       return;
     }
     if (frame.type === "event" && typeof frame.event === "string") {
@@ -68,7 +70,10 @@ class RustHost extends EventEmitter {
     this.closed = true;
     for (const { reject } of this.pending.values()) reject(error);
     this.pending.clear();
-    this.emit("host-error", { message: error.message });
+    // The host is gone, so nothing can answer a run, an approval or a question
+    // any more. The renderer is told so it can let go of that state instead of
+    // waiting for an `agent-end` that can never arrive.
+    this.emit("host-error", { message: error.message, fatal: true });
   }
 
   close() {

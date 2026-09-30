@@ -581,6 +581,7 @@ vm.runInThisContext(
     " refreshPaletteEntries, paletteMatches, renderPalette, runPaletteEntry," +
     " addAttachment, addAttachmentFiles, el, showQuestion, showQuestionStep, questionNext," +
     " answerQuestion, collectAnswers, requestAt, acceptAt, moveAt, closeAt, atKey," +
+    " showApproval, hostStopped," +
     " resetTranscript, renderChanges, closeReview, undoChanges," +
     " loadSessions, renderProjectsTree, renderSessions, renderMcps, openSession, renderProjectMeta, updateSendState, toggleBusyMessageMode, setBusy, setIdle," +
     " loadMcps, openSessions," +
@@ -1654,6 +1655,58 @@ check(
   !calls.some(([name]) => name === "resolve_question"),
   JSON.stringify(calls),
 );
+
+// ---------- a host that died under a run ----------
+
+// A fatal host error ends the run whether or not the turn said so: no
+// `agent-end` can arrive from a process that is gone, so Stop, the busy state
+// and any dialog waiting on an answer are let go rather than left stuck.
+console.log("a host that stopped mid-turn");
+calls.length = 0;
+app.setBusy();
+app.state.runId = 7;
+app.showApproval({ id: 11, tool: "bash", detail: "rm -rf /" });
+app.showQuestion({ id: 50, questions: [{ question: "Still there?" }] });
+await emit("host-error", { message: "Oxide desktop host exited with status 1", fatal: true });
+check(
+  "said why the host is gone",
+  status().includes("exited with status 1"),
+  status(),
+);
+check(
+  "let go of the run the dead host was carrying",
+  app.state.busy === false && app.state.runId === null && elementFor("stop").hidden === true,
+  JSON.stringify({ busy: app.state.busy, runId: app.state.runId }),
+);
+check(
+  "took the approval and question dialogs with it",
+  elementFor("approval").hidden === true &&
+    elementFor("question").hidden === true &&
+    app.state.pendingApproval === null &&
+    app.state.pendingQuestion === null,
+  JSON.stringify({
+    approval: app.state.pendingApproval,
+    question: app.state.pendingQuestion,
+  }),
+);
+check(
+  "answered nothing to a host that cannot read it",
+  !calls.some(([name]) => name === "resolve_approval" || name === "resolve_question"),
+  JSON.stringify(calls),
+);
+
+// A frame the bridge could not parse is one lost line, not a dead host: it is
+// said in the status and the run it is in the middle of keeps going.
+calls.length = 0;
+app.setBusy();
+app.state.runId = 8;
+await emit("host-error", { message: "Desktop host wrote invalid JSON: {", fatal: false });
+check(
+  "kept the run through a recoverable protocol warning",
+  app.state.busy === true && app.state.runId === 8 && status().includes("invalid JSON"),
+  JSON.stringify({ busy: app.state.busy, runId: app.state.runId, status: status() }),
+);
+app.setIdle();
 
 // ---------- an edited file's own card ----------
 

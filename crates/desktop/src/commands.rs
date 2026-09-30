@@ -1080,11 +1080,13 @@ mod tests {
 
         std::fs::write(work.join("a.txt"), "one\ntwo\n").unwrap();
         // A file git calls binary — valid UTF-8, with a NUL in it — so the side
-        // the review reads has to be refused lines the same way the row is.
-        std::fs::write(work.join("nul.txt"), "a\u{0}b\n").unwrap();
+        // the review reads has to be refused lines the same way the row is. The
+        // name may not be a Windows device name (`nul`, whatever its extension),
+        // which git refuses to add at all.
+        std::fs::write(work.join("zeroed.txt"), "a\u{0}b\n").unwrap();
         let baseline = snapshots.mark().unwrap();
         std::fs::write(work.join("a.txt"), "one\nthree\n").unwrap();
-        std::fs::write(work.join("nul.txt"), "a\u{0}c\n").unwrap();
+        std::fs::write(work.join("zeroed.txt"), "a\u{0}c\n").unwrap();
         // A file the run added has nothing behind it, and one that is not text
         // has nothing to align either.
         std::fs::write(work.join("b.txt"), "new\n").unwrap();
@@ -1113,7 +1115,7 @@ mod tests {
         assert_eq!(binary["binary"], json!(true));
         assert!(binary["lines"].as_array().unwrap().is_empty());
         assert_eq!(
-            read_sides(&snapshots, &work, &baseline, "nul.txt").unwrap()["binary"],
+            read_sides(&snapshots, &work, &baseline, "zeroed.txt").unwrap()["binary"],
             json!(true)
         );
 

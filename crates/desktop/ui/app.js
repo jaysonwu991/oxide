@@ -814,6 +814,19 @@ function setIdle() {
   updateSendState();
 }
 
+/// The host process is gone, so the run it was carrying is over whether or not
+/// it said so: nothing will send `agent-end`, no invoke is left to reject, and a
+/// request it was waiting on can never be answered. The turn state is let go
+/// here — the busy flag and Stop with it, the approval and question dialogs, and
+/// the per-tool timers `resetTurn` clears — so the window reads as idle instead
+/// of offering to act on a process that is not there.
+function hostStopped() {
+  state.pendingApproval = null;
+  el("approval").hidden = true;
+  setIdle();
+  resetTurn();
+}
+
 // ---------- attachments ----------
 
 /// `data:<mime>;base64,...` — the only shape the clipboard and FileReader give
@@ -3108,7 +3121,14 @@ function cycleReasoning() {
 
 async function initEvents() {
   await listen("host-error", (event) => {
-    setStatus(event.payload?.message || "Desktop host stopped");
+    const payload = event.payload || {};
+    setStatus(payload.message || "Desktop host stopped");
+    // A fatal error means the host is gone: no `agent-end` can arrive, no
+    // pending invoke is left to reject, and an approval or a question it was
+    // waiting on can no longer be answered. The run state is let go so Stop and
+    // the dialogs do not sit there forever offering to act on a dead process.
+    // A recoverable protocol warning (a frame we could not parse) leaves it be.
+    if (payload.fatal) hostStopped();
   });
   await listen("agent-start", async (event) => {
     const payload = event.payload || {};

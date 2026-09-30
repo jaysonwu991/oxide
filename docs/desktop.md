@@ -54,6 +54,22 @@ Electron starts that host and exchanges newline-delimited JSON over private
 stdin/stdout pipes. The renderer receives only an allowlisted API from the
 sandboxed preload.
 
+The window and the host share one lifetime. A run can only be watched, answered
+or stopped from the window that started it — the host's events carry no state a
+fresh renderer could be rebuilt from — so closing the last window quits the app
+on every platform, including macOS, and `before-quit` stops the host, which ends
+the run with it. That is deliberately not the usual macOS "stay resident"
+behavior: leaving the app running with no window would leave a turn streaming
+into nothing, with its approval and question requests unanswerable.
+
+The other direction is the `host-error` event, which says whether it is fatal.
+The host exiting or failing to spawn is (`fatal: true`): every pending call is
+rejected, and the renderer lets go of the run — the busy state and **Stop**, the
+approval dialog and the question dialog — because no `agent-end` can arrive from
+a process that is gone. A frame the bridge could not parse is not (`fatal:
+false`): it is one lost line, the host is still running, and the run on screen
+keeps going with the reason shown in the status line.
+
 ## Interface
 
 The window follows a Codex-style layout:
@@ -172,12 +188,16 @@ It covers the `/mcps` listing (including the state colors, a failed probe and a
 toggle), the `/sessions` dialog (this project's threads only, the row that
 resumes one, the empty case, and a store that could not be read), the project it
 opens on (the sidebar's first row, an existing selection, and no project at
-all), the **Create project** dialog, and every client command in the catalog —
+all), the **Create project** dialog, a host that stopped under a run (the turn
+and its dialogs let go for a fatal error, and kept for a recoverable protocol
+warning), and every client command in the catalog —
 a command the app does not perform has to be answered here rather than sent to
 the model as a prompt. It also reads `ui/index.html` to check what no stub can:
 that both listings are attached to the composer (inside `.composer-wrap`, above
 `.composer`) instead of floating over the window, and that each header button is
-an icon with a title.
+an icon with a title. The shell check additionally pins the window/host lifetime
+above and reads `package-lock.json` to confirm every tarball resolves to the
+public npm registry, since CI and every clean contributor install from it.
 
 ## Sharing configuration with the CLI
 

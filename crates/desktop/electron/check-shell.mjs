@@ -25,6 +25,25 @@ assert.equal(manifest.main, "electron/main.cjs");
 assert.match(manifest.devDependencies.electron, /^\d+\.\d+\.\d+$/);
 assert.match(manifest.devDependencies["@electron-forge/cli"], /^\d+\.\d+\.\d+$/);
 
+// CI and every clean contributor install from this lockfile, so each tarball has
+// to come from the public registry: a mirror baked in by whoever regenerated it
+// would make the build depend on a registry nobody else can reach. `.npmrc`
+// pins that registry so regenerating the lockfile behind a corporate mirror
+// does not quietly reintroduce one.
+assert.match(read(".npmrc"), /^registry=https:\/\/registry\.npmjs\.org\/$/m);
+const lockfile = JSON.parse(read("package-lock.json"));
+const registries = new Set(
+  Object.values(lockfile.packages || {})
+    .map((entry) => entry.resolved)
+    .filter(Boolean)
+    .map((url) => new URL(url).origin),
+);
+assert.deepEqual(
+  [...registries],
+  ["https://registry.npmjs.org"],
+  `package-lock.json resolves tarballs outside the public registry: ${[...registries].join(", ")}`,
+);
+
 for (const setting of [
   "contextIsolation: true",
   "sandbox: true",
@@ -37,6 +56,22 @@ assert.match(main, /function trustedSender\(/);
 assert.match(main, /setWindowOpenHandler/);
 assert.match(main, /will-navigate/);
 assert.match(main, /shell\.openExternal\(webUrl\(/);
+// A run can only be watched, answered or stopped from the window that started
+// it, so closing the last window ends the app (and with it the host) on every
+// platform rather than leaving a turn streaming into nothing on macOS.
+assert.match(main, /window-all-closed[\s\S]*?app\.quit\(\)/);
+assert.doesNotMatch(main, /platform !== "darwin"/);
+assert.doesNotMatch(main, /app\.on\("activate"/);
+assert.match(main, /before-quit[\s\S]*?host\?\.close\(\)/);
+
+// The host dying is fatal — nothing can answer a run, an approval or a question
+// after it — while a frame it could not parse is not, and the renderer needs the
+// difference to know whether to let go of the turn it is showing.
+const hostClient = read("electron/host-client.cjs");
+assert.match(hostClient, /fatal: true/);
+assert.match(hostClient, /fatal: false/);
+assert.match(renderer, /payload\.fatal[\s\S]*?hostStopped\(\)/);
+assert.match(renderer, /function hostStopped\(/);
 
 assert.match(preload, /contextBridge\.exposeInMainWorld\(/);
 assert.doesNotMatch(preload, /exposeInMainWorld\([^,]+,\s*ipcRenderer/);

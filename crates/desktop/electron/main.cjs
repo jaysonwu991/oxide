@@ -147,13 +147,16 @@ app.whenReady().then(() => {
   });
   registerIpc();
   createWindow();
-  app.on("activate", () => {
-    if (BrowserWindow.getAllWindows().length === 0) createWindow();
-  });
 });
 
+// The window is the only place a run can be watched, answered or stopped: its
+// events carry no state the renderer could be rebuilt from, so a recreated
+// window could not observe the run the closed one started. Closing the last
+// window therefore ends the app on every platform — `before-quit` stops the
+// host, which takes the active run with it — rather than leaving a turn
+// streaming into nothing behind macOS's usual stay-resident behavior.
 app.on("window-all-closed", () => {
-  if (process.platform !== "darwin") app.quit();
+  app.quit();
 });
 
 app.on("before-quit", () => {
