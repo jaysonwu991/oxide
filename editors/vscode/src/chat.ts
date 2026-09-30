@@ -184,6 +184,9 @@ export class ChatController {
   private readonly store = new AttachmentStore();
   private context: Chip[] = [];
   private attachments: Attachment[] = [];
+  /// Messages whose active-turn delivery lost a race with process completion.
+  /// They start normally once that process exits, preserving the composed copy.
+  private queue: PreparedSend[] = [];
   /// The editor's own file chip, and whether the user removed it: a file they
   /// took out stays out until they open another one.
   private auto: AutoContext | null = null;
@@ -364,7 +367,7 @@ export class ChatController {
     return {
       k: "state",
       ...this.transcript.state({
-        queued: 0,
+        queued: this.queue.length,
         context: this.chips(),
         attachments: this.attachmentChips(),
         title: this.threadTitle(),
@@ -985,7 +988,14 @@ export class ChatController {
       // a follow-up waits for the current answer, while steering is read before
       // the next model step. Keeping both in this process also preserves its
       // in-memory tool and verification state.
-      this.turn.steer(prepared.prompt, prepared.images, followUp);
+      const accepted = await this.turn.steer(prepared.prompt, prepared.images, followUp);
+      if (!accepted) {
+        this.queue.push(prepared);
+        this.dropComposerChips();
+        this.showNotice("The active response finished; queued this message for the next turn.");
+        this.broadcastStatus();
+        return;
+      }
       this.dropComposerChips();
       this.broadcastItem(this.transcript.pushUser(prepared.message, prepared.labels));
       this.showNotice(
@@ -1162,6 +1172,15 @@ export class ChatController {
     this.broadcastStatus();
   }
 
+  /// Starts a message whose active-turn delivery was rejected because that
+  /// process had already finished. Its prompt/media were snapshotted before the
+  /// composer cleared, so the retry is the exact message the user submitted.
+  private drainQueue(): void {
+    const next = this.queue.shift();
+    if (!next || this.turn) return;
+    this.startTurn(next, true);
+  }
+
   stop(): void {
     if (!this.turn) {
       this.showNotice("Nothing is running.");
@@ -1250,6 +1269,7 @@ export class ChatController {
     // The run's own session is now in the store (or has just grown a message),
     // so a listing left open is painted again from it.
     void this.syncSessions();
+    this.drainQueue();
   }
 
   /// A turn that finishes while the chat view is hidden is worth a toast — the
@@ -1282,6 +1302,7 @@ export class ChatController {
     }
     this.closeDialog();
     this.transcript.reset();
+    this.queue = [];
     this.sessionTitle = null;
     this.continueLast = false;
     this.dropChips();
@@ -1939,7 +1960,7 @@ export class ChatController {
   }
 
   private broadcastStatus(): void {
-    const status = this.transcript.statusMessage(0, this.footer()) as Extract<
+    const status = this.transcript.statusMessage(this.queue.length, this.footer()) as Extract<
       ViewMessage,
       { k: "status" }
     >;

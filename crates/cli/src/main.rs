@@ -1069,9 +1069,9 @@ async fn run_rpc_mode(
     let driver_approvals = approvals.clone();
     let driver_questions = questions.clone();
     let driver = tokio::spawn(async move {
-        let mut pending_prompt = None;
+        let mut pending_prompts = std::collections::VecDeque::new();
         loop {
-            let request = match pending_prompt.take() {
+            let request = match pending_prompts.pop_front() {
                 Some(request) => request,
                 None => match prompt_rx.recv().await {
                     Some(request) => request,
@@ -1130,6 +1130,42 @@ async fn run_rpc_mode(
             let mut input_open = true;
             loop {
                 tokio::select! {
+                    biased;
+                    request = prompt_rx.recv(), if input_open => {
+                        match request {
+                            Some(RpcRequest::Steer { id, text, images, follow_up }) => {
+                                match runner::build_user_message(&text, &cwd, &images, &[]) {
+                                    Ok(message) => {
+                                        if follow_up {
+                                            follow_ups.push(message);
+                                        } else {
+                                            steering.push(message);
+                                        }
+                                        let _ = frame_tx.send(serde_json::json!({
+                                            "type": "steer_ack",
+                                            "id": id,
+                                            "accepted": true,
+                                        }));
+                                    }
+                                    Err(error) => {
+                                        let _ = frame_tx.send(serde_json::json!({
+                                            "type": "steer_ack",
+                                            "id": id,
+                                            "accepted": false,
+                                            "error": format!("{error:#}"),
+                                        }));
+                                    }
+                                }
+                            }
+                            // Prompts remain ordered as future turns while the
+                            // input channel stays live for steering the active one.
+                            Some(request @ RpcRequest::Prompt { .. }) => {
+                                pending_prompts.push_back(request);
+                            }
+                            Some(_) => {}
+                            None => input_open = false,
+                        }
+                    }
                     event = run_rx.recv() => {
                         let Some(event) = event else { break };
                         let finished = matches!(event, AgentEvent::Finished(_));
@@ -1148,27 +1184,6 @@ async fn run_rpc_mode(
                                 let _ = frame_tx.send(frame);
                             }
                             break;
-                        }
-                    }
-                    request = prompt_rx.recv(), if input_open && pending_prompt.is_none() => {
-                        match request {
-                            Some(RpcRequest::Steer { text, images, follow_up }) => {
-                                if let Ok(message) = runner::build_user_message(&text, &cwd, &images, &[]) {
-                                    if follow_up {
-                                        follow_ups.push(message);
-                                    } else {
-                                        steering.push(message);
-                                    }
-                                }
-                            }
-                            // A prompt is a new turn, not mid-turn context. Keep
-                            // one pending until this run finishes, matching the
-                            // RPC driver's original sequential prompt behavior.
-                            Some(request @ RpcRequest::Prompt { .. }) => {
-                                pending_prompt = Some(request);
-                            }
-                            Some(_) => {}
-                            None => input_open = false,
                         }
                     }
                 }

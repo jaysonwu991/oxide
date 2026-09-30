@@ -689,6 +689,12 @@ describe("command contributions", () => {
         send.indexOf("this.dropComposerChips()"),
       "a busy message is handed to the active turn before the composer is cleared",
     );
+    assert.ok(
+      send.includes("const accepted = await this.turn.steer") &&
+        send.includes("if (!accepted)") &&
+        send.includes("this.queue.push(prepared)"),
+      "a busy message is retained when the active process cannot acknowledge delivery",
+    );
     assert.ok(send.includes("this.startTurn(prepared, true)"), "an idle send starts its own turn");
     assert.ok(
       send.includes('`${followUp ? "Queued" : "Steering"}:'),

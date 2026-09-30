@@ -18,12 +18,14 @@ export function promptFrame(prompt: string, images: readonly string[] = []): str
 /// Adds context to the process's in-flight turn. `followUp` uses the agent's
 /// after-response queue; false steers before its next model step.
 export function steerFrame(
+  id: number,
   prompt: string,
   images: readonly string[] = [],
   followUp = false,
 ): string {
   return `${JSON.stringify({
     type: "steer",
+    id,
     message: prompt,
     images: [...images],
     follow_up: followUp,

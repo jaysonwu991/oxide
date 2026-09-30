@@ -807,7 +807,7 @@ describe("webview composer", () => {
   });
 
   it("opens the full-size image from a thumbnail, and closes it again", () => {
-    const { byId, fireDocument, send } = loadRenderer();
+    const { active, byId, fireDocument, send } = loadRenderer();
     const preview = "data:image/png;base64,QUJDRA==";
     send(
       stateMessage({
@@ -818,15 +818,26 @@ describe("webview composer", () => {
     const open = byId.get("chips")!.children[0].children[0];
     assert.equal(open.title, "Open the full-size image");
     assert.equal(open.getAttribute("aria-label"), "Open shot.png");
+    open.focus();
     open.fire("click");
     assert.equal(byId.get("image-view")!.hidden, false);
     assert.equal(byId.get("image-view-img")!.src, preview);
     assert.equal(byId.get("image-view-img")!.alt, "shot.png");
+    assert.equal(active(), byId.get("image-view-close"));
+
+    let trapped = false;
+    byId.get("image-view")!.fire("keydown", {
+      key: "Tab",
+      preventDefault: () => { trapped = true; },
+    });
+    assert.equal(trapped, true);
+    assert.equal(active(), byId.get("image-view-close"));
 
     // Clicking the backdrop, then Escape, closes it; the thumbnail itself only
     // opens it, so a click there while it is open leaves it open.
     byId.get("image-view")!.fire("click", { target: byId.get("image-view") });
     assert.equal(byId.get("image-view")!.hidden, true);
+    assert.equal(active(), open);
     open.fire("click");
     fireDocument("keydown", { key: "Escape" });
     assert.equal(byId.get("image-view")!.hidden, true);

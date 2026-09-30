@@ -107,8 +107,9 @@ describe("rpc frames", () => {
   });
 
   it("steers the active turn with its attachments", () => {
-    assert.deepEqual(parsed(steerFrame("use the new API", ["/tmp/diagram.png"])), {
+    assert.deepEqual(parsed(steerFrame(12, "use the new API", ["/tmp/diagram.png"])), {
       type: "steer",
+      id: 12,
       message: "use the new API",
       images: ["/tmp/diagram.png"],
       follow_up: false,

@@ -74,6 +74,7 @@
   /// is the card's own, so a review never disagrees with the rows behind it.
   let reviewItem = null;
   let reviewIndex = 0;
+  let imageReturnFocus = null;
 
   // ---------- helpers ----------
 
@@ -1843,19 +1844,33 @@
   /// 96px copy, so a click opens what the host actually sent.
   function openImage(preview, label) {
     if (!preview) return;
+    imageReturnFocus = document.activeElement || null;
     imageViewImage.src = preview;
     imageViewImage.alt = label || "Attachment preview";
     imageViewImage.title = label || "Attachment preview";
     imageViewName.textContent = label || "Attachment preview";
     imageView.hidden = false;
+    imageViewClose.focus();
   }
 
-  imageViewClose.addEventListener("click", () => {
+  function closeImage() {
+    if (imageView.hidden) return;
     imageView.hidden = true;
-  });
+    const target = imageReturnFocus;
+    imageReturnFocus = null;
+    if (target && typeof target.focus === "function") target.focus();
+  }
+
+  imageViewClose.addEventListener("click", closeImage);
 
   imageView.addEventListener("click", (event) => {
-    if (event.target === imageView) imageView.hidden = true;
+    if (event.target === imageView) closeImage();
+  });
+
+  imageView.addEventListener("keydown", (event) => {
+    if (event.key !== "Tab") return;
+    event.preventDefault();
+    imageViewClose.focus();
   });
 
   // ---------- review ----------
@@ -1954,7 +1969,7 @@
       return;
     }
     if (!imageView.hidden) {
-      imageView.hidden = true;
+      closeImage();
       return;
     }
     if (!dialogBox.hidden) closeDialog();

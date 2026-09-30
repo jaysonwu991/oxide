@@ -121,6 +121,7 @@ pub enum RpcRequest {
     /// until that response finishes; ordinary steering is injected before the
     /// agent's next model step.
     Steer {
+        id: u64,
         text: String,
         images: Vec<PathBuf>,
         follow_up: bool,
@@ -184,6 +185,7 @@ impl RpcRequest {
                     })
                     .unwrap_or_default();
                 Some(RpcRequest::Steer {
+                    id: value.get("id").and_then(Value::as_u64).unwrap_or(0),
                     text,
                     images,
                     follow_up: value
@@ -372,8 +374,9 @@ pub async fn run_json(
 
 /// RPC mode: reads LF-delimited JSONL requests from stdin and writes JSONL
 /// events to stdout. Each request is `{"type":"prompt","message":"..."}`; an
-/// `{"type":"steer","message":"...","follow_up":false}` adds context to the
-/// active turn (or queues it after the response when `follow_up` is true), an
+/// `{"type":"steer","id":1,"message":"...","follow_up":false}` adds context
+/// to the active turn (or queues it after the response when `follow_up` is
+/// true) and receives a `steer_ack` carrying the same id, an
 /// `{"type":"approval","id":1,"decision":"once"}` answers a pending tool
 /// approval, a `{"type":"question","id":1,"answers":[...]}` answers a pending
 /// question, and `quit`/`abort` ends the session.
@@ -492,12 +495,14 @@ mod tests {
         assert_eq!(
             RpcRequest::parse(&json!({
                 "type": "steer",
+                "id": 17,
                 "message": "use the new API",
                 "images": ["diagram.png"],
                 "follow_up": false,
             }))
             .unwrap(),
             RpcRequest::Steer {
+                id: 17,
                 text: "use the new API".into(),
                 images: vec![PathBuf::from("diagram.png")],
                 follow_up: false,
@@ -506,6 +511,7 @@ mod tests {
         assert_eq!(
             RpcRequest::parse(&json!({"type": "follow_up", "text": "also add tests"})).unwrap(),
             RpcRequest::Steer {
+                id: 0,
                 text: "also add tests".into(),
                 images: Vec::new(),
                 follow_up: true,
