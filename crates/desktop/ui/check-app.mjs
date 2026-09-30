@@ -1,5 +1,5 @@
 // Checks the desktop front-end without a window: `ui/app.js` is loaded against
-// a stubbed DOM and Tauri bridge, then driven the way the composer drives it.
+// a stubbed DOM and Electron preload bridge, then driven the way the composer drives it.
 //
 //   node crates/desktop/ui/check-app.mjs
 //
@@ -533,13 +533,11 @@ globalThis.document = document;
 // the checks can emit one the way a finished turn does.
 const listeners = new Map();
 globalThis.window = {
-  __TAURI__: {
-    core: { invoke },
-    event: {
-      listen: async (name, handler) => {
-        if (!listeners.has(name)) listeners.set(name, []);
-        listeners.get(name).push(handler);
-      },
+  __OXIDE__: {
+    invoke,
+    listen: async (name, handler) => {
+      if (!listeners.has(name)) listeners.set(name, []);
+      listeners.get(name).push(handler);
     },
   },
   innerWidth: 1280,
@@ -593,7 +591,7 @@ vm.runInThisContext(
 const app = globalThis.__app;
 const status = () => String(elementFor("status-text").textContent);
 const projectCalls = (command) => calls.filter(([name]) => name === command);
-/// Delivers an event to the app the way Tauri does (`event.payload`).
+/// Delivers an event to the app the way the Electron preload does (`event.payload`).
 const emit = async (name, payload) => {
   for (const handler of listeners.get(name) || []) await handler({ payload });
 };
@@ -772,234 +770,25 @@ check(
   `${composer.value} @ ${composer.selectionStart}`,
 );
 
-// Every primary press on an actionable control is tracked until mouseup. If the
-// webview does not follow it with a click, the page supplies one on the next
-// task; if the native click arrives, it is not answered twice. The path is the
-// same regardless of which element owns focus.
+// Electron's Chromium renderer owns control activation. The page never
+// synthesizes a click or changes focus on a control's behalf.
 const composerButton = new StubElement("button", "composer-button");
 let composerButtonClicks = 0;
 composerButton.onclick = () => composerButtonClicks++;
-const composerRow = new StubElement("div", "composer-row");
-let composerRowClicks = 0;
-composerRow.onclick = () => composerRowClicks++;
-const composerLink = new StubElement("a", "composer-link");
-composerLink.setAttribute("href", "https://example.com/docs");
-let composerLinkClicks = 0;
-composerLink.onclick = () => composerLinkClicks++;
 document.activeElement = elementFor("prompt");
 const buttonPress = press({ target: composerButton });
 document.fire("mousedown", buttonPress);
 check(
-  "left a control press native while the message box had the caret",
+  "left a Chromium button press native while the message box had the caret",
   buttonPress.refused !== true,
   String(buttonPress.refused),
 );
-document.fire("mouseup", press({ target: composerButton }));
+document.fire("mouseup", buttonPress);
+composerButton.onclick(buttonPress);
 await nextTick();
-check(
-  "supplied an omitted click while the message box had the caret",
-  composerButtonClicks === 1,
-  String(composerButtonClicks),
-);
+check("handled Chromium's one click exactly once", composerButtonClicks === 1, composerButtonClicks);
 
-document.activeElement = null;
-const ordinaryButtonPress = press({ target: composerButton });
-document.fire("mousedown", ordinaryButtonPress);
-check(
-  "left an ordinary control press native while still tracking its activation",
-  ordinaryButtonPress.refused !== true,
-  String(ordinaryButtonPress.refused),
-);
-document.fire("mouseup", ordinaryButtonPress);
-document.fire("click", ordinaryButtonPress);
-composerButton.onclick(ordinaryButtonPress);
-await nextTick();
-check(
-  "kept a native click from being supplied a second time",
-  composerButtonClicks === 2,
-  String(composerButtonClicks),
-);
-
-document.activeElement = null;
-const omittedOrdinaryPress = press({ target: composerButton });
-document.fire("mousedown", omittedOrdinaryPress);
-document.fire("mouseup", omittedOrdinaryPress);
-await nextTick();
-check(
-  "supplied an omitted click without relying on an input's focus state",
-  composerButtonClicks === 3,
-  String(composerButtonClicks),
-);
-
-const chordButton = new StubElement("button", "chord-button");
-let chordButtonClicks = 0;
-chordButton.onclick = () => chordButtonClicks++;
-const chordPress = press({ target: chordButton });
-document.fire("mousedown", chordPress);
-document.fire("mouseup", press({ target: chordButton, button: 2 }));
-await nextTick();
-check(
-  "ignored a non-primary release during a tracked primary press",
-  chordButtonClicks === 0,
-  String(chordButtonClicks),
-);
-document.fire("mouseup", chordPress);
-await nextTick();
-check(
-  "completed that press only when its primary button was released",
-  chordButtonClicks === 1,
-  String(chordButtonClicks),
-);
-
-document.activeElement = elementFor("prompt");
-document.fire("mousedown", press({ target: composerButton }));
-document.fire("mouseup", press({ target: new StubElement("div", "away") }));
-await nextTick();
-check(
-  "left a press released away from its control alone",
-  composerButtonClicks === 3,
-  String(composerButtonClicks),
-);
-
-document.activeElement = elementFor("model-filter");
-const filterButtonPress = press({ target: composerButton });
-document.fire("mousedown", filterButtonPress);
-check(
-  "used the same native press path while a dialog text field had the caret",
-  filterButtonPress.refused !== true,
-  String(filterButtonPress.refused),
-);
-document.fire("mouseup", filterButtonPress);
-await nextTick();
-check(
-  "supplied an omitted click while a dialog text field had the caret",
-  composerButtonClicks === 4,
-  String(composerButtonClicks),
-);
-
-const disabledButton = new StubElement("button", "disabled-button");
-disabledButton.disabled = true;
-let disabledButtonClicks = 0;
-disabledButton.onclick = () => disabledButtonClicks++;
-document.activeElement = null;
-const disabledButtonPress = press({ target: disabledButton });
-document.fire("mousedown", disabledButtonPress);
-document.fire("mouseup", disabledButtonPress);
-await nextTick();
-check(
-  "did not synthesize activation for a disabled control",
-  disabledButtonClicks === 0,
-  String(disabledButtonClicks),
-);
-
-const otherField = new StubElement("input", "other-field");
-document.activeElement = elementFor("prompt");
-const fieldPress = press({ target: otherField });
-document.fire("mousedown", fieldPress);
-check(
-  "left text-field focus behavior to the browser",
-  otherField.focused !== true && fieldPress.refused !== true,
-  `${otherField.focused} / ${fieldPress.refused}`,
-);
-document.fire("mouseup", fieldPress);
-
-const checkbox = new StubElement("input", "checkbox");
-checkbox.setAttribute("type", "checkbox");
-document.activeElement = checkbox;
-const checkboxButtonPress = press({ target: composerButton });
-document.fire("mousedown", checkboxButtonPress);
-check(
-  "left a press alone while a non-text input held the focus",
-  checkboxButtonPress.refused !== true,
-  String(checkboxButtonPress.refused),
-);
-document.fire("mouseup", checkboxButtonPress);
-document.fire("click", checkboxButtonPress);
-composerButton.onclick(checkboxButtonPress);
-
-document.activeElement = elementFor("prompt");
-const composerRowPress = press({ target: composerRow });
-document.fire("mousedown", composerRowPress);
-check(
-  "left a row press native while the message box had the caret",
-  composerRowPress.refused !== true,
-  String(composerRowPress.refused),
-);
-document.fire("mouseup", composerRowPress);
-await nextTick();
-check("supplied an omitted row click", composerRowClicks === 1, String(composerRowClicks));
-
-const composerLinkPress = press({ target: composerLink });
-document.fire("mousedown", composerLinkPress);
-check(
-  "left a link press native while the message box had the caret",
-  composerLinkPress.refused !== true,
-  String(composerLinkPress.refused),
-);
-document.fire("mouseup", composerLinkPress);
-await nextTick();
-check("supplied an omitted link click", composerLinkClicks === 1, String(composerLinkClicks));
-
-const promptPress = press({ target: elementFor("prompt") });
-document.fire("mousedown", promptPress);
-check(
-  "left the message box's own press alone",
-  promptPress.refused !== true,
-  String(promptPress.refused),
-);
-document.fire("mouseup", promptPress);
-document.activeElement = null;
-const idlePress = press({ target: composerButton });
-document.fire("mousedown", idlePress);
-check(
-  "kept an idle button press native",
-  idlePress.refused !== true,
-  String(idlePress.refused),
-);
-document.fire("mouseup", press({ target: composerButton }));
-document.fire("click", idlePress);
-composerButton.onclick(idlePress);
-await nextTick();
-
-// The other half of the same problem: a repaint that replaces the row under the
-// pointer before the press is over leaves the webview with a down on one row and
-// an up on another, and it dispatches no click at all — which is the first click
-// of the two a user makes on a sidebar row. The sidebar is rebuilt from the read
-// a previous click started, so a repaint asked for mid-press is held until the
-// press is over and the click it was going to deliver has arrived. Each listing
-// is painted into an element of its own so the page's own lists are left alone.
-for (const [name, listId, paint] of [
-  ["sidebar", "projects-tree", app.renderProjectsTree],
-  ["sessions", "sessions-list", app.renderSessions],
-  ["MCP", "mcp-list", app.renderMcps],
-]) {
-  const page = elementFor(listId);
-  const list = new StubElement("div", listId);
-  elements.set(listId, list);
-  await paint();
-  const painted = list.outline();
-  list.innerHTML = "";
-  document.fire("mousedown", press({ target: composerButton }));
-  await paint();
-  check(
-    `held the ${name} listing a press was inside of`,
-    list.outline() === "",
-    list.outline() || "painted the listing while the press was still down",
-  );
-  document.fire("mouseup", press({ target: composerButton }));
-  await nextTick();
-  check(
-    `painted the ${name} listing once the press was over`,
-    list.outline() === painted,
-    list.outline(),
-  );
-  elements.set(listId, page);
-}
-
-// A read that fails is the same repaint, from the same await: a Recheck that
-// fails while a toggle is pressed, or the thread listing opened while the store
-// cannot be read, would otherwise drop the failure into the list under the
-// pointer and cost the press its click.
+// A failed read is painted into the list instead of becoming an empty result.
 for (const [name, listId, breakRead, read] of [
   [
     "MCP",
@@ -1023,17 +812,9 @@ for (const [name, listId, breakRead, read] of [
   elements.set(listId, list);
   list.innerHTML = "";
   breakRead();
-  document.fire("mousedown", press({ target: composerButton }));
   await read();
   check(
-    `held the ${name} listing a failed read asked to repaint`,
-    !list.outline().includes("Could not"),
-    list.outline(),
-  );
-  document.fire("mouseup", press({ target: composerButton }));
-  await nextTick();
-  check(
-    `painted the ${name} failure once the press was over`,
+    `painted the ${name} failure`,
     list.outline().includes("Could not"),
     list.outline() || "painted no failure",
   );
@@ -1046,20 +827,8 @@ elementFor("sessions-modal").hidden = true;
 await app.loadMcps();
 await app.loadSessions();
 
-// Only the message box's caret is what the swallow is for, so a press while some
-// other control holds the focus keeps being taken by that control as it was.
-document.activeElement = composerButton;
-const focusPress = press({ target: composerRow });
-document.fire("mousedown", focusPress);
-check(
-  "left a press alone while a control rather than the message box held the focus",
-  focusPress.refused !== true,
-  String(focusPress.refused),
-);
 document.activeElement = null;
 elementFor("create-project-modal").hidden = true;
-document.fire("mouseup", press({ target: composerButton }));
-await nextTick();
 
 await typeAt("review @sr");
 app.atKey({ key: "Escape" });
@@ -1616,9 +1385,7 @@ check(
   firstBlock.outline(),
 );
 
-// Native choice controls use the same exact-once activation contract. A press
-// on a label resolves to its radio, so a webview that consumes the label click
-// while ending the free-text edit still gets the intended choice once.
+// Chromium owns native radio activation while a text field is focused.
 const secondRadio = optionRows[1].control;
 let radioActivations = 0;
 secondRadio.click = () => {
@@ -1628,10 +1395,11 @@ secondRadio.click = () => {
 document.activeElement = firstBlock.querySelector(".question-free");
 const radioLabelPress = press({ target: optionRows[1] });
 document.fire("mousedown", radioLabelPress);
+secondRadio.click();
 document.fire("mouseup", radioLabelPress);
 await nextTick();
 check(
-  "supplied an omitted radio activation through its label",
+  "left radio activation to Chromium",
   radioActivations === 1 && secondRadio.checked === true,
   `${radioActivations} / ${secondRadio.checked}`,
 );
@@ -1691,10 +1459,11 @@ firstCheckbox.click = () => {
 document.activeElement = secondBlock.querySelector(".question-free");
 const checkboxPress = press({ target: firstCheckbox });
 document.fire("mousedown", checkboxPress);
+firstCheckbox.click();
 document.fire("mouseup", checkboxPress);
 await nextTick();
 check(
-  "supplied an omitted checkbox activation from the native input",
+  "left checkbox activation to Chromium",
   checkboxActivations === 1 && firstCheckbox.checked === true,
   `${checkboxActivations} / ${firstCheckbox.checked}`,
 );

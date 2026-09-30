@@ -2,7 +2,7 @@
 //!
 //! Loads the *same* configuration the CLI uses for a project, resolves the
 //! session, and streams `AgentEvent`s back to the caller. The GUI layer forwards
-//! those over Tauri events; keeping the logic here means it can be exercised
+//! those over desktop events; keeping the logic here means it can be exercised
 //! without a webview.
 
 use anyhow::{Context, Result};

@@ -4,9 +4,10 @@
 //! agent turn against a project using the shared `oxide-core` configuration, and
 //! `at` answers the composer's `@path` completion. All three build without any
 //! GUI dependency so they are unit tested like the rest of the workspace. The
-//! Tauri shell lives behind the `gui` feature.
+//! Electron shell talks to the Rust host over a small JSON-lines protocol.
 
 pub mod at;
+pub mod bridge;
 pub mod manager;
 pub mod turn;
 

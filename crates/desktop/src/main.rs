@@ -1,8 +1,8 @@
-//! Tauri entry point for the Oxide desktop app.
+//! Rust host for the Electron desktop app.
 //!
-//! The project/session/turn logic lives in the `oxide_desktop` library and the
-//! shared `oxide-core`; this binary only wires state and commands to a window.
-//! It builds with `--features gui` (see `cargo run -p oxide-desktop --features gui`).
+//! Electron owns the window and native dialogs. This process owns the same
+//! project/session/agent state the former in-process shell did and exchanges
+//! newline-delimited JSON frames over stdin/stdout.
 
 #![cfg_attr(
     all(not(debug_assertions), target_os = "windows"),
@@ -13,61 +13,63 @@ mod approval;
 mod ask;
 mod commands;
 
-use commands::{
-    add_project, all_sessions, at_suggestions, cancel_run, change_sides, clear_approvals,
-    create_project, delete_session, list_approvals, list_commands, list_models, list_projects,
-    list_providers, list_sessions, list_themes, login, logout, mcp_servers, open_url, pick_folder,
-    project_info, remove_project, rename_session, resolve_approval, resolve_question, send_prompt,
-    session_messages, set_mcp_server, set_model, set_project_trust, set_theme, steer_run,
-    theme_colors, undo_turn, DesktopState,
-};
+use commands::{dispatch, DesktopState};
+use oxide_desktop::bridge::EventSink;
 use oxide_desktop::manager::DesktopManager;
-use tauri::Manager;
+use serde::Deserialize;
+use serde_json::{json, Value};
+use std::sync::Arc;
+use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader, BufWriter};
+use tokio::sync::mpsc;
 
-fn main() {
-    tauri::Builder::default()
-        .plugin(tauri_plugin_dialog::init())
-        .setup(|app| {
-            let manager = DesktopManager::load_lossy();
-            app.manage(DesktopState::new(manager, app.handle().clone()));
-            Ok(())
-        })
-        .invoke_handler(tauri::generate_handler![
-            list_projects,
-            add_project,
-            create_project,
-            pick_folder,
-            remove_project,
-            list_sessions,
-            all_sessions,
-            project_info,
-            set_project_trust,
-            mcp_servers,
-            set_mcp_server,
-            list_commands,
-            at_suggestions,
-            session_messages,
-            rename_session,
-            delete_session,
-            list_providers,
-            login,
-            logout,
-            send_prompt,
-            cancel_run,
-            steer_run,
-            undo_turn,
-            change_sides,
-            resolve_approval,
-            resolve_question,
-            list_approvals,
-            clear_approvals,
-            list_models,
-            set_model,
-            list_themes,
-            theme_colors,
-            set_theme,
-            open_url,
-        ])
-        .run(tauri::generate_context!())
-        .expect("error while running the Oxide desktop app");
+#[derive(Deserialize)]
+struct Request {
+    id: u64,
+    command: String,
+    #[serde(default)]
+    args: Value,
+}
+
+#[tokio::main]
+async fn main() -> anyhow::Result<()> {
+    let (output, mut frames) = mpsc::unbounded_channel::<Value>();
+    let events = EventSink::new(output.clone());
+    let state = Arc::new(DesktopState::new(
+        DesktopManager::load_lossy(),
+        events.clone(),
+    ));
+
+    let writer = tokio::spawn(async move {
+        let mut stdout = BufWriter::new(tokio::io::stdout());
+        while let Some(frame) = frames.recv().await {
+            let encoded = serde_json::to_vec(&frame)?;
+            stdout.write_all(&encoded).await?;
+            stdout.write_all(b"\n").await?;
+            stdout.flush().await?;
+        }
+        Ok::<(), anyhow::Error>(())
+    });
+
+    let mut lines = BufReader::new(tokio::io::stdin()).lines();
+    while let Some(line) = lines.next_line().await? {
+        let request = match serde_json::from_str::<Request>(&line) {
+            Ok(request) => request,
+            Err(error) => {
+                let _ = events.emit(
+                    "host-error",
+                    json!({ "message": format!("invalid desktop request: {error}") }),
+                );
+                continue;
+            }
+        };
+        let state = Arc::clone(&state);
+        let events = events.clone();
+        tokio::spawn(async move {
+            let result = dispatch(state, &request.command, request.args).await;
+            events.response(request.id, result);
+        });
+    }
+
+    writer.abort();
+    Ok(())
 }

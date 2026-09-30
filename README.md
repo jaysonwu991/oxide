@@ -11,7 +11,7 @@
 
 # Oxide
 
-A native Rust AI coding agent with a terminal UI, a Tauri desktop app, and a
+A native Rust AI coding agent with a terminal UI, an Electron desktop app, and a
 VS Code extension. Oxide streams from OpenAI-compatible and Anthropic models,
 runs a tool-using agent loop against your project, and understands its own
 `.oxide/` configuration layout out of the box, with Claude Code configuration
@@ -22,7 +22,7 @@ support for compatibility.
 - Interactive TUI (ratatui) plus non-interactive `-p/--print`, `--mode json`
   (JSONL event stream), and `--mode rpc` (JSONL over stdin/stdout) modes. In the
   TUI, `/login` (`/connect`) and `/logout` manage provider credentials.
-- Desktop app (`oxide-desktop`, Tauri) that manages multiple projects and shows
+- Desktop app (`oxide-desktop`, Electron + Rust) that manages multiple projects and shows
   the shared session store, using the same configuration as the CLI (see
   [docs/desktop.md](docs/desktop.md)).
 - VS Code extension (`editors/vscode`) that drives the same `oxide` binary from
@@ -184,7 +184,7 @@ so check each project's documentation for the current details.
 
 | Capability | Oxide | [Codex](https://github.com/openai/codex) | [OpenCode](https://opencode.ai) | [Claude Code](https://docs.claude.com/en/docs/claude-code/overview) |
 | --- | --- | --- | --- | --- |
-| Distribution | Native Rust core + Tauri desktop app + VS Code extension | Open-source CLI (Rust) + IDE extension | Open-source CLI (Node/Bun) | Proprietary CLI + apps |
+| Distribution | Native Rust core + Electron desktop app + VS Code extension | Open-source CLI (Rust) + IDE extension | Open-source CLI (Node/Bun) | Proprietary CLI + apps |
 | License | MIT | Apache-2.0 | Open source | Proprietary |
 | Model providers | OpenAI-compatible (OpenAI, DeepSeek, Portkey, Z.AI/GLM, custom) + Anthropic Messages API | OpenAI models (GPT-5-Codex family) + custom providers | Any provider (bring your own keys) | Claude (Anthropic API, Bedrock, Vertex, third-party) |
 | Interfaces | Terminal TUI, `-p` print, JSON/RPC modes, desktop app, VS Code extension | Terminal CLI, IDE (VS Code, Cursor) | Terminal, desktop, IDE, web | Terminal, IDE, desktop, web |
@@ -204,7 +204,7 @@ so check each project's documentation for the current details.
 | Multimodal input | Images and PDFs (`--image`, `@path`) | Images | Images | Images |
 
 A dash indicates no first-class built-in equivalent. Where Oxide differs most:
-it is a dependency-light Rust core with a terminal binary and a Tauri desktop
+it is a dependency-light Rust core with a terminal binary and an Electron desktop
 app, it speaks both the OpenAI-compatible and Anthropic APIs directly, its plugin
 packages reuse the same on-disk commands, agents, skills, and MCP servers the
 ecosystem already reads, and it is compatible with the Claude Code on-disk layout
@@ -371,7 +371,7 @@ oxide plugin install <name>[@marketplace]
 
 ## Desktop app
 
-The `oxide-desktop` package (`crates/desktop`) is a Tauri v2 front-end for the
+The `oxide-desktop` package (`crates/desktop`) is an Electron front-end for the
 same `oxide-core` agent. It shares the CLI's configuration (`config.json`,
 `auth.json`, `settings.json`) and its session store, and adds a multi-project
 sidebar:
@@ -381,14 +381,16 @@ sidebar:
 - **Sessions** — a per-project session list with previews, plus a cross-repo
   view of recent sessions from every project.
 - **Chat** — runs the same agent loop through `oxide-core`, streaming text, tool
-  calls, and token usage over Tauri events.
+  calls, and token usage over a narrow preload/IPC bridge to the Rust host.
 
 The project/session/turn logic lives in the `oxide_desktop` library and is unit
-tested without a webview. The Tauri shell is behind the `gui` feature so the
-default workspace build stays GUI-free:
+tested without a browser window. Electron owns only the cross-platform window,
+dialogs, and renderer; `oxide-desktop-host` owns the Rust application state:
 
 ```sh
-cargo run -p oxide-desktop --features gui
+cd crates/desktop
+npm install
+npm start
 ```
 
 It also has an interactive approval prompt for `ask` rules (shown while
@@ -402,12 +404,13 @@ token/cost usage in the footer, and built-in Dark/Light themes (default Dark)
 that read the same `.oxide/themes` files as the CLI. Prebuilt bundles are
 drafted under `desktop-v*` releases on the
 [releases page](https://github.com/jaysonwu991/oxide/releases); to build from
-source, bundle it with `npx @tauri-apps/cli@^2 build --features gui`. See
+source, bundle it with `npm run make`. See
 [docs/desktop.md](docs/desktop.md) for the full layout, shortcuts, signing, and
 packaging details.
 
-The front-end (`crates/desktop/ui/`) is plain HTML/CSS/JS; the Rust
-commands in `crates/desktop/src/commands.rs` back it.
+The front-end (`crates/desktop/ui/`) is plain HTML/CSS/JS. A sandboxed preload
+exposes the fixed command/event contract; `crates/desktop/src/commands.rs`
+backs it through a JSON-lines Rust sidecar.
 
 ## VS Code extension
 
@@ -1069,10 +1072,14 @@ cargo fmt
 
 The workspace members are `crates/core` (shared agent core),
 `crates/cli` (the `oxide` terminal binary), and `crates/desktop`.
-The desktop GUI is feature-gated, so build it explicitly:
+The desktop Rust host is a workspace member; the Electron shell is a separate
+npm package in the same directory:
 
 ```sh
-cargo build -p oxide-desktop --features gui
+cd crates/desktop
+npm install
+npm run check
+npm start
 ```
 
 The VS Code extension is a separate pnpm package under `editors/vscode` and is

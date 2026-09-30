@@ -662,23 +662,4 @@ mod tests {
         assert_eq!(trust.default, "always");
         std::fs::remove_dir_all(&dir).ok();
     }
-
-    /// Tauri's supported first-mouse setting asks the platform webview to pass
-    /// an unfocused-window press through to the page. The page's activation
-    /// controller can then guarantee one action without a native event monitor.
-    #[test]
-    fn the_window_accepts_the_first_click_after_it_loses_focus() {
-        let raw = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/tauri.conf.json"))
-            .expect("read tauri.conf.json");
-        let config: serde_json::Value = serde_json::from_str(&raw).expect("decode tauri.conf.json");
-        let main = config["app"]["windows"]
-            .as_array()
-            .and_then(|windows| windows.iter().find(|window| window["label"] == "main"))
-            .expect("the main window in tauri.conf.json");
-        assert_eq!(
-            main["acceptFirstMouse"].as_bool(),
-            Some(true),
-            "the first click on an unfocused window is swallowed without this"
-        );
-    }
 }

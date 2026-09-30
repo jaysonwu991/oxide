@@ -38,7 +38,9 @@ cargo run -- -p "summarize this repository"
 | `cargo test` | Run the test suite. |
 | `cargo clippy --all-targets -- -D warnings` | Lint; warnings are errors. |
 | `cargo fmt` | Format the code. |
-| `cargo build -p oxide-desktop --features gui` | Desktop app (the `gui` feature is off by default so the plain build stays free of the Tauri tree). |
+| `cargo build -p oxide-desktop` | Desktop Rust host. |
+| `cd crates/desktop && npm run check` | Electron shell, live host protocol, and renderer checks. |
+| `cd crates/desktop && npm start` | Build the host and launch the desktop app. |
 | `cd editors/vscode && pnpm test` | VS Code extension tests (`tsc -p .` then `node --test out/test/`). |
 
 Before opening a pull request, make sure `cargo fmt`, `cargo clippy`, and
@@ -51,7 +53,7 @@ macOS, and Windows.
 The repository is a Cargo workspace with three Cargo packages: `oxide-core`
 (`crates/core`, shared agent core), `oxide` (`crates/cli`, the terminal binary:
 `main.rs`, `tui/`, `theme.rs`, `install.rs`, `update.rs`, `uninstall.rs`), and
-`oxide-desktop` (`crates/desktop`, the Tauri app, documented in
+`oxide-desktop` (`crates/desktop`, the Electron app and Rust host, documented in
 [`docs/desktop.md`](docs/desktop.md)). The VS Code extension under
 `editors/vscode` is a separate pnpm/TypeScript package, not a Cargo workspace
 member, documented in [`docs/vscode.md`](docs/vscode.md). Every path below is
@@ -97,9 +99,9 @@ relative to the repository root.
 | `crates/cli/src/tui/` | ratatui + crossterm interface with incremental rendering, a stacked welcome banner (block-letter `OXIDE` wordmark above the ecosystem summary), a live state row, a Pi-style footer (path/branch/session, cumulative tokens with cache and cost, context `%`/window, model/thinking, and plugin statuses), a growing editor, background-filled tool panels (Ctrl+O collapses; state-colored with hanging-indented wrapped output, blank line before the body and `Took`), reasoning blocks (Ctrl+T collapses them to `✦ Thought for 1.4s`), inline user/assistant labels, `read` bodies, colored edit diffs, a dim `ChatItem::Status` tip line for idle feedback (copies, toggles), structured `ChatItem::Listing` blocks for `/mcps` and `/plugins`, modal dialogs (provider login, `/usage`, model/session pickers, marketplaces) that place a terminal cursor at the end of each input, Shift+Tab reasoning cycling, Alt+Enter follow-ups with `Alt+Up` to pull queued messages back into the editor, theme-aware project-trust/provider dialogs, and mid-run steering. |
 | `crates/desktop/src/manager.rs` | Desktop multi-project state: the project registry (`desktop/projects.json`), session aggregation across projects, and the shared CLI config/trust loader. |
 | `crates/desktop/src/turn.rs` | Starts an agent turn for a project (session resolution + `runner::spawn_agent`), returning the event stream, steering handles, and cancel flag. |
-| `crates/core/src/approval.rs` | The interactive approve/deny broker shared by the CLI's rpc mode: emits an `approval_request` event carrying a request id and resolves `deny`/`once`/`always` from the client's answer frame. The desktop brokers the same decisions through its own Tauri emitter in `crates/desktop/src/approval.rs`. |
+| `crates/core/src/approval.rs` | The interactive approve/deny broker shared by the CLI's rpc mode: emits an `approval_request` event carrying a request id and resolves `deny`/`once`/`always` from the client's answer frame. The desktop brokers the same decisions through its Rust-host event sink in `crates/desktop/src/approval.rs`. |
 | `crates/core/src/approvals.rs` | The persisted side of an `always` answer: per-project `allow` rules in the shared `<config>/Oxide/approvals.json`, so the terminal, the desktop app and the VS Code extension stop asking for the same tool. |
-| `crates/desktop/src/commands.rs` | Tauri commands (projects, sessions, turns, models, themes, providers, approvals); `crates/desktop/src/main.rs` is the `gui`-featured entry point and `ui/` the HTML/CSS/JS front-end. |
+| `crates/desktop/src/commands.rs` | Stable renderer commands (projects, sessions, turns, models, themes, providers, approvals); `crates/desktop/src/main.rs` is the JSON-lines Rust host, `electron/` the sandboxed Electron shell, and `ui/` the HTML/CSS/JS renderer. |
 | `editors/vscode/` | VS Code extension (separate pnpm/TypeScript package): a chat webview and editor actions that drive the installed `oxide` binary as `oxide --mode rpc` (its prompt, and the answer to a tool approval, are request frames on the process's stdin); `src/core/` is webview-free and unit tested under `node --test`. |
 | `.oxide/` | Project agents, commands, prompts, skills, and plugins (Oxide layout). |
 
@@ -193,8 +195,8 @@ relative to the repository root.
 Releases are automated by GitHub Actions:
 
 1. `ci.yml` runs on pushes to `main` and on pull requests: formatting, clippy,
-   and the test suite plus a release build for the Rust workspace; a clippy and
-   `gui`-feature build of the desktop app on Linux, macOS, and Windows; and the
+   and the test suite plus a release build for the Rust workspace; Electron
+   host, renderer, bridge, and package checks on Linux, macOS, and Windows; and the
    VS Code extension's type check, unit tests, and `vsce package`.
 2. `cli.yml` triggers on `v*` tags, builds the supported CLI targets
    (including `x86_64-pc-windows-msvc`), packages each binary with a `.sha256`
