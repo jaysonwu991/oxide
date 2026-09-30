@@ -10,7 +10,7 @@
   "engines": {
     "node": ">=22.13.0"
   },
-  "packageManager": "pnpm@11.23.0",
+  "packageManager": "pnpm@12.8.1",
   "main": "electron/main.cjs",
   "scripts": {
     "host:debug": "cargo build --package oxide-desktop --bin oxide-desktop-host",

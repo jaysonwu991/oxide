@@ -24,7 +24,10 @@ function stringSet(source, declaration) {
 assert.equal(manifest.main, "electron/main.cjs");
 assert.match(manifest.devDependencies.electron, /^\d+\.\d+\.\d+$/);
 assert.match(manifest.devDependencies["@electron-forge/cli"], /^\d+\.\d+\.\d+$/);
-assert.match(manifest.packageManager || "", /^pnpm@\d+\.\d+\.\d+$/);
+// The lockfile records the pnpm it was written with (`packageManagerDependencies`,
+// from pnpm 12), so an older pnpm refuses it; the toolchain the package is
+// verified with is part of what has to stay put.
+assert.match(manifest.packageManager || "", /^pnpm@12\.\d+\.\d+$/);
 
 // CI and every clean contributor install from this lockfile, so each tarball has
 // to come from the public registry: a mirror baked in by whoever regenerated it
