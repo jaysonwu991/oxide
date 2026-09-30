@@ -791,6 +791,40 @@ check(
   String(composerButtonClicks),
 );
 
+// Older WebKit ends the field's editing session before it dispatches mousedown,
+// so `activeElement` is already empty when the page first sees the press. The
+// preceding focusout keeps that press associated with the editor for one task.
+document.activeElement = elementFor("prompt");
+document.fire("focusout", press({ target: elementFor("prompt") }));
+document.activeElement = null;
+const preBlurredButtonPress = press({ target: composerButton });
+document.fire("mousedown", preBlurredButtonPress);
+check(
+  "kept a press WebKit dispatched after it had already blurred the message box",
+  preBlurredButtonPress.refused === true,
+  String(preBlurredButtonPress.refused),
+);
+document.fire("mouseup", preBlurredButtonPress);
+await nextTick();
+check(
+  "supplied the click omitted after WebKit's early editor blur",
+  composerButtonClicks === 2,
+  String(composerButtonClicks),
+);
+
+document.activeElement = elementFor("prompt");
+document.fire("focusout", press({ target: elementFor("prompt") }));
+document.activeElement = null;
+await nextTick();
+const laterButtonPress = press({ target: composerButton });
+document.fire("mousedown", laterButtonPress);
+check(
+  "forgot an ended editing session before a later unrelated press",
+  laterButtonPress.refused !== true,
+  String(laterButtonPress.refused),
+);
+document.fire("mouseup", laterButtonPress);
+
 document.activeElement = elementFor("prompt");
 const nativeButtonPress = press({ target: composerButton });
 document.fire("mousedown", nativeButtonPress);
@@ -800,7 +834,7 @@ composerButton.onclick(nativeButtonPress);
 await nextTick();
 check(
   "kept a native click from being supplied a second time",
-  composerButtonClicks === 2,
+  composerButtonClicks === 3,
   String(composerButtonClicks),
 );
 
@@ -810,7 +844,7 @@ document.fire("mouseup", press({ target: new StubElement("div", "away") }));
 await nextTick();
 check(
   "left a press released away from its control alone",
-  composerButtonClicks === 2,
+  composerButtonClicks === 3,
   String(composerButtonClicks),
 );
 
@@ -826,7 +860,7 @@ document.fire("mouseup", filterButtonPress);
 await nextTick();
 check(
   "supplied the click WebKit omitted while ending a dialog field's editing session",
-  composerButtonClicks === 3,
+  composerButtonClicks === 4,
   String(composerButtonClicks),
 );
 

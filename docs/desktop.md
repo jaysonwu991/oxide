@@ -107,15 +107,16 @@ The window follows a Codex-style layout:
   pressed while an editable text field has the caret keeps its native click; if
   WebKit consumes that click while ending the field's editing session, the page
   supplies it after mouseup rather than making the control wait for a second
-  press. A press into another text field moves the caret there before WebKit can
-  spend that press on ending the earlier field. A control inside another stops
-  its click from reaching the row around
-  it, so a thread's
-  ✕ removes the thread rather than selecting the row and a chip's ✕ removes the
-  chip rather than opening the picture — and a thumbnail's picture is undraggable
-  (`-webkit-user-drag: none` in the stylesheet as well), so the gesture on it
-  stays the click that opens the preview instead of starting the drag WebKit
-  withholds it for. The
+  press. This also covers WebKit versions that report the field's `focusout`
+  before the page receives `mousedown`: the ended editor is remembered for that
+  one event-loop task, then forgotten. A press into another text field moves the
+  caret there before WebKit can spend that press on ending the earlier field. A
+  control inside another stops its click from reaching the row around it, so a
+  thread's ✕ removes the thread rather than selecting the row and a chip's ✕
+  removes the chip rather than opening the picture — and a thumbnail's picture
+  is undraggable (`-webkit-user-drag: none` in the stylesheet as well), so the
+  gesture on it stays the click that opens the preview instead of starting the
+  drag WebKit withholds it for. The
   status and
   token/cost usage sit just below it. The 📎 button (or a pasted clipboard
   image) attaches images/PDFs, shown above the input as thumbnails that open a
