@@ -296,13 +296,18 @@ the run's `Steering` handles and its cooperative `Cancel` flag. The Tauri comman
   its own requests with it (`AskBroker::clear_run`), and the window closes the
   dialog with it. Nothing is remembered between questions: an answer is about
   the turn that asked it.
-- **Cancel / steer** — `send_prompt` returns a run id immediately and runs the
+- **Cancel / queue / steer** — `send_prompt` returns a run id immediately and runs the
   turn in the background. `cancel_run` sets the run's cooperative `Cancel` flag
   (`oxide_core::agent::Cancel`): the loop finishes the current step — recording
   a result for any planned tool calls so the session stays a valid
   call/result sequence — and ends cleanly, with a 5-second force-abort fallback
-  if it is stuck. `steer_run` pushes into the interleaved or follow-up steering
-  queue.
+  if it is stuck. While the turn is active, typing new context replaces Stop
+  with Send and an explicit **Queue** / **Steer** choice. Queue is the safe
+  default: it waits until the current response finishes. Steer injects a course
+  correction before the agent's next model step. `steer_run` pushes into the
+  selected follow-up or interleaved steering queue, then the composer returns to
+  Queue so a later message cannot redirect work accidentally. `Alt+Enter`
+  remains a direct Queue shortcut.
 - **Notification** — a finished turn raises the same desktop toast the TUI does
   (`oxide_core::notify`, gated by the shared `notifyOnComplete` and
   `notifySound` settings). `turn::notify_finished` names the thread by its
@@ -399,9 +404,9 @@ immediately and persists it.
 
 | Key | Action |
 | --- | --- |
-| `Enter` | Send; while busy, steer the running turn |
+| `Enter` | Send with the selected Queue or Steer behavior |
 | `Shift+Enter` | Newline |
-| `Alt+Enter` | Queue a follow-up |
+| `Alt+Enter` | Queue a follow-up while busy |
 | `Shift+Tab` / `Ctrl+R` | Cycle reasoning |
 | `Ctrl+K` | Model picker |
 | `Ctrl+/` | Shortcut help |

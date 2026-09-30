@@ -577,7 +577,7 @@ vm.runInThisContext(
     " addAttachment, addAttachmentFiles, el, showQuestion, showQuestionStep, questionNext," +
     " answerQuestion, collectAnswers, requestAt, acceptAt, moveAt, closeAt, atKey," +
     " resetTranscript, renderChanges, closeReview, undoChanges," +
-    " loadSessions, renderProjectsTree, renderSessions, renderMcps, openSession, renderProjectMeta, updateSendState, setBusy, setIdle," +
+    " loadSessions, renderProjectsTree, renderSessions, renderMcps, openSession, renderProjectMeta, updateSendState, toggleBusyMessageMode, setBusy, setIdle," +
     " loadMcps, openSessions," +
     " listedSessions, selectSessionFromTree, removeSession," +
     " startTool, finishTool, toggleTool };\n",
@@ -2542,11 +2542,11 @@ check(
   `${elementFor("thread-title").textContent} / ${elementFor("projects-tree").outline()}`,
 );
 
-// ---------- one action in the composer's corner ----------
+// ---------- running-turn context in the composer's corner ----------
 
 console.log("composer action");
-// Stop and Send/Steer are one button that swaps: Stop while a turn runs with
-// nothing to say, Steer the moment there is something to send.
+// Stop and Send swap as the box gains text. New context waits by default; the
+// user can deliberately switch it to steering the active response.
 app.state.attachments = [];
 app.setIdle();
 elementFor("prompt").value = "";
@@ -2559,34 +2559,82 @@ check(
 app.setBusy();
 check(
   "offered Stop alone while a turn runs with an empty box",
-  elementFor("stop").hidden === false && elementFor("send").hidden === true,
-  `send ${elementFor("send").hidden} / stop ${elementFor("stop").hidden}`,
+  elementFor("stop").hidden === false &&
+    elementFor("send").hidden === true &&
+    elementFor("busy-message-mode").hidden === true,
+  `send ${elementFor("send").hidden} / stop ${elementFor("stop").hidden} / mode ${elementFor("busy-message-mode").hidden}`,
 );
 elementFor("prompt").value = "keep going";
 app.updateSendState();
 check(
-  "swapped in Steer once there was something to say",
+  "offered Queue by default once there was new context",
   elementFor("send").hidden === false &&
     elementFor("send").disabled === false &&
     elementFor("stop").hidden === true &&
-    elementFor("send").title === "Steer (Enter)",
-  `${elementFor("send").title} / send ${elementFor("send").hidden} / stop ${elementFor("stop").hidden}`,
+    elementFor("busy-message-mode").hidden === false &&
+    elementFor("busy-message-mode").textContent === "Queue" &&
+    elementFor("send").title === "Queue for after the current response (Enter)",
+  `${elementFor("busy-message-mode").textContent} / ${elementFor("send").title}`,
+);
+elementFor("busy-message-mode").onclick();
+check(
+  "made steering a deliberate visible choice",
+  elementFor("busy-message-mode").textContent === "Steer" &&
+    elementFor("send").title === "Steer the active response (Enter)",
+  `${elementFor("busy-message-mode").textContent} / ${elementFor("send").title}`,
 );
 elementFor("prompt").value = "";
 app.updateSendState();
 check(
   "went back to Stop when the box was emptied again",
-  elementFor("stop").hidden === false && elementFor("send").hidden === true,
-  `send ${elementFor("send").hidden} / stop ${elementFor("stop").hidden}`,
+  elementFor("stop").hidden === false &&
+    elementFor("send").hidden === true &&
+    elementFor("busy-message-mode").hidden === true,
+  `send ${elementFor("send").hidden} / stop ${elementFor("stop").hidden} / mode ${elementFor("busy-message-mode").hidden}`,
 );
 app.setIdle();
 check(
   "gave Send back, alone, when the turn ended",
   elementFor("send").hidden === false &&
     elementFor("stop").hidden === true &&
+    elementFor("busy-message-mode").hidden === true &&
     elementFor("send").title === "Send (Enter)",
   `${elementFor("send").title} / stop ${elementFor("stop").hidden}`,
 );
+
+calls.length = 0;
+app.setBusy();
+app.state.runId = 42;
+elementFor("prompt").value = "run this after your current answer";
+app.updateSendState();
+elementFor("send").onclick({ detail: 1 });
+await nextTick();
+let runningMessage = projectCalls("steer_run").at(-1);
+check(
+  "queued new context for the next response by default",
+  runningMessage?.[1]?.followUp === true,
+  JSON.stringify(runningMessage),
+);
+check(
+  "returned to the safe Queue default after sending",
+  app.state.busyMessageMode === "queue",
+  app.state.busyMessageMode,
+);
+
+calls.length = 0;
+elementFor("prompt").value = "change direction now";
+app.updateSendState();
+elementFor("busy-message-mode").onclick();
+elementFor("send").onclick({ detail: 1 });
+await nextTick();
+runningMessage = projectCalls("steer_run").at(-1);
+check(
+  "steered the active response when that choice was selected",
+  runningMessage?.[1]?.followUp === false,
+  JSON.stringify(runningMessage),
+);
+app.setIdle();
+app.state.runId = null;
 
 // The corner action is an ordinary button: the click it gets, whether the
 // browser calls it a mouse click or a keyboard activation, sends the message.

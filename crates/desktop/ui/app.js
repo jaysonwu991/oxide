@@ -23,6 +23,9 @@ const state = {
   sessions: [],
   busy: false,
   runId: null,
+  // New context sent during a run waits by default. Steering is a deliberate
+  // choice because it changes the work already in progress.
+  busyMessageMode: "queue",
   // What the running turn titled itself: the header names the thread by this
   // until the sidebar's own listing carries it.
   runTitle: "",
@@ -772,22 +775,38 @@ function resetTurn() {
   closeQuestion();
 }
 
-/// The composer's one action: while a turn runs the corner holds Stop, and the
-/// moment there is something to say it holds Send/Steer instead. Showing both
-/// reads as two ways to do the same thing, and invites a click on the one that
-/// does nothing.
+/// The composer's action while idle is Send. During a run it holds Stop until
+/// there is new context, then shows Send beside an explicit Queue/Steer choice.
 function updateSendState() {
   const hasText =
     el("prompt").value.trim().length > 0 || state.attachments.length > 0;
+  const hasBusyMessage = state.busy && hasText;
+  const mode = el("busy-message-mode");
   el("send").classList.toggle("enabled", hasText);
   el("send").disabled = !hasText;
   el("send").hidden = state.busy && !hasText;
   el("stop").hidden = !state.busy || hasText;
-  el("send").title = state.busy ? "Steer (Enter)" : "Send (Enter)";
+  mode.hidden = !hasBusyMessage;
+  mode.textContent = state.busyMessageMode === "steer" ? "Steer" : "Queue";
+  mode.title = state.busyMessageMode === "steer"
+    ? "Steer the active response; click to queue instead"
+    : "Queue for after the current response; click to steer instead";
+  mode.setAttribute("aria-label", mode.title);
+  el("send").title = hasBusyMessage
+    ? state.busyMessageMode === "steer"
+      ? "Steer the active response (Enter)"
+      : "Queue for after the current response (Enter)"
+    : "Send (Enter)";
+}
+
+function toggleBusyMessageMode() {
+  state.busyMessageMode = state.busyMessageMode === "queue" ? "steer" : "queue";
+  updateSendState();
 }
 
 function setBusy() {
   state.busy = true;
+  state.busyMessageMode = "queue";
   updateSendState();
 }
 
@@ -1031,6 +1050,9 @@ async function send(followUp = false) {
 
   if (state.busy) {
     if (state.runId == null) return;
+    // An explicit shortcut can always queue; the ordinary Send action follows
+    // the visible choice beside it.
+    followUp = followUp || state.busyMessageMode === "queue";
     textarea.value = "";
     clearAttachments();
     clearWelcome();
@@ -1044,6 +1066,9 @@ async function send(followUp = false) {
       followUp,
       attachments: attachments.length ? attachments : null,
     });
+    state.busyMessageMode = "queue";
+    updateSendState();
+    setStatus(followUp ? "Queued for the next response." : "Steering the active response…");
     return;
   }
 
@@ -3363,6 +3388,7 @@ function init() {
   el("connect").onclick = openConnect;
 
   el("send").onclick = () => send(false);
+  el("busy-message-mode").onclick = toggleBusyMessageMode;
   el("stop").onclick = stop;
   el("approval-once").onclick = () => answerApproval("once");
   el("approval-always").onclick = () => answerApproval("always");
