@@ -1001,7 +1001,8 @@ async fn run_loop(
                         Ok(result) => result,
                         Err(_) => (
                             tools::ToolOutput::error(format!(
-                                "{} stopped unexpectedly; retry the call once",
+                                "{} stopped before reporting its result; completion is unknown. \
+                                 Inspect the target state before deciding whether to retry",
                                 original.function.name
                             )),
                             0,

@@ -479,7 +479,8 @@ pub async fn execute(
                 {
                     Ok(result) => result,
                     Err(_) => Ok(ToolOutput::error(format!(
-                        "{name} stopped unexpectedly; retry the call once"
+                        "{name} stopped before reporting its result; completion is unknown. \
+                         Inspect the target state before deciding whether to retry"
                     ))),
                 }
             }
@@ -1208,9 +1209,14 @@ fn fast_find(root: &Path, pattern: &str, limit: usize) -> Option<String> {
     if !root.is_dir() {
         return None;
     }
-    if let Some(fd) = command_path("fd").or_else(|| command_path("fdfind")) {
-        if let Some(output) = fd_find(&fd, root, pattern, limit) {
-            return Some(output);
+    // fd matches path-containing globs against an absolute/./-prefixed path,
+    // which changes root-relative semantics. rg handles those patterns exactly;
+    // fd remains the faster basename-pattern path.
+    if !pattern.contains('/') && !pattern.contains('\\') {
+        if let Some(fd) = command_path("fd").or_else(|| command_path("fdfind")) {
+            if let Some(output) = fd_find(&fd, root, pattern, limit) {
+                return Some(output);
+            }
         }
     }
     rg_find(root, pattern, limit)
@@ -1219,11 +1225,16 @@ fn fast_find(root: &Path, pattern: &str, limit: usize) -> Option<String> {
 /// Lists files with fd, matching Pi's preferred implementation. Debian-based
 /// distributions package the same binary as `fdfind`, accepted above.
 fn fd_find(fd: &Path, root: &Path, pattern: &str, limit: usize) -> Option<String> {
+    if pattern.contains('/') || pattern.contains('\\') {
+        return None;
+    }
     let mut args = vec![
         "--glob".to_string(),
         "--color=never".to_string(),
         "--hidden".to_string(),
         "--no-require-git".to_string(),
+        "--type".to_string(),
+        "f".to_string(),
         "--max-results".to_string(),
         limit.saturating_add(1).to_string(),
     ];
@@ -1231,21 +1242,7 @@ fn fd_find(fd: &Path, root: &Path, pattern: &str, limit: usize) -> Option<String
         args.push("--exclude".to_string());
         args.push(ignored.to_string());
     }
-    let mut effective_pattern = pattern.replace('\\', "/");
-    if effective_pattern.contains('/') {
-        args.push("--full-path".to_string());
-        if !effective_pattern.starts_with('/')
-            && !effective_pattern.starts_with("**/")
-            && effective_pattern != "**"
-        {
-            effective_pattern = format!("**/{effective_pattern}");
-        }
-        #[cfg(windows)]
-        {
-            effective_pattern = effective_pattern.replace('/', "[/\\\\]");
-        }
-    }
-    args.extend(["--".to_string(), effective_pattern, ".".to_string()]);
+    args.extend(["--".to_string(), pattern.to_string(), ".".to_string()]);
     collect_find_child(
         std::process::Command::new(fd).current_dir(root).args(args),
         limit,
@@ -1287,7 +1284,7 @@ fn collect_find_child(command: &mut std::process::Command, limit: usize) -> Opti
         .ok()?;
     let stdout = child.stdout.take()?;
     let mut matches = Vec::with_capacity(limit.saturating_add(1).min(MAX_MATCHES + 1));
-    let mut killed_at_limit = false;
+    let mut kill_requested = false;
     let mut read_failed = false;
     for line in BufReader::new(stdout).lines() {
         let line = match line {
@@ -1304,12 +1301,12 @@ fn collect_find_child(command: &mut std::process::Command, limit: usize) -> Opti
             .replace('\\', "/");
         matches.push(line);
         if matches.len() > limit {
-            killed_at_limit = true;
-            let _ = child.kill();
+            kill_requested = child.kill().is_ok();
             break;
         }
     }
     let status = child.wait().ok()?;
+    let killed_at_limit = child_killed_at_limit(&status, kill_requested);
     // Never return partial output from a native tool that failed by itself.
     // That would look correct while silently omitting results. Let the caller
     // try the next implementation instead. A process Oxide deliberately killed
@@ -1473,7 +1470,7 @@ fn rg_grep(
     let mut child = command.spawn().ok()?;
     let stdout = child.stdout.take()?;
     let mut hits: Vec<String> = Vec::new();
-    let mut killed_at_limit = false;
+    let mut kill_requested = false;
     let mut read_failed = false;
     for line in BufReader::new(stdout).lines() {
         let line = match line {
@@ -1508,12 +1505,12 @@ fn rg_grep(
         let marker = if kind == "match" { ':' } else { '-' };
         hits.push(format!("{path}{marker}{line_number}{marker} {text}"));
         if hits.len() > limit {
-            killed_at_limit = true;
-            let _ = child.kill();
+            kill_requested = child.kill().is_ok();
             break;
         }
     }
     let status = child.wait().ok()?;
+    let killed_at_limit = child_killed_at_limit(&status, kill_requested);
     // rg exits 1 for an ordinary no-match result. Every other unsolicited
     // failure falls back rather than returning plausible-looking partial data.
     let no_matches = status.code() == Some(1) && hits.is_empty();
@@ -1521,6 +1518,28 @@ fn rg_grep(
         return None;
     }
     Some(finish_hits(hits, limit))
+}
+
+/// Confirms that a non-success status came from Oxide's limit stop rather than
+/// an accelerator that had already failed after filling its stdout pipe.
+fn child_killed_at_limit(status: &std::process::ExitStatus, requested: bool) -> bool {
+    if !requested {
+        return false;
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::ExitStatusExt;
+        status.signal() == Some(libc::SIGKILL)
+    }
+    #[cfg(windows)]
+    {
+        // std::process::Child::kill uses TerminateProcess with exit code 1.
+        status.code() == Some(1)
+    }
+    #[cfg(not(any(unix, windows)))]
+    {
+        false
+    }
 }
 
 /// Greps the tree with the built-in parallel walker.
@@ -3879,7 +3898,8 @@ mod tests {
         let fake_fd = dir.join("fd");
         std::fs::write(
             &fake_fd,
-            "#!/bin/sh\nprintf 'a.txt\\nnested/b.txt\\nthird.txt\\n'\n",
+            "#!/bin/sh\ncase \" $* \" in *\" --type f \"*) ;; *) exit 3 ;; esac\n\
+             printf 'a.txt\\nnested/b.txt\\nthird.txt\\n'\n",
         )
         .unwrap();
         let mut permissions = std::fs::metadata(&fake_fd).unwrap().permissions();
@@ -3888,6 +3908,7 @@ mod tests {
 
         let output = fd_find(&fake_fd, &dir, "*.txt", 1).unwrap();
         assert_eq!(output, "a.txt\n... [truncated]");
+        assert!(fd_find(&fake_fd, &dir, "src/*.rs", 1).is_none());
 
         std::fs::remove_dir_all(&dir).ok();
     }
@@ -3907,6 +3928,29 @@ mod tests {
         std::fs::set_permissions(&fake_fd, permissions).unwrap();
 
         assert!(fd_find(&fake_fd, &dir, "*.txt", 10).is_none());
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn fd_find_rejects_limit_sized_output_from_a_failed_process() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = std::env::temp_dir().join(format!("oxide_fd_limit_fail_{}", std::process::id()));
+        std::fs::remove_dir_all(&dir).ok();
+        std::fs::create_dir_all(&dir).unwrap();
+        let fake_fd = dir.join("fd");
+        std::fs::write(
+            &fake_fd,
+            "#!/bin/sh\nprintf 'first.txt\\nsecond.txt\\n'\nexit 2\n",
+        )
+        .unwrap();
+        let mut permissions = std::fs::metadata(&fake_fd).unwrap().permissions();
+        permissions.set_mode(0o755);
+        std::fs::set_permissions(&fake_fd, permissions).unwrap();
+
+        assert!(fd_find(&fake_fd, &dir, "*.txt", 1).is_none());
 
         std::fs::remove_dir_all(&dir).ok();
     }
