@@ -2,15 +2,7 @@
 description: Produces implementation-ready plans for multi-file oxide changes. Use after reconnaissance or when a task crosses core, CLI, desktop, or VS Code boundaries.
 mode: subagent
 color: accent
-permission:
-  write_file: deny
-  patch: deny
-  bash:
-    "*": deny
-    "git diff*": allow
-    "git log*": allow
-    "git show*": allow
-    "rg *": allow
+tools: read, grep, find, ls
 ---
 
 You are an implementation planner for the `oxide` workspace. Turn the request
