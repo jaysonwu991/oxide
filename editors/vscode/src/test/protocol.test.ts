@@ -539,7 +539,13 @@ describe("Transcript", () => {
     const transcript = new Transcript();
     transcript.replay([
       { kind: "user", text: "why is the test flaky?" },
-      { kind: "tool", name: "read", args: '{"path":"src/a.rs"}', output: "fn test() {}" },
+      {
+        kind: "tool",
+        name: "read",
+        args: '{"path":"src/a.rs"}',
+        output: "fn test() {}",
+        isError: false,
+      },
       { kind: "assistant", text: "it polls the clock" },
     ]);
     // No message per entry: the controller repaints the whole list from one
@@ -561,6 +567,32 @@ describe("Transcript", () => {
     ]);
   });
 
+  it("replays a stored tool failure without its compatibility marker", () => {
+    const transcript = new Transcript();
+    transcript.replay([
+      {
+        kind: "tool",
+        name: "edit",
+        args: '{"path":"src/a.rs","oldText":"missing","newText":"x"}',
+        output: "oldText not found",
+        isError: true,
+      },
+    ]);
+    assert.deepEqual(transcript.items, [
+      {
+        id: 1,
+        kind: "tool",
+        name: "edit",
+        args: '{"path":"src/a.rs","oldText":"missing","newText":"x"}',
+        output: "oldText not found",
+        diff: null,
+        running: false,
+        isError: true,
+        unknown: false,
+      },
+    ]);
+  });
+
   it("replays an edit with the change its own arguments describe", () => {
     const transcript = new Transcript(() => "a diff built from the file on disk now");
     transcript.replay([
@@ -569,8 +601,15 @@ describe("Transcript", () => {
         name: "edit",
         args: '{"path":"src/a.rs","edits":[{"oldText":"b","newText":"x"}]}',
         output: "Successfully replaced 1 block(s)",
+        isError: false,
       },
-      { kind: "tool", name: "write", args: '{"path":"src/a.rs","content":"x"}', output: "Wrote" },
+      {
+        kind: "tool",
+        name: "write",
+        args: '{"path":"src/a.rs","content":"x"}',
+        output: "Wrote",
+        isError: false,
+      },
     ]);
     const [edit, write] = transcript.items;
     assert.ok(edit.kind === "tool" && write.kind === "tool");

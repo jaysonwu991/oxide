@@ -138,6 +138,9 @@ pub struct DiffPreview {
 pub struct ToolOutput {
     pub text: String,
     pub media: Vec<ContentPart>,
+    /// Whether the tool failed. This is deliberately separate from `text` so
+    /// front-ends never have to infer state from user-visible wording.
+    pub is_error: bool,
     pub terminate: bool,
     pub diff: Option<DiffPreview>,
 }
@@ -147,6 +150,7 @@ impl ToolOutput {
         Self {
             text: text.into(),
             media: Vec::new(),
+            is_error: false,
             terminate: false,
             diff: None,
         }
@@ -156,6 +160,7 @@ impl ToolOutput {
         Self {
             text: text.into(),
             media,
+            is_error: false,
             terminate: false,
             diff: None,
         }
@@ -167,6 +172,32 @@ impl ToolOutput {
             text: text.into(),
         });
         self
+    }
+
+    pub fn error(text: impl Into<String>) -> Self {
+        let text = text.into();
+        Self {
+            text: text
+                .strip_prefix("error:")
+                .map(str::trim_start)
+                .unwrap_or(&text)
+                .to_string(),
+            media: Vec::new(),
+            is_error: true,
+            terminate: false,
+            diff: None,
+        }
+    }
+
+    /// Tool messages do not yet carry a provider-neutral error bit, so retain
+    /// the familiar marker in the model/session transcript while keeping it
+    /// out of the event text rendered to people.
+    pub fn model_text(&self) -> String {
+        if self.is_error {
+            format!("error: {}", self.text)
+        } else {
+            self.text.clone()
+        }
     }
 }
 
@@ -401,17 +432,30 @@ pub async fn execute(
     let name = call.function.name.as_str();
     let args: Value = match serde_json::from_str(&call.function.arguments) {
         Ok(value) => value,
-        Err(err) => return ToolOutput::text(format!("error: invalid arguments for {name}: {err}")),
+        Err(_) => {
+            return ToolOutput::error(format!(
+                "{name} received invalid JSON arguments. Expected a JSON object{}.",
+                expected_arguments(name)
+            ))
+        }
     };
 
     let canonical = canonical_tool_name(name);
     let result = if mcp.is_tool(name) {
-        mcp.call(name, args).await.map(ToolOutput::text)
+        mcp.call(name, args).await.map(|result| {
+            if result.is_error {
+                ToolOutput::error(result.text)
+            } else {
+                ToolOutput::text(result.text)
+            }
+        })
     } else {
         match canonical {
             "mcp_load" => match args.get("server").and_then(Value::as_str) {
                 Some(server) => mcp.load(server).await.map(ToolOutput::text),
-                None => Err(anyhow::anyhow!("missing `server`")),
+                None => Err(anyhow::anyhow!(
+                    "mcp_load requires a `server` string, for example {{\"server\":\"github\"}}"
+                )),
             },
             "bash" => bash(cwd, &args, progress).await.map(ToolOutput::text),
             "webfetch" => webfetch_guarded(&args, mcp).await.map(ToolOutput::text),
@@ -449,10 +493,53 @@ pub async fn execute(
                 truncate(canonical, output.text)
             },
             media: output.media,
+            is_error: output.is_error,
             terminate: output.terminate,
             diff: output.diff,
         },
-        Err(err) => ToolOutput::text(format!("error: {err:#}")),
+        Err(err) => ToolOutput::error(format!("{err:#}")),
+    }
+}
+
+fn expected_arguments(name: &str) -> &'static str {
+    match canonical_tool_name(name) {
+        "read_file" => " with a string `path` and optional integer `offset` and `limit`",
+        "write_file" => " with string `path` and `content` fields",
+        "edit" => " with a string `path` and an `edits` array of {oldText,newText} objects",
+        "glob" => " with a string `pattern` and optional `path`",
+        "grep" => " with a string `pattern` and optional `path`, `glob`, and search options",
+        "patch" => " with a unified diff string in `diff`",
+        "bash" => " with a shell command string in `command`",
+        "webfetch" => " with a URL string in `url`",
+        "mcp_load" => " with an MCP server name string in `server`",
+        _ => "",
+    }
+}
+
+fn required_string<'a>(args: &'a Value, tool: &str, key: &str, example: &str) -> Result<&'a str> {
+    args.get(key).and_then(Value::as_str).ok_or_else(|| {
+        anyhow::anyhow!(
+            "{tool} requires a `{key}` string, for example {example}{}",
+            received_keys(args)
+        )
+    })
+}
+
+fn received_keys(args: &Value) -> String {
+    let Some(object) = args.as_object() else {
+        return "; received a non-object value".to_string();
+    };
+    if object.is_empty() {
+        "; received an empty object".to_string()
+    } else {
+        format!(
+            "; received keys: {}",
+            object
+                .keys()
+                .map(String::as_str)
+                .collect::<Vec<_>>()
+                .join(", ")
+        )
     }
 }
 
@@ -466,10 +553,7 @@ fn resolve(cwd: &Path, path: &str) -> PathBuf {
 }
 
 fn read_file(cwd: &Path, args: &Value) -> Result<ToolOutput> {
-    let path = args
-        .get("path")
-        .and_then(Value::as_str)
-        .context("missing `path`")?;
+    let path = required_string(args, "read", "path", r#"{"path":"src/main.rs"}"#)?;
 
     let full = resolve(cwd, path);
     if full.is_dir() {
@@ -596,14 +680,18 @@ fn line_chunks(line: &str) -> Vec<&str> {
 }
 
 fn write_file(cwd: &Path, args: &Value) -> Result<ToolOutput> {
-    let path = args
-        .get("path")
-        .and_then(Value::as_str)
-        .context("missing `path`")?;
-    let content = args
-        .get("content")
-        .and_then(Value::as_str)
-        .context("missing `content`")?;
+    let path = required_string(
+        args,
+        "write",
+        "path",
+        r#"{"path":"notes.txt","content":"..."}"#,
+    )?;
+    let content = required_string(
+        args,
+        "write",
+        "content",
+        r#"{"path":"notes.txt","content":"..."}"#,
+    )?;
 
     let full = resolve(cwd, path);
     if let Some(parent) = full.parent() {
@@ -631,17 +719,16 @@ struct Replacement {
 /// `oldText`/`newText` are folded into the list.
 fn parse_edits(args: &Value) -> Result<Vec<Replacement>> {
     let mut raw: Vec<Replacement> = Vec::new();
-    let mut string_error: Option<String> = None;
+    let mut invalid_string: Option<String> = None;
     match args.get("edits") {
         Some(Value::String(text)) => match parse_edits_string(text) {
             Some(parsed) => collect_edits(&parsed, &mut raw),
             None => {
-                string_error = Some(
-                    serde_json::from_str::<Value>(text)
-                        .err()
-                        .map(|err| err.to_string())
-                        .unwrap_or_else(|| "it held no {oldText,newText} edits".to_string()),
-                )
+                let mut snippet: String = text.chars().take(80).collect();
+                if text.chars().count() > 80 {
+                    snippet.push('…');
+                }
+                invalid_string = Some(snippet.replace(['\n', '\r', '\t'], " "));
             }
         },
         Some(value) => collect_edits(value, &mut raw),
@@ -657,12 +744,16 @@ fn parse_edits(args: &Value) -> Result<Vec<Replacement>> {
         });
     }
     if raw.is_empty() {
-        if let Some(err) = string_error {
+        if let Some(snippet) = invalid_string {
             anyhow::bail!(
-                "`edits` is a JSON string that did not parse ({err}); pass `edits` as an array of {{oldText,newText}} objects"
+                "edit received `edits` as a string that is not valid JSON. Pass an array like \
+                 [{{\"oldText\":\"before\",\"newText\":\"after\"}}]. Received: {snippet:?}"
             );
         }
-        anyhow::bail!("edits must contain at least one replacement");
+        anyhow::bail!(
+            "edit requires at least one replacement in `edits`, for example \
+             [{{\"oldText\":\"before\",\"newText\":\"after\"}}]"
+        );
     }
     Ok(raw)
 }
@@ -914,10 +1005,12 @@ fn strip_all_line_prefixes(text: &str) -> String {
 /// `read` listing has its `N|` prefixes removed, so the common "cosmetically
 /// different" edit still lands without a round trip.
 fn edit(cwd: &Path, args: &Value) -> Result<ToolOutput> {
-    let path = args
-        .get("path")
-        .and_then(Value::as_str)
-        .context("missing `path`")?;
+    let path = required_string(
+        args,
+        "edit",
+        "path",
+        r#"{"path":"src/main.rs","edits":[{"oldText":"...","newText":"..."}]}"#,
+    )?;
     let edits = parse_edits(args)?;
     let full = resolve(cwd, path);
     let raw = std::fs::read_to_string(&full)
@@ -1075,10 +1168,7 @@ fn list_dir(cwd: &Path, args: &Value) -> Result<String> {
 const MAX_MATCHES: usize = 200;
 
 fn glob(cwd: &Path, args: &Value) -> Result<String> {
-    let pattern = args
-        .get("pattern")
-        .and_then(Value::as_str)
-        .context("missing `pattern`")?;
+    let pattern = required_string(args, "glob", "pattern", r#"{"pattern":"**/*.rs"}"#)?;
     let base = args.get("path").and_then(Value::as_str).unwrap_or(".");
     let limit = int_arg(args, "limit").unwrap_or(MAX_MATCHES);
     let root = resolve(cwd, base);
@@ -1106,12 +1196,9 @@ fn glob(cwd: &Path, args: &Value) -> Result<String> {
 }
 
 fn grep(cwd: &Path, args: &Value) -> Result<String> {
-    let pattern = args
-        .get("pattern")
-        .and_then(Value::as_str)
-        .context("missing `pattern`")?;
+    let pattern = required_string(args, "grep", "pattern", r#"{"pattern":"ToolOutput"}"#)?;
     if pattern.is_empty() {
-        anyhow::bail!("`pattern` must not be empty");
+        anyhow::bail!("grep requires a non-empty `pattern` string");
     }
     let base = args.get("path").and_then(Value::as_str).unwrap_or(".");
     // Pi names these `glob`/`ignoreCase`; the legacy names are still accepted.
@@ -1154,7 +1241,12 @@ impl GrepMatcher {
             let regex = regex::RegexBuilder::new(pattern)
                 .case_insensitive(ignore_case)
                 .build()
-                .map_err(|err| anyhow::anyhow!("invalid `pattern` regex: {err}"))?;
+                .map_err(|err| {
+                    anyhow::anyhow!(
+                        "grep could not compile `pattern` as a regular expression: {err}. \
+                         Fix the expression or set `regex` to false for a literal search"
+                    )
+                })?;
             Ok(GrepMatcher::Regex(regex))
         } else {
             Ok(GrepMatcher::Literal {
@@ -1494,10 +1586,12 @@ fn bool_arg(args: &Value, primary: &str, legacy: &str) -> bool {
 }
 
 fn patch(cwd: &Path, args: &Value) -> Result<ToolOutput> {
-    let diff = args
-        .get("diff")
-        .and_then(Value::as_str)
-        .context("missing `diff`")?;
+    let diff = required_string(
+        args,
+        "patch",
+        "diff",
+        r#"{"diff":"--- a/file\n+++ b/file\n@@ ..."}"#,
+    )?;
     let lines: Vec<&str> = diff.lines().collect();
     let mut applied: Vec<String> = Vec::new();
     let mut previews: Vec<(String, String)> = Vec::new();
@@ -1600,10 +1694,7 @@ fn patch(cwd: &Path, args: &Value) -> Result<ToolOutput> {
 /// server is loaded on demand and the model is pointed at its tools instead of
 /// an unauthenticated fetch.
 async fn webfetch_guarded(args: &Value, mcp: &McpRegistry) -> Result<String> {
-    let url = args
-        .get("url")
-        .and_then(Value::as_str)
-        .context("missing `url`")?;
+    let url = required_string(args, "webfetch", "url", r#"{"url":"https://example.com"}"#)?;
     if let Some(server) = mcp.url_owned(url) {
         let loaded = mcp.load(&server).await.with_context(|| {
             format!("loading MCP server `{server}` for URL owned by that service")
@@ -1734,10 +1825,7 @@ fn forge_hint(route: &ForgeRoute, item: &ForgeItem, url: &str) -> String {
 }
 
 async fn webfetch(args: &Value) -> Result<String> {
-    let url = args
-        .get("url")
-        .and_then(Value::as_str)
-        .context("missing `url`")?;
+    let url = required_string(args, "webfetch", "url", r#"{"url":"https://example.com"}"#)?;
     let format = args
         .get("format")
         .and_then(Value::as_str)
@@ -2001,10 +2089,7 @@ fn is_build_command(command: &str) -> bool {
 }
 
 async fn bash(cwd: &Path, args: &Value, progress: &Progress) -> Result<String> {
-    let command = args
-        .get("command")
-        .and_then(Value::as_str)
-        .context("missing `command`")?;
+    let command = required_string(args, "bash", "command", r#"{"command":"cargo test"}"#)?;
     let secs = bash_timeout_secs(args, command);
 
     #[cfg(windows)]
@@ -3013,7 +3098,9 @@ mod tests {
             &progress,
         )
         .await;
-        assert!(bad.text.contains("invalid"), "{}", bad.text);
+        assert!(bad.is_error, "{}", bad.text);
+        assert!(bad.text.contains("could not compile"), "{}", bad.text);
+        assert!(bad.text.contains("set `regex` to false"), "{}", bad.text);
 
         std::fs::remove_dir_all(&dir).ok();
     }
@@ -3217,7 +3304,8 @@ mod tests {
             &progress,
         )
         .await;
-        assert!(out.text.starts_with("error:"), "{}", out.text);
+        assert!(out.is_error, "{}", out.text);
+        assert!(out.text.contains("reading") && out.text.contains("missing.txt"));
 
         std::fs::write(dir.join("shot.png"), b"f").unwrap();
         let out = execute(
@@ -3231,6 +3319,35 @@ mod tests {
         assert!(out.text.contains("attached image"), "{}", out.text);
 
         std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[tokio::test]
+    async fn argument_errors_are_structured_and_actionable() {
+        let mcp = McpRegistry::default();
+        let progress = Progress::default();
+        let cwd = std::env::temp_dir();
+
+        let missing = execute(&call("edit", json!({ "edits": [] })), &cwd, &mcp, &progress).await;
+        assert!(missing.is_error);
+        assert!(missing.text.contains("edit requires a `path` string"));
+        assert!(missing.text.contains("received keys: edits"));
+        assert!(!missing.text.starts_with("error:"));
+
+        let malformed = ToolCall {
+            id: "test".to_string(),
+            kind: "function".to_string(),
+            function: FunctionCall {
+                name: "edit".to_string(),
+                arguments: "{not json".to_string(),
+            },
+        };
+        let malformed = execute(&malformed, &cwd, &mcp, &progress).await;
+        assert!(malformed.is_error);
+        assert!(malformed.text.contains("received invalid JSON arguments"));
+        assert!(malformed.text.contains("oldText,newText"));
+        assert!(!malformed.text.contains("line 1 column"));
+
+        assert!(malformed.model_text().starts_with("error: "));
     }
 
     #[tokio::test]
@@ -3779,7 +3896,10 @@ mod tests {
             &json!({ "path": "a.txt", "edits": "[{\"oldText\": \"hello\"" }),
         )
         .unwrap_err();
-        assert!(err.to_string().contains("did not parse"), "{err}");
+        let message = err.to_string();
+        assert!(message.contains("not valid JSON"), "{message}");
+        assert!(message.contains("oldText") && message.contains("newText"));
+        assert!(!message.contains("line 1 column"), "{message}");
 
         std::fs::remove_dir_all(&dir).ok();
     }

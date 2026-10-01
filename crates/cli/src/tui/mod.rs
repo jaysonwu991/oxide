@@ -4655,6 +4655,7 @@ fn handle_agent_event(event: AgentEvent, app: &mut App) {
             name,
             args,
             output,
+            is_error,
             diff,
             millis,
         } => {
@@ -4670,7 +4671,7 @@ fn handle_agent_event(event: AgentEvent, app: &mut App) {
             {
                 app.pending_approval = None;
             }
-            app.resolve_tool(name, args, output, diff, millis);
+            app.resolve_tool(name, args, output, is_error, diff, millis);
             app.status = "thinking...".to_string();
         }
         AgentEvent::Usage {
@@ -4998,6 +4999,7 @@ mod tests {
                 name: "bash".into(),
                 args: "{}".into(),
                 output: "denied".into(),
+                is_error: true,
                 diff: None,
                 millis: 1,
             },
@@ -5090,6 +5092,7 @@ mod tests {
                 name: "task".into(),
                 args: "{}".into(),
                 output: "the report".into(),
+                is_error: false,
                 diff: None,
                 millis: 500,
             },

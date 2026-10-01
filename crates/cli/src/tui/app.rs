@@ -107,6 +107,7 @@ pub enum ChatItem {
         name: String,
         args: String,
         output: String,
+        is_error: bool,
         diff: Option<DiffPreview>,
         millis: u64,
     },
@@ -922,13 +923,22 @@ impl App {
                         }
                     }
                 }
-                "tool" => self.items.push(ChatItem::ToolResult {
-                    name: "tool".to_string(),
-                    args: "{}".to_string(),
-                    output: message.display().unwrap_or_default(),
-                    diff: None,
-                    millis: 0,
-                }),
+                "tool" => {
+                    let output = message.display().unwrap_or_default();
+                    let is_error = output.starts_with("error:");
+                    self.items.push(ChatItem::ToolResult {
+                        name: "tool".to_string(),
+                        args: "{}".to_string(),
+                        output: output
+                            .strip_prefix("error:")
+                            .map(str::trim_start)
+                            .unwrap_or(&output)
+                            .to_string(),
+                        is_error,
+                        diff: None,
+                        millis: 0,
+                    });
+                }
                 _ => {}
             }
         }
@@ -1247,6 +1257,7 @@ impl App {
         name: String,
         args: String,
         output: String,
+        is_error: bool,
         diff: Option<DiffPreview>,
         millis: u64,
     ) {
@@ -1275,6 +1286,7 @@ impl App {
                     name,
                     args,
                     output,
+                    is_error,
                     diff,
                     millis,
                 };
@@ -1284,6 +1296,7 @@ impl App {
                 name,
                 args,
                 output,
+                is_error,
                 diff,
                 millis,
             }),

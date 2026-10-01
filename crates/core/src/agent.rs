@@ -167,6 +167,7 @@ pub enum AgentEvent {
         name: String,
         args: String,
         output: String,
+        is_error: bool,
         diff: Option<tools::DiffPreview>,
         /// Wall-clock time the tool spent running, in milliseconds.
         millis: u64,
@@ -320,6 +321,7 @@ pub fn run_subagent(
                     name,
                     args,
                     output,
+                    is_error,
                     diff,
                     millis,
                 } => {
@@ -327,6 +329,7 @@ pub fn run_subagent(
                         name,
                         args,
                         output,
+                        is_error,
                         diff,
                         millis,
                     });
@@ -795,7 +798,8 @@ async fn run_loop(
                 let _ = tx.send(AgentEvent::ToolResult {
                     name: call.function.name.clone(),
                     args: call.function.arguments.clone(),
-                    output: "error: cancelled by the user".to_string(),
+                    output: "cancelled by the user".to_string(),
+                    is_error: true,
                     diff: None,
                     millis: 0,
                 });
@@ -863,8 +867,8 @@ async fn run_loop(
                                 args: effective_args,
                             }
                         } else {
-                            Prepared::Immediate(tools::ToolOutput::text(format!(
-                                "error: permission denied for `{name}`"
+                            Prepared::Immediate(tools::ToolOutput::error(format!(
+                                "permission denied for `{name}`"
                             )))
                         },
                     );
@@ -895,10 +899,15 @@ async fn run_loop(
                                 let mut output =
                                     dispatch(&config, &cwd, &runtime, &tx, &call, depth, &progress)
                                         .await;
-                                if let Some(result) =
-                                    runtime.plugins.tool_after(&name, &args, &output.text).await
+                                if let Some(result) = runtime
+                                    .plugins
+                                    .tool_after(&name, &args, &output.text, output.is_error)
+                                    .await
                                 {
                                     output.text = result.output;
+                                    if let Some(is_error) = result.is_error {
+                                        output.is_error = is_error;
+                                    }
                                     output.terminate |= result.terminate;
                                 }
                                 (output, started.elapsed().as_millis() as u64)
@@ -911,25 +920,32 @@ async fn run_loop(
                     let (output, millis) = match handle.await {
                         Ok(result) => result,
                         Err(err) => (
-                            tools::ToolOutput::text(format!("error: tool task failed: {err}")),
+                            tools::ToolOutput::error(format!("tool task failed: {err}")),
                             0,
                         ),
                     };
                     let args = serde_json::from_str::<Value>(&original.function.arguments)
                         .unwrap_or(Value::Null);
-                    verification.record(&original.function.name, &args, &output.text);
+                    verification.record_result(
+                        &original.function.name,
+                        &args,
+                        &output.text,
+                        output.is_error,
+                    );
                     terminated.push(output.terminate);
                     let _ = tx.send(AgentEvent::ToolResult {
                         name: original.function.name.clone(),
                         args: original.function.arguments.clone(),
                         output: output.text.clone(),
+                        is_error: output.is_error,
                         diff: output.diff.clone(),
                         millis,
                     });
+                    let model_text = output.model_text();
                     let tool_message = if output.media.is_empty() {
-                        Message::tool(original.id.clone(), output.text)
+                        Message::tool(original.id.clone(), model_text)
                     } else {
-                        Message::tool_parts(original.id.clone(), output.text, output.media)
+                        Message::tool_parts(original.id.clone(), model_text, output.media)
                     };
                     record(&runtime.session, depth, &tool_message);
                     messages.push(tool_message);
@@ -981,11 +997,11 @@ async fn run_loop(
                     };
                     let mut dispatched = false;
                     let mut output = if block_reply {
-                        tools::ToolOutput::text(
-                        "error: commit and push the code changes before replying to the review, so \
+                        tools::ToolOutput::error(
+                            "commit and push the code changes before replying to the review, so \
                          the reply does not claim a fix that is not on the branch under review"
-                            .to_string(),
-                    )
+                                .to_string(),
+                        )
                     } else if permission_granted(
                         permissions.decide(&name, &subject),
                         config.auto_approve,
@@ -999,12 +1015,10 @@ async fn run_loop(
                         dispatched = true;
                         dispatch(&config, &cwd, &runtime, &tx, &call, depth, &progress).await
                     } else {
-                        tools::ToolOutput::text(format!("error: permission denied for `{name}`"))
+                        tools::ToolOutput::error(format!("permission denied for `{name}`"))
                     };
                     let canonical_name = canonical;
-                    if matches!(canonical_name, "write_file" | "edit")
-                        && !output.text.starts_with("error:")
-                    {
+                    if matches!(canonical_name, "write_file" | "edit") && !output.is_error {
                         if let Some(path) = effective_args.get("path").and_then(Value::as_str) {
                             if let Some(diagnostics) =
                                 runtime.lsp.diagnostics(&cwd, Path::new(path)).await
@@ -1016,19 +1030,31 @@ async fn run_loop(
                     }
                     if let Some(result) = runtime
                         .plugins
-                        .tool_after(&name, &effective_args, &output.text)
+                        .tool_after(&name, &effective_args, &output.text, output.is_error)
                         .await
                     {
                         output.text = result.output;
+                        if let Some(is_error) = result.is_error {
+                            output.is_error = is_error;
+                        }
                         output.terminate |= result.terminate;
                     }
                     let millis = started.elapsed().as_millis() as u64;
-                    verification.record(&name, &effective_args, &output.text);
+                    verification.record_result(
+                        &name,
+                        &effective_args,
+                        &output.text,
+                        output.is_error,
+                    );
                     // An edit invalidates a verifier result: the next run of the same
                     // build/test is a fresh check, not a repeat, so it must not get the
                     // "already ran" note. A failed edit left the workspace unchanged, so
                     // it must not clear the tracking.
-                    if mutation_invalidates_verifier(canonical_name, &output.text) {
+                    if mutation_invalidates_verifier_result(
+                        canonical_name,
+                        &output.text,
+                        output.is_error,
+                    ) {
                         seen_verifications.clear();
                     }
                     if canonical_name == "bash" {
@@ -1050,13 +1076,15 @@ async fn run_loop(
                         name,
                         args: serde_json::to_string(&effective_args).unwrap_or_default(),
                         output: text.clone(),
+                        is_error: output.is_error,
                         diff: output.diff.clone(),
                         millis,
                     });
+                    let model_text = output.model_text();
                     let tool_message = if output.media.is_empty() {
-                        Message::tool(call.id.clone(), text)
+                        Message::tool(call.id.clone(), model_text)
                     } else {
-                        Message::tool_parts(call.id.clone(), text, output.media)
+                        Message::tool_parts(call.id.clone(), model_text, output.media)
                     };
                     record(&runtime.session, depth, &tool_message);
                     messages.push(tool_message);
@@ -1410,12 +1438,12 @@ impl VerificationState {
     /// diffing or type-checking that path confirms it, and a build/test/lint
     /// command confirms everything at once. Side-effecting shell commands add a
     /// pending check that the matching rule's status command clears.
-    fn record(&mut self, name: &str, args: &Value, output: &str) {
+    fn record_result(&mut self, name: &str, args: &Value, output: &str, is_error: bool) {
         let canonical = crate::tools::canonical_tool_name(name);
         let path = args.get("path").and_then(Value::as_str);
         match canonical {
             "write_file" | "edit" | "patch" => {
-                if !output_failed(output) {
+                if !output_failed_with_state(output, is_error) {
                     // A write outside the repository the run works in is not on
                     // the branch under review, so it neither waits on a push nor
                     // is reported back as an unconfirmed edit of the project. A
@@ -1443,12 +1471,12 @@ impl VerificationState {
                 // another whole turn on it.
                 if looks_like_verification_command(raw) {
                     self.edited.clear();
-                } else if !output_failed(output) {
+                } else if !output_failed_with_state(output, is_error) {
                     self.edited
                         .retain(|edited| !inspected_by_shell(raw, output, edited));
                 }
                 let command = raw.to_ascii_lowercase();
-                let failed = output_failed(output);
+                let failed = output_failed_with_state(output, is_error);
                 if !failed && runs_git_push(raw) {
                     self.edited_since_push = false;
                 }
@@ -1472,6 +1500,11 @@ impl VerificationState {
             }
             _ => {}
         }
+    }
+
+    #[cfg(test)]
+    fn record(&mut self, name: &str, args: &Value, output: &str) {
+        self.record_result(name, args, output, output.starts_with("error:"));
     }
 
     /// Whether a review reply must be held until the pending code changes are
@@ -1544,10 +1577,11 @@ fn same_path(a: &str, b: &str) -> bool {
     a == b || a.ends_with(&format!("/{b}")) || b.ends_with(&format!("/{a}"))
 }
 
-/// Whether a tool result reports failure, either as an `error:` text result or
-/// a non-zero shell exit code.
-fn output_failed(output: &str) -> bool {
-    output.starts_with("error:")
+/// Whether a tool result reports failure explicitly or by a non-zero shell
+/// exit code. Text is intentionally not inspected: wording is presentation,
+/// not protocol.
+fn output_failed_with_state(output: &str, is_error: bool) -> bool {
+    is_error
         || output
             .lines()
             .rev()
@@ -1558,6 +1592,11 @@ fn output_failed(output: &str) -> bool {
             .and_then(|rest| rest.strip_suffix(']'))
             .and_then(|code| code.trim().parse::<i32>().ok())
             .is_some_and(|code| code != 0)
+}
+
+#[cfg(test)]
+fn output_failed(output: &str) -> bool {
+    output_failed_with_state(output, output.starts_with("error:"))
 }
 
 /// Whether a shell command is the kind that checks work (`cargo test`,
@@ -1928,8 +1967,18 @@ fn note_verifier(seen: &mut BTreeSet<String>, dispatched: bool, command: &str) -
 /// Whether a tool result invalidates a build/test result seen earlier in the
 /// run. Only a successful `write`/`edit`/`patch` changes the workspace; a failed
 /// one leaves it untouched, so the earlier verifier still applies.
+fn mutation_invalidates_verifier_result(
+    canonical_name: &str,
+    output: &str,
+    is_error: bool,
+) -> bool {
+    matches!(canonical_name, "write_file" | "edit" | "patch")
+        && !output_failed_with_state(output, is_error)
+}
+
+#[cfg(test)]
 fn mutation_invalidates_verifier(canonical_name: &str, output: &str) -> bool {
-    matches!(canonical_name, "write_file" | "edit" | "patch") && !output_failed(output)
+    mutation_invalidates_verifier_result(canonical_name, output, output.starts_with("error:"))
 }
 
 async fn dispatch(
@@ -1942,13 +1991,10 @@ async fn dispatch(
     progress: &tools::Progress,
 ) -> tools::ToolOutput {
     if config.tool_filter.is_restrictive() && !config.tool_filter.permits(&call.function.name) {
-        return tools::ToolOutput::text(format!(
-            "error: tool `{}` is disabled",
-            call.function.name
-        ));
+        return tools::ToolOutput::error(format!("tool `{}` is disabled", call.function.name));
     }
     match call.function.name.as_str() {
-        "task" => tools::ToolOutput::text(
+        "task" => legacy_tool_output(
             task(
                 config,
                 cwd,
@@ -1959,9 +2005,9 @@ async fn dispatch(
             )
             .await,
         ),
-        "skill" => tools::ToolOutput::text(skill(config, &call.function.arguments)),
-        "ask" => tools::ToolOutput::text(ask(runtime, &call.function.arguments).await),
-        "command" => tools::ToolOutput::text(
+        "skill" => legacy_tool_output(skill(config, &call.function.arguments)),
+        "ask" => ask(runtime, &call.function.arguments).await,
+        "command" => legacy_tool_output(
             command(
                 config,
                 cwd,
@@ -1972,9 +2018,19 @@ async fn dispatch(
             )
             .await,
         ),
-        "memory" => tools::ToolOutput::text(memory(config, &call.function.arguments)),
+        "memory" => legacy_tool_output(memory(config, &call.function.arguments)),
         "diagnostics" => lsp_diagnostics(runtime, cwd, &call.function.arguments).await,
         _ => tools::execute(call, cwd, &runtime.mcp, progress).await,
+    }
+}
+
+/// Older agent-level tools still return a string. Interpret their established
+/// marker once at this boundary so every event beyond it has explicit state.
+fn legacy_tool_output(text: String) -> tools::ToolOutput {
+    if text.starts_with("error:") {
+        tools::ToolOutput::error(text)
+    } else {
+        tools::ToolOutput::text(text)
     }
 }
 
@@ -1982,26 +2038,34 @@ async fn dispatch(
 /// asker, and the answers come back as the tool result. A run with nobody to ask
 /// is not offered the tool at all, so this reports the absence instead of
 /// pretending the questions were asked.
-async fn ask(runtime: &Runtime, arguments: &str) -> String {
+async fn ask(runtime: &Runtime, arguments: &str) -> tools::ToolOutput {
     let questions = match ask::parse_questions(arguments) {
         Ok(questions) => questions,
-        Err(err) => return format!("error: {err:#}"),
+        Err(err) => return tools::ToolOutput::error(format!("{err:#}")),
     };
     let Some(ask_user) = &runtime.ask else {
-        return "error: no front-end is listening for a question in this run".to_string();
+        return tools::ToolOutput::error(
+            "no front-end is listening for a question in this run; continue with the safest \
+             reasonable default",
+        );
     };
     let reply: Option<Reply> = ask_user(questions.clone()).await;
-    ask::format_reply(&questions, reply)
+    tools::ToolOutput::text(ask::format_reply(&questions, reply))
 }
 
 async fn lsp_diagnostics(runtime: &Runtime, cwd: &Path, arguments: &str) -> tools::ToolOutput {
     let args: Value = serde_json::from_str(arguments).unwrap_or(Value::Null);
     let Some(path) = args.get("path").and_then(Value::as_str) else {
-        return tools::ToolOutput::text("error: `path` is required".to_string());
+        return tools::ToolOutput::error(
+            "diagnostics requires a `path` string, for example {\"path\":\"src/main.rs\"}",
+        );
     };
     match runtime.lsp.diagnostics(cwd, Path::new(path)).await {
         Some(diagnostics) => tools::ToolOutput::text(diagnostics),
-        None => tools::ToolOutput::text(format!("error: no language server available for {path}")),
+        None => tools::ToolOutput::error(format!(
+            "no language server is available for `{path}`; check that the file type is supported \
+             and its language server is installed"
+        )),
     }
 }
 
@@ -3749,9 +3813,15 @@ for line in sys.stdin:
         // The tool reports the answers a runtime whose asker replies with them,
         // and refuses a call with no questions rather than asking nothing.
         let output = ask(&runtime, r#"{"questions":[{"question":"Proceed?"}]}"#).await;
-        assert!(output.contains("Proceed? = yes"), "{output}");
+        assert!(output.text.contains("Proceed? = yes"), "{:?}", output.text);
+        assert!(!output.is_error);
         let output = ask(&runtime, "{}").await;
-        assert!(output.starts_with("error:"), "{output}");
+        assert!(output.is_error, "{:?}", output.text);
+        assert!(
+            output.text.contains("needs a `question` string"),
+            "{:?}",
+            output.text
+        );
     }
 
     #[tokio::test]

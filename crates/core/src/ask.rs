@@ -12,7 +12,7 @@
 //! The request id is broker-wide, so a subagent's question is answered by the
 //! broker the front-end already holds, exactly as an approval is.
 
-use anyhow::{Context, Result};
+use anyhow::Result;
 use serde::de::Error as _;
 use serde::{Deserialize, Deserializer, Serialize};
 use serde_json::Value;
@@ -213,15 +213,31 @@ impl AskBroker {
 /// one that sends a single question object is accepted too, because a model that
 /// asks about one thing drops the array.
 pub fn parse_questions(arguments: &str) -> Result<Vec<Question>> {
-    let args: Value = serde_json::from_str(arguments).context("invalid `ask` arguments")?;
+    let args: Value = serde_json::from_str(arguments).map_err(|_| {
+        anyhow::anyhow!(
+            "ask received invalid JSON. Expected an object like \
+             {{\"questions\":[{{\"question\":\"Which option?\",\"options\":[{{\"label\":\"A\"}}]}}]}}"
+        )
+    })?;
     let values: Vec<Value> = match args.get("questions") {
         Some(Value::Array(items)) => items.clone(),
         Some(other) => vec![other.clone()],
         None => vec![args],
     };
     let mut questions = Vec::new();
-    for value in values {
-        let mut question: Question = serde_json::from_value(value).context("invalid question")?;
+    for (index, value) in values.into_iter().enumerate() {
+        let mut question: Question = serde_json::from_value(value).map_err(|error| {
+            let detail = error.to_string();
+            if detail.contains("missing field `question`") {
+                anyhow::anyhow!(
+                    "ask question {} needs a `question` string; `header`, `options`, and \
+                     `multiSelect` are optional",
+                    index + 1
+                )
+            } else {
+                anyhow::anyhow!("ask question {} has invalid fields: {detail}", index + 1)
+            }
+        })?;
         question.question = question.question.trim().to_string();
         if question.question.is_empty() {
             continue;
@@ -443,8 +459,24 @@ mod tests {
     #[test]
     fn rejects_a_call_with_no_question_text() {
         assert!(parse_questions(r#"{"questions":[{"question":"   "}]}"#).is_err());
-        assert!(parse_questions("{}").is_err());
-        assert!(parse_questions("not json").is_err());
+        let missing = parse_questions("{}").unwrap_err().to_string();
+        assert!(missing.contains("needs a `question` string"), "{missing}");
+        assert!(!missing.contains("missing field"), "{missing}");
+
+        let malformed = parse_questions("not json").unwrap_err().to_string();
+        assert!(malformed.contains("received invalid JSON"), "{malformed}");
+        assert!(!malformed.contains("line 1 column"), "{malformed}");
+    }
+
+    #[test]
+    fn reports_an_invalid_optional_field_instead_of_blaming_question() {
+        let error =
+            parse_questions(r#"{"questions":[{"question":"Proceed?","multiSelect":"maybe"}]}"#)
+                .unwrap_err()
+                .to_string();
+        assert!(error.contains("question 1 has invalid fields"), "{error}");
+        assert!(error.contains("expected a boolean"), "{error}");
+        assert!(!error.contains("needs a `question` string"), "{error}");
     }
 
     #[test]

@@ -72,7 +72,10 @@ export function parseSessionHistory(json: string): SessionHistory | null {
       // A result whose call the tail left out names no tool and carries no
       // arguments, so there is no card to put it under.
       const call = calls.get(str(message.toolCallId));
-      if (call) call.output = text;
+      if (call) {
+        call.isError = text.startsWith("error:");
+        call.output = call.isError ? text.slice("error:".length).trimStart() : text;
+      }
       continue;
     }
     if (role === "assistant") {
@@ -88,6 +91,7 @@ export function parseSessionHistory(json: string): SessionHistory | null {
           name,
           args: str(call.arguments),
           output: "",
+          isError: false,
         };
         entries.push(card);
         calls.set(str(call.id), card);

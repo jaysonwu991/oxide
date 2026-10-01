@@ -298,11 +298,16 @@ pub fn event_json(event: &AgentEvent) -> Option<Value> {
             "toolName": name,
             "partialResult": chunk,
         }),
-        AgentEvent::ToolResult { name, output, .. } => json!({
+        AgentEvent::ToolResult {
+            name,
+            output,
+            is_error,
+            ..
+        } => json!({
             "type": "tool_execution_end",
             "toolName": name,
             "result": output,
-            "isError": output.starts_with("error:"),
+            "isError": is_error,
         }),
         AgentEvent::Usage {
             input,
@@ -624,12 +629,14 @@ mod tests {
         let result = event_json(&AgentEvent::ToolResult {
             name: "bash".into(),
             args: "{}".into(),
-            output: "error: nope".into(),
+            output: "nope".into(),
+            is_error: true,
             diff: None,
             millis: 0,
         })
         .unwrap();
         assert_eq!(result["isError"], true);
+        assert_eq!(result["result"], "nope");
 
         let done = event_json(&AgentEvent::ThoughtDone { millis: 12 }).unwrap();
         assert_eq!(done["type"], "thinking_done");
