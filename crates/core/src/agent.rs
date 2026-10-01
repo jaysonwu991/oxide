@@ -2871,8 +2871,11 @@ mod tests {
     }
 
     /// Deadline for a scripted request to arrive, so a test that stops short of
-    /// its scripted turns fails instead of waiting out the job timeout.
-    const POLL_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
+    /// its scripted turns fails instead of waiting out the job timeout. It has
+    /// to outlast a single tool call: a `bash` command may legitimately run for
+    /// the tool's own 120s default, and on a loaded Windows runner a `git` or
+    /// `gh` invocation has crossed the old 30s and flaked the review-reply test.
+    const POLL_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(180);
 
     /// Serves one SSE response per request, in order, and returns the raw
     /// request texts it saw so a test can assert on what was sent. A request
