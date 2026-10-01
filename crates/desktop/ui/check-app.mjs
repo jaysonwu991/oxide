@@ -446,6 +446,7 @@ const changeSides = new Map([
 const changeSidesError = new Map([
   ["design.md", "the file is no longer in the snapshot"],
 ]);
+let steerAccepted = true;
 
 const invoke = async (command, args = {}) => {
   calls.push([command, args]);
@@ -494,6 +495,8 @@ const invoke = async (command, args = {}) => {
       if (atError) throw atError;
       if (!String(args.project || "").trim()) throw "select a project first";
       return answerAt(args.text);
+    case "steer_run":
+      return steerAccepted;
     // Everything the rest of `init`/selection asks for; none of it is what this
     // check is about, and all of it stays inside the stub.
     case "list_providers":
@@ -2481,7 +2484,7 @@ check(
     elementFor("stop").hidden === true &&
     elementFor("busy-message-mode").hidden === false &&
     elementFor("busy-message-mode").textContent === "Queue" &&
-    elementFor("send").title === "Queue for after the current response (Enter)",
+    elementFor("send").title === "Queue as the next turn (Enter)",
   `${elementFor("busy-message-mode").textContent} / ${elementFor("send").title}`,
 );
 elementFor("busy-message-mode").onclick();
@@ -2541,6 +2544,47 @@ check(
   runningMessage?.[1]?.followUp === false,
   JSON.stringify(runningMessage),
 );
+
+// A response can finish between drawing Send and the host receiving the
+// message. Codex keeps that prompt and starts it as the next turn; it must not
+// report a successful queue operation and silently lose it.
+calls.length = 0;
+steerAccepted = false;
+elementFor("prompt").value = "do this in the next turn";
+app.updateSendState();
+elementFor("send").onclick({ detail: 1 });
+await nextTick();
+check(
+  "kept a message rejected at the completion boundary",
+  app.state.pendingSends[0]?.prompt === "do this in the next turn" &&
+    projectCalls("send_prompt").length === 0,
+  JSON.stringify({ pending: app.state.pendingSends, calls }),
+);
+elementFor("prompt").value = "and this one after it";
+app.updateSendState();
+elementFor("send").onclick({ detail: 1 });
+await nextTick();
+check(
+  "kept concurrent rejected messages in submission order",
+  app.state.pendingSends.map((pending) => pending.prompt).join(" | ") ===
+    "do this in the next turn | and this one after it",
+  JSON.stringify(app.state.pendingSends),
+);
+await emit("agent-end", { runId: 42 });
+check(
+  "started the first raced message as Codex's next turn",
+  projectCalls("send_prompt").at(-1)?.[1]?.prompt === "do this in the next turn" &&
+    app.state.pendingSends[0]?.prompt === "and this one after it",
+  JSON.stringify(calls),
+);
+await emit("agent-end", { runId: 43 });
+check(
+  "started the next raced message only after the preceding turn",
+  projectCalls("send_prompt").at(-1)?.[1]?.prompt === "and this one after it" &&
+    app.state.pendingSends.length === 0,
+  JSON.stringify(calls),
+);
+steerAccepted = true;
 app.setIdle();
 app.state.runId = null;
 

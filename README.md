@@ -929,10 +929,11 @@ unknown remote effects stays sequential. Results are recorded in the model's
 original call order. `bash` streams stdout and stderr line by line into the TUI
 (and to stderr in `-p` mode) before the final combined output.
 
-While the agent is busy, pressing Enter queues the current input as steering
-rather than starting a new run; the message is injected into the conversation
-before the next model call. A `tool.execute.after` plugin can also request
-termination for the batch with `output.terminate = true`.
+While the agent is busy, pressing Enter uses Codex's safe default: it queues the
+current input as the next turn after the current response finishes. Alt+Enter
+deliberately steers instead, injecting the message before the agent's next model
+step. A `tool.execute.after` plugin can also request termination for the batch
+with `output.terminate = true`.
 
 ## Project trust
 

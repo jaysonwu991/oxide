@@ -666,7 +666,7 @@ pub async fn steer_run(
     follow_up: Option<bool>,
     attachments: Option<Vec<AttachmentInput>>,
     state: &DesktopState,
-) -> CmdResult<()> {
+) -> CmdResult<bool> {
     let runs = state.runs.clone();
     let runs = runs.lock().await;
     if let Some(run) = runs.get(&run_id) {
@@ -676,13 +676,13 @@ pub async fn steer_run(
             &run.steering
         };
         let parts = attachment_parts(attachments, &message, &run.cwd)?;
-        queue.push(if parts.is_empty() {
+        return Ok(queue.push(if parts.is_empty() {
             Message::user(message)
         } else {
             Message::user_parts(message, parts)
-        });
+        }));
     }
-    Ok(())
+    Ok(false)
 }
 
 /// Answers the composer's `@path` completion: the project's own files and

@@ -783,7 +783,7 @@ messages to the editor` after a dequeue. Only the newest tip is kept, so repeate
 actions update one line rather than growing the transcript, matching Pi's
 `showStatus`.
 
-While the agent is busy, Enter safely queues a follow-up after the current
+While the agent is busy, Enter safely queues the next turn after the current
 response and Alt+Enter deliberately steers before the agent's next model step.
 Both show up as your turns, and
 the status row adds `2 queued · Option+Up to edit`. Pressing that key empties the

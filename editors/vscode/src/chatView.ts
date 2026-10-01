@@ -368,7 +368,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       <span id="elapsed" hidden></span>
       <span class="spacer"></span>
       <button id="stop" class="icon danger" hidden title="Stop the running turn (Esc)" aria-label="Stop">${ICONS.stop}</button>
-      <button id="busy-message-mode" class="busy-message-mode" hidden title="Queue for after the current response">Queue</button>
+      <button id="busy-message-mode" class="busy-message-mode" hidden title="Queue as the next turn after the current response">Queue</button>
       <button id="send" class="icon primary" disabled title="Send (Enter)" aria-label="Send">${ICONS.send}</button>
     </div>
     <div id="dropzone" hidden><span>Drop files to attach</span></div>

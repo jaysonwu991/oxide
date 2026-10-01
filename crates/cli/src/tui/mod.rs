@@ -4087,7 +4087,12 @@ fn handle_mouse(mouse: MouseEvent, app: &mut App, terminal_area: Rect) {
 /// `Ctrl+V` and `@path` image/pdf references travel with it, so a steer sent
 /// mid-run contributes the same context the idle send path would.
 fn queue_while_busy(app: &mut App, raw: &str, cwd: &Path, follow_up: bool) {
-    let mut parts = app.take_attachment_parts();
+    // Keep the composer's own attachments separate from media discovered via
+    // `@path`: on a rejected boundary send only the former belong back in the
+    // composer, since the latter will be resolved from the still-present text
+    // on the next Enter.
+    let composer_parts = app.take_attachment_parts();
+    let mut parts = composer_parts.clone();
     for path in media::referenced_attachments(raw, cwd) {
         match media::load_attachment(&path) {
             Ok(part) => parts.push(part),
@@ -4100,6 +4105,23 @@ fn queue_while_busy(app: &mut App, raw: &str, cwd: &Path, follow_up: bool) {
         return;
     }
     let media_count = parts.len();
+    let message = if parts.is_empty() {
+        Message::user(raw)
+    } else {
+        Message::user_parts(raw, parts)
+    };
+    let accepted = if follow_up {
+        app.follow_ups.push(message.clone())
+    } else {
+        app.steering.push(message.clone())
+    };
+    if !accepted {
+        for part in composer_parts {
+            app.add_attachment(part);
+        }
+        app.show_status("response finished; press Enter to send as the next turn");
+        return;
+    }
     app.remember_input(raw);
     app.clear_input();
     let shown = if media_count > 0 {
@@ -4109,16 +4131,9 @@ fn queue_while_busy(app: &mut App, raw: &str, cwd: &Path, follow_up: bool) {
     };
     app.items.push(ChatItem::User(shown));
     app.auto_scroll = true;
-    let message = if parts.is_empty() {
-        Message::user(raw)
-    } else {
-        Message::user_parts(raw, parts)
-    };
     if follow_up {
-        app.follow_ups.push(message);
-        app.status = "queued follow-up...".to_string();
+        app.status = "queued as the next turn...".to_string();
     } else {
-        app.steering.push(message);
         app.status = "steering active response...".to_string();
     }
 }
@@ -4735,6 +4750,11 @@ fn handle_agent_event(event: AgentEvent, app: &mut App) {
         }
         AgentEvent::Finished(history) => {
             app.history = history;
+            // A completed run closes its input queues so a sender racing the
+            // boundary gets a reliable rejection. The next turn needs fresh
+            // queues of its own, as the desktop and RPC hosts already create.
+            app.steering = crate::agent::Steering::new();
+            app.follow_ups = crate::agent::Steering::new();
             app.workspace_paths = None;
             app.running_tool = None;
             app.subagent = None;
@@ -5015,6 +5035,8 @@ mod tests {
         assert!(app.pending_approval.is_some());
         handle_agent_event(AgentEvent::Finished(Vec::new()), &mut app);
         assert!(app.pending_approval.is_none());
+        assert!(app.steering.push(Message::user("next turn")));
+        assert!(app.follow_ups.push(Message::user("after that")));
 
         answered.abort();
         std::fs::remove_dir_all(&dir).ok();
@@ -5172,6 +5194,37 @@ mod tests {
             item,
             ChatItem::User(text) if text.contains("[1 attachment(s)]")
         )));
+    }
+
+    #[test]
+    fn a_rejected_busy_message_restores_only_composer_attachments() {
+        let dir = std::env::temp_dir().join(format!(
+            "oxide_tui_rejected_attachment_{}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("reference.pdf"), b"%PDF-1.4\n").unwrap();
+        let mut app = test_app();
+        app.busy = true;
+        app.input = "review @reference.pdf".into();
+        app.input_cursor = app.input.len();
+        app.add_attachment(crate::llm::ContentPart::ImageUrl {
+            image_url: crate::llm::ImageUrl {
+                url: "data:image/png;base64,AAAA".into(),
+                detail: None,
+            },
+        });
+        app.follow_ups.close();
+
+        queue_while_busy(&mut app, "review @reference.pdf", &dir, true);
+
+        assert_eq!(app.input, "review @reference.pdf");
+        assert_eq!(app.attachments.len(), 1);
+        assert!(matches!(
+            app.attachments[0].part,
+            crate::llm::ContentPart::ImageUrl { .. }
+        ));
+        std::fs::remove_dir_all(dir).ok();
     }
 
     #[test]

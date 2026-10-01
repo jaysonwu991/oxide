@@ -70,8 +70,9 @@ Provider logins live in the CLI: run **Oxide: Open Terminal (TUI)** and use
    with **Oxide: Set Project Trust…** (untrusted runs simply skip them).
 3. Type a message. Tool calls appear as coloured panels with a diff preview for
    file changes; `Enter` sends and `Shift+Enter` adds a newline. While a response
-   runs, **Queue** is the safe default and **Steer** deliberately redirects the
-   active response before its next model step. Paste an image, drop files on
+   runs, **Queue** is the safe default and sends the prompt as the next turn
+   after the current response; **Steer** deliberately redirects the active
+   response before its next model step. Paste an image, drop files on
    the composer, or click **Attach** to add images, PDFs and text files to the
    message.
 4. The chips above the composer are the next turn's settings: click `model: …`
@@ -147,7 +148,7 @@ Provider logins live in the CLI: run **Oxide: Open Terminal (TUI)** and use
 ## Notes and limits
 
 - One turn at a time per window; a message sent while a turn runs is either
-  queued behind the current response or steers it, and is shown in the transcript.
+  queued as the next turn after the current response or steers it, and is shown in the transcript.
   **Stop** terminates the process — the session on disk
   keeps everything up to that point, so the next message continues the thread.
 - The two chat panes are the same conversation: either can be used, both stream

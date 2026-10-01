@@ -1647,8 +1647,8 @@
     busyModeButton.textContent = busyMessageMode === "steer" ? "Steer" : "Queue";
     busyModeButton.title = busyMessageMode === "steer"
       ? "Steer the active response; click to queue instead"
-      : "Queue for after the current response; click to steer instead";
-    const action = busyMessageMode === "steer" ? "Steer the active response" : "Queue for after this turn";
+      : "Queue as the next turn after the current response; click to steer instead";
+    const action = busyMessageMode === "steer" ? "Steer the active response" : "Queue as the next turn";
     sendButton.title = busy ? `${action} (Enter)` : "Send (Enter)";
     sendButton.setAttribute("aria-label", busy ? busyMessageMode === "steer" ? "Steer" : "Queue" : "Send");
   }
