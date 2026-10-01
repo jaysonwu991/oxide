@@ -2724,23 +2724,49 @@ fn end_preview(
 /// followed by its detail and totals, and keeping one end alone discards the
 /// half that answers the call.
 fn middle_preview(lines: &[&str], max_bytes: usize, max_lines: usize) -> (String, usize, usize) {
-    let (text, dropped_lines) = if lines.len() > max_lines {
-        let head_lines = max_lines / 2;
-        let tail_lines = max_lines - head_lines;
-        let mut kept = Vec::with_capacity(max_lines);
-        kept.extend_from_slice(&lines[..head_lines]);
-        kept.extend_from_slice(&lines[lines.len() - tail_lines..]);
-        (kept.join("\n"), lines.len() - max_lines)
+    let (head_lines, tail_lines, dropped_lines) = if lines.len() > max_lines {
+        let head = max_lines / 2;
+        let tail = max_lines - head;
+        (head, tail, lines.len() - max_lines)
     } else {
-        (lines.join("\n"), 0)
+        (lines.len(), 0, 0)
     };
+
+    let head_text = lines[..head_lines].join("\n");
+    let tail_text = if tail_lines > 0 {
+        lines[lines.len() - tail_lines..].join("\n")
+    } else {
+        String::new()
+    };
+
+    // No lines dropped and all text fits: keep as-is.
+    if dropped_lines == 0 && head_text.len() + tail_text.len() <= max_bytes {
+        return (head_text, 0, 0);
+    }
 
     // The byte cut is taken on the text rather than on line boundaries: a
     // server commonly answers with a single long line of JSON, which no
-    // line-wise split can divide into a head and a tail.
-    let (head, tail, dropped_bytes) = cut_middle(&text, max_bytes);
-    if dropped_lines == 0 && dropped_bytes == 0 {
-        return (text, 0, 0);
+    // line-wise split can divide into a head and a tail. When lines were
+    // dropped, cut head and tail separately so the marker sits between them.
+    let (head, tail, dropped_bytes) = if dropped_lines > 0 {
+        cut_middle_parts(&head_text, &tail_text, max_bytes)
+    } else {
+        // No lines dropped but bytes exceed: cut the combined text in the middle.
+        let text = format!("{}\n{}", head_text, tail_text);
+        let (h, t, d) = cut_middle(&text, max_bytes);
+        (h.to_string(), t.to_string(), d)
+    };
+
+    if dropped_bytes == 0 && dropped_lines == 0 {
+        return (
+            if tail_lines > 0 {
+                format!("{}\n{}", head, tail)
+            } else {
+                head
+            },
+            0,
+            0,
+        );
     }
 
     let marker = format!("\n…{dropped_lines} lines, {dropped_bytes} bytes truncated…\n");
@@ -2749,6 +2775,38 @@ fn middle_preview(lines: &[&str], max_bytes: usize, max_lines: usize) -> (String
         dropped_lines,
         dropped_bytes,
     )
+}
+
+/// Cuts the head and tail of two separate parts to fit a byte budget,
+/// preserving the separation so the marker appears between them. The head gets
+/// three-quarters of the budget and the tail gets one-quarter (a server's
+/// summary matters more than its footer), cutting on character boundaries.
+fn cut_middle_parts(head_text: &str, tail_text: &str, max_bytes: usize) -> (String, String, usize) {
+    let head_budget = (max_bytes * 3) / 4;
+    let tail_budget = max_bytes - head_budget;
+
+    let head = if head_text.len() <= head_budget {
+        head_text.to_string()
+    } else {
+        let mut cut = head_budget;
+        while cut > 0 && !head_text.is_char_boundary(cut) {
+            cut -= 1;
+        }
+        head_text[..cut].to_string()
+    };
+
+    let tail = if tail_text.len() <= tail_budget {
+        tail_text.to_string()
+    } else {
+        let mut start = tail_text.len() - tail_budget;
+        while start < tail_text.len() && !tail_text.is_char_boundary(start) {
+            start += 1;
+        }
+        tail_text[start..].to_string()
+    };
+
+    let dropped = head_text.len() + tail_text.len() - head.len() - tail.len();
+    (head, tail, dropped)
 }
 
 /// Splits `text` into the head and tail that fit `max_bytes` between them,
