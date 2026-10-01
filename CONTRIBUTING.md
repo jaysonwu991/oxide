@@ -178,7 +178,8 @@ relative to the repository root.
 - **Themes.** Add a slot in `Theme`/`ThemeFile` in `crates/cli/src/theme.rs` and
   use it from `crates/cli/src/tui/ui.rs` via `app.theme`. Keep state
   understandable without color, preserve readable dark/light defaults, document
-  the slot in the README and `docs/cli.md`, invalidate the render cache when a
+  the slot in `docs/configuration.md` and `docs/cli.md`, invalidate the render
+  cache when a
   visual setting changes, and mirror the slot in
   `crates/core/src/theme_view.rs` so the desktop palette keeps the same semantic
   names.

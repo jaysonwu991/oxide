@@ -22,6 +22,13 @@ const MAX_LINE_LEN: usize = 1_000;
 const READ_MAX_BYTES: usize = 16_000;
 const READ_MAX_LINES: usize = 400;
 const DEFAULT_READ_LINES: usize = READ_MAX_LINES;
+/// An MCP result gets its own budget, between `read`'s and the generic cap. It
+/// is structured data a server chose the shape of, so unlike a file read the
+/// model cannot narrow it with `offset`/`limit`, and unlike `grep` it cannot
+/// re-ask for less: whatever the server returned is the only answer available.
+/// Pi gives the same output 20 KB (`extensions/mcp/tools.ts`).
+const MCP_OUTPUT_BYTES: usize = 20_000;
+const MCP_OUTPUT_LINES: usize = 500;
 const TRUNCATION_RETENTION_SECS: u64 = 7 * 24 * 60 * 60;
 /// What a search that found nothing answers with, in Pi's own words
 /// (`coding-agent/src/core/tools/{grep,find}.ts`). Short, but never an empty
@@ -2636,12 +2643,23 @@ fn now_millis() -> u128 {
         .unwrap_or(0)
 }
 
+/// Which end of an over-long result is worth keeping.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Keep {
+    /// `bash`: errors and the exit code are at the end.
+    Tail,
+    /// A file read or a listing: the beginning is the answer.
+    Head,
+    /// An MCP result: the summary is at the top and the detail at the bottom,
+    /// so half the budget is taken from each end rather than discarding one.
+    Middle,
+}
+
 /// Cap tool output so a single result cannot dominate the context window. The
-/// preview uses a tool-specific line and byte budget. `bash` keeps its tail
-/// (where errors and the exit code live), everything else
-/// keeps its head. When content is dropped, the full text is saved under the
-/// Oxide config dir and the result points at it so the model can inspect the
-/// full output without re-running the tool.
+/// preview uses a tool-specific line and byte budget, kept from the end
+/// [`Keep`] names for that tool. When content is dropped, the full text is
+/// saved under the Oxide config dir and the result points at it so the model
+/// can inspect the full output without re-running the tool.
 fn truncate(name: &str, output: String) -> String {
     truncate_into(name, output, truncation_dir().as_deref())
 }
@@ -2653,13 +2671,33 @@ fn truncate_into(name: &str, output: String, dir: Option<&Path>) -> String {
         return output;
     }
 
-    let tail = name == "bash";
+    let keep = keep_end(name);
+    let (preview, dropped_lines, dropped_bytes) = match keep {
+        Keep::Middle => middle_preview(&lines, max_bytes, max_lines),
+        Keep::Tail | Keep::Head => end_preview(&lines, max_bytes, max_lines, keep == Keep::Tail),
+    };
+
+    let mut result = format!("[truncated: {dropped_lines} lines, {dropped_bytes} bytes");
+    if let Some(path) = dir.and_then(|dir| save_truncated(dir, &output)) {
+        result.push_str(&format!("; full: {}", path.display()));
+    }
+    result.push_str("]\n");
+    result.push_str(&preview);
+    result
+}
+
+/// Keeps one end of `lines` within both budgets, returning the preview and how
+/// many lines and bytes it left out.
+fn end_preview(
+    lines: &[&str],
+    max_bytes: usize,
+    max_lines: usize,
+    tail: bool,
+) -> (String, usize, usize) {
     let keep = max_lines.min(lines.len());
     let start = if tail { lines.len() - keep } else { 0 };
-    let kept = &lines[start..start + keep];
+    let mut preview = lines[start..start + keep].join("\n");
     let dropped_lines = lines.len() - keep;
-
-    let mut preview = kept.join("\n");
     let mut dropped_bytes = 0;
     if preview.len() > max_bytes {
         if tail {
@@ -2678,14 +2716,131 @@ fn truncate_into(name: &str, output: String, dir: Option<&Path>) -> String {
             preview.truncate(cut);
         }
     }
+    (preview, dropped_lines, dropped_bytes)
+}
 
-    let mut result = format!("[truncated: {dropped_lines} lines, {dropped_bytes} bytes");
-    if let Some(path) = dir.and_then(|dir| save_truncated(dir, &output)) {
-        result.push_str(&format!("; full: {}", path.display()));
+/// Keeps the head and the tail, half of each budget apiece, with a marker
+/// naming what the middle left out. A server's result is usually a summary
+/// followed by its detail and totals, and keeping one end alone discards the
+/// half that answers the call.
+fn middle_preview(lines: &[&str], max_bytes: usize, max_lines: usize) -> (String, usize, usize) {
+    let (head_lines, tail_lines, dropped_lines) = if lines.len() > max_lines {
+        let head = max_lines / 2;
+        let tail = max_lines - head;
+        (head, tail, lines.len() - max_lines)
+    } else {
+        (lines.len(), 0, 0)
+    };
+
+    let head_text = lines[..head_lines].join("\n");
+    let tail_text = if tail_lines > 0 {
+        lines[lines.len() - tail_lines..].join("\n")
+    } else {
+        String::new()
+    };
+
+    // No lines dropped and all text fits: keep as-is.
+    if dropped_lines == 0 && head_text.len() + tail_text.len() <= max_bytes {
+        return (head_text, 0, 0);
     }
-    result.push_str("]\n");
-    result.push_str(&preview);
-    result
+
+    // The byte cut is taken on the text rather than on line boundaries: a
+    // server commonly answers with a single long line of JSON, which no
+    // line-wise split can divide into a head and a tail. When lines were
+    // dropped, cut head and tail separately so the marker sits between them.
+    let (head, tail, dropped_bytes) = if dropped_lines > 0 {
+        cut_middle_parts(&head_text, &tail_text, max_bytes)
+    } else {
+        // No lines dropped but bytes exceed: cut the combined text in the middle.
+        let text = format!("{}\n{}", head_text, tail_text);
+        let (h, t, d) = cut_middle(&text, max_bytes);
+        (h.to_string(), t.to_string(), d)
+    };
+
+    if dropped_bytes == 0 && dropped_lines == 0 {
+        return (
+            if tail_lines > 0 {
+                format!("{}\n{}", head, tail)
+            } else {
+                head
+            },
+            0,
+            0,
+        );
+    }
+
+    let marker = format!("\n…{dropped_lines} lines, {dropped_bytes} bytes truncated…\n");
+    (
+        format!("{head}{marker}{tail}"),
+        dropped_lines,
+        dropped_bytes,
+    )
+}
+
+/// Cuts the head and tail of two separate parts to fit a byte budget,
+/// preserving the separation so the marker appears between them. The head gets
+/// three-quarters of the budget and the tail gets one-quarter (a server's
+/// summary matters more than its footer), cutting on character boundaries.
+fn cut_middle_parts(head_text: &str, tail_text: &str, max_bytes: usize) -> (String, String, usize) {
+    let head_budget = (max_bytes * 3) / 4;
+    let tail_budget = max_bytes - head_budget;
+
+    let head = if head_text.len() <= head_budget {
+        head_text.to_string()
+    } else {
+        let mut cut = head_budget;
+        while cut > 0 && !head_text.is_char_boundary(cut) {
+            cut -= 1;
+        }
+        head_text[..cut].to_string()
+    };
+
+    let tail = if tail_text.len() <= tail_budget {
+        tail_text.to_string()
+    } else {
+        let mut start = tail_text.len() - tail_budget;
+        while start < tail_text.len() && !tail_text.is_char_boundary(start) {
+            start += 1;
+        }
+        tail_text[start..].to_string()
+    };
+
+    let dropped = head_text.len() + tail_text.len() - head.len() - tail.len();
+    (head, tail, dropped)
+}
+
+/// Splits `text` into the head and tail that fit `max_bytes` between them,
+/// cutting on character boundaries, and reports the bytes dropped between.
+fn cut_middle(text: &str, max_bytes: usize) -> (&str, &str, usize) {
+    if text.len() <= max_bytes {
+        return (text, "", 0);
+    }
+    let mut end = max_bytes / 2;
+    while end > 0 && !text.is_char_boundary(end) {
+        end -= 1;
+    }
+    let mut start = text.len() - (max_bytes - max_bytes / 2);
+    while start < text.len() && !text.is_char_boundary(start) {
+        start += 1;
+    }
+    if start <= end {
+        return (text, "", 0);
+    }
+    (&text[..end], &text[start..], start - end)
+}
+
+/// Which end of a tool's output to keep. An MCP tool is named
+/// `<server>__<tool>` by `mcp::expose`, and no built-in name holds `__`.
+fn keep_end(name: &str) -> Keep {
+    match name {
+        "bash" => Keep::Tail,
+        _ if is_mcp_tool(name) => Keep::Middle,
+        _ => Keep::Head,
+    }
+}
+
+fn is_mcp_tool(name: &str) -> bool {
+    name.contains("__")
 }
 
 fn output_limits(name: &str) -> (usize, usize) {
@@ -2697,6 +2852,10 @@ fn output_limits(name: &str) -> (usize, usize) {
         // One extra line for the `… more lines; use offset=` pointer, so a
         // full page of `read` output is never trimmed by the central cap.
         "read_file" => (READ_MAX_BYTES, READ_MAX_LINES + 1),
+        // A server's result is structured data, not a file: it needs more room
+        // than the generic cap, and it is the one output a reader cannot
+        // narrow with `offset`/`limit` or a tighter query.
+        _ if is_mcp_tool(name) => (MCP_OUTPUT_BYTES, MCP_OUTPUT_LINES),
         _ => (MAX_OUTPUT_BYTES, MAX_OUTPUT_LINES),
     }
 }
@@ -4056,6 +4215,196 @@ mod tests {
         let saved: Vec<_> = std::fs::read_dir(&dir).unwrap().flatten().collect();
         assert_eq!(saved.len(), 1, "{saved:?}");
         assert_eq!(std::fs::read_to_string(saved[0].path()).unwrap(), output);
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn an_mcp_result_keeps_both_ends() {
+        let mut output = String::from("SUMMARY: 3 issues found\n");
+        for i in 0..(MCP_OUTPUT_LINES + 200) {
+            output.push_str(&format!("filler line {i}\n"));
+        }
+        output.push_str("TOTAL: 3 open, 1 blocked");
+
+        let result = truncate_into("atlassian__searchJiraIssuesUsingJql", output, None);
+        assert!(result.contains("SUMMARY: 3 issues found"), "{result}");
+        assert!(result.contains("TOTAL: 3 open, 1 blocked"), "{result}");
+        assert!(result.contains("truncated…"), "{result}");
+        assert!(!result.contains("filler line 300"), "{result}");
+    }
+
+    #[test]
+    fn an_mcp_result_gets_a_bigger_budget_than_the_generic_cap() {
+        assert_eq!(
+            output_limits("server__tool"),
+            (MCP_OUTPUT_BYTES, MCP_OUTPUT_LINES)
+        );
+        const { assert!(MCP_OUTPUT_BYTES > MAX_OUTPUT_BYTES) };
+        assert_eq!(keep_end("server__tool"), Keep::Middle);
+
+        // A result that fits the MCP budget but not the generic one is kept whole.
+        let output = "y".repeat(MAX_OUTPUT_BYTES + 100);
+        assert_eq!(truncate_into("server__tool", output.clone(), None), output);
+    }
+
+    #[test]
+    fn built_in_tools_keep_their_own_ends() {
+        assert_eq!(keep_end("bash"), Keep::Tail);
+        assert_eq!(keep_end("read_file"), Keep::Head);
+        assert_eq!(keep_end("grep"), Keep::Head);
+        assert_eq!(keep_end("webfetch"), Keep::Head);
+        assert!(!is_mcp_tool("read_file"));
+        assert!(!is_mcp_tool("list_dir"));
+        assert!(is_mcp_tool("mock__echo"));
+    }
+
+    #[test]
+    fn a_middle_truncated_result_stays_within_its_budget() {
+        // Long single lines: the byte budget is what bites, not the line count.
+        let output = format!("{}\n{}", "a".repeat(40_000), "b".repeat(40_000));
+        let result = truncate_into("server__tool", output, None);
+        assert!(result.len() < MCP_OUTPUT_BYTES + 200, "{}", result.len());
+        assert!(result.starts_with("[truncated:"), "{result}");
+        // Both ends survive, which neither a head-only nor a tail-only cap can
+        // do: 40 KB of `a` would fill a head cap and bury every `b`.
+        assert!(result.contains('a'), "kept the head");
+        assert!(result.contains('b'), "kept the tail");
+        assert!(
+            result.contains("truncated…"),
+            "named the gap: {result:.120}"
+        );
+    }
+
+    #[test]
+    fn a_single_line_json_result_keeps_both_ends() {
+        // Most MCP servers answer with one line of JSON, so the line count is
+        // never exceeded and only the byte budget bites.
+        let output = format!(
+            "{{\"summary\":\"start marker\",\"rows\":[{}],\"nextPageToken\":\"end marker\"}}",
+            "\"x\",".repeat(8000)
+        );
+        let result = truncate_into("server__tool", output, None);
+        assert!(
+            result.contains("start marker"),
+            "lost the head: {result:.120}"
+        );
+        assert!(result.contains("end marker"), "lost the tail");
+    }
+
+    #[test]
+    fn middle_truncation_handles_awkward_shapes() {
+        // A single multi-byte line: both cut points land mid-character.
+        let output = "\u{4e2d}".repeat(30_000);
+        let result = truncate_into("server__tool", output, None);
+        assert!(result.starts_with("[truncated:"), "{result:.80}");
+        assert!(result.contains('\u{4e2d}'));
+        assert!(result.len() <= MCP_OUTPUT_BYTES + 200, "{}", result.len());
+
+        // Exactly at the budget: kept whole, no marker.
+        let exact = "z".repeat(MCP_OUTPUT_BYTES);
+        assert_eq!(truncate_into("server__tool", exact.clone(), None), exact);
+
+        // Many short lines: the line cap bites, the byte cap does not.
+        let many = (0..MCP_OUTPUT_LINES + 50)
+            .map(|i| format!("r{i}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let result = truncate_into("server__tool", many, None);
+        assert!(result.contains("r0\n"), "kept the head: {result:.60}");
+        assert!(
+            result.contains(&format!("r{}", MCP_OUTPUT_LINES + 49)),
+            "kept the tail"
+        );
+        assert!(result.contains("lines"), "named the gap");
+
+        // Empty and tiny results are untouched.
+        assert_eq!(truncate_into("server__tool", String::new(), None), "");
+        assert_eq!(truncate_into("server__tool", "ok".to_string(), None), "ok");
+    }
+
+    #[test]
+    fn middle_truncation_cuts_on_character_boundaries() {
+        let output = format!("{}\n{}", "é".repeat(20_000), "中".repeat(20_000));
+        let result = truncate_into("server__tool", output, None);
+        assert!(result.contains('é') && result.contains('中'), "{result}");
+    }
+
+    /// Drives a server's answer through `execute`, the path a real MCP call
+    /// takes, rather than calling `truncate` directly.
+    #[tokio::test]
+    async fn a_servers_large_answer_keeps_both_ends_through_execute() {
+        if !matches!(
+            std::process::Command::new("python3").arg("--version").output(),
+            Ok(output) if output.status.success()
+        ) {
+            return;
+        }
+
+        let dir = std::env::temp_dir().join(format!("oxide_mcp_trunc_{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let script = dir.join("big_mcp.py");
+        // Answers like a real server: a summary, a long body, then the totals
+        // the next call needs. Built line by line, with newlines written as
+        // `chr(10)`, so the escapes belong to Python and not to this literal.
+        let python = [
+            "import sys, json",
+            "def send(obj):",
+            "    sys.stdout.write(json.dumps(obj) + chr(10))",
+            "    sys.stdout.flush()",
+            "for line in sys.stdin:",
+            "    line = line.strip()",
+            "    if not line:",
+            "        continue",
+            "    msg = json.loads(line)",
+            "    method = msg.get('method')",
+            "    if method == 'initialize':",
+            "        send({'jsonrpc': '2.0', 'id': msg['id'], 'result': {'protocolVersion': '2024-11-05', 'capabilities': {}, 'serverInfo': {'name': 'big', 'version': '0'}}})",
+            "    elif method == 'tools/list':",
+            "        send({'jsonrpc': '2.0', 'id': msg['id'], 'result': {'tools': [{'name': 'report', 'description': 'Big report', 'inputSchema': {'type': 'object', 'properties': {}}}]}})",
+            "    elif method == 'tools/call':",
+            "        rows = ''.join('  PROJ-%d open' % i + chr(10) for i in range(4000))",
+            "        text = 'SUMMARY: 42 issues' + chr(10) + rows + 'TOTAL: 42 issues, nextPageToken=abc123'",
+            "        send({'jsonrpc': '2.0', 'id': msg['id'], 'result': {'content': [{'type': 'text', 'text': text}]}})",
+        ]
+        .join("\n");
+        std::fs::write(&script, python).unwrap();
+
+        let server = crate::ecosystem::McpServer {
+            name: "big".to_string(),
+            enabled: true,
+            kind: crate::ecosystem::McpKind::Local {
+                command: vec!["python3".to_string(), script.display().to_string()],
+                environment: Default::default(),
+                cwd: None,
+            },
+            domains: vec![],
+        };
+        let registry = crate::mcp::McpRegistry::new(&[server]);
+        registry.load("big").await.unwrap();
+
+        let output = execute(
+            &call("big__report", json!({})),
+            &dir,
+            &registry,
+            &Progress::default(),
+        )
+        .await;
+
+        assert!(
+            output.text.contains("SUMMARY: 42 issues"),
+            "lost the summary: {:.200}",
+            output.text
+        );
+        assert!(
+            output.text.contains("nextPageToken=abc123"),
+            "lost the totals the next call needs"
+        );
+        assert!(
+            output.text.len() <= MCP_OUTPUT_BYTES + 400,
+            "not capped: {}",
+            output.text.len()
+        );
 
         std::fs::remove_dir_all(&dir).ok();
     }

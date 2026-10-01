@@ -571,6 +571,18 @@ describe("webview footer", () => {
     assert.equal(byId.get("gauge-fill")!.style.width, "12%");
   });
 
+  /// The branch is clamped so a long one cannot push the usage line out of the
+  /// row, but the clamp has to hang off the footer line: a percentage on the
+  /// label resolves against `.branch-wrap`, whose width is its own content, so
+  /// `main` was cut down to `m…` on a pane wide enough for it.
+  it("clamps the branch against the footer row rather than its own text", () => {
+    const wrap = /\.branch-wrap \{[^}]*\}/.exec(style)?.[0] ?? "";
+    const label = /#branch \{[^}]*\}/.exec(style)?.[0] ?? "";
+    assert.match(wrap, /max-width:/, "the wrap carries the clamp");
+    assert.doesNotMatch(label, /max-width:/, "the label does not clamp itself");
+    assert.match(label, /min-width: 0/, "the label can shrink inside the clamped wrap");
+  });
+
   it("hides the gauge and the usage line when there is nothing to show", () => {
     const { byId, send } = loadRenderer();
     send(stateMessage({ footer: { chips: [], info: "", percent: null } }));

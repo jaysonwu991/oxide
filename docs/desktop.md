@@ -634,4 +634,4 @@ from the CLI, so a CLI release never rebuilds these bundles:
 
 The CLI archives (`Oxide-v<version>-<platform>.tar.gz` and
 `Oxide-v<version>-win32-x64.zip`) plus `install.sh`/`install.ps1` live in the
-separate `v*` CLI releases, not here; see the README's Installation section.
+separate `v*` CLI releases, not here; see [install.md](install.md).
