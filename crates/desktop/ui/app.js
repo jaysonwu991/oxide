@@ -1414,8 +1414,10 @@ function renderStoredTranscript(container, messages) {
       }
       for (const call of message.toolCalls || []) {
         const output = results.get(call.id) || "";
+        const isError = output.startsWith("error:");
+        const displayOutput = isError ? output.replace(/^error:\s*/, "") : output;
         const tool = createToolCard(call.name || "tool", call.arguments);
-        finishTool(tool, output, { isError: output.startsWith("error:") });
+        finishTool(tool, displayOutput, { isError });
         container.appendChild(tool.block);
       }
     }

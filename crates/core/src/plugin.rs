@@ -229,8 +229,10 @@ impl PluginHost {
             .get("terminate")
             .and_then(Value::as_bool)
             .unwrap_or(false);
+        let is_error = response.get("isError").and_then(Value::as_bool);
         Some(HookResult {
             output: text,
+            is_error,
             terminate,
         })
     }
@@ -262,11 +264,13 @@ impl PluginHost {
     }
 }
 
-/// The result of a `tool.execute.after` hook: possibly-rewritten output text
-/// plus an optional request to end the turn once the batch finishes.
+/// The result of a `tool.execute.after` hook: possibly-rewritten output and
+/// error state, plus an optional request to end the turn once the batch
+/// finishes.
 #[derive(Debug, Clone)]
 pub struct HookResult {
     pub output: String,
+    pub is_error: Option<bool>,
     pub terminate: bool,
 }
 

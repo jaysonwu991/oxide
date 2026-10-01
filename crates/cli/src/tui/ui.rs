@@ -2076,6 +2076,7 @@ fn render_item_themed(
             name,
             args,
             output,
+            is_error,
             diff,
             millis,
         } => {
@@ -2084,7 +2085,7 @@ fn render_item_themed(
             let mut bg = theme.tool_success_bg;
             let command = bash_command(name, args);
             if let Some(diff) = diff {
-                let failed = output.starts_with("error:");
+                let failed = *is_error;
                 if failed {
                     bg = theme.tool_error_bg;
                 }
@@ -2125,7 +2126,7 @@ fn render_item_themed(
                 }
             } else if let Some(path) = file_tool_path(name, args) {
                 if crate::tools::canonical_tool_name(name) == "read_file" {
-                    if output.starts_with("error:") {
+                    if *is_error {
                         bg = theme.tool_error_bg;
                         panel.extend(action_lines("Read failed", &path, theme.error, bold, inner));
                         panel.push(Line::from(""));
@@ -2151,7 +2152,7 @@ fn render_item_themed(
                             );
                         }
                     }
-                } else if output.starts_with("error:") {
+                } else if *is_error {
                     bg = theme.tool_error_bg;
                     panel.extend(action_lines("Edit failed", &path, theme.error, bold, inner));
                     panel.push(Line::from(""));
@@ -2181,9 +2182,7 @@ fn render_item_themed(
                 }
             } else if let Some(command) = &command {
                 let exit = bash_exit_code(output);
-                let failed = exit
-                    .map(|code| code != 0)
-                    .unwrap_or_else(|| output.starts_with("error:"));
+                let failed = *is_error || exit.is_some_and(|code| code != 0);
                 let color = if failed { theme.error } else { theme.success };
                 if failed {
                     bg = theme.tool_error_bg;
@@ -2217,7 +2216,7 @@ fn render_item_themed(
                     );
                 }
             } else {
-                let failed = output.starts_with("error:");
+                let failed = *is_error;
                 if failed {
                     bg = theme.tool_error_bg;
                 }
@@ -3538,6 +3537,7 @@ mod tests {
                 name: "grep".into(),
                 args: r#"{"pattern":"value"}"#.into(),
                 output: output.into(),
+                is_error: false,
                 diff: None,
                 millis: 0,
             },
@@ -3807,6 +3807,7 @@ mod tests {
                 name: "read_file".into(),
                 args: args.into(),
                 output: long_read,
+                is_error: false,
                 diff: None,
                 millis: 0,
             },
@@ -3826,6 +3827,7 @@ mod tests {
                 name: "read_file".into(),
                 args: args.into(),
                 output: "     1\tfn main() {}".into(),
+                is_error: false,
                 diff: None,
                 millis: 0,
             },
@@ -3842,6 +3844,7 @@ mod tests {
                 name: "write_file".into(),
                 args: args.into(),
                 output: "wrote 12 bytes to /x".into(),
+                is_error: false,
                 diff: None,
                 millis: 0,
             },
@@ -3850,6 +3853,25 @@ mod tests {
             &mut lines,
         );
         assert_eq!(panel_line(&lines), "→ Edited src/main.rs");
+
+        let mut lines = Vec::new();
+        render_item(
+            &ChatItem::ToolResult {
+                name: "edit".into(),
+                args: args.into(),
+                output: "edit requires at least one replacement in `edits`".into(),
+                is_error: true,
+                diff: None,
+                millis: 0,
+            },
+            80,
+            false,
+            &mut lines,
+        );
+        let text = panel_text(&lines);
+        assert!(text.starts_with("→ Edit failed src/main.rs"), "{text}");
+        assert!(text.contains("requires at least one replacement"), "{text}");
+        assert!(!text.contains("error:"), "{text}");
     }
 
     #[test]
@@ -3931,6 +3953,7 @@ mod tests {
                 name: "bash".into(),
                 args: args.into(),
                 output: "ok\n[exit: 0]".into(),
+                is_error: false,
                 diff: None,
                 millis: 0,
             },
@@ -3951,6 +3974,7 @@ mod tests {
                 name: "bash".into(),
                 args: args.into(),
                 output: "boom\n[exit: 1]".into(),
+                is_error: false,
                 diff: None,
                 millis: 0,
             },
@@ -4110,6 +4134,7 @@ mod tests {
                 name: "edit".into(),
                 args: r#"{"path":"AGENTS.md"}"#.into(),
                 output: "Successfully replaced 1 block(s) in AGENTS.md.".into(),
+                is_error: false,
                 diff: Some(diff),
                 millis: 0,
             },
@@ -4137,6 +4162,7 @@ mod tests {
                 name: "grep".into(),
                 args: r#"{"pattern":"nowhere"}"#.into(),
                 output: crate::tools::NO_MATCHES.into(),
+                is_error: false,
                 diff: None,
                 millis: 0,
             },
@@ -4165,6 +4191,7 @@ mod tests {
                 name: "write_file".into(),
                 args: r#"{"path":"src/main.rs"}"#.into(),
                 output: "wrote 12 bytes to /x".into(),
+                is_error: false,
                 diff: Some(diff),
                 millis: 0,
             },
@@ -4203,6 +4230,7 @@ mod tests {
                 name: "bash".into(),
                 args: r#"{"command":"echo hi"}"#.into(),
                 output: "hi\n[exit: 0]".into(),
+                is_error: false,
                 diff: None,
                 millis: 0,
             },
@@ -4234,6 +4262,7 @@ mod tests {
                 name: "grep".into(),
                 args: r#"{"pattern":"x"}"#.into(),
                 output: "match".into(),
+                is_error: false,
                 diff: None,
                 millis: 0,
             },
@@ -4265,6 +4294,7 @@ mod tests {
             name: "grep".into(),
             args: r#"{"pattern":"x"}"#.into(),
             output: "match".into(),
+            is_error: false,
             diff: None,
             millis: 0,
         });
@@ -4346,6 +4376,7 @@ mod tests {
                 name: "bash".into(),
                 args: args.into(),
                 output: "ok\n[exit: 0]".into(),
+                is_error: false,
                 diff: None,
                 millis: 1234,
             },
@@ -4382,6 +4413,7 @@ mod tests {
                 name: "grep".into(),
                 args: r#"{"pattern":"x"}"#.into(),
                 output: crate::tools::NO_MATCHES.into(),
+                is_error: false,
                 diff: None,
                 millis: 900,
             },
@@ -4402,6 +4434,7 @@ mod tests {
                 name: "grep".into(),
                 args: r#"{"pattern":"x"}"#.into(),
                 output: crate::tools::NO_MATCHES.into(),
+                is_error: false,
                 diff: None,
                 millis: 40,
             },
@@ -5148,6 +5181,7 @@ mod wrap_parity_tests {
             name: "bash".into(),
             args: "{\"command\":\"git clone x\"}".into(),
             output: output.into(),
+            is_error: false,
             diff: None,
             millis: 0,
         });
