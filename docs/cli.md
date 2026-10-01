@@ -6,6 +6,13 @@ permissions, modes, reasoning, memory, project trust, themes, and context
 compaction. The desktop app reads the same configuration and session files — see
 [desktop.md](desktop.md).
 
+For the reference tables rather than the task guides, see
+[configuration.md](configuration.md) (`config.json` keys, CLI flags, environment
+variables, providers, data locations), [ecosystem.md](ecosystem.md) (the `.oxide/`
+layout), [tools.md](tools.md) (tool parameters and output caps),
+[tui.md](tui.md) (keyboard shortcuts) and [modes.md](modes.md)
+(non-interactive runs and `oxide sessions`).
+
 ## Scopes and precedence
 
 Oxide merges two scopes:
@@ -955,7 +962,7 @@ with strong contrast against the terminal background and keep `success`,
 `error`, and `tool` visually distinct.
 
 For the complete keyboard guide, see
-[Keyboard shortcuts](../README.md#keyboard-shortcuts).
+[Keyboard shortcuts](tui.md#keyboard-shortcuts).
 
 ## Sessions and context
 
@@ -1089,8 +1096,8 @@ You can also provide a key without the login flow via the `OPENAI_API_KEY` /
 environment variables or an `api_key` entry in `config.json`; environment
 variables take precedence over `auth.json`.
 
-See [Configuration](../README.md#configuration) and
-[Providers](../README.md#providers) in the README for the full list.
+See [Configuration reference](configuration.md#configjson) and
+[Providers](configuration.md#providers) for the full list.
 
 ### Z.AI (GLM)
 
