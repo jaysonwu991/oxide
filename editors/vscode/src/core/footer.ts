@@ -9,7 +9,7 @@ import type { Access } from "./trust";
 export type ContextLevel = "ok" | "warn" | "high";
 
 export interface FooterChip {
-  id: "model" | "reasoning" | "agent" | "access" | "session";
+  id: "model" | "reasoning" | "agent" | "access";
   label: string;
   title: string;
 }
@@ -40,7 +40,6 @@ export interface FooterInput {
   /// `defaultProjectTrust`, which decides the access when no decision is saved.
   defaultTrust: "ask" | "always" | "never";
   savedTrust: boolean | undefined;
-  sessionId: string | null;
   branch: string;
   autoCompact: boolean;
   usage: UsageTotals;
@@ -66,7 +65,7 @@ export function footerState(input: FooterInput): FooterState {
       {
         id: "reasoning",
         label: `thinking: ${input.reasoning}`,
-        title: `Reasoning effort (--reasoning): ${REASONING_LEVELS.join(" → ")}. Click to cycle.`,
+        title: `Reasoning effort (--reasoning): ${REASONING_LEVELS.join(" → ")}. Click to choose a level.`,
       },
       {
         id: "agent",
@@ -80,13 +79,6 @@ export function footerState(input: FooterInput): FooterState {
         id: "access",
         label: `access: ${input.access}`,
         title: accessTitle(input),
-      },
-      {
-        id: "session",
-        label: `session: ${input.sessionId ? shortSession(input.sessionId) : "new"}`,
-        title: input.sessionId
-          ? `Session ${input.sessionId}. Click to resume a stored session instead.`
-          : "The next message starts a session. Click to resume a stored one.",
       },
     ],
     info: input.branch,
@@ -137,12 +129,6 @@ export function contextLevel(percent: number | null): ContextLevel {
 export function formatCost(cost: number): string {
   if (!cost) return "";
   return cost < 0.01 ? `$${cost.toFixed(4)}` : `$${cost.toFixed(2)}`;
-}
-
-/// Sessions are addressed by a full id; the footer only has room for enough of
-/// it to tell two apart (and to paste back into `--session`).
-export function shortSession(id: string): string {
-  return id.length > 8 ? id.slice(0, 8) : id;
 }
 
 function accessTitle(input: FooterInput): string {

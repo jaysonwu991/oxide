@@ -200,6 +200,15 @@ enum Command {
         #[arg(long)]
         json: bool,
     },
+    /// List models available from connected providers
+    Models {
+        /// Print provider catalogs as JSON
+        #[arg(long)]
+        json: bool,
+        /// Query only the active provider (for latency-sensitive clients)
+        #[arg(long)]
+        active: bool,
+    },
     /// Read the files a run changed, from its shadow snapshots
     Changes {
         #[command(subcommand)]
@@ -603,6 +612,10 @@ async fn main() -> Result<()> {
                 let current_dir = std::env::current_dir().context("resolving current directory")?;
                 commands::list(&current_dir, json)
             }
+            Command::Models { json, active } => {
+                let current_dir = std::env::current_dir().context("resolving current directory")?;
+                list_models(&current_dir, json, active).await
+            }
             Command::Changes { action } => match action {
                 ChangesAction::Show {
                     path,
@@ -823,6 +836,77 @@ async fn main() -> Result<()> {
         )
         .await
     }
+}
+
+/// Prints the same provider catalogs the TUI's `/models` and desktop model
+/// picker use. Front-ends call this rather than reimplementing authentication,
+/// provider endpoints, bundled fallbacks or catalog normalization.
+async fn list_models(current_dir: &Path, json_output: bool, active_only: bool) -> Result<()> {
+    let config = Config::load(current_dir, None, None, None, None)?;
+    let active = auth::canonical_provider(&config.provider);
+    let mut providers = config::provider_configs(&config);
+    if active_only {
+        providers.retain(|(name, _)| auth::canonical_provider(name) == active);
+    }
+    if providers.is_empty() {
+        anyhow::bail!("no provider connected — run /login to add an API key");
+    }
+    let fetched = futures::future::join_all(providers.into_iter().map(
+        |(name, provider_config)| async move {
+            let current = provider_config.model.clone();
+            let result = llm::LlmClient::new(provider_config).list_models().await;
+            (name, current, result)
+        },
+    ))
+    .await;
+    let catalogs = fetched
+        .into_iter()
+        .map(|(provider, current, result)| match result {
+            Ok(models) => json!({
+                "active": provider == active,
+                "provider": provider,
+                "current": current,
+                "models": models,
+            }),
+            Err(error) => json!({
+                "active": provider == active,
+                "provider": provider,
+                "current": current,
+                "models": [],
+                "error": format!("{error:#}"),
+            }),
+        })
+        .collect::<Vec<_>>();
+    if json_output {
+        println!(
+            "{}",
+            serde_json::to_string(&json!({
+                "active": active,
+                "current": config.model,
+                "providers": catalogs,
+            }))?
+        );
+    } else {
+        for catalog in catalogs {
+            let provider = catalog["provider"].as_str().unwrap_or_default();
+            if let Some(error) = catalog.get("error").and_then(|value| value.as_str()) {
+                println!("{provider}: {error}");
+                continue;
+            }
+            let marker = if catalog["active"].as_bool().unwrap_or(false) {
+                " (active)"
+            } else {
+                ""
+            };
+            println!("{provider}{marker}");
+            for model in catalog["models"].as_array().into_iter().flatten() {
+                if let Some(model) = model.as_str() {
+                    println!("  {model}");
+                }
+            }
+        }
+    }
+    Ok(())
 }
 
 async fn run_print(
@@ -1397,6 +1481,18 @@ mod tests {
                 keep_data: true,
                 dry_run: true,
                 force: true,
+            })
+        ));
+    }
+
+    #[test]
+    fn parses_model_catalog_output() {
+        let cli = Cli::try_parse_from(["oxide", "models", "--json", "--active"]).unwrap();
+        assert!(matches!(
+            cli.command,
+            Some(Command::Models {
+                json: true,
+                active: true
             })
         ));
     }

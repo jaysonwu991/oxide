@@ -1,22 +1,30 @@
-// The two dialogs the panel paints are composed here as data, so what a row
-// says — a server's state and the scope a toggle writes to, a session's age and
-// size, what a deletion would remove — is assertable without a webview or a CLI.
+// The dialogs the panel paints are composed here as data, so what a row says —
+// a setting's current choice, a server's state and scope, a session's age and
+// size, what a deletion would remove — is assertable without a webview or CLI.
 
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 
 import {
+  agentDialog,
+  APPLY_AGENT,
+  APPLY_MODEL,
+  APPLY_REASONING,
+  APPLY_TRUST,
   CHANGES_UNDO_CONFIRM,
   CLOSE_DIALOG,
   CONTINUE_SESSION,
   deleteSessionDialog,
   MCP_TOGGLE,
+  modelDialog,
   NEW_SESSION,
+  reasoningDialog,
   mcpDialog,
   OPEN_SESSION,
   SESSION_DELETE,
   SESSION_DELETE_CONFIRM,
   sessionDialog,
+  trustDialog,
   undoChangesDialog,
 } from "../core/dialogs";
 import { parseMcpList } from "../core/mcps";
@@ -54,6 +62,87 @@ const listing = JSON.stringify([
     status: "Error",
   },
 ]);
+
+describe("settings dialogs", () => {
+  it("keeps model selection in the composer and accepts a custom model ID", () => {
+    const dialog = modelDialog(
+      "claude-opus-5",
+      "portkey",
+      "claude-opus-5",
+      [
+        { model: "claude-opus-5", provider: "portkey" },
+        { model: "glm-5", provider: "zai" },
+      ],
+      "gpt-6",
+    );
+    assert.equal(dialog.kind, "model");
+    assert.equal(dialog.pin, "footer");
+    assert.equal(dialog.search, true);
+    assert.equal(dialog.searchPlaceholder, "Filter or enter a model ID…");
+    assert.deepEqual(dialog.rows.map((entry) => entry.label), ["Use “gpt-6”"]);
+    assert.equal(dialog.rows[0].value, "gpt-6");
+    assert.equal(dialog.rows[0].action, APPLY_MODEL);
+  });
+
+  it("marks the active remembered model and the config fallback", () => {
+    const active = modelDialog(
+      "claude-opus-5",
+      "portkey",
+      "glm-5",
+      [
+        { model: "claude-opus-5", provider: "portkey" },
+        { model: "glm-5", provider: "zai" },
+      ],
+    );
+    assert.equal(active.rows[0].label, "Oxide config default");
+    assert.match(active.rows[0].detail, /claude-opus-5/);
+    assert.equal(active.rows[0].status, "");
+    assert.equal(active.rows[1].status, "portkey");
+    assert.equal(active.rows[2].status, "Current");
+    assert.equal(active.count, 2);
+    assert.ok(active.rows.every((entry) => entry.action === APPLY_MODEL));
+
+    const configured = modelDialog("claude-opus-5", "portkey", "", []);
+    assert.equal(configured.rows[0].status, "Current");
+  });
+
+  it("searches the config fallback by its complete visible label", () => {
+    for (const query of ["oxide", "default", "config"]) {
+      const dialog = modelDialog("claude-opus-5", "portkey", "", [], query);
+      assert.equal(dialog.rows[0].label, "Oxide config default");
+      assert.equal(dialog.rows[0].value, "");
+    }
+  });
+
+  it("filters agents and turns an unknown name into a selectable row", () => {
+    const dialog = agentDialog(
+      [
+        { name: "reviewer", description: "Reviews a change" },
+        { name: "builder", description: "Implements a change" },
+      ],
+      "reviewer",
+      "security",
+    );
+    assert.equal(dialog.kind, "agent");
+    assert.equal(dialog.pin, "footer");
+    assert.equal(dialog.searchPlaceholder, "Filter or enter an agent name…");
+    assert.deepEqual(dialog.rows.map((entry) => entry.label), ["Use “security”"]);
+    assert.equal(dialog.rows[0].action, APPLY_AGENT);
+  });
+
+  it("offers reasoning and project access without opening VS Code chrome", () => {
+    const reasoning = reasoningDialog("medium", ["auto", "off", "medium", "high"]);
+    assert.equal(reasoning.pin, "footer");
+    assert.equal(reasoning.rows.find((entry) => entry.value === "medium")?.status, "Current");
+    assert.ok(reasoning.rows.every((entry) => entry.action === APPLY_REASONING));
+
+    const trust = trustDialog("always");
+    assert.equal(trust.pin, "footer");
+    assert.deepEqual(trust.rows.map((entry) => entry.value), ["default", "always", "never"]);
+    assert.equal(trust.rows[1].status, "Current");
+    assert.ok(trust.rows.every((entry) => entry.action === APPLY_TRUST));
+  });
+});
 
 describe("MCP dialog", () => {
   it("paints one row per server, in the name order the listing arrives in", () => {

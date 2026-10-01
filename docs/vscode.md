@@ -153,10 +153,10 @@ The composer answers `/mcps` (alias `/mcp`) itself, the way the terminal's
 `/mcps` and Claude Code's `/mcp` do: the message is not sent to the model but
 opens the panel's own **MCP servers** listing — not a `showQuickPick`, which
 takes over the window, hides the transcript the listing is about, and cannot be
-answered while a turn streams. It is the listing that belongs to the composer it
-was typed in: the same sheet the session history drops from the header, pinned to
-the other end, rising from the footer's top edge and staying attached to it, with
-its own scrollbar once a project has more servers than fit.
+answered while a turn streams. It is the listing that belongs near the composer
+where it was typed: the same standalone card used for session history, moved to
+the other end of the panel, with its own scrollbar once a project has more
+servers than fit.
 Every server is a row carrying the state the core reported (`Connected`, `Needs
 auth`, `Needs trust`, `Disabled`, `Error`) and a line naming its transport, the
 file that defined it and its state, plus an icon-only power switch that turns it
@@ -194,12 +194,11 @@ click that opens the listing is the click that closes it, which is what the
 button's own `aria-expanded` says — the panel is part of the column rather than a
 window over it, so it is opened and put away the same way. Reading the store is
 all opening does: the rows that switch threads refuse while a turn owns the
-session file, so the listing itself can be read mid-turn. The `session: <short
-id>` footer chip, **Oxide: Session History**, and `/session` (alias `/sessions`)
-in the composer reach the same listing — the listing `oxide sessions list`
-prints, painted in the panel rather than in a QuickPick. The chip and the command
-are the button's own control under another name, so they toggle with it, while
-`/session` typed in the composer opens the listing (or repaints it if it is
+session file, so the listing itself can be read mid-turn. **Oxide: Session
+History** and `/session` (alias `/sessions`) in the composer reach the same
+listing — the listing `oxide sessions list` prints, painted in the panel rather
+than in a QuickPick. The command is the button's own control under another name,
+while `/session` typed in the composer opens the listing (or repaints it if it is
 already up) rather than closing it: a command that names the history should not
 answer by taking it away. It hangs from the header rather than from the composer
 the way the MCP servers listing does: it is about the thread the header names, and
@@ -401,14 +400,11 @@ It is arranged the way the composer is used, from the top down: the chips that
 describe the next turn, the composer itself, and the dim line of numbers under
 it.
 
-- **Chips** — `model: <model> · <window>`, `thinking: <level>`, `agent: <name>`,
-  `access: trusted|untrusted` and `session: <short id>`, each with a tooltip
-  saying which setting or file behind it. A click posts a `control` message that
-  the controller routes to the same action the matching command runs:
-  `thinking` cycles the level (like <kbd>Shift+Tab</kbd> in the terminal), the
-  others open the model, agent and trust pickers and the session dialog. The webview splits
-  the host's `model: glm-5 · 128.0k` label at the first `: ` and paints the key
-  dim and uppercased, so the value is what reads first.
+- **Controls** — four icon-only buttons for model, reasoning, agent and project
+  access. Each keeps its complete current value and action in its tooltip and
+  accessible name. A click posts a `control` message that the controller routes
+  to the same in-panel picker as the matching command. Session history remains
+  the history button in the header instead of taking a second footer slot.
 - **Composer** — the message box: the attachment strip, the textarea and the
   toolbar inside one bordered block. It starts two rows tall (`rows="2"`) and
   grows with the message up to 200px, where it scrolls instead.
@@ -492,9 +488,11 @@ permissions inside a project the user did not trust. Installed plugins are read
 too, from the CLI's own plugin state (`plugins/config.json`, enabled entries
 with a live directory and manifest), because `ecosystem::load_enabled_plugins`
 loads their `agents/` ahead of project resources — the order is project, then
-plugins, then the global directories. The model picker offers only the active
-provider's remembered models: a model id is sent to whichever provider the CLI
-has active, so another provider's would run against the wrong endpoint.
+plugins, then the global directories. The model picker asks `oxide models
+--json --active` for the active provider's complete normalized catalog, the same source
+as the TUI and desktop pickers. It keeps remembered models as a fallback when a
+catalog refresh fails and accepts a custom ID; models from another provider are
+not mixed in because a per-turn model override runs against the active provider.
 
 ## The file you are editing
 
@@ -840,13 +838,11 @@ logic in the webview. A dialog is handed over the same way: the rows and the
 action each one posts are composed in the host (`core/dialogs.ts`), so the
 webview is only a renderer and a click is reported rather than interpreted.
 Its own layout is all in `media/style.css`: a listing is a flex child of the
-panel's column rather than an overlay, which is what keeps it attached to the
-edge it belongs to and lets its row list scroll. One element serves both — it
-sits under the header in the markup and the `.pin-footer` class the host's `pin`
-becomes moves the same node above the footer with `order` — so there is a
-single sheet whose borders and shadow turn around with the end it is pinned to,
-and the transcript is ordered between the two either way: the listing takes its
-room from the transcript rather than from the end it is attached to. It is also
+panel's column rather than an overlay, which lets its row list scroll. One
+complete, rounded card serves both positions — it sits under the header in the
+markup and the `.pin-footer` class the host's `pin` becomes moves the same node
+above the footer with `order`. The transcript is ordered between the two either
+way, so the listing takes its room from the transcript. It is also
 the one child of that column that does not shrink — the transcript is a scroll
 container whose content is what its base size is measured from, so a dialog that
 may shrink opens a couple of rows tall with the rest of the list scrolling
@@ -879,9 +875,10 @@ The manifest defines the two view containers (activity bar and secondary side
 bar), the editor toolbar entry, the commands and keybindings, and the `oxide.*`
 settings. See the [extension README](../editors/vscode/README.md) for the
 user-facing tables. The footer's chips are shortcuts into the same actions:
-`setModel`, `setAgent`, `cycleReasoning`, `setProjectTrust` and `resumeSession`
-are reached from a chip click and from the palette, so the two entry points never
-drift.
+`setModel`, `setAgent`, `setReasoning` and `setProjectTrust` are reached from a
+chip click and from the palette, so the two entry points never drift. Session
+history stays in the header (and is also reachable through `/session` and the
+command palette), rather than duplicating another control in the footer.
 
 ## Development and testing
 

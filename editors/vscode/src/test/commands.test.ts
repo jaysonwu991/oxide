@@ -54,7 +54,6 @@ describe("command contributions", () => {
       trustSetting: "default",
       defaultTrust: "ask",
       savedTrust: undefined,
-      sessionId: null,
       branch: "",
       autoCompact: true,
       usage: emptyUsage(),
