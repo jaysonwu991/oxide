@@ -401,6 +401,10 @@ pub struct Config {
     pub system_prompt: String,
     #[serde(default = "default_max_tokens")]
     pub max_tokens: u32,
+    /// The model's full input context window. This is separate from
+    /// `max_tokens`, which caps only one response.
+    #[serde(default = "default_context_window")]
+    pub context_window: u64,
     #[serde(default = "default_true")]
     pub auto_approve: bool,
     #[serde(default)]
@@ -446,6 +450,10 @@ fn default_system_prompt() -> String {
 
 fn default_max_tokens() -> u32 {
     8192
+}
+
+fn default_context_window() -> u64 {
+    272_000
 }
 
 fn default_true() -> bool {
@@ -526,6 +534,7 @@ impl Default for Config {
             model_catalog: Vec::new(),
             system_prompt: default_system_prompt(),
             max_tokens: default_max_tokens(),
+            context_window: default_context_window(),
             auto_approve: true,
             reasoning: Reasoning::default(),
             ecosystem: Ecosystem::default(),
@@ -574,13 +583,15 @@ impl Config {
     }
 
     /// The model's context window, used for the Pi-style context percentage
-    /// and compaction threshold. `OXIDE_CONTEXT_LIMIT` overrides it.
+    /// and compaction threshold. `OXIDE_CONTEXT_LIMIT` overrides it. Keep the
+    /// window at least as large as the response cap for compatibility with
+    /// older configurations that used `max_tokens` to raise the window.
     pub fn context_window(&self) -> u64 {
         std::env::var("OXIDE_CONTEXT_LIMIT")
             .ok()
             .and_then(|value| value.trim().parse::<u64>().ok())
             .filter(|value| *value > 0)
-            .unwrap_or_else(|| (self.max_tokens as u64).max(128_000))
+            .unwrap_or_else(|| self.context_window.max(self.max_tokens as u64))
     }
 
     pub fn config_path() -> PathBuf {
@@ -1477,6 +1488,23 @@ mod tests {
         assert!(prompt.contains("`gh` and `glab`"), "{prompt}");
         assert!(prompt.contains("inside their existing threads"), "{prompt}");
         assert!(prompt.contains("/replies"), "{prompt}");
+    }
+
+    #[test]
+    fn context_window_has_a_separate_large_default() {
+        let config = Config::default();
+        assert_eq!(config.context_window, 272_000);
+        assert_eq!(config.context_window(), 272_000);
+    }
+
+    #[test]
+    fn context_window_keeps_the_response_cap_as_a_lower_bound() {
+        let config = Config {
+            context_window: 1_050_000,
+            max_tokens: 2_000_000,
+            ..Config::default()
+        };
+        assert_eq!(config.context_window(), 2_000_000);
     }
 
     #[test]

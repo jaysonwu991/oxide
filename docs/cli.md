@@ -985,10 +985,12 @@ Configure it under `compaction` in `settings.json` (global) or
 - `modelOverrides` — per `provider/model` budget overrides; omitted fields fall
   back to the ordinary settings.
 
+The model window defaults to 272000 tokens. Set `context_window` in
+`config.json` to a larger value supported by the active model, such as 1050000.
 `OXIDE_COMPACTION_ENABLED`, `OXIDE_COMPACTION_RESERVE_TOKENS`, and
 `OXIDE_COMPACTION_KEEP_RECENT_TOKENS` override the file settings, and
-`OXIDE_CONTEXT_LIMIT` sets the model window. Manual compaction is available with
-`/compact [focus]` in the TUI or `oxide sessions compact`.
+`OXIDE_CONTEXT_LIMIT` overrides `context_window`. Manual compaction is available
+with `/compact [focus]` in the TUI or `oxide sessions compact`.
 
 Branching with `/tree <n>` or `/fork <n>` summarizes the abandoned branch with
 the same structured format and appends it as a `branch_summary` entry.

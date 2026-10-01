@@ -662,6 +662,7 @@ Oxide reads `config.json` from the platform config directory:
   "api_key": "",
   "system_prompt": "You are Oxide...",
   "max_tokens": 8192,
+  "context_window": 272000,
   "auto_approve": true,
   "reasoning": "auto",
   "theme": "dark"
@@ -694,6 +695,12 @@ reasoning model exhausts that budget on hidden reasoning and returns nothing,
 Oxide retries with a doubled budget (up to 32768) before reporting the failure,
 so a long-thinking turn recovers instead of ending in an empty response.
 
+`context_window` is the model's full context window in tokens. It defaults to
+272000 and controls both the context gauge and automatic compaction threshold.
+Set it to a larger window supported by your model, for example `1050000`, to
+retain more conversation before compaction. `OXIDE_CONTEXT_LIMIT` overrides it
+for one environment.
+
 ### Environment variables
 
 | Variable | Purpose |
@@ -703,7 +710,7 @@ so a long-thinking turn recovers instead of ending in an empty response.
 | `OXIDE_BASE_URL` | API base URL. |
 | `OXIDE_API_KEY` | API key. |
 | `OXIDE_REASONING` | Reasoning effort (`auto`, `off`, `low`, `medium`, `high`). |
-| `OXIDE_CONTEXT_LIMIT` | Model context window in tokens, used for the footer's context percentage and the compaction threshold (default: the larger of `max_tokens` and 128000). |
+| `OXIDE_CONTEXT_LIMIT` | Override `context_window`, the model context window used for the footer's context percentage and compaction threshold. |
 | `OXIDE_COMPACTION_ENABLED` | Enable/disable automatic context compaction. |
 | `OXIDE_COMPACTION_RESERVE_TOKENS` | Tokens reserved for the response before compaction triggers. |
 | `OXIDE_COMPACTION_KEEP_RECENT_TOKENS` | Recent tokens kept verbatim when compacting. |
