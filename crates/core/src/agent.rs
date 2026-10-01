@@ -2824,20 +2824,22 @@ mod tests {
 
     #[test]
     fn active_agent_tools_are_a_hard_allowlist() {
-        let mut config = Config::default();
-        config.active_agent = Some(AgentDef {
-            name: "scout".into(),
-            description: None,
-            mode: AgentMode::Subagent,
-            tools: Some(vec![
-                "read".into(),
-                "grep".into(),
-                "find".into(),
-                "ls".into(),
-            ]),
-            permission: None,
-            prompt: String::new(),
-        });
+        let config = Config {
+            active_agent: Some(AgentDef {
+                name: "scout".into(),
+                description: None,
+                mode: AgentMode::Subagent,
+                tools: Some(vec![
+                    "read".into(),
+                    "grep".into(),
+                    "find".into(),
+                    "ls".into(),
+                ]),
+                permission: None,
+                prompt: String::new(),
+            }),
+            ..Config::default()
+        };
 
         assert!(tool_enabled(&config, "read_file"));
         assert!(tool_enabled(&config, "grep"));
