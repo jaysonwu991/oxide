@@ -4,12 +4,12 @@ use crate::mcp::McpRegistry;
 use crate::media;
 use anyhow::{Context, Result};
 use serde_json::{json, Value};
-use std::collections::{BTreeSet, VecDeque};
-use std::io::{BufReader, BufWriter, Read, Write};
+use std::collections::{BTreeSet, HashMap, VecDeque};
+use std::io::{BufRead, BufReader, BufWriter, Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 use tokio::io::AsyncReadExt;
 use tokio::time::{timeout, Duration};
 
@@ -478,7 +478,9 @@ pub async fn execute(
                 .await
                 {
                     Ok(result) => result,
-                    Err(err) => Err(anyhow::anyhow!("{canonical} worker failed: {err}")),
+                    Err(_) => Ok(ToolOutput::error(format!(
+                        "{name} stopped unexpectedly; retry the call once"
+                    ))),
                 }
             }
             other => Err(anyhow::anyhow!("unknown tool `{other}`")),
@@ -1152,7 +1154,7 @@ fn dir_entries(full: &Path) -> Result<Vec<String>> {
 
 fn list_dir(cwd: &Path, args: &Value) -> Result<String> {
     let path = args.get("path").and_then(Value::as_str).unwrap_or(".");
-    let limit = int_arg(args, "limit").unwrap_or(MAX_MATCHES);
+    let limit = int_arg(args, "limit").unwrap_or(MAX_MATCHES).max(1);
     let full = resolve(cwd, path);
 
     let mut entries = dir_entries(&full)?;
@@ -1170,17 +1172,24 @@ const MAX_MATCHES: usize = 200;
 fn glob(cwd: &Path, args: &Value) -> Result<String> {
     let pattern = required_string(args, "glob", "pattern", r#"{"pattern":"**/*.rs"}"#)?;
     let base = args.get("path").and_then(Value::as_str).unwrap_or(".");
-    let limit = int_arg(args, "limit").unwrap_or(MAX_MATCHES);
+    let limit = int_arg(args, "limit").unwrap_or(MAX_MATCHES).max(1);
     let root = resolve(cwd, base);
+
+    // Use the same native fd fast path as Pi when it is installed, then
+    // ripgrep's parallel file lister. The built-in walker stays available on a
+    // minimal system with neither binary.
+    if let Some(output) = fast_find(&root, pattern, limit) {
+        return Ok(output);
+    }
 
     let mut matches = Vec::new();
     walk(&root, &mut |path| {
         let rel = path.strip_prefix(&root).unwrap_or(path);
         let rel = rel.to_string_lossy().replace('\\', "/");
-        if glob_match(pattern, &rel) {
+        if find_pattern_matches(pattern, &rel) {
             matches.push(rel);
         }
-        true
+        matches.len() <= limit
     });
     matches.sort();
     if matches.is_empty() {
@@ -1193,6 +1202,142 @@ fn glob(cwd: &Path, args: &Value) -> Result<String> {
         out.push_str("\n... [truncated]");
     }
     Ok(out)
+}
+
+fn fast_find(root: &Path, pattern: &str, limit: usize) -> Option<String> {
+    if !root.is_dir() {
+        return None;
+    }
+    if let Some(fd) = command_path("fd").or_else(|| command_path("fdfind")) {
+        if let Some(output) = fd_find(&fd, root, pattern, limit) {
+            return Some(output);
+        }
+    }
+    rg_find(root, pattern, limit)
+}
+
+/// Lists files with fd, matching Pi's preferred implementation. Debian-based
+/// distributions package the same binary as `fdfind`, accepted above.
+fn fd_find(fd: &Path, root: &Path, pattern: &str, limit: usize) -> Option<String> {
+    let mut args = vec![
+        "--glob".to_string(),
+        "--color=never".to_string(),
+        "--hidden".to_string(),
+        "--no-require-git".to_string(),
+        "--max-results".to_string(),
+        limit.saturating_add(1).to_string(),
+    ];
+    for ignored in [".git", "node_modules", "target", ".venv"] {
+        args.push("--exclude".to_string());
+        args.push(ignored.to_string());
+    }
+    let mut effective_pattern = pattern.replace('\\', "/");
+    if effective_pattern.contains('/') {
+        args.push("--full-path".to_string());
+        if !effective_pattern.starts_with('/')
+            && !effective_pattern.starts_with("**/")
+            && effective_pattern != "**"
+        {
+            effective_pattern = format!("**/{effective_pattern}");
+        }
+        #[cfg(windows)]
+        {
+            effective_pattern = effective_pattern.replace('/', "[/\\\\]");
+        }
+    }
+    args.extend(["--".to_string(), effective_pattern, ".".to_string()]);
+    collect_find_child(
+        std::process::Command::new(fd).current_dir(root).args(args),
+        limit,
+    )
+}
+
+/// Lists files through ripgrep when fd is absent. `Command::output` is
+/// intentionally avoided: a broad pattern in a large checkout must not collect
+/// every path before the model can see the first page.
+fn rg_find(root: &Path, pattern: &str, limit: usize) -> Option<String> {
+    let rg = command_path("rg")?;
+    collect_find_child(
+        std::process::Command::new(rg).current_dir(root).args([
+            "--files",
+            "--hidden",
+            "--no-require-git",
+            "--glob",
+            "!.git",
+            "--glob",
+            "!node_modules",
+            "--glob",
+            "!target",
+            "--glob",
+            "!.venv",
+            "--glob",
+            pattern,
+        ]),
+        limit,
+    )
+}
+
+/// Collects at most one result beyond the requested limit, then stops the
+/// native walker. The extra result is enough to report truncation accurately.
+fn collect_find_child(command: &mut std::process::Command, limit: usize) -> Option<String> {
+    let mut child = command
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .ok()?;
+    let stdout = child.stdout.take()?;
+    let mut matches = Vec::with_capacity(limit.saturating_add(1).min(MAX_MATCHES + 1));
+    let mut killed_at_limit = false;
+    let mut read_failed = false;
+    for line in BufReader::new(stdout).lines() {
+        let line = match line {
+            Ok(line) => line,
+            Err(_) => {
+                read_failed = true;
+                break;
+            }
+        };
+        let line = line
+            .strip_prefix("./")
+            .or_else(|| line.strip_prefix(".\\"))
+            .unwrap_or(&line)
+            .replace('\\', "/");
+        matches.push(line);
+        if matches.len() > limit {
+            killed_at_limit = true;
+            let _ = child.kill();
+            break;
+        }
+    }
+    let status = child.wait().ok()?;
+    // Never return partial output from a native tool that failed by itself.
+    // That would look correct while silently omitting results. Let the caller
+    // try the next implementation instead. A process Oxide deliberately killed
+    // after the limit is the sole non-success status we accept.
+    if read_failed || (!status.success() && !killed_at_limit) {
+        return None;
+    }
+    if matches.is_empty() {
+        return Some(NO_FILES_FOUND.to_string());
+    }
+    let truncated = matches.len() > limit;
+    matches.truncate(limit);
+    let mut out = matches.join("\n");
+    if truncated {
+        out.push_str("\n... [truncated]");
+    }
+    Some(out)
+}
+
+/// fd (and Pi's `find`) treats a pattern without a path separator as a
+/// basename pattern at every depth. Keep the Rust fallback consistent with
+/// that behavior; path-containing patterns still match from the search root.
+fn find_pattern_matches(pattern: &str, path: &str) -> bool {
+    if pattern.contains('/') || pattern.contains('\\') {
+        glob_match(&pattern.replace('\\', "/"), path)
+    } else {
+        glob_match(pattern, path.rsplit('/').next().unwrap_or(path))
+    }
 }
 
 fn grep(cwd: &Path, args: &Value) -> Result<String> {
@@ -1209,7 +1354,7 @@ fn grep(cwd: &Path, args: &Value) -> Result<String> {
     let ignore_case = bool_arg(args, "ignoreCase", "ignore_case");
     let use_regex = bool_arg(args, "regex", "use_regex");
     let context = int_arg(args, "context").unwrap_or(0);
-    let limit = int_arg(args, "limit").unwrap_or(MAX_MATCHES);
+    let limit = int_arg(args, "limit").unwrap_or(MAX_MATCHES).max(1);
     let root = resolve(cwd, base);
 
     // `rg` applies the same search with far less I/O, so prefer it and fall
@@ -1288,9 +1433,7 @@ fn rg_grep(
     limit: usize,
     use_regex: bool,
 ) -> Option<String> {
-    if !command_exists("rg") {
-        return None;
-    }
+    let rg = command_path("rg")?;
     let (dir, target) = if root.is_dir() {
         (root.to_path_buf(), ".".to_string())
     } else {
@@ -1298,7 +1441,7 @@ fn rg_grep(
         let name = root.file_name()?.to_string_lossy().to_string();
         (parent, name)
     };
-    let mut command = std::process::Command::new("rg");
+    let mut command = std::process::Command::new(rg);
     command.current_dir(&dir).args([
         "--no-require-git",
         "--hidden",
@@ -1326,19 +1469,21 @@ fn rg_grep(
         command.arg("--glob").arg(include);
     }
     command.arg("--").arg(pattern).arg(&target);
-    let output = command.output().ok()?;
-    // rg exits 0 on matches, 1 on none, and 2 on errors we should fall back on.
-    match output.status.code() {
-        Some(0) | Some(1) => {}
-        _ => return None,
-    }
-    let stdout = String::from_utf8(output.stdout).ok()?;
+    command.stdout(Stdio::piped()).stderr(Stdio::null());
+    let mut child = command.spawn().ok()?;
+    let stdout = child.stdout.take()?;
     let mut hits: Vec<String> = Vec::new();
-    for line in stdout.lines() {
-        if hits.len() > limit {
-            break;
-        }
-        let Ok(event) = serde_json::from_str::<Value>(line) else {
+    let mut killed_at_limit = false;
+    let mut read_failed = false;
+    for line in BufReader::new(stdout).lines() {
+        let line = match line {
+            Ok(line) => line,
+            Err(_) => {
+                read_failed = true;
+                break;
+            }
+        };
+        let Ok(event) = serde_json::from_str::<Value>(&line) else {
             continue;
         };
         let kind = match event.get("type").and_then(Value::as_str) {
@@ -1362,6 +1507,18 @@ fn rg_grep(
         let text = text.trim_end_matches(['\n', '\r']);
         let marker = if kind == "match" { ':' } else { '-' };
         hits.push(format!("{path}{marker}{line_number}{marker} {text}"));
+        if hits.len() > limit {
+            killed_at_limit = true;
+            let _ = child.kill();
+            break;
+        }
+    }
+    let status = child.wait().ok()?;
+    // rg exits 1 for an ordinary no-match result. Every other unsolicited
+    // failure falls back rather than returning plausible-looking partial data.
+    let no_matches = status.code() == Some(1) && hits.is_empty();
+    if read_failed || (!status.success() && !no_matches && !killed_at_limit) {
+        return None;
     }
     Some(finish_hits(hits, limit))
 }
@@ -1406,13 +1563,53 @@ fn finish_hits(mut hits: Vec<String>, limit: usize) -> String {
     out
 }
 
-/// Whether a binary is resolvable on `PATH`.
-fn command_exists(name: &str) -> bool {
-    let Some(path) = std::env::var_os("PATH") else {
+/// Caches a resolved binary per `(PATH, name)` pair. Tool-heavy turns call this
+/// for every `find`, `grep`, and forge URL; successful lookups avoid repeatedly
+/// splitting and probing PATH, while misses remain visible to a later install.
+fn command_path(name: &str) -> Option<PathBuf> {
+    let path = std::env::var_os("PATH")?;
+    type CommandCache = HashMap<(std::ffi::OsString, String), PathBuf>;
+    static CACHE: OnceLock<std::sync::Mutex<CommandCache>> = OnceLock::new();
+    let cache = CACHE.get_or_init(|| std::sync::Mutex::new(HashMap::new()));
+    let key = (path.clone(), name.to_string());
+    if let Ok(cache) = cache.lock() {
+        if let Some(found) = cache.get(&key) {
+            return Some(found.clone());
+        }
+    }
+    let found = std::env::split_paths(&path).find_map(|dir| {
+        [dir.join(name), dir.join(format!("{name}.exe"))]
+            .into_iter()
+            .find(|candidate| is_executable_file(candidate))
+    });
+    // Do not cache misses: a package manager or an Oxide-managed installer may
+    // add the binary to an existing PATH directory while this process lives.
+    if let (Some(found), Ok(mut cache)) = (&found, cache.lock()) {
+        cache.insert(key, found.clone());
+    }
+    found
+}
+
+fn is_executable_file(path: &Path) -> bool {
+    let Ok(metadata) = path.metadata() else {
         return false;
     };
-    std::env::split_paths(&path)
-        .any(|dir| dir.join(name).is_file() || dir.join(format!("{name}.exe")).is_file())
+    if !metadata.is_file() {
+        return false;
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        metadata.permissions().mode() & 0o111 != 0
+    }
+    #[cfg(not(unix))]
+    {
+        true
+    }
+}
+
+fn command_exists(name: &str) -> bool {
+    command_path(name).is_some()
 }
 
 /// Scans the candidate files for a matcher's hits across the available cores,
@@ -1831,7 +2028,12 @@ async fn webfetch(args: &Value) -> Result<String> {
         .and_then(Value::as_str)
         .unwrap_or("markdown");
 
-    let response = reqwest::Client::new()
+    // Keep one pool for the process so consecutive fetches to the same host do
+    // not repeat DNS, TCP, and TLS setup. `Client` is internally shared and is
+    // intended to be reused across requests.
+    static CLIENT: OnceLock<reqwest::Client> = OnceLock::new();
+    let client = CLIENT.get_or_init(reqwest::Client::new);
+    let response = client
         .get(url)
         .header("User-Agent", "oxide")
         .send()
@@ -3644,6 +3846,69 @@ mod tests {
         assert!(!glob_match("*.txt", "a/b.txt"));
         assert!(glob_match("a/**/b.rs", "a/b.rs"));
         assert!(glob_match("a/**/b.rs", "a/x/y/b.rs"));
+    }
+
+    #[test]
+    fn find_basename_patterns_match_at_every_depth_and_stop_at_the_limit() {
+        let dir = std::env::temp_dir().join(format!("oxide_find_fast_{}", std::process::id()));
+        std::fs::remove_dir_all(&dir).ok();
+        std::fs::create_dir_all(dir.join("nested")).unwrap();
+        std::fs::write(dir.join("root.txt"), "root").unwrap();
+        std::fs::write(dir.join("nested/child.txt"), "child").unwrap();
+        std::fs::write(dir.join("nested/skip.rs"), "skip").unwrap();
+
+        let all = glob(&dir, &json!({ "pattern": "*.txt" })).unwrap();
+        assert!(all.contains("root.txt"), "{all}");
+        assert!(all.contains("nested/child.txt"), "{all}");
+
+        let limited = glob(&dir, &json!({ "pattern": "*.txt", "limit": 1 })).unwrap();
+        assert_eq!(limited.lines().count(), 2, "{limited}");
+        assert!(limited.ends_with("... [truncated]"), "{limited}");
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn fd_find_streams_only_enough_results_to_report_truncation() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = std::env::temp_dir().join(format!("oxide_fd_find_{}", std::process::id()));
+        std::fs::remove_dir_all(&dir).ok();
+        std::fs::create_dir_all(&dir).unwrap();
+        let fake_fd = dir.join("fd");
+        std::fs::write(
+            &fake_fd,
+            "#!/bin/sh\nprintf 'a.txt\\nnested/b.txt\\nthird.txt\\n'\n",
+        )
+        .unwrap();
+        let mut permissions = std::fs::metadata(&fake_fd).unwrap().permissions();
+        permissions.set_mode(0o755);
+        std::fs::set_permissions(&fake_fd, permissions).unwrap();
+
+        let output = fd_find(&fake_fd, &dir, "*.txt", 1).unwrap();
+        assert_eq!(output, "a.txt\n... [truncated]");
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn fd_find_rejects_partial_output_from_a_failed_process() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = std::env::temp_dir().join(format!("oxide_fd_fail_{}", std::process::id()));
+        std::fs::remove_dir_all(&dir).ok();
+        std::fs::create_dir_all(&dir).unwrap();
+        let fake_fd = dir.join("fd");
+        std::fs::write(&fake_fd, "#!/bin/sh\nprintf 'plausible.txt\\n'\nexit 2\n").unwrap();
+        let mut permissions = std::fs::metadata(&fake_fd).unwrap().permissions();
+        permissions.set_mode(0o755);
+        std::fs::set_permissions(&fake_fd, permissions).unwrap();
+
+        assert!(fd_find(&fake_fd, &dir, "*.txt", 10).is_none());
+
+        std::fs::remove_dir_all(&dir).ok();
     }
 
     #[test]
