@@ -134,13 +134,13 @@ impl PluginHost {
             return Self::inactive();
         }
         let Some(runtime) = detect_runtime() else {
-            eprintln!("[plugin] no bun or node runtime found; plugins disabled");
+            crate::notice::warn("[plugin] no bun or node runtime found; plugins disabled");
             return Self::inactive();
         };
         let harness = match write_harness() {
             Ok(path) => path,
             Err(err) => {
-                eprintln!("[plugin] failed to prepare host: {err:#}");
+                crate::notice::warn(format!("[plugin] failed to prepare host: {err:#}"));
                 return Self::inactive();
             }
         };
@@ -174,7 +174,7 @@ impl PluginHost {
             }
             Err(err) => {
                 std::fs::remove_file(&harness).ok();
-                eprintln!("[plugin] failed to start {runtime}: {err}");
+                crate::notice::warn(format!("[plugin] failed to start {runtime}: {err}"));
                 Self::inactive()
             }
         }

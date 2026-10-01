@@ -205,9 +205,11 @@ refreshes it automatically. Run the flow up front with:
 oxide mcp auth <name>
 ```
 
-`oxide mcp auth` also runs automatically on first use when a terminal is
-attached; in non-interactive runs, authorize first. An optional Claude
-Code-compatible `oauth` block can provide a pre-registered `clientId`,
+`oxide mcp auth` is the only command that opens a browser: authorization waits on
+the loopback callback, so a running agent turn never starts it — a server without
+a usable token reports that it needs authorization and names this command, in the
+tool result and in `/mcps`. A stored token is still refreshed silently mid-turn.
+An optional Claude Code-compatible `oauth` block can provide a pre-registered `clientId`,
 `clientSecret`, `callbackPort`, `scopes`, or `redirectUri` when the authorization
 server does not support dynamic client registration or needs overrides.
 
@@ -220,9 +222,11 @@ Streamable HTTP. Adding the server by URL is enough:
 oxide mcp add --transport http atlassian https://mcp.atlassian.com/v1/mcp
 ```
 
-On the first prompt that needs Atlassian, Oxide loads the server, follows its
-OAuth discovery metadata, opens the consent screen, and dynamically registers
-the client. To authorize before starting Oxide, run `oxide mcp auth atlassian`.
+Then authorize it once with `oxide mcp auth atlassian`, which follows the OAuth
+discovery metadata, opens the consent screen, and dynamically registers the
+client. Afterwards a prompt that needs Atlassian loads the server with the
+stored token; a prompt that arrives before it is authorized is told to run that
+command rather than being interrupted by a browser.
 
 The equivalent `.mcp.json` / `.oxide/mcp.json` entry is:
 

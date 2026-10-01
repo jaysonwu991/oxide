@@ -103,22 +103,19 @@ impl OAuthState {
         }
     }
 
-    /// Ensures a usable token is available, running the interactive browser
-    /// flow when `interactive` is true. When false, returns an error instead of
-    /// opening a browser (for non-interactive `-p` runs).
-    pub async fn ensure_authorized(&self, interactive: bool) -> Result<()> {
+    /// Runs the interactive browser flow unless a usable token is already at
+    /// hand, and is therefore only for a caller the user is waiting on — the
+    /// `oxide mcp auth <name>` command. An agent run never calls this: it would
+    /// open a browser and block a tool call on the loopback callback for up to
+    /// [`AUTHORIZE_TIMEOUT`] while a front-end owns the screen. A run asks
+    /// [`Self::access_token_if_available`] instead, which refreshes silently and
+    /// otherwise reports that authorization is needed.
+    pub async fn ensure_authorized(&self) -> Result<()> {
         if self.valid_token().await.is_some() {
             return Ok(());
         }
         if self.try_refresh().await {
             return Ok(());
-        }
-        if !interactive {
-            bail!(
-                "`{}` requires OAuth authorization; run `oxide mcp auth {}` first",
-                self.name,
-                self.name
-            );
         }
         let auth = self.authorize().await?;
         self.store(auth).await;
@@ -147,10 +144,10 @@ impl OAuthState {
     async fn store(&self, mut auth: StoredAuth) {
         auth.resource_url = Some(self.resource_url.clone());
         if let Err(err) = save_stored(&self.name, &auth) {
-            eprintln!(
+            crate::notice::warn(format!(
                 "[mcp] failed to store OAuth token for `{}`: {err:#}",
                 self.name
-            );
+            ));
         }
         *self.auth.lock().await = Some(auth);
     }
@@ -272,8 +269,10 @@ impl OAuthState {
             resource: &self.resource_url,
         })?;
 
-        eprintln!("[mcp] authorizing `{}` — opening browser", self.name);
-        eprintln!("[mcp] if it does not open, visit:\n{url}");
+        crate::notice::info(format!(
+            "[mcp] authorizing `{}` — opening browser; if it does not open, visit:\n{url}",
+            self.name
+        ));
         open_browser(&url);
         let code = wait_for_code(listener, &state, &self.name).await?;
 
@@ -956,7 +955,7 @@ fn open_browser(url: &str) {
         "unsupported platform",
     ));
     if let Err(err) = result {
-        eprintln!("[mcp] could not open a browser: {err}");
+        crate::notice::warn(format!("[mcp] could not open a browser: {err}"));
     }
 }
 

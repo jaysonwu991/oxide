@@ -10,6 +10,7 @@ use crate::llm::{LlmClient, Message};
 use crate::lsp::LspManager;
 use crate::mcp::{McpRegistry, McpStatus};
 use crate::media;
+use crate::notice::{self, Level, Notice};
 use crate::plugin::PluginHost;
 use crate::session::SessionLog;
 use crate::snapshots::Snapshots;
@@ -60,6 +61,15 @@ pub async fn run(
             "the interactive TUI requires a terminal; use -p or --mode rpc when input or output is redirected"
         );
     }
+    // Claim the core's notice channel before anything that might report:
+    // the core has no screen of its own, and a raw write onto the alternate
+    // screen lands as garbled text ratatui will not repaint (it only touches
+    // cells whose style changed). The channel buffers, so a notice from the
+    // plugin host below still reaches the transcript once the loop runs.
+    let (notices_tx, notices_rx) = unbounded_channel::<Notice>();
+    notice::set_sink(Arc::new(move |notice| {
+        let _ = notices_tx.send(notice);
+    }));
     let mcp = Arc::new(McpRegistry::new(&config.ecosystem.mcp));
     let plugins = Arc::new(PluginHost::spawn(&config.ecosystem.hooks, &cwd).await);
     let snapshots = Snapshots::open(&cwd).ok().map(Arc::new);
@@ -86,6 +96,7 @@ pub async fn run(
         session,
         open_sessions_picker,
         theme_name,
+        notices_rx,
     )
     .await;
 
@@ -112,6 +123,7 @@ async fn event_loop(
     mut session: Option<SessionLog>,
     open_sessions_picker: bool,
     theme_name: String,
+    mut notices_rx: UnboundedReceiver<Notice>,
 ) -> Result<()> {
     let mut app = App::new(
         config.model.clone(),
@@ -346,6 +358,15 @@ async fn event_loop(
                     if let Some(bar) = app.usage.as_mut() {
                         bar.apply(result);
                     }
+                }
+            }
+            notice = notices_rx.recv() => {
+                if let Some(notice) = notice {
+                    app.items.push(match notice.level {
+                        Level::Warn => ChatItem::Error(notice.text),
+                        Level::Info => ChatItem::Info(notice.text),
+                    });
+                    app.auto_scroll = true;
                 }
             }
             _ = tick.tick(), if app.busy => {
@@ -3879,9 +3900,16 @@ fn mcp_listing(statuses: &[(String, String, McpStatus)]) -> ChatItem {
     let rows = statuses
         .iter()
         .map(|(name, source, status)| {
-            ListRow::new(name.clone())
+            let mut row = ListRow::new(name.clone())
                 .status(status.to_string(), mcp_tone(status))
-                .detail(source.clone())
+                .detail(source.clone());
+            // Authorization opens a browser and waits for the callback, so it
+            // cannot run inside a turn. The listing is where the user finds out
+            // how to do it themselves.
+            if matches!(status, McpStatus::NeedsAuth) {
+                row = row.note(format!("run `oxide mcp auth {name}` to authorize"));
+            }
+            row
         })
         .collect();
     ChatItem::Listing {

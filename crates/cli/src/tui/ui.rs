@@ -4095,6 +4095,65 @@ mod tests {
     }
 
     #[test]
+    fn an_edit_panel_restates_neither_the_path_nor_the_count() {
+        // Pi keeps `Successfully replaced N block(s) in {path}.` as the tool
+        // result and drops it at the renderer instead
+        // (`renderers/edit.ts::formatEditResult` returns nothing on success),
+        // since the header already names the file and the diff shows the change.
+        let diff = DiffPreview {
+            path: "AGENTS.md".into(),
+            text: "   1   1  a\n-  2      b\n+      2  B".into(),
+        };
+        let mut lines = Vec::new();
+        render_item(
+            &ChatItem::ToolResult {
+                name: "edit".into(),
+                args: r#"{"path":"AGENTS.md"}"#.into(),
+                output: "Successfully replaced 1 block(s) in AGENTS.md.".into(),
+                diff: Some(diff),
+                millis: 0,
+            },
+            80,
+            false,
+            &mut lines,
+        );
+        assert_eq!(panel_line(&lines), "→ Edited AGENTS.md");
+        let rendered: Vec<String> = lines.iter().map(line_text).collect();
+        assert!(
+            !rendered
+                .iter()
+                .any(|line| line.contains("block(s)") || line.contains("Successfully")),
+            "{rendered:?}"
+        );
+    }
+
+    #[test]
+    fn a_search_without_hits_reports_one_short_line() {
+        // Pi's own wording, and never an empty string: the model has to be able
+        // to tell that the search ran and found nothing.
+        let mut lines = Vec::new();
+        render_item(
+            &ChatItem::ToolResult {
+                name: "grep".into(),
+                args: r#"{"pattern":"nowhere"}"#.into(),
+                output: crate::tools::NO_MATCHES.into(),
+                diff: None,
+                millis: 0,
+            },
+            80,
+            false,
+            &mut lines,
+        );
+        let rendered: Vec<String> = lines.iter().map(line_text).collect();
+        assert!(
+            rendered
+                .iter()
+                .any(|line| line.contains("No matches found")),
+            "{rendered:?}"
+        );
+    }
+
+    #[test]
     fn edit_result_renders_colored_diff() {
         let diff = DiffPreview {
             path: "src/main.rs".into(),
@@ -4322,7 +4381,7 @@ mod tests {
             &ChatItem::ToolResult {
                 name: "grep".into(),
                 args: r#"{"pattern":"x"}"#.into(),
-                output: "no matches".into(),
+                output: crate::tools::NO_MATCHES.into(),
                 diff: None,
                 millis: 900,
             },
@@ -4342,7 +4401,7 @@ mod tests {
             &ChatItem::ToolResult {
                 name: "grep".into(),
                 args: r#"{"pattern":"x"}"#.into(),
-                output: "no matches".into(),
+                output: crate::tools::NO_MATCHES.into(),
                 diff: None,
                 millis: 40,
             },

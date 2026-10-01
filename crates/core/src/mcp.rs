@@ -5,7 +5,6 @@ use anyhow::{bail, Context, Result};
 use reqwest::header::{HeaderMap, HeaderName, HeaderValue, ACCEPT, AUTHORIZATION, CONTENT_TYPE};
 use serde_json::{json, Value};
 use std::fmt;
-use std::io::IsTerminal;
 use std::process::Stdio;
 use std::sync::{Arc, RwLock};
 use std::time::Duration;
@@ -62,15 +61,31 @@ impl fmt::Display for McpStatus {
 }
 
 #[derive(Debug)]
-struct AuthorizationRequired;
+pub struct AuthorizationRequired {
+    name: String,
+}
 
 impl fmt::Display for AuthorizationRequired {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter.write_str("OAuth authorization required")
+        write!(
+            formatter,
+            "MCP server `{}` is not authorized. Authorization opens a browser and waits for the \
+             callback, so it cannot run inside a turn: ask the user to run `oxide mcp auth {}` in \
+             another terminal, then try again. Do not retry this tool until they confirm.",
+            self.name, self.name
+        )
     }
 }
 
 impl std::error::Error for AuthorizationRequired {}
+
+impl AuthorizationRequired {
+    fn new(name: &str) -> Self {
+        Self {
+            name: name.to_string(),
+        }
+    }
+}
 
 pub async fn probe(server: &McpServer) -> McpStatus {
     if !server.enabled {
@@ -89,7 +104,7 @@ pub async fn probe(server: &McpServer) -> McpStatus {
             McpStatus::NeedsAuth
         };
     }
-    match tokio::time::timeout(STATUS_TIMEOUT, McpConnection::connect(server, false)).await {
+    match tokio::time::timeout(STATUS_TIMEOUT, McpConnection::connect(server)).await {
         Ok(Ok(_)) => McpStatus::Connected,
         Ok(Err(error)) if error.downcast_ref::<AuthorizationRequired>().is_some() => {
             McpStatus::NeedsAuth
@@ -180,7 +195,7 @@ impl McpRegistry {
             return Ok(format!("MCP server `{name}` is already loaded"));
         }
 
-        let mut connection = McpConnection::connect(server, std::io::stdin().is_terminal()).await?;
+        let mut connection = McpConnection::connect(server).await?;
         let raw = connection
             .list_tools()
             .await
@@ -539,7 +554,6 @@ struct McpConnection {
     name: String,
     transport: Transport,
     next_id: u64,
-    interactive: bool,
     instructions: Option<String>,
 }
 
@@ -561,7 +575,7 @@ enum Transport {
 }
 
 impl McpConnection {
-    async fn connect(server: &McpServer, interactive: bool) -> Result<Self> {
+    async fn connect(server: &McpServer) -> Result<Self> {
         let transport = match &server.kind {
             McpKind::Local {
                 command,
@@ -611,14 +625,11 @@ impl McpConnection {
                 let oauth = {
                     let config = oauth.clone().unwrap_or_default();
                     let state = Arc::new(OAuthState::new(&server.name, &config, url));
-                    if oauth.is_some() {
-                        if interactive {
-                            state.ensure_authorized(true).await.with_context(|| {
-                                format!("authorizing MCP server `{}`", server.name)
-                            })?;
-                        } else if state.access_token_if_available().await.is_none() {
-                            return Err(AuthorizationRequired.into());
-                        }
+                    // A stored token is refreshed silently; anything that would
+                    // need a browser is reported so the user can authorize out
+                    // of band. Connecting must never block on a login.
+                    if oauth.is_some() && state.access_token_if_available().await.is_none() {
+                        return Err(AuthorizationRequired::new(&server.name).into());
                     }
                     Some(state)
                 };
@@ -636,7 +647,6 @@ impl McpConnection {
             name: server.name.clone(),
             transport,
             next_id: 1,
-            interactive,
             instructions: None,
         };
         connection.initialize().await?;
@@ -723,18 +733,16 @@ impl McpConnection {
                 if response.status() == reqwest::StatusCode::UNAUTHORIZED {
                     if let Some(state) = oauth {
                         state.note_unauthorized(response.headers()).await;
-                        if !self.interactive {
-                            return Err(AuthorizationRequired.into());
+                        // A refresh token can settle this without a browser; a
+                        // login cannot, so it is reported rather than opened.
+                        if state.access_token_if_available().await.is_none() {
+                            return Err(AuthorizationRequired::new(&self.name).into());
                         }
-                        state
-                            .ensure_authorized(true)
-                            .await
-                            .with_context(|| format!("authorizing MCP server `{}`", self.name))?;
                         let headers = remote_headers(oauth, &headers, session_id.as_ref()).await?;
                         response = post_json(client, url, &headers, &payload)
                             .send()
                             .await
-                            .context("retrying MCP notification after authorization")?;
+                            .context("retrying MCP notification after refreshing the token")?;
                     }
                 }
                 if !response.status().is_success() {
@@ -791,20 +799,21 @@ impl McpConnection {
                 if response.status() == reqwest::StatusCode::UNAUTHORIZED {
                     if let Some(state) = oauth {
                         state.note_unauthorized(response.headers()).await;
-                        if !self.interactive {
-                            return Err(AuthorizationRequired.into());
+                        // A refresh token can settle this without a browser; a
+                        // login cannot, so it is reported rather than opened.
+                        if state.access_token_if_available().await.is_none() {
+                            return Err(AuthorizationRequired::new(&self.name).into());
                         }
-                        state
-                            .ensure_authorized(true)
-                            .await
-                            .with_context(|| format!("authorizing MCP server `{}`", self.name))?;
                         let headers = remote_headers(oauth, &headers, session_id.as_ref()).await?;
                         let request = post_json(client, url, &headers, &payload);
                         response = tokio::time::timeout(REQUEST_TIMEOUT, request.send())
                             .await
                             .map_err(|_| anyhow::anyhow!("MCP server `{}` timed out", self.name))?
                             .with_context(|| {
-                                format!("calling MCP server `{}` after authorization", self.name)
+                                format!(
+                                    "calling MCP server `{}` after refreshing the token",
+                                    self.name
+                                )
                             })?;
                     }
                 }
@@ -1326,6 +1335,51 @@ mod tests {
         };
 
         assert_eq!(probe(&server).await, McpStatus::NeedsAuth);
+    }
+
+    #[tokio::test]
+    async fn loading_an_unauthorized_server_reports_instead_of_opening_a_browser() {
+        // `load` used to pass `stdin().is_terminal()` as an "interactive" flag,
+        // so a TUI run opened a browser inside the tool call and blocked on the
+        // loopback callback for up to five minutes. A run must never log in.
+        let server = McpServer {
+            name: "oauth-load-without-token".to_string(),
+            enabled: true,
+            kind: McpKind::Remote {
+                url: "http://127.0.0.1:1/mcp".to_string(),
+                headers: Default::default(),
+                oauth: Some(Default::default()),
+            },
+            domains: vec![],
+        };
+        let registry = McpRegistry::new(std::slice::from_ref(&server));
+
+        let error = tokio::time::timeout(
+            Duration::from_secs(5),
+            registry.load("oauth-load-without-token"),
+        )
+        .await
+        .expect("load must return at once rather than wait on a login")
+        .expect_err("an unauthorized server cannot be loaded");
+
+        assert!(
+            error.downcast_ref::<AuthorizationRequired>().is_some(),
+            "the failure names authorization, so `/mcps` can report needs-auth: {error:#}"
+        );
+        let message = format!("{error:#}");
+        assert!(
+            message.contains("oxide mcp auth oauth-load-without-token"),
+            "the model is told how the user authorizes: {message}"
+        );
+        assert!(
+            registry
+                .servers
+                .read()
+                .unwrap()
+                .iter()
+                .all(|loaded| loaded.name != "oauth-load-without-token"),
+            "a server that could not authorize is not registered as loaded"
+        );
     }
 
     #[tokio::test]

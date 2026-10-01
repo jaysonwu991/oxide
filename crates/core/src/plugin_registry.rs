@@ -244,7 +244,9 @@ pub fn enabled_plugins() -> Vec<EnabledPlugin> {
                 path: installed.path.clone(),
                 manifest,
             }),
-            Err(err) => eprintln!("[plugin] skipping `{}`: {err:#}", installed.name),
+            Err(err) => {
+                crate::notice::warn(format!("[plugin] skipping `{}`: {err:#}", installed.name))
+            }
         }
     }
     plugins.sort_by(|a, b| a.name.cmp(&b.name));

@@ -23,6 +23,11 @@ const READ_MAX_BYTES: usize = 16_000;
 const READ_MAX_LINES: usize = 400;
 const DEFAULT_READ_LINES: usize = READ_MAX_LINES;
 const TRUNCATION_RETENTION_SECS: u64 = 7 * 24 * 60 * 60;
+/// What a search that found nothing answers with, in Pi's own words
+/// (`coding-agent/src/core/tools/{grep,find}.ts`). Short, but never an empty
+/// string: an empty result reads as a failure and invites a pointless retry.
+pub const NO_MATCHES: &str = "No matches found";
+pub const NO_FILES_FOUND: &str = "No files found matching pattern";
 const PROGRESS_BATCH_BYTES: usize = 4_096;
 const PROGRESS_INTERVAL: Duration = Duration::from_millis(50);
 /// How long to wait for the output readers to drain after the shell exits. A
@@ -1001,6 +1006,10 @@ fn edit(cwd: &Path, args: &Value) -> Result<ToolOutput> {
     };
     std::fs::write(&full, &final_content).with_context(|| format!("writing {}", full.display()))?;
 
+    // Pi's own wording (`coding-agent/src/core/tools/edit.ts`). The redundancy a
+    // reader sees is the renderer's to drop, not this result's: Pi keeps the
+    // sentence here and has `renderers/edit.ts::formatEditResult` return nothing
+    // on success, so a display never restates the path its header already names.
     let output = ToolOutput::text(format!(
         "Successfully replaced {} block(s) in {path}.",
         edits.len()
@@ -1085,7 +1094,7 @@ fn glob(cwd: &Path, args: &Value) -> Result<String> {
     });
     matches.sort();
     if matches.is_empty() {
-        return Ok("no matches".to_string());
+        return Ok(NO_FILES_FOUND.to_string());
     }
     let truncated = matches.len() > limit;
     matches.truncate(limit);
@@ -1294,7 +1303,7 @@ fn rust_grep(
 /// Truncates to `limit` hits and joins them, reporting truncation.
 fn finish_hits(mut hits: Vec<String>, limit: usize) -> String {
     if hits.is_empty() {
-        return "no matches".to_string();
+        return NO_MATCHES.to_string();
     }
     let truncated = hits.len() > limit;
     hits.truncate(limit);

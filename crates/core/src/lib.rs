@@ -28,6 +28,7 @@ pub mod mcp_config;
 pub mod mcp_oauth;
 pub mod media;
 pub mod memory;
+pub mod notice;
 pub mod notify;
 pub mod permission;
 pub mod plugin;
