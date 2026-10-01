@@ -334,8 +334,8 @@ the run's `Steering` handles and its cooperative `Cancel` flag. The Rust host se
   call/result sequence — and ends cleanly, with a 5-second force-abort fallback
   if it is stuck. While the turn is active, typing new context replaces Stop
   with Send and an explicit **Queue** / **Steer** choice. Queue is the safe
-  default: it waits until the current response finishes. Steer injects a course
-  correction before the agent's next model step. `steer_run` pushes into the
+  default: it waits until the current response finishes, then becomes the next
+  turn. Steer injects a course correction before the agent's next model step. `steer_run` pushes into the
   selected follow-up or interleaved steering queue, then the composer returns to
   Queue so a later message cannot redirect work accidentally. `Alt+Enter`
   remains a direct Queue shortcut.

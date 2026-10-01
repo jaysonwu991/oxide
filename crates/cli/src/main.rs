@@ -1136,15 +1136,15 @@ async fn run_rpc_mode(
                             Some(RpcRequest::Steer { id, text, images, follow_up }) => {
                                 match runner::build_user_message(&text, &cwd, &images, &[]) {
                                     Ok(message) => {
-                                        if follow_up {
-                                            follow_ups.push(message);
+                                        let accepted = if follow_up {
+                                            follow_ups.push(message)
                                         } else {
-                                            steering.push(message);
-                                        }
+                                            steering.push(message)
+                                        };
                                         let _ = frame_tx.send(serde_json::json!({
                                             "type": "steer_ack",
                                             "id": id,
-                                            "accepted": true,
+                                            "accepted": accepted,
                                         }));
                                     }
                                     Err(error) => {

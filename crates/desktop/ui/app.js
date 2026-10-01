@@ -25,6 +25,9 @@ const state = {
   // New context sent during a run waits by default. Steering is a deliberate
   // choice because it changes the work already in progress.
   busyMessageMode: "queue",
+  // A message rejected at the exact instant a run finishes. Its composed
+  // payload is started against the same session as soon as `agent-end` lands.
+  pendingSend: null,
   // What the running turn titled itself: the header names the thread by this
   // until the sidebar's own listing carries it.
   runTitle: "",
@@ -567,6 +570,7 @@ async function selectProject(project) {
   state.projectName = project.name;
   state.session = null;
   state.trust = null;
+  state.pendingSend = null;
   clearAttachments();
   el("prompt").disabled = false;
   el("trust-modal").hidden = true;
@@ -716,6 +720,7 @@ function resetTranscript() {
 }
 
 function newChat() {
+  state.pendingSend = null;
   resetTranscript();
   clearAttachments();
   loadSessions();
@@ -788,12 +793,12 @@ function updateSendState() {
   mode.textContent = state.busyMessageMode === "steer" ? "Steer" : "Queue";
   mode.title = state.busyMessageMode === "steer"
     ? "Steer the active response; click to queue instead"
-    : "Queue for after the current response; click to steer instead";
+    : "Queue as the next turn after the current response; click to steer instead";
   mode.setAttribute("aria-label", mode.title);
   el("send").title = hasBusyMessage
     ? state.busyMessageMode === "steer"
       ? "Steer the active response (Enter)"
-      : "Queue for after the current response (Enter)"
+      : "Queue as the next turn (Enter)"
     : "Send (Enter)";
 }
 
@@ -822,6 +827,7 @@ function setIdle() {
 /// of offering to act on a process that is not there.
 function hostStopped() {
   state.pendingApproval = null;
+  state.pendingSend = null;
   el("approval").hidden = true;
   setIdle();
   resetTurn();
@@ -1083,10 +1089,10 @@ async function send(followUp = false) {
     clearAttachments();
     clearWelcome();
     el("transcript").appendChild(
-      bubble("user", prompt + (followUp ? "  (follow-up)" : ""), attachments),
+      bubble("user", prompt, attachments),
     );
     scrollDown();
-    await invoke("steer_run", {
+    const accepted = await invoke("steer_run", {
       runId: state.runId,
       message: prompt,
       followUp,
@@ -1094,16 +1100,35 @@ async function send(followUp = false) {
     });
     state.busyMessageMode = "queue";
     updateSendState();
-    setStatus(followUp ? "Queued for the next response." : "Steering the active response…");
+    if (!accepted) {
+      state.pendingSend = { prompt, attachments };
+      setStatus("The response finished; starting this as the next turn…");
+      // The end event may have beaten the command reply to the renderer.
+      if (!state.busy) {
+        const pending = state.pendingSend;
+        state.pendingSend = null;
+        await startPrompt(pending.prompt, pending.attachments, false);
+      }
+      return;
+    }
+    setStatus(followUp ? "Queued as the next turn." : "Steering the active response…");
     return;
   }
 
+  await startPrompt(prompt, attachments);
+}
+
+async function startPrompt(prompt, attachments, showBubble = true) {
   if (!state.project) return;
-  textarea.value = "";
-  clearAttachments();
+  if (showBubble) {
+    el("prompt").value = "";
+    clearAttachments();
+  }
   clearWelcome();
-  el("transcript").appendChild(bubble("user", prompt, attachments));
-  scrollDown();
+  if (showBubble) {
+    el("transcript").appendChild(bubble("user", prompt, attachments));
+    scrollDown();
+  }
   resetTurn();
   setBusy();
   setStatus("Working…");
@@ -3151,6 +3176,11 @@ async function initEvents() {
     renderChanges(event.payload || {});
     resetTurn();
     await loadSessions();
+    if (state.pendingSend) {
+      const pending = state.pendingSend;
+      state.pendingSend = null;
+      await startPrompt(pending.prompt, pending.attachments, false);
+    }
   });
   el("review-modal").onkeydown = reviewKey;
   await listen("approval-request", (event) => showApproval(event.payload || {}));

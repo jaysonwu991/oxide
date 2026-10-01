@@ -32,7 +32,13 @@ pub type Approver =
 /// interrupting the in-flight tool batch.
 #[derive(Clone, Default)]
 pub struct Steering {
-    queue: Arc<Mutex<Vec<Message>>>,
+    queue: Arc<Mutex<SteeringState>>,
+}
+
+#[derive(Default)]
+struct SteeringState {
+    messages: Vec<Message>,
+    closed: bool,
 }
 
 impl Steering {
@@ -40,21 +46,75 @@ impl Steering {
         Self::default()
     }
 
-    pub fn push(&self, message: Message) {
-        if let Ok(mut queue) = self.queue.lock() {
-            queue.push(message);
-        }
+    /// Adds a message while the turn can still consume it. `false` means the
+    /// run has made its final queue decision, so a client must start the
+    /// message as a new turn instead of reporting it as accepted.
+    pub fn push(&self, message: Message) -> bool {
+        self.queue.lock().is_ok_and(|mut state| {
+            if state.closed {
+                return false;
+            }
+            state.messages.push(message);
+            true
+        })
     }
 
     pub fn drain(&self) -> Vec<Message> {
         self.queue
             .lock()
-            .map(|mut queue| std::mem::take(&mut *queue))
+            .map(|mut state| std::mem::take(&mut state.messages))
             .unwrap_or_default()
     }
 
+    fn close(&self) {
+        if let Ok(mut state) = self.queue.lock() {
+            state.closed = true;
+        }
+    }
+
+    /// Atomically takes the messages available at the end of an assistant
+    /// response. If neither queue contains work, both are closed while their
+    /// locks are still held; a concurrent sender therefore either appears in
+    /// this result or gets a reliable rejection.
+    fn drain_at_response(
+        &self,
+        follow_ups: &Self,
+        close_if_empty: bool,
+    ) -> (Vec<Message>, Vec<Message>) {
+        let Ok(mut steering) = self.queue.lock() else {
+            return (Vec::new(), Vec::new());
+        };
+        let Ok(mut follow_ups) = follow_ups.queue.lock() else {
+            return (Vec::new(), Vec::new());
+        };
+        let steered = std::mem::take(&mut steering.messages);
+        if !steered.is_empty() {
+            return (steered, Vec::new());
+        }
+        let queued = std::mem::take(&mut follow_ups.messages);
+        if close_if_empty && queued.is_empty() {
+            steering.closed = true;
+            follow_ups.closed = true;
+        }
+        (steered, queued)
+    }
+
+    fn close_pair(&self, other: &Self) {
+        let Ok(mut first) = self.queue.lock() else {
+            return;
+        };
+        let Ok(mut second) = other.queue.lock() else {
+            return;
+        };
+        first.closed = true;
+        second.closed = true;
+    }
+
     pub fn len(&self) -> usize {
-        self.queue.lock().map(|queue| queue.len()).unwrap_or(0)
+        self.queue
+            .lock()
+            .map(|state| state.messages.len())
+            .unwrap_or(0)
     }
 
     pub fn is_empty(&self) -> bool {
@@ -223,6 +283,10 @@ pub fn run_subagent(
     tx: UnboundedSender<AgentEvent>,
     runtime: Runtime,
 ) -> RunFuture {
+    // A queued Codex-style follow-up is a new primary turn, not extra input to
+    // an isolated subtask whose history is deliberately discarded. Reject it
+    // up front so each client can start it normally after this run finishes.
+    runtime.follow_ups.close();
     Box::pin(async move {
         let agent = match config.ecosystem.agent(&agent_name).cloned() {
             Some(agent) if agent.mode != AgentMode::Primary => agent,
@@ -230,17 +294,18 @@ pub fn run_subagent(
                 let _ = tx.send(AgentEvent::Error(format!(
                     "agent `{agent_name}` is primary and cannot run as a subagent"
                 )));
-                let _ = tx.send(AgentEvent::Finished(history));
+                finish(&runtime, &tx, history);
                 return;
             }
             None => {
                 let _ = tx.send(AgentEvent::Error(format!("unknown agent `{agent_name}`")));
-                let _ = tx.send(AgentEvent::Finished(history));
+                finish(&runtime, &tx, history);
                 return;
             }
         };
 
         let session = runtime.session.clone();
+        let outer_runtime = runtime.clone();
         let mut sub = config;
         sub.active_agent = Some(agent);
         let sub_runtime = Runtime {
@@ -391,7 +456,7 @@ pub fn run_subagent(
             }
             merged.push(message);
         }
-        let _ = tx.send(AgentEvent::Finished(merged));
+        finish(&outer_runtime, &tx, merged);
     })
 }
 
@@ -451,7 +516,7 @@ async fn run_loop(
                 record_usage(&runtime.session, depth, &held, held_usage);
                 send_usage(&tx, held_usage);
             }
-            let _ = tx.send(AgentEvent::Finished(messages));
+            finish(&runtime, &tx, messages);
             return;
         }
         for steered in runtime.steering.drain() {
@@ -634,7 +699,7 @@ async fn run_loop(
                     let _ = tx.send(AgentEvent::ThoughtDone {
                         millis: started.elapsed().as_millis() as u64,
                     });
-                    let _ = tx.send(AgentEvent::Finished(messages));
+                    finish(&runtime, &tx, messages);
                     return;
                 }
                 Err(err) => {
@@ -661,7 +726,7 @@ async fn run_loop(
                         millis: started.elapsed().as_millis() as u64,
                     });
                     let _ = tx.send(AgentEvent::Error(format!("{err:#}")));
-                    let _ = tx.send(AgentEvent::Finished(messages));
+                    finish(&runtime, &tx, messages);
                     return;
                 }
             }
@@ -679,7 +744,7 @@ async fn run_loop(
             let _ = tx.send(AgentEvent::Error(
                 "the model returned an empty response".to_string(),
             ));
-            let _ = tx.send(AgentEvent::Finished(messages));
+            finish(&runtime, &tx, messages);
             return;
         }
 
@@ -692,7 +757,7 @@ async fn run_loop(
             let _ = tx.send(AgentEvent::Error(
                 "the model returned an empty response".to_string(),
             ));
-            let _ = tx.send(AgentEvent::Finished(messages));
+            finish(&runtime, &tx, messages);
             return;
         }
 
@@ -704,15 +769,13 @@ async fn run_loop(
         }
 
         if tool_calls.is_empty() {
-            let steered = runtime.steering.drain();
-            // Follow-up messages are delivered only once all work is done, so
-            // they are drained here, just before finishing.
-            let follow_ups = if steered.is_empty() {
-                runtime.follow_ups.drain()
-            } else {
-                Vec::new()
-            };
-            let queued = !steered.is_empty() || !follow_ups.is_empty();
+            // The final empty check and closing the input queues are one atomic
+            // decision. A sender racing this boundary is therefore either
+            // included below or told to start a new turn.
+            let (mut steered, mut follow_ups) = runtime
+                .steering
+                .drain_at_response(&runtime.follow_ups, false);
+            let mut queued = !steered.is_empty() || !follow_ups.is_empty();
 
             // A reminder is only due on a plain answer with nothing queued. The
             // answer is held back so its re-check extends the same assistant
@@ -736,6 +799,18 @@ async fn run_loop(
                     verification_reminder = Some(reminder);
                     continue;
                 }
+            }
+
+            // No internal re-check is keeping the turn open. Recheck both
+            // queues and close them under the same locks so a last-moment
+            // sender is either included or reliably rejected.
+            if !queued {
+                let (late_steering, late_follow_ups) = runtime
+                    .steering
+                    .drain_at_response(&runtime.follow_ups, true);
+                steered.extend(late_steering);
+                follow_ups.extend(late_follow_ups);
+                queued = !steered.is_empty() || !follow_ups.is_empty();
             }
 
             // The answer is final: commit it, merged with a held summary when
@@ -766,7 +841,7 @@ async fn run_loop(
             });
             if !queued {
                 // Nothing is queued and no re-check is due, so the run is done.
-                let _ = tx.send(AgentEvent::Finished(messages));
+                finish(&runtime, &tx, messages);
                 return;
             }
             for message in steered.into_iter().chain(follow_ups) {
@@ -808,7 +883,7 @@ async fn run_loop(
                 record(&runtime.session, depth, &message);
                 messages.push(message);
             }
-            let _ = tx.send(AgentEvent::Finished(messages));
+            finish(&runtime, &tx, messages);
             return;
         }
 
@@ -1102,10 +1177,15 @@ async fn run_loop(
         }
 
         if batch_terminates(&terminated) {
-            let _ = tx.send(AgentEvent::Finished(messages));
+            finish(&runtime, &tx, messages);
             return;
         }
     }
+}
+
+fn finish(runtime: &Runtime, tx: &UnboundedSender<AgentEvent>, messages: Vec<Message>) {
+    runtime.steering.close_pair(&runtime.follow_ups);
+    let _ = tx.send(AgentEvent::Finished(messages));
 }
 
 /// Loads every configured server a user message names — by URL host or by
@@ -4542,6 +4622,64 @@ for line in sys.stdin:
         assert_eq!(follow_ups.drain().len(), 1);
         assert!(steering.drain().is_empty());
         assert!(follow_ups.drain().is_empty());
+    }
+
+    #[test]
+    fn an_empty_response_boundary_rejects_late_messages() {
+        let steering = Steering::new();
+        let follow_ups = Steering::new();
+
+        let (steered, queued) = steering.drain_at_response(&follow_ups, true);
+
+        assert!(steered.is_empty());
+        assert!(queued.is_empty());
+        assert!(!steering.push(Message::user("too late")));
+        assert!(!follow_ups.push(Message::user("too late")));
+    }
+
+    #[test]
+    fn a_response_boundary_takes_work_without_closing_the_turn() {
+        let steering = Steering::new();
+        let follow_ups = Steering::new();
+        assert!(steering.push(Message::user("change course")));
+
+        let (steered, queued) = steering.drain_at_response(&follow_ups, true);
+
+        assert_eq!(steered.len(), 1);
+        assert!(queued.is_empty());
+        assert!(follow_ups.push(Message::user("then do this")));
+    }
+
+    #[test]
+    fn an_internal_recheck_keeps_empty_input_queues_open() {
+        let steering = Steering::new();
+        let follow_ups = Steering::new();
+
+        let (steered, queued) = steering.drain_at_response(&follow_ups, false);
+
+        assert!(steered.is_empty());
+        assert!(queued.is_empty());
+        assert!(steering.push(Message::user("arrived during recheck")));
+    }
+
+    #[tokio::test]
+    async fn an_isolated_subtask_rejects_follow_ups_for_the_next_primary_turn() {
+        let runtime = test_runtime().await;
+        let follow_ups = runtime.follow_ups.clone();
+        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+
+        let future = run_subagent(
+            Config::default(),
+            std::env::temp_dir(),
+            Vec::new(),
+            "missing".into(),
+            "review it".into(),
+            tx,
+            runtime,
+        );
+
+        assert!(!follow_ups.push(Message::user("do this next")));
+        drop(future);
     }
 
     #[test]
