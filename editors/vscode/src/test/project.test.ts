@@ -64,8 +64,8 @@ describe("projectInfo", () => {
     assert.equal(info.provider, "zai");
     assert.equal(info.model, "glm-5");
     assert.deepEqual(info.models, [{ provider: "zai", model: "glm-5" }]);
-    // An untouched config uses the same 1M default as the CLI.
-    assert.equal(info.contextWindow, 1_000_000);
+    // With no `context_window`, the window is the model's, as in the CLI.
+    assert.equal(info.contextWindow, 128_000);
     assert.equal(info.configPath, path.join(configDir, "config.json"));
   });
 

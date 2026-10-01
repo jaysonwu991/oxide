@@ -386,7 +386,7 @@ with a `quit` frame when `agent_end` arrives, so the process exits on its own.
 - **Usage** — `usage` events accumulate input/output/cache tokens and cost for
   the usage line, and the latest one sets the context gauge (its prompt tokens
   over the window), which is `OXIDE_CONTEXT_LIMIT` when it is set else the
-  config's `context_window` (1M by default).
+  config's `context_window`, else the model's known window (1M when unknown).
 
 ## The footer
 

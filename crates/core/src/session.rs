@@ -23,6 +23,12 @@ use crate::llm::Message;
 
 pub const SESSION_VERSION: u32 = 3;
 
+/// Cap on the threads [`SessionLog::list_in`] fans session files across. Each
+/// worker holds a whole parsed session in memory until its summary is built, so
+/// the CPU count is not a safe bound: a high-core machine listing a store of
+/// long threads would hold dozens of full JSONL parses resident at once.
+const MAX_SESSION_LIST_THREADS: usize = 10;
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SessionHeader {
     pub version: u32,
@@ -383,11 +389,13 @@ impl SessionLog {
         // A summary needs the whole file parsed — the leaf path is only known
         // once the last line is read — so a store with a long history made a
         // picker, the desktop sidebar or `/sessions` wait on the sum of every
-        // session. Fan the files across the cores instead, the way Pi loads
-        // session infos with bounded concurrency, and sort once at the end.
+        // session. Fan the files out across a bounded pool instead of one after
+        // another, the way Pi loads session infos with bounded concurrency, and
+        // sort once at the end.
         let threads = std::thread::available_parallelism()
             .map(|count| count.get())
             .unwrap_or(1)
+            .min(MAX_SESSION_LIST_THREADS)
             .min(files.len());
         let next = AtomicUsize::new(0);
         let mut out: Vec<SessionSummary> = std::thread::scope(|scope| {

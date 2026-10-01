@@ -401,9 +401,11 @@ pub struct Config {
     pub system_prompt: String,
     #[serde(default = "default_max_tokens")]
     pub max_tokens: u32,
-    /// The model's full input context window. This is separate from
-    /// `max_tokens`, which caps only one response.
-    #[serde(default = "default_context_window")]
+    /// An explicit override for the model's full input context window, separate
+    /// from `max_tokens`, which caps only one response. `0` (the default)
+    /// derives the window from the model and falls back to
+    /// [`default_context_window`].
+    #[serde(default)]
     pub context_window: u64,
     #[serde(default = "default_true")]
     pub auto_approve: bool,
@@ -452,8 +454,46 @@ fn default_max_tokens() -> u32 {
     8192
 }
 
+/// The window used when the model is not in the built-in table. Kept large
+/// because a large window is the common case for the providers Oxide targets;
+/// a model with a smaller documented window is capped by
+/// [`builtin_context_window`], so a fresh configuration does not defer
+/// compaction past the provider's real limit.
 fn default_context_window() -> u64 {
     1_000_000
+}
+
+/// The input context window of a known model, matched by its longest prefix so
+/// `gpt-4o` and `gpt-4.1` do not fall under `gpt-4`. `None` for a model not in
+/// the table, which keeps [`default_context_window`]. The values are the
+/// providers' documented windows; a gateway that exposes a different one is
+/// answered by setting `context_window` explicitly.
+fn builtin_context_window(model: &str) -> Option<u64> {
+    const WINDOWS: &[(&str, u64)] = &[
+        ("gpt-3.5", 16_385),
+        ("gpt-4.1", 1_000_000),
+        ("gpt-4o", 128_000),
+        ("gpt-4-turbo", 128_000),
+        ("gpt-4", 8_192),
+        ("o1", 200_000),
+        ("o3", 200_000),
+        ("o4-mini", 200_000),
+        ("claude-3-5", 200_000),
+        ("claude-3-7", 200_000),
+        ("claude-3-opus", 200_000),
+        ("claude-3-sonnet", 200_000),
+        ("claude-3-haiku", 200_000),
+        ("deepseek", 128_000),
+        ("glm-4", 128_000),
+        ("glm-5", 128_000),
+        ("gemini", 1_048_576),
+    ];
+    let model = model.trim().to_ascii_lowercase();
+    WINDOWS
+        .iter()
+        .filter(|(prefix, _)| model.starts_with(prefix))
+        .max_by_key(|(prefix, _)| prefix.len())
+        .map(|(_, window)| *window)
 }
 
 fn default_true() -> bool {
@@ -534,7 +574,7 @@ impl Default for Config {
             model_catalog: Vec::new(),
             system_prompt: default_system_prompt(),
             max_tokens: default_max_tokens(),
-            context_window: default_context_window(),
+            context_window: 0,
             auto_approve: true,
             reasoning: Reasoning::default(),
             ecosystem: Ecosystem::default(),
@@ -583,18 +623,21 @@ impl Config {
     }
 
     /// The model's context window, used for the Pi-style context percentage
-    /// and compaction threshold. `OXIDE_CONTEXT_LIMIT` overrides it. Keep the
-    /// window at least as large as the response cap for compatibility with
-    /// older configurations that used `max_tokens` to raise the window.
+    /// and compaction threshold. `OXIDE_CONTEXT_LIMIT` overrides it, then an
+    /// explicit `context_window`, then the model's documented window, then the
+    /// [`default_context_window`] fallback. Keep the window at least as large
+    /// as the response cap for compatibility with older configurations that
+    /// used `max_tokens` to raise the window.
     pub fn context_window(&self) -> u64 {
         std::env::var("OXIDE_CONTEXT_LIMIT")
             .ok()
             .and_then(|value| value.trim().parse::<u64>().ok())
             .filter(|value| *value > 0)
             .unwrap_or_else(|| {
-                let configured = match self.context_window {
-                    0 => default_context_window(),
-                    value => value,
+                let configured = if self.context_window > 0 {
+                    self.context_window
+                } else {
+                    builtin_context_window(&self.model).unwrap_or_else(default_context_window)
                 };
                 configured.max(self.max_tokens as u64)
             })
@@ -1506,10 +1549,42 @@ mod tests {
     }
 
     #[test]
-    fn context_window_has_a_separate_large_default() {
+    fn context_window_derives_from_the_model() {
+        // The default model's own documented window, not the large fallback,
+        // so a fresh configuration compacts before the provider rejects the
+        // request.
         let config = Config::default();
-        assert_eq!(config.context_window, 1_000_000);
-        assert_eq!(config.context_window(), 1_000_000);
+        assert_eq!(config.context_window, 0);
+        assert_eq!(config.context_window(), 128_000);
+
+        // Longest-prefix matching: `gpt-4.1` and `gpt-4-turbo` do not fall
+        // under `gpt-4`.
+        for (model, window) in [
+            ("gpt-4.1", 1_000_000),
+            ("gpt-4-turbo", 128_000),
+            ("gpt-4o-mini", 128_000),
+            ("deepseek-chat", 128_000),
+            ("glm-5.3", 128_000),
+        ] {
+            let config = Config {
+                model: model.to_string(),
+                ..Config::default()
+            };
+            assert_eq!(config.context_window(), window, "{model}");
+        }
+
+        // A model the table does not know keeps the 1M fallback, and an
+        // explicit value always wins over both.
+        let unknown = Config {
+            model: "claude-opus-5".to_string(),
+            ..Config::default()
+        };
+        assert_eq!(unknown.context_window(), 1_000_000);
+        let explicit = Config {
+            context_window: 300_000,
+            ..Config::default()
+        };
+        assert_eq!(explicit.context_window(), 300_000);
     }
 
     #[test]
@@ -1523,12 +1598,13 @@ mod tests {
     }
 
     #[test]
-    fn zero_context_window_uses_the_default() {
+    fn zero_context_window_uses_the_model_window() {
         let config: Config = serde_json::from_value(serde_json::json!({
             "context_window": 0,
+            "model": "gpt-4o-mini",
         }))
         .unwrap();
-        assert_eq!(config.context_window(), 1_000_000);
+        assert_eq!(config.context_window(), 128_000);
     }
 
     #[test]
