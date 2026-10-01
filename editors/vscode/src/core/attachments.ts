@@ -52,8 +52,8 @@ export function dataUrlMime(dataUrl: string): string {
   return match ? match[1].trim().toLowerCase() : "";
 }
 
-/// `image` or `pdf` for the types a provider accepts, `null` for anything it
-/// cannot take (text, a tarball, a video).
+/// `image` or `pdf` for the rich-media formats Oxide can send, `null` for
+/// anything it cannot take (text, a tarball, a video).
 export function attachmentKind(mime: string): AttachmentKind | null {
   if (mime === "application/pdf") return "pdf";
   return mime.startsWith("image/") ? "image" : null;

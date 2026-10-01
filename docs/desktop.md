@@ -148,7 +148,7 @@ The window follows a Codex-style layout:
   `oxide_core::media::optimize_image` when the turn is built — the one place a
   data URL can be — so it is not embedded at full size in the request, the
   session and the renderer's own message at once. A file past the core's 20 MB
-  attachment limit, or of a type no provider takes and no browser can paint, is
+  attachment limit, or of an unsupported type no browser can paint, is
   refused with a status line instead of being read. A message can also name a
   file or folder with `@path`, which the composer completes: typing `@` offers
   the project's own paths in the same box the `/` palette uses, `↑`/`↓` walk the

@@ -1,4 +1,4 @@
-//! Multimodal attachments: image/PDF loading into provider-ready content
+//! Multimodal attachments: image/PDF loading into LLM-ready content
 //! parts, dependency-free base64 encoding, `@path` reference extraction, and a
 //! best-effort OS clipboard image grab.
 use crate::llm::{ContentPart, FileData, ImageUrl};
@@ -76,7 +76,7 @@ pub const MAX_ATTACHMENT_BYTES: usize = 20 * 1024 * 1024;
 /// inside the payload only makes it stricter.
 const MAX_DATA_URL_CHARS: usize = MAX_ATTACHMENT_BYTES / 3 * 4;
 
-/// The image types a provider takes *and* a webview can paint. Anything else
+/// The image formats Oxide can send and a webview can paint. Anything else
 /// (a TIFF, a HEIC) is refused at the door rather than reaching the model or
 /// showing as a thumbnail that cannot be drawn.
 pub fn is_supported_image_mime(mime: &str) -> bool {
@@ -311,7 +311,7 @@ fn downscale_image(_bytes: &[u8], _mime: &str) -> Option<Vec<u8>> {
     None
 }
 
-/// Reads an image or PDF and turns it into a provider-ready content part. A
+/// Reads an image or PDF and turns it into an LLM-ready content part. A
 /// file past [`MAX_ATTACHMENT_BYTES`] is refused before it is read, so a stray
 /// 200 MB PDF cannot be multiplied through the session and the request.
 pub fn load_attachment(path: &Path) -> Result<ContentPart> {
@@ -610,7 +610,7 @@ fn clipboard_bytes() -> Option<Vec<u8>> {
 /// where that read found nothing, rather than gates the new types have to get
 /// past.
 ///
-/// A TIFF is turned into a PNG, since that is the type providers take.
+/// A TIFF is turned into a PNG, which Oxide can send as rich media.
 #[cfg(target_os = "macos")]
 fn clipboard_bytes_appkit() -> Option<Vec<u8>> {
     let dir = TempImageDir::new()?;
@@ -923,7 +923,7 @@ mod tests {
         assert!(
             content_part_from_data_url("data:text/plain;base64,AAAA".to_string(), None).is_none()
         );
-        // A type no webview can paint and no provider takes is refused rather
+        // A type no webview can paint and Oxide cannot send is refused rather
         // than stored as a thumbnail that cannot be drawn.
         assert!(content_part_from_data_url(
             "data:image/tiff;base64,AAAA".to_string(),

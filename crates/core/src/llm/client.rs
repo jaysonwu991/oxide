@@ -36,9 +36,6 @@ pub struct LlmClient {
     /// OpenAI, `x-session-id` for gateways). `None` disables the hint, as for
     /// one-off catalog and compaction requests.
     session_id: Option<String>,
-    /// Recognized image text, so retries and later agent steps do not re-run
-    /// the OCR script for the same payload.
-    image_text_cache: crate::image_recognition::ImageTextCache,
 }
 
 /// The provider finished a turn without an answer: it either emitted nothing at
@@ -139,7 +136,6 @@ impl LlmClient {
             http,
             config,
             session_id: None,
-            image_text_cache: crate::image_recognition::ImageTextCache::default(),
         }
     }
 
@@ -263,7 +259,8 @@ impl LlmClient {
                             .await
                     }
                 }
-            };
+            }
+            .map_err(|error| media_request_error(error, messages));
             match result {
                 Ok(mut turn) => {
                     // A turn with neither text nor tool calls carries nothing
@@ -357,32 +354,7 @@ impl LlmClient {
         let url = format!("{}/chat/completions", self.config.base_url);
         let mut config = self.config.clone();
         config.max_tokens = max_tokens;
-        // A text-only model cannot see image parts, so turn each attached image
-        // into its recognized text before the request is built. The session log
-        // keeps the image; only this outgoing copy is rewritten.
-        let converted_messages;
-        let outgoing: &[Message] = if config.supports_images()
-            || !crate::image_recognition::messages_have_images(messages)
-        {
-            messages
-        } else {
-            converted_messages = tokio::task::spawn_blocking({
-                let messages = messages.to_vec();
-                let script = config.image_script().map(str::to_string);
-                let cache = self.image_text_cache.clone();
-                move || {
-                    crate::image_recognition::messages_with_image_text(
-                        &messages,
-                        script.as_deref(),
-                        &cache,
-                    )
-                }
-            })
-            .await
-            .unwrap_or_else(|_| messages.to_vec());
-            &converted_messages
-        };
-        let request = openai_request(&config, outgoing, tools, self.session_id.as_deref());
+        let request = openai_request(&config, messages, tools, self.session_id.as_deref());
 
         let mut builder = self.authenticate_openai(self.http.post(&url))?;
         if let Some(session) = self.session_id.as_deref() {
@@ -962,6 +934,30 @@ fn assistant_turn_is_empty(turn: &AssistantTurn) -> bool {
     turn.content.trim().is_empty() && turn.tool_calls.is_empty()
 }
 
+/// Adds an actionable hint to any failed request that carried native media.
+/// Capability is deliberately not inferred from a provider or endpoint name:
+/// the selected LLM is the source of truth, and its capabilities can change
+/// independently of Oxide.
+fn media_request_error(error: anyhow::Error, messages: &[Message]) -> anyhow::Error {
+    let has_media = messages.iter().any(|message| {
+        matches!(
+            message.content.as_ref(),
+            Some(crate::llm::MessageContent::Parts(parts))
+                if parts.iter().any(|part| matches!(
+                    part,
+                    crate::llm::ContentPart::ImageUrl { .. } | crate::llm::ContentPart::File { .. }
+                ))
+        )
+    });
+    if has_media {
+        error.context(
+            "the request included rich media attachments; confirm that the selected LLM supports them",
+        )
+    } else {
+        error
+    }
+}
+
 /// Whether the provider stopped because the output token budget ran out
 /// (OpenAI's `length`, Anthropic's `max_tokens`) rather than reaching a
 /// natural stop.
@@ -1042,6 +1038,55 @@ mod tests {
         assert!(!is_retryable(&anyhow::anyhow!(
             "provider returned 401 Unauthorized: bad key"
         )));
+    }
+
+    #[test]
+    fn media_failures_explain_that_the_selected_llm_may_not_support_attachments() {
+        let image = crate::llm::ContentPart::ImageUrl {
+            image_url: crate::llm::ImageUrl {
+                url: "data:image/png;base64,AAAA".into(),
+                detail: None,
+            },
+        };
+        let messages = vec![Message::user_parts("look", vec![image])];
+        let error = media_request_error(
+            anyhow::anyhow!("provider returned 400 Bad Request: unsupported content"),
+            &messages,
+        );
+        assert!(error.to_string().contains("confirm that the selected LLM"));
+        assert!(!is_retryable(&error));
+
+        let plain = media_request_error(
+            anyhow::anyhow!("provider unavailable"),
+            &[Message::user("hi")],
+        );
+        assert_eq!(plain.to_string(), "provider unavailable");
+    }
+
+    #[test]
+    fn provider_selection_does_not_change_native_image_parts() {
+        let image = crate::llm::ContentPart::ImageUrl {
+            image_url: crate::llm::ImageUrl {
+                url: "data:image/png;base64,AAAA".into(),
+                detail: Some("high".into()),
+            },
+        };
+        let messages = vec![Message::user_parts("look", vec![image])];
+
+        for provider in ["openai", "deepseek", "portkey", "zai", "custom"] {
+            let config = Config {
+                provider: provider.into(),
+                model: "model".into(),
+                ..Config::default()
+            };
+            let body = serde_json::to_value(openai_request(&config, &messages, &[], None)).unwrap();
+            let content = body["messages"][0]["content"].as_array().unwrap();
+            assert_eq!(content[1]["type"], "image_url", "provider: {provider}");
+            assert_eq!(
+                content[1]["image_url"]["url"], "data:image/png;base64,AAAA",
+                "provider: {provider}"
+            );
+        }
     }
 
     #[test]

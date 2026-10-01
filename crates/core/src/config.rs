@@ -385,12 +385,6 @@ pub struct Config {
     pub api_key: String,
     #[serde(default)]
     pub portkey_config: String,
-    /// A shell command that turns an attached image into text for a model
-    /// without vision (e.g. DeepSeek). `{file}` is replaced with the image's
-    /// temporary path; without it the path is appended. Empty falls back to
-    /// the built-in OCR pipeline. Overridden by `OXIDE_IMAGE_SCRIPT`.
-    #[serde(default)]
-    pub image_script: String,
     /// The model last used with each provider, so switching between logged-in
     /// providers restores that provider's model instead of leaving the other
     /// provider's model id behind.
@@ -527,7 +521,6 @@ impl Default for Config {
             base_url: "https://api.openai.com/v1".to_string(),
             api_key: String::new(),
             portkey_config: String::new(),
-            image_script: String::new(),
             provider_models: BTreeMap::new(),
             provider_base_urls: BTreeMap::new(),
             model_catalog: Vec::new(),
@@ -713,10 +706,6 @@ impl Config {
                 )
             })?;
         }
-        if let Some(value) = env_nonempty("OXIDE_IMAGE_SCRIPT") {
-            config.image_script = value;
-        }
-
         config.default_project_trust = load_default_project_trust();
         config.workspaces = crate::workspaces::Workspaces::load(cwd);
         config.ecosystem = ecosystem::load(cwd);
@@ -1068,19 +1057,6 @@ impl Config {
                 .to_ascii_lowercase()
                 .contains("api.deepseek.com")
             || self.model.to_ascii_lowercase().contains("deepseek")
-    }
-
-    /// The configured image-recognition command, or `None` for the built-in
-    /// OCR pipeline.
-    pub fn image_script(&self) -> Option<&str> {
-        (!self.image_script.trim().is_empty()).then_some(self.image_script.as_str())
-    }
-
-    /// Whether the active model can accept image parts natively. DeepSeek's
-    /// text-only models are the one built-in family that cannot; other
-    /// providers keep their native image support.
-    pub fn supports_images(&self) -> bool {
-        !self.is_deepseek()
     }
 
     /// The models bundled with a provider whose catalog cannot be listed.
@@ -2344,40 +2320,5 @@ mod tests {
         };
         assert_eq!(custom.provider_kind(), ProviderKind::OpenAi);
         assert_eq!(custom.key_env_name(), "OPENAI_API_KEY");
-    }
-
-    #[test]
-    fn deepseek_models_are_text_only_and_use_the_image_script() {
-        let deepseek = Config {
-            provider: "deepseek".into(),
-            model: "deepseek-v4-pro".into(),
-            base_url: "https://api.deepseek.com/v1".into(),
-            ..Config::default()
-        };
-        assert!(!deepseek.supports_images());
-        assert_eq!(deepseek.image_script(), None);
-
-        let deepseek = Config {
-            provider: "deepseek".into(),
-            model: "deepseek-v4-pro".into(),
-            base_url: "https://api.deepseek.com/v1".into(),
-            image_script: "tesseract {file} stdout".into(),
-            ..Config::default()
-        };
-        assert_eq!(deepseek.image_script(), Some("tesseract {file} stdout"));
-
-        // Vision-capable providers keep their native image support.
-        let gpt = Config {
-            provider: "openai".into(),
-            model: "gpt-4o-mini".into(),
-            ..Config::default()
-        };
-        assert!(gpt.supports_images());
-        let claude = Config {
-            provider: "anthropic".into(),
-            model: "claude-sonnet-5".into(),
-            ..Config::default()
-        };
-        assert!(claude.supports_images());
     }
 }
