@@ -42,9 +42,10 @@ export interface ConfigSummary {
   /// The models remembered per provider (`provider_models`), offered by the
   /// footer's model picker so switching providers keeps its own model.
   models: { provider: string; model: string }[];
-  /// The reply cap (`max_tokens`), which the CLI also uses as its default
-  /// context window.
+  /// The reply cap (`max_tokens`).
   maxTokens: number;
+  /// The full input window (`context_window`), separate from the reply cap.
+  contextWindow: number;
 }
 
 /// The parts of `config.json` the status bar and the footer show. A malformed
@@ -64,6 +65,10 @@ export function parseConfigSummary(raw: string | null): ConfigSummary | null {
     model: typeof record.model === "string" ? record.model : "",
     models,
     maxTokens: typeof record.max_tokens === "number" && record.max_tokens > 0 ? record.max_tokens : 0,
+    contextWindow:
+      typeof record.context_window === "number" && record.context_window > 0
+        ? record.context_window
+        : 0,
   };
 }
 
@@ -81,14 +86,15 @@ export function contextWindowFromEnv(env: Record<string, string | undefined>): n
 }
 
 /// The window the CLI measures context against, mirroring
-/// `Config::context_window`: the `OXIDE_CONTEXT_LIMIT` override, else
-/// `max_tokens` floored at 128k. The CLI's own default is 8192, so an
-/// untouched config reads as 128k.
+/// `Config::context_window`: the `OXIDE_CONTEXT_LIMIT` override, else the
+/// configured context window (272k by default), kept at least as large as the
+/// response cap for compatibility with older configurations.
 export function contextWindow(
   env: Record<string, string | undefined>,
   summary: ConfigSummary | null,
 ): number {
-  return contextWindowFromEnv(env) || Math.max(summary?.maxTokens ?? 0, 128_000);
+  const configured = summary?.contextWindow || 272_000;
+  return contextWindowFromEnv(env) || Math.max(configured, summary?.maxTokens ?? 0);
 }
 
 /// The models remembered for one provider (`provider_models`), which is what a

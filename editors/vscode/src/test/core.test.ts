@@ -767,10 +767,10 @@ describe("shared configuration", () => {
     );
   });
 
-  it("reads the provider, model, remembered models and reply cap from config.json", () => {
+  it("reads the provider, model, remembered models and token limits from config.json", () => {
     assert.deepEqual(
       parseConfigSummary(
-        '{"provider":"zai","model":"glm-5","max_tokens":16384,"provider_models":{"zai":"glm-5","openai":"gpt-5"}}',
+        '{"provider":"zai","model":"glm-5","max_tokens":16384,"context_window":1050000,"provider_models":{"zai":"glm-5","openai":"gpt-5"}}',
       ),
       {
         provider: "zai",
@@ -780,9 +780,16 @@ describe("shared configuration", () => {
           { provider: "openai", model: "gpt-5" },
         ],
         maxTokens: 16384,
+        contextWindow: 1050000,
       },
     );
-    assert.deepEqual(parseConfigSummary("{}"), { provider: "", model: "", models: [], maxTokens: 0 });
+    assert.deepEqual(parseConfigSummary("{}"), {
+      provider: "",
+      model: "",
+      models: [],
+      maxTokens: 0,
+      contextWindow: 0,
+    });
     assert.deepEqual(parseConfigSummary(null), null);
     assert.equal(parseConfigSummary("{"), null);
     assert.equal(parseConfigSummary("[1]"), null);
@@ -805,17 +812,24 @@ describe("shared configuration", () => {
     assert.equal(contextWindowFromEnv({ OXIDE_CONTEXT_LIMIT: "99999999999999999999" }), 0);
   });
 
-  it("mirrors the CLI's context window, floored at 128k", () => {
-    // `Config::context_window`: the override wins, else `max_tokens` floored.
+  it("mirrors the CLI's configurable 272k context window", () => {
+    // `Config::context_window`: the environment override wins, then the
+    // configured window, while the reply cap remains a lower bound.
     assert.equal(contextWindow({ OXIDE_CONTEXT_LIMIT: "200000" }, null), 200000);
-    assert.equal(contextWindow({}, null), 128_000);
-    assert.equal(contextWindow({ OXIDE_CONTEXT_LIMIT: "1.5" }, null), 128_000);
+    assert.equal(contextWindow({}, null), 272_000);
+    assert.equal(contextWindow({ OXIDE_CONTEXT_LIMIT: "1.5" }, null), 272_000);
     assert.equal(
-      contextWindow({}, { provider: "", model: "", models: [], maxTokens: 8192 }),
-      128_000,
+      contextWindow(
+        {},
+        { provider: "", model: "", models: [], maxTokens: 8192, contextWindow: 1_050_000 },
+      ),
+      1_050_000,
     );
     assert.equal(
-      contextWindow({}, { provider: "", model: "", models: [], maxTokens: 1_000_000 }),
+      contextWindow(
+        {},
+        { provider: "", model: "", models: [], maxTokens: 1_000_000, contextWindow: 272_000 },
+      ),
       1_000_000,
     );
   });

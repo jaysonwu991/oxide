@@ -387,7 +387,7 @@ with a `quit` frame when `agent_end` arrives, so the process exits on its own.
 - **Usage** — `usage` events accumulate input/output/cache tokens and cost for
   the usage line, and the latest one sets the context gauge (its prompt tokens
   over the window), which is `OXIDE_CONTEXT_LIMIT` when it is set else the
-  config's `max_tokens` floored at 128k.
+  config's `context_window` (272k by default).
 
 ## The footer
 

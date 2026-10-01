@@ -64,14 +64,14 @@ describe("projectInfo", () => {
     assert.equal(info.provider, "zai");
     assert.equal(info.model, "glm-5");
     assert.deepEqual(info.models, [{ provider: "zai", model: "glm-5" }]);
-    // An untouched config has no `max_tokens`, so the window is the 128k floor.
-    assert.equal(info.contextWindow, 128_000);
+    // An untouched config uses the same 272k default as the CLI.
+    assert.equal(info.contextWindow, 272_000);
     assert.equal(info.configPath, path.join(configDir, "config.json"));
   });
 
   it("lets OXIDE_CONTEXT_LIMIT override the window", () => {
     const deps = tree(
-      { [path.join(configDir, "config.json")]: '{"max_tokens":1}' },
+      { [path.join(configDir, "config.json")]: '{"context_window":1050000}' },
       { OXIDE_CONTEXT_LIMIT: "300000" },
     );
     assert.equal(projectInfo(pkg, "default", deps).contextWindow, 300_000);
@@ -191,6 +191,6 @@ describe("projectInfo", () => {
     assert.equal(info.model, "");
     assert.equal(info.branch, "");
     assert.deepEqual(info.agents, []);
-    assert.equal(info.contextWindow, 128_000);
+    assert.equal(info.contextWindow, 272_000);
   });
 });
