@@ -812,12 +812,12 @@ describe("shared configuration", () => {
     assert.equal(contextWindowFromEnv({ OXIDE_CONTEXT_LIMIT: "99999999999999999999" }), 0);
   });
 
-  it("mirrors the CLI's configurable 272k context window", () => {
+  it("mirrors the CLI's configurable 1M context window", () => {
     // `Config::context_window`: the environment override wins, then the
     // configured window, while the reply cap remains a lower bound.
     assert.equal(contextWindow({ OXIDE_CONTEXT_LIMIT: "200000" }, null), 200000);
-    assert.equal(contextWindow({}, null), 272_000);
-    assert.equal(contextWindow({ OXIDE_CONTEXT_LIMIT: "1.5" }, null), 272_000);
+    assert.equal(contextWindow({}, null), 1_000_000);
+    assert.equal(contextWindow({ OXIDE_CONTEXT_LIMIT: "1.5" }, null), 1_000_000);
     assert.equal(
       contextWindow(
         {},

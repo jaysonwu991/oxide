@@ -453,7 +453,7 @@ fn default_max_tokens() -> u32 {
 }
 
 fn default_context_window() -> u64 {
-    272_000
+    1_000_000
 }
 
 fn default_true() -> bool {
@@ -1371,8 +1371,9 @@ impl Config {
              repositories and review threads are reachable, and return structured data. Use \
              `gh pr view <url-or-number> --comments` / `glab mr view` to read an item, `gh pr diff` / \
              `glab mr diff` for its changes, `gh pr checks` for CI, and `gh pr comment` / \
-             `glab mr note` to reply. Reserve `webfetch` for public pages that have no CLI \
-             equivalent.\nReply to code review comments inside their existing threads instead of \
+             `glab mr note` for a new top-level comment. Reserve `webfetch` for public pages \
+             that have no CLI equivalent.\nReply to code review comments inside their existing \
+             threads instead of \
              posting one general comment: list them with `gh api repos/{owner}/{repo}/pulls/<n>/comments` \
              and answer one with \
              `gh api -X POST repos/{owner}/{repo}/pulls/<n>/comments/<comment_id>/replies -f body=<text>` \
@@ -1494,13 +1495,21 @@ mod tests {
         assert!(prompt.contains("`gh` and `glab`"), "{prompt}");
         assert!(prompt.contains("inside their existing threads"), "{prompt}");
         assert!(prompt.contains("/replies"), "{prompt}");
+        // The forge guidance must not also call a top-level comment a reply:
+        // the first sentence that names `gh pr comment` once said "to reply",
+        // and the model followed it instead of the inline instruction below.
+        assert!(
+            prompt.contains("`glab mr note` for a new top-level comment"),
+            "{prompt}"
+        );
+        assert!(!prompt.contains("`glab mr note` to reply"), "{prompt}");
     }
 
     #[test]
     fn context_window_has_a_separate_large_default() {
         let config = Config::default();
-        assert_eq!(config.context_window, 272_000);
-        assert_eq!(config.context_window(), 272_000);
+        assert_eq!(config.context_window, 1_000_000);
+        assert_eq!(config.context_window(), 1_000_000);
     }
 
     #[test]
@@ -1519,7 +1528,7 @@ mod tests {
             "context_window": 0,
         }))
         .unwrap();
-        assert_eq!(config.context_window(), 272_000);
+        assert_eq!(config.context_window(), 1_000_000);
     }
 
     #[test]

@@ -87,13 +87,13 @@ export function contextWindowFromEnv(env: Record<string, string | undefined>): n
 
 /// The window the CLI measures context against, mirroring
 /// `Config::context_window`: the `OXIDE_CONTEXT_LIMIT` override, else the
-/// configured context window (272k by default), kept at least as large as the
+/// configured context window (1M by default), kept at least as large as the
 /// response cap for compatibility with older configurations.
 export function contextWindow(
   env: Record<string, string | undefined>,
   summary: ConfigSummary | null,
 ): number {
-  const configured = summary?.contextWindow || 272_000;
+  const configured = summary?.contextWindow || 1_000_000;
   return contextWindowFromEnv(env) || Math.max(configured, summary?.maxTokens ?? 0);
 }
 

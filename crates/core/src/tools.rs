@@ -437,14 +437,9 @@ pub async fn execute(
     progress: &Progress,
 ) -> ToolOutput {
     let name = call.function.name.as_str();
-    let args: Value = match serde_json::from_str(&call.function.arguments) {
-        Ok(value) => value,
-        Err(_) => {
-            return ToolOutput::error(format!(
-                "{name} received invalid JSON arguments. Expected a JSON object{}.",
-                expected_arguments(name)
-            ))
-        }
+    let args = match parse_tool_arguments(name, &call.function.arguments) {
+        Ok(args) => args,
+        Err(message) => return ToolOutput::error(message),
     };
 
     let canonical = canonical_tool_name(name);
@@ -509,6 +504,26 @@ pub async fn execute(
         },
         Err(err) => ToolOutput::error(format!("{err:#}")),
     }
+}
+
+/// Parses a tool call's `arguments`.
+///
+/// A call with no arguments arrives as an empty string from some providers and
+/// `{}` from others, so an empty value means an empty object rather than
+/// malformed JSON. Without this an MCP tool whose schema has no properties
+/// (`atlassianUserInfo`) failed every call with a JSON `EOF` before the server
+/// was ever reached.
+fn parse_tool_arguments(name: &str, arguments: &str) -> Result<Value, String> {
+    let arguments = arguments.trim();
+    if arguments.is_empty() {
+        return Ok(Value::Object(serde_json::Map::new()));
+    }
+    serde_json::from_str(arguments).map_err(|_| {
+        format!(
+            "{name} received invalid JSON arguments. Expected a JSON object{}.",
+            expected_arguments(name)
+        )
+    })
 }
 
 fn expected_arguments(name: &str) -> &'static str {
@@ -841,6 +856,26 @@ struct Located {
     end: usize,
 }
 
+/// The comparison key for one line of an `oldText` block: trailing whitespace
+/// and the typographic characters a model substitutes when it retypes a block
+/// are invisible to the intent, so two lines that differ only in them are the
+/// same line. The typographic set matches Pi's `normalizeForFuzzyMatch`
+/// (`coding-agent/src/core/tools/edit-diff.ts`). NFKC folding is deliberately
+/// left out: it is lossy in ways a file rewrite should not be.
+fn match_key(text: &str) -> String {
+    text.trim_end()
+        .chars()
+        .map(|ch| match ch {
+            '\u{2018}' | '\u{2019}' | '\u{201a}' | '\u{201b}' => '\'',
+            '\u{201c}' | '\u{201d}' | '\u{201e}' | '\u{201f}' => '"',
+            '\u{2010}' | '\u{2011}' | '\u{2012}' | '\u{2013}' | '\u{2014}' | '\u{2015}'
+            | '\u{2212}' => '-',
+            '\u{00a0}' | '\u{2002}'..='\u{200a}' | '\u{202f}' | '\u{205f}' | '\u{3000}' => ' ',
+            other => other,
+        })
+        .collect()
+}
+
 /// Why an `oldText` could not be applied: it is absent (with the closest region
 /// when one was found), or it matched on several lines.
 enum MatchFailure {
@@ -892,11 +927,7 @@ fn locate(base: &str, old: &str) -> Result<Located, MatchFailure> {
         )));
     }
     let width = old_lines.len();
-    let mut hits: Vec<(usize, Located)> = Vec::new();
-    for i in 0..=base_lines.len() - width {
-        if !(0..width).all(|k| base_lines[i + k].text.trim_end() == old_lines[k].text.trim_end()) {
-            continue;
-        }
+    let range_at = |i: usize| {
         let last = &base_lines[i + width - 1];
         // Keep the file's trailing newline unless the matched text replaced it.
         let end = if old.ends_with('\n') {
@@ -904,13 +935,36 @@ fn locate(base: &str, old: &str) -> Result<Located, MatchFailure> {
         } else {
             last.start + last.text.len()
         };
-        hits.push((
+        (
             i + 1,
             Located {
                 start: base_lines[i].start,
                 end,
             },
-        ));
+        )
+    };
+
+    // The fast pass: trailing whitespace is invisible to the model and is often
+    // the only difference, so it is ignored before anything more expensive.
+    let mut hits: Vec<(usize, Located)> = (0..=base_lines.len() - width)
+        .filter(|&i| {
+            (0..width).all(|k| base_lines[i + k].text.trim_end() == old_lines[k].text.trim_end())
+        })
+        .map(range_at)
+        .collect();
+
+    // A block retyped with typographic characters — smart quotes, en/em dashes,
+    // non-breaking spaces — reads as the same block, so those still land. This
+    // runs only when the exact and whitespace passes found nothing, and the
+    // replacement still writes the file's own line range, so a loose match can
+    // never change text the model did not name.
+    if hits.is_empty() {
+        let base_keys: Vec<String> = base_lines.iter().map(|line| match_key(line.text)).collect();
+        let old_keys: Vec<String> = old_lines.iter().map(|line| match_key(line.text)).collect();
+        hits = (0..=base_lines.len() - width)
+            .filter(|&i| (0..width).all(|k| base_keys[i + k] == old_keys[k]))
+            .map(range_at)
+            .collect();
     }
     match hits.len() {
         1 => Ok(hits.remove(0).1),
@@ -1015,12 +1069,18 @@ fn strip_all_line_prefixes(text: &str) -> String {
 /// `read` listing has its `N|` prefixes removed, so the common "cosmetically
 /// different" edit still lands without a round trip.
 fn edit(cwd: &Path, args: &Value) -> Result<ToolOutput> {
-    let path = required_string(
-        args,
-        "edit",
-        "path",
-        r#"{"path":"src/main.rs","edits":[{"oldText":"...","newText":"..."}]}"#,
-    )?;
+    // Pi accepts `file_path` beside `path` (`coding-agent/src/core/tools/edit.ts`),
+    // and some models spell it that way; either names the file to change.
+    let path = ["path", "file_path", "filePath"]
+        .into_iter()
+        .find_map(|key| args.get(key).and_then(Value::as_str))
+        .ok_or_else(|| {
+            anyhow::anyhow!(
+                "edit requires a `path` string, for example {{\"path\":\"src/main.rs\",\
+                 \"edits\":[{{\"oldText\":\"...\",\"newText\":\"...\"}}]}}{}",
+                received_keys(args)
+            )
+        })?;
     let edits = parse_edits(args)?;
     let full = resolve(cwd, path);
     let raw = std::fs::read_to_string(&full)
@@ -3212,6 +3272,56 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn edit_accepts_file_path_and_typographic_variants() {
+        let dir = std::env::temp_dir().join(format!("oxide_edit_alias_{}", std::process::id()));
+        std::fs::remove_dir_all(&dir).ok();
+        std::fs::create_dir_all(&dir).unwrap();
+        let mcp = McpRegistry::default();
+        let progress = Progress::default();
+
+        // The file holds smart quotes and an em dash; the model retyped the
+        // block with ASCII characters and spelled the path `file_path`.
+        std::fs::write(
+            dir.join("a.txt"),
+            "He said \u{201c}hello\u{201d} \u{2014} today\n",
+        )
+        .unwrap();
+        let out = execute(
+            &call(
+                "edit",
+                json!({
+                    "file_path": "a.txt",
+                    "edits": [{
+                        "oldText": "He said \"hello\" - today",
+                        "newText": "She said \"hi\" - today"
+                    }]
+                }),
+            ),
+            &dir,
+            &mcp,
+            &progress,
+        )
+        .await;
+        assert!(!out.is_error, "{}", out.text);
+        assert_eq!(
+            std::fs::read_to_string(dir.join("a.txt")).unwrap(),
+            "She said \"hi\" - today\n"
+        );
+
+        // A wrong `path` is still named so the model can fix it.
+        let out = execute(&call("edit", json!({ "edits": [] })), &dir, &mcp, &progress).await;
+        assert!(out.is_error);
+        assert!(
+            out.text.contains("edit requires a `path` string"),
+            "{}",
+            out.text
+        );
+        assert!(out.text.contains("received keys: edits"), "{}", out.text);
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[tokio::test]
     async fn edit_failure_names_the_closest_region_and_collects_every_edit() {
         let dir = std::env::temp_dir().join(format!("oxide_edit_hint_{}", std::process::id()));
         std::fs::remove_dir_all(&dir).ok();
@@ -3728,6 +3838,48 @@ mod tests {
         assert!(!malformed.text.contains("line 1 column"));
 
         assert!(malformed.model_text().starts_with("error: "));
+    }
+
+    #[tokio::test]
+    async fn a_no_argument_call_is_not_a_json_error() {
+        let dir = std::env::temp_dir().join(format!("oxide_no_args_{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("a.txt"), "hello").unwrap();
+        let mcp = McpRegistry::default();
+        let progress = Progress::default();
+
+        // Some providers send an empty `arguments` string for a call with no
+        // arguments (an MCP tool whose schema has no properties). It is an
+        // empty object, not malformed JSON, so a call whose arguments are all
+        // optional still runs.
+        let call = ToolCall {
+            id: "test".to_string(),
+            kind: "function".to_string(),
+            function: FunctionCall {
+                name: "ls".to_string(),
+                arguments: String::new(),
+            },
+        };
+        let out = execute(&call, &dir, &mcp, &progress).await;
+        assert!(!out.is_error, "{}", out.text);
+        assert!(out.text.contains("a.txt"), "{}", out.text);
+
+        // A tool that does need arguments still names the missing one rather
+        // than reporting a parse failure.
+        let call = ToolCall {
+            id: "test".to_string(),
+            kind: "function".to_string(),
+            function: FunctionCall {
+                name: "bash".to_string(),
+                arguments: "   ".to_string(),
+            },
+        };
+        let out = execute(&call, &dir, &mcp, &progress).await;
+        assert!(out.is_error);
+        assert!(out.text.contains("`command`"), "{}", out.text);
+        assert!(!out.text.contains("invalid JSON arguments"), "{}", out.text);
+
+        std::fs::remove_dir_all(&dir).ok();
     }
 
     #[tokio::test]

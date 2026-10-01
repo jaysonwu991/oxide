@@ -1002,8 +1002,8 @@ Configure it under `compaction` in `settings.json` (global) or
 - `modelOverrides` — per `provider/model` budget overrides; omitted fields fall
   back to the ordinary settings.
 
-The model window defaults to 272000 tokens. Set `context_window` in
-`config.json` to a larger value supported by the active model, such as 1050000.
+The model window defaults to 1000000 tokens. Set `context_window` in
+`config.json` to the window the active model actually supports.
 `OXIDE_COMPACTION_ENABLED`, `OXIDE_COMPACTION_RESERVE_TOKENS`, and
 `OXIDE_COMPACTION_KEEP_RECENT_TOKENS` override the file settings, and
 `OXIDE_CONTEXT_LIMIT` overrides `context_window`. Manual compaction is available
