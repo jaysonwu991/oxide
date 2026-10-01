@@ -669,6 +669,10 @@ impl WorkDir {
             .context("generating a private name for the temporary directory")?;
         let name: String = random.iter().map(|byte| format!("{byte:02x}")).collect();
         let dir = std::env::temp_dir().join(format!("oxide-update-{name}"));
+        // `mode` is a unix-only method, so `mut` is only needed there; without
+        // this the Windows release build warns that the variable is never
+        // mutated.
+        #[cfg_attr(not(unix), allow(unused_mut))]
         let mut builder = fs::DirBuilder::new();
         #[cfg(unix)]
         {
