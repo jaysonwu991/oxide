@@ -202,7 +202,7 @@ export type ToolPatch = Partial<
 export type ReplayEntry =
   | { kind: "user"; text: string }
   | { kind: "assistant"; text: string }
-  | { kind: "tool"; name: string; args: string; output: string };
+  | { kind: "tool"; name: string; args: string; output: string; isError: boolean };
 
 /// A file or selection that is inlined into the prompt.
 export interface ContextChip {
@@ -531,7 +531,7 @@ export class Transcript {
     for (const entry of entries) {
       if (entry.kind === "user") this.pushUser(entry.text, []);
       else if (entry.kind === "assistant") this.pushAssistant(entry.text);
-      else this.pushTool(entry.name, entry.args, entry.output);
+      else this.pushTool(entry.name, entry.args, entry.output, entry.isError);
     }
   }
 
@@ -540,10 +540,10 @@ export class Transcript {
   /// describe — the replacements an `edit` made, a `patch`'s own diff — rather
   /// than one built against the file as it stands.
   ///
-  /// Its state is left unknown: the store records neither the file the call found
-  /// nor whether the tool applied, so a call that failed reads exactly like one
-  /// that landed, and the card claims neither.
-  private pushTool(name: string, args: string, output: string): void {
+  /// Successful stored calls remain unknown because the store does not record
+  /// whether a file change applied. The compatibility error marker does record
+  /// failures, so those cards retain their error state without showing the marker.
+  private pushTool(name: string, args: string, output: string, isError: boolean): void {
     this.closeAssistant();
     this.closeThinking();
     const item: ToolItem = {
@@ -552,10 +552,10 @@ export class Transcript {
       name,
       args,
       output,
-      diff: argumentDiff(name, parseArgs(args))?.diff ?? null,
+      diff: isError ? null : (argumentDiff(name, parseArgs(args))?.diff ?? null),
       running: false,
-      isError: false,
-      unknown: true,
+      isError,
+      unknown: !isError,
     };
     this.items.push(item);
   }

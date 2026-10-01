@@ -41,7 +41,7 @@ describe("stored session history", () => {
     assert.equal(history.name, "Fix the flaky test");
     assert.deepEqual(history.entries, [
       { kind: "user", text: "why is the test flaky?" },
-      { kind: "tool", name: "read", args: "{}", output: "fn test() {}" },
+      { kind: "tool", name: "read", args: "{}", output: "fn test() {}", isError: false },
       { kind: "assistant", text: "it polls the clock" },
     ]);
     assert.equal(history.total, 4);
@@ -71,8 +71,8 @@ describe("stored session history", () => {
     // than a card per stored message.
     assert.deepEqual(history.entries, [
       { kind: "assistant", text: "reading both" },
-      { kind: "tool", name: "read", args: '{"path":"a.rs"}', output: "first" },
-      { kind: "tool", name: "grep", args: '{"pattern":"x"}', output: "second" },
+      { kind: "tool", name: "read", args: '{"path":"a.rs"}', output: "first", isError: false },
+      { kind: "tool", name: "grep", args: '{"pattern":"x"}', output: "second", isError: false },
     ]);
   });
 
@@ -95,6 +95,22 @@ describe("stored session history", () => {
     assert.equal(history.shown, 1, "the CLI sent one message, whatever it was");
     assert.equal(history.usage.contextTokens, 0);
     assert.equal(history.usage.cacheHit, null);
+  });
+
+  it("replays the stored compatibility marker as structured error state", () => {
+    const history = parseSessionHistory(
+      JSON.stringify({
+        ...payload,
+        messages: [
+          { role: "assistant", content: "", toolCalls: [{ id: "c1", name: "edit", arguments: "{}" }] },
+          { role: "tool", content: "error: oldText not found", toolCallId: "c1" },
+        ],
+      }),
+    );
+    assert.ok(history);
+    assert.deepEqual(history.entries, [
+      { kind: "tool", name: "edit", args: "{}", output: "oldText not found", isError: true },
+    ]);
   });
 
   it("keeps a thread whose tail holds nothing paintable", () => {
@@ -154,7 +170,7 @@ describe("stored session history", () => {
     assert.ok(history);
     assert.deepEqual(history.entries, [
       { kind: "user", text: "why is the test flaky?" },
-      { kind: "tool", name: "read", args: "{}", output: "fn test() {}" },
+      { kind: "tool", name: "read", args: "{}", output: "fn test() {}", isError: false },
       { kind: "assistant", text: "it polls the clock" },
     ]);
   });

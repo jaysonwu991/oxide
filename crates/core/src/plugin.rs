@@ -210,14 +210,20 @@ impl PluginHost {
         response.get("args").cloned()
     }
 
-    pub async fn tool_after(&self, tool: &str, args: &Value, output: &str) -> Option<HookResult> {
+    pub async fn tool_after(
+        &self,
+        tool: &str,
+        args: &Value,
+        output: &str,
+        is_error: bool,
+    ) -> Option<HookResult> {
         let host = self.inner.as_ref()?;
         let mut host = host.lock().await;
         let response = host
             .call(
                 "tool.execute.after",
                 json!({ "tool": tool, "args": args }),
-                json!({ "title": "", "output": output, "metadata": {} }),
+                json!({ "title": "", "output": output, "metadata": {}, "isError": is_error }),
             )
             .await
             .ok()?;
@@ -380,6 +386,7 @@ export default async () => ({
   },
   "tool.execute.after": async (input, output) => {
     output.output = `${output.output} [seen]`;
+    if (output.isError) output.output = `${output.output} [failed]`;
     if (input.tool === "bash") output.terminate = true;
   },
 });
@@ -403,14 +410,15 @@ export default async () => ({
         );
 
         let after = host
-            .tool_after("write_file", &json!({ "path": "a.rs" }), "done")
+            .tool_after("write_file", &json!({ "path": "a.rs" }), "done", true)
             .await
             .unwrap();
-        assert_eq!(after.output, "done [seen]");
+        assert_eq!(after.output, "done [seen] [failed]");
+        assert_eq!(after.is_error, Some(true));
         assert!(!after.terminate);
 
         let terminating = host
-            .tool_after("bash", &json!({ "command": "true" }), "ok")
+            .tool_after("bash", &json!({ "command": "true" }), "ok", false)
             .await
             .unwrap();
         assert!(terminating.terminate);

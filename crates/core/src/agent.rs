@@ -899,8 +899,10 @@ async fn run_loop(
                                 let mut output =
                                     dispatch(&config, &cwd, &runtime, &tx, &call, depth, &progress)
                                         .await;
-                                if let Some(result) =
-                                    runtime.plugins.tool_after(&name, &args, &output.text).await
+                                if let Some(result) = runtime
+                                    .plugins
+                                    .tool_after(&name, &args, &output.text, output.is_error)
+                                    .await
                                 {
                                     output.text = result.output;
                                     if let Some(is_error) = result.is_error {
@@ -1028,7 +1030,7 @@ async fn run_loop(
                     }
                     if let Some(result) = runtime
                         .plugins
-                        .tool_after(&name, &effective_args, &output.text)
+                        .tool_after(&name, &effective_args, &output.text, output.is_error)
                         .await
                     {
                         output.text = result.output;

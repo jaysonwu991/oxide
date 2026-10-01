@@ -226,12 +226,17 @@ pub fn parse_questions(arguments: &str) -> Result<Vec<Question>> {
     };
     let mut questions = Vec::new();
     for (index, value) in values.into_iter().enumerate() {
-        let mut question: Question = serde_json::from_value(value).map_err(|_| {
-            anyhow::anyhow!(
-                "ask question {} needs a `question` string; `header`, `options`, and \
-                 `multiSelect` are optional",
-                index + 1
-            )
+        let mut question: Question = serde_json::from_value(value).map_err(|error| {
+            let detail = error.to_string();
+            if detail.contains("missing field `question`") {
+                anyhow::anyhow!(
+                    "ask question {} needs a `question` string; `header`, `options`, and \
+                     `multiSelect` are optional",
+                    index + 1
+                )
+            } else {
+                anyhow::anyhow!("ask question {} has invalid fields: {detail}", index + 1)
+            }
         })?;
         question.question = question.question.trim().to_string();
         if question.question.is_empty() {
@@ -461,6 +466,17 @@ mod tests {
         let malformed = parse_questions("not json").unwrap_err().to_string();
         assert!(malformed.contains("received invalid JSON"), "{malformed}");
         assert!(!malformed.contains("line 1 column"), "{malformed}");
+    }
+
+    #[test]
+    fn reports_an_invalid_optional_field_instead_of_blaming_question() {
+        let error =
+            parse_questions(r#"{"questions":[{"question":"Proceed?","multiSelect":"maybe"}]}"#)
+                .unwrap_err()
+                .to_string();
+        assert!(error.contains("question 1 has invalid fields"), "{error}");
+        assert!(error.contains("expected a boolean"), "{error}");
+        assert!(!error.contains("needs a `question` string"), "{error}");
     }
 
     #[test]

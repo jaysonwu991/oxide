@@ -79,6 +79,12 @@ impl fmt::Display for AuthorizationRequired {
 
 impl std::error::Error for AuthorizationRequired {}
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct McpToolResult {
+    pub text: String,
+    pub is_error: bool,
+}
+
 impl AuthorizationRequired {
     fn new(name: &str) -> Self {
         Self {
@@ -410,7 +416,7 @@ impl McpRegistry {
             .sum()
     }
 
-    pub async fn call(&self, name: &str, arguments: Value) -> Result<String> {
+    pub async fn call(&self, name: &str, arguments: Value) -> Result<McpToolResult> {
         let (handle, original) = self
             .servers
             .read()
@@ -694,18 +700,14 @@ impl McpConnection {
             .collect())
     }
 
-    async fn call_tool(&mut self, name: &str, arguments: Value) -> Result<String> {
+    async fn call_tool(&mut self, name: &str, arguments: Value) -> Result<McpToolResult> {
         let result = self
             .request(
                 "tools/call",
                 json!({ "name": name, "arguments": arguments }),
             )
             .await?;
-        let mut text = format_content(&result);
-        if result.get("isError").and_then(Value::as_bool) == Some(true) {
-            text = format!("error: {text}");
-        }
-        Ok(text)
+        Ok(mcp_tool_result(&result))
     }
 
     async fn notify(&mut self, method: &str, params: Value) -> Result<()> {
@@ -914,6 +916,13 @@ fn format_content(result: &Value) -> String {
         result.to_string()
     } else {
         parts.join("\n")
+    }
+}
+
+fn mcp_tool_result(result: &Value) -> McpToolResult {
+    McpToolResult {
+        text: format_content(result),
+        is_error: result.get("isError").and_then(Value::as_bool) == Some(true),
     }
 }
 
@@ -1247,6 +1256,21 @@ mod tests {
     }
 
     #[test]
+    fn preserves_a_tool_error_as_structured_state() {
+        let result = json!({
+            "content": [{ "type": "text", "text": "lookup failed" }],
+            "isError": true
+        });
+        assert_eq!(
+            mcp_tool_result(&result),
+            McpToolResult {
+                text: "lookup failed".to_string(),
+                is_error: true,
+            }
+        );
+    }
+
+    #[test]
     fn interpolates_environment_variables() {
         std::env::set_var("OXIDE_MCP_TEST", "secret");
         assert_eq!(interpolate("Bearer {env:OXIDE_MCP_TEST}"), "Bearer secret");
@@ -1461,7 +1485,8 @@ for line in sys.stdin:
             .call("mock__echo", json!({ "text": "hi" }))
             .await
             .unwrap();
-        assert_eq!(output, "echo:hi");
+        assert_eq!(output.text, "echo:hi");
+        assert!(!output.is_error);
 
         std::fs::remove_dir_all(&dir).ok();
     }
@@ -1561,7 +1586,8 @@ for line in sys.stdin:
             )
             .await
             .unwrap();
-        assert_eq!(output, "document content");
+        assert_eq!(output.text, "document content");
+        assert!(!output.is_error);
         server_task.await.unwrap();
     }
 }

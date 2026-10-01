@@ -442,7 +442,13 @@ pub async fn execute(
 
     let canonical = canonical_tool_name(name);
     let result = if mcp.is_tool(name) {
-        mcp.call(name, args).await.map(ToolOutput::text)
+        mcp.call(name, args).await.map(|result| {
+            if result.is_error {
+                ToolOutput::error(result.text)
+            } else {
+                ToolOutput::text(result.text)
+            }
+        })
     } else {
         match canonical {
             "mcp_load" => match args.get("server").and_then(Value::as_str) {
