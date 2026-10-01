@@ -1866,7 +1866,7 @@ export class ChatController {
     if (catalog) {
       this.modelCatalog = mergeModels(catalog.models, this.modelCatalog);
       this.modelNote = catalog.error
-        ? `Could not refresh every model: ${firstLine(catalog.error)}`
+        ? `Could not refresh models: ${firstLine(catalog.error)}`
         : this.modelCatalog.length
           ? ""
           : "The active provider returned no models; enter a model ID below.";

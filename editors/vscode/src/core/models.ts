@@ -12,7 +12,10 @@ export interface ModelCatalog {
 }
 
 export function modelsListArgs(): string[] {
-  return ["models", "--json"];
+  // An inactive provider may take longer than the extension's 30-second
+  // process budget. The picker only paints the active catalog, so do not let
+  // unrelated providers hold that useful answer back.
+  return ["models", "--json", "--active"];
 }
 
 export function parseModelCatalog(raw: string): ModelCatalog | null {

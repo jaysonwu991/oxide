@@ -1461,6 +1461,8 @@
     const percent = typeof footer.percent === "number" ? footer.percent : null;
     usageText.textContent = percent === null ? "—" : `${percent}%`;
     usageText.title = footer.usage || "";
+    usageText.setAttribute("tabindex", "0");
+    usageText.setAttribute("aria-label", footer.usage ? `Usage: ${footer.usage}` : "No usage reported");
     usageRow.title = footer.usage || "";
     usageRow.hidden = !footer.usage;
     gauge.hidden = percent === null;

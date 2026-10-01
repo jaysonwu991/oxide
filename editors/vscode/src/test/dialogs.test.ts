@@ -106,6 +106,14 @@ describe("settings dialogs", () => {
     assert.equal(configured.rows[0].status, "Current");
   });
 
+  it("searches the config fallback by its complete visible label", () => {
+    for (const query of ["oxide", "default", "config"]) {
+      const dialog = modelDialog("claude-opus-5", "portkey", "", [], query);
+      assert.equal(dialog.rows[0].label, "Oxide config default");
+      assert.equal(dialog.rows[0].value, "");
+    }
+  });
+
   it("filters agents and turns an unknown name into a selectable row", () => {
     const dialog = agentDialog(
       [

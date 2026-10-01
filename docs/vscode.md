@@ -489,7 +489,7 @@ too, from the CLI's own plugin state (`plugins/config.json`, enabled entries
 with a live directory and manifest), because `ecosystem::load_enabled_plugins`
 loads their `agents/` ahead of project resources — the order is project, then
 plugins, then the global directories. The model picker asks `oxide models
---json` for the active provider's complete normalized catalog, the same source
+--json --active` for the active provider's complete normalized catalog, the same source
 as the TUI and desktop pickers. It keeps remembered models as a fallback when a
 catalog refresh fails and accepts a custom ID; models from another provider are
 not mixed in because a per-turn model override runs against the active provider.
@@ -875,9 +875,10 @@ The manifest defines the two view containers (activity bar and secondary side
 bar), the editor toolbar entry, the commands and keybindings, and the `oxide.*`
 settings. See the [extension README](../editors/vscode/README.md) for the
 user-facing tables. The footer's chips are shortcuts into the same actions:
-`setModel`, `setAgent`, `setReasoning`, `setProjectTrust` and `resumeSession`
-are reached from a chip click and from the palette, so the two entry points never
-drift.
+`setModel`, `setAgent`, `setReasoning` and `setProjectTrust` are reached from a
+chip click and from the palette, so the two entry points never drift. Session
+history stays in the header (and is also reachable through `/session` and the
+command palette), rather than duplicating another control in the footer.
 
 ## Development and testing
 

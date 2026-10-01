@@ -2293,6 +2293,12 @@ button.icon {
   white-space: nowrap;
 }
 
+#usage-text:focus-visible {
+  outline: 1px solid var(--vscode-focusBorder);
+  outline-offset: 2px;
+  border-radius: 2px;
+}
+
 .gauge {
   width: 30px;
   height: 3px;

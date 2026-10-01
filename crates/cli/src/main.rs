@@ -205,6 +205,9 @@ enum Command {
         /// Print provider catalogs as JSON
         #[arg(long)]
         json: bool,
+        /// Query only the active provider (for latency-sensitive clients)
+        #[arg(long)]
+        active: bool,
     },
     /// Read the files a run changed, from its shadow snapshots
     Changes {
@@ -609,9 +612,9 @@ async fn main() -> Result<()> {
                 let current_dir = std::env::current_dir().context("resolving current directory")?;
                 commands::list(&current_dir, json)
             }
-            Command::Models { json } => {
+            Command::Models { json, active } => {
                 let current_dir = std::env::current_dir().context("resolving current directory")?;
-                list_models(&current_dir, json).await
+                list_models(&current_dir, json, active).await
             }
             Command::Changes { action } => match action {
                 ChangesAction::Show {
@@ -838,10 +841,13 @@ async fn main() -> Result<()> {
 /// Prints the same provider catalogs the TUI's `/models` and desktop model
 /// picker use. Front-ends call this rather than reimplementing authentication,
 /// provider endpoints, bundled fallbacks or catalog normalization.
-async fn list_models(current_dir: &Path, json_output: bool) -> Result<()> {
+async fn list_models(current_dir: &Path, json_output: bool, active_only: bool) -> Result<()> {
     let config = Config::load(current_dir, None, None, None, None)?;
     let active = auth::canonical_provider(&config.provider);
-    let providers = config::provider_configs(&config);
+    let mut providers = config::provider_configs(&config);
+    if active_only {
+        providers.retain(|(name, _)| auth::canonical_provider(name) == active);
+    }
     if providers.is_empty() {
         anyhow::bail!("no provider connected — run /login to add an API key");
     }
@@ -1481,7 +1487,13 @@ mod tests {
 
     #[test]
     fn parses_model_catalog_output() {
-        let cli = Cli::try_parse_from(["oxide", "models", "--json"]).unwrap();
-        assert!(matches!(cli.command, Some(Command::Models { json: true })));
+        let cli = Cli::try_parse_from(["oxide", "models", "--json", "--active"]).unwrap();
+        assert!(matches!(
+            cli.command,
+            Some(Command::Models {
+                json: true,
+                active: true
+            })
+        ));
     }
 }

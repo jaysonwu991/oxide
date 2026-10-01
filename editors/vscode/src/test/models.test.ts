@@ -5,7 +5,7 @@ import { modelsListArgs, parseModelCatalog } from "../core/models";
 
 describe("model catalog", () => {
   it("asks the CLI for its normalized provider catalogs", () => {
-    assert.deepEqual(modelsListArgs(), ["models", "--json"]);
+    assert.deepEqual(modelsListArgs(), ["models", "--json", "--active"]);
   });
 
   it("returns the complete active-provider catalog", () => {

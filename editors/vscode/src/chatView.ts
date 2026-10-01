@@ -373,7 +373,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     <div id="dropzone" hidden><span>Drop files to attach</span></div>
   </div>
   <div id="footline">
-    <span id="usage" class="usage"><span class="foot-icon" aria-hidden="true"><svg viewBox="0 0 16 16"><circle cx="8" cy="8" r="5.5"/><path d="M8 5v3.4l2.2 1.4"/></svg></span><span id="usage-text"></span></span>
+    <span id="usage" class="usage"><span class="foot-icon" aria-hidden="true"><svg viewBox="0 0 16 16"><circle cx="8" cy="8" r="5.5"/><path d="M8 5v3.4l2.2 1.4"/></svg></span><span id="usage-text" role="note" tabindex="0"></span></span>
     <span id="gauge" class="gauge" hidden><span id="gauge-fill"></span></span>
     <span id="branch-wrap" class="branch-wrap" hidden><span class="foot-icon" aria-hidden="true"><svg viewBox="0 0 16 16"><circle cx="4" cy="3" r="1.5"/><circle cx="4" cy="13" r="1.5"/><circle cx="12" cy="5" r="1.5"/><path d="M4 4.5v7M5.5 11c4 0 6.5-1.5 6.5-4.5"/></svg></span><span id="branch"></span></span>
   </div>

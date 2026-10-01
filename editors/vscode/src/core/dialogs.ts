@@ -182,7 +182,11 @@ export function modelDialog(
       : [...models];
   const known = choices.filter((entry) => !needle || entry.model.toLowerCase().includes(needle));
   const exact = choices.some((entry) => entry.model.toLowerCase() === needle);
-  const configMatches = !needle || configured.toLowerCase().includes(needle) || "config".includes(needle);
+  const configLabel = "Oxide config default";
+  const configMatches =
+    !needle ||
+    configLabel.toLowerCase().includes(needle) ||
+    configured.toLowerCase().includes(needle);
   return {
     kind: "model",
     pin: "footer",
@@ -192,7 +196,7 @@ export function modelDialog(
     rows: [
       ...(configMatches
         ? [
-            row("", "Oxide config default", {
+            row("", configLabel, {
               detail: configured
                 ? `Use ${configured}, the model stored in the Oxide config`
                 : "Use the model stored in the Oxide config",

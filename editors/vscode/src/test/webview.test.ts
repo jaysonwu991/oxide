@@ -562,6 +562,8 @@ describe("webview footer", () => {
     assert.equal(byId.get("branch")!.textContent, "main");
     assert.equal(byId.get("branch")!.title, "Current branch: main");
     assert.equal(byId.get("usage-text")!.textContent, "12%");
+    assert.equal(byId.get("usage-text")!.getAttribute("aria-label"), `Usage: ${footer.usage}`);
+    assert.equal(byId.get("usage-text")!.getAttribute("tabindex"), "0");
     assert.equal(byId.get("usage")!.title, footer.usage);
     assert.equal(byId.get("usage")!.hidden, false);
     assert.equal(byId.get("gauge")!.hidden, false);

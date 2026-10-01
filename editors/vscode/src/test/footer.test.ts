@@ -52,6 +52,10 @@ describe("footerState", () => {
     assert.equal(chip(state, "agent"), "agent: default");
     assert.equal(chip(state, "access"), "access: untrusted");
     assert.deepEqual(state.chips.map((entry) => entry.id), ["model", "reasoning", "agent", "access"]);
+    assert.match(
+      state.chips.find((entry) => entry.id === "reasoning")?.title ?? "",
+      /Click to choose a level\./,
+    );
   });
 
   it("falls back to the config's model", () => {

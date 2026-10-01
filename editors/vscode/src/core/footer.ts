@@ -65,7 +65,7 @@ export function footerState(input: FooterInput): FooterState {
       {
         id: "reasoning",
         label: `thinking: ${input.reasoning}`,
-        title: `Reasoning effort (--reasoning): ${REASONING_LEVELS.join(" → ")}. Click to cycle.`,
+        title: `Reasoning effort (--reasoning): ${REASONING_LEVELS.join(" → ")}. Click to choose a level.`,
       },
       {
         id: "agent",
