@@ -1478,6 +1478,7 @@ footer {
   align-items: center;
   gap: 4px;
   min-width: 0;
+  max-width: 40%;
 }
 
 #usage-text {
@@ -1487,8 +1488,8 @@ footer {
 }
 
 #branch {
-  flex: 0 0 auto;
-  max-width: 40%;
+  flex: 0 1 auto;
+  min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
