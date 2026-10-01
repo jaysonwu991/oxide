@@ -935,9 +935,9 @@ fn assistant_turn_is_empty(turn: &AssistantTurn) -> bool {
 }
 
 /// Adds an actionable hint to any failed request that carried native media.
-/// Capability is deliberately not inferred from a provider or model name: an
-/// OpenAI-compatible endpoint may front any model, and those capabilities can
-/// change independently of Oxide. The endpoint remains the source of truth.
+/// Capability is deliberately not inferred from a provider or endpoint name:
+/// the selected LLM is the source of truth, and its capabilities can change
+/// independently of Oxide.
 fn media_request_error(error: anyhow::Error, messages: &[Message]) -> anyhow::Error {
     let has_media = messages.iter().any(|message| {
         matches!(
@@ -951,7 +951,7 @@ fn media_request_error(error: anyhow::Error, messages: &[Message]) -> anyhow::Er
     });
     if has_media {
         error.context(
-            "the request included media attachments; confirm that the selected model and endpoint accept them",
+            "the request included rich media attachments; confirm that the selected LLM supports them",
         )
     } else {
         error
@@ -1041,7 +1041,7 @@ mod tests {
     }
 
     #[test]
-    fn media_failures_explain_that_the_model_or_endpoint_may_not_accept_attachments() {
+    fn media_failures_explain_that_the_selected_llm_may_not_support_attachments() {
         let image = crate::llm::ContentPart::ImageUrl {
             image_url: crate::llm::ImageUrl {
                 url: "data:image/png;base64,AAAA".into(),
@@ -1053,9 +1053,7 @@ mod tests {
             anyhow::anyhow!("provider returned 400 Bad Request: unsupported content"),
             &messages,
         );
-        assert!(error
-            .to_string()
-            .contains("confirm that the selected model"));
+        assert!(error.to_string().contains("confirm that the selected LLM"));
         assert!(!is_retryable(&error));
 
         let plain = media_request_error(
@@ -1066,7 +1064,7 @@ mod tests {
     }
 
     #[test]
-    fn openai_compatible_providers_all_keep_native_image_parts() {
+    fn provider_selection_does_not_change_native_image_parts() {
         let image = crate::llm::ContentPart::ImageUrl {
             image_url: crate::llm::ImageUrl {
                 url: "data:image/png;base64,AAAA".into(),

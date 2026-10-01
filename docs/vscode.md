@@ -433,7 +433,7 @@ it.
 
 ## Attachments
 
-A message can carry images and PDFs, which the provider reads as media. They are
+A message can carry images and PDFs, which the selected LLM reads as media. They are
 added by pasting an image into the composer, dropping files onto it, or from the
 **Attach** button or **Oxide: Add File or Selection to Chat**; on an image or PDF
 in the explorer, `addToChat` attaches it as media rather than trying to inline

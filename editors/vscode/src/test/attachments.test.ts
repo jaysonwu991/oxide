@@ -56,7 +56,7 @@ describe("dataUrlMime", () => {
 });
 
 describe("attachment kinds", () => {
-  it("accepts the image types and PDFs the provider takes", () => {
+  it("accepts the rich-media formats Oxide can send", () => {
     assert.equal(attachmentKind("image/png"), "image");
     assert.equal(attachmentKind("image/jpeg"), "image");
     assert.equal(attachmentKind("image/bmp"), "image");

@@ -836,8 +836,8 @@ function dataUrlMime(dataUrl) {
   return match ? match[1].toLowerCase() : "";
 }
 
-/// The core's own limit (`media::MAX_ATTACHMENT_BYTES`) and the types a
-/// provider takes and this webview can paint, so an over-large file is refused
+/// Enforce the core's own limit (`media::MAX_ATTACHMENT_BYTES`) and accept only
+/// formats Oxide can send and this webview can paint, so an over-large file is refused
 /// before it is read into a data URL and a format nothing can draw never
 /// becomes a thumbnail the browser cannot render.
 const MAX_ATTACHMENT_BYTES = 20 * 1024 * 1024;

@@ -795,7 +795,7 @@ WSL, where the terminal claims `Alt+Up` for scrollback.
 
 ## Attachments
 
-A message can carry images and PDFs, which the provider reads as media. `Ctrl+V`
+A message can carry images and PDFs, which the selected LLM reads as media. `Ctrl+V`
 pastes a clipboard image — or the file the clipboard holds, so a screenshot
 copied from the Finder attaches the picture itself rather than the pasteboard's
 icon of the file; a file copy that arrived from another machine leaves its URL
@@ -818,14 +818,14 @@ and the VS Code panel paint their thumbnails at — so a retina screenshot is no
 re-encoded at full resolution into every request and every session entry. An
 attachment is limited to 20 MB
 (`oxide_core::media::MAX_ATTACHMENT_BYTES`), checked before the file is read,
-and a type no provider takes or no browser can paint (`png`, `jpeg`, `gif`,
+and an unsupported type or one no browser can paint (`png`, `jpeg`, `gif`,
 `webp`, `bmp`, `pdf`) is refused with a message naming the file rather than
 being sent.
 
-Oxide sends media in the provider's native request format and does not infer
-image support from a provider or model name. If the selected model or endpoint
-rejects a media request, the error points out that its attachment support
-should be checked instead of silently rewriting or discarding the attachment.
+The selected LLM is the source of truth for rich-media support. Oxide serializes
+and forwards media without inferring support from provider or endpoint names.
+If the LLM rejects a media request, the error points to the model's capabilities
+instead of silently rewriting or discarding the attachment.
 
 ## Desktop notifications
 
