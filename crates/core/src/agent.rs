@@ -1259,10 +1259,25 @@ fn build_tool_specs(config: &Config, runtime: &Runtime, depth: usize) -> Vec<Too
     }
     specs.push(memory_spec());
     specs.push(lsp_spec());
-    if config.tool_filter.is_restrictive() {
-        specs.retain(|spec| config.tool_filter.permits(&spec.function.name));
-    }
+    specs.retain(|spec| tool_enabled(config, &spec.function.name));
     specs
+}
+
+fn tool_enabled(config: &Config, name: &str) -> bool {
+    if config.tool_filter.is_restrictive() && !config.tool_filter.permits(name) {
+        return false;
+    }
+    let Some(tools) = config
+        .active_agent
+        .as_ref()
+        .and_then(|agent| agent.tools.as_ref())
+    else {
+        return true;
+    };
+    let canonical = crate::tools::canonical_tool_name(name);
+    tools
+        .iter()
+        .any(|tool| tool == name || crate::tools::canonical_tool_name(tool) == canonical)
 }
 
 /// A batch ends the turn when every tool result in it requested termination.
@@ -2087,7 +2102,7 @@ async fn dispatch(
     depth: usize,
     progress: &tools::Progress,
 ) -> tools::ToolOutput {
-    if config.tool_filter.is_restrictive() && !config.tool_filter.permits(&call.function.name) {
+    if !tool_enabled(config, &call.function.name) {
         return tools::ToolOutput::error(format!("tool `{}` is disabled", call.function.name));
     }
     match call.function.name.as_str() {
@@ -2800,10 +2815,40 @@ mod tests {
             name: "reviewer".into(),
             description: Some("reviews code".into()),
             mode: AgentMode::Subagent,
+            tools: None,
             permission: None,
             prompt: String::new(),
         });
         assert!(task_spec(&config).function.description.contains("reviewer"));
+    }
+
+    #[test]
+    fn active_agent_tools_are_a_hard_allowlist() {
+        let config = Config {
+            active_agent: Some(AgentDef {
+                name: "scout".into(),
+                description: None,
+                mode: AgentMode::Subagent,
+                tools: Some(vec![
+                    "read".into(),
+                    "grep".into(),
+                    "find".into(),
+                    "ls".into(),
+                ]),
+                permission: None,
+                prompt: String::new(),
+            }),
+            ..Config::default()
+        };
+
+        assert!(tool_enabled(&config, "read_file"));
+        assert!(tool_enabled(&config, "grep"));
+        assert!(tool_enabled(&config, "glob"));
+        assert!(tool_enabled(&config, "list_dir"));
+        assert!(!tool_enabled(&config, "write"));
+        assert!(!tool_enabled(&config, "edit"));
+        assert!(!tool_enabled(&config, "patch"));
+        assert!(!tool_enabled(&config, "bash"));
     }
 
     async fn test_runtime() -> Runtime {
@@ -3027,6 +3072,7 @@ mod tests {
             name: "reviewer".into(),
             description: Some("reviews code".into()),
             mode: AgentMode::Subagent,
+            tools: None,
             permission: None,
             prompt: String::new(),
         });
@@ -3068,6 +3114,7 @@ mod tests {
             name: "reviewer".into(),
             description: Some("reviews code".into()),
             mode: AgentMode::Subagent,
+            tools: None,
             permission: None,
             prompt: String::new(),
         });

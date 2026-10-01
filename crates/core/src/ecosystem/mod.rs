@@ -140,6 +140,7 @@ pub struct AgentDef {
     pub name: String,
     pub description: Option<String>,
     pub mode: AgentMode,
+    pub tools: Option<Vec<String>>,
     pub permission: Option<Json>,
     pub prompt: String,
 }
@@ -882,11 +883,33 @@ fn agent_from_markdown(path: &Path) -> Option<AgentDef> {
         name: front.get_str("name").unwrap_or_else(|| file_stem(path)),
         description: front.get_str("description"),
         mode: parse_mode(front.get_str("mode").as_deref()),
+        tools: parse_agent_tools(front.get("tools")),
         permission: front
             .get("permission")
             .and_then(|value| serde_json::to_value(value).ok()),
         prompt: front.body,
     })
+}
+
+fn parse_agent_tools(value: Option<&serde_yaml::Value>) -> Option<Vec<String>> {
+    let value = value?;
+    let tools = match value {
+        serde_yaml::Value::String(list) => list
+            .split(',')
+            .map(str::trim)
+            .filter(|name| !name.is_empty())
+            .map(str::to_string)
+            .collect(),
+        serde_yaml::Value::Sequence(items) => items
+            .iter()
+            .filter_map(serde_yaml::Value::as_str)
+            .map(str::trim)
+            .filter(|name| !name.is_empty())
+            .map(str::to_string)
+            .collect(),
+        _ => return None,
+    };
+    Some(tools)
 }
 
 fn command_from_markdown(path: &Path) -> Option<CommandDef> {
@@ -1318,7 +1341,7 @@ mod tests {
         std::fs::write(dir.join("AGENTS.md"), "Project rules.").unwrap();
         std::fs::write(
             dir.join(".oxide/agents/planner.md"),
-            "---\nname: planner\ndescription: oxide planner\n---\nPlan.",
+            "---\nname: planner\ndescription: oxide planner\ntools: read, grep, find, ls\n---\nPlan.",
         )
         .unwrap();
         std::fs::write(
@@ -1342,6 +1365,15 @@ mod tests {
         assert_eq!(
             ecosystem.agent("planner").unwrap().description.as_deref(),
             Some("oxide planner")
+        );
+        assert_eq!(
+            ecosystem.agent("planner").unwrap().tools,
+            Some(vec![
+                "read".into(),
+                "grep".into(),
+                "find".into(),
+                "ls".into()
+            ])
         );
         assert!(ecosystem.command("build").is_some());
         assert!(ecosystem.skills.iter().any(|skill| skill.name == "audit"));
@@ -1430,6 +1462,7 @@ mod tests {
                 name: "x".into(),
                 description: Some("global".into()),
                 mode: AgentMode::Subagent,
+                tools: None,
                 permission: None,
                 prompt: String::new(),
             },
@@ -1440,6 +1473,7 @@ mod tests {
                 name: "x".into(),
                 description: Some("project".into()),
                 mode: AgentMode::Subagent,
+                tools: None,
                 permission: None,
                 prompt: String::new(),
             },

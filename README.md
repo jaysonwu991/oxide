@@ -811,7 +811,7 @@ overrides the Claude Code layout.
 - `AGENTS.md` — project memory and instructions
 - `.oxide/AGENTS.md` — additional layout-scoped instructions
 - `.oxide/agents/*.md` — subagents (frontmatter: `name`, `description`, `mode`,
-  `permission`); subagents may spawn subagents one level deep
+  `tools`, `permission`); subagents may spawn subagents one level deep
 - `.oxide/commands/*.md` — slash commands (`$ARGUMENTS`, `$1`, `$2`, …; optional
   `agent` and `subtask` frontmatter)
 - `.oxide/prompts/*.md` — prompt templates (Pi-style; frontmatter `description`

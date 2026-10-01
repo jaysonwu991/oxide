@@ -328,6 +328,7 @@ Create `.oxide/agents/<name>.md` (or `.claude/agents/<name>.md`):
 name: rust-reviewer
 description: Reviews Rust changes for correctness and style.
 mode: subagent
+tools: read, grep, find, ls, bash
 permission:
   write: deny
   edit: deny
@@ -343,6 +344,9 @@ You review Rust changes. Report findings by severity.
 - `mode` is `subagent` (default), `primary`, or `all`. Only `subagent` and `all`
   agents can be spawned through `task`; `--agent` can select any discovered
   agent. The `task` tool is only offered when at least one such agent exists.
+- `tools` (optional) is a comma-separated list or YAML list of the only tools
+  exposed to that agent. It is enforced again at dispatch, so omitted or
+  fabricated tool calls cannot bypass the allowlist. Omit it for all tools.
 - Subagents can spawn subagents one level deep: `task` is available at depths 0
   and 1 and omitted afterwards (`MAX_TASK_DEPTH`), which bounds a runaway tree.
 - `permission` (optional) overrides the default tool permissions (see
