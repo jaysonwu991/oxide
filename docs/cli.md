@@ -822,18 +822,6 @@ and a type no provider takes or no browser can paint (`png`, `jpeg`, `gif`,
 `webp`, `bmp`, `pdf`) is refused with a message naming the file rather than
 being sent.
 
-A text-only model cannot read an image part, so a DeepSeek model receives the
-image's recognized text instead of the image itself: each attached image is
-handed to the configured `image_script` (a shell command; `{file}` is replaced
-with the image's temporary path, or the path is appended when the placeholder
-is absent), and with no script set Oxide falls back to local OCR — `tesseract`,
-then the macOS Vision framework. `OXIDE_IMAGE_SCRIPT` overrides the script from
-the environment. When recognition fails or no OCR tool is available the image
-part becomes a short marker, so the model is told an image was attached rather
-than receiving an `image_url` part it would reject. Vision-capable providers
-(Anthropic, OpenAI and gateways that accept image parts) keep sending the image
-natively.
-
 ## Desktop notifications
 
 When an agent turn finishes, Oxide raises a system toast (Notification Center on
