@@ -7,6 +7,7 @@ import {
   configDir,
   contextWindow,
   contextWindowFromEnv,
+  modelContextWindow,
   modelsForProvider,
   parseConfigSummary,
 } from "../core/config";
@@ -812,12 +813,13 @@ describe("shared configuration", () => {
     assert.equal(contextWindowFromEnv({ OXIDE_CONTEXT_LIMIT: "99999999999999999999" }), 0);
   });
 
-  it("mirrors the CLI's configurable 272k context window", () => {
-    // `Config::context_window`: the environment override wins, then the
-    // configured window, while the reply cap remains a lower bound.
+  it("mirrors the CLI's configurable context window", () => {
+    // `Config::context_window`: the environment override wins, then an explicit
+    // `context_window`, then the model's known window, falling back to 1M, while
+    // the reply cap remains a lower bound.
     assert.equal(contextWindow({ OXIDE_CONTEXT_LIMIT: "200000" }, null), 200000);
-    assert.equal(contextWindow({}, null), 272_000);
-    assert.equal(contextWindow({ OXIDE_CONTEXT_LIMIT: "1.5" }, null), 272_000);
+    assert.equal(contextWindow({}, null), 1_000_000);
+    assert.equal(contextWindow({ OXIDE_CONTEXT_LIMIT: "1.5" }, null), 1_000_000);
     assert.equal(
       contextWindow(
         {},
@@ -831,6 +833,19 @@ describe("shared configuration", () => {
         { provider: "", model: "", models: [], maxTokens: 1_000_000, contextWindow: 272_000 },
       ),
       1_000_000,
+    );
+    // Longest-prefix matching, and a fresh config with the default model gets
+    // that model's window rather than the 1M fallback.
+    assert.equal(modelContextWindow("gpt-4o-mini"), 128_000);
+    assert.equal(modelContextWindow("gpt-4.1"), 1_000_000);
+    assert.equal(modelContextWindow("gpt-4-turbo"), 128_000);
+    assert.equal(modelContextWindow("claude-opus-5"), 0);
+    assert.equal(
+      contextWindow(
+        {},
+        { provider: "openai", model: "gpt-4o-mini", models: [], maxTokens: 8192, contextWindow: 0 },
+      ),
+      128_000,
     );
   });
 

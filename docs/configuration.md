@@ -20,7 +20,7 @@ Oxide reads `config.json` from the platform config directory:
   "api_key": "",
   "system_prompt": "You are Oxide...",
   "max_tokens": 8192,
-  "context_window": 272000,
+  "context_window": 1000000,
   "auto_approve": true,
   "reasoning": "auto",
   "theme": "dark"
@@ -61,11 +61,14 @@ reasoning model exhausts that budget on hidden reasoning and returns nothing,
 Oxide retries with a doubled budget (up to 32768) before reporting the failure,
 so a long-thinking turn recovers instead of ending in an empty response.
 
-`context_window` is the model's full context window in tokens. It defaults to
-272000 and controls both the context gauge and automatic compaction threshold.
-Set it to a larger window supported by your model, for example `1050000`, to
-retain more conversation before compaction. `OXIDE_CONTEXT_LIMIT` overrides it
-for one environment.
+`context_window` is the model's full context window in tokens, and controls both
+the context gauge and the automatic compaction threshold. When it is unset (or
+`0`), Oxide uses the documented window of a known model from a small built-in
+table and falls back to `1000000` for an unknown one, so a fresh configuration
+compacts before a model with a smaller window rejects the request. Set it
+explicitly to override the derived value — a larger window retains more
+conversation before compaction. `OXIDE_CONTEXT_LIMIT` overrides it for one
+environment.
 
 ## CLI flags
 

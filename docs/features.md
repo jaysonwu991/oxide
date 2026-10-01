@@ -72,7 +72,11 @@ builds/tests, a pull request's CI and mergeability, posted comments and reviews,
 releases, and deployments. A code change made in response to a pull request or
 review is not delivered until it is committed and pushed to the branch under
 review, so a review reply is held until the fix is pushed and an uncommitted fix
-is never reported as an addressed review. A run that tries to finish with
+is never reported as an addressed review. A reply goes into the review comment's
+own thread (`gh api -X POST
+repos/{owner}/{repo}/pulls/<n>/comments/<comment_id>/replies`) rather than as one
+general comment on the pull request; `gh pr comment` is for a new top-level
+comment. A run that tries to finish with
 unconfirmed edits or unchecked side effects gets one hidden reminder to verify
 before it can summarize; a reminder the provider answers with nothing ends the
 run with the summary the model already wrote, rather than reporting an empty

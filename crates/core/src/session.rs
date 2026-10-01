@@ -14,6 +14,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::io::{BufRead, BufReader, Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -21,6 +22,12 @@ use crate::compact::{CompactionDetails, UsageRecord};
 use crate::llm::Message;
 
 pub const SESSION_VERSION: u32 = 3;
+
+/// Cap on the threads [`SessionLog::list_in`] fans session files across. Each
+/// worker holds a whole parsed session in memory until its summary is built, so
+/// the CPU count is not a safe bound: a high-core machine listing a store of
+/// long threads would hold dozens of full JSONL parses resident at once.
+const MAX_SESSION_LIST_THREADS: usize = 10;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SessionHeader {
@@ -356,42 +363,64 @@ impl SessionLog {
     }
 
     pub(crate) fn list_in(dir: &Path) -> Result<Vec<SessionSummary>> {
-        let mut out = Vec::new();
         let entries = match std::fs::read_dir(dir) {
             Ok(entries) => entries,
-            Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(out),
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
             Err(err) => {
                 return Err(err).with_context(|| format!("listing sessions in {}", dir.display()))
             }
         };
-        for entry in entries.flatten() {
-            let path = entry.path();
-            if path.extension().is_none_or(|ext| ext != "jsonl") {
-                continue;
-            }
-            let Ok((header, state)) = read_session(&path) else {
-                continue;
-            };
-            let modified_at = entry
-                .metadata()
-                .ok()
-                .and_then(|metadata| metadata.modified().ok())
-                .map(system_time_secs)
-                .unwrap_or_else(|| parse_iso(&header.timestamp).unwrap_or(0));
-            let name = latest_name(&state.entries);
-            let (message_count, preview) =
-                leaf_digest(&state.entries, state.leaf_id.as_deref(), &state.by_id);
-            out.push(SessionSummary {
-                id: header.id,
-                name,
-                cwd: header.cwd,
-                created_at: parse_iso(&header.timestamp).unwrap_or(0),
-                modified_at,
-                message_count,
-                preview,
-                path,
-            });
-        }
+        let files: Vec<(PathBuf, Option<u64>)> = entries
+            .flatten()
+            .filter_map(|entry| {
+                let path = entry.path();
+                if path.extension().is_none_or(|ext| ext != "jsonl") {
+                    return None;
+                }
+                let modified_at = entry
+                    .metadata()
+                    .ok()
+                    .and_then(|metadata| metadata.modified().ok())
+                    .map(system_time_secs);
+                Some((path, modified_at))
+            })
+            .collect();
+
+        // A summary needs the whole file parsed — the leaf path is only known
+        // once the last line is read — so a store with a long history made a
+        // picker, the desktop sidebar or `/sessions` wait on the sum of every
+        // session. Fan the files out across a bounded pool instead of one after
+        // another, the way Pi loads session infos with bounded concurrency, and
+        // sort once at the end.
+        let threads = std::thread::available_parallelism()
+            .map(|count| count.get())
+            .unwrap_or(1)
+            .min(MAX_SESSION_LIST_THREADS)
+            .min(files.len());
+        let next = AtomicUsize::new(0);
+        let mut out: Vec<SessionSummary> = std::thread::scope(|scope| {
+            let handles: Vec<_> = (0..threads)
+                .map(|_| {
+                    scope.spawn(|| {
+                        let mut local = Vec::new();
+                        loop {
+                            let index = next.fetch_add(1, Ordering::Relaxed);
+                            let Some((path, modified_at)) = files.get(index) else {
+                                break;
+                            };
+                            if let Some(summary) = summarize_session(path, *modified_at) {
+                                local.push(summary);
+                            }
+                        }
+                        local
+                    })
+                })
+                .collect();
+            handles
+                .into_iter()
+                .flat_map(|handle| handle.join().unwrap_or_default())
+                .collect()
+        });
         out.sort_by_key(|summary| std::cmp::Reverse(summary.modified_at));
         Ok(out)
     }
@@ -937,6 +966,30 @@ fn read_session(path: &Path) -> Result<(SessionHeader, SessionState)> {
     }
     let header = header.with_context(|| format!("session log {} has no header", path.display()))?;
     Ok((header, state))
+}
+
+/// The picker metadata for one session file, or `None` when it cannot be read
+/// as a session (a corrupt file, a partial write). The preview and the message
+/// count need the entries, so this parses the whole file; `list_in` runs these
+/// across cores rather than one after another. `modified_at` is the mtime the
+/// caller already stat'd, falling back to the header's timestamp so a file
+/// whose metadata is unreadable is still ordered and listed.
+fn summarize_session(path: &Path, modified_at: Option<u64>) -> Option<SessionSummary> {
+    let (header, state) = read_session(path).ok()?;
+    let modified_at = modified_at.unwrap_or_else(|| parse_iso(&header.timestamp).unwrap_or(0));
+    let name = latest_name(&state.entries);
+    let (message_count, preview) =
+        leaf_digest(&state.entries, state.leaf_id.as_deref(), &state.by_id);
+    Some(SessionSummary {
+        id: header.id,
+        name,
+        cwd: header.cwd,
+        created_at: parse_iso(&header.timestamp).unwrap_or(0),
+        modified_at,
+        message_count,
+        preview,
+        path: path.to_path_buf(),
+    })
 }
 
 /// What a session is listed under when it was never named: the summarized
@@ -1518,6 +1571,34 @@ mod tests {
         assert_eq!(sessions[0].id, log.id());
         assert_eq!(sessions[0].message_count, 2);
         assert_eq!(sessions[0].preview, "first user message");
+
+        std::fs::remove_dir_all(&dir).ok();
+        std::fs::remove_dir_all(&cwd).ok();
+    }
+
+    #[test]
+    fn list_returns_every_session_in_the_store() {
+        let dir = temp_dir("list_many");
+        let cwd = temp_dir("list_many_proj");
+        let mut ids = Vec::new();
+        for index in 0..8 {
+            let log = SessionLog::create_in(&dir, &cwd).unwrap();
+            log.append(&Message::user(format!("session {index}")))
+                .unwrap();
+            ids.push(log.id().to_string());
+        }
+
+        // Every file is summarized, whichever worker picked it up.
+        let sessions = SessionLog::list_in(&dir).unwrap();
+        assert_eq!(sessions.len(), ids.len());
+        let mut listed: Vec<&str> = sessions.iter().map(|s| s.id.as_str()).collect();
+        listed.sort_unstable();
+        ids.sort_unstable();
+        assert_eq!(listed, ids);
+        for session in &sessions {
+            assert_eq!(session.message_count, 1);
+            assert!(session.preview.starts_with("session "), "{session:?}");
+        }
 
         std::fs::remove_dir_all(&dir).ok();
         std::fs::remove_dir_all(&cwd).ok();

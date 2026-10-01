@@ -85,16 +85,57 @@ export function contextWindowFromEnv(env: Record<string, string | undefined>): n
   return Number.isSafeInteger(value) && value > 0 ? value : 0;
 }
 
+/// The input context window of a known model, mirroring
+/// `Config::builtin_context_window` in `crates/core/src/config.rs`: matched by
+/// its longest prefix so `gpt-4o` and `gpt-4.1` do not fall under `gpt-4`.
+/// Returns 0 for a model the table does not know. The panel is TypeScript and
+/// cannot link the crate, so the table is kept here in step with the Rust one.
+export function modelContextWindow(model: string | undefined): number {
+  const windows: [string, number][] = [
+    ["gpt-3.5", 16_385],
+    ["gpt-4.1", 1_000_000],
+    ["gpt-4o", 128_000],
+    ["gpt-4-turbo", 128_000],
+    ["gpt-4", 8_192],
+    ["o1", 200_000],
+    ["o3", 200_000],
+    ["o4-mini", 200_000],
+    ["claude-3-5", 200_000],
+    ["claude-3-7", 200_000],
+    ["claude-3-opus", 200_000],
+    ["claude-3-sonnet", 200_000],
+    ["claude-3-haiku", 200_000],
+    ["deepseek", 128_000],
+    ["glm-4", 128_000],
+    ["glm-5", 128_000],
+    ["gemini", 1_048_576],
+  ];
+  const name = (model ?? "").trim().toLowerCase();
+  let best = 0;
+  let bestLength = -1;
+  for (const [prefix, window] of windows) {
+    if (name.startsWith(prefix) && prefix.length > bestLength) {
+      best = window;
+      bestLength = prefix.length;
+    }
+  }
+  return best;
+}
+
 /// The window the CLI measures context against, mirroring
-/// `Config::context_window`: the `OXIDE_CONTEXT_LIMIT` override, else the
-/// configured context window (272k by default), kept at least as large as the
-/// response cap for compatibility with older configurations.
+/// `Config::context_window`: the `OXIDE_CONTEXT_LIMIT` override, else an
+/// explicit `context_window`, else the model's known window, falling back to
+/// 1M, kept at least as large as the response cap for compatibility with older
+/// configurations.
 export function contextWindow(
   env: Record<string, string | undefined>,
   summary: ConfigSummary | null,
 ): number {
-  const configured = summary?.contextWindow || 272_000;
-  return contextWindowFromEnv(env) || Math.max(configured, summary?.maxTokens ?? 0);
+  const override = contextWindowFromEnv(env);
+  if (override) return override;
+  const configured =
+    summary?.contextWindow || modelContextWindow(summary?.model) || 1_000_000;
+  return Math.max(configured, summary?.maxTokens ?? 0);
 }
 
 /// The models remembered for one provider (`provider_models`), used before or

@@ -360,7 +360,7 @@
     "test": "pnpm run compile && node --test \"out/test/*.test.js\"",
     "package": "vsce package"
   },
-  "packageManager": "pnpm@11.23.0",
+  "packageManager": "pnpm@12.8.1",
   "devDependencies": {
     "@types/node": "^20.14.0",
     "@types/vscode": "1.90.0",
