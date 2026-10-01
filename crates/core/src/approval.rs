@@ -147,7 +147,9 @@ impl ApprovalBroker {
         };
         if decision == Decision::Always {
             if let Err(err) = self.remember(&project, &tool) {
-                eprintln!("could not save the approval rule for `{tool}`: {err:#}");
+                crate::notice::warn(format!(
+                    "could not save the approval rule for `{tool}`: {err:#}"
+                ));
             }
         }
         if let Decision::Deny {

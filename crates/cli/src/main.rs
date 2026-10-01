@@ -9,9 +9,9 @@ mod update;
 // paths keep resolving with the same names as before the workspace split.
 pub use oxide_core::{
     agent, approval, approvals, at, auth, cli, clipboard, commands, compact, config, diff,
-    ecosystem, html, llm, lsp, mcp, mcp_config, mcp_oauth, media, memory, notify, permission,
-    plugin, plugin_registry, portkey_usage, pricing, runner, session, sessions, snapshots, tools,
-    trust,
+    ecosystem, html, llm, lsp, mcp, mcp_config, mcp_oauth, media, memory, notice, notify,
+    permission, plugin, plugin_registry, portkey_usage, pricing, runner, session, sessions,
+    snapshots, tools, trust,
 };
 
 use agent::{AgentEvent, Approver, Cancel, Steering};

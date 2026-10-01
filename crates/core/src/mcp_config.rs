@@ -443,7 +443,7 @@ pub async fn auth(cwd: &Path, scope: Option<String>, name: String) -> Result<()>
         .with_context(|| format!("MCP server `{name}` is not a remote (http) server"))?;
     let oauth = crate::ecosystem::parse_oauth(config.get("oauth")).unwrap_or_default();
     let state = crate::mcp_oauth::OAuthState::new(&name, &oauth, url);
-    state.ensure_authorized(true).await?;
+    state.ensure_authorized().await?;
     println!("authorized MCP server `{name}` ({label})");
     Ok(())
 }
