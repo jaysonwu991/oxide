@@ -19,9 +19,9 @@ and MCP servers as the terminal and the desktop app — nothing is reconfigured.
   to the model as media, while a text file is inlined as context. Each chip
   shows a thumbnail (or its size), can be removed with ✕, and the message box
   starts two rows tall and grows as you type.
-- **Footer** around the composer, matching the terminal's: clickable
-  `model: …`, `thinking: …`, `agent: …`, `access: …` and `session: …` chips above
-  it, and under it the git branch, the context gauge (amber past 70%, red past
+- **Footer** around the composer, matching the terminal's: icon controls for
+  model, reasoning, agent and project access inside its toolbar, and under it
+  the git branch, the context gauge (amber past 70%, red past
   90%) and a usage line of `↑`/`↓` tokens, `R`/`W` cache tokens, `CH` hit rate,
   `$cost` and `ctx %/window` with an `(auto)` marker when auto-compaction is on.
   A live elapsed timer appears in the composer's toolbar while a turn runs.
@@ -75,11 +75,10 @@ Provider logins live in the CLI: run **Oxide: Open Terminal (TUI)** and use
    response before its next model step. Paste an image, drop files on
    the composer, or click **Attach** to add images, PDFs and text files to the
    message.
-4. The chips above the composer are the next turn's settings: click `model: …`
-   to switch the model, `thinking: …` to cycle the reasoning level, `agent: …`
-   to pick a subagent, `access: …` for project trust, or `session: …` to open
-   the session list. Under the composer the branch, the context gauge and the
-   usage line match the terminal's footer.
+4. The four icons in the composer toolbar are the next turn's settings: model,
+   reasoning level, subagent and project access. Their complete values remain
+   in tooltips. Session history stays in the header's history button. Under the
+   composer the branch, context gauge and usage line match the terminal footer.
 5. `/mcps` in the message box opens the MCP server list above the composer it
    was typed in, and `/session` the project's threads under the header — both
    inside the panel, with a server's power switch or
@@ -133,7 +132,7 @@ Provider logins live in the CLI: run **Oxide: Open Terminal (TUI)** and use
 | Setting | Default | Meaning |
 | --- | --- | --- |
 | `oxide.binaryPath` | `oxide` | The binary to run. A bare name is looked up on `PATH`, then in `~/.local/bin` and `~/.cargo/bin`. |
-| `oxide.model` | *(empty)* | `--model`. Empty uses the model from the Oxide `config.json`; the picker lists only the models remembered for that config's provider. |
+| `oxide.model` | *(empty)* | `--model`. Empty uses the model from Oxide `config.json`; the in-panel picker loads the active provider's complete catalog through `oxide models --json`, falls back to remembered models if it cannot refresh, and accepts a custom ID. |
 | `oxide.agent` | *(empty)* | `--agent`, loaded from the workspace's `.oxide/agents`. |
 | `oxide.reasoning` | `auto` | `--reasoning`: `auto`, `off`, `low`, `medium`, `high`. |
 | `oxide.projectTrust` | `default` | `always` passes `--approve`, `never` passes `--no-approve`; `default` follows `trust.json`/`defaultProjectTrust`. |

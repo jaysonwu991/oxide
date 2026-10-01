@@ -454,11 +454,10 @@ function loadRenderer(options: { image?: StubImage } = {}): Harness {
 
 const footer = {
   chips: [
-    { id: "setModel", label: "model: glm-5 · 128.0k", title: "Switch the model" },
-    { id: "cycleReasoning", label: "thinking: auto" },
-    { id: "setAgent", label: "agent: review" },
-    { id: "setProjectTrust", label: "access: trusted" },
-    { id: "resumeSession", label: "session: 1a2b3c" },
+    { id: "model", label: "model: glm-5 · 128.0k", title: "Switch the model" },
+    { id: "reasoning", label: "thinking: auto" },
+    { id: "agent", label: "agent: review" },
+    { id: "access", label: "access: trusted" },
   ],
   info: "main",
   usage: "↑1.2k · ↓340 · $0.01 · ctx 12%/128.0k (auto)",
@@ -513,32 +512,34 @@ function paletteAsked(posted: Record<string, unknown>[]): number {
 }
 
 describe("webview footer", () => {
-  it("paints one chip per footer chip, splitting the key from the value", () => {
+  it("paints one icon control per footer setting", () => {
     const { byId, send } = loadRenderer();
     send(stateMessage());
     const chips = byId.get("meta")!.children;
-    assert.equal(chips.length, 5);
+    assert.equal(chips.length, 4);
     assert.deepEqual(
       chips.map((chip) => chip.className),
-      ["meta-chip", "meta-chip", "meta-chip", "meta-chip", "meta-chip"],
+      ["meta-chip", "meta-chip", "meta-chip", "meta-chip"],
     );
-    // `model: glm-5 · 128.0k` reads as a dim key and a value, not one string.
-    assert.equal(chips[0].children[0].textContent, "model");
-    assert.equal(chips[0].children[0].className, "chip-key");
-    assert.equal(chips[0].children[1].textContent, "glm-5 · 128.0k");
-    assert.equal(chips[0].children[1].className, "chip-value");
-    assert.equal(chips[0].dataset.control, "setModel");
-    assert.equal(chips[0].title, "Switch the model");
-    assert.equal(chips[1].children[0].textContent, "thinking");
-    assert.equal(chips[1].children[1].textContent, "auto");
+    assert.equal(chips[0].children.length, 1);
+    assert.equal(chips[0].children[0].className, "control-icon");
+    assert.equal(chips[0].dataset.control, "model");
+    assert.equal(chips[0].getAttribute("aria-label"), "model: glm-5 · 128.0k");
+    assert.equal(chips[0].title, "model: glm-5 · 128.0k\nSwitch the model");
+    assert.equal(chips[1].getAttribute("aria-label"), "thinking: auto");
+    assert.equal(
+      new Set(chips.map((chip) => chip.children[0].innerHTML)).size,
+      4,
+      "model, reasoning, agent and project access each use their own glyph",
+    );
   });
 
-  it("keeps a label with no key whole", () => {
+  it("keeps a label with no key as the icon's accessible name", () => {
     const { byId, send } = loadRenderer();
-    send(stateMessage({ footer: { ...footer, chips: [{ id: "setModel", label: "glm-5" }] } }));
+    send(stateMessage({ footer: { ...footer, chips: [{ id: "model", label: "glm-5" }] } }));
     const chip = byId.get("meta")!.children[0];
-    assert.equal(chip.children.length, 0);
-    assert.equal(chip.textContent, "glm-5");
+    assert.equal(chip.children.length, 1);
+    assert.equal(chip.getAttribute("aria-label"), "glm-5");
     assert.equal(chip.title, "glm-5 — click to change");
   });
 
@@ -548,11 +549,11 @@ describe("webview footer", () => {
     // A click lands on the chip's own span, as it does in the real DOM: the
     // event bubbles to the strip, and the handler reads the control id off the
     // chip around the target.
-    const key = byId.get("meta")!.children[1].children[0];
-    byId.get("meta")!.fire("click", { target: key });
+    const icon = byId.get("meta")!.children[1].children[0];
+    byId.get("meta")!.fire("click", { target: icon });
     const message = last(posted);
     assert.equal(message.k, "control");
-    assert.equal(message.control, "cycleReasoning");
+    assert.equal(message.control, "reasoning");
   });
 
   it("paints the branch, the usage line and the gauge under the composer", () => {
@@ -560,7 +561,8 @@ describe("webview footer", () => {
     send(stateMessage());
     assert.equal(byId.get("branch")!.textContent, "main");
     assert.equal(byId.get("branch")!.title, "Current branch: main");
-    assert.equal(byId.get("usage-text")!.textContent, footer.usage);
+    assert.equal(byId.get("usage-text")!.textContent, "12%");
+    assert.equal(byId.get("usage")!.title, footer.usage);
     assert.equal(byId.get("usage")!.hidden, false);
     assert.equal(byId.get("gauge")!.hidden, false);
     assert.equal(byId.get("gauge")!.dataset.level, "ok");
@@ -1767,6 +1769,24 @@ describe("webview dialogs", () => {
     assert.equal(byId.get("dialog-search-clear")!.hidden, true);
   });
 
+  it("uses the setting dialog's own search prompt", () => {
+    const { byId, send } = loadRenderer();
+    send({
+      k: "dialog",
+      dialog: {
+        ...sessions.dialog,
+        kind: "model",
+        pin: "footer",
+        title: "Model",
+        searchPlaceholder: "Filter or enter a model ID…",
+      },
+    });
+    assert.equal(byId.get("dialog-search-input")!.placeholder, "Filter or enter a model ID…");
+
+    send(sessions);
+    assert.equal(byId.get("dialog-search-input")!.placeholder, "Search sessions…");
+  });
+
   /// A repaint under a reader who is mid-word must not take the box away from
   /// them: the answer in flight was composed with the filter the host had when
   /// the keystroke arrived, so painting it back would undo the last one.
@@ -1839,11 +1859,11 @@ describe("webview dialogs", () => {
   /// A row's own button carries a switch rather than a word, so it is one glyph
   /// wide and says what it does in its tooltip — the panel is a narrow side bar,
   /// and `Disable` on every row is a column of text where a switch will do.
-  it("paints each listing on the edge its host pinned it to", () => {
+  it("paints each listing near the end its host selected", () => {
     const { byId, send } = loadRenderer();
     // The host decides — `dialogs.ts` pins the server list to the composer and
     // the session history to the header — and the renderer only carries it: the
-    // class is what the stylesheet moves and turns around. Read the name from
+    // class is what the stylesheet moves. Read the name from
     // the stylesheet rather than spelling it a second time here, since a class
     // the two sides disagree about would leave the listing under the header.
     const pinned = /#dialog\.([\w-]+) \{/.exec(style)?.[1];
@@ -2006,11 +2026,11 @@ describe("webview dialogs", () => {
   });
 
   /// The listing is part of the panel's own column rather than a window over it:
-  /// it sits between the header and the transcript, which is what makes it hang
-  /// from the header and stay attached to it, with a row list that scrolls. It
+  /// it sits between the header and the transcript as a complete card with a
+  /// row list that scrolls. It
   /// is also the one part of the column that never gives up height — a dialog
   /// squeezed down to a sliver of scrolling rows is what the flex there was for.
-  it("anchors the dialog to the header and gives its buttons icons", () => {
+  it("positions the dialog near the header and gives its buttons icons", () => {
     const at = (needle: string) => shell.indexOf(needle);
     assert.ok(at("</header>") < at('id="dialog"'), "the dialog comes after the header");
     assert.ok(at('id="dialog"') < at('id="transcript"'), "and before the transcript");
@@ -2025,7 +2045,11 @@ describe("webview dialogs", () => {
     const rule = /#dialog \{[^}]*\}/.exec(style)?.[0] ?? "";
     assert.match(rule, /flex: 0 0 auto;/, "the dialog does not shrink");
     assert.match(rule, /max-height: min\([^)]*\d+px[^)]*\)/, "its cap leaves room for the footer");
-    assert.match(rule, /border-top: none;/, "the header's border closes the sheet");
+    assert.match(rule, /width: calc\(100% - 40px\);/, "it shares the composer's inset");
+    assert.match(rule, /max-width: 760px;/, "it shares the composer's width cap");
+    assert.match(rule, /margin: 10px auto 0;/, "the header dialog is centered with breathing room");
+    assert.match(rule, /border: var\(--dialog-edge\);/, "the card has a complete outline");
+    assert.match(rule, /border-radius: 8px;/, "all four corners use the same radius");
     // Icon-only, with the words as the tooltip and the accessible name: the
     // shell paints each one from its own `ICONS` map.
     for (const [id, label, icon] of [
@@ -2041,19 +2065,15 @@ describe("webview dialogs", () => {
     }
   });
 
-  /// One element, two anchors: the markup keeps the position under the header
-  /// that a header-pinned listing drops from, and `.pin-footer` moves the same
-  /// node above the footer with `order`, turning the sheet's shape around with
-  /// it. The transcript is ordered between the two so the listing takes its room
-  /// from the transcript in either direction.
-  it("turns the dialog around for the listing that belongs to the composer", () => {
+  /// One card, two positions: the markup keeps the position under the header,
+  /// and `.pin-footer` moves the same complete card above the footer with
+  /// `order`. The transcript is ordered between them so the listing takes its
+  /// room from the transcript in either position.
+  it("moves the complete dialog card to the composer when the host asks", () => {
     const pinned = /#dialog\.pin-footer \{[^}]*\}/.exec(style)?.[0] ?? "";
     assert.match(pinned, /order: 2;/, "it is placed after the transcript");
-    assert.match(pinned, /border-bottom: none;/, "the footer's border closes the sheet");
-    assert.match(pinned, /border-top: var\(--dialog-edge\);/, "and its own top edge comes back");
-    assert.match(pinned, /border-radius: 8px 8px 0 0;/, "square where it meets the composer");
     assert.match(pinned, /box-shadow: 0 -10px/, "the shadow is cast upward");
-    assert.match(pinned, /margin: 0 8px -1px;/, "its bottom edge overlaps the footer's border");
+    assert.match(pinned, /margin: 0 auto;/, "it centers on the composer without fusing to it");
 
     const order = (selector: string) =>
       new RegExp(`#dialog\\.pin-footer ~ ${selector} \\{\\s*order: (\\d)`).exec(style)?.[1];
@@ -3012,7 +3032,7 @@ describe("webview tool card", () => {
     const body = card.querySelector(".tbody")!;
     const hint = card.querySelector(".thint")!;
     const preview = body.textContent;
-    assert.equal(hint.textContent, "Show 35 earlier lines");
+    assert.equal(hint.textContent, "Show 37 earlier lines");
     assert.equal(hint.getAttribute("aria-expanded"), "false");
 
     // The words offering the rest of the command are the same handle as the
@@ -3025,7 +3045,7 @@ describe("webview tool card", () => {
     assert.ok(body.textContent.length > preview.length);
 
     transcript.fire("click", { target: hint });
-    assert.equal(hint.textContent, "Show 35 earlier lines", "the same row folds it away again");
+    assert.equal(hint.textContent, "Show 37 earlier lines", "the same row folds it away again");
     assert.equal(card.classList.contains("expanded"), false);
     assert.equal(body.textContent, preview);
 
@@ -3052,7 +3072,7 @@ describe("webview tool card", () => {
 
     const card = find(transcript, "tool")!;
     const hint = card.querySelector(".thint")!;
-    assert.equal(hint.textContent, "Show 20 more lines");
+    assert.equal(hint.textContent, "Show 26 more lines");
     assert.equal(hint.getAttribute("role"), "button", "the handle is reachable with Tab");
     assert.equal(hint.tabIndex, 0);
 
@@ -3061,10 +3081,10 @@ describe("webview tool card", () => {
     assert.equal(prevented, true, "a handled key does not also act on the page");
     assert.equal(hint.textContent, "Show less");
     transcript.fire("keydown", { key: " ", target: hint, preventDefault: () => { prevented = true; } });
-    assert.equal(hint.textContent, "Show 20 more lines");
+    assert.equal(hint.textContent, "Show 26 more lines");
     // Any other key is left alone, so the panel keeps its own shortcuts.
     transcript.fire("keydown", { key: "a", target: hint, preventDefault: () => { prevented = true; } });
-    assert.equal(hint.textContent, "Show 20 more lines");
+    assert.equal(hint.textContent, "Show 26 more lines");
   });
 
   it("leaves a call that changed nothing reading as before", () => {

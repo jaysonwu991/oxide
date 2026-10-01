@@ -392,6 +392,10 @@ Focus: $ARGUMENTS
   `/plugins marketplace update`, and providers for `/login`); Tab accepts the
   highlighted suggestion.
 - **Remove** a command by deleting its file.
+- `oxide models [--json]` reads the same normalized provider catalogs as the
+  TUI's `/models` picker. The JSON form is for clients such as the VS Code
+  extension; it includes the active provider, current model, each connected
+  provider's models, and any provider-specific catalog error.
 - `oxide commands [--json]` prints the catalog a client offers: the built-in
   names with their aliases, their argument hint and their `kind` (`client` for a
   command a front-end answers itself, like `/mcps`; `prompt` for one it runs by

@@ -10,7 +10,6 @@ import {
   footerState,
   formatCost,
   nextReasoning,
-  shortSession,
   usageLine,
   type FooterInput,
 } from "../core/footer";
@@ -32,7 +31,6 @@ function input(overrides: Partial<FooterInput> = {}): FooterInput {
     trustSetting: "default",
     defaultTrust: "ask",
     savedTrust: undefined,
-    sessionId: null,
     branch: "",
     autoCompact: true,
     usage: usage(),
@@ -47,19 +45,18 @@ function chip(state: ReturnType<typeof footerState>, id: string): string {
 }
 
 describe("footerState", () => {
-  it("labels the model, thinking level, agent, access and session", () => {
-    const state = footerState(input({ sessionId: "abcdef1234567890" }));
+  it("labels the model, thinking level, agent and access", () => {
+    const state = footerState(input());
     assert.equal(chip(state, "model"), "model: glm-5 · 128.0k");
     assert.equal(chip(state, "reasoning"), "thinking: auto");
     assert.equal(chip(state, "agent"), "agent: default");
     assert.equal(chip(state, "access"), "access: untrusted");
-    assert.equal(chip(state, "session"), "session: abcdef12");
+    assert.deepEqual(state.chips.map((entry) => entry.id), ["model", "reasoning", "agent", "access"]);
   });
 
-  it("falls back to the config's model and a new session", () => {
+  it("falls back to the config's model", () => {
     const state = footerState(input({ model: "", contextWindow: 0 }));
     assert.equal(chip(state, "model"), "model: config.json");
-    assert.equal(chip(state, "session"), "session: new");
   });
 
   it("carries the branch and the context gauge", () => {
@@ -136,11 +133,6 @@ describe("footer formatting", () => {
     assert.equal(formatCost(0), "");
     assert.equal(formatCost(0.0004), "$0.0004");
     assert.equal(formatCost(0.5), "$0.50");
-  });
-
-  it("shortens a session id to what tells two apart", () => {
-    assert.equal(shortSession("abcdef1234567890"), "abcdef12");
-    assert.equal(shortSession("abc"), "abc");
   });
 
   it("cycles reasoning the way the terminal's Shift+Tab does", () => {

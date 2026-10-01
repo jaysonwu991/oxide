@@ -39,8 +39,8 @@ export function configDir(input: ConfigEnv): string {
 export interface ConfigSummary {
   provider: string;
   model: string;
-  /// The models remembered per provider (`provider_models`), offered by the
-  /// footer's model picker so switching providers keeps its own model.
+  /// The models remembered per provider (`provider_models`), used as the
+  /// model picker's immediate/failure fallback while the CLI loads a catalog.
   models: { provider: string; model: string }[];
   /// The reply cap (`max_tokens`).
   maxTokens: number;
@@ -97,11 +97,11 @@ export function contextWindow(
   return contextWindowFromEnv(env) || Math.max(configured, summary?.maxTokens ?? 0);
 }
 
-/// The models remembered for one provider (`provider_models`), which is what a
-/// picker may offer: a model id is sent to whichever provider the CLI has
-/// active, so a remembered model from another one would run against the wrong
-/// endpoint. Switching provider is the terminal's `/login`, which updates
-/// `config.json` and therefore this list.
+/// The models remembered for one provider (`provider_models`), used before or
+/// when the complete CLI catalog cannot load. A model id is sent to whichever
+/// provider the CLI has active, so a remembered model from another one would
+/// run against the wrong endpoint. Switching provider is the terminal's
+/// `/login`, which updates `config.json` and therefore this list.
 export function modelsForProvider(
   summary: { models: { provider: string; model: string }[] } | null,
   provider: string,

@@ -1,7 +1,7 @@
-// The dialogs the panel paints itself: the MCP server list and the session
-// history.
+// The dialogs the panel paints itself: settings, the MCP server list and the
+// session history.
 //
-// Both are composed here as data — a title, a note and a list of rows — so the
+// They are composed here as data — a title, a note and a list of rows — so the
 // webview stays a dumb renderer and never decides what a click means: a row
 // carries the action it posts back, exactly like a footer chip carries its
 // control id. The listing itself comes from the CLI (`oxide mcp list --json`,
@@ -57,22 +57,28 @@ export interface DialogRow {
   current: boolean;
 }
 
-/// Which edge of the panel a dialog is attached to. The session history drops
-/// from the header, because it is about the thread the header names; the MCP
-/// server list grows up from the composer, because that is where the `/mcps`
-/// that opened it was typed.
+/// Which end of the panel a dialog card sits near. Session history belongs near
+/// the header it describes; settings and MCP servers belong near the composer
+/// where they are opened.
 export type DialogPin = "header" | "footer";
 
 /// Which dialog is open. Carried rather than inferred from the pin and the rows,
 /// because the controller has to know what it is looking at: the session listing
 /// is painted again from a fresh read when a turn ends, and a confirmation must
 /// not be swapped for a listing the moment it appears.
-export type DialogKind = "mcp" | "sessions" | "delete" | "undo";
+export type DialogKind =
+  | "model"
+  | "agent"
+  | "reasoning"
+  | "trust"
+  | "mcp"
+  | "sessions"
+  | "delete"
+  | "undo";
 
 export interface DialogState {
   kind: DialogKind;
-  /// The edge it hangs from, painted by the renderer as the sheet's shape: the
-  /// one it is attached to has no border, since that edge is the panel's own.
+  /// The end of the panel that positions the complete standalone card.
   pin: DialogPin;
   title: string;
   subtitle: string;
@@ -90,6 +96,8 @@ export interface DialogState {
   /// which is why the query is only ever applied to rows that are here.
   search: boolean;
   query: string;
+  /// The prompt inside a searchable/custom-value listing.
+  searchPlaceholder?: string;
   /// A trailing action beside Close (`Recheck`), and the action it posts.
   refreshLabel: string;
   refreshAction: string;
@@ -112,6 +120,10 @@ export const CHANGES_UNDO_CONFIRM = "changesUndoConfirm";
 /// Close or Escape: the view dismisses it and tells the controller, so the next
 /// pane to attach does not paint it again.
 export const CLOSE_DIALOG = "dialogClose";
+export const APPLY_MODEL = "applyModel";
+export const APPLY_AGENT = "applyAgent";
+export const APPLY_REASONING = "applyReasoning";
+export const APPLY_TRUST = "applyTrust";
 
 /// The values the session dialog's own two rows carry, so the controller can
 /// tell a session id from "start over".
@@ -146,6 +158,199 @@ const MCP_TONES: Record<string, DialogTone> = {
   disabled: "muted",
   error: "error",
 };
+
+export interface ModelChoice {
+  model: string;
+  provider: string;
+}
+
+/// Model selection stays attached to the composer. The search field doubles as
+/// custom input: a value not in the provider catalog becomes a row the user
+/// can deliberately choose.
+export function modelDialog(
+  configured: string,
+  provider: string,
+  current: string,
+  models: readonly ModelChoice[],
+  query = "",
+  note = "",
+): DialogState {
+  const needle = query.trim().toLowerCase();
+  const choices =
+    current && !models.some((entry) => entry.model === current)
+      ? [...models, { provider, model: current }]
+      : [...models];
+  const known = choices.filter((entry) => !needle || entry.model.toLowerCase().includes(needle));
+  const exact = choices.some((entry) => entry.model.toLowerCase() === needle);
+  const configMatches = !needle || configured.toLowerCase().includes(needle) || "config".includes(needle);
+  return {
+    kind: "model",
+    pin: "footer",
+    title: "Model",
+    subtitle: "Choose a model available from the active provider, or enter any model ID.",
+    note,
+    rows: [
+      ...(configMatches
+        ? [
+            row("", "Oxide config default", {
+              detail: configured
+                ? `Use ${configured}, the model stored in the Oxide config`
+                : "Use the model stored in the Oxide config",
+              status: current ? "" : "Current",
+              tone: "muted",
+              action: APPLY_MODEL,
+            }),
+          ]
+        : []),
+      ...known.map((entry) =>
+        row(entry.model, entry.model, {
+          detail: entry.provider ? `Available from ${entry.provider}` : "Current model override",
+          status: entry.model === current ? "Current" : entry.provider || provider,
+          tone: "muted",
+          action: APPLY_MODEL,
+        }),
+      ),
+      ...(needle && !exact
+        ? [
+            row(query.trim(), `Use “${query.trim()}”`, {
+              detail: "Pass this model ID with --model",
+              action: APPLY_MODEL,
+              kind: "action",
+            }),
+          ]
+        : []),
+    ],
+    count: known.length,
+    search: true,
+    query,
+    searchPlaceholder: "Filter or enter a model ID…",
+    refreshLabel: "",
+    refreshAction: "",
+  };
+}
+
+export interface AgentChoice {
+  name: string;
+  description: string;
+}
+
+export function agentDialog(
+  agents: readonly AgentChoice[],
+  current: string,
+  query = "",
+): DialogState {
+  const needle = query.trim().toLowerCase();
+  const known = agents.filter(
+    (agent) =>
+      !needle ||
+      agent.name.toLowerCase().includes(needle) ||
+      agent.description.toLowerCase().includes(needle),
+  );
+  const exact = agents.some((agent) => agent.name.toLowerCase() === needle);
+  const defaultMatches = !needle || "default no agent".includes(needle);
+  return {
+    kind: "agent",
+    pin: "footer",
+    title: "Agent",
+    subtitle: "Choose a discovered agent, or type an agent name below.",
+    note: agents.length ? "" : "No configured agents were discovered; you can still enter a name.",
+    rows: [
+      ...(defaultMatches
+        ? [
+            row("", "Default agent", {
+              detail: "Run without a subagent prompt",
+              status: current ? "" : "Current",
+              tone: "muted",
+              action: APPLY_AGENT,
+            }),
+          ]
+        : []),
+      ...known.map((agent) =>
+        row(agent.name, agent.name, {
+          detail: agent.description,
+          status: agent.name === current ? "Current" : "",
+          tone: "muted",
+          action: APPLY_AGENT,
+        }),
+      ),
+      ...(needle && !exact
+        ? [
+            row(query.trim(), `Use “${query.trim()}”`, {
+              detail: "Pass this name with --agent",
+              action: APPLY_AGENT,
+              kind: "action",
+            }),
+          ]
+        : []),
+    ],
+    count: 0,
+    search: true,
+    query,
+    searchPlaceholder: "Filter or enter an agent name…",
+    refreshLabel: "",
+    refreshAction: "",
+  };
+}
+
+export function reasoningDialog(current: string, levels: readonly string[]): DialogState {
+  return choiceDialog(
+    "reasoning",
+    "Reasoning effort",
+    "The effort passed to the next turn with --reasoning.",
+    APPLY_REASONING,
+    levels.map((level) => ({ value: level, label: level, detail: "" })),
+    current,
+  );
+}
+
+export function trustDialog(current: string): DialogState {
+  return choiceDialog(
+    "trust",
+    "Project access",
+    "Choose whether this workspace's .oxide agents, commands, skills and plugins may load.",
+    APPLY_TRUST,
+    [
+      {
+        value: "default",
+        label: "Use saved decision",
+        detail: "Follow trust.json or defaultProjectTrust",
+      },
+      { value: "always", label: "Always trust", detail: "Pass --approve for this workspace" },
+      { value: "never", label: "Never trust", detail: "Pass --no-approve for this workspace" },
+    ],
+    current,
+  );
+}
+
+function choiceDialog(
+  kind: "reasoning" | "trust",
+  title: string,
+  subtitle: string,
+  action: string,
+  choices: readonly { value: string; label: string; detail: string }[],
+  current: string,
+): DialogState {
+  return {
+    kind,
+    pin: "footer",
+    title,
+    subtitle,
+    note: "",
+    rows: choices.map((choice) =>
+      row(choice.value, choice.label, {
+        detail: choice.detail,
+        status: choice.value === current ? "Current" : "",
+        tone: "muted",
+        action,
+      }),
+    ),
+    count: 0,
+    search: false,
+    query: "",
+    refreshLabel: "",
+    refreshAction: "",
+  };
+}
 
 /// The `/mcps` dialog: every server this project loads, the state the core
 /// probed, and a switch that turns one off or back on in the file that defines

@@ -33,6 +33,11 @@ import { isApprovalDecision, type ApprovalDecision } from "./core/approvals";
 import { modelsForProvider } from "./core/config";
 import type { QuestionAnswer } from "./core/questions";
 import {
+  agentDialog,
+  APPLY_AGENT,
+  APPLY_MODEL,
+  APPLY_REASONING,
+  APPLY_TRUST,
   CHANGES_UNDO_CONFIRM,
   CLOSE_DIALOG,
   CONTINUE_SESSION,
@@ -41,15 +46,20 @@ import {
   MCP_TOGGLE,
   NEW_SESSION,
   mcpDialog,
+  modelDialog,
   OPEN_SESSION,
   SESSION_DELETE,
   SESSION_DELETE_CONFIRM,
   sessionDialog,
+  reasoningDialog,
+  trustDialog,
   undoChangesDialog,
   type DialogState,
   type LiveSession,
+  type ModelChoice,
 } from "./core/dialogs";
 import { isMcpCommand, mcpListArgs, mcpToggleArgs, parseMcpList, type McpServerView } from "./core/mcps";
+import { modelsListArgs, parseModelCatalog } from "./core/models";
 import { changeArgs, diffPlan, undoArgs, type DiffPlan } from "./core/changes";
 import {
   commandRows,
@@ -58,7 +68,7 @@ import {
   type CommandEntry,
   type PanelAction,
 } from "./core/palette";
-import { footerState, nextReasoning, REASONING_LEVELS, type FooterState } from "./core/footer";
+import { footerState, REASONING_LEVELS, type FooterState } from "./core/footer";
 import { projectInfo, type ProjectDeps, type ProjectInfo } from "./core/project";
 import {
   buildPrompt,
@@ -222,6 +232,12 @@ export class ChatController {
   /// running supersedes it, so an answer that arrives afterwards is dropped
   /// instead of painting a list the newer probe has already replaced.
   private mcpProbe = 0;
+  /// The active provider's complete catalog, read through the CLI so endpoint,
+  /// authentication and provider-specific fallbacks stay shared with `/models`.
+  private modelCatalog: ModelChoice[] = [];
+  private modelQuery = "";
+  private modelNote = "";
+  private modelProbe = 0;
   private sessions: SessionEntry[] = [];
   /// The filter the open session listing is showing. The rows are the store's
   /// own answer, so the search box only decides which of them are painted —
@@ -429,7 +445,6 @@ export class ChatController {
       trustSetting: this.trust(),
       defaultTrust: project?.defaultTrust ?? "ask",
       savedTrust: project?.savedTrust,
-      sessionId: this.transcript.sessionId,
       branch: project?.branch ?? "",
       autoCompact: project?.autoCompact ?? true,
       usage: this.transcript.usage,
@@ -1738,6 +1753,14 @@ export class ChatController {
         return this.deleteSession(value);
       case CHANGES_UNDO_CONFIRM:
         return this.restoreTurn(value);
+      case APPLY_MODEL:
+        return this.applyDialogSetting("model", value);
+      case APPLY_AGENT:
+        return this.applyDialogSetting("agent", value);
+      case APPLY_REASONING:
+        return this.applyDialogSetting("reasoning", value);
+      case APPLY_TRUST:
+        return this.applyDialogSetting("projectTrust", value);
       case CLOSE_DIALOG:
         return this.closeDialog();
       default:
@@ -1777,13 +1800,11 @@ export class ChatController {
       case "model":
         return this.setModel();
       case "reasoning":
-        return this.cycleReasoning();
+        return this.setReasoning();
       case "agent":
         return this.setAgent();
       case "access":
         return this.setProjectTrust();
-      case "session":
-        return this.resumeSession();
       default:
         return;
     }
@@ -1824,126 +1845,86 @@ export class ChatController {
     }
   }
 
-  /// The model picker. The models a provider has been used with are remembered
-  /// in `config.json`, so they are offered by name instead of asking for the id
-  /// to be typed from memory — only the active provider's, because the id is
-  /// sent to whichever provider the CLI has active and another provider's model
-  /// would run against the wrong endpoint.
+  /// The model picker lives in the panel. Its search box also accepts a custom
+  /// model id, so no part of the flow escapes into VS Code's command palette.
   async setModel(): Promise<void> {
     this.refreshProject();
+    this.modelQuery = "";
+    this.modelCatalog = modelsForProvider(this.project, this.project?.provider ?? "");
+    const cwd = this.cwd();
+    if (!cwd) {
+      this.modelNote = "Open a folder to load the provider's model catalog.";
+      this.showModelDialog();
+      return;
+    }
+    const probe = ++this.modelProbe;
+    this.modelNote = "Loading the full model catalog…";
+    this.showModelDialog();
+    const result = await runCapture(this.binary(), modelsListArgs(), cwd, 30_000);
+    if (probe !== this.modelProbe) return;
+    const catalog = result.code === 0 && !result.error ? parseModelCatalog(result.stdout) : null;
+    if (catalog) {
+      this.modelCatalog = mergeModels(catalog.models, this.modelCatalog);
+      this.modelNote = catalog.error
+        ? `Could not refresh every model: ${firstLine(catalog.error)}`
+        : this.modelCatalog.length
+          ? ""
+          : "The active provider returned no models; enter a model ID below.";
+    } else {
+      const detail = result.error || firstLine(result.stderr) || "the CLI returned no catalog";
+      this.modelNote = `Could not load the full catalog: ${detail}. Remembered models are still available.`;
+    }
+    if (this.dialog?.kind === "model") this.showModelDialog();
+  }
+
+  private showModelDialog(): void {
     const current = this.setting<string>("model", "").trim();
     const configured = this.project?.model ?? "";
     const provider = this.project?.provider ?? "";
-    type Pick = vscode.QuickPickItem & { model?: string; other?: boolean };
-    const items: Pick[] = [
-      {
-        label: configured || "config.json",
-        description: current ? "Oxide config" : "in use",
-        detail: "Use the model stored in the Oxide config",
-        model: "",
-      },
-      ...modelsForProvider(this.project, provider).map((remembered) => ({
-        label: remembered.model,
-        description: remembered.model === current ? "in use" : provider,
-        detail: `Last used with ${remembered.provider}`,
-        model: remembered.model,
-      })),
-      { label: "$(edit) Other model…", detail: "Type a model id to pass to --model", other: true },
-    ];
-    const picked = await vscode.window.showQuickPick(items, {
-      title: "Oxide: model",
-      placeHolder: `A turn passes --model; empty follows the Oxide config (${configured || "none"})`,
-    });
-    if (!picked) return;
-    if (!picked.other) {
-      await this.updateSetting("model", picked.model ?? "");
-      return;
-    }
-    const value = await vscode.window.showInputBox({
-      title: "Oxide: model",
-      prompt: "Model passed with --model. Leave empty to use the model from the Oxide config.json.",
-      value: current,
-      placeHolder: "e.g. glm-4.6, claude-sonnet-4-5, deepseek-chat",
-    });
-    if (value === undefined) return;
-    await this.updateSetting("model", value.trim());
+    this.showDialog(
+      modelDialog(configured, provider, current, this.modelCatalog, this.modelQuery, this.modelNote),
+    );
   }
 
-  /// Cycles the reasoning level the way the terminal's Shift+Tab and the
-  /// desktop composer chip do. The chip is the feedback — its label is the new
-  /// level — so the switch writes no line into the transcript.
-  async cycleReasoning(): Promise<void> {
-    await this.updateSetting("reasoning", nextReasoning(this.setting<string>("reasoning", "auto")));
-  }
-
-  /// Picks the agent a chat runs with from the ones discovered on disk, which
-  /// is the same set `--agent` resolves a name against.
+  /// Picks the agent inside the panel from the same set `--agent` resolves.
   async setAgent(): Promise<void> {
     this.refreshProject();
+    this.showAgentDialog("");
+  }
+
+  private showAgentDialog(query: string): void {
     const current = this.setting<string>("agent", "").trim();
     const agents = this.project?.agents ?? [];
-    type Pick = vscode.QuickPickItem & { agent?: string; other?: boolean };
-    const items: Pick[] = [
-      {
-        label: "No agent",
-        description: current ? "Oxide default" : "in use",
-        detail: "Run the main agent, without a subagent prompt",
-        agent: "",
-      },
-      ...agents.map((agent) => ({
-        label: agent.name,
-        description: agent.name === current ? "in use" : "",
-        detail: agent.description,
-        agent: agent.name,
-      })),
-      { label: "$(edit) Other agent…", detail: "Type an agent name", other: true },
-    ];
-    const picked = await vscode.window.showQuickPick(items, {
-      title: "Oxide: agent",
-      placeHolder: agents.length
-        ? `${agents.length} agent${agents.length === 1 ? "" : "s"} discovered for this project and globally`
-        : "No agents were found; type a name to pass to --agent",
-    });
-    if (!picked) return;
-    if (!picked.other) {
-      await this.updateSetting("agent", picked.agent ?? "");
-      return;
-    }
-    const value = await vscode.window.showInputBox({
-      title: "Oxide: agent",
-      prompt: "Agent passed with --agent. Leave empty to run the main agent.",
-      value: current,
-      placeHolder: "e.g. planner, rust-reviewer",
-    });
-    if (value === undefined) return;
-    await this.updateSetting("agent", value.trim());
+    this.showDialog(agentDialog(agents, current, query));
   }
 
   async setReasoning(): Promise<void> {
-    const levels = [...REASONING_LEVELS];
-    const picked = await vscode.window.showQuickPick(levels, {
-      title: "Oxide: reasoning effort",
-      placeHolder: "Passed with --reasoning",
-    });
-    if (!picked) return;
-    await this.updateSetting("reasoning", picked);
+    this.showDialog(
+      reasoningDialog(this.setting<string>("reasoning", "auto"), REASONING_LEVELS),
+    );
   }
 
   async setProjectTrust(): Promise<void> {
-    const options = [
-      {
-        label: "default",
-        detail: "Use the decision saved in trust.json (or defaultProjectTrust)",
-      },
-      { label: "always", detail: "Pass --approve: load this workspace's .oxide resources" },
-      { label: "never", detail: "Pass --no-approve: ignore this workspace's own resources" },
-    ];
-    const picked = await vscode.window.showQuickPick(options, {
-      title: "Oxide: project trust",
-      placeHolder: 'Runs are non-interactive, so nothing is ever prompted; "default" follows trust.json',
-    });
-    if (!picked) return;
-    await this.updateSetting("projectTrust", picked.label);
+    this.showDialog(trustDialog(this.trust()));
+  }
+
+  /// Search belongs to whichever in-panel listing is open. For model and agent
+  /// it both filters known rows and offers the typed value as a custom choice.
+  searchDialog(text: string): void {
+    switch (this.dialog?.kind) {
+      case "sessions":
+        return this.searchSessions(text);
+      case "model":
+        this.modelQuery = text;
+        return this.showModelDialog();
+      case "agent":
+        return this.showAgentDialog(text);
+    }
+  }
+
+  private async applyDialogSetting(key: string, value: string): Promise<void> {
+    this.closeDialog();
+    await this.updateSetting(key, value.trim());
   }
 
   // ---------- notices ----------
@@ -1997,4 +1978,14 @@ function trimLines(block: ContextBlock): { block: ContextBlock; cut: boolean } {
 function firstLine(text: string): string {
   const line = text.split("\n").find((entry) => entry.trim());
   return line ? line.trim() : "";
+}
+
+function mergeModels(primary: readonly ModelChoice[], fallback: readonly ModelChoice[]): ModelChoice[] {
+  const seen = new Set<string>();
+  return [...primary, ...fallback].filter((entry) => {
+    const key = `${entry.provider.toLowerCase()}\0${entry.model}`;
+    if (!entry.model || seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
 }

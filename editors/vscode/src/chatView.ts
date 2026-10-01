@@ -176,10 +176,9 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         await this.controller.dialogAction(message.action ?? "", message.value ?? "");
         return;
       case "dialogSearch":
-        // The session listing's search box. The rows are the host's, so the
-        // filter is applied there and the narrowed listing is painted back —
-        // the view never decides which of them match.
-        this.controller.searchSessions(message.text ?? "");
+        // Search/filter/custom input belongs to the open in-panel dialog; the
+        // host rebuilds its rows, so the view never decides what matches.
+        this.controller.searchDialog(message.text ?? "");
         return;
       case "openChangeDiff":
         // A row of a turn's change card, or one the review walked to. VS Code's
@@ -356,7 +355,6 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
   </div>
 </main>
 <footer>
-  <div id="meta" class="meta"></div>
   <div id="composer">
     <div id="at" class="at-list" role="listbox" aria-label="Files and folders" hidden></div>
     <div id="chips" class="chips" hidden></div>
@@ -364,6 +362,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       placeholder="Ask Oxide…  Enter to send · Shift+Enter for a newline · paste or drop an image"></textarea>
     <div id="bar">
       <button id="attach" class="icon" title="Attach images, PDFs or files (paste or drop them here too)" aria-label="Attach">${ICONS.attach}</button>
+      <div id="meta" class="meta" aria-label="Turn settings"></div>
       <span id="status" hidden></span>
       <span id="elapsed" hidden></span>
       <span class="spacer"></span>
@@ -374,9 +373,9 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     <div id="dropzone" hidden><span>Drop files to attach</span></div>
   </div>
   <div id="footline">
-    <span id="usage" class="usage"><span id="usage-text"></span></span>
+    <span id="usage" class="usage"><span class="foot-icon" aria-hidden="true"><svg viewBox="0 0 16 16"><circle cx="8" cy="8" r="5.5"/><path d="M8 5v3.4l2.2 1.4"/></svg></span><span id="usage-text"></span></span>
     <span id="gauge" class="gauge" hidden><span id="gauge-fill"></span></span>
-    <span id="branch"></span>
+    <span id="branch-wrap" class="branch-wrap" hidden><span class="foot-icon" aria-hidden="true"><svg viewBox="0 0 16 16"><circle cx="4" cy="3" r="1.5"/><circle cx="4" cy="13" r="1.5"/><circle cx="12" cy="5" r="1.5"/><path d="M4 4.5v7M5.5 11c4 0 6.5-1.5 6.5-4.5"/></svg></span><span id="branch"></span></span>
   </div>
 </footer>
 <div id="image-view" class="overlay image-overlay" role="dialog" aria-modal="true" aria-label="Image preview" hidden>

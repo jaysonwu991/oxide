@@ -14,6 +14,15 @@
   const vscode = acquireVsCodeApi();
   const $ = (id) => document.getElementById(id);
 
+  // Inline, currentColor icons keep the composer independent of VS Code's icon
+  // font while still following every light, dark and high-contrast theme.
+  const CONTROL_ICONS = {
+    model: '<svg viewBox="0 0 16 16" aria-hidden="true"><path d="m8 1.8 5.5 3.1v6.2L8 14.2l-5.5-3.1V4.9L8 1.8Z"/><path d="m2.8 5 5.2 3 5.2-3M8 8v5.8"/></svg>',
+    reasoning: '<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M8 1.7 9 5l3.3 1L9 7l-1 3.3L7 7 3.7 6 7 5l1-3.3ZM12.7 9.3l.6 1.8 1.7.6-1.7.6-.6 1.7-.6-1.7-1.8-.6 1.8-.6.6-1.8ZM3.5 10.2l.5 1.3 1.3.5-1.3.5-.5 1.3-.5-1.3-1.3-.5 1.3-.5.5-1.3Z"/></svg>',
+    agent: '<svg viewBox="0 0 16 16" aria-hidden="true"><circle cx="8" cy="5.2" r="2.5"/><path d="M3.2 13.8c.4-3 2-4.4 4.8-4.4s4.4 1.4 4.8 4.4"/></svg>',
+    access: '<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M8 1.7c1.7 1.2 3.3 1.7 5 1.8v3.8c0 3.2-1.7 5.5-5 7-3.3-1.5-5-3.8-5-7V3.5c1.7-.1 3.3-.6 5-1.8Z"/><path d="m5.6 8 1.5 1.5 3.5-3.5"/></svg>',
+  };
+
   const transcript = $("transcript");
   const empty = $("empty");
   const input = $("input");
@@ -30,6 +39,7 @@
   const chipBox = $("chips");
   const atBox = $("at");
   const branchLabel = $("branch");
+  const branchWrap = $("branch-wrap");
   const attachButton = $("attach");
   const composer = $("composer");
   const dropHint = $("dropzone");
@@ -486,9 +496,10 @@
     return subject && !subject.includes("\0") ? subject : "";
   }
 
-  // Output budgets per tool, mirroring the TUI's previews: shell keeps its tail
-  // (the exit code is at the end), the readers keep their head.
-  const PREVIEW_LINES = { bash: 5, read: 10, read_file: 10, grep: 15, find: 20, glob: 20, ls: 20, list_dir: 20 };
+  // A side bar should summarize activity rather than turn every tool into a
+  // terminal. Keep a small useful sample here; the fold still exposes the full
+  // result. Shell keeps its tail (where the exit code is), readers keep the head.
+  const PREVIEW_LINES = { bash: 3, read: 4, read_file: 4, grep: 5, find: 5, glob: 5, ls: 5, list_dir: 5 };
 
   function previewLines(name) {
     return PREVIEW_LINES[name] || 5;
@@ -1433,10 +1444,10 @@
     if (!elapsedTimer) elapsedTimer = setInterval(updateElapsed, 500);
   }
 
-  /// The footer the extension host composes: the row of chips above the
-  /// composer (`model: … · thinking: … · access: … · session: …`), the usage
-  /// line, the branch and the context gauge. Everything is a string by the time
-  /// it gets here, so this function only paints.
+  /// The footer the extension host composes: compact controls in the composer's
+  /// own toolbar, plus the usage line, branch and context gauge below it.
+  /// Everything is a string by the time it gets here, so this function only
+  /// paints.
   function setFooter(footer) {
     if (!footer) return;
     metaBox.innerHTML = "";
@@ -1446,37 +1457,31 @@
     const info = footer.info || "";
     branchLabel.textContent = info;
     branchLabel.title = info ? `Current branch: ${info}` : "";
-    usageText.textContent = footer.usage || "";
-    usageText.title = footer.usage || "";
-    usageRow.hidden = !footer.usage;
+    branchWrap.hidden = !info;
     const percent = typeof footer.percent === "number" ? footer.percent : null;
+    usageText.textContent = percent === null ? "—" : `${percent}%`;
+    usageText.title = footer.usage || "";
+    usageRow.title = footer.usage || "";
+    usageRow.hidden = !footer.usage;
     gauge.hidden = percent === null;
     gauge.dataset.level = footer.level || "ok";
     gauge.title = percent === null ? "" : `${percent}% of the context window used`;
     gaugeFill.style.width = percent === null ? "0%" : `${Math.min(percent, 100)}%`;
   }
 
-  /// One clickable chip. The host's label reads `model: glm-5 · 128.0k`, so the
-  /// key is split off and painted quietly: the same string the terminal shows,
-  /// with a value that a glance can find.
+  /// One icon-only control. Its full current value stays in the accessible name
+  /// and tooltip, so compacting the toolbar does not make it mysterious.
   function chipNode(label, control, title) {
     const el = document.createElement("button");
     el.type = "button";
     el.className = "meta-chip";
     el.dataset.control = control;
-    const at = String(label).indexOf(": ");
-    if (at > 0) {
-      const key = document.createElement("span");
-      key.className = "chip-key";
-      key.textContent = String(label).slice(0, at);
-      const value = document.createElement("span");
-      value.className = "chip-value";
-      value.textContent = String(label).slice(at + 2);
-      el.append(key, value);
-    } else {
-      el.textContent = String(label);
-    }
-    el.title = title || `${label} — click to change`;
+    el.setAttribute("aria-label", String(label));
+    const icon = document.createElement("span");
+    icon.className = "control-icon";
+    icon.innerHTML = CONTROL_ICONS[control] || CONTROL_ICONS.model;
+    el.appendChild(icon);
+    el.title = title ? `${label}\n${title}` : `${label} — click to change`;
     return el;
   }
 
@@ -1682,10 +1687,10 @@
   /// takes over the window, hides the transcript the listing is about, and
   /// cannot be answered while a turn streams. It is one element either way
   /// (`#dialog` sits under the header, ahead of the transcript, in the panel's
-  /// own flow) and the host says which end it belongs to: `.pin-footer` moves
-  /// it above the footer with CSS `order`, so the MCP list grows up from the
-  /// composer block the `/mcps` was typed in while the session list keeps
-  /// dropping from the header it is about. A row arrives with the action it
+  /// own flow) and the host says which end it belongs near: `.pin-footer` moves
+  /// the same complete card above the footer with CSS `order`, so the MCP list
+  /// grows near the composer block where `/mcps` was typed while session history
+  /// remains near the header it describes. A row arrives with the action it
   /// posts, so the view decides nothing about what a click means.
   ///
   /// Two fields are the head's: the count beside the title — how many rows the
@@ -1719,6 +1724,7 @@
     // listing was composed with — unless the caret is in it, since a repaint
     // under a reader who is typing would take the text away from them.
     dialogSearch.hidden = dialog.search !== true;
+    dialogSearchInput.placeholder = dialog.searchPlaceholder || "Search sessions…";
     if (dialog.search === true && document.activeElement !== dialogSearchInput) {
       dialogSearchInput.value = dialog.query || "";
     }
