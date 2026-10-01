@@ -999,8 +999,12 @@ async fn run_loop(
                 for (handle, original) in handles.into_iter().zip(&tool_calls) {
                     let (output, millis) = match handle.await {
                         Ok(result) => result,
-                        Err(err) => (
-                            tools::ToolOutput::error(format!("tool task failed: {err}")),
+                        Err(_) => (
+                            tools::ToolOutput::error(format!(
+                                "{} stopped before reporting its result; completion is unknown. \
+                                 Inspect the target state before deciding whether to retry",
+                                original.function.name
+                            )),
                             0,
                         ),
                     };
