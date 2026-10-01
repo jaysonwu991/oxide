@@ -2556,14 +2556,32 @@ elementFor("send").onclick({ detail: 1 });
 await nextTick();
 check(
   "kept a message rejected at the completion boundary",
-  app.state.pendingSend?.prompt === "do this in the next turn" &&
+  app.state.pendingSends[0]?.prompt === "do this in the next turn" &&
     projectCalls("send_prompt").length === 0,
-  JSON.stringify({ pending: app.state.pendingSend, calls }),
+  JSON.stringify({ pending: app.state.pendingSends, calls }),
+);
+elementFor("prompt").value = "and this one after it";
+app.updateSendState();
+elementFor("send").onclick({ detail: 1 });
+await nextTick();
+check(
+  "kept concurrent rejected messages in submission order",
+  app.state.pendingSends.map((pending) => pending.prompt).join(" | ") ===
+    "do this in the next turn | and this one after it",
+  JSON.stringify(app.state.pendingSends),
 );
 await emit("agent-end", { runId: 42 });
 check(
-  "started the raced message as Codex's next turn",
-  projectCalls("send_prompt").at(-1)?.[1]?.prompt === "do this in the next turn",
+  "started the first raced message as Codex's next turn",
+  projectCalls("send_prompt").at(-1)?.[1]?.prompt === "do this in the next turn" &&
+    app.state.pendingSends[0]?.prompt === "and this one after it",
+  JSON.stringify(calls),
+);
+await emit("agent-end", { runId: 43 });
+check(
+  "started the next raced message only after the preceding turn",
+  projectCalls("send_prompt").at(-1)?.[1]?.prompt === "and this one after it" &&
+    app.state.pendingSends.length === 0,
   JSON.stringify(calls),
 );
 steerAccepted = true;

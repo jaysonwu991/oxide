@@ -66,7 +66,9 @@ impl Steering {
             .unwrap_or_default()
     }
 
-    fn close(&self) {
+    /// Stops accepting new messages while leaving already accepted input for
+    /// the owner to drain or preserve at completion.
+    pub fn close(&self) {
         if let Ok(mut state) = self.queue.lock() {
             state.closed = true;
         }
@@ -99,15 +101,18 @@ impl Steering {
         (steered, queued)
     }
 
-    fn close_pair(&self, other: &Self) {
+    fn close_and_drain_pair(&self, other: &Self) -> Vec<Message> {
         let Ok(mut first) = self.queue.lock() else {
-            return;
+            return Vec::new();
         };
         let Ok(mut second) = other.queue.lock() else {
-            return;
+            return Vec::new();
         };
         first.closed = true;
         second.closed = true;
+        let mut pending = std::mem::take(&mut first.messages);
+        pending.extend(std::mem::take(&mut second.messages));
+        pending
     }
 
     pub fn len(&self) -> usize {
@@ -294,12 +299,12 @@ pub fn run_subagent(
                 let _ = tx.send(AgentEvent::Error(format!(
                     "agent `{agent_name}` is primary and cannot run as a subagent"
                 )));
-                finish(&runtime, &tx, history);
+                finish(&runtime, &tx, history, 0);
                 return;
             }
             None => {
                 let _ = tx.send(AgentEvent::Error(format!("unknown agent `{agent_name}`")));
-                finish(&runtime, &tx, history);
+                finish(&runtime, &tx, history, 0);
                 return;
             }
         };
@@ -456,7 +461,7 @@ pub fn run_subagent(
             }
             merged.push(message);
         }
-        finish(&outer_runtime, &tx, merged);
+        finish(&outer_runtime, &tx, merged, 0);
     })
 }
 
@@ -516,7 +521,7 @@ async fn run_loop(
                 record_usage(&runtime.session, depth, &held, held_usage);
                 send_usage(&tx, held_usage);
             }
-            finish(&runtime, &tx, messages);
+            finish(&runtime, &tx, messages, depth);
             return;
         }
         for steered in runtime.steering.drain() {
@@ -699,7 +704,7 @@ async fn run_loop(
                     let _ = tx.send(AgentEvent::ThoughtDone {
                         millis: started.elapsed().as_millis() as u64,
                     });
-                    finish(&runtime, &tx, messages);
+                    finish(&runtime, &tx, messages, depth);
                     return;
                 }
                 Err(err) => {
@@ -726,7 +731,7 @@ async fn run_loop(
                         millis: started.elapsed().as_millis() as u64,
                     });
                     let _ = tx.send(AgentEvent::Error(format!("{err:#}")));
-                    finish(&runtime, &tx, messages);
+                    finish(&runtime, &tx, messages, depth);
                     return;
                 }
             }
@@ -744,7 +749,7 @@ async fn run_loop(
             let _ = tx.send(AgentEvent::Error(
                 "the model returned an empty response".to_string(),
             ));
-            finish(&runtime, &tx, messages);
+            finish(&runtime, &tx, messages, depth);
             return;
         }
 
@@ -757,7 +762,7 @@ async fn run_loop(
             let _ = tx.send(AgentEvent::Error(
                 "the model returned an empty response".to_string(),
             ));
-            finish(&runtime, &tx, messages);
+            finish(&runtime, &tx, messages, depth);
             return;
         }
 
@@ -841,7 +846,7 @@ async fn run_loop(
             });
             if !queued {
                 // Nothing is queued and no re-check is due, so the run is done.
-                finish(&runtime, &tx, messages);
+                finish(&runtime, &tx, messages, depth);
                 return;
             }
             for message in steered.into_iter().chain(follow_ups) {
@@ -883,7 +888,7 @@ async fn run_loop(
                 record(&runtime.session, depth, &message);
                 messages.push(message);
             }
-            finish(&runtime, &tx, messages);
+            finish(&runtime, &tx, messages, depth);
             return;
         }
 
@@ -1177,14 +1182,26 @@ async fn run_loop(
         }
 
         if batch_terminates(&terminated) {
-            finish(&runtime, &tx, messages);
+            finish(&runtime, &tx, messages, depth);
             return;
         }
     }
 }
 
-fn finish(runtime: &Runtime, tx: &UnboundedSender<AgentEvent>, messages: Vec<Message>) {
-    runtime.steering.close_pair(&runtime.follow_ups);
+fn finish(
+    runtime: &Runtime,
+    tx: &UnboundedSender<AgentEvent>,
+    mut messages: Vec<Message>,
+    depth: usize,
+) {
+    // A sender may have been accepted immediately before an exceptional exit
+    // (provider error, cancellation, step limit, or a terminating tool). Keep
+    // those user messages in the session/history for the subsequent turn; the
+    // acknowledgement must never point at input that vanished at completion.
+    for pending in runtime.steering.close_and_drain_pair(&runtime.follow_ups) {
+        record(&runtime.session, depth, &pending);
+        messages.push(pending);
+    }
     let _ = tx.send(AgentEvent::Finished(messages));
 }
 
@@ -4680,6 +4697,32 @@ for line in sys.stdin:
 
         assert!(!follow_ups.push(Message::user("do this next")));
         drop(future);
+    }
+
+    #[tokio::test]
+    async fn an_exceptional_finish_retains_already_accepted_messages() {
+        let runtime = test_runtime().await;
+        assert!(runtime.steering.push(Message::user("correct this")));
+        assert!(runtime.follow_ups.push(Message::user("then do this")));
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+
+        finish(
+            &runtime,
+            &tx,
+            vec![Message::assistant("stopped", vec![])],
+            0,
+        );
+
+        let AgentEvent::Finished(messages) = rx.recv().await.unwrap() else {
+            panic!("finish emits the completed history");
+        };
+        let text: Vec<_> = messages
+            .iter()
+            .filter_map(|message| message.display())
+            .collect();
+        assert_eq!(text, ["stopped", "correct this", "then do this"]);
+        assert!(!runtime.steering.push(Message::user("too late")));
+        assert!(!runtime.follow_ups.push(Message::user("too late")));
     }
 
     #[test]

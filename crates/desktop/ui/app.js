@@ -25,9 +25,10 @@ const state = {
   // New context sent during a run waits by default. Steering is a deliberate
   // choice because it changes the work already in progress.
   busyMessageMode: "queue",
-  // A message rejected at the exact instant a run finishes. Its composed
-  // payload is started against the same session as soon as `agent-end` lands.
-  pendingSend: null,
+  // Messages rejected at the exact instant a run finishes. Their composed
+  // payloads start against the same session, in submission order, as each
+  // preceding turn ends.
+  pendingSends: [],
   // What the running turn titled itself: the header names the thread by this
   // until the sidebar's own listing carries it.
   runTitle: "",
@@ -570,7 +571,7 @@ async function selectProject(project) {
   state.projectName = project.name;
   state.session = null;
   state.trust = null;
-  state.pendingSend = null;
+  state.pendingSends = [];
   clearAttachments();
   el("prompt").disabled = false;
   el("trust-modal").hidden = true;
@@ -720,7 +721,7 @@ function resetTranscript() {
 }
 
 function newChat() {
-  state.pendingSend = null;
+  state.pendingSends = [];
   resetTranscript();
   clearAttachments();
   loadSessions();
@@ -827,7 +828,7 @@ function setIdle() {
 /// of offering to act on a process that is not there.
 function hostStopped() {
   state.pendingApproval = null;
-  state.pendingSend = null;
+  state.pendingSends = [];
   el("approval").hidden = true;
   setIdle();
   resetTurn();
@@ -1101,14 +1102,10 @@ async function send(followUp = false) {
     state.busyMessageMode = "queue";
     updateSendState();
     if (!accepted) {
-      state.pendingSend = { prompt, attachments };
+      state.pendingSends.push({ prompt, attachments });
       setStatus("The response finished; starting this as the next turn…");
       // The end event may have beaten the command reply to the renderer.
-      if (!state.busy) {
-        const pending = state.pendingSend;
-        state.pendingSend = null;
-        await startPrompt(pending.prompt, pending.attachments, false);
-      }
+      await startNextPendingSend();
       return;
     }
     setStatus(followUp ? "Queued as the next turn." : "Steering the active response…");
@@ -1148,6 +1145,12 @@ async function startPrompt(prompt, attachments, showBubble = true) {
     setStatus(`Error: ${error}`);
     setIdle();
   }
+}
+
+async function startNextPendingSend() {
+  if (state.busy || state.pendingSends.length === 0) return;
+  const pending = state.pendingSends.shift();
+  await startPrompt(pending.prompt, pending.attachments, false);
 }
 
 async function stop() {
@@ -3176,11 +3179,7 @@ async function initEvents() {
     renderChanges(event.payload || {});
     resetTurn();
     await loadSessions();
-    if (state.pendingSend) {
-      const pending = state.pendingSend;
-      state.pendingSend = null;
-      await startPrompt(pending.prompt, pending.attachments, false);
-    }
+    await startNextPendingSend();
   });
   el("review-modal").onkeydown = reviewKey;
   await listen("approval-request", (event) => showApproval(event.payload || {}));
