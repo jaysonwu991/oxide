@@ -822,6 +822,11 @@ and a type no provider takes or no browser can paint (`png`, `jpeg`, `gif`,
 `webp`, `bmp`, `pdf`) is refused with a message naming the file rather than
 being sent.
 
+Oxide sends media in the provider's native request format and does not infer
+image support from a provider or model name. If the selected model or endpoint
+rejects a media request, the error points out that its attachment support
+should be checked instead of silently rewriting or discarding the attachment.
+
 ## Desktop notifications
 
 When an agent turn finishes, Oxide raises a system toast (Notification Center on
