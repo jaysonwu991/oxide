@@ -591,7 +591,13 @@ impl Config {
             .ok()
             .and_then(|value| value.trim().parse::<u64>().ok())
             .filter(|value| *value > 0)
-            .unwrap_or_else(|| self.context_window.max(self.max_tokens as u64))
+            .unwrap_or_else(|| {
+                let configured = match self.context_window {
+                    0 => default_context_window(),
+                    value => value,
+                };
+                configured.max(self.max_tokens as u64)
+            })
     }
 
     pub fn config_path() -> PathBuf {
@@ -1505,6 +1511,15 @@ mod tests {
             ..Config::default()
         };
         assert_eq!(config.context_window(), 2_000_000);
+    }
+
+    #[test]
+    fn zero_context_window_uses_the_default() {
+        let config: Config = serde_json::from_value(serde_json::json!({
+            "context_window": 0,
+        }))
+        .unwrap();
+        assert_eq!(config.context_window(), 272_000);
     }
 
     #[test]
