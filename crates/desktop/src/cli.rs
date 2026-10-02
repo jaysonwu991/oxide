@@ -202,8 +202,12 @@ mod tests {
 
     #[test]
     fn the_install_directories_are_searched_after_the_path() {
+        // The list is split the way this host's environment holds it (a colon on
+        // Unix, a semicolon on Windows), so the fixture is joined rather than
+        // spelled: a POSIX-colon string is one entry on Windows.
+        let path_var = std::env::join_paths(["/usr/bin", "/usr/local/bin"]).unwrap();
         let dirs = search_paths(
-            "/usr/bin:/usr/local/bin",
+            path_var.to_str().unwrap(),
             Some(Path::new("/home/dev")),
             "macos",
         );
@@ -219,7 +223,16 @@ mod tests {
 
     #[test]
     fn an_empty_path_entry_is_not_a_directory() {
-        for dir in search_paths(":", Some(Path::new("/home/dev")), "linux") {
+        let path_var = std::env::join_paths(["", "/usr/bin", ""]).unwrap();
+        let dirs = search_paths(
+            path_var.to_str().unwrap(),
+            Some(Path::new("/home/dev")),
+            "linux",
+        );
+        // An empty entry means the current directory and is dropped, while the
+        // directory that was named beside it is kept.
+        assert!(dirs.contains(&PathBuf::from("/usr/bin")), "{dirs:?}");
+        for dir in dirs {
             assert!(!dir.as_os_str().is_empty(), "{dir:?}");
         }
     }
