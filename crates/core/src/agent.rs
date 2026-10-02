@@ -1382,8 +1382,9 @@ const DONE_RULES: &[DoneRule] = &[
         reminder: "You opened or updated a pull request but have not checked it. Run \
                    `gh pr checks <url>` and `gh pr view <url> --json \
                    state,mergeable,mergeStateStatus,reviewDecision,statusCheckRollup` (or the \
-                   `glab` equivalents), fix and push again if a check failed, and report the URL \
-                   with its final state.",
+                   `glab` equivalents), fix and push again if a check failed, and report it as a \
+                   link the user can click — `[#123](url)`, the URL from `gh pr view <url> \
+                   --json url` — with its final state.",
     },
     DoneRule {
         key: "comment",
@@ -4147,6 +4148,10 @@ for line in sys.stdin:
         assert!(state.pending.contains("pull request"));
         let reminder = state.reminder().unwrap();
         assert!(reminder.contains("gh pr checks"), "{reminder}");
+        // The reminder is the fallback for a run that missed the prompt's own
+        // rule, so it asks for the link in its own words.
+        assert!(reminder.contains("[#123](url)"), "{reminder}");
+        assert!(reminder.contains("--json url"), "{reminder}");
         assert!(state.reminder().is_none());
 
         let mut state = VerificationState::default();

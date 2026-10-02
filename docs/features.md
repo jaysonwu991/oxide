@@ -76,7 +76,11 @@ is never reported as an addressed review. A reply goes into the review comment's
 own thread (`gh api -X POST
 repos/{owner}/{repo}/pulls/<n>/comments/<comment_id>/replies`) rather than as one
 general comment on the pull request; `gh pr comment` is for a new top-level
-comment. A run that tries to finish with
+comment. A summary about a pull or merge request names it with a link the user
+can click — `[#123](https://github.com/owner/repo/pull/123)`, the URL the forge
+CLI printed, not a bare `#123` — beside its state, since the desktop app and the
+VS Code panel open a Markdown link in the browser and a terminal links the URL
+printed after the label. A run that tries to finish with
 unconfirmed edits or unchecked side effects gets one hidden reminder to verify
 before it can summarize; a reminder the provider answers with nothing ends the
 run with the summary the model already wrote, rather than reporting an empty
