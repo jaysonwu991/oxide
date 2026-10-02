@@ -363,6 +363,22 @@ let installError = null;
 // than the release the check resolved: the app resolves the release again as it
 // installs, so one published between the check and the click is what lands.
 let installedVersion = null;
+// What a successful install reports. A Windows installer is started rather than
+// run to completion — it asks for elevation and waits for the app to be closed
+// — so a test of that machine answers with the release still pending.
+let installPending = false;
+// Installs a test holds in flight, so a check that overlaps one can be measured
+// instead of raced.
+let installsHeld = 0;
+let heldInstalls = [];
+const holdNextInstall = () => {
+  installsHeld += 1;
+};
+const releaseHeldInstalls = () => {
+  const waiting = heldInstalls;
+  heldInstalls = [];
+  for (const go of waiting) go();
+};
 // Checks a test holds in flight, so a reply that arrives after a newer check has
 // painted can be measured instead of raced. Each held reply carries the answer
 // it would have given at the time it was asked for.
@@ -577,21 +593,28 @@ const invoke = async (command, args = {}) => {
     }
     case "install_update": {
       if (installError) throw installError;
+      if (installsHeld > 0) {
+        installsHeld -= 1;
+        await new Promise((resolve) => heldInstalls.push(resolve));
+      }
       const version = installedVersion || updateAnswer.latest;
-      updateAnswer = {
-        ...updateAnswer,
-        current: version,
-        latest: version,
-        tag: `desktop-v${version}`,
-        updateAvailable: false,
-      };
+      const tag = `desktop-v${version}`;
+      const path = updateAnswer.path;
+      const pending = installPending;
+      // The check keeps answering with the release it resolves: the install put
+      // it on disk, but the build that asks is still the one that started, and
+      // only a restart changes that. A window learns the new version by being
+      // opened again, never by a check.
       return {
         ok: true,
+        pending,
         version,
-        tag: updateAnswer.tag,
+        tag,
         asset: updateAnswer.asset ? updateAnswer.asset.name : "",
-        path: updateAnswer.path,
-        text: `Oxide ${version} is in ${updateAnswer.path}. Quit Oxide and open it again to run the new version.`,
+        path,
+        text: pending
+          ? `The Oxide ${version} installer is running. Finish it, then open Oxide again to run the new version.`
+          : `Oxide ${version} is in ${path}. Quit Oxide and open it again to run the new version.`,
       };
     }
     // Everything the rest of `init`/selection asks for; none of it is what this
@@ -698,7 +721,7 @@ vm.runInThisContext(
     " loadSessions, renderProjectsTree, renderSessions, renderMcps, openSession, renderProjectMeta, updateSendState, toggleBusyMessageMode, setBusy, setIdle," +
     " loadMcps, openSessions," +
     " listedSessions, selectSessionFromTree, removeSession," +
-    " startTool, finishTool, toggleTool, openUpdate, installUpdate };\n",
+    " startTool, finishTool, toggleTool, openUpdate, installUpdate, installedUpdate };\n",
 );
 
 const app = globalThis.__app;
@@ -2987,6 +3010,11 @@ check(
   installButton.hidden === true && updateTitle() !== "Oxide 0.34.0 is up to date",
   `${installButton.hidden} / ${updateTitle()}`,
 );
+// A window that installed a release keeps that install for the rest of the
+// session: the build running here is still the older one, so a later check
+// resolves the release again. The checks below start from a window that has not
+// installed it.
+app.installedUpdate.answer = null;
 
 // A check that could not reach GitHub is a failure the app names, not an
 // up-to-date machine.
@@ -3099,6 +3127,7 @@ check(
   JSON.stringify(calls.map(([name]) => name)),
 );
 check("reported the install that ran", updateTitle() === "Oxide 0.34.0 is installed", updateTitle());
+app.installedUpdate.answer = null;
 elementFor("update-close").onclick();
 check("closed it from its own button", elementFor("update-modal").hidden === true);
 
@@ -3145,6 +3174,85 @@ check(
   updateBody(),
 );
 installedVersion = null;
+updateAnswer = OFFERED_UPDATE;
+app.installedUpdate.answer = null;
+
+// A check started while an install worked asked about the build that was
+// running when it started, so it resolves the release the install was putting
+// in place and would offer it a second time. The install is the newer word on
+// this installation — it is what the window will be running after the restart —
+// and its report stays, whether it arrives before or after that check.
+console.log("an install and the check that overlaps it");
+updateAnswer = OFFERED_UPDATE;
+await app.openUpdate();
+check(
+  "offered the release before installing it",
+  updateTitle() === "Oxide 0.34.0 is available",
+  updateTitle(),
+);
+holdNextInstall();
+const installing = installButton.onclick();
+await nextTick();
+holdNextCheck();
+const overlapping = app.openUpdate();
+await nextTick();
+releaseHeldInstalls();
+await installing;
+check(
+  "reported the install that finished while a check was in flight",
+  updateTitle() === "Oxide 0.34.0 is installed",
+  updateTitle(),
+);
+releaseHeldChecks();
+await overlapping;
+check(
+  "kept the install's report when the check that overlapped it answered",
+  updateTitle() === "Oxide 0.34.0 is installed" && installButton.hidden === true,
+  `${updateTitle()} / ${installButton.hidden}`,
+);
+check(
+  "stopped offering the release it had just installed",
+  installButton.hidden === true && !/is available/.test(updateTitle()),
+  `${installButton.hidden} / ${updateTitle()}`,
+);
+// A check asked for afterwards is about the same installation, and the release
+// it resolves is the one on disk: the dialog repeats what the install did
+// rather than offering it again.
+calls.length = 0;
+await app.openUpdate();
+check(
+  "answered a later check with the install rather than the release",
+  updateTitle() === "Oxide 0.34.0 is installed" && projectCalls("check_updates").length === 1,
+  `${updateTitle()} / ${JSON.stringify(calls.map(([name]) => name))}`,
+);
+app.installedUpdate.answer = null;
+
+// The Windows installer is a program of its own, which this app starts and
+// cannot wait on: it asks for elevation and for Oxide to be closed, and it can
+// be cancelled. The dialog reports the launch it is, never a version in place.
+installedVersion = "0.34.0";
+installPending = true;
+updateAnswer = OFFERED_UPDATE;
+await app.openUpdate();
+await installButton.onclick();
+check(
+  "reported a started installer as running rather than installed",
+  updateTitle() === "The Oxide 0.34.0 installer is running",
+  updateTitle(),
+);
+check(
+  "said what finishes that install",
+  /Finish the installer/.test(updateNote()) && !/is installed/.test(updateBody()),
+  `${updateNote()} / ${updateBody()}`,
+);
+check(
+  "offered no second install while one is running",
+  installButton.hidden === true,
+  String(installButton.hidden),
+);
+installedVersion = null;
+installPending = false;
+app.installedUpdate.answer = null;
 updateAnswer = OFFERED_UPDATE;
 
 // ---------- the bridge the window is reached through ----------

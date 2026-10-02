@@ -2532,6 +2532,13 @@ let installingUpdate = false;
 /// moved past is dropped rather than painted over the newer answer — which would
 /// show a release, or a failure, from a question nobody is waiting on.
 let updateProbe = 0;
+/// The install this dialog has finished, if any. The window is still the build
+/// that started, so a check compares against that older version and keeps
+/// resolving the release now on disk; while the install is remembered, a check
+/// that answers with that release reports what happened instead of offering the
+/// same install again. Held in an object so a front-end check can put the dialog
+/// back to the state a fresh window is in.
+const installedUpdate = { answer: null };
 
 /// Checks the app's own release train (`desktop-v*`) and offers to install it.
 /// The resolution is `oxide_core::updates`, shared with the terminal, so the
@@ -2588,6 +2595,15 @@ function paintUpdate(check, headline) {
     el("update-install").hidden = true;
     return;
   }
+  // An install this session finished is the newest word on this installation,
+  // and the check cannot see it: the running build is still the one that
+  // started, so the release it resolved is the one already on disk. Painting it
+  // would offer an install that has happened.
+  const installed = installedUpdate.answer;
+  if (installed && check.updateAvailable && check.latest === installed.version) {
+    paintInstalled(installed);
+    return;
+  }
   el("update-title").textContent =
     headline ||
     (check.updateAvailable
@@ -2641,9 +2657,11 @@ function paintUpdateFailure(title, text) {
 /// that release carries, and puts it in this installation's place.
 async function installUpdate() {
   if (installingUpdate) return;
-  // The install owns the dialog until it reports. A check asked for while it
-  // ran — the sidebar button is still there — is a newer look at the same
-  // installation, and its answer is the one to show.
+  // The install owns the dialog until it reports, and it is what says whether
+  // one is running at all: the click that asks for a second install while this
+  // one works answers with this one's result. A check asked for meanwhile — the
+  // sidebar button is still there — is a look at the installation as it was
+  // when the check started, which the install's own report outranks.
   const probe = ++updateProbe;
   installingUpdate = true;
   const install = el("update-install");
@@ -2658,14 +2676,19 @@ async function installUpdate() {
     answer = { ok: false, text: String(error) };
   }
   installingUpdate = false;
-  if (probe !== updateProbe || el("update-modal").hidden) return;
   if (!answer || answer.ok !== true) {
+    if (probe !== updateProbe || el("update-modal").hidden) return;
     paintUpdateFailure(
       "Could not install the update",
       (answer && answer.text) || "The install did not finish.",
     );
     return;
   }
+  // The install owns the dialog from here, whatever a check started while it
+  // worked has to say: that check asked about the build running when it
+  // started, and the release it would offer is the one now in place.
+  installedUpdate.answer = answer;
+  if (el("update-modal").hidden) return;
   paintInstalled(answer);
 }
 
@@ -2675,8 +2698,17 @@ async function installUpdate() {
 /// The running app is still the build that started, so the note says what to do
 /// about that instead of claiming this window is already the new version.
 function paintInstalled(answer) {
-  el("update-title").textContent = `Oxide ${answer.version} is installed`;
-  el("update-note").textContent = "Quit Oxide and open it again to run the new version.";
+  // A Windows installer is a program this app starts and cannot wait on: it
+  // asks for elevation and for Oxide to be closed, and the user may cancel it.
+  // What is known here is that it is running, so that is what the dialog says
+  // rather than a version it cannot claim is in place.
+  const pending = answer.pending === true;
+  el("update-title").textContent = pending
+    ? `The Oxide ${answer.version} installer is running`
+    : `Oxide ${answer.version} is installed`;
+  el("update-note").textContent = pending
+    ? "Finish the installer, then open Oxide again to run the new version."
+    : "Quit Oxide and open it again to run the new version.";
   const lines = [];
   if (answer.tag) lines.push(`Release ${mono(answer.tag)}`);
   if (answer.asset) lines.push(`Downloaded ${escapeHtml(answer.asset)}`);

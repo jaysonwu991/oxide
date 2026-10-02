@@ -264,15 +264,16 @@ pub async fn install() -> Result<Value> {
         Some(digest) => updates::verify_sha256(&download, digest)?,
         None => notes.push("no checksum was published for this release".to_string()),
     }
-    notes.push(install_downloaded(
-        &installation,
-        &release.version,
-        &download,
-        &work,
-    )?);
+    let placed = install_downloaded(&installation, &release.version, &download, &work)?;
+    notes.push(placed.note);
 
     Ok(json!({
         "ok": true,
+        // A Windows installer is started rather than run to completion: it asks
+        // for elevation and waits for this app to be closed, so only it knows
+        // whether the release landed. The dialog reports the launch it is
+        // instead of claiming the version is installed.
+        "pending": placed.pending,
         "version": release.version,
         "tag": release.tag,
         "asset": release.asset,
@@ -280,6 +281,24 @@ pub async fn install() -> Result<Value> {
         "path": installation.path.as_ref().map(|path| path.display().to_string()).unwrap_or_default(),
         "text": notes.join(" "),
     }))
+}
+
+/// What an install left: the note a dialog shows, and whether the release is in
+/// place at all. Only a Windows installer can leave that in doubt — it is
+/// started as its own process, which this app cannot outlive reporting on.
+#[derive(Debug)]
+struct Placed {
+    note: String,
+    pending: bool,
+}
+
+impl Placed {
+    fn in_place(note: String) -> Self {
+        Self {
+            note,
+            pending: false,
+        }
+    }
 }
 
 /// Puts a downloaded release in this installation's place, answering with what
@@ -290,33 +309,39 @@ fn install_downloaded(
     version: &str,
     download: &Path,
     work: &WorkDir,
-) -> Result<String> {
+) -> Result<Placed> {
     match &installation.kind {
         Kind::Bundle(bundle) => {
             install_bundle(download, bundle, work)?;
-            Ok(format!(
+            Ok(Placed::in_place(format!(
                 "Oxide {version} is in {}. Quit Oxide and open it again to run the new version.",
                 bundle.display()
-            ))
+            )))
         }
         Kind::AppImage(target) => {
             replace_file(download, target)?;
-            Ok(format!(
+            Ok(Placed::in_place(format!(
                 "Oxide {version} is in place at {}. Quit Oxide and open it again to run the new \
                  version.",
                 target.display()
-            ))
+            )))
         }
         Kind::Installer => {
             // The installer owns the installation from here: it replaces the
-            // files and asks for the running app to be closed.
+            // files and asks for the running app to be closed. Starting it is
+            // all this side can know — it may still be waiting for elevation,
+            // and it may be cancelled — so the release is reported as pending
+            // rather than installed.
             Command::new(download)
                 .spawn()
                 .with_context(|| format!("running {}", download.display()))?;
-            Ok(format!(
-                "The Oxide {version} installer is running. Quit Oxide when it asks, then open it \
-                 again."
-            ))
+            Ok(Placed {
+                note: format!(
+                    "The Oxide {version} installer is running. Finish it, then open Oxide again \
+                     to run the new version."
+                ),
+                pending: true,
+            })
         }
         Kind::None => bail!(
             "{} cannot be replaced from inside the app",
@@ -760,9 +785,10 @@ mod tests {
         );
 
         let work = WorkDir::new().unwrap();
-        let text = install_downloaded(&installation, "0.34.0", &download, &work).unwrap();
+        let placed = install_downloaded(&installation, "0.34.0", &download, &work).unwrap();
 
-        assert!(text.contains("Oxide 0.34.0"), "{text}");
+        assert!(placed.note.contains("Oxide 0.34.0"), "{}", placed.note);
+        assert!(!placed.pending, "the file is in place, not pending");
         assert_eq!(fs::read(&image).unwrap(), b"new image");
         #[cfg(unix)]
         {
@@ -773,6 +799,44 @@ mod tests {
         assert!(
             left_behind(&root, &["Oxide.AppImage", "downloaded"]).is_empty(),
             "nothing else is left"
+        );
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    // A Windows installer is a process of its own, which this app starts and
+    // cannot wait on: it asks for elevation and for Oxide to be closed. What the
+    // install knows is that it is running, so that is what it reports rather
+    // than a version it cannot claim is in place.
+    #[cfg(unix)]
+    #[test]
+    fn a_windows_installer_is_reported_as_started_rather_than_installed() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let root = temp_dir("installer");
+        let directory = root.join("Programs/Oxide");
+        fs::create_dir_all(&directory).unwrap();
+        // The setup a Windows release publishes; on Unix a script stands in for
+        // the installer that is started and left to finish.
+        let setup = root.join("Oxide_0.34.0_x64-setup.exe");
+        fs::write(&setup, b"#!/bin/sh\nexit 0\n").unwrap();
+        let mut mode = fs::metadata(&setup).unwrap().permissions();
+        mode.set_mode(0o755);
+        fs::set_permissions(&setup, mode).unwrap();
+        let installation = installation_of(
+            &directory.join("oxide-desktop.exe"),
+            "windows",
+            None,
+            Some(&directory),
+        );
+
+        let work = WorkDir::new().unwrap();
+        let placed = install_downloaded(&installation, "0.34.0", &setup, &work).unwrap();
+
+        assert!(placed.pending, "the installer owns what happens next");
+        assert!(
+            placed.note.contains("installer is running"),
+            "{}",
+            placed.note
         );
         fs::remove_dir_all(root).unwrap();
     }
