@@ -1,8 +1,9 @@
-//! Rust host for the Electron desktop app.
+//! Tauri entry point for the Oxide desktop app.
 //!
-//! Electron owns the window and native dialogs. This process owns the same
-//! project/session/agent state the former in-process shell did and exchanges
-//! newline-delimited JSON frames over stdin/stdout.
+//! The project/session/turn logic lives in the `oxide_desktop` library and the
+//! shared `oxide-core`; this binary wires that state to one window and forwards
+//! every command the window invokes to `commands::dispatch`. It builds with
+//! `--features gui` (see `cargo run -p oxide-desktop --features gui`).
 
 #![cfg_attr(
     all(not(debug_assertions), target_os = "windows"),
@@ -11,65 +12,64 @@
 
 mod approval;
 mod ask;
+mod bridge;
 mod commands;
 
+use bridge::EventSink;
 use commands::{dispatch, DesktopState};
-use oxide_desktop::bridge::EventSink;
 use oxide_desktop::manager::DesktopManager;
-use serde::Deserialize;
-use serde_json::{json, Value};
+use serde_json::Value;
 use std::sync::Arc;
-use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader, BufWriter};
-use tokio::sync::mpsc;
+use tauri::{AppHandle, Manager, State};
 
-#[derive(Deserialize)]
-struct Request {
-    id: u64,
+/// The one command the window invokes: the name and arguments of a command in
+/// [`commands::dispatch`], answered with that command's own value or the reason
+/// it failed.
+///
+/// The webview reaches its own app through the Tauri globals rather than an
+/// allowlisted bridge, so the alternative is one `#[tauri::command]` per name
+/// and a typed argument list for each. Keeping the single entry point leaves the
+/// set of commands the window can perform in one match, where the argument
+/// shapes and the two operating-system-only calls (`pick_folder`, `open_url`)
+/// sit beside the state they act on, and the page's own bridge stays the four
+/// lines of `ui/app.js` that unpack this shape.
+#[tauri::command]
+async fn oxide_invoke(
+    app: AppHandle,
+    state: State<'_, Arc<DesktopState>>,
     command: String,
-    #[serde(default)]
     args: Value,
+) -> Result<Value, String> {
+    dispatch(Arc::clone(&state), &app, &command, args).await
 }
 
-#[tokio::main]
-async fn main() -> anyhow::Result<()> {
-    let (output, mut frames) = mpsc::unbounded_channel::<Value>();
-    let events = EventSink::new(output.clone());
-    let state = Arc::new(DesktopState::new(
-        DesktopManager::load_lossy(),
-        events.clone(),
-    ));
+fn main() {
+    let app = tauri::Builder::default()
+        .plugin(tauri_plugin_dialog::init())
+        .setup(|app| {
+            let events = EventSink::new(app.handle().clone());
+            app.manage(Arc::new(DesktopState::new(
+                DesktopManager::load_lossy(),
+                events,
+            )));
+            Ok(())
+        })
+        .invoke_handler(tauri::generate_handler![oxide_invoke])
+        .build(tauri::generate_context!())
+        .expect("error while building the Oxide desktop app");
 
-    let writer = tokio::spawn(async move {
-        let mut stdout = BufWriter::new(tokio::io::stdout());
-        while let Some(frame) = frames.recv().await {
-            let encoded = serde_json::to_vec(&frame)?;
-            stdout.write_all(&encoded).await?;
-            stdout.write_all(b"\n").await?;
-            stdout.flush().await?;
+    app.run(|handle, event| {
+        // The app is one window, and a run belongs to it: closing the window
+        // ends the process on every platform rather than leaving a turn
+        // nothing can watch, answer or stop. macOS keeps a windowless app
+        // alive by default, and a dock icon that reopens nothing is not a
+        // second way back into the project.
+        if let tauri::RunEvent::WindowEvent {
+            event: tauri::WindowEvent::CloseRequested { .. },
+            ..
+        } = event
+        {
+            handle.exit(0);
         }
-        Ok::<(), anyhow::Error>(())
     });
-
-    let mut lines = BufReader::new(tokio::io::stdin()).lines();
-    while let Some(line) = lines.next_line().await? {
-        let request = match serde_json::from_str::<Request>(&line) {
-            Ok(request) => request,
-            Err(error) => {
-                let _ = events.emit(
-                    "host-error",
-                    json!({ "message": format!("invalid desktop request: {error}") }),
-                );
-                continue;
-            }
-        };
-        let state = Arc::clone(&state);
-        let events = events.clone();
-        tokio::spawn(async move {
-            let result = dispatch(state, &request.command, request.args).await;
-            events.response(request.id, result);
-        });
-    }
-
-    writer.abort();
-    Ok(())
 }

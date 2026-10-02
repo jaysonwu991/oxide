@@ -1,40 +1,32 @@
-//! Transport shared by the Electron host and the desktop command layer.
+//! Where a desktop event leaves the run that produced it.
 //!
-//! The renderer never talks to this process directly. Electron's sandboxed
-//! preload exposes a narrow command API, the main process forwards those calls
-//! as JSON lines on stdin, and this host writes responses and streamed events
-//! as JSON lines on stdout.
+//! A turn streams on its own task, and an approval or a question is answered
+//! later still, so the sink the command layer, the approval broker and the ask
+//! broker share is a handle to the window itself: `commands::dispatch` answers
+//! the command the page invoked, and everything the run has to say while one is
+//! in flight is emitted on the app's own event channel, where the page's
+//! `listen` handlers pick it up.
 
 use serde::Serialize;
-use serde_json::{json, Value};
-use tokio::sync::mpsc;
+use tauri::{AppHandle, Emitter};
 
 #[derive(Clone)]
 pub struct EventSink {
-    output: mpsc::UnboundedSender<Value>,
+    app: AppHandle,
 }
 
 impl EventSink {
-    pub fn new(output: mpsc::UnboundedSender<Value>) -> Self {
-        Self { output }
+    pub fn new(app: AppHandle) -> Self {
+        Self { app }
     }
 
+    /// Announces an event to the window. A payload that will not serialize, or
+    /// a window that is gone, is reported to the caller and otherwise ignored:
+    /// a run whose event cannot be painted still has to finish.
     pub fn emit(&self, event: &str, payload: impl Serialize) -> Result<(), String> {
         let payload = serde_json::to_value(payload).map_err(|error| error.to_string())?;
-        self.output
-            .send(json!({
-                "type": "event",
-                "event": event,
-                "payload": payload,
-            }))
-            .map_err(|_| "desktop event channel is closed".to_string())
-    }
-
-    pub fn response(&self, id: u64, result: Result<Value, String>) {
-        let frame = match result {
-            Ok(value) => json!({ "type": "response", "id": id, "ok": true, "value": value }),
-            Err(error) => json!({ "type": "response", "id": id, "ok": false, "error": error }),
-        };
-        let _ = self.output.send(frame);
+        self.app
+            .emit(event, payload)
+            .map_err(|error| error.to_string())
     }
 }

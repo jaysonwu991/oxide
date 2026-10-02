@@ -8,9 +8,9 @@
 //! that tool in the terminal, the extension or here. A request that never gets
 //! an answer times out as a denial so a turn cannot hang forever.
 
+use crate::bridge::EventSink;
 use oxide_core::agent::Approver;
 use oxide_core::approvals::ApprovalStore;
-use oxide_desktop::bridge::EventSink;
 use serde_json::json;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};

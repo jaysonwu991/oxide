@@ -3,10 +3,9 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <meta
-      http-equiv="Content-Security-Policy"
-      content="default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:"
-    />
+    <!-- The policy is the shell's: `tauri.conf.json` injects it into this
+         document, where it can carry the hashes of Tauri's own scripts and the
+         `ipc:` source the app's commands are invoked over. -->
     <title>Oxide</title>
     <link rel="stylesheet" href="style.css" />
   </head>

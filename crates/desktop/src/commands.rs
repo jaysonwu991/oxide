@@ -1,7 +1,8 @@
-//! Commands backing the Electron desktop UI.
+//! Commands backing the desktop window.
 
 use crate::approval::ApprovalBroker;
 use crate::ask::AskBroker;
+use crate::bridge::EventSink;
 use anyhow::Context;
 use oxide_core::agent::{AgentEvent, Cancel, Steering};
 use oxide_core::auth::{self, AuthStore};
@@ -15,7 +16,6 @@ use oxide_core::session::{SessionLog, SessionSummary};
 use oxide_core::snapshots::Snapshots;
 use oxide_core::theme_view;
 use oxide_desktop::at::{AtAnswer, PathCache};
-use oxide_desktop::bridge::EventSink;
 use oxide_desktop::manager::{expand_project_path, DesktopManager, ProjectView};
 use oxide_desktop::turn::{notify_finished, open_session, start_turn, Turn};
 use serde::{de::DeserializeOwned, Serialize};
@@ -24,6 +24,8 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
+use tauri::AppHandle;
+use tauri_plugin_dialog::DialogExt;
 use tokio::sync::Mutex;
 use tokio::task::AbortHandle;
 
@@ -882,16 +884,79 @@ fn command_value<T: Serialize>(result: CmdResult<T>) -> CmdResult<Value> {
     result.and_then(|value| serde_json::to_value(value).map_err(err))
 }
 
-/// Dispatches the stable command contract used by the renderer. Electron owns
-/// the two operating-system-only calls (`pick_folder` and `open_url`); every
-/// command that touches Oxide state stays in this Rust process.
-pub async fn dispatch(state: Arc<DesktopState>, command: &str, args: Value) -> CmdResult<Value> {
+/// Opens the platform folder chooser. Used by the desktop's **Add** button when
+/// the path field is empty, so adding a project does not require typing an
+/// absolute path from memory.
+///
+/// The panel is the app's own (the dialog plugin's `NSOpenPanel`/GTK/Windows
+/// equivalent), not a chooser shelled out to `osascript`/`zenity`: a child
+/// process's panel opens as a background app, which can put it behind the
+/// window — or never show it at all where the platform refuses the request —
+/// and the user is left with a button that appears to do nothing.
+pub async fn pick_folder(app: &AppHandle) -> CmdResult<Option<String>> {
+    let (tx, rx) = tokio::sync::oneshot::channel();
+    app.dialog()
+        .file()
+        .set_title("Add a project to Oxide")
+        .pick_folder(move |path| {
+            let _ = tx.send(path.map(|path| path.to_string()));
+        });
+    rx.await.map_err(err)
+}
+
+/// Opens an external link in the platform browser. The transcript renders URLs
+/// as anchors, but the webview cannot navigate to a remote page, so a click is
+/// routed here instead of relying on `target="_blank"`.
+pub fn open_url(url: &str) -> CmdResult<()> {
+    let url = url.trim();
+    if !is_openable_url(url) {
+        return Err("Only http(s) links can be opened".to_string());
+    }
+    open_in_browser(url).map_err(err)
+}
+
+fn is_openable_url(url: &str) -> bool {
+    let scheme = url.to_ascii_lowercase();
+    scheme.starts_with("https://") || scheme.starts_with("http://")
+}
+
+fn open_in_browser(url: &str) -> std::io::Result<()> {
+    #[cfg(target_os = "macos")]
+    let spawned = std::process::Command::new("open").arg(url).spawn();
+    // `cmd /C start` would let a URL with quotes or shell metacharacters be
+    // read as command text, so hand the URL to a handler that takes it as a
+    // plain argument instead.
+    #[cfg(target_os = "windows")]
+    let spawned = std::process::Command::new("rundll32")
+        .args(["url.dll,FileProtocolHandler", url])
+        .spawn();
+    #[cfg(all(unix, not(target_os = "macos")))]
+    let spawned = std::process::Command::new("xdg-open").arg(url).spawn();
+    #[cfg(not(any(unix, target_os = "windows")))]
+    let spawned: std::io::Result<std::process::Child> = Err(std::io::Error::new(
+        std::io::ErrorKind::Unsupported,
+        "opening links is not supported on this platform",
+    ));
+    spawned.map(|_| ())
+}
+
+/// Dispatches the stable command contract used by the window. The two
+/// operating-system-only calls (`pick_folder` and `open_url`) are performed by
+/// this process for the window itself; every command that touches Oxide state
+/// stays below them.
+pub async fn dispatch(
+    state: Arc<DesktopState>,
+    app: &AppHandle,
+    command: &str,
+    args: Value,
+) -> CmdResult<Value> {
     match command {
         "list_projects" => command_value(list_projects(&state).await),
         "add_project" => command_value(add_project(arg(&args, "path")?, &state).await),
         "create_project" => command_value(
             create_project(arg(&args, "name")?, optional_arg(&args, "folders")?, &state).await,
         ),
+        "pick_folder" => command_value(pick_folder(app).await),
         "remove_project" => command_value(remove_project(arg(&args, "id")?, &state).await),
         "list_sessions" => command_value(list_sessions(arg(&args, "project")?, &state).await),
         "all_sessions" => command_value(all_sessions(&state).await),
@@ -998,6 +1063,7 @@ pub async fn dispatch(state: Arc<DesktopState>, command: &str, args: Value) -> C
             command_value(theme_colors(arg(&args, "project")?, arg(&args, "name")?).await)
         }
         "set_theme" => command_value(set_theme(arg(&args, "project")?, arg(&args, "name")?).await),
+        "open_url" => command_value(open_url(&arg::<String>(&args, "url")?)),
         _ => Err(format!("unknown desktop command `{command}`")),
     }
 }
@@ -1125,6 +1191,16 @@ mod tests {
         assert!(gone.to_string().contains("reading a.txt"), "{gone}");
 
         std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn a_link_that_is_not_a_web_page_is_refused() {
+        assert!(is_openable_url("https://github.com/o/r/pull/7"));
+        assert!(is_openable_url("http://localhost:3000"));
+        assert!(is_openable_url("HTTPS://example.com"));
+        assert!(!is_openable_url("file:///etc/passwd"));
+        assert!(!is_openable_url("javascript:alert(1)"));
+        assert!(!is_openable_url(""));
     }
 
     #[test]

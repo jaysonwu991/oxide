@@ -9,7 +9,7 @@ page is the detail behind it, and the task-by-task guides live in
 - Interactive TUI (ratatui) plus non-interactive `-p/--print`, `--mode json`
   (JSONL event stream), and `--mode rpc` (JSONL over stdin/stdout) modes. In the
   TUI, `/login` (`/connect`) and `/logout` manage provider credentials.
-- Desktop app (`oxide-desktop`, Electron + Rust) that manages multiple projects
+- Desktop app (`oxide-desktop`, Tauri + Rust) that manages multiple projects
   and shows the shared session store, using the same configuration as the CLI
   (see [desktop.md](desktop.md)).
 - VS Code extension (`editors/vscode`) that drives the same `oxide` binary from

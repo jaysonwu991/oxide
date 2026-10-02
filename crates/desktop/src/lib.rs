@@ -3,11 +3,11 @@
 //! `manager` holds the multi-project and session-listing logic, `turn` runs an
 //! agent turn against a project using the shared `oxide-core` configuration, and
 //! `at` answers the composer's `@path` completion. All three build without any
-//! GUI dependency so they are unit tested like the rest of the workspace. The
-//! Electron shell talks to the Rust host over a small JSON-lines protocol.
+//! GUI dependency so they are unit tested like the rest of the workspace; the
+//! Tauri shell in `src/main.rs` is the only part that links a window, and it
+//! drives these three.
 
 pub mod at;
-pub mod bridge;
 pub mod manager;
 pub mod turn;
 

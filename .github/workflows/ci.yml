@@ -1,8 +1,8 @@
 name: ci
 
 # Pull-request and `main` checks for the whole repository: the Rust workspace
-# (formatting, clippy, tests), the Electron desktop shell and Rust host, and the
-# VS Code extension. This
+# (formatting, clippy, tests), the Tauri desktop app's `gui` feature with its
+# front-end checks, and the VS Code extension. This
 # workflow only verifies; the tag-triggered release workflows (`cli.yml`,
 # `desktop.yml`, and `vscode.yml`) build the shippable artifacts.
 
@@ -44,8 +44,12 @@ jobs:
       - run: cargo test --locked
       - run: cargo build --release --locked
 
-  # Exercise the preload/IPC boundary, the real Rust host protocol, renderer
-  # behavior and an Electron package on every supported operating system.
+  # The `gui` feature is off by default (so the plain workspace build stays
+  # Tauri-free), which means the `test` job above never compiles the desktop
+  # front-end. Build and lint it on each platform here, with the same Linux
+  # system libraries the release workflow installs, so a platform-specific
+  # break is caught on the pull request instead of at tag time — and run the
+  # front-end checks, since no Rust test runs the app's own JavaScript.
   desktop:
     name: desktop (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
@@ -61,26 +65,28 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           key: desktop
-      - uses: pnpm/action-setup@v4
-        with:
-          version: 12.8.1
-          run_install: false
       - uses: actions/setup-node@v4
         with:
           node-version: 22
-          cache: pnpm
-          cache-dependency-path: crates/desktop/pnpm-lock.yaml
-      - name: Install desktop dependencies
-        working-directory: crates/desktop
-        run: pnpm install --frozen-lockfile
+      - name: Install Linux dependencies
+        if: matrix.os == 'ubuntu-22.04'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libwebkit2gtk-4.1-dev \
+            libappindicator3-dev \
+            librsvg2-dev \
+            patchelf
       - name: Lint the desktop app
-        run: cargo clippy -p oxide-desktop --all-targets --locked -- -D warnings
-      - name: Check the renderer and host bridge
-        working-directory: crates/desktop
-        run: pnpm run check
-      - name: Package the desktop app
-        working-directory: crates/desktop
-        run: pnpm run package
+        run: cargo clippy -p oxide-desktop --features gui --all-targets --locked -- -D warnings
+      - name: Test the desktop app
+        run: cargo test -p oxide-desktop --features gui --locked
+      - name: Build the CLI the front-end checks read
+        run: cargo build -p oxide --locked
+      - name: Check the shell the window is opened by
+        run: node crates/desktop/check-shell.mjs
+      - name: Check the front-end
+        run: node crates/desktop/check-app.mjs
 
   # The extension is a standalone pnpm/TypeScript package, so it is not covered
   # by the Cargo jobs. Run its type check and unit tests on each platform the
