@@ -11,30 +11,44 @@
   </head>
   <body>
     <aside class="sidebar">
+      <!-- The window's own chrome already names the app, so the sidebar's head
+           is the way into a conversation instead of a second brand: a glyph and
+           words, in the one row the sidebar has above its lists. -->
       <div class="sidebar-top">
-        <div class="brand"><span class="dot">◆</span> Oxide</div>
+        <button
+          id="new-chat"
+          class="new-chat"
+          title="New Chat&#10;Starts a thread in the current project"
+          aria-label="New Chat"
+        ><svg viewBox="0 0 16 16" width="15" height="15" aria-hidden="true"><path d="M8 3.6v8.8M3.6 8h8.8" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg><span>New Chat</span></button>
       </div>
 
       <div class="projects-section">
         <div class="projects-header">
           <span>Projects</span>
-          <button id="create-project-btn-tree" class="ghost small" title="Create a new project">+ New</button>
+          <button
+            id="create-project-btn-tree"
+            class="icon"
+            title="New project&#10;Pick the folders to include"
+            aria-label="New project"
+          ><svg viewBox="0 0 16 16" width="15" height="15" aria-hidden="true"><path d="M8 3.6v8.8M3.6 8h8.8" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg></button>
         </div>
         <div id="projects-tree" class="projects-tree"></div>
       </div>
 
       <div class="sidebar-foot">
-        <button id="connect" class="foot-btn">Connect</button>
-        <button id="trust" class="icon" title="Project trust" hidden>☑</button>
-        <button id="theme" class="icon" title="Theme">◐</button>
-        <button id="permissions" class="icon" title="Saved tool approvals">🔒</button>
+        <button
+          id="theme"
+          class="icon"
+          title="Theme"
+          aria-label="Theme"
+        ><svg viewBox="0 0 24 24" width="14" height="14" aria-hidden="true"><circle cx="12" cy="12" r="8.5" fill="none" stroke="currentColor" stroke-width="1.8"/><path d="M12 3.5a8.5 8.5 0 0 0 0 17z" fill="currentColor"/></svg></button>
         <button
           id="update"
           class="icon"
           title="Check for updates"
           aria-label="Check for updates"
-        >↻</button>
-        <button id="help" class="icon" title="Keyboard shortcuts">?</button>
+        ><svg viewBox="0 0 24 24" width="14" height="14" aria-hidden="true"><path d="M23 4v6h-6" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg></button>
       </div>
     </aside>
 
@@ -107,19 +121,66 @@
           <textarea id="prompt" placeholder="Ask Oxide…" disabled></textarea>
           <div class="composer-bar">
             <div class="composer-left">
-              <button id="attach" class="chip" title="Attach images or PDFs (paste with the platform paste shortcut)">📎</button>
-              <button id="model" class="chip" title="Switch model">model</button>
-              <button id="reasoning" class="chip" title="Reasoning effort (Shift+Tab)">auto</button>
+              <button
+                id="attach"
+                class="chip chip-icon"
+                title="Attach images or PDFs (paste with the platform paste shortcut)"
+                aria-label="Attach images or PDFs"
+              ><svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true"><path d="M21.44 11.05l-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg></button>
+              <button
+                id="model"
+                class="chip chip-icon"
+                title="Model"
+                aria-label="Model"
+              ><svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true"><path d="m8 1.8 5.5 3.1v6.2L8 14.2l-5.5-3.1V4.9L8 1.8Z" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/><path d="m2.8 5 5.2 3 5.2-3M8 8v5.8" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/></svg></button>
+              <button
+                id="reasoning"
+                class="chip chip-icon"
+                title="Thinking level"
+                aria-label="Thinking level"
+              ><svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true"><path d="M8 1.7 9 5l3.3 1L9 7l-1 3.3L7 7 3.7 6 7 5l1-3.3ZM12.7 9.3l.6 1.8 1.7.6-1.7.6-.6 1.7-.6-1.7-1.8-.6 1.8-.6.6-1.8ZM3.5 10.2l.5 1.3 1.3.5-1.3.5-.5 1.3-.5-1.3-1.3-.5 1.3-.5.5-1.3Z" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/></svg></button>
+              <button
+                id="trust"
+                class="chip chip-icon"
+                title="Project trust"
+                aria-label="Project trust"
+                hidden
+              ><svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true"><path d="M8 1.7c1.7 1.2 3.3 1.7 5 1.8v3.8c0 3.2-1.7 5.5-5 7-3.3-1.5-5-3.8-5-7V3.5c1.7-.1 3.3-.6 5-1.8Z" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/><path d="m5.6 8 1.5 1.5 3.5-3.5" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/></svg></button>
+              <span class="composer-sep" aria-hidden="true"></span>
+              <button
+                id="connect"
+                class="chip chip-icon"
+                title="Connect a provider"
+                aria-label="Connect a provider"
+              ><svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true"><path d="M6 2.2v2.6M10 2.2v2.6" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/><path d="M11.8 4.8v2a3.8 3.8 0 0 1-7.6 0v-2z" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/><path d="M8 10.6v3.4" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/></svg></button>
+              <button
+                id="permissions"
+                class="chip chip-icon"
+                title="Saved tool approvals"
+                aria-label="Saved tool approvals"
+              ><svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true"><path d="M5.6 7.4V5.6a2.4 2.4 0 0 1 4.8 0v1.8" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/><path d="M4.4 7.4h7.2a1.2 1.2 0 0 1 1.2 1.2v4.2a1.2 1.2 0 0 1-1.2 1.2H4.4a1.2 1.2 0 0 1-1.2-1.2V8.6a1.2 1.2 0 0 1 1.2-1.2z" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linejoin="round"/></svg></button>
+              <button
+                id="help"
+                class="chip chip-icon"
+                title="Keyboard shortcuts"
+                aria-label="Keyboard shortcuts"
+              ><svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true"><circle cx="8" cy="8" r="6" fill="none" stroke="currentColor" stroke-width="1.3"/><path d="M6.4 6.2a1.6 1.6 0 1 1 2.2 1.5c-.5.2-.7.5-.7 1.1v.3" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/><path d="M8 11v.01" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/></svg></button>
             </div>
             <div class="composer-right">
-              <button id="stop" class="icon danger" hidden title="Stop">■</button>
+              <button
+                id="stop"
+                class="icon danger"
+                hidden
+                title="Stop"
+                aria-label="Stop"
+              ><svg viewBox="0 0 16 16" width="13" height="13" aria-hidden="true"><rect x="4" y="4" width="8" height="8" rx="1.7" fill="currentColor"/></svg></button>
               <button
                 id="busy-message-mode"
                 class="chip busy-message-mode"
                 hidden
                 title="Queue this message as the next turn after the current response"
               >Queue</button>
-              <button id="send" class="send" disabled title="Send (Enter)">↑</button>
+              <button id="send" class="send" disabled title="Send (Enter)" aria-label="Send"><svg viewBox="0 0 16 16" width="15" height="15" aria-hidden="true"><path d="M8 13.4V3.4M4 7.4 8 3.4l4 4" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg></button>
             </div>
           </div>
         </div>
@@ -272,9 +333,14 @@
           <h2 id="review-title">Changes</h2>
           <span id="review-total" class="review-total"></span>
           <span class="review-hint">↑↓ walk the files</span>
-          <button id="review-prev" class="icon" title="Previous file (↑)" aria-label="Previous file">↑</button>
-          <button id="review-next" class="icon" title="Next file (↓)" aria-label="Next file">↓</button>
-          <button id="review-close" class="ghost small" title="Close (Esc)" aria-label="Close">✕</button>
+          <button id="review-prev" class="icon" title="Previous file (↑)" aria-label="Previous file"><svg viewBox="0 0 24 24" width="14" height="14" aria-hidden="true"><path d="M6 15l6-6 6 6" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg></button>
+          <button id="review-next" class="icon" title="Next file (↓)" aria-label="Next file"><svg viewBox="0 0 24 24" width="14" height="14" aria-hidden="true"><path d="M6 9l6 6 6-6" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg></button>
+          <button
+            id="review-close"
+            class="icon"
+            title="Close (Esc)"
+            aria-label="Close"
+          ><svg viewBox="0 0 24 24" width="14" height="14" aria-hidden="true"><path d="M18 6 6 18M6 6l12 12" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg></button>
         </div>
         <div class="review-body">
           <div id="review-files" class="review-files"></div>
