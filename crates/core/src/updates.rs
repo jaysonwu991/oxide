@@ -244,6 +244,9 @@ pub struct Release {
 }
 
 impl Release {
+    /// A release whose artifact is the one the platform prefers, without the
+    /// release being read: what a pinned version resolves to, and what a
+    /// manifest naming its own asset per platform is trusted for.
     pub fn new(component: Component, tag: &str, asset: Option<String>, platform: &str) -> Self {
         let asset = match asset.filter(|name| !name.is_empty()) {
             Some(asset) => asset,
@@ -254,6 +257,27 @@ impl Release {
             version: release_version(tag),
             asset,
             digest: None,
+        }
+    }
+
+    /// A release as GitHub lists it: the artifact is the first name this
+    /// platform installs that the release actually carries, and empty when it
+    /// carries none — a build the release job never published is not a
+    /// download to offer, and its URL would be the one thing a front-end
+    /// cannot recover from.
+    pub fn listed(
+        component: Component,
+        tag: &str,
+        releases: &serde_json::Value,
+        platform: &str,
+    ) -> Self {
+        let asset = listed_asset(releases, tag, component, platform).unwrap_or_default();
+        let digest = asset_digest(releases, tag, &asset);
+        Self {
+            tag: tag.to_string(),
+            version: release_version(tag),
+            asset,
+            digest,
         }
     }
 
@@ -373,9 +397,33 @@ async fn api_release(
         serde_json::from_slice(&body).with_context(|| format!("reading {url}"))?;
     let tag = newest_tag(&releases, component)
         .with_context(|| format!("no release of {} found in {repo}", component.label()))?;
-    let mut release = Release::new(component, &tag, None, platform);
-    release.digest = asset_digest(&releases, &tag, &release.asset);
-    Ok(release)
+    Ok(Release::listed(component, &tag, &releases, platform))
+}
+
+/// The first artifact this platform installs that the release really carries,
+/// as the release's own assets name it. `None` when it carries none of them:
+/// a platform the release does not build for, or an upload that has not
+/// finished.
+fn listed_asset(
+    releases: &serde_json::Value,
+    tag: &str,
+    component: Component,
+    platform: &str,
+) -> Option<String> {
+    let assets = releases
+        .as_array()?
+        .iter()
+        .find(|release| release.get("tag_name").and_then(|name| name.as_str()) == Some(tag))?
+        .get("assets")?
+        .as_array()?;
+    let names: Vec<&str> = assets
+        .iter()
+        .filter_map(|entry| entry.get("name")?.as_str())
+        .collect();
+    component
+        .assets(tag, platform)
+        .into_iter()
+        .find(|preferred| names.contains(&preferred.as_str()))
 }
 
 /// The newest release of one component among the releases GitHub lists, which
@@ -1032,6 +1080,61 @@ mod tests {
         // than refused.
         assert!(asset_digest(&listed, "desktop-v0.34.0", "Oxide_0.34.0_amd64.AppImage").is_none());
         assert!(asset_digest(&listed, "desktop-v0.33.0", "Oxide_0.34.0_aarch64.dmg").is_none());
+    }
+
+    #[test]
+    fn a_listed_release_offers_an_artifact_it_really_carries() {
+        let releases = serde_json::json!([{
+            "tag_name": "desktop-v0.34.0",
+            "assets": [
+                { "name": "Oxide_0.34.0_amd64.deb", "digest": "sha256:deb" },
+                { "name": "Oxide_0.34.0_amd64.AppImage", "digest": "sha256:img" }
+            ]
+        }]);
+        // The AppImage outranks the deb, and the release's own asset list is
+        // what says both are there.
+        let release = Release::listed(
+            Component::Desktop,
+            "desktop-v0.34.0",
+            &releases,
+            "linux-x64",
+        );
+        assert_eq!(release.asset, "Oxide_0.34.0_amd64.AppImage");
+        assert_eq!(release.digest.as_deref(), Some("sha256:img"));
+
+        // A release that published only the deb is installed from the deb
+        // rather than offered the AppImage it never built.
+        let deb_only = serde_json::json!([{
+            "tag_name": "desktop-v0.34.0",
+            "assets": [{ "name": "Oxide_0.34.0_amd64.deb" }]
+        }]);
+        let release = Release::listed(
+            Component::Desktop,
+            "desktop-v0.34.0",
+            &deb_only,
+            "linux-x64",
+        );
+        assert_eq!(release.asset, "Oxide_0.34.0_amd64.deb");
+        assert!(release.digest.is_none());
+
+        // A platform the release carries nothing for has no artifact at all,
+        // which a front-end reports instead of a URL that would 404.
+        let release = Release::listed(
+            Component::Desktop,
+            "desktop-v0.34.0",
+            &deb_only,
+            "darwin-arm64",
+        );
+        assert!(release.asset.is_empty());
+        assert!(release.artifact(DEFAULT_REPO).is_none());
+
+        // The extension ships one VSIX, whatever the machine.
+        let vsix = serde_json::json!([{
+            "tag_name": "extension-v0.34.0",
+            "assets": [{ "name": "oxide-vscode-0.34.0.vsix" }]
+        }]);
+        let release = Release::listed(Component::Extension, "extension-v0.34.0", &vsix, "");
+        assert_eq!(release.asset, "oxide-vscode-0.34.0.vsix");
     }
 
     #[test]

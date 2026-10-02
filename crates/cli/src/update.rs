@@ -72,13 +72,28 @@ fn check_of(
     let method = detect_install_method(executable);
     check.update_available |= options.force;
     check.installation = method.label().to_string();
-    check.installable = match method {
-        InstallMethod::Cargo | InstallMethod::Prebuilt => true,
-        InstallMethod::Unknown => options.force,
-        InstallMethod::Homebrew => false,
-    };
     check.path = executable.display().to_string();
-    check.advice = check.update_available.then(|| advice(method, executable));
+    // A release with nothing this machine installs is still an update, but not
+    // one this command can install: the release page is where its downloads are,
+    // and saying it is installable would offer a download that 404s.
+    let build = check.asset.is_some();
+    check.installable = build
+        && match method {
+            InstallMethod::Cargo | InstallMethod::Prebuilt => true,
+            InstallMethod::Unknown => options.force,
+            InstallMethod::Homebrew => false,
+        };
+    check.advice = check.update_available.then(|| {
+        if build {
+            advice(method, executable)
+        } else {
+            format!(
+                "Update available: no build of {} is published for this platform; install it from \
+                 the release page.",
+                release.tag
+            )
+        }
+    });
     check
 }
 
@@ -146,8 +161,13 @@ async fn run_for(options: Options, executable: &Path, repo: &str) -> Result<()> 
         }
         return Ok(());
     }
-    if let Some(asset) = &check.asset {
-        println!("Asset: {}", asset.name);
+    match check.asset.as_ref() {
+        Some(asset) => println!("Asset: {}", asset.name),
+        // A release with nothing this machine installs is an answer, and the
+        // JSON says the same thing with a null asset; there is no download to
+        // name.
+        None if !platform.is_empty() => println!("Asset: none published for {platform}"),
+        None => {}
     }
     if options.check {
         if let Some(advice) = check.advice.as_deref() {
@@ -172,6 +192,13 @@ async fn run_for(options: Options, executable: &Path, repo: &str) -> Result<()> 
         println!(
             "Replacing {} because it was given with --force",
             executable.display()
+        );
+    }
+    if release.asset.is_empty() {
+        bail!(
+            "{} carries no build for {platform}; see {} for the downloads this release has",
+            release.tag,
+            release.page_url(repo)
         );
     }
 
@@ -543,6 +570,46 @@ mod tests {
         );
         assert!(!check.update_available);
         assert!(check.advice.is_none());
+    }
+
+    /// A release that publishes no build for this machine is still an update,
+    /// but not one this command can install: the check says so — and offers no
+    /// artifact — rather than naming a download that would 404.
+    #[test]
+    fn a_release_with_no_build_for_this_machine_is_not_installable() {
+        let executable = Path::new("/opt/scratch/oxide");
+        let options = Options {
+            check: true,
+            version: None,
+            force: false,
+            json: true,
+            component: Component::Cli,
+            current: None,
+        };
+        // As `updates::api_release` leaves it when the release carries none of
+        // the names this platform installs.
+        let mut release = Release::new(Component::Cli, "v0.34.0", None, "darwin-arm64");
+        release.asset.clear();
+        let check = check_of(
+            &options,
+            &release,
+            executable,
+            "jaysonwu991/oxide",
+            "0.33.0",
+        );
+
+        assert!(check.update_available);
+        assert!(check.asset.is_none(), "there is nothing to download");
+        assert!(!check.installable, "nothing is published to install");
+        assert!(
+            check
+                .advice
+                .as_deref()
+                .unwrap()
+                .contains("no build of v0.34.0 is published"),
+            "{:?}",
+            check.advice
+        );
     }
 
     /// `oxide update` replaces the installed binary, and only that. A run asked
