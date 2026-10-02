@@ -16,11 +16,44 @@ mod bridge;
 mod commands;
 
 use bridge::EventSink;
+#[cfg(target_os = "macos")]
+use commands::announce_check_updates;
 use commands::{dispatch, DesktopState};
 use oxide_desktop::manager::DesktopManager;
 use serde_json::Value;
 use std::sync::Arc;
 use tauri::{AppHandle, Manager, State};
+
+/// The id of the app menu's update item, which `on_menu_event` compares against.
+#[cfg(target_os = "macos")]
+const CHECK_FOR_UPDATES: &str = "check-for-updates";
+
+/// Tauri's default menu with **Check for Updates…** added to the app menu, where
+/// a macOS user looks for it (directly under **About**).
+///
+/// macOS keeps a menu bar open whatever the app is doing; Windows and Linux show
+/// one only because an app asked for it, so the app does not gain a menu bar for
+/// this one item — the sidebar's own button is the way in there.
+#[cfg(target_os = "macos")]
+fn menu(handle: &AppHandle) -> tauri::Result<tauri::menu::Menu<tauri::Wry>> {
+    use tauri::menu::{Menu, MenuItem, MenuItemKind};
+
+    let menu = Menu::default(handle)?;
+    let item = MenuItem::with_id(
+        handle,
+        CHECK_FOR_UPDATES,
+        "Check for Updates…",
+        true,
+        None::<&str>,
+    )?;
+    // The app submenu leads the menu bar and is the only place this may go: the
+    // top level holds submenus alone on macOS.
+    if let Some(MenuItemKind::Submenu(app)) = menu.items()?.into_iter().next() {
+        // About, its separator, then this.
+        app.insert_items(&[&item], 2)?;
+    }
+    Ok(menu)
+}
 
 /// The one command the window invokes: the name and arguments of a command in
 /// [`commands::dispatch`], answered with that command's own value or the reason
@@ -44,8 +77,17 @@ async fn oxide_invoke(
 }
 
 fn main() {
-    let app = tauri::Builder::default()
-        .plugin(tauri_plugin_dialog::init())
+    let builder = tauri::Builder::default().plugin(tauri_plugin_dialog::init());
+    #[cfg(target_os = "macos")]
+    let builder = builder.menu(menu).on_menu_event(|handle, event| {
+        if event.id() == CHECK_FOR_UPDATES {
+            // The window performs the check and paints what it found, so the
+            // menu item and the sidebar button end at one dialog.
+            announce_check_updates(handle);
+        }
+    });
+
+    let app = builder
         .setup(|app| {
             let events = EventSink::new(app.handle().clone());
             app.manage(Arc::new(DesktopState::new(

@@ -1240,3 +1240,48 @@ body.resizing { cursor: col-resize; user-select: none; }
   font-size: 12px;
 }
 .path-row button { white-space: nowrap; }
+
+/* ---------- updates ---------- */
+
+/* The CLI's own update check: the release it resolved, what this machine has,
+   and what installing it would replace. The prose is one dim line per fact, so
+   a long version or a path reads as a row rather than a paragraph. */
+.update-body { display: flex; flex-direction: column; gap: 6px; margin-bottom: 4px; }
+.update-line { font-size: 12.5px; color: var(--text); }
+.update-line code {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  color: var(--accent);
+}
+.update-path { color: var(--dim); word-break: break-all; }
+.update-advice { color: var(--dim); }
+.update-error {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 11.5px;
+  line-height: 1.45;
+  color: var(--error);
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 9px 11px;
+  max-height: 220px;
+  overflow-y: auto;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+/* The same block for text that is not a failure: the report an `oxide update`
+   printed, which is read rather than acted on. */
+.update-report {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 11.5px;
+  line-height: 1.45;
+  color: var(--text);
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 9px 11px;
+  max-height: 220px;
+  overflow-y: auto;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
