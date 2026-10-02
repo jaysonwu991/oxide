@@ -126,6 +126,8 @@ oxide update [--check] [--component <cli|desktop|extension>] [--current <VERSION
 | `OXIDE_TRUNCATION_DIR` | Directory for saved truncated tool output (default `truncated/` in the config dir). |
 | `OXIDE_NOTIFY_ON_COMPLETE` / `OXIDE_NOTIFY_SOUND` | Override the desktop-notification flags (`/notify`). |
 | `OXIDE_SETTINGS_FILE` | Override the global `settings.json` path the TUI writes. |
+| `OXIDE_CHECK_FOR_UPDATES` | Enable/disable the launch's look for a newer CLI release (`/updates`). |
+| `OXIDE_UPDATES_FILE` | Override the `updates.json` path the launch notice is remembered in. |
 | `OXIDE_USAGE_FILE` | Override the `portkey-usage.json` path for the Portkey spend bar. |
 | `OPENAI_API_KEY` / `OPENAI_BASE_URL` | OpenAI credentials. |
 | `DEEPSEEK_API_KEY` / `DEEPSEEK_BASE_URL` | DeepSeek credentials. |
@@ -347,6 +349,8 @@ Runtime state lives under the platform Oxide config directory:
 - Portkey usage bar: `portkey-usage.json` (mode `0600`; see `OXIDE_USAGE_FILE`)
 - Settings: `settings.json` (e.g. `defaultProjectTrust`, `compaction`,
   `modelPrices`, `hideThinkingBlock`)
+- Updates: `updates.json` (the newest release of each component the last launch
+  found, so the launch notice needs no network wait; see `OXIDE_UPDATES_FILE`)
 - Themes: `themes/<name>.json`
 - Desktop projects: `desktop/projects.json` (folders added to the desktop
   sidebar)

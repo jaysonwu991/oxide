@@ -121,6 +121,20 @@ they unpack, and `oxide update` writes the same marker when it replaces one, so
 a custom `OXIDE_INSTALL_DIR` is recognized as a released install rather than
 needing `--force`. Restart `oxide` to run the new version.
 
+The terminal also tells you when a newer CLI release exists, without holding up
+the launch: an interactive `oxide` reads the release the last launch found from
+`updates.json` and offers it at once — `Update Available`, the version, the
+command that installs it, and where its notes are — and looks it up again only
+once that answer is more than six hours old, so a daily launch costs one
+request. Nothing is offered where `oxide update` could not install a release: a
+`target/debug` build, a distribution package or a binary moved by hand is told
+nothing, and a Homebrew install is offered `brew upgrade oxide`. `/updates`
+reports the state and the newest release seen, and `/updates on|off` turns the
+launch check off (`checkForUpdates` in the global `settings.json`, or the
+project's `.oxide/settings.json` which wins; `OXIDE_CHECK_FOR_UPDATES=0|1`
+overrides both for one launch). Only the TUI shows it — a `-p`/`--mode json`/
+`--mode rpc` run prints nothing but its own output.
+
 `--check --json` prints that report as JSON — `component`, `current`, `latest`,
 `tag`, `pinned`, `updateAvailable`, `installation`, `installable`, `path`,
 `advice`, `releaseUrl` and the `asset` (its `name`, `url` and the `digest`
