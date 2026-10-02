@@ -6,6 +6,7 @@ use crate::agent::{self, AgentEvent, Runtime};
 use crate::approval::{ApprovalBroker, Decision};
 use crate::config::{Config, Reasoning};
 use crate::ecosystem::AgentMode;
+use crate::install::InstallMethod;
 use crate::llm::{LlmClient, Message};
 use crate::lsp::LspManager;
 use crate::mcp::{McpRegistry, McpStatus};
@@ -19,6 +20,8 @@ use crate::tui::app::{
     MarketplacesState, ModelChoice, ModelsState, PendingApproval, Selection, SessionsState,
     SubagentState, Tone, TrustState, UsageField, UsageState,
 };
+use crate::tui::ui::relative_time;
+use crate::update_notice;
 use anyhow::{Context, Result};
 use crossterm::event::{
     DisableBracketedPaste, DisableMouseCapture, EnableBracketedPaste, EnableMouseCapture, Event,
@@ -29,6 +32,7 @@ use crossterm::terminal::{
     disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen,
 };
 use futures::StreamExt;
+use oxide_core::updates::Component;
 use ratatui::backend::CrosstermBackend;
 use ratatui::layout::Rect;
 use ratatui::Terminal;
@@ -252,6 +256,8 @@ async fn event_loop(
     let (marketplaces_tx, mut marketplaces_rx) = unbounded_channel::<MarketplaceOutcome>();
     let (usage_tx, mut usage_rx) =
         unbounded_channel::<Result<crate::portkey_usage::Snapshot, String>>();
+    let (update_tx, mut update_rx) = unbounded_channel::<update_notice::Notice>();
+    spawn_update_notice(&update_tx, &cwd);
     if config.model_catalog.is_empty() {
         let warmups: Vec<Config> = model_providers(&config)
             .into_iter()
@@ -287,7 +293,7 @@ async fn event_loop(
                     Some(Ok(Event::Key(key))) => handle_key(
                         key, &mut app, &mut config, &cwd, &mut rx, &mcp, &plugins,
                         snapshots.as_ref(), &lsp, &mut session, &approvals, &models_tx, &mcps_tx,
-                        &plugins_tx, &listings_tx, &marketplaces_tx, &usage_tx,
+                        &plugins_tx, &listings_tx, &marketplaces_tx, &usage_tx, &update_tx,
                     ),
                     Some(Ok(Event::Paste(text))) => handle_paste(text, &mut app),
                     Some(Ok(Event::Mouse(mouse))) => handle_mouse(mouse, &mut app, terminal_area),
@@ -367,6 +373,16 @@ async fn event_loop(
                         Level::Info => ChatItem::Info(notice.text),
                     });
                     app.auto_scroll = true;
+                }
+            }
+            update_result = update_rx.recv() => {
+                if let Some(notice) = update_result {
+                    // Only a release newer than this binary is offered, and only
+                    // where `oxide update` could install it.
+                    if let Some(item) = update_item(&notice, update_notice_command()) {
+                        app.items.push(item);
+                        app.auto_scroll = true;
+                    }
                 }
             }
             _ = tick.tick(), if app.busy => {
@@ -484,6 +500,7 @@ fn handle_key(
     listings_tx: &UnboundedSender<Result<ChatItem, String>>,
     marketplaces_tx: &UnboundedSender<MarketplaceOutcome>,
     usage_tx: &UnboundedSender<Result<crate::portkey_usage::Snapshot, String>>,
+    update_tx: &UnboundedSender<update_notice::Notice>,
 ) {
     // Ctrl+C copies an active mouse selection, otherwise quits. It still quits
     // while a dialog or the trust prompt is open (those never hold a selection).
@@ -1015,6 +1032,12 @@ fn handle_key(
                 app.clear_input();
                 refresh_suggestions(app, config);
                 handle_usage_command(app, config, &raw, usage_tx);
+                return;
+            }
+            if raw == "/updates" || raw.starts_with("/updates ") {
+                app.clear_input();
+                refresh_suggestions(app, config);
+                handle_updates_command(app, cwd, &raw, update_tx);
                 return;
             }
             if raw == "/models" || raw.starts_with("/models ") {
@@ -1728,6 +1751,8 @@ fn help_text(config: &Config) -> String {
         "  /approvals [on|off]   ask before a gated tool runs; list or clear the rules"
             .to_string(),
         "  /usage                 configure the Portkey spend bar (dialog)".to_string(),
+        "  /updates [on|off]     check for a newer release at launch; show the last one seen"
+            .to_string(),
         "  /undo, /redo          revert or reapply the agent's file changes".to_string(),
         "  /compact [focus]      summarize older context, optionally with a focus".to_string(),
         "  /copy                 copy the last assistant message".to_string(),
@@ -1776,6 +1801,143 @@ fn logout_provider(provider: &str) -> Result<bool> {
     } else {
         Ok(false)
     }
+}
+
+/// The command that installs a newer release of the CLI for this
+/// installation, or `None` when there is nothing to install into: a
+/// `target/debug` build or a distribution package is not a released install,
+/// and a notice telling it to update would be wrong.
+fn update_notice_command() -> Option<&'static str> {
+    let executable = std::env::current_exe().ok()?;
+    match crate::install::detect_install_method(&executable) {
+        InstallMethod::Cargo | InstallMethod::Prebuilt => Some("oxide update"),
+        // `oxide update` hands a Homebrew install to the package manager.
+        InstallMethod::Homebrew => Some("brew upgrade oxide"),
+        InstallMethod::Unknown => None,
+    }
+}
+
+/// The transcript's row for a remembered release this installation can act on:
+/// nothing when the version is not newer than this binary, or when `command` is
+/// `None` because oxide cannot replace this installation (a `target/debug`
+/// build, a distribution package, a binary someone moved).
+fn update_item(notice: &update_notice::Notice, command: Option<&'static str>) -> Option<ChatItem> {
+    let command = command?;
+    notice
+        .is_update_for(crate::update::current_version())
+        .then(|| ChatItem::Update {
+            version: notice.version.clone(),
+            command: command.to_string(),
+            url: notice.url.clone(),
+        })
+}
+
+/// Starts the background look for a newer CLI release that a launch makes when
+/// the check is on, handing the transcript the answer when it lands. The look
+/// never blocks the launch: the release the last one found is sent at once, and
+/// a fresh lookup only runs once that answer is old. Returns whether a look was
+/// started, which `/updates on` reports.
+fn spawn_update_notice(update_tx: &UnboundedSender<update_notice::Notice>, cwd: &Path) -> bool {
+    if update_notice_command().is_none() || !update_notice::enabled(cwd) {
+        return false;
+    }
+    let tx = update_tx.clone();
+    tokio::spawn(async move {
+        let remembered = update_notice::cached(Component::Cli);
+        let stale = remembered
+            .as_ref()
+            .is_none_or(update_notice::Notice::is_stale);
+        if let Some(notice) = remembered.clone() {
+            let _ = tx.send(notice);
+        }
+        if !stale {
+            return;
+        }
+        if let Ok(notice) = update_notice::refresh(Component::Cli).await {
+            if remembered.as_ref() != Some(&notice) {
+                let _ = tx.send(notice);
+            }
+        }
+    });
+    true
+}
+
+/// `/updates [on|off]`: whether a launch looks for a newer release of the CLI,
+/// and what the last look found. The notice itself is a line in the transcript
+/// (`ChatItem::Update`), which is what the launch's own look paints when it
+/// finds one.
+fn handle_updates_command(
+    app: &mut App,
+    cwd: &Path,
+    raw: &str,
+    update_tx: &UnboundedSender<update_notice::Notice>,
+) {
+    const HINT: &str = "usage: /updates [on|off]";
+    let args = raw.strip_prefix("/updates").unwrap_or_default().trim();
+    let notice = update_notice::cached(Component::Cli);
+
+    if args.is_empty() {
+        let state = on_off(update_notice::enabled(cwd));
+        let seen = match &notice {
+            Some(notice) => format!(
+                "newest seen {} ({})",
+                notice.tag,
+                relative_time(ui::now_secs(), notice.checked_at)
+            ),
+            None => "no release seen yet".to_string(),
+        };
+        let command = update_notice_command();
+        let installable = if command.is_none() {
+            "; this installation is not one a release replaces"
+        } else {
+            ""
+        };
+        app.items.push(ChatItem::Info(format!(
+            "update check: {state}; {seen}{installable}\n{HINT}"
+        )));
+        if let Some(notice) = notice.as_ref() {
+            if let Some(item) = update_item(notice, command) {
+                app.items.push(item);
+            }
+        }
+        return;
+    }
+
+    match args {
+        "on" | "off" => {
+            let enabled = args == "on";
+            match update_notice::save(enabled) {
+                Ok(path) => {
+                    let checked = enabled && spawn_update_notice(update_tx, cwd);
+                    let tail = match (enabled, checked) {
+                        (false, _) => String::new(),
+                        (true, true) => "; looking for a newer release…".to_string(),
+                        // Nothing to look at: the binary is not one a release
+                        // replaces, or the environment turned the check off.
+                        (true, false) => {
+                            if update_notice_command().is_none() {
+                                "; this installation is not one a release replaces".to_string()
+                            } else {
+                                "; OXIDE_CHECK_FOR_UPDATES turns the check off".to_string()
+                            }
+                        }
+                    };
+                    app.items.push(ChatItem::Info(format!(
+                        "update check {} (saved to {}){tail}",
+                        on_off(enabled),
+                        path.display()
+                    )));
+                }
+                Err(err) => app.items.push(ChatItem::Error(format!(
+                    "could not save the setting: {err:#}"
+                ))),
+            }
+        }
+        _ => app.items.push(ChatItem::Error(format!(
+            "unknown /updates option `{args}`\n{HINT}"
+        ))),
+    }
+    app.auto_scroll = true;
 }
 
 /// Starts a background fetch of today's and the month's Portkey spend for the
@@ -2814,6 +2976,10 @@ fn builtin_commands() -> Vec<CommandHint> {
             description: "Portkey spend bar".to_string(),
         },
         CommandHint {
+            name: "updates".to_string(),
+            description: "check for a newer release at launch".to_string(),
+        },
+        CommandHint {
             name: "connect".to_string(),
             description: "connect a provider".to_string(),
         },
@@ -2852,6 +3018,19 @@ const ON_OFF_ARGS: &[ArgSpec] = &[
     ArgSpec {
         value: "off",
         description: "disable",
+        children: &[],
+    },
+];
+
+const UPDATES_ARGS: &[ArgSpec] = &[
+    ArgSpec {
+        value: "on",
+        description: "look for a newer release at launch",
+        children: &[],
+    },
+    ArgSpec {
+        value: "off",
+        description: "stop looking at launch",
         children: &[],
     },
 ];
@@ -3050,6 +3229,7 @@ const COMMAND_ARGS: &[(&str, &[ArgSpec])] = &[
     ),
     ("plugins", PLUGINS_ARGS),
     ("plugin", PLUGINS_ARGS),
+    ("updates", UPDATES_ARGS),
     (
         "thinking",
         &[
@@ -4808,6 +4988,14 @@ mod tests {
         )
     }
 
+    /// The tests that redirect `settings.json` through `OXIDE_SETTINGS_FILE`
+    /// take turns: the variable is process-wide, so two of them running at the
+    /// same time would write into each other's file.
+    fn settings_env_lock() -> std::sync::MutexGuard<'static, ()> {
+        static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+        LOCK.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+
     #[test]
     fn approval_answers_parse_from_the_composer() {
         assert_eq!(parse_approval_answer("y"), Some(Decision::Once));
@@ -6224,6 +6412,7 @@ mod tests {
 
     #[test]
     fn notify_command_toggles_and_persists() {
+        let _guard = settings_env_lock();
         let dir = std::env::temp_dir().join(format!("oxide_notify_cmd_{}", std::process::id()));
         std::fs::remove_dir_all(&dir).ok();
         std::fs::create_dir_all(&dir).unwrap();
@@ -6267,6 +6456,81 @@ mod tests {
         ));
 
         std::env::remove_var("OXIDE_SETTINGS_FILE");
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn updates_command_shows_the_remembered_release_and_turns_the_check_off() {
+        let _guard = settings_env_lock();
+        let dir = std::env::temp_dir().join(format!("oxide_updates_cmd_{}", std::process::id()));
+        std::fs::remove_dir_all(&dir).ok();
+        std::fs::create_dir_all(&dir).unwrap();
+        let settings = dir.join("settings.json");
+        std::env::set_var("OXIDE_SETTINGS_FILE", &settings);
+        std::env::set_var("OXIDE_UPDATES_FILE", dir.join("updates.json"));
+
+        // What a launch that found a newer release remembers.
+        let release = oxide_core::updates::Release::new(Component::Cli, "v99.9.9", None, "");
+        let notice = update_notice::remember(Component::Cli, &release, "acme/oxide").unwrap();
+
+        // The row itself names the version, the command that installs it and
+        // where its notes are; nothing is offered without a command to run.
+        let row = update_item(&notice, Some("oxide update"));
+        assert!(
+            matches!(
+                row,
+                Some(ChatItem::Update { ref version, ref command, ref url })
+                    if version == "99.9.9"
+                        && command == "oxide update"
+                        && url == "https://github.com/acme/oxide/releases/tag/v99.9.9"
+            ),
+            "{row:?}"
+        );
+        assert!(update_item(&notice, None).is_none());
+
+        let mut app = test_app();
+        let (tx, _rx) = unbounded_channel();
+        let cwd = Path::new("/tmp/oxide-updates-cwd");
+        handle_updates_command(&mut app, cwd, "/updates", &tx);
+
+        // The status line names the state, what was seen and the syntax.
+        let info = app
+            .items
+            .iter()
+            .find_map(|item| match item {
+                ChatItem::Info(text) => Some(text.clone()),
+                _ => None,
+            })
+            .expect("the status line");
+        assert!(info.contains("update check: on"), "{info}");
+        assert!(info.contains("newest seen v99.9.9"), "{info}");
+        assert!(info.contains("usage: /updates [on|off]"), "{info}");
+        // `cargo test` runs out of `target/`, which no release replaces: the
+        // notice says so instead of offering an install that would not work.
+        assert!(info.contains("not one a release replaces"), "{info}");
+        assert!(!app
+            .items
+            .iter()
+            .any(|item| matches!(item, ChatItem::Update { .. })));
+
+        handle_updates_command(&mut app, cwd, "/updates off", &tx);
+        assert!(
+            matches!(app.items.last(), Some(ChatItem::Info(text)) if text.contains("update check off")),
+            "{:?}",
+            app.items.last()
+        );
+        let saved: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&settings).unwrap()).unwrap();
+        assert_eq!(saved["checkForUpdates"], serde_json::json!(false));
+
+        handle_updates_command(&mut app, cwd, "/updates bogus", &tx);
+        assert!(matches!(
+            app.items.last(),
+            Some(ChatItem::Error(text)) if text.contains("usage: /updates [on|off]")
+        ));
+
+        std::env::remove_var("OXIDE_SETTINGS_FILE");
+        std::env::remove_var("OXIDE_UPDATES_FILE");
         std::fs::remove_dir_all(&dir).ok();
     }
 

@@ -138,8 +138,11 @@ template: |
   - **Windows** — `exe` installer or `msi` package
   - **Linux** — `AppImage`, `deb`, or `rpm`
 
-  The CLI is released separately: its binaries, install scripts, and notes live
-  on the [releases page](https://github.com/$OWNER/$REPOSITORY/releases).
+  A released app keeps itself current: **Check for Updates…** in the app menu (or
+  **↻** in the sidebar footer) installs the newest `desktop-v` release for your
+  platform in place, so this download is only needed for the first install. The
+  CLI is released separately: its binaries, install scripts, and notes live on
+  the [releases page](https://github.com/$OWNER/$REPOSITORY/releases).
 
   ## Full Changelog
 

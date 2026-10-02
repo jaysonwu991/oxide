@@ -11,7 +11,7 @@ pub use oxide_core::{
     agent, approval, approvals, at, auth, cli, clipboard, commands, compact, config, diff,
     ecosystem, html, llm, lsp, mcp, mcp_config, mcp_oauth, media, memory, notice, notify,
     permission, plugin, plugin_registry, portkey_usage, pricing, runner, session, sessions,
-    snapshots, tools, trust,
+    snapshots, tools, trust, update_notice,
 };
 
 use agent::{AgentEvent, Approver, Cancel, Steering};
@@ -186,6 +186,19 @@ enum Command {
         /// Print the check as JSON for a front-end (with --check)
         #[arg(long, requires = "check")]
         json: bool,
+        /// Check another component's release train instead of the CLI's, for a
+        /// front-end that cannot link oxide-core (with --check)
+        #[arg(
+            long,
+            value_name = "COMPONENT",
+            requires = "check",
+            value_parser = ["cli", "desktop", "extension"]
+        )]
+        component: Option<String>,
+        /// The version the caller is running, for the component it checks
+        /// (with --check)
+        #[arg(long, value_name = "VERSION", requires = "check")]
+        current: Option<String>,
     },
     /// Manage saved sessions
     Sessions {
@@ -536,12 +549,20 @@ async fn main() -> Result<()> {
                 version,
                 force,
                 json,
+                component,
+                current,
             } => {
+                let component = component
+                    .as_deref()
+                    .and_then(oxide_core::updates::Component::parse)
+                    .unwrap_or(oxide_core::updates::Component::Cli);
                 update::run(update::Options {
                     check,
                     version,
                     force,
                     json,
+                    component,
+                    current,
                 })
                 .await
             }
@@ -1454,6 +1475,8 @@ mod tests {
                 version: None,
                 force: false,
                 json: false,
+                component: None,
+                current: None,
             })
         ));
 
@@ -1466,6 +1489,7 @@ mod tests {
                 version: Some(version),
                 force: true,
                 json: false,
+                ..
             }) if version == "0.25.0"
         ));
 
@@ -1478,6 +1502,34 @@ mod tests {
                 ..
             })
         ));
+        // A front-end that cannot link the core checks its own release train and
+        // reports the version it is running.
+        let cli = Cli::try_parse_from([
+            "oxide",
+            "update",
+            "--check",
+            "--json",
+            "--component",
+            "desktop",
+            "--current",
+            "0.33.0",
+        ])
+        .unwrap();
+        assert!(matches!(
+            cli.command,
+            Some(Command::Update {
+                component: Some(component),
+                current: Some(current),
+                ..
+            }) if component == "desktop" && current == "0.33.0"
+        ));
+        // A component this command does not know, and one it cannot install
+        // without a check, are both refused.
+        assert!(
+            Cli::try_parse_from(["oxide", "update", "--check", "--component", "cli-extra"])
+                .is_err()
+        );
+        assert!(Cli::try_parse_from(["oxide", "update", "--component", "desktop"]).is_err());
         // The JSON describes a check, so it is not printed for a run that would
         // install the release instead.
         assert!(Cli::try_parse_from(["oxide", "update", "--json"]).is_err());

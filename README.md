@@ -61,9 +61,12 @@ From source (stable Rust, edition 2021):
 cargo install --path crates/cli
 ```
 
-A prebuilt install keeps itself current with `oxide update`. Supported platforms,
-installer overrides, the desktop bundle, the VS Code VSIX, updating, and
-uninstalling are all covered in [docs/install.md](docs/install.md).
+A prebuilt install keeps itself current with `oxide update`, and each released
+surface updates its own train: the desktop app installs the newest `desktop-v*`
+bundle over itself, and the VS Code panel installs the newest `extension-v*`
+`.vsix` — so updating one never pulls a release meant for another. Supported
+platforms, installer overrides, the desktop bundle, the VS Code VSIX, updating,
+and uninstalling are all covered in [docs/install.md](docs/install.md).
 
 ## Quick start
 

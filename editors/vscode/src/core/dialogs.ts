@@ -14,7 +14,7 @@
 
 import { mcpStateLabel, type McpServerView } from "./mcps";
 import { filterSessions, type SessionEntry } from "./sessions";
-import type { UpdateCheck } from "./updates";
+import { updateVsix, type UpdateCheck } from "./updates";
 
 /// How a row's status is colored: the green/amber/red the terminal's `/mcps`
 /// uses, `muted` for a server that is off or a session's age.
@@ -131,6 +131,10 @@ export const APPLY_TRUST = "applyTrust";
 /// a row, so a dialog that is only reporting has nothing to press.
 export const UPDATE_INSTALL = "updateInstall";
 export const UPDATE_NOTES = "updateNotes";
+/// Restarts the window, which is what puts the freshly installed extension in
+/// charge: the code in this window is the one that was running when it was
+/// replaced.
+export const UPDATE_RELOAD = "updateReload";
 
 /// The values the session dialog's own two rows carry, so the controller can
 /// tell a session id from "start over".
@@ -596,21 +600,23 @@ export function undoChangesDialog(card: { id: number; detail: string }): DialogS
 /// answer, and the install takes minutes; each state carries the words rather
 /// than the call sites composing a dialog of their own.
 export type UpdateState =
-  /// Asking the CLI, which is asking GitHub.
+  /// Asking the installed CLI, which is asking GitHub.
   | { k: "checking" }
   /// The install is running. `what` names what is being installed, phrased for
   /// the title: a CLI too old to be checked has no version to name, so it is
-  /// `the newest CLI` there and `Oxide 0.33.0` when the check resolved one.
+  /// `the newest CLI` there and `Oxide 0.34.0` when the check resolved one.
   | { k: "installing"; what: string }
+  /// The install landed. `check` is the check that resolved it, so the note
+  /// can name the release and the file that carries it, and VS Code holds the
+  /// new version from the next window on.
+  | { k: "installed"; check: UpdateCheck }
   /// The check or the install did not answer with a result. `stage` says which
   /// one, because the same failure means different things at each: a check that
   /// could not reach GitHub leaves the installation alone, while a failed
   /// install may have left a half-downloaded release behind.
   | { k: "failed"; stage: "check" | "install"; message: string }
-  /// The check resolved a release. `headline` replaces the title for an answer
-  /// that is about something else — the re-check a finished install runs, which
-  /// says what was installed rather than what is newest.
-  | { k: "ready"; check: UpdateCheck; headline?: string }
+  /// The check resolved a release.
+  | { k: "ready"; check: UpdateCheck }
   /// The installed CLI is older than this panel: it does not know `--json`, so
   /// there is no release to report — but `oxide update` still updates it, which
   /// is what `text` (the CLI's own refusal) is shown under. `headline` replaces
@@ -619,17 +625,15 @@ export type UpdateState =
   /// that report is instead of describing the refusal it is not.
   | { k: "legacy"; text: string; path: string; headline?: string; subtitle?: string };
 
-/// The update dialog: the release the installed CLI's own check resolved, what
-/// this machine has, and — when the installation is one `oxide update` may
-/// replace — the install as a row.
+/// The update dialog: the release the extension's own train resolved, what this
+/// window runs, and the install — the `.vsix` — as a row.
 ///
-/// It is the terminal's `oxide update` in the panel, and deliberately no more
-/// than that: the check, the release it picks and whether this installation can
-/// be replaced are the CLI's answers, so the panel cannot offer an install the
-/// terminal would refuse. Installing updates the `oxide` command line — the
-/// binary the terminal, this panel and the desktop app all run — and the desktop
-/// app's own bundle is updated by a desktop release, which is why the install
-/// row is worded as the CLI rather than as the IDE.
+/// It is the panel's own update and deliberately not the CLI's: the check is
+/// asked about the `extension-v*` releases and the panel installs what it
+/// resolved, so the row cannot offer a release this editor would not run. The
+/// one exception is the row a CLI too old to answer the check is offered, which
+/// updates that binary — the thing standing between the user and a check at
+/// all — and says so in as many words.
 export function updateDialog(state: UpdateState): DialogState {
   const empty = {
     kind: "update" as const,
@@ -645,8 +649,8 @@ export function updateDialog(state: UpdateState): DialogState {
       ...empty,
       title: "Checking for updates",
       subtitle:
-        "Oxide asks the installed CLI which release is newest, the same check the terminal's oxide update --check performs.",
-      note: "Asking GitHub for the newest release…",
+        "Oxide asks the installed CLI which release of this extension is newest — the same check the panel runs as `oxide update --check --component extension`.",
+      note: "Asking GitHub for the newest extension release…",
       rows: [],
     };
   }
@@ -655,9 +659,36 @@ export function updateDialog(state: UpdateState): DialogState {
       ...empty,
       title: `Installing ${state.what}`,
       subtitle:
-        "The release is downloaded, verified against the release manifest and written over the installed binary.",
-      note: "This takes as long as the download; the dialog reports what the CLI says when it is done.",
+        "The release's .vsix is downloaded, checked against the checksum its release published, and handed to VS Code to install.",
+      note: "This takes as long as the download; the dialog reports what happened when it is done.",
       rows: [],
+    };
+  }
+  if (state.k === "installed") {
+    const { check } = state;
+    return {
+      ...empty,
+      title: `Oxide ${check.latest} is installed`,
+      subtitle:
+        "VS Code holds the new version; the extension running in this window is the one that was there when it was installed.",
+      note: [
+        check.current ? `Was ${check.current}` : "",
+        `Installed ${check.tag}`,
+        check.asset?.name ?? "",
+        "Restart this window to run it",
+      ]
+        .filter(Boolean)
+        .join(" · "),
+      rows: [
+        row("", "Restart Window", {
+          detail: "Run the version that was just installed",
+          action: UPDATE_RELOAD,
+        }),
+        row("", "Close", {
+          detail: "Restart later from the command palette",
+          action: CLOSE_DIALOG,
+        }),
+      ],
     };
   }
   if (state.k === "failed") {
@@ -666,23 +697,25 @@ export function updateDialog(state: UpdateState): DialogState {
       title: state.stage === "check" ? "Could not check for updates" : "Could not install the update",
       subtitle:
         state.stage === "check"
-          ? "The check asks GitHub for the newest released oxide, so a machine with no network — or a request GitHub refuses — reports it here."
-          : "The install downloads the release archive, verifies it against the release manifest and replaces the installed binary.",
+          ? "The check asks GitHub which release of this extension is newest, so a machine with no network — or a request GitHub refuses — reports it here."
+          : "The install downloads the release's .vsix, checks it against the checksum its release published and hands it to VS Code.",
       note: state.message,
-      rows: [row("", "Close", { detail: "Leave this installation as it is", action: CLOSE_DIALOG })],
+      rows: [row("", "Close", { detail: "Leave this extension as it is", action: CLOSE_DIALOG })],
     };
   }
 
   if (state.k === "legacy") {
     // The release is unknown here — the CLI that would have resolved it cannot
     // be asked — so the dialog offers the one command that works on any version
-    // rather than a version to install.
+    // rather than a version to install. That command updates the CLI, which is
+    // what this panel reads its own releases through; the sentence says so
+    // rather than leaving the row looking like the extension's own install.
     return {
       ...empty,
       title: state.headline ?? "The oxide CLI is older than this panel",
       subtitle:
         state.subtitle ??
-        "Check for Updates reads a report this CLI predates, so it cannot say which release is newest. Installing updates the oxide command line — the binary this panel, the terminal and the desktop app run — and it works on any version.",
+        "Check for Updates reads the extension's own releases through the installed oxide, and this CLI predates the report it reads — so updating the oxide command line is what makes both the check and the extension's next update reachable from here. It works on any version.",
       note: state.text,
       rows: [
         row("", "Install the newest CLI", {
@@ -698,17 +731,23 @@ export function updateDialog(state: UpdateState): DialogState {
   }
 
   const { check } = state;
-  const notes = [`Current ${check.current}`, `Latest ${check.tag}`, check.installation];
-  if (check.pinned) notes.push("pinned");
-  // A release this installation cannot install itself — Homebrew's, or a binary
-  // that is not a release — is reported with the CLI's own sentence, which names
-  // the command that can: the row it would belong to is the one thing missing.
-  if (check.updateAvailable && !check.installable && check.advice) notes.push(check.advice);
+  const vsix = updateVsix(check);
+  const notes = [
+    check.current ? `Current ${check.current}` : "",
+    `Latest ${check.tag}`,
+    vsix?.name ?? "",
+    check.pinned ? "pinned" : "",
+  ].filter(Boolean);
+  // A release this panel cannot install itself — one with no build for this
+  // platform, or an artifact that is not a VSIX — is reported with the check's
+  // own sentence, which names what to install by hand: the row it would belong
+  // to is the one thing missing.
+  if (check.updateAvailable && !vsix && check.advice) notes.push(check.advice);
   const rows: DialogRow[] = [];
-  if (check.updateAvailable && check.installable) {
+  if (vsix) {
     rows.push(
-      row(check.latest, `Install ${check.latest}`, {
-        detail: check.path ? `Replaces ${check.path}` : check.advice,
+      row(vsix.name, `Install ${check.latest}`, {
+        detail: `Downloads and installs ${vsix.name}`,
         action: UPDATE_INSTALL,
       }),
     );
@@ -729,12 +768,12 @@ export function updateDialog(state: UpdateState): DialogState {
   );
   return {
     ...empty,
-    title:
-      state.headline ||
-      (check.updateAvailable ? `Oxide ${check.latest} is available` : "Oxide is up to date"),
+    title: check.updateAvailable
+      ? `Oxide ${check.latest} is available`
+      : `Oxide ${check.current || check.latest} is up to date`,
     subtitle: check.updateAvailable
-      ? "Installing updates the oxide command line — the binary the terminal, this panel and the desktop app run."
-      : `Oxide ${check.current} is the newest released version.`,
+      ? "Installing downloads this release of the extension — the .vsix published on its own release train — and hands it to VS Code, which runs it from the next window on."
+      : `Oxide ${check.current || check.latest} is the newest released version of this extension.`,
     note: notes.join(" · "),
     rows,
   };

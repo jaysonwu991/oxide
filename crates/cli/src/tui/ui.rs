@@ -762,14 +762,14 @@ fn draw_sessions(frame: &mut Frame, app: &App) {
     frame.render_stateful_widget(list, inner, &mut list_state);
 }
 
-fn now_secs() -> u64 {
+pub(crate) fn now_secs() -> u64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|duration| duration.as_secs())
         .unwrap_or(0)
 }
 
-fn relative_time(now: u64, then: u64) -> String {
+pub(crate) fn relative_time(now: u64, then: u64) -> String {
     let secs = now.saturating_sub(then);
     if secs < 60 {
         "just now".to_string()
@@ -2309,6 +2309,13 @@ fn render_item_themed(
                 Style::default().fg(theme.info).add_modifier(Modifier::DIM),
             );
         }
+        ChatItem::Update {
+            version,
+            command,
+            url,
+        } => {
+            render_update_themed(width, theme, version, command, url, lines);
+        }
         ChatItem::Progress { label, since } => {
             let elapsed = since.elapsed();
             lines.push(Line::from(vec![
@@ -2340,6 +2347,41 @@ fn progress_bar(elapsed: std::time::Duration) -> String {
         bar.push(if filled { '█' } else { '░' });
     }
     bar
+}
+
+/// Renders the notice that a newer release of this binary exists, the way Pi
+/// announces one: a rule, the title, the version with the command that installs
+/// it, its changelog, and a rule again.
+fn render_update_themed(
+    width: usize,
+    theme: &crate::theme::Theme,
+    version: &str,
+    command: &str,
+    url: &str,
+    lines: &mut Vec<Line<'static>>,
+) {
+    let rule = Style::default().fg(theme.accent);
+    let rule_line = || Line::from(Span::styled("─".repeat(width.max(1)), rule));
+    lines.push(rule_line());
+    lines.push(Line::from(Span::styled(
+        "Update Available",
+        Style::default()
+            .fg(theme.accent)
+            .add_modifier(Modifier::BOLD),
+    )));
+    push_wrapped(
+        lines,
+        &format!("New version {version} is available. Run `{command}`"),
+        width,
+        Style::default().fg(theme.info),
+    );
+    push_wrapped(
+        lines,
+        &format!("Changelog: {url}"),
+        width,
+        Style::default().fg(theme.dim),
+    );
+    lines.push(rule_line());
 }
 
 /// Renders the banner as the wordmark on top with the welcome info stacked
@@ -4549,6 +4591,39 @@ mod tests {
         assert_eq!(line_text(&lines[0]), "copied 12 chars");
         let style = lines[0].spans[0].style;
         assert!(style.add_modifier.contains(Modifier::DIM));
+    }
+
+    #[test]
+    fn an_update_notice_names_the_release_the_command_and_the_changelog() {
+        let mut lines = Vec::new();
+        render_item_themed(
+            &ChatItem::Update {
+                version: "0.34.0".into(),
+                command: "oxide update".into(),
+                url: "https://github.com/acme/oxide/releases/tag/v0.34.0".into(),
+            },
+            60,
+            false,
+            true,
+            &crate::theme::Theme::dark(),
+            None,
+            &mut lines,
+        );
+        let text: Vec<String> = lines.iter().map(line_text).collect();
+        assert_eq!(text[0], "─".repeat(60));
+        assert_eq!(text[1], "Update Available");
+        assert_eq!(
+            text[2],
+            "New version 0.34.0 is available. Run `oxide update`"
+        );
+        // A URL is one word: it moves to its own line rather than being cut.
+        assert_eq!(text[3], "Changelog:");
+        assert_eq!(
+            text[4],
+            "https://github.com/acme/oxide/releases/tag/v0.34.0"
+        );
+        assert_eq!(text[5], "─".repeat(60));
+        assert_eq!(text.len(), 6);
     }
 
     #[test]

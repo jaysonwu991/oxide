@@ -42,4 +42,6 @@ pub mod theme_view;
 pub mod title;
 pub mod tools;
 pub mod trust;
+pub mod update_notice;
+pub mod updates;
 pub mod workspaces;
