@@ -181,18 +181,21 @@ check(
 );
 
 console.log("the build");
+// What the `gui` feature turns on, read as a list rather than a fixed spelling:
+// the Tauri CLI rewrites these dependency lines (`features = []`) when it builds.
+const guiFeature = /^gui = \[([\s\S]*?)\]/m.exec(manifest)?.[1] ?? "";
 check(
   "builds the binary only where there is a webview to put it in",
   /\[\[bin\]\][\s\S]*?name = "oxide-desktop"[\s\S]*?required-features = \["gui"\]/.test(manifest) &&
-    /gui = \[\s*"dep:tauri",\s*"dep:tauri-plugin-dialog",\s*"dep:tauri-build",\s*\]/.test(
-      manifest,
+    ["dep:tauri", "dep:tauri-plugin-dialog", "dep:tauri-build"].every((on) =>
+      guiFeature.includes(`"${on}"`),
     ),
   "",
 );
 check(
   "keeps the Tauri tooling out of a build that has no window",
-  /\[build-dependencies\][\s\S]*?tauri-build = \{ version = "2", optional = true \}/.test(manifest) &&
-    /gui = \[[\s\S]*?"dep:tauri-build",[\s\S]*?\]/.test(manifest),
+  /\[build-dependencies\]\s*tauri-build = \{[^}]*optional = true[^}]*\}/.test(manifest) &&
+    guiFeature.includes('"dep:tauri-build"'),
   "",
 );
 check(

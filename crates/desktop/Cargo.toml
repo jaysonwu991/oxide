@@ -20,11 +20,11 @@ dirs.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 tokio.workspace = true
-tauri = { version = "2", optional = true , features = [] }
+tauri = { version = "2", optional = true }
 tauri-plugin-dialog = { version = "2", optional = true }
 
 [build-dependencies]
-tauri-build = { version = "2", optional = true , features = [] }
+tauri-build = { version = "2", optional = true }
 
 [[bin]]
 name = "oxide-desktop"
