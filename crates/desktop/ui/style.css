@@ -236,6 +236,32 @@ body.resizing { cursor: col-resize; user-select: none; }
 .session:hover .s-tools { display: flex; }
 .session .s-tools button { padding: 1px 5px; font-size: 11px; }
 
+/* A release the launch installed on its own. The process is still the build that
+   started, whatever is on disk, so the row says where the install got to and
+   offers the restart that runs it. It is the window's own chrome rather than a
+   dialog, since the work happened without one, and it holds its own height
+   (`flex: none`) so the projects above it keep their room. */
+.update-banner {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin: 0 10px 8px;
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--panel);
+  color: var(--dim);
+  font-size: 11.5px;
+}
+.update-banner-text { flex: 1; min-width: 0; }
+.update-banner-actions {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 2px;
+}
+
 .sidebar-foot {
   margin-top: auto;
   display: flex;

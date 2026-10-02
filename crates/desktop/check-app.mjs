@@ -1112,6 +1112,29 @@ check(
     /id="update-install" class="primary" hidden/.test(shell),
   shell.slice(shellAt('id="update-notes"') - 20, shellAt('id="update-install"') + 40),
 );
+// A release the launch installed on its own is not the app that is running, so
+// what is left to do is a restart: the dialog offers it beside the install it
+// replaced, and only one of the two is ever on screen.
+check(
+  "offered the restart that runs an install, beside the install it replaced",
+  /id="update-restart" class="primary" hidden/.test(shell) &&
+    shellAt('id="update-install"') < shellAt('id="update-restart"'),
+  shell.slice(shellAt('id="update-install"'), shellAt('id="update-restart"') + 40),
+);
+// An install nobody in the window asked for has to be visible without opening a
+// dialog, so its row is the sidebar's own — between the projects it lists and
+// the foot — with the restart that runs it beside a glyph that puts the row
+// away without stopping the install.
+check(
+  "put the launch's own install in the sidebar, between the projects and its foot",
+  /<div id="update-banner" class="update-banner" role="status" hidden>/.test(shell) &&
+    shellAt('class="sidebar"') < shellAt('id="update-banner"') &&
+    shellAt('id="update-banner"') < shellAt('class="sidebar-foot"') &&
+    /id="update-banner-restart" class="primary small" hidden/.test(shell) &&
+    /id="update-banner-dismiss"[^>]*title="Dismiss/.test(shell) &&
+    /<\/svg>$/.test(buttonFor("update-banner-dismiss")),
+  String(shellAt('id="update-banner"')),
+);
 
 // ---------- `@path` completion ----------
 
@@ -3320,8 +3343,23 @@ check(
 );
 check(
   "told the reader what to do to run it",
-  /Quit Oxide and open it again/.test(updateNote()),
+  /Restart Oxide to run the new version/.test(updateNote()),
   updateNote(),
+);
+// The restart is the dialog's own action then: the install put the release in
+// place, and only a new process runs it.
+const restartButton = elementFor("update-restart");
+check(
+  "offered the restart that runs it",
+  restartButton.hidden === false && installButton.hidden === true,
+  `${restartButton.hidden} / ${installButton.hidden}`,
+);
+calls.length = 0;
+await restartButton.onclick();
+check(
+  "restarted the app through the app's own command",
+  projectCalls("restart_app").length === 1,
+  JSON.stringify(calls.map(([name]) => name)),
 );
 check(
   "reported what the install did, by tag and by file",
@@ -3575,10 +3613,126 @@ check(
   installButton.hidden === true,
   String(installButton.hidden),
 );
+// The installer owns this machine's copy of the app: it asks for elevation and
+// for Oxide to be closed, so there is no release in place for a restart to run.
+check(
+  "offered no restart for an install the installer owns",
+  restartButton.hidden === true && installButton.hidden === true,
+  String(restartButton.hidden),
+);
 installedVersion = null;
 installPending = false;
 app.installedUpdate.answer = null;
 updateAnswer = OFFERED_UPDATE;
+
+// ---------- the update a launch installs on its own ----------
+
+// The app keeps itself current the way its other front-ends check for one, so
+// the window is told about an install rather than asking: each step arrives as
+// an event nobody in the window clicked for, and what is left when a release
+// lands is the restart that runs it. The row is the sidebar's own, since the
+// window may be showing a conversation when it appears.
+console.log("the update a launch installs on its own");
+const banner = elementFor("update-banner");
+const bannerText = () => String(elementFor("update-banner-text").textContent);
+const bannerRestart = elementFor("update-banner-restart");
+
+// A window that has just opened has nothing to say about an install yet.
+check(
+  "said nothing about an install before the shell reported one",
+  banner.hidden === true,
+  String(banner.hidden),
+);
+
+await emit("update-progress", { stage: "downloading", version: "0.34.0" });
+await nextTick();
+check(
+  "told the reader about the install the launch started",
+  banner.hidden === false && /Downloading Oxide 0.34.0/.test(bannerText()),
+  `${banner.hidden} / ${bannerText()}`,
+);
+check(
+  "offered no restart for a release that is not in place yet",
+  bannerRestart.hidden === true,
+  String(bannerRestart.hidden),
+);
+
+// The release is on disk and the process is not: what the row offers is the
+// restart that runs it.
+const launchAnswer = {
+  ok: true,
+  version: "0.34.0",
+  tag: "desktop-v0.34.0",
+  asset: "Oxide_0.34.0_aarch64.dmg",
+  path: "/Applications/Oxide.app",
+  text: "Restart Oxide to run the new version.",
+  pending: false,
+};
+await emit("update-ready", launchAnswer);
+await nextTick();
+check(
+  "said the release was installed, and left the restart to do it",
+  banner.hidden === false &&
+    /Oxide 0.34.0 is installed/.test(bannerText()) &&
+    bannerRestart.hidden === false,
+  `${banner.hidden} / ${bannerText()} / ${bannerRestart.hidden}`,
+);
+calls.length = 0;
+await bannerRestart.onclick();
+check(
+  "restarted the app from the row the launch painted",
+  projectCalls("restart_app").length === 1,
+  JSON.stringify(calls.map(([name]) => name)),
+);
+
+// A turn owns the process — its tools write files and its stream is read here —
+// so a restart is refused while one runs rather than killing a live run.
+app.state.busy = true;
+elementFor("status-text").textContent = "";
+calls.length = 0;
+await bannerRestart.onclick();
+check(
+  "refused a restart while a turn was running",
+  projectCalls("restart_app").length === 0 && /A turn is running/.test(status()),
+  `${JSON.stringify(calls.map(([name]) => name))} / ${status()}`,
+);
+app.state.busy = false;
+
+// The install is remembered the way a click's own install is, so a check that
+// resolves the release now on disk reports it instead of offering it again.
+calls.length = 0;
+updateAnswer = OFFERED_UPDATE;
+await app.openUpdate();
+check(
+  "answered the dialog's own check with the install the launch performed",
+  updateTitle() === "Oxide 0.34.0 is installed" &&
+    installButton.hidden === true &&
+    restartButton.hidden === false,
+  `${updateTitle()} / ${installButton.hidden} / ${restartButton.hidden}`,
+);
+elementFor("update-close").onclick();
+app.installedUpdate.answer = null;
+
+// The row belongs to the window rather than to the install: putting it away
+// stops nothing, and an install that could not finish is a line rather than a
+// dialog nobody asked for.
+calls.length = 0;
+await elementFor("update-banner-dismiss").onclick();
+check(
+  "put the row away without stopping the install",
+  banner.hidden === true && calls.length === 0,
+  `${banner.hidden} / ${JSON.stringify(calls.map(([name]) => name))}`,
+);
+await emit("update-failed", { message: "the download did not verify" });
+await nextTick();
+check(
+  "reported an install that failed as a line, not a dialog",
+  banner.hidden === true &&
+    elementFor("update-modal").hidden === true &&
+    /The download did not verify|did not verify/.test(status()),
+  `${banner.hidden} / ${elementFor("update-modal").hidden} / ${status()}`,
+);
+elementFor("status-text").textContent = "";
 
 // ---------- the bridge the window is reached through ----------
 

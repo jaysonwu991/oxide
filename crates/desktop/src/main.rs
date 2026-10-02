@@ -94,6 +94,12 @@ fn main() {
                 DesktopManager::load_lossy(),
                 events,
             )));
+            // The app keeps itself current the way its other front-ends do: the
+            // newest release of its own train is looked for in the background
+            // and, where this copy is one the app replaces in place, installed
+            // without being asked. What a launch is left to say is that a restart
+            // will run it, which is the window's own row.
+            tauri::async_runtime::spawn(commands::auto_update(app.handle().clone()));
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![oxide_invoke])

@@ -15,6 +15,8 @@ use oxide_core::llm::{ContentPart, MessageContent};
 use oxide_core::session::{SessionLog, SessionSummary};
 use oxide_core::snapshots::Snapshots;
 use oxide_core::theme_view;
+use oxide_core::update_notice;
+use oxide_core::updates::Component;
 use oxide_desktop::at::{AtAnswer, PathCache};
 use oxide_desktop::manager::{expand_project_path, DesktopManager, ProjectView};
 use oxide_desktop::turn::{notify_finished, open_session, start_turn, Turn};
@@ -829,6 +831,66 @@ pub async fn install_update() -> CmdResult<Value> {
     update::install().await.map_err(err)
 }
 
+/// The update a launch installs on its own, the way a desktop app that keeps
+/// itself current does.
+///
+/// The newest release of this app's own train is looked up in the background —
+/// through the answer the shared store remembered, so a launch costs at most one
+/// request every six hours, and only where `checkForUpdates` allows it — and when
+/// it is newer than this build and this copy is one the app replaces in place, it
+/// is downloaded, verified and put there without a dialog. The window hears every
+/// step, so a release that has landed is a row the reader can restart into rather
+/// than a promise the app cannot keep: the process running is still the build that
+/// started, whatever is on disk.
+pub async fn auto_update(app: AppHandle) {
+    if !update_notice::enabled_in(None) {
+        return;
+    }
+    // A launch is not the place to report a check that could not be made — the
+    // window's own Check for Updates… is — so a lookup that fails is left to the
+    // next launch and to that button.
+    let Ok(notice) = update_notice::latest_notice(Component::Desktop).await else {
+        return;
+    };
+    let installation = update::installation();
+    if !update::launch_installs(&notice, update::current_version(), &installation) {
+        return;
+    }
+    let events = EventSink::new(app.clone());
+    let steps = events.clone();
+    let answer = update::install_reporting(move |progress| {
+        let _ = steps.emit(
+            "update-progress",
+            json!({ "stage": progress.stage, "version": progress.version }),
+        );
+    })
+    .await;
+    match answer {
+        Ok(answer) => {
+            let _ = events.emit("update-ready", answer);
+        }
+        Err(error) => {
+            let _ = events.emit("update-failed", json!({ "message": error.to_string() }));
+        }
+    }
+}
+
+/// Restarts the app, which is what runs a release an install has put in place:
+/// the process running is still the build that started, so only a new one is the
+/// new version. Tauri relaunches this copy itself and exits this one, handing the
+/// request to the main loop rather than restarting from whatever thread asked.
+///
+/// A turn is work this process owns — its tools write files and its stream is
+/// read here — so a restart is refused while one runs, the way the window refuses
+/// to replace the thread on screen mid-turn.
+pub async fn restart_app(app: &AppHandle, state: &DesktopState) -> CmdResult<()> {
+    if !state.runs.lock().await.is_empty() {
+        return Err("A turn is running; stop it before restarting Oxide.".to_string());
+    }
+    app.request_restart();
+    Ok(())
+}
+
 /// Asks the open window to check for updates and show what it found. The macOS
 /// menu item has no page of its own to paint into, so it asks the window through
 /// the same event channel a run's own events travel on, and the window's button
@@ -1096,6 +1158,7 @@ pub async fn dispatch(
         "set_theme" => command_value(set_theme(arg(&args, "project")?, arg(&args, "name")?).await),
         "check_updates" => command_value(check_updates().await),
         "install_update" => command_value(install_update().await),
+        "restart_app" => command_value(restart_app(app, &state).await),
         "open_url" => command_value(open_url(&arg::<String>(&args, "url")?)),
         _ => Err(format!("unknown desktop command `{command}`")),
     }

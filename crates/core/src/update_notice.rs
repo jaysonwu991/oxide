@@ -89,6 +89,17 @@ pub fn cached(component: Component) -> Option<Notice> {
     read(&path()?, component)
 }
 
+/// The newest release of a component, from the remembered answer unless it is
+/// time to look again: what a launch reads, so a front-end that keeps itself
+/// current costs one request at most every [`REFRESH_AFTER_SECS`] rather than
+/// one per start.
+pub async fn latest_notice(component: Component) -> Result<Notice> {
+    if let Some(notice) = cached(component).filter(|notice| !notice.is_stale()) {
+        return Ok(notice);
+    }
+    refresh(component).await
+}
+
 /// Looks for the newest release of a component and remembers it.
 pub async fn refresh(component: Component) -> Result<Notice> {
     let repo = updates::repo();
@@ -113,10 +124,21 @@ pub fn remember(component: Component, release: &Release, repo: &str) -> Result<N
 /// in a `settings.json` decides — the project's own file winning over the
 /// global one — and `OXIDE_CHECK_FOR_UPDATES` overrides both. On by default.
 pub fn enabled(cwd: &Path) -> bool {
+    enabled_in(Some(cwd))
+}
+
+/// The same flag for a front-end with no run of its own — the desktop app,
+/// whose launch is about the app rather than the folder it happens to be in —
+/// where the global `settings.json` is the file that decides.
+pub fn enabled_in(cwd: Option<&Path>) -> bool {
     if let Some(value) = env_bool(ENV_NAME) {
         return value;
     }
-    enabled_within(&settings_paths(cwd)).unwrap_or(true)
+    let paths = match cwd {
+        Some(cwd) => settings_paths(cwd),
+        None => vec![crate::config::settings_path()],
+    };
+    enabled_within(&paths).unwrap_or(true)
 }
 
 /// Persists the flag into the global `settings.json`, preserving every other
@@ -259,6 +281,23 @@ mod tests {
         assert!(!notice("0.34.0", now_secs()).is_stale());
         assert!(notice("0.34.0", now_secs() - REFRESH_AFTER_SECS).is_stale());
         assert!(notice("0.34.0", 0).is_stale());
+    }
+
+    #[tokio::test]
+    async fn a_fresh_answer_is_what_a_launch_reads_without_looking_again() {
+        let dir = temp_dir("latest");
+        let path = dir.join(FILE_NAME);
+        // A version no release will ever carry, so an answer read from the store
+        // is told apart from one looked up: the refresh this must not make would
+        // answer with the newest real release, or with a network failure to a
+        // machine that is offline.
+        std::env::set_var(FILE_ENV, &path);
+        write(&path, Component::Cli, &notice("99.9.9", now_secs())).unwrap();
+
+        let latest = latest_notice(Component::Cli).await.unwrap();
+        assert_eq!(latest.version, "99.9.9");
+        std::env::remove_var(FILE_ENV);
+        std::fs::remove_dir_all(&dir).ok();
     }
 
     #[test]

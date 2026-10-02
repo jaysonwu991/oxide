@@ -36,6 +36,23 @@
         <div id="projects-tree" class="projects-tree"></div>
       </div>
 
+      <!-- A release the launch installed on its own. The running app is still
+           the build that started, whatever is on disk, so the row says where the
+           install got to and offers the restart that runs it. It is the window's
+           own chrome rather than a dialog, since the work happened without one. -->
+      <div id="update-banner" class="update-banner" role="status" hidden>
+        <div id="update-banner-text" class="update-banner-text"></div>
+        <div class="update-banner-actions">
+          <button id="update-banner-restart" class="primary small" hidden>Restart</button>
+          <button
+            id="update-banner-dismiss"
+            class="icon"
+            title="Dismiss&#10;The install goes on in the background"
+            aria-label="Dismiss"
+          ><svg viewBox="0 0 24 24" width="14" height="14" aria-hidden="true"><path d="M18 6 6 18M6 6l12 12" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg></button>
+        </div>
+      </div>
+
       <div class="sidebar-foot">
         <button
           id="theme"
@@ -393,6 +410,7 @@
           <button id="update-notes" class="ghost" hidden>Release notes</button>
           <button id="update-close" class="ghost">Close</button>
           <button id="update-install" class="primary" hidden>Install</button>
+          <button id="update-restart" class="primary" hidden>Restart</button>
         </div>
       </div>
     </div>

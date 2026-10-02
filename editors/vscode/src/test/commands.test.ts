@@ -192,6 +192,131 @@ describe("command contributions", () => {
     );
   });
 
+  it("notices a newer release on activation, without waiting to be asked", () => {
+    // VS Code updates what it installed from the Marketplace, and this
+    // extension is a `.vsix` from the release page: nothing but the panel will
+    // ever notice its own newer release, so the launch asks rather than the
+    // user. It asks in the background — activation does not wait on GitHub, and
+    // the panel's own dialog is not opened at a user who did not ask for it —
+    // and the answer is a VS Code notification carrying the action that
+    // finishes the job.
+    const launch = extension.slice(extension.lastIndexOf("controller.syncActiveEditor()"));
+    assert.ok(
+      launch.includes("controller.checkForUpdatesInBackground()"),
+      "the launch asks the controller for its own check",
+    );
+    assert.ok(
+      launch.includes(".catch(") && launch.includes("output.appendLine"),
+      "and a check that could not run is the output channel's, not an unhandled rejection",
+    );
+    assert.ok(
+      extension.includes('const UPDATE_STATE_KEY = "oxide.update";') &&
+        extension.includes("context.globalState"),
+      "what a launch remembers is the window's own state, since the check is about the extension",
+    );
+    assert.ok(
+      extension.includes("updateMemory(context)"),
+      "and that memory is what the controller is built with",
+    );
+
+    const background = chat.slice(
+      chat.indexOf("async checkForUpdatesInBackground("),
+      chat.indexOf("private announceInstalled("),
+    );
+    assert.ok(
+      background
+        .replace(/\s+/g, " ")
+        .includes("if (!sharedSettingsFor(folder, this.deps).checkForUpdates) return;"),
+      "the shared checkForUpdates key gates it, the way the terminal's /updates does",
+    );
+    assert.ok(
+      background.includes("this.updateMemory.read()") &&
+        background.includes("shouldBackgroundCheck(memory, this.version, now)"),
+      "and a launch inside the interval asks again only when it is due",
+    );
+    assert.ok(
+      background.includes("this.updateMemory.write({") &&
+        background.includes("checkedAt: now, installedVersion: memory?.installedVersion ?? \"\""),
+      "the answer is remembered whether or not it resolved anything",
+    );
+    assert.ok(
+      !background.includes("this.showDialog(") && !background.includes("this.closeDialog()"),
+      "nothing is painted or closed over whatever the window is showing",
+    );
+    assert.ok(
+      background.includes("backgroundAction(check)"),
+      "what to do with the release is the shared core's decision",
+    );
+    // The release that carries the file this editor installs is offered with
+    // the row that starts it, as the check a marketplace extension gets would
+    // be: the file is fetched when that row is pressed rather than written into
+    // the editor unasked, and the install itself is the dialog's own machinery
+    // run without the dialog. It is remembered as this window's install so the
+    // dialog reports it rather than offering it again, and announced with the
+    // restart once VS Code holds the release.
+    assert.ok(
+      background.includes("vscode.window.showInformationMessage(") &&
+        background.includes("UPDATE_INSTALL_NOW,") &&
+        background.includes("if (choice !== UPDATE_INSTALL_NOW) return;") &&
+        background.includes("if (this.installing) return;"),
+      "the install is the notification's own row, and a second one is never run over the first",
+    );
+    assert.ok(
+      background.includes("await this.runInstall(check, action.vsix, false)"),
+      "and that row runs the dialog's own download, checksum and hand-over without its dialog",
+    );
+    assert.ok(
+      background.includes(
+        "this.updateMemory.write({ checkedAt: now, installedVersion: check.latest })",
+      ) && background.includes("this.announceInstalled(check)"),
+      "and it is announced only once VS Code holds the release",
+    );
+    const install = chat.slice(
+      chat.indexOf("private async runInstall("),
+      chat.indexOf("private async installLegacyCli("),
+    );
+    assert.ok(
+      install.includes('if (report) this.showDialog(updateDialog({ k: "installing"'),
+      "the panel's dialog follows a click, and a launch's own install paints none of it",
+    );
+    assert.ok(
+      install.includes("if (!report) return false;") && install.includes("if (report) this.showDialog("),
+      "a launch's install fails into the output channel rather than a dialog nobody opened",
+    );
+    assert.ok(
+      background.includes("this.openRelease(check.releaseUrl)") &&
+        chat.includes('const UPDATE_RELEASE_NOTES = "Release notes";'),
+      "a release with no file to install is pointed at, not offered an install nothing could run",
+    );
+
+    // The notification is the whole report, and it carries the action that
+    // finishes the job: VS Code holds the new version, and the code running here
+    // is the one it replaced until the window is reloaded.
+    const announce = chat.slice(chat.indexOf("private announceInstalled("));
+    assert.ok(
+      announce.includes("`Oxide ${check.latest} was installed. Restart the window to run it.`"),
+      "the installed release is named with what is left to do",
+    );
+    assert.ok(
+      chat.includes('const UPDATE_RESTART = "Restart Window";') &&
+        dialogs.includes('row("", "Restart Window"'),
+      "the restart is the same control the panel's dialog offers, named the same way",
+    );
+    assert.ok(
+      announce.includes("if (choice === UPDATE_RESTART) this.reloadWindow();"),
+      "and its click goes through the reload that puts the new version in charge",
+    );
+    assert.ok(
+      chat.includes('const UPDATE_LATER = "Later";') &&
+        chat.includes('const UPDATE_INSTALL_NOW = "Install";'),
+      "with the way out of the notification, and the row that starts the install",
+    );
+    assert.ok(
+      background.includes("`Oxide ${check.latest} is available (installed: ${check.current}).`"),
+      "a release the panel cannot install is offered, naming what is running now",
+    );
+  });
+
   it("handles every message the webview sends", () => {
     // The webview is plain JavaScript with no type checking of its own, so a
     // mistyped `k` would silently do nothing: every kind it posts has to have a

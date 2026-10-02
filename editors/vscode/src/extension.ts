@@ -6,7 +6,7 @@ import * as os from "node:os";
 import * as path from "node:path";
 import * as vscode from "vscode";
 
-import { ChatController } from "./chat";
+import { ChatController, type UpdateStore } from "./chat";
 import { ChatViewProvider } from "./chatView";
 import { CHANGE_SCHEME, parseSnapshotQuery } from "./core/changes";
 import { isFile, exists, listMarkdown, readTextFile, realPath, resolveBinary } from "./cli";
@@ -14,6 +14,13 @@ import { configDir, parseConfigSummary } from "./core/config";
 import { fileReference, selectionLines } from "./core/prompt";
 import type { ProjectDeps } from "./core/project";
 import type { ContextChip } from "./core/protocol";
+import type { UpdateMemory } from "./core/updates";
+
+/// Where the launch's own update check remembers what it did last time: when it
+/// last asked, and the release an install put in VS Code. It is global state
+/// rather than workspace state because the check is about the extension rather
+/// than about the folder, and the next window may open a different project.
+const UPDATE_STATE_KEY = "oxide.update";
 
 export function activate(context: vscode.ExtensionContext): void {
   const output = vscode.window.createOutputChannel("Oxide");
@@ -21,7 +28,7 @@ export function activate(context: vscode.ExtensionContext): void {
   // compares a release against. Read from the manifest VS Code loaded it from,
   // so an installed release and a development build both answer for themselves.
   const version = String(context.extension.packageJSON.version ?? "");
-  const controller = new ChatController(output, projectDeps(), version);
+  const controller = new ChatController(output, projectDeps(), version, updateMemory(context));
 
   // One provider serves both panes: the transcript and running turn live in the
   // controller, which broadcasts to every attached view. Queue/Steer messages
@@ -224,6 +231,16 @@ export function activate(context: vscode.ExtensionContext): void {
   // A file already open when the window started is tracked from the first
   // message, which is what the panel paints its chip from.
   controller.syncActiveEditor();
+  // A newer release of this extension is noticed here rather than nowhere: VS
+  // Code updates what it installed from the Marketplace, and a `.vsix` from the
+  // release page is not one of those. It runs in the background — the launch
+  // does not wait on the network, and nothing is painted over the panel — and
+  // reports itself with a notification when there is something to do. A check
+  // that failed is the output channel's alone, so an editor started without a
+  // network does not open with an error about it.
+  void controller.checkForUpdatesInBackground().catch((error: unknown) => {
+    output.appendLine(`[update] ${String(error)}`);
+  });
 }
 
 export function deactivate(): void {
@@ -281,6 +298,28 @@ function configFile(): string {
     home: os.homedir(),
     exists: fs.existsSync,
   });
+}
+
+/// The update state the panel keeps between launches, as the store
+/// `ChatController` reads it. A value from another version of this extension is
+/// read field by field and anything missing falls back to the empty state, so a
+/// stale key costs one extra check rather than a crash on activation.
+function updateMemory(context: vscode.ExtensionContext): UpdateStore {
+  return {
+    read: () => {
+      const stored: unknown = context.globalState.get(UPDATE_STATE_KEY);
+      if (!stored || typeof stored !== "object" || Array.isArray(stored)) return null;
+      const record = stored as Record<string, unknown>;
+      return {
+        checkedAt: typeof record.checkedAt === "number" ? record.checkedAt : 0,
+        installedVersion:
+          typeof record.installedVersion === "string" ? record.installedVersion : "",
+      };
+    },
+    write: async (state: UpdateMemory) => {
+      await context.globalState.update(UPDATE_STATE_KEY, state);
+    },
+  };
 }
 
 /// Adds the editor's selection, or the whole file, as context. Returns the

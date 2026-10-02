@@ -13,12 +13,14 @@
 //! like the rest of the library.
 
 use anyhow::{bail, Context, Result};
+use oxide_core::update_notice::Notice;
 use oxide_core::updates::{self, Artifact, Check, Component, Release, WorkDir};
 use serde_json::{json, Value};
 use std::ffi::OsStr;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 /// The version this build reports. Release CI writes the tag version in before
 /// building, so a released bundle answers with the release it came from.
@@ -81,6 +83,16 @@ impl Installation {
             Kind::Installer => asset.name.ends_with("-setup.exe"),
             Kind::None => false,
         }
+    }
+
+    /// Whether this copy is one the app replaces in place without being asked:
+    /// a bundle or an AppImage the user installed, which a new release simply
+    /// takes the place of. A Windows installer is not — it asks for elevation
+    /// and waits for the app to be closed, which is a thing to offer rather
+    /// than to do behind the reader's back — and neither is a copy the app does
+    /// not own at all.
+    pub fn replaces_itself(&self) -> bool {
+        self.replaceable && matches!(self.kind, Kind::Bundle(_) | Kind::AppImage(_))
     }
 
     /// What to do instead, for a copy the app will not replace itself.
@@ -232,13 +244,70 @@ pub async fn check() -> Result<Check> {
     ))
 }
 
-/// Installs the newest release of the app.
+/// Whether a launch installs a release on its own: the newest release of this
+/// app's train, newer than the build running, in a copy the app replaces in
+/// place. Everything else — a release for a copy the user installed elsewhere,
+/// a Windows installer, a checkout's build — is the window's dialog to offer
+/// instead, since only the reader can decide to do it.
+pub fn launch_installs(notice: &Notice, current: &str, installation: &Installation) -> bool {
+    notice.is_update_for(current) && installation.replaces_itself()
+}
+
+/// Installs the newest release of the app, for a caller with no progress to
+/// show — `restart` is what runs it either way. See [`install_reporting`] for
+/// what the install does, step by step.
+pub async fn install() -> Result<Value> {
+    install_reporting(|_| {}).await
+}
+
+/// What an install is doing, reported as it goes so a front-end can paint the
+/// wait rather than leave a release that is being put in place unexplained.
+#[derive(Debug, Clone)]
+pub struct Progress {
+    /// The step in progress: `checking`, `downloading`, `verifying`,
+    /// `installing`.
+    pub stage: &'static str,
+    /// The release being installed, known once it has been resolved.
+    pub version: String,
+}
+
+/// An install in flight, process-wide. The launch installs a release without
+/// being asked while the window's own dialog can be asked for the same one, and
+/// two installs staging and renaming the same bundle is how an installation is
+/// lost.
+static INSTALLING: AtomicBool = AtomicBool::new(false);
+
+/// The right to install, released when it goes out of scope.
+#[derive(Debug)]
+struct InstallGuard;
+
+impl InstallGuard {
+    fn take() -> Result<Self> {
+        if INSTALLING.swap(true, Ordering::SeqCst) {
+            bail!("an Oxide update is already being installed");
+        }
+        Ok(Self)
+    }
+}
+
+impl Drop for InstallGuard {
+    fn drop(&mut self) {
+        INSTALLING.store(false, Ordering::SeqCst);
+    }
+}
+
+/// Installs the newest release of the app, reporting each step to `report`.
 ///
 /// The release is resolved again rather than taken from the check, so one
 /// published in the meantime is the one that lands, and the download is checked
 /// against the digest its release published before it goes anywhere near this
 /// installation.
-pub async fn install() -> Result<Value> {
+pub async fn install_reporting(report: impl Fn(Progress)) -> Result<Value> {
+    let _installing = InstallGuard::take()?;
+    report(Progress {
+        stage: "checking",
+        version: String::new(),
+    });
     let client = updates::client()?;
     let repo = updates::repo();
     let release = resolve(&client, &repo).await?;
@@ -256,14 +325,26 @@ pub async fn install() -> Result<Value> {
         );
     }
 
+    report(Progress {
+        stage: "downloading",
+        version: release.version.clone(),
+    });
     let work = WorkDir::new()?;
     let download = work.path().join(&release.asset);
     let bytes = updates::download(&client, &release.url(&repo), &download).await?;
     let mut notes = Vec::new();
+    report(Progress {
+        stage: "verifying",
+        version: release.version.clone(),
+    });
     match release.digest.as_deref() {
         Some(digest) => updates::verify_sha256(&download, digest)?,
         None => notes.push("no checksum was published for this release".to_string()),
     }
+    report(Progress {
+        stage: "installing",
+        version: release.version.clone(),
+    });
     let placed = install_downloaded(&installation, &release.version, &download, &work)?;
     notes.push(placed.note);
 
@@ -858,5 +939,81 @@ mod tests {
             "{error}"
         );
         fs::remove_dir_all(root).unwrap();
+    }
+
+    // A launch installs a release on its own only where the app owns the copy
+    // it would write over, and only when the release is newer than the build
+    // running: everything else is the reader's to decide, through the dialog.
+    #[test]
+    fn a_launch_installs_only_into_a_copy_it_owns() {
+        let root = temp_dir("launch");
+        let bundle = bundle_fixture(&root);
+        let bundle_install = installation_of(
+            &bundle.join("Contents/MacOS/oxide-desktop"),
+            "macos",
+            None,
+            None,
+        );
+        let notice =
+            Notice::from_release(&release("Oxide_0.34.0_aarch64.dmg"), "acme/oxide", 1_000);
+
+        // A bundle the user installed, with a newer release to hand: done
+        // without asking, since the app is the one that put it there.
+        assert!(launch_installs(&notice, "0.33.0", &bundle_install));
+        // The running build is that release, so there is nothing to install.
+        assert!(!launch_installs(&notice, "0.34.0", &bundle_install));
+        assert!(!launch_installs(&notice, "0.35.0", &bundle_install));
+
+        // An AppImage is the app's own file just the same.
+        let image = root.join("Oxide.AppImage");
+        fs::write(&image, b"image").unwrap();
+        let appimage = installation_of(
+            &root.join("squashfs-root/oxide-desktop"),
+            "linux",
+            Some(&image),
+            None,
+        );
+        assert!(launch_installs(&notice, "0.33.0", &appimage));
+
+        // A checkout's build belongs to whoever is working in it, and a Windows
+        // installer asks for elevation and for the app to be closed — neither is
+        // a launch's to do.
+        let checkout = installation_of(
+            &root.join("target/debug/oxide-desktop"),
+            "macos",
+            None,
+            None,
+        );
+        assert!(!launch_installs(&notice, "0.33.0", &checkout));
+        let directory = root.join("Programs/Oxide");
+        fs::create_dir_all(&directory).unwrap();
+        let installer = installation_of(
+            &directory.join("oxide-desktop.exe"),
+            "windows",
+            None,
+            Some(&directory),
+        );
+        assert!(!launch_installs(&notice, "0.33.0", &installer));
+
+        // A distribution's package is updated by its package manager.
+        let system = installation_of(&root.join("usr/bin/oxide-desktop"), "linux", None, None);
+        assert!(!launch_installs(&notice, "0.33.0", &system));
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    // The launch's own install and the dialog's are the same install, so a
+    // second one is refused while the first is staging the same bundle.
+    #[test]
+    fn only_one_install_runs_at_a_time() {
+        let held = InstallGuard::take().unwrap();
+        let refused = InstallGuard::take().unwrap_err();
+        assert!(
+            refused.to_string().contains("already being installed"),
+            "{refused}"
+        );
+        // The right to install goes with the guard, so the window can install
+        // once a launch's own install has finished.
+        drop(held);
+        assert!(InstallGuard::take().is_ok());
     }
 }

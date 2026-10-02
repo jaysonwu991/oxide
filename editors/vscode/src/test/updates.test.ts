@@ -4,13 +4,20 @@
 // it here is what keeps the panel from re-deciding any of that — and the
 // component it asks about is what keeps it from offering the oxide command line
 // in place of its own release.
+//
+// What a launch does with that answer on its own is decided here too: whether
+// there is anything to ask at all, and whether the release the check resolved is
+// installed by the panel or only offered.
 
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 
 import {
+  BACKGROUND_CHECK_MS,
+  backgroundAction,
   parseUpdateCheck,
   rejectsCheck,
+  shouldBackgroundCheck,
   updateCheckArgs,
   updateInstallArgs,
   updateVsix,
@@ -191,5 +198,94 @@ describe("update check", () => {
     );
     assert.equal(rejectsCheck(""), false);
     assert.equal(rejectsCheck("error: unexpected argument '--check' found"), false);
+  });
+});
+
+describe("the check a launch makes on its own", () => {
+  /// A fixed clock, so the interval is a number rather than a test that runs
+  /// long enough to cross it.
+  const now = 1_800_000_000_000;
+
+  it("asks when nothing is remembered, and not again inside the interval", () => {
+    assert.equal(shouldBackgroundCheck(null, "0.32.0", now), true, "a window that never asked");
+    assert.equal(
+      shouldBackgroundCheck({ checkedAt: 0, installedVersion: "" }, "0.32.0", now),
+      true,
+      "one that remembers no check at all",
+    );
+    assert.equal(
+      shouldBackgroundCheck({ checkedAt: now - 60_000, installedVersion: "" }, "0.32.0", now),
+      false,
+      "a window opened again a minute later asks nothing",
+    );
+    // The interval is `oxide_core::update_notice::REFRESH_AFTER_SECS`, and the
+    // boundary belongs to the check rather than to the wait.
+    assert.equal(BACKGROUND_CHECK_MS, 6 * 60 * 60 * 1000);
+    assert.equal(
+      shouldBackgroundCheck(
+        { checkedAt: now - BACKGROUND_CHECK_MS + 1, installedVersion: "" },
+        "0.32.0",
+        now,
+      ),
+      false,
+    );
+    assert.equal(
+      shouldBackgroundCheck(
+        { checkedAt: now - BACKGROUND_CHECK_MS, installedVersion: "" },
+        "0.32.0",
+        now,
+      ),
+      true,
+      "a check six hours old is asked again",
+    );
+  });
+
+  it("waits for the reload an install is already waiting on", () => {
+    // VS Code holds the release an earlier window installed, and the code
+    // running here is the one it replaced: every answer a check could give
+    // would be that same release, so the launch asks nothing and the user is
+    // told nothing — the restart happened, or it did not, and neither is the
+    // panel's to nag about.
+    const pending = { checkedAt: now - BACKGROUND_CHECK_MS - 1, installedVersion: "0.34.0" };
+    assert.equal(shouldBackgroundCheck(pending, "0.32.0", now), false);
+    // Once the window runs what was installed there is nothing pending, and the
+    // interval decides again — a version newer than the one running is the only
+    // thing that skips a check.
+    assert.equal(shouldBackgroundCheck(pending, "0.34.0", now), true);
+    assert.equal(shouldBackgroundCheck(pending, "0.35.0", now), true);
+    // A remembered version this panel cannot read as a release (an older
+    // extension wrote the key) skips nothing.
+    assert.equal(
+      shouldBackgroundCheck({ checkedAt: 0, installedVersion: "dev" }, "0.32.0", now),
+      true,
+    );
+  });
+
+  it("offers the release that carries the file this editor installs", () => {
+    const check = parseUpdateCheck(answer);
+    assert.ok(check);
+    const action = backgroundAction(check);
+    // A `.vsix` that did not come from the Marketplace is never updated by VS
+    // Code, so the row the notification raises is the one that fetches it: the
+    // panel installs from that row rather than pointing at the release page.
+    assert.deepEqual(action, { k: "install", vsix: check.asset });
+    assert.equal(action.k === "install" ? action.vsix.name : "", "oxide-vscode-0.34.0.vsix");
+  });
+
+  it("points at a release it has no file for, and says nothing when there is none", () => {
+    const check = parseUpdateCheck(answer);
+    assert.ok(check);
+    // No build for this platform, an artifact that is not a VSIX, and a CLI old
+    // enough to answer without the file: there is nothing here to hand to VS
+    // Code, so the notification opens the release the file is on rather than
+    // offering an install that could not run.
+    assert.deepEqual(backgroundAction({ ...check, asset: null }), { k: "offer" });
+    assert.deepEqual(
+      backgroundAction({ ...check, asset: { ...check.asset!, name: "oxide-vscode-0.34.0.zip" } }),
+      { k: "offer" },
+    );
+    // A release already current — which is also what a check pinned to a
+    // version older than this one resolves to — is nothing to do at all.
+    assert.deepEqual(backgroundAction({ ...check, updateAvailable: false }), { k: "none" });
   });
 });

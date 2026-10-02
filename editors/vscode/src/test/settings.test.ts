@@ -1,5 +1,6 @@
-// `settings.json` is shared with the CLI, so the two keys the footer reports
-// have to resolve the way `config.rs` and `compact.rs` resolve them.
+// `settings.json` is shared with the CLI, so the keys the footer reports and
+// the flag a launch's own update check is gated by have to resolve the way
+// `config.rs`, `compact.rs`, `notify.rs` and `update_notice.rs` resolve them.
 
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
@@ -35,6 +36,16 @@ describe("parseSettings", () => {
     assert.equal(parseSettings("{}").notifyOnComplete, undefined);
   });
 
+  it("reads the update-check flag the terminal's /updates writes", () => {
+    // `update_notice.rs::enabled_within` reads the key with `as_bool`, so
+    // anything that is not one leaves the launch's default alone.
+    assert.equal(parseSettings('{"checkForUpdates":false}').checkForUpdates, false);
+    assert.equal(parseSettings('{"checkForUpdates":true}').checkForUpdates, true);
+    assert.equal(parseSettings('{"checkForUpdates":"false"}').checkForUpdates, undefined);
+    assert.equal(parseSettings('{"checkForUpdates":0}').checkForUpdates, undefined);
+    assert.equal(parseSettings("{}").checkForUpdates, undefined);
+  });
+
   it("reads nothing out of a missing or malformed file", () => {
     assert.deepEqual(parseSettings(null), {});
     assert.deepEqual(parseSettings("{"), {});
@@ -43,12 +54,40 @@ describe("parseSettings", () => {
 });
 
 describe("sharedSettings", () => {
-  it("defaults to ask and auto-compaction on", () => {
+  it("defaults to ask, auto-compaction on and a launch that checks", () => {
     assert.deepEqual(sharedSettings(null, null), {
       defaultTrust: "ask",
       autoCompact: true,
       notifyOnComplete: true,
+      checkForUpdates: true,
     });
+  });
+
+  it("resolves the update-check flag like update_notice.rs", () => {
+    assert.equal(sharedSettings(null, '{"checkForUpdates":false}').checkForUpdates, false);
+    assert.equal(
+      sharedSettings('{"checkForUpdates":false}', '{"checkForUpdates":true}').checkForUpdates,
+      true,
+      "the project's .oxide/settings.json wins per key",
+    );
+    assert.equal(
+      sharedSettings('{"checkForUpdates":true}', '{"checkForUpdates":true}', {
+        OXIDE_CHECK_FOR_UPDATES: "false",
+      }).checkForUpdates,
+      false,
+      "the env override wins over both files",
+    );
+    // `update_notice.rs::env_bool` parses a bare true/false and nothing else,
+    // so an override that is not one leaves the files to decide.
+    assert.equal(
+      sharedSettings('{"checkForUpdates":false}', '{"checkForUpdates":true}', {
+        OXIDE_CHECK_FOR_UPDATES: "off",
+      }).checkForUpdates,
+      true,
+    );
+    // A file that sets neither leaves the launch checking, which is what the
+    // terminal and the desktop app do with the same two files.
+    assert.equal(sharedSettings("{}", "{}").checkForUpdates, true);
   });
 
   it("resolves the notification flag like notify.rs", () => {
