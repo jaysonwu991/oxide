@@ -63,6 +63,59 @@ describe("command contributions", () => {
     }
   });
 
+  it("checks for updates through the installed CLI", () => {
+    // The release the panel offers is the one the CLI resolved: the check is
+    // `oxide update --check --json` and the install is `oxide update`, so an
+    // installation the terminal would refuse (Homebrew's, a binary that is not a
+    // release) is not replaced here either.
+    const command = manifest.contributes.commands.find(
+      (entry) => entry.command === "oxide.checkForUpdates",
+    );
+    assert.ok(command);
+    assert.equal(command.category, "Oxide");
+    // It is reached from the panel's title beside the other pane-level commands,
+    // since it is about the installation rather than the conversation.
+    const title = manifest.contributes.menus["view/title"] ?? [];
+    assert.ok(
+      title.some((entry) => entry.command === "oxide.checkForUpdates"),
+      "the panel offers it beside New Chat and Session History",
+    );
+    assert.ok(
+      /registerCommand\(\s*"oxide\.checkForUpdates",\s*guard\(\(\) => controller\.checkForUpdates\(\)\)\)/.test(
+        extension,
+      ),
+      "the command is the controller's own check",
+    );
+    assert.ok(chat.includes("updateCheckArgs()"), "the panel runs the CLI's check");
+    assert.ok(chat.includes("updateInstallArgs()"), "and the CLI's install");
+    assert.ok(
+      chat.includes("parseUpdateCheck(result.stdout)"),
+      "reading the answer rather than scraping the prose",
+    );
+    assert.ok(
+      chat.includes("!check || !check.updateAvailable || !check.installable"),
+      "only a release the check offered as installable is installed, once",
+    );
+    assert.ok(
+      chat.includes("if (this.installing) return;"),
+      "and never a second install over the binary the first one is replacing",
+    );
+    // A CLI older than the panel cannot answer the check at all, and the one row
+    // it is offered is the plain `oxide update` that replaces that binary — so
+    // the refusal is a state the install runs from, not a dead end.
+    assert.ok(
+      chat.includes("rejectsJson(result.stderr)") && chat.includes('k: "legacy"'),
+      "a CLI too old to know --json is offered the update that works anyway",
+    );
+    // The re-check after such an install reports that install's own output rather
+    // than asking the same older CLI again and printing its refusal.
+    assert.ok(
+      chat.includes("if (legacy && this.legacyCli)") &&
+        chat.includes('headline: "Ran oxide update"'),
+      "an install a checked CLI cannot confirm is reported by what it printed",
+    );
+  });
+
   it("handles every message the webview sends", () => {
     // The webview is plain JavaScript with no type checking of its own, so a
     // mistyped `k` would silently do nothing: every kind it posts has to have a

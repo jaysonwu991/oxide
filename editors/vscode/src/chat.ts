@@ -3,6 +3,7 @@
 // attached webview. All CLI contact goes through here.
 
 import * as fs from "node:fs";
+import * as os from "node:os";
 import * as path from "node:path";
 import * as vscode from "vscode";
 
@@ -54,11 +55,21 @@ import {
   reasoningDialog,
   trustDialog,
   undoChangesDialog,
+  UPDATE_INSTALL,
+  UPDATE_NOTES,
+  updateDialog,
   type DialogState,
   type LiveSession,
   type ModelChoice,
 } from "./core/dialogs";
 import { isMcpCommand, mcpListArgs, mcpToggleArgs, parseMcpList, type McpServerView } from "./core/mcps";
+import {
+  parseUpdateCheck,
+  rejectsJson,
+  updateCheckArgs,
+  updateInstallArgs,
+  type UpdateCheck,
+} from "./core/updates";
 import { modelsListArgs, parseModelCatalog } from "./core/models";
 import { changeArgs, diffPlan, undoArgs, type DiffPlan } from "./core/changes";
 import {
@@ -109,6 +120,13 @@ const MAX_CONTEXT_LINES = 2_000;
 /// large project is offered what the search provider returns first rather than
 /// holding the list until the whole tree has been read.
 const MAX_WORKSPACE_PATHS = 10_000;
+
+/// The update check is one HTTPS request to GitHub, made by the CLI rather than
+/// by the extension host: short enough that an answer is expected, long enough
+/// that a slow link is not read as a failure. The install downloads a release
+/// archive and replaces the installed binary, so its budget is minutes.
+const UPDATE_CHECK_TIMEOUT = 60_000;
+const UPDATE_INSTALL_TIMEOUT = 600_000;
 
 /// What `/help` says in the panel: the commands it answers itself, since every
 /// other command and skill is one the CLI expands. The terminal and the desktop
@@ -250,6 +268,17 @@ export class ChatController {
   /// earlier one can answer last (it started before the file was written), so it
   /// is dropped rather than repainting the rows the newer read has replaced.
   private sessionsSync = 0;
+  /// The check the update dialog is showing, held so its rows act on what was
+  /// reported: the install row installs the release the check resolved, and a
+  /// row a stale dialog post back cannot install anything else.
+  private update: UpdateCheck | null = null;
+  /// Whether the CLI answered that it does not know `--json` (`rejectsJson`),
+  /// which is the one case with no check to hold and an install still worth
+  /// offering: `oxide update` is the command that replaces that older binary.
+  private legacyCli = false;
+  /// Whether an install is in flight. The install takes as long as a download,
+  /// so the command can be asked again while one runs.
+  private installing = false;
   /// The name of the thread when the CLI knows one (a resumed session keeps its
   /// picker label); otherwise the header falls back to the first message.
   private sessionTitle: string | null = null;
@@ -1636,6 +1665,133 @@ export class ChatController {
     this.showDialog(mcpDialog(this.servers));
   }
 
+  // ---------- updates ----------
+
+  /// The newest released oxide, checked by the installed CLI and reported in the
+  /// panel: `oxide update --check --json` is the same check the terminal's
+  /// `oxide update --check` runs, so the release the panel offers is the one the
+  /// CLI would install, verified against the same manifest.
+  ///
+  /// `headline` names what the check is about when it is not the question "is
+  /// there an update" — the re-check a finished install runs, which reports the
+  /// version now on disk.
+  async checkForUpdates(headline = ""): Promise<void> {
+    // A check is one request to GitHub, and it runs about the installation
+    // rather than about the project, so no folder is required; a window with
+    // none open still has a CLI to ask.
+    const cwd = this.cwd() ?? os.homedir();
+    this.showDialog(updateDialog({ k: "checking" }));
+    const result = await runCapture(
+      this.binary(),
+      updateCheckArgs(),
+      cwd,
+      UPDATE_CHECK_TIMEOUT,
+    );
+    this.update = null;
+    this.legacyCli = false;
+    if (result.error || result.code !== 0) {
+      // A CLI older than this panel does not know `--json`. There is no release
+      // to report, but there is still something to do about it, so the dialog
+      // offers the update that works on every version rather than the CLI's
+      // refusal alone.
+      if (rejectsJson(result.stderr)) {
+        this.legacyCli = true;
+        this.showDialog(
+          updateDialog({
+            k: "legacy",
+            text: result.stderr.trim() || `exit ${result.code}`,
+            path: this.binary(),
+          }),
+        );
+        return;
+      }
+      const detail = result.error || firstLine(result.stderr) || `exit ${result.code}`;
+      this.showDialog(updateDialog({ k: "failed", stage: "check", message: detail }));
+      return;
+    }
+    const check = parseUpdateCheck(result.stdout);
+    if (!check) {
+      this.update = null;
+      this.showDialog(
+        updateDialog({
+          k: "failed",
+          stage: "check",
+          message: `The CLI did not answer with a check: ${firstLine(result.stdout) || "no output"}`,
+        }),
+      );
+      return;
+    }
+    this.update = check;
+    if (check.updateAvailable) {
+      this.showNotice(
+        `Oxide ${check.latest} is available (installed: ${check.current}).`,
+        "info",
+      );
+    }
+    this.showDialog(updateDialog({ k: "ready", check, headline }));
+  }
+
+  /// The install row: the release the check resolved, installed by the CLI that
+  /// resolved it. A check that could not be run, an installation the CLI leaves
+  /// to Homebrew, and a second click while one is running all do nothing, so the
+  /// only way in is a row that was offered — which includes the one row a CLI
+  /// too old to be checked is offered, since `oxide update` is what replaces it.
+  private async installUpdate(): Promise<void> {
+    const check = this.update;
+    const legacy = this.legacyCli;
+    if (this.installing) return;
+    if (!legacy && (!check || !check.updateAvailable || !check.installable)) return;
+    this.installing = true;
+    this.showDialog(updateDialog({ k: "installing", what: check ? `Oxide ${check.latest}` : "the newest CLI" }));
+    const cwd = this.cwd() ?? os.homedir();
+    const result = await runCapture(this.binary(), updateInstallArgs(), cwd, UPDATE_INSTALL_TIMEOUT);
+    this.installing = false;
+    if (result.error || result.code !== 0) {
+      const detail = result.error || firstLine(result.stderr) || `exit ${result.code}`;
+      this.showDialog(updateDialog({ k: "failed", stage: "install", message: detail }));
+      return;
+    }
+    this.showNotice(
+      // The CLI's own outcome line rather than a claim this side makes: an
+      // installation that is already current answers an `oxide update` with
+      // `Already up to date`, and the last line it printed is what happened.
+      legacy ? lastLine(result.stdout) || "Ran oxide update." : `Installed Oxide ${check!.latest}.`,
+    );
+    // Read once more rather than reporting the version that was asked for: what
+    // is on disk is the CLI's answer, and the dialog shows it beside the
+    // headline saying what just happened.
+    await this.checkForUpdates(legacy ? "Installed the newest oxide CLI" : `Installed Oxide ${check!.latest}`);
+    if (legacy && this.legacyCli) {
+      // The re-check came back with the same older CLI, so the report of the
+      // install itself is the answer: what it printed is the only thing that can
+      // say whether a release went on, since an installation already current
+      // answers `Already up to date` rather than installing anything.
+      const report = result.stdout.trim() || lastLine(result.stderr) || "Ran oxide update.";
+      this.showDialog(
+        updateDialog({
+          k: "legacy",
+          text: report,
+          path: this.binary(),
+          headline: "Ran oxide update",
+        }),
+      );
+    }
+  }
+
+  /// The release page, in the user's browser: a webview cannot navigate, and the
+  /// URL is the CLI's own, so it is checked rather than trusted blindly.
+  private openRelease(url: string): void {
+    if (!url) return;
+    let parsed: vscode.Uri;
+    try {
+      parsed = vscode.Uri.parse(url, true);
+    } catch {
+      return;
+    }
+    if (parsed.scheme !== "http" && parsed.scheme !== "https") return;
+    void vscode.env.openExternal(parsed);
+  }
+
   // ---------- changes ----------
 
   /// One row of a turn's change card, as VS Code's diff editor needs it: the
@@ -1745,6 +1901,10 @@ export class ChatController {
         return this.showMcps();
       case MCP_TOGGLE:
         return this.toggleMcp(value);
+      case UPDATE_INSTALL:
+        return this.installUpdate();
+      case UPDATE_NOTES:
+        return this.openRelease(value);
       case OPEN_SESSION:
         return this.openSession(value);
       case SESSION_DELETE:
@@ -1978,6 +2138,13 @@ function trimLines(block: ContextBlock): { block: ContextBlock; cut: boolean } {
 function firstLine(text: string): string {
   const line = text.split("\n").find((entry) => entry.trim());
   return line ? line.trim() : "";
+}
+
+/// The CLI's report ends with its outcome (`Already up to date; rerun with
+/// --force…`, `Installed v0.34.0.`), which is the line worth repeating.
+function lastLine(text: string): string {
+  const lines = text.split("\n").filter((entry) => entry.trim());
+  return lines.length ? lines[lines.length - 1].trim() : "";
 }
 
 function mergeModels(primary: readonly ModelChoice[], fallback: readonly ModelChoice[]): ModelChoice[] {

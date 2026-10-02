@@ -26,9 +26,13 @@ import {
   sessionDialog,
   trustDialog,
   undoChangesDialog,
+  UPDATE_INSTALL,
+  UPDATE_NOTES,
+  updateDialog,
 } from "../core/dialogs";
 import { parseMcpList } from "../core/mcps";
 import { parseSessionList } from "../core/sessions";
+import type { UpdateCheck } from "../core/updates";
 
 const listing = JSON.stringify([
   {
@@ -510,5 +514,178 @@ describe("undo-turn confirmation", () => {
     assert.match(cancel.detail, /Keep/);
     assert.equal(cancel.tone, "");
     assert.equal(cancel.value, "");
+  });
+});
+
+describe("update dialog", () => {
+  const check: UpdateCheck = {
+    current: "0.32.0",
+    latest: "0.33.0",
+    tag: "v0.33.0",
+    pinned: false,
+    updateAvailable: true,
+    installation: "prebuilt binary",
+    installable: true,
+    path: "/home/me/.local/bin/oxide",
+    advice: "Update available: run `oxide update` to install it.",
+    releaseUrl: "https://github.com/jaysonwu991/oxide/releases/tag/v0.33.0",
+  };
+
+  it("offers the install the CLI's own check resolved", () => {
+    const dialog = updateDialog({ k: "ready", check });
+    assert.equal(dialog.kind, "update");
+    // It hangs near the composer, where the panel's own commands open, rather
+    // than covering the transcript it is not about.
+    assert.equal(dialog.pin, "footer");
+    assert.equal(dialog.title, "Oxide 0.33.0 is available");
+    // Installing is the `oxide` command line — the binary the terminal, this
+    // panel and the desktop app run — rather than the IDE's own bundle.
+    assert.match(dialog.subtitle, /oxide command line/);
+    assert.match(dialog.note, /Current 0\.32\.0/);
+    assert.match(dialog.note, /Latest v0\.33\.0/);
+    assert.match(dialog.note, /prebuilt binary/);
+    assert.deepEqual(
+      dialog.rows.map((row) => row.label),
+      ["Install 0.33.0", "Release notes", "Close"],
+    );
+    assert.deepEqual(
+      dialog.rows.map((row) => row.action),
+      [UPDATE_INSTALL, UPDATE_NOTES, CLOSE_DIALOG],
+    );
+    // The row installs the release that was checked, and the release page its
+    // own URL; neither is looked up again when the click arrives.
+    assert.equal(dialog.rows[0].value, "0.33.0");
+    assert.equal(dialog.rows[0].detail, "Replaces /home/me/.local/bin/oxide");
+    assert.equal(dialog.rows[1].value, check.releaseUrl);
+    assert.equal(dialog.refreshLabel, "", "rechecking is the command, not a row");
+  });
+
+  it("reports an installation the CLI leaves to something else", () => {
+    // Homebrew's oxide is not the CLI's to replace, so there is no install row:
+    // the CLI's own sentence says which command is.
+    const brew: UpdateCheck = {
+      ...check,
+      installation: "homebrew",
+      installable: false,
+      advice: "Update available; Homebrew manages this install: run `brew upgrade oxide`.",
+    };
+    const dialog = updateDialog({ k: "ready", check: brew });
+    assert.equal(dialog.title, "Oxide 0.33.0 is available");
+    assert.deepEqual(
+      dialog.rows.map((row) => row.action),
+      [UPDATE_NOTES, CLOSE_DIALOG],
+    );
+    assert.match(dialog.note, /brew upgrade oxide/);
+  });
+
+  it("says a release is here when there is nothing newer", () => {
+    const dialog = updateDialog({
+      k: "ready",
+      check: { ...check, current: "0.33.0", updateAvailable: false, advice: "" },
+    });
+    assert.equal(dialog.title, "Oxide is up to date");
+    assert.match(dialog.subtitle, /0\.33\.0 is the newest released version/);
+    assert.deepEqual(
+      dialog.rows.map((row) => row.action),
+      [UPDATE_NOTES, CLOSE_DIALOG],
+    );
+    // A check with no advice adds none to the line of facts.
+    assert.equal(/Update available/.test(dialog.note), false);
+  });
+
+  it("says what a finished install put on disk", () => {
+    // The re-check an install runs reports the same release the row offered, and
+    // the headline is what says something happened rather than only what is
+    // newest.
+    const dialog = updateDialog({
+      k: "ready",
+      check: { ...check, current: "0.33.0", updateAvailable: false, advice: "" },
+      headline: "Installed Oxide 0.33.0",
+    });
+    assert.equal(dialog.title, "Installed Oxide 0.33.0");
+  });
+
+  it("has something to say while the check runs and while the install does", () => {
+    const checking = updateDialog({ k: "checking" });
+    assert.equal(checking.title, "Checking for updates");
+    assert.match(checking.note, /Asking GitHub/);
+    assert.deepEqual(checking.rows, [], "there is nothing to press until there is an answer");
+
+    const installing = updateDialog({ k: "installing", what: "Oxide 0.33.0" });
+    assert.equal(installing.title, "Installing Oxide 0.33.0");
+    assert.deepEqual(installing.rows, [], "a second install cannot be asked for mid-flight");
+    assert.equal(installing.pin, "footer");
+    // A CLI too old to be checked has no version to name, and the state that
+    // says so is the same one the check's own install runs through.
+    assert.equal(
+      updateDialog({ k: "installing", what: "the newest CLI" }).title,
+      "Installing the newest CLI",
+    );
+  });
+
+  /// A CLI released before this check existed answers `unexpected argument
+  /// '--json'`. There is no release to report then — but the plain `oxide update`
+  /// the dialog offers is exactly what replaces that older binary, so the one
+  /// thing that would make this a dead end (no install row) is the thing it has.
+  it("offers the update that works on a CLI too old to be checked", () => {
+    const dialog = updateDialog({
+      k: "legacy",
+      text: "error: unexpected argument '--json' found\n\nUsage: oxide update --check",
+      path: "/Users/me/.local/bin/oxide",
+    });
+    assert.equal(dialog.title, "The oxide CLI is older than this panel");
+    assert.match(dialog.subtitle, /works on any version/);
+    // The CLI's own refusal, verbatim, under an offer that acts on it.
+    assert.match(dialog.note, /unexpected argument '--json'/);
+    assert.deepEqual(
+      dialog.rows.map((row) => row.action),
+      [UPDATE_INSTALL, CLOSE_DIALOG],
+    );
+    assert.equal(dialog.rows[0].label, "Install the newest CLI");
+    assert.equal(dialog.rows[0].value, "", "there is no version to install by name");
+    assert.equal(dialog.rows[0].detail, "Replaces /Users/me/.local/bin/oxide");
+    // Nothing here is about a release, so there is nothing to open.
+    assert.equal(
+      dialog.rows.some((row) => row.action === UPDATE_NOTES),
+      false,
+    );
+    // The same state read after an install ran holds that install's report
+    // rather than a refusal, and says so instead of naming the older CLI again.
+    const ran = updateDialog({
+      k: "legacy",
+      text: "Already up to date; rerun with --force to reinstall v0.33.0.",
+      path: "/Users/me/.local/bin/oxide",
+      headline: "Ran oxide update",
+    });
+    assert.equal(ran.title, "Ran oxide update");
+    assert.match(ran.note, /Already up to date/);
+    assert.deepEqual(
+      ran.rows.map((row) => row.action),
+      [UPDATE_INSTALL, CLOSE_DIALOG],
+      "the row is still there, since a CLI that is not newest is what it is for",
+    );
+  });
+
+  it("reports a failure with the CLI's own words, and a way out", () => {
+    const failed = updateDialog({
+      k: "failed",
+      stage: "check",
+      message: "error: could not reach GitHub: operation timed out",
+    });
+    assert.equal(failed.title, "Could not check for updates");
+    assert.match(failed.subtitle, /no network/);
+    // Verbatim, since the CLI's message is the one that says what went wrong.
+    assert.equal(failed.note, "error: could not reach GitHub: operation timed out");
+    assert.deepEqual(
+      failed.rows.map((row) => row.action),
+      [CLOSE_DIALOG],
+    );
+
+    // The same failure at the other stage reads as what it is: an install that
+    // was asked for and did not land.
+    const install = updateDialog({ k: "failed", stage: "install", message: "exit 1" });
+    assert.equal(install.title, "Could not install the update");
+    assert.match(install.subtitle, /release archive/);
+    assert.equal(install.note, "exit 1");
   });
 });

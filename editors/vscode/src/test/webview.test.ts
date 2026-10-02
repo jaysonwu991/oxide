@@ -11,6 +11,8 @@ import * as path from "node:path";
 import { describe, it } from "node:test";
 import * as vm from "node:vm";
 
+import { updateDialog } from "../core/dialogs";
+
 const root = path.join(__dirname, "..", "..");
 const renderer = fs.readFileSync(path.join(root, "media", "main.js"), "utf8");
 const shell = fs.readFileSync(path.join(root, "src", "chatView.ts"), "utf8");
@@ -1987,6 +1989,73 @@ describe("webview dialogs", () => {
     });
     byId.get("dialog")!.fire("click", { target: rows[1] });
     assert.deepEqual(last(posted), { k: "dialogAction", action: "dialogClose", value: "" });
+  });
+
+  it("paints the update the CLI's check resolved, and posts its rows", () => {
+    // The dialog is composed by `dialogs.ts` (which its own test pins), so what
+    // is asserted here is that the renderer paints whatever the host hands it
+    // and posts the action a row carries — the check itself is the command's.
+    const offered = updateDialog({
+      k: "ready",
+      check: {
+        current: "0.32.0",
+        latest: "0.33.0",
+        tag: "v0.33.0",
+        pinned: false,
+        updateAvailable: true,
+        installation: "prebuilt binary",
+        installable: true,
+        path: "/home/me/.local/bin/oxide",
+        advice: "",
+        releaseUrl: "https://github.com/jaysonwu991/oxide/releases/tag/v0.33.0",
+      },
+    });
+    const { byId, posted, send } = loadRenderer();
+    send({ k: "dialog", dialog: offered });
+    assert.equal(byId.get("dialog-title")!.textContent, "Oxide 0.33.0 is available");
+    const rows = byId.get("dialog-list")!.children;
+    assert.deepEqual(
+      rows.map((row) => row.dataset.action),
+      ["updateInstall", "updateNotes", "dialogClose"],
+    );
+    byId.get("dialog")!.fire("click", { target: rows[0] });
+    assert.deepEqual(last(posted), { k: "dialogAction", action: "updateInstall", value: "0.33.0" });
+    byId.get("dialog")!.fire("click", { target: rows[1] });
+    assert.deepEqual(last(posted), {
+      k: "dialogAction",
+      action: "updateNotes",
+      value: "https://github.com/jaysonwu991/oxide/releases/tag/v0.33.0",
+    });
+
+    // An installation the CLI does not replace has no install row to press —
+    // the only way an install is started is a row the check offered.
+    send({
+      k: "dialog",
+      dialog: updateDialog({
+        k: "ready",
+        check: {
+          current: "0.32.0",
+          latest: "0.33.0",
+          tag: "v0.33.0",
+          pinned: false,
+          updateAvailable: true,
+          installation: "homebrew",
+          installable: false,
+          path: "/opt/homebrew/bin/oxide",
+          advice: "Update available; Homebrew manages this install: run `brew upgrade oxide`.",
+          releaseUrl: "https://github.com/jaysonwu991/oxide/releases/tag/v0.33.0",
+        },
+      }),
+    });
+    assert.deepEqual(
+      byId.get("dialog-list")!.children.map((row) => row.dataset.action),
+      ["updateNotes", "dialogClose"],
+    );
+
+    // The states with nothing to press paint their words and no rows at all.
+    send({ k: "dialog", dialog: updateDialog({ k: "checking" }) });
+    assert.equal(byId.get("dialog-title")!.textContent, "Checking for updates");
+    assert.equal(byId.get("dialog-list")!.children.length, 0);
   });
 
   it("closes on the Close button and on Escape", () => {

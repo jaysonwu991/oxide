@@ -126,6 +126,7 @@ Provider logins live in the CLI: run **Oxide: Open Terminal (TUI)** and use
 | **Oxide: Review Working Tree Changes** | Review the uncommitted changes without modifying files. |
 | **Oxide: Open Terminal (TUI)** | Run the interactive `oxide` TUI in a terminal, for `/login` and `/models`. |
 | **Oxide: MCP Servers…** | List the MCP servers this project loads and connect or disconnect them; typing `/mcps` in the composer opens the same list above the composer. |
+| **Oxide: Check for Updates...** | Report the newest oxide CLI release and offer to install it, by running the CLI's own `oxide update --check --json` and then `oxide update` if you take it. The extension itself updates from the Marketplace. |
 | **Oxide: Show Output Channel** | The command line, prompt, stderr and event log of each turn. |
 | **Oxide: Set Model…**, **Set Agent…**, **Set Reasoning Effort…**, **Set Project Trust…** | Write the matching workspace setting; the footer's chips are the same actions. |
 

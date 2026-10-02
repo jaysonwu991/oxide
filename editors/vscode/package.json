@@ -180,6 +180,12 @@
         "title": "MCP Servers...",
         "category": "Oxide",
         "icon": "$(server-process)"
+      },
+      {
+        "command": "oxide.checkForUpdates",
+        "title": "Check for Updates...",
+        "category": "Oxide",
+        "icon": "$(cloud-download)"
       }
     ],
     "menus": {
@@ -239,6 +245,11 @@
           "command": "oxide.openTerminal",
           "when": "view == oxide.chat || view == oxide.chatSecondary",
           "group": "navigation@3"
+        },
+        {
+          "command": "oxide.checkForUpdates",
+          "when": "view == oxide.chat || view == oxide.chatSecondary",
+          "group": "navigation@4"
         }
       ]
     },
