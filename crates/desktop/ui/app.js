@@ -14,6 +14,19 @@ const el = (id) => document.getElementById(id);
 
 const REASONING = ["auto", "off", "low", "medium", "high"];
 
+// What each level asks the model for, in the words the picker shows beside it.
+// `off` is worded as a request rather than a promise: a model that always
+// thinks — GLM 5.3 and later, which the client asks for its lowest effort rather
+// than for no thinking at all (`llm::client::glm_forces_thinking`) — still
+// reasons when this level is chosen, and the row must not say otherwise.
+const REASONING_HINTS = {
+  auto: "Let the provider decide",
+  off: "Turn thinking off where the model allows it",
+  low: "A little reasoning",
+  medium: "Balanced reasoning",
+  high: "The most reasoning",
+};
+
 const SUGGESTIONS = [
   "Explain this codebase and its architecture.",
   "Find and fix the highest-priority bug in this repository.",
@@ -671,7 +684,7 @@ async function answerTrust(trusted) {
 }
 
 function updateChips() {
-  labelControl("reasoning", `thinking: ${state.reasoning}`, "Reasoning effort (Shift+Tab)");
+  labelControl("reasoning", `thinking: ${state.reasoning}`, "Choose the reasoning level (Shift+Tab cycles)");
 }
 
 /// An icon-only control names the value it holds where a text chip used to show
@@ -2254,6 +2267,7 @@ const OVERLAYS = [
   "create-project-modal",
   "mcps-modal",
   "models-modal",
+  "reasoning-modal",
   "themes-modal",
   "permissions-modal",
   "trust-modal",
@@ -2419,6 +2433,90 @@ function renderModels() {
   }
   if (!box.children.length) {
     box.innerHTML = '<div class="empty" style="margin:14px">No models found.</div>';
+  }
+}
+
+// ---------- reasoning ----------
+
+// Where the keyboard was before the picker took it, the way the full-size
+// preview keeps its own.
+let reasoningReturnFocus = null;
+
+/// The picker the thinking chip opens: the level a turn thinks at is a choice
+/// rather than a step, and the panel's own chip offers the same list. A level
+/// is applied to the turns this window sends, the way the chip's cycle applied
+/// it — `updateChips` is what says which one it is now.
+function openReasoning() {
+  if (!state.project) {
+    setStatus("Select a project first.");
+    return;
+  }
+  reasoningReturnFocus = document.activeElement || null;
+  closeOverlays("reasoning-modal");
+  renderReasoning();
+  el("reasoning-modal").hidden = false;
+  focusReasoning();
+}
+
+/// The keyboard starts on the level in use — the row a reader who opened the
+/// picker is looking for — rather than staying where it was, which is what a
+/// dialog that never moved focus left behind the overlay.
+function focusReasoning() {
+  const rows = [...el("reasoning-list").children];
+  const target =
+    rows.find((row) => row.classList.contains("active")) || rows[0] || el("reasoning-close");
+  target.focus();
+}
+
+/// Tab walks the picker's own rows and its Close: the dialog is `aria-modal`, so
+/// nothing behind it is reachable while it is up.
+function stepReasoningFocus(step) {
+  const controls = [...el("reasoning-list").children, el("reasoning-close")];
+  const at = controls.indexOf(document.activeElement);
+  controls[at === -1 ? 0 : (at + step + controls.length) % controls.length].focus();
+}
+
+/// Closing hands the keyboard back to whatever opened the picker. Every path
+/// goes through here — a row, the Close button, or Escape — so a reader who
+/// chose a level is not left at the top of the page behind the dialog.
+function closeReasoning() {
+  if (el("reasoning-modal").hidden) return;
+  el("reasoning-modal").hidden = true;
+  const target = reasoningReturnFocus;
+  reasoningReturnFocus = null;
+  target?.focus?.();
+}
+
+function renderReasoning() {
+  const box = el("reasoning-list");
+  box.innerHTML = "";
+  for (const level of REASONING) {
+    const current = level === state.reasoning;
+    const row = document.createElement("button");
+    row.type = "button";
+    row.className = "reasoning-option" + (current ? " active" : "");
+    // The glyph and the color say which level is in use; a screen reader is told
+    // the same thing in a word it can read out.
+    row.setAttribute("aria-pressed", String(current));
+
+    const name = document.createElement("span");
+    name.className = "reasoning-option-name";
+    name.textContent = level;
+    row.appendChild(name);
+
+    const hint = document.createElement("span");
+    hint.className = "reasoning-option-detail";
+    hint.textContent = REASONING_HINTS[level] || "";
+    row.appendChild(hint);
+
+    const check = document.createElement("span");
+    check.className = "reasoning-option-check";
+    check.textContent = current ? "✓" : "";
+    check.setAttribute("aria-hidden", "true");
+    row.appendChild(check);
+
+    row.onclick = () => pickReasoning(level);
+    box.appendChild(row);
   }
 }
 
@@ -3213,11 +3311,13 @@ async function runSlashCommand(text) {
       newChat();
       return true;
     case "reasoning":
+      // The bare command opens the picker the chip opens; a level typed after it
+      // is a pick outright — the same bargain as clicking its row — which is what
+      // a front-end without a dialog needs.
       if (!args) {
-        cycleReasoning();
+        openReasoning();
       } else if (REASONING.includes(args)) {
-        state.reasoning = args;
-        updateChips();
+        pickReasoning(args);
       } else {
         setStatus(`Reasoning must be one of ${REASONING.join(", ")}.`);
       }
@@ -3538,9 +3638,31 @@ function toggleHelp() {
   el("help-modal").hidden = !hidden;
 }
 
-function cycleReasoning() {
-  state.reasoning = REASONING[(REASONING.indexOf(state.reasoning) + 1) % REASONING.length];
+/// The level a turn is given, whether it was picked from the dialog or walked to
+/// with the keyboard. `--reasoning` is sent per turn rather than stored, so this
+/// only has to agree with the chip — and a level set from anywhere but the
+/// picker's own row leaves the listing, whose mark would be out of date.
+function setReasoning(level) {
+  state.reasoning = level;
   updateChips();
+  // A level set while the picker is up — `Ctrl+R`, or a row — moves the mark, so
+  // the dialog never shows the level it has just left. The list is rebuilt to do
+  // it, which is why the keyboard is put back on the level in use: a rebuild
+  // leaves focus on a row that is no longer in the document.
+  if (!el("reasoning-modal").hidden) {
+    renderReasoning();
+    focusReasoning();
+  }
+}
+
+/// A pick is the one thing that both applies a level and puts the picker away.
+function pickReasoning(level) {
+  setReasoning(level);
+  closeReasoning();
+}
+
+function cycleReasoning() {
+  setReasoning(REASONING[(REASONING.indexOf(state.reasoning) + 1) % REASONING.length]);
 }
 
 async function initEvents() {
@@ -3788,7 +3910,13 @@ function init() {
   el("create-project-cancel").onclick = () => (el("create-project-modal").hidden = true);
   el("create-project-save").onclick = saveCreateProject;
 
-  el("reasoning").onclick = cycleReasoning;
+  el("reasoning").onclick = openReasoning;
+  el("reasoning-close").onclick = closeReasoning;
+  el("reasoning-modal").addEventListener("keydown", (event) => {
+    if (event.key !== "Tab") return;
+    event.preventDefault();
+    stepReasoningFocus(event.shiftKey ? -1 : 1);
+  });
   el("model").onclick = openModels;
   el("theme").onclick = openThemes;
   el("permissions").onclick = openPermissions;
@@ -3940,6 +4068,7 @@ function init() {
   document.addEventListener("keydown", (event) => {
     if (event.key === "Escape") {
       closeImage();
+      closeReasoning();
       if (!el("confirm-modal").hidden) resolveConfirm(false);
       if (!el("rename-modal").hidden) resolveRename(null);
       // A question dismissed with Escape is answered as unanswered rather than
@@ -3949,6 +4078,10 @@ function init() {
       return;
     }
     if (event.key === "Tab" && event.shiftKey) {
+      // Shift+Tab belongs to the picker while it is up: it walks the rows, which
+      // is what the dialog's own handler does with it, rather than cycling the
+      // levels under a reader who is choosing one.
+      if (!el("reasoning-modal").hidden) return;
       event.preventDefault();
       cycleReasoning();
       return;
