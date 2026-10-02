@@ -11,7 +11,7 @@
 
 # Oxide
 
-A native Rust AI coding agent with a terminal UI, an Electron desktop app, and a
+A native Rust AI coding agent with a terminal UI, a Tauri desktop app, and a
 VS Code extension. Oxide streams from OpenAI-compatible and Anthropic models,
 runs a tool-using agent loop against your project, and understands its own
 `.oxide/` configuration layout out of the box, with Claude Code configuration
@@ -19,7 +19,7 @@ support for compatibility.
 
 ## Highlights
 
-- **Three front-ends, one core** — a ratatui terminal UI, an Electron desktop app
+- **Three front-ends, one core** — a ratatui terminal UI, a Tauri desktop app
   (`crates/desktop`), and a VS Code extension (`editors/vscode`), all sharing the
   same configuration, sessions, trust decisions, and MCP servers.
 - **Providers** — OpenAI-compatible (OpenAI, DeepSeek, Portkey, Z.AI/GLM, custom)
@@ -105,19 +105,17 @@ Keyboard shortcuts, the transcript layout, and copy behavior are in
 
 ## Desktop app
 
-The `oxide-desktop` package (`crates/desktop`) is an Electron front-end for the
+The `oxide-desktop` package (`crates/desktop`) is a Tauri front-end for the
 same `oxide-core` agent. It shares the CLI's configuration (`config.json`,
 `auth.json`, `settings.json`) and its session store, and adds a multi-project
 sidebar: any folder can be added, every project you have run the CLI in is
 discovered from its sessions, and each project lists its own threads alongside a
 cross-repo view of recent ones. Chat runs the same agent loop through
-`oxide-core`, streaming text, tool calls, and token usage over a narrow
-preload/IPC bridge to the Rust host.
+`oxide-core`, streaming text, tool calls, and token usage over the window's own
+bridge to the Rust command layer.
 
 ```sh
-cd crates/desktop
-pnpm install
-pnpm start
+cargo run -p oxide-desktop --features gui
 ```
 
 Prebuilt bundles are drafted under `desktop-v*`
@@ -172,11 +170,14 @@ cargo fmt
 ```
 
 The workspace members are `crates/core` (shared agent core), `crates/cli` (the
-`oxide` terminal binary), and `crates/desktop` (the Rust host for the Electron
-app). The Electron shell and the VS Code extension are separate pnpm packages:
+`oxide` terminal binary), and `crates/desktop` (the Tauri desktop app). The
+desktop's `gui` feature is off by default, so the plain workspace build stays
+free of the Tauri dependency tree; the VS Code extension is a separate pnpm
+package:
 
 ```sh
-cd crates/desktop && pnpm run check
+cargo build -p oxide-desktop --features gui
+node crates/desktop/check-app.mjs && node crates/desktop/check-shell.mjs
 cd editors/vscode && pnpm test
 ```
 

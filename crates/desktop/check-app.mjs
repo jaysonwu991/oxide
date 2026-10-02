@@ -1,7 +1,7 @@
 // Checks the desktop front-end without a window: `ui/app.js` is loaded against
-// a stubbed DOM and Electron preload bridge, then driven the way the composer drives it.
+// a stubbed DOM and the Tauri bridge, then driven the way the composer drives it.
 //
-//   node crates/desktop/ui/check-app.mjs
+//   node crates/desktop/check-app.mjs
 //
 // It covers what `cargo test` cannot reach — the `/mcps` dialog (its listing,
 // the toggle, and the no-project and failure paths), the Add-project dialog's
@@ -10,7 +10,9 @@
 // form sends, and the two ways a request goes away — the run ending, and the CLI
 // giving up on it), and the `/` menu's dispatch of every built-in
 // the shared catalog offers — since a Rust test never runs the app's own
-// JavaScript. The
+// JavaScript. Every command it performs goes through the one Tauri command the
+// app registers, so a check in this file that reaches a command by name is
+// reaching the same entry point the window does. The
 // catalog is read from the built CLI (`target/debug/oxide commands --json`)
 // when that binary is present, so a client command the palette offers but the
 // app cannot answer is caught here rather than in the window.
@@ -19,8 +21,8 @@ import { existsSync, readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import vm from "node:vm";
 
-const here = fileURLToPath(new URL(".", import.meta.url));
-const root = fileURLToPath(new URL("../../../", import.meta.url));
+const here = fileURLToPath(new URL("ui/", import.meta.url));
+const root = fileURLToPath(new URL("../../", import.meta.url));
 const cli = `${root}target/debug/oxide`;
 
 const failures = [];
@@ -310,7 +312,7 @@ let createError = null;
 
 // What the bridge answers `at_suggestions` with. The token and the rows are the
 // core's own rules (`oxide_core::at`, checked by `cargo test`); this only has to
-// say what the view does with an answer, so it answers the way the host would
+// say what the view does with an answer, so it answers the way the app would
 // for the references the checks type — the two rows of a project with one
 // folder in it, in the order the core ranks them.
 let atError = null;
@@ -331,7 +333,7 @@ function defaultAtAnswer(text) {
     rows: atWorkspace.filter(
       (row) =>
         row.label.toLowerCase().includes(query) &&
-        // The host leaves out a folder the reference already spells, so the row
+        // The app leaves out a folder the reference already spells, so the row
         // taken next walks into it.
         !(query.endsWith("/") && row.label.toLowerCase() === query),
     ),
@@ -406,7 +408,7 @@ let projectRows = [
 // file as the core aligns them — each line with the number it holds on the side
 // it sits on — or a refusal. The checks read what the view paints from an
 // answer, so every file the card below lists is given the answer its own check
-// needs, and one of them is a file the host can no longer read.
+// needs, and one of them is a file the app can no longer read.
 const changeSides = new Map([
   [
     "src/agent.rs",
@@ -535,12 +537,24 @@ globalThis.document = document;
 // The app listens for the events the Rust side emits; the handlers are kept so
 // the checks can emit one the way a finished turn does.
 const listeners = new Map();
+const invokes = [];
 globalThis.window = {
-  __OXIDE__: {
-    invoke,
-    listen: async (name, handler) => {
-      if (!listeners.has(name)) listeners.set(name, []);
-      listeners.get(name).push(handler);
+  __TAURI__: {
+    // The page performs every command through the app's one Tauri command, so
+    // the stub unwraps what the page sent the way `oxide_invoke` does and logs
+    // the command the app was reached through: the checks below reach the
+    // fixture by the name in the page's own call.
+    core: {
+      invoke: (name, payload = {}) => {
+        invokes.push([name, payload]);
+        return invoke(payload.command, payload.args || {});
+      },
+    },
+    event: {
+      listen: async (name, handler) => {
+        if (!listeners.has(name)) listeners.set(name, []);
+        listeners.get(name).push(handler);
+      },
     },
   },
   innerWidth: 1280,
@@ -584,7 +598,7 @@ vm.runInThisContext(
     " refreshPaletteEntries, paletteMatches, renderPalette, runPaletteEntry," +
     " addAttachment, addAttachmentFiles, el, showQuestion, showQuestionStep, questionNext," +
     " answerQuestion, collectAnswers, requestAt, acceptAt, moveAt, closeAt, atKey," +
-    " showApproval, hostStopped," +
+    " showApproval," +
     " resetTranscript, renderChanges, closeReview, undoChanges," +
     " loadSessions, renderProjectsTree, renderSessions, renderMcps, openSession, renderProjectMeta, updateSendState, toggleBusyMessageMode, setBusy, setIdle," +
     " loadMcps, openSessions," +
@@ -595,7 +609,7 @@ vm.runInThisContext(
 const app = globalThis.__app;
 const status = () => String(elementFor("status-text").textContent);
 const projectCalls = (command) => calls.filter(([name]) => name === command);
-/// Delivers an event to the app the way the Electron preload does (`event.payload`).
+/// Delivers an event to the app the way Tauri does (`event.payload`).
 const emit = async (name, payload) => {
   for (const handler of listeners.get(name) || []) await handler({ payload });
 };
@@ -685,7 +699,7 @@ const atBox = elementFor("at-list");
 const atRows = elementFor("at-rows");
 const composer = elementFor("prompt");
 const tick = () => new Promise((resolve) => setTimeout(resolve, 0));
-/// Types a value into the composer and asks the host about it the way the input
+/// Types a value into the composer and asks the app about it the way the input
 /// handler does, with the caret where the text field would have it.
 const typeAt = async (value, caret = null) => {
   composer.value = value;
@@ -721,7 +735,7 @@ check(
   atRows.outline(),
 );
 check(
-  "told the host where the caret is",
+  "told the app where the caret is",
   projectCalls("at_suggestions").at(-1)?.[1]?.caret === 10 &&
     projectCalls("at_suggestions").at(-1)?.[1]?.text === "review @sr",
   JSON.stringify(projectCalls("at_suggestions").at(-1)),
@@ -774,8 +788,8 @@ check(
   `${composer.value} @ ${composer.selectionStart}`,
 );
 
-// Electron's Chromium renderer owns control activation. The page never
-// synthesizes a click or changes focus on a control's behalf.
+// The webview owns control activation. The page never synthesizes a click or
+// changes focus on a control's behalf.
 const composerButton = new StubElement("button", "composer-button");
 let composerButtonClicks = 0;
 composerButton.onclick = () => composerButtonClicks++;
@@ -876,11 +890,11 @@ check(
 );
 answerAt = (text) => defaultAtAnswer(text);
 
-// A host that cannot answer leaves the list closed rather than throwing into
+// An app that cannot answer leaves the list closed rather than throwing into
 // the window, and a project that is not selected is not asked about at all.
 atError = "could not read the project";
 await typeAt("review @sr");
-check("closed the list when the host refused", atBox.hidden === true);
+check("closed the list when the app refused", atBox.hidden === true);
 atError = null;
 calls.length = 0;
 const project = app.state.project;
@@ -1285,7 +1299,7 @@ check(
   String(elementFor("help-modal").hidden),
 );
 
-// A link opens once per click, and through the host, because the webview cannot
+// A link opens once per click, and through the app, because the webview cannot
 // navigate to a remote page itself.
 const link = new StubElement("a");
 link.setAttribute("href", "https://example.com/docs");
@@ -1294,7 +1308,7 @@ const openedLinks = () => calls.filter(([name]) => name === "open_url");
 calls.length = 0;
 document.fire("click", press({ target: link }));
 check(
-  "opened a link from a click, through the host",
+  "opened a link from a click, through the app",
   openedLinks().length === 1 && openedLinks()[0][1]?.url === "https://example.com/docs",
   JSON.stringify(calls),
 );
@@ -1659,58 +1673,6 @@ check(
   JSON.stringify(calls),
 );
 
-// ---------- a host that died under a run ----------
-
-// A fatal host error ends the run whether or not the turn said so: no
-// `agent-end` can arrive from a process that is gone, so Stop, the busy state
-// and any dialog waiting on an answer are let go rather than left stuck.
-console.log("a host that stopped mid-turn");
-calls.length = 0;
-app.setBusy();
-app.state.runId = 7;
-app.showApproval({ id: 11, tool: "bash", detail: "rm -rf /" });
-app.showQuestion({ id: 50, questions: [{ question: "Still there?" }] });
-await emit("host-error", { message: "Oxide desktop host exited with status 1", fatal: true });
-check(
-  "said why the host is gone",
-  status().includes("exited with status 1"),
-  status(),
-);
-check(
-  "let go of the run the dead host was carrying",
-  app.state.busy === false && app.state.runId === null && elementFor("stop").hidden === true,
-  JSON.stringify({ busy: app.state.busy, runId: app.state.runId }),
-);
-check(
-  "took the approval and question dialogs with it",
-  elementFor("approval").hidden === true &&
-    elementFor("question").hidden === true &&
-    app.state.pendingApproval === null &&
-    app.state.pendingQuestion === null,
-  JSON.stringify({
-    approval: app.state.pendingApproval,
-    question: app.state.pendingQuestion,
-  }),
-);
-check(
-  "answered nothing to a host that cannot read it",
-  !calls.some(([name]) => name === "resolve_approval" || name === "resolve_question"),
-  JSON.stringify(calls),
-);
-
-// A frame the bridge could not parse is one lost line, not a dead host: it is
-// said in the status and the run it is in the middle of keeps going.
-calls.length = 0;
-app.setBusy();
-app.state.runId = 8;
-await emit("host-error", { message: "Desktop host wrote invalid JSON: {", fatal: false });
-check(
-  "kept the run through a recoverable protocol warning",
-  app.state.busy === true && app.state.runId === 8 && status().includes("invalid JSON"),
-  JSON.stringify({ busy: app.state.busy, runId: app.state.runId, status: status() }),
-);
-app.setIdle();
-
 // ---------- an edited file's own card ----------
 
 // A call that changed a file reads as one line — the path, and how many lines
@@ -1950,7 +1912,7 @@ check(
 
 // The review is the card's own listing beside whichever file is selected, whose
 // two sides — what the run found, out of the project's shadow snapshot, and what
-// is on disk now — the host hands over one file at a time.
+// is on disk now — the app hands over one file at a time.
 const reviewTick = () => new Promise((resolve) => setTimeout(resolve, 0));
 const reviewParts = () => elementFor("review-diff").children;
 const reviewRows = () => reviewParts()[1]?.children || [];
@@ -1975,7 +1937,7 @@ check(
   reviewParts()[0].innerHTML,
 );
 check(
-  "asked the host for that file's sides at the turn's own baseline",
+  "asked the app for that file's sides at the turn's own baseline",
   calls.some(
     ([name, args]) =>
       name === "change_sides" &&
@@ -2545,7 +2507,7 @@ check(
   JSON.stringify(runningMessage),
 );
 
-// A response can finish between drawing Send and the host receiving the
+// A response can finish between drawing Send and the app receiving the
 // message. Codex keeps that prompt and starts it as the next turn; it must not
 // report a successful queue operation and silently lose it.
 calls.length = 0;
@@ -2798,6 +2760,27 @@ check(
   "answered with that dialog's own choice",
   calls.filter(([name]) => name === "delete_session").length === 2,
   JSON.stringify(calls.map(([name]) => name)),
+);
+
+// ---------- the bridge the window is reached through ----------
+
+// Every command the page performs goes through the one Tauri command the app
+// registers, with the command's own name and arguments inside it: the page
+// reaches no plugin's IPC directly, which is what keeps `pick_folder` and
+// `open_url` answering with the state the other commands hold.
+console.log("the bridge");
+check(
+  "reached the app through its own command, never a plugin's",
+  invokes.length > 0 &&
+    invokes.every(
+      ([name, payload]) =>
+        name === "oxide_invoke" &&
+        typeof payload.command === "string" &&
+        payload.command.length > 0 &&
+        payload.args !== null &&
+        typeof payload.args === "object",
+    ),
+  JSON.stringify(invokes.slice(0, 2)),
 );
 
 console.log(failures.length ? `\n${failures.length} failed` : "\nall checks passed");

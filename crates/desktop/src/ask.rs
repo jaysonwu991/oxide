@@ -14,8 +14,8 @@
 //! requests with it when [`AskBroker::clear_run`] runs, rather than leaving them
 //! to age out against the cap.
 
+use crate::bridge::EventSink;
 use oxide_core::ask::{Answer, Asker, Question, Reply};
-use oxide_desktop::bridge::EventSink;
 use serde_json::json;
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};

@@ -1,7 +1,14 @@
-// Oxide desktop front-end. Electron's isolated preload forwards this narrow
-// bridge to the Rust host; the project/session/config stores are the CLI's.
+// Oxide desktop front-end. The window is Tauri's own webview and the page is
+// sandboxed against it: the project/session/config stores it reads are the
+// CLI's, reached through the app's commands rather than the filesystem.
 
-const { invoke, listen } = window.__OXIDE__;
+// A command is performed by name: the app's one Tauri command carries the name
+// and the arguments, and answers with that command's own value or the reason it
+// failed. Everything a run has to say while one is in flight arrives on the
+// app's event channel, and a handler is given the event's own `payload`.
+const { invoke: tauriInvoke } = window.__TAURI__.core;
+const { listen } = window.__TAURI__.event;
+const invoke = (command, args = {}) => tauriInvoke("oxide_invoke", { command, args });
 
 const el = (id) => document.getElementById(id);
 
@@ -818,20 +825,6 @@ function setIdle() {
   state.busy = false;
   state.runId = null;
   updateSendState();
-}
-
-/// The host process is gone, so the run it was carrying is over whether or not
-/// it said so: nothing will send `agent-end`, no invoke is left to reject, and a
-/// request it was waiting on can never be answered. The turn state is let go
-/// here — the busy flag and Stop with it, the approval and question dialogs, and
-/// the per-tool timers `resetTurn` clears — so the window reads as idle instead
-/// of offering to act on a process that is not there.
-function hostStopped() {
-  state.pendingApproval = null;
-  state.pendingSends = [];
-  el("approval").hidden = true;
-  setIdle();
-  resetTurn();
 }
 
 // ---------- attachments ----------
@@ -2847,9 +2840,9 @@ async function runSlashCommand(text) {
 
 // ---------- `@path` completion ----------
 
-// The rows the host offered for the reference at the caret, the range of the
+// The rows the app offered for the reference at the caret, the range of the
 // value they replace, which row is highlighted, and the sequence number the
-// answer belongs to. The host decides the token and the rows (`oxide_core::at`,
+// answer belongs to. The app decides the token and the rows (`oxide_core::at`,
 // the same rules the terminal completes with); the view only ever splices in the
 // row that was taken and never reads a token itself.
 let atRows = [];
@@ -2874,7 +2867,7 @@ function atOpen() {
   return Boolean(box) && !box.hidden && atRows.length > 0;
 }
 
-/// Asks the host what the caret is sitting in. Nothing is asked of a value with
+/// Asks the app what the caret is sitting in. Nothing is asked of a value with
 /// no `@` in it at all, which is most of them.
 async function requestAt() {
   const prompt = el("prompt");
@@ -2952,7 +2945,7 @@ function renderAt() {
   });
 }
 
-/// Takes a row: the reference is replaced by what the host said it stands for,
+/// Takes a row: the reference is replaced by what the app said it stands for,
 /// with a space after a file so the next word can be typed and without one after
 /// a folder, so the query goes on narrowing inside it.
 function acceptAt(index) {
@@ -2973,7 +2966,7 @@ function acceptAt(index) {
   prompt.style.height = "auto";
   prompt.style.height = `${Math.min(prompt.scrollHeight, 220)}px`;
   updateSendState();
-  // A folder opens its own list; a file's reference is done, which the host
+  // A folder opens its own list; a file's reference is done, which the app
   // answers with no rows.
   requestAt();
 }
@@ -3150,16 +3143,6 @@ function cycleReasoning() {
 }
 
 async function initEvents() {
-  await listen("host-error", (event) => {
-    const payload = event.payload || {};
-    setStatus(payload.message || "Desktop host stopped");
-    // A fatal error means the host is gone: no `agent-end` can arrive, no
-    // pending invoke is left to reject, and an approval or a question it was
-    // waiting on can no longer be answered. The run state is let go so Stop and
-    // the dialogs do not sit there forever offering to act on a dead process.
-    // A recoverable protocol warning (a frame we could not parse) leaves it be.
-    if (payload.fatal) hostStopped();
-  });
   await listen("agent-start", async (event) => {
     const payload = event.payload || {};
     if (payload.runId != null) state.runId = payload.runId;
@@ -3448,7 +3431,7 @@ function init() {
   el("review-next").onclick = () => walkReview(1);
 
   // The renderer cannot navigate to a remote page, so a link click opens the
-  // platform browser through the host instead of reloading the app window.
+  // platform browser through the app instead of reloading the app window.
   document.addEventListener("click", (event) => {
     const link = event.target?.closest?.("a[href]") || null;
     if (!link) return;

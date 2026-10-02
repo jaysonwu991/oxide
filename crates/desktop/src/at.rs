@@ -21,7 +21,7 @@ pub struct AtAnswer {
 }
 
 /// The project's files and folders, walked once and kept until something
-/// changes them. A turn is where files appear, so the host drops this when a
+/// changes them. A turn is where files appear, so the app drops this when a
 /// turn ends rather than completing over a listing that predates the work.
 #[derive(Default)]
 pub struct PathCache {

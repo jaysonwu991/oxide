@@ -3,10 +3,9 @@
 #
 # The repository keeps a placeholder version (`0.0.0`); release CI calls this
 # with the pushed tag so the built CLI binary and desktop bundle report the tag
-# version. Patches the workspace version in `Cargo.toml` and the Electron
-# `package.json` (the pnpm lockfile records no version for a private package,
-# so nothing there has to follow), then it is up to the caller to refresh
-# `Cargo.lock` (e.g. `cargo update --workspace`).
+# version. Patches the workspace version in `Cargo.toml` and the desktop
+# `tauri.conf.json` (which duplicates it), then it is up to the caller to
+# refresh `Cargo.lock` (e.g. `cargo update --workspace`).
 #
 # A tag may carry a component prefix so each component releases independently:
 # `v1.2.3` / `cli-v1.2.3` for the CLI, `desktop-v1.2.3` for the desktop app,
@@ -56,7 +55,6 @@ fi
 "$py" - "$root" "$version" "$component" <<'PY'
 import re
 import sys
-import json
 
 root, version, component = sys.argv[1], sys.argv[2], sys.argv[3]
 
@@ -101,14 +99,20 @@ if not patched_cargo:
 with open(cargo_path, "w", encoding="utf-8") as handle:
     handle.writelines(lines)
 
-# package.json: the version Electron Forge writes into platform bundles.
-package_path = f"{root}/crates/desktop/package.json"
-with open(package_path, encoding="utf-8") as handle:
-    package = json.load(handle)
-package["version"] = version
-with open(package_path, "w", encoding="utf-8") as handle:
-    json.dump(package, handle, indent=2)
-    handle.write("\n")
+# tauri.conf.json: the app version the bundler writes into the platform bundle.
+config_path = f"{root}/crates/desktop/tauri.conf.json"
+with open(config_path, encoding="utf-8") as handle:
+    config = handle.read()
+config, count = re.subn(
+    r'("version"\s*:\s*")[^"]*(")',
+    lambda match: f"{match.group(1)}{version}{match.group(2)}",
+    config,
+    count=1,
+)
+if count != 1:
+    sys.exit("error: could not find version in tauri.conf.json")
+with open(config_path, "w", encoding="utf-8") as handle:
+    handle.write(config)
 
 print(f"set version to {version}")
 PY

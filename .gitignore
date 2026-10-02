@@ -20,9 +20,9 @@
 # Stray build output
 *.rlib
 
-# Electron dependencies and bundles
-/crates/desktop/node_modules/
-/crates/desktop/out/
+# Tauri generated schemas and bundle output
+/crates/desktop/gen/
+/crates/desktop/target/
 
 # Session dumps captured into the repo root
 /*.jsonl
