@@ -615,7 +615,8 @@ async function loadInfo() {
 /// provider is already that chip, so only what the user has to act on — a
 /// missing key, project resources left off — is written beside the title.
 function renderProjectMeta(info) {
-  el("model").textContent = info.model;
+  const window = state.contextWindow ? ` · ${formatTokens(state.contextWindow)}` : "";
+  labelControl("model", `model: ${info.model}${window}`, "Switch model");
   const notes = [];
   if (!info.hasKey) notes.push("no API key");
   if (info.trust && info.trust.required && !info.trust.trusted) {
@@ -631,9 +632,11 @@ function updateTrustButton() {
   const required = Boolean(state.project && state.trust && state.trust.required);
   button.hidden = !required;
   button.classList.toggle("active", Boolean(state.trust && state.trust.trusted));
-  button.title = state.trust && state.trust.trusted
+  const label = state.trust && state.trust.trusted
     ? "Project trusted · click to review"
     : "Project resources are not trusted";
+  button.title = label;
+  button.setAttribute("aria-label", label);
 }
 
 function showTrust(trust) {
@@ -668,7 +671,24 @@ async function answerTrust(trusted) {
 }
 
 function updateChips() {
-  el("reasoning").textContent = state.reasoning;
+  labelControl("reasoning", `thinking: ${state.reasoning}`, "Reasoning effort (Shift+Tab)");
+}
+
+/// An icon-only control names the value it holds where a text chip used to show
+/// it — the tooltip and the accessible name — the way the VS Code panel's own
+/// chips carry it, so the composer's row is the same chrome in both front-ends.
+function labelControl(id, label, hint) {
+  const chip = el(id);
+  chip.title = hint ? `${label}\n${hint}` : label;
+  chip.setAttribute("aria-label", label);
+}
+
+/// A context window in the compact shape the panel's chip uses for it, so the
+/// same number reads the same way in both front-ends.
+function formatTokens(count) {
+  if (count < 1000) return String(count);
+  if (count < 1000000) return `${(count / 1000).toFixed(1)}k`;
+  return `${(count / 1000000).toFixed(2)}M`;
 }
 
 // ---------- threads ----------
@@ -742,6 +762,20 @@ async function newTaskIn(project) {
     await selectProject(project);
   }
   newChat();
+}
+
+/// The sidebar's head: a thread in the project this window is in, and in the
+/// default one — the first folder the sidebar lists — when nothing is open yet.
+/// It never asks for a path: with no project at all there is nothing to run in,
+/// so it offers to add one through the same dialog the + in the header opens.
+async function newChatInDefaultProject() {
+  const projects = state.projects || [];
+  const project = projects.find((entry) => entry.path === state.project) || projects[0];
+  if (!project) {
+    openCreateProject();
+    return;
+  }
+  await newTaskIn(project);
 }
 
 // ---------- chat ----------
@@ -3588,6 +3622,8 @@ function init() {
   initSidebarResize();
   const createBtnTree = el("create-project-btn-tree");
   if (createBtnTree) createBtnTree.onclick = openCreateProject;
+  const newChatBtn = el("new-chat");
+  if (newChatBtn) newChatBtn.onclick = newChatInDefaultProject;
   el("create-project-add-folder").onclick = addCreateProjectFolder;
   el("create-project-cancel").onclick = () => (el("create-project-modal").hidden = true);
   el("create-project-save").onclick = saveCreateProject;
@@ -3808,7 +3844,7 @@ async function renderProjectsTree() {
   container.innerHTML = "";
   
   if (!state.projects || !state.projects.length) {
-    container.innerHTML = '<div class="empty" style="margin:12px; font-size:12px; color:var(--faint);">No projects yet. Click "+ New" to add one.</div>';
+    container.innerHTML = '<div class="empty" style="margin:12px; font-size:12px; color:var(--faint);">No projects yet. Add a folder with the + above.</div>';
     return;
   }
   

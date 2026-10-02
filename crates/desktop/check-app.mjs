@@ -712,7 +712,7 @@ const source = readFileSync(`${here}app.js`, "utf8");
 vm.runInThisContext(
   source +
     "\nglobalThis.__app = { send, runSlashCommand, state, createProjectState," +
-    " openDefaultProject, openCreateProject, addCreateProjectTypedPath, saveCreateProject," +
+    " openDefaultProject, newChatInDefaultProject, openCreateProject, addCreateProjectTypedPath, saveCreateProject," +
     " refreshPaletteEntries, paletteMatches, renderPalette, runPaletteEntry," +
     " addAttachment, addAttachmentFiles, el, showQuestion, showQuestionStep, questionNext," +
     " answerQuestion, collectAnswers, requestAt, acceptAt, moveAt, closeAt, atKey," +
@@ -721,6 +721,7 @@ vm.runInThisContext(
     " loadSessions, renderProjectsTree, renderSessions, renderMcps, openSession, renderProjectMeta, updateSendState, toggleBusyMessageMode, setBusy, setIdle," +
     " loadMcps, openSessions," +
     " listedSessions, selectSessionFromTree, removeSession," +
+    " updateChips," +
     " startTool, finishTool, toggleTool, openUpdate, installUpdate, installedUpdate };\n",
 );
 
@@ -769,6 +770,43 @@ check("kept the empty state with no project to open", app.state.project === null
 projectRows = rows;
 await app.openDefaultProject();
 
+// The sidebar's head is the way into a thread, and it never asks for a path: it
+// starts one in the project the window is in, in the default one — the first
+// folder the sidebar lists — when nothing is open yet, and offers to add a
+// project when there is none to run in at all.
+const openedWith = app.state.projects;
+app.state.project = null;
+calls.length = 0;
+await app.newChatInDefaultProject();
+check(
+  "started a thread in the default project from the sidebar's head",
+  app.state.project === projectRows[0].path && app.state.session === null,
+  `${app.state.project} / ${app.state.session}`,
+);
+app.state.session = "6f3031b2beef";
+app.state.project = projectRows[1].path;
+calls.length = 0;
+await app.newChatInDefaultProject();
+check(
+  "started it in the project on screen without re-selecting one",
+  app.state.project === projectRows[1].path &&
+    app.state.session === null &&
+    !calls.some(([name]) => name === "project_info"),
+  `${app.state.project} / ${app.state.session} / ${JSON.stringify(calls.map(([name]) => name))}`,
+);
+app.state.projects = [];
+app.state.project = null;
+el("create-project-modal").hidden = true;
+await app.newChatInDefaultProject();
+check(
+  "offered to add a project when there is none to run in",
+  elementFor("create-project-modal").hidden === false,
+  String(elementFor("create-project-modal").hidden),
+);
+el("create-project-modal").hidden = true;
+app.state.projects = openedWith;
+await app.openDefaultProject();
+
 // ---------- the composer's popovers ----------
 
 // The MCP and session listings are part of the composer rather than windows
@@ -776,7 +814,10 @@ await app.openDefaultProject();
 // it grows out of the composer's top edge and stays stuck to it.
 console.log("popovers");
 const shell = readFileSync(`${here}index.html`, "utf8");
-const sheet = readFileSync(`${here}style.css`, "utf8");
+// Comments come off the stylesheet before anything reads it: the checks below
+// parse rules out of it, and a `{` or a `}` written in a comment shifts what the
+// parse pairs up.
+const sheet = readFileSync(`${here}style.css`, "utf8").replace(/\/\*[\s\S]*?\*\//g, "");
 const shellAt = (needle) => shell.indexOf(needle);
 const buttonFor = (id) => {
   const at = shell.indexOf(`id="${id}"`);
@@ -809,6 +850,208 @@ for (const [id, label] of [
     button,
   );
 }
+// The review's head carries glyphs like the rest of the chrome: the two that
+// walk the turn's files, and the one that closes it — the extension's own close
+// in its own class, drawn from the same path.
+check(
+  "drew the review's head as glyphs",
+  ["review-prev", "review-next", "review-close"].every(
+    (id) => buttonFor(id).includes("<svg") && /<\/svg>$/.test(buttonFor(id)),
+  ),
+  `${buttonFor("review-prev")} / ${buttonFor("review-close")}`,
+);
+
+// The sidebar's foot keeps the two that belong to the window rather than to a
+// message — the release check and the theme — and everything else it used to
+// hold stands in the composer beside the message's chips, where it is reachable
+// before a project is even open.
+const sidebarFoot = shell.slice(shellAt('class="sidebar-foot"'), shellAt("</aside>"));
+const composerLeft = shell.slice(shellAt('class="composer-left"'), shellAt('class="composer-right"'));
+const idsIn = (markup) => (markup.match(/id="[a-z-]+"/g) || []).join(" ");
+check(
+  "kept Check for Updates and Theme in the sidebar, and moved the rest to the composer",
+  /id="theme"[^>]*title="Theme"[^>]*aria-label="Theme"/.test(sidebarFoot) &&
+    /id="update"[^>]*title="Check for updates"/.test(sidebarFoot) &&
+    !/id="(connect|trust|permissions|help)"/.test(sidebarFoot) &&
+    ["connect", "trust", "permissions", "help"].every((id) =>
+      composerLeft.includes(`id="${id}"`),
+    ) &&
+    shellAt('id="reasoning"') < shellAt('id="connect"'),
+  `foot: ${idsIn(sidebarFoot)} · composer: ${idsIn(composerLeft)}`,
+);
+// The chrome is icon-first, the way the extension's is: each control is a glyph
+// whose words live in its tooltip, so the row reads as buttons rather than as a
+// sentence. The model and the thinking level are the same chrome with their
+// value in the tooltip instead of on the chip, the way the panel's chips carry
+// it.
+for (const [id, title, label] of [
+  ["attach", "Attach images or PDFs (paste with the platform paste shortcut)", "Attach images or PDFs"],
+  ["model", "Model", "Model"],
+  ["reasoning", "Thinking level", "Thinking level"],
+  ["connect", "Connect a provider", "Connect a provider"],
+  ["trust", "Project trust", "Project trust"],
+  ["permissions", "Saved tool approvals", "Saved tool approvals"],
+  ["help", "Keyboard shortcuts", "Keyboard shortcuts"],
+]) {
+  const button = buttonFor(id);
+  check(
+    `made ${id} an icon-only button`,
+    button.includes('class="chip chip-icon"') &&
+      button.includes(`title="${title}"`) &&
+      button.includes(`aria-label="${label}"`) &&
+      button.includes("<svg") &&
+      /<\/svg>$/.test(button),
+    button,
+  );
+}
+// The two front-ends lay their composer out the same way round: what the
+// extension's own row carries leads — the attach button, the model, the thinking
+// level, the project's access — and the controls only this window has follow.
+// The panel's own order is read out of the source that composes it rather than
+// restated here, so a reorder there fails this check instead of drifting: the
+// ids this window has no control for (the panel's agent chip, which this app
+// reaches through its own palette) are skipped.
+const footerSource = readFileSync(
+  new URL("../../editors/vscode/src/core/footer.ts", import.meta.url),
+  "utf8",
+);
+const chipsBlock = (footerSource.match(/chips: \[([\s\S]*?)\n\s*\],/) || [])[1] || "";
+const extensionChips = [...chipsBlock.matchAll(/id: "([a-z]+)"/g)].map((match) => match[1]);
+const windowIdFor = { model: "model", reasoning: "reasoning", access: "trust" };
+const sharedOrder = extensionChips.map((id) => windowIdFor[id]).filter(Boolean);
+const composerOrder = ["attach", "model", "reasoning", "trust", "connect", "permissions", "help"];
+const rowOrder = idsIn(composerLeft);
+const standsInOrder = (list) =>
+  list.every((id, index) => rowOrder.includes(id) && (index === 0 || rowOrder.indexOf(list[index - 1]) < rowOrder.indexOf(id)));
+check(
+  "kept the extension's own order in the composer's row",
+  extensionChips.length === 4 &&
+    standsInOrder(sharedOrder) &&
+    standsInOrder(composerOrder) &&
+    shellAt('id="trust"') < shellAt('class="composer-sep"'),
+  `${extensionChips.join(" ")} → ${rowOrder}`,
+);
+check(
+  "sized an icon chip a circle of the row's own height, its glyph centered",
+  /\.chip-icon \{[^}]*display: inline-flex;[^}]*align-items: center;[^}]*justify-content: center;[^}]*\}/.test(
+    sheet,
+  ),
+  String(sheet.indexOf(".chip-icon")),
+);
+// The trust control is a glyph now, so the color is the only thing that can say
+// which decision is saved for this project.
+check(
+  "wore the accent on the trusted project's control",
+  /\.chip\.active \{[^}]*color: var\(--accent\);[^}]*\}/.test(sheet),
+  String(sheet.indexOf(".chip.active")),
+);
+// A glyph a control wears in both front-ends is the same path in both, held
+// verbatim here beside the extension's own sources: a control drawn one way in
+// the panel and another in this window fails the check instead of drifting
+// quietly, and an icon nothing matches here is what a reviewer would have to
+// diff by eye.
+const extensionIcons = [
+  readFileSync(new URL("../../editors/vscode/src/chatView.ts", import.meta.url), "utf8"),
+  readFileSync(new URL("../../editors/vscode/media/main.js", import.meta.url), "utf8"),
+].join("\n");
+const sharedGlyphs = {
+  attach:
+    "M21.44 11.05l-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48",
+  new: "M8 3.6v8.8M3.6 8h8.8",
+  send: "M8 13.4V3.4M4 7.4 8 3.4l4 4",
+  stop: '<rect x="4" y="4" width="8" height="8" rx="1.7"',
+  refresh: "M20.49 15a9 9 0 1 1-2.12-9.36L23 10",
+  close: "M18 6 6 18M6 6l12 12",
+  power: "M18.36 6.64a9 9 0 1 1-12.73 0",
+  model: "m8 1.8 5.5 3.1v6.2L8 14.2l-5.5-3.1V4.9L8 1.8Z",
+  reasoning:
+    "M8 1.7 9 5l3.3 1L9 7l-1 3.3L7 7 3.7 6 7 5l1-3.3ZM12.7 9.3l.6 1.8 1.7.6-1.7.6-.6 1.7-.6-1.7-1.8-.6 1.8-.6.6-1.8ZM3.5 10.2l.5 1.3 1.3.5-1.3.5-.5 1.3-.5-1.3-1.3-.5 1.3-.5.5-1.3Z",
+  access:
+    "M8 1.7c1.7 1.2 3.3 1.7 5 1.8v3.8c0 3.2-1.7 5.5-5 7-3.3-1.5-5-3.8-5-7V3.5c1.7-.1 3.3-.6 5-1.8Z",
+};
+const windowSources = `${shell}\n${source}`;
+for (const [name, path] of Object.entries(sharedGlyphs)) {
+  const inExtension = extensionIcons.includes(path);
+  const inWindow = windowSources.includes(path);
+  check(
+    `drew ${name} the way the VS Code extension does`,
+    inExtension && inWindow,
+    `extension: ${inExtension} · window: ${inWindow}`,
+  );
+}
+// The window around the sidebar already names the app, so the sidebar's own head
+// is not a second brand: it is the way into a conversation — the extension's own
+// plus with its words beside it, in the one row above the lists that has room for
+// them. The Projects header keeps the glyph alone, so the window's two pluses are
+// the same drawing and only one of them is worded.
+const newChatButton = buttonFor("new-chat");
+check(
+  "made the sidebar's head a New Chat control instead of a second brand",
+  shellAt('id="new-chat"') > 0 &&
+    shellAt('id="new-chat"') < shellAt('class="projects-section"') &&
+    !/class="brand"/.test(shell) &&
+    newChatButton.includes(`title="New Chat&#10;`) &&
+    newChatButton.includes('aria-label="New Chat"') &&
+    newChatButton.includes(`<path d="${sharedGlyphs.new}"`) &&
+    /<\/svg>\s*<span>New Chat<\/span>/.test(newChatButton),
+  newChatButton,
+);
+const newProjectButton = buttonFor("create-project-btn-tree");
+check(
+  "left the Projects header one glyph and its tooltip",
+  newProjectButton.includes('class="icon"') &&
+    newProjectButton.includes(`title="New project&#10;`) &&
+    newProjectButton.includes('aria-label="New project"') &&
+    newProjectButton.includes(`<path d="${sharedGlyphs.new}"`) &&
+    /<\/svg>$/.test(newProjectButton),
+  newProjectButton,
+);
+
+// A scrollbar is painted over the last pixels of the box it scrolls, so every
+// list that scrolls keeps that lane clear with its own right padding: a row ends
+// beside the bar rather than under it, an overlay bar (which takes no lane of its
+// own) lands in the padding instead of on the row, and the buttons a row carries
+// stay clickable. The width is read out of the sheet's own scrollbar rule, so a
+// list that loses its padding — or a lane made wider than the padding that was
+// left for it — fails here instead of only in a screenshot.
+const scrolledRows = [
+  ".conversation",
+  ".question-body",
+  ".projects-tree",
+  ".mcp-list",
+  ".session-list",
+  ".palette-list",
+  ".model-list",
+  ".review-files",
+];
+const laneWidth = Number(
+  (sheet.match(/::-webkit-scrollbar\s*\{\s*width:\s*([\d.]+)px/) || [])[1],
+);
+const rightPaddingOf = (selector) => {
+  let value = null;
+  for (const [, selectors, body] of sheet.matchAll(/([^{}]+)\{([^}]*)\}/g)) {
+    const applies = selectors
+      .split(",")
+      .some((one) => one.trim() === selector || one.trim().endsWith(` ${selector}`));
+    if (!applies) continue;
+    const padding = /(?:^|;)\s*padding:\s*([^;]+)/.exec(body);
+    if (padding) {
+      const parts = padding[1].trim().split(/\s+/);
+      value = parseFloat(parts.length > 1 ? parts[1] : parts[0]);
+    }
+    const right = /(?:^|;)\s*padding-right:\s*([^;]+)/.exec(body);
+    if (right) value = parseFloat(right[1]);
+  }
+  return value;
+};
+for (const selector of scrolledRows) {
+  const padding = rightPaddingOf(selector);
+  check(
+    `kept ${selector}'s rows clear of the scrollbar's lane`,
+    Number.isFinite(padding) && Number.isFinite(laneWidth) && padding >= laneWidth + 2,
+    `lane ${laneWidth} · padding-right ${padding}`,
+  );
+}
 
 // The sidebar's own button, because the menu item that opens the same dialog
 // is macOS's: Windows and Linux build no menu bar, so the window is the way in
@@ -820,9 +1063,15 @@ check(
   updateButton.includes('class="icon"') &&
     updateButton.includes('title="Check for updates"') &&
     updateButton.includes('aria-label="Check for updates"') &&
-    shellAt('id="permissions"') < shellAt('id="update"') &&
-    shellAt('id="update"') < shellAt('id="help"'),
+    sidebarFoot.includes('id="update"'),
   updateButton,
+);
+// The two that stayed in the foot are glyphs too, so the sidebar's own row has
+// no words in it either.
+check(
+  "drew the sidebar's foot as glyphs",
+  ["theme", "update"].every((id) => buttonFor(id).includes("<svg") && /<\/svg>$/.test(buttonFor(id))),
+  `${buttonFor("theme")} / ${updateButton}`,
 );
 check(
   "put the dialog among the overlays Escape closes",
@@ -1828,6 +2077,25 @@ check(
   JSON.stringify(calls),
 );
 
+// The body scrolls between the question's head and its actions, and WebKit draws
+// that scrollbar over the right edge of what it scrolls: the option card beside
+// it lost the border that says how far it reaches. Styling the scrollbar gives
+// the track a lane of a known width, and the body's own right padding has to
+// clear it, or the cards are back under it.
+const questionSteps = sheet.slice(sheet.indexOf(".question-body {"), sheet.indexOf(".question {"));
+const questionLane = /::-webkit-scrollbar \{ width: (\d+)px; \}/.exec(questionSteps);
+const questionGutter = /padding-right: (\d+)px;/.exec(questionSteps);
+check(
+  "kept the question body's scrollbar off the option cards",
+  questionLane !== null &&
+    questionGutter !== null &&
+    Number(questionGutter[1]) > Number(questionLane[1]) &&
+    /\.question-body::-webkit-scrollbar-thumb \{[^}]*background-clip: padding-box;[^}]*\}/.test(
+      sheet,
+    ),
+  `${questionGutter && questionGutter[1]}px inset beside a ${questionLane && questionLane[1]}px track`,
+);
+
 // ---------- an edited file's own card ----------
 
 // A call that changed a file reads as one line — the path, and how many lines
@@ -2468,6 +2736,8 @@ check(
 
 // The provider is the composer's own chip, so the header carries only what the
 // user has to act on.
+const windowBefore = app.state.contextWindow;
+app.state.contextWindow = 128000;
 app.renderProjectMeta({
   model: "deepseek-flash",
   provider: "deepseek",
@@ -2479,11 +2749,25 @@ check(
   elementFor("project-meta").textContent === "" && elementFor("project-meta").hidden === true,
   elementFor("project-meta").textContent,
 );
+// The chip is a glyph, so the value it carries is the tooltip the row shows and
+// the name a screen reader reads — the way the extension's own chips carry it.
 check(
-  "kept the model on the composer's chip",
-  elementFor("model").textContent === "deepseek-flash",
-  elementFor("model").textContent,
+  "named the composer's chip for the model it would run",
+  elementFor("model").getAttribute("aria-label") === "model: deepseek-flash · 128.0k" &&
+    elementFor("model").title === "model: deepseek-flash · 128.0k\nSwitch model",
+  `${elementFor("model").getAttribute("aria-label")} / ${JSON.stringify(elementFor("model").title)}`,
 );
+app.state.reasoning = "high";
+app.updateChips();
+check(
+  "named the thinking chip for the level it would think at",
+  elementFor("reasoning").getAttribute("aria-label") === "thinking: high" &&
+    elementFor("reasoning").title === "thinking: high\nReasoning effort (Shift+Tab)",
+  `${elementFor("reasoning").getAttribute("aria-label")} / ${JSON.stringify(elementFor("reasoning").title)}`,
+);
+app.state.reasoning = "auto";
+app.updateChips();
+app.state.contextWindow = windowBefore;
 app.renderProjectMeta({
   model: "deepseek-flash",
   provider: "deepseek",
@@ -2573,6 +2857,13 @@ check(
 // ---------- running-turn context in the composer's corner ----------
 
 console.log("composer action");
+// Stop and Send swap as the box gains text, and both are glyphs — the send
+// arrow and the stop square the extension's own composer wears.
+check(
+  "drew the composer's corner as glyphs",
+  ["send", "stop"].every((id) => buttonFor(id).includes("<svg") && /<\/svg>$/.test(buttonFor(id))),
+  `${buttonFor("send")} / ${buttonFor("stop")}`,
+);
 // Stop and Send swap as the box gains text. New context waits by default; the
 // user can deliberately switch it to steering the active response.
 app.state.attachments = [];

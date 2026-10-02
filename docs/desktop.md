@@ -90,9 +90,13 @@ into nothing, with its approval and question requests unanswerable.
 
 The window follows a Codex-style layout:
 
-- **Sidebar** — the `Oxide` brand, a **New task** button, the **Projects**
-  tree, and a footer pinned to the bottom with **Connect**, project trust,
-  theme, tool approvals, check for updates, and help. The tree groups each project's sessions
+- **Sidebar** — **+ New Chat** at the top, opening a thread in the project the
+  window is in and in the default one when nothing is open yet, so starting a
+  conversation never asks for a path; the **Projects** tree, and a footer pinned
+  to the bottom with the two controls that belong to the window rather than to a
+  message: the theme and the check for updates, an icon button each (a
+  half-filled circle, and the same refresh arrow the
+  extension's own check carries). The tree groups each project's sessions
   under it, and every project and stored session row carries a `✕` that removes
   it (see [Multiple projects](#multiple-projects-cross-repo)); hovering a session
   shows its `⌘1`…`⌘9` shortcut. The active project and the active thread both
@@ -104,10 +108,9 @@ The window follows a Codex-style layout:
   the same id so it is never listed twice. Its row is the window's own while no
   file stands behind it, so selecting it leaves the thread on screen as it is
   and it is offered no `✕` — there is nothing stored to delete. A window with
-  no thread on screen is
-  starting one, so its next message opens a thread of its own instead of being
-  appended to whichever thread was used last. The **+ New**
-  button in the Projects header
+  no thread on screen is starting one, so its next message opens a thread of its
+  own instead of being appended to whichever thread was used last. The `+` in
+  the Projects header
   opens the **Create project** dialog: pick one or more source folders and the
   **Project name** defaults to the first folder's basename (still editable), so
   creating a project never requires typing a name.
@@ -125,10 +128,23 @@ The window follows a Codex-style layout:
   showing the call (e.g. `bash cargo test --all`); they expand automatically for
   diffs and errors and can be clicked open/closed. `write`/`edit` results get a
   colored diff.
-- **Composer** — a floating rounded box with the attach, model, and reasoning
-  chips on the left and one action on the right, which swaps rather than
-  sitting beside a second button: **Stop** while a turn runs and there is
-  nothing to say, **Send** beside **Queue**/**Steer** the moment there is. Every
+- **Composer** — a floating rounded box whose whole chrome is icon-first, the
+  way the VS Code panel's is: the attach paperclip, the model, the thinking
+  level and the trust shield lead, then — after a rule of its own — the app's own
+  dialogs as icon buttons in the extension's own style: a plug that opens
+  **Connect**, a shield
+  for the project trust, a padlock for the saved tool approvals, and a
+  circled `?` for the shortcut help, each with the words in its tooltip and its
+  `aria-label`. The controls the extension's own row carries come first and in
+  its order, and the glyphs the two front-ends share — the paperclip, the `+`,
+  the send arrow, the stop square, the refresh arrow, the close `✕`, the MCP
+  power switch, the model's cube, the thinking sparkles and the trust shield —
+  are the same paths in both, which `check-app.mjs` holds beside the
+  extension's own sources so a control drawn one way here and another there
+  fails the check. One
+  action sits on the right, which swaps rather than sitting beside a second
+  button: **Stop** while a turn runs and there is nothing to say, **Send**
+  beside **Queue**/**Steer** the moment there is. Every
   control is wired to a plain `click` — each button, native radio/checkbox,
   sidebar/list row, change card, and attachment thumbnail. The webview owns
   focus, pointer, keyboard, and activation semantics; the page neither
@@ -248,11 +264,13 @@ When a project has resources that can execute or reshape the agent
 `SYSTEM.md`/`APPEND_SYSTEM.md`, or the Claude Code equivalents) and no decision
 is saved, the desktop asks **Trust this project?** the way the CLI's trust
 prompt does. Trusting it saves a `true` decision to `trust.json` and reloads the
-ecosystem; declining saves `false` and leaves project resources out. The ☑
-button in the sidebar footer shows and reviews the current decision, so the
-harness loads exactly as it would in the CLI instead of being silently dropped.
+ecosystem; declining saves `false` and leaves project resources out. The trust
+button in the composer — a shield, tinted with the accent once the project is
+trusted — shows and reviews the current decision, so the harness loads exactly
+as it would in the CLI instead of being silently dropped.
 
-The **Connect** button stores credentials through `oxide_core::auth`: a new key
+The **Connect** button in the composer stores credentials through
+`oxide_core::auth`: a new key
 via `auth::connect` (which also makes that provider active), or an existing
 stored provider via `auth::select_stored`. Model and base URL are persisted with
 `Config::persist_selection_at`, the same writer the CLI uses.
@@ -391,8 +409,10 @@ on and long unchanged stretches folded behind their count. A file that is not
 text on either side reads as **Binary file — no text diff.**, the same verdict
 the card's row carries (a NUL makes a file binary even when its bytes are valid
 UTF-8), a side that is not there reads as empty, and one that could not be read
-is reported as a failure rather than as an unchanged file. The arrow keys walk
-the files and <kbd>Esc</kbd> closes it.
+is reported as a failure rather than as an unchanged file. Its head carries the
+file count and the arrows' own hint beside two chevron buttons that walk the
+files and a close button — the same glyph the extension's own review head
+carries — while the arrow keys do the same and <kbd>Esc</kbd> closes it.
 - **Undo** — asks to confirm and then calls `undo_turn(project, baseline)`,
 which puts the project back to the run's own baseline
 (`oxide_core::snapshots::Snapshots::restore`): files the run created are
@@ -473,11 +493,12 @@ catalog `oxide commands --json` prints and the terminal's own autocomplete
 mirrors. A name the app itself owns is performed here: `/mcps` (`/mcp`) opens
 the **MCP servers** dialog, `/sessions` (`/session`) the **Sessions** dialog,
 `/model`, `/theme`, `/approvals`, `/trust`,
-`/connect`, `/new`, `/usage` and `/help` open or run what their sidebar entries
-do. A project command, a prompt template and a skill are sent on as a normal
-message, so the CLI's own resolution handles them — as is a client command with
-an argument, so `/mcp list` and `/session <id>` reach the agent instead of being
-performed as the bare command would be. A skill is listed under its own name
+`/connect`, `/new`, `/usage` and `/help` open or run what the composer's own
+buttons do. A project command, a prompt template and a skill are sent on as a
+normal message, so the CLI's own resolution handles them — as is a client
+command with an argument, so `/mcp list` and `/session <id>` reach the agent
+instead of being performed as the bare command would be. A skill is listed
+under its own name
 (`/rust-conventions`), with the row marked `skill` and its description beside
 it, so taking the row completes the name and sending it is what loads the skill:
 the CLI resolves the same name the menu lists, and `/skill:<name>` is the
@@ -531,7 +552,8 @@ results include a colored diff.
 
 ## Check for updates
 
-**↻** in the sidebar footer — or **Check for Updates…** in the macOS app menu,
+The check-for-updates button in the sidebar footer — or **Check for Updates…**
+in the macOS app menu,
 directly under **About**, which asks the open window to run the same check —
 reports the newest **Oxide Desktop** release and installs it. The app's own
 release train is `desktop-v*` and nothing else: the window runs the same check
@@ -565,7 +587,7 @@ replaced.
 
 A download that does not match its checksum is refused before anything is
 replaced, and one install runs at a time. A check asked for again — the menu
-item and the sidebar's **↻** are the same command — is the one that owns the
+item and the sidebar's check button are the same command — is the one that owns the
 dialog, so an answer a newer check has already replaced is dropped rather than
 repainting the dialog with an older release. A check asks GitHub for the newest
 release, so a machine with no network reports what went wrong instead of

@@ -93,9 +93,30 @@ body.resizing .sidebar-resizer { background: var(--border); }
 .sidebar-resizer:focus-visible { background: var(--border); outline: 2px solid var(--accent); outline-offset: -2px; }
 body.resizing { cursor: col-resize; user-select: none; }
 
-.sidebar-top { padding: 14px 12px 8px; }
-.brand { font-weight: 600; letter-spacing: 0.02em; padding: 0 4px 12px; }
-.brand .dot { color: var(--accent); margin-right: 6px; }
+/* The sidebar's head is a control rather than a second brand: the app's name is
+   already on the window, so this row is the way into a thread — a glyph and the
+   words, the one button in the sidebar that is not a row of a list. */
+.sidebar-top { padding: 10px 12px 6px; }
+.new-chat {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  width: 100%;
+  padding: 7px 8px;
+  background: transparent;
+  border: none;
+  border-radius: 6px;
+  color: var(--text);
+  font: inherit;
+  font-size: 13px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  text-align: left;
+  cursor: pointer;
+  transition: background 0.15s, color 0.15s;
+}
+.new-chat svg { flex: none; color: var(--accent); }
+.new-chat:hover { background: var(--panel-2); }
 
 .project-picker { padding: 4px 12px 10px; position: relative; }
 .project-btn {
@@ -223,8 +244,6 @@ body.resizing { cursor: col-resize; user-select: none; }
   padding: 8px 10px;
   border-top: 1px solid var(--border);
 }
-.foot-btn { color: var(--dim); }
-.foot-btn:hover { color: var(--text); }
 
 /* ---------- main ---------- */
 
@@ -476,7 +495,7 @@ body.resizing { cursor: col-resize; user-select: none; }
 .review-total { flex: none; display: inline-flex; gap: 6px; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 11.5px; }
 .review-hint { margin-left: auto; color: var(--faint); font-size: 11px; }
 .review-body { display: flex; flex: 1 1 auto; min-height: 0; }
-.review-files { flex: 0 0 clamp(220px, 22vw, 310px); overflow: auto; padding: 6px; border-right: 1px solid var(--border); background: var(--panel); }
+.review-files { flex: 0 0 clamp(220px, 22vw, 310px); overflow: auto; padding: 6px 14px 6px 6px; border-right: 1px solid var(--border); background: var(--panel); }
 .review-files .change-row { margin: 1px 0; border: 0; border-radius: 7px; }
 .review-files .change-row.active { box-shadow: inset 3px 0 0 var(--accent); background: var(--panel-2); }
 .review-diff { flex: 1 1 auto; min-width: 0; overflow: auto; padding: 0 18px 18px; background: var(--bg); }
@@ -710,6 +729,15 @@ body.resizing { cursor: col-resize; user-select: none; }
   font-size: 13px;
 }
 .composer-left { display: flex; align-items: center; gap: 4px; flex-wrap: wrap; }
+/* The composer's chips carry what a message goes with; the app's own dialogs
+   stand beside them after a rule of their own, so the row reads as two groups
+   rather than one. */
+.composer-sep {
+  width: 1px;
+  height: 16px;
+  margin: 0 4px;
+  background: var(--border);
+}
 .chip {
   color: var(--dim);
   border: 1px solid var(--border);
@@ -719,7 +747,27 @@ body.resizing { cursor: col-resize; user-select: none; }
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
 }
 .chip:hover { color: var(--text); border-color: var(--dim); background: var(--panel-2); }
+/* An icon chip carries no text of its own, so its line box would leave it
+   shorter than the chips beside it. It is a circle of the row's own height with
+   the glyph centered in it, off the text baseline the icon would otherwise
+   sit on. */
+.chip-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  padding: 0;
+}
+.chip-icon svg { display: block; }
+/* A trusted project wears the accent, the way the model and the theme pickers
+   mark the active row: a shield is a shield whichever decision is saved, so the
+   color is what says which one it is. */
+.chip.active { color: var(--accent); border-color: var(--accent); }
 .send {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
   width: 30px;
   height: 30px;
   padding: 0;
@@ -824,7 +872,30 @@ body.resizing { cursor: col-resize; user-select: none; }
   text-transform: uppercase;
   margin-bottom: 4px;
 }
-.question-body { display: flex; flex-direction: column; gap: 6px; max-height: 46vh; overflow: auto; }
+/* The body scrolls on its own between the question's head and its actions, and
+   WebKit paints its scrollbar over the right edge of what it scrolls: the thumb
+   landed on the border of the option card beside it — the one the reader is
+   about to pick — and the card lost the edge that says how far it reaches. The
+   track is given a lane of its own, so the cards end beside the scrollbar rather
+   than under it, whatever the system's own scrollbar width is. */
+.question-body {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  max-height: 46vh;
+  overflow-y: auto;
+  padding-right: 12px;
+}
+.question-body::-webkit-scrollbar { width: 10px; }
+.question-body::-webkit-scrollbar-track { background: transparent; }
+/* A thumb narrower than its lane, the way the system's own is: the transparent
+   border is what insets it, so the whole lane stays the scrollbar's. */
+.question-body::-webkit-scrollbar-thumb {
+  background: var(--border);
+  border: 3px solid transparent;
+  border-radius: 7px;
+  background-clip: padding-box;
+}
 .question { display: flex; flex-direction: column; gap: 6px; }
 /* An option is a card: the widget, the label, and what choosing it means under
    the label, which is where the dialog it follows puts it. */
@@ -895,7 +966,7 @@ body.resizing { cursor: col-resize; user-select: none; }
 .field-row .field { flex: 1; }
 
 .search { width: 100%; margin-bottom: 10px; }
-.model-list { max-height: 380px; overflow-y: auto; display: flex; flex-direction: column; gap: 2px; }
+.model-list { max-height: 380px; overflow-y: auto; padding-right: 14px; display: flex; flex-direction: column; gap: 2px; }
 .model-provider { color: var(--faint); font-size: 11px; text-transform: uppercase; letter-spacing: 0.06em; margin: 10px 0 2px; }
 .model { text-align: left; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12.5px; }
 .model:hover { background: var(--panel-2); }
@@ -962,6 +1033,13 @@ body.resizing { cursor: col-resize; user-select: none; }
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
 }
 
+/* One scrollbar for the whole window: this wide, with a thumb narrower than its
+   lane. A scrollbar is painted over the last `width` pixels of the box it
+   scrolls — the row of a list, the card of a dialog, the box of the palette — so
+   whatever it scrolls keeps that lane clear instead of ending under it: a
+   list that scrolls sets its own right padding wider than this width, and a
+   floating (overlay) scrollbar, which takes no lane of its own, then lands in
+   that padding rather than on the row. */
 ::-webkit-scrollbar { width: 10px; height: 10px; }
 ::-webkit-scrollbar-thumb { background: var(--border); border-radius: 6px; border: 3px solid transparent; background-clip: content-box; }
 ::-webkit-scrollbar-track { background: transparent; }
@@ -983,11 +1061,15 @@ body.resizing { cursor: col-resize; user-select: none; }
 /* ---------- projects tree view (CodeX-style) ---------- */
 
 .projects-section { padding: 8px 0; flex: 1 1 auto; min-height: 0; display: flex; flex-direction: column; overflow: hidden; }
-.projects-header { display: flex; align-items: center; justify-content: space-between; padding: 0 12px 8px; color: var(--dim); font-size: 12px; font-weight: 600; }
+.projects-header { display: flex; align-items: center; justify-content: space-between; padding: 0 12px 6px; color: var(--dim); font-size: 12px; font-weight: 600; }
 .projects-header span { letter-spacing: 0.01em; }
-.projects-header button { margin-left: auto; }
+/* Only the glyph: the words live in the tooltip, like every other control. */
+.projects-header button { margin-left: auto; padding: 2px 4px; border-radius: 6px; }
+.projects-header button:hover { background: var(--panel-2); }
 
-.projects-tree { flex: 1; overflow-y: auto; padding: 4px 8px; display: flex; flex-direction: column; gap: 2px; }
+/* 14px on the right is the scrollbar's lane (see `::-webkit-scrollbar` at the
+   foot of this sheet): the rows end beside it instead of under it. */
+.projects-tree { flex: 1; overflow-y: auto; padding: 4px 14px 4px 8px; display: flex; flex-direction: column; gap: 2px; }
 .project-group { display: flex; flex-direction: column; gap: 1px; }
 .project-item {
   position: relative;
@@ -1100,8 +1182,10 @@ body.resizing { cursor: col-resize; user-select: none; }
 .popover-actions .icon { padding: 4px; border-radius: 8px; }
 .icon svg { display: block; }
 .popover .dialog-sub { margin: 4px 14px 8px; }
+/* The two lists are the app's rows too, so they keep the same lane clear of
+   their boxes (`::-webkit-scrollbar` at the foot of this sheet). */
 .popover .mcp-list,
-.popover .session-list { max-height: none; min-height: 0; flex: 1 1 auto; padding: 0 8px 12px; }
+.popover .session-list { max-height: none; min-height: 0; flex: 1 1 auto; padding: 0 14px 12px; }
 
 /* ---------- MCP servers ---------- */
 
@@ -1186,7 +1270,7 @@ body.resizing { cursor: col-resize; user-select: none; }
   box-shadow: 0 18px 50px rgba(0, 0, 0, 0.55);
   overflow: hidden;
 }
-.palette-list { max-height: 296px; overflow-y: auto; padding: 5px; display: flex; flex-direction: column; gap: 1px; }
+.palette-list { max-height: 296px; overflow-y: auto; padding: 5px 14px 5px 5px; display: flex; flex-direction: column; gap: 1px; }
 .palette-item {
   display: grid;
   grid-template-columns: 1fr auto;
