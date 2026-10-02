@@ -17,7 +17,11 @@ import type { ContextChip } from "./core/protocol";
 
 export function activate(context: vscode.ExtensionContext): void {
   const output = vscode.window.createOutputChannel("Oxide");
-  const controller = new ChatController(output, projectDeps());
+  // The version this extension reports, which is what its own update check
+  // compares a release against. Read from the manifest VS Code loaded it from,
+  // so an installed release and a development build both answer for themselves.
+  const version = String(context.extension.packageJSON.version ?? "");
+  const controller = new ChatController(output, projectDeps(), version);
 
   // One provider serves both panes: the transcript and running turn live in the
   // controller, which broadcasts to every attached view. Queue/Steer messages

@@ -533,39 +533,43 @@ results include a colored diff.
 
 **↻** in the sidebar footer — or **Check for Updates…** in the macOS app menu,
 directly under **About**, which asks the open window to run the same check —
-reports the newest **oxide CLI** release and offers to install it. The check is
-the CLI's own (`oxide update --check --json`, through `crates/desktop/src/cli.rs`),
-so the release the window offers is the one the terminal and the VS Code panel
-would install, and the rules about what may be replaced are the CLI's: the
-dialog shows the version installed now, the newest tag, the installation it
-found (`cargo`, `homebrew`, `prebuilt binary`, `unknown`) and its path, and
-**Install** appears only when the CLI reports the installation as one it can
-replace. **Release notes** opens the release page in the system browser, and
-the dialog names the one thing this is not: the app itself comes from a desktop
-release and is not replaced from here.
+reports the newest **Oxide Desktop** release and installs it. The app's own
+release train is `desktop-v*` and nothing else: the window runs the same check
+the terminal's `oxide update --check --json --component desktop` performs,
+served by the shared resolution in `oxide_core::updates`, so the release it
+offers is the desktop release and not the oxide command line's own newest tag.
+The dialog shows the version the app runs now, the tag it would install
+(`desktop-v0.34.0`), and the installer it would fetch — `Oxide_0.34.0_aarch64.dmg`
+for this Mac's architecture, the AppImage on Linux (a `.deb` or `.rpm` when
+that is what the release carries), the NSIS `.exe` or `.msi` on Windows — then
+**Install**, **Release notes** (the release page, in the system browser) and
+**Close**. It does not update the `oxide` command line, and the terminal, the
+panel and the desktop app each update their own installation.
 
-The install runs `oxide update` on the same binary — it downloads the platform
-archive, verifies it against the release manifest and replaces the installed
-binary — and the dialog reads the check once more afterwards, so it reports the
-version now on disk rather than the one that was offered. A Homebrew Cellar is
-left to `brew upgrade oxide` and a binary that is not at a released location
-to `oxide update --force`, with the CLI's own advice line under the version.
-The command line is resolved from `PATH` first and then the directories the
-installers use (`~/.local/bin`, `~/.cargo/bin`, Homebrew's prefixes, the Windows
-programs directory), because a Finder launch gets a bare `PATH` that holds none
-of them; a machine with no CLI the app can find says so rather than reporting a
-version. A CLI released before this app cannot answer the check at all — it says
-`unexpected argument '--json'` — and the dialog reports exactly that, because the
-one command it offers, `oxide update`, is what replaces that older binary and
-works on any version: the report it prints is then shown under the title. A
-check asks GitHub for the newest release, so a machine with no network reports
-the CLI's own words instead of pretending to be up to date, and one install at a
-time is allowed. A check asked for again — the menu item and the sidebar's **↻**
-are the same command — is the one that owns the dialog, so an answer that a
-newer check has already replaced is dropped rather than repainting the dialog
-with an older release, and an install reports the version its own re-check read
-rather than the one it was offered, since a release published between the check
-and the click is the one the unpinned `oxide update` installs.
+**Install** downloads that artifact — re-resolved at the click, so what is
+installed is the release that is newest then — verifies it against the SHA-256
+GitHub reports for the asset, and puts it in this installation's place: on macOS
+the `.dmg` is mounted read-only with `hdiutil`, the `.app` inside it is copied
+out beside the installed bundle and only then renamed over it (the copy that can
+fail happens before anything is moved, and the copy that was there is put back
+if the rename cannot land), and the image is detached again; on Linux an
+AppImage is written beside the file this copy runs from and renamed over it;
+on Windows the NSIS installer is launched, so it puts the release where the old
+one was and asks for the app to be closed. The running app keeps running either
+way — the dialog ends with the path the release landed at and the one thing
+left to do, quitting and opening the app again. A release that carries no build
+for this platform, and an install that cannot be written to from here (a
+distribution's own package, a checkout's build, an app an administrator put in
+place for every user), is reported with the file to install by hand rather than
+replaced.
+
+A download that does not match its checksum is refused before anything is
+replaced, and one install runs at a time. A check asked for again — the menu
+item and the sidebar's **↻** are the same command — is the one that owns the
+dialog, so an answer a newer check has already replaced is dropped rather than
+repainting the dialog with an older release. A check asks GitHub for the newest
+release, so a machine with no network reports what went wrong instead of
+pretending to be up to date.
 
 ## Packaging
 
@@ -604,8 +608,10 @@ Settings → Privacy & Security → Open Anyway**, or the app moved to
 `/Applications` and the quarantine cleared with
 `xattr -dr com.apple.quarantine /Applications/Oxide.app`. An unsigned bundle is
 instead rejected outright as *damaged* on Apple Silicon, so the fallback
-matters. Auto-update artifacts are not enabled yet (they need a signing key),
-so the workflow asks the action for no `latest.json`.
+matters. `latest.json` stays off: the app updates itself from the plain
+installers the release publishes (see [Check for
+updates](#check-for-updates)), not from Tauri's own updater, which would need a
+signing key and a manifest beside them.
 
 ## Signing secrets
 

@@ -104,10 +104,11 @@ oxide update --force            # reinstall even when already current
 oxide update --check --json     # the same report for a front-end
 ```
 
-`oxide update` reads the release manifest the installers use, so a release that
-belongs to the desktop app or the VS Code extension is never installed as the
-CLI, and verifies the archive's SHA-256 checksum (warning when a release carries
-none). It replaces the running binary only after the unpacked one reports its
+`oxide update` resolves the newest release of its own train — the `Oxide-manifest`
+the installers read, falling back to GitHub's release list filtered to the tags
+that belong to the CLI — so a release for the desktop app or the VS Code
+extension is never installed as the CLI, and verifies the archive's SHA-256
+checksum (warning when a release carries none). It replaces the running binary only after the unpacked one reports its
 version, so a truncated download or a wrong-platform archive is refused instead
 of taking the place of a working binary — as is an archive that reports a
 version other than the release it was unpacked for, rather than replacing a
@@ -120,11 +121,20 @@ they unpack, and `oxide update` writes the same marker when it replaces one, so
 a custom `OXIDE_INSTALL_DIR` is recognized as a released install rather than
 needing `--force`. Restart `oxide` to run the new version.
 
-`--check --json` prints that report as JSON — `current`, `latest`, `tag`,
-`pinned`, `updateAvailable`, `installation`, `installable`, `path`, `advice`
-and `releaseUrl` — which is what the desktop app's **Check for Updates…** command
-and the VS Code extension's **Oxide: Check for Updates...** read before offering
-to run `oxide update` for the release it named.
+`--check --json` prints that report as JSON — `component`, `current`, `latest`,
+`tag`, `pinned`, `updateAvailable`, `installation`, `installable`, `path`,
+`advice`, `releaseUrl` and the `asset` (its `name`, `url` and the `digest`
+GitHub reports) — which is what a front-end reads instead of parsing the prose.
+`--component <cli|desktop|extension>` and `--current <VERSION>` decide which
+release train the report is about and what it is compared against: the CLI's own
+train (`v*`) by default, and the desktop app's (`desktop-v*`) or the VS Code
+extension's (`extension-v*`) when asked for, with each component's artifact for
+this platform in `asset`. That is how the desktop app's **Check for Updates…**
+resolves its own release and how the extension resolves the `.vsix` it installs,
+through the same resolution this command uses (`oxide_core::updates`) rather
+than a second copy of the rules. Only `--check` takes these two flags — an
+install of anything but the CLI belongs to the front-end that can put that
+release in place.
 
 ## Uninstalling
 

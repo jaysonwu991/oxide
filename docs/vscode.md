@@ -809,39 +809,54 @@ changed is when the webview paints it.
 ## Check for updates
 
 **Oxide: Check for Updates...** (in the command palette, and on the panel's
-title where the other pane-level commands sit) runs `oxide update --check
---json` through the installed binary and reports what it answered, in the same
-in-panel dialog the MCP and session listings use (`core/updates.ts` parses it,
-`core/dialogs.ts` composes it, so the webview only paints rows). The release it
-offers is the one the CLI resolved — the terminal's own check — and the rules
-about what may be replaced are the CLI's too: **Install 0.33.0** appears only
-when the check reported the installation as one `oxide update` can replace,
-while a Homebrew Cellar or a binary at a location the CLI does not recognize
-gets the CLI's advice line instead (`brew upgrade oxide`, `oxide update
---force`) with no install row to press. **Release notes** opens the release page
-in the system browser through `openUrl`.
+title where the other pane-level commands sit) reports the newest release of
+**this extension** and installs it. The extension releases from its own train
+(`extension-v*`) carrying `oxide-vscode-<version>.vsix`, and that is what the
+panel offers: the check is `oxide update --check --json --component extension
+--current <the version loaded here>` (`core/updates.ts` composes the arguments
+and parses the answer, `core/dialogs.ts` composes the dialog, so the webview
+only paints rows), so the resolution — which tag belongs to the extension,
+which file that release publishes for it, whether it is newer than this
+window's — is the shared `oxide_core::updates` rules the terminal's own update
+reads, while what is installed is this editor's extension rather than the
+command line the panel, the terminal and the desktop app all run.
 
-**Install** runs `oxide update` on that same binary — one download, verified
-against the release manifest, replacing the installed command line — and the
-panel reports the version now on disk rather than the one it offered, so the
-headline says `Installed Oxide 0.33.0` above the check's own answer.
+A release resolved as a VSIX is a row — **Install 0.34.0**, naming
+`oxide-vscode-0.34.0.vsix` — and a release with nothing this panel can install
+(a train that published no `.vsix`) is reported with the check's own sentence
+naming the file to install by hand, with no row to press. **Release notes**
+opens the release page in the system browser through `openUrl`. The row's
+detail says what the click does: `src/updates.ts` fetches that URL — following
+the redirect a release download answers with — into a private temp directory
+only this user can read, and verifies the file against the SHA-256 the release
+reports for it before anything else happens; a body that does not match is
+refused, and a release that published no checksum is installed unverified with
+that said in the dialog. The `.vsix` is then handed to VS Code itself —
+`workbench.extensions.installExtension` — because the editor owns what
+installing an extension means (where it goes, and whether the package is this
+extension at all), and the dialog reports what it put in place: `Oxide 0.34.0
+is installed`, `Was 0.33.0 · Installed extension-v0.34.0 ·
+oxide-vscode-0.34.0.vsix`, with **Restart Window** (which reloads the window,
+since the extension running here is the one that was there when it was
+replaced) and **Close**. The temporary directory does not outlive the install,
+whether it worked or not, and one install runs at a time.
 
 A CLI released before this panel cannot answer the check at all: it says
 `unexpected argument '--json'`. That is not a check that failed, so the dialog
-names it and offers the plain `oxide update` — which works on any version and is
-exactly what replaces that older binary — with the report it prints shown under
-the headline; an installation already current answers `Already up to date`, and
-that is repeated as the CLI's own line rather than reported as an install. A
-check that could not reach GitHub reports the CLI's own words instead, rather
-than an empty listing that would read as up to date, and one install at a time
-is allowed. The command is a palette entry, so it can be run again while the
-first request is waiting on GitHub: the newest check owns the dialog, and an
-answer that a newer one has replaced is dropped rather than painting an older
-release over it — as is an install whose own re-check has been replaced, since
-what it would report is a version a newer answer already describes. What this
-updates is the **oxide CLI**, which is what this panel, the terminal and the
-desktop app all run; the extension itself comes from the Marketplace and is
-updated there.
+names it and offers the one command that works on any version — **Install the
+newest CLI**, which runs the plain `oxide update` and replaces that binary,
+exactly the thing standing between the user and a check at all — with the
+report it printed shown under the headline; an installation already current
+answers `Already up to date`, and that is repeated as the CLI's own line rather
+than reported as an install. A check that could not reach GitHub reports what
+went wrong instead, rather than an empty listing that would read as up to date.
+The command is a palette entry, so it can be run again while the first request
+is waiting on GitHub: the newest check owns the dialog, and an answer that a
+newer one has replaced is dropped rather than painting an older release over it
+— as is an install a newer check has overtaken, since what it would report is a
+state a newer answer already describes. The extension is updated from the release
+train it was built from rather than from the Marketplace, so a window that is
+already new enough is told exactly that.
 
 ## Rendering
 

@@ -1998,16 +1998,22 @@ describe("webview dialogs", () => {
     const offered = updateDialog({
       k: "ready",
       check: {
+        component: "extension",
         current: "0.32.0",
         latest: "0.33.0",
-        tag: "v0.33.0",
+        tag: "extension-v0.33.0",
         pinned: false,
         updateAvailable: true,
-        installation: "prebuilt binary",
-        installable: true,
-        path: "/home/me/.local/bin/oxide",
+        installation: "",
+        installable: false,
+        path: "",
         advice: "",
-        releaseUrl: "https://github.com/jaysonwu991/oxide/releases/tag/v0.33.0",
+        releaseUrl: "https://github.com/jaysonwu991/oxide/releases/tag/extension-v0.33.0",
+        asset: {
+          name: "oxide-vscode-0.33.0.vsix",
+          url: "https://github.com/jaysonwu991/oxide/releases/download/extension-v0.33.0/oxide-vscode-0.33.0.vsix",
+          digest: "sha256:e02cf08397c21fc2b6f35e1d1220ac1e68bc056dbdef2ae7eb181308146fc101",
+        },
       },
     });
     const { byId, posted, send } = loadRenderer();
@@ -2019,31 +2025,37 @@ describe("webview dialogs", () => {
       ["updateInstall", "updateNotes", "dialogClose"],
     );
     byId.get("dialog")!.fire("click", { target: rows[0] });
-    assert.deepEqual(last(posted), { k: "dialogAction", action: "updateInstall", value: "0.33.0" });
+    assert.deepEqual(last(posted), {
+      k: "dialogAction",
+      action: "updateInstall",
+      value: "oxide-vscode-0.33.0.vsix",
+    });
     byId.get("dialog")!.fire("click", { target: rows[1] });
     assert.deepEqual(last(posted), {
       k: "dialogAction",
       action: "updateNotes",
-      value: "https://github.com/jaysonwu991/oxide/releases/tag/v0.33.0",
+      value: "https://github.com/jaysonwu991/oxide/releases/tag/extension-v0.33.0",
     });
 
-    // An installation the CLI does not replace has no install row to press —
+    // A release with nothing this panel installs has no install row to press —
     // the only way an install is started is a row the check offered.
     send({
       k: "dialog",
       dialog: updateDialog({
         k: "ready",
         check: {
+          component: "extension",
           current: "0.32.0",
           latest: "0.33.0",
-          tag: "v0.33.0",
+          tag: "extension-v0.33.0",
           pinned: false,
           updateAvailable: true,
-          installation: "homebrew",
+          installation: "",
           installable: false,
-          path: "/opt/homebrew/bin/oxide",
-          advice: "Update available; Homebrew manages this install: run `brew upgrade oxide`.",
-          releaseUrl: "https://github.com/jaysonwu991/oxide/releases/tag/v0.33.0",
+          path: "",
+          advice: "Update available: oxide-vscode-0.33.0.vsix is on the release page.",
+          releaseUrl: "https://github.com/jaysonwu991/oxide/releases/tag/extension-v0.33.0",
+          asset: null,
         },
       }),
     });
@@ -2051,6 +2063,37 @@ describe("webview dialogs", () => {
       byId.get("dialog-list")!.children.map((row) => row.dataset.action),
       ["updateNotes", "dialogClose"],
     );
+
+    // A finished install offers the restart that puts the new version in charge,
+    // and the row carries the action for it.
+    send({
+      k: "dialog",
+      dialog: updateDialog({
+        k: "installed",
+        check: {
+          component: "extension",
+          current: "0.32.0",
+          latest: "0.33.0",
+          tag: "extension-v0.33.0",
+          pinned: false,
+          updateAvailable: true,
+          installation: "",
+          installable: false,
+          path: "",
+          advice: "",
+          releaseUrl: "https://github.com/jaysonwu991/oxide/releases/tag/extension-v0.33.0",
+          asset: null,
+        },
+      }),
+    });
+    assert.equal(byId.get("dialog-title")!.textContent, "Oxide 0.33.0 is installed");
+    const installed = byId.get("dialog-list")!.children;
+    assert.deepEqual(
+      installed.map((row) => row.dataset.action),
+      ["updateReload", "dialogClose"],
+    );
+    byId.get("dialog")!.fire("click", { target: installed[0] });
+    assert.deepEqual(last(posted), { k: "dialogAction", action: "updateReload", value: "" });
 
     // The states with nothing to press paint their words and no rows at all.
     send({ k: "dialog", dialog: updateDialog({ k: "checking" }) });

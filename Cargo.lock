@@ -2457,7 +2457,6 @@ dependencies = [
  "reqwest 0.12.28",
  "serde",
  "serde_json",
- "sha2",
  "tokio",
 ]
 
@@ -2486,6 +2485,7 @@ dependencies = [
  "anyhow",
  "dirs 5.0.1",
  "oxide-core",
+ "reqwest 0.12.28",
  "serde",
  "serde_json",
  "tauri",

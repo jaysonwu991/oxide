@@ -1,21 +1,16 @@
 use crate::install::{self, detect_install_method, InstallMethod};
 use anyhow::{bail, Context, Result};
-use reqwest::StatusCode;
-use serde::Serialize;
-use sha2::{Digest, Sha256};
+use oxide_core::updates::{self, Check, Component, Release, WorkDir};
 use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::process::Command;
-use std::time::Duration;
 
-/// The repository releases live in, unless `OXIDE_REPO` names a fork.
-const DEFAULT_REPO: &str = "jaysonwu991/oxide";
-const MANIFEST_NAME: &str = "Oxide-manifest";
-const LEGACY_MANIFEST_NAME: &str = "oxide-manifest";
 const STAGING_PREFIX: &str = ".oxide-update-";
-const REQUEST_TIMEOUT: Duration = Duration::from_secs(300);
-const SUPPORTED_PLATFORMS: &str = "darwin-arm64, darwin-x64, linux-x64, linux-arm64, win32-x64";
 
+/// What `oxide update` was asked to do. The release rules themselves — which
+/// tag belongs to which component, the artifact a platform installs, whether a
+/// version is newer — live in `oxide_core::updates`, so the terminal, the
+/// desktop app and the editor extension resolve a release the same way.
 #[derive(Debug, Clone)]
 pub struct Options {
     pub check: bool,
@@ -25,95 +20,115 @@ pub struct Options {
     /// front-end that offers the update itself (`--check` always accompanies
     /// it, since the JSON describes a check and nothing else).
     pub json: bool,
+    /// Which release train to check: the CLI's own, or the one a front-end that
+    /// cannot link `oxide-core` asks about (the VS Code panel).
+    pub component: Component,
+    /// The version the caller reports running, for that front-end: the CLI
+    /// knows its own, the panel passes the extension's.
+    pub current: Option<String>,
 }
 
 pub async fn run(options: Options) -> Result<()> {
     let executable = std::env::current_exe().context("resolving the oxide executable")?;
-    let repo = std::env::var("OXIDE_REPO").unwrap_or_else(|_| DEFAULT_REPO.to_string());
-    run_for(options, &executable, &repo).await
+    run_for(options, &executable, &updates::repo()).await
 }
 
-/// What a check found, as a front-end reads it. The desktop app and the editor
-/// extension run `oxide update --check --json` rather than re-fetching the
-/// release themselves, so the version they compare against the running binary,
-/// the release they offer and the checksum-verified asset the install would use
-/// are the ones this copy of the CLI resolved.
-#[derive(Debug, Serialize)]
-#[serde(rename_all = "camelCase")]
-struct Check {
-    /// The version the installed binary reports.
-    current: String,
-    /// The release the check resolved: `latest` is the newest CLI release, or
-    /// the one `--version` asked for.
-    latest: String,
-    tag: String,
-    /// Whether `--version` pinned the release rather than the newest being
-    /// looked up.
-    pinned: bool,
-    /// Whether there is an update to install — what the menu command offers.
-    /// `--force` always leaves one.
-    update_available: bool,
-    /// What the check found the installation to be, and whether it installs
-    /// itself: Homebrew is left to `brew upgrade`, and a binary that is not a
-    /// release needs `--force`.
-    installation: String,
-    installable: bool,
-    path: String,
-    /// The sentence the terminal prints when it checks, kept verbatim so a
-    /// front-end that cannot install the release itself can repeat it.
-    advice: Option<String>,
-    release_url: String,
-}
-
-impl Check {
-    fn new(options: &Options, release: &Release, executable: &Path, repo: &str) -> Self {
-        let current = current_version().to_string();
-        let method = detect_install_method(executable);
-        let update_available =
-            options.force || should_install(release, &current, options.version.is_some());
-        let installable = match method {
-            InstallMethod::Cargo | InstallMethod::Prebuilt => true,
-            InstallMethod::Unknown => options.force,
-            InstallMethod::Homebrew => false,
-        };
-        Self {
-            current,
-            latest: release.version.clone(),
-            tag: release.tag.clone(),
-            pinned: options.version.is_some(),
-            update_available,
-            installation: method.label().to_string(),
-            installable,
-            path: executable.display().to_string(),
-            advice: update_available.then(|| advice(method, executable)),
-            release_url: format!("https://github.com/{repo}/releases/tag/{}", release.tag),
-        }
+/// What a check found, as a front-end reads it. The shape is
+/// `oxide_core::updates::Check`, which the desktop app's own check reports too;
+/// this fills in the half only the CLI can know — how this binary was
+/// installed, and whether it may replace it.
+fn check_of(
+    options: &Options,
+    release: &Release,
+    executable: &Path,
+    repo: &str,
+    current: &str,
+) -> Check {
+    let mut check = Check::new(
+        options.component,
+        release,
+        current,
+        options.version.is_some(),
+        repo,
+    );
+    if options.component != Component::Cli {
+        // Nothing this command installs: the app replaces itself and the panel
+        // installs its own VSIX, so the check says what to do instead.
+        check.advice = check.update_available.then(|| match &check.asset {
+            Some(asset) => format!(
+                "Update available: {} installs this release itself (Check for Updates…), or {} is \
+                 on the release page.",
+                options.component.label(),
+                asset.name
+            ),
+            None => format!(
+                "Update available: {} has no build for this platform; see the release page.",
+                options.component.label()
+            ),
+        });
+        return check;
     }
+
+    let method = detect_install_method(executable);
+    check.update_available |= options.force;
+    check.installation = method.label().to_string();
+    check.installable = match method {
+        InstallMethod::Cargo | InstallMethod::Prebuilt => true,
+        InstallMethod::Unknown => options.force,
+        InstallMethod::Homebrew => false,
+    };
+    check.path = executable.display().to_string();
+    check.advice = check.update_available.then(|| advice(method, executable));
+    check
 }
 
 async fn run_for(options: Options, executable: &Path, repo: &str) -> Result<()> {
-    let platform = platform()?;
-    let method = detect_install_method(executable);
-    let current = current_version();
-
-    let client = client()?;
-    let release = match options.version.as_deref() {
-        Some(requested) => pinned_release(requested, platform)?,
-        None => latest_release(&client, repo, platform).await?,
+    let component = options.component;
+    // This command replaces the installed binary. The desktop app and the
+    // editor extension are replaced by the front-end that runs them, so a run
+    // that is not a check says where their release comes from instead of
+    // installing something the caller cannot use.
+    if !options.check && component != Component::Cli {
+        bail!(
+            "`oxide update` replaces the installed oxide CLI; {} updates itself from its own \
+             release, so check it with `oxide update --check --component {}`",
+            component.label(),
+            component.as_str()
+        );
+    }
+    let platform = if component.platform_specific() {
+        updates::platform()?
+    } else {
+        ""
     };
-    let check = Check::new(&options, &release, executable, repo);
+    let current = match options.current.clone() {
+        Some(current) => current,
+        None if component == Component::Cli => current_version().to_string(),
+        None => String::new(),
+    };
+
+    let client = updates::client()?;
+    let release = match options.version.as_deref() {
+        Some(requested) => updates::pinned(component, requested, platform)?,
+        None => updates::latest(&client, repo, component, platform).await?,
+    };
+    let check = check_of(&options, &release, executable, repo, &current);
     if options.json {
         println!("{}", serde_json::to_string_pretty(&check)?);
         return Ok(());
     }
 
-    println!("Oxide update");
-    println!(
-        "Installation: {} at {}",
-        method.label(),
-        executable.display()
-    );
-    println!("Current: {current}");
+    println!("Oxide update — {}", component.label());
+    if component == Component::Cli {
+        println!(
+            "Installation: {} at {}",
+            check.installation,
+            executable.display()
+        );
+    }
+    if !current.is_empty() {
+        println!("Current: {current}");
+    }
     if options.version.is_some() {
         println!("Target: {}", release.tag);
     } else {
@@ -121,16 +136,27 @@ async fn run_for(options: Options, executable: &Path, repo: &str) -> Result<()> 
     }
 
     if !check.update_available {
-        println!(
-            "Already up to date; rerun with --force to reinstall {}.",
-            release.tag
-        );
+        if component == Component::Cli {
+            println!(
+                "Already up to date; rerun with --force to reinstall {}.",
+                release.tag
+            );
+        } else {
+            println!("{} is up to date.", component.label());
+        }
         return Ok(());
+    }
+    if let Some(asset) = &check.asset {
+        println!("Asset: {}", asset.name);
     }
     if options.check {
-        println!("{}", check.advice.as_deref().unwrap_or_default());
+        if let Some(advice) = check.advice.as_deref() {
+            println!("{advice}");
+        }
         return Ok(());
     }
+
+    let method = detect_install_method(executable);
     match method {
         InstallMethod::Homebrew => {
             bail!("oxide was installed with Homebrew; run `brew upgrade oxide` instead")
@@ -153,7 +179,7 @@ async fn run_for(options: Options, executable: &Path, repo: &str) -> Result<()> 
     let (url, bytes) = archive(&client, repo, &release).await?;
     let download = work.path().join(&release.asset);
     fs::write(&download, &bytes).with_context(|| format!("writing {}", download.display()))?;
-    match fetch(&client, &format!("{url}.sha256"), None).await? {
+    match updates::fetch(&client, &format!("{url}.sha256"), None).await? {
         Some(sums) => {
             verify(&download, &sums)?;
             println!("Verified SHA256 checksum");
@@ -197,281 +223,12 @@ pub fn current_version() -> &'static str {
     env!("CARGO_PKG_VERSION")
 }
 
-fn client() -> Result<reqwest::Client> {
-    reqwest::Client::builder()
-        .user_agent(format!("oxide/{}", current_version()))
-        .timeout(REQUEST_TIMEOUT)
-        .build()
-        .context("building the http client")
-}
-
-/// The platform key the release assets are named after.
-fn platform() -> Result<&'static str> {
-    platform_for(std::env::consts::OS, std::env::consts::ARCH)
-}
-
-fn platform_for(os: &str, arch: &str) -> Result<&'static str> {
-    match (os, arch) {
-        ("macos", "aarch64") => Ok("darwin-arm64"),
-        ("macos", "x86_64") => Ok("darwin-x64"),
-        ("linux", "x86_64") => Ok("linux-x64"),
-        ("linux", "aarch64") => Ok("linux-arm64"),
-        ("windows", "x86_64") => Ok("win32-x64"),
-        _ => bail!("no prebuilt binary for {os}-{arch}; supported targets: {SUPPORTED_PLATFORMS}"),
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-struct Release {
-    tag: String,
-    version: String,
-    asset: String,
-}
-
-impl Release {
-    fn new(tag: &str, asset: Option<String>, platform: &str) -> Self {
-        Self {
-            tag: tag.to_string(),
-            version: version_of(tag),
-            asset: asset.unwrap_or_else(|| archive_name(tag, platform)),
-        }
-    }
-
-    fn url(&self, repo: &str) -> String {
-        format!(
-            "https://github.com/{repo}/releases/download/{}/{}",
-            self.tag, self.asset
-        )
-    }
-}
-
-/// The release a `--version` argument pins, which resolves without asking
-/// GitHub anything.
-fn pinned_release(requested: &str, platform: &str) -> Result<Release> {
-    let tag = normalize_tag(requested)?;
-    Ok(Release {
-        version: version_of(&tag),
-        asset: archive_name(&tag, platform),
-        tag,
-    })
-}
-
-/// The newest CLI release. The installers read the release manifest first —
-/// `/releases/latest` may point at a desktop or extension release, which
-/// carries none — and fall back to the API's release list.
-async fn latest_release(client: &reqwest::Client, repo: &str, platform: &str) -> Result<Release> {
-    let manifest_url =
-        format!("https://github.com/{repo}/releases/latest/download/{MANIFEST_NAME}");
-    let manifest = match fetch(client, &manifest_url, None).await? {
-        Some(bytes) => Some(String::from_utf8_lossy(&bytes).to_string()),
-        None => {
-            let legacy = format!(
-                "https://github.com/{repo}/releases/latest/download/{LEGACY_MANIFEST_NAME}"
-            );
-            fetch(client, &legacy, None)
-                .await?
-                .map(|bytes| String::from_utf8_lossy(&bytes).to_string())
-        }
-    };
-    if let Some(version) = manifest
-        .as_deref()
-        .and_then(|text| manifest_value(text, "version"))
-    {
-        let tag = normalize_tag(&version)
-            .with_context(|| format!("the release manifest names version {version}"))?;
-        let asset = manifest
-            .as_deref()
-            .and_then(|text| manifest_value(text, platform));
-        return Ok(Release::new(&tag, asset, platform));
-    }
-
-    let url = format!("https://api.github.com/repos/{repo}/releases?per_page=100");
-    let token = std::env::var("GH_TOKEN")
-        .or_else(|_| std::env::var("GITHUB_TOKEN"))
-        .ok();
-    let body = fetch(client, &url, token.as_deref())
-        .await?
-        .with_context(|| format!("{url} has no releases"))?;
-    let releases: serde_json::Value =
-        serde_json::from_slice(&body).with_context(|| format!("reading {url}"))?;
-    let tag = cli_tag(&releases).with_context(|| format!("no CLI release found in {repo}"))?;
-    Ok(Release::new(&tag, None, platform))
-}
-
-/// The newest release whose tag belongs to the CLI, which is what `v*` marks.
-/// The desktop (`desktop-v*`) and the extension (`extension-v*`) release from
-/// their own tags, so their releases are skipped rather than installed.
-fn cli_tag(releases: &serde_json::Value) -> Option<String> {
-    releases.as_array()?.iter().find_map(|release| {
-        let tag = release.get("tag_name")?.as_str()?;
-        let rest = tag.strip_prefix('v')?;
-        rest.starts_with(|first: char| first.is_ascii_digit())
-            .then(|| tag.to_string())
-    })
-}
-
-/// One `key: value` line of the release manifest the installers read.
-fn manifest_value(text: &str, key: &str) -> Option<String> {
-    text.lines().find_map(|line| {
-        let (name, value) = line.split_once(':')?;
-        let value = value.trim();
-        (name.trim() == key && !value.is_empty()).then(|| value.to_string())
-    })
-}
-
-fn archive_name(tag: &str, platform: &str) -> String {
-    let extension = if platform.starts_with("win32") {
-        "zip"
-    } else {
-        "tar.gz"
-    };
-    format!("Oxide-{tag}-{platform}.{extension}")
-}
-
 fn binary_name() -> &'static str {
     if cfg!(windows) {
         "oxide.exe"
     } else {
         "oxide"
     }
-}
-
-/// The tag GitHub publishes for a requested version: `1.2.3` and `v1.2.3` name
-/// `v1.2.3`, and the `cli-v1.2.3` spelling release CI also accepts keeps its
-/// component prefix, since the tag itself carries it.
-fn normalize_tag(requested: &str) -> Result<String> {
-    let trimmed = requested.trim();
-    let (prefix, version) = match trimmed.strip_prefix("cli-") {
-        Some(rest) => ("cli-", rest.strip_prefix('v').unwrap_or(rest)),
-        None => ("", trimmed.strip_prefix('v').unwrap_or(trimmed)),
-    };
-    if !is_semver(version) {
-        bail!("`{requested}` is not a version (expected something like v0.26.0)");
-    }
-    Ok(format!("{prefix}v{version}"))
-}
-
-fn version_of(tag: &str) -> String {
-    let tag = tag.trim();
-    tag.strip_prefix("cli-")
-        .unwrap_or(tag)
-        .trim_start_matches('v')
-        .to_string()
-}
-
-fn is_semver(text: &str) -> bool {
-    let (core, suffix) = match text.find(['-', '+']) {
-        Some(index) => (&text[..index], Some(&text[index + 1..])),
-        None => (text, None),
-    };
-    let mut parts = core.split('.');
-    let numbers = (0..3).all(|_| {
-        parts
-            .next()
-            .is_some_and(|part| !part.is_empty() && part.bytes().all(|byte| byte.is_ascii_digit()))
-    });
-    numbers
-        && parts.next().is_none()
-        && suffix.is_none_or(|suffix| {
-            !suffix.is_empty()
-                && suffix
-                    .bytes()
-                    .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'-' | b'+'))
-        })
-}
-
-/// Whether `latest` names a later release than `current`. A version that does
-/// not parse (the `0.0.0` a source build reports, or a shim) is treated as
-/// older so the update is offered rather than silently skipped.
-fn is_newer(latest: &str, current: &str) -> bool {
-    match (parse_version(latest), parse_version(current)) {
-        (Some(latest), Some(current)) => compare(&latest, &current).is_gt(),
-        _ => true,
-    }
-}
-
-#[derive(Debug, PartialEq, Eq)]
-struct Version {
-    major: u64,
-    minor: u64,
-    patch: u64,
-    pre: Vec<Identifier>,
-}
-
-/// One dot-separated pre-release identifier, ordered the way SemVer orders
-/// them: a numeric identifier compares as a number and always ranks below an
-/// alphanumeric one, which compares in ASCII order.
-#[derive(Debug, PartialEq, Eq, PartialOrd, Ord)]
-enum Identifier {
-    Numeric(u64),
-    Text(String),
-}
-
-fn parse_version(text: &str) -> Option<Version> {
-    let text = version_of(text);
-    // Build metadata carries no precedence — two releases that differ only in
-    // it are the same version — and a pre-release may itself hold a `-`, so the
-    // metadata comes off before the pre-release is read.
-    let (text, _build) = text.split_once('+').unwrap_or((text.as_str(), ""));
-    let (core, pre) = match text.split_once('-') {
-        Some((core, pre)) => (core, Some(pre)),
-        None => (text, None),
-    };
-    let mut parts = core.split('.');
-    let version = Version {
-        major: parts.next()?.parse().ok()?,
-        minor: parts.next().unwrap_or("0").parse().ok()?,
-        patch: parts.next().unwrap_or("0").parse().ok()?,
-        pre: match pre {
-            Some(pre) => pre_identifiers(pre)?,
-            None => Vec::new(),
-        },
-    };
-    parts.next().is_none().then_some(version)
-}
-
-fn pre_identifiers(pre: &str) -> Option<Vec<Identifier>> {
-    if pre.is_empty() {
-        return None;
-    }
-    pre.split('.')
-        .map(|part| {
-            let alphanumeric = part
-                .bytes()
-                .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-');
-            if !alphanumeric {
-                return None;
-            }
-            if part.bytes().all(|byte| byte.is_ascii_digit()) {
-                part.parse().ok().map(Identifier::Numeric)
-            } else {
-                Some(Identifier::Text(part.to_string()))
-            }
-        })
-        .collect()
-}
-
-/// A release outranks its own pre-releases, so `1.0.0` is newer than
-/// `1.0.0-rc.1` and an update is offered for it.
-fn compare(latest: &Version, current: &Version) -> std::cmp::Ordering {
-    (latest.major, latest.minor, latest.patch)
-        .cmp(&(current.major, current.minor, current.patch))
-        .then_with(|| match (latest.pre.is_empty(), current.pre.is_empty()) {
-            (true, true) => std::cmp::Ordering::Equal,
-            (true, false) => std::cmp::Ordering::Greater,
-            (false, true) => std::cmp::Ordering::Less,
-            (false, false) => latest.pre.cmp(&current.pre),
-        })
-}
-
-/// Whether the release is worth installing: a pinned `--version` is installed
-/// as asked — a rollback is a request too — while the newest release is
-/// installed only when it is actually newer. `--force` bypasses both.
-fn should_install(release: &Release, current: &str, pinned: bool) -> bool {
-    if pinned {
-        return release.version != version_of(current);
-    }
-    is_newer(&release.version, current)
 }
 
 /// What to do about a release this installation cannot install itself.
@@ -501,13 +258,13 @@ async fn archive(
 ) -> Result<(String, Vec<u8>)> {
     let url = release.url(repo);
     println!("Downloading {}", release.asset);
-    if let Some(bytes) = fetch(client, &url, None).await? {
+    if let Some(bytes) = updates::fetch(client, &url, None).await? {
         return Ok((url, bytes));
     }
     if let Some(legacy) = legacy_url(&url) {
         let asset = legacy.rsplit('/').next().unwrap_or(&release.asset);
         println!("Downloading {asset}");
-        if let Some(bytes) = fetch(client, &legacy, None).await? {
+        if let Some(bytes) = updates::fetch(client, &legacy, None).await? {
             return Ok((legacy, bytes));
         }
     }
@@ -527,55 +284,16 @@ fn legacy_url(url: &str) -> Option<String> {
         .map(|rest| format!("{head}/oxide-v{rest}"))
 }
 
-/// A `None` result is a 404: a file that release does not carry.
-async fn fetch(
-    client: &reqwest::Client,
-    url: &str,
-    token: Option<&str>,
-) -> Result<Option<Vec<u8>>> {
-    let mut request = client.get(url);
-    if let Some(token) = token {
-        request = request.bearer_auth(token);
-    }
-    let response = request
-        .send()
-        .await
-        .with_context(|| format!("requesting {url}"))?;
-    let status = response.status();
-    if status == StatusCode::NOT_FOUND {
-        return Ok(None);
-    }
-    if !status.is_success() {
-        bail!("{url} returned {status}");
-    }
-    let bytes = response
-        .bytes()
-        .await
-        .with_context(|| format!("reading {url}"))?;
-    Ok(Some(bytes.to_vec()))
-}
-
+/// Checks a downloaded archive against the `.sha256` file published beside it,
+/// which holds `<digest>  <name>`.
 fn verify(file: &Path, sums: &[u8]) -> Result<()> {
     let text = String::from_utf8_lossy(sums);
     let expected = text
         .split_whitespace()
         .next()
         .context("the checksum file has no digest")?;
-    let bytes = fs::read(file).with_context(|| format!("reading {}", file.display()))?;
-    let actual = hex(&Sha256::digest(&bytes));
-    if !expected.eq_ignore_ascii_case(&actual) {
-        bail!(
-            "checksum mismatch for {}: expected {expected}, got {actual}",
-            file.display()
-        );
-    }
-    Ok(())
+    updates::verify_sha256(file, expected)
 }
-
-fn hex(bytes: &[u8]) -> String {
-    bytes.iter().map(|byte| format!("{byte:02x}")).collect()
-}
-
 fn extract(archive: &Path, dir: &Path) -> Result<()> {
     #[cfg(windows)]
     let mut command = {
@@ -725,48 +443,10 @@ fn discard_stale(directory: &Path) {
     }
 }
 
-/// A private scratch directory for the download and its unpacking, removed
-/// again when the update ends — successfully or not.
-struct WorkDir(PathBuf);
-
-impl WorkDir {
-    fn new() -> Result<Self> {
-        let mut random = [0u8; 16];
-        getrandom::getrandom(&mut random)
-            .ok()
-            .context("generating a private name for the temporary directory")?;
-        let name: String = random.iter().map(|byte| format!("{byte:02x}")).collect();
-        let dir = std::env::temp_dir().join(format!("oxide-update-{name}"));
-        // `mode` is a unix-only method, so `mut` is only needed there; without
-        // this the Windows release build warns that the variable is never
-        // mutated.
-        #[cfg_attr(not(unix), allow(unused_mut))]
-        let mut builder = fs::DirBuilder::new();
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::DirBuilderExt;
-            builder.mode(0o700);
-        }
-        builder
-            .create(&dir)
-            .with_context(|| format!("creating {}", dir.display()))?;
-        Ok(Self(dir))
-    }
-
-    fn path(&self) -> &Path {
-        &self.0
-    }
-}
-
-impl Drop for WorkDir {
-    fn drop(&mut self) {
-        let _ = fs::remove_dir_all(&self.0);
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::path::PathBuf;
     use std::time::{SystemTime, UNIX_EPOCH};
 
     fn temp_dir(tag: &str) -> PathBuf {
@@ -778,72 +458,6 @@ mod tests {
             std::env::temp_dir().join(format!("oxide-update-{tag}-{}-{nonce}", std::process::id()));
         fs::create_dir_all(&path).unwrap();
         path
-    }
-
-    #[test]
-    fn pinned_versions_install_and_the_latest_only_when_newer() {
-        let latest = pinned_release("0.26.0", "linux-x64").unwrap();
-        // The newest release is installed only when it is newer than the built-in one.
-        assert!(should_install(&latest, "0.25.0", false));
-        assert!(!should_install(&latest, "0.26.0", false));
-        assert!(!should_install(&latest, "0.27.0", false));
-        // A pinned version is installed as asked, including a rollback.
-        assert!(should_install(&latest, "0.27.0", true));
-        assert!(!should_install(&latest, "0.26.0", true));
-        // A version that does not parse is offered the update.
-        assert!(should_install(&latest, "0.0.0", false));
-    }
-
-    #[test]
-    fn platforms_match_the_release_matrix() {
-        assert_eq!(platform_for("macos", "aarch64").unwrap(), "darwin-arm64");
-        assert_eq!(platform_for("macos", "x86_64").unwrap(), "darwin-x64");
-        assert_eq!(platform_for("linux", "x86_64").unwrap(), "linux-x64");
-        assert_eq!(platform_for("linux", "aarch64").unwrap(), "linux-arm64");
-        assert_eq!(platform_for("windows", "x86_64").unwrap(), "win32-x64");
-        assert!(platform_for("freebsd", "x86_64").is_err());
-        assert!(platform_for("linux", "arm").is_err());
-    }
-
-    #[test]
-    fn versions_are_compared_semantically() {
-        assert!(is_newer("v0.26.0", "0.25.0"));
-        assert!(is_newer("0.26.0", "0.25.9"));
-        assert!(is_newer("1.0.0", "0.99.99"));
-        assert!(!is_newer("v0.26.0", "0.26.0"));
-        assert!(!is_newer("0.25.0", "0.26.0"));
-        // A release outranks its own pre-releases.
-        assert!(is_newer("1.0.0", "1.0.0-rc.1"));
-        assert!(!is_newer("1.0.0-rc.1", "1.0.0"));
-        // A version that does not parse is offered an update.
-        assert!(is_newer("0.26.0", "nightly"));
-        assert_eq!(version_of("cli-v1.2.3"), "1.2.3");
-    }
-
-    #[test]
-    fn pre_release_identifiers_are_ordered_the_way_semver_orders_them() {
-        // Build metadata carries no precedence, so the two are one version.
-        assert_eq!(parse_version("1.2.3+build.5"), parse_version("1.2.3"));
-        assert!(!is_newer("1.2.3+build.5", "1.2.3"));
-        assert!(is_newer("1.2.3+build.5", "1.2.3-pre"));
-        // Metadata after a pre-release, and a `-` inside either one.
-        assert_eq!(
-            parse_version("1.2.3-rc.1+build-2"),
-            parse_version("1.2.3-rc.1")
-        );
-        assert_eq!(parse_version("1.2.3+build-2"), parse_version("1.2.3"));
-        // A numeric identifier compares as a number, not as text.
-        assert!(is_newer("1.2.3-rc.10", "1.2.3-rc.2"));
-        assert!(!is_newer("1.2.3-rc.2", "1.2.3-rc.10"));
-        // An alphanumeric identifier outranks a numeric one.
-        assert!(is_newer("1.2.3-rc.alpha", "1.2.3-rc.1"));
-        assert!(!is_newer("1.2.3-rc.1", "1.2.3-rc.alpha"));
-        // More identifiers outrank a version that is a prefix of them.
-        assert!(is_newer("1.2.3-rc.1.1", "1.2.3-rc.1"));
-        assert!(!is_newer("1.2.3-rc.1", "1.2.3-rc.1.1"));
-        // Junk after the core names no version at all, so the update is offered.
-        assert!(parse_version("1.2.3-").is_none());
-        assert!(parse_version("1.2.3-rc..1").is_none());
     }
 
     #[test]
@@ -876,44 +490,87 @@ mod tests {
         fs::remove_dir_all(dir).unwrap();
     }
 
+    /// A check for another component is this same resolution wearing that
+    /// component's name: the desktop app and the VS Code panel cannot link
+    /// `oxide-core`, so this is where they read what their own release train
+    /// offers, and what to download if they install it themselves.
     #[test]
-    fn tags_are_normalized_from_every_spelling() {
-        assert_eq!(normalize_tag("1.2.3").unwrap(), "v1.2.3");
-        assert_eq!(normalize_tag("v1.2.3").unwrap(), "v1.2.3");
-        assert_eq!(normalize_tag(" cli-v1.2.3 ").unwrap(), "cli-v1.2.3");
-        assert_eq!(version_of("cli-v1.2.3"), "1.2.3");
-        assert_eq!(
-            normalize_tag("v1.2.3-rc.1+build.2").unwrap(),
-            "v1.2.3-rc.1+build.2"
+    fn a_check_for_another_component_names_its_own_release() {
+        let executable = Path::new("/opt/scratch/oxide");
+        let options = Options {
+            check: true,
+            version: None,
+            force: false,
+            json: true,
+            component: Component::Desktop,
+            current: Some("0.33.0".to_string()),
+        };
+        let release = Release::new(Component::Desktop, "desktop-v0.34.0", None, "darwin-arm64");
+        let check = check_of(
+            &options,
+            &release,
+            executable,
+            "jaysonwu991/oxide",
+            "0.33.0",
         );
-        assert!(normalize_tag("latest").is_err());
-        assert!(normalize_tag("v1.2").is_err());
+
+        assert_eq!(check.component, Component::Desktop);
+        assert!(check.update_available);
+        // Nothing this command installs: the app replaces itself.
+        assert!(!check.installable);
+        assert!(check.path.is_empty());
+        let asset = check.asset.as_ref().unwrap();
+        assert_eq!(asset.name, "Oxide_0.34.0_aarch64.dmg");
+        assert_eq!(
+            asset.url,
+            "https://github.com/jaysonwu991/oxide/releases/download/desktop-v0.34.0/Oxide_0.34.0_aarch64.dmg"
+        );
+        assert!(check
+            .advice
+            .as_deref()
+            .unwrap()
+            .contains("installs this release itself"));
+
+        // A release the caller already runs leaves nothing to offer, and so no
+        // advice either.
+        let release = Release::new(Component::Desktop, "desktop-v0.33.0", None, "darwin-arm64");
+        let check = check_of(
+            &options,
+            &release,
+            executable,
+            "jaysonwu991/oxide",
+            "0.33.0",
+        );
+        assert!(!check.update_available);
+        assert!(check.advice.is_none());
+    }
+
+    /// `oxide update` replaces the installed binary, and only that. A run asked
+    /// to install the app's or the panel's release says so, rather than
+    /// overwriting the CLI the caller is running with an archive it cannot use.
+    #[tokio::test]
+    async fn installing_another_component_is_refused() {
+        let options = Options {
+            check: false,
+            version: None,
+            force: false,
+            json: false,
+            component: Component::Extension,
+            current: None,
+        };
+        let error = run_for(
+            options,
+            Path::new("/opt/scratch/oxide"),
+            "jaysonwu991/oxide",
+        )
+        .await
+        .unwrap_err();
+        assert!(error.to_string().contains("updates itself"), "{error}");
     }
 
     #[test]
-    fn manifests_name_the_platform_asset() {
-        let manifest = "version: v0.26.0\ndarwin-arm64: Oxide-v0.26.0-darwin-arm64.tar.gz\n\
-                        linux-x64: Oxide-v0.26.0-linux-x64.tar.gz\n";
-        assert_eq!(manifest_value(manifest, "version").unwrap(), "v0.26.0");
-        assert_eq!(
-            manifest_value(manifest, "linux-x64").unwrap(),
-            "Oxide-v0.26.0-linux-x64.tar.gz"
-        );
-        assert!(manifest_value(manifest, "win32-x64").is_none());
-        assert!(manifest_value("not a manifest", "version").is_none());
-    }
-
-    #[test]
-    fn assets_and_urls_follow_the_release_layout() {
-        assert_eq!(
-            archive_name("v0.26.0", "darwin-arm64"),
-            "Oxide-v0.26.0-darwin-arm64.tar.gz"
-        );
-        assert_eq!(
-            archive_name("v0.26.0", "win32-x64"),
-            "Oxide-v0.26.0-win32-x64.zip"
-        );
-        let release = pinned_release("0.26.0", "linux-x64").unwrap();
+    fn a_pinned_cli_release_is_named_where_the_installers_read_it() {
+        let release = updates::pinned(Component::Cli, "0.26.0", "linux-x64").unwrap();
         assert_eq!(release.tag, "v0.26.0");
         assert_eq!(release.version, "0.26.0");
         assert_eq!(
@@ -927,22 +584,9 @@ mod tests {
         assert!(legacy_url("https://github.com/o/r/releases/download/v1/other.tar.gz").is_none());
     }
 
-    #[test]
-    fn the_newest_cli_tag_skips_other_components() {
-        let releases = serde_json::json!([
-            { "tag_name": "extension-v0.26.0" },
-            { "tag_name": "desktop-v0.26.0" },
-            { "tag_name": "v0.26.0" },
-            { "tag_name": "v0.25.0" },
-        ]);
-        assert_eq!(cli_tag(&releases).unwrap(), "v0.26.0");
-        assert!(cli_tag(&serde_json::json!([])).is_none());
-        assert!(cli_tag(&serde_json::json!([{ "tag_name": "nightly" }])).is_none());
-    }
-
-    /// The JSON a front-end offers the update from. The desktop app and the
-    /// editor extension read these keys, so they are pinned here: a rename would
-    /// otherwise leave both showing `undefined` for a version.
+    /// The JSON a front-end offers the update from, and the keys it reads: a
+    /// rename would otherwise leave the desktop app or the VS Code panel
+    /// showing `undefined` for a version.
     #[test]
     fn the_json_check_carries_what_a_front_end_offers() {
         let executable = Path::new("/opt/scratch/oxide");
@@ -951,11 +595,20 @@ mod tests {
             version: None,
             force: false,
             json: true,
+            component: Component::Cli,
+            current: None,
         };
-        let release = pinned_release("0.27.0", "linux-x64").unwrap();
-        let check = Check::new(&options, &release, executable, "jaysonwu991/oxide");
+        let release = updates::pinned(Component::Cli, "0.27.0", "linux-x64").unwrap();
+        let check = check_of(
+            &options,
+            &release,
+            executable,
+            "jaysonwu991/oxide",
+            current_version(),
+        );
 
         let value = serde_json::to_value(&check).unwrap();
+        assert_eq!(value["component"], serde_json::json!("cli"));
         assert_eq!(value["latest"], serde_json::json!("0.27.0"));
         assert_eq!(value["tag"], serde_json::json!("v0.27.0"));
         assert_eq!(value["pinned"], serde_json::json!(false));
@@ -966,6 +619,10 @@ mod tests {
         assert_eq!(
             value["releaseUrl"],
             serde_json::json!("https://github.com/jaysonwu991/oxide/releases/tag/v0.27.0")
+        );
+        assert_eq!(
+            value["asset"]["name"],
+            serde_json::json!("Oxide-v0.27.0-linux-x64.tar.gz")
         );
         // This binary is the workspace's `0.0.0` placeholder, which is older
         // than the release and so leaves an update to offer.
@@ -980,8 +637,14 @@ mod tests {
 
         // A release the binary already runs is nothing to install, and so no
         // advice either.
-        let release = pinned_release(current_version(), "linux-x64").unwrap();
-        let check = Check::new(&options, &release, executable, "jaysonwu991/oxide");
+        let release = updates::pinned(Component::Cli, current_version(), "linux-x64").unwrap();
+        let check = check_of(
+            &options,
+            &release,
+            executable,
+            "jaysonwu991/oxide",
+            current_version(),
+        );
         let value = serde_json::to_value(&check).unwrap();
         assert_eq!(value["updateAvailable"], serde_json::json!(false));
         assert_eq!(value["advice"], serde_json::json!(null));
@@ -1001,9 +664,17 @@ mod tests {
             version: Some("0.20.0".to_string()),
             force: false,
             json: true,
+            component: Component::Cli,
+            current: None,
         };
-        let release = pinned_release("0.20.0", "linux-x64").unwrap();
-        let check = Check::new(&options, &release, &executable, "jaysonwu991/oxide");
+        let release = updates::pinned(Component::Cli, "0.20.0", "linux-x64").unwrap();
+        let check = check_of(
+            &options,
+            &release,
+            &executable,
+            "jaysonwu991/oxide",
+            current_version(),
+        );
 
         assert!(check.pinned);
         assert!(check.update_available);
@@ -1022,7 +693,7 @@ mod tests {
         let dir = temp_dir("checksum");
         let file = dir.join("artifact");
         fs::write(&file, b"oxide").unwrap();
-        let digest = hex(&Sha256::digest(b"oxide"));
+        let digest = "81a863ce5e6e98e67e81580d1ed2e11a7698d27c97e9fa1dffb69af5f940e3be";
         verify(&file, format!("{digest}  artifact\n").as_bytes()).unwrap();
         verify(
             &file,
@@ -1069,21 +740,5 @@ mod tests {
         assert!(!stale.exists());
         assert!(kept.exists());
         fs::remove_dir_all(dir).unwrap();
-    }
-
-    #[test]
-    fn work_directories_are_private_and_removed() {
-        let dir = WorkDir::new().unwrap();
-        let path = dir.path().to_path_buf();
-        assert!(path.is_dir());
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            let mode = fs::metadata(&path).unwrap().permissions().mode();
-            assert_eq!(mode & 0o777, 0o700);
-        }
-        fs::write(path.join("archive"), b"bytes").unwrap();
-        drop(dir);
-        assert!(!path.exists());
     }
 }

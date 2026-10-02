@@ -331,34 +331,37 @@ const calls = [];
 let mcpsError = null;
 let createError = null;
 
-// What `oxide update --check --json` answers with, and what its install answers
-// with. The install replaces the binary on disk, so a check after a successful
-// one reports the version it installed — the fixture moves with it.
+// What `check_updates` answers with: the desktop app's own release train, the
+// way `oxide_core::updates` resolves it — a `desktop-v*` tag, and the artifact
+// this machine would replace this copy with.
 let updateAnswer = {
-  installed: true,
-  current: "0.31.0",
-  latest: "0.33.0",
-  tag: "v0.33.0",
+  component: "desktop",
+  current: "0.33.0",
+  latest: "0.34.0",
+  tag: "desktop-v0.34.0",
   pinned: false,
   updateAvailable: true,
-  installation: "prebuilt binary",
+  installation: "app bundle",
   installable: true,
-  path: "/home/dev/.local/bin/oxide",
-  advice: "Update available; run `oxide update` to install v0.33.0.",
-  releaseUrl: "https://github.com/jaysonwu991/oxide/releases/tag/v0.33.0",
+  path: "/Applications/Oxide.app",
+  advice: null,
+  releaseUrl: "https://github.com/jaysonwu991/oxide/releases/tag/desktop-v0.34.0",
+  asset: {
+    name: "Oxide_0.34.0_aarch64.dmg",
+    url: "https://github.com/jaysonwu991/oxide/releases/download/desktop-v0.34.0/Oxide_0.34.0_aarch64.dmg",
+    digest: "sha256:86966d1b137203c9ed7366329eb708d02896abce279c3ef33a80d8257a1d68b7",
+  },
 };
 let updateError = null;
-// The check's answer as a fresh machine gives it. The stub moves the live one
-// along with each install, so a check that has to be compared against the state
-// a dialog opened on reads this copy rather than whatever a test left behind.
+// The check's answer as a fresh machine gives it. A test that leaves one behind
+// puts this copy back rather than whatever it left.
 const OFFERED_UPDATE = { ...updateAnswer };
+// An install that could not finish is a rejected `install_update`, which is what
+// the app's own download, check or replacement reports.
 let installError = null;
-let installOk = true;
-let installs = 0;
 // The version a successful install leaves behind, when a test wants one other
-// than the release the check resolved: the install is unpinned, so a release
-// published between the check and the click is what lands, and the dialog has to
-// report what the CLI says afterwards rather than what it offered.
+// than the release the check resolved: the app resolves the release again as it
+// installs, so one published between the check and the click is what lands.
 let installedVersion = null;
 // Checks a test holds in flight, so a reply that arrives after a newer check has
 // painted can be measured instead of raced. Each held reply carries the answer
@@ -373,16 +376,6 @@ const releaseHeldChecks = () => {
   heldChecks = [];
   for (const go of waiting) go();
 };
-// A CLI released before `--json` was added: `check_updates` answers with the fact
-// and the CLI's own refusal, and the install row runs the plain `oxide update`
-// that works on any version. What that prints is the only report there is, so
-// the stub remembers whether one has run.
-let legacyCli = false;
-let legacyReported = false;
-const LEGACY_REFUSAL =
-  "error: unexpected argument '--json' found\n\nUsage: oxide update --check";
-const LEGACY_REPORT =
-  "Oxide update\nInstallation: prebuilt binary at /home/dev/.local/bin/oxide\nCurrent: 0.33.0\nAlready up to date; rerun with --force to reinstall v0.33.0.";
 
 // What the bridge answers `at_suggestions` with. The token and the rows are the
 // core's own rules (`oxide_core::at`, checked by `cargo test`); this only has to
@@ -575,14 +568,7 @@ const invoke = async (command, args = {}) => {
       return steerAccepted;
     case "check_updates": {
       if (updateError) throw updateError;
-      const answer = legacyCli
-        ? {
-            installed: true,
-            legacy: true,
-            path: "/home/dev/.local/bin/oxide",
-            text: legacyReported ? LEGACY_REPORT : LEGACY_REFUSAL,
-          }
-        : { ...updateAnswer };
+      const answer = { ...updateAnswer };
       if (checksHeld > 0) {
         checksHeld -= 1;
         await new Promise((resolve) => heldChecks.push(resolve));
@@ -591,36 +577,21 @@ const invoke = async (command, args = {}) => {
     }
     case "install_update": {
       if (installError) throw installError;
-      installs += 1;
-      if (legacyCli) {
-        // The older CLI updates itself with the same command it always had, and
-        // says what it did on stdout; a machine already current says so.
-        legacyReported = installOk;
-        return {
-          ok: installOk,
-          code: installOk ? 0 : 1,
-          text: installOk
-            ? LEGACY_REPORT
-            : "Error: could not download oxide-darwin-arm64.tar.gz",
-        };
-      }
-      if (installOk) {
-        const landed = installedVersion || updateAnswer.latest;
-        updateAnswer = {
-          ...updateAnswer,
-          current: landed,
-          latest: landed,
-          tag: `v${landed}`,
-          updateAvailable: false,
-          advice: null,
-        };
-      }
+      const version = installedVersion || updateAnswer.latest;
+      updateAnswer = {
+        ...updateAnswer,
+        current: version,
+        latest: version,
+        tag: `desktop-v${version}`,
+        updateAvailable: false,
+      };
       return {
-        ok: installOk,
-        code: installOk ? 0 : 1,
-        text: installOk
-          ? "Oxide update\nInstalled v0.33.0"
-          : "Error: could not download oxide-darwin-arm64.tar.gz",
+        ok: true,
+        version,
+        tag: updateAnswer.tag,
+        asset: updateAnswer.asset ? updateAnswer.asset.name : "",
+        path: updateAnswer.path,
+        text: `Oxide ${version} is in ${updateAnswer.path}. Quit Oxide and open it again to run the new version.`,
       };
     }
     // Everything the rest of `init`/selection asks for; none of it is what this
@@ -2925,9 +2896,9 @@ check(
 
 // ---------- check for updates ----------
 
-// The dialog is the app's own; what it reports is the CLI's answer
-// (`oxide update --check --json`), so the release this window offers is the one
-// the terminal would install rather than one resolved here a second time.
+// The dialog is the app's own and so is the release it offers: the desktop's
+// `desktop-v*` train, resolved by the shared `oxide_core::updates`, with the
+// artifact this machine installs — never the CLI's release list.
 console.log("check for updates");
 app.state.project = "/home/dev/Projects/oxide";
 const updateTitle = () => String(elementFor("update-title").textContent);
@@ -2937,77 +2908,89 @@ const installButton = elementFor("update-install");
 
 calls.length = 0;
 elementFor("update").onclick(press({ target: elementFor("update") }));
-check("asked the CLI's own update check", projectCalls("check_updates").length === 1, JSON.stringify(calls.map(([name]) => name)));
+check("asked the app's own update check", projectCalls("check_updates").length === 1, JSON.stringify(calls.map(([name]) => name)));
 check("opened the dialog from the sidebar's own button", elementFor("update-modal").hidden === false);
 await nextTick();
 check(
-  "named the release the CLI resolved",
-  updateTitle() === "Oxide 0.33.0 is available",
+  "named the release the app's own train resolved",
+  updateTitle() === "Oxide 0.34.0 is available",
   updateTitle(),
 );
 check(
-  "said which installation the update belongs to",
-  /command line/.test(updateNote()) && /desktop release/.test(updateNote()),
+  "said what installing does and what picks the new version up",
+  /this app's place/.test(updateNote()) && /quit and opened again/.test(updateNote()),
   updateNote(),
 );
 check(
   "showed what this machine has and what the release is",
-  updateBody().includes("0.31.0") && updateBody().includes("v0.33.0"),
+  updateBody().includes("0.33.0") && updateBody().includes("desktop-v0.34.0"),
   updateBody(),
 );
 check(
-  "showed the installation the CLI found and its path",
-  updateBody().includes("prebuilt binary") && updateBody().includes("/home/dev/.local/bin/oxide"),
+  "showed the installation the app found itself and its path",
+  updateBody().includes("app bundle") && updateBody().includes("/Applications/Oxide.app"),
   updateBody(),
 );
 check(
-  "repeated the CLI's own advice",
-  updateBody().includes("Update available; run `oxide update`"),
+  "named the artifact this machine would download",
+  updateBody().includes("Oxide_0.34.0_aarch64.dmg"),
   updateBody(),
 );
 check(
-  "offered the install the CLI says this installation can do",
-  installButton.hidden === false && installButton.textContent === "Install 0.33.0",
+  "offered the install this installation can do",
+  installButton.hidden === false && installButton.textContent === "Install 0.34.0",
   `${installButton.hidden} / ${installButton.textContent}`,
 );
-check("offered the release's own page", elementFor("update-notes").hidden === false);
+check(
+  "offered the desktop release's own page",
+  elementFor("update-notes").hidden === false,
+);
 
 calls.length = 0;
 await elementFor("update-notes").onclick();
 check(
   "opened that release in the browser through the app",
-  projectCalls("open_url")[0]?.[1]?.url === updateAnswer.releaseUrl,
+  projectCalls("open_url")[0]?.[1]?.url === updateAnswer.releaseUrl &&
+    updateAnswer.releaseUrl.includes("desktop-v0.34.0"),
   JSON.stringify(projectCalls("open_url")),
 );
 
-// Installing runs the CLI's own update, so the archive is verified and the
-// binary replaced by the code that already knows how.
+// Installing is the app's own: it downloads the artifact its release train
+// publishes for this machine, verifies it and replaces this copy in place.
 calls.length = 0;
 await installButton.onclick();
-check("ran the CLI's own install", projectCalls("install_update").length === 1, JSON.stringify(calls.map(([name]) => name)));
+check("ran the app's own install", projectCalls("install_update").length === 1, JSON.stringify(calls.map(([name]) => name)));
 check(
-  "read the version now on disk rather than the one it offered",
-  projectCalls("check_updates").length === 1,
+  "did not ask the CLI-shaped check what landed",
+  projectCalls("check_updates").length === 0,
   JSON.stringify(calls.map(([name]) => name)),
 );
 check(
-  "reported the install as the release it landed",
-  updateTitle() === "Installed Oxide 0.33.0",
+  "reported the release the install put in place",
+  updateTitle() === "Oxide 0.34.0 is installed",
   updateTitle(),
 );
 check(
-  "said what picks the new version up",
-  /terminal/.test(updateNote()) && /extension/.test(updateNote()),
+  "told the reader what to do to run it",
+  /Quit Oxide and open it again/.test(updateNote()),
   updateNote(),
 );
 check(
+  "reported what the install did, by tag and by file",
+  updateBody().includes("desktop-v0.34.0") &&
+    updateBody().includes("Oxide_0.34.0_aarch64.dmg") &&
+    updateBody().includes("/Applications/Oxide.app"),
+  updateBody(),
+);
+check(
   "stopped offering an install that has happened",
-  installButton.hidden === true && updateTitle() !== "Oxide is up to date",
+  installButton.hidden === true && updateTitle() !== "Oxide 0.34.0 is up to date",
   `${installButton.hidden} / ${updateTitle()}`,
 );
 
-// A check that could not reach GitHub is a failure the CLI names, not an
+// A check that could not reach GitHub is a failure the app names, not an
 // up-to-date machine.
+updateAnswer = OFFERED_UPDATE;
 updateError = "Error: requesting the release\n\nCaused by: connection reset by peer";
 calls.length = 0;
 await app.openUpdate();
@@ -3017,7 +3000,7 @@ check(
   updateTitle(),
 );
 check(
-  "showed the CLI's own words for it",
+  "showed the app's own words for it",
   updateBody().includes("connection reset by peer") && updateBody().includes("update-error"),
   updateBody(),
 );
@@ -3029,107 +3012,55 @@ check(
 updateError = "no <release> & no network";
 await app.openUpdate();
 check(
-  "escaped what the CLI said rather than trusting it as markup",
+  "escaped what the release lookup said rather than trusting it as markup",
   updateBody().includes("&lt;release&gt; &amp;") && !updateBody().includes("<release>"),
   updateBody(),
 );
 updateError = null;
 
-// A machine without the command line says so, since that is what is checked.
-const cliAnswer = updateAnswer;
-updateAnswer = { installed: false };
-await app.openUpdate();
-check("named the missing command line", updateTitle() === "No oxide CLI found", updateTitle());
-check("said how to install it", /install\.sh/.test(updateNote()), updateNote());
-check("offered nothing to install", installButton.hidden === true && updateBody() === "");
-
-// An up-to-date machine still reports the version it is on.
-updateAnswer = { ...cliAnswer, current: cliAnswer.latest, updateAvailable: false, advice: null };
-await app.openUpdate();
-check("reported an up-to-date machine", updateTitle() === "Oxide is up to date", updateTitle());
-check(
-  "kept the versions and the path on screen",
-  updateBody().includes("0.33.0") && updateBody().includes("/home/dev/.local/bin/oxide"),
-  updateBody(),
-);
-check("offered no install for it", installButton.hidden === true);
-check("offered no advice it does not need", !updateBody().includes("oxide update`"), updateBody());
-
-// A Homebrew cellar is `brew upgrade`'s: the CLI cannot replace it, so the
-// advice is what the dialog offers instead of an install button.
-updateAnswer = {
-  ...cliAnswer,
-  installation: "homebrew",
-  installable: false,
-  advice: "Installed with Homebrew; run `brew upgrade oxide`.",
-};
+// An up-to-date app still reports the version it is on.
+updateAnswer = { ...OFFERED_UPDATE, current: OFFERED_UPDATE.latest, updateAvailable: false };
 await app.openUpdate();
 check(
-  "let the CLI decide an installation it cannot replace",
-  installButton.hidden === true && updateBody().includes("brew upgrade oxide"),
-  `${installButton.hidden} / ${updateBody()}`,
-);
-
-// A CLI released before `--json` was added is the CLI most machines have, and a
-// check that ended in `unexpected argument '--json'` is not a failure to report:
-// there is no release to name, but `oxide update` replaces that older binary on
-// any version, so the dialog offers the one command that works rather than the
-// refusal alone.
-legacyCli = true;
-await app.openUpdate();
-check(
-  "named the CLI that cannot be checked",
-  updateTitle() === "The oxide CLI is older than this app",
+  "reported an up-to-date app by version",
+  updateTitle() === "Oxide 0.34.0 is up to date",
   updateTitle(),
 );
 check(
-  "said what the update it offers is about",
-  /command line/.test(updateNote()) && /any version/.test(updateNote()),
-  updateNote(),
-);
-check(
-  "showed the CLI's own refusal as one",
-  updateBody().includes("unexpected argument") &&
-    updateBody().includes("--json") &&
-    updateBody().includes("update-error"),
+  "kept the versions and the installation on screen",
+  updateBody().includes("0.34.0") && updateBody().includes("/Applications/Oxide.app"),
   updateBody(),
 );
-check(
-  "offered the update that works on any version",
-  installButton.hidden === false && installButton.textContent === "Install the newest CLI",
-  `${installButton.hidden} / ${installButton.textContent}`,
-);
-check("offered no release page it cannot know", elementFor("update-notes").hidden === true);
+check("offered no install for it", installButton.hidden === true);
+check("offered no advice it does not need", !updateBody().includes("update-advice"), updateBody());
 
-calls.length = 0;
-await installButton.onclick();
+// A copy the app may not write over — a checkout's build, a system package, a
+// bundle an administrator installed — gets the advice the app composed instead
+// of an install button.
+updateAnswer = {
+  ...OFFERED_UPDATE,
+  installation: "source build",
+  path: "",
+  installable: false,
+  advice:
+    "Download Oxide_0.34.0_aarch64.dmg from the release page and install it the way this copy was installed.",
+};
+await app.openUpdate();
 check(
-  "ran the CLI's own update for it",
-  projectCalls("install_update").length === 1,
-  JSON.stringify(calls.map(([name]) => name)),
+  "let the app decide an installation it cannot replace",
+  installButton.hidden === true && updateBody().includes("update-advice"),
+  `${installButton.hidden} / ${updateBody()}`,
 );
-check("reported the update's own report", updateTitle() === "Ran oxide update", updateTitle());
 check(
-  "read that report rather than calling it a failure",
-  updateBody().includes("Already up to date") &&
-    updateBody().includes("update-report") &&
-    !updateBody().includes("update-error"),
+  "named the download to use instead",
+  updateBody().includes("Oxide_0.34.0_aarch64.dmg") && updateBody().includes("source build"),
   updateBody(),
 );
-check("said whose words those are", /CLI's own/.test(updateNote()), updateNote());
-check(
-  "left the row there for a second run",
-  installButton.hidden === false && installButton.textContent === "Install the newest CLI",
-  `${installButton.hidden} / ${installButton.textContent}`,
-);
-legacyCli = false;
-legacyReported = false;
-installs = 0;
 
-// An install that fails reports the CLI's own error, and the dialog goes back
+// An install that fails reports the app's own error, and the dialog goes back
 // to being a thing to retry rather than one that looks installed.
-updateAnswer = cliAnswer;
-installOk = false;
+updateAnswer = OFFERED_UPDATE;
+installError = "mounting the downloaded disk image: hdiutil failed with exit status: 1";
 await app.openUpdate();
 await installButton.onclick();
 check(
@@ -3137,14 +3068,9 @@ check(
   updateTitle() === "Could not install the update",
   updateTitle(),
 );
-check(
-  "showed why the install failed",
-  updateBody().includes("could not download oxide-darwin-arm64.tar.gz"),
-  updateBody(),
-);
+check("showed why the install failed", updateBody().includes("hdiutil failed"), updateBody());
 check("left the release page reachable", elementFor("update-notes").hidden === false);
-installOk = true;
-installs = 0;
+installError = null;
 
 // The macOS menu item has no page of its own, so it asks the window for the
 // dialog its button opens.
@@ -3160,7 +3086,8 @@ check(
 // Escape closes every overlay, which is where the dialog's own id has to be.
 document.fire("keydown", { key: "Escape" });
 check("closed it on Escape", elementFor("update-modal").hidden === true);
-// A second press must not start a second install over the one binary.
+// A second press must not start a second install over the same installation.
+updateAnswer = OFFERED_UPDATE;
 await app.openUpdate();
 await nextTick();
 calls.length = 0;
@@ -3171,7 +3098,7 @@ check(
   projectCalls("install_update").length === 1,
   JSON.stringify(calls.map(([name]) => name)),
 );
-check("reported the install that ran", updateTitle() === "Installed Oxide 0.33.0", updateTitle());
+check("reported the install that ran", updateTitle() === "Oxide 0.34.0 is installed", updateTitle());
 elementFor("update-close").onclick();
 check("closed it from its own button", elementFor("update-modal").hidden === true);
 
@@ -3183,42 +3110,42 @@ check("closed it from its own button", elementFor("update-modal").hidden === tru
 updateAnswer = OFFERED_UPDATE;
 holdNextCheck();
 const stale = app.openUpdate();
-updateAnswer = { ...OFFERED_UPDATE, current: OFFERED_UPDATE.latest, updateAvailable: false, advice: null };
+updateAnswer = { ...OFFERED_UPDATE, current: OFFERED_UPDATE.latest, updateAvailable: false };
 const fresh = app.openUpdate();
 await nextTick();
 check(
   "painted the newer check's answer",
-  updateTitle() === "Oxide is up to date",
+  updateTitle() === "Oxide 0.34.0 is up to date",
   updateTitle(),
 );
 releaseHeldChecks();
 await Promise.all([stale, fresh]);
 check(
   "dropped the answer for the check it had already moved past",
-  updateTitle() === "Oxide is up to date" && installButton.hidden === true,
+  updateTitle() === "Oxide 0.34.0 is up to date" && installButton.hidden === true,
   `${updateTitle()} / ${installButton.hidden}`,
 );
 
-// The install is unpinned, so a release published between the check and the
-// click is the one `oxide update` installs. What the dialog reports is the
-// version the CLI now answers with, not the one it offered a download ago.
-installedVersion = "0.34.0";
+// The app resolves the release again as it installs, so a release published
+// between the check and the click is the one that lands. What the dialog reports
+// is the version the install itself resolved, not the one it offered.
+installedVersion = "0.35.0";
 updateAnswer = OFFERED_UPDATE;
 await app.openUpdate();
-check("offered the release the check resolved", updateTitle() === "Oxide 0.33.0 is available");
+check("offered the release the check resolved", updateTitle() === "Oxide 0.34.0 is available");
 await installButton.onclick();
 check(
   "reported the version that landed rather than the one it offered",
-  updateTitle() === "Installed Oxide 0.34.0",
+  updateTitle() === "Oxide 0.35.0 is installed",
   updateTitle(),
 );
 check(
-  "said that release is newer than the one the dialog opened on",
-  /published after this dialog/.test(updateNote()) && updateNote().includes("0.34.0"),
-  updateNote(),
+  "named that release on the row it reported",
+  updateBody().includes("desktop-v0.35.0"),
+  updateBody(),
 );
 installedVersion = null;
-updateAnswer = cliAnswer;
+updateAnswer = OFFERED_UPDATE;
 
 // ---------- the bridge the window is reached through ----------
 
