@@ -4148,6 +4148,10 @@ for line in sys.stdin:
         assert!(state.pending.contains("pull request"));
         let reminder = state.reminder().unwrap();
         assert!(reminder.contains("gh pr checks"), "{reminder}");
+        // The reminder is the fallback for a run that missed the prompt's own
+        // rule, so it asks for the link in its own words.
+        assert!(reminder.contains("[#123](url)"), "{reminder}");
+        assert!(reminder.contains("--json url"), "{reminder}");
         assert!(state.reminder().is_none());
 
         let mut state = VerificationState::default();
