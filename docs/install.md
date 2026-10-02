@@ -101,6 +101,7 @@ oxide update                    # install the newest CLI release
 oxide update --check            # report the newest release without installing it
 oxide update --version 0.26.0   # install (or roll back to) a specific version
 oxide update --force            # reinstall even when already current
+oxide update --check --json     # the same report for a front-end
 ```
 
 `oxide update` reads the release manifest the installers use, so a release that
@@ -118,6 +119,12 @@ it is replaced. Both installers leave a `.oxide-install` file beside the binary
 they unpack, and `oxide update` writes the same marker when it replaces one, so
 a custom `OXIDE_INSTALL_DIR` is recognized as a released install rather than
 needing `--force`. Restart `oxide` to run the new version.
+
+`--check --json` prints that report as JSON — `current`, `latest`, `tag`,
+`pinned`, `updateAvailable`, `installation`, `installable`, `path`, `advice`
+and `releaseUrl` — which is what the desktop app's **Check for Updates…** command
+and the VS Code extension's **Oxide: Check for Updates...** read before offering
+to run `oxide update` for the release it named.
 
 ## Uninstalling
 

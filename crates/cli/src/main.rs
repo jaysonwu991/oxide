@@ -183,6 +183,9 @@ enum Command {
         /// Install even when the running version is already current
         #[arg(short = 'f', long)]
         force: bool,
+        /// Print the check as JSON for a front-end (with --check)
+        #[arg(long, requires = "check")]
+        json: bool,
     },
     /// Manage saved sessions
     Sessions {
@@ -532,11 +535,13 @@ async fn main() -> Result<()> {
                 check,
                 version,
                 force,
+                json,
             } => {
                 update::run(update::Options {
                     check,
                     version,
                     force,
+                    json,
                 })
                 .await
             }
@@ -1448,6 +1453,7 @@ mod tests {
                 check: true,
                 version: None,
                 force: false,
+                json: false,
             })
         ));
 
@@ -1459,8 +1465,22 @@ mod tests {
                 check: false,
                 version: Some(version),
                 force: true,
+                json: false,
             }) if version == "0.25.0"
         ));
+
+        let cli = Cli::try_parse_from(["oxide", "update", "--check", "--json"]).unwrap();
+        assert!(matches!(
+            cli.command,
+            Some(Command::Update {
+                check: true,
+                json: true,
+                ..
+            })
+        ));
+        // The JSON describes a check, so it is not printed for a run that would
+        // install the release instead.
+        assert!(Cli::try_parse_from(["oxide", "update", "--json"]).is_err());
     }
 
     #[test]

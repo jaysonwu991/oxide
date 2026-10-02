@@ -1,6 +1,7 @@
 use crate::install::{self, detect_install_method, InstallMethod};
 use anyhow::{bail, Context, Result};
 use reqwest::StatusCode;
+use serde::Serialize;
 use sha2::{Digest, Sha256};
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -20,6 +21,10 @@ pub struct Options {
     pub check: bool,
     pub version: Option<String>,
     pub force: bool,
+    /// Print the check as JSON instead of the prose a terminal reads, for a
+    /// front-end that offers the update itself (`--check` always accompanies
+    /// it, since the JSON describes a check and nothing else).
+    pub json: bool,
 }
 
 pub async fn run(options: Options) -> Result<()> {
@@ -28,10 +33,79 @@ pub async fn run(options: Options) -> Result<()> {
     run_for(options, &executable, &repo).await
 }
 
+/// What a check found, as a front-end reads it. The desktop app and the editor
+/// extension run `oxide update --check --json` rather than re-fetching the
+/// release themselves, so the version they compare against the running binary,
+/// the release they offer and the checksum-verified asset the install would use
+/// are the ones this copy of the CLI resolved.
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct Check {
+    /// The version the installed binary reports.
+    current: String,
+    /// The release the check resolved: `latest` is the newest CLI release, or
+    /// the one `--version` asked for.
+    latest: String,
+    tag: String,
+    /// Whether `--version` pinned the release rather than the newest being
+    /// looked up.
+    pinned: bool,
+    /// Whether there is an update to install — what the menu command offers.
+    /// `--force` always leaves one.
+    update_available: bool,
+    /// What the check found the installation to be, and whether it installs
+    /// itself: Homebrew is left to `brew upgrade`, and a binary that is not a
+    /// release needs `--force`.
+    installation: String,
+    installable: bool,
+    path: String,
+    /// The sentence the terminal prints when it checks, kept verbatim so a
+    /// front-end that cannot install the release itself can repeat it.
+    advice: Option<String>,
+    release_url: String,
+}
+
+impl Check {
+    fn new(options: &Options, release: &Release, executable: &Path, repo: &str) -> Self {
+        let current = current_version().to_string();
+        let method = detect_install_method(executable);
+        let update_available =
+            options.force || should_install(release, &current, options.version.is_some());
+        let installable = match method {
+            InstallMethod::Cargo | InstallMethod::Prebuilt => true,
+            InstallMethod::Unknown => options.force,
+            InstallMethod::Homebrew => false,
+        };
+        Self {
+            current,
+            latest: release.version.clone(),
+            tag: release.tag.clone(),
+            pinned: options.version.is_some(),
+            update_available,
+            installation: method.label().to_string(),
+            installable,
+            path: executable.display().to_string(),
+            advice: update_available.then(|| advice(method, executable)),
+            release_url: format!("https://github.com/{repo}/releases/tag/{}", release.tag),
+        }
+    }
+}
+
 async fn run_for(options: Options, executable: &Path, repo: &str) -> Result<()> {
     let platform = platform()?;
     let method = detect_install_method(executable);
     let current = current_version();
+
+    let client = client()?;
+    let release = match options.version.as_deref() {
+        Some(requested) => pinned_release(requested, platform)?,
+        None => latest_release(&client, repo, platform).await?,
+    };
+    let check = Check::new(&options, &release, executable, repo);
+    if options.json {
+        println!("{}", serde_json::to_string_pretty(&check)?);
+        return Ok(());
+    }
 
     println!("Oxide update");
     println!(
@@ -40,19 +114,13 @@ async fn run_for(options: Options, executable: &Path, repo: &str) -> Result<()> 
         executable.display()
     );
     println!("Current: {current}");
-
-    let client = client()?;
-    let release = match options.version.as_deref() {
-        Some(requested) => pinned_release(requested, platform)?,
-        None => latest_release(&client, repo, platform).await?,
-    };
     if options.version.is_some() {
         println!("Target: {}", release.tag);
     } else {
         println!("Latest: {}", release.tag);
     }
 
-    if !options.force && !should_install(&release, current, options.version.is_some()) {
+    if !check.update_available {
         println!(
             "Already up to date; rerun with --force to reinstall {}.",
             release.tag
@@ -60,7 +128,7 @@ async fn run_for(options: Options, executable: &Path, repo: &str) -> Result<()> 
         return Ok(());
     }
     if options.check {
-        println!("{}", advice(method, executable));
+        println!("{}", check.advice.as_deref().unwrap_or_default());
         return Ok(());
     }
     match method {
@@ -870,6 +938,83 @@ mod tests {
         assert_eq!(cli_tag(&releases).unwrap(), "v0.26.0");
         assert!(cli_tag(&serde_json::json!([])).is_none());
         assert!(cli_tag(&serde_json::json!([{ "tag_name": "nightly" }])).is_none());
+    }
+
+    /// The JSON a front-end offers the update from. The desktop app and the
+    /// editor extension read these keys, so they are pinned here: a rename would
+    /// otherwise leave both showing `undefined` for a version.
+    #[test]
+    fn the_json_check_carries_what_a_front_end_offers() {
+        let executable = Path::new("/opt/scratch/oxide");
+        let options = Options {
+            check: true,
+            version: None,
+            force: false,
+            json: true,
+        };
+        let release = pinned_release("0.27.0", "linux-x64").unwrap();
+        let check = Check::new(&options, &release, executable, "jaysonwu991/oxide");
+
+        let value = serde_json::to_value(&check).unwrap();
+        assert_eq!(value["latest"], serde_json::json!("0.27.0"));
+        assert_eq!(value["tag"], serde_json::json!("v0.27.0"));
+        assert_eq!(value["pinned"], serde_json::json!(false));
+        assert_eq!(
+            value["path"],
+            serde_json::json!(executable.display().to_string())
+        );
+        assert_eq!(
+            value["releaseUrl"],
+            serde_json::json!("https://github.com/jaysonwu991/oxide/releases/tag/v0.27.0")
+        );
+        // This binary is the workspace's `0.0.0` placeholder, which is older
+        // than the release and so leaves an update to offer.
+        assert_eq!(value["current"], serde_json::json!(current_version()));
+        assert_eq!(value["updateAvailable"], serde_json::json!(true));
+
+        // Nothing beside a scratch path marks a release, so the check tells a
+        // front-end to leave the install to the CLI, and why.
+        assert_eq!(value["installation"], serde_json::json!("unknown"));
+        assert_eq!(value["installable"], serde_json::json!(false));
+        assert!(value["advice"].as_str().unwrap().contains("--force"));
+
+        // A release the binary already runs is nothing to install, and so no
+        // advice either.
+        let release = pinned_release(current_version(), "linux-x64").unwrap();
+        let check = Check::new(&options, &release, executable, "jaysonwu991/oxide");
+        let value = serde_json::to_value(&check).unwrap();
+        assert_eq!(value["updateAvailable"], serde_json::json!(false));
+        assert_eq!(value["advice"], serde_json::json!(null));
+    }
+
+    /// The release a `--version` pin names is offered as asked, even when the
+    /// binary already runs it or is newer (a rollback is a request too), and a
+    /// released install is one the front-end may update itself.
+    #[test]
+    fn a_pinned_check_is_offered_and_a_released_install_is_installable() {
+        let dir = temp_dir("check-installable");
+        let executable = dir.join("bin/oxide");
+        fs::create_dir_all(executable.parent().unwrap()).unwrap();
+        install::record(&executable, "0.10.0", "jaysonwu991/oxide").unwrap();
+        let options = Options {
+            check: true,
+            version: Some("0.20.0".to_string()),
+            force: false,
+            json: true,
+        };
+        let release = pinned_release("0.20.0", "linux-x64").unwrap();
+        let check = Check::new(&options, &release, &executable, "jaysonwu991/oxide");
+
+        assert!(check.pinned);
+        assert!(check.update_available);
+        assert!(check.installable);
+        assert_eq!(check.installation, "prebuilt binary");
+        assert!(check
+            .advice
+            .as_deref()
+            .unwrap()
+            .contains("run `oxide update`"));
+        fs::remove_dir_all(dir).unwrap();
     }
 
     #[test]
