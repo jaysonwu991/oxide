@@ -806,6 +806,43 @@ markers itself, the way `oxide_core::changes` does, so a card's numbers and a
 change row's agree. The host still composes that diff (`core/preview.ts`); what
 changed is when the webview paints it.
 
+## Check for updates
+
+**Oxide: Check for Updates...** (in the command palette, and on the panel's
+title where the other pane-level commands sit) runs `oxide update --check
+--json` through the installed binary and reports what it answered, in the same
+in-panel dialog the MCP and session listings use (`core/updates.ts` parses it,
+`core/dialogs.ts` composes it, so the webview only paints rows). The release it
+offers is the one the CLI resolved — the terminal's own check — and the rules
+about what may be replaced are the CLI's too: **Install 0.33.0** appears only
+when the check reported the installation as one `oxide update` can replace,
+while a Homebrew Cellar or a binary at a location the CLI does not recognize
+gets the CLI's advice line instead (`brew upgrade oxide`, `oxide update
+--force`) with no install row to press. **Release notes** opens the release page
+in the system browser through `openUrl`.
+
+**Install** runs `oxide update` on that same binary — one download, verified
+against the release manifest, replacing the installed command line — and the
+panel reports the version now on disk rather than the one it offered, so the
+headline says `Installed Oxide 0.33.0` above the check's own answer.
+
+A CLI released before this panel cannot answer the check at all: it says
+`unexpected argument '--json'`. That is not a check that failed, so the dialog
+names it and offers the plain `oxide update` — which works on any version and is
+exactly what replaces that older binary — with the report it prints shown under
+the headline; an installation already current answers `Already up to date`, and
+that is repeated as the CLI's own line rather than reported as an install. A
+check that could not reach GitHub reports the CLI's own words instead, rather
+than an empty listing that would read as up to date, and one install at a time
+is allowed. The command is a palette entry, so it can be run again while the
+first request is waiting on GitHub: the newest check owns the dialog, and an
+answer that a newer one has replaced is dropped rather than painting an older
+release over it — as is an install whose own re-check has been replaced, since
+what it would report is a version a newer answer already describes. What this
+updates is the **oxide CLI**, which is what this panel, the terminal and the
+desktop app all run; the extension itself comes from the Marketplace and is
+updated there.
+
 ## Rendering
 
 `media/main.js` renders the transcript in the webview; it is adapted from the

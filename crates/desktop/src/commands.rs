@@ -16,6 +16,7 @@ use oxide_core::session::{SessionLog, SessionSummary};
 use oxide_core::snapshots::Snapshots;
 use oxide_core::theme_view;
 use oxide_desktop::at::{AtAnswer, PathCache};
+use oxide_desktop::cli;
 use oxide_desktop::manager::{expand_project_path, DesktopManager, ProjectView};
 use oxide_desktop::turn::{notify_finished, open_session, start_turn, Turn};
 use serde::{de::DeserializeOwned, Serialize};
@@ -808,6 +809,77 @@ pub async fn set_theme(project: String, name: String) -> CmdResult<Value> {
     Ok(json!({ "name": theme.name, "colors": theme.colors }))
 }
 
+// ---------- updates ----------
+
+/// Checks for a newer CLI release by asking the installed `oxide` itself
+/// (`oxide update --check --json`). The release list, the manifest's checksums
+/// and what counts as installable are the CLI's own rules, and a second copy of
+/// them here would be a second answer to keep in step with. A machine with no
+/// CLI the app can find answers `installed: false` rather than failing, since
+/// that is a fact the dialog explains.
+pub async fn check_updates() -> CmdResult<Value> {
+    let Some(binary) = cli::binary() else {
+        return Ok(json!({ "installed": false }));
+    };
+    let output = cli::run(
+        &binary,
+        &["update", "--check", "--json"],
+        cli::CHECK_TIMEOUT,
+    )
+    .await?;
+    if !output.succeeded() {
+        // A CLI older than this app does not know `--json` and says so. There is
+        // no release to report, but there is still something to do about it —
+        // `oxide update` replaces that older binary on every version — so the
+        // window is handed the fact and the CLI's own refusal rather than an
+        // error the dialog could only print.
+        if cli::rejects_json(&output) {
+            return Ok(json!({
+                "installed": true,
+                "legacy": true,
+                "path": binary.display().to_string(),
+                "text": output.text(),
+            }));
+        }
+        // The CLI's own words, so a lookup that could not reach GitHub reports
+        // why instead of an empty result the dialog would call "up to date".
+        return Err(cli::failure(&output, "the update check"));
+    }
+    let check = cli::parse_check(&output.stdout)?;
+    let mut value = serde_json::to_value(check).map_err(err)?;
+    if let Some(object) = value.as_object_mut() {
+        object.insert("installed".to_string(), json!(true));
+    }
+    Ok(value)
+}
+
+/// Installs the release the CLI's own update resolves, by running it. The CLI
+/// downloads the platform archive, verifies it against the release manifest and
+/// replaces itself, and it refuses the installations it does not own (a Homebrew
+/// Cellar, a binary it has no marker for) — so this is one call, and its answer
+/// is whatever the CLI printed, success or refusal alike.
+pub async fn install_update() -> CmdResult<Value> {
+    let Some(binary) = cli::binary() else {
+        return Err("no oxide CLI was found to update".to_string());
+    };
+    let output = cli::run(&binary, &["update"], cli::INSTALL_TIMEOUT).await?;
+    Ok(json!({
+        "ok": output.succeeded(),
+        "code": output.code,
+        "text": output.text(),
+    }))
+}
+
+/// Asks the open window to check for updates and show what it found. The macOS
+/// menu item has no page of its own to paint into, so it asks the window through
+/// the same event channel a run's own events travel on, and the window's button
+/// and the menu item end at one dialog. Windows and Linux have no menu bar to put
+/// the item in, so the window's own button is the only way in there.
+#[cfg(target_os = "macos")]
+pub fn announce_check_updates(app: &AppHandle) {
+    let _ = EventSink::new(app.clone()).emit("check-updates", json!({}));
+}
+
 /// Creates a new project with the given name and adds it to the registry.
 /// Optionally accepts source folders to add.
 pub async fn create_project(
@@ -1063,6 +1135,8 @@ pub async fn dispatch(
             command_value(theme_colors(arg(&args, "project")?, arg(&args, "name")?).await)
         }
         "set_theme" => command_value(set_theme(arg(&args, "project")?, arg(&args, "name")?).await),
+        "check_updates" => command_value(check_updates().await),
+        "install_update" => command_value(install_update().await),
         "open_url" => command_value(open_url(&arg::<String>(&args, "url")?)),
         _ => Err(format!("unknown desktop command `{command}`")),
     }

@@ -76,8 +76,10 @@ export function activate(context: vscode.ExtensionContext): void {
     status.show();
   };
 
+  // A command that answers rather than reports — the update check returns what
+  // it read so its own caller can name it — is still fire-and-forget here.
   const guard =
-    <A extends unknown[]>(run: (...args: A) => Promise<void>) =>
+    <A extends unknown[]>(run: (...args: A) => Promise<unknown>) =>
     (...args: A): void => {
       void run(...args).catch((error: unknown) => {
         output.appendLine(`[error] ${String(error)}`);
@@ -206,6 +208,12 @@ export function activate(context: vscode.ExtensionContext): void {
     // The same list `/mcps` opens in the composer, so the picker is reachable
     // from the palette whether or not the user knows the slash command.
     vscode.commands.registerCommand("oxide.mcpServers", guard(() => controller.showMcps())),
+    // Checking for a newer release is the installed CLI's own check, answered in
+    // the panel: the version the terminal's `oxide update` would install, and an
+    // install row that runs it. The panel is not a place a binary is replaced
+    // silently, so the check only reports and the install is a row the user
+    // presses.
+    vscode.commands.registerCommand("oxide.checkForUpdates", guard(() => controller.checkForUpdates())),
   );
 
   refreshStatus();

@@ -2199,6 +2199,7 @@ const OVERLAYS = [
   "image-modal",
   "sessions-modal",
   "review-modal",
+  "update-modal",
   "help-modal",
 ];
 
@@ -2515,6 +2516,209 @@ async function clearApprovals() {
   if (!state.project) return;
   await invoke("clear_approvals", { project: state.project });
   openPermissions();
+}
+
+// ---------- updates ----------
+
+/// The check the dialog is showing, so the Release notes button opens the
+/// release the body was painted from rather than one read again.
+let updateCheck = null;
+/// An install in flight. The CLI replaces itself on disk, and two of them
+/// running over one binary is the one thing this dialog must not allow.
+let installingUpdate = false;
+/// The check the dialog is waiting on. The menu item and the sidebar button ask
+/// the same question and either may be pressed again before the first answer
+/// arrives, so every request takes a number: a reply for a number the dialog has
+/// moved past is dropped rather than painted over the newer answer — which would
+/// show a release, or a failure, from a question nobody is waiting on.
+let updateProbe = 0;
+
+/// Checks the newest CLI release and offers to install it. The check is the
+/// CLI's own (`oxide update --check --json`), so the release this window offers
+/// is the one the terminal would install; the app itself is a desktop release
+/// and is not replaced from here, which is what the note under the title says.
+async function openUpdate() {
+  el("update-title").textContent = "Updates";
+  el("update-note").textContent = "";
+  el("update-body").innerHTML = checkingLine();
+  el("update-notes").hidden = true;
+  el("update-install").hidden = true;
+  el("update-install").disabled = true;
+  closeOverlays("update-modal");
+  el("update-modal").hidden = false;
+  // A fresh check replaces the release the last one resolved, so a check that
+  // fails does not leave a Release notes button pointing at the old release.
+  updateCheck = null;
+  const probe = ++updateProbe;
+  const answer = await readUpdate();
+  // The dialog may have been closed while the check was in flight, and a
+  // repaint here would put it back; a check started since — the menu and the
+  // button pressed one after the other — owns the dialog now.
+  if (probe !== updateProbe || el("update-modal").hidden) return;
+  if (answer.failed) paintUpdateFailure("Could not check for updates", answer.failed);
+  else paintUpdate(answer.check, "");
+}
+
+/// Runs the check and reports either its answer or what went wrong, so both
+/// callers paint one shape instead of each handling a rejected promise.
+async function readUpdate() {
+  try {
+    return { check: await invoke("check_updates") };
+  } catch (error) {
+    return { failed: String(error) };
+  }
+}
+
+function checkingLine() {
+  return '<div class="update-line">Checking the newest release…</div>';
+}
+
+/// Paints what the check found. `headline` replaces the title when the dialog is
+/// reporting an install that just landed rather than a release that is out.
+function paintUpdate(check, headline) {
+  updateCheck = check || null;
+  const box = el("update-body");
+  if (!check || check.installed === false) {
+    el("update-title").textContent = "No oxide CLI found";
+    el("update-note").textContent =
+      "Check for Updates looks at the oxide command line, which is what the terminal and the editor extension run — this app is updated by installing a newer desktop release. Install the command line with install.sh, then check again.";
+    box.innerHTML = "";
+    el("update-notes").hidden = true;
+    el("update-install").hidden = true;
+    return;
+  }
+  if (check.legacy) {
+    // The installed CLI predates the report this check reads, so there is no
+    // release to name — but `oxide update` replaces that older binary on every
+    // version, so the one row worth offering is the one that does it. The text
+    // is the CLI's refusal on a fresh check and the report of an install that
+    // ran: a failure in the first case, something to read in the second.
+    el("update-title").textContent = headline || "The oxide CLI is older than this app";
+    el("update-note").textContent =
+      "Check for Updates reads a report this CLI predates, so it cannot say which release is newest. Installing updates the oxide command line — the version the terminal and the editor extension run — and it works on any version.";
+    const report = headline ? "update-report" : "update-error";
+    box.innerHTML = `<div class="${report}">${escapeHtml(check.text || "")}</div>`;
+    el("update-notes").hidden = true;
+    const legacyInstall = el("update-install");
+    legacyInstall.hidden = false;
+    legacyInstall.disabled = false;
+    legacyInstall.textContent = "Install the newest CLI";
+    return;
+  }
+  el("update-title").textContent =
+    headline || (check.updateAvailable ? `Oxide ${check.latest} is available` : "Oxide is up to date");
+  el("update-note").textContent = check.updateAvailable
+    ? "Installing updates the oxide command line — the version the terminal and the editor extension run. The desktop app itself comes from a desktop release."
+    : "";
+  const lines = [
+    `Current ${mono(check.current)}`,
+    `Latest ${mono(check.tag)}`,
+  ];
+  if (check.installation || check.path) {
+    lines.push(
+      `<span class="update-path">${escapeHtml(check.installation || "unknown")} \u00b7 ${escapeHtml(check.path || "")}</span>`,
+    );
+  }
+  if (check.advice) lines.push(`<span class="update-advice">${escapeHtml(check.advice)}</span>`);
+  box.innerHTML = lines.map((line) => `<div class="update-line">${line}</div>`).join("");
+  const notes = el("update-notes");
+  notes.hidden = !check.releaseUrl;
+  const install = el("update-install");
+  // The CLI decides whether it can replace this installation: a Homebrew Cellar
+  // is `brew upgrade`'s, and a binary that is not a release needs `--force`
+  // first. When it cannot, the advice line above is the way to install instead.
+  install.hidden = !(check.updateAvailable && check.installable);
+  install.disabled = false;
+  install.textContent = check.updateAvailable ? `Install ${check.latest}` : "Install";
+}
+
+/// A failure to check or to install: the CLI's own words, which say which of the
+/// two it was — a release lookup that could not reach GitHub, or a download that
+/// did not verify.
+function paintUpdateFailure(title, text) {
+  el("update-title").textContent = title;
+  el("update-note").textContent =
+    title === "Could not check for updates"
+      ? "The check asks GitHub for the newest release, so a machine with no network — or a request the network refuses — says so here."
+      : "";
+  el("update-body").innerHTML = `<div class="update-error">${escapeHtml(text)}</div>`;
+  el("update-notes").hidden = updateCheck === null || !updateCheck.releaseUrl;
+  el("update-install").hidden = true;
+}
+
+/// Installs the release the dialog offered by running the CLI's own update, which
+/// downloads the platform archive, verifies it against the release manifest and
+/// replaces the installed binary.
+async function installUpdate() {
+  if (installingUpdate) return;
+  const offered = updateCheck;
+  // The install owns the dialog until it reports. A check asked for while it
+  // ran — the sidebar button is still there — is a newer look at the same
+  // installation, and its answer is the one to show, since the binary on disk
+  // is what the install left behind either way.
+  const probe = ++updateProbe;
+  installingUpdate = true;
+  const install = el("update-install");
+  install.disabled = true;
+  install.textContent = "Installing…";
+  el("update-body").innerHTML =
+    '<div class="update-line">Downloading the release and replacing the installed CLI…</div>';
+  let answer;
+  try {
+    answer = await invoke("install_update");
+  } catch (error) {
+    answer = { ok: false, text: String(error) };
+  }
+  installingUpdate = false;
+  if (probe !== updateProbe || el("update-modal").hidden) return;
+  if (!answer || answer.ok !== true) {
+    paintUpdateFailure("Could not install the update", (answer && answer.text) || "The install did not finish.");
+    return;
+  }
+  // Read once more, so the dialog reports the version now on disk rather than
+  // the one that was offered a download ago.
+  const after = await readUpdate();
+  if (probe !== updateProbe || el("update-modal").hidden) return;
+  if (after.failed) {
+    paintUpdateFailure("Could not check for updates", after.failed);
+    return;
+  }
+  if (after.check && after.check.legacy) {
+    // The CLI is still the one that cannot be checked, so the report of the
+    // install itself is the answer: what it printed is the only thing that can
+    // say whether a release went on (a CLI already current answers "Already up
+    // to date"), and a claim made here instead would be guessing.
+    paintUpdate(
+      { installed: true, legacy: true, path: after.check.path, text: (answer && answer.text) || "" },
+      "Ran oxide update",
+    );
+    el("update-note").textContent =
+      "The report above is the CLI's own. If it installed a release, the command line the terminal and the editor extension run is that one now; if it said it was already current, there was nothing to install.";
+    return;
+  }
+  // What landed is what the CLI reports now, not the release that was offered:
+  // the install is unpinned, so a release published between the check and the
+  // click is the one `oxide update` installs, and this read of the binary is the
+  // only thing that knows which version is there.
+  const landed = (after.check && after.check.current) || "";
+  paintUpdate(after.check, landed ? `Installed Oxide ${landed}` : "Ran oxide update");
+  el("update-note").textContent =
+    offered && offered.latest && landed && landed !== offered.latest
+      ? `The CLI installed the newest release, ${landed} — one published after this dialog was opened. The terminal, the editor extension and any new oxide command use it now.`
+      : "The terminal, the editor extension and any new oxide command use the new version.";
+}
+
+/// Opens the release the dialog is showing in the platform browser, the way a
+/// link in a reply is opened.
+function openReleaseNotes() {
+  if (!updateCheck || !updateCheck.releaseUrl) return;
+  invoke("open_url", { url: updateCheck.releaseUrl }).catch((error) =>
+    setStatus(`Could not open link: ${error}`),
+  );
+}
+
+function mono(value) {
+  return `<code>${escapeHtml(value || "")}</code>`;
 }
 
 // ---------- MCP servers ----------
@@ -3166,6 +3370,9 @@ async function initEvents() {
   });
   el("review-modal").onkeydown = reviewKey;
   await listen("approval-request", (event) => showApproval(event.payload || {}));
+  // The macOS menu item has no page of its own to paint into, so it asks the
+  // window for the dialog the sidebar's own button opens.
+  await listen("check-updates", () => openUpdate());
   await listen("question-request", (event) => showQuestion(event.payload || {}));
   // The request timed out with nobody answering, while the run it belongs to
   // may still be going: the dialog goes away so it does not offer an answer that
@@ -3413,6 +3620,10 @@ function init() {
   });
   el("mcps-close").onclick = () => (el("mcps-modal").hidden = true);
   el("mcps-refresh").onclick = () => loadMcps();
+  el("update").onclick = openUpdate;
+  el("update-close").onclick = () => (el("update-modal").hidden = true);
+  el("update-notes").onclick = openReleaseNotes;
+  el("update-install").onclick = installUpdate;
   el("sessions-close").onclick = () => (el("sessions-modal").hidden = true);
   el("sessions-new").onclick = () => {
     el("sessions-modal").hidden = true;

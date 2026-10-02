@@ -77,7 +77,9 @@ loopback transport the bridge's calls travel on.
 
 Events travel the other way on the window's own channel: `bridge.rs` holds the
 window and emits `agent-start`, `agent-event`, `agent-end`, `approval-request`,
-`question-request` and `question-closed`, which `app.js` listens for. A run can
+`question-request` and `question-closed`, which `app.js` listens for, plus
+`check-updates`, which the macOS menu item emits so the window performs the
+check and paints one dialog (see [Check for updates](#check-for-updates)). A run can
 only be watched, answered or stopped from the window that started it — the
 events carry no state a fresh window could be rebuilt from — so closing it ends
 the app and the turn with it, which is deliberately not the usual macOS "stay
@@ -90,7 +92,7 @@ The window follows a Codex-style layout:
 
 - **Sidebar** — the `Oxide` brand, a **New task** button, the **Projects**
   tree, and a footer pinned to the bottom with **Connect**, project trust,
-  theme, tool approvals, and help. The tree groups each project's sessions
+  theme, tool approvals, check for updates, and help. The tree groups each project's sessions
   under it, and every project and stored session row carries a `✕` that removes
   it (see [Multiple projects](#multiple-projects-cross-repo)); hovering a session
   shows its `⌘1`…`⌘9` shortcut. The active project and the active thread both
@@ -526,6 +528,44 @@ inline emphasis/code/links. Bare `http(s)://` URLs are auto-linked too, and
 clicking any link opens it in the system browser — navigation is denied inside
 the application window. Tool results render as panels; `write`/`edit`
 results include a colored diff.
+
+## Check for updates
+
+**↻** in the sidebar footer — or **Check for Updates…** in the macOS app menu,
+directly under **About**, which asks the open window to run the same check —
+reports the newest **oxide CLI** release and offers to install it. The check is
+the CLI's own (`oxide update --check --json`, through `crates/desktop/src/cli.rs`),
+so the release the window offers is the one the terminal and the VS Code panel
+would install, and the rules about what may be replaced are the CLI's: the
+dialog shows the version installed now, the newest tag, the installation it
+found (`cargo`, `homebrew`, `prebuilt binary`, `unknown`) and its path, and
+**Install** appears only when the CLI reports the installation as one it can
+replace. **Release notes** opens the release page in the system browser, and
+the dialog names the one thing this is not: the app itself comes from a desktop
+release and is not replaced from here.
+
+The install runs `oxide update` on the same binary — it downloads the platform
+archive, verifies it against the release manifest and replaces the installed
+binary — and the dialog reads the check once more afterwards, so it reports the
+version now on disk rather than the one that was offered. A Homebrew Cellar is
+left to `brew upgrade oxide` and a binary that is not at a released location
+to `oxide update --force`, with the CLI's own advice line under the version.
+The command line is resolved from `PATH` first and then the directories the
+installers use (`~/.local/bin`, `~/.cargo/bin`, Homebrew's prefixes, the Windows
+programs directory), because a Finder launch gets a bare `PATH` that holds none
+of them; a machine with no CLI the app can find says so rather than reporting a
+version. A CLI released before this app cannot answer the check at all — it says
+`unexpected argument '--json'` — and the dialog reports exactly that, because the
+one command it offers, `oxide update`, is what replaces that older binary and
+works on any version: the report it prints is then shown under the title. A
+check asks GitHub for the newest release, so a machine with no network reports
+the CLI's own words instead of pretending to be up to date, and one install at a
+time is allowed. A check asked for again — the menu item and the sidebar's **↻**
+are the same command — is the one that owns the dialog, so an answer that a
+newer check has already replaced is dropped rather than repainting the dialog
+with an older release, and an install reports the version its own re-check read
+rather than the one it was offered, since a release published between the check
+and the click is the one the unpinned `oxide update` installs.
 
 ## Packaging
 

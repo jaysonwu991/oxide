@@ -14,6 +14,7 @@
 
 import { mcpStateLabel, type McpServerView } from "./mcps";
 import { filterSessions, type SessionEntry } from "./sessions";
+import type { UpdateCheck } from "./updates";
 
 /// How a row's status is colored: the green/amber/red the terminal's `/mcps`
 /// uses, `muted` for a server that is off or a session's age.
@@ -67,6 +68,7 @@ export type DialogPin = "header" | "footer";
 /// is painted again from a fresh read when a turn ends, and a confirmation must
 /// not be swapped for a listing the moment it appears.
 export type DialogKind =
+  | "update"
   | "model"
   | "agent"
   | "reasoning"
@@ -124,6 +126,11 @@ export const APPLY_MODEL = "applyModel";
 export const APPLY_AGENT = "applyAgent";
 export const APPLY_REASONING = "applyReasoning";
 export const APPLY_TRUST = "applyTrust";
+/// The update dialog's own two rows: installing the release the check resolved,
+/// and opening its release page. The check itself is run by the command, not by
+/// a row, so a dialog that is only reporting has nothing to press.
+export const UPDATE_INSTALL = "updateInstall";
+export const UPDATE_NOTES = "updateNotes";
 
 /// The values the session dialog's own two rows carry, so the controller can
 /// tell a session id from "start over".
@@ -581,5 +588,154 @@ export function undoChangesDialog(card: { id: number; detail: string }): DialogS
     query: "",
     refreshLabel: "",
     refreshAction: "",
+  };
+}
+
+/// What the update dialog is showing. The check runs through the CLI and takes
+/// a round trip to GitHub, so the panel has something to say before there is an
+/// answer, and the install takes minutes; each state carries the words rather
+/// than the call sites composing a dialog of their own.
+export type UpdateState =
+  /// Asking the CLI, which is asking GitHub.
+  | { k: "checking" }
+  /// The install is running. `what` names what is being installed, phrased for
+  /// the title: a CLI too old to be checked has no version to name, so it is
+  /// `the newest CLI` there and `Oxide 0.33.0` when the check resolved one.
+  | { k: "installing"; what: string }
+  /// The check or the install did not answer with a result. `stage` says which
+  /// one, because the same failure means different things at each: a check that
+  /// could not reach GitHub leaves the installation alone, while a failed
+  /// install may have left a half-downloaded release behind.
+  | { k: "failed"; stage: "check" | "install"; message: string }
+  /// The check resolved a release. `headline` replaces the title for an answer
+  /// that is about something else — the re-check a finished install runs, which
+  /// says what was installed rather than what is newest.
+  | { k: "ready"; check: UpdateCheck; headline?: string }
+  /// The installed CLI is older than this panel: it does not know `--json`, so
+  /// there is no release to report — but `oxide update` still updates it, which
+  /// is what `text` (the CLI's own refusal) is shown under. `headline` replaces
+  /// the title for the same state read after an install ran, when what it holds
+  /// is that install's report rather than a refusal, and `subtitle` says what
+  /// that report is instead of describing the refusal it is not.
+  | { k: "legacy"; text: string; path: string; headline?: string; subtitle?: string };
+
+/// The update dialog: the release the installed CLI's own check resolved, what
+/// this machine has, and — when the installation is one `oxide update` may
+/// replace — the install as a row.
+///
+/// It is the terminal's `oxide update` in the panel, and deliberately no more
+/// than that: the check, the release it picks and whether this installation can
+/// be replaced are the CLI's answers, so the panel cannot offer an install the
+/// terminal would refuse. Installing updates the `oxide` command line — the
+/// binary the terminal, this panel and the desktop app all run — and the desktop
+/// app's own bundle is updated by a desktop release, which is why the install
+/// row is worded as the CLI rather than as the IDE.
+export function updateDialog(state: UpdateState): DialogState {
+  const empty = {
+    kind: "update" as const,
+    pin: "footer" as const,
+    count: 0,
+    search: false,
+    query: "",
+    refreshLabel: "",
+    refreshAction: "",
+  };
+  if (state.k === "checking") {
+    return {
+      ...empty,
+      title: "Checking for updates",
+      subtitle:
+        "Oxide asks the installed CLI which release is newest, the same check the terminal's oxide update --check performs.",
+      note: "Asking GitHub for the newest release…",
+      rows: [],
+    };
+  }
+  if (state.k === "installing") {
+    return {
+      ...empty,
+      title: `Installing ${state.what}`,
+      subtitle:
+        "The release is downloaded, verified against the release manifest and written over the installed binary.",
+      note: "This takes as long as the download; the dialog reports what the CLI says when it is done.",
+      rows: [],
+    };
+  }
+  if (state.k === "failed") {
+    return {
+      ...empty,
+      title: state.stage === "check" ? "Could not check for updates" : "Could not install the update",
+      subtitle:
+        state.stage === "check"
+          ? "The check asks GitHub for the newest released oxide, so a machine with no network — or a request GitHub refuses — reports it here."
+          : "The install downloads the release archive, verifies it against the release manifest and replaces the installed binary.",
+      note: state.message,
+      rows: [row("", "Close", { detail: "Leave this installation as it is", action: CLOSE_DIALOG })],
+    };
+  }
+
+  if (state.k === "legacy") {
+    // The release is unknown here — the CLI that would have resolved it cannot
+    // be asked — so the dialog offers the one command that works on any version
+    // rather than a version to install.
+    return {
+      ...empty,
+      title: state.headline ?? "The oxide CLI is older than this panel",
+      subtitle:
+        state.subtitle ??
+        "Check for Updates reads a report this CLI predates, so it cannot say which release is newest. Installing updates the oxide command line — the binary this panel, the terminal and the desktop app run — and it works on any version.",
+      note: state.text,
+      rows: [
+        row("", "Install the newest CLI", {
+          detail: state.path ? `Replaces ${state.path}` : "Runs oxide update",
+          action: UPDATE_INSTALL,
+        }),
+        row("", "Close", {
+          detail: "Leave this installation as it is",
+          action: CLOSE_DIALOG,
+        }),
+      ],
+    };
+  }
+
+  const { check } = state;
+  const notes = [`Current ${check.current}`, `Latest ${check.tag}`, check.installation];
+  if (check.pinned) notes.push("pinned");
+  // A release this installation cannot install itself — Homebrew's, or a binary
+  // that is not a release — is reported with the CLI's own sentence, which names
+  // the command that can: the row it would belong to is the one thing missing.
+  if (check.updateAvailable && !check.installable && check.advice) notes.push(check.advice);
+  const rows: DialogRow[] = [];
+  if (check.updateAvailable && check.installable) {
+    rows.push(
+      row(check.latest, `Install ${check.latest}`, {
+        detail: check.path ? `Replaces ${check.path}` : check.advice,
+        action: UPDATE_INSTALL,
+      }),
+    );
+  }
+  if (check.releaseUrl) {
+    rows.push(
+      row(check.releaseUrl, "Release notes", {
+        detail: "Open the release page in your browser",
+        action: UPDATE_NOTES,
+      }),
+    );
+  }
+  rows.push(
+    row("", "Close", {
+      detail: check.updateAvailable ? "Keep the version installed now" : "Nothing to install",
+      action: CLOSE_DIALOG,
+    }),
+  );
+  return {
+    ...empty,
+    title:
+      state.headline ||
+      (check.updateAvailable ? `Oxide ${check.latest} is available` : "Oxide is up to date"),
+    subtitle: check.updateAvailable
+      ? "Installing updates the oxide command line — the binary the terminal, this panel and the desktop app run."
+      : `Oxide ${check.current} is the newest released version.`,
+    note: notes.join(" · "),
+    rows,
   };
 }

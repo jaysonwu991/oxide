@@ -78,7 +78,7 @@ oxide mcp <COMMAND>
 oxide plugin <COMMAND>
 oxide sessions <COMMAND>
 oxide uninstall [--keep-config] [--keep-data] [--dry-run] [--force]
-oxide update [--check] [--version <VERSION>] [--force]
+oxide update [--check] [--version <VERSION>] [--force] [--json]
 ```
 
 | Flag | Description |
