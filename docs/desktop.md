@@ -560,7 +560,12 @@ one command it offers, `oxide update`, is what replaces that older binary and
 works on any version: the report it prints is then shown under the title. A
 check asks GitHub for the newest release, so a machine with no network reports
 the CLI's own words instead of pretending to be up to date, and one install at a
-time is allowed.
+time is allowed. A check asked for again — the menu item and the sidebar's **↻**
+are the same command — is the one that owns the dialog, so an answer that a
+newer check has already replaced is dropped rather than repainting the dialog
+with an older release, and an install reports the version its own re-check read
+rather than the one it was offered, since a release published between the check
+and the click is the one the unpinned `oxide update` installs.
 
 ## Packaging
 

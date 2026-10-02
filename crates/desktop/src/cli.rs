@@ -72,7 +72,12 @@ pub fn binary_name() -> &'static str {
 /// the Finder the bare `/usr/bin:/bin:/usr/sbin:/sbin`, so a Homebrew install —
 /// exactly the one `oxide update` hands to `brew upgrade` — is on no `PATH` this
 /// process can see.
-pub fn search_paths(path_var: &str, home: Option<&Path>, os: &str) -> Vec<PathBuf> {
+pub fn search_paths(
+    path_var: &str,
+    home: Option<&Path>,
+    data_dir: Option<&Path>,
+    os: &str,
+) -> Vec<PathBuf> {
     let mut dirs: Vec<PathBuf> = std::env::split_paths(path_var)
         .filter(|dir| !dir.as_os_str().is_empty())
         .collect();
@@ -80,10 +85,20 @@ pub fn search_paths(path_var: &str, home: Option<&Path>, os: &str) -> Vec<PathBu
         dirs.push(home.join(".local/bin"));
         dirs.push(home.join(".cargo/bin"));
         if os == "windows" {
-            // Where the released Windows archive is unpacked, and the shim
-            // directory a package manager copies it through.
-            dirs.push(home.join("AppData/Local/Programs/oxide"));
+            // The shim directory a package manager copies it through.
             dirs.push(home.join("scoop/shims"));
+        }
+    }
+    if os == "windows" {
+        // Where the released Windows archive is unpacked, spelled the way
+        // `install.ps1` (`%LOCALAPPDATA%\Programs\Oxide`) and `docs/install.md`
+        // spell it. `%LOCALAPPDATA%` is asked of the platform rather than joined
+        // onto the home directory, because local app data can be redirected and
+        // then `%USERPROFILE%\AppData\Local` is a directory nothing installs
+        // into — which is exactly the machine with the bare `PATH` this list
+        // exists for.
+        if let Some(data) = data_dir {
+            dirs.push(data.join("Programs").join("Oxide"));
         }
     }
     if os == "macos" {
@@ -105,6 +120,7 @@ pub fn binary() -> Option<PathBuf> {
     let dirs = search_paths(
         &std::env::var("PATH").unwrap_or_default(),
         dirs::home_dir().as_deref(),
+        dirs::data_local_dir().as_deref(),
         std::env::consts::OS,
     );
     locate(&dirs, binary_name(), &|candidate| candidate.is_file())
@@ -209,6 +225,7 @@ mod tests {
         let dirs = search_paths(
             path_var.to_str().unwrap(),
             Some(Path::new("/home/dev")),
+            None,
             "macos",
         );
         assert_eq!(dirs[0], PathBuf::from("/usr/bin"));
@@ -222,11 +239,32 @@ mod tests {
     }
 
     #[test]
+    fn the_windows_install_directory_is_local_app_data() {
+        // The installer unpacks into `%LOCALAPPDATA%\Programs\Oxide`, and a
+        // managed machine may keep local app data outside the profile, so the
+        // directory comes from the platform rather than from the home directory.
+        let dirs = search_paths(
+            "",
+            Some(Path::new("/home/dev")),
+            Some(Path::new("/redirected/LocalAppData")),
+            "windows",
+        );
+        assert!(dirs.contains(&PathBuf::from("/redirected/LocalAppData/Programs/Oxide")));
+        assert!(!dirs.contains(&PathBuf::from("/home/dev/AppData/Local/Programs/Oxide")));
+        // The rest of the list survives a machine that will not say where its
+        // local app data is, so the home-directory entries are still searched.
+        let without = search_paths("", Some(Path::new("/home/dev")), None, "windows");
+        assert!(without.contains(&PathBuf::from("/home/dev/.local/bin")));
+        assert!(without.contains(&PathBuf::from("/home/dev/scoop/shims")));
+    }
+
+    #[test]
     fn an_empty_path_entry_is_not_a_directory() {
         let path_var = std::env::join_paths(["", "/usr/bin", ""]).unwrap();
         let dirs = search_paths(
             path_var.to_str().unwrap(),
             Some(Path::new("/home/dev")),
+            None,
             "linux",
         );
         // An empty entry means the current directory and is dropped, while the

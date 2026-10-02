@@ -615,8 +615,9 @@ export type UpdateState =
   /// there is no release to report — but `oxide update` still updates it, which
   /// is what `text` (the CLI's own refusal) is shown under. `headline` replaces
   /// the title for the same state read after an install ran, when what it holds
-  /// is that install's report rather than a refusal.
-  | { k: "legacy"; text: string; path: string; headline?: string };
+  /// is that install's report rather than a refusal, and `subtitle` says what
+  /// that report is instead of describing the refusal it is not.
+  | { k: "legacy"; text: string; path: string; headline?: string; subtitle?: string };
 
 /// The update dialog: the release the installed CLI's own check resolved, what
 /// this machine has, and — when the installation is one `oxide update` may
@@ -680,6 +681,7 @@ export function updateDialog(state: UpdateState): DialogState {
       ...empty,
       title: state.headline ?? "The oxide CLI is older than this panel",
       subtitle:
+        state.subtitle ??
         "Check for Updates reads a report this CLI predates, so it cannot say which release is newest. Installing updates the oxide command line — the binary this panel, the terminal and the desktop app run — and it works on any version.",
       note: state.text,
       rows: [

@@ -2526,6 +2526,12 @@ let updateCheck = null;
 /// An install in flight. The CLI replaces itself on disk, and two of them
 /// running over one binary is the one thing this dialog must not allow.
 let installingUpdate = false;
+/// The check the dialog is waiting on. The menu item and the sidebar button ask
+/// the same question and either may be pressed again before the first answer
+/// arrives, so every request takes a number: a reply for a number the dialog has
+/// moved past is dropped rather than painted over the newer answer — which would
+/// show a release, or a failure, from a question nobody is waiting on.
+let updateProbe = 0;
 
 /// Checks the newest CLI release and offers to install it. The check is the
 /// CLI's own (`oxide update --check --json`), so the release this window offers
@@ -2543,10 +2549,12 @@ async function openUpdate() {
   // A fresh check replaces the release the last one resolved, so a check that
   // fails does not leave a Release notes button pointing at the old release.
   updateCheck = null;
+  const probe = ++updateProbe;
   const answer = await readUpdate();
   // The dialog may have been closed while the check was in flight, and a
-  // repaint here would put it back.
-  if (el("update-modal").hidden) return;
+  // repaint here would put it back; a check started since — the menu and the
+  // button pressed one after the other — owns the dialog now.
+  if (probe !== updateProbe || el("update-modal").hidden) return;
   if (answer.failed) paintUpdateFailure("Could not check for updates", answer.failed);
   else paintUpdate(answer.check, "");
 }
@@ -2644,6 +2652,11 @@ function paintUpdateFailure(title, text) {
 async function installUpdate() {
   if (installingUpdate) return;
   const offered = updateCheck;
+  // The install owns the dialog until it reports. A check asked for while it
+  // ran — the sidebar button is still there — is a newer look at the same
+  // installation, and its answer is the one to show, since the binary on disk
+  // is what the install left behind either way.
+  const probe = ++updateProbe;
   installingUpdate = true;
   const install = el("update-install");
   install.disabled = true;
@@ -2657,7 +2670,7 @@ async function installUpdate() {
     answer = { ok: false, text: String(error) };
   }
   installingUpdate = false;
-  if (el("update-modal").hidden) return;
+  if (probe !== updateProbe || el("update-modal").hidden) return;
   if (!answer || answer.ok !== true) {
     paintUpdateFailure("Could not install the update", (answer && answer.text) || "The install did not finish.");
     return;
@@ -2665,7 +2678,7 @@ async function installUpdate() {
   // Read once more, so the dialog reports the version now on disk rather than
   // the one that was offered a download ago.
   const after = await readUpdate();
-  if (el("update-modal").hidden) return;
+  if (probe !== updateProbe || el("update-modal").hidden) return;
   if (after.failed) {
     paintUpdateFailure("Could not check for updates", after.failed);
     return;
@@ -2683,9 +2696,16 @@ async function installUpdate() {
       "The report above is the CLI's own. If it installed a release, the command line the terminal and the editor extension run is that one now; if it said it was already current, there was nothing to install.";
     return;
   }
-  paintUpdate(after.check, `Installed ${(offered && offered.latest) || "the newest oxide CLI"}`);
+  // What landed is what the CLI reports now, not the release that was offered:
+  // the install is unpinned, so a release published between the check and the
+  // click is the one `oxide update` installs, and this read of the binary is the
+  // only thing that knows which version is there.
+  const landed = (after.check && after.check.current) || "";
+  paintUpdate(after.check, landed ? `Installed Oxide ${landed}` : "Ran oxide update");
   el("update-note").textContent =
-    "The terminal, the editor extension and any new oxide command use the new version.";
+    offered && offered.latest && landed && landed !== offered.latest
+      ? `The CLI installed the newest release, ${landed} — one published after this dialog was opened. The terminal, the editor extension and any new oxide command use it now.`
+      : "The terminal, the editor extension and any new oxide command use the new version.";
 }
 
 /// Opens the release the dialog is showing in the platform browser, the way a

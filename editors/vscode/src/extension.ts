@@ -76,8 +76,10 @@ export function activate(context: vscode.ExtensionContext): void {
     status.show();
   };
 
+  // A command that answers rather than reports — the update check returns what
+  // it read so its own caller can name it — is still fire-and-forget here.
   const guard =
-    <A extends unknown[]>(run: (...args: A) => Promise<void>) =>
+    <A extends unknown[]>(run: (...args: A) => Promise<unknown>) =>
     (...args: A): void => {
       void run(...args).catch((error: unknown) => {
         output.appendLine(`[error] ${String(error)}`);

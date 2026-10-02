@@ -348,9 +348,31 @@ let updateAnswer = {
   releaseUrl: "https://github.com/jaysonwu991/oxide/releases/tag/v0.33.0",
 };
 let updateError = null;
+// The check's answer as a fresh machine gives it. The stub moves the live one
+// along with each install, so a check that has to be compared against the state
+// a dialog opened on reads this copy rather than whatever a test left behind.
+const OFFERED_UPDATE = { ...updateAnswer };
 let installError = null;
 let installOk = true;
 let installs = 0;
+// The version a successful install leaves behind, when a test wants one other
+// than the release the check resolved: the install is unpinned, so a release
+// published between the check and the click is what lands, and the dialog has to
+// report what the CLI says afterwards rather than what it offered.
+let installedVersion = null;
+// Checks a test holds in flight, so a reply that arrives after a newer check has
+// painted can be measured instead of raced. Each held reply carries the answer
+// it would have given at the time it was asked for.
+let checksHeld = 0;
+let heldChecks = [];
+const holdNextCheck = () => {
+  checksHeld += 1;
+};
+const releaseHeldChecks = () => {
+  const waiting = heldChecks;
+  heldChecks = [];
+  for (const go of waiting) go();
+};
 // A CLI released before `--json` was added: `check_updates` answers with the fact
 // and the CLI's own refusal, and the install row runs the plain `oxide update`
 // that works on any version. What that prints is the only report there is, so
@@ -551,17 +573,22 @@ const invoke = async (command, args = {}) => {
       return answerAt(args.text);
     case "steer_run":
       return steerAccepted;
-    case "check_updates":
+    case "check_updates": {
       if (updateError) throw updateError;
-      if (legacyCli) {
-        return {
-          installed: true,
-          legacy: true,
-          path: "/home/dev/.local/bin/oxide",
-          text: legacyReported ? LEGACY_REPORT : LEGACY_REFUSAL,
-        };
+      const answer = legacyCli
+        ? {
+            installed: true,
+            legacy: true,
+            path: "/home/dev/.local/bin/oxide",
+            text: legacyReported ? LEGACY_REPORT : LEGACY_REFUSAL,
+          }
+        : { ...updateAnswer };
+      if (checksHeld > 0) {
+        checksHeld -= 1;
+        await new Promise((resolve) => heldChecks.push(resolve));
       }
-      return { ...updateAnswer };
+      return answer;
+    }
     case "install_update": {
       if (installError) throw installError;
       installs += 1;
@@ -578,9 +605,12 @@ const invoke = async (command, args = {}) => {
         };
       }
       if (installOk) {
+        const landed = installedVersion || updateAnswer.latest;
         updateAnswer = {
           ...updateAnswer,
-          current: updateAnswer.latest,
+          current: landed,
+          latest: landed,
+          tag: `v${landed}`,
           updateAvailable: false,
           advice: null,
         };
@@ -802,8 +832,9 @@ check(
 );
 check(
   "put the dialog among the overlays Escape closes",
-  /<div id="update-modal" class="overlay" hidden>/.test(shell) &&
-    shellAt('id="update"') < shellAt('id="update-modal"'),
+  /<div id="update-modal" class="overlay" role="dialog" aria-modal="true" aria-labelledby="update-title" hidden>/.test(
+    shell,
+  ) && shellAt('id="update"') < shellAt('id="update-modal"'),
   String(shellAt('id="update-modal"')),
 );
 check(
@@ -2959,7 +2990,11 @@ check(
   projectCalls("check_updates").length === 1,
   JSON.stringify(calls.map(([name]) => name)),
 );
-check("reported the install as the release it landed", updateTitle() === "Installed 0.33.0", updateTitle());
+check(
+  "reported the install as the release it landed",
+  updateTitle() === "Installed Oxide 0.33.0",
+  updateTitle(),
+);
 check(
   "said what picks the new version up",
   /terminal/.test(updateNote()) && /extension/.test(updateNote()),
@@ -3136,9 +3171,54 @@ check(
   projectCalls("install_update").length === 1,
   JSON.stringify(calls.map(([name]) => name)),
 );
-check("reported the install that ran", updateTitle() === "Installed 0.33.0", updateTitle());
+check("reported the install that ran", updateTitle() === "Installed Oxide 0.33.0", updateTitle());
 elementFor("update-close").onclick();
 check("closed it from its own button", elementFor("update-modal").hidden === true);
+
+// The check is asked for from two places — the sidebar button and the macOS menu
+// item — and either can be pressed again before the first answer arrives. The
+// answer for the question nobody is waiting on is dropped rather than painted,
+// which is what keeps a stale release (or a stale failure) from replacing what
+// the newer check found.
+updateAnswer = OFFERED_UPDATE;
+holdNextCheck();
+const stale = app.openUpdate();
+updateAnswer = { ...OFFERED_UPDATE, current: OFFERED_UPDATE.latest, updateAvailable: false, advice: null };
+const fresh = app.openUpdate();
+await nextTick();
+check(
+  "painted the newer check's answer",
+  updateTitle() === "Oxide is up to date",
+  updateTitle(),
+);
+releaseHeldChecks();
+await Promise.all([stale, fresh]);
+check(
+  "dropped the answer for the check it had already moved past",
+  updateTitle() === "Oxide is up to date" && installButton.hidden === true,
+  `${updateTitle()} / ${installButton.hidden}`,
+);
+
+// The install is unpinned, so a release published between the check and the
+// click is the one `oxide update` installs. What the dialog reports is the
+// version the CLI now answers with, not the one it offered a download ago.
+installedVersion = "0.34.0";
+updateAnswer = OFFERED_UPDATE;
+await app.openUpdate();
+check("offered the release the check resolved", updateTitle() === "Oxide 0.33.0 is available");
+await installButton.onclick();
+check(
+  "reported the version that landed rather than the one it offered",
+  updateTitle() === "Installed Oxide 0.34.0",
+  updateTitle(),
+);
+check(
+  "said that release is newer than the one the dialog opened on",
+  /published after this dialog/.test(updateNote()) && updateNote().includes("0.34.0"),
+  updateNote(),
+);
+installedVersion = null;
+updateAnswer = cliAnswer;
 
 // ---------- the bridge the window is reached through ----------
 

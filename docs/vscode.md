@@ -834,9 +834,14 @@ the headline; an installation already current answers `Already up to date`, and
 that is repeated as the CLI's own line rather than reported as an install. A
 check that could not reach GitHub reports the CLI's own words instead, rather
 than an empty listing that would read as up to date, and one install at a time
-is allowed. What this updates is the **oxide CLI**, which is what this panel, the
-terminal and the desktop app all run; the extension itself comes from the
-Marketplace and is updated there.
+is allowed. The command is a palette entry, so it can be run again while the
+first request is waiting on GitHub: the newest check owns the dialog, and an
+answer that a newer one has replaced is dropped rather than painting an older
+release over it — as is an install whose own re-check has been replaced, since
+what it would report is a version a newer answer already describes. What this
+updates is the **oxide CLI**, which is what this panel, the terminal and the
+desktop app all run; the extension itself comes from the Marketplace and is
+updated there.
 
 ## Rendering
 

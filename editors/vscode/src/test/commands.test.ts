@@ -110,9 +110,35 @@ describe("command contributions", () => {
     // The re-check after such an install reports that install's own output rather
     // than asking the same older CLI again and printing its refusal.
     assert.ok(
-      chat.includes("if (legacy && this.legacyCli)") &&
+      chat.includes('if (painted.k === "legacy")') &&
         chat.includes('headline: "Ran oxide update"'),
       "an install a checked CLI cannot confirm is reported by what it printed",
+    );
+    // A check is a palette entry, so it can be asked for again while the first
+    // request is still waiting on GitHub: the answer for the probe that has been
+    // superseded is dropped rather than replacing the state the newer one set.
+    assert.ok(
+      chat.includes("const probe = ++this.updateProbe;") &&
+        chat.includes('if (probe !== this.updateProbe) return { k: "superseded" };'),
+      "a check an earlier one has superseded is dropped, not painted",
+    );
+    assert.ok(
+      chat.includes("const probe = ++this.updateProbe;") &&
+        chat.includes("if (probe !== this.updateProbe) return;\n    if (result.error || result.code !== 0) {"),
+      "and an install a newer check has overtaken reports nothing either",
+    );
+    // The install is unpinned, so the release that lands is the one newest when
+    // the command runs rather than the one the check offered: the headline is
+    // composed from the version the re-check reads off the binary, and the
+    // notice naming the install waits for that answer.
+    assert.ok(
+      chat.includes("(fresh) => `Installed Oxide ${fresh.current}`)"),
+      "the install reports the version that landed, not the one it offered",
+    );
+    assert.ok(
+      chat.includes('if (after.k !== "release") return;') &&
+        chat.includes("this.showNotice(`Installed Oxide ${after.check.current}.`)"),
+      "and says so only once the version on disk has been read",
     );
   });
 

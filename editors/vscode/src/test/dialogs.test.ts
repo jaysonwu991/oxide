@@ -656,13 +656,28 @@ describe("update dialog", () => {
       text: "Already up to date; rerun with --force to reinstall v0.33.0.",
       path: "/Users/me/.local/bin/oxide",
       headline: "Ran oxide update",
+      subtitle: "The report above is the CLI's own.",
     });
     assert.equal(ran.title, "Ran oxide update");
     assert.match(ran.note, /Already up to date/);
+    // The subtitle describes the report in the note rather than the refusal this
+    // state is otherwise a refusal about, which is what its own sentence says.
+    assert.equal(ran.subtitle, "The report above is the CLI's own.");
     assert.deepEqual(
       ran.rows.map((row) => row.action),
       [UPDATE_INSTALL, CLOSE_DIALOG],
       "the row is still there, since a CLI that is not newest is what it is for",
+    );
+    // Without one it still describes the refusal, so a reader that knows the
+    // state from the title is not shown a subtitle about a refusal it is not.
+    assert.match(
+      updateDialog({
+        k: "legacy",
+        text: "Already up to date.",
+        path: "/Users/me/.local/bin/oxide",
+        headline: "Ran oxide update",
+      }).subtitle,
+      /cannot say which release is newest/,
     );
   });
 
