@@ -858,6 +858,56 @@ state a newer answer already describes. The extension is updated from the releas
 train it was built from rather than from the Marketplace, so a window that is
 already new enough is told exactly that.
 
+### The check a launch makes by itself
+
+A window also looks on its own: `ChatController.checkForUpdatesInBackground`
+runs once at activation (`extension.ts`), so a release published since the last
+look is noticed without anyone asking for it — the way every other extension in
+the editor is kept current. Nothing is painted over the panel and nothing waits
+on the network: the launch goes on, and what the check finds is reported with a
+VS Code notification rather than the panel's own dialog.
+
+`checkForUpdates` in a `settings.json` decides whether a launch looks at all
+(`core/settings.ts`; the project's `.oxide/settings.json` wins over the global
+one and `OXIDE_CHECK_FOR_UPDATES` overrides both, the same resolution
+`update_notice.rs` makes for the terminal's notice). The answer is remembered in
+the window's global state — when it last asked, and the release an install left
+here — so a launch asks GitHub at most once every six hours
+(`BACKGROUND_CHECK_MS`, the interval `oxide_core::update_notice` refreshes on),
+and a window already carrying a release it has not reloaded into asks nothing,
+since every answer would be the version already on disk (`core/updates.ts`).
+
+What happens with the answer is `backgroundAction`: a release this editor can
+take — a `.vsix`, which is what the extension publishes — raises a notification
+(`Oxide 0.36.0 is available (installed: 0.35.0).`) with an **Install** row and a
+**Later** one, and pressing **Install** downloads that file, verifies it against
+the checksum the release reports and hands it to VS Code — the dialog's own
+machinery without its dialog, since the panel is not what the user was looking
+at. The file is fetched when that row is pressed rather than written into the
+editor at launch, which is how the marketplace's own extensions are kept
+current: a check that reports, and a click that installs. The launch's own flow
+is the notification's alone: its install runs the dialog's machinery with the
+transcript and the dialog left out of it (`report = false`), so a release
+noticed at activation never writes a line into whatever conversation happens to
+be on screen. Once VS Code holds the
+release the window is told what is left — `Oxide 0.36.0 was installed. Restart
+the window to run it.` with a **Restart Window** row — since the code running is
+the one it replaced. Which install happened is remembered by the install itself
+rather than by the row that asked for it, so a release installed by hand is
+also a release every later window knows about: the version on disk is what
+answers, and a window still running the old code offers nothing while it is
+newer. A release the panel has no file for (no build for this
+platform, or a CLI that answered without one) is reported with a **Release
+notes** row instead, which opens the release page where that file is, rather
+than offering an install nothing could run. A window with nothing to do stays
+silent: an extension already current, a check that could not reach GitHub, a
+machine with no `oxide` on it, and a CLI too old to know the check's flags are
+all reported by **Oxide: Check for Updates...** alone — running that command is
+what says the installed CLI has to be replaced first. What a launch did find is
+named in the extension's Output channel (`Oxide 0.36.0 is available (installed:
+0.35.0).`), which is where a check that failed or an install that did not finish
+says so too, so the offer is never the only thing the reader has to go on.
+
 ## Rendering
 
 `media/main.js` renders the transcript in the webview; it is adapted from the

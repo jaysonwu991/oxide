@@ -5,7 +5,7 @@ import assert from "node:assert/strict";
 import * as path from "node:path";
 import { describe, it } from "node:test";
 
-import { projectInfo, projectRoot, type ProjectDeps } from "../core/project";
+import { projectInfo, projectRoot, sharedSettingsFor, type ProjectDeps } from "../core/project";
 
 const repo = path.join("/repo");
 const pkg = path.join(repo, "pkg");
@@ -51,6 +51,45 @@ describe("projectRoot", () => {
 
   it("has no root when nothing marks one", () => {
     assert.equal(projectRoot(pkg, tree({})), null);
+  });
+});
+
+describe("sharedSettingsFor", () => {
+  it("reads the global file for a window with no folder open", () => {
+    // The launch's own update check runs whether or not a folder is open — it
+    // is about the extension rather than the project — and there is no project
+    // file for a window that has no folder, so the global file and the
+    // environment are all it has to read.
+    const deps = tree({ [path.join(configDir, "settings.json")]: '{"checkForUpdates":false}' });
+    assert.equal(sharedSettingsFor(null, deps).checkForUpdates, false);
+    assert.equal(sharedSettingsFor(pkg, deps).checkForUpdates, false);
+  });
+
+  it("lets a project's own .oxide/settings.json win per key", () => {
+    const deps = tree({
+      [path.join(repo, ".git/HEAD")]: "ref: refs/heads/main\n",
+      [path.join(configDir, "settings.json")]: '{"checkForUpdates":true}',
+      [path.join(repo, ".oxide/settings.json")]: '{"checkForUpdates":false}',
+    });
+    assert.equal(sharedSettingsFor(pkg, deps).checkForUpdates, false);
+    assert.equal(
+      sharedSettingsFor(null, deps).checkForUpdates,
+      true,
+      "a window with no folder never reads a project file",
+    );
+  });
+
+  it("resolves what projectInfo reports, so the two cannot disagree", () => {
+    const deps = tree({
+      [path.join(repo, ".git/HEAD")]: "ref: refs/heads/main\n",
+      [path.join(configDir, "settings.json")]:
+        '{"compaction":{"enabled":false},"notifyOnComplete":false,"checkForUpdates":false}',
+    });
+    const settings = sharedSettingsFor(pkg, deps);
+    const info = projectInfo(pkg, "default", deps);
+    assert.equal(info.autoCompact, settings.autoCompact);
+    assert.equal(info.notifyOnComplete, settings.notifyOnComplete);
+    assert.equal(settings.checkForUpdates, false);
   });
 });
 

@@ -61,10 +61,13 @@ check(
 );
 
 console.log("the events the two halves share");
+// The launch's own install reports its steps through one call that both keeps
+// them for a window that subscribed late and emits them, so that call site names
+// the event the window listens for as surely as an `.emit` does.
 const emitted = new Set(
   [...read("src/commands.rs") + read("src/approval.rs") + read("src/ask.rs") + read("src/turn.rs")]
     .join("")
-    .match(/\.emit\(\s*"([a-z-]+)"/g)
+    .match(/\.(?:emit|announce_launch_update)\(\s*"([a-z-]+)"/g)
     .map((call) => call.match(/"([a-z-]+)"/)[1]),
 );
 const listened = new Set([...app.matchAll(/listen\("([a-z-]+)"/g)].map(([, name]) => name));

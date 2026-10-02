@@ -100,6 +100,64 @@ export function updateVsix(check: UpdateCheck): UpdateAsset | null {
   return check.asset;
 }
 
+/// What a window does with the release a check resolved, on its own.
+///
+/// VS Code updates what it installed from the Marketplace, and this extension is
+/// a `.vsix` from the release page: nothing else will ever notice its own newer
+/// release. A release that carries the file this editor installs is therefore
+/// offered with the row that fetches it — the marketplace's own bargain, a check
+/// that reports and a click that installs; one that carries none — no build for
+/// this platform, or a CLI old enough to answer without the artifact — can only
+/// be pointed at, since there is no file here to hand to VS Code. A check with
+/// nothing newer is nothing at all.
+export type BackgroundAction =
+  | { k: "install"; vsix: UpdateAsset }
+  | { k: "offer" }
+  | { k: "none" };
+
+export function backgroundAction(check: UpdateCheck): BackgroundAction {
+  const vsix = updateVsix(check);
+  if (vsix) return { k: "install", vsix };
+  return check.updateAvailable ? { k: "offer" } : { k: "none" };
+}
+
+/// What a window remembers between launches about its own updates: when it last
+/// asked the CLI, and the release an install has put in VS Code.
+export interface UpdateMemory {
+  /// When the last check ran, in Unix milliseconds — 0 for one that never did,
+  /// which is every window's first launch.
+  checkedAt: number;
+  /// The version an install left in VS Code, or `""` for none. It outlives the
+  /// window that installed it, which is what makes the reload still pending in
+  /// the next one.
+  installedVersion: string;
+}
+
+/// How long a remembered check is trusted. It is the interval the terminal's
+/// launch notice refreshes on (`oxide_core::update_notice::REFRESH_AFTER_SECS`),
+/// so a window opened twice in a morning asks GitHub once — long enough that a
+/// daily launch costs one request, short enough that a release cut today is
+/// noticed tomorrow.
+export const BACKGROUND_CHECK_MS = 6 * 60 * 60 * 1000;
+
+/// Whether a launch should ask the CLI which release of this extension is
+/// newest.
+///
+/// A release an install put in VS Code is the one thing that still has to happen
+/// somewhere else: every answer a check could give here would be the version
+/// already on disk, since the code running is the one that was there when it was
+/// replaced. Nothing is left to do but the reload, so a launch that has one
+/// pending asks nothing and says nothing.
+export function shouldBackgroundCheck(
+  memory: UpdateMemory | null,
+  current: string,
+  now: number,
+): boolean {
+  if (memory && isNewer(memory.installedVersion, current)) return false;
+  if (!memory?.checkedAt) return true;
+  return now - memory.checkedAt >= BACKGROUND_CHECK_MS;
+}
+
 /// The check the panel runs: the shared resolver in the installed CLI, asked
 /// about the extension's own releases and told which version this panel is, so
 /// the answer is read rather than scraped. `current` is left out when the
@@ -136,6 +194,30 @@ const CHECK_FLAGS = ["--json", "--component", "--current"];
 /// extension's own updates — reachable from here.
 export function rejectsCheck(stderr: string): boolean {
   return CHECK_FLAGS.some((flag) => stderr.includes(`unexpected argument '${flag}'`));
+}
+
+/// Whether `candidate` is a later release than `running`, by the numbers of the
+/// two versions. A version this panel cannot read as numbers decides nothing,
+/// which leaves the check that follows it asking rather than skipped.
+function isNewer(candidate: string, running: string): boolean {
+  const left = versionParts(candidate);
+  const right = versionParts(running);
+  if (!left || !right) return false;
+  for (let index = 0; index < Math.max(left.length, right.length); index += 1) {
+    const a = left[index] ?? 0;
+    const b = right[index] ?? 0;
+    if (a !== b) return a > b;
+  }
+  return false;
+}
+
+/// The numeric core of a version: `v0.34.0` and `0.34.0-rc.1` are `0.34.0`,
+/// since the tags this panel compares are releases. Anything else — a version
+/// from somewhere other than a release — is no answer rather than a guess.
+function versionParts(version: string): number[] | null {
+  const core = version.trim().replace(/^v/i, "").split(/[-+]/)[0];
+  if (!/^\d+(\.\d+)*$/.test(core)) return null;
+  return core.split(".").map(Number);
 }
 
 function assetOf(value: unknown): UpdateAsset | null {

@@ -13,7 +13,7 @@ import type { TrustSetting } from "./args";
 import { contextWindow, parseConfigSummary } from "./config";
 import { gitBranch } from "./git";
 import { enabledPluginDirs } from "./plugins";
-import { sharedSettings } from "./settings";
+import { sharedSettings, type SharedSettings } from "./settings";
 import { resolveAccess, trustDecision, parseTrustStore, type Access } from "./trust";
 
 export interface ProjectDeps {
@@ -54,11 +54,7 @@ export function projectInfo(folder: string, trust: TrustSetting, deps: ProjectDe
   const configPath = path.join(deps.configDir, "config.json");
   const config = parseConfigSummary(deps.read(configPath));
   const root = projectRoot(folder, deps);
-  const settings = sharedSettings(
-    deps.read(path.join(deps.configDir, "settings.json")),
-    deps.read(path.join(root ?? folder, ".oxide", "settings.json")),
-    deps.env,
-  );
+  const settings = sharedSettingsFor(folder, deps);
   const savedTrust = trustDecision(
     parseTrustStore(deps.read(path.join(deps.configDir, "trust.json"))),
     folder,
@@ -79,6 +75,19 @@ export function projectInfo(folder: string, trust: TrustSetting, deps: ProjectDe
     agents: agentChoices(agentFiles(root, access, deps)),
     configPath,
   };
+}
+
+/// The shared settings for a folder, whether or not one is open: the global
+/// file and `OXIDE_*` are all a window with no folder has to read, and the
+/// CLI's own resolution reads the same two when it is asked with no project
+/// (`update_notice::enabled`, which the launch's own check is gated by).
+export function sharedSettingsFor(folder: string | null, deps: ProjectDeps): SharedSettings {
+  const root = folder ? (projectRoot(folder, deps) ?? folder) : null;
+  return sharedSettings(
+    deps.read(path.join(deps.configDir, "settings.json")),
+    root ? deps.read(path.join(root, ".oxide", "settings.json")) : null,
+    deps.env,
+  );
 }
 
 /// The closest directory that looks like a project, mirroring

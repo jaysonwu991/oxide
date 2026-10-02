@@ -747,15 +747,22 @@ function resetTranscript() {
   renderWelcome();
 }
 
+/// A turn belongs to this window's own process — its tools write files and its
+/// stream is read here — so anything that would replace what is on screen, or the
+/// process itself, is refused while one runs.
+function busyRefusal(what) {
+  if (!state.busy) return false;
+  setStatus(`A turn is running; stop it before ${what}.`);
+  return true;
+}
+
 /// A running turn owns the thread it is on: clearing the transcript under it
 /// would paint the rest of its events into a chat that no longer exists, and the
 /// session id it is about to report would be dropped with the queued messages.
 /// Every path that starts a fresh thread asks here first, as the VS Code panel
 /// refuses its own new chat while a turn is live.
 function canStartNewChat() {
-  if (!state.busy) return true;
-  setStatus("A turn is running; stop it before starting a new thread.");
-  return false;
+  return !busyRefusal("starting a new thread");
 }
 
 function newChat() {
@@ -2595,6 +2602,16 @@ let updateProbe = 0;
 /// same install again. Held in an object so a front-end check can put the dialog
 /// back to the state a fresh window is in.
 const installedUpdate = { answer: null };
+/// The install a launch performs on its own, as the shell reported it: null
+/// while there is none, `{ stage, version }` while one works, `{ answer }` once a
+/// release is in place. The app keeps itself current the way its other front-ends
+/// check for one, so the window is told rather than asking.
+let launchUpdate = null;
+/// Whether the reader has put this launch's row away. Kept apart from the
+/// install's own state, since what the row says goes on arriving — and a row that
+/// came back on the next stage would be one the reader cannot dismiss, which is
+/// not what a dismissal means.
+const launchDismissed = { yes: false };
 
 /// Checks the app's own release train (`desktop-v*`) and offers to install it.
 /// The resolution is `oxide_core::updates`, shared with the terminal, so the
@@ -2609,6 +2626,7 @@ async function openUpdate() {
   el("update-notes").hidden = true;
   el("update-install").hidden = true;
   el("update-install").disabled = true;
+  el("update-restart").hidden = true;
   closeOverlays("update-modal");
   el("update-modal").hidden = false;
   // A fresh check replaces the release the last one resolved, so a check that
@@ -2649,6 +2667,7 @@ function paintUpdate(check, headline) {
     box.innerHTML = "";
     el("update-notes").hidden = true;
     el("update-install").hidden = true;
+    el("update-restart").hidden = true;
     return;
   }
   // An install this session finished is the newest word on this installation,
@@ -2692,6 +2711,9 @@ function paintUpdate(check, headline) {
   install.hidden = !(check.updateAvailable && check.installable);
   install.disabled = false;
   install.textContent = check.updateAvailable ? `Install ${check.latest}` : "Install";
+  // A release that is only offered has not been installed, so there is nothing
+  // to restart into yet.
+  el("update-restart").hidden = true;
 }
 
 /// A failure to check or to install: the CLI's own words, which say which of the
@@ -2706,6 +2728,7 @@ function paintUpdateFailure(title, text) {
   el("update-body").innerHTML = `<div class="update-error">${escapeHtml(text)}</div>`;
   el("update-notes").hidden = updateCheck === null || !updateCheck.releaseUrl;
   el("update-install").hidden = true;
+  el("update-restart").hidden = true;
 }
 
 /// Installs the release the dialog offered: the app downloads the artifact its
@@ -2764,7 +2787,7 @@ function paintInstalled(answer) {
     : `Oxide ${answer.version} is installed`;
   el("update-note").textContent = pending
     ? "Finish the installer, then open Oxide again to run the new version."
-    : "Quit Oxide and open it again to run the new version.";
+    : "Restart Oxide to run the new version. The release is in place; the app running here is still the one that started.";
   const lines = [];
   if (answer.tag) lines.push(`Release ${mono(answer.tag)}`);
   if (answer.asset) lines.push(`Downloaded ${escapeHtml(answer.asset)}`);
@@ -2773,6 +2796,113 @@ function paintInstalled(answer) {
   el("update-body").innerHTML = lines.map((line) => `<div class="update-line">${line}</div>`).join("");
   el("update-notes").hidden = !updateCheck || !updateCheck.releaseUrl;
   el("update-install").hidden = true;
+  // Only a release this app put in place is one to restart into: a Windows
+  // installer owns what happens next, and the app it asks to be closed is this
+  // one.
+  el("update-restart").hidden = pending;
+}
+
+// ---------- the launch's own update ----------
+
+/// The launch looked for a release of this app and is installing one without
+/// being asked, so the window hears about it rather than asking: each step
+/// arrives as a stage, and what is left when it lands is the restart that runs
+/// it.
+function handleUpdateProgress(payload) {
+  launchUpdate = {
+    stage: (payload && payload.stage) || "",
+    version: (payload && payload.version) || "",
+  };
+  paintLaunchUpdate();
+}
+
+function handleUpdateReady(answer) {
+  // The dialog reports an install this window performed from the same place a
+  // click's own install is remembered: a check that resolves the release now on
+  // disk reports the install rather than offering it a second time.
+  installedUpdate.answer = answer;
+  launchUpdate = { answer };
+  paintLaunchUpdate();
+  // A dialog the reader opened while this install ran was asked about the build
+  // that started — the release it resolved is the one now on disk — so its own
+  // Install row would put the same release there twice. The install is the newest
+  // word on the dialog too, and it is repaired rather than left offering it.
+  if (!el("update-modal").hidden) paintInstalled(answer);
+}
+
+/// A launch's own install that could not finish. Nobody asked for it, so it is
+/// a line rather than a dialog — and asking again is what the window's own Check
+/// for Updates… is for.
+function handleUpdateFailed(payload) {
+  launchUpdate = null;
+  paintLaunchUpdate();
+  setStatus(`Could not install the update: ${(payload && payload.message) || "unknown error"}`);
+}
+
+/// Paints where the launch's own install got to, or what it left to do. A
+/// release installed in the background is not the app that is running — the
+/// process is still the build that started — so the row ends in the restart that
+/// runs it.
+function paintLaunchUpdate() {
+  const banner = el("update-banner");
+  if (!launchUpdate || launchDismissed.yes) {
+    banner.hidden = true;
+    return;
+  }
+  const answer = launchUpdate.answer;
+  const stage =
+    {
+      checking: "Looking for",
+      downloading: "Downloading",
+      verifying: "Verifying",
+      installing: "Installing",
+    }[launchUpdate.stage] || "Installing";
+  el("update-banner-text").textContent = answer
+    ? `Oxide ${answer.version} is installed.`
+    : launchUpdate.version
+      ? `${stage} Oxide ${launchUpdate.version}…`
+      : "Looking for a new release…";
+  el("update-banner-restart").hidden = !answer;
+  banner.hidden = false;
+}
+
+/// The row is the window's own, so it can be put away without stopping what it
+/// names: the install goes on either way, and a release already in place is
+/// offered again by Check for Updates…, which reports the install rather than
+/// offering to repeat it. The dismissal lasts the rest of the launch, since a row
+/// that returned with the next stage is one the reader cannot put away.
+function dismissLaunchUpdate() {
+  launchDismissed.yes = true;
+  launchUpdate = null;
+  paintLaunchUpdate();
+}
+
+/// Asks what the launch's own install has already said.
+///
+/// The install starts before this page does, so its first steps were emitted into
+/// a window with nothing listening; the newest of them is kept beside the app's
+/// state for exactly this window, and the report the restart hangs on is not one
+/// to miss. What it answers is painted through the same handlers the events go to,
+/// since it is the event it would have heard.
+function catchUpOnLaunchUpdate() {
+  return invoke("launch_update")
+    .then((heard) => {
+      if (!heard || !heard.event) return;
+      const payload = heard.payload || {};
+      if (heard.event === "update-progress") handleUpdateProgress(payload);
+      else if (heard.event === "update-ready") handleUpdateReady(payload);
+      else if (heard.event === "update-failed") handleUpdateFailed(payload);
+    })
+    .catch(() => {});
+}
+
+/// Restarts Oxide, which is what runs a release an install has put in place: the
+/// process running is still the build that started, so only a new one is the new
+/// version. A turn is work this process owns, so a restart mid-turn is refused
+/// the way starting a new thread is.
+function restartApp() {
+  if (busyRefusal("restarting Oxide")) return;
+  invoke("restart_app").catch((error) => setStatus(`Could not restart Oxide: ${error}`));
 }
 
 /// Opens the release the dialog is showing in the platform browser, the way a
@@ -3440,6 +3570,14 @@ async function initEvents() {
   // The macOS menu item has no page of its own to paint into, so it asks the
   // window for the dialog the sidebar's own button opens.
   await listen("check-updates", () => openUpdate());
+  // The launch installs a release on its own, so these are the window's side of
+  // an install nobody in the window asked for — and the install starts before
+  // this page does, so what it has already said is asked for rather than waited
+  // on, once the listeners above are in place to hear the rest.
+  await listen("update-progress", (event) => handleUpdateProgress(event.payload || {}));
+  await listen("update-ready", (event) => handleUpdateReady(event.payload || {}));
+  await listen("update-failed", (event) => handleUpdateFailed(event.payload || {}));
+  await catchUpOnLaunchUpdate();
   await listen("question-request", (event) => showQuestion(event.payload || {}));
   // The request timed out with nobody answering, while the run it belongs to
   // may still be going: the dialog goes away so it does not offer an answer that
@@ -3693,6 +3831,9 @@ function init() {
   el("update-close").onclick = () => (el("update-modal").hidden = true);
   el("update-notes").onclick = openReleaseNotes;
   el("update-install").onclick = installUpdate;
+  el("update-restart").onclick = restartApp;
+  el("update-banner-restart").onclick = restartApp;
+  el("update-banner-dismiss").onclick = dismissLaunchUpdate;
   el("sessions-close").onclick = () => (el("sessions-modal").hidden = true);
   el("sessions-new").onclick = () => {
     el("sessions-modal").hidden = true;

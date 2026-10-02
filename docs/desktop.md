@@ -592,6 +592,56 @@ repainting the dialog with an older release. A check asks GitHub for the newest
 release, so a machine with no network reports what went wrong instead of
 pretending to be up to date.
 
+### The update a launch performs itself
+
+A launch does not wait to be asked. `main.rs`'s `setup` spawns
+`commands::auto_update` off the window's path, which resolves the newest release
+of this app's own train through the shared `oxide_core::update_notice`: the
+answer the last launch found is read at once and looked up again only once that
+answer is older than six hours, so a launch costs at most one request and never
+waits on the network for it. `checkForUpdates` in a `settings.json` decides
+whether a launch looks at all (`OXIDE_CHECK_FOR_UPDATES` overrides it); a launch
+is about the app rather than the folder open in it, so the global file answers
+when nothing is open (`enabled_in(None)`), which is why the flag turns the
+shared notice, this install and the terminal's off together.
+
+Only a copy the app owns installs itself: `update::launch_installs` is true when
+the release is newer than the build running here *and* this installation is one
+the app replaces in place — a macOS `.app` bundle, or the AppImage it runs from.
+A checkout's build, a distribution's package, a copy an administrator put in
+place for every user, and the Windows installer (which asks for elevation and
+waits for the app to be closed) all leave the launch alone: nothing is written
+over behind the reader's back, and the dialog's own **Install** stays the way in.
+What does run is the dialog's own install — the same download, the same
+checksum, the same swap — with one install at a time, so a second launch cannot
+race the first.
+
+The window reports it as a row above the sidebar's foot rather than a dialog,
+since nobody asked for this one: the stages arrive as `update-progress` events
+and the row follows them (`Looking for a new release…`, `Downloading Oxide
+0.36.0…`, `Verifying…`, `Installing…`), ending at `Oxide 0.36.0 is installed.`
+with **Restart** beside it. The install starts from `setup`, before the page has
+loaded and subscribed to the event channel, so each step is kept beside the app's
+state as well as emitted and the page asks for the newest one as it starts
+(`launch_update`): the report the restart hangs on is not one to have missed,
+and a window that opened mid-install paints exactly what it would have heard.
+The process running is still the build that started,
+so the reload is the only thing that runs the release: **Restart** is the
+`restart_app` command, which asks Tauri to relaunch this copy and exit this one
+(`AppHandle::request_restart`, handed to the main loop rather than restarted
+from whatever thread asked). A turn is work this process owns — its tools write
+files and its stream is read here — so a restart mid-turn is refused the way
+replacing the thread on screen is refused, and the row says so. The ✕ puts the
+row away without stopping the install, and it puts it away for the rest of the
+launch: what the row says goes on arriving, and a row that came back with the
+next stage is one the reader cannot dismiss. Because the window remembers the
+release it installed, a later **Check for Updates…** reports that install rather
+than offering to repeat it — including a dialog that was already open when the
+launch's install landed, which is repaired with the install rather than left
+offering a release that is by then on disk. A launch's install that could not
+finish reports itself in a line under the composer instead of a dialog, and the
+dialog's own button is the one to ask again with.
+
 ## Packaging
 
 Icons are checked in (`icons/`). Build a bundle or native installer with the
