@@ -132,8 +132,7 @@ The window follows a Codex-style layout:
   way the VS Code panel's is: the attach paperclip, the model, the thinking
   level and the trust shield lead, then — after a rule of its own — the app's own
   dialogs as icon buttons in the extension's own style: a plug that opens
-  **Connect**, a shield
-  for the project trust, a padlock for the saved tool approvals, and a
+  **Connect**, a padlock for the saved tool approvals, and a
   circled `?` for the shortcut help, each with the words in its tooltip and its
   `aria-label`. The controls the extension's own row carries come first and in
   its order, and the glyphs the two front-ends share — the paperclip, the `+`,

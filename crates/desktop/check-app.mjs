@@ -794,6 +794,23 @@ check(
     !calls.some(([name]) => name === "project_info"),
   `${app.state.project} / ${app.state.session} / ${JSON.stringify(calls.map(([name]) => name))}`,
 );
+// A running turn owns the thread it is on, so the head refuses rather than
+// clearing the transcript under it and leaving its later events with nowhere to
+// go — the same refusal the panel's own new chat makes.
+app.state.session = "6f3031b2beef";
+app.state.project = projectRows[1].path;
+app.setBusy();
+calls.length = 0;
+await app.newChatInDefaultProject();
+check(
+  "refused a new thread while a turn was running",
+  app.state.session === "6f3031b2beef" &&
+    app.state.project === projectRows[1].path &&
+    calls.length === 0 &&
+    /turn is running/.test(status()),
+  `${app.state.session} / ${JSON.stringify(calls.map(([name]) => name))} / ${status()}`,
+);
+app.setIdle();
 app.state.projects = [];
 app.state.project = null;
 el("create-project-modal").hidden = true;
@@ -2919,6 +2936,23 @@ check(
     elementFor("busy-message-mode").hidden === true &&
     elementFor("send").title === "Send (Enter)",
   `${elementFor("send").title} / stop ${elementFor("stop").hidden}`,
+);
+// The accessible name follows the action the button performs, so a screen
+// reader hears what the click will do rather than the label it was built with.
+const cornerLabel = () => elementFor("send").getAttribute("aria-label");
+app.setBusy();
+elementFor("prompt").value = "keep going";
+app.updateSendState();
+const queuedLabel = cornerLabel();
+elementFor("busy-message-mode").onclick();
+const steeredLabel = cornerLabel();
+app.setIdle();
+elementFor("prompt").value = "";
+app.updateSendState();
+check(
+  "named the corner's action for a screen reader",
+  queuedLabel === "Queue" && steeredLabel === "Steer" && cornerLabel() === "Send",
+  `${queuedLabel} / ${steeredLabel} / ${cornerLabel()}`,
 );
 
 calls.length = 0;

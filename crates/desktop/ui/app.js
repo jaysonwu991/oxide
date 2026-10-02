@@ -747,7 +747,19 @@ function resetTranscript() {
   renderWelcome();
 }
 
+/// A running turn owns the thread it is on: clearing the transcript under it
+/// would paint the rest of its events into a chat that no longer exists, and the
+/// session id it is about to report would be dropped with the queued messages.
+/// Every path that starts a fresh thread asks here first, as the VS Code panel
+/// refuses its own new chat while a turn is live.
+function canStartNewChat() {
+  if (!state.busy) return true;
+  setStatus("A turn is running; stop it before starting a new thread.");
+  return false;
+}
+
 function newChat() {
+  if (!canStartNewChat()) return;
   state.pendingSends = [];
   resetTranscript();
   clearAttachments();
@@ -758,6 +770,9 @@ function newChat() {
 /// Starts a task in `project`, selecting it first when it is not the active one.
 /// The composer belongs to a project, so a task always lands in a real one.
 async function newTaskIn(project) {
+  // Asked before the project is switched, so a refusal leaves the running
+  // thread's window exactly as it was.
+  if (!canStartNewChat()) return;
   if (project && project.path !== state.project) {
     await selectProject(project);
   }
@@ -842,6 +857,13 @@ function updateSendState() {
       ? "Steer the active response (Enter)"
       : "Queue as the next turn (Enter)"
     : "Send (Enter)";
+  // The accessible name follows the action the button now performs, the way the
+  // panel's own corner does: a screen reader hears Queue or Steer, not the
+  // label the button was built with.
+  el("send").setAttribute(
+    "aria-label",
+    hasBusyMessage ? (state.busyMessageMode === "steer" ? "Steer" : "Queue") : "Send",
+  );
 }
 
 function toggleBusyMessageMode() {
