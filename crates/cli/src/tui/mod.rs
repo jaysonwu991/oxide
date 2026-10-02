@@ -1915,7 +1915,11 @@ fn handle_updates_command(
                         // Nothing to look at: the binary is not one a release
                         // replaces, or the environment turned the check off.
                         (true, false) => {
-                            "; this installation is not one a release replaces".to_string()
+                            if update_notice_command().is_none() {
+                                "; this installation is not one a release replaces".to_string()
+                            } else {
+                                "; OXIDE_CHECK_FOR_UPDATES turns the check off".to_string()
+                            }
                         }
                     };
                     app.items.push(ChatItem::Info(format!(
