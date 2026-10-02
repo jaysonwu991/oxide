@@ -122,9 +122,15 @@ describe("command contributions", () => {
         chat.includes('if (probe !== this.updateProbe) return { k: "superseded" };'),
       "a check an earlier one has superseded is dropped, not painted",
     );
+    // The install answers the same question, so a check asked for while it ran is
+    // the one that keeps the dialog. The line breaks are collapsed first, the way
+    // the session listing's assertions do, since a checkout on Windows is CRLF.
+    const install = chat.slice(chat.indexOf("private async installUpdate(")).replace(/\s+/g, " ");
     assert.ok(
-      chat.includes("const probe = ++this.updateProbe;") &&
-        chat.includes("if (probe !== this.updateProbe) return;\n    if (result.error || result.code !== 0) {"),
+      install.includes("const probe = ++this.updateProbe;") &&
+        install.includes(
+          'if (probe !== this.updateProbe) return; if (result.error || result.code !== 0) {',
+        ),
       "and an install a newer check has overtaken reports nothing either",
     );
     // The install is unpinned, so the release that lands is the one newest when
