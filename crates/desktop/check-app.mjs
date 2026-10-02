@@ -367,6 +367,11 @@ let installedVersion = null;
 // run to completion — it asks for elevation and waits for the app to be closed
 // — so a test of that machine answers with the release still pending.
 let installPending = false;
+// What the launch's own install is kept as having said, for a window that
+// subscribed to the event channel after it started. The app keeps the newest
+// event beside its state and the page asks for it once it is listening; a test
+// that wants the page to have missed one sets it here.
+let launchHeard = null;
 // Installs a test holds in flight, so a check that overlaps one can be measured
 // instead of raced.
 let installsHeld = 0;
@@ -617,6 +622,8 @@ const invoke = async (command, args = {}) => {
           : `Oxide ${version} is in ${path}. Quit Oxide and open it again to run the new version.`,
       };
     }
+    case "launch_update":
+      return launchHeard;
     // Everything the rest of `init`/selection asks for; none of it is what this
     // check is about, and all of it stays inside the stub.
     case "list_providers":
@@ -722,7 +729,7 @@ vm.runInThisContext(
     " loadMcps, openSessions," +
     " listedSessions, selectSessionFromTree, removeSession," +
     " updateChips," +
-    " startTool, finishTool, toggleTool, openUpdate, installUpdate, installedUpdate };\n",
+    " startTool, finishTool, toggleTool, openUpdate, installUpdate, installedUpdate, catchUpOnLaunchUpdate, launchDismissed };\n",
 );
 
 const app = globalThis.__app;
@@ -3733,6 +3740,67 @@ check(
   `${banner.hidden} / ${elementFor("update-modal").hidden} / ${status()}`,
 );
 elementFor("status-text").textContent = "";
+
+// A window that opened after the install started heard none of it: the events
+// were emitted into a page that was not listening, and the one that must not be
+// missed is the report the restart hangs on. The shell keeps the newest of them
+// beside its state, and the page asks for what it has already said as it starts,
+// from the same channel every other command travels on.
+app.launchDismissed.yes = false;
+check(
+  "asked what the launch's install had already said as it started",
+  invokes.some(([, payload]) => payload.command === "launch_update"),
+  JSON.stringify(invokes.map(([, payload]) => payload.command).slice(0, 4)),
+);
+launchHeard = { event: "update-ready", payload: launchAnswer };
+await app.catchUpOnLaunchUpdate();
+check(
+  "painted the install a page that opened late would have missed",
+  banner.hidden === false &&
+    /Oxide 0.34.0 is installed/.test(bannerText()) &&
+    bannerRestart.hidden === false,
+  `${banner.hidden} / ${bannerText()} / ${bannerRestart.hidden}`,
+);
+
+// What the row says goes on arriving — the install is still working — so a
+// dismissal is kept apart from it: a row that came back with the next stage is
+// one the reader cannot put away.
+calls.length = 0;
+await elementFor("update-banner-dismiss").onclick();
+await emit("update-progress", { stage: "installing", version: "0.34.0" });
+await nextTick();
+check(
+  "left the row the reader put away away, whatever the install reports next",
+  banner.hidden === true,
+  String(banner.hidden),
+);
+launchHeard = null;
+app.launchDismissed.yes = false;
+
+// A dialog opened while the launch's install was running was asked about the
+// build that started, so it offers the release the install has just put in
+// place: the install is the newest word on the dialog too, and its Install row is
+// one that would install what is already there.
+app.installedUpdate.answer = null;
+updateAnswer = { ...OFFERED_UPDATE };
+calls.length = 0;
+await app.openUpdate();
+check(
+  "offered the release the dialog's own check resolved",
+  installButton.hidden === false && restartButton.hidden === true,
+  `${installButton.hidden} / ${restartButton.hidden}`,
+);
+await emit("update-ready", launchAnswer);
+await nextTick();
+check(
+  "repaired the open dialog with the install that landed under it",
+  updateTitle() === "Oxide 0.34.0 is installed" &&
+    installButton.hidden === true &&
+    restartButton.hidden === false,
+  `${updateTitle()} / ${installButton.hidden} / ${restartButton.hidden}`,
+);
+elementFor("update-close").onclick();
+app.installedUpdate.answer = null;
 
 // ---------- the bridge the window is reached through ----------
 

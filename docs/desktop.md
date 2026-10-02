@@ -620,18 +620,27 @@ The window reports it as a row above the sidebar's foot rather than a dialog,
 since nobody asked for this one: the stages arrive as `update-progress` events
 and the row follows them (`Looking for a new release…`, `Downloading Oxide
 0.36.0…`, `Verifying…`, `Installing…`), ending at `Oxide 0.36.0 is installed.`
-with **Restart** beside it. The process running is still the build that started,
+with **Restart** beside it. The install starts from `setup`, before the page has
+loaded and subscribed to the event channel, so each step is kept beside the app's
+state as well as emitted and the page asks for the newest one as it starts
+(`launch_update`): the report the restart hangs on is not one to have missed,
+and a window that opened mid-install paints exactly what it would have heard.
+The process running is still the build that started,
 so the reload is the only thing that runs the release: **Restart** is the
 `restart_app` command, which asks Tauri to relaunch this copy and exit this one
 (`AppHandle::request_restart`, handed to the main loop rather than restarted
 from whatever thread asked). A turn is work this process owns — its tools write
 files and its stream is read here — so a restart mid-turn is refused the way
 replacing the thread on screen is refused, and the row says so. The ✕ puts the
-row away without stopping the install, and because the window remembers the
+row away without stopping the install, and it puts it away for the rest of the
+launch: what the row says goes on arriving, and a row that came back with the
+next stage is one the reader cannot dismiss. Because the window remembers the
 release it installed, a later **Check for Updates…** reports that install rather
-than offering to repeat it. A launch's install that could not finish reports
-itself in a line under the composer instead of a dialog, and the dialog's own
-button is the one to ask again with.
+than offering to repeat it — including a dialog that was already open when the
+launch's install landed, which is repaired with the install rather than left
+offering a release that is by then on disk. A launch's install that could not
+finish reports itself in a line under the composer instead of a dialog, and the
+dialog's own button is the one to ask again with.
 
 ## Packaging
 

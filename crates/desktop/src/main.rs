@@ -98,8 +98,11 @@ fn main() {
             // newest release of its own train is looked for in the background
             // and, where this copy is one the app replaces in place, installed
             // without being asked. What a launch is left to say is that a restart
-            // will run it, which is the window's own row.
-            tauri::async_runtime::spawn(commands::auto_update(app.handle().clone()));
+            // will run it, which is the window's own row — and every step is kept
+            // beside the state as well as emitted, since the page subscribes to
+            // the event channel after the install has started.
+            let state = app.state::<Arc<DesktopState>>().inner().clone();
+            tauri::async_runtime::spawn(commands::auto_update(state));
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![oxide_invoke])

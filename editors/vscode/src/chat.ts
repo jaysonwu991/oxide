@@ -1924,8 +1924,19 @@ export class ChatController {
     // asked about the code that was running when it started.
     this.installedUpdate = check;
     this.update = null;
-    this.showNotice(`Installed Oxide ${check.latest}.`);
-    if (report) this.showDialog(updateDialog({ k: "installed", check }));
+    // Remembered whichever row ran the install: what is on disk is the release
+    // now waiting for a reload, and a window that did not install it — this one
+    // before its reload, or another one still running the old code — asks nothing
+    // and offers nothing while the version it remembers is newer than the one it
+    // runs. A click is therefore remembered where a launch's own install is.
+    await this.updateMemory.write({
+      checkedAt: this.updateMemory.read()?.checkedAt ?? Date.now(),
+      installedVersion: check.latest,
+    });
+    if (report) {
+      this.showNotice(`Installed Oxide ${check.latest}.`);
+      this.showDialog(updateDialog({ k: "installed", check }));
+    }
     return true;
   }
 
@@ -2057,7 +2068,6 @@ export class ChatController {
         );
         return;
       }
-      await this.updateMemory.write({ checkedAt: now, installedVersion: check.latest });
       this.announceInstalled(check);
       return;
     }

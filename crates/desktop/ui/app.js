@@ -2607,6 +2607,11 @@ const installedUpdate = { answer: null };
 /// release is in place. The app keeps itself current the way its other front-ends
 /// check for one, so the window is told rather than asking.
 let launchUpdate = null;
+/// Whether the reader has put this launch's row away. Kept apart from the
+/// install's own state, since what the row says goes on arriving — and a row that
+/// came back on the next stage would be one the reader cannot dismiss, which is
+/// not what a dismissal means.
+const launchDismissed = { yes: false };
 
 /// Checks the app's own release train (`desktop-v*`) and offers to install it.
 /// The resolution is `oxide_core::updates`, shared with the terminal, so the
@@ -2818,6 +2823,11 @@ function handleUpdateReady(answer) {
   installedUpdate.answer = answer;
   launchUpdate = { answer };
   paintLaunchUpdate();
+  // A dialog the reader opened while this install ran was asked about the build
+  // that started — the release it resolved is the one now on disk — so its own
+  // Install row would put the same release there twice. The install is the newest
+  // word on the dialog too, and it is repaired rather than left offering it.
+  if (!el("update-modal").hidden) paintInstalled(answer);
 }
 
 /// A launch's own install that could not finish. Nobody asked for it, so it is
@@ -2835,7 +2845,7 @@ function handleUpdateFailed(payload) {
 /// runs it.
 function paintLaunchUpdate() {
   const banner = el("update-banner");
-  if (!launchUpdate) {
+  if (!launchUpdate || launchDismissed.yes) {
     banner.hidden = true;
     return;
   }
@@ -2859,10 +2869,31 @@ function paintLaunchUpdate() {
 /// The row is the window's own, so it can be put away without stopping what it
 /// names: the install goes on either way, and a release already in place is
 /// offered again by Check for Updates…, which reports the install rather than
-/// offering to repeat it.
+/// offering to repeat it. The dismissal lasts the rest of the launch, since a row
+/// that returned with the next stage is one the reader cannot put away.
 function dismissLaunchUpdate() {
+  launchDismissed.yes = true;
   launchUpdate = null;
   paintLaunchUpdate();
+}
+
+/// Asks what the launch's own install has already said.
+///
+/// The install starts before this page does, so its first steps were emitted into
+/// a window with nothing listening; the newest of them is kept beside the app's
+/// state for exactly this window, and the report the restart hangs on is not one
+/// to miss. What it answers is painted through the same handlers the events go to,
+/// since it is the event it would have heard.
+function catchUpOnLaunchUpdate() {
+  return invoke("launch_update")
+    .then((heard) => {
+      if (!heard || !heard.event) return;
+      const payload = heard.payload || {};
+      if (heard.event === "update-progress") handleUpdateProgress(payload);
+      else if (heard.event === "update-ready") handleUpdateReady(payload);
+      else if (heard.event === "update-failed") handleUpdateFailed(payload);
+    })
+    .catch(() => {});
 }
 
 /// Restarts Oxide, which is what runs a release an install has put in place: the
@@ -3540,10 +3571,13 @@ async function initEvents() {
   // window for the dialog the sidebar's own button opens.
   await listen("check-updates", () => openUpdate());
   // The launch installs a release on its own, so these are the window's side of
-  // an install nobody in the window asked for.
+  // an install nobody in the window asked for — and the install starts before
+  // this page does, so what it has already said is asked for rather than waited
+  // on, once the listeners above are in place to hear the rest.
   await listen("update-progress", (event) => handleUpdateProgress(event.payload || {}));
   await listen("update-ready", (event) => handleUpdateReady(event.payload || {}));
   await listen("update-failed", (event) => handleUpdateFailed(event.payload || {}));
+  await catchUpOnLaunchUpdate();
   await listen("question-request", (event) => showQuestion(event.payload || {}));
   // The request timed out with nobody answering, while the run it belongs to
   // may still be going: the dialog goes away so it does not offer an answer that

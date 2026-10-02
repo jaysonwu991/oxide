@@ -162,6 +162,17 @@ describe("command contributions", () => {
         install.includes('updateDialog({ k: "installed", check })'),
       "the install reports itself whether or not a check is in flight behind it",
     );
+    // What is on disk is the release waiting for a reload, and the window that
+    // did not install it — this one before its reload, or another one still
+    // running the old code — is the one that would offer it again: the install is
+    // what a window remembers, whichever row ran it. The check time it already
+    // had is kept, since a check that did not run is not a check that did.
+    assert.ok(
+      install.includes("await this.updateMemory.write({") &&
+        install.includes("checkedAt: this.updateMemory.read()?.checkedAt ?? Date.now()") &&
+        install.includes("installedVersion: check.latest,"),
+      "the install is remembered whichever row ran it, so a window that did not run it offers nothing",
+    );
     assert.ok(
       !install.includes("this.checkForUpdates("),
       "and the one that stands reports what it put in VS Code rather than reading the version still running",
@@ -240,7 +251,9 @@ describe("command contributions", () => {
       "the answer is remembered whether or not it resolved anything",
     );
     assert.ok(
-      !background.includes("this.showDialog(") && !background.includes("this.closeDialog()"),
+      !background.includes("this.showDialog(") &&
+        !background.includes("this.closeDialog()") &&
+        !background.includes("this.showNotice("),
       "nothing is painted or closed over whatever the window is showing",
     );
     assert.ok(
@@ -262,13 +275,12 @@ describe("command contributions", () => {
       "the install is the notification's own row, and a second one is never run over the first",
     );
     assert.ok(
-      background.includes("await this.runInstall(check, action.vsix, false)"),
-      "and that row runs the dialog's own download, checksum and hand-over without its dialog",
+      background.includes("await this.runInstall(check, action.vsix, false)") &&
+        !background.includes("installedVersion: check.latest"),
+      "and that row runs the dialog's own download, checksum and hand-over without its dialog, remembering it through the install alone",
     );
     assert.ok(
-      background.includes(
-        "this.updateMemory.write({ checkedAt: now, installedVersion: check.latest })",
-      ) && background.includes("this.announceInstalled(check)"),
+      background.includes("this.announceInstalled(check)"),
       "and it is announced only once VS Code holds the release",
     );
     const install = chat.slice(
@@ -282,6 +294,18 @@ describe("command contributions", () => {
     assert.ok(
       install.includes("if (!report) return false;") && install.includes("if (report) this.showDialog("),
       "a launch's install fails into the output channel rather than a dialog nobody opened",
+    );
+    // The transcript and the dialog are one report of a click and one of a
+    // launch, and which one a window gets is not the install's to guess: a
+    // launch's own install says so through the notification its caller raises,
+    // never by writing into whatever conversation was on screen when it started.
+    assert.ok(
+      install
+        .replace(/\s+/g, " ")
+        .includes(
+          'if (report) { this.showNotice(`Installed Oxide ${check.latest}.`); this.showDialog(updateDialog({ k: "installed", check })); }',
+        ),
+      "so the launch's own install reports itself to the panel nowhere at all",
     );
     assert.ok(
       background.includes("this.openRelease(check.releaseUrl)") &&

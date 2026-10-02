@@ -56,6 +56,9 @@ pub struct DesktopState {
     /// The `@path` completion's listing of the open project, walked once and
     /// dropped when a turn ends (see `oxide_desktop::at`).
     pub at: PathCache,
+    /// The newest word the launch's own install has for the window, as the event
+    /// it would have heard. See `LaunchUpdate`.
+    pub launch_update: std::sync::Mutex<Option<LaunchUpdate>>,
     runs: Arc<Mutex<HashMap<u64, RunHandle>>>,
     next_run: AtomicU64,
     events: EventSink,
@@ -68,11 +71,43 @@ impl DesktopState {
             approvals: Arc::new(ApprovalBroker::new(events.clone())),
             questions: Arc::new(AskBroker::new(events.clone())),
             at: PathCache::default(),
+            launch_update: std::sync::Mutex::new(None),
             runs: Arc::new(Mutex::new(HashMap::new())),
             next_run: AtomicU64::new(1),
             events,
         }
     }
+
+    /// Keeps the newest word from the launch's own install and hands it to the
+    /// window, which may not be listening for it yet.
+    fn announce_launch_update(&self, event: &'static str, payload: Value) {
+        let mut slot = self
+            .launch_update
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        *slot = Some(LaunchUpdate {
+            event,
+            payload: payload.clone(),
+        });
+        let _ = self.events.emit(event, payload);
+    }
+}
+
+/// The newest thing a launch's own install has said, as the window would have
+/// heard it.
+///
+/// The install starts from `setup`, before the page has loaded and subscribed to
+/// the event channel, so its first events can be emitted into a window that has
+/// nothing listening — and the one that must not be lost is the report that a
+/// release is in place, since the restart that runs it is offered nowhere else.
+/// Keeping the newest event beside the state lets a window that has just started
+/// listening ask what it missed and paint exactly what it would have heard.
+#[derive(Clone, Debug)]
+pub struct LaunchUpdate {
+    /// The event's own name: `update-progress`, `update-ready` or
+    /// `update-failed`.
+    pub event: &'static str,
+    pub payload: Value,
 }
 
 fn message_view(message: &Message) -> Value {
@@ -842,7 +877,7 @@ pub async fn install_update() -> CmdResult<Value> {
 /// step, so a release that has landed is a row the reader can restart into rather
 /// than a promise the app cannot keep: the process running is still the build that
 /// started, whatever is on disk.
-pub async fn auto_update(app: AppHandle) {
+pub async fn auto_update(state: Arc<DesktopState>) {
     if !update_notice::enabled_in(None) {
         return;
     }
@@ -856,23 +891,33 @@ pub async fn auto_update(app: AppHandle) {
     if !update::launch_installs(&notice, update::current_version(), &installation) {
         return;
     }
-    let events = EventSink::new(app.clone());
-    let steps = events.clone();
+    let steps = state.clone();
     let answer = update::install_reporting(move |progress| {
-        let _ = steps.emit(
+        steps.announce_launch_update(
             "update-progress",
             json!({ "stage": progress.stage, "version": progress.version }),
         );
     })
     .await;
     match answer {
-        Ok(answer) => {
-            let _ = events.emit("update-ready", answer);
-        }
+        Ok(answer) => state.announce_launch_update("update-ready", answer),
         Err(error) => {
-            let _ = events.emit("update-failed", json!({ "message": error.to_string() }));
+            state.announce_launch_update("update-failed", json!({ "message": error.to_string() }))
         }
     }
+}
+
+/// What the launch's own install has said so far, for a window that started
+/// listening after it began: the newest event it would have heard, or nothing
+/// when this launch installs nothing at all.
+pub fn launch_update(state: &DesktopState) -> CmdResult<Option<Value>> {
+    let slot = state
+        .launch_update
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    Ok(slot
+        .as_ref()
+        .map(|heard| json!({ "event": heard.event, "payload": heard.payload })))
 }
 
 /// Restarts the app, which is what runs a release an install has put in place:
@@ -1158,6 +1203,7 @@ pub async fn dispatch(
         "set_theme" => command_value(set_theme(arg(&args, "project")?, arg(&args, "name")?).await),
         "check_updates" => command_value(check_updates().await),
         "install_update" => command_value(install_update().await),
+        "launch_update" => command_value(launch_update(&state)),
         "restart_app" => command_value(restart_app(app, &state).await),
         "open_url" => command_value(open_url(&arg::<String>(&args, "url")?)),
         _ => Err(format!("unknown desktop command `{command}`")),

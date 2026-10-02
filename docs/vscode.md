@@ -885,10 +885,18 @@ the checksum the release reports and hands it to VS Code — the dialog's own
 machinery without its dialog, since the panel is not what the user was looking
 at. The file is fetched when that row is pressed rather than written into the
 editor at launch, which is how the marketplace's own extensions are kept
-current: a check that reports, and a click that installs. Once VS Code holds the
+current: a check that reports, and a click that installs. The launch's own flow
+is the notification's alone: its install runs the dialog's machinery with the
+transcript and the dialog left out of it (`report = false`), so a release
+noticed at activation never writes a line into whatever conversation happens to
+be on screen. Once VS Code holds the
 release the window is told what is left — `Oxide 0.36.0 was installed. Restart
 the window to run it.` with a **Restart Window** row — since the code running is
-the one it replaced. A release the panel has no file for (no build for this
+the one it replaced. Which install happened is remembered by the install itself
+rather than by the row that asked for it, so a release installed by hand is
+also a release every later window knows about: the version on disk is what
+answers, and a window still running the old code offers nothing while it is
+newer. A release the panel has no file for (no build for this
 platform, or a CLI that answered without one) is reported with a **Release
 notes** row instead, which opens the release page where that file is, rather
 than offering an install nothing could run. A window with nothing to do stays
