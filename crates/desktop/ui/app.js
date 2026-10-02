@@ -15,9 +15,13 @@ const el = (id) => document.getElementById(id);
 const REASONING = ["auto", "off", "low", "medium", "high"];
 
 // What each level asks the model for, in the words the picker shows beside it.
+// `off` is worded as a request rather than a promise: a model that always
+// thinks — GLM 5.3 and later, which the client asks for its lowest effort rather
+// than for no thinking at all (`llm::client::glm_forces_thinking`) — still
+// reasons when this level is chosen, and the row must not say otherwise.
 const REASONING_HINTS = {
   auto: "Let the provider decide",
-  off: "Answer without thinking first",
+  off: "Turn thinking off where the model allows it",
   low: "A little reasoning",
   medium: "Balanced reasoning",
   high: "The most reasoning",
@@ -2434,6 +2438,10 @@ function renderModels() {
 
 // ---------- reasoning ----------
 
+// Where the keyboard was before the picker took it, the way the full-size
+// preview keeps its own.
+let reasoningReturnFocus = null;
+
 /// The picker the thinking chip opens: the level a turn thinks at is a choice
 /// rather than a step, and the panel's own chip offers the same list. A level
 /// is applied to the turns this window sends, the way the chip's cycle applied
@@ -2443,9 +2451,40 @@ function openReasoning() {
     setStatus("Select a project first.");
     return;
   }
+  reasoningReturnFocus = document.activeElement || null;
   closeOverlays("reasoning-modal");
   renderReasoning();
   el("reasoning-modal").hidden = false;
+  focusReasoning();
+}
+
+/// The keyboard starts on the level in use — the row a reader who opened the
+/// picker is looking for — rather than staying where it was, which is what a
+/// dialog that never moved focus left behind the overlay.
+function focusReasoning() {
+  const rows = [...el("reasoning-list").children];
+  const target =
+    rows.find((row) => row.classList.contains("active")) || rows[0] || el("reasoning-close");
+  target.focus();
+}
+
+/// Tab walks the picker's own rows and its Close: the dialog is `aria-modal`, so
+/// nothing behind it is reachable while it is up.
+function stepReasoningFocus(step) {
+  const controls = [...el("reasoning-list").children, el("reasoning-close")];
+  const at = controls.indexOf(document.activeElement);
+  controls[at === -1 ? 0 : (at + step + controls.length) % controls.length].focus();
+}
+
+/// Closing hands the keyboard back to whatever opened the picker. Every path
+/// goes through here — a row, the Close button, or Escape — so a reader who
+/// chose a level is not left at the top of the page behind the dialog.
+function closeReasoning() {
+  if (el("reasoning-modal").hidden) return;
+  el("reasoning-modal").hidden = true;
+  const target = reasoningReturnFocus;
+  reasoningReturnFocus = null;
+  target?.focus?.();
 }
 
 function renderReasoning() {
@@ -2476,7 +2515,7 @@ function renderReasoning() {
     check.setAttribute("aria-hidden", "true");
     row.appendChild(check);
 
-    row.onclick = () => setReasoning(level);
+    row.onclick = () => pickReasoning(level);
     box.appendChild(row);
   }
 }
@@ -3273,11 +3312,12 @@ async function runSlashCommand(text) {
       return true;
     case "reasoning":
       // The bare command opens the picker the chip opens; a level typed after it
-      // is taken directly, which is what a front-end without a dialog needs.
+      // is a pick outright — the same bargain as clicking its row — which is what
+      // a front-end without a dialog needs.
       if (!args) {
         openReasoning();
       } else if (REASONING.includes(args)) {
-        setReasoning(args);
+        pickReasoning(args);
       } else {
         setStatus(`Reasoning must be one of ${REASONING.join(", ")}.`);
       }
@@ -3605,7 +3645,20 @@ function toggleHelp() {
 function setReasoning(level) {
   state.reasoning = level;
   updateChips();
-  el("reasoning-modal").hidden = true;
+  // A level set while the picker is up — `Ctrl+R`, or a row — moves the mark, so
+  // the dialog never shows the level it has just left. The list is rebuilt to do
+  // it, which is why the keyboard is put back on the level in use: a rebuild
+  // leaves focus on a row that is no longer in the document.
+  if (!el("reasoning-modal").hidden) {
+    renderReasoning();
+    focusReasoning();
+  }
+}
+
+/// A pick is the one thing that both applies a level and puts the picker away.
+function pickReasoning(level) {
+  setReasoning(level);
+  closeReasoning();
 }
 
 function cycleReasoning() {
@@ -3858,7 +3911,12 @@ function init() {
   el("create-project-save").onclick = saveCreateProject;
 
   el("reasoning").onclick = openReasoning;
-  el("reasoning-close").onclick = () => (el("reasoning-modal").hidden = true);
+  el("reasoning-close").onclick = closeReasoning;
+  el("reasoning-modal").addEventListener("keydown", (event) => {
+    if (event.key !== "Tab") return;
+    event.preventDefault();
+    stepReasoningFocus(event.shiftKey ? -1 : 1);
+  });
   el("model").onclick = openModels;
   el("theme").onclick = openThemes;
   el("permissions").onclick = openPermissions;
@@ -4010,6 +4068,7 @@ function init() {
   document.addEventListener("keydown", (event) => {
     if (event.key === "Escape") {
       closeImage();
+      closeReasoning();
       if (!el("confirm-modal").hidden) resolveConfirm(false);
       if (!el("rename-modal").hidden) resolveRename(null);
       // A question dismissed with Escape is answered as unanswered rather than
@@ -4019,6 +4078,10 @@ function init() {
       return;
     }
     if (event.key === "Tab" && event.shiftKey) {
+      // Shift+Tab belongs to the picker while it is up: it walks the rows, which
+      // is what the dialog's own handler does with it, rather than cycling the
+      // levels under a reader who is choosing one.
+      if (!el("reasoning-modal").hidden) return;
       event.preventDefault();
       cycleReasoning();
       return;

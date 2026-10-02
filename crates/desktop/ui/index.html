@@ -295,9 +295,9 @@
       </div>
     </div>
 
-    <div id="reasoning-modal" class="overlay" hidden>
+    <div id="reasoning-modal" class="overlay" role="dialog" aria-modal="true" aria-labelledby="reasoning-title" hidden>
       <div class="dialog">
-        <h2>Reasoning effort</h2>
+        <h2 id="reasoning-title">Reasoning effort</h2>
         <p class="dialog-sub">The effort passed to each turn with <code>--reasoning</code>. It overrides the stored setting for this window rather than writing it to <code>config.json</code>.</p>
         <div id="reasoning-list" class="reasoning-list"></div>
         <div class="dialog-actions">

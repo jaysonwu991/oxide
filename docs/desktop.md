@@ -445,13 +445,19 @@ The top bar exposes the same controls the CLI has:
   persists with `Config::persist_selection_at`.
 - **Reasoning** — opens a picker listing `auto`, `off`, `low`, `medium` and
   `high` with the level in use marked, the way the panel's own thinking chip does.
-  `Shift+Tab` and `Ctrl+R` still walk the levels, the bare `/reasoning` opens the
-  same picker, and `/reasoning <level>` applies one directly.
+  It is a `role="dialog"` / `aria-modal` panel named by its own title: the
+  keyboard goes to the level in use when it opens and comes back to the chip
+  whatever closes it, so a reader who picked a level is not left behind the
+  overlay. `Shift+Tab` and `Ctrl+R` still walk the levels, the bare `/reasoning`
+  opens the same picker, and `/reasoning <level>` applies one directly.
 
 Reasoning is sent per turn as a `--reasoning`-equivalent override; `start_turn`
 passes it to `Config::load`, so it doesn't rewrite the stored config — which is
 why the picker is a choice about the turns this window sends rather than a
-setting it saves.
+setting it saves. `off` is a request rather than a promise: a model that always
+thinks — GLM 5.3 and later, which the client asks for its lowest effort instead
+of for none at all — still reasons at that level, which is why the row asks for
+no thinking rather than offering an answer without any.
 
 ## Usage
 

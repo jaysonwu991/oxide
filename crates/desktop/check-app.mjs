@@ -2835,6 +2835,10 @@ const pressedReasoning = () =>
     .filter((row) => row.getAttribute("aria-pressed") === "true")
     .map((row) => row.children[0]?.textContent)
     .join(" ");
+const reasoningRow = (level) => reasoningRows().find((row) => row.children[0].textContent === level);
+// The chip has the keyboard when a reader clicks it, which is what the picker
+// gives back when it closes.
+elementFor("reasoning").focus();
 elementFor("reasoning").click();
 check(
   "opened a picker for the level instead of stepping through it",
@@ -2845,9 +2849,62 @@ check(
     pressedReasoning() === "auto",
   `${elementFor("reasoning-modal").hidden} / ${reasoningNames().join(" ")} / ${extensionLevels.join(" ")} / ${currentReasoning()} / ${pressedReasoning()}`,
 );
-reasoningRows()
-  .find((row) => row.children[0].textContent === "medium")
-  .click();
+// A model that always thinks still does at `off`: GLM 5.3 and later are asked for
+// their lowest effort instead of for none at all (`llm::client::glm_forces_thinking`),
+// so the row asks for no thinking rather than promising an answer without any.
+check(
+  "did not promise an answer without any thinking",
+  /^Turn thinking off where the model allows it$/.test(reasoningRow("off")?.children[1]?.textContent),
+  reasoningRow("off")?.children[1]?.textContent,
+);
+// The dialog is `aria-modal`, so the keyboard belongs to it: opening puts it on
+// the level in use, not on the chip behind the overlay, where a reader has to
+// tab past the rest of the page to reach a row at all.
+check(
+  "put the keyboard on the level in use",
+  document.activeElement === reasoningRow("auto"),
+  document.activeElement === reasoningRow("auto") ? "auto" : String(document.activeElement?.id),
+);
+// Tab walks the picker's own controls, so nothing behind it can take a
+// keystroke while it is up.
+const tabbedReasoning = (shiftKey = false) =>
+  elementFor("reasoning-modal").fire("keydown", { key: "Tab", shiftKey, preventDefault() {} });
+tabbedReasoning();
+const tabbedOnward = document.activeElement === reasoningRow("off");
+elementFor("reasoning-close").focus();
+tabbedReasoning();
+const tabbedRound = document.activeElement === reasoningRow("auto");
+tabbedReasoning(true);
+const shiftTabbedRound = document.activeElement === elementFor("reasoning-close");
+check(
+  "kept Tab inside the picker, and turned it round at the ends",
+  tabbedOnward && tabbedRound && shiftTabbedRound,
+  `${tabbedOnward} / ${tabbedRound} / ${shiftTabbedRound} / ${document.activeElement?.id}`,
+);
+// Shift+Tab is the levels' own shortcut, and while the picker is up it walks the
+// rows instead: the page's cycle must not take the same key, or a reader walking
+// the list would watch the mark move under them and the dialog shut.
+const heldLevel = app.state.reasoning;
+document.fire("keydown", { key: "Tab", shiftKey: true, preventDefault() {} });
+check(
+  "left the level alone while Shift+Tab walked the picker",
+  app.state.reasoning === heldLevel && elementFor("reasoning-modal").hidden === false,
+  `${app.state.reasoning} / ${heldLevel} / ${elementFor("reasoning-modal").hidden}`,
+);
+// A shortcut that does change the level with the picker up moves its mark rather
+// than leaving the dialog showing the level it just left — and leaves the
+// keyboard on the mark, since the list is rebuilt to do it.
+document.fire("keydown", { key: "r", ctrlKey: true, preventDefault() {} });
+check(
+  "moved the picker's mark when a shortcut changed the level under it",
+  app.state.reasoning === "off" &&
+    elementFor("reasoning-modal").hidden === false &&
+    currentReasoning() === "off" &&
+    pressedReasoning() === "off" &&
+    document.activeElement === reasoningRow("off"),
+  `${app.state.reasoning} / ${currentReasoning()} / ${document.activeElement?.id}`,
+);
+reasoningRow("medium").click();
 check(
   "took the level a row named and put the picker away",
   app.state.reasoning === "medium" &&
@@ -2855,19 +2912,29 @@ check(
     elementFor("reasoning").getAttribute("aria-label") === "thinking: medium",
   `${app.state.reasoning} / ${elementFor("reasoning-modal").hidden} / ${elementFor("reasoning").getAttribute("aria-label")}`,
 );
+// Every close path hands the keyboard back — the row here, Escape below — so a
+// reader who picked a level is not left at the top of the page.
+check(
+  "handed the keyboard back to the chip a pick was made from",
+  document.activeElement === elementFor("reasoning"),
+  document.activeElement?.id,
+);
 elementFor("reasoning").click();
 check(
   "marked the level it is on when the picker is opened again",
-  currentReasoning() === "medium" && pressedReasoning() === "medium",
-  `${currentReasoning()} / ${pressedReasoning()}`,
+  currentReasoning() === "medium" &&
+    pressedReasoning() === "medium" &&
+    document.activeElement === reasoningRow("medium"),
+  `${currentReasoning()} / ${pressedReasoning()} / ${document.activeElement?.id}`,
 );
 // A picker that is not in `OVERLAYS` stays over the app through the key that
-// closes every dialog.
+// closes every dialog — and Escape puts the keyboard back where it was too.
 document.fire("keydown", { key: "Escape", preventDefault() {} });
 check(
   "closed the picker on Escape like every other dialog",
-  elementFor("reasoning-modal").hidden === true,
-  String(elementFor("reasoning-modal").hidden),
+  elementFor("reasoning-modal").hidden === true &&
+    document.activeElement === elementFor("reasoning"),
+  `${elementFor("reasoning-modal").hidden} / ${document.activeElement?.id}`,
 );
 // There is nothing to pick before a project is open — the level would be
 // replaced by the one that project's config resolves to — so the chip gives the
@@ -2902,6 +2969,9 @@ check(
   status(),
 );
 elementFor("reasoning").click();
+// The keyboard is moved off the opener first, so the check reads the restore
+// rather than an element that was still focused for another reason.
+reasoningRow("high").focus();
 elementFor("reasoning-close").click();
 check(
   "shipped the picker in the markup with a way out of it",
@@ -2911,6 +2981,29 @@ check(
     elementFor("reasoning-modal").hidden === true &&
     /\.reasoning-option \{[^}]*\}/.test(sheet),
   `${shellAt('id="reasoning-modal"')} / ${shellAt('id="reasoning-list"')} / ${elementFor("reasoning-modal").hidden}`,
+);
+// The third way out, and the last one that has to give the keyboard back.
+check(
+  "handed the keyboard back when the Close button was used",
+  document.activeElement === elementFor("reasoning"),
+  document.activeElement?.id,
+);
+// ...and the shortcut still walks the levels when no picker is up.
+document.fire("keydown", { key: "Tab", shiftKey: true, preventDefault() {} });
+check(
+  "walked the levels on Shift+Tab when no picker is up",
+  app.state.reasoning === "medium" &&
+    elementFor("reasoning").getAttribute("aria-label") === "thinking: medium",
+  `${app.state.reasoning} / ${elementFor("reasoning").getAttribute("aria-label")}`,
+);
+// A dialog a screen reader is told about, named by its own title: the overlay
+// covers the app, so what is behind it is not what a reader is answering.
+check(
+  "shipped it as a dialog named by its own title",
+  /id="reasoning-modal"[^>]*role="dialog"[^>]*aria-modal="true"[^>]*aria-labelledby="reasoning-title"/.test(
+    shell,
+  ) && /<h2 id="reasoning-title">Reasoning effort<\/h2>/.test(shell),
+  shellAt('aria-labelledby="reasoning-title"'),
 );
 app.state.reasoning = "auto";
 app.updateChips();
