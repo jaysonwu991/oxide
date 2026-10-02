@@ -34,15 +34,15 @@ see [docs/vscode.md](vscode.md)) is a separate pnpm package that drives the
 ```
 crates/desktop/
   src/
-    lib.rs          re-exports the GUI-free library
-    manager.rs      project registry + session aggregation (shared, tested)
-    turn.rs         starts an agent turn against a project (shared, tested)
-    approval.rs     interactive approve/deny broker (uses `oxide_core::approvals`)
-    ask.rs          a skill's question broker (uses `oxide_core::ask`)
-    bridge.rs       the window's event channel
+    lib.rs          the library the window drives: at, manager, turn
+    manager.rs      project registry + session aggregation
+    turn.rs         starts an agent turn against a project
     at.rs           the `@path` walk the composer completes from
-    commands.rs     the window's command dispatcher (shared, tested)
-    main.rs         Tauri entry point (gui feature)
+    commands.rs     the window's command dispatcher (needs `gui`)
+    approval.rs     interactive approve/deny broker (needs `gui`)
+    ask.rs          a skill's question broker (needs `gui`)
+    bridge.rs       the window's event channel (needs `gui`)
+    main.rs         Tauri entry point, and the four modules above (needs `gui`)
   ui/               front-end: index.html, app.js, style.css
   capabilities/     the capability the window is given (`core:default`)
   tauri.conf.json   window + bundle config, including the CSP
@@ -54,9 +54,13 @@ crates/desktop/
 ```
 
 The `gui` feature is **off by default** so `cargo build` / `cargo test` /
-`cargo clippy` stay free of the Tauri dependency tree. The manager, turn,
-approval and command logic build and test without it; `main.rs` is the only file
-that needs a window, and the same feature guards it.
+`cargo clippy` stay free of the Tauri dependency tree — `tauri`,
+`tauri-plugin-dialog` and `tauri-build` are all optional and the feature is what
+turns them on. `src/lib.rs` (the `at`, `manager` and `turn` modules) is what a
+plain `cargo test` runs; `commands.rs`, `approval.rs`, `ask.rs` and `bridge.rs`
+are declared by `main.rs`, and the binary is the target the feature gates, so
+their tests run under `cargo test -p oxide-desktop --features gui` — which is
+what `.github/workflows/ci.yml` runs on each platform.
 
 Tauri serves `ui/` out of the binary — the assets are embedded at compile time —
 and hands the page exactly one command, `oxide_invoke`, which carries
@@ -551,9 +555,9 @@ Developer ID variables are set:
 - **Linux**: no signing; `.deb`/`.rpm`/AppImage as-is.
 
 Without a Developer ID, `.github/workflows/desktop.yml` — which builds macOS
-(arm64 + x64), Linux, and Windows on a `desktop-v*` tag push and drafts a
-release through `tauri-apps/tauri-action` — sets `APPLE_SIGNING_IDENTITY=-`, so
-Tauri **ad-hoc signs** the macOS
+(arm64 + x64), Linux, and Windows on a `desktop-v*` tag push, with
+`tauri-apps/tauri-action` running each build — sets `APPLE_SIGNING_IDENTITY=-`,
+so Tauri **ad-hoc signs** the macOS
 bundle. The signature is valid, but the app is not notarized and macOS
 quarantines the download, so the first launch must be approved in **System
 Settings → Privacy & Security → Open Anyway**, or the app moved to
@@ -658,3 +662,10 @@ from the CLI, so a CLI release never rebuilds these bundles:
 The CLI archives (`Oxide-v<version>-<platform>.tar.gz` and
 `Oxide-v<version>-win32-x64.zip`) plus `install.sh`/`install.ps1` live in the
 separate `v*` CLI releases, not here; see [install.md](install.md).
+
+The workflow builds every platform at once and hands the bundles to its release
+job: each build job uploads the installers it produced as a workflow artifact
+and the release job — the only job granted `contents: write`, and the one that
+runs for a `desktop-v*` tag alone — drafts the release and uploads them, so a
+`workflow_dispatch` build publishes nothing and needs no more than a read-only
+token.

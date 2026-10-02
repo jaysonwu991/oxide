@@ -10,6 +10,7 @@ default = []
 gui = [
     "dep:tauri",
     "dep:tauri-plugin-dialog",
+    "dep:tauri-build",
 ]
 
 [dependencies]
@@ -19,11 +20,11 @@ dirs.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 tokio.workspace = true
-tauri = { version = "2", optional = true }
+tauri = { version = "2", optional = true , features = [] }
 tauri-plugin-dialog = { version = "2", optional = true }
 
 [build-dependencies]
-tauri-build = { version = "2" }
+tauri-build = { version = "2", optional = true , features = [] }
 
 [[bin]]
 name = "oxide-desktop"

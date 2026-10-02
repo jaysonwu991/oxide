@@ -184,7 +184,15 @@ console.log("the build");
 check(
   "builds the binary only where there is a webview to put it in",
   /\[\[bin\]\][\s\S]*?name = "oxide-desktop"[\s\S]*?required-features = \["gui"\]/.test(manifest) &&
-    /gui = \[\s*"dep:tauri",\s*"dep:tauri-plugin-dialog",\s*\]/.test(manifest),
+    /gui = \[\s*"dep:tauri",\s*"dep:tauri-plugin-dialog",\s*"dep:tauri-build",\s*\]/.test(
+      manifest,
+    ),
+  "",
+);
+check(
+  "keeps the Tauri tooling out of a build that has no window",
+  /\[build-dependencies\][\s\S]*?tauri-build = \{ version = "2", optional = true \}/.test(manifest) &&
+    /gui = \[[\s\S]*?"dep:tauri-build",[\s\S]*?\]/.test(manifest),
   "",
 );
 check(

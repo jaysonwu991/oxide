@@ -55,7 +55,7 @@ two Node checks above on each platform.
 The repository is a Cargo workspace with three Cargo packages: `oxide-core`
 (`crates/core`, shared agent core), `oxide` (`crates/cli`, the terminal binary:
 `main.rs`, `tui/`, `theme.rs`, `install.rs`, `update.rs`, `uninstall.rs`), and
-`oxide-desktop` (`crates/desktop`, the Tauri app and the GUI-free command layer
+`oxide-desktop` (`crates/desktop`, the Tauri app plus the GUI-free library
 under it, documented in
 [`docs/desktop.md`](docs/desktop.md)). The VS Code extension under
 `editors/vscode` is a separate pnpm/TypeScript package, not a Cargo workspace
