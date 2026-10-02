@@ -123,8 +123,8 @@ describe("command contributions", () => {
     // it is offered is the plain `oxide update` that replaces that binary — so
     // the refusal is a state the install runs from, not a dead end.
     assert.ok(
-      chat.includes("rejectsJson(result.stderr)") && chat.includes('k: "legacy"'),
-      "a CLI too old to know --json is offered the update that works anyway",
+      chat.includes("rejectsCheck(result.stderr)") && chat.includes('k: "legacy"'),
+      "a CLI too old to know the check's flags is offered the update that works anyway",
     );
     assert.ok(
       chat.includes("this.installLegacyCli()") && chat.includes("updateInstallArgs()"),
@@ -145,9 +145,11 @@ describe("command contributions", () => {
         chat.includes('if (probe !== this.updateProbe) return { k: "superseded" };'),
       "a check an earlier one has superseded is dropped, not painted",
     );
-    // The install answers the same question, so a check asked for while it runs
-    // is the one that keeps the dialog — and neither the file it put in VS Code
-    // nor a report about it is painted for a dialog that has been replaced. The
+    // The install answers the same question, and it is the answer that stands: a
+    // check asked for while the install runs asked about the version that was
+    // running when it started, and a check made after the install resolves the
+    // release now on disk, which is the one this window put there — so the
+    // release is reported as installed rather than offered a second time. The
     // line breaks are collapsed first, the way the session listing's assertions
     // do, since a checkout on Windows is CRLF.
     const install = chat
@@ -155,10 +157,10 @@ describe("command contributions", () => {
       .replace(/\s+/g, " ");
     assert.ok(
       install.includes("const probe = ++this.updateProbe;") &&
-        install.includes("if (probe !== this.updateProbe) return;") &&
+        install.includes("this.installedUpdate = check;") &&
         install.includes("this.showNotice(`Installed Oxide ${check.latest}.`)") &&
         install.includes('updateDialog({ k: "installed", check })'),
-      "an install a newer check has overtaken reports nothing",
+      "the install reports itself whether or not a check is in flight behind it",
     );
     assert.ok(
       !install.includes("this.checkForUpdates("),
@@ -167,7 +169,20 @@ describe("command contributions", () => {
     assert.ok(
       install.includes("if (probe === this.updateProbe) {") &&
         install.includes('stage: "install", message: messageOf(error)'),
-      "and a failure is reported only to the dialog that is still up",
+      "while a failure is reported only to the dialog that is still up",
+    );
+    // A check made after an install cannot see it — the panel still runs the
+    // version that started, which is what the check compares — so the release
+    // the install put in VS Code is reported again as installed, and the row
+    // that installs it is not offered a second time.
+    const check = chat
+      .slice(chat.indexOf("async checkForUpdates("), chat.indexOf("private async installUpdate("))
+      .replace(/\s+/g, " ");
+    assert.ok(
+      check.includes("const installed = this.installedUpdate;") &&
+        check.includes("if (installed && check.latest === installed.latest) {") &&
+        check.includes('return { k: "installed", check: installed };'),
+      "a check made after an install reports that install rather than offering it again",
     );
     // The temporary directory a download landed in does not outlive the install
     // that used it, whether it worked or not.

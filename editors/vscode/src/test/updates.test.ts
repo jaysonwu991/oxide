@@ -10,7 +10,7 @@ import { describe, it } from "node:test";
 
 import {
   parseUpdateCheck,
-  rejectsJson,
+  rejectsCheck,
   updateCheckArgs,
   updateInstallArgs,
   updateVsix,
@@ -164,21 +164,32 @@ describe("update check", () => {
     assert.deepEqual(updateInstallArgs(), ["update"]);
   });
 
-  it("tells a CLI too old to know --json from a check that failed", () => {
+  it("tells a CLI too old to know the check's flags from a check that failed", () => {
     // Measured against the released 0.33.0 binary, which predates the flag: clap
     // writes this on stderr and exits 2. It is not a network failure and not an
     // answer, and the dialog offers the update that replaces it.
     assert.equal(
-      rejectsJson("error: unexpected argument '--json' found\n\nUsage: oxide update --check\n"),
+      rejectsCheck("error: unexpected argument '--json' found\n\nUsage: oxide update --check\n"),
       true,
     );
-    // A check that could not reach GitHub says something else, and so does a
-    // `--json` mentioned in a message that is not a refusal.
+    // A binary new enough for `--json` but older than the flags the check asks
+    // about the extension's own train with: it rejects the invocation the same
+    // way, so it is the same state — a CLI older than this panel — rather than a
+    // check that failed.
     assert.equal(
-      rejectsJson("Error: requesting the manifest\n\nCaused by: Operation timed out (os error 60)"),
+      rejectsCheck(
+        "error: unexpected argument '--component' found\n\nUsage: oxide update --check [OPTIONS]\n",
+      ),
+      true,
+    );
+    assert.equal(rejectsCheck("error: unexpected argument '--current' found"), true);
+    // A check that could not reach GitHub says something else, and so does a
+    // flag mentioned in a message that is not a refusal.
+    assert.equal(
+      rejectsCheck("Error: requesting the manifest\n\nCaused by: Operation timed out (os error 60)"),
       false,
     );
-    assert.equal(rejectsJson(""), false);
-    assert.equal(rejectsJson("error: unexpected argument '--check' found"), false);
+    assert.equal(rejectsCheck(""), false);
+    assert.equal(rejectsCheck("error: unexpected argument '--check' found"), false);
   });
 });

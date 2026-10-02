@@ -119,15 +119,23 @@ export function updateInstallArgs(): string[] {
   return ["update"];
 }
 
-/// Whether the CLI refused the check because it does not know `--json`.
+/// The flags the check asks the CLI with, in the order `updateCheckArgs` adds
+/// them.
+const CHECK_FLAGS = ["--json", "--component", "--current"];
+
+/// Whether the CLI refused the check because it does not know one of the flags
+/// it was asked with.
 ///
-/// An `oxide` released before this panel answers a flag it predates with clap's
-/// own `unexpected argument '--json' found` on stderr and exit code 2. That is
-/// not a check that failed: the installation is simply older than the report
-/// this panel reads, and updating it is what makes the check — and with it the
+/// An `oxide` released before the check answers an argument it predates with
+/// clap's own `unexpected argument '--json' found` on stderr and exit code 2 —
+/// and a binary new enough to know `--json` but older than `--component` and
+/// `--current` answers with the same words about those, which is why every flag
+/// the check needs is read rather than only the first one. Either one is not a
+/// check that failed: the installation is simply older than the report this
+/// panel reads, and updating it is what makes the check — and with it the
 /// extension's own updates — reachable from here.
-export function rejectsJson(stderr: string): boolean {
-  return stderr.includes("unexpected argument '--json'");
+export function rejectsCheck(stderr: string): boolean {
+  return CHECK_FLAGS.some((flag) => stderr.includes(`unexpected argument '${flag}'`));
 }
 
 function assetOf(value: unknown): UpdateAsset | null {
