@@ -78,8 +78,12 @@ describe("update download", () => {
       assert.equal(path.basename(download.file), "oxide-vscode-0.34.0.vsix");
       // And it sits in a directory of its own that only this user can read: an
       // extension package is not a file to leave in a shared temp directory.
-      assert.equal(fs.statSync(download.dir).mode & 0o077, 0);
-      assert.equal(fs.statSync(download.file).mode & 0o077, 0);
+      // Windows has no permission bits to read back — Node synthesizes a mode
+      // there — so the check is one only a POSIX filesystem can answer.
+      if (process.platform !== "win32") {
+        assert.equal(fs.statSync(download.dir).mode & 0o077, 0);
+        assert.equal(fs.statSync(download.file).mode & 0o077, 0);
+      }
       removeDownload(download);
       assert.equal(fs.existsSync(download.dir), false, "the download is removed on request");
     } finally {
