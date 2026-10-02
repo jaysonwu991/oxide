@@ -882,8 +882,8 @@ finds one, prints it in the transcript the way Pi announces one:
 ```
 ───
 Update Available
-New version 0.35.0 is available. Run oxide update
-Release notes: https://github.com/jaysonwu991/oxide/releases/tag/v0.35.0
+New version 0.35.0 is available. Run `oxide update`
+Changelog: https://github.com/jaysonwu991/oxide/releases/tag/v0.35.0
 ───
 ```
 

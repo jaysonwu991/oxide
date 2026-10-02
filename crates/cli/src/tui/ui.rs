@@ -2350,8 +2350,8 @@ fn progress_bar(elapsed: std::time::Duration) -> String {
 }
 
 /// Renders the notice that a newer release of this binary exists, the way Pi
-/// announces one: a rule, the version and the command that installs it, where
-/// its notes are, and a rule again.
+/// announces one: a rule, the title, the version with the command that installs
+/// it, its changelog, and a rule again.
 fn render_update_themed(
     width: usize,
     theme: &crate::theme::Theme,
@@ -2371,13 +2371,13 @@ fn render_update_themed(
     )));
     push_wrapped(
         lines,
-        &format!("New version {version} is available. Run {command}"),
+        &format!("New version {version} is available. Run `{command}`"),
         width,
         Style::default().fg(theme.info),
     );
     push_wrapped(
         lines,
-        &format!("Release notes: {url}"),
+        &format!("Changelog: {url}"),
         width,
         Style::default().fg(theme.dim),
     );
@@ -4594,7 +4594,7 @@ mod tests {
     }
 
     #[test]
-    fn an_update_notice_names_the_release_the_command_and_the_notes() {
+    fn an_update_notice_names_the_release_the_command_and_the_changelog() {
         let mut lines = Vec::new();
         render_item_themed(
             &ChatItem::Update {
@@ -4612,9 +4612,12 @@ mod tests {
         let text: Vec<String> = lines.iter().map(line_text).collect();
         assert_eq!(text[0], "─".repeat(60));
         assert_eq!(text[1], "Update Available");
-        assert_eq!(text[2], "New version 0.34.0 is available. Run oxide update");
+        assert_eq!(
+            text[2],
+            "New version 0.34.0 is available. Run `oxide update`"
+        );
         // A URL is one word: it moves to its own line rather than being cut.
-        assert_eq!(text[3], "Release notes:");
+        assert_eq!(text[3], "Changelog:");
         assert_eq!(
             text[4],
             "https://github.com/acme/oxide/releases/tag/v0.34.0"
