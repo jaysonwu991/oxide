@@ -40,7 +40,7 @@ last fallback. `OXIDE_BASE_URL` overrides the selected provider's base-URL
 variable, which overrides the file. Behavior settings live in `config.json`
 (global); the global `settings.json` (and the project `.oxide/settings.json`)
 supply `defaultProjectTrust`, `compaction`, `modelPrices`, `hideThinkingBlock`,
-`notifyOnComplete`, and `notifySound`.
+`notifyOnComplete`, `notifySound`, and `checkForUpdates`.
 
 Installed plugin packages (see [Plugins and hooks](#plugins-and-hooks)) load
 after global resources and before project resources, so project entries still
@@ -396,12 +396,13 @@ Focus: $ARGUMENTS
   `/tree`, `/fork`, `/clone`, `/name`, `/model`, `/thinking`, `/theme`,
   `/trust`, `/export`, `/reload`, `/init`, `/login`, `/logout`, `/models`,
   `/mcps`, `/plugins`, `/marketplaces`, `/notify`, `/approvals`, `/usage`,
-  `/connect`, `/undo`, `/redo`, `/compact`, `/copy`, `/copy all`, and a skill by
+  `/updates`, `/connect`, `/undo`, `/redo`, `/compact`, `/copy`, `/copy all`,
+  and a skill by
   its own name (`/rust-conventions`, also spelled `/skill:<name>`). After a
   space, the built-in commands autocomplete their fixed
   arguments too (`/notify sound`, `/approvals on`, `/usage currency usd`,
-  `/plugins marketplace update`, and providers for `/login`); Tab accepts the
-  highlighted suggestion.
+  `/updates off`, `/plugins marketplace update`, and providers for `/login`); Tab
+  accepts the highlighted suggestion.
 - **Remove** a command by deleting its file.
 - `oxide models [--json] [--active]` reads the same normalized provider catalogs as the
   TUI's `/models` picker. The JSON form is for clients such as the VS Code
@@ -872,6 +873,42 @@ alert — `Glass` on macOS, the freedesktop `complete` sound (via
 `Notification.Default` on Windows. Notification delivery is best-effort: if the
 platform helper or sound player is unavailable it is skipped without affecting
 the turn.
+
+## Update check
+
+A launch looks for a newer release of the CLI in the background and, when it
+finds one, prints it in the transcript the way Pi announces one:
+
+```
+───
+Update Available
+New version 0.35.0 is available. Run oxide update
+Release notes: https://github.com/jaysonwu991/oxide/releases/tag/v0.35.0
+───
+```
+
+The lookup never holds up the launch: the release the last launch found is read
+from `updates.json` and shown at once, and a fresh lookup only runs once that
+answer is more than six hours old (one request a day for a daily launch —
+`oxide update` is still the way to look right now). What is remembered is one
+release per component, so the CLI's own notice never overwrites the desktop
+app's or the extension's answer.
+
+Nothing is offered where `oxide update` could not install a release anyway: a
+`target/debug` build, a distribution package, or a binary someone moved has no
+install method oxide recognizes, so it is told nothing rather than offered an
+install that would fail. A Homebrew Cellar is offered `brew upgrade oxide`,
+since that is what `oxide update` hands a Homebrew install to.
+
+- `/updates` reports the state and the newest release seen; `/updates on|off`
+turns the launch check on or off (asking right now when it turns it on).
+- `checkForUpdates` in the global `settings.json` — or the project's
+  `.oxide/settings.json`, which wins — turns it off by hand; the default is on.
+  `OXIDE_CHECK_FOR_UPDATES=0|1` overrides both for one launch.
+- The check runs only in the TUI. A `-p`/`--mode json`/`--mode rpc` run prints
+  nothing of its own, so a scripted run's output stays the frames it was asked
+  for; the desktop app and the VS Code panel keep their own **Check for
+  Updates** surfaces over the same `oxide update --check --json`.
 
 ## Memory and instructions
 
@@ -1373,7 +1410,8 @@ Runtime state lives under the platform Oxide config directory:
   or a directory that is neither a git work tree nor project-sized
 - `memory/` — persistent memory entries
 - `trust.json` — saved project trust decisions
-- `settings.json` — global settings such as `defaultProjectTrust`, `compaction`, `modelPrices`, `hideThinkingBlock`, `notifyOnComplete`, and `notifySound`
+- `settings.json` — global settings such as `defaultProjectTrust`, `compaction`, `modelPrices`, `hideThinkingBlock`, `notifyOnComplete`, `notifySound`, and `checkForUpdates`
+- `updates.json` — the newest release of each component the last launch found, so the "update available" notice needs no network wait (override with `OXIDE_UPDATES_FILE`)
 - `themes/<name>.json` — custom TUI themes
 - `plugins/` — installed plugin packages, marketplaces, and plugin state
 - `portkey-usage.json` — Portkey spend bar settings and API key (mode `0600`, override the path with `OXIDE_USAGE_FILE`)

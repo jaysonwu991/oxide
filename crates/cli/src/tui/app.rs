@@ -130,6 +130,14 @@ pub enum ChatItem {
     /// theme change). Only the newest one is kept so repeated actions do not
     /// stack up lines, matching Pi's `showStatus`.
     Status(String),
+    /// A newer release of this binary than the one running, noticed at launch:
+    /// Pi's "Update Available" surface, with the command that installs it and
+    /// where its notes are.
+    Update {
+        version: String,
+        command: String,
+        url: String,
+    },
     /// A background command still running, rendered as an animated progress bar
     /// until its result replaces it (`/mcps`, `/plugins list`).
     Progress {
