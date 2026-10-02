@@ -443,10 +443,15 @@ The top bar exposes the same controls the CLI has:
   fetch every logged-in provider's catalog. Choosing one calls `set_model`,
   which applies it through `apply_provider` / `apply_login_options` and
   persists with `Config::persist_selection_at`.
-- **Reasoning** — cycles `auto → off → low → medium → high`.
+- **Reasoning** — opens a picker listing `auto`, `off`, `low`, `medium` and
+  `high` with the level in use marked, the way the panel's own thinking chip does.
+  `Shift+Tab` and `Ctrl+R` still walk the levels, the bare `/reasoning` opens the
+  same picker, and `/reasoning <level>` applies one directly.
 
 Reasoning is sent per turn as a `--reasoning`-equivalent override; `start_turn`
-passes it to `Config::load`, so it doesn't rewrite the stored config.
+passes it to `Config::load`, so it doesn't rewrite the stored config — which is
+why the picker is a choice about the turns this window sends rather than a
+setting it saves.
 
 ## Usage
 
@@ -477,7 +482,7 @@ immediately and persists it.
 | `Enter` | Send with the selected Queue or Steer behavior |
 | `Shift+Enter` | Newline |
 | `Alt+Enter` | Queue a follow-up while busy |
-| `Shift+Tab` / `Ctrl+R` | Cycle reasoning |
+| `Shift+Tab` / `Ctrl+R` | Cycle reasoning (the thinking chip opens the level picker) |
 | `Ctrl+K` | Model picker |
 | `Ctrl+/` | Shortcut help |
 | `⌘1`…`⌘9` / `Ctrl+1`…`9` | Open the session with that number in the Projects tree |

@@ -14,6 +14,15 @@ const el = (id) => document.getElementById(id);
 
 const REASONING = ["auto", "off", "low", "medium", "high"];
 
+// What each level asks the model for, in the words the picker shows beside it.
+const REASONING_HINTS = {
+  auto: "Let the provider decide",
+  off: "Answer without thinking first",
+  low: "A little reasoning",
+  medium: "Balanced reasoning",
+  high: "The most reasoning",
+};
+
 const SUGGESTIONS = [
   "Explain this codebase and its architecture.",
   "Find and fix the highest-priority bug in this repository.",
@@ -671,7 +680,7 @@ async function answerTrust(trusted) {
 }
 
 function updateChips() {
-  labelControl("reasoning", `thinking: ${state.reasoning}`, "Reasoning effort (Shift+Tab)");
+  labelControl("reasoning", `thinking: ${state.reasoning}`, "Choose the reasoning level (Shift+Tab cycles)");
 }
 
 /// An icon-only control names the value it holds where a text chip used to show
@@ -2254,6 +2263,7 @@ const OVERLAYS = [
   "create-project-modal",
   "mcps-modal",
   "models-modal",
+  "reasoning-modal",
   "themes-modal",
   "permissions-modal",
   "trust-modal",
@@ -2419,6 +2429,55 @@ function renderModels() {
   }
   if (!box.children.length) {
     box.innerHTML = '<div class="empty" style="margin:14px">No models found.</div>';
+  }
+}
+
+// ---------- reasoning ----------
+
+/// The picker the thinking chip opens: the level a turn thinks at is a choice
+/// rather than a step, and the panel's own chip offers the same list. A level
+/// is applied to the turns this window sends, the way the chip's cycle applied
+/// it — `updateChips` is what says which one it is now.
+function openReasoning() {
+  if (!state.project) {
+    setStatus("Select a project first.");
+    return;
+  }
+  closeOverlays("reasoning-modal");
+  renderReasoning();
+  el("reasoning-modal").hidden = false;
+}
+
+function renderReasoning() {
+  const box = el("reasoning-list");
+  box.innerHTML = "";
+  for (const level of REASONING) {
+    const current = level === state.reasoning;
+    const row = document.createElement("button");
+    row.type = "button";
+    row.className = "reasoning-option" + (current ? " active" : "");
+    // The glyph and the color say which level is in use; a screen reader is told
+    // the same thing in a word it can read out.
+    row.setAttribute("aria-pressed", String(current));
+
+    const name = document.createElement("span");
+    name.className = "reasoning-option-name";
+    name.textContent = level;
+    row.appendChild(name);
+
+    const hint = document.createElement("span");
+    hint.className = "reasoning-option-detail";
+    hint.textContent = REASONING_HINTS[level] || "";
+    row.appendChild(hint);
+
+    const check = document.createElement("span");
+    check.className = "reasoning-option-check";
+    check.textContent = current ? "✓" : "";
+    check.setAttribute("aria-hidden", "true");
+    row.appendChild(check);
+
+    row.onclick = () => setReasoning(level);
+    box.appendChild(row);
   }
 }
 
@@ -3213,11 +3272,12 @@ async function runSlashCommand(text) {
       newChat();
       return true;
     case "reasoning":
+      // The bare command opens the picker the chip opens; a level typed after it
+      // is taken directly, which is what a front-end without a dialog needs.
       if (!args) {
-        cycleReasoning();
+        openReasoning();
       } else if (REASONING.includes(args)) {
-        state.reasoning = args;
-        updateChips();
+        setReasoning(args);
       } else {
         setStatus(`Reasoning must be one of ${REASONING.join(", ")}.`);
       }
@@ -3538,9 +3598,18 @@ function toggleHelp() {
   el("help-modal").hidden = !hidden;
 }
 
-function cycleReasoning() {
-  state.reasoning = REASONING[(REASONING.indexOf(state.reasoning) + 1) % REASONING.length];
+/// The level a turn is given, whether it was picked from the dialog or walked to
+/// with the keyboard. `--reasoning` is sent per turn rather than stored, so this
+/// only has to agree with the chip — and a level set from anywhere but the
+/// picker's own row leaves the listing, whose mark would be out of date.
+function setReasoning(level) {
+  state.reasoning = level;
   updateChips();
+  el("reasoning-modal").hidden = true;
+}
+
+function cycleReasoning() {
+  setReasoning(REASONING[(REASONING.indexOf(state.reasoning) + 1) % REASONING.length]);
 }
 
 async function initEvents() {
@@ -3788,7 +3857,8 @@ function init() {
   el("create-project-cancel").onclick = () => (el("create-project-modal").hidden = true);
   el("create-project-save").onclick = saveCreateProject;
 
-  el("reasoning").onclick = cycleReasoning;
+  el("reasoning").onclick = openReasoning;
+  el("reasoning-close").onclick = () => (el("reasoning-modal").hidden = true);
   el("model").onclick = openModels;
   el("theme").onclick = openThemes;
   el("permissions").onclick = openPermissions;

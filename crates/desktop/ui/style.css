@@ -998,6 +998,35 @@ body.resizing { cursor: col-resize; user-select: none; }
 .model:hover { background: var(--panel-2); }
 .model.active { color: var(--accent); }
 
+.reasoning-list { display: flex; flex-direction: column; gap: 6px; }
+.reasoning-option {
+  position: relative;
+  display: block;
+  width: 100%;
+  padding: 10px 34px 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: transparent;
+  color: var(--text);
+  text-align: left;
+  cursor: pointer;
+  transition: background 0.15s, border-color 0.15s;
+}
+.reasoning-option:hover { background: var(--panel-2); border-color: var(--dim); }
+.reasoning-option.active { background: var(--panel-2); border-color: var(--accent); }
+.reasoning-option-name { display: block; font-weight: 500; }
+.reasoning-option.active .reasoning-option-name { color: var(--accent); }
+.reasoning-option-detail { display: block; color: var(--faint); font-size: 11.5px; }
+.reasoning-option-check {
+  position: absolute;
+  right: 13px;
+  top: 50%;
+  transform: translateY(-50%);
+  color: var(--accent);
+  font-size: 14px;
+  line-height: 1;
+}
+
 .theme-list { display: flex; flex-direction: column; gap: 6px; }
 .theme { text-align: left; }
 .theme:hover { background: var(--panel-2); }

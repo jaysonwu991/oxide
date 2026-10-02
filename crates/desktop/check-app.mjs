@@ -8,7 +8,8 @@
 // call into the core, the attachment chips (an image's thumbnail and the
 // full-size preview it opens), the question dialog (its title, what a blank
 // form sends, and the two ways a request goes away — the run ending, and the CLI
-// giving up on it), and the `/` menu's dispatch of every built-in
+// giving up on it), the reasoning picker (its rows, the level a row applies, and
+// the Escape and Close that put it away), and the `/` menu's dispatch of every built-in
 // the shared catalog offers — since a Rust test never runs the app's own
 // JavaScript. Every command it performs goes through the one Tauri command the
 // app registers, so a check in this file that reaches a command by name is
@@ -2809,8 +2810,107 @@ app.updateChips();
 check(
   "named the thinking chip for the level it would think at",
   elementFor("reasoning").getAttribute("aria-label") === "thinking: high" &&
-    elementFor("reasoning").title === "thinking: high\nReasoning effort (Shift+Tab)",
+    elementFor("reasoning").title === "thinking: high\nChoose the reasoning level (Shift+Tab cycles)",
   `${elementFor("reasoning").getAttribute("aria-label")} / ${JSON.stringify(elementFor("reasoning").title)}`,
+);
+app.state.reasoning = "auto";
+app.updateChips();
+
+// The level a turn thinks at is a choice among five rather than a step, so the
+// chip opens a picker instead of walking the cycle: the levels it lists are the
+// same cycle the terminal's Shift+Tab walks, read out of the panel's own source
+// rather than restated here, so the two front-ends cannot drift apart.
+const extensionLevels = [
+  ...((footerSource.match(/REASONING_LEVELS = \[([^\]]*)\]/) || [])[1] || "").matchAll(/"([a-z]+)"/g),
+].map((match) => match[1]);
+const reasoningRows = () => elementFor("reasoning-list").children;
+const reasoningNames = () => reasoningRows().map((row) => row.children[0]?.textContent);
+const currentReasoning = () =>
+  reasoningRows()
+    .filter((row) => row.classList.contains("active"))
+    .map((row) => row.children[0]?.textContent)
+    .join(" ");
+const pressedReasoning = () =>
+  reasoningRows()
+    .filter((row) => row.getAttribute("aria-pressed") === "true")
+    .map((row) => row.children[0]?.textContent)
+    .join(" ");
+elementFor("reasoning").click();
+check(
+  "opened a picker for the level instead of stepping through it",
+  elementFor("reasoning-modal").hidden === false &&
+    reasoningNames().join(" ") === extensionLevels.join(" ") &&
+    reasoningRows().every((row) => row.children[1]?.textContent) &&
+    currentReasoning() === "auto" &&
+    pressedReasoning() === "auto",
+  `${elementFor("reasoning-modal").hidden} / ${reasoningNames().join(" ")} / ${extensionLevels.join(" ")} / ${currentReasoning()} / ${pressedReasoning()}`,
+);
+reasoningRows()
+  .find((row) => row.children[0].textContent === "medium")
+  .click();
+check(
+  "took the level a row named and put the picker away",
+  app.state.reasoning === "medium" &&
+    elementFor("reasoning-modal").hidden === true &&
+    elementFor("reasoning").getAttribute("aria-label") === "thinking: medium",
+  `${app.state.reasoning} / ${elementFor("reasoning-modal").hidden} / ${elementFor("reasoning").getAttribute("aria-label")}`,
+);
+elementFor("reasoning").click();
+check(
+  "marked the level it is on when the picker is opened again",
+  currentReasoning() === "medium" && pressedReasoning() === "medium",
+  `${currentReasoning()} / ${pressedReasoning()}`,
+);
+// A picker that is not in `OVERLAYS` stays over the app through the key that
+// closes every dialog.
+document.fire("keydown", { key: "Escape", preventDefault() {} });
+check(
+  "closed the picker on Escape like every other dialog",
+  elementFor("reasoning-modal").hidden === true,
+  String(elementFor("reasoning-modal").hidden),
+);
+// There is nothing to pick before a project is open — the level would be
+// replaced by the one that project's config resolves to — so the chip gives the
+// answer the app's other project-bound commands give.
+const holdingProject = app.state.project;
+app.state.project = null;
+elementFor("reasoning").click();
+check(
+  "gave the app's own answer when no project is open",
+  elementFor("reasoning-modal").hidden === true && status() === "Select a project first.",
+  `${elementFor("reasoning-modal").hidden} / ${status()}`,
+);
+app.state.project = holdingProject;
+await app.runSlashCommand("/reasoning");
+check(
+  "opened the picker from the bare command",
+  elementFor("reasoning-modal").hidden === false,
+  String(elementFor("reasoning-modal").hidden),
+);
+await app.runSlashCommand("/reasoning low");
+check(
+  "took a level typed after the command",
+  app.state.reasoning === "low" &&
+    elementFor("reasoning-modal").hidden === true &&
+    elementFor("reasoning").getAttribute("aria-label") === "thinking: low",
+  `${app.state.reasoning} / ${elementFor("reasoning-modal").hidden} / ${elementFor("reasoning").getAttribute("aria-label")}`,
+);
+await app.runSlashCommand("/reasoning nope");
+check(
+  "named the levels when the argument is not one",
+  status() === "Reasoning must be one of auto, off, low, medium, high.",
+  status(),
+);
+elementFor("reasoning").click();
+elementFor("reasoning-close").click();
+check(
+  "shipped the picker in the markup with a way out of it",
+  shellAt('id="reasoning-modal"') > 0 &&
+    shellAt('id="reasoning-list"') > shellAt('id="reasoning-modal"') &&
+    /id="reasoning-close"[^>]*>Close<\/button>/.test(shell) &&
+    elementFor("reasoning-modal").hidden === true &&
+    /\.reasoning-option \{[^}]*\}/.test(sheet),
+  `${shellAt('id="reasoning-modal"')} / ${shellAt('id="reasoning-list"')} / ${elementFor("reasoning-modal").hidden}`,
 );
 app.state.reasoning = "auto";
 app.updateChips();
