@@ -17,13 +17,17 @@
 // when that binary is present, so a client command the palette offers but the
 // app cannot answer is caught here rather than in the window.
 import { execFileSync } from "node:child_process";
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import vm from "node:vm";
 
 const here = fileURLToPath(new URL("ui/", import.meta.url));
 const root = fileURLToPath(new URL("../../", import.meta.url));
-const cli = `${root}target/debug/oxide`;
+const cli = [`${root}target/debug/oxide`, `${root}target/debug/oxide.exe`].find((path) =>
+  existsSync(path),
+);
 
 const failures = [];
 const check = (name, condition, detail = "") => {
@@ -36,13 +40,30 @@ const check = (name, condition, detail = "") => {
 };
 
 // The catalog the app's `/` menu draws, read from the CLI itself: without it the
-// fallback for a command the app cannot perform has nothing to look up.
+// fallback for a command the app cannot perform has nothing to look up. The
+// project's own commands, prompt templates and skills load only while it is
+// trusted, and a machine that has never answered the trust prompt (a fresh CI
+// runner) would list the built-ins alone — the skill checks below would then
+// fail for a reason that has nothing to do with the app. The decision is handed
+// to the child in a settings file of its own, so the machine's real one stays
+// as it was.
 let catalog = [];
-let catalogSkipped = false;
-if (existsSync(cli)) {
-  catalog = JSON.parse(execFileSync(cli, ["commands", "--json"], { encoding: "utf8" }));
-} else {
-  catalogSkipped = true;
+let catalogSkipped = !cli;
+if (cli) {
+  const scratch = mkdtempSync(join(tmpdir(), "oxide-check-"));
+  const settings = join(scratch, "settings.json");
+  writeFileSync(settings, JSON.stringify({ defaultProjectTrust: "always" }));
+  try {
+    catalog = JSON.parse(
+      execFileSync(cli, ["commands", "--json"], {
+        cwd: root,
+        env: { ...process.env, OXIDE_SETTINGS_FILE: settings },
+        encoding: "utf8",
+      }),
+    );
+  } finally {
+    rmSync(scratch, { recursive: true, force: true });
+  }
 }
 
 // ---------- the stubbed page ----------
@@ -2207,7 +2228,7 @@ check(
 console.log("slash commands");
 if (catalogSkipped) {
   // Worth saying out loud rather than passing silently.
-  console.log(`  skip the catalog check: ${cli} is not built`);
+  console.log("  skip the catalog check: target/debug/oxide is not built");
 } else {
   const client = catalog.filter((entry) => entry.kind === "client");
   check("the catalog offers client commands", client.length > 0);
