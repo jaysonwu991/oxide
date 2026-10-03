@@ -66,7 +66,10 @@ input, textarea {
   border-radius: 8px;
   padding: 8px 10px;
 }
-input:focus, textarea:focus { outline: none; border-color: var(--dim); }
+/* A box does not paint on focus: no border change, so every input looks the
+   same whether the caret is in it or not. `outline: none` stays to suppress
+   WebKit's own focus ring. */
+input:focus, textarea:focus { outline: none; }
 
 /* ---------- glyphs ---------- */
 
@@ -700,16 +703,10 @@ body.resizing { cursor: col-resize; user-select: none; }
   transition: border-color 0.15s, box-shadow 0.15s;
 }
 /* The box that holds what is about to be sent says so: a border lift while it
-   has text or an attachment in it, and the accent ring only while the caret is
-   in the message box itself, so a message waiting for a turn reads apart from
-   the one being typed. The ring is a class the box's own caret sets rather than
-   `:focus-within`, which would also answer for the attach chip, a picker chip or
-   the send button sharing the box. */
+   has text or an attachment in it. Nothing is painted for focus — the caret
+   moving into a box leaves its border alone, so every box looks the same
+   whether the caret is in it or not. */
 .composer.filled { border-color: color-mix(in srgb, var(--dim) 40%, transparent); }
-.composer.focused {
-  border-color: color-mix(in srgb, var(--accent) 45%, transparent);
-  box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 10%, transparent);
-}
 .composer textarea {
   width: 100%;
   border: none;
@@ -719,7 +716,6 @@ body.resizing { cursor: col-resize; user-select: none; }
   min-height: 40px;
   max-height: 220px;
 }
-.composer textarea:focus { border: none; }
 .attachments {
   display: flex;
   flex-wrap: wrap;
@@ -1064,7 +1060,7 @@ body.resizing { cursor: col-resize; user-select: none; }
   font: inherit;
   font-size: 13px;
 }
-.question-free:focus { outline: none; border-color: var(--accent); }
+.question-free:focus { outline: none; }
 /* Dismiss keeps the left edge the dialog's other actions leave to the answers. */
 .question-actions { justify-content: flex-start; }
 .question-actions .spacer { flex: 1 1 auto; }

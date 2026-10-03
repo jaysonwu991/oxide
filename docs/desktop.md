@@ -197,10 +197,10 @@ The regions, top to bottom:
   are the same paths in both, which `check-app.mjs` holds beside the
   extension's own sources so a control drawn one way here and another there
   fails the check. The box itself says whether it is holding something: its
-  border lifts while a message or a chip is in it, and only the caret being in
-  the message box brings the accent ring — a chip or the send button sharing the
-  box does not, so the message being typed reads apart from one that is
-  waiting for a turn. One
+  border lifts while a message or a chip is in it. No input box paints on
+  focus — the caret moving into a box leaves its border alone — so every box
+  looks the same whether the caret is in it or not, and WebKit's own focus ring
+  is suppressed with `outline: none`. One
   action sits on the right, which swaps rather than sitting beside a second
   button: **Stop** while a turn runs and there is nothing to say, **Send**
   beside **Queue**/**Steer** the moment there is — and only **Stop** while that
