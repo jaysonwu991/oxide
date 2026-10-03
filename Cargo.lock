@@ -2483,7 +2483,11 @@ name = "oxide-desktop"
 version = "0.0.0"
 dependencies = [
  "anyhow",
+ "block2",
  "dirs 5.0.1",
+ "objc2",
+ "objc2-app-kit",
+ "objc2-foundation",
  "oxide-core",
  "reqwest 0.12.28",
  "serde",

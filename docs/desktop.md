@@ -161,8 +161,11 @@ The regions, top to bottom:
   not repeated here because the composer's model chip already names it; the
   right side says only what has to be acted on (`no API key`, `project
   resources off`). The window takes the first mouse press
-  (`acceptFirstMouse` in `tauri.conf.json`); no AppKit event monitor,
-  Objective-C hook, or platform-specific input path is installed.
+  (`acceptFirstMouse` in `tauri.conf.json`), and on macOS an `NSEvent` monitor
+  (`crates/desktop/src/first_click.rs`) activates the app and makes the window
+  under the pointer key before the press reaches the webview, so a press into a
+  background window is delivered to the control under the pointer instead of
+  being spent on activation.
 - **Conversation** — a centered 780px column, the width the composer and the
   popovers above it share, so the window's edges line up rather than each row
   measuring itself. User messages are right-aligned

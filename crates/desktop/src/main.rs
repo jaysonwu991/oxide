@@ -14,6 +14,8 @@ mod approval;
 mod ask;
 mod bridge;
 mod commands;
+#[cfg(target_os = "macos")]
+mod first_click;
 
 use bridge::EventSink;
 #[cfg(target_os = "macos")]
@@ -89,6 +91,11 @@ fn main() {
 
     let app = builder
         .setup(|app| {
+            // The press that would key a background window is taken back from
+            // AppKit before the webview sees it, so the control under the
+            // pointer answers the first click (see `first_click.rs`).
+            #[cfg(target_os = "macos")]
+            first_click::install();
             let events = EventSink::new(app.handle().clone());
             app.manage(Arc::new(DesktopState::new(
                 DesktopManager::load_lossy(),
