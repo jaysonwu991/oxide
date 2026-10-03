@@ -169,6 +169,7 @@ class StubElement {
   releasePointerCapture() {}
   setAttribute(name, value) {
     (this.attributes ||= {})[name] = String(value);
+    if (name === "type") this.type = String(value);
   }
   getAttribute(name) {
     return (this.attributes || {})[name] ?? null;
@@ -220,6 +221,12 @@ class StubElement {
     return true;
   }
 
+  matches(selector) {
+    return String(selector)
+      .split(",")
+      .some((part) => this.matchesSelector(part.trim()));
+  }
+
   descendants() {
     const found = [];
     for (const child of this.children) found.push(child, ...child.descendants());
@@ -234,7 +241,7 @@ class StubElement {
   }
   closest(selector) {
     for (let node = this; node; node = node.parentNode) {
-      if (node.matchesSelector(selector)) return node;
+      if (node.matches(selector)) return node;
     }
     return null;
   }
@@ -1602,23 +1609,111 @@ check(
   `${composer.value} @ ${composer.selectionStart}`,
 );
 
-// The webview owns control activation. The page never synthesizes a click or
-// changes focus on a control's behalf.
+// WebKit may spend the first press after editing only moving focus to a button,
+// withholding the click until the next press. The page prevents that focus
+// default while an editor is active and leaves the one native click in charge.
 const composerButton = new StubElement("button", "composer-button");
 let composerButtonClicks = 0;
 composerButton.onclick = () => composerButtonClicks++;
+const composerRow = new StubElement("div", "composer-row");
+const composerLink = new StubElement("a", "composer-link");
+composerLink.setAttribute("href", "https://example.com/docs");
 document.activeElement = elementFor("prompt");
 const buttonPress = press({ target: composerButton });
 document.fire("mousedown", buttonPress);
 check(
-  "left a Chromium button press native while the message box had the caret",
-  buttonPress.refused !== true,
+  "kept the editor as first responder while a button was pressed",
+  buttonPress.refused === true,
   String(buttonPress.refused),
 );
-document.fire("mouseup", buttonPress);
 composerButton.onclick(buttonPress);
+document.fire("mouseup", press({ target: composerButton }));
 await nextTick();
-check("handled Chromium's one click exactly once", composerButtonClicks === 1, composerButtonClicks);
+check(
+  "handled one native click exactly once",
+  composerButtonClicks === 1,
+  String(composerButtonClicks),
+);
+
+// A dialog editor is the same case as the message box.
+document.activeElement = elementFor("model-filter");
+const filterButtonPress = press({ target: composerButton });
+document.fire("mousedown", filterButtonPress);
+check(
+  "kept a dialog editor as first responder through a button press",
+  filterButtonPress.refused === true,
+  String(filterButtonPress.refused),
+);
+document.fire("mouseup", press({ target: composerButton }));
+
+// With no editor active the press keeps its ordinary browser behavior.
+document.activeElement = null;
+const ordinaryButtonPress = press({ target: composerButton });
+document.fire("mousedown", ordinaryButtonPress);
+check(
+  "left a button's ordinary focus behavior alone when no editor was active",
+  ordinaryButtonPress.refused !== true,
+  String(ordinaryButtonPress.refused),
+);
+document.fire("mouseup", ordinaryButtonPress);
+
+// A press into another text field is the browser's to place the caret with.
+const otherField = new StubElement("input", "other-field");
+document.activeElement = elementFor("prompt");
+const fieldPress = press({ target: otherField });
+document.fire("mousedown", fieldPress);
+check(
+  "left another text field's focus behavior to the browser",
+  fieldPress.refused !== true,
+  String(fieldPress.refused),
+);
+document.fire("mouseup", fieldPress);
+
+// A non-editor input holding focus is not an editing session.
+const checkbox = new StubElement("input", "checkbox");
+checkbox.setAttribute("type", "checkbox");
+document.activeElement = checkbox;
+const checkboxButtonPress = press({ target: composerButton });
+document.fire("mousedown", checkboxButtonPress);
+check(
+  "left a button press alone while a non-editor input held focus",
+  checkboxButtonPress.refused !== true,
+  String(checkboxButtonPress.refused),
+);
+document.fire("mouseup", checkboxButtonPress);
+
+// A row the page wires a click to is a control, so it keeps the editor focused
+// too; a row with no click of its own is left native.
+const composerRowControl = new StubElement("div", "composer-row-control");
+composerRowControl.onclick = () => {};
+document.activeElement = elementFor("prompt");
+const rowControlPress = press({ target: composerRowControl });
+document.fire("mousedown", rowControlPress);
+check(
+  "kept the editor focused through a clickable row press",
+  rowControlPress.refused === true,
+  String(rowControlPress.refused),
+);
+document.fire("mouseup", rowControlPress);
+
+const composerRowPress = press({ target: composerRow });
+document.fire("mousedown", composerRowPress);
+check(
+  "left a row with no click of its own native while the editor had the caret",
+  composerRowPress.refused !== true,
+  String(composerRowPress.refused),
+);
+document.fire("mouseup", composerRowPress);
+
+const composerLinkPress = press({ target: composerLink });
+document.fire("mousedown", composerLinkPress);
+check(
+  "kept the editor focused through a link press",
+  composerLinkPress.refused === true,
+  String(composerLinkPress.refused),
+);
+document.fire("mouseup", composerLinkPress);
+document.activeElement = null;
 
 // A failed read is painted into the list instead of becoming an empty result.
 for (const [name, listId, breakRead, read] of [
@@ -2217,7 +2312,8 @@ check(
   firstBlock.outline(),
 );
 
-// Chromium owns native radio activation while a text field is focused.
+// A choice row keeps the editor focused through mousedown for the same WebKit
+// reason as a button, then its one native click activates the input it labels.
 const secondRadio = optionRows[1].control;
 let radioActivations = 0;
 secondRadio.click = () => {
@@ -2227,11 +2323,16 @@ secondRadio.click = () => {
 document.activeElement = firstBlock.querySelector(".question-free");
 const radioLabelPress = press({ target: optionRows[1] });
 document.fire("mousedown", radioLabelPress);
+check(
+  "kept the question editor focused while a radio row was pressed",
+  radioLabelPress.refused === true,
+  String(radioLabelPress.refused),
+);
 secondRadio.click();
 document.fire("mouseup", radioLabelPress);
 await nextTick();
 check(
-  "left radio activation to Chromium",
+  "handled the radio row's native activation once",
   radioActivations === 1 && secondRadio.checked === true,
   `${radioActivations} / ${secondRadio.checked}`,
 );
@@ -2291,11 +2392,16 @@ firstCheckbox.click = () => {
 document.activeElement = secondBlock.querySelector(".question-free");
 const checkboxPress = press({ target: firstCheckbox });
 document.fire("mousedown", checkboxPress);
+check(
+  "kept the question editor focused while a checkbox was pressed",
+  checkboxPress.refused === true,
+  String(checkboxPress.refused),
+);
 firstCheckbox.click();
 document.fire("mouseup", checkboxPress);
 await nextTick();
 check(
-  "left checkbox activation to Chromium",
+  "handled the checkbox's native activation once",
   checkboxActivations === 1 && firstCheckbox.checked === true,
   `${checkboxActivations} / ${firstCheckbox.checked}`,
 );
