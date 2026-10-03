@@ -1437,7 +1437,15 @@ impl Config {
              printed or `gh pr view <number> --json url` reports; `glab` reports the same for a \
              merge request), never as a bare `#123`: the desktop app and the VS Code panel open a \
              Markdown link in the browser and a terminal links the printed URL, while a number \
-             on its own leaves the user nothing to open."
+             on its own leaves the user nothing to open.\nName a commit the same way — \
+             `[<short sha>](<url>)` — in a report, a reply to a review comment or any other \
+             summary: the URL is the one the forge reports for that commit \
+             (`gh api repos/{owner}/{repo}/commits/<sha> --jq .html_url` on GitHub), never a \
+             template filled in by hand, since a GitLab project answers its own \
+             `https://gitlab.com/owner/repo/-/commit/<sha>` on whatever domain it lives on and \
+             not a `github.com/commit/` path. A hash written on its own is not turned into a \
+             link by the forge, so a reply that says which commit addressed a comment carries \
+             that link and never the hash alone."
                 .to_string(),
         );
 
@@ -1518,6 +1526,22 @@ mod tests {
         // The link has to be the URL, not the number the model already has.
         assert!(forge.contains("gh pr view <number> --json url"), "{forge}");
         assert!(forge.contains("never as a bare `#123`"), "{forge}");
+        // A commit is opened the same way: a hash on its own is not a link, and
+        // the URL is the forge's own rather than a GitHub-shaped template.
+        assert!(
+            forge.contains("in a report, a reply to a review comment"),
+            "{forge}"
+        );
+        assert!(
+            forge.contains("gh api repos/{owner}/{repo}/commits/<sha> --jq .html_url"),
+            "{forge}"
+        );
+        assert!(
+            forge.contains("https://gitlab.com/owner/repo/-/commit/<sha>"),
+            "{forge}"
+        );
+        assert!(forge.contains("not a `github.com/commit/` path"), "{forge}");
+        assert!(forge.contains("never the hash alone"), "{forge}");
     }
 
     #[test]
