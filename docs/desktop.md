@@ -210,13 +210,15 @@ The regions, top to bottom:
   control is wired to a plain `click` — each button, native radio/checkbox,
   sidebar/list row, change card, and attachment thumbnail. The webview owns
   focus, pointer, keyboard, and activation semantics, and page-control
-  activation stays native: while an editor owns focus, a primary `mousedown` on
-  any control the page wires a click to — a button, a link, a sidebar/list row,
-  a change card or a question choice — prevents only the focus-changing default,
-  so WebKit delivers that press's click instead of spending it on moving focus —
-  the press that otherwise read as one needing a second click. Keyboard focus
-  and activation are unchanged, and the page never synthesizes an activation:
-  the control handles exactly the click the browser delivered. A
+  activation stays native: while an editor owns focus — including one WebKit
+  ended just before the press, remembered from its `focusout` — a primary
+  `mousedown` on any control the page wires a click to — a button, a link, a
+  sidebar/list row, a change card or a question choice — prevents only the
+  focus-changing default, so WebKit delivers that press's click instead of
+  spending it on moving focus — the press that otherwise read as one needing a
+  second click. Keyboard focus and activation are unchanged, and the native
+  click stays authoritative: the page supplies one on the next task only when
+  the webview withheld it, so a control answers exactly once. A
   control inside another stops its click from reaching the row around it, so a
   thread's ✕ removes the thread rather than selecting the row and a chip's ✕
   removes the chip rather than opening the picture — and a thumbnail's picture
