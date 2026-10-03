@@ -4656,6 +4656,43 @@ function pressedControl(target) {
   return null;
 }
 
+/// The editor WebKit ended immediately before dispatching the press that ended
+/// it. Some macOS WebKit versions update `activeElement` before the page sees
+/// `mousedown`, so reading `activeElement` alone misses that press and lets the
+/// webview spend it ending an editing session that is already over. The memory
+/// lasts only for the current task, so a later, unrelated press stays native.
+let justBlurredEditor = null;
+function rememberBlurredEditor(event) {
+  const editor = event.target;
+  if (!isTextEditor(editor)) return;
+  justBlurredEditor = editor;
+  setTimeout(() => {
+    if (justBlurredEditor === editor) justBlurredEditor = null;
+  }, 0);
+}
+
+/// The control the current editing-session press landed on, and whether the
+/// webview delivered its native click. The native click stays authoritative:
+/// one is supplied on the next task only when the webview omitted it, which is
+/// what some macOS WebKit versions do when the press ends an editing session.
+let editorControlPress = null;
+function finishEditorControlPress(event) {
+  const press = editorControlPress;
+  if (!press) return;
+  if (pressedControl(event.target) !== press.control) {
+    editorControlPress = null;
+    return;
+  }
+  // A native click follows mouseup before the next task. Give WebKit that
+  // chance first, then supply the click only when the webview omitted it, so a
+  // control never answers two clicks and a press dragged off stays cancelled.
+  setTimeout(() => {
+    if (editorControlPress !== press) return;
+    editorControlPress = null;
+    if (!press.clicked && !press.control.disabled) press.control.click();
+  }, 0);
+}
+
 function init() {
   initSidebarResize();
   const createBtnTree = el("create-project-btn-tree");
@@ -4748,19 +4785,43 @@ function init() {
   // WebKit can spend the first press after editing only moving focus to a
   // control, withholding its click until the next press. Keep the editor as
   // first responder through mousedown so the browser completes that same
-  // native click. Question choices use labels around their native controls and
+  // native click, reading the editor WebKit may have already ended through the
+  // `focusout` it dispatched just before the press. When a version still omits
+  // the click — or ends the editing session before the page sees the press at
+  // all — the next task supplies the one click that was withheld, and never a
+  // second one. Question choices use labels around their native controls and
   // need the same treatment. Keyboard focus and activation remain untouched.
+  document.addEventListener("focusout", rememberBlurredEditor, true);
   document.addEventListener(
     "mousedown",
     (event) => {
       if (event.button !== 0) return;
-      if (!pressedControl(event.target)) return;
-      if (isTextEditor(document.activeElement)) {
-        event.preventDefault();
+      const editor = isTextEditor(document.activeElement)
+        ? document.activeElement
+        : justBlurredEditor;
+      justBlurredEditor = null;
+      if (!editor) return;
+      const control = pressedControl(event.target);
+      if (!control) return;
+      event.preventDefault();
+      editorControlPress = { control, clicked: false };
+    },
+    true,
+  );
+  document.addEventListener(
+    "click",
+    (event) => {
+      if (editorControlPress && pressedControl(event.target) === editorControlPress.control) {
+        editorControlPress.clicked = true;
       }
     },
     true,
   );
+  document.addEventListener("mouseup", finishEditorControlPress, true);
+  window.addEventListener("blur", () => {
+    editorControlPress = null;
+    justBlurredEditor = null;
+  });
 
   // The renderer cannot navigate to a remote page, so a link click opens the
   // platform browser through the app instead of reloading the app window.

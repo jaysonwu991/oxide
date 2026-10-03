@@ -1730,7 +1730,9 @@ check(
 
 // WebKit may spend the first press after editing only moving focus to a button,
 // withholding the click until the next press. The page prevents that focus
-// default while an editor is active and leaves the one native click in charge.
+// default while an editor is active and leaves the one native click in charge;
+// if a WebKit version withholds the click anyway, the page supplies the single
+// one that was withheld.
 const composerButton = new StubElement("button", "composer-button");
 let composerButtonClicks = 0;
 composerButton.onclick = () => composerButtonClicks++;
@@ -1745,6 +1747,8 @@ check(
   buttonPress.refused === true,
   String(buttonPress.refused),
 );
+// The browser delivers the press's own click: the page must not add a second.
+document.fire("click", press({ target: composerButton }));
 composerButton.onclick(buttonPress);
 document.fire("mouseup", press({ target: composerButton }));
 await nextTick();
@@ -1753,6 +1757,42 @@ check(
   composerButtonClicks === 1,
   String(composerButtonClicks),
 );
+
+// Older WebKit ends the editor before it dispatches mousedown, so
+// `activeElement` is already empty when the page first sees the press. The
+// preceding `focusout` keeps that press associated with the editor, and the
+// click the webview omitted is supplied once the press is over.
+document.activeElement = elementFor("prompt");
+document.fire("focusout", press({ target: elementFor("prompt") }));
+document.activeElement = null;
+const preBlurredButtonPress = press({ target: composerButton });
+document.fire("mousedown", preBlurredButtonPress);
+check(
+  "kept a press WebKit dispatched after it had already blurred the editor",
+  preBlurredButtonPress.refused === true,
+  String(preBlurredButtonPress.refused),
+);
+document.fire("mouseup", press({ target: composerButton }));
+await nextTick();
+check(
+  "supplied the click the pre-blurred press never produced",
+  composerButtonClicks === 2,
+  String(composerButtonClicks),
+);
+
+// The memory of an ended editing session lasts only for its own press.
+document.activeElement = elementFor("prompt");
+document.fire("focusout", press({ target: elementFor("prompt") }));
+document.activeElement = null;
+await nextTick();
+const laterButtonPress = press({ target: composerButton });
+document.fire("mousedown", laterButtonPress);
+check(
+  "forgot an ended editing session before a later unrelated press",
+  laterButtonPress.refused !== true,
+  String(laterButtonPress.refused),
+);
+document.fire("mouseup", laterButtonPress);
 
 // A dialog editor is the same case as the message box.
 document.activeElement = elementFor("model-filter");
@@ -1763,9 +1803,12 @@ check(
   filterButtonPress.refused === true,
   String(filterButtonPress.refused),
 );
+document.fire("click", press({ target: composerButton }));
 document.fire("mouseup", press({ target: composerButton }));
+await nextTick();
 
-// With no editor active the press keeps its ordinary browser behavior.
+// With no editor active the press keeps its ordinary browser behavior, and no
+// click is ever supplied on its behalf.
 document.activeElement = null;
 const ordinaryButtonPress = press({ target: composerButton });
 document.fire("mousedown", ordinaryButtonPress);
@@ -1775,6 +1818,12 @@ check(
   String(ordinaryButtonPress.refused),
 );
 document.fire("mouseup", ordinaryButtonPress);
+await nextTick();
+check(
+  "supplied nothing for a press with no editing session",
+  composerButtonClicks === 2,
+  String(composerButtonClicks),
+);
 
 // A press into another text field is the browser's to place the caret with.
 const otherField = new StubElement("input", "other-field");
@@ -1813,6 +1862,7 @@ check(
   rowControlPress.refused === true,
   String(rowControlPress.refused),
 );
+document.fire("click", press({ target: composerRowControl }));
 document.fire("mouseup", rowControlPress);
 
 const composerRowPress = press({ target: composerRow });
@@ -1831,6 +1881,7 @@ check(
   composerLinkPress.refused === true,
   String(composerLinkPress.refused),
 );
+document.fire("click", press({ target: composerLink }));
 document.fire("mouseup", composerLinkPress);
 document.activeElement = null;
 
@@ -2453,6 +2504,9 @@ check(
   radioLabelPress.refused === true,
   String(radioLabelPress.refused),
 );
+// The row's one browser click activates the input it labels; the page must not
+// supply a second.
+document.fire("click", press({ target: optionRows[1] }));
 secondRadio.click();
 document.fire("mouseup", radioLabelPress);
 await nextTick();
@@ -2522,6 +2576,7 @@ check(
   checkboxPress.refused === true,
   String(checkboxPress.refused),
 );
+document.fire("click", press({ target: firstCheckbox }));
 firstCheckbox.click();
 document.fire("mouseup", checkboxPress);
 await nextTick();
