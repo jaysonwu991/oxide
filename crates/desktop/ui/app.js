@@ -2529,7 +2529,7 @@ function reviewSplit(file, lines) {
   let index = 0;
   while (index < lines.length) {
     if (lines[index].kind !== "context") {
-      split.appendChild(splitRow(lines[index]));
+      split.appendChild(diffRow(lines[index]));
       index += 1;
       continue;
     }
@@ -2537,14 +2537,14 @@ function reviewSplit(file, lines) {
     while (end < lines.length && lines[end].kind === "context") end += 1;
     const open = reviewState.expanded.has(`${file.path}:${index}`);
     if (open || end - index <= REVIEW_CONTEXT * 2 + 1) {
-      for (let at = index; at < end; at += 1) split.appendChild(splitRow(lines[at]));
+      for (let at = index; at < end; at += 1) split.appendChild(diffRow(lines[at]));
     } else {
       for (let at = index; at < index + REVIEW_CONTEXT; at += 1) {
-        split.appendChild(splitRow(lines[at]));
+        split.appendChild(diffRow(lines[at]));
       }
       split.appendChild(unmodifiedBar(file, index, end - index - REVIEW_CONTEXT * 2));
       for (let at = end - REVIEW_CONTEXT; at < end; at += 1) {
-        split.appendChild(splitRow(lines[at]));
+        split.appendChild(diffRow(lines[at]));
       }
     }
     index = end;
@@ -2569,7 +2569,7 @@ function unmodifiedBar(file, start, hidden) {
 /// One line of the split: the number it has on each side and the text that side
 /// holds, so a removed line leaves the new column empty and an added one leaves
 /// the old column empty.
-function splitRow(line) {
+function diffRow(line) {
   const row = document.createElement("div");
   row.className = `split-row ${line.kind}`;
   const side = (number, text) => {

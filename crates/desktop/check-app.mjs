@@ -748,7 +748,7 @@ vm.runInThisContext(
     " loadMcps, openSessions," +
     " listedSessions, selectSessionFromTree, removeSession," +
     " updateChips," +
-    " startTool, finishTool, toggleTool, openUpdate, installUpdate, installedUpdate, catchUpOnLaunchUpdate, launchDismissed };\n",
+    " startTool, finishTool, toggleTool, openUpdate, installUpdate, installedUpdate, catchUpOnLaunchUpdate, launchDismissed, renderMarkdown };\n",
 );
 
 const app = globalThis.__app;
@@ -3862,6 +3862,31 @@ check(
   elementFor("thread-title").textContent === "0f1e2d3c" &&
     elementFor("projects-tree").outline().includes("0f1e2d3c"),
   `${elementFor("thread-title").textContent} / ${elementFor("projects-tree").outline()}`,
+);
+
+// ---------- markdown ----------
+
+console.log("markdown");
+// A Markdown table is rendered from `splitRow`, a string splitter. The review's
+// diff row builder once shared the name and shadowed it through hoisting, so a
+// transcript holding a table threw `header.map is not a function` — the table's
+// "header" was the DOM row the diff builder returns. A table must render both on
+// its own and beside a line whose inline code holds a pipe.
+const soloTable = app.renderMarkdown("| a | b |\n|---|---|\n| 1 | 2 |");
+check(
+  "rendered a Markdown table's header and rows",
+  soloTable.includes("<table>") &&
+    soloTable.includes("<th>a</th>") &&
+    soloTable.includes("<td>1</td>"),
+  soloTable,
+);
+const tableByPipe = app.renderMarkdown(
+  "A line with `a|b` code.\n\n| x | y |\n|---|---|\n| 1 | 2 |",
+);
+check(
+  "rendered a table beside an inline pipe in code",
+  tableByPipe.includes("<table>") && tableByPipe.includes("<code>a|b</code>"),
+  tableByPipe,
 );
 
 // ---------- running-turn context in the composer's corner ----------
