@@ -867,21 +867,29 @@ async function loadSessions() {
     state.sessionsError = "";
     renderProjectsTree();
     refreshThreadTitle();
-    // The home state lists the newest threads across every project, so the
-    // listing that just arrived is what fills it. Only a transcript holding
-    // nothing but the welcome is repainted: once a message has been sent — or a
-    // finished turn's card has landed — the transcript is the thread, and a
-    // listing arriving late (every turn ends by reading it again) must not clear
-    // it. The rows are the store's own order, which is newest first.
-    const transcript = el("transcript");
-    const only = transcript.children;
-    if (only.length === 1 && only[0].classList?.contains("welcome")) renderWelcome();
+    repaintWelcome();
     return "";
   } catch (error) {
     setStatus(`Failed to load threads: ${error}`);
     state.sessionsError = String(error);
+    // The home state is painted before either listing answers, so a store that
+    // cannot be read still lets the folders that did arrive repaint it: the
+    // reader looks at what the sidebar holds rather than at "Add a folder".
+    repaintWelcome();
     return String(error);
   }
+}
+
+/// Repaints the home state while the transcript holds nothing but it, whichever
+/// way the thread listing went. The welcome lists the newest threads across
+/// every project, so the listing that just arrived is what fills it — but once a
+/// message has been sent, or a finished turn's card has landed, the transcript
+/// is the thread, and a listing arriving late (every turn ends by reading it
+/// again) must not clear it. The rows are the store's own order, newest first.
+function repaintWelcome() {
+  const transcript = el("transcript");
+  const only = transcript.children;
+  if (only.length === 1 && only[0].classList?.contains("welcome")) renderWelcome();
 }
 
 async function openSession(session) {
