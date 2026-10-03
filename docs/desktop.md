@@ -89,13 +89,23 @@ into nothing, with its approval and question requests unanswerable.
 ## Interface
 
 The window follows a Codex-style layout. Every glyph it draws for itself is
-inline SVG on one grid at one stroke weight — the tree's folder, a document, a
-caret and a check, the mark that signs a reply, `+`, and the remove `✕` — so
-nothing on screen is a character whose shape and size would come from the
-machine's fonts, and every control's words live in its tooltip and its
-`aria-label`, as the extension's do. `check-app.mjs` holds the paths the two
-front-ends share beside the extension's own sources, so chrome drawn one way in
-the panel and another in this window fails the check.
+inline SVG — the tree's folder, a document, a caret and a check, the mark that
+signs a reply, `+`, and the remove `✕` — stroked with `currentColor` in the
+panel's own two boxes and weights (24 units at 1.8 for a glyph that fills its
+button, 16 at 1.5–1.6 for the marks that sit on a text baseline), so nothing on
+screen is a character whose shape and size would come from the machine's fonts,
+and every control's words live in its tooltip and its `aria-label`, as the
+extension's do. The characters the window still types are text in a line rather
+than a control's drawing: a tool card's `✔`/`✖` and the `☐`/`☑` of an assistant's
+task list, which the panel's own renderer types too, the `✦` that opens a
+thinking block, which the terminal's does, the `⌘` naming a shortcut in words,
+the `·` a line of derived facts is joined with, and the image preview's head-row
+`✕`. Drawing one here and typing it there would make the two front-ends read the
+same state two ways, so `check-app.mjs` pins the set the window's own strings
+carry — a character a control could wear cannot appear under cover of them. It
+also holds the paths the two front-ends share beside the extension's own
+sources, so chrome drawn one way in the panel and another in this window fails
+the check.
 
 The regions, top to bottom:
 
@@ -187,8 +197,9 @@ The regions, top to bottom:
   are the same paths in both, which `check-app.mjs` holds beside the
   extension's own sources so a control drawn one way here and another there
   fails the check. The box itself says whether it is holding something: its
-  border lifts while a message or a chip is in it, and only the caret being in it
-  brings the accent ring, so the message being typed reads apart from one that is
+  border lifts while a message or a chip is in it, and only the caret being in
+  the message box brings the accent ring — a chip or the send button sharing the
+  box does not, so the message being typed reads apart from one that is
   waiting for a turn. One
   action sits on the right, which swaps rather than sitting beside a second
   button: **Stop** while a turn runs and there is nothing to say, **Send**

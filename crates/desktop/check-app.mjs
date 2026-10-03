@@ -1426,10 +1426,45 @@ for (const [name, path] of Object.entries(windowGlyphs)) {
 // composer's stroked paperclip. Each is a path in `ICONS` instead, and one
 // coming back is what this fails on.
 const typedGlyphs = ["📁", "📄", "＋", "✕", "×", "◆", "✓", "▾", "▸"];
+// Two marks in this window are still typed, and are meant to be: both are text
+// in the panel's own webview, so drawing them here would make the two front-ends
+// read the same state two ways — the divergence this check exists to catch
+// rather than an instance of it. `✔`/`✖` is what a tool card's state reads as,
+// and `media/main.js` picks between those same two characters. The rest are text
+// for the same reason: `☐`/`☑` are an assistant's task markers in this window's
+// Markdown and in the panel's, `✦` marks a thinking block the way the terminal's
+// renderer does, `⌘` names a shortcut in words, and `·` is the separator a line
+// of derived facts is joined with. A mark in a line of text is not a control's
+// drawing.
+const textCharacters = ["·", "☐", "☑", "⌘", "✔", "✖", "✦"];
+const sharedCharacters = ["✔", "✖", "☐", "☑"];
+// So the characters the window's own strings wear are pinned rather than
+// sampled: a control wearing a character is caught whichever one it is, not only
+// the nine this pass replaced, and the two the panel shares have to be there — a
+// pair that drifted apart in either direction fails here rather than in a
+// reader's eye. What counts is a character written as a string of its own (a
+// `"✖"` or a `"⌘"`), since that is a mark standing in for a drawing; the same
+// character inside a longer string is prose, an em dash or an ellipsis in a
+// sentence.
+const standaloneCharacters = [
+  ...new Set(
+    [...source.matchAll(/"([^"\n]{1,3})"/g)]
+      .flatMap((match) => [...match[1]])
+      .filter((character) => character.codePointAt(0) > 126),
+  ),
+].sort();
 check(
   "left no control wearing a character where a glyph belongs",
   typedGlyphs.every((character) => !source.includes(`"${character}"`)),
   typedGlyphs.filter((character) => source.includes(`"${character}"`)).join(" "),
+);
+check(
+  "typed the characters the panel types, and only those",
+  standaloneCharacters.join("") === [...textCharacters].sort().join("") &&
+    sharedCharacters.every((character) => extensionIcons.includes(`"${character}"`)),
+  `${standaloneCharacters.join("")} / panel ${
+    sharedCharacters.filter((character) => extensionIcons.includes(`"${character}"`)).length
+  }/${sharedCharacters.length}`,
 );
 // A row's own controls are hidden until the row is pointed at, or until one of
 // them holds the keyboard: the sidebar reads as a list of names rather than as a
@@ -1451,7 +1486,9 @@ check(
   "kept a thread's shortcut out of the way until its row is pointed at",
   /\.session-item \.shortcut \{[^}]*opacity: 0;/.test(sheet) &&
     /\.session-item:hover \.shortcut,\s*\.session-item:focus-within \.shortcut \{ opacity: 1; \}/.test(sheet) &&
-    /<tr><td>⌘1…⌘9<\/td><td>Open the thread at that place in the sidebar<\/td><\/tr>/.test(shell),
+    /<tr><td>⌘1…⌘9 \/ Ctrl\+1…9<\/td><td>Open the thread at that place in the sidebar<\/td><\/tr>/.test(shell) &&
+    // The row names both spellings because the handler takes either modifier.
+    /!event\.ctrlKey && !event\.metaKey/.test(source),
   sheet.slice(sheet.indexOf(".session-item .shortcut {"), sheet.indexOf(".session-item .shortcut {") + 260),
 );
 // The window around the sidebar already names the app, so the sidebar's own head
@@ -3794,15 +3831,32 @@ check(
   `send ${elementFor("send").hidden} / stop ${elementFor("stop").hidden}`,
 );
 // The box says whether it is holding something: a lift on its border while a
-// message waits in it, and the accent ring only while the caret is in it, so a
-// message being typed reads apart from one that is waiting for a turn.
+// message waits in it, and the accent ring only while the caret is in the
+// message box itself — not for a chip or the send button sharing the box, which
+// `:focus-within` would answer for too, so the ring is a class the caret sets.
 check(
   "left the composer's border at rest while it holds nothing",
   elementFor("composer").classList.contains("filled") === false &&
-    /\.composer\.filled \{ border-color: color-mix\(in srgb, var\(--dim\) 40%, transparent\); \}/.test(sheet) &&
-    /\.composer:focus-within \{[^}]*border-color: color-mix\(in srgb, var\(--accent\) 45%, transparent\);[^}]*box-shadow: 0 0 0 3px color-mix\(in srgb, var\(--accent\) 10%, transparent\);[^}]*\}/.test(
+    /\.composer\.focused \{[^}]*border-color: color-mix\(in srgb, var\(--accent\) 45%, transparent\);[^}]*box-shadow: 0 0 0 3px color-mix\(in srgb, var\(--accent\) 10%, transparent\);[^}]*\}/.test(
       sheet,
-    ),
+    ) &&
+    /\.composer\.filled \{ border-color: color-mix\(in srgb, var\(--dim\) 40%, transparent\); \}/.test(sheet) &&
+    !/\.composer:focus-within/.test(sheet),
+  elementFor("composer").className,
+);
+// The ring is the caret's, so it follows one: the message box taking focus puts
+// it up and losing it takes the ring down, with the border lift left to the text
+// still waiting in the box.
+elementFor("prompt").fire("focus");
+check(
+  "brought the accent ring up for the caret in the message box",
+  elementFor("composer").classList.contains("focused") === true,
+  elementFor("composer").className,
+);
+elementFor("prompt").fire("blur");
+check(
+  "took the ring down when the caret left it",
+  elementFor("composer").classList.contains("focused") === false,
   elementFor("composer").className,
 );
 elementFor("prompt").value = "a message";

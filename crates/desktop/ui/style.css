@@ -701,9 +701,12 @@ body.resizing { cursor: col-resize; user-select: none; }
 }
 /* The box that holds what is about to be sent says so: a border lift while it
    has text or an attachment in it, and the accent ring only while the caret is
-   in it, so a message waiting for a turn reads apart from the one being typed. */
+   in the message box itself, so a message waiting for a turn reads apart from
+   the one being typed. The ring is a class the box's own caret sets rather than
+   `:focus-within`, which would also answer for the attach chip, a picker chip or
+   the send button sharing the box. */
 .composer.filled { border-color: color-mix(in srgb, var(--dim) 40%, transparent); }
-.composer:focus-within {
+.composer.focused {
   border-color: color-mix(in srgb, var(--accent) 45%, transparent);
   box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 10%, transparent);
 }

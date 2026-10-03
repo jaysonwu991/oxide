@@ -36,19 +36,21 @@ const SUGGESTIONS = [
 
 // ---------- glyphs ----------
 
-/// Every icon the window draws: inline SVG on a 24-unit grid, stroked with
-/// `currentColor` in one weight, so a control's glyph is the same drawing on
-/// every machine. A character is not one — a `✕`, a `📁` or a `＋` is whatever
-/// shape and size the machine's own font gives it, which is how the composer's
-/// stroked paperclip ended up beside an emoji folder. The ones this window
-/// shares with the VS Code panel are the panel's own paths, held to them by
-/// `check-app.mjs`.
+/// Every icon the window draws: inline SVG stroked with `currentColor`, so a
+/// control's glyph is the same drawing on every machine. A character is not one
+/// — a `✕`, a `📁` or a `＋` is whatever shape and size the machine's own font
+/// gives it, which is how the composer's stroked paperclip ended up beside an
+/// emoji folder. The box and the weight are the panel's own two — a 24-unit box
+/// at 1.8 for a glyph that fills its button, a 16-unit one at 1.5–1.6 for the
+/// marks that sit on a text baseline — and the paths this window shares with the
+/// VS Code panel are the panel's verbatim, held to them by `check-app.mjs`.
 function glyph(paths, box = 24) {
   return `<svg viewBox="0 0 ${box} ${box}" aria-hidden="true">${paths}</svg>`;
 }
 
-// The two weights the grid is drawn at: a 24-unit box for a glyph that fills
-// its button, a 16-unit one for the marks that sit on a text baseline.
+// The two boxes the app's own drawings are made in, at the weight the panel
+// draws each in: a 24-unit box for a glyph that fills its button, a 16-unit one
+// at the panel's own 1.5 for the plus it shares with it.
 const STROKE_24 =
   'fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"';
 const STROKE_16 =
@@ -4771,6 +4773,11 @@ function init() {
     );
   });
 
+  // The accent ring belongs to the caret rather than to the box: `:focus-within`
+  // would light it up for the attach chip or the send button the keyboard
+  // happened to be on, which is not the message being typed.
+  el("prompt").addEventListener("focus", () => el("composer").classList.add("focused"));
+  el("prompt").addEventListener("blur", () => el("composer").classList.remove("focused"));
   el("prompt").addEventListener("input", () => {
     el("prompt").style.height = "auto";
     el("prompt").style.height = `${Math.min(el("prompt").scrollHeight, 220)}px`;
