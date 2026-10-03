@@ -80,11 +80,15 @@ comment. A summary about a pull or merge request names it with a link the user
 can click — `[#123](https://github.com/owner/repo/pull/123)`, the URL the forge
 CLI printed, not a bare `#123` — beside its state, since the desktop app and the
 VS Code panel open a Markdown link in the browser and a terminal links the URL
-printed after the label. A commit is named that way too —
-`[<short sha>](https://github.com/owner/repo/commit/<sha>)` in a report, a reply
-to a review comment or any other summary — because a hash on its own is not
-turned into a link by the forge: a reply that says which commit addressed a
-comment carries the link rather than the hash alone. A run that tries to finish
+printed after the label. A commit is named that way too — `[<short sha>](<url>)`
+in a report, a reply to a review comment or any other summary — with the URL
+the forge reports for that commit rather than a template filled in by hand:
+`gh api repos/{owner}/{repo}/commits/<sha> --jq .html_url` answers GitHub's
+`https://github.com/owner/repo/commit/<sha>`, and a GitLab project answers its
+own `https://gitlab.com/owner/repo/-/commit/<sha>` on whatever domain it lives
+on, since a hash on its own is not turned into a link by the forge: a reply
+that says which commit addressed a comment carries the link rather than the
+hash alone. A run that tries to finish
 with unconfirmed edits or unchecked side effects gets one hidden reminder to verify
 before it can summarize; a reminder the provider answers with nothing ends the
 run with the summary the model already wrote, rather than reporting an empty
