@@ -309,6 +309,41 @@ body.resizing { cursor: col-resize; user-select: none; }
   font-size: 12.5px;
 }
 .suggestions button:hover { color: var(--text); border-color: var(--dim); background: var(--panel); }
+/* The home state's own rows, for a window that opened on no project: the newest
+   threads across the folders the sidebar lists, so the window opens on
+   something to open rather than on an empty box. */
+.recent { margin-top: 4px; text-align: left; }
+.recent-label {
+  color: var(--faint);
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  margin-bottom: 6px;
+}
+.recent-thread {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  width: 100%;
+  padding: 8px 10px;
+  border: 1px solid transparent;
+  border-radius: 10px;
+  background: none;
+  color: var(--text);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.recent-thread:hover { background: var(--panel); border-color: var(--border); }
+.recent-name {
+  flex: 1;
+  min-width: 0;
+  font-size: 12.5px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.recent-meta { color: var(--faint); font-size: 11px; white-space: nowrap; }
 
 .empty { color: var(--dim); margin: auto; }
 
@@ -790,6 +825,16 @@ body.resizing { cursor: col-resize; user-select: none; }
    mark the active row: a shield is a shield whichever decision is saved, so the
    color is what says which one it is. */
 .chip.active { color: var(--accent); border-color: var(--accent); }
+/* The project chip is the one control on the row that names where the message
+   goes rather than what it carries, so it keeps its words and takes the accent
+   while no project is open — it is then the app's way into a first thread. */
+.project-chip { display: inline-flex; align-items: center; gap: 6px; max-width: 220px; }
+.project-chip.empty { color: var(--accent); border-color: var(--accent); }
+.project-chip .chip-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
 .send {
   display: inline-flex;
   align-items: center;
@@ -1237,10 +1282,11 @@ body.resizing { cursor: col-resize; user-select: none; }
 .popover-actions .icon { padding: 4px; border-radius: 8px; }
 .icon svg { display: block; }
 .popover .dialog-sub { margin: 4px 14px 8px; }
-/* The two lists are the app's rows too, so they keep the same lane clear of
+/* The three lists are the app's rows too, so they keep the same lane clear of
    their boxes (`::-webkit-scrollbar` at the foot of this sheet). */
 .popover .mcp-list,
-.popover .session-list { max-height: none; min-height: 0; flex: 1 1 auto; padding: 0 14px 12px; }
+.popover .session-list,
+.popover .project-list { max-height: none; min-height: 0; flex: 1 1 auto; padding: 0 14px 12px; }
 
 /* ---------- MCP servers ---------- */
 
@@ -1312,6 +1358,42 @@ body.resizing { cursor: col-resize; user-select: none; }
   text-overflow: ellipsis;
 }
 .session-meta { color: var(--faint); font-size: 11px; }
+
+/* ---------- projects ---------- */
+
+/* The composer's project chip: the folders this window runs in, one row each,
+   the same rows the sidebar draws under the Projects header. */
+.project-list { display: flex; flex-direction: column; gap: 2px; max-height: 46vh; overflow-y: auto; }
+.project-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 8px 10px;
+  border: 1px solid transparent;
+  border-radius: 10px;
+  background: none;
+  color: var(--text);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.project-row:hover { background: var(--panel-2); }
+.project-row.active { border-color: var(--border); }
+.project-main { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.project-label {
+  font-size: 12.5px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.project-path {
+  color: var(--faint);
+  font-size: 11px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
 
 /* ---------- slash command palette ---------- */
 

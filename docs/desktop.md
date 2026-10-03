@@ -91,8 +91,10 @@ into nothing, with its approval and question requests unanswerable.
 The window follows a Codex-style layout:
 
 - **Sidebar** — **+ New Chat** at the top, opening a thread in the project the
-  window is in and in the default one when nothing is open yet, so starting a
-  conversation never asks for a path; the **Projects** tree, and a footer pinned
+  window is in and, when nothing is open yet, the folder picker that asks which
+  project to start in — a folder is never picked for the reader, and with no
+  project at all the same button offers the Add-project dialog; the **Projects**
+  tree, and a footer pinned
   to the bottom with the two controls that belong to the window rather than to a
   message: the theme and the check for updates, an icon button each (a
   half-filled circle, and the same refresh arrow the
@@ -114,6 +116,12 @@ The window follows a Codex-style layout:
   opens the **Create project** dialog: pick one or more source folders and the
   **Project name** defaults to the first folder's basename (still editable), so
   creating a project never requires typing a name.
+- **Home** — what the transcript shows before a thread is in it. It follows
+  Codex's own habit of opening on something to do rather than on an empty box:
+  with no project open it lists the newest threads across **every** project the
+  sidebar knows, each under its summarized title and the folder it is in, and
+  one click resumes it in its own project; with a project open it is the
+  invitation, the folder and the suggestion buttons it always was.
 - **Top bar** — the open thread's title: the same label its sidebar row shows,
   and a running turn's own summarized title (sent with `agent-start`) before
   the listing has it. A new task carries no placeholder, and the provider is
@@ -128,13 +136,20 @@ The window follows a Codex-style layout:
   showing the call (e.g. `bash cargo test --all`); they expand automatically for
   diffs and errors and can be clicked open/closed. `write`/`edit` results get a
   colored diff.
-- **Composer** — a floating rounded box whose whole chrome is icon-first, the
+- **Composer** — a floating rounded box whose project chip names the folder the
+  message will run in and whose whole rest is icon-first, the
   way the VS Code panel's is: the attach paperclip, the model, the thinking
   level and the trust shield lead, then — after a rule of its own — the app's own
   dialogs as icon buttons in the extension's own style: a plug that opens
   **Connect**, a padlock for the saved tool approvals, and a
   circled `?` for the shortcut help, each with the words in its tooltip and its
-  `aria-label`. The controls the extension's own row carries come first and in
+  `aria-label`. The project chip is the one control there that keeps its words
+  on the face of it — **Choose a project** while none is open, else the folder's
+  name, accented in the first case the way the model picker marks the row in use
+  — because with nothing open it is how a first thread starts rather than a
+  value to look up (see
+  [Multiple projects](#multiple-projects-cross-repo)).
+  The controls the extension's own row carries come first and in
   its order, and the glyphs the two front-ends share — the paperclip, the `+`,
   the send arrow, the stop square, the refresh arrow, the close `✕`, the MCP
   power switch, the model's cube, the thinking sparkles and the trust shield —
@@ -223,8 +238,8 @@ node crates/desktop/check-shell.mjs
 bridge. It covers the `/mcps` listing (including the state colors, a failed
 probe and a toggle), the `/sessions` dialog (this project's threads only, the
 row that resumes one, the empty case, and a store that could not be read), the
-project it opens on (the sidebar's first row, an existing selection, and no
-project at all), the **Create project** dialog, and every client command in the
+project it opens on (no project at all, the picker's rows, and the folder a
+picked row opens), the **Create project** dialog, and every client command in the
 catalog — a command the app does not perform has to be answered here rather
 than sent to the model as a prompt. It also reads `ui/index.html` to check what
 no stub can: that both listings are attached to the composer (inside
@@ -290,14 +305,34 @@ sessions nested underneath; clicking a session opens that thread (switching to
 its project first when the selection differs). The transcript is loaded with
 `session_messages` (`SessionLog::open_id`).
 
-The window opens on the first row rather than on nothing: `app.js` selects the
-project the sidebar would show first (a registered folder, most recently opened
-first, else one discovered from a session), so the composer is usable at launch.
-The composer belongs to a project — with none selected the box stays disabled,
-and the path behind it would resolve against the directory the app was launched
-in, which is `$HOME` on one platform and `/` on another, not a folder the user
-picked. With no project at all the empty state stays, since there is nothing to
-run in.
+The window does not select a project for the reader: nothing is open at launch,
+and the transcript shows the app's **home state** — the composer ready to type
+in, the project chip under it, and, when the sidebar already lists threads, the
+newest few across **every** project (up to `MAX_RECENT_THREADS`, in the order
+`all_sessions` answers with, which is newest first) with the folder each one is
+in, so a click resumes a thread. The composer belongs to a project all the same:
+the path behind it would otherwise resolve against the directory the app was
+launched in, which is `$HOME` on one platform and `/` on another, not a folder
+the user picked. So the chip in the composer's own row carries the open folder's
+name — **Choose a project** while there is none — and opens the folder picker
+(`openProjects`): the rows the sidebar draws, plus a `+` that opens the
+Add-project dialog. Picking one (`pickProject`) selects it, which is also how a
+thread starts there, since selecting a project clears the transcript for the next
+message; picking the project already open only puts the picker away.
+
+Everything that needs a folder asks for one rather than guessing. A message sent
+with none open is not sent at all: it stays in the box and the picker opens with
+`Select a project first.` in the status, as do the model chip (whose catalog is
+read from a project's own config) and `/new`. The sidebar's **+ New Chat** opens
+that same picker when nothing is open, the Add-project dialog when there is no
+folder to pick at all, and a thread in the open project otherwise. With no
+project at all the home state says to add one with the project chip.
+
+A draft survives the folder it was waiting for: text typed and files attached
+before anything was open are still in the composer once a row of the picker is
+taken, since that pick is the last step of the message rather than a move
+somewhere else (`selectProject` only clears the attachments when a project is
+already open, where the chips were meant for the folder being left).
 
 The `✕` on a project row removes an **Added** project from the registry
 (`remove_project`), keeping its sessions; for a **Discovered** project it
