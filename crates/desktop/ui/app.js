@@ -633,6 +633,11 @@ async function loadProjects() {
     state.projects = await invoke("list_projects");
     await loadSessions(); // This will also call renderProjectsTree
     updateProjectChip();
+    // The chip can be clicked before this request answers, when it still has
+    // nothing to offer — so a picker already on screen is repainted with the
+    // folders that just arrived rather than left saying there are none until it
+    // is closed and opened again.
+    if (!el("projects-modal").hidden) renderProjects();
   } catch (error) {
     setStatus(`Failed to load projects: ${error}`);
   }
@@ -654,6 +659,18 @@ function openProjects() {
   closeOverlays("projects-modal");
   renderProjects();
   el("projects-modal").hidden = false;
+}
+
+/// Everything that needs a folder asks for one the same way: the picker of the
+/// rows the sidebar draws, or the Add-project dialog when there is nothing to
+/// pick at all. A reader who typed a message before choosing is not sent looking
+/// for a path they have never added.
+function askForProject() {
+  if ((state.projects || []).length) {
+    openProjects();
+    return;
+  }
+  openCreateProject();
 }
 
 function renderProjects() {
@@ -693,6 +710,11 @@ async function pickProject(project) {
 }
 
 async function selectProject(project) {
+  // A running turn belongs to the folder it started in — its run id is that
+  // thread's — so switching out from under it is refused the way starting a
+  // fresh thread is: the next Queue or Steer would otherwise be sent to the run
+  // of a project the chip no longer names.
+  if (busyRefusal("switching projects")) return false;
   // A folder picked while nothing was open is the first step of the message
   // already in the box, so the draft goes with it: the chips came from the
   // reader rather than from the project being left. A switch between folders
@@ -712,6 +734,7 @@ async function selectProject(project) {
   renderProjectsTree(); // Update tree view instead of dropdown
   resetTranscript();
   await Promise.all([loadInfo(), loadSessions(), loadTheme()]);
+  return true;
 }
 
 async function loadInfo() {
@@ -931,7 +954,7 @@ async function newTaskIn(project) {
   // thread's window exactly as it was.
   if (!canStartNewChat()) return;
   if (project && project.path !== state.project) {
-    await selectProject(project);
+    if (!(await selectProject(project))) return;
   }
   newChat();
 }
@@ -939,20 +962,15 @@ async function newTaskIn(project) {
 /// The sidebar's head: a thread in the project this window is in, and, when
 /// nothing is open yet, the picker that asks which folder to run in. A project is
 /// not chosen for the reader on the way in, so it is not chosen here either —
-/// the thread it starts is one they named the folder for. With no project at all
-/// there is nothing to run in, so it offers to add one through the same dialog
-/// the + in the header opens.
+/// the thread it starts is one they named the folder for, and with no project at
+/// all nothing to run in, so it asks for one the way every other control does.
 async function newChatFromSidebar() {
   if (!canStartNewChat()) return;
   if (state.project) {
     newChat();
     return;
   }
-  if (!(state.projects || []).length) {
-    openCreateProject();
-    return;
-  }
-  openProjects();
+  askForProject();
 }
 
 // ---------- chat ----------
@@ -1298,7 +1316,7 @@ async function send(followUp = false) {
   // picked. What was typed stays in the box while the folder is chosen.
   if (!state.project) {
     setStatus("Select a project first.");
-    openProjects();
+    askForProject();
     return;
   }
 
@@ -2552,6 +2570,7 @@ async function openModels() {
   // reason the message box asks for a folder before it sends anything.
   if (!state.project) {
     setStatus("Select a project first.");
+    askForProject();
     return;
   }
   closeOverlays("models-modal");
@@ -4446,7 +4465,7 @@ async function selectSessionFromTree(session) {
   // is queried against the right project and the composer is enabled.
   const project = state.projects.find((p) => p.path === session.cwd);
   if (project && project.path !== state.project) {
-    await selectProject(project);
+    if (!(await selectProject(project))) return;
   }
 
   window.history.replaceState({}, "", `?session=${session.id}`);

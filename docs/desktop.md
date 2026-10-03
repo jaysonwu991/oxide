@@ -318,15 +318,28 @@ name — **Choose a project** while there is none — and opens the folder picke
 (`openProjects`): the rows the sidebar draws, plus a `+` that opens the
 Add-project dialog. Picking one (`pickProject`) selects it, which is also how a
 thread starts there, since selecting a project clears the transcript for the next
-message; picking the project already open only puts the picker away.
+message; picking the project already open only puts the picker away. The chip can
+be clicked before `list_projects` has answered, when there is nothing to offer
+yet, so a picker already on screen is repainted with the folders that arrive
+rather than left saying there are none.
 
 Everything that needs a folder asks for one rather than guessing. A message sent
 with none open is not sent at all: it stays in the box and the picker opens with
 `Select a project first.` in the status, as do the model chip (whose catalog is
-read from a project's own config) and `/new`. The sidebar's **+ New Chat** opens
-that same picker when nothing is open, the Add-project dialog when there is no
-folder to pick at all, and a thread in the open project otherwise. With no
-project at all the home state says to add one with the project chip.
+read from a project's own config) and `/new`. All three ask through the same
+helper (`askForProject`), which offers the picker, or the Add-project dialog when
+there is no folder to pick at all — as the sidebar's **+ New Chat** does when
+nothing is open, which otherwise just starts a thread in the open project. With
+no project at all the home state says to add one with the project chip.
+
+A folder is never switched out from under a running turn. The turn belongs to
+this window's process and its run id is the thread it is in, so the next Queue or
+Steer would be sent to the run of a project the chip no longer names.
+`selectProject` refuses while one runs (`busyRefusal`, the answer starting a new
+thread already gives) and reports the refusal, and every caller that would go on
+to open something honors it: the picker's rows, the sidebar's project rows, and
+resuming a thread that lives in another project — which would otherwise open a
+session in the folder the window is not in.
 
 A draft survives the folder it was waiting for: text typed and files attached
 before anything was open are still in the composer once a row of the picker is

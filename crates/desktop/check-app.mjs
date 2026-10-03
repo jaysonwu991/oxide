@@ -720,7 +720,7 @@ const source = readFileSync(`${here}app.js`, "utf8");
 vm.runInThisContext(
   source +
     "\nglobalThis.__app = { send, runSlashCommand, state, createProjectState," +
-    " newChatFromSidebar, openProjects, renderProjects, pickProject, updateProjectChip, renderWelcome, recentThreads," +
+    " newChatFromSidebar, openProjects, renderProjects, pickProject, updateProjectChip, renderWelcome, recentThreads, loadProjects," +
     " openCreateProject, addCreateProjectTypedPath, saveCreateProject, openModels," +
     " refreshPaletteEntries, paletteMatches, renderPalette, runPaletteEntry," +
     " addAttachment, addAttachmentFiles, el, showQuestion, showQuestionStep, questionNext," +
@@ -864,6 +864,55 @@ check(
     calls.length === 0,
   `${app.state.session} / ${JSON.stringify(calls.map(([name]) => name))}`,
 );
+// The chip can be clicked before `list_projects` has answered, when there is
+// still nothing to offer: the picker is repainted with the folders that arrive
+// rather than left saying there are none until it is closed and opened again.
+app.state.projects = [];
+el("projects-modal").hidden = true;
+el("project").onclick();
+check(
+  "offered no folders before the list had arrived",
+  elementFor("project-list").outline().includes("No projects yet"),
+  elementFor("project-list").outline(),
+);
+await app.loadProjects();
+check(
+  "filled the picker that was already open",
+  elementFor("projects-modal").hidden === false &&
+    elementFor("project-list").children.length === projectRows.length,
+  `${elementFor("projects-modal").hidden} / ${elementFor("project-list").outline()}`,
+);
+el("projects-modal").hidden = true;
+// A turn belongs to the folder it started in — its run id is that thread's — so
+// a folder picked under it is refused rather than leaving the next Queue or
+// Steer pointed at the run of a project the chip no longer names.
+app.state.session = "6f3031b2beef";
+app.setBusy();
+calls.length = 0;
+el("project").onclick();
+elementFor("project-list").children[0].onclick();
+await nextTick();
+check(
+  "refused to switch folders under a running turn",
+  app.state.project === projectRows[1].path &&
+    app.state.session === "6f3031b2beef" &&
+    app.state.busy === true &&
+    /turn is running/.test(status()),
+  `${app.state.project} / ${app.state.session} / ${app.state.busy} / ${status()}`,
+);
+// A thread in another project is the same switch by another door, so it lands on
+// the same refusal: the run's own folder is the one it stays in.
+calls.length = 0;
+await app.selectSessionFromTree({ id: "fe0031b1", cwd: projectRows[0].path });
+check(
+  "refused to resume another folder's thread under it too",
+  app.state.project === projectRows[1].path &&
+    app.state.session === "6f3031b2beef" &&
+    calls.length === 0 &&
+    /turn is running/.test(status()),
+  `${app.state.project} / ${app.state.session} / ${JSON.stringify(calls.map(([name]) => name))}`,
+);
+app.setIdle();
 
 // The sidebar's head is the way into a thread, and it never picks a folder for
 // the reader: with nothing open it asks which one, with one open it starts the
@@ -922,6 +971,18 @@ check(
   elementFor("create-project-modal").hidden === false,
   String(elementFor("create-project-modal").hidden),
 );
+// Nothing to pick at all is the one case that cannot be answered by the picker,
+// and every control that wants a folder gets the same dialog for it.
+el("create-project-modal").hidden = true;
+calls.length = 0;
+await app.openModels();
+check(
+  "offered to add one from the model chip too",
+  elementFor("create-project-modal").hidden === false &&
+    elementFor("projects-modal").hidden === true &&
+    calls.length === 0,
+  `${elementFor("create-project-modal").hidden} / ${elementFor("projects-modal").hidden} / ${JSON.stringify(calls.map(([name]) => name))}`,
+);
 el("create-project-modal").hidden = true;
 app.state.projects = openedWith;
 
@@ -942,15 +1003,18 @@ check(
 );
 // The folder is picked as the last step of that message rather than in place of
 // it: what was typed and what was attached to it are still there to send, and
-// only the transcript is the new project's.
+// only the transcript is the new project's. The model catalog is read from a
+// project's own config, so its chip asks for the folder the same way.
 calls.length = 0;
+el("projects-modal").hidden = true;
 await app.openModels();
 check(
-  "told the reader a model needs a folder first",
+  "told the reader a model needs a folder first, and asked for one",
   calls.length === 0 &&
     elementFor("models-modal").hidden === true &&
+    elementFor("projects-modal").hidden === false &&
     status() === "Select a project first.",
-  `${status()} / ${JSON.stringify(calls.map(([name]) => name))}`,
+  `${status()} / ${elementFor("projects-modal").hidden} / ${JSON.stringify(calls.map(([name]) => name))}`,
 );
 app.addAttachment("shot.png", "data:image/png;base64,iVBORw0KGgo=");
 elementFor("project-list").children[0].onclick();
