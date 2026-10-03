@@ -439,12 +439,20 @@ export interface LiveSession {
 /// It is echoed back so a redraw under a typed-in filter keeps the filter, and
 /// the count in the head is what the filter left, so narrowing the list is
 /// visible as a number rather than only as a shorter list.
+///
+/// `running` is the thread a turn is writing into when that thread is not the
+/// one on screen — the reader moved to another thread while it ran. Its row says
+/// so rather than reading as any other past conversation, because a turn is
+/// still adding to it: the row is a way back to the reply being written, not
+/// only to what it already said. The open thread's own mark is `current`, and a
+/// row is never both.
 export function sessionDialog(
   sessions: readonly SessionEntry[],
   current: string | null,
   note = "",
   live: LiveSession | null = null,
   query = "",
+  running: LiveSession | null = null,
 ): DialogState {
   const open = live && live.id === current ? live : null;
   const file = open ? sessions.find((session) => session.id === open.id) : undefined;
@@ -459,16 +467,28 @@ export function sessionDialog(
       )
     : sessions;
   const filtered = filterSessions(named, query);
+  // The turn's own thread, when the reader is not looking at it: its row says a
+  // turn is in it rather than reading as a past conversation.
+  const runningId = running && running.id !== current ? running.id : null;
+  // The threads the store has no row for yet: the one on screen — a fresh thread
+  // whose file it is still catching up to — and, when the reader is elsewhere,
+  // the one a turn is writing into. A session file is written as its turn
+  // starts, so the second is only the moment before the read lands; without a
+  // stand-in the listing would omit the very thread it has the most to say
+  // about.
+  const stands: SessionEntry[] = [];
+  if (open && !file) stands.push({ id: open.id, label: title, age: "", messages: 0 });
+  if (runningId && !sessions.some((session) => session.id === runningId)) {
+    stands.push({ id: runningId, label: running!.label.trim(), age: "", messages: 0 });
+  }
   // The thread on screen is filtered like any other row, so a search never
   // leaves a row behind that the query does not match.
-  const stand: SessionEntry | null =
-    open && !file ? { id: open.id, label: title, age: "", messages: 0 } : null;
-  const standing = stand ? filterSessions([stand], query) : [];
+  const standing = filterSessions(stands, query);
   const threads = standing.length + filtered.length;
   // The note is the host's when it has one to give (the read failed, the store
   // is not there yet); otherwise a listing says why it is showing no threads,
   // which is either nothing stored yet or a filter that left none.
-  const empty = sessions.length || open
+  const empty = sessions.length || stands.length
     ? query.trim() && !threads
       ? `No thread matches “${query.trim()}”.`
       : ""
@@ -495,25 +515,26 @@ export function sessionDialog(
         action: OPEN_SESSION,
         kind: "action",
       }),
-      ...(stand && standing.length
-        ? [
-            row(stand.id, title || stand.id, {
-              detail: "Open in this panel — the store has no file for it yet",
-              status: "Current",
-              tone: "muted" as DialogTone,
-              action: OPEN_SESSION,
-              kind: "thread",
-              current: true,
-            }),
-          ]
-        : []),
+      ...standing.map((entry) =>
+        row(entry.id, entry.label || entry.id, {
+          // The store has no file to delete yet: a trash on this row would ask
+          // the CLI to remove a session it cannot find.
+          detail: "Open in this panel — the store has no file for it yet",
+          status: entry.id === runningId ? "Running" : "Current",
+          tone: (entry.id === runningId ? "ok" : "muted") as DialogTone,
+          action: OPEN_SESSION,
+          kind: "thread",
+          current: entry.id === current,
+        }),
+      ),
       ...filtered.map((session) => {
         const marked = session.id === current;
+        const live = session.id === runningId;
         const name = session.label || session.id;
         return row(session.id, name, {
           detail: `${session.messages} message${session.messages === 1 ? "" : "s"}`,
-          status: marked ? "Current" : session.age,
-          tone: "muted",
+          status: marked ? "Current" : live ? "Running" : session.age,
+          tone: live ? "ok" : "muted",
           action: OPEN_SESSION,
           button: `Delete ${name}`,
           buttonAction: SESSION_DELETE,

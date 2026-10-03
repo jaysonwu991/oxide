@@ -276,7 +276,13 @@ it yet: `sessionDialog` is handed the open thread as a `LiveSession` (its id and
 the title the header shows), so a thread that is running — or one whose first
 message has not been flushed — is listed under the name the header carries
 instead of missing from the list, and the store catching up replaces the row
-rather than adding a second one. For the same reason the listing is read again
+rather than adding a second one. The turn's own thread is handed in the same way
+when it is *not* the one on screen (`sessionDialog`'s `running`), since it is the
+one thread a reader most needs a row for: it is listed under the run's title,
+marked **Running** where the age would sit (with **Current** never on the same
+row, so one word says which thread is which) and standing in for its own row
+while the store has not written it yet — and taking the row is the strip's own
+**Open**: the parked transcript is swapped back on screen rather than replayed. For the same reason the listing is read again
 while it is open, at the two moments a session is written: when the `session`
 header names the thread, and when the turn ends. Only a session listing is
 re-read — `chat.ts::syncSessions` returns early for a confirmation or the MCP
@@ -302,9 +308,12 @@ one of the threads it lists, empty for an ordinary row), which is the only thing
 the renderer needs to paint a thread apart from a way out of the listing, and
 `current` for the thread the panel has open — the mark the listing puts on the
 conversation on screen, sent rather than read off the row's status word, which
-is a word to paint. `kind: "sessions"` is also the only state the header's own
-button has to agree with, since it is that listing which puts the button's
-`aria-expanded` up.
+is a word to paint. The turn's own thread travels in `sessionDialog`'s `running`
+and comes back as a word rather than a field: its row says **Running** where the
+age would sit, with the `ok` tone, and never beside `Current`, since one word has
+to say which thread is which. `kind: "sessions"` is also the only state the
+header's own button has to agree with, since it is that listing which puts the
+button's `aria-expanded` up.
 
 Nothing about where it opens is left to the renderer either: the MCP list is
 pinned to the footer, above the composer it was asked for in, the session
@@ -382,11 +391,59 @@ with a `quit` frame when `agent_end` arrives, so the process exits on its own.
   remembered between them: unlike an approval, a question is about this
   conversation only.
 - **Per folder** — sessions are per project, so switching to a different
-  workspace folder resets the transcript and starts its own thread.
+  workspace folder resets the transcript and starts its own thread. A turn pins
+  the folder it began in: while one runs, the folder a newly activated file names
+  waits, since the run's own events are still being applied to the transcript it
+  started in and its session belongs to that project. Leaving a folder clears a
+  parked thread with it — that transcript is the folder being left, and the
+  strip's **Open** would otherwise put another project's conversation on screen.
 - **Usage** — `usage` events accumulate input/output/cache tokens and cost for
   the usage line, and the latest one sets the context gauge (its prompt tokens
   over the window), which is `OXIDE_CONTEXT_LIMIT` when it is set else the
   config's `context_window`, else the model's known window (1M when unknown).
+
+### The thread a turn is in
+
+A turn owns the conversation it was started in, and one `Transcript` is kept per
+thread — items, totals, phase, change cards — so a reader can open another
+thread while a turn runs without the run's output landing in it. The run's own is
+held in `runTranscript` and every event is applied there
+(`this.runTranscript ?? this.transcript`), painted only while that thread is also
+the one on screen; the footer's totals and the status are painted the same way,
+so a reader in another thread sees that thread's numbers. A queued message
+continues the thread it was composed in (`startTurn(prepared, showUser, target)`),
+and an approval or a question is answered in the transcript its card was painted
+into — which, while the reader is elsewhere, is a card they cannot see, so a
+notice says which thread is waiting and where the answer goes: an unanswered
+dialog is a turn that ends in a denial after the broker's five minutes.
+
+The header says where the turn is. A strip under it (`#run-strip`,
+`#run-open`) names the thread — *A turn is running in “<title>”*, or *A turn
+finished in “<title>”* once it is over and its reply has not been read — and its
+**Open** is the way there: it posts the same `openRun` control the desktop app's
+strip carries, and the controller swaps the parked transcript back on screen
+rather than reading the store again, so the reply, the tool cards and the change
+card are all still there. What the strip is painted from is `runThread()`: the
+run's own thread and whether it is still going, carried on every `state` and
+`status` message and `null` while that thread is the one on screen — nothing is
+said about a thread the reader is already in. Opening the run's row in the
+session listing (`parkedRun()`) is the same swap, since a row standing in for the
+running thread should lead back to it rather than to a replay.
+
+A message typed in another thread while the run is live is refused instead of
+steered into it — *A turn is running in “<title>”; open it to queue or steer, or
+stop it.* — and the composer's corner offers Stop alone until the reader is
+back, with `submit` keeping the text rather than posting it, so nothing is typed
+into a conversation the reply has nowhere to land in. The desktop app's window
+refuses the same send in the same words. Two doors wait for the run: **New chat**
+and **Continue most recent session**, which would write into the session the
+process is appending to, are answered with a note saying to stop the turn first —
+while a thread's own row is allowed, since reading another thread is the point:
+the run's transcript is parked with the run and the turn keeps going in it. A
+thread the turn is working in cannot be deleted from the listing either. A
+history read for a thread (`loadHistory`) lands in the transcript it was read
+for or is dropped, and closing the on-screen thread builds a fresh `Transcript`
+rather than reusing the one the run may still be holding.
 
 ## The footer
 
@@ -1085,6 +1142,26 @@ thread reads back — `oxide sessions show --json` parsed into the turns the pan
 replays, a call paired with the result that answered it, and the totals the
 footer shows, including the output of a CLI that answered with nothing — is
 covered in `test/history.test.ts`.
+
+A turn's own thread is held to source-level checks for the same reason the `send`
+routing is: the controller cannot be loaded without `vscode`, so the assertions
+read it — that the stream is applied to the transcript the prompt was typed into
+and painted only while that is the one on screen, that a queued message, an
+approval answer and a question answer all go to that transcript, that the strip is
+painted from the run's own thread and its **Open** posts the `openRun` control the
+controller answers by swapping the parked transcript back, that the listing's row
+for the running thread is the same swap, that the thread being left is parked
+before the new one is built, that **New chat** and **Continue** wait for the run,
+that a message typed in another thread is refused before anything is steered,
+that the folder a run began in is the one it keeps (and that a parked thread goes
+with the folder it belongs to), and that a history read lands in the thread it was
+read for or nowhere — in `test/commands.test.ts`. That one thread's items, totals
+and phase live in the `Transcript` rather than in the controller, so an event
+applied to the run's thread cannot repaint the one being read, is covered in
+`test/protocol.test.ts`; the strip's own painting — hidden while the run is the
+thread on screen, naming the thread and offering **Open**, and Stop alone in the
+corner while the run is elsewhere — and the running thread's **Running** word in
+the listing are covered in `test/webview.test.ts` and `test/dialogs.test.ts`.
 
 `pnpm test` runs on Linux, macOS and Windows in CI (`.github/workflows/ci.yml`),
 because the parts of the extension that touch the system have a per-platform

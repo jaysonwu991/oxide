@@ -245,6 +245,37 @@ export interface TranscriptState {
   binary: string;
   showThinking: boolean;
   footer: FooterState;
+  /// The thread a turn belongs to when it is not the one the panel is showing,
+  /// so the view can say which conversation is running and offer the way back
+  /// to it. `null` when the panel's own thread is the run's — or when nothing
+  /// is running and nothing is parked.
+  run: RunThread | null;
+}
+
+/// A turn's own thread, named for a pane that is showing another one. The
+/// reader moved to a different thread while the turn ran (or a finished turn's
+/// thread is still waiting to be opened), and the run keeps writing into its
+/// own transcript, which the reader is not looking at.
+///
+/// The run belongs to the thread it started in: a delta, a tool card and a
+/// change card are all applied to that transcript, so a reply is never painted
+/// into the conversation the reader moved to. The strip is where it is named,
+/// and `open` is the door back to it.
+///
+/// A message typed while it is up belongs to the running turn rather than to
+/// the thread on screen — a Queue or a Steer with nowhere to land — so the
+/// composer offers Stop alone until the reader is back in the run's thread,
+/// which is what `run.running` says.
+export interface RunThread {
+  /// The run's thread id, or `null` while the CLI has not named it yet (the
+  /// session header is what writes it, and it arrives after the first event).
+  sessionId: string | null;
+  /// What the strip names it by: the title the header showed when the reader
+  /// left it, else the thread's own summarized title.
+  title: string;
+  /// Whether the turn is still running, so the strip says "running" rather
+  /// than "finished" and the composer's corner keeps Stop.
+  running: boolean;
 }
 
 /// One change card's state after it was undone, or after a newer card took the
@@ -276,6 +307,9 @@ export type ViewMessage =
       /// is sent, before a `state` message repaints the view, so the header's
       /// title follows the send without waiting for one.
       title?: string;
+      /// The turn's own thread when it is not the one on screen, so the strip
+      /// follows a turn's start and end without a full `state` repaint.
+      run?: RunThread | null;
     }
   /// The footer is attached by the controller (the transcript only knows the
   /// totals), so a usage event repaints the whole footer row.
@@ -458,6 +492,7 @@ export class Transcript {
     binary: string;
     showThinking: boolean;
     footer: FooterState;
+    run: RunThread | null;
   }): TranscriptState {
     return {
       items: this.items,

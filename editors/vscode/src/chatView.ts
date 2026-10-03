@@ -331,6 +331,10 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     <button id="resume-session" class="icon" title="Session history" aria-label="Session history" aria-expanded="false" aria-controls="dialog">${ICONS.resume}</button>
   </div>
 </header>
+<section id="run-strip" hidden>
+  <span id="run-strip-text"></span>
+  <button id="run-open" class="run-open" type="button">Open</button>
+</section>
 <section id="dialog" class="popover" hidden aria-labelledby="dialog-title">
   <div class="popover-head">
     <h2 id="dialog-title"></h2>

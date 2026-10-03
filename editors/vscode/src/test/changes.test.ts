@@ -43,6 +43,7 @@ const noState = {
     percent: 0,
     level: "ok" as const,
   },
+  run: null,
 };
 
 function file(over: Partial<ChangedFile> = {}): ChangedFile {
