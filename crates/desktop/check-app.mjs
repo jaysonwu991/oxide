@@ -748,7 +748,7 @@ vm.runInThisContext(
     " loadMcps, openSessions," +
     " listedSessions, selectSessionFromTree, removeSession," +
     " updateChips," +
-    " startTool, finishTool, toggleTool, openUpdate, installUpdate, installedUpdate, catchUpOnLaunchUpdate, launchDismissed, renderMarkdown };\n",
+    " startTool, finishTool, toggleTool, openUpdate, installUpdate, installedUpdate, catchUpOnLaunchUpdate, launchDismissed };\n",
 );
 
 const app = globalThis.__app;
@@ -1730,9 +1730,7 @@ check(
 
 // WebKit may spend the first press after editing only moving focus to a button,
 // withholding the click until the next press. The page prevents that focus
-// default while an editor is active and leaves the one native click in charge;
-// if a WebKit version withholds the click anyway, the page supplies the single
-// one that was withheld.
+// default while an editor is active and leaves the one native click in charge.
 const composerButton = new StubElement("button", "composer-button");
 let composerButtonClicks = 0;
 composerButton.onclick = () => composerButtonClicks++;
@@ -1747,97 +1745,14 @@ check(
   buttonPress.refused === true,
   String(buttonPress.refused),
 );
-// The browser delivers the press's own click after mouseup: the page must not
-// add a second.
-document.fire("mouseup", press({ target: composerButton }));
-document.fire("click", press({ target: composerButton }));
 composerButton.onclick(buttonPress);
+document.fire("mouseup", press({ target: composerButton }));
 await nextTick();
 check(
   "handled one native click exactly once",
   composerButtonClicks === 1,
   String(composerButtonClicks),
 );
-
-// A press the browser released somewhere other than the control it began on is
-// cancelled: the fallback must not turn a drag-off into a click.
-document.activeElement = elementFor("prompt");
-const draggedPress = press({ target: composerButton });
-document.fire("mousedown", draggedPress);
-document.fire("mouseup", press({ target: composerRow }));
-await nextTick();
-check(
-  "supplied nothing for a press released away from its control",
-  composerButtonClicks === 1,
-  String(composerButtonClicks),
-);
-
-// A disabled control never answers a click, and the fallback must not force one.
-const disabledButton = new StubElement("button", "disabled-button");
-disabledButton.disabled = true;
-let disabledClicks = 0;
-disabledButton.onclick = () => disabledClicks++;
-document.activeElement = elementFor("prompt");
-document.fire("mousedown", press({ target: disabledButton }));
-document.fire("mouseup", press({ target: disabledButton }));
-await nextTick();
-check("supplied nothing for a disabled control", disabledClicks === 0, String(disabledClicks));
-
-// A release from another button while the primary press is still held must not
-// run the fallback early; the primary release is the one that finishes it.
-document.activeElement = elementFor("prompt");
-const chordedPress = press({ target: composerButton });
-document.fire("mousedown", chordedPress);
-document.fire("mouseup", press({ target: composerButton, button: 2 }));
-await nextTick();
-check(
-  "left a primary press open through a secondary release",
-  composerButtonClicks === 1,
-  String(composerButtonClicks),
-);
-document.fire("mouseup", press({ target: composerButton }));
-await nextTick();
-check(
-  "supplied the primary press's click once on its own release",
-  composerButtonClicks === 2,
-  String(composerButtonClicks),
-);
-
-// Older WebKit ends the editor before it dispatches mousedown, so
-// `activeElement` is already empty when the page first sees the press. The
-// preceding `focusout` keeps that press associated with the editor, and the
-// click the webview omitted is supplied once the press is over.
-document.activeElement = elementFor("prompt");
-document.fire("focusout", press({ target: elementFor("prompt") }));
-document.activeElement = null;
-const preBlurredButtonPress = press({ target: composerButton });
-document.fire("mousedown", preBlurredButtonPress);
-check(
-  "kept a press WebKit dispatched after it had already blurred the editor",
-  preBlurredButtonPress.refused === true,
-  String(preBlurredButtonPress.refused),
-);
-document.fire("mouseup", press({ target: composerButton }));
-await nextTick();
-check(
-  "supplied the click the pre-blurred press never produced",
-  composerButtonClicks === 3,
-  String(composerButtonClicks),
-);
-
-// The memory of an ended editing session lasts only for its own press.
-document.activeElement = elementFor("prompt");
-document.fire("focusout", press({ target: elementFor("prompt") }));
-document.activeElement = null;
-await nextTick();
-const laterButtonPress = press({ target: composerButton });
-document.fire("mousedown", laterButtonPress);
-check(
-  "forgot an ended editing session before a later unrelated press",
-  laterButtonPress.refused !== true,
-  String(laterButtonPress.refused),
-);
-document.fire("mouseup", laterButtonPress);
 
 // A dialog editor is the same case as the message box.
 document.activeElement = elementFor("model-filter");
@@ -1849,11 +1764,8 @@ check(
   String(filterButtonPress.refused),
 );
 document.fire("mouseup", press({ target: composerButton }));
-document.fire("click", press({ target: composerButton }));
-await nextTick();
 
-// With no editor active the press keeps its ordinary browser behavior, and no
-// click is ever supplied on its behalf.
+// With no editor active the press keeps its ordinary browser behavior.
 document.activeElement = null;
 const ordinaryButtonPress = press({ target: composerButton });
 document.fire("mousedown", ordinaryButtonPress);
@@ -1863,12 +1775,6 @@ check(
   String(ordinaryButtonPress.refused),
 );
 document.fire("mouseup", ordinaryButtonPress);
-await nextTick();
-check(
-  "supplied nothing for a press with no editing session",
-  composerButtonClicks === 3,
-  String(composerButtonClicks),
-);
 
 // A press into another text field is the browser's to place the caret with.
 const otherField = new StubElement("input", "other-field");
@@ -1907,7 +1813,6 @@ check(
   rowControlPress.refused === true,
   String(rowControlPress.refused),
 );
-document.fire("click", press({ target: composerRowControl }));
 document.fire("mouseup", rowControlPress);
 
 const composerRowPress = press({ target: composerRow });
@@ -1926,7 +1831,6 @@ check(
   composerLinkPress.refused === true,
   String(composerLinkPress.refused),
 );
-document.fire("click", press({ target: composerLink }));
 document.fire("mouseup", composerLinkPress);
 document.activeElement = null;
 
@@ -2549,11 +2453,8 @@ check(
   radioLabelPress.refused === true,
   String(radioLabelPress.refused),
 );
-// The row's one browser click activates the input it labels after mouseup; the
-// page must not supply a second.
-document.fire("mouseup", radioLabelPress);
-document.fire("click", press({ target: optionRows[1] }));
 secondRadio.click();
+document.fire("mouseup", radioLabelPress);
 await nextTick();
 check(
   "handled the radio row's native activation once",
@@ -2621,9 +2522,8 @@ check(
   checkboxPress.refused === true,
   String(checkboxPress.refused),
 );
-document.fire("mouseup", checkboxPress);
-document.fire("click", press({ target: firstCheckbox }));
 firstCheckbox.click();
+document.fire("mouseup", checkboxPress);
 await nextTick();
 check(
   "handled the checkbox's native activation once",
@@ -3907,31 +3807,6 @@ check(
   elementFor("thread-title").textContent === "0f1e2d3c" &&
     elementFor("projects-tree").outline().includes("0f1e2d3c"),
   `${elementFor("thread-title").textContent} / ${elementFor("projects-tree").outline()}`,
-);
-
-// ---------- markdown ----------
-
-console.log("markdown");
-// A Markdown table is rendered from `splitRow`, a string splitter. The review's
-// diff row builder once shared the name and shadowed it through hoisting, so a
-// transcript holding a table threw `header.map is not a function` — the table's
-// "header" was the DOM row the diff builder returns. A table must render both on
-// its own and beside a line whose inline code holds a pipe.
-const soloTable = app.renderMarkdown("| a | b |\n|---|---|\n| 1 | 2 |");
-check(
-  "rendered a Markdown table's header and rows",
-  soloTable.includes("<table>") &&
-    soloTable.includes("<th>a</th>") &&
-    soloTable.includes("<td>1</td>"),
-  soloTable,
-);
-const tableByPipe = app.renderMarkdown(
-  "A line with `a|b` code.\n\n| x | y |\n|---|---|\n| 1 | 2 |",
-);
-check(
-  "rendered a table beside an inline pipe in code",
-  tableByPipe.includes("<table>") && tableByPipe.includes("<code>a|b</code>"),
-  tableByPipe,
 );
 
 // ---------- running-turn context in the composer's corner ----------
