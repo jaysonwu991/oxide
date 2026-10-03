@@ -468,8 +468,8 @@ let threads = existing;
 let threadsError = null;
 
 // The sidebar's rows as `list_projects` answers them: registered folders first
-// (most recently opened first), then projects discovered from sessions. The app
-// opens on the first of them, so the stub carries two.
+// (most recently opened first), then projects discovered from sessions. Nothing
+// is selected on the way in, so the stub carries two for the picker to offer.
 let projectRows = [
   {
     id: "/home/dev/Projects/oxide",
@@ -712,15 +712,16 @@ globalThis.FileReader = class {
   }
 };
 
-/// The markup ships the composer disabled and the app enables it once a project
-/// is selected, so the stub starts it the way the page does.
-elementFor("prompt").disabled = true;
+/// The markup ships the composer ready to type in — a project is not chosen for
+/// the reader on the way in, so the box is not gated behind one — and what a
+/// message with nowhere to run is answered by is the picker the chip opens.
 
 const source = readFileSync(`${here}app.js`, "utf8");
 vm.runInThisContext(
   source +
     "\nglobalThis.__app = { send, runSlashCommand, state, createProjectState," +
-    " openDefaultProject, newChatInDefaultProject, openCreateProject, addCreateProjectTypedPath, saveCreateProject," +
+    " newChatFromSidebar, openProjects, renderProjects, pickProject, updateProjectChip, renderWelcome, recentThreads, loadProjects," +
+    " openCreateProject, addCreateProjectTypedPath, saveCreateProject, openModels," +
     " refreshPaletteEntries, paletteMatches, renderPalette, runPaletteEntry," +
     " addAttachment, addAttachmentFiles, el, showQuestion, showQuestionStep, questionNext," +
     " answerQuestion, collectAnswers, requestAt, acceptAt, moveAt, closeAt, atKey," +
@@ -741,75 +742,216 @@ const emit = async (name, payload) => {
   for (const handler of listeners.get(name) || []) await handler({ payload });
 };
 
-// ---------- the project it opens on ----------
+// ---------- what the window opens on ----------
 
-console.log("default project");
+console.log("launch");
 // `init()` ran as the source loaded; its project list arrives on a promise, so
-// let the startup chain settle before reading what it selected.
-await new Promise((resolve) => setTimeout(resolve, 0));
+// let the startup chain settle before reading what it opened — which is a window
+// with no project in it. A folder is not chosen for the reader on the way in:
+// the home state is shown, the composer is ready, and the chip under it takes a
+// folder when they pick one.
+await nextTick();
+check("opened on no project", app.state.project === null, String(app.state.project));
 check(
-  "opened on the first project in the sidebar",
-  app.state.project === projectRows[0].path,
-  String(app.state.project),
-);
-const firstRow = elementFor("projects-tree").children[0]?.children[0];
-check(
-  "marked that row as the active one",
-  String(firstRow?.className).includes("active"),
-  String(firstRow?.className),
+  "marked no project as the active one",
+  elementFor("projects-tree").children.every(
+    (group) => !String(group.children[0]?.className).includes("active"),
+  ),
+  elementFor("projects-tree").outline(),
 );
 check("left the composer ready to type in", elementFor("prompt").disabled === false);
-app.state.project = projectRows[1].path;
-await app.openDefaultProject();
 check(
-  "left a project that was already selected alone",
-  app.state.project === projectRows[1].path,
-  String(app.state.project),
+  "named the composer's chip as the way to pick a folder",
+  elementFor("project-name").textContent === "Choose a project" &&
+    elementFor("project").classList.contains("empty") &&
+    /Pick the folder/.test(String(elementFor("project").title)),
+  `${elementFor("project-name").textContent} / ${elementFor("project").title}`,
 );
-// With no project at all there is nothing to open, so the empty state stays
-// rather than a task being started in a folder the user never picked.
-const rows = projectRows;
-app.state.project = null;
-projectRows = [];
-await app.openDefaultProject();
-check("kept the empty state with no project to open", app.state.project === null, String(app.state.project));
-// Back to what the app opened with, so the sections below start from a real
-// startup rather than an empty sidebar.
-projectRows = rows;
-await app.openDefaultProject();
 
-// The sidebar's head is the way into a thread, and it never asks for a path: it
-// starts one in the project the window is in, in the default one — the first
-// folder the sidebar lists — when nothing is open yet, and offers to add a
-// project when there is none to run in at all.
-const openedWith = app.state.projects;
-app.state.project = null;
-calls.length = 0;
-await app.newChatInDefaultProject();
+// The home state is where a thread is picked up again — the newest threads across
+// every folder the sidebar lists, nearest first — since a window that opens on no
+// project should open on something to do rather than on an empty box.
+const recentRows = () => elementFor("transcript").querySelectorAll(".recent-thread");
+const recentText = (index) => recentRows().map((row) => row.children[index].textContent).join(" / ");
+const recentRow = (title) =>
+  recentRows().find((row) => row.children[0].textContent === title);
 check(
-  "started a thread in the default project from the sidebar's head",
-  app.state.project === projectRows[0].path && app.state.session === null,
-  `${app.state.project} / ${app.state.session}`,
+  "offered the newest threads across every project",
+  recentText(0) === "Fix the flaky test / say hi / Other project",
+  recentText(0),
 );
+check(
+  "named the folder each of them is in",
+  recentText(1) === "oxide · 7m ago / oxide · 3d ago / elsewhere · just now",
+  recentText(1),
+);
+// Resuming from the home state points the composer at the thread's own project
+// first, which is the folder its rows and its next message belong to.
+calls.length = 0;
+recentRow("Fix the flaky test").onclick();
+await nextTick();
+await nextTick();
+check(
+  "opened the thread a home row named, in its own project",
+  app.state.project === "/home/dev/Projects/oxide" &&
+    app.state.session === "fe0031b1" &&
+    projectCalls("session_messages")[0]?.[1]?.project === "/home/dev/Projects/oxide",
+  `${app.state.project} / ${app.state.session} / ${JSON.stringify(calls.map(([name]) => name))}`,
+);
+// A listing that arrives while a thread is on screen belongs to the sidebar, not
+// to the transcript: only a transcript holding nothing but the welcome is
+// repainted, so the `all_sessions` every turn ends with cannot clear the thread
+// it just finished.
+const sent = document.createElement("div");
+sent.className = "sent-message";
+elementFor("transcript").appendChild(sent);
+await app.loadSessions();
+check(
+  "left a thread on screen alone when the listing arrived",
+  elementFor("transcript").querySelectorAll(".sent-message").length === 1,
+  elementFor("transcript").outline(),
+);
+// The picker the chip opens carries the same folders the sidebar draws, and
+// picking one opens that project — which is also how a thread starts in it,
+// since selecting a project clears the transcript for the next message.
+app.state.session = null;
+app.state.project = null;
+app.resetTranscript();
+el("projects-modal").hidden = true;
+calls.length = 0;
+el("project").onclick();
+check(
+  "opened the folder picker from the composer's chip",
+  elementFor("projects-modal").hidden === false &&
+    elementFor("project-list").children.length === projectRows.length &&
+    calls.length === 0,
+  `${elementFor("projects-modal").hidden} / ${elementFor("project-list").outline()}`,
+);
+check(
+  "listed each folder by its name and its path",
+  elementFor("project-list").outline().includes("oxide") &&
+    elementFor("project-list").outline().includes("/tmp/elsewhere") &&
+    elementFor("project-list").outline().includes("elsewhere"),
+  elementFor("project-list").outline(),
+);
+// Escape puts it away like the app's other panels, which is where the picker's
+// own id in the overlay list has to be.
+document.fire("keydown", { key: "Escape" });
+check("closed the picker on Escape", elementFor("projects-modal").hidden === true);
+el("project").onclick();
+elementFor("project-list").children[1].onclick();
+await nextTick();
+check(
+  "opened the folder the picker named",
+  app.state.project === projectRows[1].path &&
+    elementFor("projects-modal").hidden === true &&
+    elementFor("project-name").textContent === "elsewhere" &&
+    !elementFor("project").classList.contains("empty"),
+  `${app.state.project} / ${elementFor("project-name").textContent}`,
+);
+// Picking the project already open only puts the picker away: selecting it again
+// would clear a transcript the reader did not ask to leave.
+app.state.session = "6f3031b2beef";
+calls.length = 0;
+el("project").onclick();
+elementFor("project-list").children[1].onclick();
+await nextTick();
+check(
+  "left a folder that was already open alone",
+  app.state.project === projectRows[1].path &&
+    app.state.session === "6f3031b2beef" &&
+    elementFor("projects-modal").hidden === true &&
+    calls.length === 0,
+  `${app.state.session} / ${JSON.stringify(calls.map(([name]) => name))}`,
+);
+// The chip can be clicked before `list_projects` has answered, when there is
+// still nothing to offer: the picker is repainted with the folders that arrive
+// rather than left saying there are none until it is closed and opened again.
+app.state.projects = [];
+el("projects-modal").hidden = true;
+el("project").onclick();
+check(
+  "offered no folders before the list had arrived",
+  elementFor("project-list").outline().includes("No projects yet"),
+  elementFor("project-list").outline(),
+);
+await app.loadProjects();
+check(
+  "filled the picker that was already open",
+  elementFor("projects-modal").hidden === false &&
+    elementFor("project-list").children.length === projectRows.length,
+  `${elementFor("projects-modal").hidden} / ${elementFor("project-list").outline()}`,
+);
+el("projects-modal").hidden = true;
+// A turn belongs to the folder it started in — its run id is that thread's — so
+// a folder picked under it is refused rather than leaving the next Queue or
+// Steer pointed at the run of a project the chip no longer names.
+app.state.session = "6f3031b2beef";
+app.setBusy();
+calls.length = 0;
+el("project").onclick();
+elementFor("project-list").children[0].onclick();
+await nextTick();
+check(
+  "refused to switch folders under a running turn",
+  app.state.project === projectRows[1].path &&
+    app.state.session === "6f3031b2beef" &&
+    app.state.busy === true &&
+    /turn is running/.test(status()),
+  `${app.state.project} / ${app.state.session} / ${app.state.busy} / ${status()}`,
+);
+// A thread in another project is the same switch by another door, so it lands on
+// the same refusal: the run's own folder is the one it stays in.
+calls.length = 0;
+await app.selectSessionFromTree({ id: "fe0031b1", cwd: projectRows[0].path });
+check(
+  "refused to resume another folder's thread under it too",
+  app.state.project === projectRows[1].path &&
+    app.state.session === "6f3031b2beef" &&
+    calls.length === 0 &&
+    /turn is running/.test(status()),
+  `${app.state.project} / ${app.state.session} / ${JSON.stringify(calls.map(([name]) => name))}`,
+);
+app.setIdle();
+
+// The sidebar's head is the way into a thread, and it never picks a folder for
+// the reader: with nothing open it asks which one, with one open it starts the
+// thread there, and a running turn owns the thread it is on.
+app.state.project = null;
+app.state.session = null;
+el("projects-modal").hidden = true;
+calls.length = 0;
+await app.newChatFromSidebar();
+check(
+  "asked which folder to start in rather than choosing one",
+  app.state.project === null &&
+    elementFor("projects-modal").hidden === false &&
+    calls.length === 0,
+  `${app.state.project} / ${elementFor("projects-modal").hidden} / ${JSON.stringify(calls.map(([name]) => name))}`,
+);
+check(
+  "left `/new` to ask for a folder too",
+  (await app.runSlashCommand("/new")) === true &&
+    app.state.project === null &&
+    elementFor("projects-modal").hidden === false,
+  `${app.state.project} / ${elementFor("projects-modal").hidden}`,
+);
+el("projects-modal").hidden = true;
 app.state.session = "6f3031b2beef";
 app.state.project = projectRows[1].path;
 calls.length = 0;
-await app.newChatInDefaultProject();
+await app.newChatFromSidebar();
 check(
-  "started it in the project on screen without re-selecting one",
+  "started it in the folder on screen without re-selecting one",
   app.state.project === projectRows[1].path &&
     app.state.session === null &&
     !calls.some(([name]) => name === "project_info"),
   `${app.state.project} / ${app.state.session} / ${JSON.stringify(calls.map(([name]) => name))}`,
 );
-// A running turn owns the thread it is on, so the head refuses rather than
-// clearing the transcript under it and leaving its later events with nowhere to
-// go — the same refusal the panel's own new chat makes.
-app.state.session = "6f3031b2beef";
-app.state.project = projectRows[1].path;
 app.setBusy();
+app.state.session = "6f3031b2beef";
 calls.length = 0;
-await app.newChatInDefaultProject();
+await app.newChatFromSidebar();
 check(
   "refused a new thread while a turn was running",
   app.state.session === "6f3031b2beef" &&
@@ -819,24 +961,100 @@ check(
   `${app.state.session} / ${JSON.stringify(calls.map(([name]) => name))} / ${status()}`,
 );
 app.setIdle();
+const openedWith = app.state.projects;
 app.state.projects = [];
 app.state.project = null;
 el("create-project-modal").hidden = true;
-await app.newChatInDefaultProject();
+await app.newChatFromSidebar();
 check(
   "offered to add a project when there is none to run in",
   elementFor("create-project-modal").hidden === false,
   String(elementFor("create-project-modal").hidden),
 );
+// Nothing to pick at all is the one case that cannot be answered by the picker,
+// and every control that wants a folder gets the same dialog for it.
+el("create-project-modal").hidden = true;
+calls.length = 0;
+await app.openModels();
+check(
+  "offered to add one from the model chip too",
+  elementFor("create-project-modal").hidden === false &&
+    elementFor("projects-modal").hidden === true &&
+    calls.length === 0,
+  `${elementFor("create-project-modal").hidden} / ${elementFor("projects-modal").hidden} / ${JSON.stringify(calls.map(([name]) => name))}`,
+);
 el("create-project-modal").hidden = true;
 app.state.projects = openedWith;
-await app.openDefaultProject();
+
+// A message with nowhere to run is answered by the picker rather than sent
+// against the directory the app was launched in, and what was typed stays in the
+// box while the folder is chosen. The model catalog is read from a project's own
+// config, so it asks the same way.
+el("prompt").value = "hello";
+calls.length = 0;
+await app.send();
+check(
+  "asked for a folder before sending a message",
+  calls.length === 0 &&
+    el("prompt").value === "hello" &&
+    elementFor("projects-modal").hidden === false &&
+    status() === "Select a project first.",
+  `${status()} / ${el("prompt").value} / ${JSON.stringify(calls.map(([name]) => name))}`,
+);
+// The folder is picked as the last step of that message rather than in place of
+// it: what was typed and what was attached to it are still there to send, and
+// only the transcript is the new project's. The model catalog is read from a
+// project's own config, so its chip asks for the folder the same way.
+calls.length = 0;
+el("projects-modal").hidden = true;
+await app.openModels();
+check(
+  "told the reader a model needs a folder first, and asked for one",
+  calls.length === 0 &&
+    elementFor("models-modal").hidden === true &&
+    elementFor("projects-modal").hidden === false &&
+    status() === "Select a project first.",
+  `${status()} / ${elementFor("projects-modal").hidden} / ${JSON.stringify(calls.map(([name]) => name))}`,
+);
+app.addAttachment("shot.png", "data:image/png;base64,iVBORw0KGgo=");
+elementFor("project-list").children[0].onclick();
+await nextTick();
+check(
+  "kept the message that was waiting for a folder",
+  app.state.project === projectRows[0].path &&
+    el("prompt").value === "hello" &&
+    app.state.attachments.length === 1,
+  `${app.state.project} / ${el("prompt").value} / ${app.state.attachments.length}`,
+);
+// Switching folders with a draft in the box is a different thing — the chips
+// were attached to a message meant for the folder being left — so they go.
+el("project").onclick();
+elementFor("project-list").children[1].onclick();
+await nextTick();
+check(
+  "dropped a draft's attachments when switching folders",
+  app.state.project === projectRows[1].path &&
+    el("prompt").value === "hello" &&
+    app.state.attachments.length === 0,
+  `${app.state.project} / ${app.state.attachments.length}`,
+);
+el("prompt").value = "";
+
+// Back to what the sections below expect to start from — a project open on
+// screen — rather than from a window that has just opened.
+await app.pickProject(app.state.projects[0]);
+check(
+  "opened the folder the picker named after that",
+  app.state.project === projectRows[0].path &&
+    elementFor("project-name").textContent === "oxide",
+  `${app.state.project} / ${elementFor("project-name").textContent}`,
+);
 
 // ---------- the composer's popovers ----------
 
-// The MCP and session listings are part of the composer rather than windows
-// over the app: each is a sibling above `.composer` inside `.composer-wrap`, so
-// it grows out of the composer's top edge and stays stuck to it.
+// The listings are part of the composer rather than windows over the app: each
+// is a sibling above `.composer` inside `.composer-wrap`, so it grows out of the
+// composer's top edge and stays stuck to it.
 console.log("popovers");
 const shell = readFileSync(`${here}index.html`, "utf8");
 // Comments come off the stylesheet before anything reads it: the checks below
@@ -850,17 +1068,41 @@ const buttonFor = (id) => {
   return shell.slice(shell.lastIndexOf("<button", at), shell.indexOf("</button>", at));
 };
 check(
-  "attached the MCP and session popovers to the composer",
-  shellAt('class="composer-wrap"') < shellAt('id="mcps-modal"') &&
+  "attached the listings to the composer",
+  shellAt('class="composer-wrap"') < shellAt('id="projects-modal"') &&
+    shellAt('id="projects-modal"') < shellAt('id="mcps-modal"') &&
     shellAt('id="mcps-modal"') < shellAt('id="sessions-modal"') &&
     shellAt('id="sessions-modal"') < shellAt('class="composer"'),
-  `${shellAt('id="mcps-modal"')} / ${shellAt('id="sessions-modal"')} / ${shellAt('class="composer"')}`,
+  `${shellAt('id="projects-modal"')} / ${shellAt('id="mcps-modal"')} / ${shellAt('id="sessions-modal"')} / ${shellAt('class="composer"')}`,
+);
+// The project chip sits in the composer's own row, before the controls that
+// describe the message: it is the folder the message goes to. It carries words
+// rather than a glyph, since with nothing open it is how a first thread starts.
+const composerBar = shell.slice(
+  shell.indexOf('class="composer-bar"'),
+  shell.indexOf('id="send"'),
+);
+check(
+  "put the project chip in the composer's row, with its own words",
+  composerBar.includes('id="project"') &&
+    /<span id="project-name"[^>]*>[^<]+<\/span>/.test(composerBar) &&
+    shell.indexOf('id="project"') < shell.indexOf('id="attach"'),
+  composerBar.slice(0, 420),
+);
+// A project is not selected for the reader on the way in, so the box a message
+// is typed into is not gated behind one in the markup either.
+check(
+  "shipped the composer ready to type in",
+  /<textarea id="prompt"/.test(shell) && !/<textarea id="prompt"[^>]*disabled/.test(shell),
+  shell.slice(shell.indexOf('<textarea id="prompt"'), shell.indexOf('<textarea id="prompt"') + 120),
 );
 check(
   "left the popovers out of the overlays",
-  !/<div id="(mcps|sessions)-modal" class="overlay"/.test(shell),
+  !/<div id="(projects|mcps|sessions)-modal" class="overlay"/.test(shell),
 );
 for (const [id, label] of [
+  ["projects-add", "New project"],
+  ["projects-close", "Close"],
   ["mcps-refresh", "Recheck the servers"],
   ["mcps-close", "Close"],
   ["sessions-new", "New thread"],
@@ -869,7 +1111,9 @@ for (const [id, label] of [
   const button = buttonFor(id);
   check(
     `made ${id} an icon-only button`,
-    button.includes(`title="${label}"`) &&
+    // The words are in the tooltip rather than the button: the label exactly,
+    // then either the line break a second hint follows or the closing quote.
+    new RegExp(`title="${label}(&#10;|")`).test(button) &&
       button.includes(`aria-label="${label}"`) &&
       button.includes("<svg"),
     button,
@@ -1045,6 +1289,7 @@ const scrolledRows = [
   ".projects-tree",
   ".mcp-list",
   ".session-list",
+  ".project-list",
   ".palette-list",
   ".model-list",
   ".review-files",

@@ -533,27 +533,92 @@ function diffBlock(diff) {
 
 // ---------- welcome ----------
 
+// How many threads the home state offers before the sidebar becomes the way to
+// the rest of them: enough to pick up where the reader left off, not a second
+// listing of everything stored.
+const MAX_RECENT_THREADS = 5;
+
+/// What fills the transcript before a thread is in it — the window's home. With
+/// a project it is the invitation, the folder and the suggestions; with none it
+/// is where a thread is picked up again: the newest threads across every folder
+/// the sidebar lists, since a window that opens on no project should open on
+/// something to do rather than on an empty box. The composer is usable either
+/// way — the project chip under it takes the folder.
 function renderWelcome() {
   const project = state.project;
-  const suggestions = project
-    ? `<div class="suggestions">${SUGGESTIONS.map(
-        (text) => `<button data-prompt="${escapeHtml(text)}">${escapeHtml(text)}</button>`,
-      ).join("")}</div>`
-    : "";
-  el("transcript").innerHTML = `
-    <div class="welcome">
-      <div class="welcome-mark">◆</div>
-      <h1>${project ? "What should we build?" : "Select a project"}</h1>
-      <p>${project ? escapeHtml(state.project) : "Add or pick a project on the left to get started."}</p>
-      ${suggestions}
-    </div>`;
-  el("transcript").querySelectorAll(".suggestions button").forEach((button) => {
-    button.onclick = () => {
-      el("prompt").value = button.dataset.prompt;
-      el("prompt").focus();
-      updateSendState();
-    };
-  });
+  const welcome = document.createElement("div");
+  welcome.className = "welcome";
+  const mark = document.createElement("div");
+  mark.className = "welcome-mark";
+  mark.textContent = "◆";
+  const title = document.createElement("h1");
+  title.textContent = "What should we build?";
+  const hint = document.createElement("p");
+  hint.textContent = project
+    ? project
+    : (state.projects || []).length
+      ? "Pick a folder with the project chip below, or open a recent thread."
+      : "Add a folder to run in — the project chip below, or the + beside Projects.";
+  welcome.append(mark, title, hint);
+  if (project) {
+    const suggestions = document.createElement("div");
+    suggestions.className = "suggestions";
+    for (const text of SUGGESTIONS) {
+      const button = document.createElement("button");
+      button.dataset.prompt = text;
+      button.textContent = text;
+      button.onclick = () => {
+        el("prompt").value = text;
+        el("prompt").focus();
+        updateSendState();
+      };
+      suggestions.appendChild(button);
+    }
+    welcome.appendChild(suggestions);
+  } else {
+    const recent = recentThreads();
+    if (recent.length) welcome.appendChild(recentList(recent));
+  }
+  el("transcript").innerHTML = "";
+  el("transcript").appendChild(welcome);
+}
+
+/// The newest threads across every project the sidebar lists — the same rows it
+/// groups under each folder, which is where a window with nothing open resumes
+/// one. The stand-in row for a thread the store has not written is left out:
+/// there is no thread on screen at home, so there is nothing to stand in for.
+function recentThreads() {
+  const listed = new Set((state.projects || []).map((project) => project.path));
+  return listedSessions()
+    .filter((session) => !session.unstored && listed.has(session.cwd))
+    .slice(0, MAX_RECENT_THREADS);
+}
+
+function recentList(threads) {
+  const box = document.createElement("div");
+  box.className = "recent";
+  const label = document.createElement("div");
+  label.className = "recent-label";
+  label.textContent = "Recent threads";
+  box.appendChild(label);
+  for (const session of threads) {
+    const row = document.createElement("button");
+    row.type = "button";
+    row.className = "recent-thread";
+    const name = document.createElement("span");
+    name.className = "recent-name";
+    name.textContent = sessionLabel(session);
+    const meta = document.createElement("span");
+    meta.className = "recent-meta";
+    meta.textContent = [projectNameOf(session.cwd), sessionAge(session.modified_at)]
+      .filter(Boolean)
+      .join(" · ");
+    row.append(name, meta);
+    row.title = `${name.textContent} — ${meta.textContent}`;
+    row.onclick = () => selectSessionFromTree(session);
+    box.appendChild(row);
+  }
+  return box;
 }
 
 function clearWelcome() {
@@ -567,39 +632,109 @@ async function loadProjects() {
   try {
     state.projects = await invoke("list_projects");
     await loadSessions(); // This will also call renderProjectsTree
+    updateProjectChip();
+    // The chip can be clicked before this request answers, when it still has
+    // nothing to offer — so a picker already on screen is repainted with the
+    // folders that just arrived rather than left saying there are none until it
+    // is closed and opened again.
+    if (!el("projects-modal").hidden) renderProjects();
   } catch (error) {
     setStatus(`Failed to load projects: ${error}`);
   }
 }
 
-/// Opens the app on the first project the sidebar shows — a registered folder,
-/// most recently opened first, then one discovered from a session — rather than
-/// on nothing. The composer belongs to a project: with none selected the box
-/// stays disabled, and the path behind it would resolve against whatever
-/// directory the app was launched in ($HOME on one platform, `/` on another),
-/// which is not a folder the user picked. With no project at all the empty
-/// state stays, since there is nothing to run in.
-async function openDefaultProject() {
-  await loadProjects();
-  if (state.project) return;
-  const [first] = state.projects || [];
-  if (first) await selectProject(first);
+/// The name a folder is listed under: the row the sidebar draws for it, else its
+/// basename, so a path with no row still reads as a name.
+function projectNameOf(path) {
+  const project = (state.projects || []).find((entry) => entry.path === path);
+  return project ? project.name : folderBasename(path);
+}
+
+/// The folders this window can run in — what the composer's project chip opens,
+/// and the same list the sidebar draws: a folder added in the app first, then one
+/// that only exists because a thread was started in it. Picking a row opens that
+/// project, which is also how a thread starts in it: selecting a project clears
+/// the transcript, so the next message opens a thread of its own.
+function openProjects() {
+  closeOverlays("projects-modal");
+  renderProjects();
+  el("projects-modal").hidden = false;
+}
+
+/// Everything that needs a folder asks for one the same way: the picker of the
+/// rows the sidebar draws, or the Add-project dialog when there is nothing to
+/// pick at all. A reader who typed a message before choosing is not sent looking
+/// for a path they have never added.
+function askForProject() {
+  if ((state.projects || []).length) {
+    openProjects();
+    return;
+  }
+  openCreateProject();
+}
+
+function renderProjects() {
+  const box = el("project-list");
+  box.innerHTML = "";
+  const projects = state.projects || [];
+  if (!projects.length) {
+    box.innerHTML = '<div class="dialog-empty">No projects yet. Add a folder to run in.</div>';
+    return;
+  }
+  for (const project of projects) {
+    const row = document.createElement("button");
+    row.type = "button";
+    row.className = `project-row${project.path === state.project ? " active" : ""}`;
+    const main = document.createElement("div");
+    main.className = "project-main";
+    const label = document.createElement("div");
+    label.className = "project-label";
+    label.textContent = project.name;
+    const path = document.createElement("div");
+    path.className = "project-path";
+    path.textContent = project.path;
+    main.append(label, path);
+    row.appendChild(main);
+    row.title = project.path;
+    row.onclick = () => pickProject(project);
+    box.appendChild(row);
+  }
+}
+
+/// Picking the project already open only puts the picker away: selecting it
+/// again would clear a transcript the reader did not ask to leave.
+async function pickProject(project) {
+  el("projects-modal").hidden = true;
+  if (!project || project.path === state.project) return;
+  await selectProject(project);
 }
 
 async function selectProject(project) {
+  // A running turn belongs to the folder it started in — its run id is that
+  // thread's — so switching out from under it is refused the way starting a
+  // fresh thread is: the next Queue or Steer would otherwise be sent to the run
+  // of a project the chip no longer names.
+  if (busyRefusal("switching projects")) return false;
+  // A folder picked while nothing was open is the first step of the message
+  // already in the box, so the draft goes with it: the chips came from the
+  // reader rather than from the project being left. A switch between folders
+  // drops them, since they were meant for the one being left behind.
+  const wasOpen = Boolean(state.project);
   state.project = project.path;
   state.projectName = project.name;
   state.session = null;
   state.trust = null;
   state.pendingSends = [];
-  clearAttachments();
-  el("prompt").disabled = false;
+  if (wasOpen) clearAttachments();
+  el("projects-modal").hidden = true;
   el("trust-modal").hidden = true;
   updateTrustButton();
+  updateChips();
   setStatus("Ready");
   renderProjectsTree(); // Update tree view instead of dropdown
   resetTranscript();
   await Promise.all([loadInfo(), loadSessions(), loadTheme()]);
+  return true;
 }
 
 async function loadInfo() {
@@ -685,6 +820,22 @@ async function answerTrust(trusted) {
 
 function updateChips() {
   labelControl("reasoning", `thinking: ${state.reasoning}`, "Choose the reasoning level (Shift+Tab cycles)");
+  updateProjectChip();
+}
+
+/// The composer's project chip names the folder the message goes to, and asks for
+/// one while there is none: a project is not selected for the reader on the way
+/// in, so the chip is where they pick it. It keeps its words rather than hiding
+/// them in a tooltip, since with nothing open it reads as the action it is.
+function updateProjectChip() {
+  const open = Boolean(state.project);
+  const name = open ? projectNameOf(state.project) : "Choose a project";
+  el("project-name").textContent = name;
+  el("project").classList.toggle("empty", !open);
+  el("project").title = open
+    ? `project: ${name}\nSwitch the folder this window runs in`
+    : "Choose a project\nPick the folder this window runs in";
+  el("project").setAttribute("aria-label", open ? `project: ${name}` : "Choose a project");
 }
 
 /// An icon-only control names the value it holds where a text chip used to show
@@ -716,6 +867,15 @@ async function loadSessions() {
     state.sessionsError = "";
     renderProjectsTree();
     refreshThreadTitle();
+    // The home state lists the newest threads across every project, so the
+    // listing that just arrived is what fills it. Only a transcript holding
+    // nothing but the welcome is repainted: once a message has been sent — or a
+    // finished turn's card has landed — the transcript is the thread, and a
+    // listing arriving late (every turn ends by reading it again) must not clear
+    // it. The rows are the store's own order, which is newest first.
+    const transcript = el("transcript");
+    const only = transcript.children;
+    if (only.length === 1 && only[0].classList?.contains("welcome")) renderWelcome();
     return "";
   } catch (error) {
     setStatus(`Failed to load threads: ${error}`);
@@ -794,23 +954,23 @@ async function newTaskIn(project) {
   // thread's window exactly as it was.
   if (!canStartNewChat()) return;
   if (project && project.path !== state.project) {
-    await selectProject(project);
+    if (!(await selectProject(project))) return;
   }
   newChat();
 }
 
-/// The sidebar's head: a thread in the project this window is in, and in the
-/// default one — the first folder the sidebar lists — when nothing is open yet.
-/// It never asks for a path: with no project at all there is nothing to run in,
-/// so it offers to add one through the same dialog the + in the header opens.
-async function newChatInDefaultProject() {
-  const projects = state.projects || [];
-  const project = projects.find((entry) => entry.path === state.project) || projects[0];
-  if (!project) {
-    openCreateProject();
+/// The sidebar's head: a thread in the project this window is in, and, when
+/// nothing is open yet, the picker that asks which folder to run in. A project is
+/// not chosen for the reader on the way in, so it is not chosen here either —
+/// the thread it starts is one they named the folder for, and with no project at
+/// all nothing to run in, so it asks for one the way every other control does.
+async function newChatFromSidebar() {
+  if (!canStartNewChat()) return;
+  if (state.project) {
+    newChat();
     return;
   }
-  await newTaskIn(project);
+  askForProject();
 }
 
 // ---------- chat ----------
@@ -1148,6 +1308,16 @@ async function send(followUp = false) {
       updateSendState();
       return;
     }
+  }
+
+  // The composer belongs to a project: a message with nowhere to run is answered
+  // with the picker rather than sent against the directory the app was launched
+  // in, which is $HOME on one platform and `/` on another, not a folder the user
+  // picked. What was typed stays in the box while the folder is chosen.
+  if (!state.project) {
+    setStatus("Select a project first.");
+    askForProject();
+    return;
   }
 
   if (state.busy) {
@@ -2265,6 +2435,7 @@ const OVERLAYS = [
   "question",
   "connect-modal",
   "create-project-modal",
+  "projects-modal",
   "mcps-modal",
   "models-modal",
   "reasoning-modal",
@@ -2394,7 +2565,14 @@ async function saveConnect() {
 // ---------- models ----------
 
 async function openModels() {
-  if (!state.project) return;
+  // The catalog is read from this project's config, and the request would
+  // otherwise resolve against the directory the app was launched in — the same
+  // reason the message box asks for a folder before it sends anything.
+  if (!state.project) {
+    setStatus("Select a project first.");
+    askForProject();
+    return;
+  }
   closeOverlays("models-modal");
   el("models-modal").hidden = false;
   el("model-list").innerHTML = '<div class="empty" style="margin:14px">Loading…</div>';
@@ -3304,11 +3482,9 @@ async function runSlashCommand(text) {
       await openSessions();
       return true;
     case "new":
-      if (!state.project) {
-        setStatus("Select a project first.");
-        return true;
-      }
-      newChat();
+      // A new thread needs a folder to be new in, so the command asks for one
+      // when none is open rather than naming a project the reader never picked.
+      await newChatFromSidebar();
       return true;
     case "reasoning":
       // The bare command opens the picker the chip opens; a level typed after it
@@ -3905,7 +4081,13 @@ function init() {
   const createBtnTree = el("create-project-btn-tree");
   if (createBtnTree) createBtnTree.onclick = openCreateProject;
   const newChatBtn = el("new-chat");
-  if (newChatBtn) newChatBtn.onclick = newChatInDefaultProject;
+  if (newChatBtn) newChatBtn.onclick = newChatFromSidebar;
+  el("project").onclick = openProjects;
+  el("projects-add").onclick = () => {
+    el("projects-modal").hidden = true;
+    openCreateProject();
+  };
+  el("projects-close").onclick = () => (el("projects-modal").hidden = true);
   el("create-project-add-folder").onclick = addCreateProjectFolder;
   el("create-project-cancel").onclick = () => (el("create-project-modal").hidden = true);
   el("create-project-save").onclick = saveCreateProject;
@@ -4110,7 +4292,10 @@ function init() {
   renderWelcome();
   initEvents();
   loadTheme();
-  openDefaultProject();
+  // The sidebar is loaded rather than opened on: a project is not selected for
+  // the reader on the way in, so the window starts with nothing open — the home
+  // transcript, the composer and the project chip that takes a folder.
+  loadProjects();
 }
 
 init();
@@ -4280,7 +4465,7 @@ async function selectSessionFromTree(session) {
   // is queried against the right project and the composer is enabled.
   const project = state.projects.find((p) => p.path === session.cwd);
   if (project && project.path !== state.project) {
-    await selectProject(project);
+    if (!(await selectProject(project))) return;
   }
 
   window.history.replaceState({}, "", `?session=${session.id}`);
@@ -4292,10 +4477,10 @@ function clearSelectedProject() {
   state.projectName = "";
   state.session = null;
   state.trust = null;
-  el("prompt").disabled = true;
   el("project-meta").textContent = "";
   el("trust-modal").hidden = true;
   updateTrustButton();
+  updateChips();
   setStatus("Ready");
   resetTranscript();
 }
