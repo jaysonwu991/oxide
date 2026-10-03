@@ -428,7 +428,10 @@ run's own thread and whether it is still going, carried on every `state` and
 `status` message and `null` while that thread is the one on screen — nothing is
 said about a thread the reader is already in. Opening the run's row in the
 session listing (`parkedRun()`) is the same swap, since a row standing in for the
-running thread should lead back to it rather than to a replay.
+running thread should lead back to it rather than to a replay — and that row is
+answered before the store's listing is read, because the row the dialog adds for
+an id that is nowhere in `this.sessions` is exactly the one a lookup placed first
+would return on, which is the row a thread with no file yet can be reopened from.
 
 A message typed in another thread while the run is live is refused instead of
 steered into it — *A turn is running in “<title>”; open it to queue or steer, or
@@ -1150,7 +1153,8 @@ and painted only while that is the one on screen, that a queued message, an
 approval answer and a question answer all go to that transcript, that the strip is
 painted from the run's own thread and its **Open** posts the `openRun` control the
 controller answers by swapping the parked transcript back, that the listing's row
-for the running thread is the same swap, that the thread being left is parked
+for the running thread is the same swap and is answered before the store's
+listing is read, that the thread being left is parked
 before the new one is built, that **New chat** and **Continue** wait for the run,
 that a message typed in another thread is refused before anything is steered,
 that the folder a run began in is the one it keeps (and that a parked thread goes

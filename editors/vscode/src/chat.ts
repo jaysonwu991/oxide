@@ -1716,15 +1716,18 @@ export class ChatController {
       this.continueSession();
       return;
     }
-    const session = this.sessions.find((entry) => entry.id === value);
-    if (!session) return;
     // The run's own thread, taken from the listing instead of the strip: the
-    // same door, so it is the same swap.
+    // same door, so it is the same swap. It is asked before the listing is read,
+    // because the row that stands in for a run the store has not written — the
+    // one the dialog adds when the id is nowhere in `this.sessions` — is exactly
+    // the row this opens, and a lookup that came first would return on it.
     if (this.parkedRun()?.sessionId === value) {
       this.closeDialog();
       this.openRun();
       return;
     }
+    const session = this.sessions.find((entry) => entry.id === value);
+    if (!session) return;
     // Already the thread on screen: nothing to rebuild, whether or not a turn is
     // running in it.
     if (this.transcript.sessionId === value) {

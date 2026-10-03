@@ -447,8 +447,17 @@ event channel serializes events with
   screen: the run's id and title live in `state.runSession` / `state.runTitle`
   while `state.session` follows the transcript, so a stored thread opened from
   the sidebar tree or the `/sessions` list while a turn is going — the review a
-  running turn used to block — can be read without taking the turn over. The
-  header then carries a strip naming the running thread (`A turn is running in
+  running turn used to block — can be read without taking the turn over. What is
+  left behind is parked rather than thrown away: the thread's transcript goes
+  off-screen whole, with its change cards, its totals and the folder it belongs
+  to, and coming back is a swap rather than a re-read of a store that is a step
+  behind. A message that has only just been sent is parked under the thread it
+  was composed in while the turn is still learning which thread that is — and
+  under no thread at all when it is starting a new one, which is what the park's
+  `pending` flag says `agent-start` finishes by re-keying it to the id the run
+  reports — so a reader who opens another conversation in that window loses
+  neither the bubble they sent nor the history they were reading. The header then
+  carries a strip naming the running thread (`A turn is running in
   “<title>”`) and opening it again on the click, the sidebar's row for that
   thread is marked with a spinner and is a way back to it on its own (a row
   standing in for a thread the store has not written yet makes the window switch
@@ -462,7 +471,13 @@ event channel serializes events with
   and keeps what was typed). Transcript events paint only while the thread on
   screen is the run's own — a reply written into the transcript it was not
   started in is the thing this split exists to prevent — while the window's own
-  status line is not the thread's and shows wherever the reader is. A turn that
+  status line is not the thread's and shows wherever the reader is. Which thread
+  the run takes over is the reader's place to decide and not the run's: a turn's
+  thread is adopted only while both the thread and the folder the message was
+  sent from are still the ones on screen, so a prompt that started a new thread
+  in one folder while the reader opened another — where there is no thread
+  either — is not adopted there, and the reader's own view is left alone. A turn
+  that
   ends while another thread is on screen files its change card under the thread
   it changed, which paints it when that thread is opened, rather than dropping a
   listing about files that really are on disk; the thread a turn is running in
@@ -555,7 +570,12 @@ no thinking rather than offering an answer without any.
 
 Opening a session restores its cumulative `usage_totals()` (input/output tokens
 and cost); live turns update the footer from each `usage` event, including a
-rough context percentage using `config.context_window()`.
+rough context percentage using `config.context_window()`. The percentage is
+worked out where the totals are painted rather than where the event arrived: the
+run's `prompt` count travels with its thread and the window is the one in force on
+screen, so a turn in another folder counts its own tokens while the reader is
+looking at a project with a window of its own, and its gauge is its own again when
+the strip brings its thread back.
 
 ## Themes
 

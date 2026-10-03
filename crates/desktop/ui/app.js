@@ -145,18 +145,19 @@ function setStatus(text) {
 }
 
 /// The totals a `usage` event carries, as the footer draws them. The provider
-/// reports `input` as the uncached prompt; the cached prefix still occupies the
-/// window, so count it toward the context percentage.
+/// reports `input` as the uncached prompt, and the cached prefix still occupies
+/// the window, so the two are carried as the raw `prompt`: the percentage is a
+/// measure of a window, and which window that is is a question about where the
+/// totals are painted rather than about where the event arrived (see `setUsage`).
 function usageTotals(event) {
   const usage = event.usage || {};
-  const prompt = (usage.input || 0) + (usage.cacheRead || 0) + (usage.cacheWrite || 0);
   return {
     input: usage.input,
     output: usage.output,
     cacheRead: usage.cacheRead,
     cacheWrite: usage.cacheWrite,
     cost: usage.cost,
-    contextPct: state.contextWindow ? (prompt / state.contextWindow) * 100 : null,
+    prompt: (usage.input || 0) + (usage.cacheRead || 0) + (usage.cacheWrite || 0),
   };
 }
 
@@ -166,11 +167,20 @@ function setUsage({
   cacheRead = 0,
   cacheWrite = 0,
   cost = 0,
+  prompt = 0,
   contextPct = null,
 }) {
+  // The window the percentage is a fraction of is the one in force where the
+  // totals are drawn, not the one that happened to be open when the event
+  // arrived: a run in another folder counts its tokens while the reader is
+  // looking at a project with a window of its own — and its totals come back to
+  // the folder they belong to, since the strip opens the run's own first.
+  if (contextPct == null && prompt > 0 && state.contextWindow > 0) {
+    contextPct = (prompt / state.contextWindow) * 100;
+  }
   // What the footer is showing, held so a thread the reader leaves can take its
   // own totals with it and paint them back on return.
-  state.usage = { input, output, cacheRead, cacheWrite, cost, contextPct };
+  state.usage = { input, output, cacheRead, cacheWrite, cost, prompt, contextPct };
   const bits = [`↑ ${input} ↓ ${output}`];
   if (cacheRead || cacheWrite) bits.push(`R ${cacheRead} W ${cacheWrite}`);
   if (cost) bits.push(`$${Number(cost).toFixed(4)}`);
@@ -1226,7 +1236,16 @@ function setIdle() {
 /// not known to be anywhere else, so the transcript on screen is where it is
 /// read.
 function viewingRun() {
-  return state.runSession == null || state.runSession === state.session;
+  if (state.runSession != null) return state.runSession === state.session;
+  // A turn that has not reported itself yet has no id of its own, and the thread
+  // the message being started was composed in is where it is running — so the same
+  // question is asked of that one. It matters: between the send and `agent-start`
+  // the reader can open another thread, and a message typed there would be steered
+  // into a run whose reply belongs to a conversation that is not on screen.
+  if (state.sendView != null) {
+    return state.sendView.session === state.session && state.sendView.project === state.project;
+  }
+  return true;
 }
 
 /// The thread the header's strip names: the one a turn is running in, and — once
@@ -1252,10 +1271,11 @@ function runThreadLabel() {
 function runTranscript(session) {
   if (session == null) return el("transcript");
   if (state.parked?.session === session) return state.parked.node;
-  // The thread being painted is neither on screen nor parked — a message queued
-  // as the previous turn ended, started while the reader is in another thread:
-  // the run gets a transcript of its own rather than writing into that one.
-  if (session !== state.session) parkRun();
+  // A run's thread is parked by whichever door moved the reader off it — under
+  // the run's id, or under the thread a message being started was composed in
+  // while the run has not said which one that is — so what is left to answer here
+  // is the node: the parked transcript, or the one on screen when the thread
+  // being painted is the reader's own.
   return state.parked?.session === session ? state.parked.node : el("transcript");
 }
 
@@ -1289,13 +1309,24 @@ function transcriptProject(session) {
 /// been told about yet. One thread is parked at a time: a turn that ended has
 /// written its thread to the store, so a second park is free to let the first go.
 function parkRun() {
-  const session = state.runSession;
-  if (session == null || state.parked?.session === session) return;
+  // The run's own thread. A turn that has not reported itself yet has no id, and
+  // the message being started is what names the thread it is in: the one it was
+  // composed in, where its own bubble is already painted and where the run's
+  // first output will land. A message that starts a thread of its own has no id
+  // at all — the park is keyed by nothing and `agent-start` re-keys it with the
+  // id the run created, which is why the park says it is still waiting for one.
+  const session = state.runSession ?? state.sendView?.session ?? null;
+  const starting = state.runSession == null && state.sendView != null;
+  if (!starting && session == null) return;
+  if (state.parked?.session === session && (!starting || state.parked.pending)) return;
   const node = document.createElement("div");
   node.className = "conversation";
   if (state.session === session) node.append(...el("transcript").children);
   state.parked = {
     session,
+    // Whether this park is still waiting for the turn to say which thread it is
+    // in — the case `agent-start` finishes.
+    pending: starting,
     node,
     changes: state.changes,
     // The footer describes the thread being read, so the run's totals wait here
@@ -1304,7 +1335,9 @@ function parkRun() {
     title: state.runTitle,
     // And the folder it belongs to travels with it: the turn may end while the
     // reader is in another project, and the strip still opens this thread's own
-    // folder rather than whichever one the window happens to be showing.
+    // folder rather than whichever one the window happens to be showing. Every
+    // door parks before it moves the view, so a message still being started is
+    // recorded under the folder it was composed in.
     project: transcriptProject(session),
   };
   state.changes = [];
@@ -1706,13 +1739,15 @@ async function send(followUp = false) {
 /// when it is not the one on screen — a message that arrived as the previous run
 /// finished, started once that run is really over — and either way the view it
 /// was sent from is recorded, so the run's own `agent-start` can tell whether the
-/// reader is still looking at the thread that message was typed in.
+/// reader is still looking at the thread that message was typed in. The folder is
+/// recorded with it: a message that starts a thread of its own has no id for the
+/// comparison, and two folders both have none.
 async function startPrompt(prompt, attachments, showBubble = true, target = null) {
   const project = target?.project || state.project;
   if (!project) return;
   const session = target ? target.session : state.session;
   const here = project === state.project && session === state.session;
-  state.sendView = { session };
+  state.sendView = { session, project };
   // The run's own thread and folder, held apart from the ones on screen: the
   // reader may open another thread while it works, and the run keeps writing into
   // this thread of this folder.
@@ -4261,12 +4296,21 @@ async function initEvents() {
     // turn to end. The session is on disk from here, so the listing has it.
     state.runTitle = payload.title || "";
     state.heldThread = payload.sessionId ? { id: payload.sessionId, title: state.runTitle } : null;
+    // A park the reader made while this turn was still starting was keyed by the
+    // thread the message was composed in — or by nothing at all, when it started a
+    // thread of its own: the run's own id is what the way back to it is keyed by
+    // from here, and what the strip, the sidebar row and the composer read.
+    if (state.parked?.pending) {
+      state.parked.session = payload.sessionId || null;
+      state.parked.pending = false;
+    }
     // The thread this run reports is adopted by the view only while the reader
     // is still on the thread the message that started it was composed in: one
     // sent from a thread with nothing in it yet has no id to compare, and a
-    // reader who opened another conversation since is reading that one.
+    // reader who opened another conversation — or another folder, which has none
+    // of its own — since is reading that one.
     const sent = state.sendView;
-    if (sent == null || state.session === sent.session) {
+    if (sent == null || (state.session === sent.session && state.project === sent.project)) {
       state.session = payload.sessionId || null;
     }
     state.sendView = null;

@@ -1148,6 +1148,15 @@ describe("command contributions", () => {
         listing.includes("this.openRun();"),
       "the run's row in the listing opens the run's thread",
     );
+    // The row of a run the store has not written has no entry to find — the
+    // dialog adds it when the id is nowhere in `this.sessions` — so the swap is
+    // asked for before the lookup, which would otherwise return on the one row
+    // that is the way back into a thread with no file yet.
+    assert.ok(
+      listing.indexOf("this.openRun();") <
+        listing.indexOf("this.sessions.find((entry) => entry.id === value)"),
+      "and that row is answered before the store's listing is read",
+    );
   });
 
   it("parks the thread a reader leaves, and refuses to type into another one", () => {
