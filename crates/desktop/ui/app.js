@@ -4541,6 +4541,55 @@ function initSidebarResize() {
   });
 }
 
+const EDITABLE_INPUT_TYPES = new Set([
+  "text",
+  "search",
+  "email",
+  "url",
+  "tel",
+  "password",
+  "number",
+  "date",
+  "datetime-local",
+  "month",
+  "time",
+  "week",
+]);
+
+/// Whether `node` is a text editor of its own. WebKit can spend the first press
+/// after editing only moving focus to a button, withholding its click until the
+/// next press; the editor is kept as first responder through that press so the
+/// same native click completes.
+function isTextEditor(node) {
+  if (!node) return false;
+  if (node.isContentEditable || node.tagName === "TEXTAREA") return true;
+  return (
+    node.tagName === "INPUT" &&
+    EDITABLE_INPUT_TYPES.has(String(node.type || "text").toLowerCase())
+  );
+}
+
+/// The innermost control a press belongs to. Buttons and links are controls by
+/// their element kind; a native radio or checkbox resolves through its label to
+/// the input it operates, and the page's rows become controls when it gives them
+/// an `onclick` handler.
+function pressedControl(target) {
+  for (let node = target; node && node !== document.body; node = node.parentNode) {
+    if (node.tagName === "INPUT" && ["checkbox", "radio"].includes(node.type)) {
+      return node;
+    }
+    if (
+      node.tagName === "LABEL" &&
+      node.control?.tagName === "INPUT" &&
+      ["checkbox", "radio"].includes(node.control.type)
+    ) {
+      return node.control;
+    }
+    if (node.tagName === "BUTTON" || node.tagName === "A" || node.onclick) return node;
+  }
+  return null;
+}
+
 function init() {
   initSidebarResize();
   const createBtnTree = el("create-project-btn-tree");
@@ -4629,6 +4678,23 @@ function init() {
   el("review-close").onclick = closeReview;
   el("review-prev").onclick = () => walkReview(-1);
   el("review-next").onclick = () => walkReview(1);
+
+  // WebKit can spend the first press after editing only moving focus to a
+  // control, withholding its click until the next press. Keep the editor as
+  // first responder through mousedown so the browser completes that same
+  // native click. Question choices use labels around their native controls and
+  // need the same treatment. Keyboard focus and activation remain untouched.
+  document.addEventListener(
+    "mousedown",
+    (event) => {
+      if (event.button !== 0) return;
+      if (!pressedControl(event.target)) return;
+      if (isTextEditor(document.activeElement)) {
+        event.preventDefault();
+      }
+    },
+    true,
+  );
 
   // The renderer cannot navigate to a remote page, so a link click opens the
   // platform browser through the app instead of reloading the app window.
