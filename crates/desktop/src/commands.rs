@@ -302,7 +302,18 @@ pub async fn set_mcp_server(
 /// skills this project loads. Draws the same catalog the CLI's autocomplete and
 /// the extension's menu do, from the shared `oxide_core::commands`.
 pub async fn list_commands(project: String) -> CmdResult<Vec<oxide_core::commands::CommandEntry>> {
-    Ok(oxide_core::commands::palette(&project_dir(&project)?))
+    palette_entries(&project)
+}
+
+/// The rows for a project, or — with none open, which is where the window starts
+/// — the built-ins alone. A command, a prompt template and a skill are read from
+/// a folder, while the built-ins are what the app performs itself, so the home
+/// state's `/` lists those instead of answering with nothing.
+fn palette_entries(project: &str) -> Result<Vec<oxide_core::commands::CommandEntry>, String> {
+    if project.trim().is_empty() {
+        return Ok(oxide_core::commands::builtin_entries());
+    }
+    Ok(oxide_core::commands::palette(&project_dir(project)?))
 }
 
 /// A project root a command can read. An empty one has no folder behind it, and
@@ -1333,6 +1344,28 @@ mod tests {
         assert!(gone.to_string().contains("reading a.txt"), "{gone}");
 
         std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn the_home_screen_palette_is_the_builtins() {
+        // The window opens on no project and the composer is ready to type in, so
+        // `/` there lists what the app performs itself rather than failing into
+        // an empty menu. A folder is what the configured commands, prompt
+        // templates and skills are read from, and there is none to read.
+        let home = palette_entries("").unwrap();
+        let names: Vec<&str> = home.iter().map(|entry| entry.name.as_str()).collect();
+        assert_eq!(
+            names,
+            oxide_core::commands::BUILTINS
+                .iter()
+                .map(|command| command.name)
+                .collect::<Vec<_>>()
+        );
+        assert!(names.contains(&"help") && names.contains(&"new") && names.contains(&"session"));
+        // Whitespace is no folder either, and the other commands keep refusing it
+        // rather than resolving it to the directory the app was launched in.
+        assert_eq!(palette_entries("   ").unwrap().len(), home.len());
+        assert!(project_dir("  ").is_err());
     }
 
     #[test]

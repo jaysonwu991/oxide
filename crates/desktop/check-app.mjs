@@ -634,7 +634,12 @@ const invoke = async (command, args = {}) => {
     case "list_approvals":
       return [];
     case "list_commands":
-      return catalog;
+      // The core answers a projectless ask with the built-ins alone (see
+      // `palette_entries`): a command, a prompt template and a skill are read
+      // from a folder, and the home state has none to read.
+      return String(args.project || "").trim()
+        ? catalog
+        : catalog.filter((entry) => entry.source === "builtin");
     default:
       return null;
   }
@@ -811,6 +816,27 @@ check(
   elementFor("transcript").querySelectorAll(".sent-message").length === 1,
   elementFor("transcript").outline(),
 );
+// The home state is painted before either listing answers, so a store that cannot
+// be read still lets the folders that did arrive repaint it — otherwise the
+// welcome keeps saying to add a folder that the sidebar is already showing.
+app.state.project = null;
+app.state.projects = [];
+app.resetTranscript();
+const blankHome = elementFor("transcript").outline();
+threadsError = "permission denied";
+app.state.projects = projectRows.map((row) => ({ ...row }));
+app.state.sessions = existing;
+await app.loadSessions();
+check(
+  "repainted the home state when the threads could not be read",
+  blankHome.includes("Add a folder") &&
+    !elementFor("transcript").outline().includes("Add a folder") &&
+    elementFor("transcript").querySelectorAll(".recent-thread").length > 0 &&
+    /Failed to load threads/.test(status()),
+  `${blankHome} / ${elementFor("transcript").outline()} / ${status()}`,
+);
+threadsError = null;
+await app.loadSessions();
 // The picker the chip opens carries the same folders the sidebar draws, and
 // picking one opens that project — which is also how a thread starts in it,
 // since selecting a project clears the transcript for the next message.
@@ -3014,6 +3040,47 @@ if (catalogSkipped) {
     app.state.busy = false;
     app.state.runId = null;
   }
+
+  // The window opens on no project and the composer is ready to type in, so `/`
+  // is asked for there too: a command, a prompt template and a skill are read
+  // from a folder and the built-ins are what the app performs itself, so the
+  // core answers a projectless ask with those rather than leaving the menu empty.
+  const builtinRows = catalog.filter((entry) => entry.source === "builtin");
+  app.state.project = null;
+  elementFor("prompt").value = "/";
+  calls.length = 0;
+  await app.refreshPaletteEntries();
+  app.renderPalette();
+  const homeRows = app.paletteMatches() || [];
+  check(
+    "asked the core for the palette of no project",
+    projectCalls("list_commands").at(-1)?.[1]?.project === "",
+    JSON.stringify(projectCalls("list_commands").at(-1)),
+  );
+  check(
+    "listed the built-ins on the home state's `/` menu",
+    builtinRows.length > 0 &&
+      homeRows.map((entry) => entry.name).join(" ") === builtinRows.map((entry) => entry.name).join(" ") &&
+      elementFor("palette-list").children.length === builtinRows.length,
+    `${JSON.stringify(homeRows.map((entry) => entry.name))} / ${elementFor("palette-list").outline()}`,
+  );
+  // A client command belongs to the app wherever the window is, so taking `/new`
+  // at home is performed rather than sent to the model: with no folder open it
+  // asks for one, which is the picker.
+  elementFor("projects-modal").hidden = true;
+  elementFor("prompt").value = "/new";
+  calls.length = 0;
+  app.runPaletteEntry(homeRows.find((entry) => entry.name === "new"));
+  check(
+    "performed /new at home rather than sending it to the model",
+    elementFor("projects-modal").hidden === false &&
+      !calls.some(([name]) => name === "send_prompt"),
+    `${elementFor("projects-modal").hidden} / ${JSON.stringify(calls.map(([name]) => name))}`,
+  );
+  elementFor("projects-modal").hidden = true;
+  elementFor("prompt").value = "";
+  app.state.project = "/home/dev/Projects/oxide";
+  await app.refreshPaletteEntries();
 }
 
 // ---------- the thread on screen has a name ----------

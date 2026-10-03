@@ -310,7 +310,12 @@ and the transcript shows the app's **home state** — the composer ready to type
 in, the project chip under it, and, when the sidebar already lists threads, the
 newest few across **every** project (up to `MAX_RECENT_THREADS`, in the order
 `all_sessions` answers with, which is newest first) with the folder each one is
-in, so a click resumes a thread. The composer belongs to a project all the same:
+in, so a click resumes a thread. The home state is painted before either listing
+answers and repainted as each one arrives, a thread listing that failed
+included: the threads are what it lists, but the folders are the sidebar's and
+they are already known, so a store that cannot be read still leaves the reader
+with what is on offer rather than with the note to add a folder. The composer
+belongs to a project all the same:
 the path behind it would otherwise resolve against the directory the app was
 launched in, which is `$HOME` on one platform and `/` on another, not a folder
 the user picked. So the chip in the composer's own row carries the open folder's
@@ -564,7 +569,12 @@ terminal's other spelling of it. A name the app cannot
 perform — today `/agent`, whose palette of subagents the app does not have yet —
 says so in the transcript rather than reaching the model as the literal text
 `/agent`. With no project selected the project-scoped commands say that first,
-so a listing or a toggle cannot land in the app's own directory.
+so a listing or a toggle cannot land in the app's own directory, and the palette
+itself is the built-in list alone: a command, a prompt template and a skill are
+read from a folder, while the built-ins are what the app performs itself, so
+`list_commands` answers a projectless ask with `builtin_entries` and `/new` and
+`/help` are offered on the home state rather than left behind a
+`No matching command.` row.
 
 The **MCP servers** listing (`/mcps`, alias `/mcp`) and the **Sessions** listing
 (`/sessions`, alias `/session`) open out of the composer rather than over the

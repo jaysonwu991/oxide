@@ -204,6 +204,13 @@ pub fn builtin(name: &str) -> Option<&'static Builtin> {
         .find(|command| command.name == name || command.aliases.contains(&name.as_str()))
 }
 
+/// The built-ins alone: what a client offers when there is no project to read the
+/// commands, prompt templates and skills of — the rows a client performs itself
+/// need no folder, so a `/` menu asked for before one is chosen still has them.
+pub fn builtin_entries() -> Vec<CommandEntry> {
+    BUILTINS.iter().map(CommandEntry::builtin).collect()
+}
+
 /// Every entry a client shows for `cwd`: the built-ins, then the commands,
 /// prompt templates and skills visible from the project.
 pub fn palette(cwd: &Path) -> Vec<CommandEntry> {
@@ -226,7 +233,7 @@ pub fn palette_with(cwd: &Path, project_trusted: bool) -> Vec<CommandEntry> {
         },
     );
 
-    let mut entries: Vec<CommandEntry> = BUILTINS.iter().map(CommandEntry::builtin).collect();
+    let mut entries: Vec<CommandEntry> = builtin_entries();
     // The project load already merges the global scope, so the global listing
     // is what is compared against to tell where an entry came from.
     let global = configured(&global);
@@ -462,6 +469,34 @@ mod tests {
         assert!(entries
             .iter()
             .any(|entry| entry.name == "theme" && entry.desktop_only));
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn the_builtins_alone_are_the_rows_a_client_performs_itself() {
+        let entries = builtin_entries();
+        assert_eq!(
+            names(&entries),
+            BUILTINS
+                .iter()
+                .map(|command| command.name)
+                .collect::<Vec<_>>()
+        );
+        assert!(entries
+            .iter()
+            .all(|entry| entry.kind == "client" && entry.source == "builtin"));
+        // A project contributes nothing here: a command, a prompt template and a
+        // skill are what a folder answers for, and none of them is in this list.
+        let dir = temp_dir("builtins_alone");
+        std::fs::create_dir_all(dir.join(".oxide").join("commands")).unwrap();
+        std::fs::write(
+            dir.join(".oxide").join("commands").join("ship.md"),
+            "Open a pull request\n",
+        )
+        .unwrap();
+        let still = builtin_entries();
+        assert!(!still.iter().any(|entry| entry.name == "ship"));
+        assert_eq!(still.len(), entries.len());
         std::fs::remove_dir_all(&dir).ok();
     }
 
