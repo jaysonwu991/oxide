@@ -3955,35 +3955,57 @@ check(
   elementFor("send").hidden === false && elementFor("stop").hidden === true,
   `send ${elementFor("send").hidden} / stop ${elementFor("stop").hidden}`,
 );
-// The box says whether it is holding something: a lift on its border while a
-// message waits in it, and the accent ring only while the caret is in the
-// message box itself — not for a chip or the send button sharing the box, which
-// `:focus-within` would answer for too, so the ring is a class the caret sets.
+// A box does not paint on focus: no input changes its border when the caret
+// moves into it, so every box looks the same whether the caret is in it or not.
+// `outline: none` stays to suppress WebKit's own focus ring. The rule is read
+// out of the sheet rather than a selector hardcoded here: every `:focus` rule
+// that names a box must declare nothing but `outline: none`.
+const boxNames = new Set(["composer", "question-free", "question-choice"]);
+for (const [, attrs] of shell.matchAll(/<(?:input|textarea)\b([^>]*)>/g)) {
+  for (const [, id] of attrs.matchAll(/\bid="([^"]+)"/g)) boxNames.add(id);
+  for (const [, cls] of attrs.matchAll(/\bclass="([^"]+)"/g)) {
+    cls.split(/\s+/).forEach((name) => name && boxNames.add(name));
+  }
+}
+const focusPaints = [];
+for (const [, selector, body] of sheet.matchAll(/([^{}]+)\{([^{}]*)\}/g)) {
+  const within = selector.trim();
+  if (!/:focus(-visible|-within)?\b/.test(within)) continue;
+  const namesBox =
+    /\binput\b|\btextarea\b/.test(within) ||
+    [...boxNames].some((name) => new RegExp(`[.#]${name}(?![\\w-])`).test(within));
+  if (!namesBox) continue;
+  // A `:focus-visible` rule is the keyboard's own indicator and may draw an
+  // outline — that is what keeps a radio/checkbox a Tab reaches visible. Every
+  // other focus rule must be inert but for suppressing WebKit's own ring.
+  const keyboardOnly = within.includes(":focus-visible");
+  const paints = body
+    .split(";")
+    .map((decl) => decl.trim())
+    .filter(Boolean)
+    .filter((decl) =>
+      keyboardOnly ? !/^outline(-offset)?:/.test(decl) : !/^outline:\s*none\b/.test(decl),
+    );
+  if (paints.length) focusPaints.push(`${within} => ${paints.join("; ")}`);
+}
 check(
-  "left the composer's border at rest while it holds nothing",
-  elementFor("composer").classList.contains("filled") === false &&
-    /\.composer\.focused \{[^}]*border-color: color-mix\(in srgb, var\(--accent\) 45%, transparent\);[^}]*box-shadow: 0 0 0 3px color-mix\(in srgb, var\(--accent\) 10%, transparent\);[^}]*\}/.test(
-      sheet,
-    ) &&
-    /\.composer\.filled \{ border-color: color-mix\(in srgb, var\(--dim\) 40%, transparent\); \}/.test(sheet) &&
-    !/\.composer:focus-within/.test(sheet),
-  elementFor("composer").className,
+  "left every input box looking the same whether the caret is in it or not",
+  focusPaints.length === 0,
+  focusPaints.join(" | "),
 );
-// The ring is the caret's, so it follows one: the message box taking focus puts
-// it up and losing it takes the ring down, with the border lift left to the text
-// still waiting in the box.
+check(
+  "kept a keyboard-only outline on the question choice",
+  /\.question-choice:focus-visible \{[^}]*outline: 2px solid var\(--accent\)/.test(sheet),
+  sheet.match(/\.question-choice:focus-visible \{[^}]*\}/)?.[0] || "",
+);
+const restingClass = elementFor("composer").className;
 elementFor("prompt").fire("focus");
 check(
-  "brought the accent ring up for the caret in the message box",
-  elementFor("composer").classList.contains("focused") === true,
-  elementFor("composer").className,
+  "painted nothing on the composer for the caret in it",
+  elementFor("composer").className === restingClass,
+  `${restingClass} -> ${elementFor("composer").className}`,
 );
 elementFor("prompt").fire("blur");
-check(
-  "took the ring down when the caret left it",
-  elementFor("composer").classList.contains("focused") === false,
-  elementFor("composer").className,
-);
 elementFor("prompt").value = "a message";
 app.updateSendState();
 check(
