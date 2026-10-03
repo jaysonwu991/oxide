@@ -66,10 +66,7 @@ input, textarea {
   border-radius: 8px;
   padding: 8px 10px;
 }
-/* A box does not paint on focus: no border change, so every input looks the
-   same whether the caret is in it or not. `outline: none` stays to suppress
-   WebKit's own focus ring. */
-input:focus, textarea:focus { outline: none; }
+input:focus, textarea:focus { outline: none; border-color: var(--dim); }
 
 /* ---------- glyphs ---------- */
 
@@ -703,10 +700,16 @@ body.resizing { cursor: col-resize; user-select: none; }
   transition: border-color 0.15s, box-shadow 0.15s;
 }
 /* The box that holds what is about to be sent says so: a border lift while it
-   has text or an attachment in it. Nothing is painted for focus — the caret
-   moving into a box leaves its border alone, so every box looks the same
-   whether the caret is in it or not. */
+   has text or an attachment in it, and the accent ring only while the caret is
+   in the message box itself, so a message waiting for a turn reads apart from
+   the one being typed. The ring is a class the box's own caret sets rather than
+   `:focus-within`, which would also answer for the attach chip, a picker chip or
+   the send button sharing the box. */
 .composer.filled { border-color: color-mix(in srgb, var(--dim) 40%, transparent); }
+.composer.focused {
+  border-color: color-mix(in srgb, var(--accent) 45%, transparent);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 10%, transparent);
+}
 .composer textarea {
   width: 100%;
   border: none;
@@ -716,6 +719,7 @@ body.resizing { cursor: col-resize; user-select: none; }
   min-height: 40px;
   max-height: 220px;
 }
+.composer textarea:focus { border: none; }
 .attachments {
   display: flex;
   flex-wrap: wrap;
@@ -1048,10 +1052,6 @@ body.resizing { cursor: col-resize; user-select: none; }
 }
 .question-option:hover { border-color: var(--accent); }
 .question-option input { grid-row: 1 / span 2; margin: 2px 0 0; accent-color: var(--accent); }
-/* A radio and a checkbox are boxes too, and the blanket `outline: none` above
-   would leave the one a Tab reaches with no indicator at all. The keyboard gets
-   one back, and only the keyboard: a pointer click does not draw it. */
-.question-choice:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 .question-label { font-size: 13px; }
 .question-detail { grid-column: 2; color: var(--dim); font-size: 12px; }
 .question-own { border-style: dashed; }
@@ -1064,7 +1064,7 @@ body.resizing { cursor: col-resize; user-select: none; }
   font: inherit;
   font-size: 13px;
 }
-.question-free:focus { outline: none; }
+.question-free:focus { outline: none; border-color: var(--accent); }
 /* Dismiss keeps the left edge the dialog's other actions leave to the answers. */
 .question-actions { justify-content: flex-start; }
 .question-actions .spacer { flex: 1 1 auto; }

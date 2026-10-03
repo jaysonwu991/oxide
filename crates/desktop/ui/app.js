@@ -4839,6 +4839,11 @@ function init() {
     );
   });
 
+  // The accent ring belongs to the caret rather than to the box: `:focus-within`
+  // would light it up for the attach chip or the send button the keyboard
+  // happened to be on, which is not the message being typed.
+  el("prompt").addEventListener("focus", () => el("composer").classList.add("focused"));
+  el("prompt").addEventListener("blur", () => el("composer").classList.remove("focused"));
   el("prompt").addEventListener("input", () => {
     el("prompt").style.height = "auto";
     el("prompt").style.height = `${Math.min(el("prompt").scrollHeight, 220)}px`;
