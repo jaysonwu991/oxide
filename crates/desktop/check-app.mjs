@@ -1747,14 +1747,59 @@ check(
   buttonPress.refused === true,
   String(buttonPress.refused),
 );
-// The browser delivers the press's own click: the page must not add a second.
+// The browser delivers the press's own click after mouseup: the page must not
+// add a second.
+document.fire("mouseup", press({ target: composerButton }));
 document.fire("click", press({ target: composerButton }));
 composerButton.onclick(buttonPress);
-document.fire("mouseup", press({ target: composerButton }));
 await nextTick();
 check(
   "handled one native click exactly once",
   composerButtonClicks === 1,
+  String(composerButtonClicks),
+);
+
+// A press the browser released somewhere other than the control it began on is
+// cancelled: the fallback must not turn a drag-off into a click.
+document.activeElement = elementFor("prompt");
+const draggedPress = press({ target: composerButton });
+document.fire("mousedown", draggedPress);
+document.fire("mouseup", press({ target: composerRow }));
+await nextTick();
+check(
+  "supplied nothing for a press released away from its control",
+  composerButtonClicks === 1,
+  String(composerButtonClicks),
+);
+
+// A disabled control never answers a click, and the fallback must not force one.
+const disabledButton = new StubElement("button", "disabled-button");
+disabledButton.disabled = true;
+let disabledClicks = 0;
+disabledButton.onclick = () => disabledClicks++;
+document.activeElement = elementFor("prompt");
+document.fire("mousedown", press({ target: disabledButton }));
+document.fire("mouseup", press({ target: disabledButton }));
+await nextTick();
+check("supplied nothing for a disabled control", disabledClicks === 0, String(disabledClicks));
+
+// A release from another button while the primary press is still held must not
+// run the fallback early; the primary release is the one that finishes it.
+document.activeElement = elementFor("prompt");
+const chordedPress = press({ target: composerButton });
+document.fire("mousedown", chordedPress);
+document.fire("mouseup", press({ target: composerButton, button: 2 }));
+await nextTick();
+check(
+  "left a primary press open through a secondary release",
+  composerButtonClicks === 1,
+  String(composerButtonClicks),
+);
+document.fire("mouseup", press({ target: composerButton }));
+await nextTick();
+check(
+  "supplied the primary press's click once on its own release",
+  composerButtonClicks === 2,
   String(composerButtonClicks),
 );
 
@@ -1776,7 +1821,7 @@ document.fire("mouseup", press({ target: composerButton }));
 await nextTick();
 check(
   "supplied the click the pre-blurred press never produced",
-  composerButtonClicks === 2,
+  composerButtonClicks === 3,
   String(composerButtonClicks),
 );
 
@@ -1803,8 +1848,8 @@ check(
   filterButtonPress.refused === true,
   String(filterButtonPress.refused),
 );
-document.fire("click", press({ target: composerButton }));
 document.fire("mouseup", press({ target: composerButton }));
+document.fire("click", press({ target: composerButton }));
 await nextTick();
 
 // With no editor active the press keeps its ordinary browser behavior, and no
@@ -1821,7 +1866,7 @@ document.fire("mouseup", ordinaryButtonPress);
 await nextTick();
 check(
   "supplied nothing for a press with no editing session",
-  composerButtonClicks === 2,
+  composerButtonClicks === 3,
   String(composerButtonClicks),
 );
 
@@ -2504,11 +2549,11 @@ check(
   radioLabelPress.refused === true,
   String(radioLabelPress.refused),
 );
-// The row's one browser click activates the input it labels; the page must not
-// supply a second.
+// The row's one browser click activates the input it labels after mouseup; the
+// page must not supply a second.
+document.fire("mouseup", radioLabelPress);
 document.fire("click", press({ target: optionRows[1] }));
 secondRadio.click();
-document.fire("mouseup", radioLabelPress);
 await nextTick();
 check(
   "handled the radio row's native activation once",
@@ -2576,9 +2621,9 @@ check(
   checkboxPress.refused === true,
   String(checkboxPress.refused),
 );
+document.fire("mouseup", checkboxPress);
 document.fire("click", press({ target: firstCheckbox }));
 firstCheckbox.click();
-document.fire("mouseup", checkboxPress);
 await nextTick();
 check(
   "handled the checkbox's native activation once",

@@ -4677,6 +4677,11 @@ function rememberBlurredEditor(event) {
 /// what some macOS WebKit versions do when the press ends an editing session.
 let editorControlPress = null;
 function finishEditorControlPress(event) {
+  // Only the primary button arms the press, so only its release finishes it: a
+  // secondary release while the primary is still held must not run the
+  // fallback ahead of the primary release, which would activate the control
+  // twice (once supplied here, once by the primary press's native click).
+  if (event.button !== 0) return;
   const press = editorControlPress;
   if (!press) return;
   if (pressedControl(event.target) !== press.control) {
