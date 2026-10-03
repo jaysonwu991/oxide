@@ -3975,17 +3975,28 @@ for (const [, selector, body] of sheet.matchAll(/([^{}]+)\{([^{}]*)\}/g)) {
     /\binput\b|\btextarea\b/.test(within) ||
     [...boxNames].some((name) => new RegExp(`[.#]${name}(?![\\w-])`).test(within));
   if (!namesBox) continue;
+  // A `:focus-visible` rule is the keyboard's own indicator and may draw an
+  // outline — that is what keeps a radio/checkbox a Tab reaches visible. Every
+  // other focus rule must be inert but for suppressing WebKit's own ring.
+  const keyboardOnly = within.includes(":focus-visible");
   const paints = body
     .split(";")
     .map((decl) => decl.trim())
     .filter(Boolean)
-    .filter((decl) => !/^outline:\s*none\b/.test(decl));
+    .filter((decl) =>
+      keyboardOnly ? !/^outline(-offset)?:/.test(decl) : !/^outline:\s*none\b/.test(decl),
+    );
   if (paints.length) focusPaints.push(`${within} => ${paints.join("; ")}`);
 }
 check(
   "left every input box looking the same whether the caret is in it or not",
   focusPaints.length === 0,
   focusPaints.join(" | "),
+);
+check(
+  "kept a keyboard-only outline on the question choice",
+  /\.question-choice:focus-visible \{[^}]*outline: 2px solid var\(--accent\)/.test(sheet),
+  sheet.match(/\.question-choice:focus-visible \{[^}]*\}/)?.[0] || "",
 );
 const restingClass = elementFor("composer").className;
 elementFor("prompt").fire("focus");
