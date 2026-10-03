@@ -153,6 +153,54 @@ pre,
   text-overflow: ellipsis;
 }
 
+/* The turn's own thread, named while the reader is looking at another one: the
+   running turn keeps writing into its own conversation, so the strip says which
+   that is and is the way back to it. It sits under the header's title — the one
+   line the panel already reads to know which thread is open — and shares the
+   header's own bottom border so the two read as one bar. */
+#run-strip {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 5px 10px;
+  flex: 0 0 auto;
+  font-size: 0.92em;
+  color: var(--vscode-foreground);
+  background: var(--vscode-editorWidget-background, var(--vscode-editor-background));
+  border-bottom: 1px solid var(--vscode-panel-border, rgba(128, 128, 128, 0.25));
+}
+
+/* The flex display above would otherwise win over the attribute. */
+#run-strip[hidden] {
+  display: none;
+}
+
+#run-strip-text {
+  min-width: 0;
+  flex: 1 1 auto;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* One word on the strip is the door back to the run's thread — the same control
+   the desktop app's own strip carries — so it is a plain text button rather
+   than a second icon among the header's. */
+#run-open {
+  flex: 0 0 auto;
+  padding: 1px 8px;
+  border: 1px solid var(--vscode-button-border, transparent);
+  border-radius: 4px;
+  background: var(--vscode-button-secondaryBackground, transparent);
+  color: var(--vscode-button-secondaryForeground, var(--vscode-textLink-foreground));
+  font: inherit;
+  cursor: pointer;
+}
+
+#run-open:hover {
+  background: var(--vscode-button-secondaryHoverBackground, var(--vscode-toolbar-hoverBackground));
+}
+
 /* ---------- transcript ---------- */
 
 #transcript {

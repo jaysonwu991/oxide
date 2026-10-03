@@ -65,6 +65,9 @@
   const reviewTotal = $("review-total");
   const reviewFiles = $("review-files");
   const reviewClose = $("review-close");
+  const runStrip = $("run-strip");
+  const runStripText = $("run-strip-text");
+  const runOpenButton = $("run-open");
 
   const entries = new Map();
   let chips = [];
@@ -76,6 +79,12 @@
   let busy = false;
   let busyMessageMode = "queue";
   let queued = 0;
+  /// The turn's own thread when it is not the one on screen (`state.run`):
+  /// `{ sessionId, title, running }`, or null while the panel's own transcript
+  /// is the run's. It is what the strip paints and what stops the composer
+  /// offering a Send whose answer would land in a conversation nobody is
+  /// reading.
+  let runThread = null;
   let startedAt = 0;
   let elapsedTimer = 0;
   let dirty = new Set();
@@ -1315,6 +1324,7 @@
         titleLabel.textContent = message.title || "New chat";
         for (const item of message.items) appendItem(item, false);
         setStatus(message.status, message.busy, message.queued);
+        setRun(message.run);
         setFooter(message.footer);
         setChips(message.context, message.attachments);
         scrollDown(true);
@@ -1379,6 +1389,7 @@
       }
       case "status":
         setStatus(message.status, message.busy, message.queued);
+        setRun(message.run);
         setFooter(message.footer);
         // The title changes when the first message is sent, before the next
         // `state` message repaints the view, so the header follows the send.
@@ -1411,6 +1422,40 @@
   }
 
   // ---------- footer ----------
+
+  /// The turn's own thread, when it is not the one on screen. The label is the
+  /// same one the desktop app's strip carries, because the two front-ends say
+  /// the same thing about the same situation: the running turn owns the
+  /// conversation it started in, and this is where that conversation is named
+  /// and how the reader gets back to it.
+  function setRun(run) {
+    runThread = run || null;
+    const away = Boolean(runThread);
+    runStrip.hidden = !away;
+    if (away) {
+      const label = runThread.title || "another thread";
+      const text = runThread.running
+        ? `A turn is running in “${label}”`
+        : `A turn finished in “${label}”`;
+      runStripText.textContent = text;
+      runStrip.title = `Open “${label}”`;
+      runOpenButton.title = `Open “${label}”`;
+      runOpenButton.setAttribute("aria-label", `Open “${label}”`);
+      runStrip.setAttribute("aria-label", `${text}. Open it.`);
+    } else {
+      runStrip.removeAttribute("aria-label");
+      runStrip.title = "";
+    }
+    // The corner follows: a message typed here while the run is in another
+    // thread has nowhere on screen to be answered, so the panel offers Stop
+    // alone — the host refuses the send in the same words the desktop app does.
+    updateSendState();
+  }
+
+  /// Whether the run is writing into a thread other than the one on screen.
+  function runAway() {
+    return Boolean(runThread);
+  }
 
   function setStatus(text, isBusy, queuedCount) {
     busy = Boolean(isBusy);
@@ -1647,10 +1692,17 @@
   /// reader is aiming at does not move as the box is typed into.
   function updateSendState() {
     const hasText = Boolean(input.value.trim()) || pendingCount() > 0;
+    // The corner's own actions belong to the thread this composer is showing. A
+    // turn running in another thread is not this transcript's, so a message
+    // typed here would be steered into that run and its reply would land in a
+    // conversation that is not on screen: the corner offers Stop alone until the
+    // reader is back in it (the strip above is the way there), and the typed text
+    // is kept rather than sent. The host refuses the send in the same words.
+    const here = !runAway();
     sendButton.disabled = !hasText;
-    sendButton.hidden = busy && !hasText;
-    stopButton.hidden = !busy || hasText;
-    busyModeButton.hidden = !busy || !hasText;
+    sendButton.hidden = busy && (!hasText || !here);
+    stopButton.hidden = !busy || (hasText && here);
+    busyModeButton.hidden = !busy || !hasText || !here;
     busyModeButton.textContent = busyMessageMode === "steer" ? "Steer" : "Queue";
     busyModeButton.title = busyMessageMode === "steer"
       ? "Steer the active response; click to queue instead"
@@ -1998,6 +2050,13 @@
   function submit() {
     const text = input.value;
     if (!text.trim() && pendingCount() === 0) return;
+    // The corner offers Stop alone while the run is in another thread, and Enter
+    // is the same corner: the message stays in the box rather than being steered
+    // into a run whose reply would land in a conversation that is not on screen.
+    // It is not lost — the strip above is the way into that thread, and what is
+    // typed here is still here when it is opened. The host refuses the same send
+    // in the same words, for anything that reaches it another way.
+    if (busy && runAway()) return;
     const mode = busy ? busyMessageMode : "queue";
     input.value = "";
     busyMessageMode = "queue";
@@ -2435,6 +2494,10 @@
   stopButton.addEventListener("click", () => vscode.postMessage({ k: "stop" }));
   $("new-session").addEventListener("click", () => vscode.postMessage({ k: "newSession" }));
   historyButton.addEventListener("click", () => vscode.postMessage({ k: "resumeSession" }));
+  // The strip's own control: the turn's thread is on another one, so this is the
+  // way back to it — the same door the desktop app's strip offers, and the same
+  // control id its view posts.
+  runOpenButton.addEventListener("click", () => vscode.postMessage({ k: "control", control: "openRun" }));
 
   // The footer's chips are the extension's own commands: each one opens a picker
   // or cycles a setting, and the host re-sends the footer afterwards.

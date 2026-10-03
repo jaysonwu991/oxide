@@ -107,6 +107,7 @@ import {
   type AttachmentChip,
   type ChangesItem,
   type ContextChip,
+  type RunThread,
   type ViewMessage,
   type WireEvent,
 } from "./core/protocol";
@@ -268,7 +269,21 @@ interface PreparedSend {
 }
 
 export class ChatController {
-  private readonly transcript: Transcript;
+  /// The transcript on screen. It is replaced rather than only reset when the
+  /// reader opens another thread while a turn runs: the running turn keeps the
+  /// one it started in (`runTranscript`), and this becomes the thread being
+  /// read. One process, one conversation's output — nothing a run streams is
+  /// applied to a transcript that is not its own.
+  private transcript: Transcript;
+  /// The transcript the running turn writes into, set when it starts and held
+  /// until the reader opens it again. `null` means the panel's own transcript
+  /// is the run's (which is the state every run starts in), so the two are
+  /// compared rather than a flag kept beside them.
+  private runTranscript: Transcript | null = null;
+  /// What the strip names a left-behind run's thread by: the title the header
+  /// showed when the reader moved on (`threadTitle()`), so a thread the store
+  /// has not named yet is not the one row written as a bare id.
+  private runTitle = "";
   private readonly views = new Set<vscode.WebviewView>();
   private readonly store = new AttachmentStore();
   private context: Chip[] = [];
@@ -392,7 +407,14 @@ export class ChatController {
     /// has never checked.
     private readonly updateMemory: UpdateStore = NO_UPDATE_STORE,
   ) {
-    this.transcript = new Transcript((name, args) => {
+    this.transcript = this.newTranscript();
+  }
+
+  /// A transcript bound to this window's diff previews. Opening another thread
+  /// while a turn runs builds one for the thread being opened, so the run keeps
+  /// writing into the transcript that belongs to it.
+  private newTranscript(): Transcript {
+    return new Transcript((name, args) => {
       const preview = toolDiff(name, args, (file) => this.readForPreview(file));
       return preview ? preview.diff : null;
     });
@@ -507,6 +529,7 @@ export class ChatController {
         binary: this.binary(),
         showThinking: this.setting<boolean>("showThinking", true),
         footer: this.footer(),
+        run: this.runThread(),
       }),
     };
   }
@@ -633,10 +656,22 @@ export class ChatController {
     const folder = this.folder();
     if (!folder) return null;
     if (this.activeFolder && this.activeFolder !== folder.uri.fsPath) {
+      // A turn that is still running pins the folder it began in: its own events
+      // are still being applied to the transcript on screen, and the folder its
+      // session belongs to is the one it started in. Moving the editor to a file
+      // in another folder waits until the run is over — the desktop app refuses
+      // the switch outright while a turn runs, for the same reason.
+      if (this.turn) return this.activeFolder;
       // Sessions are per project, so a conversation does not follow the user
       // across folders.
       const previous = path.basename(this.activeFolder);
       this.transcript.reset();
+      // A finished run's thread was parked from the folder being left, and the
+      // strip's `Open` would put a conversation from another project back on
+      // screen: the park goes with the folder, and the thread stays where the
+      // store keeps it.
+      this.runTranscript = null;
+      this.runTitle = "";
       this.nextChipId = 1;
       this.context = [];
       this.broadcast(this.stateMessage());
@@ -1115,6 +1150,18 @@ export class ChatController {
     const prepared = this.prepareSend(message);
     if (!prepared) return;
     if (this.turn) {
+      // The run owns the thread it is in: a message typed into another thread's
+      // transcript would be steered into that run while its reply has nowhere
+      // here to land. The strip names the thread it is in, and opening it is
+      // where a Queue or a Steer belongs — the same refusal, in the same words,
+      // the desktop app and the terminal make.
+      if (!this.viewingRun()) {
+        this.showNotice(
+          `A turn is running in “${this.runLabel()}”; open it to queue or steer, or stop it.`,
+          "warn",
+        );
+        return;
+      }
       const followUp = busyMode === "queue";
       // The active RPC process owns both queues, like the desktop and terminal:
       // a follow-up waits for the current answer, while steering is read before
@@ -1129,7 +1176,7 @@ export class ChatController {
         return;
       }
       this.dropComposerChips();
-      this.broadcastItem(this.transcript.pushUser(prepared.message, prepared.labels));
+      this.broadcastItem((this.runTranscript ?? this.transcript).pushUser(prepared.message, prepared.labels));
       this.showNotice(
         `${followUp ? "Queued" : "Steering"}: ${firstLine(prepared.message) || "an attachment"}`,
       );
@@ -1209,20 +1256,28 @@ export class ChatController {
     };
   }
 
-  /// Starts the CLI turn for an assembled message. When the message was queued
-  /// while a turn ran, its bubble is already in the transcript and the composer
-  /// is already clear, so `showUser` is false and the composer is left alone.
-  private startTurn(prepared: PreparedSend, showUser: boolean): void {
+  /// Starts the CLI turn for an assembled message. `target` is the transcript
+  /// the turn belongs to: the panel's for a message the user just sent, and the
+  /// run's own for a queued message that followed it — a queued message
+  /// continues the thread it was composed in even when the reader has moved to
+  /// another one. When the message was queued while a turn ran, its bubble is
+  /// already in the transcript and the composer is already clear, so `showUser`
+  /// is false and the composer is left alone.
+  private startTurn(prepared: PreparedSend, showUser: boolean, target = this.transcript): void {
     const folder = this.folder();
     const args = buildTurnArgs({
       ...this.turnOptions(),
-      session: this.transcript.sessionId,
-      continueLast: this.continueLast && !this.transcript.sessionId,
+      session: target.sessionId,
+      continueLast: this.continueLast && !target.sessionId,
     });
     this.continueLast = false;
 
     if (showUser) {
-      this.broadcastItem(this.transcript.pushUser(prepared.message, prepared.labels));
+      const messages = target.pushUser(prepared.message, prepared.labels);
+      // A message continuing a run whose thread is not on screen belongs to
+      // that thread's transcript: painting it here would append it to the
+      // conversation the reader is looking at.
+      if (target === this.transcript) this.broadcastItem(messages);
     }
 
     const command = this.binary();
@@ -1230,8 +1285,9 @@ export class ChatController {
     if (folder) this.output.appendLine(`  cwd ${folder.uri.fsPath}`);
     this.output.appendLine(`  prompt:\n${indent(prepared.prompt)}`);
 
-    this.transcript.busy = true;
-    this.transcript.status = "Thinking…";
+    target.busy = true;
+    target.status = "Thinking…";
+    this.runTranscript = target;
     this.run = {
       cancelled: false,
       sawEvent: false,
@@ -1280,10 +1336,13 @@ export class ChatController {
       this.showNotice("That approval request is no longer waiting.", "warn");
       return;
     }
-    const messages = this.transcript.answerApproval(requestId, decision);
+    // The card lives in the run's own transcript, which the panel's is only
+    // while the reader is still in its thread; a request answered from another
+    // thread settles the card where it was painted.
+    const messages = (this.runTranscript ?? this.transcript).answerApproval(requestId, decision);
     if (!messages) return;
     turn.approve(requestId, decision);
-    this.broadcastItem(messages);
+    if (this.viewingRun()) this.broadcastItem(messages);
     this.broadcastStatus();
   }
 
@@ -1297,10 +1356,10 @@ export class ChatController {
       this.showNotice("That question is no longer waiting.", "warn");
       return;
     }
-    const messages = this.transcript.answerQuestion(requestId, answers);
+    const messages = (this.runTranscript ?? this.transcript).answerQuestion(requestId, answers);
     if (!messages) return;
     turn.answer(requestId, answers);
-    this.broadcastItem(messages);
+    if (this.viewingRun()) this.broadcastItem(messages);
     this.broadcastStatus();
   }
 
@@ -1310,7 +1369,9 @@ export class ChatController {
   private drainQueue(): void {
     const next = this.queue.shift();
     if (!next || this.turn) return;
-    this.startTurn(next, true);
+    // The queued message continues the thread whose turn it followed — the run's
+    // own, which need not be the one on screen.
+    this.startTurn(next, true, this.runTranscript ?? this.transcript);
   }
 
   stop(): void {
@@ -1320,7 +1381,9 @@ export class ChatController {
     }
     if (this.run) this.run.cancelled = true;
     this.turn.cancel();
-    this.transcript.status = "Stopping…";
+    // The turn's own transcript carries the phase: the thread on screen is not
+    // the one being stopped, so its status stays what it is.
+    (this.runTranscript ?? this.transcript).status = "Stopping…";
     this.broadcastStatus();
   }
 
@@ -1336,27 +1399,56 @@ export class ChatController {
   private handleEvent(event: WireEvent): void {
     if (!this.run) return;
     this.run.sawEvent = true;
-    const id = this.transcript.sessionId;
-    const messages = this.transcript.apply(event);
-    this.broadcastItem(messages);
+    // The run's own transcript, which is the panel's only while the reader is
+    // still in its thread: a delta, a tool card and a change card are applied to
+    // the conversation they belong to, never to the one on screen.
+    const run = this.runTranscript ?? this.transcript;
+    const id = run.sessionId;
+    const messages = run.apply(event);
+    if (run === this.transcript) this.broadcastItem(messages);
+    // A request that holds the turn is answered in the transcript it was painted
+    // into, so while the reader is in another thread the card is the one thing
+    // they cannot see: the turn waits on it (and denies after five minutes), and
+    // this is what says so and where the answer goes. A tool approval and a
+    // skill's question are the two events that stop the run for an answer.
+    if (run !== this.transcript) {
+      if (event.type === "approval_request") {
+        this.showNotice(
+          `“${this.runLabel()}” is waiting for approval — open it in the strip above to answer.`,
+          "warn",
+        );
+      } else if (event.type === "question_request") {
+        this.showNotice(
+          `“${this.runLabel()}” is waiting for your answer — open it in the strip above to answer.`,
+          "warn",
+        );
+      }
+    }
     this.broadcastStatus();
     // A session is written as the turn it belongs to runs, so the listing gains
     // its row when the header arrives rather than when the turn ends: a reader
     // who opened it while the run was starting sees the thread it is about.
-    if (this.transcript.sessionId !== id) void this.syncSessions();
+    if (run.sessionId !== id) void this.syncSessions();
     this.onDidChange.fire();
   }
 
   private handleExit(result: { code: number | null; signal: string | null; error?: string }): void {
     const run = this.run;
+    // Whether this process's thread is the one on screen, read before the run is
+    // dropped: a turn that finished in a thread the reader moved away from is a
+    // strip that says "finished" and a transcript nobody has repainted, so what
+    // settles its cards goes into that transcript rather than being broadcast.
+    const away = !this.viewingRun();
+    const target = this.runTranscript ?? this.transcript;
+    const title = away ? this.runLabel() : "";
     this.turn = null;
     this.run = null;
-    this.transcript.busy = false;
-    this.transcript.status = "Idle";
+    target.busy = false;
+    target.status = "Idle";
     // A card still waiting belongs to a request whose process is gone (a stop,
     // or a crash): leaving its buttons live would offer an answer nobody reads.
-    this.broadcastItem(this.transcript.closeApprovals());
-    this.broadcastItem(this.transcript.closeQuestions());
+    const settled = [...target.closeApprovals(), ...target.closeQuestions()];
+    if (!away) this.broadcastItem(settled);
 
     if (run?.cancelled) {
       this.showNotice("Run stopped. The next message continues this session.");
@@ -1385,6 +1477,14 @@ export class ChatController {
       this.showNotice("oxide produced no events; see the Oxide output channel.", "warn");
     } else {
       this.notify(run);
+      // A turn that finished in a thread the reader moved away from is waiting
+      // to be read: the strip names it, and this says where its reply and its
+      // change card are — the door the desktop app's own strip offers.
+      if (away) {
+        this.showNotice(
+          `${title || "The turn"} finished. Open it in the strip above to read the reply.`,
+        );
+      }
     }
 
     // The run may have created a branch, committed, or written `.oxide/` files.
@@ -1415,7 +1515,10 @@ export class ChatController {
     if (!this.setting<boolean>("notifyOnFinish", true)) return;
     if (!(this.project?.notifyOnComplete ?? true)) return;
     if ([...this.views].some((view) => view.visible)) return;
-    const title = this.threadTitle();
+    // A turn that finished in a thread the reader left is named by that
+    // thread's own title rather than the one on screen: the toast says which
+    // conversation finished, not which one is open.
+    const title = this.parkedRun() ? this.runLabel() : this.threadTitle();
     void vscode.window.showInformationMessage(title ? `Oxide: ${title}` : "Oxide finished.");
   }
 
@@ -1433,7 +1536,11 @@ export class ChatController {
       return;
     }
     this.closeDialog();
-    this.transcript.reset();
+    this.transcript = this.newTranscript();
+    // The thread a finished run left parked goes with it: a new chat is the way
+    // out of the strip, and the store still holds that thread for the listing.
+    this.runTranscript = null;
+    this.runTitle = "";
     this.queue = [];
     this.sessionTitle = null;
     this.continueLast = false;
@@ -1457,6 +1564,7 @@ export class ChatController {
         note,
         this.liveSession(),
         this.sessionQuery,
+        this.liveRun(),
       ),
     );
   }
@@ -1467,6 +1575,14 @@ export class ChatController {
   private liveSession(): LiveSession | null {
     const id = this.transcript.sessionId;
     return id ? { id, label: this.threadTitle() } : null;
+  }
+
+  /// The turn's own thread, as the listing needs it: the row of a conversation a
+  /// turn is still writing into says so, so a listing opened while the reader is
+  /// elsewhere names the one that is running.
+  private liveRun(): LiveSession | null {
+    const id = this.parkedRun()?.sessionId;
+    return id ? { id, label: this.runLabel() } : null;
   }
 
   /// The session listing painted again from a fresh read, without the note a
@@ -1575,31 +1691,77 @@ export class ChatController {
   /// session to resume from its stored context. Resuming paints the thread's
   /// stored conversation before anything is sent, so the panel shows what the
   /// next message continues from rather than an empty transcript.
+  ///
+  /// Opening a thread *other* than the running turn's is allowed and leaves that
+  /// turn alone: its own transcript is parked with the stream, and the thread
+  /// being read becomes the panel's. That is the read-only review the desktop app
+  /// offers the same way — a turn owns the conversation it is writing into, and a
+  /// message typed while it is elsewhere is refused rather than steered into it.
   private async openSession(value: string): Promise<void> {
-    if (this.turn) {
-      // The dialog stays open with the reason in place rather than closing over
-      // a notice painted behind it.
-      this.showSessions("A turn is running; stop it before switching sessions.");
-      return;
-    }
-    this.closeDialog();
     if (value === NEW_SESSION) {
+      if (this.turn) {
+        this.showSessions("A turn is running; stop it before starting a new chat.");
+        return;
+      }
+      this.closeDialog();
       this.newSession();
       return;
     }
     if (value === CONTINUE_SESSION) {
+      if (this.turn) {
+        this.showSessions("A turn is running; stop it before switching sessions.");
+        return;
+      }
+      this.closeDialog();
       this.continueSession();
+      return;
+    }
+    // The run's own thread, taken from the listing instead of the strip: the
+    // same door, so it is the same swap. It is asked before the listing is read,
+    // because the row that stands in for a run the store has not written — the
+    // one the dialog adds when the id is nowhere in `this.sessions` — is exactly
+    // the row this opens, and a lookup that came first would return on it.
+    if (this.parkedRun()?.sessionId === value) {
+      this.closeDialog();
+      this.openRun();
       return;
     }
     const session = this.sessions.find((entry) => entry.id === value);
     if (!session) return;
+    // Already the thread on screen: nothing to rebuild, whether or not a turn is
+    // running in it.
+    if (this.transcript.sessionId === value) {
+      this.closeDialog();
+      return;
+    }
+    this.closeDialog();
+    // The thread being left keeps its own transcript when the running turn is in
+    // it: the run goes on painting there rather than under the thread being
+    // opened, and the strip names it.
+    this.parkRun();
     const label = session.label || value;
-    this.transcript.reset();
+    this.transcript = this.newTranscript();
     this.transcript.sessionId = value;
     this.sessionTitle = session.label || null;
     this.dropChips();
     this.broadcast(this.stateMessage());
     await this.loadHistory(value, label);
+  }
+
+  /// The strip's own `Open`: the run's thread — or the one a finished turn left
+  /// parked — brought back to the panel with everything it holds, so the reply,
+  /// the tool cards and the turn's change card are what the reader returns to.
+  /// The transcript is the very object the run was writing into, so nothing is
+  /// replayed from the store and no message is lost.
+  openRun(): void {
+    const run = this.parkedRun();
+    if (!run) return;
+    this.transcript = run;
+    this.runTranscript = null;
+    this.sessionTitle = this.runTitle || null;
+    this.runTitle = "";
+    this.dropChips();
+    this.broadcast(this.stateMessage());
   }
 
   /// The stored conversation of the thread being resumed, read by the CLI from
@@ -1614,7 +1776,13 @@ export class ChatController {
   private async loadHistory(id: string, label: string): Promise<void> {
     const cwd = this.cwd();
     if (!cwd) return;
+    // The thread this read is for, since the reader can open another one — or the
+    // strip can bring a running thread back — while the store is being read: a
+    // history that landed in whatever transcript is on screen then would paint
+    // one conversation's messages into another's.
+    const target = this.transcript;
     const result = await runCapture(this.binary(), sessionShowArgs(id, HISTORY_MESSAGES), cwd);
+    if (this.transcript !== target) return;
     if (result.error || result.code !== 0) {
       const detail = result.error || firstLine(result.stderr) || `exit ${result.code}`;
       this.showNotice(`${label} is resumed, but its history could not be read: ${detail}`, "warn");
@@ -1628,8 +1796,8 @@ export class ChatController {
     // Pushed into the transcript without painting each one: the view rebuilds
     // the whole list from the one `state` message below, so sending a message
     // per stored turn would repaint the panel sixty times over.
-    this.transcript.replay(history.entries);
-    this.transcript.usage = history.usage;
+    target.replay(history.entries);
+    target.usage = history.usage;
     if (history.name) this.sessionTitle = history.name;
     this.broadcast(this.stateMessage());
     const tail =
@@ -1692,9 +1860,16 @@ export class ChatController {
       return;
     }
     if (this.transcript.sessionId === id) {
-      this.transcript.reset();
+      this.transcript = this.newTranscript();
       this.sessionTitle = null;
       this.continueLast = false;
+      this.broadcast(this.stateMessage());
+    }
+    // A finished turn's thread can still be parked behind the strip; deleting it
+    // takes the strip with it, since there is nothing left to open.
+    if (this.parkedRun()?.sessionId === id) {
+      this.runTranscript = null;
+      this.runTitle = "";
       this.broadcast(this.stateMessage());
     }
     this.showNotice(`Deleted ${label}.`);
@@ -2295,6 +2470,12 @@ export class ChatController {
         return this.setAgent();
       case "access":
         return this.setProjectTrust();
+      case "openRun":
+        // The strip's own control: the thread a turn is writing into — or the
+        // one a finished turn left parked — brought back to the panel with the
+        // reply, the tool cards and the change card it holds.
+        this.openRun();
+        return;
       default:
         return;
     }
@@ -2435,7 +2616,53 @@ export class ChatController {
       ViewMessage,
       { k: "status" }
     >;
-    this.broadcast({ ...status, title: this.threadTitle() });
+    this.broadcast({ ...status, title: this.threadTitle(), run: this.runThread() });
+  }
+
+  /// The running turn's own thread, when it is not the one on screen: the
+  /// reader opened another thread while it ran, or a finished turn's thread is
+  /// still parked behind the strip. `null` while the panel's own transcript is
+  /// the run's, which is the state a run starts in — so the strip is nothing but
+  /// the answer to "is the thing writing this window somewhere else?".
+  private runThread(): RunThread | null {
+    const run = this.runTranscript;
+    if (!run || run === this.transcript) return null;
+    return { sessionId: run.sessionId, title: this.runLabel(), running: this.turn !== null };
+  }
+
+  /// Whether the run's own thread is the one being read. Everything the turn
+  /// streams is applied to the run's transcript either way; this only decides
+  /// whether the panel paints it as it arrives.
+  private viewingRun(): boolean {
+    return this.runTranscript === null || this.runTranscript === this.transcript;
+  }
+
+  /// Parks the thread the panel is showing, so the reader can open another one
+  /// without the running turn's output following them there. Only a run whose
+  /// own thread is on screen has anything to park — a reader already away from it
+  /// keeps the title that names it — and the title is taken now, while the header
+  /// still shows it. It is the same moment the desktop app's park takes its own.
+  private parkRun(): void {
+    if (!this.runTranscript || this.runTranscript !== this.transcript) return;
+    this.runTitle = this.threadTitle();
+  }
+
+  /// The thread the strip names and its `Open` opens: the run's while one is in
+  /// flight, the parked one once it is over. `null` when the panel's own thread
+  /// is the run's.
+  private parkedRun(): Transcript | null {
+    const run = this.runTranscript;
+    return run && run !== this.transcript ? run : null;
+  }
+
+  /// What a left-behind run's thread is called in the strip and in the notice
+  /// that refuses a message typed in another thread: the title the header showed
+  /// when the reader left it, else the thread's own summarized title, else
+  /// whatever it is at worst — a thread the CLI has not named yet. It is the
+  /// desktop app's own `runThreadLabel`, said the same way, so the two front-ends
+  /// name the same conversation identically.
+  private runLabel(): string {
+    return this.runTitle || this.runTranscript?.title() || "another thread";
   }
 
   get running(): boolean {

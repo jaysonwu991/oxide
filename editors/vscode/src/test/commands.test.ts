@@ -467,12 +467,17 @@ describe("command contributions", () => {
   it("routes a question answer to the running turn", () => {
     // A question card that settled without a frame would leave the `ask` call
     // waiting for the answer until the broker's timeout, so the panel shows an
-    // answered card while the agent sits there.
+    // answered card while the agent sits there. The card lives in the run's own
+    // transcript — the panel's only while the reader is still in its thread — so
+    // an answer written from another thread settles the card where it was
+    // painted rather than in a conversation that never asked.
     const answer = chat.slice(
       chat.indexOf("answerQuestion(requestId"),
       chat.indexOf("stop():"),
     );
-    assert.ok(answer.includes("this.transcript.answerQuestion(requestId, answers)"));
+    assert.ok(
+      answer.includes("(this.runTranscript ?? this.transcript).answerQuestion(requestId, answers)"),
+    );
     assert.ok(answer.includes("turn.answer(requestId, answers)"), "the frame is written too");
   });
 
@@ -512,9 +517,9 @@ describe("command contributions", () => {
     );
     assert.ok(
       helper.replace(/\s+/g, " ").includes(
-        "sessionDialog( this.sessions, this.transcript.sessionId, note, this.liveSession(), this.sessionQuery, )",
+        "sessionDialog( this.sessions, this.transcript.sessionId, note, this.liveSession(), this.sessionQuery, this.liveRun(), )",
       ),
-      "and that place passes the open thread's id, its live stand-in and the filter",
+      "and that place passes the open thread's id, its live stand-in, the filter and the turn's own thread",
     );
     // The sites that repaint it: the load, its failure, the listing itself, a
     // row while a turn runs, a delete while a turn runs, a failed delete and a
@@ -662,12 +667,22 @@ describe("command contributions", () => {
     );
 
     // The two moments a session is written: the header naming the thread, and
-    // the turn ending.
+    // the turn ending. The id compared is the one the run's own transcript
+    // reports — the thread being written is the run's, which is not the one on
+    // screen once the reader has opened another conversation.
     const events = chat.slice(
       chat.indexOf("private handleEvent("),
       chat.indexOf("private handleExit("),
     );
-    assert.match(events, /if \(this\.transcript\.sessionId !== id\) void this\.syncSessions\(\)/);
+    assert.ok(
+      events.includes("const run = this.runTranscript ?? this.transcript;"),
+      "a streamed event is applied to the run's own thread",
+    );
+    assert.ok(
+      events.includes("const id = run.sessionId;") &&
+        events.includes("if (run.sessionId !== id) void this.syncSessions()"),
+      "and the listing is refreshed for the thread it names",
+    );
     const exit = chat.slice(chat.indexOf("private handleExit("), chat.indexOf("async resumeSession("));
     assert.ok(exit.includes("void this.syncSessions()"), "and so does a finished turn");
 
@@ -978,8 +993,8 @@ describe("command contributions", () => {
       "the selected busy behavior is announced",
     );
     assert.ok(
-      send.includes("broadcastItem(this.transcript.pushUser(prepared.message"),
-      "and its bubble appears while the active turn owns it",
+      send.includes("broadcastItem((this.runTranscript ?? this.transcript).pushUser(prepared.message"),
+      "and its bubble appears in the thread the turn is in",
     );
 
     assert.ok(send.includes('const followUp = busyMode === "queue"'));
@@ -995,6 +1010,227 @@ describe("command contributions", () => {
     assert.ok(
       renderer.includes('titleLabel.textContent = message.title || "New chat"'),
       "and the webview paints it over the placeholder",
+    );
+  });
+
+  it("keeps a run's output in the thread it was started in", () => {
+    // A turn owns the conversation it began in: the reader may open another
+    // thread while it runs, and everything the CLI streams still belongs to the
+    // thread the prompt was typed into — a delta, a tool card and the turn's
+    // change card are the reply to that message, not to whatever is on screen.
+    const events = chat.slice(
+      chat.indexOf("private handleEvent("),
+      chat.indexOf("private handleExit("),
+    );
+    assert.ok(events.includes("const run = this.runTranscript ?? this.transcript;"));
+    assert.ok(
+      events.includes("const messages = run.apply(event);") &&
+        events.includes("if (run === this.transcript) this.broadcastItem(messages);"),
+      "applied there, painted only when that thread is the one being read",
+    );
+
+    // The two events that hold the turn are answered in the transcript they were
+    // painted into, which is the one thing the reader away from it cannot see:
+    // the turn would sit on the request until the broker's five-minute timeout,
+    // so the notice says which thread is waiting and where its answer goes.
+    assert.ok(
+      events.includes("if (run !== this.transcript) {") &&
+        events.includes('if (event.type === "approval_request") {') &&
+        events.includes('} else if (event.type === "question_request") {'),
+      "only while the run is in another thread, and only for those two events",
+    );
+    assert.ok(
+      events.includes('`“${this.runLabel()}” is waiting for approval — open it in the strip above to answer.`') &&
+        events.includes('`“${this.runLabel()}” is waiting for your answer — open it in the strip above to answer.`'),
+      "a held turn says so where the reader is",
+    );
+    for (const [method, call] of [
+      ["approve", "answerApproval"],
+      ["answerQuestion", "answerQuestion"],
+    ]) {
+      const body = chat.slice(
+        chat.indexOf(`${method}(requestId`),
+        chat.indexOf("private broadcastItem("),
+      );
+      assert.ok(
+        body.includes(`(this.runTranscript ?? this.transcript).${call}(requestId`),
+        `${method} settles the card where it was painted`,
+      );
+      assert.ok(
+        body.includes("if (this.viewingRun()) this.broadcastItem(messages);"),
+        `${method} paints it only in the thread on screen`,
+      );
+    }
+
+    // A queued message continues the thread whose turn it followed, and the
+    // bubble for one is pushed into that thread rather than the panel's.
+    assert.ok(
+      chat
+        .slice(chat.indexOf("private drainQueue()"), chat.indexOf("stop():"))
+        .includes("this.startTurn(next, true, this.runTranscript ?? this.transcript)"),
+      "a queued message continues its own thread",
+    );
+    assert.ok(
+      chat.includes("if (target === this.transcript) this.broadcastItem(messages);"),
+      "and its bubble is painted only where that thread is",
+    );
+
+    // Stopping reaches the run wherever the reader is, and says so in the run's
+    // own transcript rather than in the one on screen.
+    const stop = chat.slice(chat.indexOf("stop(): void"), chat.indexOf("private broadcastItem("));
+    assert.ok(stop.includes('(this.runTranscript ?? this.transcript).status = "Stopping…"'));
+  });
+
+  it("says which thread a turn is in, and offers the way back to it", () => {
+    // One state message per painting, so the strip lives in the same one the
+    // transcript does: the run's own thread travels with every `state` and
+    // `status`, and the view paints the strip from it.
+    assert.ok(
+      chat.includes("run: this.runThread(),") &&
+        chat.includes("broadcast({ ...status, title: this.threadTitle(), run: this.runThread() });"),
+      "the run's own thread rides on the state and the status",
+    );
+    const thread = chat.slice(
+      chat.indexOf("private runThread()"),
+      chat.indexOf("private viewingRun()"),
+    );
+    assert.ok(
+      thread.includes("if (!run || run === this.transcript) return null;") &&
+        thread.includes("running: this.turn !== null"),
+      "null while it is the thread on screen, and it says whether it is still going",
+    );
+
+    // The strip is markup of the panel's own column, under the header that names
+    // the thread it is about, and its control is the icon-first one a listing
+    // gets rather than a second place to type.
+    const strip = chatView.slice(
+      chatView.indexOf('id="run-strip"'),
+      chatView.indexOf('id="dialog"'),
+    );
+    assert.ok(
+      strip.includes('id="run-strip-text"') && strip.includes('id="run-open"'),
+      "the strip names the thread and offers the way in",
+    );
+    assert.ok(
+      chatView.indexOf('id="run-strip"') > chatView.indexOf("</header>"),
+      "and drops from the header's own edge",
+    );
+    assert.ok(
+      renderer.includes('runOpenButton.addEventListener("click", () => vscode.postMessage({ k: "control", control: "openRun" }))'),
+      "whose click is the control the host already routes",
+    );
+    assert.ok(
+      chat.includes('case "openRun":'),
+      "a control id the controller answers",
+    );
+
+    // Opening it is a swap, not a replay: the transcript the run was writing
+    // into is the one put back on screen, so the reply, the tool cards and the
+    // change card are all still there and a stored history is not read again.
+    const open = chat.slice(chat.indexOf("openRun(): void"), chat.indexOf("private async loadHistory("));
+    assert.ok(
+      open.includes("const run = this.parkedRun();") &&
+        open.includes("this.transcript = run;") &&
+        open.includes("this.runTranscript = null;") &&
+        open.includes("this.broadcast(this.stateMessage());"),
+      "Open puts the run's own transcript back on screen",
+    );
+    assert.ok(!open.includes("loadHistory"), "without reading the store for it");
+
+    // The listing's row for that thread is the same door, so a reader who is in
+    // the history rather than looking at the strip gets the same swap.
+    const listing = chat.slice(
+      chat.indexOf("private async openSession("),
+      chat.indexOf("openRun(): void"),
+    );
+    assert.ok(
+      listing.includes("if (this.parkedRun()?.sessionId === value) {") &&
+        listing.includes("this.openRun();"),
+      "the run's row in the listing opens the run's thread",
+    );
+    // The row of a run the store has not written has no entry to find — the
+    // dialog adds it when the id is nowhere in `this.sessions` — so the swap is
+    // asked for before the lookup, which would otherwise return on the one row
+    // that is the way back into a thread with no file yet.
+    assert.ok(
+      listing.indexOf("this.openRun();") <
+        listing.indexOf("this.sessions.find((entry) => entry.id === value)"),
+      "and that row is answered before the store's listing is read",
+    );
+  });
+
+  it("parks the thread a reader leaves, and refuses to type into another one", () => {
+    const opening = chat.slice(
+      chat.indexOf("private async openSession("),
+      chat.indexOf("openRun(): void"),
+    );
+    // Opening a thread other than the run's takes the title before the swap —
+    // the strip names the conversation the reader is leaving — and the thread
+    // being left keeps its own transcript, so the stream goes on painting there.
+    assert.ok(
+      opening.includes("\n    this.parkRun();") &&
+        opening.indexOf("this.parkRun();") < opening.indexOf("this.transcript = this.newTranscript();"),
+      "the thread being left is parked before the new one is built",
+    );
+    assert.ok(
+      chat
+        .slice(chat.indexOf("private parkRun()"), chat.indexOf("private parkedRun()"))
+        .includes("if (!this.runTranscript || this.runTranscript !== this.transcript) return;"),
+      "and only a run whose thread is on screen has anything to park",
+    );
+
+    // The two rows that start something new are refused mid-turn rather than
+    // parking: a fresh chat and the most recent thread both write into the
+    // session the run is appending to.
+    assert.ok(
+      opening.includes('this.showSessions("A turn is running; stop it before starting a new chat.")') &&
+        opening.includes('this.showSessions("A turn is running; stop it before switching sessions.")'),
+      "the rows that start a thread wait for the run",
+    );
+
+    // A message typed here is held rather than steered into the other thread's
+    // run: the panel says where it would have gone and keeps the box as it is.
+    const send = chat.slice(chat.indexOf("async send("), chat.indexOf("private prepareSend("));
+    assert.ok(
+      send.includes("if (!this.viewingRun()) {") &&
+        send.includes('`A turn is running in “${this.runLabel()}”; open it to queue or steer, or stop it.`'),
+      "the send says which thread the turn is in",
+    );
+    assert.ok(
+      send.indexOf("if (!this.viewingRun()) {") < send.indexOf("this.turn.steer("),
+      "and is refused before anything is steered",
+    );
+    assert.ok(
+      renderer.includes("if (busy && runAway()) return;"),
+      "while the view keeps the text rather than sending it",
+    );
+
+    // Every read that can land after the reader moved on is dropped: a history
+    // painted into whatever transcript is on screen would show one conversation's
+    // messages as another's.
+    const history = chat.slice(chat.indexOf("private async loadHistory("), chat.indexOf("private async deleteSession("));
+    assert.ok(
+      history.includes("const target = this.transcript;") &&
+        history.includes("if (this.transcript !== target) return;") &&
+        history.includes("target.replay(history.entries);"),
+      "a history lands in the thread it was read for",
+    );
+  });
+
+  it("pins the folder a running turn began in", () => {
+    const cwd = chat.slice(chat.indexOf("private cwd()"), chat.indexOf("relativeTo(file"));
+    assert.ok(
+      cwd.includes("if (this.turn) return this.activeFolder;"),
+      "the folder a run began in is the one it keeps",
+    );
+    // A folder switch clears a finished run's park with it: the transcript behind
+    // the strip belongs to the folder being left, and Open would put another
+    // project's conversation on screen.
+    const cleared = cwd.slice(cwd.indexOf("const previous = path.basename"));
+    assert.ok(
+      cleared.indexOf("this.runTranscript = null;") > 0 &&
+        cleared.indexOf("this.runTranscript = null;") < cleared.indexOf("this.broadcast(this.stateMessage());"),
+      "and a parked thread goes with the folder it belongs to",
     );
   });
 });

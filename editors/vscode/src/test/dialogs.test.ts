@@ -284,6 +284,69 @@ describe("session dialog", () => {
     );
   });
 
+  /// The turn's own thread, when the reader is looking at another one: the row
+  /// says a turn is still writing into it, because that thread is not only a
+  /// past conversation — it is the reply being written, and the row is how the
+  /// reader gets back to it. It is a mark of its own rather than `Current`, which
+  /// belongs to the thread on screen, so a listing never says two rows are the
+  /// one being read.
+  it("says on the turn's own row that a turn is running in it", () => {
+    const dialog = sessionDialog(sessions, "7c8031b1", "", null, "", {
+      id: "fe0031b1",
+      label: "Create VS Code Extension for Oxide",
+    });
+    const running = dialog.rows.find((row) => row.value === "fe0031b1")!;
+    assert.equal(running.status, "Running");
+    assert.equal(running.tone, "ok", "it stands out from an ordinary age");
+    assert.equal(running.current, false, "the thread on screen is the current one");
+    assert.equal(running.buttonAction, SESSION_DELETE, "and it is still a thread to delete");
+    const onScreen = dialog.rows.find((row) => row.value === "7c8031b1")!;
+    assert.equal(onScreen.status, "Current");
+    assert.equal(onScreen.tone, "muted");
+
+    // The thread on screen is the run's too when the reader never left it, and
+    // then there is nothing to say: it is the current thread and nothing else.
+    const here = sessionDialog(sessions, "fe0031b1", "", null, "", {
+      id: "fe0031b1",
+      label: "Create VS Code Extension for Oxide",
+    });
+    const row = here.rows.find((entry) => entry.value === "fe0031b1")!;
+    assert.equal(row.status, "Current");
+    assert.equal(here.rows.filter((entry) => entry.status === "Running").length, 0);
+  });
+
+  /// A turn whose thread the store has no file for yet is the one row the listing
+  /// would otherwise omit — the read that would have added it has not landed
+  /// yet — so it stands in for itself, marked as the running thread rather than as
+  /// the one on screen.
+  it("marks a running thread the store has no row for yet", () => {
+    const dialog = sessionDialog([], "9f00c0de", "", null, "", {
+      id: "7c8031b1",
+      label: "say hi",
+    });
+    assert.deepEqual(
+      dialog.rows.map((row) => row.value),
+      [NEW_SESSION, CONTINUE_SESSION, "7c8031b1"],
+    );
+    const running = dialog.rows[2];
+    assert.equal(running.label, "say hi", "the title the header shows it under");
+    assert.equal(running.status, "Running");
+    assert.equal(running.tone, "ok");
+    assert.equal(running.current, false, "that thread is not the one on screen");
+    assert.equal(running.button, "", "and there is still no file to delete");
+    assert.equal(dialog.count, 1, "it is a thread the listing holds");
+    assert.equal(dialog.note, "", "so the project is not told it has none");
+
+    // The thread on screen is the run's too when the reader never left it: one
+    // row, marked as the current one, and nothing running elsewhere.
+    const here = sessionDialog([], "9f00c0de", "", { id: "9f00c0de", label: "mine" }, "", {
+      id: "9f00c0de",
+      label: "mine",
+    });
+    assert.equal(here.rows[2].status, "Current");
+    assert.equal(here.rows.filter((row) => row.status === "Running").length, 0);
+  });
+
   it("names a session the way the terminal's picker does", () => {
     const dialog = sessionDialog(sessions, null);
     assert.equal(dialog.rows[2].label, "Create VS Code Extension for Oxide");

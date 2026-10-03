@@ -107,9 +107,16 @@ The window follows a Codex-style layout:
   message — as soon as its turn starts rather than once it ends: the thread the
   window is in stands in for itself in the tree, in that project's session
   count and in the `/sessions` list until the store has written it, keyed by
-  the same id so it is never listed twice. Its row is the window's own while no
+  the same id so it is never listed twice. It is named by the title the window
+  kept beside that id rather than on the turn that gave it, since the thread
+  outlives the turn: a run whose thread was parked (see
+  [Agent turns](#agent-turns)) and opened again is that same row under the same
+  name. Its row is the window's own while no
   file stands behind it, so selecting it leaves the thread on screen as it is
-  and it is offered no `✕` — there is nothing stored to delete. A window with
+  and it is offered no `✕` — there is nothing stored to delete. A turn's own
+  thread is marked on its row wherever the reader is — a spinner beside the
+  title, and a tooltip saying a turn is running in it — since the transcript may
+  be another conversation's (see [Agent turns](#agent-turns)). A window with
   no thread on screen is starting one, so its next message opens a thread of its
   own instead of being appended to whichever thread was used last. The `+` in
   the Projects header
@@ -124,7 +131,10 @@ The window follows a Codex-style layout:
   invitation, the folder and the suggestion buttons it always was.
 - **Top bar** — the open thread's title: the same label its sidebar row shows,
   and a running turn's own summarized title (sent with `agent-start`) before
-  the listing has it. A new task carries no placeholder, and the provider is
+  the listing has it. Beside it, while the reader is in another thread, a strip
+  names the turn still running (`A turn is running in “<title>”`) with a spinner
+  and an **Open** affordance, and the click opens that thread again — the way
+  back to the Queue or Steer it takes. A new task carries no placeholder, and the provider is
   not repeated here because the composer's model chip already names it; the
   right side says only what has to be acted on (`no API key`, `project
   resources off`). The window takes the first mouse press
@@ -158,7 +168,10 @@ The window follows a Codex-style layout:
   fails the check. One
   action sits on the right, which swaps rather than sitting beside a second
   button: **Stop** while a turn runs and there is nothing to say, **Send**
-  beside **Queue**/**Steer** the moment there is. Every
+  beside **Queue**/**Steer** the moment there is — and only **Stop** while that
+  turn is running in a thread this composer is not showing, since a message
+  typed here would be steered into a run whose reply belongs to the
+  conversation being read. Every
   control is wired to a plain `click` — each button, native radio/checkbox,
   sidebar/list row, change card, and attachment thumbnail. The webview owns
   focus, pointer, keyboard, and activation semantics; the page neither
@@ -429,6 +442,47 @@ event channel serializes events with
   selected follow-up or interleaved steering queue, then the composer returns to
   Queue so a later message cannot redirect work accidentally. `Alt+Enter`
   remains a direct Queue shortcut.
+- **Reading another thread while a turn runs** — a turn belongs to the thread
+  it started in and to no other, and that is kept apart from the thread on
+  screen: the run's id and title live in `state.runSession` / `state.runTitle`
+  while `state.session` follows the transcript, so a stored thread opened from
+  the sidebar tree or the `/sessions` list while a turn is going — the review a
+  running turn used to block — can be read without taking the turn over. What is
+  left behind is parked rather than thrown away: the thread's transcript goes
+  off-screen whole, with its change cards, its totals and the folder it belongs
+  to, and coming back is a swap rather than a re-read of a store that is a step
+  behind. A message that has only just been sent is parked under the thread it
+  was composed in while the turn is still learning which thread that is — and
+  under no thread at all when it is starting a new one, which is what the park's
+  `pending` flag says `agent-start` finishes by re-keying it to the id the run
+  reports — so a reader who opens another conversation in that window loses
+  neither the bubble they sent nor the history they were reading. The header then
+  carries a strip naming the running thread (`A turn is running in
+  “<title>”`) and opening it again on the click, the sidebar's row for that
+  thread is marked with a spinner and is a way back to it on its own (a row
+  standing in for a thread the store has not written yet makes the window switch
+  to it rather than read a file that is not there, and is named by the title the
+  turn gave that thread — `state.heldThread`, kept with the thread's id rather
+  than on the run, which is what lets a parked thread opened again keep its
+  name), and the composer's corner
+  offers **Stop**
+  alone, since a message typed into another thread's transcript would be steered
+  into a run whose reply has nowhere here to land (Send says where the turn is
+  and keeps what was typed). Transcript events paint only while the thread on
+  screen is the run's own — a reply written into the transcript it was not
+  started in is the thing this split exists to prevent — while the window's own
+  status line is not the thread's and shows wherever the reader is. Which thread
+  the run takes over is the reader's place to decide and not the run's: a turn's
+  thread is adopted only while both the thread and the folder the message was
+  sent from are still the ones on screen, so a prompt that started a new thread
+  in one folder while the reader opened another — where there is no thread
+  either — is not adopted there, and the reader's own view is left alone. A turn
+  that
+  ends while another thread is on screen files its change card under the thread
+  it changed, which paints it when that thread is opened, rather than dropping a
+  listing about files that really are on disk; the thread a turn is running in
+  is refused the ✕ wherever the reader is, since the run appends to its file as
+  it works.
 - **Notification** — a finished turn raises the same desktop toast the TUI does
   (`oxide_core::notify`, gated by the shared `notifyOnComplete` and
   `notifySound` settings). `turn::notify_finished` names the thread by its
@@ -516,7 +570,12 @@ no thinking rather than offering an answer without any.
 
 Opening a session restores its cumulative `usage_totals()` (input/output tokens
 and cost); live turns update the footer from each `usage` event, including a
-rough context percentage using `config.context_window()`.
+rough context percentage using `config.context_window()`. The percentage is
+worked out where the totals are painted rather than where the event arrived: the
+run's `prompt` count travels with its thread and the window is the one in force on
+screen, so a turn in another folder counts its own tokens while the reader is
+looking at a project with a window of its own, and its gauge is its own again when
+the strip brings its thread back.
 
 ## Themes
 

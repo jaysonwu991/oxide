@@ -1580,6 +1580,78 @@ describe("webview composer", () => {
   });
 });
 
+describe("webview run strip", () => {
+  const run = { sessionId: "s2", title: "Fix the build", running: true };
+
+  it("hides the strip while the run is the thread on screen", () => {
+    const { byId, send } = loadRenderer();
+    send(stateMessage());
+    assert.equal(byId.get("run-strip")!.hidden, true, "nothing to say about another thread");
+    assert.equal(
+      byId.get("run-strip")!.getAttribute("aria-label"),
+      null,
+      "and nothing for a screen reader either",
+    );
+
+    // The reader opened another thread while the turn went on: the strip names
+    // the conversation the running turn owns and is the way back to it.
+    send(stateMessage({ busy: true, status: "Thinking…", run }));
+    assert.equal(byId.get("run-strip")!.hidden, false);
+    assert.equal(byId.get("run-strip-text")!.textContent, "A turn is running in “Fix the build”");
+    assert.equal(byId.get("run-open")!.title, "Open “Fix the build”");
+    assert.equal(byId.get("run-open")!.getAttribute("aria-label"), "Open “Fix the build”");
+    assert.equal(
+      byId.get("run-strip")!.getAttribute("aria-label"),
+      "A turn is running in “Fix the build”. Open it.",
+    );
+
+    // The same thread once its turn is over: it is still not the one on screen,
+    // so the strip stays — the reply is there to be read.
+    send(stateMessage({ run: { ...run, running: false } }));
+    assert.equal(byId.get("run-strip")!.hidden, false);
+    assert.equal(
+      byId.get("run-strip-text")!.textContent,
+      "A turn finished in “Fix the build”",
+    );
+
+    // Opening it clears the strip with the state the host sends alongside.
+    send(stateMessage());
+    assert.equal(byId.get("run-strip")!.hidden, true);
+  });
+
+  it("asks the host for the run's own thread from the strip", () => {
+    const { byId, posted, send } = loadRenderer();
+    send(stateMessage({ busy: true, status: "Thinking…", run }));
+    byId.get("run-open")!.fire("click");
+    assert.deepEqual(last(posted), { k: "control", control: "openRun" });
+  });
+
+  it("offers Stop alone while the run is in another thread", () => {
+    const { byId, send } = loadRenderer();
+    // A message typed here would be steered into the other thread's run and its
+    // answer would land in a conversation nobody is looking at, so the corner
+    // keeps nothing to send: the strip above is where the reader goes instead.
+    send(stateMessage({ busy: true, status: "Thinking…", run }));
+    byId.get("input")!.value = "and also…";
+    byId.get("input")!.fire("input");
+    assert.equal(byId.get("send")!.hidden, true, "nothing typed here is sent");
+    assert.equal(byId.get("stop")!.hidden, false, "Stop is still reachable");
+    assert.equal(
+      byId.get("busy-message-mode")!.hidden,
+      true,
+      "and there is no queue-or-steer choice to make here",
+    );
+
+    // Back in the run's own thread — the strip is gone with it — the corner is
+    // the queue/steer one it always was.
+    send(stateMessage({ busy: true, status: "Thinking…" }));
+    assert.equal(byId.get("send")!.hidden, false);
+    assert.equal(byId.get("send")!.getAttribute("aria-label"), "Queue");
+    assert.equal(byId.get("stop")!.hidden, true);
+    assert.equal(byId.get("busy-message-mode")!.hidden, false);
+  });
+});
+
 describe("webview dialogs", () => {
   /// The two listings the host composes (`src/core/dialogs.ts`): the MCP servers
   /// with the button that turns each one over, and the session history with the

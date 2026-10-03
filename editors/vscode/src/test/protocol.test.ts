@@ -890,6 +890,7 @@ describe("Transcript", () => {
       binary: "/usr/local/bin/oxide",
       showThinking: false,
       footer,
+      run: null,
     });
     assert.equal(state.items.length, 1);
     assert.equal(state.sessionId, "s");
@@ -899,5 +900,42 @@ describe("Transcript", () => {
     assert.deepEqual(state.attachments, [
       { id: 8, label: "shot.png", kind: "image", preview: "data:image/png;base64,AA", detail: "4 B · pasted" },
     ]);
+  });
+
+  /// The controller keeps one `Transcript` per thread and swaps which one the
+  /// panel is painting, so that the conversation a turn is writing into is not the
+  /// one a reader scrolled to. Everything a thread holds — its items, its totals,
+  /// its status — has to live in the object rather than in the controller, or an
+  /// event applied to the run's thread would repaint the one on screen.
+  it("keeps one thread's stream out of another thread's transcript", () => {
+    const run = new Transcript();
+    run.apply({ type: "session", id: "s1" });
+    run.pushUser("fix the build", []);
+    const other = new Transcript();
+    other.apply({ type: "session", id: "s2" });
+    other.replay([{ kind: "user", text: "what did we decide?" }]);
+
+    run.busy = true;
+    run.apply({ type: "message_update", assistantMessageEvent: { type: "text_delta", delta: "on it" } });
+    run.apply({ type: "usage", usage: { input: 12, output: 3, cost: 0.5 } });
+
+    assert.deepEqual(
+      run.items.map((item) => item.kind),
+      ["user", "assistant"],
+      "the run's own thread holds what it streamed",
+    );
+    assert.deepEqual(
+      other.items.map((item) => item.kind),
+      ["user"],
+      "and the thread being read is untouched",
+    );
+    assert.equal(run.sessionId, "s1");
+    assert.equal(other.sessionId, "s2");
+    assert.equal(run.busy, true);
+    assert.equal(other.busy, false, "a phase belongs to the thread it is running in");
+    assert.equal(other.usage.input, 0, "so do the totals");
+    assert.equal(run.usage.input, 12);
+    assert.equal(other.usage.cost, 0);
+    assert.equal(run.usage.cost, 0.5);
   });
 });

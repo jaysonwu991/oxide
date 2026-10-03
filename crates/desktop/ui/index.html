@@ -84,6 +84,14 @@
       <header class="topbar">
         <div class="thread-title" id="thread-title"></div>
         <div class="thread-meta" id="project-meta"></div>
+        <!-- Where the turn on the window is running while the reader is looking
+             at another thread: one line saying which conversation is still
+             working, and the way back to it. -->
+        <button id="run-banner" class="run-banner" type="button" hidden>
+          <span class="spinner" aria-hidden="true"></span>
+          <span id="run-banner-text" class="run-banner-text"></span>
+          <span class="run-banner-open" aria-hidden="true">Open</span>
+        </button>
       </header>
 
       <div id="transcript" class="conversation"></div>
