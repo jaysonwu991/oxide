@@ -88,7 +88,16 @@ into nothing, with its approval and question requests unanswerable.
 
 ## Interface
 
-The window follows a Codex-style layout:
+The window follows a Codex-style layout. Every glyph it draws for itself is
+inline SVG on one grid at one stroke weight — the tree's folder, a document, a
+caret and a check, the mark that signs a reply, `+`, and the remove `✕` — so
+nothing on screen is a character whose shape and size would come from the
+machine's fonts, and every control's words live in its tooltip and its
+`aria-label`, as the extension's do. `check-app.mjs` holds the paths the two
+front-ends share beside the extension's own sources, so chrome drawn one way in
+the panel and another in this window fails the check.
+
+The regions, top to bottom:
 
 - **Sidebar** — **+ New Chat** at the top, opening a thread in the project the
   window is in and, when nothing is open yet, the folder picker that asks which
@@ -100,8 +109,12 @@ The window follows a Codex-style layout:
   half-filled circle, and the same refresh arrow the
   extension's own check carries). The tree groups each project's sessions
   under it, and every project and stored session row carries a `✕` that removes
-  it (see [Multiple projects](#multiple-projects-cross-repo)); hovering a session
-  shows its `⌘1`…`⌘9` shortcut. The active project and the active thread both
+  it (see [Multiple projects](#multiple-projects-cross-repo)) — hidden, like the
+  project's own **New task** `+`, until the row is pointed at or the keyboard is
+  in it, since a tree of rows is not a wall of buttons; a session's `⌘1`…`⌘9`
+  shortcut waits for the same gesture, since it is a reference rather than a
+  label, and the shortcuts dialog is where the list itself is written down. The
+  active project and the active thread both
   carry the accent bar, so which one is on screen reads the same in either
   list, and a thread is listed — under the summarized title of its first
   message — as soon as its turn starts rather than once it ends: the thread the
@@ -140,12 +153,20 @@ The window follows a Codex-style layout:
   resources off`). The window takes the first mouse press
   (`acceptFirstMouse` in `tauri.conf.json`); no AppKit event monitor,
   Objective-C hook, or platform-specific input path is installed.
-- **Conversation** — a centered 760px column. User messages are right-aligned
+- **Conversation** — a centered 780px column, the width the composer and the
+  popovers above it share, so the window's edges line up rather than each row
+  measuring itself. User messages are right-aligned
   bubbles; assistant replies render Markdown and links open in the system
   browser (see [Rendering](#rendering)). Tool calls are compact cards
-  showing the call (e.g. `bash cargo test --all`); they expand automatically for
-  diffs and errors and can be clicked open/closed. `write`/`edit` results get a
-  colored diff.
+  showing the call (e.g. `bash cargo test --all`) — a finished call is a line of
+  the transcript rather than a box around it, so a long run reads as a log, and
+  only the card still being written and the one that failed keep a surface, each
+  carrying its state on its left edge (accent, error) with the reply's own text
+  above the dimmer output below it. They expand automatically for
+  diffs and errors and can be clicked open/closed — a card wears the fold caret
+  only once it has output behind it, so a card showing everything it printed
+  stays the text it looks like instead of offering a fold that does nothing, and
+  `write`/`edit` results get a colored diff.
 - **Composer** — a floating rounded box whose project chip names the folder the
   message will run in and whose whole rest is icon-first, the
   way the VS Code panel's is: the attach paperclip, the model, the thinking
@@ -165,7 +186,10 @@ The window follows a Codex-style layout:
   power switch, the model's cube, the thinking sparkles and the trust shield —
   are the same paths in both, which `check-app.mjs` holds beside the
   extension's own sources so a control drawn one way here and another there
-  fails the check. One
+  fails the check. The box itself says whether it is holding something: its
+  border lifts while a message or a chip is in it, and only the caret being in it
+  brings the accent ring, so the message being typed reads apart from one that is
+  waiting for a turn. One
   action sits on the right, which swaps rather than sitting beside a second
   button: **Stop** while a turn runs and there is nothing to say, **Send**
   beside **Queue**/**Steer** the moment there is — and only **Stop** while that

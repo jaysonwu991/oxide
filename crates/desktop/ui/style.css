@@ -1,10 +1,10 @@
 :root {
   --bg: #1c1c1c;
-  --sidebar: #131313;
-  --panel: #202020;
-  --panel-2: #2a2a2a;
-  --panel-3: #303030;
-  --border: #303030;
+  --sidebar: #161616;
+  --panel: #212121;
+  --panel-2: #262626;
+  --panel-3: #2d2d2d;
+  --border: #2b2b2b;
   --text: #ededed;
   --dim: #9a9a9a;
   --faint: #6f6f6f;
@@ -16,7 +16,7 @@
   --info: #9a9a9a;
   --user: #a9c7ff;
   --assistant: #ededed;
-  --radius: 12px;
+  --radius: 14px;
 }
 
 * { box-sizing: border-box; }
@@ -67,6 +67,23 @@ input, textarea {
   padding: 8px 10px;
 }
 input:focus, textarea:focus { outline: none; border-color: var(--dim); }
+
+/* ---------- glyphs ---------- */
+
+/* Every icon the window draws is an inline SVG (`ICONS` in `app.js`), so a
+   control's drawing does not depend on the machine's fonts. Each is sized here,
+   beside the box it sits in, and the marks inside one are `currentColor`. */
+.welcome-mark svg { display: block; width: 34px; height: 34px; }
+.label-mark svg { display: block; width: 10px; height: 10px; }
+.label-mark { display: inline-flex; color: var(--accent); }
+.project-item .icon svg { display: block; width: 15px; height: 15px; }
+.row-add svg { display: block; width: 12px; height: 12px; }
+.row-remove svg { display: block; width: 13px; height: 13px; }
+.attachment .att-file svg { display: block; width: 18px; height: 18px; }
+.attachment .att-remove svg { display: block; width: 11px; height: 11px; }
+.changes-icon svg { display: block; width: 14px; height: 14px; }
+.change-chev svg, .changes-caret svg { display: block; width: 12px; height: 12px; }
+.reasoning-option-check svg, .theme-option-check svg { display: block; width: 14px; height: 14px; }
 
 /* ---------- sidebar ---------- */
 
@@ -314,14 +331,14 @@ body.resizing { cursor: col-resize; user-select: none; }
 .conversation {
   flex: 1;
   overflow-y: auto;
-  padding: 28px 20px 8px;
+  padding: 34px 22px 10px;
   display: flex;
   flex-direction: column;
-  gap: 18px;
+  gap: 22px;
 }
 
 .welcome { margin: auto; text-align: center; max-width: 560px; }
-.welcome-mark { font-size: 34px; color: var(--accent); margin-bottom: 14px; }
+.welcome-mark { color: var(--accent); margin-bottom: 14px; }
 .welcome h1 { font-size: 24px; font-weight: 600; margin: 0 0 8px; }
 .welcome p { color: var(--dim); margin: 0 0 22px; word-break: break-all; }
 .suggestions { display: flex; flex-wrap: wrap; gap: 8px; justify-content: center; }
@@ -371,10 +388,10 @@ body.resizing { cursor: col-resize; user-select: none; }
 
 .empty { color: var(--dim); margin: auto; }
 
-.msg { max-width: 760px; width: 100%; margin: 0 auto; }
-.msg.user { align-self: flex-end; max-width: 78%; background: var(--panel-2); border-radius: 14px; padding: 10px 14px; }
+.msg { max-width: 780px; width: 100%; margin: 0 auto; }
+.msg.user { align-self: flex-end; max-width: 78%; background: var(--panel-2); border-radius: 16px; padding: 11px 15px; }
 .msg.user .label { display: none; }
-.msg.assistant .label { color: var(--dim); font-size: 11.5px; margin-bottom: 5px; }
+.msg.assistant .label { display: inline-flex; align-items: center; gap: 6px; color: var(--dim); font-size: 11.5px; margin-bottom: 7px; }
 .msg .body { word-break: break-word; }
 .msg.user .body { white-space: pre-wrap; }
 .msg .body :is(h1, h2, h3, h4, h5, h6) { margin: 14px 0 6px; line-height: 1.3; }
@@ -412,24 +429,39 @@ body.resizing { cursor: col-resize; user-select: none; }
 .tok-number { color: var(--tool); }
 .tok-comment { color: var(--faint); font-style: italic; }
 
+/* A finished call is a line of the transcript rather than a box around it: a
+   long run reads as a log of what happened. Only a card that is still being
+   written, or one that failed and is worth a look, wears a surface — with the
+   state on its left edge, the way the panel's own cards carry it. */
 .tool {
-  max-width: 760px;
+  max-width: 780px;
   width: 100%;
   margin: 0 auto;
-  background: var(--tool-bg);
-  border: 1px solid var(--border);
+  background: none;
+  border: none;
   border-radius: 12px;
-  padding: 9px 12px;
+  padding: 4px 0;
   font-size: 12.5px;
 }
-.tool.running { border-color: var(--dim); }
-.tool .thead { display: flex; align-items: center; gap: 8px; color: var(--text); font-weight: 500; cursor: pointer; }
+.tool.running, .tool.error { padding: 9px 12px; background: var(--tool-bg); }
+.tool.running { box-shadow: inset 2px 0 0 var(--accent); }
+.tool.error { box-shadow: inset 2px 0 0 var(--error); }
+.tool .thead { display: flex; align-items: center; gap: 8px; color: var(--text); font-weight: 500; }
+/* A caret is drawn only on a header that opens something, so a card showing
+   everything it has does not offer a fold that does nothing — and the pointer
+   follows the caret, since a header with nothing behind it is text. The space
+   is reserved either way, so a card's name does not move when it finishes and
+   the caret appears. It is the change card's own caret, turned to its row
+   rather than left pointing down. */
+.tool .tool-caret { flex: none; display: inline-flex; color: var(--faint); visibility: hidden; transform: rotate(-90deg); transition: transform 0.1s; }
+.tool .tool-caret svg { display: block; width: 11px; height: 11px; }
+.tool.foldable .thead { cursor: pointer; }
+.tool.foldable .tool-caret { visibility: visible; }
+.tool.expanded .tool-caret { transform: rotate(0deg); }
 .tool .thead .tname { flex: none; }
 .tool .thead .targ { flex: 1 1 auto; min-width: 0; color: var(--faint); font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 11.5px; font-weight: 400; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .tool .thead .tstate { flex: none; display: inline-flex; align-items: center; gap: 5px; color: var(--faint); font-size: 11px; font-weight: 400; }
 .tool.error .tstate { color: var(--error); }
-.tool .thead::before { content: "▸"; color: var(--faint); font-size: 10px; transition: transform 0.1s; }
-.tool.expanded .thead::before { transform: rotate(90deg); }
 .tool.error .thead { color: var(--error); }
 .spinner { width: 10px; height: 10px; flex: none; border: 1.5px solid var(--faint); border-top-color: transparent; border-radius: 50%; animation: spin 0.7s linear infinite; }
 @keyframes spin { to { transform: rotate(360deg); } }
@@ -459,12 +491,12 @@ body.resizing { cursor: col-resize; user-select: none; }
 
 .changes {
   flex: none;
-  max-width: 760px;
+  max-width: 780px;
   width: 100%;
   margin: 10px auto 0;
-  background: var(--tool-bg);
+  background: var(--panel);
   border: 1px solid var(--border);
-  border-radius: 12px;
+  border-radius: 14px;
   overflow: hidden;
   font-size: 12.5px;
 }
@@ -482,7 +514,7 @@ body.resizing { cursor: col-resize; user-select: none; }
   background: var(--panel-2);
   color: var(--dim);
 }
-.changes-caret { flex: none; color: var(--faint); font-size: 10px; transition: transform 0.1s; }
+.changes-caret { flex: none; color: var(--faint); transition: transform 0.1s; }
 .changes.collapsed .changes-caret { transform: rotate(-90deg); }
 .changes-title { flex: none; color: var(--text); font-weight: 500; }
 .changes-total { flex: none; display: inline-flex; gap: 6px; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 11.5px; }
@@ -539,8 +571,10 @@ body.resizing { cursor: col-resize; user-select: none; }
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
   font-size: 11px;
 }
-.change-chev { flex: none; color: var(--faint); font-size: 10px; transition: transform 0.1s; }
-.change-row.open .change-chev { transform: rotate(90deg); }
+/* The caret is drawn pointing down, so a row that is closed turns it to the
+   right and one that is open leaves it as it is. */
+.change-chev { flex: none; color: var(--faint); transition: transform 0.1s; transform: rotate(-90deg); }
+.change-row.open .change-chev { transform: rotate(0deg); }
 .change-diff { background: var(--bg); padding: 2px 12px 8px; }
 .change-diff .diff { margin-top: 0; border-top: 0; padding-top: 0; }
 .change-diff .diff pre { max-height: 320px; }
@@ -645,7 +679,7 @@ body.resizing { cursor: col-resize; user-select: none; }
 .review-note { color: var(--faint); font-size: 12px; }
 
 .thinking {
-  max-width: 760px;
+  max-width: 780px;
   width: 100%;
   margin: 0 auto;
   color: var(--faint);
@@ -655,16 +689,24 @@ body.resizing { cursor: col-resize; user-select: none; }
 
 /* ---------- composer ---------- */
 
-.composer-wrap { padding: 12px 20px 8px; }
+.composer-wrap { padding: 14px 22px 10px; }
 .composer {
-  max-width: 760px;
+  max-width: 780px;
   margin: 0 auto;
   background: var(--panel);
   border: 1px solid var(--border);
   border-radius: 16px;
   padding: 10px 12px;
+  transition: border-color 0.15s, box-shadow 0.15s;
 }
-.composer:focus-within { border-color: var(--dim); }
+/* The box that holds what is about to be sent says so: a border lift while it
+   has text or an attachment in it, and the accent ring only while the caret is
+   in it, so a message waiting for a turn reads apart from the one being typed. */
+.composer.filled { border-color: color-mix(in srgb, var(--dim) 40%, transparent); }
+.composer:focus-within {
+  border-color: color-mix(in srgb, var(--accent) 45%, transparent);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 10%, transparent);
+}
 .composer textarea {
   width: 100%;
   border: none;
@@ -721,7 +763,7 @@ body.resizing { cursor: col-resize; user-select: none; }
   justify-content: center;
   border-radius: 7px;
   background: var(--panel-3);
-  font-size: 18px;
+  color: var(--dim);
 }
 .attachment .att-name {
   font-size: 11.5px;
@@ -875,7 +917,7 @@ body.resizing { cursor: col-resize; user-select: none; }
 .send.enabled:hover { filter: brightness(1.15); }
 
 #status {
-  max-width: 760px;
+  max-width: 780px;
   margin: 6px auto 0;
   padding: 0 4px;
   color: var(--faint);
@@ -1092,8 +1134,6 @@ body.resizing { cursor: col-resize; user-select: none; }
   top: 50%;
   transform: translateY(-50%);
   color: var(--accent);
-  font-size: 14px;
-  line-height: 1;
 }
 
 .theme-list { display: flex; flex-direction: column; gap: 6px; }
@@ -1143,8 +1183,6 @@ body.resizing { cursor: col-resize; user-select: none; }
   top: 50%;
   transform: translateY(-50%);
   color: var(--accent);
-  font-size: 14px;
-  line-height: 1;
 }
 .theme-empty { color: var(--faint); font-size: 12.5px; padding: 6px 2px; }
 
@@ -1233,7 +1271,13 @@ body.resizing { cursor: col-resize; user-select: none; }
    mark sits in the row's indent gutter, clear of the shortcut and the ✕. */
 .session-item .session-run { position: absolute; left: 14px; top: 50%; transform: translateY(-50%); display: flex; align-items: center; }
 .session-item .session-run .spinner { border-color: var(--accent); border-top-color: transparent; }
-.session-item .shortcut { color: var(--faint); font-size: 10px; margin-left: auto; font-family: ui-monospace; }
+.session-item .shortcut { color: var(--faint); font-size: 10px; margin-left: auto; font-family: ui-monospace; opacity: 0; transition: opacity 0.12s; }
+/* The shortcut is a reference rather than a label, so it waits until the row is
+   pointed at; the cell it takes is reserved either way (the row's `.name` is
+   the flexible one), so nothing shifts when it appears. The help dialog is
+   where the list itself is written down. */
+.session-item:hover .shortcut,
+.session-item:focus-within .shortcut { opacity: 1; }
 .session-item .name { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
 .row-add {
@@ -1251,11 +1295,10 @@ body.resizing { cursor: col-resize; user-select: none; }
   border-radius: 5px;
   background: transparent;
   color: var(--faint);
-  font-size: 12px;
   line-height: 1;
   cursor: pointer;
-  opacity: 0.4;
-  transition: opacity 0.15s, background 0.15s, color 0.15s;
+  opacity: 0;
+  transition: opacity 0.12s, background 0.12s, color 0.12s;
 }
 .row-add:hover { opacity: 1; background: var(--panel-3); color: var(--accent); }
 
@@ -1274,16 +1317,23 @@ body.resizing { cursor: col-resize; user-select: none; }
   border-radius: 5px;
   background: transparent;
   color: var(--faint);
-  font-size: 11px;
   line-height: 1;
   cursor: pointer;
-  opacity: 0.4;
-  transition: opacity 0.15s, background 0.15s, color 0.15s;
+  opacity: 0;
+  transition: opacity 0.12s, background 0.12s, color 0.12s;
 }
 .row-remove:hover { opacity: 1; background: var(--panel-3); color: var(--error); }
+/* A row's own controls are drawn only while the row is pointed at, or while one
+   of them holds the keyboard: the sidebar reads as a list of names rather than
+   a column of buttons, and the room they take is reserved either way — the
+   row's own right padding — so nothing moves when they appear. A row that is
+   being read keeps its ✕ in the tab order, where `:focus-within` reveals it. */
 .project-item:hover .row-remove,
 .project-item:hover .row-add,
-.session-item:hover .row-remove { opacity: 1; }
+.project-item:focus-within .row-remove,
+.project-item:focus-within .row-add,
+.session-item:hover .row-remove,
+.session-item:focus-within .row-remove { opacity: 1; }
 
 /* ---------- composer popovers ---------- */
 
@@ -1295,7 +1345,7 @@ body.resizing { cursor: col-resize; user-select: none; }
 .popover {
   display: flex;
   flex-direction: column;
-  max-width: 760px;
+  max-width: 780px;
   margin: 0 auto 8px;
   max-height: min(52vh, 460px);
   min-height: 0;

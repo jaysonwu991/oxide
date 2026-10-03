@@ -34,6 +34,55 @@ const SUGGESTIONS = [
   "Review the working tree changes and summarize the risks.",
 ];
 
+// ---------- glyphs ----------
+
+/// Every icon the window draws: inline SVG on a 24-unit grid, stroked with
+/// `currentColor` in one weight, so a control's glyph is the same drawing on
+/// every machine. A character is not one — a `✕`, a `📁` or a `＋` is whatever
+/// shape and size the machine's own font gives it, which is how the composer's
+/// stroked paperclip ended up beside an emoji folder. The ones this window
+/// shares with the VS Code panel are the panel's own paths, held to them by
+/// `check-app.mjs`.
+function glyph(paths, box = 24) {
+  return `<svg viewBox="0 0 ${box} ${box}" aria-hidden="true">${paths}</svg>`;
+}
+
+// The two weights the grid is drawn at: a 24-unit box for a glyph that fills
+// its button, a 16-unit one for the marks that sit on a text baseline.
+const STROKE_24 =
+  'fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"';
+const STROKE_16 =
+  'fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"';
+
+/// Sizing is the sheet's, next to the box each glyph is drawn in.
+const ICONS = {
+  // A project's folder and a document the webview cannot paint: the two drawn
+  // for this window alone, in the composer's own style.
+  folder: glyph(
+    `<path d="M20.2 19.4a1.8 1.8 0 0 0 1.8-1.8v-8a1.8 1.8 0 0 0-1.8-1.8h-7.9a1.8 1.8 0 0 1-1.5-.8l-.9-1.4a1.8 1.8 0 0 0-1.5-.8H3.8A1.8 1.8 0 0 0 2 6.6v11a1.8 1.8 0 0 0 1.8 1.8Z" ${STROKE_24}/>`,
+  ),
+  file: glyph(
+    `<path d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8z" ${STROKE_24}/>` +
+      `<path d="M14 3v5h5" ${STROKE_24}/>`,
+  ),
+  close: glyph(`<path d="M18 6 6 18M6 6l12 12" ${STROKE_24}/>`),
+  plus: glyph('<path d="M8 3.6v8.8M3.6 8h8.8" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>', 16),
+  check: glyph('<path d="m5.6 8 1.5 1.5 3.5-3.5" ' + STROKE_16 + '/>', 16),
+  caret: glyph(`<path d="M5.5 8.6 12 14.8l6.5-6.2" ${STROKE_24}/>`),
+  power: glyph(
+    '<path d="M18.36 6.64a9 9 0 1 1-12.73 0" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/>' +
+      '<path d="M12 2v10" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/>',
+  ),
+  mark: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 2.4 21.6 12 12 21.6 2.4 12Z" fill="currentColor"/></svg>',
+};
+
+/// The check a chosen row wears, or nothing at all on a row that is not the one
+/// in use: a picker repaints its rows in place, so what it draws is replaced
+/// rather than added to.
+function setCheck(node, on) {
+  node.innerHTML = on ? ICONS.check : "";
+}
+
 const state = {
   projects: [],
   project: null,
@@ -641,7 +690,7 @@ function renderWelcome() {
   welcome.className = "welcome";
   const mark = document.createElement("div");
   mark.className = "welcome-mark";
-  mark.textContent = "◆";
+  mark.innerHTML = ICONS.mark;
   const title = document.createElement("h1");
   title.textContent = "What should we build?";
   const hint = document.createElement("p");
@@ -1106,9 +1155,7 @@ async function newChatFromSidebar() {
 function bubble(kind, text, attachments = []) {
   const wrap = document.createElement("div");
   wrap.className = `msg ${kind}`;
-  const label = document.createElement("div");
-  label.className = "label";
-  label.textContent = kind === "user" ? "you" : "◆ Oxide";
+  const label = speakerLabel(kind);
   const body = document.createElement("div");
   body.className = "body";
   body.innerHTML = kind === "assistant" ? renderMarkdown(text) : escapeHtml(text);
@@ -1123,6 +1170,27 @@ function bubble(kind, text, attachments = []) {
   }
   wrap.append(label, body);
   return wrap;
+}
+
+/// The speaker line a message carries. The assistant's is the app's own mark
+/// beside its name, drawn rather than typed, so the transcript names the
+/// speaker the way the home state's mark does — and a `user` label is left to
+/// the sheet, which hides it.
+function speakerLabel(kind) {
+  const label = document.createElement("div");
+  label.className = "label";
+  if (kind !== "assistant") {
+    label.textContent = "you";
+    return label;
+  }
+  const mark = document.createElement("span");
+  mark.className = "label-mark";
+  mark.setAttribute("aria-hidden", "true");
+  mark.innerHTML = ICONS.mark;
+  const name = document.createElement("span");
+  name.textContent = "Oxide";
+  label.append(mark, name);
+  return label;
 }
 
 /// Scrolls a transcript to its newest line. The one on screen unless a caller
@@ -1176,6 +1244,7 @@ function updateSendState() {
   const here = viewingRun();
   const hasBusyMessage = state.busy && hasText && here;
   const mode = el("busy-message-mode");
+  el("composer").classList.toggle("filled", hasText);
   el("send").classList.toggle("enabled", hasText);
   el("send").disabled = !hasText;
   el("send").hidden = state.busy && (!hasText || !here);
@@ -1578,7 +1647,7 @@ function renderAttachments() {
     } else {
       const icon = document.createElement("div");
       icon.className = "att-file";
-      icon.textContent = "📄";
+      icon.innerHTML = ICONS.file;
       chip.appendChild(icon);
     }
     const label = document.createElement("div");
@@ -1587,7 +1656,7 @@ function renderAttachments() {
     chip.appendChild(label);
     const remove = document.createElement("button");
     remove.className = "att-remove";
-    remove.textContent = "×";
+    remove.innerHTML = ICONS.close;
     remove.title = "Remove attachment";
     remove.onclick = () => {
       state.attachments.splice(index, 1);
@@ -1798,9 +1867,7 @@ function ensureAssistant() {
   if (state.currentAssistant) return state.currentAssistant;
   const wrap = document.createElement("div");
   wrap.className = "msg assistant";
-  const label = document.createElement("div");
-  label.className = "label";
-  label.textContent = "◆ Oxide";
+  const label = speakerLabel("assistant");
   const body = document.createElement("div");
   body.className = "body";
   wrap.append(label, body);
@@ -1897,6 +1964,12 @@ function createToolCard(name, args) {
   block.className = "tool running";
   const head = document.createElement("div");
   head.className = "thead";
+  // The caret the card folds by: the same drawing the change card and its rows
+  // fold by, shown once the card has output behind it (`.foldable`).
+  const caret = document.createElement("span");
+  caret.className = "tool-caret";
+  caret.setAttribute("aria-hidden", "true");
+  caret.innerHTML = ICONS.caret;
   const tname = document.createElement("span");
   tname.className = "tname";
   tname.textContent = name;
@@ -1908,7 +1981,7 @@ function createToolCard(name, args) {
   const tstate = document.createElement("span");
   tstate.className = "tstate";
   tstate.innerHTML = '<span class="spinner"></span>running';
-  head.append(tname, targ, tstate);
+  head.append(caret, tname, targ, tstate);
   const pre = document.createElement("pre");
   pre.className = "tbody";
   const hint = document.createElement("div");
@@ -2044,9 +2117,11 @@ function paintTool(tool) {
 
 /// A card's two handles are buttons only while it has output to fold: once
 /// marked, they are reachable with Tab and toggle with Enter or Space, and a
-/// card that shows everything it has stays the text it looks like. A card can
-/// only gain output to fold, so the marks are never taken back.
+/// card that shows everything it has stays the text it looks like — which is
+/// what `foldable` draws, the caret and the pointer both. A card can only gain
+/// output to fold, so the marks are never taken back.
 function markToolToggle(tool, expandable) {
+  if (expandable) tool.block.classList.add("foldable");
   for (const toggle of [tool.head, tool.hint]) {
     toggle.tabIndex = expandable ? 0 : -1;
     if (!expandable) continue;
@@ -2179,7 +2254,7 @@ function changeRow(file) {
     statusBadge(file.status) +
     `<span class="change-path">${escapeHtml(file.path)}</span>` +
     `<span class="change-stats">${file.binary ? "binary" : statsHtml(file.added, file.removed) || "no line changes"}</span>` +
-    `<span class="change-chev">▸</span>`;
+    `<span class="change-chev">${ICONS.caret}</span>`;
   row.onclick = () => toggleChangeDiff(row, file);
   return row;
 }
@@ -2210,13 +2285,10 @@ function changesCard(card) {
   const icon = document.createElement("span");
   icon.className = "changes-icon";
   icon.setAttribute("aria-hidden", "true");
-  icon.innerHTML =
-    '<svg viewBox="0 0 24 24" width="14" height="14" aria-hidden="true">' +
-    '<path d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8z" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/>' +
-    '<path d="M14 3v5h5" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>';
+  icon.innerHTML = ICONS.file;
   const caret = document.createElement("span");
   caret.className = "changes-caret";
-  caret.textContent = "▾";
+  caret.innerHTML = ICONS.caret;
   const title = document.createElement("span");
   title.className = "changes-title";
   const total = document.createElement("span");
@@ -3111,7 +3183,7 @@ function renderReasoning() {
 
     const check = document.createElement("span");
     check.className = "reasoning-option-check";
-    check.textContent = current ? "✓" : "";
+    setCheck(check, current);
     check.setAttribute("aria-hidden", "true");
     row.appendChild(check);
 
@@ -3182,7 +3254,7 @@ function renderThemes(entries, current) {
 
     const check = document.createElement("span");
     check.className = "theme-option-check";
-    check.textContent = name === current ? "✓" : "";
+    setCheck(check, name === current);
     row.appendChild(check);
 
     row.onclick = () => selectTheme(name, row);
@@ -3199,7 +3271,7 @@ async function selectTheme(name, row) {
       const isActive = node === row;
       node.classList.toggle("active", isActive);
       const check = node.querySelector(".theme-option-check");
-      if (check) check.textContent = isActive ? "✓" : "";
+      if (check) setCheck(check, isActive);
     }
   } catch (error) {
     setStatus(`Theme failed: ${error}`);
@@ -3617,14 +3689,6 @@ function mono(value) {
 }
 
 // ---------- MCP servers ----------
-
-/// The one icon the app builds in JavaScript: the power switch beside a server,
-/// which no character renders the same way everywhere. The popover's Recheck and
-/// Close are in `index.html`, and every other button is words.
-const ICONS = {
-  power:
-    '<svg viewBox="0 0 24 24" width="14" height="14" aria-hidden="true"><path d="M18.36 6.64a9 9 0 1 1-12.73 0" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/><path d="M12 2v10" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>',
-};
 
 /// The servers this project loads, with the state the core reports: the same
 /// listing `oxide mcp list` prints and the terminal's `/mcps` shows.
@@ -4892,7 +4956,7 @@ async function renderProjectsTree() {
     
     const icon = document.createElement("div");
     icon.className = "icon";
-    icon.textContent = "📁";
+    icon.innerHTML = ICONS.folder;
     projectItem.appendChild(icon);
     
     const name = document.createElement("div");
@@ -4910,7 +4974,7 @@ async function renderProjectsTree() {
     newTaskBtn.type = "button";
     newTaskBtn.className = "row-add";
     newTaskBtn.title = `New task in ${project.name}`;
-    newTaskBtn.textContent = "＋";
+    newTaskBtn.innerHTML = ICONS.plus;
     newTaskBtn.onclick = (event) => {
       event.stopPropagation();
       newTaskIn(project);
@@ -4923,7 +4987,7 @@ async function renderProjectsTree() {
     removeProjectBtn.title = project.registered
       ? "Remove or delete project…"
       : "Delete project…";
-    removeProjectBtn.textContent = "✕";
+    removeProjectBtn.innerHTML = ICONS.close;
     removeProjectBtn.onclick = (event) => {
       event.stopPropagation();
       removeProject(project);
@@ -4984,7 +5048,7 @@ async function renderProjectsTree() {
         removeSessionBtn.type = "button";
         removeSessionBtn.className = "row-remove";
         removeSessionBtn.title = "Delete thread";
-        removeSessionBtn.textContent = "✕";
+        removeSessionBtn.innerHTML = ICONS.close;
         removeSessionBtn.onclick = (event) => {
           event.stopPropagation();
           removeSession(session);
