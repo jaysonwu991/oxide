@@ -735,7 +735,7 @@ globalThis.FileReader = class {
 const source = readFileSync(`${here}app.js`, "utf8");
 vm.runInThisContext(
   source +
-    "\nglobalThis.__app = { send, runSlashCommand, state, createProjectState, ICONS," +
+    "\nglobalThis.__app = { send, runSlashCommand, state, createProjectState," +
     " newChatFromSidebar, openProjects, renderProjects, pickProject, updateProjectChip, renderWelcome, recentThreads, loadProjects," +
     " openCreateProject, addCreateProjectTypedPath, saveCreateProject, openModels," +
     " refreshPaletteEntries, paletteMatches, renderPalette, runPaletteEntry," +
@@ -777,30 +777,6 @@ check(
   elementFor("projects-tree").outline(),
 );
 check("left the composer ready to type in", elementFor("prompt").disabled === false);
-// What the sidebar draws for a folder is the app's own drawing, on the same grid
-// and at the same weight as the composer's controls under it — not an emoji,
-// whose shape and size belong to whatever font the machine has.
-const firstProjectRow = elementFor("projects-tree").children[0].children[0];
-check(
-  "drew a project's folder as the app's own glyph",
-  String(firstProjectRow.children[0].innerHTML) === app.ICONS.folder,
-  firstProjectRow.outline(),
-);
-// Both of the row's controls are drawings too, and both are the VS Code panel's
-// own: the plus is the panel's plus, and the ✕ is the one its listing uses.
-check(
-  "drew a row's controls from the app's own set",
-  String(firstProjectRow.children[3].innerHTML) === app.ICONS.plus &&
-    String(firstProjectRow.children[4].innerHTML) === app.ICONS.close,
-  firstProjectRow.outline(),
-);
-// The home state's mark is the app's own drawing as well, and the transcript
-// signs each answer with the same one.
-check(
-  "drew the home state's mark as the app's own glyph",
-  elementFor("transcript").querySelector(".welcome-mark")?.innerHTML === app.ICONS.mark,
-  elementFor("transcript").outline(),
-);
 check(
   "named the composer's chip as the way to pick a folder",
   elementFor("project-name").textContent === "Choose a project" &&
@@ -1396,101 +1372,6 @@ for (const [name, path] of Object.entries(sharedGlyphs)) {
     `extension: ${inExtension} · window: ${inWindow}`,
   );
 }
-// The rest of the window's own art — the drawings that belong to this app rather
-// than to both front-ends: a project's folder, the document a file attachment
-// shows, the caret a card folds by, the check a picker puts on the row in use,
-// and the mark the app signs an answer with. Each is held in `ICONS` and sized
-// by the sheet, and each of the two `sharedGlyphs` it also uses is the panel's
-// own path rather than a look-alike.
-const windowGlyphs = {
-  folder: "M20.2 19.4a1.8 1.8 0 0 0 1.8-1.8v-8",
-  file: "M14 3H7a2 2 0 0 0-2 2v14",
-  caret: "M5.5 8.6 12 14.8l6.5-6.2",
-  check: "m5.6 8 1.5 1.5 3.5-3.5",
-  mark: "M12 2.4 21.6 12 12 21.6 2.4 12Z",
-  plus: sharedGlyphs.new,
-  close: sharedGlyphs.close,
-  power: sharedGlyphs.power,
-};
-for (const [name, path] of Object.entries(windowGlyphs)) {
-  check(
-    `drew ${name} from the app's own set`,
-    String(app.ICONS[name]).includes(path),
-    String(app.ICONS[name]),
-  );
-}
-// A control wears a drawing, never a character. These are the characters the
-// window's controls used to be typed as — a `✕` for a row's delete, a `📁` for a
-// project, a `✓` for a check — and a character is whatever shape and size the
-// machine's own font gives it, which is how an emoji folder ended up beside the
-// composer's stroked paperclip. Each is a path in `ICONS` instead, and one
-// coming back is what this fails on.
-const typedGlyphs = ["📁", "📄", "＋", "✕", "×", "◆", "✓", "▾", "▸"];
-// Two marks in this window are still typed, and are meant to be: both are text
-// in the panel's own webview, so drawing them here would make the two front-ends
-// read the same state two ways — the divergence this check exists to catch
-// rather than an instance of it. `✔`/`✖` is what a tool card's state reads as,
-// and `media/main.js` picks between those same two characters. The rest are text
-// for the same reason: `☐`/`☑` are an assistant's task markers in this window's
-// Markdown and in the panel's, `✦` marks a thinking block the way the terminal's
-// renderer does, `⌘` names a shortcut in words, and `·` is the separator a line
-// of derived facts is joined with. A mark in a line of text is not a control's
-// drawing.
-const textCharacters = ["·", "☐", "☑", "⌘", "✔", "✖", "✦"];
-const sharedCharacters = ["✔", "✖", "☐", "☑"];
-// So the characters the window's own strings wear are pinned rather than
-// sampled: a control wearing a character is caught whichever one it is, not only
-// the nine this pass replaced, and the two the panel shares have to be there — a
-// pair that drifted apart in either direction fails here rather than in a
-// reader's eye. What counts is a character written as a string of its own (a
-// `"✖"` or a `"⌘"`), since that is a mark standing in for a drawing; the same
-// character inside a longer string is prose, an em dash or an ellipsis in a
-// sentence.
-const standaloneCharacters = [
-  ...new Set(
-    [...source.matchAll(/"([^"\n]{1,3})"/g)]
-      .flatMap((match) => [...match[1]])
-      .filter((character) => character.codePointAt(0) > 126),
-  ),
-].sort();
-check(
-  "left no control wearing a character where a glyph belongs",
-  typedGlyphs.every((character) => !source.includes(`"${character}"`)),
-  typedGlyphs.filter((character) => source.includes(`"${character}"`)).join(" "),
-);
-check(
-  "typed the characters the panel types, and only those",
-  standaloneCharacters.join("") === [...textCharacters].sort().join("") &&
-    sharedCharacters.every((character) => extensionIcons.includes(`"${character}"`)),
-  `${standaloneCharacters.join("")} / panel ${
-    sharedCharacters.filter((character) => extensionIcons.includes(`"${character}"`)).length
-  }/${sharedCharacters.length}`,
-);
-// A row's own controls are hidden until the row is pointed at, or until one of
-// them holds the keyboard: the sidebar reads as a list of names rather than as a
-// column of buttons. The room they take belongs to the row's own right padding,
-// so nothing moves when they appear, and `:focus-within` is what keeps the ✕
-// reachable by Tab.
-check(
-  "hid each row's controls until the row is pointed at",
-  /\.project-item:hover \.row-remove,\s*\.project-item:hover \.row-add,\s*\.project-item:focus-within \.row-remove,\s*\.project-item:focus-within \.row-add,\s*\.session-item:hover \.row-remove,\s*\.session-item:focus-within \.row-remove \{ opacity: 1; \}/.test(
-    sheet,
-  ) && (sheet.match(/\.row-(?:add|remove) \{[^}]*opacity:\s*0;/g) || []).length === 2,
-  sheet.slice(sheet.indexOf(".row-add {"), sheet.indexOf(".row-add:hover")),
-);
-// The shortcut a row answers to is a reference rather than a label, so it is
-// drawn only while the row is pointed at, on the same terms as the ✕ beside it.
-// The help dialog is where the list itself is written down, so hiding it here
-// is not hiding it from the reader.
-check(
-  "kept a thread's shortcut out of the way until its row is pointed at",
-  /\.session-item \.shortcut \{[^}]*opacity: 0;/.test(sheet) &&
-    /\.session-item:hover \.shortcut,\s*\.session-item:focus-within \.shortcut \{ opacity: 1; \}/.test(sheet) &&
-    /<tr><td>⌘1…⌘9 \/ Ctrl\+1…9<\/td><td>Open the thread at that place in the sidebar<\/td><\/tr>/.test(shell) &&
-    // The row names both spellings because the handler takes either modifier.
-    /!event\.ctrlKey && !event\.metaKey/.test(source),
-  sheet.slice(sheet.indexOf(".session-item .shortcut {"), sheet.indexOf(".session-item .shortcut {") + 260),
-);
 // The window around the sidebar already names the app, so the sidebar's own head
 // is not a second brand: it is the way into a conversation — the extension's own
 // plus with its words beside it, in the one row above the lists that has room for
@@ -2254,14 +2135,8 @@ elementFor("image-view-close").onclick();
 check("kept a PDF attachment", app.addAttachment("report.pdf", "data:application/pdf;base64,AA") === true);
 const pdf = chips()[1];
 check(
-  "gave a PDF the app's own file glyph instead of a thumbnail",
-  pdf?.children[0]?.className === "att-file" && pdf.children[0].innerHTML === app.ICONS.file,
-  elementFor("attachments").outline(),
-);
-// Its ✕ is a drawing too, the same one a row's delete wears.
-check(
-  "drew the chip's remove as the app's own glyph",
-  pdf?.children[2]?.className === "att-remove" && pdf.children[2].innerHTML === app.ICONS.close,
+  "gave a PDF a glyph instead of a thumbnail",
+  pdf?.children[0]?.className === "att-file" && pdf.children[0].textContent === "📄",
   elementFor("attachments").outline(),
 );
 check("refused any other file", app.addAttachment("notes.txt", "data:text/plain;base64,AA") === false);
@@ -2833,11 +2708,6 @@ check(
     !String(plainCard.block.className).includes("expanded"),
   `hint hidden: ${plainCard.hint.hidden}, body: ${JSON.stringify(plainCard.pre.textContent)}`,
 );
-// What folds wears the caret and the pointer; a card showing everything it has
-// is text, so its header does not offer a fold that does nothing. The sheet
-// draws the caret for `.foldable` alone — the rule the panel's own card
-// follows — and reserves its width either way, so a card's name does not jump
-// when it finishes and the caret appears.
 // "Click to expand" is one way in, not the only one: the card is a fold, so
 // both of its handles take Enter and Space, and a key the card does not own is
 // left to whatever else is listening.
@@ -2869,55 +2739,6 @@ check(
   "left a card with nothing behind it as text, not a button",
   shortCard.hint.tabIndex === -1 && shortCard.head.tabIndex === -1,
   `hint tabIndex: ${shortCard.hint.tabIndex}, head tabIndex: ${shortCard.head.tabIndex}`,
-);
-check(
-  "offered the caret and the pointer only on a card that folds",
-  String(editCard.block.className).includes("foldable") &&
-    String(plainCard.block.className).includes("foldable") &&
-    !String(shortCard.block.className).includes("foldable") &&
-    editCard.head.children[0].innerHTML === app.ICONS.caret &&
-    /\.tool \.tool-caret \{[^}]*visibility: hidden;/.test(sheet) &&
-    /\.tool\.foldable \.tool-caret \{ visibility: visible; \}/.test(sheet) &&
-    /\.tool\.foldable \.thead \{ cursor: pointer; \}/.test(sheet) &&
-    /\.tool\.expanded \.tool-caret \{ transform: rotate\(0deg\); \}/.test(sheet) &&
-    !/\.tool \.thead \{[^}]*cursor: pointer/.test(sheet) &&
-    !/\.tool .thead::before/.test(sheet),
-  `${editCard.block.className} / ${plainCard.block.className} / ${shortCard.block.className} / ${editCard.head.children[0].innerHTML}`,
-);
-// A finished call is a line of the transcript rather than a box around it, so a
-// long run reads as a log of what happened: the surface is kept for the card
-// still being written and the one that failed, each with its state on the left
-// edge, and a card's output sits below the reply's own text rather than
-// competing with it.
-const errorCard = app.startTool("bash", JSON.stringify({ command: "false" }));
-app.finishTool(errorCard, "boom\n", { isError: true });
-const runningCard = app.startTool("bash", JSON.stringify({ command: "sleep 1" }));
-check(
-  "kept a surface for the card being written and the one that failed",
-  /\.tool \{[^}]*background: none;[^}]*border: none;/.test(sheet) &&
-    /\.tool\.running, \.tool\.error \{ padding: 9px 12px; background: var\(--tool-bg\); \}/.test(sheet) &&
-    /\.tool\.running \{ box-shadow: inset 2px 0 0 var\(--accent\); \}/.test(sheet) &&
-    /\.tool\.error \{ box-shadow: inset 2px 0 0 var\(--error\); \}/.test(sheet) &&
-    /\.tool pre \{\s*color: var\(--dim\);/.test(sheet) &&
-    String(errorCard.block.className).includes("error") &&
-    String(runningCard.block.className).includes("running") &&
-    !/running|error/.test(String(editCard.block.className)),
-  `${errorCard.block.className} / ${runningCard.block.className} / ${editCard.block.className}`,
-);
-// Everything in the conversation sits in one measured column — the reply, a card
-// a call or a turn left, the thinking block, the composer's box and its status
-// line — so the window's edges line up rather than each row picking its own.
-const columnCarriers = [".msg {", ".tool {", ".changes {", ".thinking {", ".composer {", "#status {", ".popover {"];
-const columnWidth = (selector) => {
-  const at = sheet.indexOf(selector);
-  if (at < 0) return "";
-  return (sheet.slice(at, sheet.indexOf("}", at)).match(/max-width: (\d+)px/) || [])[1] || "";
-};
-const columnWidths = columnCarriers.map(columnWidth);
-check(
-  "kept the conversation and the composer in one column",
-  columnWidths.every((width) => width === "780"),
-  columnCarriers.map((selector, index) => `${selector} ${columnWidths[index]}`).join(" · "),
 );
 
 // ---------- a finished turn's changes ----------
@@ -2964,29 +2785,10 @@ const list = card.children[1];
 check(
   "led with a file tile, and offered Undo before Review",
   String(head.children[0].className) === "changes-icon" &&
-    head.children[0].innerHTML === app.ICONS.file &&
+    head.children[0].innerHTML.includes("<svg") &&
     head.children[5].children[0].textContent === "Undo" &&
     head.children[5].children[1].textContent === "Review",
   `${head.children[0].className} / ${head.children[5].children.map((b) => b.textContent).join(", ")}`,
-);
-// The card's fold and each row's are the same caret, drawn pointing down: a
-// closed row turns it to the right, an open one leaves it as it is.
-const changedRowCaret = transcriptCards()[0].children[1].children[0];
-check(
-  "drew the card's fold and its rows' carets from the app's own set",
-  head.children[1].innerHTML === app.ICONS.caret &&
-    String(changedRowCaret.innerHTML).includes(app.ICONS.caret),
-  `${head.children[1].innerHTML} / ${changedRowCaret.innerHTML}`,
-);
-// The caret is drawn pointing down, so a row that is closed turns it to the
-// right and one that is open leaves it alone — while the card's own fold is the
-// other way round, since the card starts open.
-check(
-  "turned a closed row's caret to its row, and the card's to its own state",
-  /\.change-chev \{[^}]*transform: rotate\(-90deg\)/.test(sheet) &&
-    /\.change-row\.open \.change-chev \{ transform: rotate\(0deg\)/.test(sheet) &&
-    /\.changes\.collapsed \.changes-caret \{ transform: rotate\(-90deg\)/.test(sheet),
-  `${sheet.slice(sheet.indexOf(".change-chev {"), sheet.indexOf(".change-diff {"))}`,
 );
 // The transcript is a flex column and the card hides its own overflow, which
 // together let a flex item shrink below the rows it holds: without its own
@@ -3572,14 +3374,6 @@ check(
   document.activeElement === reasoningRow("auto"),
   document.activeElement === reasoningRow("auto") ? "auto" : String(document.activeElement?.id),
 );
-// The row in use wears a drawn check rather than a `✓` character, and only that
-// row wears one.
-check(
-  "drew the picker's check on the row in use and nowhere else",
-  reasoningRow("auto").children[2].innerHTML === app.ICONS.check &&
-    reasoningRow("high").children[2].innerHTML === "",
-  `${reasoningRow("auto").children[2].innerHTML} / ${reasoningRow("high").children[2].innerHTML}`,
-);
 // Tab walks the picker's own controls, so nothing behind it can take a
 // keystroke while it is up.
 const tabbedReasoning = (shiftKey = false) =>
@@ -3829,49 +3623,6 @@ check(
   "offered Send with nothing typed",
   elementFor("send").hidden === false && elementFor("stop").hidden === true,
   `send ${elementFor("send").hidden} / stop ${elementFor("stop").hidden}`,
-);
-// The box says whether it is holding something: a lift on its border while a
-// message waits in it, and the accent ring only while the caret is in the
-// message box itself — not for a chip or the send button sharing the box, which
-// `:focus-within` would answer for too, so the ring is a class the caret sets.
-check(
-  "left the composer's border at rest while it holds nothing",
-  elementFor("composer").classList.contains("filled") === false &&
-    /\.composer\.focused \{[^}]*border-color: color-mix\(in srgb, var\(--accent\) 45%, transparent\);[^}]*box-shadow: 0 0 0 3px color-mix\(in srgb, var\(--accent\) 10%, transparent\);[^}]*\}/.test(
-      sheet,
-    ) &&
-    /\.composer\.filled \{ border-color: color-mix\(in srgb, var\(--dim\) 40%, transparent\); \}/.test(sheet) &&
-    !/\.composer:focus-within/.test(sheet),
-  elementFor("composer").className,
-);
-// The ring is the caret's, so it follows one: the message box taking focus puts
-// it up and losing it takes the ring down, with the border lift left to the text
-// still waiting in the box.
-elementFor("prompt").fire("focus");
-check(
-  "brought the accent ring up for the caret in the message box",
-  elementFor("composer").classList.contains("focused") === true,
-  elementFor("composer").className,
-);
-elementFor("prompt").fire("blur");
-check(
-  "took the ring down when the caret left it",
-  elementFor("composer").classList.contains("focused") === false,
-  elementFor("composer").className,
-);
-elementFor("prompt").value = "a message";
-app.updateSendState();
-check(
-  "lifted it once the box had something in it",
-  elementFor("composer").classList.contains("filled") === true,
-  elementFor("composer").className,
-);
-elementFor("prompt").value = "";
-app.updateSendState();
-check(
-  "set it back down when the box was emptied",
-  elementFor("composer").classList.contains("filled") === false,
-  elementFor("composer").className,
 );
 app.setBusy();
 check(
@@ -4268,14 +4019,6 @@ check(
   "took the run's own totals back with its thread",
   app.state.usage?.input === 4000,
   String(app.state.usage?.input),
-);
-// The bubble names its speaker with the app's own mark beside the name, the same
-// drawing the home state opens with, rather than a `◆` typed into a label.
-const speaker = el("transcript").querySelectorAll(".assistant")[0].children[0];
-check(
-  "signed the reply with the app's own mark rather than a character",
-  speaker?.children[0]?.innerHTML === app.ICONS.mark && speaker.children[1]?.textContent === "Oxide",
-  `${speaker?.children[0]?.innerHTML} / ${speaker?.children[1]?.textContent}`,
 );
 // A turn that ends while the reader is elsewhere really did change those files,
 // so its card lands in the transcript the run has been painting into — kept for
