@@ -22,7 +22,13 @@ import { fileURLToPath } from "node:url";
 
 const here = fileURLToPath(new URL(".", import.meta.url));
 const root = fileURLToPath(new URL("../../", import.meta.url));
-const read = (path) => readFileSync(`${here}${path}`, "utf8");
+// A check is about what a file says, not about how the machine that checked it
+// out spells its newlines. A Windows checkout — and a Windows CI runner, where
+// `core.autocrlf` is on by default — hands these files CRLF, and a guard that
+// reads a line to its end (`targetsOf` below) has to see the same line there as
+// it does here. Every read goes through this one place for that reason.
+const text = (path) => readFileSync(path, "utf8").replace(/\r\n/g, "\n");
+const read = (path) => text(`${here}${path}`);
 const exists = (path) => Boolean(statSync(`${here}${path}`, { throwIfNoEntry: false }));
 
 const failures = [];
@@ -47,9 +53,9 @@ const engine = read("src/main.rs");
 const bridge = read("src/bridge.rs");
 const update = read("src/update.rs");
 const manifest = read("Cargo.toml");
-const coreUpdates = readFileSync(`${root}crates/core/src/updates.rs`, "utf8");
-const setVersion = readFileSync(`${root}scripts/set-version.sh`, "utf8");
-const ignores = readFileSync(`${root}.gitignore`, "utf8");
+const coreUpdates = text(`${root}crates/core/src/updates.rs`);
+const setVersion = text(`${root}scripts/set-version.sh`);
+const ignores = text(`${root}.gitignore`);
 // pnpm is this package's manager rather than npm, and it keeps its settings in
 // `pnpm-workspace.yaml` instead of in an `.npmrc`. Read only if it is there, so
 // its absence is the check that fails rather than this line.
@@ -396,8 +402,8 @@ check(
 // they set up is the one `package.json` names, and each caches on this package's
 // own lockfile rather than the tree beside it.
 const withoutComments = (source) => source.replace(/^\s*#.*$/gm, "");
-const ciWorkflow = readFileSync(`${root}.github/workflows/ci.yml`, "utf8");
-const desktopWorkflow = readFileSync(`${root}.github/workflows/desktop.yml`, "utf8");
+const ciWorkflow = text(`${root}.github/workflows/ci.yml`);
+const desktopWorkflow = text(`${root}.github/workflows/desktop.yml`);
 const workflowJobs = [
   between(ciWorkflow, "\n  desktop:", "\n  vscode:"),
   between(desktopWorkflow, "\n  build:", "\n  release:"),
@@ -864,6 +870,20 @@ check(
   ["node_modules", "electron/dist", "artifacts", "target"].every((name) =>
     ignores.includes(`/crates/desktop/${name}/`),
   ) && exists("electron/main.ts") && exists("electron/preload.ts"),
+);
+// Every file above is read through one normaliser, because `targetsOf` reads a
+// line to its end and a Windows checkout — and a Windows CI runner, where
+// `core.autocrlf` is on by default — hands these files CRLF, where that parse
+// finds no targets at all and the release reads as one nothing builds. That is
+// how this file's release check failed on the Windows runner once, so both
+// halves are held here: the one reader strips carriage returns, and nothing
+// reads a file around it.
+const selfSource = readFileSync(fileURLToPath(import.meta.url), "utf8");
+check(
+  "read every file as a Windows checkout spells it",
+  /\.replace\(\/\\r\\n\/g, "\\n"\)/.test(selfSource) &&
+    (selfSource.match(/readFileSync\(/g) ?? []).length === 2,
+  `${(selfSource.match(/readFileSync\(/g) ?? []).length} read point(s)`,
 );
 
 console.log("");
