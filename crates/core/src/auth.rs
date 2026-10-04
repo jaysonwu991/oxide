@@ -184,6 +184,44 @@ fn select_stored_with(
 
 pub use crate::config::canonical_provider;
 
+/// What logging in to a provider resolves to: the canonical name, and the
+/// credential a request to it carries. A key the reader typed is what gets
+/// stored; an empty one reuses what is already stored, or — for a model server
+/// on this machine, which asks for nothing — is simply empty, so choosing one is
+/// a login rather than a key nobody has.
+pub fn resolve_login(provider: &str, typed: &str) -> Result<(String, String)> {
+    resolve_login_with(
+        &AuthStore::path(),
+        &crate::config::Config::config_path(),
+        provider,
+        typed,
+    )
+}
+
+fn resolve_login_with(
+    auth_path: &Path,
+    config_path: &Path,
+    provider: &str,
+    typed: &str,
+) -> Result<(String, String)> {
+    if !typed.trim().is_empty() {
+        let name = connect_with(auth_path, config_path, provider, typed)?;
+        return Ok((name, typed.to_string()));
+    }
+    if is_local(provider) {
+        crate::config::Config::set_active_provider_at(config_path, &canonical_provider(provider))?;
+        return Ok((canonical_provider(provider), String::new()));
+    }
+    select_stored_with(auth_path, config_path, provider)
+}
+
+/// Whether a provider is a model server on this machine, which is reached
+/// without a credential at all: there is none to store, so logging in to one is
+/// choosing it and its endpoint rather than presenting a key.
+pub fn is_local(provider: &str) -> bool {
+    provider_option(provider).is_some_and(|option| option.local)
+}
+
 pub fn provider_option(name: &str) -> Option<&'static ProviderOption> {
     let name = canonical_provider(name);
     known_providers().iter().find(|option| option.name == name)
@@ -263,6 +301,42 @@ mod tests {
         assert_eq!(store.key("openai"), Some("sk-openai"));
         assert_eq!(store.key("anthropic"), Some("sk-ant-test"));
         assert_eq!(store.key("deepseek"), Some("sk-deepseek"));
+    }
+
+    /// What logging in resolves to: a key the reader typed is stored, an empty
+    /// one reuses the stored credential, and a server on this machine answers
+    /// with the empty key it needs rather than a lookup that would find nothing.
+    #[test]
+    fn a_local_provider_logs_in_without_a_credential() {
+        let dir = temp_dir("local-login");
+        let auth_path = dir.join("auth.json");
+        let config_path = dir.join("config.json");
+
+        let (name, key) = resolve_login_with(&auth_path, &config_path, "Ollama", "").unwrap();
+        assert_eq!(name, "ollama");
+        assert!(key.is_empty());
+        assert!(!auth_path.exists(), "nothing is stored for a local server");
+        let config: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&config_path).unwrap()).unwrap();
+        assert_eq!(config["provider"], "ollama");
+
+        // A key it was given anyway is still stored, so a proxied server or a
+        // gateway fronting one keeps whatever it was handed.
+        let (name, key) =
+            resolve_login_with(&auth_path, &config_path, "ollama", "sk-local").unwrap();
+        assert_eq!((name.as_str(), key.as_str()), ("ollama", "sk-local"));
+        assert_eq!(
+            AuthStore::load_from(&auth_path).unwrap().key("ollama"),
+            Some("sk-local")
+        );
+
+        // A provider that does keep a credential still needs one.
+        let error = resolve_login_with(&auth_path, &config_path, "portkey", "").unwrap_err();
+        assert!(error
+            .to_string()
+            .contains("no stored credentials for `portkey`"));
+
+        std::fs::remove_dir_all(&dir).ok();
     }
 
     #[test]

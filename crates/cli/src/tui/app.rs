@@ -734,6 +734,9 @@ pub struct App {
     /// A browser login the key handler asked for, started by the event loop
     /// that owns the channel its progress arrives on.
     pub pending_login: Option<String>,
+    /// Which browser login that is: an attempt the dialog has moved past cannot
+    /// answer a later one, since both may be polling at once.
+    pub login_attempt: u64,
     pub models: Option<ModelsState>,
     pub sessions: Option<SessionsState>,
     pub marketplaces: Option<MarketplacesState>,
@@ -873,6 +876,7 @@ impl App {
             pending_approval: None,
             connect: None,
             pending_login: None,
+            login_attempt: 0,
             models: None,
             sessions: None,
             marketplaces: None,

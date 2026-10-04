@@ -323,8 +323,11 @@ reported in their own words rather than as a failed request.
 `ollama` (`http://localhost:11434/v1`), `lmstudio` (`http://localhost:1234/v1`)
 and `llamacpp` (`http://localhost:8080/v1`) need no credential: a model server on
 this machine is reached without a key, and the key variables above only exist for
-a setup that requires one. A provider is treated as local by the table, not by
-the URL, so a custom provider pointed at a remote host still needs a key.
+a setup that requires one. `/login ollama` is therefore the whole login: the
+provider is applied with an empty key and the dialog goes on to its settings
+rather than asking for a credential nothing stores. A provider is treated as
+local by the table, not by the URL, so a custom provider pointed at a remote host
+still needs a key.
 
 ### Credentials
 

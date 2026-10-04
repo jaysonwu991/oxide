@@ -299,7 +299,8 @@ async fn event_loop(
                             &plugins_tx, &listings_tx, &marketplaces_tx, &usage_tx, &update_tx,
                         );
                         if let Some(provider) = app.pending_login.take() {
-                            start_device_login(provider, &login_tx);
+                            app.login_attempt += 1;
+                            start_device_login(provider, app.login_attempt, &login_tx);
                         }
                     }
                     Some(Ok(Event::Paste(text))) => handle_paste(text, &mut app),
@@ -4580,20 +4581,34 @@ fn logout_active_provider(app: &mut App, config: &mut Config, provider: &str) ->
 
 /// What a browser login in the background has to say: the code and URL to show
 /// the reader, and then the credential it minted or the reason it could not.
-enum LoginEvent {
+enum LoginStep {
     Code { url: String, code: String },
     Token(String),
     Failed(String),
+}
+
+/// One of those, tagged with the attempt it belongs to. A login the reader
+/// walked away from is still polling — the browser round trip cannot be called
+/// off from here — so it names its attempt and an answer meant for a dialog that
+/// has been replaced is dropped rather than painted into the one that replaced
+/// it.
+struct LoginEvent {
+    attempt: u64,
+    step: LoginStep,
 }
 
 /// Paints one step of a browser login. The code and URL land in the dialog it
 /// belongs to (a dialog the reader closed is left alone, since nothing is
 /// waiting on it any more), the minted credential moves it on to the settings
 /// it can still edit, and a failure puts the choice back where it started with
-/// the reason beside it.
+/// the reason beside it. Anything from an attempt the dialog has moved past is
+/// dropped here.
 fn handle_login_event(event: LoginEvent, app: &mut App, config: &mut Config) {
-    match event {
-        LoginEvent::Code { url, code } => {
+    if event.attempt != app.login_attempt {
+        return;
+    }
+    match event.step {
+        LoginStep::Code { url, code } => {
             if let Some(state) = app.connect.as_mut() {
                 if matches!(state.step, ConnectStep::Browser { .. }) {
                     // The code is short-lived and has to be typed into a browser
@@ -4603,7 +4618,7 @@ fn handle_login_event(event: LoginEvent, app: &mut App, config: &mut Config) {
                 }
             }
         }
-        LoginEvent::Token(token) => {
+        LoginStep::Token(token) => {
             let Some(mut state) = app.connect.take() else {
                 return;
             };
@@ -4616,7 +4631,7 @@ fn handle_login_event(event: LoginEvent, app: &mut App, config: &mut Config) {
             open_connect_options(&mut state, &canonical, provider, config);
             app.connect = Some(state);
         }
-        LoginEvent::Failed(error) => {
+        LoginStep::Failed(error) => {
             if let Some(state) = app.connect.as_mut() {
                 if matches!(state.step, ConnectStep::Browser { .. }) {
                     state.step = ConnectStep::Provider;
@@ -4629,14 +4644,17 @@ fn handle_login_event(event: LoginEvent, app: &mut App, config: &mut Config) {
 }
 
 /// Runs a provider's browser login off the UI thread: the code and URL come back
-/// for the dialog to show, and the credential it mints is what gets stored.
-fn start_device_login(provider: String, tx: &UnboundedSender<LoginEvent>) {
+/// for the dialog to show, and the credential it mints is what gets stored. Every
+/// event it sends names `attempt`, so the dialog it was started for is the only
+/// one it can answer.
+fn start_device_login(provider: String, attempt: u64, tx: &UnboundedSender<LoginEvent>) {
     let tx = tx.clone();
     tokio::spawn(async move {
         let Some(client_id) = crate::auth::device_flow_client(&provider) else {
-            let _ = tx.send(LoginEvent::Failed(format!(
-                "{provider} does not log in through the browser"
-            )));
+            let _ = tx.send(LoginEvent {
+                attempt,
+                step: LoginStep::Failed(format!("{provider} does not log in through the browser")),
+            });
             return;
         };
         let http = reqwest::Client::builder()
@@ -4645,16 +4663,20 @@ fn start_device_login(provider: String, tx: &UnboundedSender<LoginEvent>) {
             .unwrap_or_default();
         let codes = tx.clone();
         let result = crate::llm::copilot::login(&http, client_id, |login| {
-            let _ = codes.send(LoginEvent::Code {
-                url: login.verification_uri.clone(),
-                code: login.user_code.clone(),
+            let _ = codes.send(LoginEvent {
+                attempt,
+                step: LoginStep::Code {
+                    url: login.verification_uri.clone(),
+                    code: login.user_code.clone(),
+                },
             });
         })
         .await;
-        let _ = tx.send(match result {
-            Ok(token) => LoginEvent::Token(token),
-            Err(err) => LoginEvent::Failed(format!("{err:#}")),
-        });
+        let step = match result {
+            Ok(token) => LoginStep::Token(token),
+            Err(err) => LoginStep::Failed(format!("{err:#}")),
+        };
+        let _ = tx.send(LoginEvent { attempt, step });
     });
 }
 
@@ -4682,11 +4704,17 @@ fn handle_connect_key(key: KeyEvent, app: &mut App, config: &mut Config) {
                     state.input.clear();
                     state.error = None;
                     state.authorization = None;
+                    let canonical = crate::auth::canonical_provider(&provider);
                     if crate::auth::device_flow_client(&provider).is_some() {
                         // A provider that logs in through the browser is waited
                         // on by the event loop rather than typed into here.
                         app.pending_login = Some(provider.clone());
                         state.step = ConnectStep::Browser { provider };
+                    } else if crate::auth::is_local(&provider) {
+                        // A model server on this machine has no credential to
+                        // ask for, so the dialog goes straight to what can still
+                        // be chosen: the model and the endpoint it answers at.
+                        open_connect_options(&mut state, &canonical, provider, config);
                     } else {
                         state.step = ConnectStep::Key { provider };
                     }
@@ -4841,19 +4869,16 @@ fn open_connect_options(
 }
 
 /// Saves a login from the dialog: stores a new key (or reuses the stored one),
-/// applies the optional model/endpoint/Config ID, and persists the selection.
+/// applies the optional model/endpoint/Config ID, and persists the selection. A
+/// provider that needs no credential is applied as it stands rather than looked
+/// up in the store, where it would have nothing to find.
 fn save_connect(
     app: &mut App,
     config: &mut Config,
     state: &ConnectState,
     provider: &str,
 ) -> Result<String> {
-    let (name, key) = if state.key.trim().is_empty() {
-        crate::auth::select_stored(provider)?
-    } else {
-        let name = crate::auth::connect(provider, &state.key)?;
-        (name, state.key.clone())
-    };
+    let (name, key) = crate::auth::resolve_login(provider, &state.key)?;
     config.apply_provider(&name, &key);
     config.apply_login_options(&state.model, &state.base_url, &state.portkey_config);
     config.persist_selection_at(&Config::config_path())?;
@@ -5868,6 +5893,97 @@ mod tests {
         assert!(app.pending_login.is_none());
     }
 
+    /// A model server on this machine asks for no credential, so choosing one is
+    /// the whole login and the dialog moves on to what it can still choose.
+    #[test]
+    fn connect_goes_straight_to_the_settings_for_a_local_provider() {
+        let mut app = test_app();
+        let mut config = Config::default();
+        app.connect = Some(ConnectState::new());
+
+        for ch in "ollama".chars() {
+            handle_connect_key(key(KeyCode::Char(ch)), &mut app, &mut config);
+        }
+        handle_connect_key(key(KeyCode::Enter), &mut app, &mut config);
+
+        assert!(app.pending_login.is_none());
+        let state = app.connect.as_ref().unwrap();
+        assert!(
+            matches!(&state.step, ConnectStep::Options { provider } if provider == "ollama"),
+            "a local server has no key to ask for"
+        );
+        assert_eq!(state.model, config.model_for_provider("ollama"));
+        assert_eq!(state.base_url, config.base_url_for_provider("ollama"));
+        assert!(state.key.is_empty());
+    }
+
+    /// A login the reader walked away from is still polling, so its late answer
+    /// has to be dropped rather than painted into the dialog that replaced it.
+    #[test]
+    fn an_answer_from_a_superseded_login_is_dropped() {
+        let mut app = test_app();
+        let mut config = Config::default();
+        let mut state = ConnectState::new();
+        state.step = ConnectStep::Browser {
+            provider: "github-copilot".to_string(),
+        };
+        app.connect = Some(state);
+        // A second login was started after that dialog was left behind, so the
+        // event loop is no longer waiting on the first attempt.
+        app.login_attempt = 2;
+
+        handle_login_event(
+            LoginEvent {
+                attempt: 1,
+                step: LoginStep::Code {
+                    url: "https://github.com/login/device".to_string(),
+                    code: "WDJB-MJHT".to_string(),
+                },
+            },
+            &mut app,
+            &mut config,
+        );
+        assert!(
+            app.connect.as_ref().unwrap().authorization.is_none(),
+            "the code of a login nobody is waiting on is not shown"
+        );
+
+        handle_login_event(
+            LoginEvent {
+                attempt: 1,
+                step: LoginStep::Token("ghu_stale".to_string()),
+            },
+            &mut app,
+            &mut config,
+        );
+        let state = app.connect.as_ref().unwrap();
+        assert!(state.key.is_empty());
+        assert!(matches!(state.step, ConnectStep::Browser { .. }));
+
+        handle_login_event(
+            LoginEvent {
+                attempt: 1,
+                step: LoginStep::Failed("the device flow was refused".to_string()),
+            },
+            &mut app,
+            &mut config,
+        );
+        assert!(app.connect.as_ref().unwrap().error.is_none());
+
+        // The attempt the dialog is on is the one that answers it.
+        handle_login_event(
+            LoginEvent {
+                attempt: 2,
+                step: LoginStep::Token("ghu_new".to_string()),
+            },
+            &mut app,
+            &mut config,
+        );
+        let state = app.connect.as_ref().unwrap();
+        assert_eq!(state.key, "ghu_new");
+        assert!(matches!(state.step, ConnectStep::Options { .. }));
+    }
+
     #[test]
     fn a_browser_login_shows_its_code_and_lands_on_the_settings() {
         let mut app = test_app();
@@ -5879,9 +5995,12 @@ mod tests {
         app.connect = Some(state);
 
         handle_login_event(
-            LoginEvent::Code {
-                url: "https://github.com/login/device".to_string(),
-                code: "WDJB-MJHT".to_string(),
+            LoginEvent {
+                attempt: app.login_attempt,
+                step: LoginStep::Code {
+                    url: "https://github.com/login/device".to_string(),
+                    code: "WDJB-MJHT".to_string(),
+                },
             },
             &mut app,
             &mut config,
@@ -5897,7 +6016,10 @@ mod tests {
         assert!(matches!(state.step, ConnectStep::Browser { .. }));
 
         handle_login_event(
-            LoginEvent::Token("ghu_abc".to_string()),
+            LoginEvent {
+                attempt: app.login_attempt,
+                step: LoginStep::Token("ghu_abc".to_string()),
+            },
             &mut app,
             &mut config,
         );
@@ -5921,7 +6043,10 @@ mod tests {
         app.connect = Some(state);
 
         handle_login_event(
-            LoginEvent::Failed("GitHub refused the device flow".to_string()),
+            LoginEvent {
+                attempt: app.login_attempt,
+                step: LoginStep::Failed("GitHub refused the device flow".to_string()),
+            },
             &mut app,
             &mut config,
         );
@@ -5936,7 +6061,10 @@ mod tests {
         // reopening it.
         app.connect = None;
         handle_login_event(
-            LoginEvent::Token("ghu_abc".to_string()),
+            LoginEvent {
+                attempt: app.login_attempt,
+                step: LoginStep::Token("ghu_abc".to_string()),
+            },
             &mut app,
             &mut config,
         );
