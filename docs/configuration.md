@@ -83,7 +83,7 @@ oxide update [--check] [--component <cli|desktop|extension>] [--current <VERSION
 
 | Flag | Description |
 | --- | --- |
-| `[PROMPT]...` | Prompt words. `@path` reads a file into the prompt (images/PDFs become attachments). Providing one implies non-interactive mode. |
+| `[PROMPT]...` | Prompt words. `@path` reads a file into the prompt (images and PDFs become attachments). Providing one implies non-interactive mode. |
 | `-m, --model <MODEL>` | Model to use (overrides config). |
 | `--provider <PROVIDER>` | Provider name (overrides config). |
 | `--agent <AGENT>` | Agent to run, from `.oxide/agents` (or `.claude/agents`). |
@@ -107,7 +107,7 @@ oxide update [--check] [--component <cli|desktop|extension>] [--current <VERSION
 | `-c, --continue` | Resume the most recent session for this project. |
 | `-r, --resume` | Browse and select a past session to resume. |
 | `--fork <PATH\|ID>` | Fork a session file or id into a new session. |
-| `--image <PATH>` | Attach an image or PDF (repeatable). |
+| `--image <PATH>` | Attach an image, a PDF or a text file (repeatable). |
 | `-C, --cwd <DIR>` | Working directory for the agent. |
 
 ## Environment variables

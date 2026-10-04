@@ -340,7 +340,8 @@ The regions, top to bottom:
   drag the engine withholds it for. The
   status and
   token/cost usage sit just below it. The 📎 button (or a pasted clipboard
-  image) attaches images/PDFs, shown above the input as thumbnails that open a
+  image) attaches images, PDFs and text files, shown above the input as
+  thumbnails that open a
   full preview when clicked (or focused and opened with Enter/Space) — the
   preview is closed by the ✕ icon button its siblings carry, which sits in a
   head row above the picture rather than on it, so what closes the overlay is
@@ -352,8 +353,13 @@ The regions, top to bottom:
   `oxide_core::media::optimize_image` when the turn is built — the one place a
   data URL can be — so it is not embedded at full size in the request, the
   session and the page's own message at once. A file past the core's 20 MB
-  attachment limit, or of an unsupported type no browser can paint, is
-  refused with a status line instead of being read. A message can also name a
+  attachment limit is refused with a status line instead of being read, and
+  nothing else is turned away at the door: a format no provider takes but the
+  machine's image tools can convert (a TIFF, a HEIC) is converted by the core,
+  and anything that is neither an image nor a PDF travels as its own text — a
+  payload that is binary in a way neither reads (`application/octet-stream`, a
+  video) is refused by the core with the file named, rather than sent as
+  mojibake. A message can also name a
   file or folder with `@path`, which the composer completes: typing `@` offers
   the project's own paths in the same box the `/` palette uses, `↑`/`↓` walk the
   rows, `Enter`/`Tab` takes one, `Escape` closes the list, a folder keeps the

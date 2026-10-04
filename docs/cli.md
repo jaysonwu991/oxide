@@ -813,7 +813,8 @@ WSL, where the terminal claims `Alt+Up` for scrollback.
 
 ## Attachments
 
-A message can carry images and PDFs, which the selected LLM reads as media. `Ctrl+V`
+A message can carry images, PDFs and text files, which the selected LLM reads as media
+or as text. `Ctrl+V`
 pastes a clipboard image — or the file the clipboard holds, so a screenshot
 copied from the Finder attaches the picture itself rather than the pasteboard's
 icon of the file; a file copy that arrived from another machine leaves its URL
@@ -834,11 +835,17 @@ completes from.
 An image is downscaled to a 1568px long edge — the same bound the desktop app
 and the VS Code panel paint their thumbnails at — so a retina screenshot is not
 re-encoded at full resolution into every request and every session entry. An
-attachment is limited to 20 MB
-(`oxide_core::media::MAX_ATTACHMENT_BYTES`), checked before the file is read,
-and an unsupported type or one no browser can paint (`png`, `jpeg`, `gif`,
-`webp`, `bmp`, `pdf`) is refused with a message naming the file rather than
-being sent.
+image in a format no provider takes but this machine's image tools can convert
+(a TIFF, a HEIC, a HEIF, an AVIF) is converted to PNG rather than refused, and
+one neither can decode is reported by name.
+
+Anything that is neither an image nor a PDF is attached as its own text, wrapped
+the way Pi wraps it (`<file name="…">…</file>`), so a `.csv`, a `.json` or a
+source file can ride along without a format list deciding what may travel. The
+only size gate is 20 MB (`oxide_core::media::MAX_ATTACHMENT_BYTES`), checked
+before the file is read, and a binary payload holding a NUL byte — neither
+media nor text — is refused with a message naming the file rather than being
+sent as mojibake.
 
 The selected LLM is the source of truth for rich-media support. Oxide serializes
 and forwards media without inferring support from provider or endpoint names.

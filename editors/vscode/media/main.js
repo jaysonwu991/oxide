@@ -1600,10 +1600,11 @@
     }
   }
 
-  /// An image or PDF the next message will carry: a thumbnail where the host
-  /// could send one, a glyph and the size where it could not. An image's
-  /// thumbnail opens the full-size one — the panel is narrow and the chip is
-  /// small, so the copy on it is not much of a look at what is being sent.
+  /// An image, a PDF or a text file the next message will carry: a thumbnail
+  /// where the host could send one, a glyph and the size where it could not. An
+  /// image's thumbnail opens the full-size one — the panel is narrow and the
+  /// chip is small, so the copy on it is not much of a look at what is being
+  /// sent.
   function attachmentNode(attachment) {
     const el = document.createElement("div");
     el.className = "chip attachment";
@@ -1623,7 +1624,7 @@
     } else {
       const glyph = document.createElement("span");
       glyph.className = "chip-glyph";
-      glyph.textContent = attachment.kind === "pdf" ? "▤" : "▣";
+      glyph.textContent = attachment.kind === "image" ? "▣" : "▤";
       el.appendChild(glyph);
     }
     const text = document.createElement("span");

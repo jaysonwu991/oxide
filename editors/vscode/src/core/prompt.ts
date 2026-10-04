@@ -37,9 +37,10 @@ export function buildPrompt(message: string, blocks: ContextBlock[] = []): strin
   return parts.join("\n\n");
 }
 
-/// Image and PDF extensions the CLI sends as media instead of text, mirroring
+/// Media extensions the CLI sends as attachments instead of text, mirroring
 /// `oxide_core::media::is_attachment_path`. Anything listed here is passed as
-/// `--image` rather than inlined into the prompt.
+/// `--image` rather than inlined into the prompt — including the formats the
+/// CLI converts (a TIFF, a HEIC), which are media all the same.
 const ATTACHMENT_EXTENSIONS = new Set([
   "png",
   "jpg",
@@ -47,6 +48,11 @@ const ATTACHMENT_EXTENSIONS = new Set([
   "gif",
   "webp",
   "bmp",
+  "tif",
+  "tiff",
+  "heic",
+  "heif",
+  "avif",
   "pdf",
 ]);
 

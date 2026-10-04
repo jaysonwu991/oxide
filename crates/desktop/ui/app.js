@@ -1244,7 +1244,7 @@ function bubble(kind, text, attachments = []) {
   const body = document.createElement("div");
   body.className = "body";
   body.innerHTML = kind === "assistant" ? renderMarkdown(text) : escapeHtml(text);
-  const images = attachments.filter((attachment) => isImageAttachment(attachment.dataUrl));
+  const images = attachments.filter((attachment) => isPaintableImage(attachment.dataUrl));
   if (images.length) {
     const strip = document.createElement("div");
     strip.className = "msg-attachments";
@@ -1592,19 +1592,42 @@ function dataUrlMime(dataUrl) {
   return match ? match[1].toLowerCase() : "";
 }
 
-/// Enforce the core's own limit (`media::MAX_ATTACHMENT_BYTES`) and accept only
-/// formats Oxide can send and this webview can paint, so an over-large file is refused
-/// before it is read into a data URL and a format nothing can draw never
-/// becomes a thumbnail the browser cannot render.
+/// Enforce the core's own limit (`media::MAX_ATTACHMENT_BYTES`) and the core's
+/// own rule on what may travel (`media::load_attachment`): any image, a PDF, or
+/// any text file. An image format a provider does not take (a TIFF, a HEIC) is
+/// converted by the core rather than refused here, and a text file rides along
+/// as its own text — so an over-large file is refused before it is read into a
+/// data URL and nothing is turned away for a type the core would have taken.
 const MAX_ATTACHMENT_BYTES = 20 * 1024 * 1024;
-const ATTACHABLE_MIMES = [
+
+/// The image formats this webview can draw, which are the ones a chip shows a
+/// thumbnail for. Every other attachment — a TIFF the core converts, a PDF, a
+/// text file — wears the file glyph.
+const PAINTABLE_IMAGE_MIMES = [
   "image/png",
   "image/jpeg",
   "image/gif",
   "image/webp",
   "image/bmp",
-  "application/pdf",
 ];
+
+/// Text shapes a drop can carry that the browser does not type as `text/*`.
+const TEXTUAL_MIMES = [
+  "application/json",
+  "application/xml",
+  "application/javascript",
+  "application/x-yaml",
+  "application/yaml",
+  "application/toml",
+  "application/csv",
+  "application/sql",
+  "application/x-sh",
+];
+
+function isAttachableMime(mime) {
+  if (mime.startsWith("image/") || mime.startsWith("text/")) return true;
+  return mime === "application/pdf" || TEXTUAL_MIMES.includes(mime);
+}
 
 function formatBytes(bytes) {
   if (bytes < 1024) return `${bytes} B`;
@@ -1612,14 +1635,16 @@ function formatBytes(bytes) {
   return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
 }
 
-function isImageAttachment(dataUrl) {
-  return dataUrlMime(dataUrl).startsWith("image/");
+/// Whether a chip draws the picture itself rather than a file glyph. A TIFF or
+/// a HEIC is an image the core sends but this browser cannot paint.
+function isPaintableImage(dataUrl) {
+  return PAINTABLE_IMAGE_MIMES.includes(dataUrlMime(dataUrl));
 }
 
 function addAttachment(name, dataUrl) {
   const mime = dataUrlMime(dataUrl);
-  if (!ATTACHABLE_MIMES.includes(mime)) {
-    setStatus("Only PNG, JPEG, GIF, WebP, BMP and PDF can be attached");
+  if (!isAttachableMime(mime)) {
+    setStatus("Only images, PDFs and text files can be attached");
     return false;
   }
   if (state.attachments.some((attachment) => attachment.dataUrl === dataUrl)) {
@@ -1631,7 +1656,7 @@ function addAttachment(name, dataUrl) {
     return false;
   }
   state.attachments.push({
-    name: name || (mime === "application/pdf" ? "document.pdf" : "image"),
+    name: name || (mime === "application/pdf" ? "document.pdf" : "attachment"),
     dataUrl,
   });
   renderAttachments();
@@ -1699,12 +1724,14 @@ async function addAttachmentFiles(files) {
       continue;
     }
     // A blob the browser has typed says what it is before anything is read, so
-    // a format nothing here can paint (a TIFF, a HEIC) is refused rather than
+    // a type neither the core nor a chip has a use for is refused rather than
     // read into a data URL first; one it has not typed is left to the data URL
     // it turns into.
     const declared = (file.type || "").toLowerCase();
-    if (declared && !ATTACHABLE_MIMES.includes(declared)) {
-      setStatus(`Cannot attach ${file.name}: ${declared} is not one of PNG, JPEG, GIF, WebP, BMP and PDF`);
+    if (declared && !isAttachableMime(declared)) {
+      setStatus(
+        `Cannot attach ${file.name}: ${declared} is not an image, a PDF or a text file`,
+      );
       continue;
     }
     try {
@@ -1727,7 +1754,7 @@ function renderAttachments() {
   state.attachments.forEach((attachment, index) => {
     const chip = document.createElement("div");
     chip.className = "attachment";
-    if (isImageAttachment(attachment.dataUrl)) {
+    if (isPaintableImage(attachment.dataUrl)) {
       chip.appendChild(openableImage(attachment.dataUrl, attachment.name));
     } else {
       const icon = document.createElement("div");

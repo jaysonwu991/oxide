@@ -1,6 +1,8 @@
-//! Multimodal attachments: image/PDF loading into LLM-ready content
-//! parts, dependency-free base64 encoding, `@path` reference extraction, and a
-//! best-effort OS clipboard image grab.
+//! Multimodal attachments: reading any file a message carries into LLM-ready
+//! content parts — an image (converted to a format a provider takes, where the
+//! machine has the tools to), a PDF, or any other text — plus dependency-free
+//! base64 encoding, `@path` reference extraction, and a best-effort OS
+//! clipboard grab.
 use crate::llm::{ContentPart, FileData, ImageUrl};
 use anyhow::{Context, Result};
 use sha2::{Digest, Sha256};
@@ -76,36 +78,157 @@ pub const MAX_ATTACHMENT_BYTES: usize = 20 * 1024 * 1024;
 /// inside the payload only makes it stricter.
 const MAX_DATA_URL_CHARS: usize = MAX_ATTACHMENT_BYTES / 3 * 4;
 
-/// The image formats Oxide can send and a webview can paint. Anything else
-/// (a TIFF, a HEIC) is refused at the door rather than reaching the model or
-/// showing as a thumbnail that cannot be drawn.
+/// The image formats a provider takes as they stand — Pi's own normalized set,
+/// so a GIF keeps its animation and a PNG, a JPEG or a WebP travels untouched.
+/// Anything else sniffed as an image (a BMP, a TIFF, a HEIC) is converted to
+/// PNG first, the way Pi converts one.
 pub fn is_supported_image_mime(mime: &str) -> bool {
     matches!(
         mime,
-        "image/png" | "image/jpeg" | "image/gif" | "image/webp" | "image/bmp"
+        "image/png" | "image/jpeg" | "image/gif" | "image/webp"
     )
 }
 
-pub fn image_mime(path: &Path) -> Option<&'static str> {
-    let ext = path.extension()?.to_str()?.to_ascii_lowercase();
-    match ext.as_str() {
-        "png" => Some("image/png"),
-        "jpg" | "jpeg" => Some("image/jpeg"),
-        "gif" => Some("image/gif"),
-        "webp" => Some("image/webp"),
-        "bmp" => Some("image/bmp"),
+/// How many bytes of a file are read to identify it, the window Pi sniffs with.
+const SNIFF_BYTES: usize = 4100;
+
+/// The image format in a buffer, read from the bytes rather than the file's
+/// name, the way Pi identifies one. `None` is either not an image at all or an
+/// image whose bytes are a shape no provider takes — an animated PNG, a
+/// JPEG-LS — which is what keeps a text file named `.png` from being sent as
+/// base64 and a real screenshot without an extension from being missed.
+pub fn sniff_image_mime(bytes: &[u8]) -> Option<&'static str> {
+    if bytes.starts_with(&[0xFF, 0xD8, 0xFF]) {
+        return (bytes.get(3) != Some(&0xF7)).then_some("image/jpeg");
+    }
+    if bytes.starts_with(b"\x89PNG\r\n\x1a\n") {
+        return (is_png(bytes) && !is_animated_png(bytes)).then_some("image/png");
+    }
+    if bytes.starts_with(b"GIF87a") || bytes.starts_with(b"GIF89a") {
+        return Some("image/gif");
+    }
+    if bytes.starts_with(b"RIFF") && bytes.get(8..12) == Some(b"WEBP".as_slice()) {
+        return Some("image/webp");
+    }
+    if bytes.starts_with(b"BM") && is_bmp(bytes) {
+        return Some("image/bmp");
+    }
+    None
+}
+
+/// A PNG whose first chunk is an IHDR of the length the format declares.
+fn is_png(bytes: &[u8]) -> bool {
+    bytes.len() >= 16
+        && u32::from_be_bytes(bytes[8..12].try_into().unwrap()) == 13
+        && &bytes[12..16] == b"IHDR"
+}
+
+/// An APNG carries an `acTL` chunk before its image data. Flattening one to a
+/// single frame is not what its sender attached, so it is not an image here.
+fn is_animated_png(bytes: &[u8]) -> bool {
+    let mut offset = 8;
+    while offset + 8 <= bytes.len() {
+        let length = u32::from_be_bytes(bytes[offset..offset + 4].try_into().unwrap()) as usize;
+        let kind = &bytes[offset + 4..offset + 8];
+        if kind == b"acTL" {
+            return true;
+        }
+        if kind == b"IDAT" {
+            return false;
+        }
+        let next = offset + 8 + length + 4;
+        if next <= offset || next > bytes.len() {
+            return false;
+        }
+        offset = next;
+    }
+    false
+}
+
+/// A BMP whose header describes an uncompressed bitmap with a colour depth the
+/// format actually has, so a file that merely starts `BM` is read as text.
+fn is_bmp(bytes: &[u8]) -> bool {
+    if bytes.len() < 26 {
+        return false;
+    }
+    let declared = u32::from_le_bytes(bytes[2..6].try_into().unwrap());
+    let pixel_offset = u32::from_le_bytes(bytes[10..14].try_into().unwrap());
+    let header = u32::from_le_bytes(bytes[14..18].try_into().unwrap());
+    if declared != 0 && declared < 26 {
+        return false;
+    }
+    if pixel_offset < 14 + header {
+        return false;
+    }
+    if declared != 0 && pixel_offset >= declared {
+        return false;
+    }
+    let (planes, depth) = match header {
+        12 => (uint16_le(bytes, 22), uint16_le(bytes, 24)),
+        40..=124 => {
+            if bytes.len() < 30 {
+                return false;
+            }
+            (uint16_le(bytes, 26), uint16_le(bytes, 28))
+        }
+        _ => return false,
+    };
+    planes == 1 && matches!(depth, 1 | 4 | 8 | 16 | 24 | 32)
+}
+
+fn uint16_le(bytes: &[u8], offset: usize) -> u16 {
+    u16::from_le_bytes([bytes[offset], bytes[offset + 1]])
+}
+
+fn read_head(path: &Path, limit: usize) -> Option<Vec<u8>> {
+    use std::io::Read;
+    let mut file = std::fs::File::open(path).ok()?;
+    let mut head = vec![0u8; limit];
+    let read = file.read(&mut head).ok()?;
+    head.truncate(read);
+    Some(head)
+}
+
+/// The image format a file holds. Its bytes decide first; the extension answers
+/// only for a format the sniff does not know but the OS image tools can still
+/// turn into one a provider takes, so a TIFF or a HEIC is converted rather than
+/// refused.
+pub fn image_mime_of(path: &Path) -> Option<&'static str> {
+    if let Some(mime) = read_head(path, SNIFF_BYTES)
+        .as_deref()
+        .and_then(sniff_image_mime)
+    {
+        return Some(mime);
+    }
+    convertible_image_mime(path)
+}
+
+/// A format a provider does not take but the OS image tools can convert.
+fn convertible_image_mime(path: &Path) -> Option<&'static str> {
+    match path.extension()?.to_str()?.to_ascii_lowercase().as_str() {
+        "tif" | "tiff" => Some("image/tiff"),
+        "heic" => Some("image/heic"),
+        "heif" => Some("image/heif"),
+        "avif" => Some("image/avif"),
         _ => None,
     }
 }
 
 pub fn is_image_path(path: &Path) -> bool {
-    image_mime(path).is_some()
+    image_mime_of(path).is_some()
 }
 
+/// A PDF by its extension or by the header the format begins with, so one that
+/// was saved without a `.pdf` still attaches as a document.
 pub fn is_pdf_path(path: &Path) -> bool {
-    path.extension()
+    if path
+        .extension()
         .and_then(|ext| ext.to_str())
         .is_some_and(|ext| ext.eq_ignore_ascii_case("pdf"))
+    {
+        return true;
+    }
+    read_head(path, 5).is_some_and(|head| head == b"%PDF-")
 }
 
 pub fn is_attachment_path(path: &Path) -> bool {
@@ -311,9 +434,68 @@ fn downscale_image(_bytes: &[u8], _mime: &str) -> Option<Vec<u8>> {
     None
 }
 
-/// Reads an image or PDF and turns it into an LLM-ready content part. A
+/// The extension an input image is written with before the OS tools read it —
+/// `sips` and ImageMagick both go by the name, and neither reads a file called
+/// `input.img` as a HEIC.
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+fn source_extension(mime: &str) -> &str {
+    match mime {
+        "image/bmp" => "bmp",
+        "image/tiff" => "tiff",
+        "image/heic" => "heic",
+        "image/heif" => "heif",
+        "image/avif" => "avif",
+        _ => "img",
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn convert_image_to_png(bytes: &[u8], mime: &str) -> Option<Vec<u8>> {
+    let dir = TempImageDir::new()?;
+    let input = dir.write(&format!("input.{}", source_extension(mime)), bytes)?;
+    let output = dir.path().join("output.png");
+    let status = Command::new("sips")
+        .args(["-s", "format", "png"])
+        .arg(&input)
+        .arg("--out")
+        .arg(&output)
+        .output()
+        .ok()?;
+    status
+        .status
+        .success()
+        .then(|| std::fs::read(&output).ok())
+        .flatten()
+}
+
+#[cfg(target_os = "linux")]
+fn convert_image_to_png(bytes: &[u8], mime: &str) -> Option<Vec<u8>> {
+    let dir = TempImageDir::new()?;
+    let input = dir.write(&format!("input.{}", source_extension(mime)), bytes)?;
+    let output = dir.path().join("output.png");
+    let input = input.to_str()?.to_string();
+    let output = output.to_str()?.to_string();
+    let converted = run_ok("magick", &[&input, &output])
+        || run_ok("convert", &[&input, &output])
+        || run_ok(
+            "ffmpeg",
+            &["-y", "-loglevel", "error", "-i", &input, &output],
+        );
+    converted.then(|| std::fs::read(&output).ok()).flatten()
+}
+
+#[cfg(not(any(target_os = "macos", target_os = "linux")))]
+fn convert_image_to_png(_bytes: &[u8], _mime: &str) -> Option<Vec<u8>> {
+    None
+}
+
+/// Reads a file and turns it into an LLM-ready content part, the way Pi reads
+/// one: an image (converted to a format a provider takes when it is not one
+/// already) becomes an image part, a PDF becomes a document part, and anything
+/// else becomes its own text. Nothing is refused for being the wrong type — a
 /// file past [`MAX_ATTACHMENT_BYTES`] is refused before it is read, so a stray
-/// 200 MB PDF cannot be multiplied through the session and the request.
+/// 200 MB log cannot be multiplied through the session and the request, and a
+/// file whose head holds a NUL byte is refused rather than sent as mojibake.
 pub fn load_attachment(path: &Path) -> Result<ContentPart> {
     let size = std::fs::metadata(path)
         .with_context(|| format!("reading {}", path.display()))?
@@ -337,28 +519,66 @@ pub fn load_attachment(path: &Path) -> Result<ContentPart> {
             },
         });
     }
-    let mime = image_mime(path).with_context(|| {
-        format!(
-            "unsupported attachment type: {} (expected png/jpg/gif/webp/pdf)",
+    if let Some(mime) = image_mime_of(path) {
+        if !is_supported_image_mime(mime) {
+            // An image no provider takes as it stands — a TIFF, a HEIC — is
+            // converted to one it does, rather than refused at the door.
+            let png = convert_image_to_png(&bytes, mime).with_context(|| {
+                format!(
+                    "{} is a {mime} image, which no provider takes and no image tool on this machine could convert",
+                    path.display()
+                )
+            })?;
+            let png = optimize_image(png, "image/png");
+            return Ok(ContentPart::ImageUrl {
+                image_url: ImageUrl {
+                    url: format!("data:image/png;base64,{}", base64_encode(&png)),
+                    detail: None,
+                },
+            });
+        }
+        // GIF is left alone so an animation is not flattened to one frame.
+        let bytes = if mime == "image/gif" {
+            bytes
+        } else {
+            optimize_image(bytes, mime)
+        };
+        return Ok(ContentPart::ImageUrl {
+            image_url: ImageUrl {
+                url: format!("data:{mime};base64,{}", base64_encode(&bytes)),
+                detail: None,
+            },
+        });
+    }
+    text_attachment(path, &bytes)
+}
+
+/// Everything that is neither an image nor a PDF is attached as its text,
+/// wrapped the way Pi wraps one, so a `.csv`, a `.json` or a source file can be
+/// sent without a format list deciding what may travel.
+fn text_attachment(path: &Path, bytes: &[u8]) -> Result<ContentPart> {
+    if bytes.iter().take(SNIFF_BYTES).any(|byte| *byte == 0) {
+        anyhow::bail!(
+            "{} is not an image, a PDF or a text file, so there is nothing to attach",
             path.display()
-        )
-    })?;
-    // GIF is left alone so an animation is not flattened to one frame.
-    let bytes = if mime == "image/gif" {
-        bytes
-    } else {
-        optimize_image(bytes, mime)
-    };
-    Ok(ContentPart::ImageUrl {
-        image_url: ImageUrl {
-            url: format!("data:{mime};base64,{}", base64_encode(&bytes)),
-            detail: None,
-        },
+        );
+    }
+    Ok(ContentPart::Text {
+        text: file_text(&path.display().to_string(), bytes),
     })
 }
 
+/// Pi's own wrapper around an attached file's text.
+fn file_text(name: &str, bytes: &[u8]) -> String {
+    format!(
+        "<file name=\"{name}\">\n{}\n</file>",
+        String::from_utf8_lossy(bytes)
+    )
+}
+
 /// Extracts `@path` references from free-form input that point at existing
-/// image/PDF files. The input text is left untouched.
+/// attachment files (an image or a PDF — what the CLI reads as more than text).
+/// The input text is left untouched.
 pub fn referenced_attachments(input: &str, cwd: &Path) -> Vec<PathBuf> {
     let mut found = Vec::new();
     for token in input.split_whitespace() {
@@ -404,8 +624,26 @@ pub fn attachment_label(part: &ContentPart) -> String {
             .filename
             .clone()
             .unwrap_or_else(|| "document".to_string()),
-        ContentPart::Text { .. } => "text".to_string(),
+        ContentPart::Text { text } => file_name_of(text).unwrap_or_else(|| "text".to_string()),
     }
+}
+
+/// What a part is, in the words a tool result names it with: the image's own
+/// format, `pdf`, or `text`.
+pub fn part_kind(part: &ContentPart) -> &str {
+    match part {
+        ContentPart::ImageUrl { image_url } => {
+            data_url_media_type(&image_url.url).unwrap_or("image")
+        }
+        ContentPart::File { .. } => "pdf",
+        ContentPart::Text { .. } => "text",
+    }
+}
+
+/// The name inside the wrapper [`file_text`] writes.
+fn file_name_of(text: &str) -> Option<String> {
+    let rest = text.strip_prefix("<file name=\"")?;
+    Some(rest.split('"').next()?.to_string())
 }
 
 fn data_url_media_type(url: &str) -> Option<&str> {
@@ -428,26 +666,22 @@ fn human_bytes(bytes: u64) -> String {
 }
 
 /// Builds a content part from an already-encoded data URL, e.g. an image the
-/// desktop read from the clipboard. Returns `None` for a type the provider
-/// cannot take as an attachment, a type a webview cannot paint, or a payload
-/// past [`MAX_ATTACHMENT_BYTES`]. An image is downscaled here — the one place a
-/// data URL can be — so a full-resolution paste is not stored or shipped at
-/// full size just because it never touched a path.
+/// desktop read from the clipboard: a PDF or any other text becomes its own
+/// part, and an image is downscaled (and converted, where it is not a format a
+/// provider takes) here — the one place a data URL can be — so a full-resolution
+/// paste is not stored or shipped at full size just because it never touched a
+/// path. Returns `None` for a payload past [`MAX_ATTACHMENT_BYTES`], one that is
+/// not base64, a binary payload that is not an image, or an image the OS image
+/// tools could not decode.
 pub fn content_part_from_data_url(
     data_url: String,
     filename: Option<String>,
 ) -> Option<ContentPart> {
     let media_type = data_url_media_type(&data_url)?;
-    let image = media_type.starts_with("image/");
-    if (!image && media_type != "application/pdf")
-        || (image && !is_supported_image_mime(media_type))
-    {
-        return None;
-    }
     if data_url.len() > MAX_DATA_URL_CHARS {
         return None;
     }
-    if !image {
+    if media_type == "application/pdf" {
         return Some(ContentPart::File {
             file: FileData {
                 filename,
@@ -455,26 +689,49 @@ pub fn content_part_from_data_url(
             },
         });
     }
-    // A GIF is left alone so an animation is not flattened to one frame.
-    if media_type != "image/gif" {
-        let payload = data_url.split_once(',')?.1;
-        let bytes = base64_decode(payload)?;
-        // The decoded length is what the limit is about, and it is in hand here
-        // for nothing.
-        if bytes.len() > MAX_ATTACHMENT_BYTES {
+    let image = media_type.starts_with("image/");
+    let payload = data_url.split_once(',')?.1;
+    let bytes = base64_decode(payload)?;
+    // The decoded length is what the limit is about, and it is in hand here for
+    // nothing.
+    if bytes.len() > MAX_ATTACHMENT_BYTES {
+        return None;
+    }
+    if !image {
+        // Anything that is not media travels as its text, the same shape a file
+        // attaches with; a payload holding a NUL is not text.
+        if bytes.iter().take(SNIFF_BYTES).any(|byte| *byte == 0) {
             return None;
         }
-        let bytes = optimize_image(bytes, media_type);
+        let name = filename.unwrap_or_else(|| "file".to_string());
+        return Some(ContentPart::Text {
+            text: file_text(&name, &bytes),
+        });
+    }
+    if !is_supported_image_mime(media_type) {
+        // An image no provider takes as it stands is converted to one it does,
+        // the way Pi converts one, instead of being refused.
+        let png = optimize_image(convert_image_to_png(&bytes, media_type)?, "image/png");
         return Some(ContentPart::ImageUrl {
             image_url: ImageUrl {
-                url: format!("data:{media_type};base64,{}", base64_encode(&bytes)),
+                url: format!("data:image/png;base64,{}", base64_encode(&png)),
                 detail: None,
             },
         });
     }
+    // A GIF is left alone so an animation is not flattened to one frame.
+    if media_type == "image/gif" {
+        return Some(ContentPart::ImageUrl {
+            image_url: ImageUrl {
+                url: data_url,
+                detail: None,
+            },
+        });
+    }
+    let bytes = optimize_image(bytes, media_type);
     Some(ContentPart::ImageUrl {
         image_url: ImageUrl {
-            url: data_url,
+            url: format!("data:{media_type};base64,{}", base64_encode(&bytes)),
             detail: None,
         },
     })
@@ -500,8 +757,10 @@ pub fn expand_path(raw: &str, cwd: &Path) -> PathBuf {
 /// A copy from the Finder is preferred over its picture: the pasteboard also
 /// carries the copied file's *icon*, so grabbing the PNG-flavoured data would
 /// attach a placeholder image of the file instead of the file — a copied
-/// screenshot arrived as a `PNG`-document icon. A file that is here but cannot
-/// be attached is reported rather than replaced by that icon.
+/// screenshot arrived as a `PNG`-document icon. The file is read the way any
+/// other attachment is, so a copied text file rides along as its own text; one
+/// that is here but cannot be attached — past the size limit, or a binary that
+/// is neither media nor text — is reported rather than replaced by that icon.
 pub fn clipboard_attachment() -> Option<ContentPart> {
     if let Some(path) = clipboard_file(clipboard_path()) {
         return load_attachment(&path).ok();
@@ -733,12 +992,99 @@ mod tests {
     }
 
     #[test]
-    fn detects_attachment_types() {
-        assert_eq!(image_mime(Path::new("a.PNG")), Some("image/png"));
-        assert_eq!(image_mime(Path::new("a.jpeg")), Some("image/jpeg"));
-        assert!(is_image_path(Path::new("shot.webp")));
-        assert!(is_pdf_path(Path::new("doc.PDF")));
-        assert!(!is_attachment_path(Path::new("main.rs")));
+    fn reads_an_image_format_from_the_bytes() {
+        assert_eq!(sniff_image_mime(ONE_PX_PNG), Some("image/png"));
+        assert_eq!(sniff_image_mime(b"GIF89a"), Some("image/gif"));
+        assert_eq!(sniff_image_mime(b"GIF87a"), Some("image/gif"));
+        assert_eq!(
+            sniff_image_mime(&[0xFF, 0xD8, 0xFF, 0xE0]),
+            Some("image/jpeg")
+        );
+        // A JPEG-LS is a shape no provider takes.
+        assert_eq!(sniff_image_mime(&[0xFF, 0xD8, 0xFF, 0xF7]), None);
+        assert_eq!(
+            sniff_image_mime(b"RIFF\x00\x00\x00\x00WEBPVP8 "),
+            Some("image/webp")
+        );
+        assert_eq!(sniff_image_mime(&bmp_fixture()), Some("image/bmp"));
+        assert_eq!(sniff_image_mime(b"# a text file named .png"), None);
+    }
+
+    /// An animated PNG is not sent as a still one: its `acTL` chunk sits
+    /// between the header and the image data.
+    #[test]
+    fn an_animated_or_malformed_png_is_not_an_image() {
+        assert_eq!(sniff_image_mime(&animated_png()), None);
+        let mut truncated = ONE_PX_PNG.to_vec();
+        truncated[8..12].copy_from_slice(&12u32.to_be_bytes());
+        assert_eq!(sniff_image_mime(&truncated), None);
+    }
+
+    /// Pi's own normalized set: what a provider takes as it stands. Everything
+    /// else sniffed as an image — a BMP included, which this sniff still
+    /// recognizes — is converted to PNG rather than sent.
+    #[test]
+    fn a_provider_takes_pi_normalized_formats_as_they_stand() {
+        for mime in ["image/png", "image/jpeg", "image/gif", "image/webp"] {
+            assert!(
+                is_supported_image_mime(mime),
+                "{mime} should travel as it is"
+            );
+        }
+        for mime in ["image/bmp", "image/tiff", "image/heic", "image/avif"] {
+            assert!(!is_supported_image_mime(mime), "{mime} should convert");
+        }
+    }
+
+    fn animated_png() -> Vec<u8> {
+        let mut png = ONE_PX_PNG.to_vec();
+        let ac_tl: &[u8] = b"\x00\x00\x00\x08acTL\x00\x00\x00\x01\x00\x00\x00\x02\x00\x00\x00\x00";
+        png.splice(33..33, ac_tl.iter().copied());
+        png
+    }
+
+    /// A 1x1 24-bit BMP, header and all.
+    fn bmp_fixture() -> Vec<u8> {
+        let mut bmp = vec![0u8; 54];
+        bmp[..2].copy_from_slice(b"BM");
+        bmp[2..6].copy_from_slice(&60u32.to_le_bytes());
+        bmp[10..14].copy_from_slice(&54u32.to_le_bytes());
+        bmp[14..18].copy_from_slice(&40u32.to_le_bytes());
+        bmp[26..28].copy_from_slice(&1u16.to_le_bytes());
+        bmp[28..30].copy_from_slice(&24u16.to_le_bytes());
+        bmp
+    }
+
+    #[test]
+    fn an_attachment_is_decided_by_the_bytes_rather_than_the_name() {
+        let dir = std::env::temp_dir().join(format!("oxide_media_kind_{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+
+        // A screenshot saved without an extension is an image.
+        let bare = dir.join("screenshot");
+        std::fs::write(&bare, ONE_PX_PNG).unwrap();
+        assert_eq!(image_mime_of(&bare), Some("image/png"));
+
+        // A text file named `.png` is not.
+        let liar = dir.join("notes.png");
+        std::fs::write(&liar, b"# notes").unwrap();
+        assert_eq!(image_mime_of(&liar), None);
+        assert!(!is_attachment_path(&liar));
+
+        // A format the sniff does not know is still an image here, because the
+        // OS image tools can convert it.
+        let scan = dir.join("scan.tif");
+        std::fs::write(&scan, b"II*\x00").unwrap();
+        assert_eq!(image_mime_of(&scan), Some("image/tiff"));
+        assert!(is_attachment_path(&scan));
+
+        // A PDF is recognised by its header too.
+        let spec = dir.join("spec");
+        std::fs::write(&spec, b"%PDF-1.7\n...").unwrap();
+        assert!(is_pdf_path(&spec));
+        assert!(is_pdf_path(Path::new("docs/SPEC.PDF")));
+
+        std::fs::remove_dir_all(&dir).ok();
     }
 
     /// A real 1x1 PNG, used to build a large fixture with the system image tool.
@@ -807,15 +1153,111 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("oxide_media_{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let file = dir.join("dot.png");
-        std::fs::write(&file, b"f").unwrap();
+        std::fs::write(&file, ONE_PX_PNG).unwrap();
 
         let part = load_attachment(&file).unwrap();
         match part {
             ContentPart::ImageUrl { image_url } => {
-                assert_eq!(image_url.url, "data:image/png;base64,Zg==");
+                assert_eq!(
+                    image_url.url,
+                    format!("data:image/png;base64,{}", base64_encode(ONE_PX_PNG))
+                );
             }
             other => panic!("unexpected part: {other:?}"),
         }
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// An image no provider takes as it stands is converted rather than refused:
+    /// a TIFF the system tool turns into a PNG travels as that PNG. The fixture
+    /// is written by the same tool, so a machine whose `sips` cannot make one is
+    /// a failure rather than a silent pass.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn converts_an_image_a_provider_will_not_take() {
+        let dir = std::env::temp_dir().join(format!("oxide_media_convert_{}", std::process::id()));
+        std::fs::remove_dir_all(&dir).ok();
+        std::fs::create_dir_all(&dir).unwrap();
+        let png = dir.join("in.png");
+        let large = dir.join("large.png");
+        let tiff = dir.join("scan.tiff");
+        std::fs::write(&png, ONE_PX_PNG).unwrap();
+        for args in [
+            vec![
+                "-Z",
+                "200",
+                png.to_str().unwrap(),
+                "--out",
+                large.to_str().unwrap(),
+            ],
+            vec![
+                "-s",
+                "format",
+                "tiff",
+                large.to_str().unwrap(),
+                "--out",
+                tiff.to_str().unwrap(),
+            ],
+        ] {
+            let out = Command::new("sips")
+                .args(&args)
+                .output()
+                .expect("sips is built into macOS");
+            assert!(
+                out.status.success(),
+                "sips {args:?} failed: {}",
+                String::from_utf8_lossy(&out.stderr)
+            );
+        }
+
+        assert_eq!(image_mime_of(&tiff), Some("image/tiff"));
+        let part = load_attachment(&tiff).expect("a TIFF is converted, not refused");
+        match &part {
+            ContentPart::ImageUrl { image_url } => {
+                assert!(
+                    image_url.url.starts_with("data:image/png;base64,"),
+                    "{}",
+                    image_url.url
+                );
+                let bytes =
+                    base64_decode(image_url.url.trim_start_matches("data:image/png;base64,"))
+                        .expect("the payload decodes");
+                assert_eq!(png_dimensions(&bytes), Some((200, 200)));
+            }
+            other => panic!("a TIFF should travel as an image, got {other:?}"),
+        }
+        assert_eq!(part_kind(&part), "image/png");
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// Anything that is neither an image nor a PDF is attached as its text,
+    /// wrapped the way Pi wraps one, so no format list decides what may travel.
+    #[test]
+    fn loads_any_other_file_as_its_text() {
+        let dir = std::env::temp_dir().join(format!("oxide_media_text_{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("rows.csv");
+        std::fs::write(&file, b"a,b\n1,2\n").unwrap();
+
+        match load_attachment(&file).unwrap() {
+            ContentPart::Text { text } => {
+                assert!(text.starts_with(&format!("<file name=\"{}\">", file.display())));
+                assert!(text.contains("a,b\n1,2"));
+                assert!(text.ends_with("</file>"));
+            }
+            other => panic!("unexpected part: {other:?}"),
+        }
+
+        // A binary file is refused rather than sent as mojibake.
+        let binary = dir.join("blob.bin");
+        std::fs::write(&binary, [0u8, 1, 2, 3]).unwrap();
+        let error = load_attachment(&binary).unwrap_err().to_string();
+        assert!(
+            error.contains("nothing to attach"),
+            "unexpected error: {error}"
+        );
 
         std::fs::remove_dir_all(&dir).ok();
     }
@@ -824,7 +1266,7 @@ mod tests {
     fn extracts_referenced_attachments() {
         let dir = std::env::temp_dir().join(format!("oxide_media_ref_{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
-        std::fs::write(dir.join("shot.png"), b"x").unwrap();
+        std::fs::write(dir.join("shot.png"), ONE_PX_PNG).unwrap();
         std::fs::write(dir.join("notes.txt"), b"x").unwrap();
 
         let found = referenced_attachments("look at @shot.png and @notes.txt please", &dir);
@@ -920,11 +1362,22 @@ mod tests {
         .expect("pdf");
         assert!(matches!(pdf, ContentPart::File { .. }));
 
+        match content_part_from_data_url(
+            "data:text/csv;base64,YSxiCg==".to_string(),
+            Some("rows.csv".to_string()),
+        ) {
+            Some(ContentPart::Text { text }) => {
+                assert_eq!(text, "<file name=\"rows.csv\">\na,b\n\n</file>");
+            }
+            other => panic!("unexpected part: {other:?}"),
+        }
+
+        // A payload that is not text is refused rather than shipped as mojibake.
         assert!(
             content_part_from_data_url("data:text/plain;base64,AAAA".to_string(), None).is_none()
         );
-        // A type no webview can paint and Oxide cannot send is refused rather
-        // than stored as a thumbnail that cannot be drawn.
+        // An image the OS tools cannot decode either is refused rather than
+        // stored as a thumbnail that cannot be drawn.
         assert!(content_part_from_data_url(
             "data:image/tiff;base64,AAAA".to_string(),
             Some("scan.tif".to_string())

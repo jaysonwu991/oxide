@@ -15,8 +15,9 @@ and MCP servers as the terminal and the desktop app — nothing is reconfigured.
   are the desktop app's: the cyan diamond mark and, in the Extensions view, the
   desktop app icon.
 - **Attachments**: paste an image into the composer, drop files onto it, or
-  click **Attach** — images and PDFs become chips above the message and travel
-  to the model as media, while a text file is inlined as context. Each chip
+  click **Attach** — an image, a PDF or a text file becomes a chip above the
+  message and travels to the model as media or as its own text, while a text
+  file picked from the explorer is inlined as context instead. Each chip
   shows a thumbnail (or its size), can be removed with ✕, and the message box
   starts two rows tall and grows as you type.
 - **Footer** around the composer, matching the terminal's: icon controls for
@@ -175,7 +176,8 @@ Provider logins live in the CLI: run **Oxide: Open Terminal (TUI)** and use
   temporary directory (`os.tmpdir()`), because the CLI takes attachment *paths*
   (`--image`); the directory is removed when the window closes. Files picked or
   dropped from the explorer are passed where they already are, so nothing is
-  copied for them. At most eight attachments ride on one message.
+  copied for them. At most eight attachments ride on one message, and one of a
+  type neither the panel nor the CLI has a use for is refused with a notice.
 - The footer reads the same files the CLI does, read-only: `config.json` for the
   model and window, `trust.json` plus `defaultProjectTrust` for the access chip,
   `settings.json`/`.oxide/settings.json` for auto-compaction, the project's

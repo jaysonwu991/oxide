@@ -218,11 +218,14 @@ export interface ContextChip {
   detail?: string;
 }
 
-/// An image or PDF the message carries as media (`--image`).
+/// An image, a PDF or a text file the message carries as an attachment
+/// (`--image`). A text file is one the CLI attaches as its own text, which is
+/// what a pasted blob of source or data becomes.
 export interface AttachmentChip extends ContextChip {
-  kind: "image" | "pdf";
-  /// A data URL for the chip's thumbnail, or `null` when the picture is too
-  /// large to send to the webview (the chip shows a glyph instead).
+  kind: "image" | "pdf" | "text";
+  /// A data URL for the chip's thumbnail, or `null` when there is no picture
+  /// to draw — a PDF, a text file, or an image this webview cannot paint, all
+  /// of which show a glyph instead.
   preview: string | null;
   /// The size and origin, for the chip's tooltip.
   detail: string;

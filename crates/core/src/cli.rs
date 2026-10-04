@@ -22,7 +22,7 @@ pub enum OutputMode {
 }
 
 /// Expands `@path` file arguments into an initial prompt prefix, mirroring
-/// Pi's `pi @file "message"` form. Attachments (images/PDFs) are returned
+/// Pi's `pi @file "message"` form. Attachments (an image, a PDF or a text file) are returned
 /// separately so they can be sent as media parts.
 pub struct FileArgs {
     pub text: String,

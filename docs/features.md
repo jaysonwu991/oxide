@@ -35,8 +35,9 @@ page is the detail behind it, and the task-by-task guides live in
   stream errors surface as errors instead of silently ending the turn. Text the
   last attempt streamed is kept in the session, so the next message can continue
   from what you already saw.
-- Multimodal prompts: attach images/PDFs with `--image` or `@path` references,
-  and pass prompt files as `oxide @file "message"`.
+- Multimodal prompts: attach images, PDFs and text files with `--image` or
+  `@path` references, and pass prompt files as `oxide @file "message"`. An image
+  no provider takes is converted rather than refused.
 
 ## Tools and the agent loop
 

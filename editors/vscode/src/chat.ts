@@ -24,6 +24,7 @@ import {
   attachmentRejection,
   decodeDataUrl,
   formatBytes,
+  isPaintableImage,
   MAX_ATTACHMENT_BYTES,
   MAX_ATTACHMENTS,
   type AttachmentKind,
@@ -934,7 +935,7 @@ export class ChatController {
   addAttachment(dataUrl: string, name = ""): ContextChip | null {
     const decoded = decodeDataUrl(dataUrl);
     if (!decoded) {
-      this.showNotice("Only images and PDFs can be attached.", "warn");
+      this.showNotice("Only images, PDFs and text files can be attached.", "warn");
       return null;
     }
     const key = attachmentId(decoded.bytes);
@@ -959,15 +960,19 @@ export class ChatController {
       label,
       path: written.path,
       kind: decoded.kind,
-      // Only an image gets a thumbnail: a PDF would echo its whole data URL
-      // back to the view for nothing.
-      preview: decoded.kind === "image" ? previewForDataUrl(dataUrl) : null,
+      // Only a picture this webview can draw gets a thumbnail: a PDF would
+      // echo its whole data URL back for nothing, and a TIFF or a HEIC has
+      // nothing the browser can paint.
+      preview:
+        decoded.kind === "image" && isPaintableImage(decoded.mime)
+          ? previewForDataUrl(dataUrl)
+          : null,
       detail: `${written.detail} · pasted`,
     });
   }
 
-  /// An image or PDF that is already on disk, addressed by an absolute path
-  /// passed straight to `--image`.
+  /// Media that is already on disk, addressed by an absolute path passed
+  /// straight to `--image`: an image (including one the CLI converts) or a PDF.
   private addAttachmentFile(file: string, mime: string): ContextChip | null {
     const kind = attachmentKind(mime);
     if (!kind) return null;
@@ -993,7 +998,7 @@ export class ChatController {
       label,
       path: file,
       kind,
-      preview: kind === "image" ? previewForFile(file, mime) : null,
+      preview: kind === "image" && isPaintableImage(mime) ? previewForFile(file, mime) : null,
       detail: `${formatBytes(size)} · ${this.relativeTo(file)}`,
     });
   }

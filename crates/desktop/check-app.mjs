@@ -2580,11 +2580,23 @@ check(
   pdf?.children[2]?.className === "att-remove" && pdf.children[2].innerHTML === app.ICONS.close,
   elementFor("attachments").outline(),
 );
-check("refused any other file", app.addAttachment("notes.txt", "data:text/plain;base64,AA") === false);
+// A text file rides along as its own text and a TIFF is an image the core
+// converts, so neither is turned away for its type; both wear the file glyph,
+// since there is no picture to draw for either.
 check(
-  "refused a format the webview cannot paint",
-  app.addAttachment("scan.tif", "data:image/tiff;base64,AA") === false &&
-    status() === "Only PNG, JPEG, GIF, WebP, BMP and PDF can be attached",
+  "kept a text attachment",
+  app.addAttachment("notes.txt", "data:text/plain;base64,YQ==") === true,
+  status(),
+);
+const notes = chips()[2];
+check(
+  "gave a text file the app's own file glyph instead of a thumbnail",
+  notes?.children[0]?.className === "att-file",
+  elementFor("attachments").outline(),
+);
+check(
+  "kept an image the core converts",
+  app.addAttachment("scan.tif", "data:image/tiff;base64,AA") === true,
   status(),
 );
 app.state.attachments = [];
@@ -2610,13 +2622,14 @@ check(
 );
 app.state.attachments = [];
 
-// The browser has already typed a picked file, so a format nothing here can
-// paint is refused before it is read: a TIFF with nothing readable behind it
-// would fail the read (and base64 itself) if the check came after it.
-await app.addAttachmentFiles([{ name: "scan.tif", size: 1024, type: "image/tiff" }]);
+// The browser has already typed a picked file, so a type neither the core nor
+// a chip has a use for is refused before it is read: a ZIP with nothing
+// readable behind it would fail the read (and base64 itself) if the check came
+// after it.
+await app.addAttachmentFiles([{ name: "bundle.zip", size: 1024, type: "application/zip" }]);
 check(
-  "refused a format the webview cannot paint without reading it",
-  app.state.attachments.length === 0 && status() === "Cannot attach scan.tif: image/tiff is not one of PNG, JPEG, GIF, WebP, BMP and PDF",
+  "refused a type nothing can take without reading it",
+  app.state.attachments.length === 0 && status() === "Cannot attach bundle.zip: application/zip is not an image, a PDF or a text file",
   status(),
 );
 // A blob the browser did not type is still decided by the data URL it becomes.
