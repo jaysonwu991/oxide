@@ -60,7 +60,7 @@ cargo install --path crates/cli
 ```
 
 Provider logins live in the CLI: run **Oxide: Open Terminal (TUI)** and use
-`/login` there. The extension reads the resulting `auth.json` and
+`/connect` there. The extension reads the resulting `auth.json` and
 `config.json` — it never asks for a key itself.
 
 ## Getting started
@@ -82,8 +82,9 @@ Provider logins live in the CLI: run **Oxide: Open Terminal (TUI)** and use
    in tooltips. Session history stays in the header's history button. Under the
    composer the branch and context gauge stay compact; focus or hover the
    context percentage for the terminal footer's complete usage details.
-5. `/mcps` in the message box opens the MCP server list above the composer it
-   was typed in, and `/session` the project's threads under the header — both
+5. `/mcp` in the message box opens the MCP server list
+   above the composer it was typed in, and `/session`
+   the project's threads under the header — both
    inside the panel, with a server's power switch or
    the thread a row names acting where it was asked (the same lists **Oxide:
    MCP Servers…** and **Oxide: Resume Session…** open from the palette). The
@@ -125,8 +126,8 @@ Provider logins live in the CLI: run **Oxide: Open Terminal (TUI)** and use
 | **Oxide: Explain Selection** | Attach the selection and ask for an explanation. |
 | **Oxide: Fix Selection** | Attach the selection and ask for a minimal fix. |
 | **Oxide: Review Working Tree Changes** | Review the uncommitted changes without modifying files. |
-| **Oxide: Open Terminal (TUI)** | Run the interactive `oxide` TUI in a terminal, for `/login` and `/models`. |
-| **Oxide: MCP Servers…** | List the MCP servers this project loads and connect or disconnect them; typing `/mcps` in the composer opens the same list above the composer. |
+| **Oxide: Open Terminal (TUI)** | Run the interactive `oxide` TUI in a terminal, for `/connect` and `/models`. |
+| **Oxide: MCP Servers…** | List the MCP servers this project loads and connect or disconnect them; typing `/mcp` in the composer opens the same list above the composer. |
 | **Oxide: Check for Updates...** | Report the newest oxide CLI release and offer to install it, by running the CLI's own `oxide update --check --json` and then `oxide update` if you take it. The extension itself updates from the Marketplace. |
 | **Oxide: Show Output Channel** | The command line, prompt, stderr and event log of each turn. |
 | **Oxide: Set Model…**, **Set Agent…**, **Set Reasoning Effort…**, **Set Project Trust…** | Write the matching workspace setting; the footer's chips are the same actions. |

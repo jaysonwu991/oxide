@@ -5,8 +5,8 @@
 // webview stays a dumb renderer and never decides what a click means: a row
 // carries the action it posts back, exactly like a footer chip carries its
 // control id. The listing itself comes from the CLI (`oxide mcp list --json`,
-// `oxide sessions list`), so the rows here say what the terminal's `/mcps` and
-// `/resume` say about the same project.
+// `oxide sessions list`), so the rows here say what the terminal's `/mcp` and
+// `/session` say about the same project.
 //
 // Rendering them in the panel instead of a `showQuickPick` keeps the flow in
 // Oxide's own UI: a native picker takes over the window, hides the transcript
@@ -17,7 +17,7 @@ import { filterProviders, providerState, type ProviderView } from "./providers";
 import { filterSessions, type SessionEntry } from "./sessions";
 import { updateVsix, type UpdateCheck } from "./updates";
 
-/// How a row's status is colored: the green/amber/red the terminal's `/mcps`
+/// How a row's status is colored: the green/amber/red the terminal's `/mcp`
 /// uses, `muted` for a server that is off or a session's age.
 export type DialogTone = "ok" | "warn" | "error" | "muted" | "";
 
@@ -183,7 +183,7 @@ export interface ModelChoice {
 /// The provider table, in the panel: every provider a client can connect, with
 /// the state a login would change, searched rather than listed because the table
 /// holds all of them. A row signs in to the provider it names — the same
-/// `auth.json` and `config.json` the terminal's `/login` writes, so what the
+/// `auth.json` and `config.json` the terminal's `/connect` writes, so what the
 /// panel connects is what the next turn runs on.
 ///
 /// The rows come from the CLI (`oxide providers --json`), so which providers
@@ -207,7 +207,7 @@ export function providerDialog(
     pin: "footer",
     title: "Providers",
     subtitle:
-      "Sign in to a provider. The credential is stored where the terminal's /login stores it, and the next turn uses it.",
+      "Sign in to a provider. The credential is stored where the terminal's /connect stores it, and the next turn uses it.",
     note: note || empty,
     rows: rows.map((provider) =>
       row(provider.name, provider.label, {
@@ -420,7 +420,7 @@ function choiceDialog(
   };
 }
 
-/// The `/mcps` dialog: every server this project loads, the state the core
+/// The `/mcp` dialog: every server this project loads, the state the core
 /// probed, and a switch that turns one off or back on in the file that defines
 /// it. `note` overrides the empty-list message, so a listing that failed can say
 /// so in place where a QuickPick would just vanish.
@@ -430,7 +430,7 @@ export function mcpDialog(servers: readonly McpServerView[], note = ""): DialogS
     pin: "footer",
     title: "MCP servers",
     subtitle:
-      "The servers this project loads, and whether Oxide can reach them. A toggle is written to the file that defines the server — the same change the terminal's /mcps makes.",
+      "The servers this project loads, and whether Oxide can reach them. A toggle is written to the file that defines the server — the same change the terminal's /mcp makes.",
     note:
       note ||
       (servers.length

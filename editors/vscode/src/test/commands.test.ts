@@ -580,16 +580,16 @@ describe("command contributions", () => {
       open.includes('if (this.dialog?.kind !== "sessions") return;'),
       "and an answer to a listing closed while it was read is dropped",
     );
-    // `/session` asks for the listing rather than toggling it, in both places it
-    // is reached from: a command that names the history should not answer by
-    // closing it.
+    // `/session` asks for the listing rather than toggling it: a command that
+    // names the history should not answer by closing it, whether it was typed in
+    // the composer or taken from the `/` menu.
     assert.equal(
-      /isSessionCommand\(message\)\s*\)\s*\{\s*await this\.openSessions\(\)/.test(chat),
+      /case "session":[\s\S]*?return this\.openSessions\(\)/.test(chat),
       true,
-      "the command typed in the composer opens the history",
+      "the command opens the history",
     );
     assert.equal(
-      /isSessionCommand\(message\)\s*\)\s*\{\s*await this\.resumeSession\(\)/.test(chat),
+      /case "session":[\s\S]*?return this\.resumeSession\(\)/.test(chat),
       false,
       "and never the toggle",
     );
@@ -939,17 +939,21 @@ describe("command contributions", () => {
   });
 
   it("answers the client commands in the panel instead of prompting them", () => {
-    // `/mcps` and `/session` are the commands a front-end performs itself, so a
+    // `/mcp` and `/session` are the commands a front-end performs itself, so a
     // message that reaches the prompt path would ask the model what a server
-    // list is rather than showing it.
+    // list is rather than showing it. Which names those are is the catalog's own
+    // list (`palette.test.ts` routes them), so the panel keeps none here.
     const send = chat.slice(chat.indexOf("async send("), chat.indexOf("private ", chat.indexOf("async send(")));
-    for (const command of ["isMcpCommand", "isSessionCommand"]) {
-      assert.ok(send.includes(`${command}(message)`), `send consults ${command}`);
-      assert.ok(
-        send.indexOf(`${command}(message)`) < send.indexOf("this.turn.steer"),
-        `${command} is answered before a message is queued, steered or prompted`,
-      );
-    }
+    assert.equal(
+      /isMcpCommand|isSessionCommand/.test(send),
+      false,
+      "send keeps no list of names of its own",
+    );
+    assert.ok(send.includes("routeCommand(await this.commands(), message)"), "the catalog decides");
+    assert.ok(
+      send.indexOf("routeCommand(") < send.indexOf("this.turn.steer"),
+      "a built-in is answered before a message is queued, steered or prompted",
+    );
   });
 
   it("sends an image on its own, and a busy message keeps its own chips", () => {

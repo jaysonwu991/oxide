@@ -1,4 +1,4 @@
-// The `/mcps` dialog reads the CLI's own JSON listing, so what it says about a
+// The `/mcp` dialog reads the CLI's own JSON listing, so what it says about a
 // server has to survive a CLI that answers with a human table, a partial entry
 // or a state this build has not seen.
 
@@ -8,7 +8,6 @@ import * as path from "node:path";
 import { describe, it } from "node:test";
 
 import {
-  isMcpCommand,
   mcpListArgs,
   mcpStateLabel,
   mcpToggleArgs,
@@ -94,19 +93,6 @@ describe("MCP server listing", () => {
     assert.deepEqual(mcpListArgs(), ["mcp", "list", "--json"]);
   });
 
-  it("answers only the bare slash command", () => {
-    assert.ok(isMcpCommand("/mcps"));
-    assert.ok(isMcpCommand("  /MCP  "));
-    assert.ok(!isMcpCommand("/mcp list"));
-    assert.ok(!isMcpCommand("show me /mcps"));
-    assert.ok(!isMcpCommand(""));
-    // The slash is what makes it a command: plain text about MCP reaches the
-    // model instead of opening the picker.
-    assert.ok(!isMcpCommand("mcp"));
-    assert.ok(!isMcpCommand("mcps"));
-    assert.ok(!isMcpCommand("MCP: how do servers authenticate?"));
-  });
-
   it("requires a workspace folder before listing servers", () => {
     const root = path.join(__dirname, "..", "..");
     const chat = fs.readFileSync(path.join(root, "src", "chat.ts"), "utf8");
@@ -123,14 +109,15 @@ describe("MCP server listing", () => {
 
   // The controller imports `vscode`, so it cannot be loaded here; the decision
   // it consults is. A composer line that reaches the prompt path instead would
-  // send `/mcps` to the model as text.
+  // send `/mcp` to the model as text — the route itself, and the names it
+  // answers, are the catalog's and are covered in `palette.test.ts`.
   it("is consulted before the message is prompted", () => {
     const root = path.join(__dirname, "..", "..");
     const chat = fs.readFileSync(path.join(root, "src", "chat.ts"), "utf8");
     const send = chat.slice(chat.indexOf("async send("), chat.indexOf("private ", chat.indexOf("async send(")));
-    assert.ok(send.includes("isMcpCommand(message)"), "send consults the command");
+    assert.ok(send.includes("routeCommand(await this.commands(), message)"), "send consults the command");
     assert.ok(
-      send.indexOf("isMcpCommand(message)") < send.indexOf("this.turn.steer"),
+      send.indexOf("routeCommand(") < send.indexOf("this.turn.steer"),
       "the command is answered before a message is queued or prompted",
     );
   });

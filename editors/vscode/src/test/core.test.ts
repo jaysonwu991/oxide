@@ -24,7 +24,7 @@ import {
   selectionLines,
   type AtReferenceSources,
 } from "../core/prompt";
-import { filterSessions, isSessionCommand, parseSessionList, parseVersion } from "../core/sessions";
+import { filterSessions, parseSessionList, parseVersion } from "../core/sessions";
 import { sniffMediaMime } from "../core/attachments";
 import { resolveBinary, spawnPlan } from "../cli";
 
@@ -742,16 +742,6 @@ describe("session listing", () => {
     assert.equal(parseVersion("oxide 0.0.0\n"), "0.0.0");
     assert.equal(parseVersion("oxide 1.2.3-beta.1"), "1.2.3-beta.1");
     assert.equal(parseVersion("not installed"), null);
-  });
-
-  it("answers only the bare session command", () => {
-    // The dialog is opened here rather than by sending `/session` to the model,
-    // which is what the terminal and the desktop app do with it too.
-    assert.ok(isSessionCommand("/session"));
-    assert.ok(isSessionCommand("  /SESSIONS  "));
-    assert.ok(!isSessionCommand("/session fe0031b1"));
-    assert.ok(!isSessionCommand("list the sessions"));
-    assert.ok(!isSessionCommand(""));
   });
 
   /// The panel's search box filters the answer the store already gave, so what

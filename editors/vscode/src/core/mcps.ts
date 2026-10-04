@@ -1,6 +1,6 @@
 // The MCP server list, read from the CLI's own `oxide mcp list --json`.
 //
-// The listing is the one the terminal's `/mcps` draws and the desktop app's MCP
+// The listing is the one the terminal's `/mcp` draws and the desktop app's MCP
 // dialog shows, so the picker here reports the same servers, the same states and
 // the same source labels without the extension having to read `mcp.json` itself
 // (or know where each scope keeps it).
@@ -95,17 +95,4 @@ export function mcpToggleArgs(server: McpServerView, enabled: boolean): string[]
 /// runs in.
 export function mcpListArgs(): string[] {
   return ["mcp", "list", "--json"];
-}
-
-/// True for the slash command the dialog answers, so a typed `/mcps` opens the
-/// list instead of being sent to the model as a prompt. Only the bare command:
-/// the leading slash is required — bare `mcp` is ordinary text — and
-/// `/mcp list` is left to the agent's own resolution.
-export function isMcpCommand(text: string): boolean {
-  const trimmed = text.trim();
-  if (!trimmed.startsWith("/")) return false;
-  const parts = trimmed.split(/\s+/);
-  if (parts.length !== 1) return false;
-  const name = parts[0].slice(1).toLowerCase();
-  return name === "mcps" || name === "mcp";
 }

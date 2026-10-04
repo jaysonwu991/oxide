@@ -17,8 +17,6 @@
 /// One row of `oxide commands --json`.
 export interface CommandEntry {
   name: string;
-  /// Alternative spellings, e.g. `mcps` for `mcp`.
-  aliases: string[];
   description: string;
   /// An argument hint (`auto|off|low|medium|high`), or "" when it takes none.
   arguments: string;
@@ -27,8 +25,13 @@ export interface CommandEntry {
   kind: string;
   /// `builtin`, `project` or `global`.
   source: string;
-  /// A command only the desktop app can perform (its theme picker, provider
-  /// login), which is left out of this panel's menu.
+  /// The front-ends that perform it (`terminal`, `desktop`, `panel`), as the
+  /// catalog declares them. Empty in a CLI that predates the field.
+  frontEnds: string[];
+  /// The same fact as a client too old to read `frontEnds` saw it: true when
+  /// this panel is not one of the front-ends that perform the command (its
+  /// `/theme` and `/logout`, and the terminal's `/permissions`). Kept because a
+  /// released extension is answered by whichever CLI is installed.
   desktopOnly: boolean;
 }
 
@@ -85,13 +88,13 @@ export function parseCommandList(output: string): CommandEntry[] {
     if (!name) continue;
     entries.push({
       name,
-      aliases: Array.isArray(record.aliases)
-        ? record.aliases.filter((alias): alias is string => typeof alias === "string")
-        : [],
       description: stringOf(record.description),
       arguments: stringOf(record.arguments),
       kind: stringOf(record.kind) || "prompt",
       source: stringOf(record.source),
+      frontEnds: Array.isArray(record.front_ends)
+        ? record.front_ends.filter((name): name is string => typeof name === "string")
+        : [],
       desktopOnly: record.desktop_only === true,
     });
   }
@@ -111,10 +114,10 @@ export function commandQuery(value: string): string | null {
 /// The entries the panel offers, best first, capped at `MAX_COMMAND_ROWS`.
 ///
 /// Matching is the terminal's and the desktop app's: a case-insensitive
-/// substring of the name or an alias, with the names that start with the query
-/// first — so `/ox` offers `/oxide-architecture` before a command that merely
-/// mentions it. The panel's own actions follow the project's own entries: a
-/// skill or command the user is reaching for is what the menu is for.
+/// substring of the name, with the names that start with the query first — so
+/// `/ox` offers `/oxide-architecture` before a command that merely mentions it.
+/// The panel's own actions follow the project's own entries: a skill or command
+/// the user is reaching for is what the menu is for.
 export function paletteCommands(
   entries: readonly CommandEntry[],
   query: string,
@@ -131,22 +134,42 @@ export function paletteCommands(
 }
 
 /// Whether the panel offers an entry at all: every configured command and
-/// skill, and the built-in commands it has an action for.
+/// skill, and the built-in commands this panel performs. A client command is a
+/// row only where the catalog names this panel among the front-ends that run it
+/// — the terminal's `/permissions` and the desktop app's `/theme` are not rows
+/// here, since taking one would send text the CLI hands the model.
 function offered(entry: CommandEntry): boolean {
   if (entry.kind !== "client") return true;
-  if (entry.desktopOnly) return false;
-  return panelCommand(entry.name) !== null;
+  if (entry.frontEnds.length) return entry.frontEnds.includes(PANEL);
+  // A CLI that prints no front-ends: the desktop's own names are the ones this
+  // panel knows it is not, and a command it has no action for is no row either
+  // way (taking one would send text the CLI hands the model).
+  return !entry.desktopOnly && panelCommand(entry.name) !== null;
 }
 
-/// How well an entry answers a query: a name that starts with it, then an alias
-/// that does, then one that mentions it anywhere. `-1` is no match.
+/// The name the catalog files an entry under, from the name the user typed. The
+/// catalog holds one spelling per command, so the name is the name; an unknown
+/// or configured one is returned as it was typed.
+export function canonicalCommand(
+  name: string,
+  entries: readonly CommandEntry[],
+): string {
+  const typed = name.trim().replace(/^\//, "").toLowerCase();
+  const entry = entries.find(
+    (candidate) => candidate.kind === "client" && candidate.name.toLowerCase() === typed,
+  );
+  return entry ? entry.name.toLowerCase() : typed;
+}
+
+/// The front-end the catalog names for this panel.
+const PANEL = "panel";
+
+/// How well an entry answers a query: a name that starts with it, then one that
+/// mentions it anywhere. `-1` is no match.
 function rankOf(entry: CommandEntry, query: string): number {
   const name = entry.name.toLowerCase();
   if (name.startsWith(query)) return 0;
-  const aliases = entry.aliases.map((alias) => alias.toLowerCase());
-  if (aliases.some((alias) => alias.startsWith(query))) return 1;
-  if (name.includes(query)) return 2;
-  return aliases.some((alias) => alias.includes(query)) ? 3 : -1;
+  return name.includes(query) ? 1 : -1;
 }
 
 /// The rows for a composer value, and the range of the value they replace —
@@ -169,41 +192,37 @@ export function commandRows(
   return { start: 0, end: value.length, rows };
 }
 
-/// The action the panel performs for a built-in command, by name or alias, or
-/// `null` for one it has none for. A leading slash is allowed, as the CLI's own
-/// `builtin` lookup allows it.
+/// The action the panel performs for a built-in command, by its catalog name,
+/// or `null` for one it has none for. A leading slash is allowed, as the CLI's
+/// own `builtin` lookup allows it.
+///
+/// The catalog's names are the only spellings there are, so this switch matches
+/// a name and holds no table of its own.
 export function panelCommand(name: string): PanelAction | null {
   switch (name.trim().replace(/^\//, "").toLowerCase()) {
     case "help":
       return "help";
     case "mcp":
-    case "mcps":
       return "mcp";
-    // Signing in to a provider is the CLI's own `login`, so the panel performs it
-    // with its own dialog rather than sending `/connect` on as a prompt.
+    // Signing in to a provider is the CLI's own `connect`, so the panel performs
+    // it with its own dialog rather than sending the text on as a prompt.
     case "connect":
-    case "login":
       return "provider";
     case "model":
       return "model";
     case "reasoning":
-    case "thinking":
       return "reasoning";
     case "agent":
       return "agent";
     case "trust":
-    case "access":
       return "trust";
     case "session":
-    case "sessions":
       return "session";
     case "new":
-    case "clear":
       return "new";
     case "attach":
       return "attach";
     case "usage":
-    case "cost":
       return "usage";
     default:
       return null;
@@ -230,15 +249,12 @@ export function routeCommand(
 ): CommandRoute | null {
   const trimmed = text.trim();
   if (!trimmed.startsWith("/") || /\s/.test(trimmed)) return null;
-  const name = trimmed.slice(1).toLowerCase();
+  const name = canonicalCommand(trimmed.slice(1), entries);
   if (!name) return null;
   const action = panelCommand(name);
   if (action) return { kind: "action", action };
   const entry = entries.find(
-    (candidate) =>
-      candidate.kind === "client" &&
-      (candidate.name.toLowerCase() === name ||
-        candidate.aliases.some((alias) => alias.toLowerCase() === name)),
+    (candidate) => candidate.kind === "client" && candidate.name.toLowerCase() === name,
   );
   return entry ? { kind: "refused", name: entry.name } : null;
 }
