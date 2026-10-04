@@ -275,7 +275,7 @@ fn project_info_value(config: &Config, project: &Path) -> Value {
 // ---------- mcp servers ----------
 
 /// The MCP servers visible from `project` with their connection state: what
-/// `/mcps` lists. The view is the same one the CLI prints and the VS Code
+/// `/mcp` lists. The view is the same one the CLI prints and the VS Code
 /// extension draws, so all three agree on names, transports and statuses.
 pub async fn mcp_servers(project: String) -> CmdResult<Vec<oxide_core::mcp_config::ServerView>> {
     let cwd = project_dir(&project)?;
@@ -377,7 +377,7 @@ pub async fn delete_session(project: String, id: String) -> CmdResult<()> {
 
 /// Known providers with their stored-credential state, as the core's own
 /// picker listing has it: the desktop app, the VS Code panel and the terminal's
-/// `/login` draw the same rows.
+/// `/connect` draw the same rows.
 pub async fn list_providers() -> CmdResult<Vec<auth::ProviderView>> {
     Ok(auth::provider_views())
 }

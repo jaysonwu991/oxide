@@ -4,7 +4,7 @@
 //
 //   node crates/desktop/check-app.mjs
 //
-// It covers what `cargo test` cannot reach — the `/mcps` dialog (its listing,
+// It covers what `cargo test` cannot reach — the `/mcp` dialog (its listing,
 // the toggle, and the no-project and failure paths), the Add-project dialog's
 // call into the core, the attachment chips (an image's thumbnail and the
 // full-size preview it opens), the question dialog (its title, what a blank
@@ -443,7 +443,7 @@ function defaultAtAnswer(text) {
   };
 }
 
-// The threads the sidebar groups by project and `/sessions` lists for the one
+// The threads the sidebar groups by project and `/session` lists for the one
 // that is selected, newest first, the way the core orders them.
 const existing = [
   {
@@ -2316,16 +2316,16 @@ check(
 app.state.busy = false;
 app.state.runId = null;
 
-// ---------- /mcps ----------
+// ---------- /mcp ----------
 
 const driveMcps = async () => {
   elementFor("mcp-list").children = [];
-  elementFor("prompt").value = "/mcps";
+  elementFor("prompt").value = "/mcp";
   await app.send(false);
   return elementFor("mcp-list").outline();
 };
 
-console.log("/mcps");
+console.log("/mcp");
 app.state.project = null;
 calls.length = 0;
 let opened = await driveMcps();
@@ -2418,9 +2418,9 @@ check(
 app.state.busy = false;
 app.state.runId = null;
 
-// ---------- /sessions ----------
+// ---------- /session ----------
 
-console.log("/sessions");
+console.log("/session");
 // A command the app performs itself never reaches the model, and the list is
 // drawn in the app rather than handed to the window as a native picker.
 app.state.project = "/home/dev/Projects/oxide";
@@ -2429,7 +2429,7 @@ app.state.projects = [
 ];
 elementFor("sessions-modal").hidden = true;
 calls.length = 0;
-const handled = await app.runSlashCommand("/sessions");
+const handled = await app.runSlashCommand("/session");
 check("consumed the command instead of prompting", handled === true && projectCalls("send_prompt").length === 0);
 check("asked the core for the project's threads", projectCalls("all_sessions").length === 1, JSON.stringify(projectCalls("all_sessions")));
 check("opened the dialog", elementFor("sessions-modal").hidden === false);
@@ -2466,14 +2466,14 @@ check(
   projectCalls("session_messages")[0]?.[1]?.id === "fe0031b1",
   JSON.stringify(projectCalls("session_messages")),
 );
-check("left `/sessions <id>` to the agent", (await app.runSlashCommand("/session fe0031b1")) === false);
+check("left `/session <id>` to the agent", (await app.runSlashCommand("/session fe0031b1")) === false);
 
 threads = [];
 // With no thread open either: the thread the window is in is listed even when
 // the store has none, so an empty listing is the case with nothing open at all.
 const openThread = app.state.session;
 app.state.session = null;
-await app.runSlashCommand("/sessions");
+await app.runSlashCommand("/session");
 check(
   "said so when the project has no threads",
   elementFor("sessions-list").innerHTML.includes("No threads for this project yet"),
@@ -2484,7 +2484,7 @@ app.state.session = openThread;
 // A store that cannot be read is not the same as a project with no threads, and
 // saying so is the whole point of a listing opened where it was asked.
 threadsError = "permission denied";
-await app.runSlashCommand("/sessions");
+await app.runSlashCommand("/session");
 check(
   "showed why the thread listing failed instead of an empty one",
   elementFor("sessions-list").innerHTML.includes("permission denied") &&
@@ -3754,20 +3754,33 @@ if (catalogSkipped) {
     app.state.palette.length === catalog.length,
     `${app.state.palette.length} of ${catalog.length}`,
   );
-  // A client command belongs to the app, not to the model: a spelling the app
-  // does not name is sent on as a prompt, which is the failure this catches.
+  // A client command belongs to the app, not to the model: a name the app does
+  // not answer is sent on as a prompt, which is the failure this catches.
   const unperformed = [];
   for (const entry of client) {
-    for (const spelling of [entry.name, ...entry.aliases]) {
-      elementFor("status-text").textContent = "";
-      const handled = await app.runSlashCommand(`/${spelling}`);
-      const said = status();
-      check(`/${spelling} is answered by the app`, handled === true, `handled=${handled}`);
-      if (said.includes("is not available in the desktop app yet")) unperformed.push(`/${spelling}`);
-    }
+    elementFor("status-text").textContent = "";
+    const handled = await app.runSlashCommand(`/${entry.name}`);
+    const said = status();
+    check(`/${entry.name} is answered by the app`, handled === true, `handled=${handled}`);
+    if (said.includes("is not available in the desktop app yet")) unperformed.push(`/${entry.name}`);
   }
   if (unperformed.length) {
     console.log(`  note the app answers these with a "not available" note: ${unperformed.join(", ")}`);
+  }
+  // One spelling per command: the catalog carries a name and no second spelling
+  // for it — not even an empty list of them — and the page resolves nothing
+  // beyond the name it was given.
+  const aliased = client.filter((entry) => "aliases" in entry);
+  check(
+    "the catalog declares no alias for a client command",
+    aliased.length === 0,
+    aliased.map((entry) => entry.name).join(", "),
+  );
+  // A retired spelling is not the app's: it has no arm to reach, so it stays a
+  // prompt for the CLI rather than being answered here.
+  elementFor("status-text").textContent = "";
+  for (const retired of ["/mcps", "/approvals", "/access", "/thinking", "/sessions", "/login"]) {
+    check(`${retired} is not the app's own command`, (await app.runSlashCommand(retired)) === false);
   }
 
   // The catalog's other half is the project's own commands, prompt templates and
@@ -3848,7 +3861,22 @@ if (catalogSkipped) {
   // is asked for there too: a command, a prompt template and a skill are read
   // from a folder and the built-ins are what the app performs itself, so the
   // core answers a projectless ask with those rather than leaving the menu empty.
-  const builtinRows = catalog.filter((entry) => entry.source === "builtin");
+  // The built-ins the core names this app for: a command another front-end
+  // performs (`/agent` is the VS Code panel's) is not a row here, since taking
+  // it would reach the app's "not available" note rather than doing anything.
+  const builtinRows = catalog.filter(
+    (entry) =>
+      entry.source === "builtin" &&
+      (!(entry.front_ends || []).length || entry.front_ends.includes("desktop")),
+  );
+  const elsewhereRows = client.filter(
+    (entry) => (entry.front_ends || []).length && !entry.front_ends.includes("desktop"),
+  );
+  check(
+    "the catalog names commands for other front-ends",
+    elsewhereRows.length > 0,
+    "no client command is another front-end's, so the rows could not be held",
+  );
   app.state.project = null;
   elementFor("prompt").value = "/";
   calls.length = 0;
@@ -3867,13 +3895,31 @@ if (catalogSkipped) {
       elementFor("palette-list").children.length === builtinRows.length,
     `${JSON.stringify(homeRows.map((entry) => entry.name))} / ${elementFor("palette-list").outline()}`,
   );
+  check(
+    "left out the built-ins the catalog gives to another front-end",
+    elsewhereRows.every(
+      (entry) => !homeRows.some((row) => row.name === entry.name),
+    ),
+    `${JSON.stringify(elsewhereRows.map((entry) => entry.name))} / ${JSON.stringify(homeRows.map((entry) => entry.name))}`,
+  );
+  // Typed rather than taken from the menu, one of them names the front-end that
+  // performs it instead of promising it here later.
+  const elsewhere = elsewhereRows[0];
+  elementFor("status-text").textContent = "";
+  await app.runSlashCommand(`/${elsewhere.name}`);
+  const note = status();
+  check(
+    `named the front-end that performs /${elsewhere.name}`,
+    new RegExp(`/${elsewhere.name} is the (terminal|desktop app|VS Code panel)`).test(note),
+    note,
+  );
   // A client command belongs to the app wherever the window is, so taking `/new`
   // at home is performed rather than sent to the model: with no folder open it
   // asks for one, which is the picker.
   elementFor("projects-modal").hidden = true;
   elementFor("prompt").value = "/new";
   calls.length = 0;
-  app.runPaletteEntry(homeRows.find((entry) => entry.name === "new"));
+  await app.runPaletteEntry(homeRows.find((entry) => entry.name === "new"));
   check(
     "performed /new at home rather than sending it to the model",
     elementFor("projects-modal").hidden === false &&
