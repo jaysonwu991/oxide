@@ -190,11 +190,21 @@ pub async fn login(
         tokio::time::sleep(wait.min(deadline - tokio::time::Instant::now())).await;
         match poll_for_token(http, &login, client_id).await? {
             Poll::Token(token) => return Ok(token),
-            Poll::Pending => wait = login.interval,
-            Poll::SlowDown => wait += Duration::from_secs(DEFAULT_INTERVAL_SECS),
             Poll::Denied => anyhow::bail!("the GitHub login was denied"),
             Poll::Expired => anyhow::bail!("the GitHub code expired before it was approved"),
+            poll => wait = next_interval(wait, &poll),
         }
+    }
+}
+
+/// The interval the poll after `poll` is made after. RFC 8628 raises the
+/// interval on `slow_down` for the rest of the flow, so it is added to what is
+/// already being waited and an ordinary `authorization_pending` keeps it —
+/// returning to the flow's original interval is what earns the throttle again.
+fn next_interval(wait: Duration, poll: &Poll) -> Duration {
+    match poll {
+        Poll::SlowDown => wait + Duration::from_secs(DEFAULT_INTERVAL_SECS),
+        _ => wait,
     }
 }
 
@@ -346,6 +356,26 @@ mod tests {
             parse_poll(&json!({ "error": "expired_token" })),
             Poll::Expired
         );
+    }
+
+    /// RFC 8628: the wait a `slow_down` answer asks for holds for the rest of
+    /// the flow. A second throttle adds to it again, and the ordinary
+    /// "not yet" leaves it alone rather than dropping back to the interval the
+    /// flow started with.
+    #[test]
+    fn a_throttled_poll_stays_throttled() {
+        let start = Duration::from_secs(DEFAULT_INTERVAL_SECS);
+        let slowed = next_interval(start, &Poll::SlowDown);
+        assert_eq!(slowed, start + Duration::from_secs(DEFAULT_INTERVAL_SECS));
+        assert_eq!(next_interval(slowed, &Poll::Pending), slowed);
+        assert_eq!(
+            next_interval(slowed, &Poll::SlowDown),
+            slowed + Duration::from_secs(DEFAULT_INTERVAL_SECS)
+        );
+        // A wait a server named in the device code is what the first poll uses,
+        // and nothing but a throttle moves it.
+        let announced = Duration::from_secs(30);
+        assert_eq!(next_interval(announced, &Poll::Pending), announced);
     }
 
     #[test]
