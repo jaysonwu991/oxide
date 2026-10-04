@@ -23,7 +23,7 @@ use electrobun::{
     self, Core, Rect, WebviewCallbacks, WebviewOptions, WindowCallbacks, WindowOptions,
 };
 use oxide_desktop::manager::DesktopManager;
-use serde_json::{json, Value};
+use serde_json::Value;
 use std::ffi::{c_char, CStr};
 use std::sync::{Arc, OnceLock};
 use std::thread;
@@ -288,6 +288,8 @@ extern "C" fn menu_clicked(_id: u32, action: *const c_char) {
 /// from, rather than the TypeScript layer that fills them in from the role.
 #[cfg(target_os = "macos")]
 fn menu_json() -> String {
+    use serde_json::json;
+
     json!([
         {
             "label": "Oxide",
