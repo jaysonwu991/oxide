@@ -5,8 +5,8 @@
 //! `at` answers the composer's `@path` completion, and `update` checks the
 //! app's own release train and installs it. All four build without any GUI
 //! dependency so they are unit tested like the rest of the workspace; the
-//! Electrobun shell in `src/main.rs` is the only part that links a window, and
-//! it drives these four.
+//! window in `electron/` is what turns them into packets, and the engine in
+//! `src/main.rs` is what hands it each one.
 
 pub mod at;
 pub mod manager;

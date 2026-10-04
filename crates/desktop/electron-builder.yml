@@ -1,0 +1,97 @@
+# Packaging the Electron app.
+#
+# The window (Electron) and the engine (the `oxide-desktop` harness) are two
+# programs in one bundle: Electron's files are the app, and the harness is
+# carried beside them as a resource and started as a child process. Everything
+# the app needs at runtime is inside what this file describes — Electron itself
+# provides the browser and Node, `electron/dist` is the compiled window and
+# `ui/` is the page — so nothing is fetched when the app runs.
+#
+# The artifact names are not decoration. The app updates itself from its own
+# release, and `oxide_core::updates::Component::Desktop` resolves the assets a
+# release carries by name (`macos-<arch>-Oxide.dmg`, `linux-<arch>-Oxide-Setup.
+# <ext>`, `win-<arch>-Oxide-Setup.exe`), so a release whose files are named
+# anything else is one the app cannot see. Renaming one here means renaming it
+# in `crates/core/src/updates.rs` too, which is what its own test holds.
+appId: dev.oxide.desktop
+productName: Oxide
+copyright: Copyright © Oxide
+
+directories:
+  output: artifacts
+  buildResources: build
+
+files:
+  - electron/dist/**
+  - ui/**
+  - package.json
+
+# The two halves: the window's own files (above) and the engine.
+mac:
+  category: public.app-category.developer-tools
+  target:
+    - target: dmg
+      arch:
+        - arm64
+  artifactName: macos-${arch}-Oxide.${ext}
+  icon: icons/icon.icns
+  # A hardened runtime is what notarization requires; these are the two
+  # exceptions Electron needs for its own JavaScript engine, and the third lets
+  # the app run the harness it ships, which is signed as part of the bundle
+  # rather than being code the app loads.
+  hardenedRuntime: true
+  entitlements: build/entitlements.mac.plist
+  entitlementsInherit: build/entitlements.mac.plist
+  # The harness is an executable inside the bundle that the app starts as a
+  # child process, so it is signed along with the app.
+  binaries:
+    - Resources/harness/oxide-desktop
+  extraResources:
+    - from: target/release/oxide-desktop
+      to: harness/oxide-desktop
+
+win:
+  target:
+    - target: nsis
+      arch:
+        - x64
+  artifactName: win-${arch}-Oxide-Setup.${ext}
+  icon: icons/icon.ico
+  extraResources:
+    - from: target/release/oxide-desktop.exe
+      to: harness/oxide-desktop.exe
+
+nsis:
+  # One click, for the user who ran it: the installer takes the default
+  # directory under the user's own application data and needs no elevation,
+  # which is what lets the app offer it as an install rather than as a file to
+  # unpack. `/S` runs the same install with nothing on screen, which is how an
+  # update runs it.
+  oneClick: true
+  perMachine: false
+  createDesktopShortcut: true
+  createStartMenuShortcut: true
+  deleteAppDataOnUninstall: false
+
+linux:
+  target:
+    - target: AppImage
+      arch:
+        - x64
+        - arm64
+    - target: tar.gz
+      arch:
+        - x64
+        - arm64
+  artifactName: linux-${arch}-Oxide-Setup.${ext}
+  icon: icons/icon.png
+  category: Development
+  synopsis: An AI coding agent
+  description: Oxide is an AI coding agent that works in your terminal, editor and desktop.
+  desktop:
+    entry:
+      Name: Oxide
+      Comment: An AI coding agent
+  extraResources:
+    - from: target/release/oxide-desktop
+      to: harness/oxide-desktop

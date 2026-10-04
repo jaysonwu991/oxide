@@ -3,11 +3,13 @@
 #
 # The repository keeps a placeholder version (`0.0.0`); release CI calls this
 # with the pushed tag so the built CLI binary and desktop bundle report the tag
-# version. Patches the workspace version in the root `Cargo.toml`, the desktop
-# package's own `Cargo.toml` (it is not a workspace member, so it does not read
-# the workspace's) and the desktop `electrobun.config.ts` (which duplicates it),
-# then it is up to the caller to refresh the lockfiles (e.g. `cargo update
-# --workspace`, and the same in `crates/desktop`).
+# version. Patches the workspace version in the root `Cargo.toml` and the two
+# the desktop app reads its own version from: the engine's `Cargo.toml` (it is
+# not a workspace member, so it does not read the workspace's) and the Electron
+# window's `package.json` (which the bundler writes into the app bundle, and
+# which the updater compares a release against). Then it is up to the caller to
+# refresh the lockfiles (e.g. `cargo update --workspace`, and the same in
+# `crates/desktop`).
 #
 # A tag may carry a component prefix so each component releases independently:
 # `v1.2.3` / `cli-v1.2.3` for the CLI, `desktop-v1.2.3` for the desktop app,
@@ -125,21 +127,23 @@ if not patched_desktop:
 with open(desktop_manifest, "w", encoding="utf-8") as handle:
     handle.writelines(lines)
 
-# electrobun.config.ts: the app version the Electrobun bundler writes into the
-# platform bundle (and the one the updater compares against a release).
-config_path = f"{root}/crates/desktop/electrobun.config.ts"
-with open(config_path, encoding="utf-8") as handle:
-    config = handle.read()
-config, count = re.subn(
-    r'(version:\s*")[^"]*(")',
+# crates/desktop/package.json: the Electron window's own version, which the
+# bundler writes into the app bundle and `app.getVersion()` reports — the number
+# a release is compared against. The engine's `Cargo.toml` above is the same
+# number for the harness, so the two halves of one app agree.
+package_path = f"{root}/crates/desktop/package.json"
+with open(package_path, encoding="utf-8") as handle:
+    package = handle.read()
+package, count = re.subn(
+    r'("version"\s*:\s*")[^"]*(")',
     lambda match: f"{match.group(1)}{version}{match.group(2)}",
-    config,
+    package,
     count=1,
 )
 if count != 1:
-    sys.exit("error: could not find version in electrobun.config.ts")
-with open(config_path, "w", encoding="utf-8") as handle:
-    handle.write(config)
+    sys.exit("error: could not find version in crates/desktop/package.json")
+with open(package_path, "w", encoding="utf-8") as handle:
+    handle.write(package)
 
 print(f"set version to {version}")
 PY

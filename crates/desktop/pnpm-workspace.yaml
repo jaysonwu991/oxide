@@ -1,0 +1,24 @@
+# The desktop app's package, managed with pnpm.
+#
+# pnpm reads its settings from here rather than from `.npmrc`, so this file is
+# both the marker of the package and the place its configuration lives.
+#
+# `electron-builder` depends on `@electron/rebuild`, which names its `node-gyp`
+# as a git URL (`github.com/electron/node-gyp` at a pinned commit) instead of a
+# published version. pnpm refuses a subdependency from anywhere but a registry
+# by default, and the setting below is what lets that pinned commit through: it
+# is a developer's dependency of this package and nothing from it is shipped,
+# since what the app bundles is `electron/dist`, `ui/` and `package.json`.
+blockExoticSubdeps: false
+
+# pnpm runs a dependency's install scripts only where this file allows it, and
+# Electron's own is what downloads the browser binary the app opens its window
+# with.
+#
+# `electron-winstaller`'s is refused on purpose: it exists to select 7-Zip for the
+# Squirrel.Windows installer, and this package builds Windows with electron-builder's
+# NSIS target, so nothing here runs it. (electron-builder reads the 7-Zip it needs
+# from `7zip-bin`, its own dependency.)
+allowBuilds:
+  electron: true
+  electron-winstaller: false

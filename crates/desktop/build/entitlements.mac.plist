@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  What the hardened runtime is allowed to do.
+
+  Electron's own JavaScript engine is the first two: a just-in-time compiler
+  writes machine code as it runs, which a hardened runtime forbids unless the
+  app says so. The third is the harness the app ships and starts: it is a
+  program of this app's own that is signed with it, and the runtime refuses to
+  start it while library validation is on.
+-->
+<plist version="1.0">
+<dict>
+	<key>com.apple.security.cs.allow-jit</key>
+	<true/>
+	<key>com.apple.security.cs.allow-unsigned-executable-memory</key>
+	<true/>
+	<key>com.apple.security.cs.disable-library-validation</key>
+	<true/>
+</dict>
+</plist>

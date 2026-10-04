@@ -20,15 +20,14 @@
 # Stray build output
 *.rlib
 
-# Desktop build output: Hutch projects the selected Electrobun devkit into
-# `.hutch/devkit/` (a copy of a release's SDK, not a source file), a build or a
-# package lands in `build/` and `artifacts/`, and a dev run stages the running
-# bundle's scratch beside the crate in `.cottontail-tmp/`.
-/crates/desktop/.hutch/
-/crates/desktop/build/
+# Desktop build output: the app's dependencies are npm packages, the compiled
+# window lands in `electron/dist/`, a package lands in `artifacts/`, and the
+# engine is built by cargo into `target/`. `build/` is not output: it holds the
+# packaging resources (`build/entitlements.mac.plist`).
+/crates/desktop/node_modules/
+/crates/desktop/electron/dist/
 /crates/desktop/artifacts/
 /crates/desktop/target/
-/crates/desktop/.cottontail-tmp/
 
 # Session dumps captured into the repo root
 /*.jsonl
