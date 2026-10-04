@@ -119,12 +119,21 @@ The regions, top to bottom:
   half-filled circle, and the same refresh arrow the
   extension's own check carries). The tree groups each project's sessions
   under it, and every project and stored session row carries a `✕` that removes
-  it (see [Multiple projects](#multiple-projects-cross-repo)) — hidden, like the
-  project's own **New task** `+`, until the row is pointed at or the keyboard is
-  in it, since a tree of rows is not a wall of buttons; a session's `⌘1`…`⌘9`
-  shortcut waits for the same gesture, since it is a reference rather than a
-  label, and the shortcuts dialog is where the list itself is written down. The
-  active project and the active thread both
+  it (see [Multiple projects](#multiple-projects-cross-repo)), drawn on the row
+  itself rather than behind a pointer, beside the project's own **New task**
+  `+`. A row carries nothing else: the key a thread answers to is nowhere on
+  the row, since the shortcuts dialog is where that list is written down and a
+  badge beside the `✕` was a second thing the title had to make room for. A
+  control that exists only while the row is pointed at is one the reader has to
+  hover before they can click it, and a tree whose buttons appear under the
+  cursor changes what it says as the reader moves; the room each one takes
+  belongs to the row's own padding and nothing moves when a pointer crosses it,
+  and they are quiet at rest and take the accent or the error colour while
+  pointed at, which is a highlight rather than the reason they are there. That
+  padding is also what keeps them off the text: each row reserves the room the
+  control at its end takes (`padding-right` against that control's own width and
+  offset), so a press meant for a name is a press on the name and never on the
+  button drawn beside it. The active project and the active thread both
   carry the accent bar, so which one is on screen reads the same in either
   list, and a thread is listed — under the summarized title of its first
   message — as soon as its turn starts rather than once it ends: the thread the
@@ -208,17 +217,34 @@ The regions, top to bottom:
   typed here would be steered into a run whose reply belongs to the
   conversation being read. Every
   control is wired to a plain `click` — each button, native radio/checkbox,
-  sidebar/list row, change card, and attachment thumbnail. The webview owns
-  focus, pointer, keyboard, and activation semantics, and page-control
-  activation stays native: while an editor owns focus — including one WebKit
-  ended just before the press, remembered from its `focusout` — a primary
-  `mousedown` on any control the page wires a click to — a button, a link, a
-  sidebar/list row, a change card or a question choice — prevents only the
-  focus-changing default, so WebKit delivers that press's click instead of
+  sidebar/list row, change card, and attachment thumbnail — and no control is
+  revealed by hovering it: a `:hover` rule in this window is a highlight (a
+  background, a colour, a brightness), never the reason a control is there —
+  and a hovered rule changes only how a control looks, never the box it sits in,
+  since one that moves under the pointer moves out from under the press. Nor is
+  anything invisible left where a press lands: nothing in this sheet is drawn
+  at `opacity: 0`, no rule lets a press through what is drawn with
+  `pointer-events`, and the `[hidden]` an overlay or popover carries keeps its
+  `!important`, so a dialog the app has put away cannot be painted back over
+  the window by a later rule. `crates/desktop/check-app.mjs` reads each of those
+  out of the sheet. The
+  webview owns focus, pointer, keyboard, and activation semantics, and
+  page-control activation stays native: while an editor owns focus — including
+  one WebKit ended just before the press, remembered from its `focusout` — a
+  primary `mousedown` on any control the page wires a click to — a button, a
+  link, a sidebar/list row, a change card or a question choice — prevents only
+  the focus-changing default, so WebKit delivers that press's click instead of
   spending it on moving focus — the press that otherwise read as one needing a
-  second click. Keyboard focus and activation are unchanged, and the native
-  click stays authoritative: the page supplies one on the next task only when
-  the webview withheld it, so a control answers exactly once. A
+  second click — and the box the reader has moved on from gives the caret up
+  with that press, so the next thing typed goes where they clicked rather than
+  into a box they have left. The rows of the two completion lists are the
+  exception, since taking one finishes the text in the box the caret is in
+  rather than leaving it; a press that lands on no control at all is left to
+  WebKit, which ends the editing session on its own, and one into another text
+  field places that field's caret without the page's help. Keyboard focus and
+  activation are unchanged, and the native click stays authoritative: the page
+  supplies one on the next task only when the webview withheld it, so a control
+  answers exactly once. A
   control inside another stops its click from reaching the row around it, so a
   thread's ✕ removes the thread rather than selecting the row and a chip's ✕
   removes the chip rather than opening the picture — and a thumbnail's picture
@@ -646,7 +672,7 @@ immediately and persists it.
 | `Shift+Tab` / `Ctrl+R` | Cycle reasoning (the thinking chip opens the level picker) |
 | `Ctrl+K` | Model picker |
 | `Ctrl+/` | Shortcut help |
-| `⌘1`…`⌘9` / `Ctrl+1`…`9` | Open the session with that number in the Projects tree |
+| `⌘1`…`⌘9` / `Ctrl+1`…`9` | Open the thread standing at that place in the Projects tree |
 | `Escape` | Close any dialog; a question is dismissed, which the agent is told rather than left waiting |
 
 ## Slash commands

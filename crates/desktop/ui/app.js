@@ -4624,8 +4624,8 @@ const EDITABLE_INPUT_TYPES = new Set([
 
 /// Whether `node` is a text editor of its own. WebKit can spend the first press
 /// after editing only moving focus to a button, withholding its click until the
-/// next press; the editor is kept as first responder through that press so the
-/// same native click completes.
+/// next press; that press is kept off the focus default so the same native click
+/// completes, and the click WebKit omits is supplied on the next task instead.
 function isTextEditor(node) {
   if (!node) return false;
   if (node.isContentEditable || node.tagName === "TEXTAREA") return true;
@@ -4654,6 +4654,14 @@ function pressedControl(target) {
     if (node.tagName === "BUTTON" || node.tagName === "A" || node.onclick) return node;
   }
   return null;
+}
+
+/// Whether a control belongs to the list that completes the box being typed in —
+/// a row of the `@` reference list or of the command palette. Taking one splices
+/// into the editor the caret is in, so it is the one kind of control that leaves
+/// the caret where it is.
+function completesEditor(control) {
+  return Boolean(control.closest(".palette-item"));
 }
 
 /// The editor WebKit ended immediately before dispatching the press that ended
@@ -4788,14 +4796,14 @@ function init() {
   el("review-next").onclick = () => walkReview(1);
 
   // WebKit can spend the first press after editing only moving focus to a
-  // control, withholding its click until the next press. Keep the editor as
-  // first responder through mousedown so the browser completes that same
-  // native click, reading the editor WebKit may have already ended through the
-  // `focusout` it dispatched just before the press. When a version still omits
-  // the click — or ends the editing session before the page sees the press at
-  // all — the next task supplies the one click that was withheld, and never a
-  // second one. Question choices use labels around their native controls and
-  // need the same treatment. Keyboard focus and activation remain untouched.
+  // control, withholding its click until the next press. That focus default is
+  // kept off mousedown so the browser completes that same native click, reading
+  // the editor WebKit may have already ended through the `focusout` it
+  // dispatched just before the press. When a version still omits the click — or
+  // ends the editing session before the page sees the press at all — the next
+  // task supplies the one click that was withheld, and never a second one.
+  // Question choices use labels around their native controls and need the same
+  // treatment. Keyboard focus and activation remain untouched.
   document.addEventListener("focusout", rememberBlurredEditor, true);
   document.addEventListener(
     "mousedown",
@@ -4809,6 +4817,13 @@ function init() {
       const control = pressedControl(event.target);
       if (!control) return;
       event.preventDefault();
+      // The press landed on a control rather than in the box the caret is in, so
+      // the box gives the caret up with it: keeping it as first responder would
+      // leave the reader typing into a box they have moved on from. The rows
+      // that complete that box are the exception, and a control that takes the
+      // caret itself — a picker focusing its own filter — does so after this
+      // press, so its own `focus` is the one that stands.
+      if (!completesEditor(control)) editor.blur();
       editorControlPress = { control, clicked: false };
     },
     true,
@@ -4972,7 +4987,7 @@ init();
 // ============================================================================
 
 // Flattened project/session order, matching how the tree renders them, so
-// `⌘1`…`⌘9` select the session carrying that label.
+// `⌘1`…`⌘9` select the thread standing at that place in the sidebar.
 function orderedSessions() {
   const byProject = new Map();
   for (const project of state.projects) byProject.set(project.path, []);
@@ -5007,12 +5022,6 @@ async function renderProjectsTree() {
       sessionsByProject[session.cwd].push(session);
     }
   }
-  
-  const shortcutFor = new Map(
-    orderedSessions()
-      .slice(0, 9)
-      .map((session, index) => [session.id, index + 1]),
-  );
   
   for (const project of state.projects) {
     const projectGroup = document.createElement("div");
@@ -5099,14 +5108,6 @@ async function renderProjectsTree() {
         spinner.className = "spinner";
         mark.appendChild(spinner);
         sessionItem.appendChild(mark);
-      }
-
-      const shortcutNumber = shortcutFor.get(session.id);
-      if (shortcutNumber) {
-        const shortcut = document.createElement("div");
-        shortcut.className = "shortcut";
-        shortcut.textContent = "⌘" + shortcutNumber;
-        sessionItem.appendChild(shortcut);
       }
 
       // A thread the store has not written has no file to remove, so its row
