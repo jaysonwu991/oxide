@@ -178,7 +178,13 @@ class StubElement {
     this.focused = true;
     document.activeElement = this;
   }
-  blur() {}
+  // A box that is blurred is the box the caret was in giving it up, which the
+  // page does itself when a press lands on a control somewhere else.
+  blur() {
+    if (document.activeElement !== this) return;
+    this.focused = false;
+    document.activeElement = null;
+  }
   click() {
     this.onclick?.(press({ target: this, detail: 0 }));
   }
@@ -1433,10 +1439,9 @@ const typedGlyphs = ["📁", "📄", "＋", "✕", "×", "◆", "✓", "▾", "�
 // and `media/main.js` picks between those same two characters. The rest are text
 // for the same reason: `☐`/`☑` are an assistant's task markers in this window's
 // Markdown and in the panel's, `✦` marks a thinking block the way the terminal's
-// renderer does, `⌘` names a shortcut in words, and `·` is the separator a line
-// of derived facts is joined with. A mark in a line of text is not a control's
-// drawing.
-const textCharacters = ["·", "☐", "☑", "⌘", "✔", "✖", "✦"];
+// renderer does, and `·` is the separator a line of derived facts is joined
+// with. A mark in a line of text is not a control's drawing.
+const textCharacters = ["·", "☐", "☑", "✔", "✖", "✦"];
 const sharedCharacters = ["✔", "✖", "☐", "☑"];
 // So the characters the window's own strings wear are pinned rather than
 // sampled: a control wearing a character is caught whichever one it is, not only
@@ -1466,30 +1471,174 @@ check(
     sharedCharacters.filter((character) => extensionIcons.includes(`"${character}"`)).length
   }/${sharedCharacters.length}`,
 );
-// A row's own controls are hidden until the row is pointed at, or until one of
-// them holds the keyboard: the sidebar reads as a list of names rather than as a
-// column of buttons. The room they take belongs to the row's own right padding,
-// so nothing moves when they appear, and `:focus-within` is what keeps the ✕
-// reachable by Tab.
+// A control is drawn before the pointer reaches it: a ✕ that exists only while
+// the row is pointed at is a control the reader cannot click without hovering it
+// first, and the row changes what it says as the cursor crosses it. Every rule
+// this sheet writes for a hovered or keyboard-held element is read here with the
+// same selector at rest, and one whose resting rule hides the element —
+// `opacity: 0`, `display: none`, `visibility: hidden` — fails. Highlighting the
+// control that is under the pointer, or dimming one, is drawn either way.
+const sheetRules = [...sheet.matchAll(/([^{}]+)\{([^}]*)\}/g)].map(([, selectors, body]) => [
+  selectors.trim(),
+  body,
+]);
+const hiddenAtRest = (body) =>
+  /(^|[;\s])opacity:\s*0(?:[;\s]|$)/.test(body) ||
+  /display:\s*none/.test(body) ||
+  /visibility:\s*hidden/.test(body);
+const restingBody = (selectors) =>
+  sheetRules
+    .filter(([each]) => each === selectors.replace(/:hover|:focus(-within|-visible)?/g, "").trim())
+    .map(([, body]) => body)
+    .join(";");
+const hiddenUntilPointedAt = sheetRules
+  .filter(([selectors]) => /:hover|:focus/.test(selectors))
+  .filter(([selectors]) => hiddenAtRest(restingBody(selectors)))
+  .map(([selectors]) => selectors);
 check(
-  "hid each row's controls until the row is pointed at",
-  /\.project-item:hover \.row-remove,\s*\.project-item:hover \.row-add,\s*\.project-item:focus-within \.row-remove,\s*\.project-item:focus-within \.row-add,\s*\.session-item:hover \.row-remove,\s*\.session-item:focus-within \.row-remove \{ opacity: 1; \}/.test(
-    sheet,
-  ) && (sheet.match(/\.row-(?:add|remove) \{[^}]*opacity:\s*0;/g) || []).length === 2,
-  sheet.slice(sheet.indexOf(".row-add {"), sheet.indexOf(".row-add:hover")),
+  "left no control waiting for the pointer before it exists",
+  hiddenUntilPointedAt.length === 0,
+  hiddenUntilPointedAt.join(" | "),
 );
-// The shortcut a row answers to is a reference rather than a label, so it is
-// drawn only while the row is pointed at, on the same terms as the ✕ beside it.
-// The help dialog is where the list itself is written down, so hiding it here
-// is not hiding it from the reader.
+// A hover is a highlight, never the reason for a press: a rule that changes
+// where a thing is while the pointer is on it moves that thing out from under
+// the click the reader is already making. So what a hovered or keyboard-held
+// rule may change is how the element looks — its paint, never its box.
+const cosmeticOnHover = [
+  "background",
+  "background-color",
+  "background-image",
+  "border-color",
+  "box-shadow",
+  "color",
+  "cursor",
+  "fill",
+  "filter",
+  "opacity",
+  "outline",
+  "outline-color",
+  "outline-offset",
+  "stroke",
+  "text-decoration",
+  "text-decoration-color",
+];
+const movedOnHover = sheetRules
+  .filter(([selectors]) => /:hover|:focus/.test(selectors))
+  .flatMap(([selectors, body]) =>
+    body
+      .split(";")
+      .map((declaration) => declaration.split(":")[0].trim())
+      .filter((property) => property && !property.startsWith("/*"))
+      .filter((property) => !cosmeticOnHover.includes(property))
+      .map((property) => `${selectors} { ${property} }`),
+  );
 check(
-  "kept a thread's shortcut out of the way until its row is pointed at",
-  /\.session-item \.shortcut \{[^}]*opacity: 0;/.test(sheet) &&
-    /\.session-item:hover \.shortcut,\s*\.session-item:focus-within \.shortcut \{ opacity: 1; \}/.test(sheet) &&
-    /<tr><td>⌘1…⌘9 \/ Ctrl\+1…9<\/td><td>Open the thread at that place in the sidebar<\/td><\/tr>/.test(shell) &&
-    // The row names both spellings because the handler takes either modifier.
-    /!event\.ctrlKey && !event\.metaKey/.test(source),
-  sheet.slice(sheet.indexOf(".session-item .shortcut {"), sheet.indexOf(".session-item .shortcut {") + 260),
+  "made a hover a highlight rather than a press's reason",
+  movedOnHover.length === 0,
+  movedOnHover.join(" | "),
+);
+// Nothing invisible stands where a press lands. An element at `opacity: 0` is
+// drawn as nothing and still answers the click — a control hidden that way is
+// the reader's first press spent on a thing they cannot see; `pointer-events`
+// is how a press is let through what is drawn; and the `[hidden]` an overlay
+// carries is only what hides it while no later rule can outrank it, since a
+// dialog the app has put away must not be painted over the window again.
+const invisibleRules = [
+  ...sheetRules
+    .filter(([, body]) => /(^|[;\s])opacity:\s*0(?:[;\s]|$)/.test(body))
+    .map(([selectors]) => `${selectors} { opacity: 0 }`),
+  ...sheetRules
+    .filter(([, body]) => /pointer-events/.test(body))
+    .map(([selectors]) => `${selectors} { pointer-events }`),
+];
+check(
+  "left nothing invisible where a press lands",
+  invisibleRules.length === 0 && /\[hidden\][^{]*\{[^}]*display:\s*none\s*!important/.test(sheet),
+  invisibleRules.join(" | ") ||
+    (/\[hidden\]/.test(sheet) ? "the [hidden] guard lost its !important" : "the [hidden] guard is gone"),
+);
+// What a row carries is on the row: the ✕ that removes a thread or a folder and
+// the `+` that starts a task in one. Each takes the room the row already
+// reserves for it, so a long title ellipsizes against them rather than pushing
+// them out.
+const rowRule = (selector) => {
+  const start = sheet.indexOf(`${selector} {`);
+  return start < 0 ? "" : sheet.slice(start, sheet.indexOf("}", start));
+};
+const drawnOnTheRow = [".row-add", ".row-remove"];
+check(
+  "drew each row's controls without pointing at it",
+  drawnOnTheRow.every((selector) => {
+    const rule = rowRule(selector);
+    return rule.includes("color:") && !hiddenAtRest(rule);
+  }),
+  drawnOnTheRow.map((selector) => rowRule(selector).replace(/\s+/g, " ")).join(" | "),
+);
+// A thread's row carries its title and its ✕, and nothing else: the `⌘1`…`⌘9`
+// badge it used to wear named a key the row does not have to list — the
+// shortcuts dialog is where that list is written down — and a badge beside the
+// ✕ was a second thing the title had to make room for. The title is the
+// flexible cell either way, so the ✕ keeps the row's own right-hand room.
+check(
+  "kept a thread's row down to its title and its ✕",
+  !/"shortcut"/.test(source) &&
+    !/\.session-item \.shortcut/.test(sheet) &&
+    /\.session-item \.name \{ flex: 1/.test(sheet) &&
+    /position: absolute/.test(rowRule(".row-remove")),
+  `badge ${/"shortcut"/.test(source)} / rule ${
+    /\.session-item \.shortcut/.test(sheet)
+  } / ${rowRule(".session-item .name").replace(/\s+/g, " ")}`,
+);
+// The controls a row draws stand in the room the row reserves for them rather
+// than over what the row says: `padding-right` is that room, so a press on a
+// thread's name is a press on the name and never on the ✕ beside it.
+const rowBodies = (selector) =>
+  sheetRules
+    .filter(([selectors]) =>
+      selectors.split(",").some((each) => each.trim() === selector),
+    )
+    .map(([, body]) => body)
+    .join(";");
+const lastPixels = (text, property) => {
+  const match = [
+    ...text.matchAll(new RegExp(`(?:^|[;\\s])${property}:\\s*([\\d.]+)px`, "g")),
+  ].pop();
+  return match ? Number(match[1]) : NaN;
+};
+const rightPadding = (row) => {
+  const text = rowBodies(row);
+  const explicit = lastPixels(text, "padding-right");
+  if (!Number.isNaN(explicit)) return explicit;
+  const shorthand = [...text.matchAll(/(?:^|[;\s])padding:\s*([^;]+)/g)].pop();
+  const values = shorthand
+    ? [...shorthand[1].matchAll(/([\d.]+)px/g)].map(([, value]) => Number(value))
+    : [];
+  if (!values.length) return NaN;
+  return values.length === 1 ? values[0] : values[1];
+};
+const roomForControl = (row, control) =>
+  rightPadding(row) -
+  (lastPixels(rowBodies(control), "right") + lastPixels(rowBodies(control), "width"));
+const rowControls = [
+  [".session-item", ".row-remove"],
+  [".project-item", ".row-remove"],
+  [".project-item", ".row-add"],
+];
+check(
+  "kept each row's controls in the room the row reserves for them",
+  rowControls.every(([row, control]) => roomForControl(row, control) >= 0),
+  rowControls
+    .map(([row, control]) => `${row} ${control} ${roomForControl(row, control)}px`)
+    .join(" | "),
+);
+// The shortcut is a reference to a key, so the list itself is written down in
+// the shortcuts dialog, and the handler takes either platform's modifier.
+check(
+  "named the shortcut's list in the help dialog and its keys in the handler",
+  /<tr><td>⌘1…⌘9 \/ Ctrl\+1…9<\/td><td>Open the thread at that place in the sidebar<\/td><\/tr>/.test(
+    shell,
+  ) && /!event\.ctrlKey && !event\.metaKey/.test(source),
+  shell.slice(shell.indexOf("⌘1…⌘9"), shell.indexOf("⌘1…⌘9") + 120),
 );
 // The window around the sidebar already names the app, so the sidebar's own head
 // is not a second brand: it is the way into a conversation — the extension's own
@@ -1712,7 +1861,8 @@ await tick();
 check("closed the list once the reference was done", atBox.hidden === true);
 
 // A row of the list is clicked like anything else, while the press is refused
-// so the caret stays in the message box it is completing into.
+// so the caret stays in the message box it is completing into: that list is the
+// box's own, and taking a row finishes the text in it rather than leaving it.
 await typeAt("review @sr");
 const atPress = press();
 atRows.children[0].fire("mousedown", atPress);
@@ -1720,6 +1870,14 @@ check(
   "kept the caret in the message box when a row is clicked",
   atPress.refused === true,
   String(atPress.refused),
+);
+document.activeElement = elementFor("prompt");
+const atDocumentPress = press({ target: atRows.children[0] });
+document.fire("mousedown", atDocumentPress);
+check(
+  "left the caret in the box a completion row belongs to",
+  atDocumentPress.refused === true && document.activeElement === elementFor("prompt"),
+  `${atDocumentPress.refused} / ${document.activeElement?.id ?? "(none)"}`,
 );
 atRows.children[0].onclick(atPress);
 check(
@@ -1729,10 +1887,11 @@ check(
 );
 
 // WebKit may spend the first press after editing only moving focus to a button,
-// withholding the click until the next press. The page prevents that focus
-// default while an editor is active and leaves the one native click in charge;
-// if a WebKit version withholds the click anyway, the page supplies the single
-// one that was withheld.
+// withholding the click until the next press. The page keeps that focus default
+// off the press and leaves the one native click in charge — and the box the
+// reader has moved on from gives up the caret with it, so the next thing typed
+// goes where they clicked. If a WebKit version withholds the click anyway, the
+// page supplies the single one that was withheld.
 const composerButton = new StubElement("button", "composer-button");
 let composerButtonClicks = 0;
 composerButton.onclick = () => composerButtonClicks++;
@@ -1743,9 +1902,14 @@ document.activeElement = elementFor("prompt");
 const buttonPress = press({ target: composerButton });
 document.fire("mousedown", buttonPress);
 check(
-  "kept the editor as first responder while a button was pressed",
+  "kept the press off the focus default that spends its click",
   buttonPress.refused === true,
   String(buttonPress.refused),
+);
+check(
+  "took the caret out of the box a button press landed away from",
+  document.activeElement === null,
+  document.activeElement?.id ?? "(none)",
 );
 // The browser delivers the press's own click after mouseup: the page must not
 // add a second.
@@ -1839,14 +2003,16 @@ check(
 );
 document.fire("mouseup", laterButtonPress);
 
-// A dialog editor is the same case as the message box.
-document.activeElement = elementFor("model-filter");
+// A dialog's box is the same case as the message box: a press on a control
+// elsewhere in the window leaves it, and it still answers one click.
+const dialogBox = elementFor("model-filter");
+document.activeElement = dialogBox;
 const filterButtonPress = press({ target: composerButton });
 document.fire("mousedown", filterButtonPress);
 check(
-  "kept a dialog editor as first responder through a button press",
-  filterButtonPress.refused === true,
-  String(filterButtonPress.refused),
+  "took the caret out of a dialog's box when a button was pressed",
+  filterButtonPress.refused === true && document.activeElement !== dialogBox,
+  `${filterButtonPress.refused} / ${document.activeElement?.id ?? "(none)"}`,
 );
 document.fire("mouseup", press({ target: composerButton }));
 document.fire("click", press({ target: composerButton }));
@@ -1895,17 +2061,17 @@ check(
 );
 document.fire("mouseup", checkboxButtonPress);
 
-// A row the page wires a click to is a control, so it keeps the editor focused
-// too; a row with no click of its own is left native.
+// A row the page wires a click to is a control, so a press on it leaves the box
+// the reader was typing in too; a row with no click of its own is left native.
 const composerRowControl = new StubElement("div", "composer-row-control");
 composerRowControl.onclick = () => {};
 document.activeElement = elementFor("prompt");
 const rowControlPress = press({ target: composerRowControl });
 document.fire("mousedown", rowControlPress);
 check(
-  "kept the editor focused through a clickable row press",
-  rowControlPress.refused === true,
-  String(rowControlPress.refused),
+  "took the caret out of the box a clickable row's press left",
+  rowControlPress.refused === true && document.activeElement === null,
+  `${rowControlPress.refused} / ${document.activeElement?.id ?? "(none)"}`,
 );
 document.fire("click", press({ target: composerRowControl }));
 document.fire("mouseup", rowControlPress);
@@ -1919,12 +2085,13 @@ check(
 );
 document.fire("mouseup", composerRowPress);
 
+document.activeElement = elementFor("prompt");
 const composerLinkPress = press({ target: composerLink });
 document.fire("mousedown", composerLinkPress);
 check(
-  "kept the editor focused through a link press",
-  composerLinkPress.refused === true,
-  String(composerLinkPress.refused),
+  "took the caret out of the box a link's press left",
+  composerLinkPress.refused === true && document.activeElement === null,
+  `${composerLinkPress.refused} / ${document.activeElement?.id ?? "(none)"}`,
 );
 document.fire("click", press({ target: composerLink }));
 document.fire("mouseup", composerLinkPress);
@@ -3509,6 +3676,17 @@ if (catalogSkipped) {
       elementFor("palette-list").outline(),
     );
     check("the row says it is a skill", markup.includes('class="source">skill<'), markup);
+
+    // The palette is the box's own list too, so a press on a row leaves the
+    // caret where the row is about to complete into rather than taking it.
+    document.activeElement = elementFor("prompt");
+    const paletteRowPress = press({ target: painted });
+    document.fire("mousedown", paletteRowPress);
+    check(
+      "left the caret in the box a command row belongs to",
+      paletteRowPress.refused === true && document.activeElement === elementFor("prompt"),
+      `${paletteRowPress.refused} / ${document.activeElement?.id ?? "(none)"}`,
+    );
 
     // Taking the row completes it, since a skill takes arguments and is the
     // message the CLI expands rather than a client command.
