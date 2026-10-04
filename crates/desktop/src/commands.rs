@@ -378,7 +378,7 @@ pub async fn delete_session(project: String, id: String) -> CmdResult<()> {
 /// Known providers with their stored-credential state.
 pub async fn list_providers() -> CmdResult<Vec<Value>> {
     let stored = auth::stored_providers();
-    Ok(auth::KNOWN_PROVIDERS
+    Ok(auth::known_providers()
         .iter()
         .map(|option| {
             json!({
