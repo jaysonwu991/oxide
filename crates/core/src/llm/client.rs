@@ -798,11 +798,14 @@ impl LlmClient {
         hooks: &mut StreamHooks<'_>,
     ) -> Result<AssistantTurn> {
         let region = aws::region_from(&|name| std::env::var(name).ok());
-        let url = format!(
-            "https://{}/model/{}/converse-stream",
-            aws::host(&region, "bedrock-runtime"),
-            self.config.model
-        );
+        // The region names the host unless this run was pointed at an endpoint of
+        // its own — a VPC endpoint, a gateway, a local emulator — which the
+        // preset's base URL is for. The model is in the path either way.
+        let base = match self.config.base_url.trim_end_matches('/') {
+            "" => format!("https://{}", aws::host(&region, "bedrock-runtime")),
+            endpoint => endpoint.to_string(),
+        };
+        let url = format!("{base}/model/{}/converse-stream", self.config.model);
         let mut config = self.config.clone();
         config.max_tokens = max_tokens;
         let body = bedrock::request_body(&config, messages, tools);
@@ -835,8 +838,16 @@ impl LlmClient {
 
         let mut turn = AssistantTurn::default();
         let mut partials = BTreeMap::new();
-        let outcome = read_sse(response, |data| {
-            bedrock::apply_event(data, &mut turn, &mut partials, hooks.text, hooks.thinking)
+        let outcome = read_event_stream(response, |event, payload| {
+            bedrock::apply_event(
+                event,
+                payload,
+                &mut turn,
+                &mut partials,
+                hooks.text,
+                hooks.thinking,
+            )?;
+            Ok(event == bedrock::STOP_EVENT)
         })
         .await?;
 
@@ -1213,6 +1224,49 @@ where
     }
 
     Ok(SseOutcome { completed, abrupt })
+}
+
+/// Read one response body framed as binary event-stream messages (AWS's
+/// `application/vnd.amazon.eventstream`), handing every whole frame's event name
+/// and JSON payload to `on_event`. The counterpart of `read_sse` for a provider
+/// whose stream is not made of lines: `on_event` reports whether the event it
+/// was handed ends the stream, which is what a `[DONE]` sentinel is to SSE.
+async fn read_event_stream<F>(response: reqwest::Response, mut on_event: F) -> Result<SseOutcome>
+where
+    F: FnMut(&str, &serde_json::Value) -> Result<bool>,
+{
+    let mut buffer: Vec<u8> = Vec::new();
+    let mut stream = response.bytes_stream();
+    let mut completed = false;
+    let mut abrupt = false;
+
+    while let Some(chunk) = stream.next().await {
+        let chunk = match chunk {
+            Ok(chunk) => chunk,
+            Err(err) => {
+                if completed {
+                    break;
+                }
+                if is_abrupt_stream_close(&err) {
+                    abrupt = true;
+                    break;
+                }
+                return Err(err).context("reading response stream");
+            }
+        };
+        buffer.extend_from_slice(&chunk);
+        bedrock::drain_frames(&mut buffer, |event, payload| {
+            completed |= on_event(event, payload)?;
+            Ok(())
+        })?;
+    }
+
+    // Bytes still in the buffer are a frame that never finished arriving, so the
+    // stream was cut short even if it did not say so on the way out.
+    Ok(SseOutcome {
+        completed,
+        abrupt: abrupt || !buffer.is_empty(),
+    })
 }
 
 /// How an SSE body ended: whether the `[DONE]` sentinel arrived, and whether
@@ -1828,6 +1882,94 @@ mod tests {
         assert!(!request.headers().contains_key("x-amz-date"));
     }
 
+    /// `converse-stream` answers with AWS's binary event-stream framing rather
+    /// than SSE, so a turn read as lines would come back empty however well the
+    /// events themselves parse. Each frame's event name and payload are read here
+    /// however the body is chunked, the stop event is what marks the stream
+    /// complete, and the events reach the turn the way the wire sends them.
+    #[tokio::test]
+    async fn a_bedrock_turn_is_read_from_its_event_stream_frames() {
+        let body: Vec<u8> = [
+            ("messageStart", r#"{"role":"assistant"}"#),
+            (
+                "contentBlockDelta",
+                r#"{"contentBlockIndex":0,"delta":{"text":"hel"}}"#,
+            ),
+            (
+                "contentBlockDelta",
+                r#"{"contentBlockIndex":0,"delta":{"text":"lo"}}"#,
+            ),
+            ("contentBlockStop", r#"{"contentBlockIndex":0}"#),
+            (bedrock::STOP_EVENT, r#"{"stopReason":"end_turn"}"#),
+            (
+                "metadata",
+                r#"{"usage":{"inputTokens":10,"outputTokens":4}}"#,
+            ),
+        ]
+        .into_iter()
+        .flat_map(|(event, payload)| bedrock::frame(event, payload))
+        .collect();
+        let (addr, server) = framed_server(body).await;
+        let config = Config {
+            provider: "bedrock".into(),
+            api_key: "bedrock-token".into(),
+            model: "anthropic.claude-3-5-sonnet-20241022-v2:0".into(),
+            base_url: format!("http://{addr}"),
+            ..Config::default()
+        };
+        let client = LlmClient::new(config);
+
+        let turn = {
+            let mut hooks = StreamHooks {
+                text: &mut |_| {},
+                thinking: &mut |_| {},
+                retry: &mut |_| {},
+            };
+            client
+                .stream_chat(&[Message::user("hi")], &[], &mut hooks)
+                .await
+                .unwrap()
+        };
+
+        assert_eq!(turn.content, "hello");
+        assert_eq!(turn.finish_reason.as_deref(), Some("end_turn"));
+        assert_eq!(turn.usage.input, 10);
+        assert_eq!(turn.usage.output, 4);
+        let request = server.await.unwrap();
+        assert!(
+            request.starts_with(
+                "POST /model/anthropic.claude-3-5-sonnet-20241022-v2:0/converse-stream"
+            ),
+            "{request}"
+        );
+    }
+
+    /// A frame the connection ended in the middle of is a turn that was cut
+    /// short, not a complete one that happened to stop saying anything.
+    #[tokio::test]
+    async fn a_frame_that_never_finished_arriving_is_truncation() {
+        let mut body = bedrock::frame(
+            "contentBlockDelta",
+            r#"{"contentBlockIndex":0,"delta":{"text":"hi"}}"#,
+        );
+        body.extend_from_slice(
+            &bedrock::frame(bedrock::STOP_EVENT, r#"{"stopReason":"end_turn"}"#)[..8],
+        );
+        let (addr, _server) = framed_server(body).await;
+        let response = reqwest::Client::new()
+            .post(format!("http://{addr}/model/m/converse-stream"))
+            .body("{}")
+            .send()
+            .await
+            .unwrap();
+
+        let outcome = read_event_stream(response, |_, _| Ok(false)).await.unwrap();
+        assert!(!outcome.completed);
+        assert!(outcome.abrupt, "the frame left half-read is truncation");
+        // Which is what the turn reports: text arrived, and no stop reason did.
+        assert!(stream_incomplete(&outcome, None, true));
+    }
+
     /// A Duo turn is authorized by a token the instance mints, not by the
     /// credential the reader stored: the stored one opens the instance, and
     /// what the gateway sees is what came back beside it.
@@ -2307,6 +2449,37 @@ mod tests {
                 let _ = socket.shutdown().await;
             }
             seen
+        });
+        (addr, handle)
+    }
+
+    /// Serves one response body as raw bytes, in two writes so a frame can be
+    /// met split across chunks, and returns the raw request text it saw. An
+    /// event-stream body is binary, so `sse_server` cannot carry it.
+    async fn framed_server(
+        body: Vec<u8>,
+    ) -> (std::net::SocketAddr, tokio::task::JoinHandle<String>) {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let handle = tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.unwrap();
+            let mut chunk = [0u8; 8192];
+            let read = socket.read(&mut chunk).await.unwrap_or(0);
+            let request = String::from_utf8_lossy(&chunk[..read]).into_owned();
+            let head = format!(
+                "HTTP/1.1 200 OK\r\ncontent-type: application/vnd.amazon.eventstream\r\ncontent-length: {}\r\nconnection: close\r\n\r\n",
+                body.len()
+            );
+            let split = body.len() / 2;
+            let _ = socket.write_all(head.as_bytes()).await;
+            let _ = socket.write_all(&body[..split]).await;
+            let _ = socket.flush().await;
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+            let _ = socket.write_all(&body[split..]).await;
+            let _ = socket.shutdown().await;
+            request
         });
         (addr, handle)
     }

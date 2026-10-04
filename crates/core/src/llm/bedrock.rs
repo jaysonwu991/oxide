@@ -7,6 +7,19 @@ use anyhow::{bail, Result};
 use serde_json::{json, Value};
 use std::collections::BTreeMap;
 
+/// The event that ends a Converse stream, after which no other event arrives.
+pub const STOP_EVENT: &str = "messageStop";
+
+/// The fixed parts of an event-stream frame: the prelude's two lengths and its
+/// CRC at the front, and the message CRC at the end.
+const PRELUDE: usize = 12;
+const TRAILER: usize = 4;
+
+/// The largest frame the protocol allows. A prelude naming a longer one is not
+/// an event stream at all — an SSE line read as a prelude asks for a gigabyte —
+/// so it is refused rather than waited on.
+const MAX_FRAME: usize = 16 * 1024 * 1024;
+
 /// The tool calls Bedrock streams. Unlike the OpenAI wire its arguments arrive
 /// as JSON fragments split across deltas, so each one is accumulated as text and
 /// parsed once the block closes.
@@ -89,18 +102,20 @@ pub fn request_body(config: &Config, messages: &[Message], tools: &[ToolSpec]) -
     body
 }
 
-/// Apply one parsed SSE event to the in-progress assistant turn.
+/// Apply one event of the Converse stream to the in-progress assistant turn.
+///
+/// The event names itself in the frame's `:event-type` header rather than in
+/// its payload, so it is passed in; a payload that does carry its own name —
+/// the shape AWS documents these events in — unwraps to the same thing.
 pub fn apply_event(
-    data: &str,
+    event: &str,
+    payload: &Value,
     turn: &mut AssistantTurn,
     partials: &mut BTreeMap<usize, PartialToolCall>,
     on_text: &mut dyn FnMut(String),
     on_thinking: &mut dyn FnMut(String),
 ) -> Result<()> {
-    let Ok(value) = serde_json::from_str::<Value>(data) else {
-        return Ok(());
-    };
-    if let Some(object) = value.as_object() {
+    if let Some(object) = payload.as_object() {
         // A rejected request arrives as an event named after the exception,
         // which is what has to fail the turn rather than be read as an empty
         // step.
@@ -112,12 +127,17 @@ pub fn apply_event(
                 );
             }
         }
-        if let Some(message) = object.get("message").and_then(Value::as_str) {
-            bail!("bedrock error: {message}");
-        }
+    }
+    if let Some(message) = payload["message"].as_str() {
+        bail!("bedrock error: {message}");
     }
 
-    if let Some(usage) = value["metadata"]["usage"].as_object() {
+    // Both shapes of the same event — the payload AWS puts on the wire, and one
+    // that wraps itself in the name of the union member — reduce to the body,
+    // whose fields are named the same either way.
+    let value = payload.get(event).unwrap_or(payload);
+
+    if let Some(usage) = value["usage"].as_object() {
         let input = usage
             .get("inputTokens")
             .and_then(Value::as_u64)
@@ -138,7 +158,7 @@ pub fn apply_event(
             .unwrap_or(0);
     }
 
-    if let Some(reason) = value["messageStop"]["stopReason"].as_str() {
+    if let Some(reason) = value["stopReason"].as_str() {
         // Bedrock spells the output limit `max_tokens`; oxide's escalation path
         // keys off the OpenAI spelling.
         turn.finish_reason = Some(match reason {
@@ -148,24 +168,15 @@ pub fn apply_event(
     }
 
     // A block's number lives inside the event that names it.
-    let Some(start) = value["contentBlockStart"].get("start") else {
-        if let Some(change) = value.get("contentBlockDelta") {
-            let index = change["contentBlockIndex"].as_u64().unwrap_or(0) as usize;
-            return apply_delta(
-                &change["delta"],
-                index,
-                partials,
-                turn,
-                on_text,
-                on_thinking,
-            );
+    let Some(start) = value.get("start") else {
+        if let Some(delta) = value.get("delta") {
+            let index = value["contentBlockIndex"].as_u64().unwrap_or(0) as usize;
+            return apply_delta(delta, index, partials, turn, on_text, on_thinking);
         }
         return Ok(());
     };
     if let Some(call) = start.get("toolUse").and_then(Value::as_object) {
-        let index = value["contentBlockStart"]["contentBlockIndex"]
-            .as_u64()
-            .unwrap_or(0) as usize;
+        let index = value["contentBlockIndex"].as_u64().unwrap_or(0) as usize;
         partials.insert(
             index,
             PartialToolCall {
@@ -217,6 +228,144 @@ fn apply_delta(
             .push_str(fragment);
     }
     Ok(())
+}
+
+/// Hand every complete frame of an AWS event-stream body to `on_event`, keeping
+/// what is left of a frame that has not fully arrived for the next chunk.
+///
+/// The Converse stream is not SSE: `converse-stream` answers with AWS's binary
+/// event-stream framing (`application/vnd.amazon.eventstream`) — a prelude of
+/// two lengths and a CRC, then headers, then a payload and a second CRC — so
+/// reading the response as text loses every event it holds. Each frame's
+/// `:event-type` header names the event and its payload is the JSON that event
+/// carries; both are handed over together. The CRCs are not checked: a corrupt
+/// payload does not parse into the event it claims to be, and an event that
+/// does not parse leaves the turn without the stop reason it needs, which is
+/// already an error where it is read.
+pub fn drain_frames<F>(buffer: &mut Vec<u8>, mut on_event: F) -> Result<()>
+where
+    F: FnMut(&str, &Value) -> Result<()>,
+{
+    let mut consumed = 0;
+    while let Some((total, headers_len)) = frame_lengths(&buffer[consumed..])? {
+        let end = consumed + total;
+        if end > buffer.len() {
+            break;
+        }
+        let frame = &buffer[consumed..end];
+        let headers = &frame[PRELUDE..PRELUDE + headers_len];
+        let payload = &frame[PRELUDE + headers_len..total - TRAILER];
+        let value = serde_json::from_slice::<Value>(payload).unwrap_or(Value::Null);
+        on_event(header(headers, ":event-type").unwrap_or_default(), &value)?;
+        consumed = end;
+    }
+    buffer.drain(..consumed);
+    Ok(())
+}
+
+/// Whether `buffer` holds at least one whole frame — the lengths of its prelude
+/// when it does, and nothing while the frame is still arriving. A prelude that
+/// cannot be a frame longer than itself is a stream that is not this protocol.
+fn frame_lengths(buffer: &[u8]) -> Result<Option<(usize, usize)>> {
+    if buffer.len() < PRELUDE {
+        return Ok(None);
+    }
+    let total = u32::from_be_bytes([buffer[0], buffer[1], buffer[2], buffer[3]]) as usize;
+    let headers = u32::from_be_bytes([buffer[4], buffer[5], buffer[6], buffer[7]]) as usize;
+    if !(PRELUDE + TRAILER..=MAX_FRAME).contains(&total) || headers > total - PRELUDE - TRAILER {
+        bail!("bedrock returned a malformed event-stream frame");
+    }
+    Ok(Some((total, headers)))
+}
+
+/// The value of one header, if the frame carries it. A header is its name's
+/// length and bytes, a type byte, and a value whose bytes depend on that type —
+/// a bool has none, a fixed-width number has its width, and a string has a
+/// length and the bytes.
+fn header<'a>(headers: &'a [u8], wanted: &str) -> Option<&'a str> {
+    let mut rest = headers;
+    while rest.len() > 1 {
+        let name_len = rest[0] as usize;
+        if rest.len() < name_len + 2 {
+            return None;
+        }
+        let name = std::str::from_utf8(&rest[1..1 + name_len]).ok()?;
+        let kind = rest[1 + name_len];
+        let mut at = name_len + 2;
+        let text = match kind {
+            0 | 1 => None,
+            2 => {
+                at += 1;
+                None
+            }
+            3 => {
+                at += 2;
+                None
+            }
+            4 => {
+                at += 4;
+                None
+            }
+            5 | 8 => {
+                at += 8;
+                None
+            }
+            6 | 7 | 9 => {
+                if rest.len() < at + 2 {
+                    return None;
+                }
+                let len = u16::from_be_bytes([rest[at], rest[at + 1]]) as usize;
+                at += 2;
+                if rest.len() < at + len {
+                    return None;
+                }
+                let value = std::str::from_utf8(&rest[at..at + len]).ok();
+                at += len;
+                if kind == 7 {
+                    value
+                } else {
+                    None
+                }
+            }
+            _ => return None,
+        };
+        if name == wanted {
+            return text;
+        }
+        if rest.len() < at {
+            return None;
+        }
+        rest = &rest[at..];
+    }
+    None
+}
+
+/// One event-stream frame, laid out the way `converse-stream` sends it: the two
+/// lengths of the prelude with its CRC, the headers, the payload and the message
+/// CRC. The CRCs are left zero, since nothing reads them — a frame whose payload
+/// did not arrive intact does not parse into the event it claims to be.
+#[cfg(test)]
+pub(crate) fn frame(event: &str, payload: &str) -> Vec<u8> {
+    let mut headers = Vec::new();
+    for (name, value) in [
+        (":event-type", event),
+        (":content-type", "application/json"),
+    ] {
+        headers.push(name.len() as u8);
+        headers.extend_from_slice(name.as_bytes());
+        headers.push(7);
+        headers.extend_from_slice(&(value.len() as u16).to_be_bytes());
+        headers.extend_from_slice(value.as_bytes());
+    }
+    let total = PRELUDE + headers.len() + payload.len() + TRAILER;
+    let mut bytes = Vec::new();
+    bytes.extend_from_slice(&(total as u32).to_be_bytes());
+    bytes.extend_from_slice(&(headers.len() as u32).to_be_bytes());
+    bytes.extend_from_slice(&0u32.to_be_bytes());
+    bytes.extend_from_slice(&headers);
+    bytes.extend_from_slice(payload.as_bytes());
+    bytes.extend_from_slice(&0u32.to_be_bytes());
+    bytes
 }
 
 pub fn into_tool_calls(partials: BTreeMap<usize, PartialToolCall>) -> Vec<ToolCall> {
@@ -455,26 +604,109 @@ mod tests {
         );
     }
 
+    /// Hands `buffer` to the decoder, keeping every event it takes out.
+    fn decoded(buffer: &mut Vec<u8>) -> Vec<(String, Value)> {
+        let mut seen = Vec::new();
+        drain_frames(buffer, |event, payload| {
+            seen.push((event.to_string(), payload.clone()));
+            Ok(())
+        })
+        .unwrap();
+        seen
+    }
+
+    #[test]
+    fn decodes_the_event_stream_frames_a_converse_stream_sends() {
+        let mut buffer = Vec::new();
+        buffer.extend_from_slice(&frame("messageStart", r#"{"role":"assistant"}"#));
+        let last = frame(
+            "contentBlockDelta",
+            r#"{"contentBlockIndex":0,"delta":{"text":"hi"}}"#,
+        );
+        // A frame whose last bytes have not arrived is not an event yet.
+        buffer.extend_from_slice(&last[..last.len() - 2]);
+
+        let seen = decoded(&mut buffer);
+        assert_eq!(seen.len(), 1);
+        assert_eq!(seen[0].0, "messageStart");
+        assert_eq!(seen[0].1["role"], "assistant");
+        assert!(!buffer.is_empty(), "the partial frame is kept");
+
+        buffer.extend_from_slice(&last[last.len() - 2..]);
+        let seen = decoded(&mut buffer);
+        assert_eq!(seen.len(), 1);
+        assert_eq!(seen[0].0, "contentBlockDelta");
+        assert_eq!(seen[0].1["delta"]["text"], "hi");
+        assert!(buffer.is_empty());
+    }
+
+    #[test]
+    fn refuses_a_stream_that_is_not_framed() {
+        // A response read as SSE, or a proxy's own page, is not an event stream:
+        // its first bytes name a frame no one is going to send.
+        let mut buffer = b"data: {\"contentBlockDelta\": {}}\n\n".to_vec();
+        let error = drain_frames(&mut buffer, |_, _| Ok(())).unwrap_err();
+        assert!(error.to_string().contains("malformed"), "{error}");
+
+        let mut buffer = Vec::new();
+        buffer.extend_from_slice(&64u32.to_be_bytes());
+        buffer.extend_from_slice(&200u32.to_be_bytes());
+        buffer.extend_from_slice(&[0; 64]);
+        let error = drain_frames(&mut buffer, |_, _| Ok(())).unwrap_err();
+        assert!(error.to_string().contains("malformed"), "{error}");
+    }
+
     #[test]
     fn streams_text_and_a_tool_call_split_across_deltas() {
         let mut turn = AssistantTurn::default();
         let mut partials = BTreeMap::new();
         let mut text = String::new();
         let mut on_text = |value: String| text.push_str(&value);
+        let mut buffer = Vec::new();
 
-        for event in [
-            r#"{"contentBlockDelta":{"delta":{"text":"he"},"contentBlockIndex":0}}"#,
-            r#"{"contentBlockDelta":{"delta":{"text":"llo"},"contentBlockIndex":0}}"#,
-            r#"{"contentBlockStart":{"contentBlockIndex":1,"start":{"toolUse":{"toolUseId":"t1","name":"read"}}}}"#,
+        for (event, payload) in [
+            ("messageStart", r#"{"role":"assistant"}"#),
+            (
+                "contentBlockDelta",
+                r#"{"delta":{"text":"he"},"contentBlockIndex":0}"#,
+            ),
+            (
+                "contentBlockDelta",
+                r#"{"delta":{"text":"llo"},"contentBlockIndex":0}"#,
+            ),
+            (
+                "contentBlockStart",
+                r#"{"contentBlockIndex":1,"start":{"toolUse":{"toolUseId":"t1","name":"read"}}}"#,
+            ),
             // The arguments arrive in fragments, so the block is only a call
             // once the last one has landed.
-            r#"{"contentBlockDelta":{"contentBlockIndex":1,"delta":{"toolUse":{"input":"{\"pa"}}}}"#,
-            r#"{"contentBlockDelta":{"contentBlockIndex":1,"delta":{"toolUse":{"input":"th\":\"a.rs\"}"}}}}"#,
-            r#"{"contentBlockStop":{"contentBlockIndex":1}}"#,
-            r#"{"messageStop":{"stopReason":"tool_use"}}"#,
-            r#"{"metadata":{"usage":{"inputTokens":10,"outputTokens":4,"cacheReadInputTokens":6}}}"#,
+            (
+                "contentBlockDelta",
+                r#"{"contentBlockIndex":1,"delta":{"toolUse":{"input":"{\"pa"}}}"#,
+            ),
+            (
+                "contentBlockDelta",
+                r#"{"contentBlockIndex":1,"delta":{"toolUse":{"input":"th\":\"a.rs\"}"}}}"#,
+            ),
+            ("contentBlockStop", r#"{"contentBlockIndex":1}"#),
+            (STOP_EVENT, r#"{"stopReason":"tool_use"}"#),
+            (
+                "metadata",
+                r#"{"usage":{"inputTokens":10,"outputTokens":4,"cacheReadInputTokens":6}}"#,
+            ),
         ] {
-            apply_event(event, &mut turn, &mut partials, &mut on_text, &mut |_| {}).unwrap();
+            buffer.extend_from_slice(&frame(event, payload));
+            drain_frames(&mut buffer, |event, payload| {
+                apply_event(
+                    event,
+                    payload,
+                    &mut turn,
+                    &mut partials,
+                    &mut on_text,
+                    &mut |_| {},
+                )
+            })
+            .unwrap();
         }
 
         assert_eq!(text, "hello");
@@ -493,13 +725,14 @@ mod tests {
         let mut partials = BTreeMap::new();
         let mut thinking = String::new();
         let mut on_thinking = |value: String| thinking.push_str(&value);
-        for event in [
-            r#"{"contentBlockDelta":{"contentBlockIndex":0,"delta":{"reasoningContent":{"text":"step "}}}}"#,
-            r#"{"contentBlockDelta":{"contentBlockIndex":0,"delta":{"reasoningContent":{"text":"one"}}}}"#,
-            r#"{"contentBlockDelta":{"contentBlockIndex":0,"delta":{"reasoningContent":{"signature":"sig"}}}}"#,
+        for delta in [
+            json!({"reasoningContent":{"text":"step "}}),
+            json!({"reasoningContent":{"text":"one"}}),
+            json!({"reasoningContent":{"signature":"sig"}}),
         ] {
             apply_event(
-                event,
+                "contentBlockDelta",
+                &json!({"contentBlockIndex":0,"delta":delta}),
                 &mut turn,
                 &mut partials,
                 &mut |_| {},
@@ -513,11 +746,30 @@ mod tests {
     }
 
     #[test]
+    fn reads_either_shape_of_the_same_event() {
+        // The payload of an event is the body it carries, but an event that
+        // names itself is read the same way.
+        let mut turn = AssistantTurn::default();
+        let mut partials = BTreeMap::new();
+        apply_event(
+            "contentBlockDelta",
+            &json!({"contentBlockDelta":{"contentBlockIndex":0,"delta":{"text":"hi"}}}),
+            &mut turn,
+            &mut partials,
+            &mut |_| {},
+            &mut |_| {},
+        )
+        .unwrap();
+        assert_eq!(turn.content, "hi");
+    }
+
+    #[test]
     fn reads_the_output_limit_as_truncation() {
         let mut turn = AssistantTurn::default();
         let mut partials = BTreeMap::new();
         apply_event(
-            r#"{"messageStop":{"stopReason":"max_tokens"}}"#,
+            STOP_EVENT,
+            &json!({"stopReason":"max_tokens"}),
             &mut turn,
             &mut partials,
             &mut |_| {},
@@ -532,7 +784,8 @@ mod tests {
         let mut turn = AssistantTurn::default();
         let mut partials = BTreeMap::new();
         let error = apply_event(
-            r#"{"message":"the model is not available"}"#,
+            "validationException",
+            &json!({"message":"the model is not available"}),
             &mut turn,
             &mut partials,
             &mut |_| {},
