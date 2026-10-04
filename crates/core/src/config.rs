@@ -796,6 +796,22 @@ pub fn canonical_provider(name: &str) -> String {
     name
 }
 
+/// Whether a provider that was given no credential of its own is authorized
+/// with `OPENAI_API_KEY`.
+///
+/// That variable is OpenAI's: every provider in the table names the one it reads
+/// (`DEEPSEEK_API_KEY`, `GROQ_API_KEY`, `ANTHROPIC_API_KEY`, …), and the one
+/// other thing that answers to it is a custom endpoint, which declares none and
+/// speaks the OpenAI wire. Falling back across the table would hand the OpenAI
+/// secret to whichever unrelated host the reader switched to, since nothing
+/// would tell the reader it had travelled.
+fn takes_openai_key(provider: &str) -> bool {
+    match ProviderPreset::for_name(provider) {
+        Some(preset) => preset.name == "openai",
+        None => true,
+    }
+}
+
 /// How much reasoning effort to ask the model for. `Auto` (the default) leaves
 /// the effort to the provider or uses its native adaptive mode; explicit levels
 /// are translated by the active provider client.
@@ -1377,11 +1393,7 @@ impl Config {
                     .collect();
             }
         }
-        let openai_key_fallback = match preset {
-            Some(preset) => preset.kind == ProviderKind::OpenAi && !preset.local,
-            None => true,
-        };
-        if config.api_key.is_empty() && openai_key_fallback {
+        if config.api_key.is_empty() && takes_openai_key(&config.provider) {
             if let Some(key) = env_nonempty("OPENAI_API_KEY") {
                 config.api_key = key;
             }
@@ -3602,6 +3614,20 @@ mod tests {
         // whose preset may offer a download page instead of a key page.
         for preset in PROVIDERS.iter().filter(|preset| !preset.local) {
             assert!(!preset.key_env.is_empty(), "{} has no key env", preset.name);
+        }
+        // `OPENAI_API_KEY` is OpenAI's own, so it is OpenAI that reads it and a
+        // custom endpoint that borrows it — never another host's name, which
+        // would send the OpenAI secret to a provider the reader switched to.
+        assert!(takes_openai_key("openai"));
+        assert!(takes_openai_key("gpt-4o"));
+        assert!(takes_openai_key("my-gateway"));
+        for preset in PROVIDERS.iter().filter(|preset| preset.name != "openai") {
+            assert!(
+                !takes_openai_key(preset.name),
+                "{} would be sent the OpenAI key",
+                preset.name
+            );
+            assert!(!takes_openai_key(preset.name.to_ascii_uppercase().as_str()));
         }
     }
 
