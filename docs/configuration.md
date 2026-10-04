@@ -218,7 +218,9 @@ Vertex AI runs the same models under a Google Cloud project and location, and
 authenticates with a service-account credential instead of a key. Set
 `GOOGLE_VERTEX_CREDENTIALS` to the service-account JSON itself (or
 `GOOGLE_APPLICATION_CREDENTIALS` to its path, which is also the file
-`gcloud auth application-default login` writes), plus `GOOGLE_VERTEX_LOCATION`
+`gcloud auth application-default login` writes — `~/.config/gcloud` on Unix and
+`%APPDATA%\gcloud` on Windows, or the directory `CLOUDSDK_CONFIG` names), plus
+`GOOGLE_VERTEX_LOCATION`
 (default `us-central1`). The token is minted from the key and refreshed as it
 expires, and the project — `GOOGLE_VERTEX_PROJECT` or `GOOGLE_CLOUD_PROJECT` — is
 taken from the key itself when neither is set. A service account with no file

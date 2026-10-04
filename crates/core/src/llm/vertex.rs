@@ -77,14 +77,25 @@ fn read_credential_with(
     Some((source, value))
 }
 
+/// Where `gcloud auth application-default login` wrote its credential.
+///
+/// gcloud keeps its own configuration wherever `CLOUDSDK_CONFIG` points and
+/// otherwise under the platform's config root: a dot directory in the home one
+/// on Unix, and the roaming application data on Windows — which has no `HOME`
+/// to look under, so asking for one reported a valid login as missing there.
 fn adc_path(with_env: &dyn Fn(&str) -> Option<String>) -> Option<PathBuf> {
-    let home = with_env("HOME")?;
-    Some(
-        PathBuf::from(home)
-            .join(".config")
-            .join("gcloud")
-            .join("application_default_credentials.json"),
-    )
+    let root = with_env("CLOUDSDK_CONFIG")
+        .filter(|dir| !dir.trim().is_empty())
+        .map(|dir| PathBuf::from(dir.trim()))
+        .or_else(|| {
+            let base = with_env(if cfg!(windows) { "APPDATA" } else { "HOME" })?;
+            Some(if cfg!(windows) {
+                PathBuf::from(base).join("gcloud")
+            } else {
+                PathBuf::from(base).join(".config").join("gcloud")
+            })
+        })?;
+    Some(root.join("application_default_credentials.json"))
 }
 
 /// The project a credential belongs to, so a Vertex request can be built
@@ -367,6 +378,55 @@ mod tests {
         let home = dir.join("home");
         let empty = |name: &str| (name == "HOME").then(|| home.display().to_string());
         assert!(!has_credential_with(&empty));
+    }
+
+    /// The application default credentials `gcloud auth application-default
+    /// login` leaves behind are found where gcloud keeps its configuration,
+    /// which is not the same directory on every platform.
+    #[test]
+    fn finds_the_application_default_credentials_gcloud_writes() {
+        let dir = std::env::temp_dir().join(format!("oxide-vertex-adc-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let credentials = dir.join("application_default_credentials.json");
+        std::fs::write(&credentials, service_account().to_string()).unwrap();
+
+        // The directory gcloud itself is told to keep its configuration in.
+        let configured = dir.join("cloudsdk");
+        std::fs::create_dir_all(&configured).unwrap();
+        std::fs::copy(
+            &credentials,
+            configured.join("application_default_credentials.json"),
+        )
+        .unwrap();
+        let home = dir.join("home");
+        let empty_home = home.display().to_string();
+        let env = |name: &str| match name {
+            "CLOUDSDK_CONFIG" => Some(configured.display().to_string()),
+            "HOME" | "APPDATA" => Some(empty_home.clone()),
+            _ => None,
+        };
+        assert!(has_credential_with(&env));
+
+        // And the platform's own config root when it says nothing.
+        let root = if cfg!(windows) {
+            home.join("gcloud")
+        } else {
+            home.join(".config").join("gcloud")
+        };
+        std::fs::create_dir_all(&root).unwrap();
+        let platform = |name: &str| match name {
+            "HOME" | "APPDATA" => Some(empty_home.clone()),
+            _ => None,
+        };
+        assert!(!has_credential_with(&platform));
+        std::fs::copy(
+            &credentials,
+            root.join("application_default_credentials.json"),
+        )
+        .unwrap();
+        assert!(has_credential_with(&platform));
+
+        std::fs::remove_dir_all(&dir).ok();
     }
 
     #[test]
