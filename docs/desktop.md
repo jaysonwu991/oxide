@@ -119,6 +119,18 @@ combination would silently do the role's own behavior instead of announcing
 `check-updates`. `check-shell.mjs` reads the menu back out of `main.rs` and holds
 all four rules.
 
+The window is 1200×800 and opens centered, with 820×560 as its floor — the size
+below which a transcript, its tool cards and the composer stop being usable. The
+shell this replaced set that floor as a window option; Electrobun has none to
+set, so `main.rs` keeps it where a resize arrives: `WindowCallbacks::resize`
+compares the size it is handed against the floor and, when the window is under
+it, asks `get_window_frame` for the window as it is and `set_window_size` for the
+minimum. The two calls are not in the resize callback's own space — it reports
+the room the page is laid out in, they speak in the window's outer size — so the
+chrome between them is measured from the window rather than assumed, which keeps
+the floor the layout's size on every platform. The resize the clamp causes
+reports a page already at the minimum, so it settles rather than asking again.
+
 ## Interface
 
 The window follows a Codex-style layout. Every glyph it draws for itself is
@@ -793,7 +805,14 @@ inline emphasis/code/links. Bare `http(s)://` URLs are auto-linked too, and
 clicking any link opens it in the system browser through `open_url` — one call
 into Electrobun's `Core::open_external`, which hands the URL to whatever the
 machine uses as its handler rather than a program this source picks per target —
-while navigation is denied inside the application window. Tool results render as
+while navigation is denied inside the application window. That denial is kept in
+two places because Electrobun reads it in two: the webview is given the rules
+`["^*","views://main/*"]` — matched against the whole URL, last match wins, `*`
+the only wildcard — and the `decide_navigation` callback, which the renderers
+that ask it rather than read a policy go through, allows nothing but
+`views://main/`. The window therefore navigates to the page it was built with
+and nowhere else, which is what makes a link in a reply a browser tab rather
+than a remote document painted in the app. Tool results render as
 panels;
 `write`/`edit` results include a colored diff.
 
@@ -825,7 +844,14 @@ moved, and the copy that was there is put back if the rename cannot land), and
 the image is detached again; elsewhere the setup archive is unpacked with the
 machine's own `tar` and **its installer is run**, which owns the installation
 from there — it writes over the files and waits for the running app to be closed
-— so that install is reported as started rather than finished. The running app
+— so that install is reported as started rather than finished. A setup is
+unpacked into `<config>/Oxide/desktop/installer`, beside the app's own registry
+rather than in the private scratch directory a download lands in: the installer
+reads the payload beside it while this app is still running, and that scratch
+directory is removed as the install call returns, which would pull the payload
+out from under a setup that had only just started. Each install empties that
+directory before it unpacks into it, so a run that was interrupted leaves one
+directory rather than a pile. The running app
 keeps running either way — the dialog ends with the path the release landed at
 and the one thing left to do, quitting and opening the app again. A release
 that carries no build for this platform (macOS Intel included), and an install

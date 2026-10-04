@@ -211,8 +211,8 @@ Releases are automated by GitHub Actions:
    checksum, and publishes a GitHub Release with `install.sh` and `install.ps1`
    attached.
 3. `desktop.yml` triggers on `desktop-v*` tags (and manually), builds the
-   macOS arm64, Linux x64 and Windows x64 installers through Hutch, and drafts
-   a release.
+   macOS arm64, Linux x64 and arm64, and Windows x64 installers through Hutch,
+   and drafts a release.
 4. `vscode.yml` triggers on `extension-v*` tags, runs the extension's type
    check and unit tests, builds `oxide-vscode-<version>.vsix`, and attaches it
    to the matching GitHub Release.

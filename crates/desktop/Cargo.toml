@@ -7,9 +7,9 @@ description = "Desktop app for Oxide: manage multiple projects and sessions"
 
 # This package is excluded from the root workspace on purpose. Its main process
 # is Electrobun's Rust SDK, and the crate for it is projected into
-# `.hutch/devkit/rust-sdk` by `hutch electrobun sync` rather than published to
+# `.hutch/devkit/rust-sdk` by `hutch electrobun prepare` rather than published to
 # crates.io. A workspace member naming that path would make every cargo command
-# in the workspace fail until the desktop project had been synced.
+# in the workspace fail until the desktop project had been prepared.
 #
 # The projected SDK is excluded from this package's own workspace for the same
 # reason it is not ours to lint: it is a path dependency inside the workspace

@@ -114,6 +114,7 @@ fn create_window(
     window.centered = true;
     window.callbacks = WindowCallbacks {
         close: Some(window_closed),
+        resize: Some(window_resized),
         ..WindowCallbacks::default()
     };
     let window_id = match core.create_window(window) {
@@ -143,7 +144,7 @@ fn create_window(
     // queue. The event channel is wired to the same dispatcher as the fallback
     // the page uses where a webview has no user bridge at all.
     webview.callbacks = WebviewCallbacks {
-        decide_navigation: Some(electrobun::allow_all_navigation),
+        decide_navigation: Some(decide_navigation),
         event: Some(webview_event),
         event_bridge: Some(event_bridge_message),
         ..WebviewCallbacks::default()
@@ -156,6 +157,13 @@ fn create_window(
             return;
         }
     };
+
+    // The window navigates to the page it was given and nothing else, which the
+    // native side enforces from the policy kept on the webview rather than from
+    // the callback (see [`NAVIGATION_RULES`]).
+    if let Err(error) = core.set_webview_navigation_rules(webview_id, NAVIGATION_RULES) {
+        eprintln!("[oxide] failed to restrict the window's navigation: {error}");
+    }
 
     let host = Arc::new(Host::new(core, webview_id));
     let state = Arc::new(DesktopState::new(
@@ -197,6 +205,51 @@ extern "C" fn window_closed(_window_id: u32) {
     if let Some(core) = CORE.get() {
         let _ = core.stop_event_loop();
     }
+}
+
+/// The page is the app's own document, and the one thing the window may
+/// navigate to. A link in a reply is opened in the machine's browser by the host
+/// command the page calls, so a navigation to one would be a second way out of
+/// the app — or a remote document painted in the window that is the app. The
+/// rules are Electrobun's own: each is matched against the whole URL with `*`
+/// alone as its wildcard and the last match deciding, so the first rule refuses
+/// every scheme and the second lets the app's own view through.
+const NAVIGATION_RULES: &str = r#"["^*","views://main/*"]"#;
+
+extern "C" fn decide_navigation(_webview_id: u32, url: *const c_char) -> u32 {
+    u32::from(cstr(url).starts_with("views://main/"))
+}
+
+/// The smallest window the layout is built for — the floor the shell this
+/// replaced kept as its own window option. Electrobun has no minimum size to
+/// set, so it is kept where a resize arrives: a window reported below it is
+/// asked for the minimum instead. The two frame calls speak in the window's
+/// outer size while the resize reports the room the page is laid out in, so the
+/// chrome between them is measured from the window as it is rather than assumed;
+/// the resize this answers reports a page already at the minimum, so the clamp
+/// settles instead of asking again.
+const MIN_WINDOW: (f64, f64) = (820.0, 560.0);
+
+/// A layout rounds its own numbers, so a size within half a point of the floor
+/// is the floor.
+const FLOOR_SLACK: f64 = 0.5;
+
+extern "C" fn window_resized(window_id: u32, _x: f64, _y: f64, width: f64, height: f64) {
+    let Some(core) = CORE.get() else {
+        return;
+    };
+    if width >= MIN_WINDOW.0 - FLOOR_SLACK && height >= MIN_WINDOW.1 - FLOOR_SLACK {
+        return;
+    }
+    let chrome = core
+        .get_window_frame(window_id)
+        .map(|frame| (frame.width - width, frame.height - height))
+        .unwrap_or((0.0, 0.0));
+    let _ = core.set_window_size(
+        window_id,
+        MIN_WINDOW.0 + chrome.0.max(0.0),
+        MIN_WINDOW.1 + chrome.1.max(0.0),
+    );
 }
 
 /// The user bridge Electrobun queues for the main process. Nothing else reads

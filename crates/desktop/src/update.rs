@@ -128,6 +128,23 @@ fn data_root() -> Option<PathBuf> {
     dirs::data_local_dir()
 }
 
+/// Where a setup archive is unpacked: beside the desktop's own state, which is
+/// not the installation the installer writes over.
+///
+/// It cannot be the run's own scratch directory. A Windows or Linux installer
+/// is started as a process of its own and reads the payload that sits beside
+/// it, and this side reports the launch and returns while that process is still
+/// going — a directory removed as the call returns would pull the payload out
+/// from under it. The path comes from the same module that resolves the
+/// registry, so it is the directory the app already owns.
+fn setup_staging() -> Result<PathBuf> {
+    let registry = oxide_core::workspaces::registry_path();
+    let directory = registry
+        .parent()
+        .context("the desktop's own directory could not be resolved")?;
+    Ok(directory.join("installer"))
+}
+
 /// The record an Electrobun install root carries: the uninstaller it was
 /// installed with, and the manifest that uninstaller reads.
 const INSTALL_MARKERS: [&str; 3] = [".electrobun-uninstall.json", "uninstall", "uninstall.exe"];
@@ -359,7 +376,8 @@ pub async fn install_reporting(report: impl Fn(Progress)) -> Result<Value> {
         stage: "installing",
         version: release.version.clone(),
     });
-    let placed = install_downloaded(&installation, &release.version, &download, &work)?;
+    let staging = setup_staging()?;
+    let placed = install_downloaded(&installation, &release.version, &download, &work, &staging)?;
     notes.push(placed.note);
 
     Ok(json!({
@@ -404,6 +422,7 @@ fn install_downloaded(
     version: &str,
     download: &Path,
     work: &WorkDir,
+    staging: &Path,
 ) -> Result<Placed> {
     match &installation.kind {
         Kind::Bundle(bundle) => {
@@ -418,8 +437,11 @@ fn install_downloaded(
             // installation from here: it writes over the files and waits for
             // the running app to be closed. Starting it is all this side can
             // know — it may still be waiting for elevation or on the reader —
-            // so the release is reported as pending rather than installed.
-            let program = unpack_setup(download, work)?;
+            // so the release is reported as pending rather than installed. It
+            // is unpacked outside the run's own work directory for the same
+            // reason: the installer reads the payload beside it while this app
+            // is still going, so that directory is not this call's to remove.
+            let program = unpack_setup(download, staging)?;
             Command::new(&program)
                 .spawn()
                 .with_context(|| format!("running {}", program.display()))?;
@@ -438,13 +460,17 @@ fn install_downloaded(
     }
 }
 
-/// Unpacks a downloaded setup archive and answers with the installer inside it.
+/// Unpacks a downloaded setup archive into `staging` and answers with the
+/// installer inside it.
 ///
 /// Both the zip a Windows release publishes and the gzipped tar of a Linux one
 /// are read by the machine's own `tar`, which keeps the install step free of an
-/// archive dependency the app would otherwise carry for one file.
-fn unpack_setup(archive: &Path, work: &WorkDir) -> Result<PathBuf> {
-    let unpacked = work.path().join("setup");
+/// archive dependency the app would otherwise carry for one file. What a
+/// previous install left there is removed first, so an interrupted one is a
+/// single directory rather than a pile.
+fn unpack_setup(archive: &Path, staging: &Path) -> Result<PathBuf> {
+    let _ = fs::remove_dir_all(staging);
+    let unpacked = staging.join("setup");
     fs::create_dir_all(&unpacked).with_context(|| format!("creating {}", unpacked.display()))?;
     let mut command = Command::new("tar");
     command.arg("-xf").arg(archive).arg("-C").arg(&unpacked);
@@ -1042,7 +1068,9 @@ mod tests {
         run(&mut pack, "packing the fixture").unwrap();
 
         let work = WorkDir::new().unwrap();
-        let placed = install_downloaded(&installation, "0.34.0", &download, &work).unwrap();
+        let staging = root.join("staging");
+        let placed =
+            install_downloaded(&installation, "0.34.0", &download, &work, &staging).unwrap();
 
         assert!(placed.pending, "the installer owns what happens next");
         assert!(
@@ -1059,6 +1087,25 @@ mod tests {
             std::thread::sleep(std::time::Duration::from_millis(20));
         }
         assert!(started, "the unpacked installer was started");
+
+        // The directory the installer reads its payload out of outlives the
+        // call that unpacked it: the process it belongs to is still running
+        // when the install returns, and the scratch directory it was not
+        // unpacked into is gone by then.
+        let staged = staging.join("setup/installer");
+        assert!(staged.is_file(), "{} is still there", staged.display());
+        let scratch = work.path().to_path_buf();
+        drop(work);
+        assert!(!scratch.exists(), "the run's own scratch is removed");
+        assert!(staged.is_file(), "and the installer is still there");
+
+        // A later install unpacks into the same directory without inheriting
+        // what the previous one left in it.
+        let leftover = staging.join("setup/from-an-older-release");
+        fs::write(&leftover, b"stale").unwrap();
+        unpack_setup(&download, &staging).unwrap();
+        assert!(!leftover.exists(), "the previous install's files are gone");
+        assert!(staged.is_file(), "and this install's installer is there");
         fs::remove_dir_all(root).unwrap();
     }
 
@@ -1085,13 +1132,30 @@ mod tests {
         run(&mut pack, "packing the fixture").unwrap();
 
         let work = WorkDir::new().unwrap();
-        let error = install_downloaded(&installation, "0.34.0", &download, &work).unwrap_err();
+        let staging = root.join("staging");
+        let error =
+            install_downloaded(&installation, "0.34.0", &download, &work, &staging).unwrap_err();
 
         assert!(
             error.to_string().contains("holds no single setup program"),
             "{error}"
         );
         fs::remove_dir_all(root).unwrap();
+    }
+
+    // An installer is unpacked beside the app's own state, which is not the
+    // installation the installer would write over: it is a directory nobody
+    // replaces while the installer is reading the payload in it.
+    #[test]
+    fn a_setup_is_staged_beside_the_desktops_own_state() {
+        let staging = setup_staging().unwrap();
+        assert_eq!(staging.file_name(), Some(OsStr::new("installer")));
+        assert_eq!(
+            staging.parent(),
+            oxide_core::workspaces::registry_path().parent(),
+            "{} stays beside the registry the app writes",
+            staging.display()
+        );
     }
 
     #[test]
@@ -1102,7 +1166,9 @@ mod tests {
         let installation = installation_of(&binary, "macos", None);
 
         let work = WorkDir::new().unwrap();
-        let error = install_downloaded(&installation, "0.34.0", &binary, &work).unwrap_err();
+        let staging = root.join("staging");
+        let error =
+            install_downloaded(&installation, "0.34.0", &binary, &work, &staging).unwrap_err();
 
         assert!(
             error

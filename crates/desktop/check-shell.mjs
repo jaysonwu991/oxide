@@ -429,6 +429,102 @@ check(
   "",
 );
 
+// ---------- what the window is allowed to do ----------
+
+console.log("the window's own rules");
+// The window is the app's own page. Electrobun would let it navigate anywhere
+// by default, and a policy that allows every URL is a second way out of the
+// app: a link in a reply is opened in the machine's browser by the command the
+// page calls, so nothing in the window should follow one. The rules are the
+// native side's — the last match wins and `*` is the only wildcard — and the
+// callback is the renderer's, so both are asserted to name the app's own view.
+const navigation = /const NAVIGATION_RULES: &str = r#"(\[[^\]]*\])"#/.exec(shell);
+const ruleList = navigation ? JSON.parse(navigation[1]) : [];
+check(
+  "lets the window navigate to its own page and nowhere else",
+  ruleList.length === 2 &&
+    ruleList[0] === "^*" &&
+    ruleList[1].startsWith("views://") &&
+    ruleList[1].endsWith("/*") &&
+    ruleList[1].includes(loadUrl?.[1] ?? "\u0000") &&
+    /decide_navigation: Some\(decide_navigation\)/.test(shell) &&
+    !code(shell).includes("allow_all_navigation"),
+  ruleList.join(" "),
+);
+check(
+  "reads the same door in the callback the renderers ask",
+  /fn decide_navigation\([^)]*\) -> u32 \{\s*u32::from\(cstr\(url\)\.starts_with\(/.test(shell) &&
+    code(shell).includes("set_webview_navigation_rules") &&
+    code(shell).indexOf("set_webview_navigation_rules") > code(shell).indexOf("create_webview"),
+  "",
+);
+// The shell this replaced kept a minimum window size, which is the layout's own
+// floor rather than a nicety: a run's transcript, tool cards and the composer
+// stop being usable below it. Electrobun's window options have no minimum to
+// set, so the floor is kept where a resize arrives and the frame is put back to
+// it — a resize handler that only reads the size is a window that keeps
+// shrinking.
+const minimum = /const MIN_WINDOW: \(f64, f64\) = \(([\d.]+), ([\d.]+)\)/.exec(shell);
+check(
+  "keeps the layout's smallest window",
+  Boolean(minimum) &&
+    Number(minimum[1]) >= 820 &&
+    Number(minimum[2]) >= 560 &&
+    /resize: Some\(window_resized\)/.test(shell) &&
+    /fn window_resized\(/.test(shell) &&
+    /get_window_frame\(/.test(shell.slice(shell.indexOf("fn window_resized"), shell.indexOf("fn cstr"))) &&
+    /set_window_size\(/.test(shell.slice(shell.indexOf("fn window_resized"), shell.indexOf("fn cstr"))),
+  minimum ? `${minimum[1]}×${minimum[2]}` : "no minimum",
+);
+
+// ---------- the update the app installs itself ----------
+
+console.log("the installer");
+// A Windows or Linux release is installed by a setup program, which the app
+// starts and cannot wait on: it reads the payload that was unpacked beside it
+// while this app is still running. A scratch directory removed as the install
+// call returns would take that payload out from under it, so the unpack has to
+// land in the app's own state directory instead — one that outlives the run and
+// is cleared by the next install.
+const update = read("src/update.rs");
+const unpack = update.slice(update.indexOf("fn unpack_setup"), update.indexOf("fn find_setup"));
+const install = update.slice(update.indexOf("fn install_downloaded"), update.indexOf("fn unpack_setup"));
+const staging = update.slice(update.indexOf("fn setup_staging"), update.indexOf("fn setup_staging") + 500);
+check(
+  "unpacks a setup where the installer can still read it",
+  /unpack_setup\(download, staging\)/.test(install) &&
+    !/unpack_setup\(download, work\.path\(\)\)/.test(install) &&
+    /setup_staging\(\)\?/.test(update) &&
+    /registry_path\(\)/.test(staging) &&
+    /\.parent\(\)/.test(staging) &&
+    /join\("installer"\)/.test(staging),
+  staging.replace(/\s+/g, " ").slice(0, 160),
+);
+check(
+  "clears what an earlier install left before unpacking again",
+  /remove_dir_all\(staging\)/.test(unpack),
+  unpack.replace(/\s+/g, " ").slice(0, 120),
+);
+// The notarize gate has to be all of one method's variables or none: a partial
+// set is notarization switched on with nothing to notarize with, which stops a
+// macOS release at the Apple submission instead of leaving it unsigned.
+const notary = code(config).slice(code(config).indexOf("const notary"), code(config).indexOf("const notary") + 400);
+check(
+  "asks for every notarization variable or none of them",
+  notary.includes("env.ELECTROBUN_APPLEAPIKEY &&") &&
+    notary.includes("env.ELECTROBUN_APPLEAPIKEYPATH &&") &&
+    notary.includes("env.ELECTROBUN_APPLEAPIISSUER") &&
+    notary.includes("env.ELECTROBUN_APPLEID &&") &&
+    notary.includes("env.ELECTROBUN_APPLEIDPASS &&") &&
+    notary.includes("env.ELECTROBUN_TEAMID"),
+  notary.replace(/\s+/g, " ").slice(0, 160),
+);
+check(
+  "names the command that projects the Rust SDK",
+  /hutch electrobun prepare/.test(manifest) && !/hutch electrobun sync/.test(manifest),
+  "",
+);
+
 // ---------- nothing left of the shell this replaced ----------
 
 console.log("the migration");

@@ -7,8 +7,14 @@ import type { ElectrobunConfig } from "electrobun";
 const env: Record<string, string | undefined> =
 	(globalThis as { process?: { env?: Record<string, string | undefined> } }).process?.env ?? {};
 const identity = env.ELECTROBUN_DEVELOPER_ID ?? "";
+// Either authentication method is all three of its variables or none of them:
+// a partial set (the key id alone, say) would turn notarization on with nothing
+// to notarize with, and the release build would fail at the Apple submission
+// rather than at the door.
 const notary = Boolean(
-	env.ELECTROBUN_APPLEAPIKEY ||
+	(env.ELECTROBUN_APPLEAPIKEY &&
+		env.ELECTROBUN_APPLEAPIKEYPATH &&
+		env.ELECTROBUN_APPLEAPIISSUER) ||
 		(env.ELECTROBUN_APPLEID && env.ELECTROBUN_APPLEIDPASS && env.ELECTROBUN_TEAMID),
 );
 
