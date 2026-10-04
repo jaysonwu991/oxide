@@ -201,8 +201,24 @@ impl ListRow {
 #[derive(Debug, Clone)]
 pub enum ConnectStep {
     Provider,
-    Key { provider: String },
-    Options { provider: String },
+    /// A provider that logs in through the browser: the dialog waits on the
+    /// flow while the code and URL it asked GitHub for are shown.
+    Browser {
+        provider: String,
+    },
+    Key {
+        provider: String,
+    },
+    Options {
+        provider: String,
+    },
+}
+
+/// The code and URL a browser login is waiting on.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Authorization {
+    pub url: String,
+    pub code: String,
 }
 
 /// One editable row of the login dialog's optional settings.
@@ -240,6 +256,9 @@ pub struct ConnectState {
     pub base_url: String,
     pub portkey_config: String,
     pub focus: ConnectField,
+    /// The browser login this dialog is waiting on, once GitHub has answered
+    /// with a code to approve.
+    pub authorization: Option<Authorization>,
 }
 
 impl ConnectState {
@@ -255,6 +274,7 @@ impl ConnectState {
             base_url: String::new(),
             portkey_config: String::new(),
             focus: ConnectField::Model,
+            authorization: None,
         }
     }
 
@@ -711,6 +731,9 @@ pub struct App {
     pub assistant_open: bool,
     pub pending_approval: Option<PendingApproval>,
     pub connect: Option<ConnectState>,
+    /// A browser login the key handler asked for, started by the event loop
+    /// that owns the channel its progress arrives on.
+    pub pending_login: Option<String>,
     pub models: Option<ModelsState>,
     pub sessions: Option<SessionsState>,
     pub marketplaces: Option<MarketplacesState>,
@@ -849,6 +872,7 @@ impl App {
             assistant_open: false,
             pending_approval: None,
             connect: None,
+            pending_login: None,
             models: None,
             sessions: None,
             marketplaces: None,

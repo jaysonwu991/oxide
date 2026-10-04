@@ -16,9 +16,9 @@ use crate::plugin::PluginHost;
 use crate::session::SessionLog;
 use crate::snapshots::Snapshots;
 use crate::tui::app::{
-    App, ChatItem, CommandHint, ConnectField, ConnectState, ConnectStep, ListRow, MarketplacePane,
-    MarketplacesState, ModelChoice, ModelsState, PendingApproval, Selection, SessionsState,
-    SubagentState, Tone, TrustState, UsageField, UsageState,
+    App, Authorization, ChatItem, CommandHint, ConnectField, ConnectState, ConnectStep, ListRow,
+    MarketplacePane, MarketplacesState, ModelChoice, ModelsState, PendingApproval, Selection,
+    SessionsState, SubagentState, Tone, TrustState, UsageField, UsageState,
 };
 use crate::tui::ui::relative_time;
 use crate::update_notice;
@@ -257,6 +257,8 @@ async fn event_loop(
     let (usage_tx, mut usage_rx) =
         unbounded_channel::<Result<crate::portkey_usage::Snapshot, String>>();
     let (update_tx, mut update_rx) = unbounded_channel::<update_notice::Notice>();
+    let (login_tx, login_rx) = unbounded_channel::<LoginEvent>();
+    let mut login_rx = Some(login_rx);
     spawn_update_notice(&update_tx, &cwd);
     if config.model_catalog.is_empty() {
         let warmups: Vec<Config> = model_providers(&config)
@@ -290,11 +292,16 @@ async fn event_loop(
         tokio::select! {
             maybe_event = reader.next() => {
                 match maybe_event {
-                    Some(Ok(Event::Key(key))) => handle_key(
-                        key, &mut app, &mut config, &cwd, &mut rx, &mcp, &plugins,
-                        snapshots.as_ref(), &lsp, &mut session, &approvals, &models_tx, &mcps_tx,
-                        &plugins_tx, &listings_tx, &marketplaces_tx, &usage_tx, &update_tx,
-                    ),
+                    Some(Ok(Event::Key(key))) => {
+                        handle_key(
+                            key, &mut app, &mut config, &cwd, &mut rx, &mcp, &plugins,
+                            snapshots.as_ref(), &lsp, &mut session, &approvals, &models_tx, &mcps_tx,
+                            &plugins_tx, &listings_tx, &marketplaces_tx, &usage_tx, &update_tx,
+                        );
+                        if let Some(provider) = app.pending_login.take() {
+                            start_device_login(provider, &login_tx);
+                        }
+                    }
                     Some(Ok(Event::Paste(text))) => handle_paste(text, &mut app),
                     Some(Ok(Event::Mouse(mouse))) => handle_mouse(mouse, &mut app, terminal_area),
                     _ => {}
@@ -385,6 +392,11 @@ async fn event_loop(
                     }
                 }
             }
+            login_event = recv_opt(&mut login_rx) => {
+                if let Some(event) = login_event {
+                    handle_login_event(event, &mut app, &mut config);
+                }
+            }
             _ = tick.tick(), if app.busy => {
                 app.mark_running_tool_dirty();
             }
@@ -409,7 +421,7 @@ async fn event_loop(
     Ok(())
 }
 
-async fn recv_opt(rx: &mut Option<UnboundedReceiver<AgentEvent>>) -> Option<AgentEvent> {
+async fn recv_opt<T>(rx: &mut Option<UnboundedReceiver<T>>) -> Option<T> {
     match rx {
         Some(receiver) => receiver.recv().await,
         None => futures::future::pending().await,
@@ -2816,7 +2828,7 @@ fn resolve_provider_choice(value: &str) -> String {
     if let Ok(index) = value.parse::<usize>() {
         if let Some(option) = index
             .checked_sub(1)
-            .and_then(|index| crate::auth::KNOWN_PROVIDERS.get(index))
+            .and_then(|index| crate::auth::known_providers().get(index))
         {
             return option.name.to_string();
         }
@@ -3304,7 +3316,7 @@ fn argument_suggestions(command: &str, rest: &str) -> Vec<CommandHint> {
     let prefix = prefix.to_ascii_lowercase();
 
     if tokens.is_empty() && matches!(command, "connect" | "login" | "logout") {
-        return crate::auth::KNOWN_PROVIDERS
+        return crate::auth::known_providers()
             .iter()
             .filter(|provider| provider.name.starts_with(&prefix))
             .map(|provider| CommandHint {
@@ -4566,6 +4578,86 @@ fn logout_active_provider(app: &mut App, config: &mut Config, provider: &str) ->
     }
 }
 
+/// What a browser login in the background has to say: the code and URL to show
+/// the reader, and then the credential it minted or the reason it could not.
+enum LoginEvent {
+    Code { url: String, code: String },
+    Token(String),
+    Failed(String),
+}
+
+/// Paints one step of a browser login. The code and URL land in the dialog it
+/// belongs to (a dialog the reader closed is left alone, since nothing is
+/// waiting on it any more), the minted credential moves it on to the settings
+/// it can still edit, and a failure puts the choice back where it started with
+/// the reason beside it.
+fn handle_login_event(event: LoginEvent, app: &mut App, config: &mut Config) {
+    match event {
+        LoginEvent::Code { url, code } => {
+            if let Some(state) = app.connect.as_mut() {
+                if matches!(state.step, ConnectStep::Browser { .. }) {
+                    // The code is short-lived and has to be typed into a browser
+                    // window, so it goes to the clipboard beside the dialog.
+                    let _ = crate::clipboard::copy(&code);
+                    state.authorization = Some(Authorization { url, code });
+                }
+            }
+        }
+        LoginEvent::Token(token) => {
+            let Some(mut state) = app.connect.take() else {
+                return;
+            };
+            let ConnectStep::Browser { provider } = state.step.clone() else {
+                app.connect = Some(state);
+                return;
+            };
+            let canonical = crate::auth::canonical_provider(&provider);
+            state.key = token;
+            open_connect_options(&mut state, &canonical, provider, config);
+            app.connect = Some(state);
+        }
+        LoginEvent::Failed(error) => {
+            if let Some(state) = app.connect.as_mut() {
+                if matches!(state.step, ConnectStep::Browser { .. }) {
+                    state.step = ConnectStep::Provider;
+                    state.authorization = None;
+                    state.error = Some(error);
+                }
+            }
+        }
+    }
+}
+
+/// Runs a provider's browser login off the UI thread: the code and URL come back
+/// for the dialog to show, and the credential it mints is what gets stored.
+fn start_device_login(provider: String, tx: &UnboundedSender<LoginEvent>) {
+    let tx = tx.clone();
+    tokio::spawn(async move {
+        let Some(client_id) = crate::auth::device_flow_client(&provider) else {
+            let _ = tx.send(LoginEvent::Failed(format!(
+                "{provider} does not log in through the browser"
+            )));
+            return;
+        };
+        let http = reqwest::Client::builder()
+            .timeout(std::time::Duration::from_secs(30))
+            .build()
+            .unwrap_or_default();
+        let codes = tx.clone();
+        let result = crate::llm::copilot::login(&http, client_id, |login| {
+            let _ = codes.send(LoginEvent::Code {
+                url: login.verification_uri.clone(),
+                code: login.user_code.clone(),
+            });
+        })
+        .await;
+        let _ = tx.send(match result {
+            Ok(token) => LoginEvent::Token(token),
+            Err(err) => LoginEvent::Failed(format!("{err:#}")),
+        });
+    });
+}
+
 fn handle_connect_key(key: KeyEvent, app: &mut App, config: &mut Config) {
     let Some(mut state) = app.connect.take() else {
         return;
@@ -4581,42 +4673,32 @@ fn handle_connect_key(key: KeyEvent, app: &mut App, config: &mut Config) {
             match state.step.clone() {
                 ConnectStep::Provider => {
                     let provider = if value.is_empty() {
-                        crate::auth::KNOWN_PROVIDERS[state.selected]
+                        crate::auth::known_providers()[state.selected]
                             .name
                             .to_string()
                     } else {
                         resolve_provider_choice(&value)
                     };
-                    state.step = ConnectStep::Key { provider };
                     state.input.clear();
                     state.error = None;
+                    state.authorization = None;
+                    if crate::auth::device_flow_client(&provider).is_some() {
+                        // A provider that logs in through the browser is waited
+                        // on by the event loop rather than typed into here.
+                        app.pending_login = Some(provider.clone());
+                        state.step = ConnectStep::Browser { provider };
+                    } else {
+                        state.step = ConnectStep::Key { provider };
+                    }
                 }
+                ConnectStep::Browser { .. } => {}
                 ConnectStep::Key { provider } => {
                     if value.is_empty() && !state.is_connected(&provider) {
                         state.error = Some("enter an API key".to_string());
                     } else {
                         let canonical = crate::auth::canonical_provider(&provider);
                         state.key = value;
-                        // The active provider's live values win over its preset,
-                        // which matters for an endpoint set by hand in the file.
-                        if canonical == crate::auth::canonical_provider(&config.provider) {
-                            state.model = config.model.clone();
-                            state.base_url = config.base_url.clone();
-                        } else {
-                            state.model = config.model_for_provider(&canonical);
-                            state.base_url = config.base_url_for_provider(&canonical);
-                        }
-                        state.portkey_config = if canonical == "portkey" {
-                            config.portkey_config.clone()
-                        } else {
-                            String::new()
-                        };
-                        state.step = ConnectStep::Options {
-                            provider: provider.clone(),
-                        };
-                        state.focus = ConnectField::Model;
-                        state.input = state.model.clone();
-                        state.error = None;
+                        open_connect_options(&mut state, &canonical, provider.clone(), config);
                     }
                 }
                 ConnectStep::Options { provider } => {
@@ -4650,6 +4732,9 @@ fn handle_connect_key(key: KeyEvent, app: &mut App, config: &mut Config) {
                 state.input.pop();
                 state.error = None;
             }
+            // The browser login is not something Backspace walks out of: the
+            // code it waits on is already with GitHub.
+            ConnectStep::Browser { .. } => {}
             ConnectStep::Key { .. } => {
                 if state.input.is_empty() {
                     state.step = ConnectStep::Provider;
@@ -4697,7 +4782,7 @@ fn handle_connect_key(key: KeyEvent, app: &mut App, config: &mut Config) {
         },
         KeyCode::Down => match state.step.clone() {
             ConnectStep::Provider if state.input.is_empty() => {
-                state.selected = (state.selected + 1).min(crate::auth::KNOWN_PROVIDERS.len() - 1);
+                state.selected = (state.selected + 1).min(crate::auth::known_providers().len() - 1);
             }
             ConnectStep::Options { provider } => {
                 let fields = ConnectState::option_fields(&provider);
@@ -4724,6 +4809,35 @@ fn handle_connect_key(key: KeyEvent, app: &mut App, config: &mut Config) {
     if keep {
         app.connect = Some(state);
     }
+}
+
+/// Moves the dialog from the credential to the optional settings it can still
+/// edit, seeded with what this provider is configured with now. The active
+/// provider's live values win over its preset, which matters for an endpoint
+/// set by hand in the file.
+fn open_connect_options(
+    state: &mut ConnectState,
+    canonical: &str,
+    provider: String,
+    config: &Config,
+) {
+    if canonical == crate::auth::canonical_provider(&config.provider) {
+        state.model = config.model.clone();
+        state.base_url = config.base_url.clone();
+    } else {
+        state.model = config.model_for_provider(canonical);
+        state.base_url = config.base_url_for_provider(canonical);
+    }
+    state.portkey_config = if canonical == "portkey" {
+        config.portkey_config.clone()
+    } else {
+        String::new()
+    };
+    state.step = ConnectStep::Options { provider };
+    state.focus = ConnectField::Model;
+    state.input = state.model.clone();
+    state.error = None;
+    state.authorization = None;
 }
 
 /// Saves a login from the dialog: stores a new key (or reuses the stored one),
@@ -5626,17 +5740,25 @@ mod tests {
 
     #[test]
     fn provider_choice_maps_numbers_and_aliases() {
+        let providers = crate::auth::known_providers();
+        for (index, option) in providers.iter().enumerate() {
+            assert_eq!(
+                resolve_provider_choice(&(index + 1).to_string()),
+                option.name,
+                "{index}"
+            );
+        }
         assert_eq!(resolve_provider_choice("1"), "openai");
-        assert_eq!(resolve_provider_choice("2"), "deepseek");
-        assert_eq!(resolve_provider_choice("3"), "anthropic");
-        assert_eq!(resolve_provider_choice("4"), "portkey");
-        assert_eq!(resolve_provider_choice("5"), "zai");
+        assert_eq!(resolve_provider_choice("2"), "anthropic");
         assert_eq!(resolve_provider_choice("DeepSeek"), "deepseek");
         assert_eq!(resolve_provider_choice("Port-Key"), "portkey");
         assert_eq!(resolve_provider_choice("glm"), "zai");
         assert_eq!(resolve_provider_choice("gpt-4o"), "openai");
         assert_eq!(resolve_provider_choice("my-endpoint"), "my-endpoint");
-        assert_eq!(resolve_provider_choice("9"), "9");
+        assert_eq!(
+            resolve_provider_choice(&(providers.len() + 1).to_string()),
+            (providers.len() + 1).to_string()
+        );
     }
 
     #[test]
@@ -5678,7 +5800,7 @@ mod tests {
         let state = app.connect.as_ref().unwrap();
         assert!(matches!(
             &state.step,
-            ConnectStep::Key { provider } if provider == "deepseek"
+            ConnectStep::Key { provider } if provider == "anthropic"
         ));
         assert!(state.input.is_empty());
         assert!(state.error.is_none());
@@ -5708,7 +5830,7 @@ mod tests {
         handle_connect_key(key(KeyCode::Enter), &mut app, &mut config);
         assert!(matches!(
             &app.connect.as_ref().unwrap().step,
-            ConnectStep::Key { provider } if provider == "deepseek"
+            ConnectStep::Key { provider } if provider == "anthropic"
         ));
 
         handle_connect_key(key(KeyCode::Backspace), &mut app, &mut config);
@@ -5719,13 +5841,116 @@ mod tests {
     }
 
     #[test]
+    fn connect_starts_a_browser_login_for_a_provider_that_needs_one() {
+        let mut app = test_app();
+        let mut config = Config::default();
+        app.connect = Some(ConnectState::new());
+
+        for ch in "github-copilot".chars() {
+            handle_connect_key(key(KeyCode::Char(ch)), &mut app, &mut config);
+        }
+        handle_connect_key(key(KeyCode::Enter), &mut app, &mut config);
+
+        assert!(matches!(
+            &app.connect.as_ref().unwrap().step,
+            ConnectStep::Browser { provider } if provider == "github-copilot"
+        ));
+        assert_eq!(app.pending_login.as_deref(), Some("github-copilot"));
+
+        // A provider whose credential is a pasted key is not sent to a browser.
+        let mut app = test_app();
+        app.connect = Some(ConnectState::new());
+        handle_connect_key(key(KeyCode::Enter), &mut app, &mut config);
+        assert!(matches!(
+            &app.connect.as_ref().unwrap().step,
+            ConnectStep::Key { provider } if provider == "openai"
+        ));
+        assert!(app.pending_login.is_none());
+    }
+
+    #[test]
+    fn a_browser_login_shows_its_code_and_lands_on_the_settings() {
+        let mut app = test_app();
+        let mut config = Config::default();
+        let mut state = ConnectState::new();
+        state.step = ConnectStep::Browser {
+            provider: "github-copilot".to_string(),
+        };
+        app.connect = Some(state);
+
+        handle_login_event(
+            LoginEvent::Code {
+                url: "https://github.com/login/device".to_string(),
+                code: "WDJB-MJHT".to_string(),
+            },
+            &mut app,
+            &mut config,
+        );
+        let state = app.connect.as_ref().unwrap();
+        assert_eq!(
+            state.authorization,
+            Some(Authorization {
+                url: "https://github.com/login/device".to_string(),
+                code: "WDJB-MJHT".to_string(),
+            })
+        );
+        assert!(matches!(state.step, ConnectStep::Browser { .. }));
+
+        handle_login_event(
+            LoginEvent::Token("ghu_abc".to_string()),
+            &mut app,
+            &mut config,
+        );
+        let state = app.connect.as_ref().unwrap();
+        assert_eq!(state.key, "ghu_abc");
+        assert_eq!(state.model, config.model_for_provider("github-copilot"));
+        assert!(
+            matches!(&state.step, ConnectStep::Options { provider } if provider == "github-copilot")
+        );
+        assert!(state.authorization.is_none());
+    }
+
+    #[test]
+    fn a_browser_login_that_failed_puts_the_choice_back() {
+        let mut app = test_app();
+        let mut config = Config::default();
+        let mut state = ConnectState::new();
+        state.step = ConnectStep::Browser {
+            provider: "github-copilot".to_string(),
+        };
+        app.connect = Some(state);
+
+        handle_login_event(
+            LoginEvent::Failed("GitHub refused the device flow".to_string()),
+            &mut app,
+            &mut config,
+        );
+        let state = app.connect.as_ref().unwrap();
+        assert!(matches!(state.step, ConnectStep::Provider));
+        assert_eq!(
+            state.error.as_deref(),
+            Some("GitHub refused the device flow")
+        );
+
+        // An answer for a dialog the reader closed is dropped rather than
+        // reopening it.
+        app.connect = None;
+        handle_login_event(
+            LoginEvent::Token("ghu_abc".to_string()),
+            &mut app,
+            &mut config,
+        );
+        assert!(app.connect.is_none());
+    }
+
+    #[test]
     fn connect_key_step_opens_optional_settings() {
         let mut app = test_app();
         let mut config = Config::default();
         app.connect = Some(ConnectState::new());
 
         // Pick Portkey so the Config ID row is offered.
-        handle_connect_key(key(KeyCode::Char('4')), &mut app, &mut config);
+        handle_connect_key(key(KeyCode::Char('5')), &mut app, &mut config);
         handle_connect_key(key(KeyCode::Enter), &mut app, &mut config);
         handle_connect_key(key(KeyCode::Char('k')), &mut app, &mut config);
         handle_connect_key(key(KeyCode::Enter), &mut app, &mut config);
@@ -5942,8 +6167,13 @@ mod tests {
         // Provider names for the login commands.
         app.set_input("/login d".to_string());
         refresh_suggestions(&mut app, &config);
-        assert_eq!(app.suggestions.len(), 1);
-        assert_eq!(app.suggestions[0].name, "deepseek");
+        let names: Vec<&str> = app.suggestions.iter().map(|h| h.name.as_str()).collect();
+        assert_eq!(names, vec!["deepseek", "deepinfra"]);
+
+        app.set_input("/login de".to_string());
+        refresh_suggestions(&mut app, &config);
+        let names: Vec<&str> = app.suggestions.iter().map(|h| h.name.as_str()).collect();
+        assert_eq!(names, vec!["deepseek", "deepinfra"]);
 
         // Free-text commands and unknown arguments offer nothing.
         app.set_input("/models foo".to_string());
