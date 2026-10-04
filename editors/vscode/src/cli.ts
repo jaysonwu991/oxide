@@ -99,13 +99,18 @@ function quoteForCmd(arg: string): string {
 }
 
 /// Runs a command to completion and collects its output. Used for the session
-/// picker, the stored conversation of a resumed thread, and the version probe,
-/// all of which are fast and one-shot.
+/// picker, the stored conversation of a resumed thread, the provider listing and
+/// the version probe, all of which are fast and one-shot.
+///
+/// `stdin` is what the command is given on its own pipe, for the one thing that
+/// must not be an argument: a provider's API key reaches `oxide login` there
+/// (`--key-stdin`), since an argument would be visible in the process listing.
 export function runCapture(
   command: string,
   args: string[],
   cwd: string,
   timeoutMs = 20_000,
+  stdin?: string,
 ): Promise<CommandResult> {
   return new Promise((resolve) => {
     let stdout = "";
@@ -117,12 +122,17 @@ export function runCapture(
       clearTimeout(timer);
       resolve(result);
     };
-    let child: ReturnType<typeof spawn>;
+    let child: ChildProcessWithoutNullStreams;
     try {
       ({ child } = startCli(command, args, cwd));
     } catch (error) {
       resolve({ code: null, stdout: "", stderr: "", error: String(error) });
       return;
+    }
+    if (stdin !== undefined) {
+      child.stdin.end(stdin);
+    } else {
+      child.stdin.end();
     }
     const timer = setTimeout(() => {
       child.kill();

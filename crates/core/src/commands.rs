@@ -54,8 +54,11 @@ pub struct Builtin {
     pub description: &'static str,
     /// An argument hint for autocomplete and help, e.g. `on|off|list|clear`.
     pub arguments: Option<&'static str>,
-    /// Desktop-only commands have no meaning where the client cannot perform
-    /// them: provider login and the theme picker live in the app's own UI.
+    /// Commands a client may not be able to perform: the desktop app's theme
+    /// picker and provider logout live in its own UI, so a front-end that has no
+    /// action for them leaves them out of its menu rather than sending the name
+    /// to the model. Provider login is not one of them — every front-end draws
+    /// that picker over `oxide providers`.
     pub desktop_only: bool,
 }
 
@@ -150,7 +153,10 @@ pub const BUILTINS: &[Builtin] = &[
         aliases: &["login"],
         description: "Sign in to a provider",
         arguments: Some("provider"),
-        desktop_only: true,
+        // The desktop app, the terminal and the VS Code panel each draw this
+        // picker over `oxide providers` and write the credential with
+        // `oxide login`, so the command is not one a single front-end owns.
+        desktop_only: false,
     },
     Builtin {
         name: "logout",

@@ -26,9 +26,13 @@ support for compatibility.
   extension
   (`editors/vscode`), all sharing the
   same configuration, sessions, trust decisions, and MCP servers.
-- **Providers** — OpenAI-compatible (OpenAI, DeepSeek, Portkey, Z.AI/GLM, custom)
-  and the Anthropic Messages API, with reasoning effort from `auto` to `high` and
-  resilient streaming that retries transient failures.
+- **Providers** — 35 built-in providers behind one table: every OpenAI-compatible
+  endpoint (OpenAI, DeepSeek, Groq, Mistral, xAI, OpenRouter, Z.AI/GLM, …), the
+  Anthropic Messages API, Gemini and Vertex AI, Amazon Bedrock, Azure OpenAI,
+  GitHub Copilot (device-flow login) and GitLab Duo (the AI gateway's proxy),
+  plus any custom endpoint. Reasoning effort
+  from `auto` to `high`, and resilient streaming that retries transient failures.
+  See [Providers](docs/configuration.md#providers).
 - **Tools** — `read`, `write`, `edit`, `bash`, `grep`, `find`, `ls`, `webfetch`
   plus agent-level `task`, `skill`, `command`, `memory`, `diagnostics`, and `ask`;
   MCP servers over stdio or HTTP, loaded on demand with OAuth discovery.

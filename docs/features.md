@@ -19,8 +19,12 @@ page is the detail behind it, and the task-by-task guides live in
 
 ## Models and providers
 
-- OpenAI-compatible (OpenAI, DeepSeek, Portkey, Z.AI/GLM, custom) and Anthropic
-  Messages API clients.
+- 35 built-in providers, one table deep: OpenAI-compatible endpoints (OpenAI,
+  DeepSeek, Groq, Mistral, xAI, OpenRouter, Together, Fireworks, NVIDIA,
+  Perplexity, Z.AI/GLM, Moonshot, Qwen, and more), the Anthropic Messages API
+  (Anthropic, MiniMax), Gemini and Vertex AI, Amazon Bedrock, Azure OpenAI,
+  GitHub Copilot and GitLab Duo — plus any custom OpenAI-compatible endpoint.
+  See [Providers](configuration.md#providers).
 - Reasoning effort: `auto` (default), `off`, `low`, `medium`, or `high`, cycled
   in the TUI with Shift+Tab or set with `--reasoning` / `OXIDE_REASONING`.
   `auto` uses the provider/model's native behavior; explicit levels map to

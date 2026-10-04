@@ -1093,6 +1093,16 @@ Start `oxide` even without a key, then run `/login`:
   saving — a row left blank keeps the provider's default.
 - `/login deepseek` or `/login portkey` skips the picker. When that provider is
   already connected the command switches to it; otherwise it asks for the key.
+- Bedrock and Vertex ask for no key: they authorize with a credential this
+  machine already has — an AWS signing identity, Google's application-default
+  file — so `/login bedrock` is a login in itself. A machine without one says
+  what to set instead of asking for a key that would never be read.
+- A provider that authenticates by a browser flow instead of a pasted key asks
+  for that instead: `/login github-copilot` shows a GitHub URL and a one-time
+  code (also copied to the clipboard), waits for the approval, and stores the
+  token it mints before moving on to the same settings step. Nothing is typed.
+  `/login gitlab` is not one of those: the token to paste is a GitLab personal
+  access token carrying the `ai_features` scope.
 - `/logout` removes the active provider's stored credential and switches to
   another logged-in provider when one is left; `/logout <provider>` removes a
   specific one without disturbing the active session.
@@ -1101,6 +1111,49 @@ Press Enter to confirm and Esc to cancel. The key is stored in `auth.json`
 (mode `0600`) and the active provider is written to `config.json`, so it applies
 to the running session and the next launch. `/connect` remains an alias of
 `/login`.
+
+### From a front-end
+
+The desktop app's **Connect** dialog and the VS Code panel's Connect Provider
+command draw the same table the TUI's picker does, from one definition:
+
+```console
+oxide providers --json          # every provider, and the state of each
+oxide login openai --json --key-stdin <key
+oxide login ollama              # a stored credential, or one that needs none
+oxide login bedrock             # a credential this machine already has
+```
+
+`oxide providers --json` prints `{ "active": <name|null>, "providers": [...] }`,
+where each row carries the `name` a login takes, the `label` and `description` a
+picker paints, the `keyUrl` a key is issued at, and `local`, `stored` and `active`
+— the state a row shows beside it. Its `credential` says where a credential comes
+from, which is what decides whether a picker asks for a key at all:
+
+- `key` — a key typed here and kept in `auth.json`.
+- `external` — one this machine already holds, read where it lives and never
+  copied into the store: Bedrock's AWS signing identity (`AWS_ACCESS_KEY_ID` and
+  `AWS_SECRET_ACCESS_KEY`, or `~/.aws/credentials`) and Vertex's
+  application-default file (`GOOGLE_APPLICATION_CREDENTIALS`, or
+  `gcloud auth application-default login`). No key is asked for, and a login with
+  none stores nothing.
+- `none` — nothing to present; a model server on this machine.
+
+The human-readable form of the same listing is one tab-separated line per
+provider, marked `[in use]`, `[stored]`, `[no key needed]` or
+`[machine credential]`.
+
+`oxide login <provider> [--key-stdin] [--model <m>] [--base-url <url>] [--json]`
+is what a front-end runs when a row is taken. The key is read from stdin rather
+than an argument — an argument is visible in the process listing and kept in a
+shell's history — and `--key-stdin` is what says to read one, so a stored
+provider is connected by name alone, and so is one whose credential is the
+machine's own (Enter with an empty key does the same in the TUI). A provider
+whose own credential is missing is refused with what to set rather than asked for
+a key it would never read. `--model` and `--base-url` are the settings step's
+values, and `--json` prints `{ provider, label, model, local }` for the caller to
+report. Either front-end writes `auth.json` and `config.json` through the same
+core, so a login in one is a login in the others; neither needs a project open.
 
 ### Several providers at once
 
@@ -1135,10 +1188,14 @@ and back restores it instead of the previous provider's URL. A custom provider
 with no remembered endpoint uses the previous provider's URL, or the endpoint
 from `OXIDE_BASE_URL`.
 
-You can also provide a key without the login flow via the `OPENAI_API_KEY` /
-`DEEPSEEK_API_KEY` / `ANTHROPIC_API_KEY` / `PORTKEY_API_KEY` / `ZAI_API_KEY`
-environment variables or an `api_key` entry in `config.json`; environment
-variables take precedence over `auth.json`.
+You can also provide a key without the login flow, through the environment
+variable the provider's own documentation uses (`OPENAI_API_KEY`,
+`DEEPSEEK_API_KEY`, `ANTHROPIC_API_KEY`, `PORTKEY_API_KEY`, `ZAI_API_KEY`,
+`GEMINI_API_KEY`, `GROQ_API_KEY`, `GITHUB_TOKEN`, … — each is listed with its
+provider in [Configuration reference](configuration.md#providers)) or an
+`api_key` entry in `config.json`; environment variables take precedence over
+`auth.json`. A provider that is not in the table takes its key from
+`<NAME>_API_KEY` (`oxider` → `OXIDER_API_KEY`).
 
 See [Configuration reference](configuration.md#configjson) and
 [Providers](configuration.md#providers) for the full list.
@@ -1236,7 +1293,10 @@ key for that gateway when prompted. Oxide sends the key as
 the key as a bearer token.
 
 `portkey_config` is optional when the gateway does not require a saved Portkey
-Config. `model_catalog` is also optional, but is useful when the gateway blocks
+Config. A Config ID typed in the `/login portkey` settings step is written to
+`portkey_config` in the global `config.json`, so it is still in force on the
+next launch and is not lost when you log in to another provider. `model_catalog`
+is also optional, but is useful when the gateway blocks
 `GET <base_url>/models` or exposes account-specific model names. The active
 `model` is always included in the model picker.
 
@@ -1284,8 +1344,9 @@ at once, each row tagged with its provider (`gpt-4o-mini [openai]`), and the sam
 model id can appear once per provider. Selecting a model from another provider
 switches to it and remembers the choice for that provider. Providers whose
 catalog cannot be fetched are reported in the transcript while the others stay
-usable; custom endpoints are skipped because their base URL is not stored per
-provider.
+usable; a custom endpoint is listed through the URL remembered for it in
+`provider_base_urls`, and is left out when it has none, since its catalog would
+otherwise be queried against the active provider's endpoint.
 
 Refreshing the credential with `/login portkey` preserves an existing Portkey
 model, custom base URL, and Config ID when Portkey is already active. See

@@ -375,21 +375,11 @@ pub async fn delete_session(project: String, id: String) -> CmdResult<()> {
 
 // ---------- providers ----------
 
-/// Known providers with their stored-credential state.
-pub async fn list_providers() -> CmdResult<Vec<Value>> {
-    let stored = auth::stored_providers();
-    Ok(auth::KNOWN_PROVIDERS
-        .iter()
-        .map(|option| {
-            json!({
-                "name": option.name,
-                "label": option.label,
-                "description": option.description,
-                "keyUrl": option.key_url,
-                "stored": stored.iter().any(|name| name == option.name),
-            })
-        })
-        .collect())
+/// Known providers with their stored-credential state, as the core's own
+/// picker listing has it: the desktop app, the VS Code panel and the terminal's
+/// `/login` draw the same rows.
+pub async fn list_providers() -> CmdResult<Vec<auth::ProviderView>> {
+    Ok(auth::provider_views())
 }
 
 /// Stores (or reuses) a provider credential and persists the selection in the
@@ -399,22 +389,15 @@ pub async fn login(
     key: Option<String>,
     model: Option<String>,
     base_url: Option<String>,
-) -> CmdResult<Value> {
-    let name = match key.as_deref().filter(|value| !value.trim().is_empty()) {
-        Some(key) => auth::connect(&provider, key).map_err(err)?,
-        None => auth::select_stored(&provider).map_err(err)?.0,
-    };
-    let mut config = Config::load(Path::new("."), None, None, None, None).map_err(err)?;
-    if let Some(model) = model.filter(|value| !value.is_empty()) {
-        config.model = model;
-    }
-    if let Some(url) = base_url.filter(|value| !value.is_empty()) {
-        config.base_url = url;
-    }
-    config
-        .persist_selection_at(&Config::config_path())
-        .map_err(err)?;
-    Ok(json!({ "provider": name, "model": config.model }))
+) -> CmdResult<auth::LoginOutcome> {
+    auth::login_provider(
+        &provider,
+        key.as_deref().unwrap_or_default(),
+        model.as_deref(),
+        base_url.as_deref(),
+        Path::new("."),
+    )
+    .map_err(err)
 }
 
 pub async fn logout(provider: String) -> CmdResult<bool> {
@@ -1325,6 +1308,7 @@ mod tests {
         let call = ToolCall {
             id: "call_1".into(),
             kind: "function".into(),
+            signature: None,
             function: FunctionCall {
                 name: "bash".into(),
                 arguments: "{\"command\":\"ls\"}".into(),

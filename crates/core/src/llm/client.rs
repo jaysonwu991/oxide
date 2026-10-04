@@ -1,11 +1,12 @@
 use crate::config::{
-    glm_forces_thinking, supports_adaptive_thinking, Config, ProviderKind, Reasoning,
+    glm_forces_thinking, supports_adaptive_thinking, AuthStyle, Config, ProviderKind, Reasoning,
 };
 use crate::llm::anthropic;
 use crate::llm::types::{
     push_thinking, AssistantTurn, ChatRequest, FunctionCall, Message, StreamChunk, StreamOptions,
     ToolCall, ToolSpec, Usage,
 };
+use crate::llm::{aws, bedrock, copilot, gemini, gitlab, vertex};
 use anyhow::{Context, Result};
 use futures::StreamExt;
 use serde_json::Value;
@@ -172,14 +173,83 @@ impl LlmClient {
     }
 
     async fn fetch_models(&self) -> Result<Vec<String>> {
-        let url = format!("{}/models", self.config.base_url);
-        let request = match self.config.provider_kind() {
-            ProviderKind::Anthropic => self
-                .http
-                .get(&url)
-                .header("x-api-key", self.config.require_api_key()?)
-                .header("anthropic-version", anthropic::API_VERSION),
-            ProviderKind::OpenAi => self.authenticate_openai(self.http.get(&url))?,
+        // A Copilot account is served from the endpoint its own session names,
+        // and that session is what authorizes the listing too.
+        let copilot = match self.config.auth_style() {
+            AuthStyle::Copilot => {
+                Some(copilot::session(&self.http, self.config.require_api_key()?).await?)
+            }
+            _ => None,
+        };
+        // The gateway token is what lists Duo's models, and the proxy in front
+        // of them is the one place they are listed from.
+        let gitlab = match self.config.auth_style() {
+            AuthStyle::Gitlab => Some(
+                gitlab::direct_access(
+                    &self.http,
+                    &self.config.gitlab_instance(),
+                    self.config.require_api_key()?,
+                )
+                .await?,
+            ),
+            _ => None,
+        };
+        let mut url = match self.config.provider_kind() {
+            // Bedrock lists foundation models over the control plane, which is a
+            // different host from the one a turn streams from.
+            ProviderKind::Bedrock => {
+                let region = aws::region_from(&|name| std::env::var(name).ok());
+                format!(
+                    "https://{}/foundation-models",
+                    aws::host(&region, "bedrock")
+                )
+            }
+            _ => self.config.models_url()?,
+        };
+        if let Some(session) = &copilot {
+            url = format!("{}/models", session.api);
+        }
+        // Duo lists its models through the gateway token, on the proxy the
+        // model speaks — so a Claude model's listing is Anthropic's, with the
+        // version header that wire asks for and without the instance token as
+        // an `x-api-key`.
+        let request = if let Some(access) = &gitlab {
+            let request = gitlab_headers(self.http.get(&url), access);
+            match self.config.provider_kind() {
+                ProviderKind::Anthropic => {
+                    request.header("anthropic-version", anthropic::API_VERSION)
+                }
+                _ => request,
+            }
+        } else {
+            match self.config.provider_kind() {
+                ProviderKind::Anthropic => self
+                    .http
+                    .get(&url)
+                    .header("x-api-key", self.config.require_api_key()?)
+                    .header("anthropic-version", anthropic::API_VERSION),
+                ProviderKind::Gemini => {
+                    let request = self.http.get(&url);
+                    let request = match self.config.auth_style() {
+                        AuthStyle::Vertex => {
+                            let token =
+                                vertex::access_token(&self.http, &self.config.api_key).await?;
+                            request.bearer_auth(token)
+                        }
+                        _ => request.header("x-goog-api-key", self.config.require_api_key()?),
+                    };
+                    // The Gemini API puts the version in a header rather than the
+                    // path, and refuses a call without one.
+                    request.header("x-goog-api-version", "v1beta")
+                }
+                ProviderKind::Bedrock => {
+                    self.sign_aws(self.http.get(&url), "GET", &url, None, b"", "bedrock")?
+                }
+                ProviderKind::OpenAi => match &copilot {
+                    Some(session) => copilot_headers(self.http.get(&url), &session.token),
+                    None => self.authenticate_openai(self.http.get(&url))?,
+                },
+            }
         };
 
         let response = request
@@ -202,20 +272,86 @@ impl LlmClient {
             {
                 return Ok(self.config.model_catalog());
             }
+            // Vertex has no listing an ordinary account can call, and a Bedrock
+            // account without `bedrock:ListFoundationModels` answers the same
+            // way, so both fall back to the bundled catalog rather than failing
+            // the picker.
+            if matches!(self.config.provider_kind(), ProviderKind::Bedrock)
+                || self.config.auth_style() == AuthStyle::Vertex
+            {
+                return Ok(self.config.model_catalog());
+            }
             anyhow::bail!("provider returned {status}: {}", body.trim());
         }
 
-        let list: ModelList = match response.json().await {
-            Ok(list) => list,
+        let value: Value = match response.json().await {
+            Ok(value) => value,
             // The listing endpoint is undocumented at Z.AI, so an unexpected
             // shape falls back to the bundled catalog like a missing one.
             Err(_) if self.config.is_zai() => return Ok(self.config.model_catalog()),
             Err(err) => return Err(err).context("parsing model list"),
         };
-        let mut models: Vec<String> = list.data.into_iter().map(|model| model.id).collect();
+        let mut models: Vec<String> = match self.config.provider_kind() {
+            ProviderKind::Gemini => gemini::parse_model_list(&value),
+            ProviderKind::Bedrock => bedrock::parse_model_list(&value),
+            _ => {
+                let list: ModelList = serde_json::from_value(value)?;
+                list.data.into_iter().map(|model| model.id).collect()
+            }
+        };
         models.sort();
         models.dedup();
         Ok(models)
+    }
+
+    /// Signs a request with AWS SigV4 for `service`, or attaches the Bedrock
+    /// bearer token when one is configured instead — the two ways a Bedrock
+    /// request is authorized. `url` is the request's own URL, whose host and
+    /// path are what the signature covers.
+    fn sign_aws(
+        &self,
+        request: reqwest::RequestBuilder,
+        method: &str,
+        url: &str,
+        content_type: Option<&str>,
+        payload: &[u8],
+        service: &str,
+    ) -> Result<reqwest::RequestBuilder> {
+        if let Some(token) = non_empty_token(&self.config.api_key).or_else(|| {
+            non_empty_token(&std::env::var("AWS_BEARER_TOKEN_BEDROCK").unwrap_or_default())
+        }) {
+            return Ok(request.bearer_auth(token));
+        }
+        let rest = url.split_once("://").map(|(_, rest)| rest).unwrap_or(url);
+        let (host, path_and_query) = match rest.split_once('/') {
+            Some((host, path)) => (host, format!("/{path}")),
+            None => (rest, "/".to_string()),
+        };
+        let (path, query) = match path_and_query.split_once('?') {
+            Some((path, query)) => (path, parse_query(query)),
+            None => (path_and_query.as_str(), Vec::new()),
+        };
+        let credentials = aws::credentials_from(&|name| std::env::var(name).ok())
+            .context("the Bedrock provider signs its requests with AWS SigV4")?;
+        let region = aws::region_from(&|name| std::env::var(name).ok());
+        let amz_date = aws::amz_timestamp(SystemTime::now());
+        let headers = aws::sign(&aws::SigningRequest {
+            method,
+            uri: path,
+            query: &query,
+            host,
+            content_type,
+            payload,
+            credentials: &credentials,
+            region: &region,
+            service,
+            amz_date: &amz_date,
+        });
+        let mut request = request;
+        for (name, value) in headers {
+            request = request.header(name, value);
+        }
+        Ok(request)
     }
 
     /// Stream a chat completion, reporting text, reasoning, and retries through
@@ -252,6 +388,14 @@ impl LlmClient {
                 match self.config.provider_kind() {
                     ProviderKind::Anthropic => {
                         self.stream_anthropic(messages, tools, max_tokens, &mut attempt_hooks)
+                            .await
+                    }
+                    ProviderKind::Gemini => {
+                        self.stream_gemini(messages, tools, max_tokens, &mut attempt_hooks)
+                            .await
+                    }
+                    ProviderKind::Bedrock => {
+                        self.stream_bedrock(messages, tools, max_tokens, &mut attempt_hooks)
                             .await
                     }
                     ProviderKind::OpenAi => {
@@ -351,12 +495,31 @@ impl LlmClient {
         max_tokens: u32,
         hooks: &mut StreamHooks<'_>,
     ) -> Result<AssistantTurn> {
-        let url = format!("{}/chat/completions", self.config.base_url);
+        let mut url = self.config.chat_url()?;
         let mut config = self.config.clone();
         config.max_tokens = max_tokens;
         let request = openai_request(&config, messages, tools, self.session_id.as_deref());
 
-        let mut builder = self.authenticate_openai(self.http.post(&url))?;
+        let mut builder = self.http.post(&url);
+        if self.config.auth_style() == AuthStyle::Copilot {
+            // The session names the endpoint this account is served from, which
+            // is not always the public one.
+            let session = copilot::session(&self.http, self.config.require_api_key()?).await?;
+            url = format!("{}/chat/completions", session.api);
+            builder = copilot_headers(builder, &session.token);
+        } else if self.config.auth_style() == AuthStyle::Gitlab {
+            // The stored token opens the instance, which mints the gateway
+            // token the proxy accepts.
+            let access = gitlab::direct_access(
+                &self.http,
+                &self.config.gitlab_instance(),
+                self.config.require_api_key()?,
+            )
+            .await?;
+            builder = gitlab_headers(builder, &access);
+        } else {
+            builder = self.authenticate_openai(builder)?;
+        }
         if let Some(session) = self.session_id.as_deref() {
             // Cache-affinity hints for OpenAI-compatible gateways (OpenRouter,
             // litellm, ...). Direct OpenAI uses `prompt_cache_key` in the body.
@@ -466,6 +629,7 @@ impl LlmClient {
                     p.id
                 },
                 kind: "function".to_string(),
+                signature: None,
                 function: FunctionCall {
                     name: p.name,
                     arguments: p.arguments,
@@ -489,15 +653,19 @@ impl LlmClient {
         request: reqwest::RequestBuilder,
     ) -> Result<reqwest::RequestBuilder> {
         let key = self.config.require_api_key()?;
-        if self.config.is_portkey() {
-            let request = request.header("x-portkey-api-key", key);
-            if self.config.portkey_config.trim().is_empty() {
-                Ok(request)
-            } else {
-                Ok(request.header("x-portkey-config", self.config.portkey_config.trim()))
+        match self.config.auth_style() {
+            AuthStyle::Portkey => {
+                let request = request.header("x-portkey-api-key", key);
+                if self.config.portkey_config.trim().is_empty() {
+                    Ok(request)
+                } else {
+                    Ok(request.header("x-portkey-config", self.config.portkey_config.trim()))
+                }
             }
-        } else {
-            Ok(request.bearer_auth(key))
+            // Azure names its key in a header of its own, and carries the
+            // version in the URL rather than an `OpenAI-Beta` one.
+            AuthStyle::Azure => Ok(request.header("api-key", key)),
+            _ => Ok(request.bearer_auth(key)),
         }
     }
 
@@ -508,16 +676,27 @@ impl LlmClient {
         max_tokens: u32,
         hooks: &mut StreamHooks<'_>,
     ) -> Result<AssistantTurn> {
-        let url = format!("{}/messages", self.config.base_url);
+        let url = self.config.chat_url()?;
         let mut config = self.config.clone();
         config.max_tokens = max_tokens;
         let body = anthropic::request_body(&config, messages, tools);
 
-        let response = self
-            .http
-            .post(&url)
-            .header("x-api-key", self.config.require_api_key()?)
-            .header("anthropic-version", anthropic::API_VERSION)
+        let mut request = self.http.post(&url);
+        if self.config.auth_style() == AuthStyle::Gitlab {
+            let access = gitlab::direct_access(
+                &self.http,
+                &self.config.gitlab_instance(),
+                self.config.require_api_key()?,
+            )
+            .await?;
+            request = gitlab_headers(request, &access)
+                .header("anthropic-version", anthropic::API_VERSION);
+        } else {
+            request = request
+                .header("x-api-key", self.config.require_api_key()?)
+                .header("anthropic-version", anthropic::API_VERSION);
+        }
+        let response = request
             .json(&body)
             .send()
             .await
@@ -550,12 +729,191 @@ impl LlmClient {
         }
         Ok(turn)
     }
+
+    /// Stream a turn from Google's `generateContent` API, as served by the
+    /// Gemini API and by Vertex AI. The two differ in host, path prefix and
+    /// credential only, so the body and the event handling are shared.
+    async fn stream_gemini(
+        &self,
+        messages: &[Message],
+        tools: &[ToolSpec],
+        max_tokens: u32,
+        hooks: &mut StreamHooks<'_>,
+    ) -> Result<AssistantTurn> {
+        let url = self.config.chat_url()?;
+        let mut config = self.config.clone();
+        config.max_tokens = max_tokens;
+        let body = gemini::request_body(&config, messages, tools);
+
+        let request = self.http.post(&url);
+        let request = match self.config.auth_style() {
+            AuthStyle::Vertex => {
+                let token = vertex::access_token(&self.http, &self.config.api_key).await?;
+                request.bearer_auth(token)
+            }
+            _ => request.header("x-goog-api-key", self.config.require_api_key()?),
+        };
+        let response = request
+            .header("x-goog-api-version", "v1beta")
+            .json(&body)
+            .send()
+            .await
+            .with_context(|| format!("requesting {url}"))?;
+
+        let status = response.status();
+        if !status.is_success() {
+            let body = response.text().await.unwrap_or_default();
+            anyhow::bail!("provider returned {status}: {}", body.trim());
+        }
+
+        let mut turn = AssistantTurn::default();
+        let mut partials = BTreeMap::new();
+
+        let outcome = read_sse(response, |data| {
+            gemini::apply_event(data, &mut turn, &mut partials, hooks.text, hooks.thinking)
+        })
+        .await?;
+
+        turn.tool_calls = gemini::into_tool_calls(partials);
+        // The stream ends with a `finishReason`, which is the same proof of
+        // completion Anthropic's stop reason gives.
+        if stream_incomplete(
+            &outcome,
+            turn.finish_reason.as_deref(),
+            !assistant_turn_is_empty(&turn),
+        ) {
+            anyhow::bail!("provider stream ended before completing the response");
+        }
+        Ok(turn)
+    }
+
+    /// Stream a turn from AWS Bedrock's Converse API, signed with SigV4 (or a
+    /// Bedrock bearer token when one is configured). The model is named in the
+    /// path and the region in the host, so neither can come from `base_url`
+    /// alone.
+    async fn stream_bedrock(
+        &self,
+        messages: &[Message],
+        tools: &[ToolSpec],
+        max_tokens: u32,
+        hooks: &mut StreamHooks<'_>,
+    ) -> Result<AssistantTurn> {
+        let region = aws::region_from(&|name| std::env::var(name).ok());
+        // The region names the host unless this run was pointed at an endpoint of
+        // its own — a VPC endpoint, a gateway, a local emulator — which the
+        // preset's base URL is for. The model is in the path either way.
+        let base = match self.config.base_url.trim_end_matches('/') {
+            "" => format!("https://{}", aws::host(&region, "bedrock-runtime")),
+            endpoint => endpoint.to_string(),
+        };
+        let model = aws::encode_path_segment(&self.config.model);
+        let url = format!("{base}/model/{model}/converse-stream");
+        let mut config = self.config.clone();
+        config.max_tokens = max_tokens;
+        let body = bedrock::request_body(&config, messages, tools);
+        let payload = serde_json::to_vec(&body)?;
+
+        let request = self
+            .http
+            .post(&url)
+            .header("accept", bedrock::EVENT_STREAM)
+            .header("content-type", "application/json");
+        let request = self.sign_aws(
+            request,
+            "POST",
+            &url,
+            Some("application/json"),
+            &payload,
+            "bedrock",
+        )?;
+        let response = request
+            .body(payload)
+            .send()
+            .await
+            .with_context(|| format!("requesting {url}"))?;
+
+        let status = response.status();
+        if !status.is_success() {
+            let body = response.text().await.unwrap_or_default();
+            anyhow::bail!("provider returned {status}: {}", body.trim());
+        }
+
+        let mut turn = AssistantTurn::default();
+        let mut partials = BTreeMap::new();
+        let outcome = read_event_stream(response, |event, payload| {
+            bedrock::apply_event(
+                event,
+                payload,
+                &mut turn,
+                &mut partials,
+                hooks.text,
+                hooks.thinking,
+            )?;
+            Ok(event == bedrock::STOP_EVENT)
+        })
+        .await?;
+
+        turn.tool_calls = bedrock::into_tool_calls(partials);
+        if stream_incomplete(
+            &outcome,
+            turn.finish_reason.as_deref(),
+            !assistant_turn_is_empty(&turn),
+        ) {
+            anyhow::bail!("provider stream ended before completing the response");
+        }
+        Ok(turn)
+    }
 }
 
 impl CachedModels {
     fn is_fresh(&self) -> bool {
         now_secs().saturating_sub(self.updated_at) < MODEL_CACHE_TTL_SECS
     }
+}
+
+/// A credential that is actually there, so a blank one falls through to the
+/// next source rather than being sent as a bearer token.
+fn non_empty_token(value: &str) -> Option<String> {
+    let trimmed = value.trim();
+    (!trimmed.is_empty()).then(|| trimmed.to_string())
+}
+
+/// The headers a GitHub Copilot request is authorized and identified with. The
+/// session token is a bearer token of its own, and Copilot refuses a request
+/// that does not say which client made it.
+fn copilot_headers(request: reqwest::RequestBuilder, token: &str) -> reqwest::RequestBuilder {
+    request
+        .header("authorization", format!("Bearer {token}"))
+        .header("copilot-integration-id", copilot::INTEGRATION_ID)
+        .header("editor-version", copilot::EDITOR_VERSION)
+        .header("editor-plugin-version", copilot::PLUGIN_VERSION)
+        .header("x-github-api-version", "2025-04-01")
+}
+
+/// The headers a GitLab gateway request carries: the token the instance minted,
+/// and whatever headers came back beside it, since the proxy asks for those by
+/// name rather than accepting any client.
+fn gitlab_headers(
+    mut request: reqwest::RequestBuilder,
+    access: &gitlab::DirectAccess,
+) -> reqwest::RequestBuilder {
+    for (name, value) in &access.headers {
+        request = request.header(name.as_str(), value.as_str());
+    }
+    request.bearer_auth(&access.token)
+}
+
+/// The query of a URL as the pairs SigV4 canonicalizes, so a signed request and
+/// the URL it is sent to agree on what it asks for.
+fn parse_query(query: &str) -> Vec<(String, String)> {
+    query
+        .split('&')
+        .filter(|pair| !pair.is_empty())
+        .map(|pair| match pair.split_once('=') {
+            Some((name, value)) => (name.to_string(), value.to_string()),
+            None => (pair.to_string(), String::new()),
+        })
+        .collect()
 }
 
 fn model_cache_key(config: &Config) -> String {
@@ -870,6 +1228,49 @@ where
     Ok(SseOutcome { completed, abrupt })
 }
 
+/// Read one response body framed as binary event-stream messages (AWS's
+/// `application/vnd.amazon.eventstream`), handing every whole frame's event name
+/// and JSON payload to `on_event`. The counterpart of `read_sse` for a provider
+/// whose stream is not made of lines: `on_event` reports whether the event it
+/// was handed ends the stream, which is what a `[DONE]` sentinel is to SSE.
+async fn read_event_stream<F>(response: reqwest::Response, mut on_event: F) -> Result<SseOutcome>
+where
+    F: FnMut(&str, &serde_json::Value) -> Result<bool>,
+{
+    let mut buffer: Vec<u8> = Vec::new();
+    let mut stream = response.bytes_stream();
+    let mut completed = false;
+    let mut abrupt = false;
+
+    while let Some(chunk) = stream.next().await {
+        let chunk = match chunk {
+            Ok(chunk) => chunk,
+            Err(err) => {
+                if completed {
+                    break;
+                }
+                if is_abrupt_stream_close(&err) {
+                    abrupt = true;
+                    break;
+                }
+                return Err(err).context("reading response stream");
+            }
+        };
+        buffer.extend_from_slice(&chunk);
+        bedrock::drain_frames(&mut buffer, |event, payload| {
+            completed |= on_event(event, payload)?;
+            Ok(())
+        })?;
+    }
+
+    // Bytes still in the buffer are a frame that never finished arriving, so the
+    // stream was cut short even if it did not say so on the way out.
+    Ok(SseOutcome {
+        completed,
+        abrupt: abrupt || !buffer.is_empty(),
+    })
+}
+
 /// How an SSE body ended: whether the `[DONE]` sentinel arrived, and whether
 /// the connection dropped before the body was framed complete.
 struct SseOutcome {
@@ -1001,6 +1402,7 @@ mod tests {
         turn.tool_calls = vec![ToolCall {
             id: "call_0".into(),
             kind: "function".into(),
+            signature: None,
             function: FunctionCall {
                 name: "read".into(),
                 arguments: "{}".into(),
@@ -1101,6 +1503,7 @@ mod tests {
         let call = ToolCall {
             id: "call_0".into(),
             kind: "function".into(),
+            signature: None,
             function: FunctionCall {
                 name: "read".into(),
                 arguments: "{}".into(),
@@ -1134,6 +1537,7 @@ mod tests {
         let call = ToolCall {
             id: "call_0".into(),
             kind: "function".into(),
+            signature: None,
             function: FunctionCall {
                 name: "read".into(),
                 arguments: "{}".into(),
@@ -1213,6 +1617,7 @@ mod tests {
         let call = ToolCall {
             id: "call_0".into(),
             kind: "function".into(),
+            signature: None,
             function: FunctionCall {
                 name: "bash".into(),
                 arguments: "{}".into(),
@@ -1271,6 +1676,35 @@ mod tests {
         assert_eq!(request.headers()["x-portkey-api-key"], "pk-test");
         assert_eq!(request.headers()["x-portkey-config"], "pc-test");
         assert!(!request.headers().contains_key("authorization"));
+    }
+
+    /// The Portkey listing is a gateway call like any other, so `/models` is
+    /// authenticated with Portkey's own header — plus the Config ID, so the
+    /// catalog offered is the one that config routes to.
+    #[tokio::test]
+    async fn a_portkey_model_listing_uses_the_gateways_own_key() {
+        let (addr, server) = json_server(vec![
+            serde_json::json!({"data": [{"id": "gpt-5.4"}, {"id": "claude-sonnet-5"}]}).to_string(),
+        ])
+        .await;
+        let config = Config {
+            provider: "portkey".into(),
+            model: "claude-sonnet-5".into(),
+            base_url: format!("http://{addr}/v1"),
+            api_key: "pk-test".into(),
+            portkey_config: "pc-test".into(),
+            ..Config::default()
+        };
+        let client = LlmClient::new(config);
+        let models = client.fetch_models().await.unwrap();
+
+        assert_eq!(models, ["claude-sonnet-5", "gpt-5.4"]);
+        let sent = server.await.unwrap().remove(0);
+        assert!(sent.starts_with("GET /v1/models"), "{sent}");
+        let lower = sent.to_ascii_lowercase();
+        assert!(lower.contains("x-portkey-api-key: pk-test"), "{sent}");
+        assert!(lower.contains("x-portkey-config: pc-test"), "{sent}");
+        assert!(!lower.contains("authorization"), "{sent}");
     }
 
     #[test]
@@ -1423,6 +1857,303 @@ mod tests {
             .unwrap();
         assert_eq!(request.headers()["authorization"], "Bearer sk-test");
         assert!(!request.headers().contains_key("x-portkey-api-key"));
+    }
+
+    /// A Bedrock credential the reader stored is a bearer token, and it must be
+    /// the one that authorizes the request — signing with SigV4 instead would
+    /// ignore the only credential on the machine.
+    #[test]
+    fn a_stored_bedrock_credential_is_sent_as_a_bearer_token() {
+        let config = Config {
+            provider: "bedrock".into(),
+            api_key: "bedrock-token".into(),
+            model: "anthropic.claude-3-5-sonnet-20241022-v2:0".into(),
+            ..Config::default()
+        };
+        let client = LlmClient::new(config);
+        let url = "https://bedrock-runtime.us-east-1.amazonaws.com/model/m/converse-stream";
+        let request = client
+            .sign_aws(
+                client.http.post(url),
+                "POST",
+                url,
+                Some("application/json"),
+                b"{}",
+                "bedrock",
+            )
+            .unwrap()
+            .build()
+            .unwrap();
+        assert_eq!(request.headers()["authorization"], "Bearer bedrock-token");
+        assert!(!request.headers().contains_key("x-amz-date"));
+    }
+
+    /// `converse-stream` answers with AWS's binary event-stream framing rather
+    /// than SSE, so a turn read as lines would come back empty however well the
+    /// events themselves parse. Each frame's event name and payload are read here
+    /// however the body is chunked, the stop event is what marks the stream
+    /// complete, and the events reach the turn the way the wire sends them.
+    #[tokio::test]
+    async fn a_bedrock_turn_is_read_from_its_event_stream_frames() {
+        let body: Vec<u8> = [
+            ("messageStart", r#"{"role":"assistant"}"#),
+            (
+                "contentBlockDelta",
+                r#"{"contentBlockIndex":0,"delta":{"text":"hel"}}"#,
+            ),
+            (
+                "contentBlockDelta",
+                r#"{"contentBlockIndex":0,"delta":{"text":"lo"}}"#,
+            ),
+            ("contentBlockStop", r#"{"contentBlockIndex":0}"#),
+            (bedrock::STOP_EVENT, r#"{"stopReason":"end_turn"}"#),
+            (
+                "metadata",
+                r#"{"usage":{"inputTokens":10,"outputTokens":4}}"#,
+            ),
+        ]
+        .into_iter()
+        .flat_map(|(event, payload)| bedrock::frame(event, payload))
+        .collect();
+        let (addr, server) = framed_server(body).await;
+        let config = Config {
+            provider: "bedrock".into(),
+            api_key: "bedrock-token".into(),
+            model: "anthropic.claude-3-5-sonnet-20241022-v2:0".into(),
+            base_url: format!("http://{addr}"),
+            ..Config::default()
+        };
+        let client = LlmClient::new(config);
+
+        let turn = {
+            let mut hooks = StreamHooks {
+                text: &mut |_| {},
+                thinking: &mut |_| {},
+                retry: &mut |_| {},
+            };
+            client
+                .stream_chat(&[Message::user("hi")], &[], &mut hooks)
+                .await
+                .unwrap()
+        };
+
+        assert_eq!(turn.content, "hello");
+        assert_eq!(turn.finish_reason.as_deref(), Some("end_turn"));
+        assert_eq!(turn.usage.input, 10);
+        assert_eq!(turn.usage.output, 4);
+        let request = server.await.unwrap();
+        assert!(
+            request.starts_with(
+                "POST /model/anthropic.claude-3-5-sonnet-20241022-v2%3A0/converse-stream"
+            ),
+            "{request}"
+        );
+        // The stream asked for is the one it answers with, and the model id is
+        // encoded in the path the signature was made over, so a colon in it is
+        // not the one difference between what is signed and what is sent.
+        assert!(
+            request
+                .to_ascii_lowercase()
+                .contains("accept: application/vnd.amazon.eventstream"),
+            "{request}"
+        );
+    }
+
+    /// A frame the connection ended in the middle of is a turn that was cut
+    /// short, not a complete one that happened to stop saying anything.
+    #[tokio::test]
+    async fn a_frame_that_never_finished_arriving_is_truncation() {
+        let mut body = bedrock::frame(
+            "contentBlockDelta",
+            r#"{"contentBlockIndex":0,"delta":{"text":"hi"}}"#,
+        );
+        body.extend_from_slice(
+            &bedrock::frame(bedrock::STOP_EVENT, r#"{"stopReason":"end_turn"}"#)[..8],
+        );
+        let (addr, _server) = framed_server(body).await;
+        let response = reqwest::Client::new()
+            .post(format!("http://{addr}/model/m/converse-stream"))
+            .body("{}")
+            .send()
+            .await
+            .unwrap();
+
+        let outcome = read_event_stream(response, |_, _| Ok(false)).await.unwrap();
+        assert!(!outcome.completed);
+        assert!(outcome.abrupt, "the frame left half-read is truncation");
+        // Which is what the turn reports: text arrived, and no stop reason did.
+        assert!(stream_incomplete(&outcome, None, true));
+    }
+
+    /// A Duo turn is authorized by a token the instance mints, not by the
+    /// credential the reader stored: the stored one opens the instance, and
+    /// what the gateway sees is what came back beside it.
+    #[tokio::test]
+    async fn a_gitlab_turn_presents_the_credential_to_the_instance_first() {
+        let _env = crate::env_lock::hold();
+        let (instance, instance_server) = sse_server(vec![serde_json::json!({
+            "token": "gateway-jwt",
+            "headers": { "X-Gitlab-Realm": "saas" }
+        })
+        .to_string()])
+        .await;
+        let (gateway, gateway_server) = sse_server(vec![completed_turn("hi")]).await;
+        // The instance and the gateway are hosts the configuration names, and a
+        // stub machine has neither.
+        std::env::set_var("GITLAB_INSTANCE_URL", format!("http://{instance}"));
+        std::env::set_var("GITLAB_AI_GATEWAY_URL", format!("http://{gateway}"));
+        let config = Config {
+            provider: "gitlab".into(),
+            model: "gpt-4o".into(),
+            base_url: String::new(),
+            api_key: "glpat-secret".into(),
+            ..Config::default()
+        };
+        let client = LlmClient::new(config);
+
+        let turn = {
+            let mut hooks = StreamHooks {
+                text: &mut |_| {},
+                thinking: &mut |_| {},
+                retry: &mut |_| {},
+            };
+            client
+                .stream_chat(&[Message::user("hi")], &[], &mut hooks)
+                .await
+                .unwrap()
+        };
+        std::env::remove_var("GITLAB_INSTANCE_URL");
+        std::env::remove_var("GITLAB_AI_GATEWAY_URL");
+
+        assert_eq!(turn.content, "hi");
+        let exchange = instance_server.await.unwrap();
+        assert_eq!(exchange.len(), 1);
+        assert!(exchange[0].starts_with("POST /api/v4/ai/third_party_agents/direct_access"));
+        assert!(
+            exchange[0]
+                .to_ascii_lowercase()
+                .contains("authorization: bearer glpat-secret"),
+            "{}",
+            exchange[0]
+        );
+
+        let chat = gateway_server.await.unwrap();
+        assert_eq!(chat.len(), 1);
+        assert!(chat[0].starts_with("POST /ai/v1/proxy/openai/v1/chat/completions"));
+        let sent = chat[0].to_ascii_lowercase();
+        assert!(
+            sent.contains("authorization: bearer gateway-jwt"),
+            "{}",
+            chat[0]
+        );
+        assert!(sent.contains("x-gitlab-realm: saas"), "{}", chat[0]);
+    }
+
+    /// Duo serves Claude through the gateway's Anthropic proxy, so the same
+    /// minted token is presented on Anthropic's wire — with the version header
+    /// Anthropic asks for and without the `x-api-key` a direct Anthropic turn
+    /// would carry.
+    #[tokio::test]
+    async fn a_claude_model_is_proxied_to_anthropic_under_duo() {
+        let _env = crate::env_lock::hold();
+        let (instance, _instance_server) = sse_server(vec![
+            serde_json::json!({"token": "gateway-jwt", "headers": {"X-Gitlab-Realm": "saas"}})
+                .to_string(),
+        ])
+        .await;
+        let (gateway, gateway_server) = sse_server(vec![anthropic_sse(&[
+            serde_json::json!({"type": "message_start", "message": {"usage": {"input_tokens": 3, "output_tokens": 1}}}),
+            serde_json::json!({"type": "content_block_start", "index": 0, "content_block": {"type": "text", "text": ""}}),
+            serde_json::json!({"type": "content_block_delta", "index": 0, "delta": {"type": "text_delta", "text": "hi"}}),
+            serde_json::json!({"type": "message_delta", "delta": {"stop_reason": "end_turn"}, "usage": {"output_tokens": 2}}),
+            serde_json::json!({"type": "message_stop"}),
+        ])])
+        .await;
+        std::env::set_var("GITLAB_INSTANCE_URL", format!("http://{instance}"));
+        std::env::set_var("GITLAB_AI_GATEWAY_URL", format!("http://{gateway}"));
+        let config = Config {
+            provider: "gitlab".into(),
+            model: "claude-sonnet-4-6".into(),
+            base_url: String::new(),
+            api_key: "glpat-secret".into(),
+            ..Config::default()
+        };
+        let client = LlmClient::new(config);
+
+        let turn = {
+            let mut hooks = StreamHooks {
+                text: &mut |_| {},
+                thinking: &mut |_| {},
+                retry: &mut |_| {},
+            };
+            client
+                .stream_chat(&[Message::user("hi")], &[], &mut hooks)
+                .await
+                .unwrap()
+        };
+        std::env::remove_var("GITLAB_INSTANCE_URL");
+        std::env::remove_var("GITLAB_AI_GATEWAY_URL");
+
+        assert_eq!(turn.content, "hi");
+        let sent = gateway_server.await.unwrap().remove(0);
+        assert!(
+            sent.starts_with("POST /ai/v1/proxy/anthropic/v1/messages"),
+            "{sent}"
+        );
+        let lower = sent.to_ascii_lowercase();
+        assert!(
+            lower.contains("authorization: bearer gateway-jwt"),
+            "{sent}"
+        );
+        assert!(lower.contains("x-gitlab-realm: saas"), "{sent}");
+        assert!(lower.contains("anthropic-version: 2023-06-01"), "{sent}");
+        assert!(!lower.contains("x-api-key"), "{sent}");
+    }
+
+    /// `/models` under Duo is the gateway's own listing, so a Claude model —
+    /// which turns on Anthropic's wire — does not put the instance's personal
+    /// access token on it as an `x-api-key`.
+    #[tokio::test]
+    async fn a_duo_model_listing_uses_the_minted_token() {
+        let _env = crate::env_lock::hold();
+        let (instance, _instance_server) = sse_server(vec![
+            serde_json::json!({"token": "gateway-jwt", "headers": {"X-Gitlab-Realm": "saas"}})
+                .to_string(),
+        ])
+        .await;
+        let (gateway, gateway_server) = json_server(vec![
+            serde_json::json!({"data": [{"id": "gpt-4o"}, {"id": "claude-sonnet-4-6"}]})
+                .to_string(),
+        ])
+        .await;
+        std::env::set_var("GITLAB_INSTANCE_URL", format!("http://{instance}"));
+        std::env::set_var("GITLAB_AI_GATEWAY_URL", format!("http://{gateway}"));
+        let config = Config {
+            provider: "gitlab".into(),
+            model: "claude-sonnet-4-6".into(),
+            base_url: String::new(),
+            api_key: "glpat-secret".into(),
+            ..Config::default()
+        };
+        let client = LlmClient::new(config);
+        let models = client.fetch_models().await.unwrap();
+        std::env::remove_var("GITLAB_INSTANCE_URL");
+        std::env::remove_var("GITLAB_AI_GATEWAY_URL");
+
+        assert_eq!(models, ["claude-sonnet-4-6", "gpt-4o"]);
+        let sent = gateway_server.await.unwrap().remove(0);
+        assert!(
+            sent.starts_with("GET /ai/v1/proxy/anthropic/v1/models"),
+            "{sent}"
+        );
+        let lower = sent.to_ascii_lowercase();
+        assert!(
+            lower.contains("authorization: bearer gateway-jwt"),
+            "{sent}"
+        );
+        assert!(lower.contains("x-gitlab-realm: saas"), "{sent}");
+        assert!(lower.contains("anthropic-version: 2023-06-01"), "{sent}");
+        assert!(!lower.contains("x-api-key"), "{sent}");
     }
 
     #[test]
@@ -1676,6 +2407,34 @@ mod tests {
         (addr, handle)
     }
 
+    /// Serves one JSON body per request, reading only the request head: a
+    /// bodyless `GET` never sends the end-of-body a body-reading stub waits for.
+    async fn json_server(
+        bodies: Vec<String>,
+    ) -> (std::net::SocketAddr, tokio::task::JoinHandle<Vec<String>>) {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let handle = tokio::spawn(async move {
+            let mut seen = Vec::new();
+            for body in bodies {
+                let (mut socket, _) = listener.accept().await.unwrap();
+                let mut chunk = [0u8; 8192];
+                let read = socket.read(&mut chunk).await.unwrap_or(0);
+                seen.push(String::from_utf8_lossy(&chunk[..read]).into_owned());
+                let response = format!(
+                    "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",
+                    body.len()
+                );
+                let _ = socket.write_all(response.as_bytes()).await;
+                let _ = socket.shutdown().await;
+            }
+            seen
+        });
+        (addr, handle)
+    }
+
     /// Serves a scripted sequence of SSE responses on one listener, in order,
     /// returning the raw request texts. A `truncated` entry declares a
     /// `content-length` larger than the body it writes and then drops the
@@ -1705,6 +2464,37 @@ mod tests {
                 let _ = socket.shutdown().await;
             }
             seen
+        });
+        (addr, handle)
+    }
+
+    /// Serves one response body as raw bytes, in two writes so a frame can be
+    /// met split across chunks, and returns the raw request text it saw. An
+    /// event-stream body is binary, so `sse_server` cannot carry it.
+    async fn framed_server(
+        body: Vec<u8>,
+    ) -> (std::net::SocketAddr, tokio::task::JoinHandle<String>) {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let handle = tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.unwrap();
+            let mut chunk = [0u8; 8192];
+            let read = socket.read(&mut chunk).await.unwrap_or(0);
+            let request = String::from_utf8_lossy(&chunk[..read]).into_owned();
+            let head = format!(
+                "HTTP/1.1 200 OK\r\ncontent-type: application/vnd.amazon.eventstream\r\ncontent-length: {}\r\nconnection: close\r\n\r\n",
+                body.len()
+            );
+            let split = body.len() / 2;
+            let _ = socket.write_all(head.as_bytes()).await;
+            let _ = socket.write_all(&body[..split]).await;
+            let _ = socket.flush().await;
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+            let _ = socket.write_all(&body[split..]).await;
+            let _ = socket.shutdown().await;
+            request
         });
         (addr, handle)
     }

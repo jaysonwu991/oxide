@@ -394,6 +394,7 @@ mod tests {
         let call = ToolCall {
             id: "call_1".into(),
             kind: "function".into(),
+            signature: None,
             function: FunctionCall {
                 name: "read".into(),
                 arguments: "{\"path\":\"a.rs\"}".into(),

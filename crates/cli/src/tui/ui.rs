@@ -1,8 +1,8 @@
 use crate::config::Reasoning;
 use crate::tools::DiffPreview;
 use crate::tui::app::{
-    App, ChatItem, ConnectState, ConnectStep, ListRow, MarketplacePane, Selection, SubagentState,
-    Tone, UsageField,
+    App, Authorization, ChatItem, ConnectState, ConnectStep, ListRow, MarketplacePane, Selection,
+    SubagentState, Tone, UsageField,
 };
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
@@ -201,6 +201,7 @@ fn draw_connect(frame: &mut Frame, app: &App) {
             "Choose a provider, or type a custom provider name",
             state.input.clone(),
         ),
+        ConnectStep::Browser { .. } => ("Approve the login in your browser", state.input.clone()),
         ConnectStep::Key { provider } => (
             crate::auth::provider_option(provider)
                 .map(|option| option.key_url)
@@ -214,7 +215,9 @@ fn draw_connect(frame: &mut Frame, app: &App) {
     };
     let title = match &state.step {
         ConnectStep::Provider => " connect ",
-        ConnectStep::Key { provider } | ConnectStep::Options { provider } => provider.as_str(),
+        ConnectStep::Browser { provider }
+        | ConnectStep::Key { provider }
+        | ConnectStep::Options { provider } => provider.as_str(),
     };
     let connected = match &state.step {
         ConnectStep::Key { provider } => state.is_connected(provider),
@@ -232,10 +235,26 @@ fn draw_connect(frame: &mut Frame, app: &App) {
         Style::default().fg(app.theme.info),
     ))];
     let mut cursor: Option<(usize, u16)> = None;
+    // A list longer than the panel is shown as the window around the chosen
+    // row, with the range it shows named in the hint.
+    let mut shown_range: Option<(usize, usize, usize)> = None;
     match &state.step {
         ConnectStep::Provider => {
             lines.push(Line::from(""));
-            for (index, option) in crate::auth::KNOWN_PROVIDERS.iter().enumerate() {
+            let providers = crate::auth::known_providers();
+            let error_lines = if state.error.is_some() { 2 } else { 0 };
+            let room = (inner.height as usize).saturating_sub(2 + error_lines + 3);
+            let visible = room.clamp(1, providers.len().max(1));
+            let start = if providers.len() > visible {
+                state
+                    .selected
+                    .saturating_sub(visible - 1)
+                    .min(providers.len() - visible)
+            } else {
+                0
+            };
+            let end = (start + visible).min(providers.len());
+            for (index, option) in providers.iter().enumerate().take(end).skip(start) {
                 let selected = state.input.is_empty() && state.selected == index;
                 let marker = if selected { "›" } else { " " };
                 let style = if selected {
@@ -257,6 +276,9 @@ fn draw_connect(frame: &mut Frame, app: &App) {
                 }
                 lines.push(Line::from(spans));
             }
+            if start > 0 || end < providers.len() {
+                shown_range = Some((start, end, providers.len()));
+            }
             lines.push(Line::from(""));
             if let Some(error) = &state.error {
                 lines.push(Line::from(Span::styled(
@@ -271,6 +293,42 @@ fn draw_connect(frame: &mut Frame, app: &App) {
                 Span::styled(shown.clone(), Style::default().fg(app.theme.assistant)),
             ]));
             cursor = Some((input_line, 2 + shown.chars().count() as u16));
+        }
+        ConnectStep::Browser { .. } => {
+            lines.push(Line::from(""));
+            match &state.authorization {
+                Some(Authorization { url, code }) => {
+                    lines.push(Line::from(vec![
+                        Span::styled("  open ", Style::default().fg(app.theme.info)),
+                        Span::styled(url.clone(), Style::default().fg(app.theme.accent)),
+                    ]));
+                    lines.push(Line::from(vec![
+                        Span::styled("  code ", Style::default().fg(app.theme.info)),
+                        Span::styled(
+                            code.clone(),
+                            Style::default()
+                                .fg(app.theme.assistant)
+                                .add_modifier(Modifier::BOLD),
+                        ),
+                    ]));
+                    lines.push(Line::from(Span::styled(
+                        "  the code is also in your clipboard",
+                        Style::default().fg(app.theme.info),
+                    )));
+                }
+                None => lines.push(Line::from(Span::styled(
+                    "  asking GitHub for a code...",
+                    Style::default().fg(app.theme.info),
+                ))),
+            }
+            lines.push(Line::from(""));
+            if let Some(error) = &state.error {
+                lines.push(Line::from(Span::styled(
+                    format!("error: {error}"),
+                    Style::default().fg(app.theme.error),
+                )));
+                lines.push(Line::from(""));
+            }
         }
         ConnectStep::Key { .. } => {
             lines.push(Line::from(""));
@@ -337,17 +395,25 @@ fn draw_connect(frame: &mut Frame, app: &App) {
             }
         }
     }
+    let hint = match (state.step.clone(), connected) {
+        (ConnectStep::Provider, _) => "↑/↓ choose · Enter continue · Esc cancel".to_string(),
+        (ConnectStep::Browser { .. }, _) => "waiting for the approval · Esc cancel".to_string(),
+        (ConnectStep::Key { .. }, true) => {
+            "Enter use stored key · type to replace it · Backspace back · Esc cancel".to_string()
+        }
+        (ConnectStep::Key { .. }, false) => {
+            "Enter connect · Backspace back · Esc cancel".to_string()
+        }
+        (ConnectStep::Options { .. }, _) => {
+            "↑/↓ field · Enter next/save · Backspace back · Esc cancel".to_string()
+        }
+    };
+    let hint = match shown_range {
+        Some((start, end, total)) => format!("{hint} · {}-{} of {total} shown", start + 1, end),
+        None => hint,
+    };
     lines.push(Line::from(Span::styled(
-        match (state.step.clone(), connected) {
-            (ConnectStep::Provider, _) => "↑/↓ choose · Enter continue · Esc cancel",
-            (ConnectStep::Key { .. }, true) => {
-                "Enter use stored key · type to replace it · Backspace back · Esc cancel"
-            }
-            (ConnectStep::Key { .. }, false) => "Enter connect · Backspace back · Esc cancel",
-            (ConnectStep::Options { .. }, _) => {
-                "↑/↓ field · Enter next/save · Backspace back · Esc cancel"
-            }
-        },
+        hint,
         Style::default().fg(app.theme.info),
     )));
 

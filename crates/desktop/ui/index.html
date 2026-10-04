@@ -295,11 +295,13 @@
       <div class="dialog">
         <h2>Connect a provider</h2>
         <p class="dialog-sub">Credentials are stored in the same <code>auth.json</code> the CLI uses.</p>
+        <input id="provider-filter" class="search" placeholder="Search providers…" spellcheck="false" />
         <div id="provider-list" class="provider-list"></div>
-        <div class="field">
+        <div id="login-key-field" class="field">
           <label for="login-key">API key</label>
-          <input id="login-key" type="password" placeholder="sk-…" spellcheck="false" autocomplete="off" />
+          <input id="login-key" type="password" placeholder="Paste your API key" spellcheck="false" autocomplete="off" />
         </div>
+        <p id="login-key-note" class="provider-note" hidden></p>
         <div class="field-row">
           <div class="field">
             <label for="login-model">Model (optional)</label>

@@ -146,17 +146,34 @@ relative to the repository root.
   `crates/core/src/session.rs`; summarization lives in
   `crates/core/src/compact.rs`. The model sees `SessionLog::messages` (the leaf
   path with the latest compaction applied).
-- **Providers.** Add a preset in `ProviderPreset::for_name` in
-  `crates/core/src/config.rs`, the name and key URL in `KNOWN_PROVIDERS` in
-  `crates/core/src/auth.rs`, and any aliases in `canonical_provider`; if the API
-  is not OpenAI-compatible, extend the dispatch in
-  `crates/core/src/llm/client.rs` (see `crates/core/src/llm/anthropic.rs`).
+- **Providers.** Every provider is one entry in the `PROVIDERS` table in
+  `crates/core/src/config.rs` (`ProviderPreset`): its name, label, aliases, wire
+  dialect, authentication style, endpoint, default model and environment
+  variables. Nothing else lists providers — the login picker reads
+  `auth::known_providers()`, the aliases and key variables come from the same
+  entry, and the client dispatch switches on the entry's `ProviderKind`. So a
+  new OpenAI-compatible provider is one entry and nothing more. A provider that
+  speaks a different API needs (a) a variant in `ProviderKind`, (b) an
+  `AuthStyle` if its authentication is new, (c) the request/response and stream
+  handling beside the existing ones (`crates/core/src/llm/anthropic.rs`,
+  `gemini.rs`, `bedrock.rs`), dispatched from `crates/core/src/llm/client.rs`
+  (`stream_chat`, `fetch_models` and `endpoint_url` in `config.rs`), and (d) a
+  login flow in `crates/core/src/auth.rs` if a pasted key is not how it is
+  reached (`crates/core/src/llm/copilot.rs` is the device-flow one). Providers
+  that share a wire format share the client: Azure OpenAI and GitHub Copilot are
+  `ProviderKind::OpenAi` with their own `AuthStyle`, host and URL shape, and
+  GitLab Duo is one `AuthStyle` that selects a gateway proxy and the token the
+  instance mints for it.
   OpenAI-compatible providers map explicit reasoning levels to
   `reasoning_effort`; Portkey-hosted newer Claude models and the Anthropic
   client use adaptive thinking where supported, with an Anthropic
-  extended-thinking `budget_tokens` fallback for older models. A provider with
-  no model-listing endpoint ships a fallback catalog in
-  `crates/core/src/config.rs` (see `GLM_FALLBACK_MODELS`).
+  extended-thinking `budget_tokens` fallback for older models. A provider whose
+  catalog cannot be listed ships one in the entry's `models` field, and
+  `Config::merge_model_catalog` leaves a known provider's live listing alone.
+  Signed and derived endpoints (Bedrock SigV4, Vertex OAuth, Azure deployments)
+  live in `crates/core/src/llm/{aws,vertex,bedrock}.rs` and
+  `Config::azure_url`; every one of them is described in
+  [docs/configuration.md](docs/configuration.md#providers).
 - **Ecosystem sources.** Parsing lives in `crates/core/src/ecosystem/mod.rs`;
   frontmatter handling is in `crates/core/src/ecosystem/frontmatter.rs`. The
   native Oxide layout (`.oxide/`, `AGENTS.md`) and Claude Code layout

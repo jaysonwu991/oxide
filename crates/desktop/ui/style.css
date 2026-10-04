@@ -1085,7 +1085,18 @@ body.resizing { cursor: col-resize; user-select: none; }
 .question-actions { justify-content: flex-start; }
 .question-actions .spacer { flex: 1 1 auto; }
 
-.provider-list { display: flex; flex-direction: column; gap: 3px; margin-bottom: 16px; }
+.provider-list {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  margin-bottom: 16px;
+  max-height: 300px;
+  overflow-y: auto;
+  padding-right: 14px;
+}
+/* What the selected provider needs instead of a key: a sentence where the field
+   would be, so a server on this machine is not asked for a credential. */
+.provider-note { color: var(--faint); font-size: 12px; margin: 0 0 12px; }
 .trust-resources {
   display: flex;
   flex-wrap: wrap;

@@ -1,49 +1,176 @@
+use crate::config::AuthStyle;
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
+use std::sync::OnceLock;
 
 const AUTH_FILE: &str = "auth.json";
+
+/// One provider as the login picker draws it, read from the single provider
+/// table in [`crate::config::PROVIDERS`].
 #[derive(Debug, Clone, Copy)]
 pub struct ProviderOption {
     pub name: &'static str,
     pub label: &'static str,
     pub description: &'static str,
     pub key_url: &'static str,
+    pub auth: AuthStyle,
+    /// Whether the provider needs no credential (a server on this machine).
+    pub local: bool,
 }
 
-pub const KNOWN_PROVIDERS: [ProviderOption; 5] = [
-    ProviderOption {
-        name: "openai",
-        label: "OpenAI",
-        description: "GPT models",
-        key_url: "https://platform.openai.com/api-keys",
-    },
-    ProviderOption {
-        name: "deepseek",
-        label: "DeepSeek",
-        description: "DeepSeek chat and reasoning models",
-        key_url: "https://platform.deepseek.com/api_keys",
-    },
-    ProviderOption {
-        name: "anthropic",
-        label: "Anthropic",
-        description: "Claude models",
-        key_url: "https://console.anthropic.com/settings/keys",
-    },
-    ProviderOption {
-        name: "portkey",
-        label: "Portkey",
-        description: "AI gateway and model routing",
-        key_url: "https://app.portkey.ai/api-keys",
-    },
-    ProviderOption {
-        name: "zai",
-        label: "Z.AI",
-        description: "GLM models",
-        key_url: "https://z.ai/manage-apikey/apikey-list",
-    },
-];
+/// Every provider the login picker offers, in the order the provider table
+/// declares them. Built once from that table, so a provider is never listed in
+/// one place and missing from another.
+pub fn known_providers() -> &'static [ProviderOption] {
+    static OPTIONS: OnceLock<Vec<ProviderOption>> = OnceLock::new();
+    OPTIONS.get_or_init(|| {
+        crate::config::PROVIDERS
+            .iter()
+            .map(|preset| ProviderOption {
+                name: preset.name,
+                label: preset.label,
+                description: preset.description,
+                key_url: preset.key_url,
+                auth: preset.auth,
+                local: preset.local,
+            })
+            .collect()
+    })
+}
+
+/// How a provider's credential is presented, which is what a picker has to know
+/// before it asks for a key.
+#[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "kebab-case")]
+pub enum CredentialMode {
+    /// A key typed at login and kept in `auth.json`.
+    Key,
+    /// A credential the machine already holds — an AWS signing identity, a
+    /// Google application-default file — which is read where it lives and never
+    /// copied here, so a login asks for nothing and stores nothing.
+    External,
+    /// Nothing to present at all: a model server on this machine.
+    None,
+}
+
+/// One provider as a front-end's picker draws it: the table's own words, plus
+/// whether a credential is stored for it and whether it is the one in use. The
+/// desktop app, the VS Code panel and `oxide providers --json` all draw this
+/// listing rather than reading the provider table themselves.
+#[derive(Debug, Clone, Serialize, PartialEq)]
+pub struct ProviderView {
+    pub name: &'static str,
+    pub label: &'static str,
+    pub description: &'static str,
+    /// Where a key for this provider is issued.
+    #[serde(rename = "keyUrl")]
+    pub key_url: &'static str,
+    /// Whether the provider needs no credential (a server on this machine).
+    pub local: bool,
+    /// Whether a credential is already stored for it.
+    pub stored: bool,
+    /// Whether it is the provider `config.json` selects.
+    pub active: bool,
+    /// Where a credential for it comes from, so a row that a machine's own
+    /// identity already authorizes is not asked for a key it never reads.
+    pub credential: CredentialMode,
+}
+
+/// Every provider a picker lists, in the table's own order, each carrying the
+/// state a row shows beside it.
+pub fn provider_views() -> Vec<ProviderView> {
+    provider_views_at(
+        &AuthStore::path(),
+        &crate::config::Config::config_path(),
+        &|name| std::env::var(name).ok(),
+    )
+}
+
+fn provider_views_at(
+    auth_path: &Path,
+    config_path: &Path,
+    env: &dyn Fn(&str) -> Option<String>,
+) -> Vec<ProviderView> {
+    let store = AuthStore::load_from(auth_path).unwrap_or_default();
+    let active = crate::config::Config::active_provider_at(config_path);
+    known_providers()
+        .iter()
+        .map(|option| ProviderView {
+            name: option.name,
+            label: option.label,
+            description: option.description,
+            key_url: option.key_url,
+            local: option.local,
+            stored: store.key(option.name).is_some(),
+            active: active.as_deref() == Some(option.name),
+            credential: credential_mode_with(option.name, env),
+        })
+        .collect()
+}
+
+/// What connecting a provider resolved to, which is what a front-end reports
+/// back after a login.
+#[derive(Debug, Clone, Serialize, PartialEq)]
+pub struct LoginOutcome {
+    pub provider: String,
+    pub label: String,
+    pub model: String,
+    /// Whether the provider needs no credential (a server on this machine).
+    pub local: bool,
+}
+
+/// Connects a provider the way the desktop app's Connect dialog and
+/// `oxide login` both do: stores the credential it was given (or reuses the
+/// stored one), switches the selection to the provider, and applies the model
+/// and endpoint the caller named without disturbing the ones it did not.
+pub fn login_provider(
+    provider: &str,
+    key: &str,
+    model: Option<&str>,
+    base_url: Option<&str>,
+    cwd: &Path,
+) -> Result<LoginOutcome> {
+    // The selection is read before the credential is stored: resolving a login
+    // writes the provider into `config.json`, and a config loaded after that
+    // would name the incoming provider as the outgoing one — losing the model
+    // and endpoint the previous one is remembered by.
+    let mut config = crate::config::Config::load(cwd, None, None, None, None)?;
+    let (name, credential) = resolve_login(provider, key)?;
+    apply_login_choice(&mut config, &name, &credential, model, base_url);
+    config.persist_selection_at(&crate::config::Config::config_path())?;
+    Ok(LoginOutcome {
+        label: provider_label(&name).to_string(),
+        local: is_local(&name),
+        provider: name,
+        model: config.model,
+    })
+}
+
+/// The selection a login leaves behind: the provider's own model and endpoint,
+/// with whatever the reader named substituted for them. Split out from
+/// [`login_provider`] because this is the whole of the decision and making it
+/// needs no filesystem.
+fn apply_login_choice(
+    config: &mut crate::config::Config,
+    provider: &str,
+    credential: &str,
+    model: Option<&str>,
+    base_url: Option<&str>,
+) {
+    config.apply_provider(provider, credential);
+    if let Some(model) = non_empty(model) {
+        config.model = model.to_string();
+    }
+    if let Some(url) = non_empty(base_url) {
+        config.base_url = url.to_string();
+    }
+}
+
+fn non_empty(value: Option<&str>) -> Option<&str> {
+    value.map(str::trim).filter(|value| !value.is_empty())
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AuthEntry {
@@ -123,6 +250,19 @@ impl AuthStore {
     }
 }
 
+/// The OAuth application a provider's browser login identifies itself as, or
+/// `None` for a provider whose login is a key the reader pastes. A provider
+/// that mints a short-lived credential from a stored one is the one that needs
+/// the flow; GitHub Copilot is the one today, exchanging its GitHub token for a
+/// Copilot session token per turn.
+pub fn device_flow_client(name: &str) -> Option<&'static str> {
+    let name = canonical_provider(name);
+    match provider_option(&name).map(|option| option.auth) {
+        Some(AuthStyle::Copilot) => Some(crate::llm::copilot::CLIENT_ID),
+        _ => None,
+    }
+}
+
 pub fn connect(provider: &str, key: &str) -> Result<String> {
     connect_with(
         &AuthStore::path(),
@@ -174,18 +314,106 @@ fn select_stored_with(
     Ok((name, key))
 }
 
-pub fn canonical_provider(name: &str) -> String {
-    match name.trim().to_ascii_lowercase().as_str() {
-        "gpt" | "gpt-4" | "gpt-4o" => "openai".to_string(),
-        "port-key" => "portkey".to_string(),
-        "glm" | "z.ai" | "z-ai" | "zhipu" | "bigmodel" => "zai".to_string(),
-        other => other.to_string(),
+pub use crate::config::canonical_provider;
+
+/// What logging in to a provider resolves to: the canonical name, and the
+/// credential a request to it carries. A key the reader typed is what gets
+/// stored; an empty one reuses what is already stored, or — for a model server
+/// on this machine or a credential the machine already holds — is simply empty,
+/// so choosing one is a login rather than a key nobody has.
+pub fn resolve_login(provider: &str, typed: &str) -> Result<(String, String)> {
+    resolve_login_with(
+        &AuthStore::path(),
+        &crate::config::Config::config_path(),
+        provider,
+        typed,
+        &|name| std::env::var(name).ok(),
+    )
+}
+
+fn resolve_login_with(
+    auth_path: &Path,
+    config_path: &Path,
+    provider: &str,
+    typed: &str,
+    env: &dyn Fn(&str) -> Option<String>,
+) -> Result<(String, String)> {
+    if !typed.trim().is_empty() {
+        let name = connect_with(auth_path, config_path, provider, typed)?;
+        return Ok((name, typed.to_string()));
     }
+    let name = canonical_provider(provider);
+    // A credential already stored is the one the reader chose, so it is reused
+    // even where the machine also has one outside this store.
+    if AuthStore::load_from(auth_path)
+        .unwrap_or_default()
+        .key(&name)
+        .is_some()
+    {
+        return select_stored_with(auth_path, config_path, provider);
+    }
+    if is_local(&name) {
+        crate::config::Config::set_active_provider_at(config_path, &name)?;
+        return Ok((name, String::new()));
+    }
+    match external_credential(&name, env) {
+        Some(Ok(())) => {
+            crate::config::Config::set_active_provider_at(config_path, &name)?;
+            Ok((name, String::new()))
+        }
+        // A provider that signs with a credential kept elsewhere is told what
+        // is missing rather than asked for a key it does not read.
+        Some(Err(reason)) => Err(reason),
+        None => select_stored_with(auth_path, config_path, provider),
+    }
+}
+
+/// A provider whose credential this store never holds: an AWS signing identity,
+/// or Google's application-default file. `Some(Ok(()))` when the machine has it,
+/// `Some(Err(..))` naming what to set when it does not, and `None` for a
+/// provider that keeps a key here instead.
+fn external_credential(provider: &str, env: &dyn Fn(&str) -> Option<String>) -> Option<Result<()>> {
+    match provider_option(provider)?.auth {
+        AuthStyle::Aws => Some(crate::llm::aws::credentials_from(env).map(|_| ())),
+        AuthStyle::Vertex => Some(if crate::llm::vertex::has_credential_with(env) {
+            Ok(())
+        } else {
+            Err(anyhow::anyhow!(
+                "no Google application-default credential found for `{provider}` - set \
+                 GOOGLE_APPLICATION_CREDENTIALS, or run `gcloud auth application-default login`"
+            ))
+        }),
+        _ => None,
+    }
+}
+
+/// Where a credential for a provider comes from, which is what a picker's row
+/// reports so it asks for a key only where one is kept here.
+pub fn credential_mode_with(
+    provider: &str,
+    env: &dyn Fn(&str) -> Option<String>,
+) -> CredentialMode {
+    if is_local(provider) {
+        return CredentialMode::None;
+    }
+    match external_credential(provider, env) {
+        Some(Ok(())) => CredentialMode::External,
+        // A provider whose own credential is missing still takes a key, and a
+        // login that finds none says what to set.
+        _ => CredentialMode::Key,
+    }
+}
+
+/// Whether a provider is a model server on this machine, which is reached
+/// without a credential at all: there is none to store, so logging in to one is
+/// choosing it and its endpoint rather than presenting a key.
+pub fn is_local(provider: &str) -> bool {
+    provider_option(provider).is_some_and(|option| option.local)
 }
 
 pub fn provider_option(name: &str) -> Option<&'static ProviderOption> {
     let name = canonical_provider(name);
-    KNOWN_PROVIDERS.iter().find(|option| option.name == name)
+    known_providers().iter().find(|option| option.name == name)
 }
 
 pub fn provider_label(name: &str) -> &str {
@@ -220,18 +448,136 @@ mod tests {
         assert_eq!(canonical_provider("GLM"), "zai");
         assert_eq!(canonical_provider(" z.ai "), "zai");
         assert_eq!(canonical_provider("Zhipu"), "zai");
+        assert_eq!(canonical_provider("Grok"), "xai");
+        assert_eq!(canonical_provider("Gemini"), "google");
+        assert_eq!(canonical_provider("Claude"), "anthropic");
+        assert_eq!(canonical_provider("Amazon-Bedrock"), "bedrock");
+        // A provider nobody declared keeps the name it was configured with.
+        assert_eq!(canonical_provider("my-endpoint"), "my-endpoint");
     }
 
     #[test]
-    fn known_providers_include_zai() {
-        let names: Vec<&str> = KNOWN_PROVIDERS.iter().map(|option| option.name).collect();
+    fn known_providers_cover_every_declared_preset() {
+        // The picker lists the provider table itself, so a provider can never
+        // be declared without being offered at login.
+        assert_eq!(known_providers().len(), crate::config::PROVIDERS.len());
+        let names: Vec<&str> = known_providers().iter().map(|option| option.name).collect();
         assert_eq!(
             names,
-            vec!["openai", "deepseek", "anthropic", "portkey", "zai"]
+            crate::config::PROVIDERS
+                .iter()
+                .map(|preset| preset.name)
+                .collect::<Vec<_>>()
         );
         let zai = provider_option("glm").expect("glm resolves to the Z.AI preset");
         assert_eq!(zai.label, "Z.AI");
         assert!(zai.key_url.contains("z.ai"));
+        assert!(provider_option("ollama").expect("ollama is offered").local);
+        assert_eq!(
+            provider_option("copilot").expect("copilot is offered").auth,
+            AuthStyle::Copilot
+        );
+    }
+
+    /// The picker's rows are the provider table plus what is on disk: the same
+    /// listing answers for the desktop app, the VS Code panel and the terminal.
+    #[test]
+    fn provider_views_pair_the_table_with_what_is_connected() {
+        let dir = temp_dir("provider-views");
+        let auth_path = dir.join("auth.json");
+        let config_path = dir.join("config.json");
+        let mut store = AuthStore::default();
+        store.set("openai", "sk-openai");
+        store.save_to(&auth_path).unwrap();
+        std::fs::write(&config_path, r#"{"provider":"anthropic"}"#).unwrap();
+        // A service-account file Vertex can mint a token from, since a path that
+        // is not a credential is no credential at all.
+        let account = dir.join("service-account.json");
+        std::fs::write(&account, r#"{"type":"service_account"}"#).unwrap();
+        let account = account.to_str().unwrap().to_string();
+
+        let views = provider_views_at(&auth_path, &config_path, &no_aws_credentials());
+        assert_eq!(views.len(), crate::config::PROVIDERS.len());
+        let row = |name: &str| views.iter().find(|view| view.name == name).unwrap();
+        assert!(row("openai").stored && !row("openai").active);
+        assert!(row("anthropic").active && !row("anthropic").stored);
+        assert!(row("ollama").local && !row("ollama").stored);
+        assert_eq!(row("openai").credential, CredentialMode::Key);
+        assert_eq!(row("ollama").credential, CredentialMode::None);
+        // A provider whose credential the machine holds says so, which is what
+        // keeps a picker from asking for a key nothing would read; one whose
+        // credential is missing still takes a key typed here.
+        let signed = provider_views_at(
+            &auth_path,
+            &config_path,
+            &env(&[
+                ("AWS_ACCESS_KEY_ID", "AKIAEXAMPLE"),
+                ("AWS_SECRET_ACCESS_KEY", "secret"),
+                ("GOOGLE_APPLICATION_CREDENTIALS", account.as_str()),
+            ]),
+        );
+        let signed_row = |name: &str| signed.iter().find(|view| view.name == name).unwrap();
+        assert_eq!(signed_row("bedrock").credential, CredentialMode::External);
+        assert_eq!(signed_row("vertex").credential, CredentialMode::External);
+        assert_eq!(signed_row("openai").credential, CredentialMode::Key);
+        assert_eq!(row("bedrock").credential, CredentialMode::Key);
+        assert_eq!(row("vertex").credential, CredentialMode::Key);
+        // A server on this machine is never held to a key it does not have, and
+        // the JSON a front-end reads carries the aliases it matches on.
+        let json = serde_json::to_value(row("openai")).unwrap();
+        assert_eq!(json["name"], "openai");
+        assert_eq!(json["keyUrl"], row("openai").key_url);
+        assert_eq!(json["active"], false);
+        assert_eq!(json["credential"], "key");
+        assert_eq!(
+            serde_json::to_value(row("ollama")).unwrap()["credential"],
+            "none"
+        );
+
+        // An unreadable store still lists every provider rather than nothing.
+        std::fs::write(&auth_path, "not json").unwrap();
+        assert_eq!(
+            provider_views_at(&auth_path, &config_path, &no_aws_credentials()).len(),
+            views.len()
+        );
+        assert!(!provider_views_at(&auth_path, &config_path, &no_aws_credentials())[0].stored);
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// A login is the reader's own choice over the provider's defaults: the
+    /// model and endpoint they named win, and the ones they left alone are the
+    /// provider's, never the previous provider's gateway.
+    #[test]
+    fn a_login_keeps_every_choice_that_was_not_made() {
+        let mut config = crate::config::Config {
+            provider: "portkey".to_string(),
+            model: "gpt-4o".to_string(),
+            base_url: "https://gateway.example/v1".to_string(),
+            ..Default::default()
+        };
+
+        apply_login_choice(&mut config, "openai", "sk-openai", None, None);
+        assert_eq!(config.provider, "openai");
+        assert_eq!(config.base_url, "https://api.openai.com/v1");
+        assert_eq!(
+            config.provider_base_urls["portkey"],
+            "https://gateway.example/v1"
+        );
+
+        apply_login_choice(
+            &mut config,
+            "openai",
+            "sk-openai",
+            Some(" gpt-5.1 "),
+            Some("https://proxy.example/v1"),
+        );
+        assert_eq!(config.model, "gpt-5.1");
+        assert_eq!(config.base_url, "https://proxy.example/v1");
+
+        // An empty string is not a choice, so it cannot blank a remembered one.
+        apply_login_choice(&mut config, "openai", "sk-openai", Some("  "), Some(""));
+        assert_eq!(config.model, "gpt-5.1");
+        assert_eq!(config.base_url, "https://proxy.example/v1");
     }
 
     #[test]
@@ -245,6 +591,135 @@ mod tests {
         assert_eq!(store.key("openai"), Some("sk-openai"));
         assert_eq!(store.key("anthropic"), Some("sk-ant-test"));
         assert_eq!(store.key("deepseek"), Some("sk-deepseek"));
+    }
+
+    /// What logging in resolves to: a key the reader typed is stored, an empty
+    /// one reuses the stored credential, and a server on this machine answers
+    /// with the empty key it needs rather than a lookup that would find nothing.
+    #[test]
+    fn a_local_provider_logs_in_without_a_credential() {
+        let dir = temp_dir("local-login");
+        let auth_path = dir.join("auth.json");
+        let config_path = dir.join("config.json");
+
+        let (name, key) = resolve_login_with(
+            &auth_path,
+            &config_path,
+            "Ollama",
+            "",
+            &no_aws_credentials(),
+        )
+        .unwrap();
+        assert_eq!(name, "ollama");
+        assert!(key.is_empty());
+        assert!(!auth_path.exists(), "nothing is stored for a local server");
+        let config: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&config_path).unwrap()).unwrap();
+        assert_eq!(config["provider"], "ollama");
+
+        // A key it was given anyway is still stored, so a proxied server or a
+        // gateway fronting one keeps whatever it was handed.
+        let (name, key) = resolve_login_with(
+            &auth_path,
+            &config_path,
+            "ollama",
+            "sk-local",
+            &no_aws_credentials(),
+        )
+        .unwrap();
+        assert_eq!((name.as_str(), key.as_str()), ("ollama", "sk-local"));
+        assert_eq!(
+            AuthStore::load_from(&auth_path).unwrap().key("ollama"),
+            Some("sk-local")
+        );
+
+        // A provider that does keep a credential still needs one.
+        let error = resolve_login_with(
+            &auth_path,
+            &config_path,
+            "portkey",
+            "",
+            &no_aws_credentials(),
+        )
+        .unwrap_err();
+        assert!(error
+            .to_string()
+            .contains("no stored credentials for `portkey`"));
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// Bedrock and Vertex authorize with a credential the machine already has —
+    /// an AWS signing identity and Google's application-default file — so an
+    /// empty login is a login there, and it stores nothing: neither credential
+    /// is this store's to keep. A machine without one is told what to set rather
+    /// than asked for a key that would never be read.
+    #[test]
+    fn a_provider_signed_with_the_machines_own_credential_logs_in_without_a_key() {
+        let dir = temp_dir("external-credential");
+        let auth_path = dir.join("auth.json");
+        let config_path = dir.join("config.json");
+        let aws = env(&[
+            ("AWS_ACCESS_KEY_ID", "AKIAEXAMPLE"),
+            ("AWS_SECRET_ACCESS_KEY", "secret"),
+        ]);
+
+        let (name, key) =
+            resolve_login_with(&auth_path, &config_path, "bedrock", "", &aws).unwrap();
+        assert_eq!((name.as_str(), key.as_str()), ("bedrock", ""));
+        assert!(!auth_path.exists(), "an AWS identity is not stored here");
+        let config: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&config_path).unwrap()).unwrap();
+        assert_eq!(config["provider"], "bedrock");
+
+        // The same provider on a machine with nothing to sign with says which
+        // variable to set, since no key it could be given would be the one used.
+        let error = resolve_login_with(
+            &auth_path,
+            &config_path,
+            "amazon-bedrock",
+            "",
+            &no_aws_credentials(),
+        )
+        .unwrap_err();
+        assert!(error.to_string().contains("AWS_ACCESS_KEY_ID"), "{error}");
+
+        // Vertex reads a file instead, and the same two answers hold.
+        let service_account = dir.join("service-account.json");
+        std::fs::write(&service_account, r#"{"type":"service_account"}"#).unwrap();
+        let path = service_account.to_str().unwrap().to_string();
+        let pairs = [("GOOGLE_APPLICATION_CREDENTIALS", path.as_str())];
+        let google = env(&pairs);
+        let (name, key) =
+            resolve_login_with(&auth_path, &config_path, "vertex", "", &google).unwrap();
+        assert_eq!((name.as_str(), key.as_str()), ("vertex", ""));
+        assert!(!auth_path.exists());
+        let error = resolve_login_with(
+            &auth_path,
+            &config_path,
+            "vertex",
+            "",
+            &no_aws_credentials(),
+        )
+        .unwrap_err();
+        assert!(
+            error.to_string().contains("GOOGLE_APPLICATION_CREDENTIALS"),
+            "{error}"
+        );
+
+        // A stored credential is the reader's own choice and is reused ahead of
+        // the machine's, even for a provider that could sign on its own.
+        let mut store = AuthStore::default();
+        store.set("bedrock", "bedrock-bearer-token");
+        store.save_to(&auth_path).unwrap();
+        let (name, key) =
+            resolve_login_with(&auth_path, &config_path, "bedrock", "", &aws).unwrap();
+        assert_eq!(
+            (name.as_str(), key.as_str()),
+            ("bedrock", "bedrock-bearer-token")
+        );
+
+        std::fs::remove_dir_all(&dir).ok();
     }
 
     #[test]
@@ -289,6 +764,28 @@ mod tests {
         let value: serde_json::Value = serde_json::to_value(&store).unwrap();
         assert_eq!(value["openai"]["type"], "api");
         assert_eq!(value["openai"]["key"], "sk-test");
+    }
+
+    /// A machine's own environment, injected: the two providers whose credential
+    /// is not in this store are decided by what is set here, so a test says what
+    /// the machine has instead of reading the one running it.
+    fn env<'a>(pairs: &'a [(&'a str, &'a str)]) -> impl Fn(&str) -> Option<String> + 'a {
+        move |name| {
+            pairs
+                .iter()
+                .find(|(key, _)| *key == name)
+                .map(|(_, value)| value.to_string())
+        }
+    }
+
+    /// An environment with no AWS identity anywhere: the shared file is named
+    /// explicitly, since an absent variable would otherwise be read from the
+    /// home directory of whichever machine runs the test.
+    fn no_aws_credentials() -> impl Fn(&str) -> Option<String> {
+        env(&[(
+            "AWS_SHARED_CREDENTIALS_FILE",
+            "/nonexistent-oxide-credentials",
+        )])
     }
 
     fn temp_dir(tag: &str) -> PathBuf {

@@ -211,7 +211,10 @@ const state = {
   reasoning: "auto",
   contextWindow: 0,
   providers: [],
-  providerIndex: 0,
+  // The provider the connect dialog has selected, kept by name rather than by
+  // row: the list is filtered as the reader searches, so a row's position says
+  // nothing about which provider is chosen.
+  providerName: "",
   models: null,
   pendingApproval: null,
   pendingQuestion: null,
@@ -3094,37 +3097,105 @@ function resolveRename(value) {
 
 async function openConnect() {
   state.providers = await invoke("list_providers");
-  state.providerIndex = Math.max(
-    0,
-    state.providers.findIndex((provider) => provider.stored),
-  );
+  // The provider already in use is the one to open on, then a stored one, then
+  // the first row — never a search that was left over from last time.
+  const preferred =
+    state.providers.find((provider) => provider.active) ??
+    state.providers.find((provider) => provider.stored) ??
+    state.providers[0];
+  state.providerName = preferred ? preferred.name : "";
+  el("provider-filter").value = "";
+  el("login-key").value = "";
   renderProviders();
   closeOverlays("connect-modal");
   el("connect-modal").hidden = false;
 }
 
+/// Picks the provider the dialog is on. A key typed for the provider before it
+/// goes: the credential belongs to the provider it was pasted for.
+function selectProvider(name) {
+  if (name === state.providerName) return;
+  state.providerName = name;
+  el("login-key").value = "";
+}
+
+/// The providers whose name, label or description mention the query, in the
+/// table's own order.
+function filteredProviders() {
+  const query = el("provider-filter").value.trim().toLowerCase();
+  if (!query) return state.providers;
+  return state.providers.filter((provider) =>
+    `${provider.name} ${provider.label} ${provider.description}`.toLowerCase().includes(query),
+  );
+}
+
 function renderProviders() {
   const box = el("provider-list");
+  const rows = filteredProviders();
+  // A search that hides the selected provider moves the selection to the first
+  // row the reader can see, so Save connects what is on screen.
+  if (!rows.some((provider) => provider.name === state.providerName)) {
+    selectProvider(rows.length ? rows[0].name : "");
+  }
   box.innerHTML = "";
-  state.providers.forEach((provider, index) => {
+  if (!rows.length) {
+    box.innerHTML =
+      '<div class="empty" style="margin:8px 0">No provider matches that search.</div>';
+    renderLoginFields();
+    return;
+  }
+  for (const provider of rows) {
     const row = document.createElement("button");
     row.type = "button";
-    row.className = "provider" + (index === state.providerIndex ? " active" : "");
+    row.className = "provider" + (provider.name === state.providerName ? " active" : "");
+    const marks = [];
+    if (provider.active) marks.push("in use");
+    if (provider.stored) marks.push("stored");
     row.innerHTML =
       `<span class="p-name">${escapeHtml(provider.label)}</span>` +
-      `<span class="p-desc">${escapeHtml(provider.description)}</span>` +
-      (provider.stored ? '<span class="badge">stored</span>' : "");
+      `<span class="p-desc">${escapeHtml(provider.name)} · ${escapeHtml(provider.description)}</span>` +
+      (marks.length ? `<span class="badge">${escapeHtml(marks.join(" · "))}</span>` : "");
     row.onclick = () => {
-      state.providerIndex = index;
+      selectProvider(provider.name);
       renderProviders();
     };
     box.appendChild(row);
-  });
+  }
+  renderLoginFields();
+}
+
+/// What the selected provider needs: a key field whose placeholder says what
+/// leaving it empty means, or the sentence that replaces it for a provider that
+/// asks for no key at all — a server on this machine, or one that authorizes
+/// with a credential the machine already holds, which is read where it lives and
+/// is not the key this box would collect.
+function renderLoginFields() {
+  const provider = state.providers.find((one) => one.name === state.providerName);
+  const field = el("login-key-field");
+  const note = el("login-key-note");
+  const keyless = Boolean(provider && (provider.local || provider.credential === "external"));
+  field.hidden = keyless;
+  note.hidden = !keyless;
+  if (!provider) {
+    el("login-key").placeholder = "Paste your API key";
+    return;
+  }
+  el("login-key").placeholder = provider.stored
+    ? "Leave empty to reuse the stored key"
+    : "Paste your API key";
+  if (provider.local) {
+    note.textContent = `${provider.label} is a server on this machine — no key needed.`;
+  } else if (keyless) {
+    note.textContent = `${provider.label} authorizes with a credential this machine already has — no key needed.`;
+  }
 }
 
 async function saveConnect() {
-  const provider = state.providers[state.providerIndex];
-  if (!provider) return;
+  const provider = state.providers.find((one) => one.name === state.providerName);
+  if (!provider) {
+    setStatus("Choose a provider first.");
+    return;
+  }
   try {
     await invoke("login", {
       provider: provider.name,
@@ -4023,13 +4094,16 @@ async function runSlashCommand(text) {
     case "connect":
       await openConnect();
       if (args) {
-        const index = state.providers.findIndex(
+        const wanted = args.toLowerCase();
+        const match = state.providers.find(
           (provider) =>
-            provider.name === args.toLowerCase() ||
-            provider.label.toLowerCase() === args.toLowerCase(),
+            provider.name === wanted || provider.label.toLowerCase() === wanted,
         );
-        if (index >= 0) {
-          state.providerIndex = index;
+        if (match) {
+          // A named provider is put in the search box, so a row far down a long
+          // list is the one on screen rather than selected somewhere off it.
+          state.providerName = match.name;
+          el("provider-filter").value = match.name;
           renderProviders();
         } else {
           el("login-key").focus();
@@ -4865,6 +4939,7 @@ function init() {
   el("question-dismiss").onclick = () => answerQuestion(true);
   el("login-cancel").onclick = () => (el("connect-modal").hidden = true);
   el("login-save").onclick = saveConnect;
+  el("provider-filter").addEventListener("input", renderProviders);
   el("models-close").onclick = () => (el("models-modal").hidden = true);
   el("model-filter").addEventListener("input", renderModels);
   el("themes-close").onclick = () => (el("themes-modal").hidden = true);

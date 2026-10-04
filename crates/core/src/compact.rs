@@ -606,6 +606,7 @@ mod tests {
             vec![ToolCall {
                 id: id.to_string(),
                 kind: "function".to_string(),
+                signature: None,
                 function: crate::llm::FunctionCall {
                     name: name.to_string(),
                     arguments: arguments.to_string(),

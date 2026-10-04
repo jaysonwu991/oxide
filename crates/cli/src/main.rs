@@ -225,6 +225,29 @@ enum Command {
         #[arg(long)]
         active: bool,
     },
+    /// List the providers a client can connect
+    Providers {
+        /// Print the listing as JSON
+        #[arg(long)]
+        json: bool,
+    },
+    /// Connect a provider, storing its credential
+    Login {
+        /// Provider name, as `oxide providers` lists it
+        provider: String,
+        /// Read the API key from stdin (one line)
+        #[arg(long)]
+        key_stdin: bool,
+        /// Model to use with this provider
+        #[arg(long)]
+        model: Option<String>,
+        /// Endpoint to use with this provider
+        #[arg(long, value_name = "URL")]
+        base_url: Option<String>,
+        /// Print the result as JSON
+        #[arg(long)]
+        json: bool,
+    },
     /// Read the files a run changed, from its shadow snapshots
     Changes {
         #[command(subcommand)]
@@ -642,6 +665,14 @@ async fn main() -> Result<()> {
                 let current_dir = std::env::current_dir().context("resolving current directory")?;
                 list_models(&current_dir, json, active).await
             }
+            Command::Providers { json } => list_providers(json),
+            Command::Login {
+                provider,
+                key_stdin,
+                model,
+                base_url,
+                json,
+            } => connect_provider(&provider, key_stdin, model, base_url, json),
             Command::Changes { action } => match action {
                 ChangesAction::Show {
                     path,
@@ -862,6 +893,83 @@ async fn main() -> Result<()> {
         )
         .await
     }
+}
+
+/// Prints the providers a picker draws, from the single provider table in the
+/// core, with the state a row shows beside it. A front-end that cannot link
+/// `oxide-core` — the VS Code panel drives this binary — reads the listing here
+/// instead of keeping its own copy of the table.
+fn list_providers(json_output: bool) -> Result<()> {
+    let views = auth::provider_views();
+    if json_output {
+        let active = views.iter().find(|view| view.active).map(|view| view.name);
+        println!(
+            "{}",
+            serde_json::to_string(&json!({ "active": active, "providers": views }))?
+        );
+        return Ok(());
+    }
+    for view in &views {
+        let mut marks = Vec::new();
+        if view.active {
+            marks.push("in use");
+        }
+        if view.stored {
+            marks.push("stored");
+        }
+        if view.local {
+            marks.push("no key needed");
+        } else if view.credential == auth::CredentialMode::External {
+            // A provider that signs with the machine's own identity is as usable
+            // without a key as a server on this machine, and says so here rather
+            // than reading as one that is waiting for a paste.
+            marks.push("machine credential");
+        }
+        let mark = if marks.is_empty() {
+            String::new()
+        } else {
+            format!("  [{}]", marks.join(", "))
+        };
+        println!(
+            "{}\t{} — {}{}",
+            view.name, view.label, view.description, mark
+        );
+    }
+    Ok(())
+}
+
+/// Connects a provider from a front-end that has no terminal dialog to run: the
+/// credential lands in the same `auth.json` the terminal writes, so a login here
+/// is a login there. The key is read from stdin rather than an argument, which
+/// would be visible in the process listing and kept in the shell's history.
+fn connect_provider(
+    provider: &str,
+    key_stdin: bool,
+    model: Option<String>,
+    base_url: Option<String>,
+    json_output: bool,
+) -> Result<()> {
+    let key = if key_stdin {
+        let mut line = String::new();
+        io::stdin()
+            .read_line(&mut line)
+            .context("reading the API key from stdin")?;
+        line.trim().to_string()
+    } else {
+        String::new()
+    };
+    let cwd = std::env::current_dir().context("resolving current directory")?;
+    let outcome =
+        auth::login_provider(provider, &key, model.as_deref(), base_url.as_deref(), &cwd)?;
+    if json_output {
+        println!("{}", serde_json::to_string(&outcome)?);
+    } else {
+        println!(
+            "Connected {} ({}) — model {}",
+            outcome.label, outcome.provider, outcome.model
+        );
+    }
+    Ok(())
 }
 
 /// Prints the same provider catalogs the TUI's `/models` and desktop model
@@ -1567,5 +1675,57 @@ mod tests {
                 active: true
             })
         ));
+    }
+
+    #[test]
+    fn parses_a_provider_listing_and_a_login() {
+        let cli = Cli::try_parse_from(["oxide", "providers", "--json"]).unwrap();
+        assert!(matches!(
+            cli.command,
+            Some(Command::Providers { json: true })
+        ));
+
+        let cli = Cli::try_parse_from([
+            "oxide",
+            "login",
+            "openai",
+            "--key-stdin",
+            "--model",
+            "gpt-5.1",
+            "--base-url",
+            "https://proxy.example/v1",
+            "--json",
+        ])
+        .unwrap();
+        match cli.command {
+            Some(Command::Login {
+                provider,
+                key_stdin: true,
+                model,
+                base_url,
+                json: true,
+            }) => {
+                assert_eq!(provider, "openai");
+                assert_eq!(model.as_deref(), Some("gpt-5.1"));
+                assert_eq!(base_url.as_deref(), Some("https://proxy.example/v1"));
+            }
+            other => panic!("unexpected command: {other:?}"),
+        }
+
+        // A login without a key is how a stored or local provider is chosen.
+        let cli = Cli::try_parse_from(["oxide", "login", "ollama"]).unwrap();
+        assert!(matches!(
+            cli.command,
+            Some(Command::Login {
+                key_stdin: false,
+                model: None,
+                base_url: None,
+                json: false,
+                ..
+            })
+        ));
+        // The provider is required, so an empty login fails rather than
+        // silently connecting whatever was last used.
+        assert!(Cli::try_parse_from(["oxide", "login"]).is_err());
     }
 }

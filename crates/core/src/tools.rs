@@ -2961,6 +2961,7 @@ mod tests {
         ToolCall {
             id: "test".to_string(),
             kind: "function".to_string(),
+            signature: None,
             function: FunctionCall {
                 name: name.to_string(),
                 arguments: args.to_string(),
@@ -3839,6 +3840,7 @@ mod tests {
         let malformed = ToolCall {
             id: "test".to_string(),
             kind: "function".to_string(),
+            signature: None,
             function: FunctionCall {
                 name: "edit".to_string(),
                 arguments: "{not json".to_string(),
@@ -3868,6 +3870,7 @@ mod tests {
         let call = ToolCall {
             id: "test".to_string(),
             kind: "function".to_string(),
+            signature: None,
             function: FunctionCall {
                 name: "ls".to_string(),
                 arguments: String::new(),
@@ -3882,6 +3885,7 @@ mod tests {
         let call = ToolCall {
             id: "test".to_string(),
             kind: "function".to_string(),
+            signature: None,
             function: FunctionCall {
                 name: "bash".to_string(),
                 arguments: "   ".to_string(),

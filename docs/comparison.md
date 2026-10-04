@@ -9,7 +9,7 @@ so check each project's documentation for the current details.
 | --- | --- | --- | --- | --- |
 | Distribution | Native Rust core + Electron desktop app (TypeScript window over the Rust engine) + VS Code extension | Open-source CLI (Rust) + IDE extension | Open-source CLI (Node/Bun) | Proprietary CLI + apps |
 | License | MIT | Apache-2.0 | Open source | Proprietary |
-| Model providers | OpenAI-compatible (OpenAI, DeepSeek, Portkey, Z.AI/GLM, custom) + Anthropic Messages API | OpenAI models (GPT-5-Codex family) + custom providers | Any provider (bring your own keys) | Claude (Anthropic API, Bedrock, Vertex, third-party) |
+| Model providers | 35 built-in providers (OpenAI-compatible, Anthropic Messages, Gemini/Vertex, Bedrock, Azure, GitHub Copilot, GitLab Duo) + any custom endpoint | OpenAI models (GPT-5-Codex family) + custom providers | Any provider (bring your own keys) | Claude (Anthropic API, Bedrock, Vertex, third-party) |
 | Interfaces | Terminal TUI, `-p` print, JSON/RPC modes, desktop app, VS Code extension | Terminal CLI, IDE (VS Code, Cursor) | Terminal, desktop, IDE, web | Terminal, IDE, desktop, web |
 | Project config | `.oxide/` + `AGENTS.md` (also reads `.claude/`) | `AGENTS.md` + `~/.codex/config.toml` | `opencode.json` + `AGENTS.md` | `CLAUDE.md` + `.claude/` |
 | Subagents | `--agent`, `task`, command routing | Subagents | Agents | Subagents, background agents |
@@ -28,8 +28,8 @@ so check each project's documentation for the current details.
 
 A dash indicates no first-class built-in equivalent. Where Oxide differs most:
 it is a dependency-light Rust core with a terminal binary and an Electron
-desktop app whose window drives that same core, it speaks both the OpenAI-compatible and
-Anthropic APIs directly, its plugin
+desktop app whose window drives that same core, it speaks the OpenAI-compatible,
+Anthropic, Gemini, Bedrock and Azure APIs directly, its plugin
 packages reuse the same on-disk commands, agents, skills, and MCP servers the
 ecosystem already reads, and it is compatible with the Claude Code on-disk layout
 while using its own `.oxide/` format.

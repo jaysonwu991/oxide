@@ -50,6 +50,7 @@ export interface CommandRow {
 export type PanelAction =
   | "help"
   | "mcp"
+  | "provider"
   | "model"
   | "reasoning"
   | "agent"
@@ -178,6 +179,11 @@ export function panelCommand(name: string): PanelAction | null {
     case "mcp":
     case "mcps":
       return "mcp";
+    // Signing in to a provider is the CLI's own `login`, so the panel performs it
+    // with its own dialog rather than sending `/connect` on as a prompt.
+    case "connect":
+    case "login":
+      return "provider";
     case "model":
       return "model";
     case "reasoning":

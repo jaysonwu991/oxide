@@ -258,6 +258,12 @@ pub struct ToolCall {
     #[serde(rename = "type")]
     pub kind: String,
     pub function: FunctionCall,
+    /// The signature a thinking-capable model attaches to the part it returned,
+    /// which has to come back on that same part rather than on the turn as a
+    /// whole. Gemini signs a function call this way; every other provider leaves
+    /// it empty, and a stored session from one of those carries no field at all.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub signature: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -545,6 +551,7 @@ mod tests {
         ToolCall {
             id: id.into(),
             kind: "function".into(),
+            signature: None,
             function: FunctionCall {
                 name: name.into(),
                 arguments: "{}".into(),

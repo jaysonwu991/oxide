@@ -129,26 +129,207 @@ oxide update [--check] [--component <cli|desktop|extension>] [--current <VERSION
 | `OXIDE_CHECK_FOR_UPDATES` | Enable/disable the launch's look for a newer CLI release (`/updates`). |
 | `OXIDE_UPDATES_FILE` | Override the `updates.json` path the launch notice is remembered in. |
 | `OXIDE_USAGE_FILE` | Override the `portkey-usage.json` path for the Portkey spend bar. |
-| `OPENAI_API_KEY` / `OPENAI_BASE_URL` | OpenAI credentials. |
-| `DEEPSEEK_API_KEY` / `DEEPSEEK_BASE_URL` | DeepSeek credentials. |
-| `ANTHROPIC_API_KEY` / `ANTHROPIC_BASE_URL` | Anthropic credentials. |
-| `PORTKEY_API_KEY` / `PORTKEY_BASE_URL` | Portkey AI Gateway credentials. |
 | `PORTKEY_CONFIG` | Optional Portkey config ID sent as `x-portkey-config`. |
 | `PORTKEY_MODELS` | Optional comma-separated model catalog for keys that cannot call `/models`. |
-| `ZAI_API_KEY` / `ZAI_BASE_URL` | Z.AI (GLM) credentials. |
+
+Every provider's own variables are listed with it in
+[Providers](#providers) below. A provider also reads `<NAME>_BASE_URL` when the
+preset declares one, so `OPENAI_BASE_URL`, `ANTHROPIC_BASE_URL`,
+`PORTKEY_BASE_URL`, `GEMINI_BASE_URL`, `GROQ_BASE_URL` and the rest point that
+provider at another host. `OXIDE_API_KEY` and `OXIDE_BASE_URL` beat them all for
+the provider in use.
 
 ## Providers
 
-| Name | API | Default model | Base URL | Key env |
-| --- | --- | --- | --- | --- |
-| `openai`, `gpt`, `gpt-4`, `gpt-4o` | OpenAI-compatible | `gpt-4o-mini` | `https://api.openai.com/v1` | `OPENAI_API_KEY` |
-| `deepseek` | OpenAI-compatible | `deepseek-chat` | `https://api.deepseek.com/v1` | `DEEPSEEK_API_KEY` |
-| `anthropic` | Anthropic Messages | `claude-3-5-sonnet-latest` | `https://api.anthropic.com/v1` | `ANTHROPIC_API_KEY` |
-| `portkey`, `port-key` | OpenAI-compatible gateway | `claude-sonnet-5` | `https://api.portkey.ai/v1` | `PORTKEY_API_KEY` |
-| `zai`, `glm`, `z.ai`, `z-ai`, `zhipu`, `bigmodel` | OpenAI-compatible | `glm-5.3` | `https://api.z.ai/api/paas/v4` | `ZAI_API_KEY` |
+Every provider Oxide knows is declared once, in the single table the login
+picker, the aliases, the environment variables and the client dispatch all read.
+Naming one of these (by name or by alias) with `/login`, `--provider` or
+`"provider"` in `config.json` is enough: the endpoint, the default model, the key
+variable and the wire dialect come from the table.
 
-Any OpenAI-compatible endpoint can be used by setting `provider`, `base_url`,
-`model`, and a key.
+| Name | Aliases | API | Default model | Base URL | Key env |
+| --- | --- | --- | --- | --- | --- |
+| `openai` | `gpt`, `gpt-4`, `gpt-4o` | OpenAI-compatible | `gpt-4o-mini` | `https://api.openai.com/v1` | `OPENAI_API_KEY` |
+| `anthropic` | `claude` | Anthropic Messages | `claude-3-5-sonnet-latest` | `https://api.anthropic.com/v1` | `ANTHROPIC_API_KEY` |
+| `deepseek` |  | OpenAI-compatible | `deepseek-chat` | `https://api.deepseek.com/v1` | `DEEPSEEK_API_KEY` |
+| `google` | `gemini`, `google-ai`, `googleai` | Gemini `generateContent` | `gemini-2.0-flash` | `https://generativelanguage.googleapis.com/v1beta` | `GEMINI_API_KEY`, `GOOGLE_API_KEY`, `GOOGLE_GENERATIVE_AI_API_KEY` |
+| `portkey` | `port-key` | OpenAI-compatible gateway | `claude-sonnet-5` | `https://api.portkey.ai/v1` | `PORTKEY_API_KEY` |
+| `zai` | `glm`, `z.ai`, `z-ai`, `zhipu`, `bigmodel` | OpenAI-compatible | `glm-5.3` | `https://api.z.ai/api/paas/v4` | `ZAI_API_KEY`, `ZHIPU_API_KEY`, `GLM_API_KEY` |
+| `xai` | `grok`, `x-ai` | OpenAI-compatible | `grok-3` | `https://api.x.ai/v1` | `XAI_API_KEY` |
+| `mistral` |  | OpenAI-compatible | `mistral-large-latest` | `https://api.mistral.ai/v1` | `MISTRAL_API_KEY` |
+| `openrouter` |  | OpenAI-compatible | `anthropic/claude-3.5-sonnet` | `https://openrouter.ai/api/v1` | `OPENROUTER_API_KEY` |
+| `groq` |  | OpenAI-compatible | `llama-3.3-70b-versatile` | `https://api.groq.com/openai/v1` | `GROQ_API_KEY` |
+| `cerebras` |  | OpenAI-compatible | `llama-3.3-70b` | `https://api.cerebras.ai/v1` | `CEREBRAS_API_KEY` |
+| `together` | `togetherai` | OpenAI-compatible | `meta-llama/Llama-3.3-70B-Instruct-Turbo` | `https://api.together.xyz/v1` | `TOGETHER_API_KEY` |
+| `fireworks` | `fireworks-ai` | OpenAI-compatible | `accounts/fireworks/models/llama-v3p3-70b-instruct` | `https://api.fireworks.ai/inference/v1` | `FIREWORKS_API_KEY` |
+| `deepinfra` |  | OpenAI-compatible | `meta-llama/Llama-3.3-70B-Instruct` | `https://api.deepinfra.com/v1/openai` | `DEEPINFRA_API_KEY` |
+| `nebius` |  | OpenAI-compatible | `meta-llama/Llama-3.3-70B-Instruct` | `https://api.studio.nebius.com/v1` | `NEBIUS_API_KEY` |
+| `baseten` |  | OpenAI-compatible | `meta-llama/Llama-3.3-70B-Instruct` | `https://inference.baseten.co/v1` | `BASETEN_API_KEY` |
+| `siliconflow` |  | OpenAI-compatible | `Qwen/Qwen2.5-72B-Instruct` | `https://api.siliconflow.com/v1` | `SILICONFLOW_API_KEY` |
+| `novita` | `novita-ai` | OpenAI-compatible | `meta-llama/llama-3.3-70b-instruct` | `https://api.novita.ai/openai` | `NOVITA_API_KEY` |
+| `nvidia` | `nim` | OpenAI-compatible | `meta/llama-3.3-70b-instruct` | `https://integrate.api.nvidia.com/v1` | `NVIDIA_API_KEY` |
+| `upstage` |  | OpenAI-compatible | `solar-pro` | `https://api.upstage.ai/v1/solar` | `UPSTAGE_API_KEY` |
+| `moonshot` | `kimi`, `moonshot-ai` | OpenAI-compatible | `kimi-k2-0711-preview` | `https://api.moonshot.ai/v1` | `MOONSHOT_API_KEY` |
+| `alibaba` | `qwen`, `dashscope` | OpenAI-compatible | `qwen-max` | `https://dashscope-intl.aliyuncs.com/compatible-mode/v1` | `DASHSCOPE_API_KEY`, `QWEN_API_KEY` |
+| `minimax` |  | Anthropic Messages | `MiniMax-M2` | `https://api.minimax.io/anthropic/v1` | `MINIMAX_API_KEY` |
+| `perplexity` | `pplx` | OpenAI-compatible | `sonar` | `https://api.perplexity.ai` | `PERPLEXITY_API_KEY` |
+| `cohere` |  | OpenAI-compatible | `command-r-plus` | `https://api.cohere.ai/compatibility/v1` | `COHERE_API_KEY` |
+| `vercel` | `ai-gateway`, `gateway` | OpenAI-compatible | `anthropic/claude-3.5-sonnet` | `https://ai-gateway.vercel.sh/v1` | `AI_GATEWAY_API_KEY` |
+| `huggingface` | `hf` | OpenAI-compatible | `meta-llama/Llama-3.3-70B-Instruct` | `https://router.huggingface.co/v1` | `HF_TOKEN`, `HUGGINGFACE_API_KEY` |
+| `ollama` |  | OpenAI-compatible | `llama3.3` | `http://localhost:11434/v1` | `OLLAMA_API_KEY` |
+| `lmstudio` | `lm-studio` | OpenAI-compatible | `local-model` | `http://localhost:1234/v1` | `LMSTUDIO_API_KEY` |
+| `llamacpp` | `llama-cpp`, `llama.cpp` | OpenAI-compatible | `local-model` | `http://localhost:8080/v1` | `LLAMACPP_API_KEY` |
+| `vertex` | `google-vertex`, `vertex-ai` | Gemini `generateContent` | `gemini-2.0-flash` | derived from the project and location | `GOOGLE_VERTEX_CREDENTIALS`, `GOOGLE_APPLICATION_CREDENTIALS` |
+| `bedrock` | `amazon-bedrock`, `aws-bedrock`, `aws` | Bedrock Converse | `anthropic.claude-3-5-sonnet-20241022-v2:0` | `https://bedrock.<region>.amazonaws.com` | `AWS_BEARER_TOKEN_BEDROCK` (or AWS SigV4 credentials) |
+| `azure` | `azure-openai`, `azure-ai` | Azure OpenAI | `&mdash;` | your resource's endpoint | `AZURE_API_KEY`, `AZURE_OPENAI_API_KEY` |
+| `github-copilot` | `copilot`, `github` | OpenAI-compatible | `gpt-4o` | `https://api.githubcopilot.com` | `GITHUB_TOKEN`, `GH_TOKEN` |
+| `gitlab` | `gitlab-duo`, `duo` | OpenAI-compatible (Anthropic for a Claude model) | `gpt-4o` | the AI gateway's proxy | `GITLAB_TOKEN`, `GL_TOKEN` |
+
+A provider that is not in the table still works the same way: set `provider`,
+`base_url`, `model` and a key, and it is treated as an OpenAI-compatible
+endpoint under the name you gave it (`oxider` reads `OXIDER_API_KEY` for it, and
+remembers its model and endpoint separately from every other provider). Naming a
+known provider's host as the `base_url` of a custom provider also gets that
+host's dialect, so a gateway in front of a first-party API is still spoken to the
+right way.
+
+### Wire dialects
+
+Four dialects are implemented, and a provider speaks one of them:
+
+| Dialect | Providers | Notes |
+| --- | --- | --- |
+| OpenAI-compatible | most of the table, plus any custom `base_url` | Chat completions, streamed over SSE. The session id is sent as `prompt_cache_key` (direct OpenAI) or as `x-session-id`/`x-client-request-id` (gateways) for cache affinity. |
+| Anthropic Messages | `anthropic`, `minimax`, and `gitlab` for its `claude-*` models | Native `cache_control` breakpoints on the system prompt, the last tool and the newest message; extended thinking blocks are replayed on later turns. |
+| Gemini `generateContent` | `google`, `vertex` | Streamed with `streamGenerateContent`; the key is a header on the Gemini API and an OAuth token on Vertex. |
+| Bedrock Converse | `bedrock` | Streamed `ConverseStream`, signed with SigV4. |
+
+Reasoning is translated per dialect: `reasoning_effort` on OpenAI-compatible
+endpoints, adaptive or extended thinking on Anthropic, `thinkingConfig` on
+Gemini, `thinking.type` on Z.AI, `additionalModelRequestFields` on Bedrock.
+
+### Google and Vertex AI
+
+The Gemini API takes a key: `/login google` (aliases `gemini`, `google-ai`,
+`googleai`) stores it, or set `GEMINI_API_KEY`, `GOOGLE_API_KEY` or
+`GOOGLE_GENERATIVE_AI_API_KEY`.
+
+Vertex AI runs the same models under a Google Cloud project and location, and
+authenticates with a service-account credential instead of a key. Set
+`GOOGLE_VERTEX_CREDENTIALS` to the service-account JSON itself (or
+`GOOGLE_APPLICATION_CREDENTIALS` to its path, which is also the file
+`gcloud auth application-default login` writes — `~/.config/gcloud` on Unix and
+`%APPDATA%\gcloud` on Windows, or the directory `CLOUDSDK_CONFIG` names), plus
+`GOOGLE_VERTEX_LOCATION`
+(default `us-central1`). The token is minted from the key and refreshed as it
+expires, and the project — `GOOGLE_VERTEX_PROJECT` or `GOOGLE_CLOUD_PROJECT` — is
+taken from the key itself when neither is set. A service account with no file
+behind it (an ambient credential on a Google Cloud workload) is not read; a file
+is what is looked for.
+
+### Amazon Bedrock
+
+`/login bedrock` stores either kind of credential the API accepts:
+
+- **A Bedrock API key** (`AWS_BEARER_TOKEN_BEDROCK`, or the key typed into
+  `/login bedrock`) is sent as a bearer token — it is the credential this
+  configuration holds, so it wins over signing when it is set.
+- **AWS credentials** (`AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY`, plus
+  `AWS_SESSION_TOKEN` for a temporary one) sign each request with SigV4, read
+  from the environment or from `~/.aws/credentials` (profile from
+  `AWS_PROFILE`, default `default`).
+
+`AWS_REGION` (or `AWS_DEFAULT_REGION`) names the region and defaults to
+`us-east-1`. The endpoint is `bedrock.<region>.amazonaws.com`, and the model id
+is Bedrock's own — `anthropic.claude-3-5-sonnet-20241022-v2:0` by default, with
+`amazon.`, `meta.` or `mistral.` ids for the open models. `/models` lists the
+foundation models the account can actually invoke.
+
+### Azure OpenAI
+
+Azure serves OpenAI models from your own resource, so it needs three things:
+
+- The endpoint: `AZURE_OPENAI_ENDPOINT`, `AZURE_OPENAI_BASE_URL`, or a
+  `base_url` in `config.json`. `AZURE_OPENAI_RESOURCE` (or
+  `AZURE_RESOURCE_NAME`) builds `https://<resource>.openai.azure.com` instead.
+- The deployment: the model name is used as the deployment, or set
+  `AZURE_OPENAI_DEPLOYMENT` to name one explicitly.
+- The key: `AZURE_API_KEY` or `AZURE_OPENAI_API_KEY`.
+
+Requests go to
+`<endpoint>/openai/deployments/<deployment>/chat/completions?api-version=<version>`,
+with the key in the `api-key` header. The version defaults to `2024-10-21` and
+can be overridden with `AZURE_OPENAI_API_VERSION` or `AZURE_API_VERSION`.
+
+### GitHub Copilot
+
+Copilot models are served from a GitHub subscription rather than an API key, and
+the credential is a GitHub token that is exchanged for a short-lived Copilot
+session token before each turn. The session names the endpoint your account is
+served from, so a Copilot Business account's host is used rather than assumed.
+
+In the TUI, `/login github-copilot` (aliases `copilot`, `github`) runs GitHub's
+device flow: it shows a URL and a one-time code (also copied to the system
+clipboard), waits for the approval in the browser, and stores the token it mints
+— then the optional settings step, as for any other provider. Set `GITHUB_TOKEN`
+or `GH_TOKEN` instead to use a token you already have (`gh auth token` prints
+one); the desktop app and the VS Code panel paste one the same way. `copilot`,
+`github` and the "GitHub Copilot" row in the picker are the same provider.
+
+`/models` lists the models the subscription exposes. A Copilot token is
+short-lived: it is minted on demand and cached in memory until just before it
+expires, so a long session does not fail in the middle of a turn.
+
+### GitLab Duo
+
+Duo is served from a GitLab subscription rather than an endpoint a token opens
+directly. The token you store — a personal access token with the `ai_features`
+scope — is presented to your GitLab instance, which mints a short-lived (30
+minute) token for GitLab's AI gateway, and the turn is sent to the gateway's
+proxy with that token and the headers the instance handed back beside it. The
+minted token is cached in memory until just before it lapses, so a long session
+is not re-authorized every turn; the token that lives on disk is the one you
+pasted.
+
+The gateway serves two proxies and the model name says which one a turn takes:
+a `claude-*` model goes through Anthropic's wire (`/ai/v1/proxy/anthropic/v1`),
+everything else through OpenAI's (`/ai/v1/proxy/openai/v1`). So the model is the
+provider's own model name — `claude-sonnet-4-6`, `gpt-4o` — not the
+`duo-chat-*` alias the Duo chat UI lists; `/models` lists the catalog of the
+proxy the model you are set to speaks (Anthropic's for a Claude model, OpenAI's
+otherwise), with the same minted token a turn carries. Because Anthropic is a
+separate wire dialect, the gateway's Anthropic proxy is not reachable by
+`base_url` alone: an Anthropic request authenticates with `x-api-key`, while the
+proxy wants the token the instance minted, and the instance token is not that.
+The provider name `gitlab` is what selects the proxy and the minted token.
+
+```bash
+export GITLAB_TOKEN=glpat-…   # a personal access token with ai_features
+oxide --provider gitlab --model claude-sonnet-4-6 -p "explain this repo"
+```
+
+`GITLAB_INSTANCE_URL` (or `GITLAB_URL`) points at a self-managed instance
+instead of `gitlab.com`, and `GITLAB_AI_GATEWAY_URL` points at a self-managed
+gateway; the settings step's base URL does the same thing for the gateway. In the
+TUI, `/login gitlab` asks for the token and stores it, as for any pasted
+credential — there is no browser flow for a personal access token.
+
+Duo needs a subscription that includes it — GitLab Ultimate with the Duo
+Enterprise add-on, and the AI features enabled for the account — on an instance
+that serves the third-party agent endpoint. A licence without it, a credential
+without the `ai_features` scope and an instance without the endpoint are each
+reported in their own words rather than as a failed request.
+
+### Local servers
+
+`ollama` (`http://localhost:11434/v1`), `lmstudio` (`http://localhost:1234/v1`)
+and `llamacpp` (`http://localhost:8080/v1`) need no credential: a model server on
+this machine is reached without a key, and the key variables above only exist for
+a setup that requires one. `/login ollama` is therefore the whole login: the
+provider is applied with an empty key and the dialog goes on to its settings
+rather than asking for a credential nothing stores. A provider is treated as
+local by the table, not by the URL, so a custom provider pointed at a remote host
+still needs a key.
 
 ### Credentials
 
@@ -171,7 +352,10 @@ providers can be stored at once, and the active provider is written to
 logged-in provider, and picking a model from another one switches to it. Each
 provider remembers the model and custom endpoint it was last used with in the
 `provider_models` and `provider_base_urls` maps of `config.json`, so a gateway
-configured for one provider does not leak into the others. See
+configured for one provider does not leak into the others. A Portkey Config ID
+chosen in that settings step is written to `portkey_config`, and kept there
+whatever provider is active next, since it belongs to Portkey rather than to the
+selection. See
 [Providers and credentials](cli.md#providers-and-credentials).
 
 ### Portkey
