@@ -639,6 +639,11 @@ fn handle_key(
                 return;
             }
             app.remember_input(&raw);
+            // The shared catalog holds one spelling per built-in, so this
+            // normalizes the case of a name a front-end typed rather than
+            // translating a second spelling of it: a word the catalog does not
+            // declare falls through to the prompt path below.
+            let raw = crate::commands::canonical_slash(&raw);
             if raw == "/undo" || raw == "/redo" {
                 app.clear_input();
                 refresh_suggestions(app, config);
@@ -769,17 +774,10 @@ fn handle_key(
                 });
                 return;
             }
-            if raw == "/connect"
-                || raw.starts_with("/connect ")
-                || raw == "/login"
-                || raw.starts_with("/login ")
-            {
+            if raw == "/connect" || raw.starts_with("/connect ") {
                 app.clear_input();
                 refresh_suggestions(app, config);
-                let rest = raw
-                    .strip_prefix("/connect")
-                    .or_else(|| raw.strip_prefix("/login"))
-                    .unwrap_or_default();
+                let rest = raw.strip_prefix("/connect").unwrap_or_default();
                 let provider = rest.trim().to_string();
                 let mut state = ConnectState::new();
                 if !provider.is_empty() {
@@ -819,7 +817,7 @@ fn handle_key(
                 };
                 if provider.is_empty() {
                     app.items.push(ChatItem::Info(
-                        "no provider connected — run /login to add one".to_string(),
+                        "no provider connected — run /connect to add one".to_string(),
                     ));
                     return;
                 }
@@ -846,7 +844,7 @@ fn handle_key(
                 }
                 return;
             }
-            if raw == "/mcps" {
+            if raw == "/mcp" {
                 app.clear_input();
                 refresh_suggestions(app, config);
                 app.status = "checking MCP servers...".to_string();
@@ -858,7 +856,7 @@ fn handle_key(
                 });
                 return;
             }
-            if raw == "/marketplaces" || raw == "/marketplace" {
+            if raw == "/marketplaces" {
                 app.clear_input();
                 refresh_suggestions(app, config);
                 match crate::plugin_registry::marketplace_overview() {
@@ -1029,22 +1027,44 @@ fn handle_key(
                 handle_notify_command(app, config, &raw);
                 return;
             }
-            if raw == "/approvals" || raw.starts_with("/approvals ") {
+            if raw == "/permissions" || raw.starts_with("/permissions ") {
                 app.clear_input();
                 refresh_suggestions(app, config);
-                handle_approvals_command(app, config, approvals, cwd, &raw, &Config::config_path());
+                handle_permissions_command(
+                    app,
+                    config,
+                    approvals,
+                    cwd,
+                    &raw,
+                    &Config::config_path(),
+                );
                 return;
             }
-            if raw == "/usage" {
+            if raw == "/usage" || raw.starts_with("/usage ") {
+                app.clear_input();
+                refresh_suggestions(app, config);
+                let rest = raw.strip_prefix("/usage").unwrap_or_default().trim();
+                app.items.push(ChatItem::Info(usage_summary(app)));
+                if !rest.is_empty() {
+                    // `/usage` reports rather than configures, so the spelling that
+                    // used to configure the bar is named instead of guessed at.
+                    app.items.push(ChatItem::Info(
+                        "usage: /usage takes no arguments — the Portkey spend bar is /spend"
+                            .to_string(),
+                    ));
+                }
+                return;
+            }
+            if raw == "/spend" {
                 app.clear_input();
                 refresh_suggestions(app, config);
                 app.usage_modal = Some(UsageState::new(app.usage_settings.clone()));
                 return;
             }
-            if raw.starts_with("/usage ") {
+            if raw.starts_with("/spend ") {
                 app.clear_input();
                 refresh_suggestions(app, config);
-                handle_usage_command(app, config, &raw, usage_tx);
+                handle_spend_command(app, config, &raw, usage_tx);
                 return;
             }
             if raw == "/updates" || raw.starts_with("/updates ") {
@@ -1216,13 +1236,6 @@ fn handle_key(
             if raw == "/session" {
                 app.clear_input();
                 refresh_suggestions(app, config);
-                app.items
-                    .push(ChatItem::Info(session_info(session, &app.history)));
-                return;
-            }
-            if raw == "/resume" {
-                app.clear_input();
-                refresh_suggestions(app, config);
                 if app.busy {
                     return;
                 }
@@ -1239,6 +1252,13 @@ fn handle_key(
                     }
                     Err(err) => app.items.push(ChatItem::Error(format!("session: {err:#}"))),
                 }
+                return;
+            }
+            if raw == "/status" {
+                app.clear_input();
+                refresh_suggestions(app, config);
+                app.items
+                    .push(ChatItem::Info(session_info(session, &app.history)));
                 return;
             }
             if raw == "/name" || raw.starts_with("/name ") {
@@ -1287,13 +1307,13 @@ fn handle_key(
                     .push(ChatItem::Info(format!("model set to {requested}")));
                 return;
             }
-            if raw == "/thinking" || raw.starts_with("/thinking ") {
+            if raw == "/reasoning" || raw.starts_with("/reasoning ") {
                 app.clear_input();
                 refresh_suggestions(app, config);
-                let requested = raw.strip_prefix("/thinking").unwrap_or_default().trim();
+                let requested = raw.strip_prefix("/reasoning").unwrap_or_default().trim();
                 if requested.is_empty() {
                     app.items.push(ChatItem::Info(format!(
-                        "thinking: {}; usage: /thinking <off|low|medium|high|auto>",
+                        "thinking: {}; usage: /reasoning <off|low|medium|high|auto>",
                         config.reasoning.label()
                     )));
                     return;
@@ -1732,49 +1752,94 @@ fn available_providers(config: &Config) -> usize {
     names.len().max(1)
 }
 
+/// The `/help` rows for the commands only the terminal has: the left cell as it
+/// is shown and the description beside it. Nothing here is shared with the other
+/// front-ends, so nothing here can drift out of the catalog.
+const TERMINAL_HELP_ROWS: &[(&str, &str)] = &[
+    ("/hotkeys", "Show the keyboard shortcuts"),
+    ("/exit", "Quit Oxide"),
+    (
+        "/<skill>",
+        "Load a skill by name (also written /skill:<name>)",
+    ),
+    ("/name <name>", "Name the current session"),
+    ("/status", "Show this session's file, id, name, and stats"),
+    ("/tree [n]", "List branch points, or branch at message n"),
+    ("/fork [n]", "Branch a new session from message n"),
+    ("/clone", "Duplicate the current session"),
+    ("/export [file]", "Export the session to HTML"),
+    ("/reload", "Reload config, commands, and skills"),
+    ("/init", "Create or update AGENTS.md for this project"),
+    (
+        "/models [filter]",
+        "List models from every logged-in provider",
+    ),
+    (
+        "/plugins [list|install|uninstall|enable|disable|marketplace]",
+        "Manage plugins and marketplaces",
+    ),
+    (
+        "/marketplaces [list|add|update|remove]",
+        "Browse, add, and remove plugin marketplaces",
+    ),
+    (
+        "/notify [on|off]",
+        "Show or set completion notifications (sound too)",
+    ),
+    (
+        "/spend [on|off]",
+        "Configure the Portkey spend bar (dialog)",
+    ),
+    (
+        "/updates [on|off]",
+        "Check for a newer release at launch; show the last one seen",
+    ),
+    ("/undo, /redo", "Revert or reapply the agent's file changes"),
+    (
+        "/compact [focus]",
+        "Summarize older context, optionally with a focus",
+    ),
+    (
+        "/copy [all]",
+        "Copy the last assistant message, or the whole transcript",
+    ),
+];
+
 fn help_text(config: &Config) -> String {
-    let mut lines = vec![
-        "built-in commands:".to_string(),
-        "  /help                 show this help".to_string(),
-        "  /hotkeys              show the keyboard shortcuts".to_string(),
-        "  /exit                 quit Oxide".to_string(),
-        "  /<skill>              load a skill by name (also /skill:<name>)".to_string(),
-        "  /new                  start a new session".to_string(),
-        "  /session              show session file, id, name, and stats".to_string(),
-        "  /resume               browse and resume a past session".to_string(),
-        "  /name <name>          name the current session".to_string(),
-        "  /model [id]           show or switch the active model".to_string(),
-        "  /thinking [level]     show or set the thinking level".to_string(),
-        "  /export [file]        export the session to HTML".to_string(),
-        "  /tree [n]             list branch points, or branch at message n".to_string(),
-        "  /fork [n]             branch a new session from message n".to_string(),
-        "  /clone                duplicate the current session".to_string(),
-        "  /reload               reload config, commands, and skills".to_string(),
-        "  /trust [show|off]     save or show the project trust decision".to_string(),
-        "  /theme [name]         show or switch the color theme".to_string(),
-        "  /init                 create or update AGENTS.md for this project".to_string(),
-        "  /connect [provider]   connect a provider and save its API key".to_string(),
-        "  /login [provider]     alias of /connect; switches when already stored".to_string(),
-        "  /logout [provider]    remove stored credentials (switches providers)".to_string(),
-        "  /models [filter]      list models from every logged-in provider".to_string(),
-        "  /mcps                 list MCP servers and connection status".to_string(),
-        "  /plugins              manage plugins and marketplaces".to_string(),
-        "  /marketplaces         browse, add, and remove plugin marketplaces".to_string(),
-        "  /notify [on|off]      show or set completion notifications (sound too)".to_string(),
-        "  /approvals [on|off]   ask before a gated tool runs; list or clear the rules"
-            .to_string(),
-        "  /usage                 configure the Portkey spend bar (dialog)".to_string(),
-        "  /updates [on|off]     check for a newer release at launch; show the last one seen"
-            .to_string(),
-        "  /undo, /redo          revert or reapply the agent's file changes".to_string(),
-        "  /compact [focus]      summarize older context, optionally with a focus".to_string(),
-        "  /copy                 copy the last assistant message".to_string(),
-        "  /copy all             copy the whole transcript".to_string(),
-        format!(
-            "keys: Enter send/queue · Shift+Enter newline · Alt+Enter steer while busy · {} edit queued · Shift+Tab/Ctrl+R reasoning · Ctrl+O tool details · Ctrl+T thinking · Ctrl+V image · Ctrl+A/E message start/end · ↑/↓ history · PgUp/PgDn/wheel scroll · Ctrl+U/D half page · drag to select and copy · Ctrl+C copy selection/quit",
-            dequeue_key_label()
-        ),
-    ];
+    // The catalog's rows first — the names, argument hints and descriptions the
+    // desktop app's palette and the panel's menu show too — then the commands
+    // only the terminal has. One spelling per command, the catalog's.
+    let mut rows: Vec<(String, String)> =
+        crate::commands::builtin_entries_for(crate::commands::FrontEnd::Terminal)
+            .into_iter()
+            .map(|entry| {
+                let left = match &entry.arguments {
+                    Some(arguments) => format!("/{} <{}>", entry.name, arguments),
+                    None => format!("/{}", entry.name),
+                };
+                (left, entry.description)
+            })
+            .collect();
+    rows.extend(
+        TERMINAL_HELP_ROWS
+            .iter()
+            .map(|(left, description)| (left.to_string(), description.to_string())),
+    );
+    let width = rows
+        .iter()
+        .map(|(left, _)| left.chars().count())
+        .max()
+        .unwrap_or(0)
+        .max(22);
+    let mut lines = vec!["built-in commands:".to_string()];
+    lines.extend(
+        rows.iter()
+            .map(|(left, description)| format!("  {left:<width$}  {description}")),
+    );
+    lines.push(format!(
+        "keys: Enter send/queue · Shift+Enter newline · Alt+Enter steer while busy · {} edit queued · Shift+Tab/Ctrl+R reasoning · Ctrl+O tool details · Ctrl+T thinking · Ctrl+V image · Ctrl+A/E message start/end · ↑/↓ history · PgUp/PgDn/wheel scroll · Ctrl+U/D half page · drag to select and copy · Ctrl+C copy selection/quit",
+        dequeue_key_label()
+    ));
     if !config.ecosystem.commands.is_empty() {
         let names: Vec<String> = config
             .ecosystem
@@ -1994,7 +2059,6 @@ fn sync_usage_bar(
     }
 }
 
-/// `/usage`: configure and toggle the Portkey spend bar.
 /// Handles `/notify [on|off]`, `/notify sound [on|off]`, and `/notify test`,
 /// persisting the two completion-notification flags to `settings.json`.
 fn handle_notify_command(app: &mut App, config: &mut Config, raw: &str) {
@@ -2076,9 +2140,9 @@ fn on_off(value: bool) -> &'static str {
     }
 }
 
-/// `/approvals`: whether a permission-gated tool is asked about, plus the rules
-/// this project has already answered with "always allow".
-fn handle_approvals_command(
+/// `/permissions`: whether a permission-gated tool is asked about, plus the
+/// rules this project has already answered with "always allow".
+fn handle_permissions_command(
     app: &mut App,
     config: &mut Config,
     approvals: &ApprovalBroker,
@@ -2086,8 +2150,8 @@ fn handle_approvals_command(
     raw: &str,
     path: &Path,
 ) {
-    const HINT: &str = "usage: /approvals [on|off] · /approvals list · /approvals clear";
-    let args = raw.strip_prefix("/approvals").unwrap_or_default().trim();
+    const HINT: &str = "usage: /permissions [on|off] · /permissions list · /permissions clear";
+    let args = raw.strip_prefix("/permissions").unwrap_or_default().trim();
     let verb = args.split_whitespace().next().unwrap_or_default();
 
     match verb {
@@ -2119,12 +2183,12 @@ fn handle_approvals_command(
         other => {
             let Some(asking) = parse_toggle(other) else {
                 app.items.push(ChatItem::Error(format!(
-                    "unknown /approvals option `{other}`\n{HINT}"
+                    "unknown /permissions option `{other}`\n{HINT}"
                 )));
                 return;
             };
             // Asking is the inverse of the stored auto-approval, and it is a
-            // `config.json` key, so `/approvals` writes the same field the
+            // `config.json` key, so `/permissions` writes the same field the
             // `--ask-approvals` flag overrides for a single run.
             config.auto_approve = !asking;
             match Config::set_auto_approve_at(path, config.auto_approve) {
@@ -2149,14 +2213,67 @@ fn parse_toggle(value: &str) -> Option<bool> {
     }
 }
 
-fn handle_usage_command(
+/// `/usage`: this chat's own tokens, cost and context — the same numbers the
+/// footer carries, written out. The Portkey account's spend is `/spend`.
+fn usage_summary(app: &App) -> String {
+    use crate::tui::ui::{context_percent, format_tokens};
+    let mut parts: Vec<String> = Vec::new();
+    if app.tokens_in > 0 {
+        parts.push(format!("↑{} in", format_tokens(app.tokens_in)));
+    }
+    if app.tokens_out > 0 {
+        parts.push(format!("↓{} out", format_tokens(app.tokens_out)));
+    }
+    if app.tokens_cache_read > 0 {
+        parts.push(format!("R{}", format_tokens(app.tokens_cache_read)));
+    }
+    if app.tokens_cache_write > 0 {
+        parts.push(format!("W{}", format_tokens(app.tokens_cache_write)));
+    }
+    if app.tokens_cache_read + app.tokens_cache_write > 0 {
+        if let Some(hit) = app.cache_hit_rate {
+            parts.push(format!("CH{hit:.1}%"));
+        }
+    }
+    if app.cost > 0.0 {
+        parts.push(format!("${:.3}", app.cost));
+    }
+    let usage = if parts.is_empty() {
+        "no tokens reported yet".to_string()
+    } else {
+        parts.join(" ")
+    };
+    let mut lines = vec![format!("this chat: {usage}")];
+    if app.context_limit > 0 {
+        let auto = if app.auto_compact { "auto" } else { "manual" };
+        lines.push(if app.context_used > 0 {
+            format!(
+                "context: {}% of {} ({auto} compaction)",
+                context_percent(app.context_used, app.context_limit),
+                format_tokens(app.context_limit)
+            )
+        } else {
+            format!(
+                "context: ? of {} ({auto} compaction)",
+                format_tokens(app.context_limit)
+            )
+        });
+    }
+    lines.push("the Portkey account's spend is /spend".to_string());
+    lines.join("\n")
+}
+
+/// `/spend`: the Portkey account's own spend — the settings dialog and the typed
+/// forms that configure the footer's spend bar. This chat's own tokens are
+/// `/usage`.
+fn handle_spend_command(
     app: &mut App,
     config: &Config,
     raw: &str,
     usage_tx: &UnboundedSender<Result<crate::portkey_usage::Snapshot, String>>,
 ) {
-    const HINT: &str = "usage: /usage on|off · /usage user <firstname.lastname> · /usage budget <amount|off> · /usage currency <usd|cny> · /usage key <pk-...> · /usage metadata <key>";
-    let args = raw.strip_prefix("/usage").unwrap_or_default().trim();
+    const HINT: &str = "usage: /spend on|off · /spend user <firstname.lastname> · /spend budget <amount|off> · /spend currency <usd|cny> · /spend key <pk-...> · /spend metadata <key>";
+    let args = raw.strip_prefix("/spend").unwrap_or_default().trim();
     let (verb, rest) = match args.split_once(char::is_whitespace) {
         Some((verb, rest)) => (verb, rest.trim()),
         None => (args, ""),
@@ -2177,19 +2294,20 @@ fn handle_usage_command(
         "on" => {
             if !config.is_portkey() {
                 app.items.push(ChatItem::Error(
-                    "the Portkey spend bar needs a Portkey login — run /login portkey".to_string(),
+                    "the Portkey spend bar needs a Portkey login — run /connect portkey"
+                        .to_string(),
                 ));
                 return;
             }
             if settings.user.trim().is_empty() {
                 app.items.push(ChatItem::Error(
-                    "set the Portkey username first: /usage user <firstname.lastname>".to_string(),
+                    "set the Portkey username first: /spend user <firstname.lastname>".to_string(),
                 ));
                 return;
             }
             if settings.effective_key(config).is_none() {
                 app.items.push(ChatItem::Error(
-                    "no Portkey API key — run /login portkey or set one with /usage key <pk-...>"
+                    "no Portkey API key — run /connect portkey or set one with /spend key <pk-...>"
                         .to_string(),
                 ));
                 return;
@@ -2208,7 +2326,7 @@ fn handle_usage_command(
         "user" => {
             if rest.is_empty() || rest.split_whitespace().count() > 1 {
                 app.items.push(ChatItem::Error(
-                    "usage: /usage user <firstname.lastname> (one word)".to_string(),
+                    "usage: /spend user <firstname.lastname> (one word)".to_string(),
                 ));
                 return;
             }
@@ -2216,7 +2334,8 @@ fn handle_usage_command(
             let enabled = settings.enabled && settings.available(config);
             if settings.enabled && !enabled {
                 app.items.push(ChatItem::Error(
-                    "the Portkey spend bar needs a Portkey login — run /login portkey".to_string(),
+                    "the Portkey spend bar needs a Portkey login — run /connect portkey"
+                        .to_string(),
                 ));
             }
             (true, Some(format!("portkey user set to {rest}")), enabled)
@@ -2224,7 +2343,7 @@ fn handle_usage_command(
         "key" => {
             if rest.is_empty() {
                 app.items.push(ChatItem::Error(
-                    "usage: /usage key <pk-...> (or `off` to use the provider key)".to_string(),
+                    "usage: /spend key <pk-...> (or `off` to use the provider key)".to_string(),
                 ));
                 return;
             }
@@ -2264,7 +2383,7 @@ fn handle_usage_command(
         "currency" => {
             let Some(currency) = crate::portkey_usage::Currency::parse(rest) else {
                 app.items.push(ChatItem::Error(
-                    "usage: /usage currency <usd|cny> (also `$` or `¥`)".to_string(),
+                    "usage: /spend currency <usd|cny> (also `$` or `¥`)".to_string(),
                 ));
                 return;
             };
@@ -2282,7 +2401,7 @@ fn handle_usage_command(
         "metadata" => {
             if rest.is_empty() {
                 app.items.push(ChatItem::Error(
-                    "usage: /usage metadata <key> (e.g. `_user` or `email`)".to_string(),
+                    "usage: /spend metadata <key> (e.g. `_user` or `email`)".to_string(),
                 ));
                 return;
             }
@@ -2295,7 +2414,7 @@ fn handle_usage_command(
         }
         other => {
             app.items.push(ChatItem::Error(format!(
-                "unknown /usage option `{other}`\n{HINT}"
+                "unknown /spend option `{other}`\n{HINT}"
             )));
             return;
         }
@@ -2335,7 +2454,7 @@ fn apply_usage_settings(
     }
 }
 
-/// Routes keys while the `/usage` settings dialog is open. Text fields are
+/// Routes keys while the `/spend` settings dialog is open. Text fields are
 /// edited in place; `Esc` commits and closes the dialog.
 fn handle_usage_key(
     key: KeyEvent,
@@ -2388,7 +2507,8 @@ fn handle_usage_key(
             }
             if settings.enabled && !settings.available(config) {
                 app.items.push(ChatItem::Error(
-                    "the Portkey spend bar needs a Portkey login — run /login portkey".to_string(),
+                    "the Portkey spend bar needs a Portkey login — run /connect portkey"
+                        .to_string(),
                 ));
             }
             apply_usage_settings(app, config, settings, true, usage_tx);
@@ -2408,7 +2528,7 @@ fn handle_usage_key(
                 UsageField::Enabled => {
                     state.settings.enabled = !state.settings.enabled;
                     state.error = if state.settings.enabled && !state.settings.available(config) {
-                        Some("needs a Portkey login — run /login portkey".to_string())
+                        Some("needs a Portkey login — run /connect portkey".to_string())
                     } else {
                         None
                     };
@@ -2841,10 +2961,7 @@ fn resolve_provider_choice(value: &str) -> String {
 /// Handles `/attach [list|remove <id|n>|clear]`, editing the pending composer
 /// attachments. Returns whether the input was an attach command.
 fn handle_attach_command(app: &mut App, raw: &str) -> bool {
-    let Some(rest) = raw
-        .strip_prefix("/attachments")
-        .or_else(|| raw.strip_prefix("/attach"))
-    else {
+    let Some(rest) = raw.strip_prefix("/attach") else {
         return false;
     };
     match rest.trim() {
@@ -2882,136 +2999,52 @@ fn handle_attach_command(app: &mut App, raw: &str) -> bool {
     true
 }
 
+/// What the `/` completion offers: the shared catalog's commands the terminal
+/// performs, then the ones only the terminal has. A shared command is named and
+/// described in the catalog, so `/mcp` completes as `/mcp` everywhere and a
+/// spelling is written down once.
 fn builtin_commands() -> Vec<CommandHint> {
+    let mut hints: Vec<CommandHint> =
+        crate::commands::builtin_entries_for(crate::commands::FrontEnd::Terminal)
+            .into_iter()
+            .map(|entry| CommandHint {
+                name: entry.name,
+                description: entry.description,
+            })
+            .collect();
+    hints.extend(terminal_only_commands());
+    hints
+}
+
+/// The commands only the terminal performs — session branching, attachment
+/// editing, the spend bar, the transcript and its tools. They are described here
+/// because no other front-end offers them.
+fn terminal_only_commands() -> Vec<CommandHint> {
+    let hint = |name: &str, description: &str| CommandHint {
+        name: name.to_string(),
+        description: description.to_string(),
+    };
     vec![
-        CommandHint {
-            name: "help".to_string(),
-            description: "show help".to_string(),
-        },
-        CommandHint {
-            name: "hotkeys".to_string(),
-            description: "show keyboard shortcuts".to_string(),
-        },
-        CommandHint {
-            name: "exit".to_string(),
-            description: "quit Oxide".to_string(),
-        },
-        CommandHint {
-            name: "new".to_string(),
-            description: "start a new session".to_string(),
-        },
-        CommandHint {
-            name: "session".to_string(),
-            description: "show session info".to_string(),
-        },
-        CommandHint {
-            name: "resume".to_string(),
-            description: "browse and resume a past session".to_string(),
-        },
-        CommandHint {
-            name: "tree".to_string(),
-            description: "list user messages for branching".to_string(),
-        },
-        CommandHint {
-            name: "fork".to_string(),
-            description: "branch a new session from a message".to_string(),
-        },
-        CommandHint {
-            name: "clone".to_string(),
-            description: "duplicate the session".to_string(),
-        },
-        CommandHint {
-            name: "name".to_string(),
-            description: "name the session".to_string(),
-        },
-        CommandHint {
-            name: "model".to_string(),
-            description: "switch the model".to_string(),
-        },
-        CommandHint {
-            name: "thinking".to_string(),
-            description: "set the thinking level".to_string(),
-        },
-        CommandHint {
-            name: "export".to_string(),
-            description: "export the session to HTML".to_string(),
-        },
-        CommandHint {
-            name: "theme".to_string(),
-            description: "switch the color theme".to_string(),
-        },
-        CommandHint {
-            name: "trust".to_string(),
-            description: "save project trust decision".to_string(),
-        },
-        CommandHint {
-            name: "reload".to_string(),
-            description: "reload config and skills".to_string(),
-        },
-        CommandHint {
-            name: "init".to_string(),
-            description: "create or update AGENTS.md".to_string(),
-        },
-        CommandHint {
-            name: "login".to_string(),
-            description: "connect a provider (alias of /connect)".to_string(),
-        },
-        CommandHint {
-            name: "logout".to_string(),
-            description: "remove stored credentials".to_string(),
-        },
-        CommandHint {
-            name: "models".to_string(),
-            description: "choose a model".to_string(),
-        },
-        CommandHint {
-            name: "mcps".to_string(),
-            description: "check MCP server status".to_string(),
-        },
-        CommandHint {
-            name: "plugins".to_string(),
-            description: "manage plugins and marketplaces".to_string(),
-        },
-        CommandHint {
-            name: "marketplaces".to_string(),
-            description: "browse and manage plugin marketplaces".to_string(),
-        },
-        CommandHint {
-            name: "notify".to_string(),
-            description: "toggle completion notifications and sound".to_string(),
-        },
-        CommandHint {
-            name: "approvals".to_string(),
-            description: "ask before a gated tool runs".to_string(),
-        },
-        CommandHint {
-            name: "usage".to_string(),
-            description: "Portkey spend bar".to_string(),
-        },
-        CommandHint {
-            name: "updates".to_string(),
-            description: "check for a newer release at launch".to_string(),
-        },
-        CommandHint {
-            name: "connect".to_string(),
-            description: "connect a provider".to_string(),
-        },
-        CommandHint {
-            name: "compact".to_string(),
-            description: "summarize the conversation".to_string(),
-        },
-        CommandHint {
-            name: "undo".to_string(),
-            description: "revert file changes".to_string(),
-        },
-        CommandHint {
-            name: "redo".to_string(),
-            description: "reapply file changes".to_string(),
-        },
-        CommandHint {
-            name: "attach".to_string(),
-            description: "list, remove, or clear pending attachments".to_string(),
-        },
+        hint("hotkeys", "Show keyboard shortcuts"),
+        hint("exit", "Quit Oxide"),
+        hint("copy", "Copy the transcript to the clipboard"),
+        hint("tree", "List user messages for branching"),
+        hint("fork", "Branch a new session from a message"),
+        hint("clone", "Duplicate the session"),
+        hint("name", "Name the session"),
+        hint("status", "Show this session's file and id"),
+        hint("export", "Export the session to HTML"),
+        hint("reload", "Reload config and skills"),
+        hint("init", "Create or update AGENTS.md"),
+        hint("models", "Choose a model from any connected provider"),
+        hint("plugins", "Manage plugins and marketplaces"),
+        hint("marketplaces", "Browse and manage plugin marketplaces"),
+        hint("notify", "Toggle completion notifications and sound"),
+        hint("spend", "Configure the Portkey spend bar"),
+        hint("updates", "Check for a newer release at launch"),
+        hint("compact", "Summarize the conversation"),
+        hint("undo", "Revert file changes"),
+        hint("redo", "Reapply file changes"),
     ]
 }
 
@@ -3104,7 +3137,8 @@ const PLUGINS_ARGS: &[ArgSpec] = &[
     },
 ];
 
-/// Argument completions for the built-in commands with a fixed grammar.
+/// Argument completions for the built-in commands with a fixed grammar, keyed by
+/// the catalog's own name for a shared command so every spelling reaches it.
 const COMMAND_ARGS: &[(&str, &[ArgSpec])] = &[
     (
         "attach",
@@ -3160,7 +3194,7 @@ const COMMAND_ARGS: &[(&str, &[ArgSpec])] = &[
         ],
     ),
     (
-        "approvals",
+        "permissions",
         &[
             ArgSpec {
                 value: "on",
@@ -3185,7 +3219,7 @@ const COMMAND_ARGS: &[(&str, &[ArgSpec])] = &[
         ],
     ),
     (
-        "usage",
+        "spend",
         &[
             ArgSpec {
                 value: "status",
@@ -3244,7 +3278,7 @@ const COMMAND_ARGS: &[(&str, &[ArgSpec])] = &[
     ("plugin", PLUGINS_ARGS),
     ("updates", UPDATES_ARGS),
     (
-        "thinking",
+        "reasoning",
         &[
             ArgSpec {
                 value: "auto",
@@ -3296,6 +3330,7 @@ const COMMAND_ARGS: &[(&str, &[ArgSpec])] = &[
 ];
 
 fn command_args(name: &str) -> &'static [ArgSpec] {
+    let name = crate::commands::builtin(name).map_or(name, |builtin| builtin.name);
     COMMAND_ARGS
         .iter()
         .find(|(command, _)| *command == name)
@@ -3316,7 +3351,7 @@ fn argument_suggestions(command: &str, rest: &str) -> Vec<CommandHint> {
     };
     let prefix = prefix.to_ascii_lowercase();
 
-    if tokens.is_empty() && matches!(command, "connect" | "login" | "logout") {
+    if tokens.is_empty() && matches!(command, "connect" | "logout") {
         return crate::auth::known_providers()
             .iter()
             .filter(|provider| provider.name.starts_with(&prefix))
@@ -3442,8 +3477,14 @@ fn refresh_suggestions(app: &mut App, config: &Config) {
     }
     app.suggestions = hints
         .into_iter()
-        .filter(|hint| hint.name.to_ascii_lowercase().starts_with(&query))
+        .filter(|hint| row_matches(&hint.name, &query))
         .collect();
+}
+
+/// Whether a row answers to what was typed: a name that starts with the query,
+/// so a row is offered by the spelling it will be written as.
+fn row_matches(name: &str, query: &str) -> bool {
+    name.to_ascii_lowercase().starts_with(query)
 }
 
 /// Applies the selected command or file suggestion to the input.
@@ -4567,7 +4608,7 @@ fn logout_active_provider(app: &mut App, config: &mut Config, provider: &str) ->
         config.api_key.clear();
         config.provider.clear();
         apply_model_state(app, config);
-        return format!("logged out of {provider} — run /login to reconnect");
+        return format!("logged out of {provider} — run /connect to reconnect");
     };
     match switch_provider(app, config, &next) {
         Ok(name) => format!(
@@ -5272,25 +5313,32 @@ mod tests {
             "gated tools run without asking by default"
         );
 
-        handle_approvals_command(&mut app, &mut config, &broker, &dir, "/approvals on", &path);
+        handle_permissions_command(
+            &mut app,
+            &mut config,
+            &broker,
+            &dir,
+            "/permissions on",
+            &path,
+        );
         assert!(!config.auto_approve);
         let saved: serde_json::Value =
             serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
         assert_eq!(saved["auto_approve"], serde_json::json!(false));
 
-        handle_approvals_command(&mut app, &mut config, &broker, &dir, "/approvals", &path);
+        handle_permissions_command(&mut app, &mut config, &broker, &dir, "/permissions", &path);
         assert!(matches!(
             app.items.last(),
             Some(ChatItem::Info(text))
                 if text.contains("tool approvals: on") && text.contains("always allowed here: bash")
         ));
 
-        handle_approvals_command(
+        handle_permissions_command(
             &mut app,
             &mut config,
             &broker,
             &dir,
-            "/approvals off",
+            "/permissions off",
             &path,
         );
         assert!(config.auto_approve);
@@ -5298,12 +5346,12 @@ mod tests {
             serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
         assert_eq!(saved["auto_approve"], serde_json::json!(true));
 
-        handle_approvals_command(
+        handle_permissions_command(
             &mut app,
             &mut config,
             &broker,
             &dir,
-            "/approvals clear",
+            "/permissions clear",
             &path,
         );
         assert!(broker.list(&dir).is_empty());
@@ -5312,17 +5360,17 @@ mod tests {
             Some(ChatItem::Info(text)) if text.contains("cleared this project's approvals")
         ));
 
-        handle_approvals_command(
+        handle_permissions_command(
             &mut app,
             &mut config,
             &broker,
             &dir,
-            "/approvals maybe",
+            "/permissions maybe",
             &path,
         );
         assert!(matches!(
             app.items.last(),
-            Some(ChatItem::Error(text)) if text.contains("unknown /approvals option `maybe`")
+            Some(ChatItem::Error(text)) if text.contains("unknown /permissions option `maybe`")
         ));
         std::fs::remove_dir_all(&dir).ok();
     }
@@ -5580,7 +5628,7 @@ mod tests {
                     && text.contains("notes.csv")
         ));
 
-        assert!(handle_attach_command(&mut app, "/attachments remove 1"));
+        assert!(handle_attach_command(&mut app, "/attach remove 1"));
         assert_eq!(app.attachments.len(), 2);
 
         assert!(handle_attach_command(&mut app, "/attach remove zzzz"));
@@ -6169,10 +6217,34 @@ mod tests {
         let help = help_text(&config);
         assert!(help.contains("built-in commands"));
         assert!(help.contains("/connect"));
-        assert!(help.contains("/mcps"));
+        assert!(help.contains("/mcp"));
         assert!(help.contains("/notify"));
         assert!(help.contains("/plugins"));
         assert!(help.contains("/review"));
+        // The shared rows spell the command the way the catalog does and say
+        // what it takes there, so the help cannot name one the app cannot run.
+        for builtin in crate::commands::builtin_entries_for(crate::commands::FrontEnd::Terminal) {
+            assert!(
+                help.contains(&format!("/{}", builtin.name)),
+                "{}",
+                builtin.name
+            );
+            assert!(help.contains(&builtin.description), "{}", builtin.name);
+            match &builtin.arguments {
+                Some(arguments) => assert!(
+                    help.contains(&format!("/{} <{}>", builtin.name, arguments)),
+                    "{}",
+                    builtin.name
+                ),
+                None => assert!(help.contains(&format!("/{}  ", builtin.name))),
+            }
+        }
+        // One spelling per command: no alias line, and no retired spelling
+        // printed as though the terminal still took it.
+        assert!(!help.contains("aliases:"));
+        for retired in ["/mcps", "/approvals", "/access", "/thinking", "/sessions"] {
+            assert!(!help.contains(retired), "{retired}");
+        }
     }
 
     #[test]
@@ -6182,13 +6254,48 @@ mod tests {
 
         app.set_input("/".to_string());
         refresh_suggestions(&mut app, &config);
-        assert!(app.suggestions.iter().any(|hint| hint.name == "models"));
-        assert!(app.suggestions.iter().any(|hint| hint.name == "mcps"));
-        assert!(app.suggestions.iter().any(|hint| hint.name == "plugins"));
+        let names: Vec<&str> = app.suggestions.iter().map(|h| h.name.as_str()).collect();
+        // The shared catalog's rows and the terminal's own alike.
+        assert!(names.contains(&"mcp"));
+        assert!(names.contains(&"model"));
+        assert!(names.contains(&"permissions"));
+        assert!(names.contains(&"spend"));
+        assert!(names.contains(&"models"));
+        assert!(names.contains(&"plugins"));
+        // The terminal-only list and the catalog's overlap in neither direction.
+        assert_eq!(
+            names
+                .iter()
+                .filter(|name| crate::commands::builtin(name).is_some())
+                .count(),
+            crate::commands::builtin_entries_for(crate::commands::FrontEnd::Terminal).len()
+        );
 
         app.set_input("/models".to_string());
         refresh_suggestions(&mut app, &config);
         assert!(app.suggestions.iter().any(|hint| hint.name == "models"));
+
+        app.set_input("/mc".to_string());
+        refresh_suggestions(&mut app, &config);
+        // A row is offered by the spelling it will be written as, so `/mc`
+        // narrows to `/mcp` alone.
+        let narrowed: Vec<&str> = app
+            .suggestions
+            .iter()
+            .map(|hint| hint.name.as_str())
+            .collect();
+        assert_eq!(narrowed, ["mcp"]);
+        // A retired spelling is not a row and not a narrowing: the completion
+        // offers the one name the catalog holds.
+        for retired in ["/mcps", "/think", "/approvals"] {
+            app.set_input(retired.to_string());
+            refresh_suggestions(&mut app, &config);
+            assert!(app.suggestions.is_empty(), "{retired}");
+        }
+
+        app.set_input("/re".to_string());
+        refresh_suggestions(&mut app, &config);
+        assert!(app.suggestions.iter().any(|hint| hint.name == "reasoning"));
 
         app.set_input("hello".to_string());
         refresh_suggestions(&mut app, &config);
@@ -6287,18 +6394,18 @@ mod tests {
         let names: Vec<&str> = app.suggestions.iter().map(|h| h.name.as_str()).collect();
         assert_eq!(names, vec!["on", "off"]);
 
-        app.set_input("/usage currency ".to_string());
+        app.set_input("/spend currency ".to_string());
         refresh_suggestions(&mut app, &config);
         let names: Vec<&str> = app.suggestions.iter().map(|h| h.name.as_str()).collect();
         assert_eq!(names, vec!["usd", "cny"]);
 
         // Provider names for the login commands.
-        app.set_input("/login d".to_string());
+        app.set_input("/connect d".to_string());
         refresh_suggestions(&mut app, &config);
         let names: Vec<&str> = app.suggestions.iter().map(|h| h.name.as_str()).collect();
         assert_eq!(names, vec!["deepseek", "deepinfra"]);
 
-        app.set_input("/login de".to_string());
+        app.set_input("/connect de".to_string());
         refresh_suggestions(&mut app, &config);
         let names: Vec<&str> = app.suggestions.iter().map(|h| h.name.as_str()).collect();
         assert_eq!(names, vec!["deepseek", "deepinfra"]);
@@ -6670,6 +6777,41 @@ mod tests {
         assert_eq!(state.selected_session().unwrap().id, "aaa");
     }
 
+    #[test]
+    fn usage_reports_this_chat() {
+        let mut app = test_app();
+        assert!(usage_summary(&app).contains("no tokens reported yet"));
+
+        app.tokens_in = 12_500;
+        app.tokens_out = 800;
+        app.tokens_cache_read = 9_000;
+        app.tokens_cache_write = 1_500;
+        app.cache_hit_rate = Some(75.0);
+        app.cost = 0.4321;
+        app.context_used = 12_500;
+        app.context_limit = 200_000;
+        let report = usage_summary(&app);
+        assert!(
+            report.contains("this chat: ↑13k in ↓800 out R9.0k W1.5k CH75.0% $0.432"),
+            "{report}"
+        );
+        assert!(
+            report.contains("context: 6% of 200k (auto compaction)"),
+            "{report}"
+        );
+        assert!(report.contains("/spend"), "{report}");
+
+        // A cost nothing reported and no window are left out rather than shown
+        // as zero, the way the footer omits them.
+        app.cache_hit_rate = None;
+        app.cost = 0.0;
+        app.context_limit = 0;
+        app.auto_compact = false;
+        let report = usage_summary(&app);
+        assert!(!report.contains('$'), "{report}");
+        assert!(!report.contains("context:"), "{report}");
+    }
+
     #[tokio::test]
     async fn usage_command_configures_and_toggles_the_bar() {
         let dir = std::env::temp_dir().join(format!("oxide_usage_cmd_{}", std::process::id()));
@@ -6684,47 +6826,47 @@ mod tests {
         let mut config = Config::default();
         let (tx, _rx) = unbounded_channel();
 
-        handle_usage_command(&mut app, &config, "/usage", &tx);
+        handle_spend_command(&mut app, &config, "/spend", &tx);
         assert!(matches!(
             app.items.last(),
             Some(ChatItem::Info(text)) if text.contains("bar: off")
         ));
 
-        handle_usage_command(&mut app, &config, "/usage on", &tx);
+        handle_spend_command(&mut app, &config, "/spend on", &tx);
         assert!(matches!(
             app.items.last(),
             Some(ChatItem::Error(text)) if text.contains("needs a Portkey login")
         ));
         assert!(app.usage.is_none());
 
-        handle_usage_command(&mut app, &config, "/usage user firstname.lastname", &tx);
-        handle_usage_command(&mut app, &config, "/usage budget 600", &tx);
+        handle_spend_command(&mut app, &config, "/spend user firstname.lastname", &tx);
+        handle_spend_command(&mut app, &config, "/spend budget 600", &tx);
         assert!(matches!(
             app.items.last(),
             Some(ChatItem::Info(text)) if text.contains("budget set to $600.00")
         ));
-        handle_usage_command(&mut app, &config, "/usage currency ¥", &tx);
+        handle_spend_command(&mut app, &config, "/spend currency ¥", &tx);
         assert!(matches!(
             app.items.last(),
             Some(ChatItem::Info(text)) if text.contains("currency set to cny (¥600.00)")
         ));
-        handle_usage_command(&mut app, &config, "/usage budget ¥601", &tx);
+        handle_spend_command(&mut app, &config, "/spend budget ¥601", &tx);
         assert!(matches!(
             app.items.last(),
             Some(ChatItem::Info(text)) if text.contains("budget set to ¥601.00")
         ));
-        handle_usage_command(&mut app, &config, "/usage budget 600", &tx);
-        handle_usage_command(&mut app, &config, "/usage currency eur", &tx);
+        handle_spend_command(&mut app, &config, "/spend budget 600", &tx);
+        handle_spend_command(&mut app, &config, "/spend currency eur", &tx);
         assert!(matches!(
             app.items.last(),
             Some(ChatItem::Error(text)) if text.contains("currency <usd|cny>")
         ));
 
-        handle_usage_command(&mut app, &config, "/usage on", &tx);
+        handle_spend_command(&mut app, &config, "/spend on", &tx);
         assert!(app.usage.is_none(), "a Portkey login is still missing");
 
         config.apply_provider("portkey", "pk-test");
-        handle_usage_command(&mut app, &config, "/usage on", &tx);
+        handle_spend_command(&mut app, &config, "/spend on", &tx);
         assert!(app.usage.is_some());
         assert!(matches!(
             app.items.last(),
@@ -6740,7 +6882,7 @@ mod tests {
         assert_eq!(saved.user, "firstname.lastname");
         assert_eq!(saved.budget, Some(600.0));
         assert_eq!(saved.currency, crate::portkey_usage::Currency::Cny);
-        handle_usage_command(&mut app, &config, "/usage budget $600", &tx);
+        handle_spend_command(&mut app, &config, "/spend budget $600", &tx);
         assert_eq!(
             crate::portkey_usage::UsageSettings::load_from(&path)
                 .unwrap()
@@ -6749,13 +6891,13 @@ mod tests {
             "a `$` amount switches the currency back"
         );
 
-        handle_usage_command(&mut app, &config, "/usage key pk-usage-key", &tx);
+        handle_spend_command(&mut app, &config, "/spend key pk-usage-key", &tx);
         assert!(matches!(
             app.items.last(),
             Some(ChatItem::Info(text)) if text.contains("pk-u...-key")
         ));
 
-        handle_usage_command(&mut app, &config, "/usage off", &tx);
+        handle_spend_command(&mut app, &config, "/spend off", &tx);
         assert!(app.usage.is_none());
         sync_usage_bar(&mut app, &config, &tx);
         assert!(app.usage.is_none(), "off stays off");
@@ -6765,10 +6907,10 @@ mod tests {
                 .enabled
         );
 
-        handle_usage_command(&mut app, &config, "/usage bogus", &tx);
+        handle_spend_command(&mut app, &config, "/spend bogus", &tx);
         assert!(matches!(
             app.items.last(),
-            Some(ChatItem::Error(text)) if text.contains("unknown /usage option")
+            Some(ChatItem::Error(text)) if text.contains("unknown /spend option")
         ));
 
         std::env::remove_var("OXIDE_USAGE_FILE");
