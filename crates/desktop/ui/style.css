@@ -1038,11 +1038,12 @@ body.resizing { cursor: col-resize; user-select: none; }
 .question-body::-webkit-scrollbar { width: 10px; }
 .question-body::-webkit-scrollbar-track { background: transparent; }
 /* A thumb narrower than its lane, the way the system's own is: the transparent
-   border is what insets it, so the whole lane stays the scrollbar's. Its colour
-   is the window's own thumb again, so a dialog's bar and the sidebar's are the
-   same bar. */
+   border is what insets it, so the whole lane stays the scrollbar's. It is
+   painted like the window's own bar — that is, while the box is scrolled and
+   not before — which the rule further down the sheet does for every scrollbar
+   in the window, this one included. */
 .question-body::-webkit-scrollbar-thumb {
-  background: color-mix(in srgb, var(--text) 22%, transparent);
+  background: transparent;
   border: 3px solid transparent;
   border-radius: 7px;
   background-clip: padding-box;
@@ -1219,20 +1220,32 @@ body.resizing { cursor: col-resize; user-select: none; }
    whatever it scrolls keeps that lane clear instead of ending under it: a
    list that scrolls sets its own right padding wider than this width, and a
    floating (overlay) scrollbar, which takes no lane of its own, then lands in
-   that padding rather than on the row. */
+   that padding rather than on the row. The lane is kept while the bar is away —
+   the thumb unpainted rather than the scrollbar absent — because a bar that
+   took its room when it appeared would move the list out from under the pointer
+   that was scrolling it. */
 ::-webkit-scrollbar { width: 10px; height: 10px; }
-/* A rounded, inset thumb in the theme's own text colour rather than a slab of
-   border: a bar painted square across the whole height of a list reads as a seam
-   down the sidebar instead of as a bar, and one painted in `--border` sits at
-   the same weight as the rules it runs beside. There is no `:hover` variant to
-   go with it — the pseudo-element resolves `:hover` against the window rather
-   than the pointer, so such a rule outweighs this one and paints the bar with
-   its brightened colour for good. */
+/* The bar is drawn while its box is scrolled and taken away again once it stops,
+   the way the system's own overlay bar behaves: `app.js` marks the element that
+   scrolled for as long as it keeps scrolling, and the thumb is painted only
+   under that mark. A bar standing there while nothing moves is a seam down the
+   side of the list it belongs to. Painted it is rounded and inset rather than a
+   slab, in the theme's own text colour rather than in `--border`, which sits at
+   the same weight as the rules it runs beside — and it is painted with
+   `background-color`, since the `background` shorthand would reset the
+   `background-clip` that insets it and bring the bar back the full width of its
+   lane. There is no `:hover` variant to go with it — a scrollbar's
+   pseudo-element resolves `:hover` against the window rather than the pointer,
+   so such a rule paints every bar in the window at once and never lets one go. */
 ::-webkit-scrollbar-thumb {
-  background: color-mix(in srgb, var(--text) 22%, transparent);
+  background-color: transparent;
   border: 3px solid transparent;
   border-radius: 7px;
   background-clip: padding-box;
+  transition: background-color 180ms ease;
+}
+.scrolling::-webkit-scrollbar-thumb {
+  background-color: color-mix(in srgb, var(--text) 22%, transparent);
 }
 ::-webkit-scrollbar-track { background: transparent; }
 

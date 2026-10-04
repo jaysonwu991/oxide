@@ -4690,6 +4690,37 @@ function initSidebarResize() {
   });
 }
 
+/// How long a scrollbar stays drawn after the last scroll of its box, in
+/// milliseconds: long enough to be read while the wheel is still spinning down,
+/// short enough that the bar is away by the time the reader has moved on.
+const SCROLLBAR_LINGER = 900;
+/// The window's scrollbars are overlay bars: one is drawn while its box is being
+/// scrolled and taken away again when that stops, so a bar is never a permanent
+/// seam down the side of what it scrolls. A scrollbar belongs to the element it
+/// scrolls, so the element that scrolled is the one marked — and since a scroll
+/// does not bubble, the listener is registered for the capture phase, which is
+/// one listener for every list in the window rather than one per list.
+function initOverlayScrollbars() {
+  const timers = new WeakMap();
+  document.addEventListener(
+    "scroll",
+    (event) => {
+      const scrolled = event.target === document ? document.documentElement : event.target;
+      if (!scrolled?.classList) return;
+      scrolled.classList.add("scrolling");
+      clearTimeout(timers.get(scrolled));
+      timers.set(
+        scrolled,
+        setTimeout(() => {
+          timers.delete(scrolled);
+          scrolled.classList.remove("scrolling");
+        }, SCROLLBAR_LINGER),
+      );
+    },
+    { capture: true, passive: true },
+  );
+}
+
 const EDITABLE_INPUT_TYPES = new Set([
   "text",
   "search",
@@ -4791,6 +4822,7 @@ function finishEditorControlPress(event) {
 
 function init() {
   initSidebarResize();
+  initOverlayScrollbars();
   const createBtnTree = el("create-project-btn-tree");
   if (createBtnTree) createBtnTree.onclick = openCreateProject;
   const newChatBtn = el("new-chat");

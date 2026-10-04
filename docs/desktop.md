@@ -174,6 +174,20 @@ also holds the paths the two front-ends share beside the extension's own
 sources, so chrome drawn one way in the panel and another in this window fails
 the check.
 
+Lists do not wear a bar that is always there. A scrollable box keeps its
+scrollbar's lane clear of its rows, and the bar is drawn only while the box is
+being scrolled: `ui/app.js` marks the element the `scroll` came from and the
+sheet paints the thumb under that mark, taking it away again a moment after the
+scrolling stops, so nothing stands in the lane while a list sits still. The
+thumb is inset inside its lane (a transparent border with
+`background-clip: padding-box`) and painted in the theme's own text colour
+rather than in the border colour, which sits at the same weight as the rules it
+runs beside; it is painted with `background-color`, since the `background`
+shorthand would reset that clip and bring the bar back the full width of its
+lane. `check-app.mjs` holds that pairing — a resting thumb painted, a mark that
+paints nothing, a mark never taken away or landing on the body, and a painted
+bar that has lost its inset are each a failed check.
+
 The regions, top to bottom:
 
 - **Sidebar** — **+ New Chat** at the top, opening a thread in the project the
