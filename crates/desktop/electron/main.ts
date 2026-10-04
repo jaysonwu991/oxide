@@ -13,9 +13,11 @@
 /// neither request nor answer — the page and the harness agree on the packet,
 /// and a rule about a run belongs on the side that can enforce it — except for
 /// the calls that are the window's because the operating system is: the folder
-/// chooser (answered here, since a dialog is the window's own), opening a URL
-/// and the relaunch that runs an installed release (both asked for by the
-/// harness, which decides whether the app is in a state to do it).
+/// chooser and the browser a link opens in, which are both answered here, since
+/// a native panel and the platform's own handler are things no child process
+/// can be reached through, and the relaunch that runs an installed release, which
+/// the harness asks for because it is the half that knows whether a turn is
+/// running.
 ///
 /// Nothing here is loaded from the network: the page is this crate's `ui/`
 /// directory, read from disk (or from the app's own archive once packaged), and
@@ -158,7 +160,7 @@ function startHarness(window: BrowserWindow): void {
   queuedToHarness = [];
 
   // Every line the harness writes is a packet: the page's own is forwarded
-  // unchanged, and the two the window is the one to carry out are read here.
+  // unchanged, and the one the window is the one to carry out is read here.
   readLines(child.stdout, (line) => {
     if (!window.isDestroyed()) window.webContents.send(TO_PAGE, line);
     relay(line);
@@ -184,28 +186,19 @@ function sendToHarness(line: string): void {
   else queuedToHarness.push(line);
 }
 
-/// Carries out the two packets that are the window's own because the operating
-/// system is: the harness decides whether the app is in a state to open a link
-/// or to be restarted, and the window is the only half that can do either.
+/// Carries out the packet that is the window's own because the operating system
+/// is: the harness decides whether the app is in a state to be restarted — a
+/// turn's tools write files and its stream is read there — and the window is the
+/// only half that can start it again.
 function relay(line: string): void {
   const packet = parsePacket(line);
   if (packet?.type !== "message") return;
-  if (packet.id === "open-url") {
-    const url = packet.payload?.url;
-    // The harness has already refused anything that is not a page; this is the
-    // window's own last look before the URL goes to the platform's handler,
-    // where a `file:` or a custom scheme would open something that is not a
-    // page at all.
-    if (typeof url === "string" && isOpenableUrl(url)) {
-      void shell.openExternal(url).catch((error: unknown) => {
-        console.error(`[oxide] could not open ${url}: ${describe(error)}`);
-      });
-    }
-    return;
-  }
   if (packet.id === "restart") restart();
 }
 
+/// Whether a URL is a page, which is the only thing this window will hand to the
+/// platform's own handler: anything else — a `file:` path, a `javascript:`
+/// payload — would open something that is not a page at all.
 function isOpenableUrl(url: string): boolean {
   const scheme = url.trimStart().toLowerCase();
   return scheme.startsWith("http://") || scheme.startsWith("https://");
@@ -259,8 +252,7 @@ interface PagePacket {
   type?: string;
   /// A request's own number, or — for an announcement — the event's name.
   id?: number | string;
-  params?: { command?: string; args?: unknown };
-  payload?: { url?: string };
+  params?: { command?: string; args?: { url?: unknown } };
 }
 
 function parsePacket(raw: unknown): PagePacket | undefined {
@@ -285,6 +277,18 @@ ipcMain.on(TO_HOST, (event, message: unknown) => {
     void answerPickFolder(BrowserWindow.fromWebContents(event.sender), request.id);
     return;
   }
+  // Opening a link is the window's own for the same reason: the platform's
+  // handler is this process's to start, and whether it started is something only
+  // this process hears. A launch the page was told had succeeded, whose browser
+  // then would not run, is a click that quietly did nothing.
+  if (request.params?.command === "open_url" && typeof request.id === "number") {
+    void answerOpenUrl(
+      BrowserWindow.fromWebContents(event.sender),
+      request.id,
+      request.params.args,
+    );
+    return;
+  }
   if (typeof message === "string") sendToHarness(message);
 });
 
@@ -299,11 +303,48 @@ async function answerPickFolder(window: BrowserWindow | null, id: number): Promi
   const answer = window
     ? await dialog.showOpenDialog(window, options)
     : await dialog.showOpenDialog(options);
-  const chosen = answer.canceled ? null : (answer.filePaths[0] ?? null);
-  window?.webContents.send(
-    TO_PAGE,
-    JSON.stringify({ type: "response", id, success: true, payload: chosen }),
-  );
+  answerRequest(window, id, answer.canceled ? null : (answer.filePaths[0] ?? null));
+}
+
+/// Opens a link in the machine's browser and answers the page's request with what
+/// happened. The transcript renders URLs as anchors, but the window cannot
+/// navigate to a remote page, so a click is routed here instead of being left to
+/// the page's own navigation — and the scheme is checked before the URL goes
+/// anywhere, so a `file:` path or a `javascript:` payload never reaches the
+/// platform's handler.
+async function answerOpenUrl(
+  window: BrowserWindow | null,
+  id: number,
+  args: { url?: unknown } | undefined,
+): Promise<void> {
+  const url = typeof args?.url === "string" ? args.url.trim() : "";
+  if (!isOpenableUrl(url)) {
+    answerError(window, id, "Only http(s) links can be opened");
+    return;
+  }
+  try {
+    await shell.openExternal(url);
+    answerRequest(window, id, null);
+  } catch (error: unknown) {
+    answerError(window, id, describe(error));
+  }
+}
+
+/// Answers one of the page's requests in the shape the harness answers in, so a
+/// window-owned call settles the page's own promise either way.
+function answerRequest(window: BrowserWindow | null, id: number, payload: unknown): void {
+  respond(window, { type: "response", id, success: true, payload });
+}
+
+/// The same answer for a call that could not be carried out, which is what the
+/// page's own `catch` reads.
+function answerError(window: BrowserWindow | null, id: number, error: string): void {
+  respond(window, { type: "response", id, success: false, error });
+}
+
+function respond(window: BrowserWindow | null, packet: Record<string, unknown>): void {
+  if (!window || window.isDestroyed()) return;
+  window.webContents.send(TO_PAGE, JSON.stringify(packet));
 }
 
 // ---------- the menu bar ----------

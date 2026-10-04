@@ -86,9 +86,9 @@ them as a resource and started as a child process: `Resources/harness/oxide-desk
 one JSON packet per line: the page's own requests out on the engine's stdin, its
 answers and announcements back on the engine's stdout. The window is a relay — it
 forwards a request and a packet unread, because a rule about a run belongs on the
-half that can enforce it — and only the two packets the operating system makes
-its own (`open-url` and `restart`, below) are read there at all, so the page and
-the engine are the only two parties to the protocol.
+half that can enforce it — and only the one packet the operating system makes
+its own (`restart`, below) is read there at all, so the page and the engine are
+the only two parties to the protocol.
 
 The page is this crate's own `ui/` directory, loaded with `loadFile` (in a
 checkout and inside the packaged app's archive alike): one plain script with no
@@ -106,9 +106,11 @@ asks for it by command name — so the window needs no capability grant and no
 allow-list beyond that bridge. Only the calls that are the operating system's
 belong to the window rather than to the engine: the folder chooser
 (`pick_folder`, answered by Electron's own panel, which no child process can
-draw), and the two the engine asks for and the window performs — a URL to open
-and the relaunch that runs an installed release — since the engine decides whether
-the app is in a state to do either and the window is the half that can. The menu
+draw) and a link to open (`open_url`, answered by the window once the platform's
+handler has started or refused to — a browser that would not run is reported to
+the page rather than written to a console nobody is reading), and the relaunch
+that runs an installed release, which the engine asks for and the window performs
+since the engine is the half that knows whether a turn is running. The menu
 bar is the window's own for the same reason (see below).
 The page's own `Content-Security-Policy` in `ui/index.html` is the window's
 (`default-src 'none'`, `script-src 'self'`, `style-src 'self' 'unsafe-inline'`,
@@ -122,9 +124,11 @@ and `question-closed`, which `app.js` listens for, plus `update-progress`,
 `update-ready` and `update-failed` from a launch's own install (see
 [The update a launch performs itself](#the-update-a-launch-performs-itself)), and
 the window raises `check-updates` from its menu item so the page performs the
-check and paints one dialog (see [Check for updates](#check-for-updates)). Two
-more are the window's own to carry out rather than the page's — `open-url` and
-`restart` — and they are read off the packet channel there. A run can only be
+check and paints one dialog (see [Check for updates](#check-for-updates)). One
+more is the window's own to carry out rather than the page's — `restart` — and it
+is read off the packet channel there; a link to open is not, since opening one is
+the window's own command, answered on the bridge before the engine sees it. A run
+can only be
 watched, answered or stopped from the window that started it — the events carry
 no state a fresh window could be rebuilt from — so closing it ends the app and
 the turn with it (`window-all-closed` quits the app, quitting kills the engine's
@@ -878,12 +882,14 @@ Assistant replies render as Markdown: headings, ordered/unordered lists
 (including `- [ ]` tasks), blockquotes, rules, pipe tables, fenced code with
 lightweight syntax highlighting (Rust, JS/TS, Python, Go, Bash, JSON), and
 inline emphasis/code/links. Bare `http(s)://` URLs are auto-linked too, and
-clicking any link opens it in the system browser through `open_url`: the engine
-checks the scheme (http(s) alone) and asks the window, which is the half that
-has the machine's handler, and the window checks it once more before
-`shell.openExternal` — so a `file:` path or a custom scheme reaches nothing at
-all rather than the platform's handler. Neither side reads the URL as a command
-line, and no branch of it is one platform's. Navigation is denied inside the
+clicking any link opens it in the system browser through `open_url`: the window
+is the half that has the machine's handler, so it answers the page's request
+directly — checking the scheme first (http(s) alone), so a `file:` path or a
+custom scheme reaches nothing at all rather than the platform's handler, calling
+`shell.openExternal`, and answering with whether the browser started, which is
+what a click the machine could not carry out is reported by instead of a console
+line nobody reads. Neither side reads the URL as a command line, and no branch of
+it is one platform's. Navigation is denied inside the
 window for the same reason: it shows the page it was built with and nowhere
 else, so a link in a reply is a browser tab rather than a remote document
 painted in the app (`setWindowOpenHandler` denies every popup, and

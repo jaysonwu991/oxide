@@ -171,14 +171,22 @@ jobs:
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
         run: |
           set -euo pipefail
-          if [ -n "${APPLE_API_KEY_P8:-}" ]; then
-            printf '%s' "${APPLE_API_KEY_P8}" | openssl base64 -d -A > "${RUNNER_TEMP}/AuthKey.p8"
-            {
-              printf 'APPLE_API_KEY=%s\n' "${RUNNER_TEMP}/AuthKey.p8"
-              printf 'APPLE_API_KEY_ID=%s\n' "${APPLE_API_KEY:-(unset)}"
-              printf 'APPLE_API_ISSUER=%s\n' "${APPLE_API_ISSUER:-(unset)}"
-              printf 'APPLE_TEAM_ID=%s\n' "${APPLE_TEAM_ID:-(unset)}"
-            } >> "${GITHUB_ENV}"
+          # All of the key or none of it: the file, the key's own id and the
+          # issuer belong together, and a file written without either of the
+          # other two would be a notarization that fails this build rather than
+          # one that leaves it unsigned.
+          if [ -z "${APPLE_API_KEY_P8:-}" ] || [ -z "${APPLE_API_KEY:-}" ] || [ -z "${APPLE_API_ISSUER:-}" ]; then
+            echo "no App Store Connect key is configured; this build is left unnotarized"
+            exit 0
+          fi
+          printf '%s' "${APPLE_API_KEY_P8}" | openssl base64 -d -A > "${RUNNER_TEMP}/AuthKey.p8"
+          {
+            printf 'APPLE_API_KEY=%s\n' "${RUNNER_TEMP}/AuthKey.p8"
+            printf 'APPLE_API_KEY_ID=%s\n' "${APPLE_API_KEY}"
+            printf 'APPLE_API_ISSUER=%s\n' "${APPLE_API_ISSUER}"
+          } >> "${GITHUB_ENV}"
+          if [ -n "${APPLE_TEAM_ID:-}" ]; then
+            printf 'APPLE_TEAM_ID=%s\n' "${APPLE_TEAM_ID}" >> "${GITHUB_ENV}"
           fi
 
       # One command produces this platform's installer: it compiles the harness

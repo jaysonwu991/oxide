@@ -218,18 +218,22 @@ fn install_root_of(executable: &Path, data_root: Option<&Path>) -> Option<PathBu
     None
 }
 
-/// The `.app` bundle an executable belongs to. Electron runs the app from
-/// `Oxide.app/Contents/MacOS/<program>`, whatever the program is called, so the
-/// bundle is three directories up — and only when that directory really is one,
-/// which is what tells a released app from the binary beside it in a
-/// `target/debug` build.
+/// The `.app` bundle an executable belongs to: the closest ancestor that is one.
+///
+/// How far the program sits from the bundle says nothing — Electron runs the
+/// app from `Oxide.app/Contents/MacOS/<program>`, and this app's engine from
+/// `Oxide.app/Contents/Resources/harness/oxide-desktop` — so what makes a
+/// directory the bundle is its `Contents/` holding an `Info.plist`, which is
+/// also what tells a released app from the binary beside it in a `target/debug`
+/// build.
 fn bundle_of(executable: &Path) -> Option<PathBuf> {
-    let contents = executable.parent()?.parent()?;
-    let bundle = contents.parent()?;
-    let is_bundle = contents.file_name() == Some(OsStr::new("Contents"))
-        && bundle.extension() == Some(OsStr::new("app"))
-        && contents.join("Info.plist").is_file();
-    is_bundle.then(|| bundle.to_path_buf())
+    executable
+        .ancestors()
+        .find(|ancestor| {
+            ancestor.extension() == Some(OsStr::new("app"))
+                && ancestor.join("Contents").join("Info.plist").is_file()
+        })
+        .map(Path::to_path_buf)
 }
 
 /// Whether this process may write into `directory`. The probe is the honest
@@ -755,6 +759,26 @@ mod tests {
             "0.34.0",
         );
         assert!(!fresh.update_available && !fresh.installable && fresh.advice.is_none());
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn the_engines_own_path_finds_the_bundle_it_is_packaged_in() {
+        // The engine is a program inside the app, not the app's own executable:
+        // a copy that read the bundle as a fixed number of directories up would
+        // call every packaged macOS build a checkout and never offer it an
+        // update.
+        let root = temp_dir("harness");
+        let bundle = bundle_fixture(&root);
+        let engine = bundle.join("Contents/Resources/harness/oxide-desktop");
+        fs::create_dir_all(engine.parent().unwrap()).unwrap();
+        fs::write(&engine, b"engine").unwrap();
+
+        let installation = installation_of(&engine, "macos", None, None);
+        assert_eq!(installation.label, "app bundle");
+        assert_eq!(installation.path.as_deref(), Some(bundle.as_path()));
+        assert!(installation.replaces_itself());
+        assert!(matches!(installation.kind, Kind::Bundle(path) if path == bundle));
         fs::remove_dir_all(root).unwrap();
     }
 

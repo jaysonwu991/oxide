@@ -108,7 +108,8 @@ const scalar = (source, key) => {
 const arms = new Set([...commands.matchAll(/^\s*"([a-z_]+)" =>/gm)].map(([, name]) => name));
 const performed = new Set([...app.matchAll(/invoke\("([a-z_]+)"/g)].map(([, name]) => name));
 // A command the window performs itself never reaches the engine: the folder
-// chooser is the platform's panel, which no child process can draw.
+// chooser is the platform's panel and a link is the platform's browser, and a
+// child process can be reached through neither.
 const performedByWindow = new Set(
   [...code(shell).matchAll(/params\?\.command === "([a-z_]+)"/g)].map(([, name]) => name),
 );
@@ -139,8 +140,8 @@ console.log("the events the two halves share");
 const emitted = new Set(
   [...commands + read("src/approval.rs") + read("src/ask.rs") + read("src/turn.rs")]
     .join("")
-    .match(/\.(?:emit|announce_launch_update)\(\s*"([a-z-]+)"/g)
-    .map((call) => call.match(/"([a-z-]+)"/)[1]),
+    .match(/\.(?:emit|announce_launch_update)\(\s*"([a-z0-9_-]+)"/g)
+    .map((call) => call.match(/"([a-z0-9_-]+)"/)[1]),
 );
 // Two of them the window raises on its own — the update check a menu item asks
 // for — so the events a packet can carry are the engine's and the window's
@@ -150,9 +151,10 @@ for (const site of [...code(shell).matchAll(/webContents\.send\(([\s\S]*?)\);/g)
   if (name) emitted.add(name[1]);
 }
 const listened = new Set([...app.matchAll(/listen\("([a-z-]+)"/g)].map(([, name]) => name));
-// Two of them are the window's own rather than the page's — a link to open in the
-// machine's browser, and the restart that runs a release an install has put in
-// place — so they are read where the window takes them off the packet channel.
+// One of them is the window's own rather than the page's — the restart that runs
+// a release an install has put in place — so it is read where the window takes it
+// off the packet channel. A link is not one of these at all: opening it is the
+// window's own command, answered on the bridge before the engine ever sees it.
 const windowHandled = new Set(
   [...code(shell).matchAll(/packet\.id === "([a-z-]+)"/g)].map(([, name]) => name),
 );
@@ -162,7 +164,7 @@ check(
     windowHandled.size > 0 &&
     [...listened].every((name) => emitted.has(name)) &&
     [...emitted].every((name) => listened.has(name) || windowHandled.has(name)) &&
-    [...windowHandled].every((name) => !listened.has(name)),
+    [...windowHandled].every((name) => emitted.has(name) && !listened.has(name)),
   `unemitted: ${[...listened].filter((name) => !emitted.has(name)).join(", ")} / dropped: ${[...emitted]
     .filter((name) => !listened.has(name) && !windowHandled.has(name))
     .join(", ")}`,
@@ -334,23 +336,27 @@ check(
   /request\.params\?\.command === "pick_folder"/.test(shell) &&
     /dialog\.showOpenDialog\(window, options\)/.test(shell) &&
     /properties: \["openDirectory", "createDirectory"\]/.test(shell) &&
-    /JSON\.stringify\(\{ type: "response", id, success: true, payload: chosen \}\)/.test(shell) &&
+    /answerRequest\(window, id, answer\.canceled \? null : \(answer\.filePaths\[0\] \?\? null\)\)/.test(
+      shell,
+    ) &&
     /BrowserWindow\.fromWebContents\(event\.sender\)/.test(shell) &&
     /invoke\("pick_folder"/.test(app) &&
     !/osascript|zenity/.test(code(shell)),
 );
 // A link is handed to the machine's own handler, and the window is the half that
-// has one: the engine asks through a packet, the window checks the scheme and
-// opens it, and neither reads the URL as a command line — and no branch here is
-// one platform's.
+// has one: the page's request is answered there — before the engine ever sees it
+// — the scheme is checked before the URL goes anywhere, and the answer carries
+// whether the browser started, so a click that could not be carried out is one
+// the reader is told about instead of one that quietly does nothing.
 check(
-  "handed a link to the machine's own handler rather than a program chosen per target",
-  /packet\.id === "open-url"/.test(shell) &&
-    /shell\.openExternal\(url\)/.test(shell) &&
+  "handed a link to the machine's own handler and said whether it opened",
+  /request\.params\?\.command === "open_url"/.test(shell) &&
+    /await shell\.openExternal\(url\)/.test(shell) &&
     /isOpenableUrl\(url\)/.test(shell) &&
-    /host\.emit\("open-url", json!\(\{ "url": url \}\)\)/.test(commands) &&
-    /scheme\.starts_with\("https:\/\/"\) \|\| scheme\.starts_with\("http:\/\/"\)/.test(commands) &&
-    !/#\[cfg\(/.test(code(between(commands, "pub fn open_url", "pub async fn dispatch"))),
+    /answerError\(window, id, describe\(error\)\)/.test(shell) &&
+    /invoke\("open_url"/.test(app) &&
+    !/xdg-open|rundll32|openPath|"open", "-a"/.test(code(shell)) &&
+    !/open-url|is_openable_url/.test(commands),
 );
 
 // ---------- the window the page runs in ----------
@@ -424,6 +430,27 @@ check(
     /cache-dependency-path: crates\/desktop\/pnpm-lock\.yaml/.test(workflowJobs[0]) &&
     /hashFiles\('crates\/desktop\/pnpm-lock\.yaml'\)/.test(workflowJobs[1]),
   npmCommands.join(", ") || "pnpm in both workflow jobs",
+);
+// The notarization key travels as three secrets that belong together — the
+// encoded `.p8`, the key's own id, and the issuer it was made for — while
+// electron-builder notarizes as soon as it finds this configuration at all. A
+// step that wrote the file with a placeholder for the other two would fail
+// every unsigned build instead of leaving it unsigned.
+const keyStep = between(
+  desktopWorkflow,
+  "- name: Write App Store Connect API key",
+  "- name: Build",
+);
+check(
+  "wrote the notarization key only as a whole",
+  keyStep !== "" &&
+    /\[ -z "\$\{APPLE_API_KEY_P8:-\}" \] \|\| \[ -z "\$\{APPLE_API_KEY:-\}" \] \|\| \[ -z "\$\{APPLE_API_ISSUER:-\}" \]/.test(
+      keyStep,
+    ) &&
+    /openssl base64 -d -A > "\$\{RUNNER_TEMP\}\/AuthKey\.p8"/.test(keyStep) &&
+    /printf 'APPLE_API_KEY=%s\\n' "\$\{RUNNER_TEMP\}\/AuthKey\.p8"/.test(keyStep) &&
+    !/\(unset\)/.test(keyStep),
+  keyStep === "" ? "no key step" : "the key or nothing",
 );
 // `ui/app.js` fills the receive half of the bridge in on `window` itself, which
 // a context-isolated preload could not be reached through — so the page and the

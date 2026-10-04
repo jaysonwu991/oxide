@@ -1022,33 +1022,11 @@ fn command_value<T: Serialize>(result: CmdResult<T>) -> CmdResult<Value> {
     result.and_then(|value| serde_json::to_value(value).map_err(err))
 }
 
-/// Opens an external link in the machine's browser. The transcript renders URLs
-/// as anchors, but the window cannot navigate to a remote page, so a click is
-/// routed here instead of relying on `target="_blank"`.
-///
-/// What may be opened is decided here rather than by the window: only an http(s)
-/// URL is a page, and anything else — a `file:` path, a `javascript:` payload —
-/// is refused to the page instead of being handed to the machine's own handler.
-/// The launch itself is the window's (the `open-url` event), since opening a URL
-/// is the platform's, and a browser that would not start is its to report.
-pub fn open_url(host: &Host, url: &str) -> CmdResult<()> {
-    let url = url.trim();
-    if !is_openable_url(url) {
-        return Err("Only http(s) links can be opened".to_string());
-    }
-    host.emit("open-url", json!({ "url": url }))?;
-    Ok(())
-}
-
-fn is_openable_url(url: &str) -> bool {
-    let scheme = url.to_ascii_lowercase();
-    scheme.starts_with("https://") || scheme.starts_with("http://")
-}
-
 /// Dispatches the stable command contract used by the window. The window's own
-/// calls — `pick_folder`, and the launches behind `open_url` and `restart_app` —
-/// are the Electron process's to perform; every command that touches Oxide state
-/// is here.
+/// calls — `pick_folder` and `open_url` — never arrive here, since the operating
+/// system is what carries them out; the launch behind `restart_app` is announced
+/// from the arm that can tell whether the app is in a state to make it; and every
+/// command that touches Oxide state is here.
 pub async fn dispatch(
     state: Arc<DesktopState>,
     host: &Host,
@@ -1171,7 +1149,6 @@ pub async fn dispatch(
         "install_update" => command_value(install_update().await),
         "launch_update" => command_value(launch_update(&state)),
         "restart_app" => command_value(restart_app(host, &state).await),
-        "open_url" => command_value(open_url(host, &arg::<String>(&args, "url")?)),
         _ => Err(format!("unknown desktop command `{command}`")),
     }
 }
