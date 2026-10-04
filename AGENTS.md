@@ -184,8 +184,8 @@ the picked label answers — so it holds the question being asked until
 - `cargo clippy --all-targets -- -D warnings`
 - `cargo fmt`
 - `cd crates/desktop && hutch electrobun prepare` (project the Electrobun devkit the package links; needed once before building it)
-- `cd crates/desktop && cargo build --features gui` (desktop app; the `gui` feature is what pulls in Electrobun)
-- `cd crates/desktop && cargo test --lib --features gui` (desktop manager, turn, command, and bridge tests)
+- `cd crates/desktop && cargo build` (the desktop app; the package is its own workspace and links the Electrobun SDK)
+- `cd crates/desktop && cargo test` (desktop manager, turn, command, bridge and updater tests)
 - `cd crates/desktop && hutch electrobun dev` (build the main process, lay out the app and launch it; `--watch` for a rebuild on an edit)
 - `cd crates/desktop && hutch electrobun build --env=stable` (an installer for this platform under `artifacts/`)
 - `node crates/desktop/check-app.mjs` (front-end behavior against a stubbed DOM and bridge)

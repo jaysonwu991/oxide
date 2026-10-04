@@ -359,11 +359,16 @@ check(
     /electrobun: \{ version: "\d+\.\d+\.\d+" \}/.test(hutch),
   "",
 );
+// Hutch builds this package with its own Cargo invocation — the manifest and
+// binary `electrobun.config.ts` names — so the SDK is an ordinary dependency of
+// that binary rather than one behind a feature: a binary gated behind a feature
+// Hutch does not pass is one Hutch's build would not produce.
 check(
-  "builds the binary only where there is a webview to put it in",
-  /required-features = \["gui"\]/.test(binarySection) &&
-    /^gui = \["dep:electrobun"\]$/m.test(manifest),
-  `${binarySection.replace(/\s+/g, " ").trim()} / ${/^gui = .*$/m.exec(manifest)?.[0] ?? ""}`,
+  "declares the SDK the binary Hutch builds from",
+  /^electrobun = \{ path = "\.hutch\/devkit\/rust-sdk" \}$/m.test(manifest) &&
+    !/required-features/.test(manifest) &&
+    !/^gui = /m.test(manifest),
+  `${binarySection.replace(/\s+/g, " ").trim()} / ${/^electrobun = .*$/m.exec(manifest)?.[0] ?? ""}`,
 );
 // The SDK is a path dependency inside this package's own directory, so Cargo
 // would otherwise adopt it as a member and lint generated code with `-D

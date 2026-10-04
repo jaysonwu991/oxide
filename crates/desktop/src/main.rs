@@ -2,10 +2,10 @@
 //!
 //! The project/session/turn logic lives in the `oxide_desktop` library and the
 //! shared `oxide-core`; this binary owns the window Electrobun opens and routes
-//! every command the page sends to `commands::dispatch`. It builds with
-//! `--features gui`, as a project of its own rather than a workspace member (see
-//! `Cargo.toml`), and Electrobun's own build runs it — `hutch run dev` in a
-//! checkout.
+//! every command the page sends to `commands::dispatch`. It is built by
+//! Electrobun's own build — the manifest and binary `electrobun.config.ts`
+//! names, with no feature to turn on (see `Cargo.toml`) — so the package is a
+//! project of its own rather than a workspace member.
 
 #![cfg_attr(
     all(not(debug_assertions), target_os = "windows"),

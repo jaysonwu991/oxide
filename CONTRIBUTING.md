@@ -38,7 +38,7 @@ cargo run -- -p "summarize this repository"
 | `cargo test` | Run the test suite. |
 | `cargo clippy --all-targets -- -D warnings` | Lint; warnings are errors. |
 | `cargo fmt` | Format the code. |
-| `cd crates/desktop && hutch electrobun prepare && cargo test --lib --features gui` | The desktop shell's own tests (the `gui` feature is what pulls in Electrobun; the package is its own workspace). |
+| `cd crates/desktop && hutch electrobun prepare && cargo test` | The desktop shell's own tests (the package is its own workspace, and the SDK it links is the devkit Hutch projects into `.hutch/devkit`). |
 | `cd crates/desktop && hutch electrobun dev` | Build the main process, lay out the app and launch it. |
 | `node crates/desktop/check-app.mjs` | Desktop front-end checks (`ui/app.js` against a stubbed DOM and bridge). |
 | `node crates/desktop/check-shell.mjs` | Desktop shell checks (command/event contract, build config, bundle). |

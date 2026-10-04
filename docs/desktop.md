@@ -63,18 +63,19 @@ crates/desktop/
   check-shell.mjs   shell check (command/event contract, config, bundle)
 ```
 
-The `gui` feature is **off by default** so `cargo build` / `cargo test` /
-`cargo clippy` stay free of the window's own dependencies — `electrobun` is
-optional, and it is what the feature turns on, together with the `[[bin]]`
-that uses it (`required-features = ["gui"]`). `src/lib.rs` (the `at`, `manager`
-and `turn` modules) is what a plain `cargo test` runs; `commands.rs`,
-`update.rs`, `approval.rs`, `ask.rs`, `bridge.rs` and `main.rs` are declared by
-`main.rs`, so their tests run under `cargo test --lib` from `crates/desktop`
-with `--features gui` — which is what `.github/workflows/ci.yml` runs on each
-platform.
+`electrobun` is an ordinary dependency of this package rather than one behind a
+feature, because Hutch's own build is what produces the app: it compiles the
+manifest and binary `electrobun.config.ts` names (`Cargo.toml` /
+`oxide-desktop`) with no feature to turn on, so a binary gated behind one is a
+binary that build would not produce. `src/lib.rs` (the `at`, `manager` and
+`turn` modules) builds without a window at all — it is what the unit tests
+cover — while `commands.rs`, `update.rs`, `approval.rs`, `ask.rs`,
+`bridge.rs` and `main.rs` are declared by `main.rs`, so their tests run with
+`cargo test` from `crates/desktop` — which is what `.github/workflows/ci.yml`
+runs on each platform.
 
 Electrobun runs a build in `crates/desktop`, which compiles the Rust main
-process with the `gui` feature and copies `ui/` into `views/main/` verbatim: the
+process and copies `ui/` into `views/main/` verbatim: the
 page is one plain script with no imports to resolve, so there is nothing for a
 bundler to do and no `package.json` to install. The window loads the page from
 Electrobun's own `views://` protocol, and it talks to the main process over the
@@ -306,13 +307,13 @@ hutch electrobun dev --watch   # rebuilds and relaunches on an edit
 
 # the package is its own workspace, so it can also be built by hand — the Rust
 # SDK has to be projected into `.hutch/devkit` first (`hutch electrobun prepare`)
-cargo run --features gui
+cargo run
 ```
 
 `crates/desktop` is not a member of the root workspace, so a plain `cargo
 build`/`cargo test` at the repository root neither builds nor tests the window.
 Run the package's own commands from `crates/desktop` — `hutch electrobun prepare`
-then `cargo test --lib --features gui` for the shell's own tests.
+then `cargo test` for the shell's own tests.
 
 The front-end (`ui/`) is not bundled: Electrobun's build copies `ui/index.html`,
 `ui/app.js` and `ui/style.css` into the app beside the compiled main process (the

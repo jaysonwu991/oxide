@@ -18,10 +18,6 @@ description = "Desktop app for Oxide: manage multiple projects and sessions"
 [workspace]
 exclude = [".hutch"]
 
-[features]
-default = []
-gui = ["dep:electrobun"]
-
 [dependencies]
 oxide-core = { path = "../core" }
 anyhow = "1"
@@ -30,12 +26,11 @@ reqwest = { version = "0.12", default-features = false, features = ["json", "str
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "process", "time", "io-util", "io-std", "sync", "net"] }
-electrobun = { path = ".hutch/devkit/rust-sdk", optional = true }
+electrobun = { path = ".hutch/devkit/rust-sdk" }
 
 [[bin]]
 name = "oxide-desktop"
 path = "src/main.rs"
-required-features = ["gui"]
 
 [profile.release]
 opt-level = 3

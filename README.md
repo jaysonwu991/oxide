@@ -188,7 +188,7 @@ the VS Code extension is a separate pnpm
 package:
 
 ```sh
-cd crates/desktop && hutch electrobun prepare && cargo test --lib --features gui
+cd crates/desktop && hutch electrobun prepare && cargo test
 node crates/desktop/check-app.mjs && node crates/desktop/check-shell.mjs
 cd editors/vscode && pnpm test
 ```
