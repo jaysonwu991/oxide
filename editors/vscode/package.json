@@ -176,6 +176,12 @@
         "category": "Oxide"
       },
       {
+        "command": "oxide.connectProvider",
+        "title": "Connect Provider...",
+        "category": "Oxide",
+        "icon": "$(plug)"
+      },
+      {
         "command": "oxide.mcpServers",
         "title": "MCP Servers...",
         "category": "Oxide",

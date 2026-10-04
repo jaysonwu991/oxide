@@ -21,6 +21,8 @@ import {
   reasoningDialog,
   mcpDialog,
   OPEN_SESSION,
+  providerDialog,
+  PROVIDER_SELECT,
   SESSION_DELETE,
   SESSION_DELETE_CONFIRM,
   sessionDialog,
@@ -32,6 +34,7 @@ import {
   updateDialog,
 } from "../core/dialogs";
 import { parseMcpList } from "../core/mcps";
+import { parseProviders } from "../core/providers";
 import { parseSessionList } from "../core/sessions";
 import type { UpdateCheck } from "../core/updates";
 
@@ -217,6 +220,109 @@ describe("MCP dialog", () => {
       dialog.rows.every((row) => row.kind === ""),
       "a server row is an ordinary one",
     );
+  });
+});
+
+describe("provider dialog", () => {
+  const providers = parseProviders(
+    JSON.stringify({
+      active: "openai",
+      providers: [
+        {
+          name: "openai",
+          label: "OpenAI",
+          description: "GPT models",
+          keyUrl: "https://platform.openai.com/api-keys",
+          local: false,
+          stored: true,
+          active: true,
+        },
+        {
+          name: "bedrock",
+          label: "Amazon Bedrock",
+          description: "Claude and Nova models on AWS",
+          keyUrl: "",
+          local: false,
+          stored: false,
+          active: false,
+        },
+        {
+          name: "ollama",
+          label: "Ollama",
+          description: "Local models served by Ollama",
+          keyUrl: "",
+          local: true,
+          stored: false,
+          active: false,
+        },
+      ],
+    }),
+  );
+
+  it("lists the table, searched, from the composer's own edge", () => {
+    const dialog = providerDialog(providers);
+    assert.equal(dialog.title, "Providers");
+    // `/connect` is typed into the composer, so the table it opens grows up from
+    // the composer rather than covering the panel from the header down.
+    assert.equal(dialog.pin, "footer");
+    assert.deepEqual(
+      dialog.rows.map((row) => row.label),
+      ["OpenAI", "Amazon Bedrock", "Ollama"],
+    );
+    // The table is every provider a client can connect, which is why it is
+    // searched rather than listed.
+    assert.equal(dialog.search, true);
+    assert.equal(dialog.searchPlaceholder, "Search providers…");
+    assert.equal(dialog.count, 3);
+  });
+
+  it("carries the state a login would change, and the name the CLI knows", () => {
+    const rows = providerDialog(providers).rows;
+    assert.deepEqual(
+      rows.map((row) => row.status),
+      ["In use", "", "No key needed"],
+    );
+    assert.deepEqual(
+      rows.map((row) => row.tone),
+      ["ok", "", ""],
+    );
+    // The row's value is the provider's own name: it is what the login is run
+    // with, and a label is a display string that a rename would invalidate.
+    assert.deepEqual(
+      rows.map((row) => row.value),
+      ["openai", "bedrock", "ollama"],
+    );
+    assert.deepEqual(
+      rows.map((row) => row.action),
+      [PROVIDER_SELECT, PROVIDER_SELECT, PROVIDER_SELECT],
+    );
+    assert.equal(rows[0].detail, "openai · GPT models");
+    // Taking a row signs in to it: nothing else hangs off the row.
+    assert.equal(rows[0].button, "");
+  });
+
+  it("narrows the rows the CLI already answered", () => {
+    const dialog = providerDialog(providers, "aws");
+    assert.deepEqual(
+      dialog.rows.map((row) => row.value),
+      ["bedrock"],
+    );
+    // The count is what is listed, not what the table holds.
+    assert.equal(dialog.count, 1);
+    assert.equal(dialog.query, "aws");
+  });
+
+  it("says so when a search matches nothing, and when there is no table at all", () => {
+    const none = providerDialog(providers, "watson");
+    assert.equal(none.rows.length, 0);
+    assert.equal(none.note, "No provider matches “watson”.");
+    const empty = providerDialog([], "");
+    assert.equal(empty.note, "No providers are configured for this installation.");
+  });
+
+  it("shows a failure in place of the reason it is empty", () => {
+    const dialog = providerDialog([], "", "Could not list providers: exit 1");
+    assert.equal(dialog.note, "Could not list providers: exit 1");
   });
 });
 

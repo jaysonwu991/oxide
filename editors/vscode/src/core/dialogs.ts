@@ -13,6 +13,7 @@
 // the listing is about, and cannot be answered while a turn streams.
 
 import { mcpStateLabel, type McpServerView } from "./mcps";
+import { filterProviders, providerState, type ProviderView } from "./providers";
 import { filterSessions, type SessionEntry } from "./sessions";
 import { updateVsix, type UpdateCheck } from "./updates";
 
@@ -69,6 +70,7 @@ export type DialogPin = "header" | "footer";
 /// not be swapped for a listing the moment it appears.
 export type DialogKind =
   | "update"
+  | "provider"
   | "model"
   | "agent"
   | "reasoning"
@@ -122,6 +124,9 @@ export const CHANGES_UNDO_CONFIRM = "changesUndoConfirm";
 /// Close or Escape: the view dismisses it and tells the controller, so the next
 /// pane to attach does not paint it again.
 export const CLOSE_DIALOG = "dialogClose";
+/// A row of the provider table: signing in to the provider it names, which is
+/// how the panel connects one without the terminal.
+export const PROVIDER_SELECT = "providerSelect";
 export const APPLY_MODEL = "applyModel";
 export const APPLY_AGENT = "applyAgent";
 export const APPLY_REASONING = "applyReasoning";
@@ -173,6 +178,54 @@ const MCP_TONES: Record<string, DialogTone> = {
 export interface ModelChoice {
   model: string;
   provider: string;
+}
+
+/// The provider table, in the panel: every provider a client can connect, with
+/// the state a login would change, searched rather than listed because the table
+/// holds all of them. A row signs in to the provider it names — the same
+/// `auth.json` and `config.json` the terminal's `/login` writes, so what the
+/// panel connects is what the next turn runs on.
+///
+/// The rows come from the CLI (`oxide providers --json`), so which providers
+/// exist, which are stored and which one is in use is the core's answer rather
+/// than a copy kept here.
+export function providerDialog(
+  providers: readonly ProviderView[],
+  query = "",
+  note = "",
+): DialogState {
+  const rows = filterProviders(providers, query);
+  const empty = providers.length
+    ? query.trim()
+      ? `No provider matches “${query.trim()}”.`
+      : ""
+    : "No providers are configured for this installation.";
+  return {
+    kind: "provider",
+    // The composer's own column, like the MCP list: `/connect` is typed there,
+    // and the model chip beside it is where the model is chosen afterwards.
+    pin: "footer",
+    title: "Providers",
+    subtitle:
+      "Sign in to a provider. The credential is stored where the terminal's /login stores it, and the next turn uses it.",
+    note: note || empty,
+    rows: rows.map((provider) =>
+      row(provider.name, provider.label, {
+        detail: [provider.name, provider.description].filter(Boolean).join(" · "),
+        status: providerState(provider),
+        // Only the provider in use is called out in the accent: a stored one is
+        // ordinary news, and a row with nothing to say is not a disabled one.
+        tone: provider.active ? "ok" : "",
+        action: PROVIDER_SELECT,
+      }),
+    ),
+    count: rows.length,
+    search: true,
+    query,
+    searchPlaceholder: "Search providers…",
+    refreshLabel: "",
+    refreshAction: "",
+  };
 }
 
 /// Model selection stays attached to the composer. The search field doubles as

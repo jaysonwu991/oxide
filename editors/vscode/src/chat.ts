@@ -51,6 +51,8 @@ import {
   mcpDialog,
   modelDialog,
   OPEN_SESSION,
+  providerDialog,
+  PROVIDER_SELECT,
   SESSION_DELETE,
   SESSION_DELETE_CONFIRM,
   sessionDialog,
@@ -66,6 +68,13 @@ import {
   type ModelChoice,
 } from "./core/dialogs";
 import { isMcpCommand, mcpListArgs, mcpToggleArgs, parseMcpList, type McpServerView } from "./core/mcps";
+import {
+  parseLoginOutcome,
+  parseProviders,
+  providerLoginArgs,
+  providersListArgs,
+  type ProviderView,
+} from "./core/providers";
 import {
   backgroundAction,
   parseUpdateCheck,
@@ -139,6 +148,12 @@ const MAX_WORKSPACE_PATHS = 10_000;
 const UPDATE_CHECK_TIMEOUT = 60_000;
 const UPDATE_INSTALL_TIMEOUT = 600_000;
 
+/// Connecting a provider stores a credential and writes the selection, which is
+/// one file write; the CLI also probes nothing, so a login answers at once. The
+/// budget is still generous, because the first login in a fresh config directory
+/// loads the whole configuration first.
+const LOGIN_TIMEOUT = 60_000;
+
 /// The answers the launch's own update notification carries. The restart is the
 /// same control the panel's dialog offers, named the same way, and the other is
 /// the way out of a notification the user does not want to act on now.
@@ -158,7 +173,7 @@ const UPDATE_RELEASE_NOTES = "Release notes";
 /// other command and skill is one the CLI expands. The terminal and the desktop
 /// app list the whole catalog, which is why this is not built from it.
 const PANEL_HELP =
-  "Panel commands: /model /reasoning /agent /trust (the footer's chips), /mcps, /session, /new, /attach, /usage. " +
+  "Panel commands: /model /reasoning /agent /trust (the footer's chips), /connect, /mcps, /session, /new, /attach, /usage. " +
   "A project's commands and skills are completed from `/` and run by the CLI — pick a skill to load its instructions.";
 
 /// What an update check left on the panel, for the one caller that has something
@@ -334,6 +349,14 @@ export class ChatController {
   private modelQuery = "";
   private modelNote = "";
   private modelProbe = 0;
+  /// The provider table as the CLI last answered it, the search over it, and the
+  /// newest read of it. Held rather than re-read per keystroke: a login changes
+  /// what the rows say, so the table is read again when the dialog opens and
+  /// after one, never while the reader types in it.
+  private providers: ProviderView[] = [];
+  private providerQuery = "";
+  private providerNote = "";
+  private providerProbe = 0;
   private sessions: SessionEntry[] = [];
   /// The filter the open session listing is showing. The rows are the store's
   /// own answer, so the search box only decides which of them are painted —
@@ -1950,6 +1973,120 @@ export class ChatController {
     this.showDialog(mcpDialog(this.servers));
   }
 
+  // ---------- providers ----------
+
+  /// The provider table in the panel, read from the CLI's own listing so the
+  /// panel, the desktop app and the terminal offer the same providers and the
+  /// same state for each. `/connect`, the command and the palette entry all come
+  /// here, so there is one implementation of what connecting one means.
+  async openProviders(): Promise<void> {
+    // A login writes the shared `auth.json` and `config.json`, which live with
+    // the config directory rather than in the project, so no folder is needed:
+    // a window with none open still has a CLI to ask.
+    const cwd = this.cwd() ?? os.homedir();
+    // The listing being opened starts unfiltered: the query belongs to the one
+    // that was on screen, not to the next one.
+    this.providerQuery = "";
+    this.providerNote = "";
+    // A table is a read of one file, but the read is shown rather than looking
+    // like nothing happened on a slow machine.
+    const probe = ++this.providerProbe;
+    void vscode.window.setStatusBarMessage("Oxide: listing providers…", 20_000);
+    this.showProviders("Listing providers…");
+    const result = await runCapture(this.binary(), providersListArgs(), cwd);
+    // A listing opened while an earlier read is in flight supersedes it, and one
+    // closed while the read was in flight stays closed.
+    if (probe !== this.providerProbe) return;
+    if (this.dialog?.kind !== "provider") return;
+    if (result.error || result.code !== 0) {
+      const detail = result.error || firstLine(result.stderr) || `exit ${result.code}`;
+      const failed = `Could not list providers: ${detail}`;
+      this.showNotice(failed, "error");
+      this.showProviders(failed);
+      return;
+    }
+    this.providers = parseProviders(result.stdout);
+    this.showProviders();
+  }
+
+  /// Paints the table again — after a read, after a login, or on a keystroke in
+  /// its search box. The rows are composed by `core/dialogs.ts`, so the count
+  /// beside the title and the empty-list note stay in step with the filter.
+  private showProviders(note = ""): void {
+    if (note) this.providerNote = note;
+    this.showDialog(providerDialog(this.providers, this.providerQuery, this.providerNote));
+  }
+
+  /// The provider table's search box: the query narrows the rows the CLI has
+  /// already answered, so typing filters the list without spawning it again.
+  private searchProviders(text: string): void {
+    if (this.dialog?.kind !== "provider" || text === this.providerQuery) return;
+    this.providerQuery = text;
+    this.showProviders();
+  }
+
+  /// A row of the provider table, taken: sign in to the provider it names. A
+  /// provider with a stored credential and one that is a server on this machine
+  /// are connected as they are — the key is asked for only where one is needed —
+  /// and the key itself is typed into VS Code's own password box rather than into
+  /// the panel, so a secret never reaches a document (or a transcript) this
+  /// extension keeps.
+  private async connectProvider(name: string): Promise<void> {
+    const provider = this.providers.find((entry) => entry.name === name);
+    if (!provider) return;
+    const cwd = this.cwd() ?? os.homedir();
+    let key = "";
+    if (!provider.local && !provider.stored) {
+      const answer = await vscode.window.showInputBox({
+        title: `Oxide: connect ${provider.label}`,
+        prompt: provider.keyUrl
+          ? `Paste the API key for ${provider.label} — issued at ${provider.keyUrl}`
+          : `Paste the API key for ${provider.label}`,
+        placeHolder: "API key",
+        password: true,
+        ignoreFocusOut: true,
+      });
+      // Dismissed: nothing is connected and the table stays where it was.
+      if (answer === undefined) {
+        this.showProviders();
+        return;
+      }
+      key = answer.trim();
+      if (!key) {
+        this.showNotice(`${provider.label} needs a key.`, "warn");
+        this.showProviders();
+        return;
+      }
+    }
+    this.closeDialog();
+    void vscode.window.setStatusBarMessage(`Oxide: connecting ${provider.label}…`, 20_000);
+    const result = await runCapture(
+      this.binary(),
+      providerLoginArgs(provider.name, Boolean(key)),
+      cwd,
+      LOGIN_TIMEOUT,
+      key ? `${key}\n` : undefined,
+    );
+    if (result.error || result.code !== 0) {
+      const detail = result.error || firstLine(result.stderr) || `exit ${result.code}`;
+      const failed = `Could not connect ${provider.label}: ${detail}`;
+      this.showNotice(failed, "error");
+      // The table is read again rather than painted from what is here: a login
+      // that failed may still have changed which provider is stored or in use.
+      this.providerNote = failed;
+      return this.openProviders();
+    }
+    const outcome = parseLoginOutcome(result.stdout);
+    const label = outcome?.label || provider.label;
+    // The provider, its default model and its endpoint are what `config.json`
+    // now selects, and the next turn reads that file: the footer's chips are
+    // repainted from it so the panel says what the next message will run on.
+    this.refreshProject();
+    this.showNotice(`Connected ${label}.`);
+    this.onDidChange.fire();
+    this.broadcast(this.stateMessage());
+  }
+
   // ---------- updates ----------
 
   /// One run of the check: the installed CLI asked which release of this
@@ -2438,6 +2575,8 @@ export class ChatController {
         return this.confirmDeleteSession(value);
       case SESSION_DELETE_CONFIRM:
         return this.deleteSession(value);
+      case PROVIDER_SELECT:
+        return this.connectProvider(value);
       case CHANGES_UNDO_CONFIRM:
         return this.restoreTurn(value);
       case APPLY_MODEL:
@@ -2515,6 +2654,8 @@ export class ChatController {
         return;
       case "mcp":
         return this.showMcps();
+      case "provider":
+        return this.openProviders();
       case "session":
         // Opens rather than toggles: the header's button is the control that
         // swaps, and a command that names the history should not answer by
@@ -2607,6 +2748,8 @@ export class ChatController {
     switch (this.dialog?.kind) {
       case "sessions":
         return this.searchSessions(text);
+      case "provider":
+        return this.searchProviders(text);
       case "model":
         this.modelQuery = text;
         return this.showModelDialog();
