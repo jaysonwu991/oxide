@@ -806,7 +806,8 @@ impl LlmClient {
             "" => format!("https://{}", aws::host(&region, "bedrock-runtime")),
             endpoint => endpoint.to_string(),
         };
-        let url = format!("{base}/model/{}/converse-stream", self.config.model);
+        let model = aws::encode_path_segment(&self.config.model);
+        let url = format!("{base}/model/{model}/converse-stream");
         let mut config = self.config.clone();
         config.max_tokens = max_tokens;
         let body = bedrock::request_body(&config, messages, tools);
@@ -815,7 +816,7 @@ impl LlmClient {
         let request = self
             .http
             .post(&url)
-            .header("accept", "application/json")
+            .header("accept", bedrock::EVENT_STREAM)
             .header("content-type", "application/json");
         let request = self.sign_aws(
             request,
@@ -1943,8 +1944,17 @@ mod tests {
         let request = server.await.unwrap();
         assert!(
             request.starts_with(
-                "POST /model/anthropic.claude-3-5-sonnet-20241022-v2:0/converse-stream"
+                "POST /model/anthropic.claude-3-5-sonnet-20241022-v2%3A0/converse-stream"
             ),
+            "{request}"
+        );
+        // The stream asked for is the one it answers with, and the model id is
+        // encoded in the path the signature was made over, so a colon in it is
+        // not the one difference between what is signed and what is sent.
+        assert!(
+            request
+                .to_ascii_lowercase()
+                .contains("accept: application/vnd.amazon.eventstream"),
             "{request}"
         );
     }

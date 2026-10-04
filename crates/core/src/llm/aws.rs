@@ -69,7 +69,9 @@ pub fn host(region: &str, service: &str) -> String {
 /// host and the content type all take part in the signature.
 pub struct SigningRequest<'a> {
     pub method: &'a str,
-    /// The path as it goes on the wire, already percent-coded.
+    /// The path as it goes on the wire, already percent-coded: a value that
+    /// needs encoding is encoded before it is put here (`encode_path_segment`),
+    /// so the signature is made over the path that is actually sent.
     pub uri: &'a str,
     pub query: &'a [(String, String)],
     /// The authority the request is sent to, port included.
@@ -191,6 +193,14 @@ fn canonical_query(query: &[(String, String)]) -> String {
         .collect();
     pairs.sort();
     pairs.join("&")
+}
+
+/// A path segment of a signed request, percent-encoded the way the signature is
+/// computed over it. Everything outside the unreserved set is encoded, `/`
+/// included, because the whole value is one segment — a Bedrock model id, whose
+/// inference-profile form is an ARN — so what is signed is what is sent.
+pub fn encode_path_segment(value: &str) -> String {
+    uri_encode(value, true)
 }
 
 /// The percent-encoding SigV4 canonicalizes with, which encodes everything
@@ -406,6 +416,29 @@ mod tests {
         assert_eq!(
             canonical_query(&[("a b".to_string(), "c/d".to_string())]),
             "a%20b=c%2Fd"
+        );
+    }
+
+    /// A model id is one path segment, so a colon in the default form and a
+    /// slash in an inference-profile ARN are encoded — and the signature is
+    /// made over the same encoded path that goes on the wire.
+    #[test]
+    fn escapes_a_path_segment() {
+        assert_eq!(
+            encode_path_segment("anthropic.claude-3-5-sonnet-20241022-v2:0"),
+            "anthropic.claude-3-5-sonnet-20241022-v2%3A0"
+        );
+        assert_eq!(
+            encode_path_segment(
+                "arn:aws:bedrock:us-east-1:1:inference-profile/us.anthropic.claude"
+            ),
+            "arn%3Aaws%3Abedrock%3Aus-east-1%3A1%3Ainference-profile%2Fus.anthropic.claude"
+        );
+        // The unreserved set is left alone, so a model id that needs no
+        // encoding is sent as it was written.
+        assert_eq!(
+            encode_path_segment("amazon.nova-lite-v1_0"),
+            "amazon.nova-lite-v1_0"
         );
     }
 }
