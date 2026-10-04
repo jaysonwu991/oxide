@@ -1,4 +1,4 @@
-// Oxide desktop front-end. The window is Electrobun's own webview and the page
+// Oxide desktop front-end. The window is Electron's own renderer and the page
 // is sandboxed against it: the project/session/config stores it reads are the
 // CLI's, reached through the app's commands rather than the filesystem.
 //
@@ -7,15 +7,15 @@
 // Everything a run has to say while one is in flight arrives as a packet of its
 // own, and a handler is given the event's own `payload`.
 //
-// Both directions are the envelope Electrobun's preload bridge already speaks:
-// a packet goes out on the user bridge, which the core queues for the main
-// process and the running app drains (`src/main.rs`), and the host answers
-// through `window.__electrobun.receiveMessageFromHost`, which the preload leaves
+// Both directions use the names this page has always read, which
+// `electron/preload.ts` installs before the page runs: a packet goes out on the
+// user bridge, which the preload hands to the window
+// (`electron/main.ts`), and the window answers through
+// `window.__electrobun.receiveMessageFromHost`, which the preload leaves
 // filling a queue until a page takes it over — this page does, since it speaks
-// the wire itself rather than going through `Electroview`'s typed RPC. A webview
-// whose preload installs no user bridge still has the event one, which carries
-// the packet as the `host-message` event it was written as; the app reads the
-// same packet off either.
+// the wire itself. A window whose preload installs no user bridge still has the
+// event one, which carries the packet as the `host-message` event it was written
+// as; the page reads the same packet off either.
 const userBridge = window.__electrobunHostBridge;
 const eventBridge = window.__electrobunSendToHost;
 
@@ -30,8 +30,8 @@ const listeners = new Map();
 let nextRequest = 1;
 
 // The preload sets the namespace up, and the page fills it in rather than
-// loading `Electroview`, whose typed RPC this window does not use. A webview
-// the preload ran in a sandboxed mode leaves nothing to fill in.
+// loading a typed RPC layer this window does not use. A page the preload ran in
+// a sandboxed mode leaves nothing to fill in.
 if (!window.__electrobun) window.__electrobun = {};
 
 function deliver(packet) {
@@ -3472,7 +3472,8 @@ const launchDismissed = { yes: false };
 /// The resolution is `oxide_core::updates`, shared with the terminal, so the
 /// release this window offers is a release of this app and not of the CLI — and
 /// when this installation is one the app may replace (a bundle it can write to,
-/// an installation the Electrobun setup made) the dialog installs it in place.
+/// an AppImage, an installation this app's own installer made) the dialog
+/// installs it in place.
 async function openUpdate() {
   el("update-title").textContent = "Updates";
   el("update-note").textContent = "";
@@ -4689,6 +4690,37 @@ function initSidebarResize() {
   });
 }
 
+/// How long a scrollbar stays drawn after the last scroll of its box, in
+/// milliseconds: long enough to be read while the wheel is still spinning down,
+/// short enough that the bar is away by the time the reader has moved on.
+const SCROLLBAR_LINGER = 900;
+/// The window's scrollbars are overlay bars: one is drawn while its box is being
+/// scrolled and taken away again when that stops, so a bar is never a permanent
+/// seam down the side of what it scrolls. A scrollbar belongs to the element it
+/// scrolls, so the element that scrolled is the one marked — and since a scroll
+/// does not bubble, the listener is registered for the capture phase, which is
+/// one listener for every list in the window rather than one per list.
+function initOverlayScrollbars() {
+  const timers = new WeakMap();
+  document.addEventListener(
+    "scroll",
+    (event) => {
+      const scrolled = event.target === document ? document.documentElement : event.target;
+      if (!scrolled?.classList) return;
+      scrolled.classList.add("scrolling");
+      clearTimeout(timers.get(scrolled));
+      timers.set(
+        scrolled,
+        setTimeout(() => {
+          timers.delete(scrolled);
+          scrolled.classList.remove("scrolling");
+        }, SCROLLBAR_LINGER),
+      );
+    },
+    { capture: true, passive: true },
+  );
+}
+
 const EDITABLE_INPUT_TYPES = new Set([
   "text",
   "search",
@@ -4790,6 +4822,7 @@ function finishEditorControlPress(event) {
 
 function init() {
   initSidebarResize();
+  initOverlayScrollbars();
   const createBtnTree = el("create-project-btn-tree");
   if (createBtnTree) createBtnTree.onclick = openCreateProject;
   const newChatBtn = el("new-chat");

@@ -5,18 +5,12 @@ edition = "2021"
 license = "MIT"
 description = "Desktop app for Oxide: manage multiple projects and sessions"
 
-# This package is excluded from the root workspace on purpose. Its main process
-# is Electrobun's Rust SDK, and the crate for it is projected into
-# `.hutch/devkit/rust-sdk` by `hutch electrobun prepare` rather than published to
-# crates.io. A workspace member naming that path would make every cargo command
-# in the workspace fail until the desktop project had been prepared.
-#
-# The projected SDK is excluded from this package's own workspace for the same
-# reason it is not ours to lint: it is a path dependency inside the workspace
-# directory, which Cargo would otherwise adopt as a member and build with `-D
-# warnings` applied to generated code.
+# This package is one half of the desktop app: the process the Electron window
+# in `crates/desktop/electron` starts, which owns the projects, the sessions and
+# the turns. It is excluded from the root workspace on purpose, so the app's
+# dependencies and its own lock file stay out of the core workspace's build
+# graph — the same shape the VS Code extension has, in the other direction.
 [workspace]
-exclude = [".hutch"]
 
 [dependencies]
 oxide-core = { path = "../core" }
@@ -26,7 +20,6 @@ reqwest = { version = "0.12", default-features = false, features = ["json", "str
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "process", "time", "io-util", "io-std", "sync", "net"] }
-electrobun = { path = ".hutch/devkit/rust-sdk" }
 
 [[bin]]
 name = "oxide-desktop"

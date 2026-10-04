@@ -1,21 +1,34 @@
-// Checks the desktop shell without a window: the command the page reaches, the
-// channel it reaches it over, and the configuration the window is built from.
+// Checks the desktop shell without a window: the commands the page reaches, the
+// two channels it reaches them over, and the configuration the app is built
+// from.
 //
 //   node crates/desktop/check-shell.mjs
 //
-// `cargo test` reaches the command layer and `check-app.mjs` drives the page
-// against a stubbed bridge, but neither can see whether the two halves still
+// The app is three programs in two languages — the page (`ui/`, plain
+// JavaScript), the window (`electron/`, TypeScript) and the engine (`src/`,
+// Rust) — and each pair of them agrees on something no single test can see.
+// `cargo test` reaches the engine's command layer and `check-app.mjs` drives the
+// page against a stubbed bridge, but neither can see whether the halves still
 // agree: a command `ui/app.js` performs that `src/commands.rs` no longer answers
-// is a button that fails in the window, and an event the page waits for that
-// nothing emits is a turn that never ends. This file is that join — the packet
-// one half writes and the other reads — plus the window Electrobun is asked to
-// build and the migration's own end: no Tauri, no bundler, no node_modules.
-import { readdirSync, readFileSync, statSync } from "node:fs";
+// is a button that fails in the window, an event the page waits for that nothing
+// emits is a turn that never ends, a channel name renamed in the preload is a
+// window that answers nothing at all, and an artifact renamed in
+// `electron-builder.yml` is a release the updater cannot see. This file is those
+// joins — the packet one half writes and the other reads — plus the window the
+// build is asked to produce, and the migration's own end: no Electrobun, no
+// Tauri, no bun.
+import { readFileSync, statSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 
 const here = fileURLToPath(new URL(".", import.meta.url));
 const root = fileURLToPath(new URL("../../", import.meta.url));
-const read = (path) => readFileSync(`${here}${path}`, "utf8");
+// A check is about what a file says, not about how the machine that checked it
+// out spells its newlines. A Windows checkout — and a Windows CI runner, where
+// `core.autocrlf` is on by default — hands these files CRLF, and a guard that
+// reads a line to its end (`targetsOf` below) has to see the same line there as
+// it does here. Every read goes through this one place for that reason.
+const text = (path) => readFileSync(path, "utf8").replace(/\r\n/g, "\n");
+const read = (path) => text(`${here}${path}`);
 const exists = (path) => Boolean(statSync(`${here}${path}`, { throwIfNoEntry: false }));
 
 const failures = [];
@@ -30,53 +43,79 @@ const check = (name, condition, detail = "") => {
 
 const app = read("ui/app.js");
 const html = read("ui/index.html");
+const shell = read("electron/main.ts");
+const preload = read("electron/preload.ts");
+const packaged = JSON.parse(read("package.json"));
+const tsconfig = JSON.parse(read("tsconfig.json"));
+const builder = read("electron-builder.yml");
 const commands = read("src/commands.rs");
-const shell = read("src/main.rs");
+const engine = read("src/main.rs");
 const bridge = read("src/bridge.rs");
+const update = read("src/update.rs");
 const manifest = read("Cargo.toml");
-const config = read("electrobun.config.ts");
-const hutch = read("hutch.config.ts");
+const coreUpdates = text(`${root}crates/core/src/updates.rs`);
+const setVersion = text(`${root}scripts/set-version.sh`);
+const ignores = text(`${root}.gitignore`);
+// pnpm is this package's manager rather than npm, and it keeps its settings in
+// `pnpm-workspace.yaml` instead of in an `.npmrc`. Read only if it is there, so
+// its absence is the check that fails rather than this line.
+const settings = exists("pnpm-workspace.yaml") ? read("pnpm-workspace.yaml") : "";
 
-// The build config is TypeScript, and a shell check does not run a bundler to
-// read it: an object is found by the name it is given and read to its matching
-// brace, so what is asserted here is the shape a build would actually get.
-const balanced = (text, open) => {
-  let depth = 0;
-  for (let index = open; index < text.length; index += 1) {
-    if (text[index] === "{") depth += 1;
-    else if (text[index] === "}") {
-      depth -= 1;
-      if (depth === 0) return text.slice(open + 1, index);
+// A negative assertion is about what a file *does*, so it is read with its
+// documentation taken off: these files name what they replaced.
+const code = (source) => source.replace(/^\s*(\/\/|\/\*|\*).*$/gm, "");
+// One section of a manifest, so a name is asserted where it is declared rather
+// than anywhere the file happens to mention it.
+const section = (source, header) => {
+  const start = source.indexOf(header);
+  if (start < 0) return "";
+  const end = source.indexOf("\n[", start);
+  return source.slice(start, end < 0 ? source.length : end);
+};
+// A slice of a source from one marker to the next, for asserting on one function
+// rather than on the file it lives in.
+const between = (source, from, to) => {
+  const start = source.indexOf(from);
+  const end = to ? source.indexOf(to, start) : -1;
+  return start < 0 ? "" : source.slice(start, end < 0 ? source.length : end);
+};
+
+// `electron-builder.yml` is YAML, and this check does not run a YAML parser: a
+// top-level block is read to the next line that starts at column zero, and a key
+// inside it is read off its own line.
+const block = (source, key) => {
+  const lines = source.split("\n");
+  const start = lines.findIndex((line) => new RegExp(`^${key}:`).test(line));
+  if (start < 0) return "";
+  let end = lines.length;
+  for (let index = start + 1; index < lines.length; index += 1) {
+    if (lines[index].trim() !== "" && !/^\s/.test(lines[index])) {
+      end = index;
+      break;
     }
   }
-  return "";
+  return lines.slice(start, end).join("\n");
 };
-const objectOf = (source, key) => {
-  const match = new RegExp(`(?:^|\\n)\\s*${key}:\\s*\\{`).exec(source);
-  return match ? balanced(source, match.index + match[0].length - 1) : "";
+const scalar = (source, key) => {
+  const match = new RegExp(`^\\s*${key}:[ \\t]*(.*)$`, "m").exec(source);
+  return match ? match[1].replace(/^["']|["']$/g, "").trim() : "";
 };
-const literalOf = (source, key) => {
-  const match = new RegExp(`(?:^|\\n)\\s*${key}:\\s*("[^"]*"|'[^']*'|[\\w.]+)`).exec(source);
-  return match ? match[1].replace(/^["']|["']$/g, "") : "";
-};
-// A negative assertion is about what a file *does*, so it is read with its
-// documentation taken off: these files explain what they replaced by name.
-const code = (source) => source.replace(/^\s*(\/\/|\/\*|\*).*$/gm, "");
-
-const appConfig = objectOf(config, "app");
-const build = objectOf(config, "build");
-const rust = objectOf(build, "rust");
-const copy = objectOf(build, "copy");
-const mac = objectOf(build, "mac");
-const runtime = objectOf(config, "runtime");
 
 // ---------- the commands and events the two halves share ----------
 
-// The names `ui/app.js` performs and the dispatch arms the app answers with,
+// The names `ui/app.js` performs and the dispatch arms the engine answers with,
 // read out of the sources themselves rather than a hand-kept list.
 const arms = new Set([...commands.matchAll(/^\s*"([a-z_]+)" =>/gm)].map(([, name]) => name));
 const performed = new Set([...app.matchAll(/invoke\("([a-z_]+)"/g)].map(([, name]) => name));
-const unanswered = [...performed].filter((name) => !arms.has(name));
+// A command the window performs itself never reaches the engine: the folder
+// chooser is the platform's panel and a link is the platform's browser, and a
+// child process can be reached through neither.
+const performedByWindow = new Set(
+  [...code(shell).matchAll(/params\?\.command === "([a-z_]+)"/g)].map(([, name]) => name),
+);
+const unanswered = [...performed].filter(
+  (name) => !arms.has(name) && !performedByWindow.has(name),
+);
 
 console.log("the commands the page performs");
 check(
@@ -101,30 +140,48 @@ console.log("the events the two halves share");
 const emitted = new Set(
   [...commands + read("src/approval.rs") + read("src/ask.rs") + read("src/turn.rs")]
     .join("")
-    .match(/\.(?:emit|announce_launch_update)\(\s*"([a-z-]+)"/g)
-    .map((call) => call.match(/"([a-z-]+)"/)[1]),
+    .match(/\.(?:emit|announce_launch_update)\(\s*"([a-z0-9_-]+)"/g)
+    .map((call) => call.match(/"([a-z0-9_-]+)"/)[1]),
 );
+// Two of them the window raises on its own — the update check a menu item asks
+// for — so the events a packet can carry are the engine's and the window's
+// together.
+for (const site of [...code(shell).matchAll(/webContents\.send\(([\s\S]*?)\);/g)].map(([, body]) => body)) {
+  const name = /id: "([a-z-]+)"/.exec(site);
+  if (name) emitted.add(name[1]);
+}
 const listened = new Set([...app.matchAll(/listen\("([a-z-]+)"/g)].map(([, name]) => name));
+// One of them is the window's own rather than the page's — the restart that runs
+// a release an install has put in place — so it is read where the window takes it
+// off the packet channel. A link is not one of these at all: opening it is the
+// window's own command, answered on the bridge before the engine ever sees it.
+const windowHandled = new Set(
+  [...code(shell).matchAll(/packet\.id === "([a-z-]+)"/g)].map(([, name]) => name),
+);
 check(
-  "listens for exactly the events the app emits",
+  "delivers every event the app emits to the half that reads it",
   listened.size > 0 &&
+    windowHandled.size > 0 &&
     [...listened].every((name) => emitted.has(name)) &&
-    [...emitted].every((name) => listened.has(name)),
-  `unemitted: ${[...listened].filter((name) => !emitted.has(name)).join(", ")} / unread: ${[...emitted]
-    .filter((name) => !listened.has(name))
+    [...emitted].every((name) => listened.has(name) || windowHandled.has(name)) &&
+    [...windowHandled].every((name) => emitted.has(name) && !listened.has(name)),
+  `unemitted: ${[...listened].filter((name) => !emitted.has(name)).join(", ")} / dropped: ${[...emitted]
+    .filter((name) => !listened.has(name) && !windowHandled.has(name))
     .join(", ")}`,
 );
 
-// ---------- the channel between them ----------
+// ---------- the channel between the page and the window ----------
 //
-// One JSON packet travels both ways: the page writes it, the main process reads
-// it, and an answer or an announcement comes back over the same shapes. Each
-// half is asserted on its own keys below, because a field renamed on one side is
-// a window that answers nothing, and nothing else in either suite would notice.
+// One JSON packet travels the whole way: the page writes it, the window passes
+// it on, the engine reads it, and an answer or an announcement comes back over
+// the same shapes. Each half is asserted on its own keys below, because a field
+// renamed on one side is a window that answers nothing, and nothing else in
+// either suite would notice.
 
 console.log("the channel the page reaches");
-// The page's one call to the host, read out of the page: a request that carries
-// the command's name and arguments under the envelope the main process reads.
+// The page's one call to the process that shows it, read out of the page: a
+// request carrying the command's name and arguments under the envelope the
+// window and the engine both read.
 const invokeCall = app.slice(app.indexOf("function invoke("), app.indexOf("async function listen("));
 check(
   "performed every command through the app's one command",
@@ -149,434 +206,717 @@ check(
     app.includes("__electrobunPendingHostMessages") &&
     /listeners\.get\(packet\.id\)/.test(app),
 );
+// The page names four globals and defines one of them; the preload installs the
+// rest. They are the names the shell this replaced used, which is how the page
+// runs in this window unchanged — so the preload has to install exactly the
+// names the page reads and no name it does not.
+const pageGlobals = [...new Set([...app.matchAll(/__electrobun[A-Za-z]*/g)].map(([name]) => name))];
+const installed = new Set([...preload.matchAll(/__electrobun[A-Za-z]*/g)].map(([name]) => name));
+// The page hands a packet to the bridge it finds first, and the preload installs
+// that one, so the two names it reads for the channel are the preload's — and
+// the event bridge the page checks second is not installed, which is what makes
+// the packet a `postMessage` in this window rather than an event.
+check(
+  "installed the globals the page reads and no others",
+  ["__electrobunHostBridge", "__electrobunPendingHostMessages", "__electrobun"].every(
+    (name) => pageGlobals.includes(name) && installed.has(name),
+  ) &&
+    [...installed].every((name) => pageGlobals.includes(name)) &&
+    !installed.has("__electrobunSendToHost") &&
+    /const userBridge = window\.__electrobunHostBridge/.test(app) &&
+    /if \(userBridge\) return userBridge\.postMessage\(JSON\.stringify\(packet\)\)/.test(app),
+  `page: ${pageGlobals.join(", ")} / preload: ${[...installed].join(", ")}`,
+);
+check(
+  "answered over the name the preload's queue hands packets to",
+  /typeof page\.__electrobun\?\.receiveMessageFromHost === "function"/.test(preload) &&
+    /page\.__electrobun\.receiveMessageFromHost\(raw\)/.test(preload) &&
+    /page\.__electrobunPendingHostMessages\.push\(raw\)/.test(preload) &&
+    /window\.__electrobun\.receiveMessageFromHost = receiveMessageFromHost/.test(app) &&
+    /window\.__electrobunPendingHostMessages = \[\]/.test(app) &&
+    /setTimeout\(drainPendingHostMessages, 0\)/.test(app),
+);
 
-// The packet the page writes and the packet the main process reads are one
-// packet: these are the paths both halves name.
+// ---------- the channel between the window and the engine ----------
+
+console.log("the channel the window reaches");
+// The preload's own end of the packet channel: one send, one subscription, and
+// the two names both halves of the window have to spell the same way. A channel
+// renamed in one of them is a window where every click does nothing.
+const channelOf = (source) => ({
+  host: /const TO_HOST = "([^"]+)"/.exec(source)?.[1],
+  page: /const TO_PAGE = "([^"]+)"/.exec(source)?.[1],
+});
+const preloadChannel = channelOf(preload);
+const windowChannel = channelOf(shell);
+check(
+  "spelled the two channel names the same in the preload and in the window",
+  Boolean(preloadChannel.host) &&
+    preloadChannel.host === windowChannel.host &&
+    preloadChannel.page === windowChannel.page &&
+    preloadChannel.host !== preloadChannel.page,
+  `${preloadChannel.host}/${preloadChannel.page} vs ${windowChannel.host}/${windowChannel.page}`,
+);
+check(
+  "carried the packet across the window's own boundary",
+  /ipcRenderer\.send\(TO_HOST, message\)/.test(preload) &&
+    /ipcRenderer\.on\(TO_PAGE, \(_event, raw: string\) => deliver\(raw\)\)/.test(preload) &&
+    /ipcMain\.on\(TO_HOST, \(event, message: unknown\)/.test(shell) &&
+    /webContents\.send\(TO_PAGE, line\)/.test(shell),
+);
+// The engine is a child process and a packet is one JSON line of it: the window
+// writes each with its own newline and reads the answers the same way, so
+// neither side buffers a packet into two or waits for a length prefix that never
+// comes.
+check(
+  "started the engine and spoke to it one packet per line",
+  /spawn\(binary, \[\], \{ stdio: \["pipe", "pipe", "pipe"\] \}\)/.test(shell) &&
+    /harness\.stdin\.write\(`\$\{line\}\\n`\)/.test(shell) &&
+    /readLines\(child\.stdout/.test(shell) &&
+    /pending\.split\("\\n"\)/.test(shell),
+);
+// The engine's binary: packaged inside the app's own resources, or the one cargo
+// left in this crate's `target/` for a development run, or whatever a developer
+// pointed the app at. All three matter — a packaged app that looked for
+// `target/` would have no engine at all.
+const harnessPath = between(shell, "function harnessPath()", "function startHarness");
+check(
+  "found the engine where the build puts it",
+  /app\.isPackaged\) return path\.join\(process\.resourcesPath, "harness", name\)/.test(
+    harnessPath,
+  ) &&
+    /OXIDE_DESKTOP_HARNESS/.test(harnessPath) &&
+    /path\.join\(__dirname, "\.\.", "\.\.", "target", profile, name\)/.test(harnessPath) &&
+    /"oxide-desktop\.exe" : "oxide-desktop"/.test(harnessPath),
+  harnessPath.replace(/\s+/g, " ").trim(),
+);
+// The engine's half of the protocol: a request read by its own fields, answered
+// over the two envelopes the page and the window already agreed on.
 check(
   "reads the packet the page writes",
-  /packet\["type"\] != "request"/.test(shell) &&
-    /packet\["id"\]\.as_u64\(\)/.test(shell) &&
-    /packet\["params"\]\["command"\]/.test(shell) &&
-    /packet\["params"\]\["args"\]/.test(shell),
-  "",
+  /packet\["type"\] != "request"/.test(engine) &&
+    /packet\["id"\]\.as_u64\(\)/.test(engine) &&
+    /packet\["params"\]\["command"\]/.test(engine) &&
+    /packet\["params"\]\["args"\]/.test(engine),
 );
 check(
-  "reads it off the channel the core queues for this process",
-  /pop_next_queued_host_message_string\(\)/.test(shell) &&
-    /spawn_host_message_drain/.test(shell) &&
-    /event_bridge: Some\(event_bridge_message\)/.test(shell),
+  "read it one line at a time off the pipe it was started with",
+  /let stdin = std::io::stdin\(\)/.test(engine) &&
+    /for line in stdin\.lock\(\)\.lines\(\)/.test(engine) &&
+    /Host::stdout\(\)/.test(engine),
 );
 check(
-  "hands the request to the command layer",
-  /use commands::\{dispatch, DesktopState\}/.test(shell) &&
-    /let answer = dispatch\(Arc::clone\(&state\), &host, &command, args\)\.await;/.test(shell),
+  "handed the request to the command layer",
+  /use commands::\{dispatch, DesktopState\}/.test(engine) &&
+    /dispatch\(Arc::clone\(&state\), &host, &command, args\)\.await/.test(engine) &&
+    /host\.respond\(id, answer\)/.test(engine) &&
+    /DesktopManager::load_lossy/.test(engine) &&
+    /auto_update\(Arc::clone\(&state\)\)/.test(engine),
 );
 check(
-  "carries the app's state into the window it opened",
-  /let webview_id = match core\.create_webview\(webview\)/.test(shell) &&
-    /Host::new\(core, webview_id\)/.test(shell) &&
-    /STATE\.set\(/.test(code(shell)) &&
-    /DesktopManager::load_lossy/.test(shell),
-);
-check(
-  "ends with the window it opened",
-  /fn window_closed/.test(shell) && /stop_event_loop\(\)/.test(shell),
-);
-
-// An answer is the page's own promise: the id it sent, whether it worked, and
-// either the value or the reason. The event channel is the same envelope with an
-// event name where the id goes.
-check(
-  "answered the packet on the same channel",
-  /send_host_message_to_webview_json/.test(bridge) &&
-    /"type": "response", "id": id, "success": true, "payload": payload/.test(bridge) &&
+  "kept the answer and the announcement the same two shapes",
+  /"type": "response", "id": id, "success": true, "payload": payload/.test(bridge) &&
     /"type": "response", "id": id, "success": false, "error": error/.test(bridge) &&
+    /"type": "message", "id": event, "payload": payload/.test(bridge) &&
     /packet\.type === "response"/.test(app) &&
-    /packet\.success/.test(app),
+    /packet\.success/.test(app) &&
+    /packet\.type === "message"/.test(app),
+);
+// A request the page sends before the engine is up is held rather than written
+// into a pipe nobody has opened, and the window answers the one request the
+// operating system's own panel has to: a folder chooser cannot be drawn from the
+// engine, which has no window at all.
+check(
+  "held what the page sent before the engine was listening",
+  /queuedToHarness\.push\(line\)/.test(shell) &&
+    /for \(const line of queuedToHarness\) child\.stdin\.write/.test(shell),
 );
 check(
-  "announced an event as its own packet",
-  /"type": "message", "id": event, "payload": payload/.test(bridge) &&
-    /packet\.type === "message"/.test(app) &&
-    /listeners\.get\(packet\.id\)/.test(app),
+  "opened the folder chooser the window's own panel provides",
+  /request\.params\?\.command === "pick_folder"/.test(shell) &&
+    /dialog\.showOpenDialog\(window, options\)/.test(shell) &&
+    /properties: \["openDirectory", "createDirectory"\]/.test(shell) &&
+    /answerRequest\(window, id, answer\.canceled \? null : \(answer\.filePaths\[0\] \?\? null\)\)/.test(
+      shell,
+    ) &&
+    /BrowserWindow\.fromWebContents\(event\.sender\)/.test(shell) &&
+    /invoke\("pick_folder"/.test(app) &&
+    !/osascript|zenity/.test(code(shell)),
 );
-// What the host opens the page with is what the page has to be able to reach:
-// the preload's own fallback evaluates the page's receiver by name, so the name
-// it installs is the one the two halves have to agree on.
+// A link is handed to the machine's own handler, and the window is the half that
+// has one: the page's request is answered there — before the engine ever sees it
+// — the scheme is checked before the URL goes anywhere, and the answer carries
+// whether the browser started, so a click that could not be carried out is one
+// the reader is told about instead of one that quietly does nothing.
 check(
-  "answers over the name the preload's fallback calls",
-  /window\.__electrobun\.receiveMessageFromHost = receiveMessageFromHost/.test(app) &&
-    /window\.__electrobun\.receiveMessageFromBun = receiveMessageFromHost/.test(app),
-  "",
-);
-
-check(
-  "opens the folder chooser the app's own window provides",
-  /OpenFileDialogOptions/.test(bridge) &&
-    /can_choose_directory: true/.test(bridge) &&
-    /host\.pick_folder\(\)\.await/.test(commands) &&
-    !/osascript|zenity/.test(code(bridge)),
-  "",
-);
-// One call into the host, which asks the core to pick the platform's handler:
-// a URL reaches that handler as its own argument, so no branch here is one
-// platform's and no shell reads the URL as text.
-const openUrl = commands.slice(commands.indexOf("pub fn open_url"), commands.indexOf("pub async fn dispatch"));
-check(
-  "handed a link to the machine's own handler rather than a program chosen per target",
-  /host\.open_url\(url\)/.test(openUrl) &&
-    !/#\[cfg\(/.test(code(openUrl)) &&
-    /is_openable_url\(url\)/.test(bridge) &&
-    /open_external\(url\)/.test(bridge),
-  openUrl.replace(/\s+/g, " ").trim(),
+  "handed a link to the machine's own handler and said whether it opened",
+  /request\.params\?\.command === "open_url"/.test(shell) &&
+    /await shell\.openExternal\(url\)/.test(shell) &&
+    /isOpenableUrl\(url\)/.test(shell) &&
+    /answerError\(window, id, describe\(error\)\)/.test(shell) &&
+    /invoke\("open_url"/.test(app) &&
+    !/xdg-open|rundll32|openPath|"open", "-a"/.test(code(shell)) &&
+    !/open-url|is_openable_url/.test(commands),
 );
 
 // ---------- the window the page runs in ----------
 
 console.log("the window");
 check(
-  "runs this package as the app's own main process",
-  literalOf(build, "mainProcess") === "rust" &&
-    literalOf(rust, "manifest") === "Cargo.toml" &&
-    literalOf(rust, "binary") === "oxide-desktop",
-  `${literalOf(build, "mainProcess")} / ${literalOf(rust, "manifest")} / ${literalOf(rust, "binary")}`,
+  "runs this package's own main process",
+  packaged.main === "electron/dist/main.js" &&
+    packaged.scripts.build === "tsc -p tsconfig.json" &&
+    /tsc -p tsconfig\.json && cargo build --release && electron-builder --config electron-builder\.yml/.test(
+      packaged.scripts.dist,
+    ) &&
+    exists("tsconfig.json") &&
+    exists("electron-builder.yml") &&
+    // Both workflows install with `pnpm install --frozen-lockfile`, which reads a
+    // lockfile and fails without one: the app's own packages have to be pinned
+    // in the tree. `package-lock.json` is npm's answer to the same question, and
+    // the two together would describe the tree twice.
+    exists("pnpm-lock.yaml") &&
+    !exists("package-lock.json") &&
+    packaged.packageManager === "pnpm@12.8.1",
+  packaged.main,
 );
-// One section of the manifest, so a name is asserted where it is declared
-// rather than anywhere the file happens to mention it.
-const section = (source, header) => {
-  const start = source.indexOf(header);
-  if (start < 0) return "";
-  const end = source.indexOf("\n[", start);
-  return source.slice(start, end < 0 ? source.length : end);
-};
-const binarySection = section(manifest, "[[bin]]");
+// pnpm installs a package's tree the way its manifest declares it: what one
+// dependency happens to carry is not reachable from this package. That is what
+// makes the two settings below load-bearing — `electron`'s own install script
+// downloads the browser the window runs in, and electron-builder names its
+// `node-gyp` as a git URL at a pinned commit, which pnpm refuses under a
+// dependency unless this file says otherwise — and it is why `@types/node` is
+// declared here rather than borrowed: it is named in `tsconfig.json`'s `types`,
+// so a copy that only arrived under a dependency would type-check against a flat
+// tree and not in this one. The resolution mode is this compiler's: TypeScript 7
+// removed `node10`, so the two move together.
 check(
-  "builds the binary this package's manifest declares",
-  new RegExp(`name = "${literalOf(rust, "binary")}"`).test(binarySection),
-  binarySection.replace(/\s+/g, " ").trim(),
+  "installed through the settings of the package manager the extension uses",
+  settings !== "" &&
+    scalar(settings, "blockExoticSubdeps") === "false" &&
+    scalar(block(settings, "allowBuilds"), "electron") === "true" &&
+    scalar(block(settings, "allowBuilds"), "electron-winstaller") === "false" &&
+    Boolean(packaged.devDependencies["@types/node"]) &&
+    /^7\./.test(packaged.devDependencies.typescript) &&
+    tsconfig.compilerOptions.module === "nodenext" &&
+    tsconfig.compilerOptions.moduleResolution === "nodenext",
+  `${packaged.devDependencies.typescript} ${tsconfig.compilerOptions.moduleResolution}`,
 );
-// The page is copied where the window loads it from: the view name in the
-// `views://` URL and the folder the copy destinations share are one name.
-const loadUrl = /"views:\/\/([^/]+)\/([^"]+)"/.exec(shell);
-const destinations = [...copy.matchAll(/^\s*"([^"]+)":\s*"([^"]+)"/gm)].map(([, from, to]) => ({
-  from,
-  to,
-}));
-check(
-  "loads the page out of the folder the build copies it into",
-  Boolean(loadUrl) &&
-    destinations.length > 0 &&
-    destinations.every(({ to }) => to.startsWith(`views/${loadUrl[1]}/`)) &&
-    destinations.some(({ to }) => to === `views/${loadUrl[1]}/${loadUrl[2]}`) &&
-    destinations.every(({ from }) => exists(from)),
-  `${loadUrl?.[0]} / ${destinations.map(({ to }) => to).join(", ")}`,
+// The workflows that build the app install the same tree this check reads, so a
+// job that reached for npm would be one with no lockfile to install from while
+// the compiler and the bundler it needs arrived from somewhere else. The pnpm
+// they set up is the one `package.json` names, and each caches on this package's
+// own lockfile rather than the tree beside it.
+const withoutComments = (source) => source.replace(/^\s*#.*$/gm, "");
+const ciWorkflow = text(`${root}.github/workflows/ci.yml`);
+const desktopWorkflow = text(`${root}.github/workflows/desktop.yml`);
+const workflowJobs = [
+  between(ciWorkflow, "\n  desktop:", "\n  vscode:"),
+  between(desktopWorkflow, "\n  build:", "\n  release:"),
+];
+const npmCommands = workflowJobs.flatMap(
+  (job) => withoutComments(job).match(/\bnpm (?:ci|install|run)\b/g) ?? [],
 );
 check(
-  "copies it and everything it loads",
+  "installed and built by the workflows the same way",
+  workflowJobs.every(
+    (job) =>
+      job !== "" &&
+      /pnpm\/action-setup@v4/.test(job) &&
+      new RegExp(`version: ${packaged.packageManager.split("@")[1]}`).test(job) &&
+      /pnpm install --frozen-lockfile/.test(job),
+  ) &&
+    npmCommands.length === 0 &&
+    /cache-dependency-path: crates\/desktop\/pnpm-lock\.yaml/.test(workflowJobs[0]) &&
+    /hashFiles\('crates\/desktop\/pnpm-lock\.yaml'\)/.test(workflowJobs[1]),
+  npmCommands.join(", ") || "pnpm in both workflow jobs",
+);
+// The notarization key travels as three secrets that belong together — the
+// encoded `.p8`, the key's own id, and the issuer it was made for — while
+// electron-builder notarizes as soon as it finds this configuration at all. A
+// step that wrote the file with a placeholder for the other two would fail
+// every unsigned build instead of leaving it unsigned.
+const keyStep = between(
+  desktopWorkflow,
+  "- name: Write App Store Connect API key",
+  "- name: Build",
+);
+check(
+  "wrote the notarization key only as a whole",
+  keyStep !== "" &&
+    /\[ -z "\$\{APPLE_API_KEY_P8:-\}" \] \|\| \[ -z "\$\{APPLE_API_KEY:-\}" \] \|\| \[ -z "\$\{APPLE_API_ISSUER:-\}" \]/.test(
+      keyStep,
+    ) &&
+    /openssl base64 -d -A > "\$\{RUNNER_TEMP\}\/AuthKey\.p8"/.test(keyStep) &&
+    /printf 'APPLE_API_KEY=%s\\n' "\$\{RUNNER_TEMP\}\/AuthKey\.p8"/.test(keyStep) &&
+    !/\(unset\)/.test(keyStep),
+  keyStep === "" ? "no key step" : "the key or nothing",
+);
+// `ui/app.js` fills the receive half of the bridge in on `window` itself, which
+// a context-isolated preload could not be reached through — so the page and the
+// preload share one world. What keeps the page from reaching Node is that
+// `nodeIntegration` is off and the preload exposes one function and nothing
+// else.
+const prefs = between(shell, "webPreferences: {", "\n  });");
+const exposed = [
+  ...new Set(
+    [...preload.matchAll(/require\("electron"\)|ipcRenderer\.(?:send|on|invoke)|contextBridge|process\.\w+/g)].map(
+      ([name]) => name,
+    ),
+  ),
+];
+check(
+  "loads the page's bridge into the page's own world, with Node out of the page",
+  /preload: path\.join\(__dirname, "preload\.js"\)/.test(prefs) &&
+    /contextIsolation: false/.test(prefs) &&
+    /nodeIntegration: false/.test(prefs) &&
+    /sandbox: false/.test(prefs),
+  prefs.replace(/\s+/g, " ").trim(),
+);
+check(
+  "exposed the packet channel to the page and nothing else",
+  exposed.length > 0 &&
+    exposed.every((name) => name === 'require("electron")' || name.startsWith("ipcRenderer.")) &&
+    /ipcRenderer\.send\(TO_HOST, message\)/.test(preload) &&
+    /ipcRenderer\.on\(TO_PAGE/.test(preload),
+  exposed.join(", "),
+);
+const minimum = /const MIN_SIZE = \{ width: ([\d.]+), height: ([\d.]+) \}/.exec(shell);
+check(
+  "kept the layout's smallest window",
+  Boolean(minimum) &&
+    Number(minimum[1]) >= 820 &&
+    Number(minimum[2]) >= 560 &&
+    /minWidth: MIN_SIZE\.width/.test(shell) &&
+    /minHeight: MIN_SIZE\.height/.test(shell),
+  minimum ? `${minimum[1]}×${minimum[2]}` : "no minimum",
+);
+// A press that activates the window is a press in the window: without this the
+// first click on a control in a window that is not yet key is spent on making it
+// key, and the reader has to click twice. The window is also shown once its
+// first frame is there rather than as a white rectangle while the transcript is
+// read.
+check(
+  "took the first press as the reader's own rather than a press to activate with",
+  /acceptFirstMouse: true/.test(shell) &&
+    /show: false/.test(shell) &&
+    /window\.once\("ready-to-show"/.test(shell),
+);
+// The page is this crate's `ui/` directory, both in a checkout and inside the
+// app's own archive, and the build has to carry it there: a `files` list that
+// forgot `ui/` is an app with no page.
+const pagePath = between(shell, "function pagePath()", "function windowFor");
+const files = block(builder, "files");
+check(
+  "loaded the page the build carries into the app",
+  /path\.join\(__dirname, "\.\.", "\.\.", "ui", "index\.html"\)/.test(pagePath) &&
+    /window\.loadFile\(pagePath\(\)\)/.test(shell) &&
+    /^\s*- ui\/\*\*$/m.test(files) &&
+    /^\s*- electron\/dist\/\*\*$/m.test(files),
+  files.replace(/\s+/g, " ").trim(),
+);
+check(
+  "copies it with everything it loads",
   /<script src="app\.js"><\/script>/.test(html) &&
     /href="style\.css"/.test(html) &&
-    destinations.some(({ to }) => to.endsWith("/app.js")) &&
-    destinations.some(({ to }) => to.endsWith("/style.css")),
-  "",
+    exists("ui/app.js") &&
+    exists("ui/style.css"),
 );
 check(
-  "gives the policy to the page that carries it rather than a window it is injected into",
+  "gives the policy to the page that carries it rather than to a window it is injected into",
   /http-equiv="Content-Security-Policy"/.test(html) &&
     /content="default-src 'none'; script-src 'self'/.test(html) &&
     /style-src 'self' 'unsafe-inline'/.test(html) &&
     /connect-src 'none'/.test(html) &&
-    !config.includes("csp"),
-  "",
+    !code(builder).includes("csp"),
 );
 check(
   "keeps the page's markup free of inline script",
   !/<script(?![^>]*\bsrc=)[^>]*>/.test(html) && !/\son[a-z]+=/i.test(html),
 );
 check(
-  "ends the process with the window it opened",
-  literalOf(runtime, "exitOnLastWindowClosed") === "true",
-  literalOf(runtime, "exitOnLastWindowClosed"),
-);
-
-// ---------- the bundle and the build that produces it ----------
-
-console.log("the bundle");
-const iconset = literalOf(mac, "icons");
-const iconsetFiles = iconset && exists(iconset) ? readdirSync(`${here}${iconset}`).sort() : [];
-check(
-  "bundles the icons the build names",
-  iconsetFiles.length === 10 &&
-    ["icon_16x16.png", "icon_128x128@2x.png", "icon_512x512@2x.png"].every((name) =>
-      iconsetFiles.includes(name),
-    ) &&
-    exists(literalOf(objectOf(build, "win"), "icon")) &&
-    exists(literalOf(objectOf(build, "linux"), "icon")),
-  `${iconsetFiles.join(", ")}`,
-);
-// Signing is the release pipeline's to decide: the two switches follow an
-// identity and notary credentials named in the environment, so a local build
-// stays unsigned and a released bundle is signed and notarized. The
-// entitlements are a record in the config rather than a file beside it.
-check(
-  "signs and notarizes only when the pipeline names the credentials",
-  /codesign: identity !== ""/.test(mac) &&
-    /notarize: notary/.test(mac) &&
-    /env\.ELECTROBUN_DEVELOPER_ID/.test(config) &&
-    /env\.ELECTROBUN_APPLEAPIKEY/.test(config) &&
-    !exists("entitlements.plist"),
-  "",
-);
-// The entitlements are a record in the config rather than a file beside it: a
-// JIT-ing webview needs them, and a release build that names a missing path
-// fails at the very end of a bundle.
-check(
-  "entitles the bundle from the config it is built with",
-  /"com.apple.security.cs.allow-jit": true/.test(objectOf(mac, "entitlements")) &&
-    /"com.apple.security.network.client": true/.test(objectOf(mac, "entitlements")),
-  "",
-);
-// The app compares a release against the version it was built with, and the
-// bundler writes the one in this config: two halves of one number, both written
-// by the release's own script.
-const packageVersion = /\[package\][\s\S]*?^version = "([^"]+)"/m.exec(manifest)?.[1];
-const setVersion = readFileSync(`${root}scripts/set-version.sh`, "utf8");
-check(
-  "reports the version the app compares a release against",
-  literalOf(appConfig, "version") === packageVersion &&
-    /desktop_manifest = f"\{root\}\/crates\/desktop\/Cargo\.toml"/.test(setVersion) &&
-    setVersion.includes('version:\\s*")[^\"]*(\")'),
-  `${literalOf(appConfig, "version")} / ${packageVersion}`,
-);
-
-console.log("the build");
-// The devkit is projected into `.hutch/` by Hutch when it prepares this
-// project, so the path dependency, the tsconfig and the pinned release all name
-// the same directory: a build here is the SDK the hutch config asked for.
-check(
-  "links the SDK the devkit projects",
-  new RegExp(`electrobun = \\{ path = "\\.hutch/devkit/rust-sdk"`).test(manifest) &&
-    /"\.\/\.hutch\/devkit\/tsconfig\.json"/.test(read("tsconfig.json")) &&
-    /electrobun: \{ version: "\d+\.\d+\.\d+" \}/.test(hutch),
-  "",
-);
-// Hutch builds this package with its own Cargo invocation — the manifest and
-// binary `electrobun.config.ts` names — so the SDK is an ordinary dependency of
-// that binary rather than one behind a feature: a binary gated behind a feature
-// Hutch does not pass is one Hutch's build would not produce.
-check(
-  "declares the SDK the binary Hutch builds from",
-  /^electrobun = \{ path = "\.hutch\/devkit\/rust-sdk" \}$/m.test(manifest) &&
-    !/required-features/.test(manifest) &&
-    !/^gui = /m.test(manifest),
-  `${binarySection.replace(/\s+/g, " ").trim()} / ${/^electrobun = .*$/m.exec(manifest)?.[0] ?? ""}`,
-);
-// The SDK is a path dependency inside this package's own directory, so Cargo
-// would otherwise adopt it as a member and lint generated code with `-D
-// warnings`; the package leaving the root workspace is what keeps every other
-// cargo command in the repository working while `.hutch/` is unsynced.
-check(
-  "keeps the vendored SDK out of the workspace's own build",
-  /\[workspace\][\s\S]*?exclude = \[".hutch"\]/.test(manifest) &&
-    /exclude = \[[\s\S]{0,80}"crates\/desktop"/.test(readFileSync(`${root}Cargo.toml`, "utf8")),
-  "",
-);
-
-// ---------- the menu bar ----------
-
-console.log("the menu bar");
-// The application menu is handed to Electrobun as raw JSON rather than through
-// the SDK's typed builder, and its native side reads a missing `enabled` as
-// `false`: an item spelled without it is drawn greyed out with nothing to
-// click, and a disabled top-level item takes the whole submenu under it with it
-// — the update item answered nothing until every item carried the field. Every
-// item the menu is written from is therefore read back here, so one added
-// without it fails in this check instead of in a reader's menu bar.
-const menu = shell.slice(shell.indexOf("fn menu_json"), shell.indexOf("fn cstr"));
-const menuItems = [...menu.matchAll(/\{([^{}]*)\}/g)].map(([, body]) => body.replace(/\s+/g, " ").trim());
-const labelled = menuItems.filter((body) => body.includes('"label"'));
-check(
-  "spells every menu item enabled",
-  labelled.length >= 10 && labelled.every((body) => body.includes('"enabled": true')),
-  labelled.filter((body) => !body.includes('"enabled": true')).join(" | "),
-);
-// The three menus that carry a submenu are written one field per line, so they
-// are held to the shape that names them and enables them in that order.
-const submenus = [...menu.matchAll(/\{\s*"label": "([^"]+)",\s*"enabled": true,\s*"submenu":/g)].map(
-  ([, label]) => label,
-);
-check(
-  "offers the app, Edit and Window menus",
-  submenus.join(", ") === "Oxide, Edit, Window",
-  submenus.join(", "),
-);
-// An item that carries both a role and an action loses the action: the native
-// side replaces the click selector with the role's own behaviour, so the menu
-// item that was meant to announce something would silently do the role instead.
-const dispatched = menuItems.filter((body) => body.includes('"action"'));
-check(
-  "leaves an action item to announce itself",
-  dispatched.length > 0 && dispatched.every((body) => !body.includes('"role"')),
-  dispatched.filter((body) => body.includes('"role"')).join(" | "),
-);
-// The menu is built against `NSApp`, which exists only once the native event
-// loop is running: installing it from `run()` before `run_main_thread` is a null
-// dereference at launch, so the install belongs to the window path that follows
-// it.
-check(
-  "builds the menu bar once the application exists",
-  code(shell).indexOf("set_application_menu_json") > code(shell).indexOf("fn create_window") &&
-    code(shell).indexOf("fn create_window") > code(shell).indexOf("run_main_thread"),
-  "",
+  "ended the app with the window it opened",
+  /app\.on\("window-all-closed", \(\) => app\.quit\(\)\)/.test(shell) &&
+    /app\.on\("before-quit"/.test(shell) &&
+    /harness\?\.kill\(\)/.test(shell),
 );
 
 // ---------- what the window is allowed to do ----------
 
 console.log("the window's own rules");
-// The window is the app's own page. Electrobun would let it navigate anywhere
-// by default, and a policy that allows every URL is a second way out of the
-// app: a link in a reply is opened in the machine's browser by the command the
-// page calls, so nothing in the window should follow one. The rules are the
-// native side's — the last match wins and `*` is the only wildcard — and the
-// callback is the renderer's, so both are asserted to name the app's own view.
-const navigation = /const NAVIGATION_RULES: &str = r#"(\[[^\]]*\])"#/.exec(shell);
-const ruleList = navigation ? JSON.parse(navigation[1]) : [];
+// The window is the app's own page. It never navigates: a link in a reply is
+// opened in the machine's browser by the packet above, so a page that navigated
+// this window away would be replacing the app, a popup would be a window with no
+// engine behind it, and a second webview would be a second page carrying the
+// preload's channel.
 check(
-  "lets the window navigate to its own page and nowhere else",
-  ruleList.length === 2 &&
-    ruleList[0] === "^*" &&
-    ruleList[1].startsWith("views://") &&
-    ruleList[1].endsWith("/*") &&
-    ruleList[1].includes(loadUrl?.[1] ?? "\u0000") &&
-    /decide_navigation: Some\(decide_navigation\)/.test(shell) &&
-    !code(shell).includes("allow_all_navigation"),
-  ruleList.join(" "),
+  "let the window show its own page and nothing else",
+  /setWindowOpenHandler\(\(\) => \(\{ action: "deny" \}\)\)/.test(shell) &&
+    /on\("will-navigate", \(event\) => event\.preventDefault\(\)\)/.test(shell) &&
+    /on\("will-attach-webview", \(event\) => event\.preventDefault\(\)\)/.test(shell) &&
+    !/webSecurity: false|allowRunningInsecureContent/.test(code(shell)) &&
+    !/allow_all_navigation/.test(code(shell)),
+);
+// Electron keeps its own browser state — the Chromium profile, the GPU cache —
+// under `app.getPath("userData")`, which by default is the very directory
+// Oxide's own configuration lives in: a `Cache/` and a `Local Storage/` in the
+// middle of a config directory the CLI reads is somebody else's files in it.
+check(
+  "kept Electron's own profile out of the config directory the CLI reads",
+  /app\.setPath\(\s*"userData",\s*path\.join\(app\.getPath\("appData"\), "Oxide", "desktop", "electron"\)/.test(
+    shell,
+  ) &&
+    /^app\.setPath\(/m.test(shell),
+  between(shell, "app.setPath(", ");").replace(/\s+/g, " ").trim(),
+);
+
+// ---------- the menu bar ----------
+
+console.log("the menu bar");
+// The menu bar is the window's own. The one item on it that is not a platform
+// role is the update check, and the page paints the dialog: the click reaches it
+// as the event the page already listens for, so the menu item and the sidebar's
+// own button end at the same dialog.
+const menu = between(shell, "function installMenu()", "function announceCheckUpdates()");
+check(
+  "offered the app, Edit and Window menus where the platform has one",
+  /Menu\.setApplicationMenu\(\s*Menu\.buildFromTemplate/.test(menu) &&
+    /if \(process\.platform !== "darwin"\) \{\s*Menu\.setApplicationMenu\(null\);\s*return;/.test(
+      menu,
+    ) &&
+    /label: "Oxide"/.test(menu) &&
+    /label: "Edit"/.test(menu) &&
+    /label: "Window"/.test(menu) &&
+    /installMenu\(\);/.test(shell),
+  menu.replace(/\s+/g, " ").trim().slice(0, 160),
 );
 check(
-  "reads the same door in the callback the renderers ask",
-  /fn decide_navigation\([^)]*\) -> u32 \{\s*u32::from\(cstr\(url\)\.starts_with\(/.test(shell) &&
-    code(shell).includes("set_webview_navigation_rules") &&
-    code(shell).indexOf("set_webview_navigation_rules") > code(shell).indexOf("create_webview"),
-  "",
+  "left the menu's own behaviour to the platform's roles",
+  /role: "about"/.test(menu) &&
+    /role: "quit"/.test(menu) &&
+    /role: "copy"/.test(menu) &&
+    /role: "minimize"/.test(menu) &&
+    /role: "hideOthers"/.test(menu),
 );
-// The shell this replaced kept a minimum window size, which is the layout's own
-// floor rather than a nicety: a run's transcript, tool cards and the composer
-// stop being usable below it. Electrobun's window options have no minimum to
-// set, so the floor is kept where a resize arrives and the frame is put back to
-// it — a resize handler that only reads the size is a window that keeps
-// shrinking.
-const minimum = /const MIN_WINDOW: \(f64, f64\) = \(([\d.]+), ([\d.]+)\)/.exec(shell);
+const clicks = [...menu.matchAll(/\{ label: "([^"]+)", click: /g)].map(([, label]) => label);
 check(
-  "keeps the layout's smallest window",
-  Boolean(minimum) &&
-    Number(minimum[1]) >= 820 &&
-    Number(minimum[2]) >= 560 &&
-    /resize: Some\(window_resized\)/.test(shell) &&
-    /fn window_resized\(/.test(shell) &&
-    /get_window_frame\(/.test(shell.slice(shell.indexOf("fn window_resized"), shell.indexOf("fn cstr"))) &&
-    /set_window_size\(/.test(shell.slice(shell.indexOf("fn window_resized"), shell.indexOf("fn cstr"))),
-  minimum ? `${minimum[1]}×${minimum[2]}` : "no minimum",
+  "asks the window to check for updates and no more",
+  JSON.stringify(clicks) === JSON.stringify(["Check for Updates…"]) &&
+    /label: "Check for Updates…", click: \(\) => announceCheckUpdates\(\)/.test(menu) &&
+    menu.indexOf('role: "about"') < menu.indexOf("Check for Updates…"),
+  clicks.join(", "),
+);
+check(
+  "announced it over the channel a turn's events travel on",
+  /window\.webContents\.send\(\s*TO_PAGE,\s*JSON\.stringify\(\{ type: "message", id: "check-updates", payload: \{\} \}\)/.test(
+    shell,
+  ) && /listen\("check-updates"/.test(app),
+);
+
+// ---------- the release the app installs itself ----------
+
+console.log("the release");
+// The artifact names are not decoration: the app updates itself from its own
+// release, and it resolves the file a release carries by that name. So every
+// name `oxide_core::updates` resolves for this component is checked against the
+// one `electron-builder.yml` would write — the join a rename on either side
+// breaks, and a rename anybody could make by hand.
+const artifacts = [
+  { platform: "mac", arch: "arm64", ext: "dmg", asset: "macos-arm64-Oxide.dmg" },
+  { platform: "linux", arch: "x64", ext: "AppImage", asset: "linux-x64-Oxide-Setup.AppImage" },
+  { platform: "linux", arch: "arm64", ext: "tar.gz", asset: "linux-arm64-Oxide-Setup.tar.gz" },
+  { platform: "win", arch: "x64", ext: "exe", asset: "win-x64-Oxide-Setup.exe" },
+];
+const named = artifacts.map(({ platform, arch, ext, asset }) => {
+  const template = scalar(block(builder, platform), "artifactName");
+  const expanded = template
+    .replace("${arch}", arch)
+    .replace("${ext}", ext)
+    .replace("${name}", "Oxide")
+    .replace("${version}", packaged.version);
+  return { asset, expanded, template };
+});
+const resolved = (asset) => new RegExp(`"${asset.replace(/[.$]/g, "\\$&")}"`).test(coreUpdates);
+check(
+  "named the files a release carries the way the updater resolves them",
+  named.length === artifacts.length &&
+    named.every(({ asset, expanded }) => expanded === asset && resolved(asset)),
+  named
+    .filter(({ asset, expanded }) => expanded !== asset || !resolved(asset))
+    .map(({ template, expanded, asset }) => `${template} → ${expanded} ≠ ${asset}`)
+    .join(" | "),
+);
+// A target list and the names are two halves of one release: a name for an
+// archive nothing builds is a download that is never there.
+// A target and the architectures it builds for, read as the pairs they are
+// declared in: `- target: x` with the `arch:` list under it. A name for an
+// archive nothing builds is a download that is never there, which is why the
+// architectures are asserted per target rather than as one union.
+const targetsOf = (platform) => {
+  const lines = block(builder, platform).split("\n");
+  const found = [];
+  for (let index = 0; index < lines.length; index += 1) {
+    const name = /^\s*- target: (\S+)$/.exec(lines[index]);
+    if (!name) continue;
+    const arch = [];
+    for (let next = index + 1; next < lines.length; next += 1) {
+      if (/^\s*- target: /.test(lines[next])) break;
+      if (!/^\s*arch:\s*$/.test(lines[next])) continue;
+      for (let entry = next + 1; entry < lines.length; entry += 1) {
+        const match = /^(\s*)- (\S+)$/.exec(lines[entry]);
+        if (!match || match[1].length <= 4) break;
+        arch.push(match[2]);
+      }
+    }
+    found.push({ target: name[1], arch });
+  }
+  return found;
+};
+check(
+  "built every target those names belong to",
+  targetsOf("mac").map(({ target }) => target).join(",") === "dmg" &&
+    targetsOf("win").map(({ target }) => target).join(",") === "nsis" &&
+    targetsOf("linux").map(({ target }) => target).join(",") === "AppImage,tar.gz",
+  ["mac", "win", "linux"]
+    .map((platform) => targetsOf(platform).map(({ target }) => target).join("+"))
+    .join(" / "),
+);
+// macOS is arm64 only — the x64 build was never published — which is what the
+// core's own platform list says too.
+const archesOf = (platform, expected) =>
+  targetsOf(platform).every(({ arch }) => arch.slice().sort().join(",") === expected);
+check(
+  "built the architectures the core offers a release for",
+  archesOf("mac", "arm64") &&
+    archesOf("win", "x64") &&
+    archesOf("linux", "arm64,x64") &&
+    /const SUPPORTED_PLATFORMS: &str = "darwin-arm64, darwin-x64, linux-x64, linux-arm64, win32-x64"/.test(
+      coreUpdates,
+    ),
+  ["mac", "win", "linux"]
+    .map((platform) =>
+      targetsOf(platform)
+        .map(({ target, arch }) => `${target}:${arch.join("+")}`)
+        .join(" "),
+    )
+    .join(" / "),
+);
+// The engine is a child process the app starts itself, so it has to be inside
+// the app: carried as a resource on each platform, and named as a binary so the
+// macOS build signs it along with the bundle it runs from.
+check(
+  "carried the engine into every bundle the build makes",
+  ["mac", "win", "linux"].every(
+    (platform) =>
+      /to: harness\/oxide-desktop(\.exe)?/.test(block(builder, platform)) &&
+      /from: target\/release\/oxide-desktop/.test(block(builder, platform)),
+  ) && /binaries:\s*\n\s*- Resources\/harness\/oxide-desktop/.test(block(builder, "mac")),
+);
+// The app and the engine report one version: the bundler writes `package.json`'s
+// into the app, `current_version()` in the engine reads its own manifest's, and
+// the release script writes both from the tag.
+check(
+  "reports the version the app compares a release against",
+  /^version = "([^"]+)"/m.exec(section(manifest, "[package]"))?.[1] === packaged.version &&
+    /env!\("CARGO_PKG_VERSION"\)/.test(update) &&
+    /crates\/desktop\/Cargo\.toml/.test(setVersion) &&
+    /crates\/desktop\/package\.json/.test(setVersion) &&
+    !/electrobun/.test(setVersion),
+  packaged.version,
 );
 
 // ---------- the update the app installs itself ----------
 
 console.log("the installer");
-// A Windows or Linux release is installed by a setup program, which the app
-// starts and cannot wait on: it reads the payload that was unpacked beside it
-// while this app is still running. A scratch directory removed as the install
-// call returns would take that payload out from under it, so the unpack has to
-// land in the app's own state directory instead — one that outlives the run and
-// is cleared by the next install.
-const update = read("src/update.rs");
-const unpack = update.slice(update.indexOf("fn unpack_setup"), update.indexOf("fn find_setup"));
-const install = update.slice(update.indexOf("fn install_downloaded"), update.indexOf("fn unpack_setup"));
-const staging = update.slice(update.indexOf("fn setup_staging"), update.indexOf("fn setup_staging") + 500);
+// Each kind of installation is replaced the way it was installed: a macOS bundle
+// from the release's disk image, a Linux AppImage by writing the release's own
+// file over the one this process runs from, a Windows installation by starting
+// the release's setup — which owns the files and waits for this app to be
+// closed, so it is the one case the app cannot claim a version for.
+const install = between(update, "fn install_downloaded", "/// Copies a downloaded setup program");
 check(
-  "unpacks a setup where the installer can still read it",
-  /unpack_setup\(download, staging\)/.test(install) &&
-    !/unpack_setup\(download, work\.path\(\)\)/.test(install) &&
-    /setup_staging\(\)\?/.test(update) &&
-    /registry_path\(\)/.test(staging) &&
-    /\.parent\(\)/.test(staging) &&
-    /join\("installer"\)/.test(staging),
-  staging.replace(/\s+/g, " ").slice(0, 160),
+  "replaced a copy in place for the two kinds the app owns",
+  /Kind::Bundle\(bundle\) => \{\s*install_bundle\(download, bundle, work\)/.test(install) &&
+    /Kind::AppImage\(image\) => \{\s*install_appimage\(download, image\)/.test(install) &&
+    /matches!\(self\.kind, Kind::Bundle\(_\) \| Kind::AppImage\(_\)\)/.test(update),
+  install.replace(/\s+/g, " ").trim().slice(0, 160),
 );
 check(
-  "clears what an earlier install left before unpacking again",
-  /remove_dir_all\(staging\)/.test(unpack),
-  unpack.replace(/\s+/g, " ").slice(0, 120),
+  "started the installer the release publishes rather than unpacking an archive",
+  /Kind::Installer => \{[\s\S]*?let staged = stage_setup\(download, staging\)\?;[\s\S]*?Command::new\(&staged\)\s*\.spawn\(\)/.test(install) &&
+    /pending: true/.test(install) &&
+    !/unpack_setup|Command::new\("tar"\)/.test(code(update)),
+  install.replace(/\s+/g, " ").trim().slice(0, 200),
 );
-// The notarize gate has to be all of one method's variables or none: a partial
-// set is notarization switched on with nothing to notarize with, which stops a
-// macOS release at the Apple submission instead of leaving it unsigned.
-const notary = code(config).slice(code(config).indexOf("const notary"), code(config).indexOf("const notary") + 400);
+// The program that is started is a copy in a directory of its own rather than
+// the download itself: the run's scratch directory is removed as the install
+// returns, so a setup started from there would be reading a file an unrelated
+// cleanup is about to delete.
+const staging = between(update, "fn stage_setup", "/// Where a downloaded setup is put");
 check(
-  "asks for every notarization variable or none of them",
-  notary.includes("env.ELECTROBUN_APPLEAPIKEY &&") &&
-    notary.includes("env.ELECTROBUN_APPLEAPIKEYPATH &&") &&
-    notary.includes("env.ELECTROBUN_APPLEAPIISSUER") &&
-    notary.includes("env.ELECTROBUN_APPLEID &&") &&
-    notary.includes("env.ELECTROBUN_APPLEIDPASS &&") &&
-    notary.includes("env.ELECTROBUN_TEAMID"),
-  notary.replace(/\s+/g, " ").slice(0, 160),
+  "staged the setup it starts beside the app's own state",
+  /fn stage_setup\(download: &Path, directory: &Path\) -> Result<PathBuf>/.test(staging) &&
+    /remove\(directory\)/.test(staging) &&
+    /fs::copy\(download, &staged\)/.test(staging) &&
+    /from_mode\(0o755\)/.test(staging) &&
+    /fn setup_staging\(\) -> PathBuf \{[\s\S]*?registry_path\(\)[\s\S]*?join\("installer"\)/.test(update) &&
+    /install_downloaded\([\s\S]{0,160}?&setup_staging\(\)/.test(update),
+  staging.replace(/\s+/g, " ").trim().slice(0, 200),
 );
+// The swap is a copy beside the installation followed by one rename, so the step
+// that can fail happens before anything moves: an AppImage written over directly
+// is a broken file if the download stops halfway.
+const appimage = between(update, "fn install_appimage", "/// Replaces a macOS app bundle");
 check(
-  "names the command that projects the Rust SDK",
-  /hutch electrobun prepare/.test(manifest) && !/hutch electrobun sync/.test(manifest),
-  "",
+  "put the new file in place in one step",
+  /let fresh = sibling\(image, "new"\)/.test(appimage) &&
+    /fs::copy\(download, &fresh\)/.test(appimage) &&
+    /fs::rename\(&fresh, image\)/.test(appimage) &&
+    /from_mode\(0o755\)/.test(appimage),
+  appimage.replace(/\s+/g, " ").trim().slice(0, 160),
+);
+// A copy the app may not write over — one an administrator installed for every
+// user, a distribution's package — is reported as advice rather than replaced,
+// and a copy that is not an installation of this app at all is not touched.
+check(
+  "refused a copy that is not this app's to replace",
+  /Kind::None => bail!\(\s*"\{\} cannot be replaced from inside the app"/.test(install) &&
+    /replaceable: writable\(&root\)/.test(update) &&
+    /fn writable\(/.test(update) &&
+    /if !self\.replaceable \{/.test(update) &&
+    /if !matches!\(self\.kind, Kind::None\)/.test(update),
+);
+// An installed copy is told from a checkout's build by what the installer left
+// beside the program, and by the executable really being inside the directory:
+// another application's uninstaller says nothing about this one.
+check(
+  "told an installed copy by the uninstaller its own setup left",
+  /const INSTALL_MARKERS: \[&str; \d\] = [^;]*"Uninstall Oxide\.exe"/.test(update) &&
+    /!executable\.starts_with\(&path\)/.test(update) &&
+    /fn install_root_of\(/.test(update) &&
+    /dirs::data_local_dir\(\)/.test(update),
+);
+// Linux is the one platform whose artifact is a file the user keeps: the
+// AppImage runtime names the file it was started from in the environment, since
+// the binary inside a mounted image is an unpacked copy whose own path says
+// nothing about where the image is.
+check(
+  "found the AppImage this process was started from",
+  /env::var_os\("APPIMAGE"\)/.test(update) &&
+    /fn installation_of\(/.test(update) &&
+    /if os == "macos"/.test(update) &&
+    /installation_of\(\s*&executable,\s*std::env::consts::OS,\s*data_root\(\)\.as_deref\(\),\s*appimage\.as_deref\(\),\s*\)/.test(
+      update,
+    ) &&
+    /label: "AppImage"/.test(update) &&
+    /asset\.name\.ends_with\("\.AppImage"\)/.test(update),
+);
+// A launch installs on its own only where the app owns the copy it runs from —
+// never a Windows installer, a distribution's package or a checkout's build,
+// which the window's dialog offers instead.
+check(
+  "installed on its own only into a copy this app owns",
+  /notice\.is_update_for\(current\) && installation\.replaces_itself\(\)/.test(update) &&
+    /fn install_reporting\(/.test(update) &&
+    /fn auto_update\(/.test(commands) &&
+    /launch_installs\(/.test(commands),
+);
+// Every step of an install reports itself, and the page paints those stages as
+// the row above the sidebar's foot: a stage renamed here is a row the window
+// never fills in, and a stage the window paints that nothing reports is a wait
+// with nothing to say.
+const stages = [
+  ...new Set([...update.matchAll(/stage: "([a-z]+)"/g)].map(([, name]) => name)),
+].sort();
+check(
+  "reported each step of an install to the window",
+  JSON.stringify(stages) === JSON.stringify(["checking", "downloading", "installing", "verifying"]) &&
+    /"stage": progress\.stage/.test(commands) &&
+    /announce_launch_update\(\s*"update-progress"/.test(commands) &&
+    /announce_launch_update\("update-ready"/.test(commands) &&
+    /announce_launch_update\("update-failed"/.test(commands) &&
+    ["update-progress", "update-ready", "update-failed"].every((name) =>
+      app.includes(`listen("${name}"`),
+    ) &&
+    /fn launch_update\(/.test(commands),
+  stages.join(", "),
 );
 
-// ---------- nothing left of the shell this replaced ----------
+// ---------- the migration's own end ----------
 
 console.log("the migration");
-const files = [];
-const walk = (dir) => {
-  for (const entry of readdirSync(`${here}${dir}`, { withFileTypes: true })) {
-    const path = `${dir}${entry.name}`;
-    if (entry.isDirectory()) {
-      if (
-        !["target", "gen", "node_modules", ".git", ".hutch", "build", "artifacts", ".cottontail-tmp"].includes(
-          entry.name,
-        )
-      )
-        walk(`${path}/`);
-      continue;
-    }
-    if (/\.(js|cjs|mjs|ts)$/.test(entry.name)) files.push(path);
-  }
-};
-walk("");
-// The front-end is one plain script — no bundler, no preload, no imports to
-// resolve — and the only other sources in the package are the two the build is
-// configured by and the tsconfig, which is JSON and only points at the devkit's
-// own.
-const sources = [
-  "check-app.mjs",
-  "check-shell.mjs",
+// The window this replaced is gone from the crate, not merely unused: a config
+// file for it, a lockfile for a runtime the build no longer needs, or a Rust
+// dependency on it is a build that goes on doing two things.
+const strays = [
   "electrobun.config.ts",
   "hutch.config.ts",
-  "tsconfig.json",
-  "ui/app.js",
+  "build/dev-macos-arm64",
+  "src-tauri",
+  "bun.lockb",
+  "node_modules/@electrobun",
+  "scripts/hutch",
 ];
 check(
-  "keeps the front-end the only JavaScript, beside its own checks and build config",
-  JSON.stringify(files.sort()) === JSON.stringify(sources.filter((path) => path !== "tsconfig.json").sort()),
-  files.join(", "),
+  "left nothing of the shell this replaced in the crate",
+  strays.every((path) => !exists(path)) &&
+    !/electrobun|hutch/i.test(code(read("src/lib.rs")) + code(update) + code(bridge)) &&
+    !/electrobun|hutch/i.test(manifest + JSON.stringify(packaged) + read("tsconfig.json")) &&
+    !/\bbun\b/i.test(code(read("src/lib.rs")) + code(update)),
+  strays.filter((path) => exists(path)).join(", "),
 );
+// What the crate does carry is the two things a release build needs on disk: a
+// bundler that makes the platform's own artifact, and an icon for it.
 check(
-  "left no packaging of the shell this replaced",
-  ["tauri.conf.json", "capabilities", "build.rs", "gen", "package.json", "bun.lockb", "node_modules"].every(
-    (path) => !exists(path),
-  ) && !/tauri/i.test(manifest),
+  "built the app with a bundler and an icon for each platform",
+  exists("electron-builder.yml") &&
+    exists("icons/icon.icns") &&
+    exists("icons/icon.ico") &&
+    exists("icons/icon.png") &&
+    scalar(builder, "appId") === "dev.oxide.desktop" &&
+    scalar(builder, "productName") === "Oxide" &&
+    scalar(builder, "output") === "artifacts",
+  `${scalar(builder, "appId")} / ${scalar(builder, "productName")}`,
 );
+// The macOS build is signed and notarized from the release workflow, and the
+// hardened runtime it runs under needs the JIT entitlement the engine's own
+// JavaScript-free binary does not: an unsigned bundle is one the reader has to
+// walk around Gatekeeper to open.
 check(
-  "keeps the build's own output out of the repository",
-  [
-    "crates/desktop/.hutch/",
-    "crates/desktop/build/",
-    "crates/desktop/artifacts/",
-    "crates/desktop/.cottontail-tmp/",
-  ].every((path) => readFileSync(`${root}.gitignore`, "utf8").includes(path)),
+  "kept the hardened runtime's own entitlements",
+  /hardenedRuntime: true/.test(block(builder, "mac")) &&
+    /entitlements: build\/entitlements\.mac\.plist/.test(block(builder, "mac")) &&
+    exists("build/entitlements.mac.plist") &&
+    /com\.apple\.security\.cs\.allow-jit/.test(read("build/entitlements.mac.plist")),
+);
+// The window's build output, the bundler's output and the engine cargo builds
+// are all generated: a release that committed one would ship a stale app, and a
+// checkout that ignored none of them cannot tell a fresh build from an old one.
+check(
+  "kept the generated parts of the crate out of the tree",
+  ["node_modules", "electron/dist", "artifacts", "target"].every((name) =>
+    ignores.includes(`/crates/desktop/${name}/`),
+  ) && exists("electron/main.ts") && exists("electron/preload.ts"),
+);
+// Every file above is read through one normaliser, because `targetsOf` reads a
+// line to its end and a Windows checkout — and a Windows CI runner, where
+// `core.autocrlf` is on by default — hands these files CRLF, where that parse
+// finds no targets at all and the release reads as one nothing builds. That is
+// how this file's release check failed on the Windows runner once, so both
+// halves are held here: the one reader strips carriage returns, and nothing
+// reads a file around it.
+const selfSource = readFileSync(fileURLToPath(import.meta.url), "utf8");
+check(
+  "read every file as a Windows checkout spells it",
+  /\.replace\(\/\\r\\n\/g, "\\n"\)/.test(selfSource) &&
+    (selfSource.match(/readFileSync\(/g) ?? []).length === 2,
+  `${(selfSource.match(/readFileSync\(/g) ?? []).length} read point(s)`,
 );
 
-console.log(failures.length ? `\n${failures.length} failed` : "\nall checks passed");
-process.exit(failures.length ? 1 : 0);
+console.log("");
+if (failures.length > 0) {
+  console.log(`${failures.length} check(s) failed`);
+  for (const name of failures) console.log(`  - ${name}`);
+  process.exit(1);
+}
+console.log("the desktop shell is the one the build makes");

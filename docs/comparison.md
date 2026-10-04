@@ -7,7 +7,7 @@ so check each project's documentation for the current details.
 
 | Capability | Oxide | [Codex](https://github.com/openai/codex) | [OpenCode](https://opencode.ai) | [Claude Code](https://docs.claude.com/en/docs/claude-code/overview) |
 | --- | --- | --- | --- | --- |
-| Distribution | Native Rust core + Electrobun desktop app (Rust main process) + VS Code extension | Open-source CLI (Rust) + IDE extension | Open-source CLI (Node/Bun) | Proprietary CLI + apps |
+| Distribution | Native Rust core + Electron desktop app (TypeScript window over the Rust engine) + VS Code extension | Open-source CLI (Rust) + IDE extension | Open-source CLI (Node/Bun) | Proprietary CLI + apps |
 | License | MIT | Apache-2.0 | Open source | Proprietary |
 | Model providers | OpenAI-compatible (OpenAI, DeepSeek, Portkey, Z.AI/GLM, custom) + Anthropic Messages API | OpenAI models (GPT-5-Codex family) + custom providers | Any provider (bring your own keys) | Claude (Anthropic API, Bedrock, Vertex, third-party) |
 | Interfaces | Terminal TUI, `-p` print, JSON/RPC modes, desktop app, VS Code extension | Terminal CLI, IDE (VS Code, Cursor) | Terminal, desktop, IDE, web | Terminal, IDE, desktop, web |
@@ -27,8 +27,8 @@ so check each project's documentation for the current details.
 | Multimodal input | Images and PDFs (`--image`, `@path`) | Images | Images | Images |
 
 A dash indicates no first-class built-in equivalent. Where Oxide differs most:
-it is a dependency-light Rust core with a terminal binary and an Electrobun
-desktop app whose main process is Rust, it speaks both the OpenAI-compatible and
+it is a dependency-light Rust core with a terminal binary and an Electron
+desktop app whose window drives that same core, it speaks both the OpenAI-compatible and
 Anthropic APIs directly, its plugin
 packages reuse the same on-disk commands, agents, skills, and MCP servers the
 ecosystem already reads, and it is compatible with the Claude Code on-disk layout

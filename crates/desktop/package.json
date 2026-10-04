@@ -1,0 +1,25 @@
+{
+  "name": "oxide-desktop",
+  "productName": "Oxide",
+  "version": "0.0.0",
+  "private": true,
+  "description": "The Oxide desktop app.",
+  "license": "MIT",
+  "author": {
+    "name": "Oxide"
+  },
+  "main": "electron/dist/main.js",
+  "packageManager": "pnpm@12.8.1",
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "check": "tsc -p tsconfig.json --noEmit",
+    "start": "cargo build && tsc -p tsconfig.json && electron .",
+    "dist": "tsc -p tsconfig.json && cargo build --release && electron-builder --config electron-builder.yml"
+  },
+  "devDependencies": {
+    "@types/node": "24.19.1",
+    "electron": "44.5.1",
+    "electron-builder": "26.0.12",
+    "typescript": "7.0.2"
+  }
+}

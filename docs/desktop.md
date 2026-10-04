@@ -1,13 +1,15 @@
 # Desktop app
 
 The `oxide-desktop` package (`crates/desktop`) is an
-[Electrobun](https://electrobun.dev) front-end for the
-same agent the terminal CLI runs: one native window whose **main process is
-Rust**, the same language the rest of Oxide is written in. The goal is one
-configuration and one session
-store shared by every front-end (the CLI, the desktop app, and the VS Code
-extension), with a GUI that can manage **multiple projects** (cross-repo) and
-show each project's session list.
+[Electron](https://www.electronjs.org) front-end for the same agent the terminal
+CLI runs: a **TypeScript window** (`electron/`) around a **Rust engine** (`src/`,
+the `oxide-desktop` binary) written in the same language as the rest of Oxide.
+They are one app in one bundle and two processes — the window is the app's
+screen, and the engine beside it is started as a child and spoken to over one
+JSON packet per line — and the goal is one configuration and one session store
+shared by every front-end (the CLI, the desktop app, and the VS Code extension),
+with a GUI that can manage **multiple projects** (cross-repo) and show each
+project's session list.
 
 ## Workspace
 
@@ -25,12 +27,12 @@ The Cargo package names are `oxide-core`, `oxide`, and `oxide-desktop`.
 `oxide-core` owns everything the agent needs; the CLI and desktop are thin
 front-ends over it, and `oxide-desktop` reuses `oxide_core::config` and
 `oxide_core::session` directly, so they read the same `config.json`, `auth.json`,
-`settings.json`, and `sessions/` tree. The Electrobun shell only owns the window
+`settings.json`, and `sessions/` tree. The Electron window only owns the screen
 and the transport: the command layer, the project registry, the turn loop and the
-brokers are ordinary Rust and are tested without a webview. `crates/desktop` is
+brokers are ordinary Rust and are tested without a browser. `crates/desktop` is
 excluded from the Cargo workspace (`exclude = ["crates/desktop"]` in the root
-`Cargo.toml`), because Electrobun's own build owns the binary's layout and
-version — it is a project of its own, built from its own directory. The VS Code
+`Cargo.toml`), because the app's own build owns the binary's layout and version —
+it is a project of its own, built from its own directory. The VS Code
 extension (`editors/vscode`,
 see [docs/vscode.md](vscode.md)) is a separate pnpm package that drives the
 `oxide` binary, so it shares the same files without linking `oxide-core`.
@@ -39,97 +41,121 @@ see [docs/vscode.md](vscode.md)) is a separate pnpm package that drives the
 
 ```
 crates/desktop/
-  src/
-    lib.rs          the library the window drives: at, manager, turn
+  src/              the engine (Rust): the harness the window starts
+    lib.rs          the library it is built from: at, manager, turn
     manager.rs      project registry + session aggregation
     turn.rs         starts an agent turn against a project
     at.rs           the `@path` walk the composer completes from
-    commands.rs     the window's command dispatcher
+    commands.rs     the `oxide_invoke` dispatcher, and the update path
     approval.rs     interactive approve/deny broker
     ask.rs          a skill's question broker
-    bridge.rs       the window, and where an event leaves it
+    bridge.rs       the packet channel: one JSON packet per line
     update.rs       this app's own release train
-    main.rs         Electrobun entry point: the window, the menu, the loop
-  ui/               front-end: index.html, app.js, style.css
-  electrobun.config.ts  app config: name, identifier, version, window, the copy
-                        of `ui/` into `views/main/`, icons, entitlements, and the
-                        signing flags the release pipeline's env decides
-  hutch.config.ts   the Electrobun release whose devkit this package builds against
-  .hutch/devkit/    the Rust SDK `hutch electrobun prepare` projects here (generated,
-                    not checked in; `Cargo.toml` points its path dependency at it)
-  icons/            app icons (`icon.iconset` for macOS, `icon.ico`, `icon.png`)
+    main.rs         harness entry point: read stdin, answer each request
+  electron/         the window (TypeScript)
+    main.ts         one BrowserWindow, the menu, the engine it starts
+    preload.ts      the bridge the page is handed
+    dist/           `tsc` output (generated; this is what Electron runs)
+  ui/               the page: index.html, app.js, style.css
+  electron-builder.yml  packaging: identifier, product name, targets, artifact
+                        names, the engine copied in as a resource, signing
+  build/
+    entitlements.mac.plist  the hardened runtime's own entitlements
+  icons/            app icons (`icon.icns` for macOS, `icon.ico`, `icon.png`)
+  package.json      the app's own package: the pnpm scripts and Electron itself
+  pnpm-workspace.yaml  pnpm's settings for this package (the install scripts it
+                        runs, and the dependency sources it allows)
+  pnpm-lock.yaml    the app's own lockfile (generated; what CI installs from)
+  tsconfig.json     the window's TypeScript config (`electron/` → `electron/dist`)
   check-app.mjs     front-end check (stubbed DOM and bridge)
-  check-shell.mjs   shell check (command/event contract, config, bundle)
+  check-shell.mjs   shell check (command/event contract, window, menu, bundle)
 ```
 
-`electrobun` is an ordinary dependency of this package rather than one behind a
-feature, because Hutch's own build is what produces the app: it compiles the
-manifest and binary `electrobun.config.ts` names (`Cargo.toml` /
-`oxide-desktop`) with no feature to turn on, so a binary gated behind one is a
-binary that build would not produce. `src/lib.rs` (the `at`, `manager` and
-`turn` modules) builds without a window at all — it is what the unit tests
-cover — while `commands.rs`, `update.rs`, `approval.rs`, `ask.rs`,
-`bridge.rs` and `main.rs` are declared by `main.rs`, so their tests run with
-`cargo test` from `crates/desktop` — which is what `.github/workflows/ci.yml`
-runs on each platform.
+The engine has no window dependency at all: it links `oxide-core` and the crates
+around it, and nothing of Electron's. `src/lib.rs` (the `at`, `manager` and
+`turn` modules) is what its unit tests cover, while `commands.rs`, `update.rs`,
+`approval.rs`, `ask.rs`, `bridge.rs` and `main.rs` are declared by `main.rs`, so
+their tests run with `cargo test` from `crates/desktop` — which is what
+`.github/workflows/ci.yml` runs on each platform, beside the window's own type
+check.
 
-Electrobun runs a build in `crates/desktop`, which compiles the Rust main
-process and copies `ui/` into `views/main/` verbatim: the
-page is one plain script with no imports to resolve, so there is nothing for a
-bundler to do and no `package.json` to install. The window loads the page from
-Electrobun's own `views://` protocol, and it talks to the main process over the
-bridge Electrobun's preload installs: a request is
-`{type: "request", id, method: "oxide_invoke", params: {command, args}}`
-posted on the user bridge, answered with
-`{type: "response", id, success, payload|error}`. The page imports nothing from
-a framework API — `bridge.rs` performs the folder picker and `open_url` in Rust,
-and the page asks for them by command name — so the window needs no capability
-grant and no allow-list beyond the bridge itself; the page's own
-`Content-Security-Policy` in `ui/index.html` is the window's
+The app is two programs in one bundle. The window is Electron's own files —
+`electron/dist/**`, `ui/**` and `package.json` — and the engine is carried beside
+them as a resource and started as a child process: `Resources/harness/oxide-desktop`
+(`Resources/harness/oxide-desktop.exe` on Windows). What travels between them is
+one JSON packet per line: the page's own requests out on the engine's stdin, its
+answers and announcements back on the engine's stdout. The window is a relay — it
+forwards a request and a packet unread, because a rule about a run belongs on the
+half that can enforce it — and only the one packet the operating system makes
+its own (`restart`, below) is read there at all, so the page and the engine are
+the only two parties to the protocol.
+
+The page is this crate's own `ui/` directory, loaded with `loadFile` (in a
+checkout and inside the packaged app's archive alike): one plain script with no
+imports to resolve, so there is nothing for a bundler to do. The window's preload
+hands it the three globals its script has always read — `__electrobunHostBridge`
+(what it sends through), `__electrobun.receiveMessageFromHost` (what the window
+calls to hand it a packet) and the `__electrobunPendingHostMessages` queue in
+between, for a packet that arrives before the page's own script has run — and
+those names are kept as they are on purpose, because the page is what reads them.
+A request is
+`{type: "request", id, method: "oxide_invoke", params: {command, args}}`,
+answered with `{type: "response", id, success, payload|error}`, and the page
+imports nothing from a framework API — the engine performs the work, and the page
+asks for it by command name — so the window needs no capability grant and no
+allow-list beyond that bridge. Only the calls that are the operating system's
+belong to the window rather than to the engine: the folder chooser
+(`pick_folder`, answered by Electron's own panel, which no child process can
+draw) and a link to open (`open_url`, answered by the window once the platform's
+handler has started or refused to — a browser that would not run is reported to
+the page rather than written to a console nobody is reading), and the relaunch
+that runs an installed release, which the engine asks for and the window performs
+since the engine is the half that knows whether a turn is running. The menu
+bar is the window's own for the same reason (see below).
+The page's own `Content-Security-Policy` in `ui/index.html` is the window's
 (`default-src 'none'`, `script-src 'self'`, `style-src 'self' 'unsafe-inline'`,
 `img-src 'self' data: blob:` for attachment thumbnails and previews,
 `font-src 'self'`, `connect-src 'none'` — nothing in the page fetches anything —
 and `form-action`/`base-uri`/`frame-ancestors` `'none'`).
 
-Events travel the other way on the window's own channel: `bridge.rs` holds the
-window and emits `agent-start`, `agent-event`, `agent-end`, `approval-request`,
-`question-request` and `question-closed`, which `app.js` listens for, plus
-`check-updates`, which the macOS menu item emits so the window performs the
-check and paints one dialog (see [Check for updates](#check-for-updates)). A run can
-only be watched, answered or stopped from the window that started it — the
-events carry no state a fresh window could be rebuilt from — so closing it ends
-the app and the turn with it (`runtime.exitOnLastWindowClosed` in
-`electrobun.config.ts`, and the window's own `close` callback, which stops the
-event loop), which is deliberately not the usual macOS "stay resident" behavior:
-a resident app with no window would leave a turn streaming into nothing, with its
-approval and question requests unanswerable.
+Events travel the other way as packets of their own: the engine announces
+`agent-start`, `agent-event`, `agent-end`, `approval-request`, `question-request`
+and `question-closed`, which `app.js` listens for, plus `update-progress`,
+`update-ready` and `update-failed` from a launch's own install (see
+[The update a launch performs itself](#the-update-a-launch-performs-itself)), and
+the window raises `check-updates` from its menu item so the page performs the
+check and paints one dialog (see [Check for updates](#check-for-updates)). One
+more is the window's own to carry out rather than the page's — `restart` — and it
+is read off the packet channel there; a link to open is not, since opening one is
+the window's own command, answered on the bridge before the engine sees it. A run
+can only be
+watched, answered or stopped from the window that started it — the events carry
+no state a fresh window could be rebuilt from — so closing it ends the app and
+the turn with it (`window-all-closed` quits the app, quitting kills the engine's
+child process, and the engine's own loop ends when its stdin does), which is
+deliberately not the usual macOS "stay resident" behavior: a resident app with no
+window would leave a turn streaming into nothing, with its approval and question
+requests unanswerable.
 
-The menu bar is the app's own, built in `main.rs` and handed to Electrobun as raw
-JSON (`label`/`action`/`role`/`submenu`/`enabled`) rather than through the SDK's
-typed builder, which fills in the fields the native side expects. Two
-consequences are load-bearing. The install happens once the window is up, since
-the native side builds the `NSMenu` against `NSApp` and that exists only after
-the event loop has started — installing it from `run()` before
-`Core::run_main_thread` is a null dereference at launch. And every item spells
-`enabled: true`: the raw path reads a missing `enabled` as `false`, so an item
-written without it is drawn greyed out and answers nothing, and a disabled
-top-level item takes its whole submenu down with it. An item carries a `role`
-*or* an `action`, never both — a role replaces the item's click selector, so the
-combination would silently do the role's own behavior instead of announcing
-`check-updates`. `check-shell.mjs` reads the menu back out of `main.rs` and holds
-all four rules.
+The menu bar is the window's own: `installMenu` builds it with
+`Menu.buildFromTemplate` from the platform's own roles (`about`, `quit`,
+`hideOthers`, `undo`/`copy`/`paste`, `minimize`/`zoom`/`close`) plus the one item
+the app answers itself — **Check for Updates…**, which sends the page the
+`check-updates` event and so ends at the same dialog the sidebar's own button
+opens. macOS is the only platform that gets one; everywhere else the window is
+the app, as it was before. `check-shell.mjs` reads the menu back out of
+`electron/main.ts` and holds its shape: the roles, the one `click` being the
+update check, and that item sitting after **About**.
 
-The window is 1200×800 and opens centered, with 820×560 as its floor — the size
-below which a transcript, its tool cards and the composer stop being usable. The
-shell this replaced set that floor as a window option; Electrobun has none to
-set, so `main.rs` keeps it where a resize arrives: `WindowCallbacks::resize`
-compares the size it is handed against the floor and, when the window is under
-it, asks `get_window_frame` for the window as it is and `set_window_size` for the
-minimum. The two calls are not in the resize callback's own space — it reports
-the room the page is laid out in, they speak in the window's outer size — so the
-chrome between them is measured from the window rather than assumed, which keeps
-the floor the layout's size on every platform. The resize the clamp causes
-reports a page already at the minimum, so it settles rather than asking again.
+The window is 1200×800 and opens centered, with 820×560 as its floor (`MIN_SIZE`
+in `electron/main.ts`, kept as the window's own `minWidth`/`minHeight`) — the size
+below which a transcript, its tool cards and the composer stop being usable. No
+resize handler measures anything for it: Electron clamps the window itself. The
+window is shown once its first frame is there (`show: false` until
+`ready-to-show`) rather than as a white rectangle while the transcript is built,
+and it takes the press that activates it as a press in the window
+(`acceptFirstMouse: true`), so the first click on a control in a window that is
+not yet key is not spent on making it key.
 
 ## Interface
 
@@ -151,6 +177,20 @@ carry — a character a control could wear cannot appear under cover of them. It
 also holds the paths the two front-ends share beside the extension's own
 sources, so chrome drawn one way in the panel and another in this window fails
 the check.
+
+Lists do not wear a bar that is always there. A scrollable box keeps its
+scrollbar's lane clear of its rows, and the bar is drawn only while the box is
+being scrolled: `ui/app.js` marks the element the `scroll` came from and the
+sheet paints the thumb under that mark, taking it away again a moment after the
+scrolling stops, so nothing stands in the lane while a list sits still. The
+thumb is inset inside its lane (a transparent border with
+`background-clip: padding-box`) and painted in the theme's own text colour
+rather than in the border colour, which sits at the same weight as the rules it
+runs beside; it is painted with `background-color`, since the `background`
+shorthand would reset that clip and bring the bar back the full width of its
+lane. `check-app.mjs` holds that pairing — a resting thumb painted, a mark that
+paints nothing, a mark never taken away or landing on the body, and a painted
+bar that has lost its inset are each a failed check.
 
 The regions, top to bottom:
 
@@ -214,10 +254,11 @@ The regions, top to bottom:
   back to the Queue or Steer it takes. A new task carries no placeholder, and the provider is
   not repeated here because the composer's model chip already names it; the
   right side says only what has to be acted on (`no API key`, `project
-  resources off`). The window is Electrobun's own (`WindowOptions` in
-  `src/main.rs`): no AppKit event monitor, Objective-C hook, preload script or
-  platform-specific input path is installed, and every control is wired to a
-  plain `onclick`.
+  resources off`). The window is Electron's own (`createWindow` in
+  `electron/main.ts`): no AppKit event monitor, Objective-C hook or
+  platform-specific input path is installed — the page's own preload is the one
+  thing it adds, and it installs the packet bridge and nothing else — and every
+  control is wired to a plain `onclick`.
 - **Conversation** — a centered 780px column, the width the composer and the
   popovers above it share, so the window's edges line up rather than each row
   measuring itself. User messages are right-aligned
@@ -254,8 +295,8 @@ The regions, top to bottom:
   fails the check. The box itself says whether it is holding something: its
   border lifts while a message or a chip is in it. No input box paints on
   focus — the caret moving into a box leaves its border alone — so every box
-  looks the same whether the caret is in it or not, and WebKit's own focus ring
-  is suppressed with `outline: none`. One
+  looks the same whether the caret is in it or not, and the engine's own focus
+  ring is suppressed with `outline: none`. One
   action sits on the right, which swaps rather than sitting beside a second
   button: **Stop** while a turn runs and there is nothing to say, **Send**
   beside **Queue**/**Steer** the moment there is — and only **Stop** while that
@@ -274,29 +315,29 @@ The regions, top to bottom:
   `!important`, so a dialog the app has put away cannot be painted back over
   the window by a later rule. `crates/desktop/check-app.mjs` reads each of those
   out of the sheet. The
-  webview owns focus, pointer, keyboard, and activation semantics, and
+  window's engine owns focus, pointer, keyboard, and activation semantics, and
   page-control activation stays native: while an editor owns focus — including
-  one WebKit ended just before the press, remembered from its `focusout` — a
+  one Chromium ended just before the press, remembered from its `focusout` — a
   primary `mousedown` on any control the page wires a click to — a button, a
   link, a sidebar/list row, a change card or a question choice — prevents only
-  the focus-changing default, so WebKit delivers that press's click instead of
-  spending it on moving focus — the press that otherwise read as one needing a
+  the focus-changing default, so the engine delivers that press's click instead
+  of spending it on moving focus — the press that otherwise read as one needing a
   second click — and the box the reader has moved on from gives the caret up
   with that press, so the next thing typed goes where they clicked rather than
   into a box they have left. The rows of the two completion lists are the
   exception, since taking one finishes the text in the box the caret is in
-  rather than leaving it; a press that lands on no control at all is left to
-  WebKit, which ends the editing session on its own, and one into another text
+  rather than leaving it; a press that lands on no control at all is left to the
+  engine, which ends the editing session on its own, and one into another text
   field places that field's caret without the page's help. Keyboard focus and
   activation are unchanged, and the native click stays authoritative: the page
-  supplies one on the next task only when the webview withheld it, so a control
+  supplies one on the next task only when the window withheld it, so a control
   answers exactly once. A
   control inside another stops its click from reaching the row around it, so a
   thread's ✕ removes the thread rather than selecting the row and a chip's ✕
   removes the chip rather than opening the picture — and a thumbnail's picture
   is undraggable (`-webkit-user-drag: none` in the stylesheet as well), so the
   gesture on it stays the click that opens the preview instead of starting the
-  drag WebKit withholds it for. The
+  drag the engine withholds it for. The
   status and
   token/cost usage sit just below it. The 📎 button (or a pasted clipboard
   image) attaches images/PDFs, shown above the input as thumbnails that open a
@@ -327,45 +368,71 @@ The regions, top to bottom:
 ## Running
 
 ```sh
-# from crates/desktop: build the main process, lay out the app, and run it
-hutch electrobun dev
-hutch electrobun dev --watch   # rebuilds and relaunches on an edit
+cd crates/desktop
+pnpm install     # once: Electron, TypeScript and electron-builder
 
-# the package is its own workspace, so it can also be built by hand — the Rust
-# SDK has to be projected into `.hutch/devkit` first (`hutch electrobun prepare`)
-cargo run
+pnpm start       # `cargo build`, then `tsc`, then the window
+pnpm run build   # compile the window only (`tsc -p tsconfig.json`)
+pnpm run check   # type check the window, writing nothing
+pnpm run dist    # both halves in release, packaged into the platform's installer
 ```
 
-`crates/desktop` is not a member of the root workspace, so a plain `cargo
-build`/`cargo test` at the repository root neither builds nor tests the window.
-Run the package's own commands from `crates/desktop` — `hutch electrobun prepare`
-then `cargo test` for the shell's own tests.
+`pnpm start` compiles the engine with `cargo build` first, compiles the window,
+and runs Electron on this crate. The window finds the engine it starts in this
+order: `OXIDE_DESKTOP_HARNESS` when a developer points it at one, the copy
+carried in the bundle (`Resources/harness/oxide-desktop`, or
+`Resources/harness/oxide-desktop.exe` on Windows) when the app is packaged, and
+otherwise `target/debug/oxide-desktop` (or `target/release/oxide-desktop` when
+`OXIDE_DESKTOP_PROFILE=release`). A window whose engine is missing reports the
+path it looked for and exits, rather than painting a UI whose every click would
+fail.
 
-The front-end (`ui/`) is not bundled: Electrobun's build copies `ui/index.html`,
-`ui/app.js` and `ui/style.css` into the app beside the compiled main process (the
-`build.copy` map in `electrobun.config.ts`), and the window loads them from the
-`views://` protocol. A plain `cargo run` re-compiles the main process and copies
-nothing, so an edit to `ui/` reaches the window through `hutch electrobun dev
---watch` (or another build) rather than on its own — a running window is never
-hot-reloaded — and a new asset has to be added to that copy map before it can be
-loaded at all.
+`crates/desktop` is not a member of the root workspace, so a plain `cargo
+build`/`cargo test` at the repository root neither builds nor tests it. Run the
+package's own commands from `crates/desktop` — `pnpm run check` for the window's
+TypeScript, `cargo test` for the engine's own tests.
+
+The window's packages are pnpm's, the way the VS Code extension's are: the tree
+is installed from `pnpm-lock.yaml` (which CI installs with `--frozen-lockfile`),
+`package.json` names the pnpm version to use, and pnpm's own settings live in
+`pnpm-workspace.yaml` rather than an `.npmrc`. Two of them are there because the
+build needs them: Electron's install script is what downloads the browser the
+window runs in — pnpm runs no dependency's scripts unless that file allows it —
+and electron-builder names its `node-gyp` as a git URL at a pinned commit, which
+pnpm refuses under a dependency unless the file says otherwise. pnpm also
+installs the tree the way the manifest declares it rather than flattening every
+dependency into one directory, which is why `@types/node` is a dependency of
+this package: `tsconfig.json` names it in `types`, so a copy that only arrived
+under something else would type-check on a machine with a flat tree and not
+here.
+
+The compiler is TypeScript 7, whose configuration is `tsconfig.json`'s: it emits
+CommonJS for Electron's own loader, and the resolution mode it uses is
+`nodenext` — the older `node`/`node10` mode is one 7 removed.
+
+The front-end (`ui/`) is not compiled: `electron-builder.yml` copies the
+`ui/` directory into the app, and the window reads the page out of it by
+`loadFile` — this crate's own directory in a checkout, the app's archive in a
+packaged build — so an edit to `ui/` needs no build step and is in the window
+the next time the page is loaded. An edit to `electron/*.ts` is not, since
+Electron runs `electron/dist/main.js`: `pnpm run build` compiles it.
 
 To refresh the app you launch from `/Applications` (or any installed copy),
 build an installer and put the app in place:
 
 ```sh
-# an unsigned installer of this platform, written to crates/desktop/artifacts/
-cd crates/desktop && hutch electrobun build --env=stable
+cd crates/desktop
+pnpm run dist   # this platform's installer, written to artifacts/
 # quit Oxide, then install from the artifact this produced
 ```
 
-A released build is signed and notarized by the pipeline (see
-[Packaging](#packaging)); a local one is left unsigned, and macOS quarantine on a
-downloaded copy is what the release notes advise a reader about rather than a
-failure of the app itself.
+A released build is signed and notarized by the pipeline when its secrets are
+configured (see [Packaging](#packaging)); a local one is left unsigned, and
+macOS quarantine on a downloaded copy is what the release notes advise a reader
+about rather than a failure of the app itself.
 
-The two checks are plain Node scripts — the page is JavaScript and the shell's
-config is TypeScript, which `cargo test` cannot reach:
+The two checks are plain Node scripts — the page is JavaScript and the window's
+own sources are TypeScript, which `cargo test` cannot reach:
 
 ```sh
 cargo build -p oxide              # the catalog and MCP state are read from the CLI
@@ -389,21 +456,34 @@ rather than a hand-kept list: every `invoke("…")` in `app.js` has an arm in
 `src/commands.rs` (and every arm is one the page performs, or a listed one kept
 for a client that calls the app rather than the page), the events `commands.rs`,
 `approval.rs`, `ask.rs` and `turn.rs` emit are exactly the events `app.js`
-listens for, the page reaches the app through `oxide_invoke` and no private
-bridge, `main.rs` reads the packets the core queues for this process and hands
-them to the command layer, the answers and announcements go back over the
-channel the page's preload gives it, the window's options are the app's own (its
-state carried in, the page loaded out of the folder the build copies it into,
-the process ending with the window), the CSP is the page's own rather than one
-injected over it, `electrobun.config.ts` copies everything the page loads and
-names icons that are on disk, `set-version.sh` writes the version both the
-config and the Cargo manifest report, the manifest declares the SDK the devkit
-projects as an ordinary dependency of `oxide-desktop` (so the build Hutch runs
-links it, and the package sitting outside the workspace keeps it out of the
-workspace's own build), and the migration's own end: the only JavaScript in the
-crate is the front-end plus these two files and the build config, and nothing of
-the shell it replaced is left behind (`tauri.conf.json`, `capabilities/`,
-`build.rs`, `gen/`, `package.json`, `bun.lockb`, `node_modules`).
+listens for (plus the two the window takes off the packet channel itself), the
+page reaches the engine through `oxide_invoke` over the bridge its preload
+installs (`__electrobunHostBridge`, `__electrobun.receiveMessageFromHost` and
+the pending-messages queue — the names the page has always read, and no name it
+does not), the window and its preload spell the two channel names the same way,
+`electron/main.ts` starts the engine as a child and speaks to it one packet per
+line, `src/main.rs` reads those packets off its own stdin and hands them to the
+command layer, the answer and the announcement keep the two shapes `bridge.rs`
+writes, the window's own rules (its own page and nothing else — no popup, no
+navigation, no attached webview — Electron's profile kept out of the config
+directory the CLI reads, and the layout's smallest window kept as the option
+Electron clamps with), the package's own `main` and pnpm scripts being the
+window's build, the tree installed and compiled the way the extension's is (a
+pnpm lockfile and no npm one, the settings `pnpm-workspace.yaml` has to carry for
+this package's dependencies, `@types/node` declared here rather than borrowed,
+and the `nodenext` resolution TypeScript 7 asks for) and the two workflows that
+build the app installing that same tree with the pnpm the package names, the menu
+bar and its one
+click, the artifact names in
+`electron-builder.yml` against the ones
+`oxide_core::updates::Component::Desktop` resolves and the engine carried into
+every bundle the build makes, the installer (each kind of installation replaced
+the way it was installed, and the stages a launch reports), the CSP as the page's
+own rather than one injected over it, `set-version.sh` writing the version both
+the Cargo manifest and `package.json` report, and the migration's own end:
+nothing of the shell the app replaced is left in the crate (no Electrobun or
+Hutch config, no devkit, no bun lockfile), and the generated parts of the crate
+are the ones its `.gitignore` keeps out.
 
 ## Sharing configuration with the CLI
 
@@ -422,8 +502,8 @@ is saved, the desktop asks **Trust this project?** the way the CLI's trust
 prompt does. Trusting it saves a `true` decision to `trust.json` and reloads the
 ecosystem; declining saves `false` and leaves project resources out. The trust
 button in the composer — a shield, tinted with the accent once the project is
-trusted — shows and reviews the current decision, so the harness loads exactly
-as it would in the CLI instead of being silently dropped.
+trusted — shows and reviews the current decision, so the project's resources load
+exactly as they would in the CLI instead of being silently dropped.
 
 The **Connect** button in the composer stores credentials through
 `oxide_core::auth`: a new key
@@ -480,7 +560,7 @@ nothing is open, which otherwise just starts a thread in the open project. With
 no project at all the home state says to add one with the project chip.
 
 A folder is never switched out from under a running turn. The turn belongs to
-this window's process and its run id is the thread it is in, so the next Queue or
+the engine's process and its run id is the thread it is in, so the next Queue or
 Steer would be sent to the run of a project the chip no longer names.
 `selectProject` refuses while one runs (`busyRefusal`, the answer starting a new
 thread already gives) and reports the refusal, and every caller that would go on
@@ -521,7 +601,7 @@ from the terminal is told the same thing.
 project's config, resolves the session (`new` / `latest` / an id), appends the
 user message through `oxide_core::runner::begin_session`, and spawns the shared
 agent loop with `runner::spawn_agent`, returning a stream of `AgentEvent`s plus
-the run's `Steering` handles and its cooperative `Cancel` flag. The window's
+the run's `Steering` handles and its cooperative `Cancel` flag. The engine's
 event channel serializes events with
 `oxide_core::cli::event_json` (the same Pi-shaped JSON the CLI emits in
 `--mode json`), attaches any `DiffPreview`, and forwards them over
@@ -802,17 +882,18 @@ Assistant replies render as Markdown: headings, ordered/unordered lists
 (including `- [ ]` tasks), blockquotes, rules, pipe tables, fenced code with
 lightweight syntax highlighting (Rust, JS/TS, Python, Go, Bash, JSON), and
 inline emphasis/code/links. Bare `http(s)://` URLs are auto-linked too, and
-clicking any link opens it in the system browser through `open_url` — one call
-into Electrobun's `Core::open_external`, which hands the URL to whatever the
-machine uses as its handler rather than a program this source picks per target —
-while navigation is denied inside the application window. That denial is kept in
-two places because Electrobun reads it in two: the webview is given the rules
-`["^*","views://main/*"]` — matched against the whole URL, last match wins, `*`
-the only wildcard — and the `decide_navigation` callback, which the renderers
-that ask it rather than read a policy go through, allows nothing but
-`views://main/`. The window therefore navigates to the page it was built with
-and nowhere else, which is what makes a link in a reply a browser tab rather
-than a remote document painted in the app. Tool results render as
+clicking any link opens it in the system browser through `open_url`: the window
+is the half that has the machine's handler, so it answers the page's request
+directly — checking the scheme first (http(s) alone), so a `file:` path or a
+custom scheme reaches nothing at all rather than the platform's handler, calling
+`shell.openExternal`, and answering with whether the browser started, which is
+what a click the machine could not carry out is reported by instead of a console
+line nobody reads. Neither side reads the URL as a command line, and no branch of
+it is one platform's. Navigation is denied inside the
+window for the same reason: it shows the page it was built with and nowhere
+else, so a link in a reply is a browser tab rather than a remote document
+painted in the app (`setWindowOpenHandler` denies every popup, and
+`will-navigate`/`will-attach-webview` are prevented). Tool results render as
 panels;
 `write`/`edit` results include a colored diff.
 
@@ -822,14 +903,15 @@ The check-for-updates button in the sidebar footer — or **Check for Updates…
 in the macOS app menu,
 directly under **About**, which asks the open window to run the same check —
 reports the newest **Oxide Desktop** release and installs it. The app's own
-release train is `desktop-v*` and nothing else: the window runs the same check
-the terminal's `oxide update --check --json --component desktop` performs,
+release train is `desktop-v*` and nothing else: the engine resolves it with the
+same check the terminal's `oxide update --check --json --component desktop`
+performs,
 served by the shared resolution in `oxide_core::updates`, so the release it
 offers is the desktop release and not the oxide command line's own newest tag.
 The dialog shows the version the app runs now, the tag it would install
 (`desktop-v0.34.0`), and the installer it would fetch —
-`macos-arm64-Oxide.dmg` on this Mac, the `-Setup.tar.gz` on Linux, the
-`-Setup.zip` on Windows — then **Install**, **Release notes** (the release page,
+`macos-arm64-Oxide.dmg` on this Mac, the `-Setup.AppImage` on Linux, the
+`-Setup.exe` on Windows — then **Install**, **Release notes** (the release page,
 in the system browser) and **Close**. It does not update the `oxide` command
 line, and the terminal, the panel and the desktop app each update their own
 installation.
@@ -837,27 +919,30 @@ installation.
 **Install** downloads that artifact — re-resolved at the click, so what is
 installed is the release that is newest then — verifies it against the SHA-256
 GitHub reports for the asset, and puts it in this installation's place the way
-this copy was installed: on macOS the `.dmg` is mounted read-only with
-`hdiutil`, the `.app` inside it is copied out beside the installed bundle and
-only then renamed over it (the copy that can fail happens before anything is
-moved, and the copy that was there is put back if the rename cannot land), and
-the image is detached again; elsewhere the setup archive is unpacked with the
-machine's own `tar` and **its installer is run**, which owns the installation
-from there — it writes over the files and waits for the running app to be closed
-— so that install is reported as started rather than finished. A setup is
-unpacked into `<config>/Oxide/desktop/installer`, beside the app's own registry
-rather than in the private scratch directory a download lands in: the installer
-reads the payload beside it while this app is still running, and that scratch
-directory is removed as the install call returns, which would pull the payload
-out from under a setup that had only just started. Each install empties that
-directory before it unpacks into it, so a run that was interrupted leaves one
-directory rather than a pile. The running app
-keeps running either way — the dialog ends with the path the release landed at
-and the one thing left to do, quitting and opening the app again. A release
-that carries no build for this platform (macOS Intel included), and an install
-that cannot be written to from here (a distribution's own package, a checkout's
-build, a copy an administrator put in place for every user), is reported with
-the file to install by hand rather than replaced.
+this copy was installed. A macOS `.app` bundle is replaced from the release's disk
+image: the `.dmg` is mounted read-only with `hdiutil` (and `-nobrowse`, so a
+check puts no volume in the Finder's sidebar), the `.app` inside it is copied out
+beside the installed bundle with `ditto`, and only then renamed over it — the
+copy that can fail happens before anything is moved, and the copy that was there
+is put back if the rename cannot land — and the image is detached again. An
+AppImage is a file this process is running from, so the release's own file is
+copied beside it, made executable, and renamed over the path — one step, since a
+Linux process keeps the file it started with — which is the whole installation.
+A Windows copy is replaced by **running the release's setup**, which owns the
+installation from there: it writes over the files it put there and waits for the
+running app to be closed, so that install is reported as started (pending) rather
+than finished. That setup is copied into `<config>/Oxide/desktop/installer`
+before it is started, since the download itself lands in the run's own scratch
+directory, which is removed as the call returns — a program started from there
+would be reading a file an unrelated cleanup is about to delete, and on Windows a
+program that is still running is exactly what the cleanup cannot remove. The
+running app keeps running either way — the dialog ends with
+the path the release landed at and the one thing left to do, quitting and opening
+the app again. A release this copy cannot be replaced with is reported with the
+file to install by hand instead: a checkout's build, a distribution's own package
+or a copy an administrator put in place for every user cannot be written to from
+here at all, and an artifact of another kind than this installation's (a Windows
+setup for an app bundle) is not the one that replaces it.
 
 A download that does not match its checksum is refused before anything is
 replaced, and one install runs at a time. A check asked for again — the menu
@@ -869,7 +954,7 @@ pretending to be up to date.
 
 ### The update a launch performs itself
 
-A launch does not wait to be asked. `main.rs`'s `setup` spawns
+A launch does not wait to be asked. The engine's `main.rs` spawns
 `commands::auto_update` off the window's path, which resolves the newest release
 of this app's own train through the shared `oxide_core::update_notice`: the
 answer the last launch found is read at once and looked up again only once that
@@ -882,9 +967,9 @@ shared notice, this install and the terminal's off together.
 
 Only a copy the app owns installs itself: `update::launch_installs` is true when
 the release is newer than the build running here *and* this installation is one
-the app replaces in place — a macOS `.app` bundle the reader installed. A
-checkout's build, a distribution's package, a copy an administrator put in
-place for every user, and an installation an Electrobun installer made (which
+the app replaces in place — a macOS `.app` bundle the reader installed, or an
+AppImage. A checkout's build, a distribution's package, a copy an administrator
+put in place for every user, and a Windows installation a setup made (which
 takes over the files and waits for the app to be closed) all leave the launch
 alone: nothing is written over behind the reader's back, and the dialog's own
 **Install** stays the way in.
@@ -896,17 +981,19 @@ The window reports it as a row above the sidebar's foot rather than a dialog,
 since nobody asked for this one: the stages arrive as `update-progress` events
 and the row follows them (`Looking for a new release…`, `Downloading Oxide
 0.36.0…`, `Verifying…`, `Installing…`), ending at `Oxide 0.36.0 is installed.`
-with **Restart** beside it. The install starts from `setup`, before the page has
-loaded and subscribed to the event channel, so each step is kept beside the app's
+with **Restart** beside it. The install starts with the engine, before the page
+has loaded and subscribed to the event channel, so each step is kept beside the
+app's
 state as well as emitted and the page asks for the newest one as it starts
 (`launch_update`): the report the restart hangs on is not one to have missed,
 and a window that opened mid-install paints exactly what it would have heard.
 The process running is still the build that started,
 so the reload is the only thing that runs the release: **Restart** is the
-`restart_app` command, which relaunches this copy and stops the event loop — the
-loop that owns the window being this process — and starts the new copy as its
-own process (`open -n` on a macOS bundle, the executable again elsewhere), so
-the release just put in place is the one that runs. A turn is work this process
+`restart_app` command, which the engine refuses while a turn runs and otherwise
+asks the window for, since a process cannot replace the app it was started from —
+the window relaunches this copy and exits (`app.relaunch()`, naming the
+AppImage's own file from `$APPIMAGE` when that is what is running), so the release
+just put in place is the one that runs. A turn is work this process
 owns — its tools write
 files and its stream is read here — so a restart mid-turn is refused the way
 replacing the thread on screen is refused, and the row says so. The ✕ puts the
@@ -922,69 +1009,76 @@ dialog's own button is the one to ask again with.
 
 ## Packaging
 
-Icons are checked in (`icons/`: a 10-entry `icon.iconset` for macOS, plus
-`icon.ico` and `icon.png`). Hutch builds the installer for the machine it runs
-on:
+Icons are checked in (`icons/`: `icon.icns` for macOS, `icon.ico` for Windows,
+`icon.png` for Linux, and the `.png` sizes and `icon.iconset` they were made
+from). One command produces this platform's installer:
 
 ```sh
 cd crates/desktop
-hutch electrobun prepare            # project the Rust SDK, resolve the toolchain
-hutch electrobun build --env=stable # an unsigned installer for this platform
-hutch electrobun dev                # a dev build, launched
+pnpm run dist   # tsc, then cargo build --release, then electron-builder
 ```
 
-Each build writes to `crates/desktop/artifacts/`, flat and prefixed the way
-Electrobun names them: a `.dmg` on macOS, a `-Setup.zip` on Windows, a
-`-Setup.tar.gz` on Linux, each beside the `*.tar.zst` update archive and the
-`*-update.json` metadata of Electrobun's own updater. The release uploads only
-the installer, because this app's updater installs the **installer** (see [Check
-for updates](#check-for-updates)) rather than applying Electrobun's update
-payload: the archive, the delta patches and metadata naming an archive the
-release does not carry are all left behind.
+That script is three steps: `tsc -p tsconfig.json` compiles the window,
+`cargo build --release` compiles the engine, and
+`electron-builder --config electron-builder.yml` packages the two into one app —
+Electron's own files (`electron/dist/**`, `ui/**`, `package.json`) with the engine
+carried beside them as `Resources/harness/oxide-desktop`
+(`Resources/harness/oxide-desktop.exe` on Windows), named in the macOS build as a
+binary so it is signed along with the bundle that runs it.
 
-Builds are per-platform: a macOS build produces only the macOS artifacts, so a
+Each build writes to `crates/desktop/artifacts/`, named the way
+`oxide_core::updates::Component::Desktop` resolves a release's assets: a
+`macos-arm64-Oxide.dmg`, a `linux-<arch>-Oxide-Setup.AppImage` and a
+`linux-<arch>-Oxide-Setup.tar.gz` for each Linux architecture, and a
+`win-x64-Oxide-Setup.exe`. electron-builder also writes its own `latest*.yml`
+metadata and a blockmap beside the installer; this app resolves its release
+through GitHub itself, so metadata describing a feed it does not read is
+deliberately not published.
+
+Builds are per-platform: a macOS build produces only the macOS artifact, so a
 release is four builds (macOS arm64, Linux x64, Linux arm64, Windows x64), each
-on a runner of its own platform. macOS is the only platform Hutch signs and
-notarizes; the build's entitlements come from `electrobun.config.ts` (the JIT
-and unsigned-executable-memory the runtime needs, and outbound network for the
-model and MCP endpoints), and Electrobun adds its own runtime entitlements under
-them. An **AppImage is not among them** — the packaging formats are the DMG, the
-Windows setup zip and the Linux setup tar, which is what `oxide` resolves a
-release against.
+on a runner of its own platform — the Linux arm64 artifact on an arm64 runner
+rather than cross-compiled, so the engine and the AppImage are both native.
+macOS is the only platform that is signed and notarized; the hardened runtime it
+runs under needs the entitlements in `build/entitlements.mac.plist` (the JIT and
+unsigned-executable-memory Electron's own JavaScript engine needs, and the third
+that lets the app run the engine it ships, which is signed as part of the
+bundle), which `electron-builder.yml` points both `entitlements` and
+`entitlementsInherit` at. macOS Intel is not built at all: the app ships for
+Apple Silicon alone. The Windows installer is a one-click, per-user install
+(`oneClick: true`, `perMachine: false`), which is what lets the app offer it as
+an install rather than as a file to unpack.
 
-A build with no signing credentials in the environment is unsigned, which is
-what a local build is. `.github/workflows/desktop.yml` — which builds macOS
-arm64, Linux x64 and arm64, and Windows x64 on a `desktop-v*` tag push — hands
-Hutch the signing variables, renamed from the repository's secrets, and only on
-the macOS job:
+A build with no signing credentials in the environment is unsigned, which is what
+a local build is. `.github/workflows/desktop.yml` — which builds macOS arm64,
+Linux x64 and arm64, and Windows x64 on a `desktop-v*` tag push — sets those
+variables, and only on the macOS job:
 
-| Electrobun variable | Secret | Value |
+| Variable | Secret | Value |
 | --- | --- | --- |
-| `ELECTROBUN_DEVELOPER_ID` | `APPLE_SIGNING_IDENTITY` | the identity `security find-identity -v -p codesigning` prints |
-| `ELECTROBUN_APPLEID` | `APPLE_ID` | the enrolled Apple ID |
-| `ELECTROBUN_APPLEIDPASS` | `APPLE_PASSWORD` | an app-specific password |
-| `ELECTROBUN_TEAMID` | `APPLE_TEAM_ID` | the 10-character team ID |
-| `ELECTROBUN_APPLEAPIKEY` | `APPLE_API_KEY` | an App Store Connect key ID |
-| `ELECTROBUN_APPLEAPIISSUER` | `APPLE_API_ISSUER` | that key's issuer UUID |
-| `ELECTROBUN_APPLEAPIKEYPATH` | `APPLE_API_KEY_P8` | the `.p8` file, written out of the base64 secret |
+| `CSC_LINK` | `APPLE_CERTIFICATE` | the `.p12` the base64 secret is decoded to (`$RUNNER_TEMP/certificate.p12`) |
+| `CSC_KEY_PASSWORD` | `APPLE_CERTIFICATE_PASSWORD` | that certificate's password |
+| `APPLE_API_KEY` | `APPLE_API_KEY_P8` | the `.p8` file, written out of the base64 secret as `$RUNNER_TEMP/AuthKey.p8` |
+| `APPLE_API_KEY_ID` | `APPLE_API_KEY` | an App Store Connect key ID |
+| `APPLE_API_ISSUER` | `APPLE_API_ISSUER` | that key's issuer UUID |
+| `APPLE_TEAM_ID` | `APPLE_TEAM_ID` | the 10-character team ID |
 
-The certificate travels as `APPLE_CERTIFICATE`/`APPLE_CERTIFICATE_PASSWORD` and
-is imported into a temporary keychain of the run's own, which is put first in
-the search list, since `codesign` can only use an identity in a keychain. Only
-variables with a value are exported, so a repository without secrets still
-builds a bundle — unsigned rather than half-signed. `electrobun.config.ts` reads
-those variables itself and turns `codesign`/`notarize` on only when it finds
-them, so the decision belongs to the pipeline and a checkout never signs by
-accident.
+The certificate is decoded from the secret into a `.p12` and imported into a
+temporary keychain of the run's own, which is put first in the search list, since
+`codesign` can only use an identity in a keychain; electron-builder is handed that
+`.p12` as `CSC_LINK` and its password as `CSC_KEY_PASSWORD`. A build with no
+certificate is left to produce an unsigned bundle rather than a half-signed one —
+the import step exits without setting anything when `APPLE_CERTIFICATE` is empty
+— and the App Store Connect step sets nothing when there is no key, so a
+repository without secrets still builds.
 
 An unsigned app downloaded from the internet is quarantined by the browser and
 Gatekeeper may refuse it; a reader can clear it with
 `xattr -cr /Applications/Oxide.app`, which is what the release notes say. A
-signed and notarized release needs none of that, and Electrobun's own updater
-payload (`*-update.json` and the `*.tar.zst` it names) is not published at all:
-this app updates itself from the plain installers the release carries (see
-[Check for updates](#check-for-updates)) rather than from a manifest beside
-them.
+signed and notarized release needs none of that, and electron-builder's own
+update metadata (`latest*.yml` and the blockmap it names) is not published at
+all: this app updates itself from the installers the release carries (see
+[Check for updates](#check-for-updates)) rather than from a feed beside them.
 
 ## Signing secrets
 
@@ -1015,46 +1109,41 @@ there is nothing to sign with and the ad-hoc fallback is the only option.
      Certificate Authority*).
 2. Export it — *Keychain Access → login → My Certificates*, right-click the
    certificate → *Export*, save as `.p12` with a password.
-3. Read the certificate common name on the same Mac:
-   `security find-identity -v -p codesigning`.
 
-Then either use your **Apple ID**, or an **App Store Connect API key**, for
-notarization — not both.
+There is no identity name to record: the workflow imports the `.p12` into a
+keychain of its own and hands electron-builder that file, so the certificate it
+carries is the identity that signs.
 
-**Apple ID** (Hutch signs, notarizes and staples the app and the DMG):
+Notarization needs your **App Store Connect API key**, which is what
+`desktop.yml` is written for — not both it and an Apple ID. Create the key under
+*Users and Access → Integrations → App Store Connect API*, role *Admin* or *App
+Manager*:
 
 | Secret | Value |
 | --- | --- |
 | `APPLE_CERTIFICATE` | base64 of the `.p12` (`base64 -i cert.p12 \| pbcopy`; Linux `base64 -w0 cert.p12`) |
 | `APPLE_CERTIFICATE_PASSWORD` | the `.p12` export password |
-| `APPLE_SIGNING_IDENTITY` | e.g. `Developer ID Application: Jayson Wu (ABCDE12345)` |
-| `APPLE_ID` | the enrolled Apple ID email |
-| `APPLE_PASSWORD` | an **app-specific password** (account.apple.com → *Sign-In and Security → App-Specific Passwords*) |
+| `APPLE_API_KEY_P8` | base64 of the `.p8` (`base64 -i AuthKey_XXXX.p8 \| pbcopy`) |
+| `APPLE_API_KEY` | the key ID (the `AuthKey_<id>.p8` file name) |
+| `APPLE_API_ISSUER` | the issuer UUID shown above the key list |
 | `APPLE_TEAM_ID` | 10-character Team ID (developer.apple.com → *Membership details*) |
 
-**App Store Connect API key** (create under *Users and Access → Integrations →
-App Store Connect API*, role *Admin* or *App Manager*):
-
-| Secret | Value |
-| --- | --- |
-| `APPLE_API_ISSUER` | the issuer UUID shown above the key list |
-| `APPLE_API_KEY` | the key ID (the `AuthKey_<id>.p8` file name) |
-| `APPLE_API_KEY_P8` | base64 of the `.p8` (`base64 -i AuthKey_XXXX.p8 \| pbcopy`) |
-
-The workflow decodes `APPLE_API_KEY_P8` to `$RUNNER_TEMP/AuthKey.p8` and sets
-`ELECTROBUN_APPLEAPIKEYPATH`; the `.p8` can only be downloaded once, so store it
-somewhere safe.
+The workflow decodes `APPLE_API_KEY_P8` to `$RUNNER_TEMP/AuthKey.p8` and hands
+electron-builder that path as `APPLE_API_KEY`, with the key's id as
+`APPLE_API_KEY_ID`, the issuer as `APPLE_API_ISSUER` and the team as
+`APPLE_TEAM_ID`; the `.p8` can only be downloaded once, so store it somewhere
+safe.
 
 ### From the CLI
 
-On the machine that holds the `.p12`:
+On the machine that holds the `.p12` and the `.p8`:
 
 ```sh
 base64 -i cert.p12 | gh secret set APPLE_CERTIFICATE
 gh secret set APPLE_CERTIFICATE_PASSWORD
-gh secret set APPLE_SIGNING_IDENTITY --body 'Developer ID Application: Your Name (ABCDE12345)'
-gh secret set APPLE_ID --body 'you@example.com'
-gh secret set APPLE_PASSWORD              # paste the app-specific password
+base64 -i AuthKey_XXXX.p8 | gh secret set APPLE_API_KEY_P8
+gh secret set APPLE_API_KEY --body 'ABCDE12345'      # the key ID, not the file
+gh secret set APPLE_API_ISSUER --body 'your-issuer-uuid'
 gh secret set APPLE_TEAM_ID --body 'ABCDE12345'
 ```
 
@@ -1064,34 +1153,36 @@ shell history.
 ## Release assets
 
 Each `desktop-v*` release carries installers for the four platforms the app is
-built for. Pick the asset whose platform matches the machine — Electrobun's
-installer names carry the app name and the platform rather than the version, so
-they read the same in every release. The desktop app is versioned separately
-from the CLI, so a CLI release never rebuilds these:
+built for. Pick the asset whose platform matches the machine — the names carry
+the app name and the platform rather than the version, so they read the same in
+every release. The desktop app is versioned separately from the CLI, so a CLI
+release never rebuilds these:
 
 | Asset | Platform |
 | --- | --- |
 | `macos-arm64-Oxide.dmg` | macOS, Apple Silicon (`uname -m` → `arm64`) |
-| `linux-x64-Oxide-Setup.tar.gz` | Linux x64 |
-| `linux-arm64-Oxide-Setup.tar.gz` | Linux arm64 |
-| `win-x64-Oxide-Setup.zip` | Windows x64 |
+| `linux-x64-Oxide-Setup.AppImage` | Linux x64 (the file the app replaces itself with) |
+| `linux-x64-Oxide-Setup.tar.gz` | Linux x64, an archive to unpack by hand |
+| `linux-arm64-Oxide-Setup.AppImage` | Linux arm64 |
+| `linux-arm64-Oxide-Setup.tar.gz` | Linux arm64, an archive to unpack by hand |
+| `win-x64-Oxide-Setup.exe` | Windows x64 (a one-click, per-user install) |
 
-There is no **macOS Intel** asset: Electrobun publishes no x64 core for macOS,
-so the app ships for Apple Silicon alone and `oxide` resolves no desktop release
-for `darwin-x64`. The Linux archive unpacks an executable named `installer`
-beside a README; the Windows zip carries `Oxide-Setup.exe` and hides the payload
-it unpacks in a `.installer/` directory of its own. Electrobun's own updater
-payload — the `*.tar.zst` archive and the `*-update.json` metadata naming it —
-is not uploaded: this app's updater ignores it and installs the installer
-itself.
+There is no **macOS Intel** asset: the app is built for Apple Silicon alone, and
+`Component::Desktop` resolves no asset for `darwin-x64`, so a check on an Intel
+Mac is offered no desktop release. electron-builder's own update metadata
+(`latest*.yml` and the blockmap naming an archive) is not uploaded: this app
+resolves its release through GitHub itself and installs the artifact
+`Component::Desktop::assets()` names for this platform — macOS the disk image,
+Linux the AppImage, Windows the setup — rather than a feed beside it.
 
 The CLI archives (`Oxide-v<version>-<platform>.tar.gz` and
 `Oxide-v<version>-win32-x64.zip`) plus `install.sh`/`install.ps1` live in the
 separate `v*` CLI releases, not here; see [install.md](install.md).
 
 The workflow builds every platform in its own job and hands the installers to
-the release job: each build job uploads what it produced as a workflow artifact
-and the release job — the only job granted `contents: write`, and the one that
+the release job: each build job uploads what it produced — `*.dmg`, `*.AppImage`,
+`*-Setup.tar.gz` and `*-Setup.exe` — as a workflow artifact, and the release job —
+the only job granted `contents: write`, and the one that
 runs for a `desktop-v*` tag alone — drafts the release and uploads them, so a
 `workflow_dispatch` build publishes nothing and needs no more than a read-only
 token.

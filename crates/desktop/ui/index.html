@@ -3,8 +3,8 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <!-- The page carries its own policy. Electrobun's build config has no
-         window-level CSP to inject one from, so the document is where it
+    <!-- The page carries its own policy. The window hands the page the policy it
+         ships with rather than injecting one, so the document is where it
          lives, and `crates/desktop/check-shell.mjs` holds it: the page's own
          script and sheet, the pictures it paints and nothing remote, and no
          connection at all — the host it talks to is this window's preload. -->

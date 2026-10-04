@@ -7,15 +7,21 @@ name: desktop
 # never forces a desktop rebuild. Only the release job — the one that writes a
 # release — is granted `contents: write`; a build, including a
 # `workflow_dispatch` run that publishes nothing, holds a read-only token, as
-# the CLI and extension workflows do. Signing and notarization happen when the
-# corresponding secrets are configured: Hutch signs a release build from the
-# `ELECTROBUN_DEVELOPER_ID` identity and notarizes it from the App Store Connect
-# credentials, and a build with no secrets configured still produces an
-# installable bundle.
+# the CLI and extension workflows do.
 #
-# Every platform builds on its own host: the Electrobun devkit is published per
-# platform, and there is no macOS x64 core, so the app ships for Apple Silicon
-# alone and Intel Macs are not a target.
+# The app is two programs: Electron, which electron-builder packages, and the
+# `oxide-desktop` harness, which is compiled from `src/` and carried into the
+# bundle as a resource. `pnpm run dist` runs both halves — TypeScript, then
+# `cargo build --release`, then electron-builder — so the binary the bundler
+# signs is the one it just built. Signing and
+# notarization happen when the corresponding secrets are configured — the
+# certificate is imported into a temporary keychain and named to electron-builder
+# as `CSC_LINK`, and the App Store Connect credentials are passed in the names it
+# reads — and a build with no secrets configured still produces an installable
+# bundle.
+#
+# Every platform builds on its own host, and there is no macOS x64 core, so the
+# app ships for Apple Silicon alone and Intel Macs are not a target.
 
 on:
   workflow_dispatch:
@@ -40,9 +46,8 @@ jobs:
             name: Linux x64
             artifact: linux-x64
 
-          # Electrobun publishes an arm64 Linux core and Hutch a build for it, so
-          # the arm64 artifact is built on an arm64 runner rather than
-          # cross-compiled.
+          # The arm64 Linux artifact is built on an arm64 runner rather than
+          # cross-compiled, so the harness and the AppImage are both native.
           - platform: ubuntu-24.04-arm
             name: Linux arm64
             artifact: linux-arm64
@@ -63,19 +68,25 @@ jobs:
         with:
           node-version: 22
 
+      - name: Install pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 12.8.1
+          run_install: false
+
+      # Electron links the same system libraries a Chromium-based app needs, and
+      # electron-builder's AppImage target uses the `fuse` it finds on the host.
       - name: Install Linux dependencies
         if: startsWith(matrix.platform, 'ubuntu')
         run: |
           sudo apt-get update
-          sudo apt-get install -y \
-            build-essential \
-            cmake \
-            pkg-config \
-            libgtk-3-dev \
-            libwebkit2gtk-4.1-dev \
-            libayatana-appindicator3-dev \
-            libpipewire-0.3-dev \
-            librsvg2-dev
+          sudo apt-get install -y --no-install-recommends \
+            libgtk-3-0 \
+            libnss3 \
+            libasound2t64 \
+            libgbm1 \
+            libxss1 \
+            libxtst6
 
       # The app's package is its own workspace, so its bundles land in its own
       # `target/`, which is what this caches.
@@ -85,102 +96,30 @@ jobs:
           key: desktop-app
           workspaces: crates/desktop
 
-      - name: Install Hutch
-        if: matrix.platform != 'windows-latest'
-        shell: bash
-        run: curl -fsSL https://hutch.blackboard.sh/hutch/install.sh | sh
+      - name: Cache Electron
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cache/electron
+            ~/.cache/electron-builder
+          key: electron-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('crates/desktop/pnpm-lock.yaml') }}
 
-      - name: Install Hutch
-        if: matrix.platform == 'windows-latest'
-        shell: pwsh
-        run: '& ([scriptblock]::Create((irm https://hutch.blackboard.sh/hutch/install.ps1)))'
-
-      # The launcher Hutch's installer writes, which is a `.exe` on Windows and
-      # sits at the same place on every platform. It is resolved rather than
-      # relied on being on `PATH`: the installer only adds its directory to a
-      # *new* shell's environment, which this run is not.
-      - name: Find Hutch
-        shell: bash
-        run: |
-          launcher="$HOME/.hutch/bin/hutch"
-          if [ -x "${launcher}.exe" ]; then launcher="${launcher}.exe"; fi
-          echo "HUTCH=${launcher}" >> "${GITHUB_ENV}"
-
-      # The Rust SDK this package links is not a published crate: Hutch projects
-      # the release named in `hutch.config.ts` into `crates/desktop/.hutch/devkit`
-      # before the build, which is where the path dependency points.
-      - name: Project the Electrobun devkit
+      - name: Install the app's packages
         working-directory: crates/desktop
-        shell: bash
-        run: '"${HUTCH}" electrobun prepare'
+        run: pnpm install --frozen-lockfile
 
       - name: Set version from tag
         if: startsWith(github.ref, 'refs/tags/desktop-v')
         shell: bash
         run: ./scripts/set-version.sh "${GITHUB_REF_NAME}"
 
-      # Only export the signing variables that actually have a value: an unset
-      # GitHub secret is an empty string, and Hutch treats an empty identity as
-      # one to sign with. Only the macOS job — the only one that signs or
-      # notarizes — is given the secrets at all. The names are Electrobun's; the
-      # repository's secrets keep the names the Tauri pipeline used.
-      - name: Export code signing secrets
-        if: startsWith(matrix.platform, 'macos')
-        shell: bash
-        env:
-          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
-          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
-          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
-          APPLE_ID: ${{ secrets.APPLE_ID }}
-          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
-          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
-          APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
-          APPLE_API_KEY: ${{ secrets.APPLE_API_KEY }}
-        run: |
-          set -euo pipefail
-          export ELECTROBUN_DEVELOPER_ID="${APPLE_SIGNING_IDENTITY:-}"
-          export ELECTROBUN_APPLEID="${APPLE_ID:-}"
-          export ELECTROBUN_APPLEIDPASS="${APPLE_PASSWORD:-}"
-          export ELECTROBUN_TEAMID="${APPLE_TEAM_ID:-}"
-          export ELECTROBUN_APPLEAPIKEY="${APPLE_API_KEY:-}"
-          export ELECTROBUN_APPLEAPIISSUER="${APPLE_API_ISSUER:-}"
-          for name in \
-            ELECTROBUN_DEVELOPER_ID \
-            ELECTROBUN_APPLEID \
-            ELECTROBUN_APPLEIDPASS \
-            ELECTROBUN_TEAMID \
-            ELECTROBUN_APPLEAPIKEY \
-            ELECTROBUN_APPLEAPIISSUER; do
-            value="${!name:-}"
-            if [ -n "${value}" ]; then
-              delimiter="OXIDE_ENV_${RANDOM}${RANDOM}${RANDOM}"
-              {
-                printf '%s<<%s\n' "${name}" "${delimiter}"
-                printf '%s\n' "${value}"
-                printf '%s\n' "${delimiter}"
-              } >> "${GITHUB_ENV}"
-            fi
-          done
-
-      # An App Store Connect key is a downloaded file, so it travels as a base64
-      # secret and is materialized where Hutch reads it.
-      - name: Write App Store Connect API key
-        if: startsWith(matrix.platform, 'macos')
-        shell: bash
-        env:
-          APPLE_API_KEY_P8: ${{ secrets.APPLE_API_KEY_P8 }}
-        run: |
-          set -euo pipefail
-          if [ -n "${APPLE_API_KEY_P8:-}" ]; then
-            printf '%s' "${APPLE_API_KEY_P8}" | openssl base64 -d -A > "${RUNNER_TEMP}/AuthKey.p8"
-            echo "ELECTROBUN_APPLEAPIKEYPATH=${RUNNER_TEMP}/AuthKey.p8" >> "${GITHUB_ENV}"
-          fi
-
       # The Developer ID identity has to be in a keychain for `codesign` to use
       # it: the certificate arrives as a base64 `.p12` and is imported into a
       # temporary keychain of this run's own, which is then put first in the
-      # search list. A build with no certificate is left to produce an unsigned
-      # bundle rather than a half-signed one.
+      # search list. electron-builder is handed the keychain's own copy of the
+      # certificate as `CSC_LINK`, and its password, which is how it signs the
+      # app and the harness inside it. A build with no certificate is left to
+      # produce an unsigned bundle rather than a half-signed one.
       - name: Import the Developer ID certificate
         if: startsWith(matrix.platform, 'macos')
         shell: bash
@@ -210,28 +149,70 @@ jobs:
             -k "${password}" \
             "${keychain}"
           security list-keychains -d user -s "${keychain}" "$(security default-keychain | tr -d ' "')"
-          rm -f "${RUNNER_TEMP}/certificate.p12"
+          {
+            printf 'CSC_LINK=%s\n' "${RUNNER_TEMP}/certificate.p12"
+            printf 'CSC_KEY_PASSWORD=%s\n' "${APPLE_CERTIFICATE_PASSWORD}"
+          } >> "${GITHUB_ENV}"
 
-      # One command produces the installer, the update archive and the update
-      # metadata for this platform; a build that produces no installer fails the
-      # upload step below rather than shipping a release missing its assets.
+      # An App Store Connect key is a downloaded file, so it travels as a base64
+      # secret and is materialized where notarization reads it. This step runs
+      # only where the certificate was imported above too: electron-builder
+      # notarizes by itself as soon as these variables are set, and the app has
+      # to be signed before a notary reads it — half the configuration would
+      # otherwise turn a build that could have been left unsigned into a
+      # failure.
+      - name: Write App Store Connect API key
+        if: startsWith(matrix.platform, 'macos') && env.CSC_LINK != ''
+        shell: bash
+        env:
+          APPLE_API_KEY_P8: ${{ secrets.APPLE_API_KEY_P8 }}
+          APPLE_API_KEY: ${{ secrets.APPLE_API_KEY }}
+          APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: |
+          set -euo pipefail
+          # All of the key or none of it: the file, the key's own id and the
+          # issuer belong together, and a file written without either of the
+          # other two would be a notarization that fails this build rather than
+          # one that leaves it unsigned.
+          if [ -z "${APPLE_API_KEY_P8:-}" ] || [ -z "${APPLE_API_KEY:-}" ] || [ -z "${APPLE_API_ISSUER:-}" ]; then
+            echo "no App Store Connect key is configured; this build is left unnotarized"
+            exit 0
+          fi
+          printf '%s' "${APPLE_API_KEY_P8}" | openssl base64 -d -A > "${RUNNER_TEMP}/AuthKey.p8"
+          {
+            printf 'APPLE_API_KEY=%s\n' "${RUNNER_TEMP}/AuthKey.p8"
+            printf 'APPLE_API_KEY_ID=%s\n' "${APPLE_API_KEY}"
+            printf 'APPLE_API_ISSUER=%s\n' "${APPLE_API_ISSUER}"
+          } >> "${GITHUB_ENV}"
+          if [ -n "${APPLE_TEAM_ID:-}" ]; then
+            printf 'APPLE_TEAM_ID=%s\n' "${APPLE_TEAM_ID}" >> "${GITHUB_ENV}"
+          fi
+
+      # One command produces this platform's installer: it compiles the harness
+      # (the engine, from `src/`) and hands Electron and that binary to the
+      # platform's packager. A build that produces no installer
+      # fails the upload step below rather than shipping a release missing its
+      # assets.
       - name: Build
         working-directory: crates/desktop
         shell: bash
-        run: '"${HUTCH}" electrobun build --env=stable'
+        run: pnpm run dist
 
-      # The installers `docs/desktop.md` lists under **Release assets**. The
-      # `.tar.zst` archive, the delta patches and the update metadata that names
-      # them are Electrobun's own updater payload and are left out: this app's
-      # updater installs the installer, and metadata pointing at an archive the
-      # release does not carry is worse than none.
+      # The installers `docs/desktop.md` lists under **Release assets**, named
+      # the way `oxide_core::updates::Component::Desktop::assets()` resolves
+      # them. electron-builder also writes its own `latest*.yml` metadata and a
+      # blockmap beside the installer; this app's updater resolves the release
+      # through GitHub itself, so metadata describing a feed it does not read is
+      # left out.
       - uses: actions/upload-artifact@v4
         with:
           name: oxide-desktop-${{ matrix.artifact }}
           path: |
             crates/desktop/artifacts/*.dmg
-            crates/desktop/artifacts/*-Setup.zip
+            crates/desktop/artifacts/*.AppImage
             crates/desktop/artifacts/*-Setup.tar.gz
+            crates/desktop/artifacts/*-Setup.exe
           if-no-files-found: error
 
   release:

@@ -76,12 +76,6 @@ impl DesktopState {
         }
     }
 
-    /// The window this app is, for the commands that are the app's own rather
-    /// than the project's — opening the folder chooser, restarting it.
-    pub fn host(&self) -> Arc<Host> {
-        self.events.host()
-    }
-
     /// Keeps the newest word from the launch's own install and hands it to the
     /// window, which may not be listening for it yet.
     fn announce_launch_update(&self, event: &'static str, payload: Value) {
@@ -937,27 +931,19 @@ pub fn launch_update(state: &DesktopState) -> CmdResult<Option<Value>> {
 
 /// Restarts the app, which is what runs a release an install has put in place:
 /// the process running is still the build that started, so only a new one is the
-/// new version. The window's own handle starts that copy and stops this one's
-/// event loop.
+/// new version.
 ///
 /// A turn is work this process owns — its tools write files and its stream is
 /// read here — so a restart is refused while one runs, the way the window refuses
-/// to replace the thread on screen mid-turn.
+/// to replace the thread on screen mid-turn. What the window is asked for is the
+/// restart itself (the `restart` event), because a process cannot replace the
+/// app it was started from: the window's own process is the one that comes back.
 pub async fn restart_app(host: &Host, state: &DesktopState) -> CmdResult<()> {
     if !state.runs.lock().await.is_empty() {
         return Err("A turn is running; stop it before restarting Oxide.".to_string());
     }
-    host.restart()
-}
-
-/// Asks the open window to check for updates and show what it found. The macOS
-/// menu item has no page of its own to paint into, so it asks the window through
-/// the same event channel a run's own events travel on, and the window's button
-/// and the menu item end at one dialog. Windows and Linux have no menu bar to put
-/// the item in, so the window's own button is the only way in there.
-#[cfg(target_os = "macos")]
-pub fn announce_check_updates(host: &Host) {
-    let _ = host.emit("check-updates", json!({}));
+    host.emit("restart", json!({}))?;
+    Ok(())
 }
 
 /// Creates a new project with the given name and adds it to the registry.
@@ -1036,25 +1022,11 @@ fn command_value<T: Serialize>(result: CmdResult<T>) -> CmdResult<Value> {
     result.and_then(|value| serde_json::to_value(value).map_err(err))
 }
 
-/// Opens the platform folder chooser. Used by the desktop's **Add** button when
-/// the path field is empty, so adding a project does not require typing an
-/// absolute path from memory. The window's own handle runs the panel.
-pub async fn pick_folder(host: &Host) -> CmdResult<Option<String>> {
-    host.pick_folder().await
-}
-
-/// Opens an external link in the machine's browser. The transcript renders URLs
-/// as anchors, but the webview cannot navigate to a remote page, so a click is
-/// routed here instead of relying on `target="_blank"`. The launch is the
-/// window's own handle, which asks the platform for its own handler.
-pub fn open_url(host: &Host, url: &str) -> CmdResult<()> {
-    host.open_url(url)
-}
-
-/// Dispatches the stable command contract used by the window. The two
-/// operating-system-only calls (`pick_folder` and `open_url`) are performed by
-/// this process for the window itself; every command that touches Oxide state
-/// stays below them.
+/// Dispatches the stable command contract used by the window. The window's own
+/// calls — `pick_folder` and `open_url` — never arrive here, since the operating
+/// system is what carries them out; the launch behind `restart_app` is announced
+/// from the arm that can tell whether the app is in a state to make it; and every
+/// command that touches Oxide state is here.
 pub async fn dispatch(
     state: Arc<DesktopState>,
     host: &Host,
@@ -1067,7 +1039,6 @@ pub async fn dispatch(
         "create_project" => command_value(
             create_project(arg(&args, "name")?, optional_arg(&args, "folders")?, &state).await,
         ),
-        "pick_folder" => command_value(pick_folder(host).await),
         "remove_project" => command_value(remove_project(arg(&args, "id")?, &state).await),
         "list_sessions" => command_value(list_sessions(arg(&args, "project")?, &state).await),
         "all_sessions" => command_value(all_sessions(&state).await),
@@ -1178,7 +1149,6 @@ pub async fn dispatch(
         "install_update" => command_value(install_update().await),
         "launch_update" => command_value(launch_update(&state)),
         "restart_app" => command_value(restart_app(host, &state).await),
-        "open_url" => command_value(open_url(host, &arg::<String>(&args, "url")?)),
         _ => Err(format!("unknown desktop command `{command}`")),
     }
 }

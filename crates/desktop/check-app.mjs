@@ -761,7 +761,7 @@ vm.runInThisContext(
     " loadMcps, openSessions," +
     " listedSessions, selectSessionFromTree, removeSession," +
     " updateChips," +
-    " startTool, finishTool, toggleTool, openUpdate, installUpdate, installedUpdate, catchUpOnLaunchUpdate, launchDismissed, renderMarkdown };\n",
+    " startTool, finishTool, toggleTool, openUpdate, installUpdate, installedUpdate, catchUpOnLaunchUpdate, launchDismissed, renderMarkdown, SCROLLBAR_LINGER };\n",
 );
 
 const app = globalThis.__app;
@@ -1721,6 +1721,52 @@ for (const selector of scrolledRows) {
     `lane ${laneWidth} · padding-right ${padding}`,
   );
 }
+
+// The bar is an overlay bar: drawn while its box is scrolled and taken away
+// again once it stops, so it is never a seam down the side of what it scrolls.
+// The lane above stays reserved either way, which is what keeps the thumb
+// unpainted at rest rather than the scrollbar absent. Only the mark `app.js`
+// puts on the element that scrolled paints it.
+const ruleFor = (selector) => {
+  for (const [, selectors, body] of sheet.matchAll(/([^{}]+)\{([^}]*)\}/g)) {
+    if (selectors.trim() === selector) return body.trim();
+  }
+  return "";
+};
+const restingThumb = ruleFor("::-webkit-scrollbar-thumb");
+const shownThumb = ruleFor(".scrolling::-webkit-scrollbar-thumb");
+const paints = (body) => /(^|;)\s*background(?:-color)?:\s*(?!transparent)\S/.test(body);
+check(
+  "drew a scrollbar only while its box was being scrolled",
+  /(^|;)\s*background(?:-color)?:\s*transparent\s*(;|$)/.test(restingThumb) && paints(shownThumb),
+  `${restingThumb} | ${shownThumb}`,
+);
+// And the bar it paints is the thumb the lane was drawn for: a `background`
+// shorthand in the rule that paints it would reset the `background-clip` the
+// resting thumb is inset by, and the bar would come back the full width of its
+// lane — a slab down the side of the list again, at the moment it is shown.
+check(
+  "kept the bar the mark paints inset inside its lane",
+  !/(^|;)\s*background\s*:/.test(shownThumb) || /background-clip\s*:/.test(shownThumb),
+  shownThumb,
+);
+// And the mark itself: put on the element that scrolled — a scrollbar belongs to
+// the element it scrolls, and a scroll does not bubble, so the listener is the
+// capture-phase one rather than a listener per list — and taken off again once
+// that box has stopped. The stub fires the listener the page registered.
+const scrolledBox = elementFor("projects-tree");
+document.fire("scroll", { target: scrolledBox });
+check(
+  "marked the box that scrolled while it was scrolled",
+  scrolledBox.classList.contains("scrolling"),
+  scrolledBox.className,
+);
+await new Promise((resolve) => setTimeout(resolve, app.SCROLLBAR_LINGER + 80));
+check(
+  "took the scrollbar away again once the box stopped",
+  !scrolledBox.classList.contains("scrolling"),
+  scrolledBox.className,
+);
 
 // The sidebar's own button, because the menu item that opens the same dialog
 // is macOS's: Windows and Linux build no menu bar, so the window is the way in

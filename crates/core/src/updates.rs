@@ -119,10 +119,11 @@ impl Component {
     /// The artifacts this platform installs from, most preferred first: the one
     /// an in-place install uses, then the downloads a user would pick by hand.
     ///
-    /// The desktop app's names are the Electrobun installer's, which drop the
-    /// version: `macos-arm64-Oxide.dmg`, `win-x64-Oxide-Setup.zip`,
-    /// `linux-<arch>-Oxide-Setup.tar.gz`. macOS x64 is absent because Electrobun
-    /// publishes no Intel core to build it from.
+    /// The desktop app's names drop the version, so a reader who downloaded one
+    /// by hand can go on using the link they have: `macos-<arch>-Oxide.dmg`,
+    /// `win-<arch>-Oxide-Setup.exe`, and on Linux the AppImage the app replaces
+    /// itself with followed by the archive a user unpacks by hand. macOS x64 is
+    /// absent because its build was never published.
     pub fn assets(self, tag: &str, platform: &str) -> Vec<String> {
         let version = release_version(tag);
         match self {
@@ -136,9 +137,15 @@ impl Component {
             }
             Self::Desktop => match platform {
                 "darwin-arm64" => vec!["macos-arm64-Oxide.dmg".to_string()],
-                "linux-x64" => vec!["linux-x64-Oxide-Setup.tar.gz".to_string()],
-                "linux-arm64" => vec!["linux-arm64-Oxide-Setup.tar.gz".to_string()],
-                "win32-x64" => vec!["win-x64-Oxide-Setup.zip".to_string()],
+                "linux-x64" => vec![
+                    "linux-x64-Oxide-Setup.AppImage".to_string(),
+                    "linux-x64-Oxide-Setup.tar.gz".to_string(),
+                ],
+                "linux-arm64" => vec![
+                    "linux-arm64-Oxide-Setup.AppImage".to_string(),
+                    "linux-arm64-Oxide-Setup.tar.gz".to_string(),
+                ],
+                "win32-x64" => vec!["win-x64-Oxide-Setup.exe".to_string()],
                 _ => Vec::new(),
             },
             Self::Extension => vec![format!("oxide-vscode-{version}.vsix")],
@@ -928,9 +935,9 @@ mod tests {
             "https://github.com/jaysonwu991/oxide/releases/tag/desktop-v0.34.0"
         );
         for (platform, asset) in [
-            ("linux-x64", "linux-x64-Oxide-Setup.tar.gz"),
-            ("linux-arm64", "linux-arm64-Oxide-Setup.tar.gz"),
-            ("win32-x64", "win-x64-Oxide-Setup.zip"),
+            ("linux-x64", "linux-x64-Oxide-Setup.AppImage"),
+            ("linux-arm64", "linux-arm64-Oxide-Setup.AppImage"),
+            ("win32-x64", "win-x64-Oxide-Setup.exe"),
         ] {
             assert_eq!(
                 Release::new(Component::Desktop, "desktop-v0.34.0", None, platform).asset,
@@ -942,11 +949,15 @@ mod tests {
         assert!(Component::Desktop
             .assets("desktop-v0.34.0", "darwin-x64")
             .is_empty());
-        // The installer a user would pick by hand is named too, so a front-end
-        // can offer a download when it cannot install in place.
+        // The downloads a user would pick by hand are named too, so a front-end
+        // can offer one when it cannot install in place: the AppImage this
+        // platform installs from, then the archive to unpack.
         assert_eq!(
             Component::Desktop.assets("desktop-v0.34.0", "linux-x64"),
-            ["linux-x64-Oxide-Setup.tar.gz"]
+            [
+                "linux-x64-Oxide-Setup.AppImage",
+                "linux-x64-Oxide-Setup.tar.gz"
+            ]
         );
         assert!(Component::Desktop
             .assets("desktop-v0.34.0", "freebsd-x64")
