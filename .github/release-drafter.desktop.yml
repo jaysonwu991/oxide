@@ -132,11 +132,28 @@ template: |
 
   ## Install
 
-  Download the bundle for your platform from the assets below:
+  Download the installer for your platform from the assets below. The app is
+  built for Apple Silicon and for 64-bit Windows and Linux; there is no Intel
+  Mac build.
 
-  - **macOS** — `dmg` for Apple Silicon (`aarch64`) or Intel (`x64`)
-  - **Windows** — `exe` installer or `msi` package
-  - **Linux** — `AppImage`, `deb`, or `rpm`
+  - **macOS, Apple Silicon** — `macos-arm64-Oxide.dmg`
+  - **Windows x64** — `win-x64-Oxide-Setup.exe`, a one-click install for the
+    user who runs it
+  - **Linux x64** — `linux-x86_64-Oxide-Setup.AppImage`, or
+    `linux-x64-Oxide-Setup.tar.gz` to unpack by hand
+  - **Linux arm64** — `linux-arm64-Oxide-Setup.AppImage`, or
+    `linux-arm64-Oxide-Setup.tar.gz` to unpack by hand
+
+  On macOS the app is notarized only when this release was built with both an
+  Apple Developer certificate and an App Store Connect key configured; a build
+  carrying the certificate alone is signed but left unnotarized. If macOS
+  reports it as **damaged** instead of opening it — what a quarantined build
+  without a notarization ticket looks like — clear the download's quarantine
+  flag and open it again:
+
+  ```sh
+  xattr -dr com.apple.quarantine /Applications/Oxide.app
+  ```
 
   A released app keeps itself current: **Check for Updates…** in the app menu (or
   **↻** in the sidebar footer) installs the newest `desktop-v` release for your
