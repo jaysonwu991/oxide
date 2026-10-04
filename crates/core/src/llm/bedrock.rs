@@ -10,6 +10,10 @@ use std::collections::BTreeMap;
 /// The event that ends a Converse stream, after which no other event arrives.
 pub const STOP_EVENT: &str = "messageStop";
 
+/// What `converse-stream` answers with, which is what a request asks for: the
+/// stream is AWS's binary event-stream framing rather than SSE.
+pub const EVENT_STREAM: &str = "application/vnd.amazon.eventstream";
+
 /// The fixed parts of an event-stream frame: the prelude's two lengths and its
 /// CRC at the front, and the message CRC at the end.
 const PRELUDE: usize = 12;
@@ -175,6 +179,14 @@ pub fn apply_event(
         }
         return Ok(());
     };
+    // A reasoning block of its own starts here, which is what keeps two of them
+    // separate: each block's fragments and its own signature belong together,
+    // and a signature that signed another block's text would be refused on
+    // replay.
+    if start.get("reasoningContent").is_some() {
+        turn.thinking
+            .push(json!({ "type": "thinking", "thinking": "" }));
+    }
     if let Some(call) = start.get("toolUse").and_then(Value::as_object) {
         let index = value["contentBlockIndex"].as_u64().unwrap_or(0) as usize;
         partials.insert(
@@ -490,7 +502,11 @@ fn result_text(message: &Message) -> String {
 }
 
 fn assistant_parts(message: &Message) -> Vec<Value> {
-    let mut parts = Vec::new();
+    // A thinking-capable model's own blocks go back first, in the order they
+    // arrived: Bedrock refuses a tool turn continued without the signed
+    // `reasoningContent` the model produced, so dropping them breaks every
+    // thinking turn that called a tool.
+    let mut parts = reasoning_parts(message);
     if let Some(content) = &message.content {
         let text = content.display();
         if !text.is_empty() {
@@ -512,6 +528,27 @@ fn assistant_parts(message: &Message) -> Vec<Value> {
         }
     }
     parts
+}
+
+/// The reasoning an assistant turn carried, as Bedrock's own content blocks.
+/// The signature travels with the text it signs — that is what the model checks
+/// the replayed block against — and a block that arrived without one is still
+/// this model's reasoning, so it goes back as text alone.
+fn reasoning_parts(message: &Message) -> Vec<Value> {
+    message
+        .thinking
+        .as_deref()
+        .unwrap_or_default()
+        .iter()
+        .filter_map(|block| {
+            let text = block["thinking"].as_str().filter(|text| !text.is_empty())?;
+            let mut reasoning = json!({ "text": text });
+            if let Some(signature) = block["signature"].as_str().filter(|one| !one.is_empty()) {
+                reasoning["signature"] = json!(signature);
+            }
+            Some(json!({ "reasoningContent": { "reasoningText": reasoning } }))
+        })
+        .collect()
 }
 
 /// A thinking budget for a Claude model on Bedrock, which is where the
@@ -745,6 +782,102 @@ mod tests {
         assert_eq!(thinking, "step one");
         assert_eq!(turn.thinking[0]["thinking"], "step one");
         assert_eq!(turn.thinking[0]["signature"], "sig");
+    }
+
+    /// Each reasoning block keeps its own text and signature: a block that was
+    /// signed must be replayed with the text that signature was made over, so a
+    /// second block's reasoning cannot be merged into the first.
+    #[test]
+    fn keeps_each_reasoning_block_apart() {
+        let mut turn = AssistantTurn::default();
+        let mut partials = BTreeMap::new();
+        for (event, payload) in [
+            (
+                "contentBlockStart",
+                r#"{"contentBlockIndex":0,"start":{"reasoningContent":{}}}"#,
+            ),
+            (
+                "contentBlockDelta",
+                r#"{"contentBlockIndex":0,"delta":{"reasoningContent":{"text":"first"}}}"#,
+            ),
+            (
+                "contentBlockDelta",
+                r#"{"contentBlockIndex":0,"delta":{"reasoningContent":{"signature":"sig-one"}}}"#,
+            ),
+            (
+                "contentBlockStart",
+                r#"{"contentBlockIndex":1,"start":{"reasoningContent":{}}}"#,
+            ),
+            (
+                "contentBlockDelta",
+                r#"{"contentBlockIndex":1,"delta":{"reasoningContent":{"text":"second"}}}"#,
+            ),
+            (
+                "contentBlockDelta",
+                r#"{"contentBlockIndex":1,"delta":{"reasoningContent":{"signature":"sig-two"}}}"#,
+            ),
+        ] {
+            apply_event(
+                event,
+                &serde_json::from_str(payload).unwrap(),
+                &mut turn,
+                &mut partials,
+                &mut |_| {},
+                &mut |_| {},
+            )
+            .unwrap();
+        }
+        assert_eq!(turn.thinking.len(), 2);
+        assert_eq!(turn.thinking[0]["thinking"], "first");
+        assert_eq!(turn.thinking[0]["signature"], "sig-one");
+        assert_eq!(turn.thinking[1]["thinking"], "second");
+        assert_eq!(turn.thinking[1]["signature"], "sig-two");
+    }
+
+    /// A thinking turn that called a tool is continued with the reasoning the
+    /// model produced, signature and all, ahead of the call — which is what
+    /// Bedrock checks the replayed block against.
+    #[test]
+    fn replays_reasoning_ahead_of_the_call_that_followed_it() {
+        let call = ToolCall {
+            id: "tooluse_x".to_string(),
+            kind: "function".to_string(),
+            signature: None,
+            function: FunctionCall {
+                name: "read".to_string(),
+                arguments: "{\"path\":\"a.rs\"}".to_string(),
+            },
+        };
+        let assistant = Message::assistant("looking", vec![call]).with_thinking(vec![
+            json!({ "type": "thinking", "thinking": "step one", "signature": "sig" }),
+            json!({ "type": "thinking", "thinking": "" }),
+        ]);
+        let body = request_body(&config(), &[Message::user("hi"), assistant], &[]);
+
+        let content = &body["messages"][1]["content"];
+        assert_eq!(
+            content[0]["reasoningContent"]["reasoningText"]["text"],
+            "step one"
+        );
+        assert_eq!(
+            content[0]["reasoningContent"]["reasoningText"]["signature"],
+            "sig"
+        );
+        assert_eq!(content[1]["text"], "looking");
+        assert_eq!(content[2]["toolUse"]["name"], "read");
+    }
+
+    /// Reasoning that arrived without a signature — which is what a
+    /// non-Anthropic model on Bedrock sends — still goes back as reasoning
+    /// rather than being dropped or refused for lacking one.
+    #[test]
+    fn replays_reasoning_that_carried_no_signature() {
+        let assistant = Message::assistant("answer", vec![])
+            .with_thinking(vec![json!({ "type": "thinking", "thinking": "because" })]);
+        let body = request_body(&config(), &[assistant], &[]);
+        let reasoning = &body["messages"][0]["content"][0]["reasoningContent"]["reasoningText"];
+        assert_eq!(reasoning["text"], "because");
+        assert!(reasoning.get("signature").is_none());
     }
 
     #[test]
