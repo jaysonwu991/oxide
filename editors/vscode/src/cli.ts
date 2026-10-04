@@ -15,6 +15,7 @@ import * as os from "node:os";
 import * as path from "node:path";
 
 import type { ApprovalDecision } from "./core/approvals";
+import { SNIFF_BYTES } from "./core/attachments";
 import { drainLines, parseEvent, type WireEvent } from "./core/protocol";
 import type { QuestionAnswer } from "./core/questions";
 import { approvalFrame, promptFrame, questionFrame, quitFrame, steerFrame } from "./core/rpc";
@@ -350,6 +351,24 @@ export function readTextFile(file: string, maxBytes = 2_000_000): string | null 
     const stat = fs.statSync(file);
     if (!stat.isFile() || stat.size > maxBytes) return null;
     return fs.readFileSync(file, "utf8");
+  } catch {
+    return null;
+  }
+}
+
+/// Reads the first bytes of a file, for identifying what it holds (see
+/// `core/attachments.ts::sniffMediaMime`), or `null` when it cannot be read.
+export function readFileHead(file: string, maxBytes = SNIFF_BYTES): Buffer | null {
+  try {
+    if (!fs.statSync(file).isFile()) return null;
+    const handle = fs.openSync(file, "r");
+    try {
+      const head = Buffer.alloc(maxBytes);
+      const read = fs.readSync(handle, head, 0, maxBytes, 0);
+      return head.subarray(0, read);
+    } finally {
+      fs.closeSync(handle);
+    }
   } catch {
     return null;
   }

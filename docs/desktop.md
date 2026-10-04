@@ -355,7 +355,8 @@ The regions, top to bottom:
   session and the page's own message at once. A file past the core's 20 MB
   attachment limit is refused with a status line instead of being read, and
   nothing else is turned away at the door: a format no provider takes but the
-  machine's image tools can convert (a TIFF, a HEIC) is converted by the core,
+  tools the machine has can convert (a TIFF, a HEIC) is converted by the core —
+  `sips` on macOS, ImageMagick on Linux, and the imaging stack Windows carries —
   and anything that is neither an image nor a PDF travels as its own text — a
   payload that is binary in a way neither reads (`application/octet-stream`, a
   video) is refused by the core with the file named, rather than sent as

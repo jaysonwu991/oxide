@@ -1,7 +1,7 @@
 // Attachment plumbing: what a pasted blob is, what it may be written as, and
 // what the CLI will recognize once it is on disk. The CLI reads an attachment's
-// type from its bytes first and falls back to the file extension
-// (`oxide_core::media::image_mime_of`), so these shapes have to agree with it.
+// type from its own bytes (`oxide_core::media::image_mime_of_bytes`), so these
+// shapes have to agree with it.
 
 import assert from "node:assert/strict";
 import { Buffer } from "node:buffer";
@@ -25,6 +25,7 @@ import {
   MAX_ATTACHMENT_BYTES,
   MAX_ATTACHMENTS,
   MAX_PREVIEW_CHARS,
+  sniffMediaMime,
 } from "../core/attachments";
 
 const PNG = "data:image/png;base64,iVBORw0KGgo=";
@@ -113,6 +114,9 @@ describe("attachmentMimeForPath", () => {
     assert.equal(attachmentMimeForPath("docs/spec.pdf"), "application/pdf");
     assert.equal(attachmentMimeForPath("photo.jpeg"), "image/jpeg");
     assert.equal(attachmentMimeForPath("C:\\Users\\me\\a.jpg"), "image/jpeg");
+    // Both spellings of a TIFF, since the CLI takes either.
+    assert.equal(attachmentMimeForPath("scan.tif"), "image/tiff");
+    assert.equal(attachmentMimeForPath("scan.TIFF"), "image/tiff");
   });
 
   it("treats a source file, a dotfile and an extensionless name as no attachment", () => {
@@ -120,6 +124,31 @@ describe("attachmentMimeForPath", () => {
     assert.equal(attachmentMimeForPath("Makefile"), null);
     assert.equal(attachmentMimeForPath(".png"), null);
     assert.equal(attachmentMimeForPath(""), null);
+  });
+});
+
+describe("sniffMediaMime", () => {
+  const bytes = (...values: number[]): Uint8Array => Uint8Array.from(values);
+  const ascii = (text: string): Uint8Array => Buffer.from(text, "latin1");
+
+  it("reads the format a file's own bytes name", () => {
+    assert.equal(sniffMediaMime(bytes(0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a)), "image/png");
+    assert.equal(sniffMediaMime(bytes(0xff, 0xd8, 0xff, 0xe0)), "image/jpeg");
+    assert.equal(sniffMediaMime(ascii("GIF89a")), "image/gif");
+    assert.equal(sniffMediaMime(ascii("RIFF\u0000\u0000\u0000\u0000WEBPVP8 ")), "image/webp");
+    assert.equal(sniffMediaMime(ascii("BM")), "image/bmp");
+    assert.equal(sniffMediaMime(bytes(0x49, 0x49, 0x2a, 0x00)), "image/tiff");
+    assert.equal(sniffMediaMime(bytes(0x4d, 0x4d, 0x00, 0x2a)), "image/tiff");
+    assert.equal(sniffMediaMime(ascii("%PDF-1.7\n")), "application/pdf");
+    assert.equal(sniffMediaMime(ascii("\u0000\u0000\u0000\u0018ftypheic\u0000\u0000\u0000\u0000heicmif1")), "image/heic");
+    assert.equal(sniffMediaMime(ascii("\u0000\u0000\u0000\u0018ftypavif\u0000\u0000\u0000\u0000avifmif1")), "image/avif");
+  });
+
+  it("names nothing for text, an MP4 or a JPEG-LS", () => {
+    assert.equal(sniffMediaMime(ascii("# notes\n")), null);
+    assert.equal(sniffMediaMime(ascii("\u0000\u0000\u0000\u0018ftypisom\u0000\u0000\u0000\u0000isomiso2")), null);
+    assert.equal(sniffMediaMime(bytes(0xff, 0xd8, 0xff, 0xf7)), null);
+    assert.equal(sniffMediaMime(new Uint8Array()), null);
   });
 });
 

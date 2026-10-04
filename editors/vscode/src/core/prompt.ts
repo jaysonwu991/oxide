@@ -137,6 +137,12 @@ export interface AtReferenceSources {
   read: (absolute: string) => string | null;
   /// The path shown in the context header (workspace-relative).
   label: (absolute: string) => string;
+  /// What the file's own bytes are, or `null` when they cannot be read:
+  /// `media` hands the path to the CLI, which reads the same bytes and has
+  /// nothing to attach to a file that is neither an image, a PDF nor text, and
+  /// `text` inlines it as context. Without it the name is the only hint there
+  /// is, which is what a caller that has no filesystem answers with.
+  media?: (absolute: string) => "media" | "text" | null;
 }
 
 export interface AtExpansion {
@@ -189,11 +195,15 @@ export function expandAtReferences(message: string, sources: AtReferenceSources)
     }
     const lines = referenceLines(reference);
     const absolute = sources.resolve(lines ? lines.path : reference);
+    // The bytes decide where they can be read; the extension is what a caller
+    // with no filesystem has to go by.
+    const kind = absolute ? (sources.media?.(absolute) ?? null) : null;
+    const media = kind ? kind === "media" : absolute ? isAttachmentPath(absolute) : false;
     // One text file at two ranges is two blocks, so a text reference's identity
     // carries the range it named — while an image or PDF travels whole whatever
     // follows its name, so two ranges of one attachment are one attachment.
     const key = absolute
-      ? isAttachmentPath(absolute) || !lines
+      ? media || !lines
         ? absolute
         : `${absolute}#${lines.start}-${lines.end}`
       : "";
@@ -207,7 +217,7 @@ export function expandAtReferences(message: string, sources: AtReferenceSources)
       }
       continue;
     }
-    if (isAttachmentPath(absolute)) {
+    if (media) {
       seen.add(key);
       attachments.push(absolute);
       kept.push(gone + tail);

@@ -2622,17 +2622,26 @@ check(
 );
 app.state.attachments = [];
 
-// The browser has already typed a picked file, so a type neither the core nor
-// a chip has a use for is refused before it is read: a ZIP with nothing
-// readable behind it would fail the read (and base64 itself) if the check came
-// after it.
-await app.addAttachmentFiles([{ name: "bundle.zip", size: 1024, type: "application/zip" }]);
+// The type a browser declared is no gate: the core reads the bytes a data URL
+// carries, and a picked source file can arrive typed
+// `application/octet-stream`, so refusing on the declared type is how a valid
+// attachment never reaches it. The size is the one thing decided before the
+// read, which the file past the limit above shows.
+await app.addAttachmentFiles([
+  {
+    name: "notes.md",
+    size: 1024,
+    type: "application/octet-stream",
+    dataUrl: "data:application/octet-stream;base64,IyBub3Rlcwo=",
+  },
+]);
 check(
-  "refused a type nothing can take without reading it",
-  app.state.attachments.length === 0 && status() === "Cannot attach bundle.zip: application/zip is not an image, a PDF or a text file",
-  status(),
+  "attached a text file the browser typed as a generic blob",
+  app.state.attachments.length === 1 && app.state.attachments[0].name === "notes.md",
+  JSON.stringify(app.state.attachments),
 );
-// A blob the browser did not type is still decided by the data URL it becomes.
+app.state.attachments = [];
+// A blob the browser did not type is decided by the data URL it becomes.
 await app.addAttachmentFiles([
   { name: "shot.png", size: 1024, type: "", dataUrl: "data:image/png;base64,AA" },
 ]);

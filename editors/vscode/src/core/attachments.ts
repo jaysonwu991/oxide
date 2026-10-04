@@ -2,8 +2,8 @@
 // carries.
 //
 // They travel to the CLI as `--image <path>`, which reads the type from the
-// bytes and falls back to the file extension (`oxide_core::media::image_mime_of`
-// / `is_pdf_path`, and the convertible-image extensions) — but a pasted
+// file's own bytes (`oxide_core::media::image_mime_of_bytes` / `is_pdf_path`),
+// the same way `sniffMediaMime` here reads the head it is handed — but a pasted
 // screenshot only exists as a data URL inside the webview, so the host writes
 // it to a temporary file first (`src/attachments.ts`). Everything that does not
 // touch the filesystem lives here, where it is unit tested.
@@ -33,10 +33,11 @@ export const MAX_PREVIEW_CHARS = 6_000_000;
 
 export type AttachmentKind = "image" | "pdf" | "text";
 
-/// The extension the CLI recognizes per media MIME type, which is how it reads
-/// the type of a file it is handed. Mirrors `media::image_mime_of` and the PDF
-/// check: a TIFF, a HEIC and an AVIF are media too — the CLI converts them to a
-/// format a provider takes rather than refusing them.
+/// The extension the CLI recognizes per media MIME type, which is how a file
+/// whose head cannot be read is named by its extension instead. Mirrors
+/// `media::image_mime_of_bytes` and the PDF header check: a TIFF, a HEIC and an
+/// AVIF are media too — the CLI converts them to a format a provider takes
+/// rather than refusing them.
 const EXTENSIONS: Record<string, string> = {
   "image/png": "png",
   "image/jpeg": "jpg",
@@ -83,11 +84,44 @@ const TEXT_EXTENSIONS: Record<string, string> = {
   "application/x-sh": "sh",
 };
 
-/// The reverse of `EXTENSIONS`, with the alternate spelling the CLI accepts.
+/// The reverse of `EXTENSIONS`, with the alternate spellings the CLI accepts.
 /// Media only: a text file is inlined as context by the extension itself, so it
 /// is not passed as an attachment path.
-const MIMES: Record<string, string> = { jpeg: "image/jpeg" };
+const MIMES: Record<string, string> = { jpeg: "image/jpeg", tif: "image/tiff" };
 for (const [mime, extension] of Object.entries(EXTENSIONS)) MIMES[extension] = mime;
+
+/// How many bytes of a file are read to identify it, the window the CLI sniffs
+/// with (`oxide_core::media::SNIFF_BYTES`).
+export const SNIFF_BYTES = 4100;
+
+/// The media type a file's own bytes name, or `null` when they name none — the
+/// mirror of `oxide_core::media`'s sniff, which is what decides: a text file
+/// called `.tif` is not an image and a screenshot saved without an extension
+/// is one. Only the signatures are read here; the CLI's own read is the one
+/// that decides what a part becomes.
+export function sniffMediaMime(head: Uint8Array): string | null {
+  const bytes = head;
+  const starts = (prefix: readonly number[] | string): boolean => {
+    const expect = typeof prefix === "string" ? [...prefix].map((c) => c.charCodeAt(0)) : prefix;
+    return bytes.length >= expect.length && expect.every((byte, at) => bytes[at] === byte);
+  };
+  // A JPEG-LS is a shape no provider takes.
+  if (starts([0xff, 0xd8, 0xff]) && bytes[3] !== 0xf7) return "image/jpeg";
+  if (starts([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a])) return "image/png";
+  if (starts("GIF87a") || starts("GIF89a")) return "image/gif";
+  if (starts("RIFF") && String.fromCharCode(...bytes.slice(8, 12)) === "WEBP") return "image/webp";
+  if (starts("BM")) return "image/bmp";
+  if (starts([0x49, 0x49, 0x2a, 0x00]) || starts([0x4d, 0x4d, 0x00, 0x2a])) return "image/tiff";
+  if (starts("%PDF-")) return "application/pdf";
+  if (String.fromCharCode(...bytes.slice(4, 8)) !== "ftyp") return null;
+  const brand = String.fromCharCode(...bytes.slice(8, 12));
+  if (["heic", "heix", "hevc", "hevx", "heim", "heis", "hevm", "hevs"].includes(brand)) {
+    return "image/heic";
+  }
+  if (brand === "mif1" || brand === "msf1") return "image/heif";
+  if (brand === "avif" || brand === "avis") return "image/avif";
+  return null;
+}
 
 /// The MIME type of a data URL, lowercased, or `""` when it is not one.
 export function dataUrlMime(dataUrl: string): string {

@@ -753,7 +753,12 @@ CLI reads (`images` in `core/rpc.ts`).
 Because the prompt is sent on stdin, a message's own `@path` references are
 resolved by the extension instead of the CLI: `@src/main.rs` becomes a context
 block, media (an image — including one the CLI converts — or a PDF) becomes an
-attachment, and a reference that does not resolve stays in the message. Duplicate references are collapsed, and trailing
+attachment, and a reference that does not resolve stays in the message. Whether a
+reference is media is read from the file's own head (`cli.ts::readFileHead` and
+`core/attachments.ts::sniffMediaMime`, the same bytes the CLI reads) rather than
+from its name, so a text file called `.tif` is inlined as its text and a
+screenshot saved without an extension attaches as an image; a file whose head
+cannot be read falls back to the extension. Duplicate references are collapsed, and trailing
 punctuation is not taken as part of the path. The composer's completion offers
 the paths that will resolve this way — a folder is only a step into one, and a
 reference that resolves to nothing is left for the model to read as text.

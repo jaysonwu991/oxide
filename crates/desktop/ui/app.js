@@ -1592,12 +1592,15 @@ function dataUrlMime(dataUrl) {
   return match ? match[1].toLowerCase() : "";
 }
 
-/// Enforce the core's own limit (`media::MAX_ATTACHMENT_BYTES`) and the core's
-/// own rule on what may travel (`media::load_attachment`): any image, a PDF, or
-/// any text file. An image format a provider does not take (a TIFF, a HEIC) is
-/// converted by the core rather than refused here, and a text file rides along
-/// as its own text — so an over-large file is refused before it is read into a
-/// data URL and nothing is turned away for a type the core would have taken.
+/// Enforce the core's own limit (`media::MAX_ATTACHMENT_BYTES`): a file past it
+/// is refused before it is read into a data URL, since the bytes exist several
+/// times over once they do. Whether a file may travel is the core's call — it
+/// reads a file's own bytes (`media::load_attachment`: any image, a PDF, or any
+/// text file, with an image format a provider does not take converted rather
+/// than refused) — and the type a browser declared says nothing about what the
+/// file holds: a picked `.md` can arrive as `application/octet-stream`, and
+/// gating on that is how a valid attachment is turned away from the core that
+/// would have taken it.
 const MAX_ATTACHMENT_BYTES = 20 * 1024 * 1024;
 
 /// The image formats this webview can draw, which are the ones a chip shows a
@@ -1610,24 +1613,6 @@ const PAINTABLE_IMAGE_MIMES = [
   "image/webp",
   "image/bmp",
 ];
-
-/// Text shapes a drop can carry that the browser does not type as `text/*`.
-const TEXTUAL_MIMES = [
-  "application/json",
-  "application/xml",
-  "application/javascript",
-  "application/x-yaml",
-  "application/yaml",
-  "application/toml",
-  "application/csv",
-  "application/sql",
-  "application/x-sh",
-];
-
-function isAttachableMime(mime) {
-  if (mime.startsWith("image/") || mime.startsWith("text/")) return true;
-  return mime === "application/pdf" || TEXTUAL_MIMES.includes(mime);
-}
 
 function formatBytes(bytes) {
   if (bytes < 1024) return `${bytes} B`;
@@ -1643,10 +1628,6 @@ function isPaintableImage(dataUrl) {
 
 function addAttachment(name, dataUrl) {
   const mime = dataUrlMime(dataUrl);
-  if (!isAttachableMime(mime)) {
-    setStatus("Only images, PDFs and text files can be attached");
-    return false;
-  }
   if (state.attachments.some((attachment) => attachment.dataUrl === dataUrl)) {
     setStatus("Already attached");
     return false;
@@ -1723,17 +1704,9 @@ async function addAttachmentFiles(files) {
       );
       continue;
     }
-    // A blob the browser has typed says what it is before anything is read, so
-    // a type neither the core nor a chip has a use for is refused rather than
-    // read into a data URL first; one it has not typed is left to the data URL
-    // it turns into.
-    const declared = (file.type || "").toLowerCase();
-    if (declared && !isAttachableMime(declared)) {
-      setStatus(
-        `Cannot attach ${file.name}: ${declared} is not an image, a PDF or a text file`,
-      );
-      continue;
-    }
+    // Nothing but the size is decided before the read: the core reads the
+    // bytes the data URL carries, so a type the browser guessed at is no gate.
+    // It only says whether this webview might paint the chip as a picture.
     try {
       let dataUrl = await readFileAsDataUrl(file);
       const mime = dataUrlMime(dataUrl);
