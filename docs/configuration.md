@@ -27,7 +27,7 @@ Oxide reads `config.json` from the platform config directory:
 }
 ```
 
-`api_key` may be left empty when a key is available via `/login` or the
+`api_key` may be left empty when a key is available via `/connect` or the
 environment.
 
 ### auto_approve
@@ -38,10 +38,9 @@ desktop app (an approval card), and are denied in a non-interactive run. The TUI
 asks in the transcript and answers in the composer: `y` runs the tool once, `a`
 allows it for this project from now on, and `n` — optionally with a reason the
 agent reads as guidance — refuses it (`Esc` refuses too). `--ask-approvals` asks
-for one run, `/approvals [on|off]` toggles the stored value, `/approvals list`
-shows the state and the tools this project allows, and `/approvals clear` forgets
-them. The VS Code panel asks on its own setting (`oxide.askApprovals`) rather
-than this one. See [Permissions](cli.md#permissions).
+for one run, `/permissions [on|off]` toggles the stored value, `/permissions list` shows the state and the tools this project
+allows, and `/permissions clear` forgets them. The VS Code panel asks on its own
+setting (`oxide.askApprovals`) rather than this one. See [Permissions](cli.md#permissions).
 
 ### reasoning
 
@@ -143,7 +142,7 @@ the provider in use.
 
 Every provider Oxide knows is declared once, in the single table the login
 picker, the aliases, the environment variables and the client dispatch all read.
-Naming one of these (by name or by alias) with `/login`, `--provider` or
+Naming one of these (by name or by alias) with `/connect`, `--provider` or
 `"provider"` in `config.json` is enough: the endpoint, the default model, the key
 variable and the wire dialect come from the table.
 
@@ -210,7 +209,7 @@ Gemini, `thinking.type` on Z.AI, `additionalModelRequestFields` on Bedrock.
 
 ### Google and Vertex AI
 
-The Gemini API takes a key: `/login google` (aliases `gemini`, `google-ai`,
+The Gemini API takes a key: `/connect google` (aliases `gemini`, `google-ai`,
 `googleai`) stores it, or set `GEMINI_API_KEY`, `GOOGLE_API_KEY` or
 `GOOGLE_GENERATIVE_AI_API_KEY`.
 
@@ -229,10 +228,10 @@ is what is looked for.
 
 ### Amazon Bedrock
 
-`/login bedrock` stores either kind of credential the API accepts:
+`/connect bedrock` stores either kind of credential the API accepts:
 
 - **A Bedrock API key** (`AWS_BEARER_TOKEN_BEDROCK`, or the key typed into
-  `/login bedrock`) is sent as a bearer token — it is the credential this
+  `/connect bedrock`) is sent as a bearer token — it is the credential this
   configuration holds, so it wins over signing when it is set.
 - **AWS credentials** (`AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY`, plus
   `AWS_SESSION_TOKEN` for a temporary one) sign each request with SigV4, read
@@ -268,7 +267,7 @@ the credential is a GitHub token that is exchanged for a short-lived Copilot
 session token before each turn. The session names the endpoint your account is
 served from, so a Copilot Business account's host is used rather than assumed.
 
-In the TUI, `/login github-copilot` (aliases `copilot`, `github`) runs GitHub's
+In the TUI, `/connect github-copilot` (aliases `copilot`, `github`) runs GitHub's
 device flow: it shows a URL and a one-time code (also copied to the system
 clipboard), waits for the approval in the browser, and stores the token it mints
 — then the optional settings step, as for any other provider. Set `GITHUB_TOKEN`
@@ -311,7 +310,7 @@ oxide --provider gitlab --model claude-sonnet-4-6 -p "explain this repo"
 `GITLAB_INSTANCE_URL` (or `GITLAB_URL`) points at a self-managed instance
 instead of `gitlab.com`, and `GITLAB_AI_GATEWAY_URL` points at a self-managed
 gateway; the settings step's base URL does the same thing for the gateway. In the
-TUI, `/login gitlab` asks for the token and stores it, as for any pasted
+TUI, `/connect gitlab` asks for the token and stores it, as for any pasted
 credential — there is no browser flow for a personal access token.
 
 Duo needs a subscription that includes it — GitLab Ultimate with the Duo
@@ -325,7 +324,7 @@ reported in their own words rather than as a failed request.
 `ollama` (`http://localhost:11434/v1`), `lmstudio` (`http://localhost:1234/v1`)
 and `llamacpp` (`http://localhost:8080/v1`) need no credential: a model server on
 this machine is reached without a key, and the key variables above only exist for
-a setup that requires one. `/login ollama` is therefore the whole login: the
+a setup that requires one. `/connect ollama` is therefore the whole login: the
 provider is applied with an empty key and the dialog goes on to its settings
 rather than asking for a credential nothing stores. A provider is treated as
 local by the table, not by the URL, so a custom provider pointed at a remote host
@@ -336,11 +335,11 @@ still needs a key.
 Credential management happens inside the TUI with the Pi-style commands:
 
 ```text
-/login [provider]    connect a provider and store its API key
+/connect [provider]    connect a provider and store its API key
 /logout [provider]   remove stored credentials
 ```
 
-`/login` opens a provider picker (`/login <provider>` skips straight to the key;
+`/connect` opens a provider picker (`/connect <provider>` skips straight to the key;
 for a provider that is already connected it switches to it instead of asking for
 the key again, and pressing Enter on the key step reuses the stored key). After
 the key, an optional settings step lets you set the model, base URL, and (for
@@ -360,28 +359,29 @@ selection. See
 
 ### Portkey
 
-Run `/login portkey` in the TUI, or set `PORTKEY_API_KEY`, then select a model
+Run `/connect portkey` in the TUI, or set `PORTKEY_API_KEY`, then select a model
 with `/models` or `"model"` in `config.json`. The preset uses
 `https://api.portkey.ai/v1`, sends the key as `x-portkey-api-key`, and defaults
-to `claude-sonnet-5`. Run `/usage` to open the spend-bar dialog and enable a
+to `claude-sonnet-5`. Run `/spend` to open the spend-bar dialog and enable a
 full-width bar (session, today, and month cost against an optional monthly budget
 in `$` or `¥`) in the TUI.
 
 For custom gateways, Config IDs, environment precedence, and model-catalog
 fallbacks, see the full [Portkey configuration](cli.md#portkey) section. The
-[Portkey usage bar](cli.md#portkey-usage-bar) documents the `/usage` dialog and
-the `portkey-usage.json` file.
+[Portkey usage bar](cli.md#portkey-usage-bar) documents the `/spend` dialog and
+the `portkey-usage.json` file — the shared `/usage` reports this chat's tokens,
+cost and context window instead.
 
 ### Z.AI (GLM)
 
-Run `/login glm` in the TUI (or `/login zai`), or set `ZAI_API_KEY`, then pick a
+Run `/connect glm` in the TUI (or `/connect zai`), or set `ZAI_API_KEY`, then pick a
 model with `/models`. The preset talks to Z.AI's OpenAI-compatible endpoint
 `https://api.z.ai/api/paas/v4` and defaults to `glm-5.3`; `glm-5.3-flash` is the
 cheaper, faster option. Z.AI documents no model listing endpoint, so the picker
 falls back to a bundled list of current GLM models.
 
 GLM selects thinking with `thinking.type` rather than `reasoning_effort`, and the
-GLM-5.3 series only accepts `low`, `high`, or `max`. `/thinking` therefore maps
+GLM-5.3 series only accepts `low`, `high`, or `max`. `/reasoning` therefore maps
 `low` to `low`, `medium` to `high`, and `high` to `max`; `off` disables thinking
 where the model allows it and asks for the lowest effort on GLM-5.3, which always
 thinks. GLM prices ship in the built-in table, so the footer's `$cost` works out

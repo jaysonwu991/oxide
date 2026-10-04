@@ -223,7 +223,7 @@ The regions, top to bottom:
   list, and a thread is listed — under the summarized title of its first
   message — as soon as its turn starts rather than once it ends: the thread the
   window is in stands in for itself in the tree, in that project's session
-  count and in the `/sessions` list until the store has written it, keyed by
+  count and in the `/session` list until the store has written it, keyed by
   the same id so it is never listed twice. It is named by the title the window
   kept beside that id rather than on the turn that gave it, since the thread
   outlives the turn: a run whose thread was parked (see
@@ -449,8 +449,8 @@ node crates/desktop/check-app.mjs
 node crates/desktop/check-shell.mjs
 ```
 
-`check-app.mjs` loads `ui/app.js` against a stubbed DOM and a stubbed bridge. It covers the `/mcps` listing (including the state colors, a failed
-probe and a toggle), the `/sessions` dialog (this project's threads only, the
+`check-app.mjs` loads `ui/app.js` against a stubbed DOM and a stubbed bridge. It covers the `/mcp` listing (including the state colors, a failed
+probe and a toggle), the `/session` dialog (this project's threads only, the
 row that resumes one, the empty case, and a store that could not be read), the
 project it opens on (no project at all, the picker's rows, and the folder a
 picked row opens), the **Create project** dialog, and every client command in the
@@ -500,7 +500,7 @@ are the ones its `.gitignore` keeps out.
 `oxide_core::config::Config::load(project, ...)` for whichever project is
 selected, which reads the global `config.json` and `auth.json` and loads that
 project's ecosystem — exactly what `oxide` does when launched in that folder.
-Credentials added with the CLI's `/login` are therefore available to the
+Credentials added with the CLI's `/connect` are therefore available to the
 desktop, and vice versa. Project trust (`trust.json`) is resolved the same way
 the CLI resolves it before a run.
 
@@ -521,7 +521,7 @@ stored provider via `auth::select_stored`. Model and base URL are persisted with
 `Config::persist_selection_at`, the same writer the CLI uses.
 
 The dialog is the provider table itself, read from `auth::provider_views()` — the
-one listing the CLI's `/login` picker and the VS Code panel draw — with a search
+one listing the CLI's `/connect` picker and the VS Code panel draw — with a search
 box over it, since the table holds every provider a client can connect. A row
 names the provider the way a login takes it, and says what state it is in (`In
 use` for the active one, `No key needed` for a server on this machine). Each row
@@ -680,7 +680,7 @@ event channel serializes events with
   it started in and to no other, and that is kept apart from the thread on
   screen: the run's id and title live in `state.runSession` / `state.runTitle`
   while `state.session` follows the transcript, so a stored thread opened from
-  the sidebar tree or the `/sessions` list while a turn is going — the review a
+  the sidebar tree or the `/session` list while a turn is going — the review a
   running turn used to block — can be read without taking the turn over. What is
   left behind is parked rather than thrown away: the thread's transcript goes
   off-screen whole, with its change cards, its totals and the folder it belongs
@@ -846,22 +846,26 @@ The composer answers a leading `/` with the client's own commands. Typing `/`
 opens a palette of them — the built-in list plus the commands, prompt templates
 and skills the project or its plugins load, from `oxide_core::commands`, the
 catalog `oxide commands --json` prints and the terminal's own autocomplete
-mirrors. A name the app itself owns is performed here: `/mcps` (`/mcp`) opens
-the **MCP servers** dialog, `/sessions` (`/session`) the **Sessions** dialog,
-`/model`, `/theme`, `/approvals`, `/trust`,
-`/connect`, `/new`, `/usage` and `/help` open or run what the composer's own
-buttons do. A project command, a prompt template and a skill are sent on as a
-normal message, so the CLI's own resolution handles them — as is a client
-command with an argument, so `/mcp list` and `/session <id>` reach the agent
-instead of being performed as the bare command would be. A skill is listed
-under its own name
-(`/rust-conventions`), with the row marked `skill` and its description beside
-it, so taking the row completes the name and sending it is what loads the skill:
-the CLI resolves the same name the menu lists, and `/skill:<name>` is the
-terminal's other spelling of it. A name the app cannot
-perform — today `/agent`, whose palette of subagents the app does not have yet —
-says so in the transcript rather than reaching the model as the literal text
-`/agent`. With no project selected the project-scoped commands say that first,
+mirrors. A name the app itself owns is performed here — the built-ins the catalog
+names the desktop app for, each with the one spelling the catalog declares: `/mcp`
+opens the **MCP servers** dialog, `/session` the **Sessions** dialog, and
+`/model`, `/theme`, `/permissions`, `/trust`, `/connect`, `/new`, `/reasoning`,
+`/usage` and `/help` open or run what the
+composer's own buttons do, while a built-in another front-end owns (`/agent` is
+the VS Code panel's) is not a row at all. A project command, a prompt template
+and a skill are sent on as a normal message, so the CLI's own resolution handles
+them — as is a client command with an argument, so `/mcp list` and `/session
+<id>` reach the agent instead of being performed as the bare command would be. A
+skill is listed under its own name (`/rust-conventions`), with the row marked
+`skill` and its description beside it, so taking the row completes the name and
+sending it is what loads the skill: the CLI resolves the same name the menu
+lists, and `/skill:<name>` is the terminal's other spelling of it. Typing a
+built-in out in full names the front-end the catalog hands it to (`/agent is the
+VS Code panel's command.`) rather than sending the literal text `/agent` to the
+model, and a client command no front-end performs yet is named as not being in
+the app yet, in the same status line — which is what keeps every name the
+catalog declares a client command from being sent on as a prompt. With no
+project selected the project-scoped commands say that first,
 so a listing or a toggle cannot land in the app's own directory, and the palette
 itself is the built-in list alone: a command, a prompt template and a skill are
 read from a folder, while the built-ins are what the app performs itself, so
@@ -869,9 +873,9 @@ read from a folder, while the built-ins are what the app performs itself, so
 `/help` are offered on the home state rather than left behind a
 `No matching command.` row.
 
-The **MCP servers** listing (`/mcps`, alias `/mcp`) and the **Sessions** listing
-(`/sessions`, alias `/session`) open out of the composer rather than over the
-app: each is a panel of the composer's own column, growing upward from its top
+The **MCP servers** listing (`/mcp`) and the **Sessions**
+listing (`/session`) open out of the
+composer rather than over the app: each is a panel of the composer's own column, growing upward from its top
 edge and staying attached to it, with its own scrollbar once the list is longer
 than the space it takes. Nothing is dimmed behind them, so the transcript stays
 readable, and their buttons are icons — a power switch per server, a plus and a
@@ -888,7 +892,7 @@ again, and the listing comes from
 and the VS Code panel's listing. A project's own servers report **Needs Trust** rather
 than being started until the project is trusted.
 
-The **Sessions** dialog (`/sessions`, alias `/session`) lists this project's
+The **Sessions** dialog (`/session`) lists this project's
 threads, newest first, from `all_sessions` — the same rows the tree groups under
 the project — each named by its session name or, unnamed, by the summarized
 preview the terminal's picker and the VS Code panel's listing show it under, with how long

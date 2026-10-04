@@ -10,7 +10,7 @@ The TUI's layout, keyboard shortcuts, and copy behavior. Configuration lives in
 oxide
 
 # Then connect a provider from inside the TUI
-/login
+/connect
 ```
 
 Or provide credentials through the environment:

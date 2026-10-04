@@ -138,7 +138,7 @@ desktop's, so the two can only drift together.
 
 `core/config.ts` resolves the same `<platform config dir>/Oxide` directory the
 CLI uses (falling back to the pre-migration lowercase directory), so a provider
-connected with the terminal's `/login` is immediately usable in the panel. For
+connected with the terminal's `/connect` is immediately usable in the panel. For
 most of that directory the extension is a reader: the model, agent, reasoning,
 tools, and trust are VS Code settings (`oxide.*`) that become `--model` /
 `--agent` / … flags, and the CLI applies them to its own config.
@@ -152,9 +152,8 @@ active provider/model.
 
 ## MCP servers
 
-The composer answers `/mcps` (alias `/mcp`) itself, the way the terminal's
-`/mcps` and Claude Code's `/mcp` do: the message is not sent to the model but
-opens the panel's own **MCP servers** listing — not a `showQuickPick`, which
+The composer answers `/mcp` itself, the way the terminal does: the message is not sent to the
+model but opens the panel's own **MCP servers** listing — not a `showQuickPick`, which
 takes over the window, hides the transcript the listing is about, and cannot be
 answered while a turn streams. It is the listing that belongs near the composer
 where it was typed: the same standalone card used for session history, moved to
@@ -184,7 +183,7 @@ extension never reads `mcp.json` itself and cannot disagree with the CLI about
 which servers a project loads, which scope's definition wins a name, or what
 their state is. A server the project defines is only probed while the project
 is trusted: an untrusted one reports **Needs trust** rather than being
-connected. `/mcps` is one of the composer's own commands — *The `/` palette*
+connected. `/mcp` is one of the composer's own commands — *The `/` palette*
 below covers the rest, and how a project command, a prompt template or a skill is
 left to the CLI to resolve, while the footer chips and the VS Code command
 palette remain the way to change the model, the agent, the reasoning level and
@@ -198,8 +197,7 @@ button's own `aria-expanded` says — the panel is part of the column rather tha
 window over it, so it is opened and put away the same way. Reading the store is
 all opening does: the rows that switch threads refuse while a turn owns the
 session file, so the listing itself can be read mid-turn. **Oxide: Session
-History** and `/session` (alias `/sessions`) in the composer reach the same
-listing — the listing `oxide sessions list` prints, painted in the panel rather
+History** and `/session` in the composer reach the same listing — the listing `oxide sessions list` prints, painted in the panel rather
 than in a QuickPick. The command is the button's own control under another name,
 while `/session` typed in the composer opens the listing (or repaints it if it is
 already up) rather than closing it: a command that names the history should not
@@ -661,13 +659,13 @@ catalog `oxide commands --json` prints — `oxide_core::commands::palette`, the
 same listing the terminal's `/` menu and the desktop app's palette draw. The host
 reads it through the installed binary rather than walking `.oxide/commands`,
 `.oxide/prompts` and `.oxide/skills` itself, so the panel cannot disagree with
-the CLI about what a project holds, which scope wins a name, or which spelling
+the CLI about what a project holds, which scope wins a name, or which name
 runs what. It is read once per folder and kept with the folder it came from, so
 moving the active editor to another project cannot answer with the one before it,
 and a read that fails is remembered as an empty catalog rather than respawned on
 every keystroke. `core/palette.ts` holds the rules — a row per built-in, per
 project command, per prompt template and per skill, matched by name
-or alias with a name that starts with the query ranked ahead of one that merely
+with a name that starts with the query ranked ahead of one that merely
 mentions it, capped at `MAX_COMMAND_ROWS` (200, the `@` list's own cap) — and the
 webview only draws the rows it is handed, in the same list element as the `@`
 completion, labelled *Commands and skills*.
@@ -683,15 +681,20 @@ completion, labelled *Commands and skills*.
   (`/build src`), and the message that goes is what the CLI expands. A client
   command with no arguments is the exception — the panel performs it on the spot,
   through the same switch the matching footer chip uses, so a chip and its
-  command cannot drift apart. `/model`, `/reasoning` (`/thinking`), `/agent`,
-  `/trust` (`/access`), `/mcps` (`/mcp`), `/session` (`/sessions`), `/new`,
-  `/attach`, `/usage` (`/cost`) and `/help`.
-- A client command the panel has no action for — `/permissions`, the desktop
-  app's `/theme`, `/logout` — is answered in the transcript rather than sent to
-  the model as the text `/permissions`. Its row is left out of the palette, and
-  the desktop-only names are dropped with it, so a row is only ever offered for
-  something the panel or the CLI can actually do.
-- `/connect` (alias `/login`) opens the provider table in the panel: every
+  command cannot drift apart. `/model`, `/reasoning`, `/agent`, `/trust`, `/mcp`,
+  `/session`, `/new`, `/attach`, `/usage` and `/help` — each under the one name
+  the catalog declares.
+- Which built-ins are rows at all is the catalog's answer, not this panel's: each
+  entry carries the `front_ends` that perform it, and only those naming `panel`
+  are offered — so `/agent` is here, while `/permissions` and the desktop app's
+  `/theme` and `/logout` are not, since a row is only ever drawn for something
+  this composer performs or the CLI expands. A name outside that set is still
+  refused if it is typed out in full: `/permissions` is answered in the
+  transcript (`/permissions is not one this panel runs — use the terminal.`)
+  rather than sent to the model as the text `/permissions`, which the CLI would
+  hand the agent as a prompt. A CLI that predates the field prints `desktop_only`
+  instead, which is what a released extension falls back to.
+- `/connect` opens the provider table in the panel: every
   provider a client can connect, read from the CLI's own `oxide providers --json`
   so the panel keeps no copy of it, with a search box over it and a `In use`,
   `Stored`, `No key needed` or `Machine credential` word on the rows that have
@@ -703,8 +706,8 @@ completion, labelled *Commands and skills*.
   connected by name alone — the row's `credential` (`key`, `external`, `none`) is
   what decides whether the box is put up at all, so Bedrock is never asked to
   paste an AWS key the request does not read — and the credential lands in the
-  same `auth.json` the terminal's `/login` writes, so either one is a login in the
-  other. The footer's model chip is where the model is chosen afterwards. The
+  same `auth.json` the terminal's `/connect` writes, so either one is a login in
+  the other. The footer's model chip is where the model is chosen afterwards. The
   command is also contributed as **Oxide: Connect Provider** for the palette, and
   no project has to be open — the configuration it writes lives beside the CLI's,
   not in a folder.
@@ -1141,7 +1144,7 @@ them with wraparound, and the ✕ or a rebuilt transcript closing it —
 the output of a tool card folding from the row that offers the rest of it as
 well as from its header, and a card that already shows everything it has
 offering no fold and no caret —
-the `/mcps` and `/sessions` listings (and the full-size image a thumbnail
+the `/mcp` and `/session` listings (and the full-size image a thumbnail
 opens, from the ✕ in its head row, the backdrop or <kbd>Esc</kbd>), the tracked file's dashed chip and the empty box it cannot send on its
 own, and the rows of the `@` completion with the keys that walk, take and close
 them — the `@` rows and the palette's side by side, since the two share one
@@ -1164,7 +1167,7 @@ readers are covered one file each: `test/settings.test.ts`, `test/trust.test.ts`
 `test/git.test.ts`, `test/agents.test.ts`, `test/plugins.test.ts`,
 `test/project.test.ts` (the five together, against an injected file map, with the
 untrusted and plugin-agent cases spelled out) and `test/footer.test.ts` (the
-labels, the usage line and the gauge). The `/mcps` listing's own parsing — the
+labels, the usage line and the gauge). The `/mcp` listing's own parsing — the
 server listing, the per-state names, the toggle arguments and the bare slash
 command — is covered in `test/mcps.test.ts`, which also holds the controller's
 `send` to answering that command before a message is queued or prompted (a

@@ -8,7 +8,7 @@ page is the detail behind it, and the task-by-task guides live in
 
 - Interactive TUI (ratatui) plus non-interactive `-p/--print`, `--mode json`
   (JSONL event stream), and `--mode rpc` (JSONL over stdin/stdout) modes. In the
-  TUI, `/login` (`/connect`) and `/logout` manage provider credentials.
+  TUI, `/connect` and `/logout` manage provider credentials.
 - Desktop app (`oxide-desktop`, an Electron window over the same Rust engine) that
   manages multiple projects
   and shows the shared session store, using the same configuration as the CLI
@@ -141,8 +141,8 @@ so local-only files like `.claude/settings.local.json` stay out of the PR.
   `/fork <n>`).
 - Pi-style session flags: `--session <path|id>`, `--no-session`, `--name`,
   `-c`/`--continue`, `-r`/`--resume` (browse past sessions), and
-  `--fork <path|id>`, plus TUI commands `/new`, `/session`, `/resume`, `/name`,
-  `/model`, `/thinking`, `/export`, `/reload`, and `/hotkeys`.
+  `--fork <path|id>`, plus TUI commands `/new`, `/session`, `/name`, `/model`,
+  `/reasoning`, `/export`, `/reload`, and `/hotkeys`.
 - Session branching: `/tree` lists user messages and `/tree <n>` branches the
   current session in place (summarizing the abandoned path), `/fork <n>`
   branches a new session from one, and `/clone` duplicates the current session.
@@ -190,7 +190,7 @@ so local-only files like `.claude/settings.local.json` stay out of the PR.
   matches Pi: full-width top and bottom rules colored by the thinking level that
   grow to 12 rows, and semantic colors keep dark, light, and custom themes
   consistent. See [tui.md](tui.md).
-- Portkey spend bar: with a Portkey login, `/usage` opens a settings dialog that
+- Portkey spend bar: with a Portkey login, `/spend` opens a settings dialog that
   adds a full-width bar at the bottom of the screen showing the user, this
   session's cost, and today's and the month's spend from the Portkey analytics
   API against an optional monthly budget in `$` or `¥`.

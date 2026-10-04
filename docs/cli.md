@@ -95,7 +95,7 @@ oxide mcp remove extra
 `oxide mcp list` checks every configured server in parallel and reports
 `Connected`, `Needs Auth`, `Needs Trust`, `Disabled`, or the connection error.
 Status checks never open a browser or execute untrusted project servers; use
-`oxide mcp auth <name>` for a server that needs OAuth. The TUI `/mcps` command
+`oxide mcp auth <name>` for a server that needs OAuth. The TUI `/mcp` command
 performs the same check.
 
 ```sh
@@ -106,7 +106,7 @@ oxide mcp enable filesystem                    # back on, in whichever file defi
 ```
 
 `--json` is what the desktop app's **MCP servers** dialog and the VS Code
-panel's `/mcps` picker read: the `state` field is one of `connected`,
+panel's `/mcp` picker read: the `state` field is one of `connected`,
 `needs-auth`, `needs-trust`, `disabled`, `error`, so a client colors and groups
 without parsing the display string, and `scope` is the `project` / `global`
 value `--scope` accepts for a toggle that lands in the file the listing came
@@ -215,7 +215,7 @@ oxide mcp auth <name>
 `oxide mcp auth` is the only command that opens a browser: authorization waits on
 the loopback callback, so a running agent turn never starts it — a server without
 a usable token reports that it needs authorization and names this command, in the
-tool result and in `/mcps`. A stored token is still refreshed silently mid-turn.
+tool result and in `/mcp`. A stored token is still refreshed silently mid-turn.
 An optional Claude Code-compatible `oauth` block can provide a pre-registered `clientId`,
 `clientSecret`, `callbackPort`, `scopes`, or `redirectUri` when the authorization
 server does not support dynamic client registration or needs overrides.
@@ -392,17 +392,20 @@ Focus: $ARGUMENTS
 - `agent: <name>` runs the command as that agent. `subtask: true` runs it in an
   isolated subagent context whose result is reported back to the main
   conversation.
-- Built-in commands: `/help`, `/hotkeys`, `/exit`, `/new`, `/session`, `/resume`,
-  `/tree`, `/fork`, `/clone`, `/name`, `/model`, `/thinking`, `/theme`,
-  `/trust`, `/export`, `/reload`, `/init`, `/login`, `/logout`, `/models`,
-  `/mcps`, `/plugins`, `/marketplaces`, `/notify`, `/approvals`, `/usage`,
-  `/updates`, `/connect`, `/undo`, `/redo`, `/compact`, `/copy`, `/copy all`,
-  and a skill by
-  its own name (`/rust-conventions`, also spelled `/skill:<name>`). After a
-  space, the built-in commands autocomplete their fixed
-  arguments too (`/notify sound`, `/approvals on`, `/usage currency usd`,
-  `/updates off`, `/plugins marketplace update`, and providers for `/login`); Tab
-  accepts the highlighted suggestion.
+- Built-in commands: `/help`, `/hotkeys`, `/exit`, `/new`, `/session`,
+  `/tree`, `/fork`, `/clone`, `/name`, `/model`, `/reasoning`, `/theme`,
+  `/trust`, `/export`, `/reload`, `/init`, `/connect`, `/logout`, `/models`,
+  `/mcp`, `/plugins`, `/marketplaces`, `/notify`, `/permissions`, `/usage`,
+  `/spend`, `/updates`, `/undo`, `/redo`, `/compact`, `/copy`,
+  `/copy all`, and a skill by its own name (`/rust-conventions`, whose other
+  spelling is `/skill:<name>`). The catalog holds one spelling per command, so
+  `/help` and the autocomplete list each name once and a word that is not one —
+  `/mcps` for `/mcp`, `/login` for `/connect` — is an ordinary message rather
+  than a second way to reach a command. After a space,
+  the built-in commands autocomplete their fixed arguments too
+  (`/notify sound`, `/permissions on`, `/spend currency usd`, `/updates off`,
+  `/plugins marketplace update`, and providers for `/connect`); Tab accepts the
+  highlighted suggestion.
 - **Remove** a command by deleting its file.
 - `oxide models [--json] [--active]` reads the same normalized provider catalogs as the
   TUI's `/models` picker. The JSON form is for clients such as the VS Code
@@ -411,22 +414,29 @@ Focus: $ARGUMENTS
   only the active provider, so a latency-sensitive client is not held up by a
   slow inactive provider it will not display.
 - `oxide commands [--json]` prints the catalog a client offers: the built-in
-  names with their aliases, their argument hint and their `kind` (`client` for a
-  command a front-end answers itself, like `/mcps`; `prompt` for one it runs by
+  names, each with its argument hint, their `kind` (`client` for a
+  command a front-end answers itself, like `/mcp`; `prompt` for one it runs by
   sending `/name args`; `skill` for a skill, which is listed under its own name —
   sending `/name` loads it, and `/skill:<name>` is the terminal's other
-  spelling), then the commands, prompt
-  templates and skills the project and its plugins contribute, each with the
-  `source` it was found in (`builtin`, `project` or `global`). A command whose
-  frontmatter routes it to an agent or a subtask is one of those `prompt`
-  entries: the CLI applies the routing when it runs the `/name` prompt, so a
-  client only has to send it. An agent is not a slash command — it is selected
+  spelling) and the `front_ends` that perform it (`terminal`, `desktop`,
+  `panel`), then the commands, prompt templates and skills the project and its
+  plugins contribute, each with the `source` it was found in (`builtin`,
+  `project` or `global`). A command whose frontmatter routes it to an agent or a
+  subtask is one of those `prompt` entries: the CLI applies the routing when it
+  runs the `/name` prompt, so a client only has to send it. An agent is not a slash command — it is selected
   with a picker of the front-end's own (`/agent` in the terminal, `--agent` for
   a run) — so agent files contribute no entry. The desktop app's `/` palette is
   built from the catalog, so its menu and the terminal's autocomplete agree on
   what exists, and the VS Code panel draws the same catalog in its composer — a
   skill's own row in either one sends `/name`, which is what loads it; the panel
   answers the client commands it has an action for from its own code.
+  `front_ends` is what keeps a menu honest: each client offers the built-ins it
+  is named in and leaves out the rest (`/permissions` is the terminal's and the
+  desktop app's; `/agent` is the panel's), so a row that appears is one the
+  client performs rather than one it answers with a "not available here" note.
+  `desktop_only` is printed beside it for a client too old to read the new field:
+  true when the panel is not among the front-ends that perform the command, which
+  is how such a client hid the desktop app's own rows.
 
 ## Prompt templates
 
@@ -703,9 +713,10 @@ permission:
 - `--ask-approvals` asks for one run (it switches `auto_approve` off for it) and
   `--no-ask-approvals` runs gated tools without asking; either overrides the
   stored value.
-- In the TUI, `/approvals [on|off]` toggles that same `auto_approve` key for
-  later runs, `/approvals list` shows the state and the tools this project allows
-  from now on, and `/approvals clear` forgets them.
+- In the TUI, `/permissions [on|off]` toggles that
+  same `auto_approve` key for later runs, `/permissions list` shows the state and
+  the tools this project allows from now on, and `/permissions clear` forgets
+  them.
 - The VS Code panel asks on its own: `oxide.askApprovals` (default on) starts the
   turn with `--ask-approvals`, so the shared `config.json` value does not decide
   there.
@@ -1082,26 +1093,26 @@ inside the TUI, like Pi.
 
 ### From the TUI
 
-Start `oxide` even without a key, then run `/login`:
+Start `oxide` even without a key, then run `/connect`:
 
-- `/login` lists the providers — enter a number or name, then paste the API key
+- `/connect` lists the providers — enter a number or name, then paste the API key
   (Enter with the field empty reuses the stored key when there is one). Providers
   with a stored key are marked `connected`. After the key, an optional settings
   step pre-fills the model and endpoint (and, for Portkey, the Config ID) so a
   custom gateway can be configured without editing `config.json` by hand; press
   Enter through the rows to keep the pre-filled values, or replace one before
   saving — a row left blank keeps the provider's default.
-- `/login deepseek` or `/login portkey` skips the picker. When that provider is
+- `/connect deepseek` or `/connect portkey` skips the picker. When that provider is
   already connected the command switches to it; otherwise it asks for the key.
 - Bedrock and Vertex ask for no key: they authorize with a credential this
   machine already has — an AWS signing identity, Google's application-default
-  file — so `/login bedrock` is a login in itself. A machine without one says
+  file — so `/connect bedrock` is a login in itself. A machine without one says
   what to set instead of asking for a key that would never be read.
 - A provider that authenticates by a browser flow instead of a pasted key asks
-  for that instead: `/login github-copilot` shows a GitHub URL and a one-time
+  for that instead: `/connect github-copilot` shows a GitHub URL and a one-time
   code (also copied to the clipboard), waits for the approval, and stores the
   token it mints before moving on to the same settings step. Nothing is typed.
-  `/login gitlab` is not one of those: the token to paste is a GitLab personal
+  `/connect gitlab` is not one of those: the token to paste is a GitLab personal
   access token carrying the `ai_features` scope.
 - `/logout` removes the active provider's stored credential and switches to
   another logged-in provider when one is left; `/logout <provider>` removes a
@@ -1109,8 +1120,7 @@ Start `oxide` even without a key, then run `/login`:
 
 Press Enter to confirm and Esc to cancel. The key is stored in `auth.json`
 (mode `0600`) and the active provider is written to `config.json`, so it applies
-to the running session and the next launch. `/connect` remains an alias of
-`/login`.
+to the running session and the next launch.
 
 ### From a front-end
 
@@ -1161,7 +1171,7 @@ Credentials for different providers live side by side in `auth.json`, so you can
 log in to OpenAI, Anthropic, and Portkey and move between them without re-entering
 a key. Switching happens by:
 
-- `/login <provider>` for a provider that is already connected.
+- `/connect <provider>` for a provider that is already connected.
 - Enter in the login dialog's key step, which reuses the stored key — type a key
   first to replace it instead.
 - Picking a model of another provider in `/models` (see below).
@@ -1210,10 +1220,10 @@ the provider only differs in its endpoint and defaults:
 | Names | `zai`, `glm`, `z.ai`, `z-ai`, `zhipu`, `bigmodel` |
 | Base URL | `https://api.z.ai/api/paas/v4` (`ZAI_BASE_URL`) |
 | Default model | `glm-5.3` (`glm-5.3-flash` is cheaper and faster) |
-| Key | `ZAI_API_KEY`, or `/login glm` |
+| Key | `ZAI_API_KEY`, or `/connect glm` |
 
 ```text
-/login glm
+/connect glm
 ```
 
 Keys are created at <https://z.ai/manage-apikey/apikey-list>. The preset is
@@ -1237,12 +1247,12 @@ with `/models` or a `"model"` entry:
 ```
 
 Thinking is controlled by `thinking.type` rather than `reasoning_effort`; see
-[Reasoning](#reasoning) for how `/thinking` maps onto GLM's levels.
+[Reasoning](#reasoning) for how `/reasoning` maps onto GLM's levels.
 
 ### Portkey
 
 Portkey uses the OpenAI-compatible Chat Completions API. In both setups below,
-keep the API key out of `config.json`: `/login portkey` stores it in
+keep the API key out of `config.json`: `/connect portkey` stores it in
 `auth.json` with mode `0600` and selects Portkey as the active provider.
 
 #### Login without a custom gateway
@@ -1250,7 +1260,7 @@ keep the API key out of `config.json`: `/login portkey` stores it in
 Start Oxide and run:
 
 ```text
-/login portkey
+/connect portkey
 ```
 
 Paste your Portkey API key when prompted. For a new setup, no other
@@ -1286,14 +1296,14 @@ First add the gateway and routing settings to the global `config.json`:
 }
 ```
 
-After saving the file, start Oxide and run `/login portkey`. If Oxide is already
-running, save the file, run `/login portkey`, then run `/reload`. Paste the API
+After saving the file, start Oxide and run `/connect portkey`. If Oxide is already
+running, save the file, run `/connect portkey`, then run `/reload`. Paste the API
 key for that gateway when prompted. Oxide sends the key as
 `x-portkey-api-key` and the Config ID as `x-portkey-config`; it does not send
 the key as a bearer token.
 
 `portkey_config` is optional when the gateway does not require a saved Portkey
-Config. A Config ID typed in the `/login portkey` settings step is written to
+Config. A Config ID typed in the `/connect portkey` settings step is written to
 `portkey_config` in the global `config.json`, so it is still in force on the
 next launch and is not lost when you log in to another provider. `model_catalog`
 is also optional, but is useful when the gateway blocks
@@ -1348,7 +1358,7 @@ usable; a custom endpoint is listed through the URL remembered for it in
 `provider_base_urls`, and is left out when it has none, since its catalog would
 otherwise be queried against the active provider's endpoint.
 
-Refreshing the credential with `/login portkey` preserves an existing Portkey
+Refreshing the credential with `/connect portkey` preserves an existing Portkey
 model, custom base URL, and Config ID when Portkey is already active. See
 Portkey's documentation for the current [gateway headers](https://portkey.ai/docs/api-reference/inference-api/headers)
 and [OpenAI-compatible setup](https://portkey.ai/docs/integrations/libraries/openai-compatible).
@@ -1367,18 +1377,21 @@ footer's `$cost`). `Today` and `Month` come from the Portkey analytics API, so
 they cover every request your workspace attributed to that user from any
 client, not just this session, and they are the USD amounts Portkey reports. The
 optional ` / $600.00` after `Month` is the budget configured with
-`/usage budget`, formatted in the currency set with `/usage currency`.
+`/spend budget`, formatted in the currency set with `/spend currency`.
 
 The bar only runs while a Portkey provider is logged in, because the spend it
-shows belongs to that account: `/login portkey` (or `PORTKEY_API_KEY`) has to be
-in place before `/usage on` and before the bar appears again at startup.
+shows belongs to that account: `/connect portkey` (or `PORTKEY_API_KEY`) has to be
+in place before `/spend on` and before the bar appears again at startup.
 
 ### Configure and toggle
 
-Run `/usage` to open the Portkey spend-bar dialog. It is a small form over the
-bar's settings: move with `↑`/`↓`, press `Enter` to toggle `Enabled` and
-`Currency` or to edit a text field in place (the cursor sits at the end of the
-value; an API key is masked), and `Esc` to save and close. The rows are:
+Run `/spend` to open the Portkey spend-bar dialog. (The shared `/usage` is not
+this bar: it reports the current chat's tokens, cost and context window and takes
+no arguments, so the bar's own settings are all behind `/spend`.) The dialog is
+a small form over the bar's settings: move with `↑`/`↓`, press `Enter` to toggle
+`Enabled` and `Currency` or to edit a text field in place (the cursor sits at the
+end of the value; an API key is masked), and `Esc` to save and close. The rows
+are:
 
 ```text
 Enabled    show or hide the bar
@@ -1393,29 +1406,29 @@ Endpoint   analytics base URL (default https://api.portkey.ai/v1)
 The same settings can still be changed one at a time from the command line:
 
 ```text
-/usage status                 show the status and syntax
-/usage on | off               show or hide the bar
-/usage user <firstname.lastname>   the user whose spend to show
-/usage key <pk-...>           usage API key (or `off` to use the provider key)
-/usage budget <amount|off>    monthly budget shown after the month spend
-/usage currency <usd|cny>     budget currency (`$`/`¥` are accepted too)
-/usage metadata <key>         metadata key holding the user (default `_user`)
+/spend status                 show the status and syntax
+/spend on | off               show or hide the bar
+/spend user <firstname.lastname>   the user whose spend to show
+/spend key <pk-...>           usage API key (or `off` to use the provider key)
+/spend budget <amount|off>    monthly budget shown after the month spend
+/spend currency <usd|cny>     budget currency (`$`/`¥` are accepted too)
+/spend metadata <key>         metadata key holding the user (default `_user`)
 ```
 
 `on` requires a Portkey login, a username, and an API key. The key comes from
-`/usage key` when set, and otherwise from the active Portkey credential, so
-`/login portkey` followed by `/usage user firstname.lastname` and `/usage on` is
-enough. Use `/usage key` when usage has to be queried with a different (for
+`/spend key` when set, and otherwise from the active Portkey credential, so
+`/connect portkey` followed by `/spend user firstname.lastname` and `/spend on` is
+enough. Use `/spend key` when usage has to be queried with a different (for
 example, organization-scoped) key than the one that serves models.
 
-`/usage budget 600` sets a monthly budget of `$600.00`; set the currency first
-or afterwards with `/usage currency cny` to show it as `¥600.00`. Both the
-amount and the symbol are accepted, so `/usage budget ¥600` works too. The spend
+`/spend budget 600` sets a monthly budget of `$600.00`; set the currency first
+or afterwards with `/spend currency cny` to show it as `¥600.00`. Both the
+amount and the symbol are accepted, so `/spend budget ¥600` works too. The spend
 columns stay in USD either way.
 
 By default the bar filters on the `_user` metadata field. If your gateway
 attributes users with a different key (`email`, `user_id`, ...), set it with
-`/usage metadata <key>` so the query matches your traffic.
+`/spend metadata <key>` so the query matches your traffic.
 
 The bar refreshes every 60 seconds and once after each turn. Its settings and
 key live in `portkey-usage.json` in the Oxide config directory (mode `0600`,
@@ -1489,7 +1502,7 @@ Global ecosystem resources can additionally live under `~/.oxide/` and
 `~/.claude/`; global Claude-compatible MCP configuration is read from
 `~/.claude.json`.
 
-Deleting a session file removes that conversation; `/resume` can also delete
+Deleting a session file removes that conversation; `/session` can also delete
 (Ctrl+D) or rename (Ctrl+R) sessions from the picker. `oxide sessions` offers
 non-interactive management: `list` (with `--all` or `--older-than`), `show
 <id>` (print one saved conversation — `--tail <n>` for just its newest

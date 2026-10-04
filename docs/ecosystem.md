@@ -61,11 +61,14 @@ Oxide also reads the Claude Code layout, so existing configurations work as-is:
 ## Slash commands
 
 Slash commands are expanded from the ecosystem and also include built-ins:
-`/help`, `/hotkeys`, `/exit`, `/new`, `/session`, `/resume`, `/tree`, `/fork`,
-`/clone`, `/name`, `/model`, `/thinking`, `/theme`, `/trust`, `/export`,
-`/reload`, `/init`, `/login`, `/logout`, `/models`, `/mcps`, `/plugins`,
-`/marketplaces`, `/notify`, `/approvals`, `/usage`, `/connect`, `/undo`,
-`/redo`, `/compact`, `/copy`, `/copy all`, and `/skill:<name>`. Discovered
+`/help`, `/hotkeys`, `/exit`, `/new`, `/session`, `/tree`, `/fork`, `/clone`,
+`/name`, `/model`, `/reasoning`, `/theme`, `/trust`, `/export`, `/reload`,
+`/init`, `/connect`, `/logout`, `/models`, `/mcp`, `/plugins`, `/marketplaces`,
+`/notify`, `/permissions`, `/usage`, `/spend`, `/undo`, `/redo`, `/compact`,
+`/copy`, `/copy all`, and `/skill:<name>`. Each command has exactly one
+spelling: a name the catalog does not declare is a plain message rather than a
+second way to reach a command.
+Discovered
 commands and prompt templates can also be invoked by the agent through the
 `command` tool, and skills load on demand with `skill` or via `/skill:<name>`.
 
