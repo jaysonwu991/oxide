@@ -352,7 +352,9 @@ The regions, top to bottom:
   image a paste handed over at full resolution is downscaled again by
   `oxide_core::media::optimize_image` when the turn is built — the one place a
   data URL can be — so it is not embedded at full size in the request, the
-  session and the page's own message at once. A file past the core's 20 MB
+  session and the page's own message at once — on Windows the page's own
+  downscale is the only one, since the platform ships no image tool to resize
+  with. A file past the core's 20 MB
   attachment limit is refused with a status line instead of being read, and
   nothing else is turned away at the door: a format no provider takes but the
   tools the machine has can convert (a TIFF, a HEIC) is converted by the core —

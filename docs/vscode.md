@@ -512,7 +512,8 @@ The CLI takes attachment *paths*, so:
   disposed) and passes that path instead.
 
 The webview downscales an image's longest edge to 1568px on a canvas before it
-sends it on (`oxide_core::media::optimize_image` does the same on the CLI side),
+sends it on (`oxide_core::media::optimize_image` does the same on the CLI side
+on macOS and Linux, which have an image tool to resize with),
 so a retina screenshot does not travel as a data URL at full resolution. `src/core/attachments.ts`
 is pure: it reads a data URL's type, maps a type onto the extension the CLI
 reads (the image types it takes — `png`, `jpg`/`jpeg`, `gif`, `webp`, `bmp` —
