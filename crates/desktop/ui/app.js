@@ -3847,7 +3847,7 @@ function mono(value) {
 // ---------- MCP servers ----------
 
 /// The servers this project loads, with the state the core reports: the same
-/// listing `oxide mcp list` prints and the terminal's `/mcps` shows.
+/// listing `oxide mcp list` prints and the terminal's `/mcp` shows.
 async function openMcps() {
   closeOverlays("mcps-modal");
   el("mcps-modal").hidden = false;
@@ -3939,9 +3939,9 @@ async function toggleMcp(server, button) {
 
 // ---------- sessions ----------
 
-/// The threads stored for this project, newest first: what `/sessions` opens,
+/// The threads stored for this project, newest first: what `/session` opens,
 /// and the same list the sidebar draws beside the project. The terminal's
-/// `/resume` picker and the VS Code panel's dialog show the same sessions, so a
+/// `/session` picker and the VS Code panel's dialog show the same sessions, so a
 /// thread started in one front-end is reachable from the others.
 async function openSessions() {
   if (!state.project) {
@@ -4039,22 +4039,13 @@ function sessionMessages(count) {
 
 // ---------- slash commands ----------
 
-/// Alias → the name the built-ins dispatch on, mirroring
-/// `oxide_core::commands`.
-const SLASH_ALIASES = {
-  mcps: "mcp",
-  approvals: "permissions",
-  access: "trust",
-  thinking: "reasoning",
-  sessions: "session",
-  clear: "new",
-  cost: "usage",
-  login: "connect",
-};
-
-function slashName(raw) {
-  const name = String(raw || "").replace(/^\//, "").toLowerCase();
-  return SLASH_ALIASES[name] || name;
+/// Reads the catalog for the project on screen: the rows the `/` menu draws.
+/// The catalog holds one spelling per command, so there is nothing here to
+/// resolve a typed name through — the name is the name.
+async function loadCommands() {
+  const entries = await invoke("list_commands", { project: state.project || "" });
+  state.palette = entries || [];
+  return state.palette;
 }
 
 /// The built-ins this app performs itself. A name that is not here is sent on as
@@ -4062,7 +4053,7 @@ function slashName(raw) {
 /// agent through the CLI's own resolution.
 async function runSlashCommand(text) {
   const parts = String(text).trim().split(/\s+/);
-  const name = slashName(parts[0]);
+  const name = parts[0].replace(/^\//, "").toLowerCase();
   const args = parts.slice(1).join(" ").trim();
   switch (name) {
     case "help":
@@ -4171,9 +4162,18 @@ async function runSlashCommand(text) {
       return true;
     default: {
       // A client command the app does not implement yet is still worth naming,
-      // rather than sending `/logout` to the model as a prompt.
+      // rather than sending `/logout` to the model as a prompt — and one the
+      // catalog gives to another front-end is named for the one that performs
+      // it, since a command this app will never run is not one still to come.
       const builtin = state.palette.find((entry) => entry.kind === "client" && entry.name === name);
       if (!builtin) return false;
+      const elsewhere = (builtin.front_ends || [])
+        .filter((front) => front !== "desktop")
+        .map((front) => FRONT_END_LABELS[front] || front);
+      if ((builtin.front_ends || []).length && elsewhere.length) {
+        setStatus(`/${builtin.name} is the ${elsewhere.join(" and ")}'s command.`);
+        return true;
+      }
       setStatus(`/${builtin.name} is not available in the desktop app yet.`);
       return true;
     }
@@ -4381,10 +4381,28 @@ function closePalette() {
 /// kept warm: the list depends on the selected project's own commands.
 async function refreshPaletteEntries() {
   try {
-    state.palette = await invoke("list_commands", { project: state.project || "" });
+    await loadCommands();
   } catch (error) {
     state.palette = state.palette || [];
   }
+}
+
+/// The front-ends the catalog names a command for, as the core labels them.
+const FRONT_END_LABELS = {
+  terminal: "terminal",
+  desktop: "desktop app",
+  panel: "VS Code panel",
+};
+
+/// Whether this app is one of the front-ends a command is offered to. A row the
+/// app cannot perform would otherwise be a `/agent` in its menu answered by a
+/// note saying it is not here.
+function offeredHere(entry) {
+  const frontEnds = entry.front_ends || [];
+  // A CLI that predates the field: the desktop's own names were marked then, so
+  // nothing is left out on their account.
+  if (!frontEnds.length) return true;
+  return frontEnds.includes("desktop");
 }
 
 function paletteMatches() {
@@ -4393,9 +4411,7 @@ function paletteMatches() {
   const query = text.slice(1).toLowerCase();
   if (/\s/.test(query)) return null;
   return state.palette.filter(
-    (entry) =>
-      entry.name.toLowerCase().includes(query) ||
-      entry.aliases.some((alias) => alias.toLowerCase().includes(query)),
+    (entry) => offeredHere(entry) && entry.name.toLowerCase().includes(query),
   );
 }
 
@@ -4442,8 +4458,9 @@ function runPaletteEntry(entry) {
   if (entry.kind === "client" && !entry.arguments) {
     prompt.value = "";
     updateSendState();
-    runSlashCommand(`/${entry.name}`);
-    return;
+    // The command is performed as it is taken, and the answer is handed back so
+    // a caller that needs to know what it did can wait for it.
+    return runSlashCommand(`/${entry.name}`);
   }
   prompt.value = `/${entry.name}${entry.arguments ? " " : ""}`;
   prompt.focus();

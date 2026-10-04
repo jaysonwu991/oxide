@@ -1744,7 +1744,7 @@
   /// (`#dialog` sits under the header, ahead of the transcript, in the panel's
   /// own flow) and the host says which end it belongs near: `.pin-footer` moves
   /// the same complete card above the footer with CSS `order`, so the MCP list
-  /// grows near the composer block where `/mcps` was typed while session history
+  /// grows near the composer block where `/mcp` was typed while session history
   /// remains near the header it describes. A row arrives with the action it
   /// posts, so the view decides nothing about what a click means.
   ///

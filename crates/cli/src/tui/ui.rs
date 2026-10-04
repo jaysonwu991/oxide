@@ -579,7 +579,7 @@ fn draw_models(frame: &mut Frame, app: &App) {
     let mut lines: Vec<Line> = vec![
         Line::from(""),
         Line::from(Span::styled(
-            "Models from every logged-in provider. Use /login to add more.",
+            "Models from every logged-in provider. Use /connect to add more.",
             Style::default().fg(app.theme.tool),
         )),
         Line::from(""),
@@ -1720,7 +1720,7 @@ fn display_path(path: &str) -> String {
     path.to_string()
 }
 
-fn context_percent(used: u64, limit: u64) -> u64 {
+pub(crate) fn context_percent(used: u64, limit: u64) -> u64 {
     (used as f64 / limit as f64 * 100.0).round() as u64
 }
 
@@ -1738,7 +1738,7 @@ fn context_color(pct: u64, theme: &crate::theme::Theme) -> Color {
 
 /// Formats token counts the way Pi's footer does: `999`, `1.2k`, `12k`,
 /// `1.2M`, `12M`.
-fn format_tokens(value: u64) -> String {
+pub(crate) fn format_tokens(value: u64) -> String {
     if value < 1_000 {
         value.to_string()
     } else if value < 10_000 {
@@ -4818,7 +4818,7 @@ mod tests {
             })
             .collect();
 
-        assert!(text.contains("Models from every logged-in provider. Use /login to add more."));
+        assert!(text.contains("Models from every logged-in provider. Use /connect to add more."));
         assert!(text.contains("deepseek-flash [deepseek]"));
         assert!(text.contains("deepseek-flash [portkey]"));
         assert!(text.contains("deepseek-v4-pro [deepseek] · default"));

@@ -120,7 +120,7 @@ async fn exchange(
         let detail = body.trim();
         match status.as_u16() {
             401 => anyhow::bail!(
-                "GitLab refused the credential for `{instance}`. Create a personal access token with the `ai_features` scope at https://gitlab.com/-/user_settings/personal_access_tokens and run `/login gitlab`"
+                "GitLab refused the credential for `{instance}`. Create a personal access token with the `ai_features` scope at https://gitlab.com/-/user_settings/personal_access_tokens and run `/connect gitlab`"
             ),
             403 => anyhow::bail!(
                 "GitLab Duo is not available to this account on `{instance}` — Duo Agent Platform needs GitLab Ultimate with the Duo Enterprise add-on, and the AI features enabled for the account"

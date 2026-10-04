@@ -67,7 +67,7 @@ import {
   type LiveSession,
   type ModelChoice,
 } from "./core/dialogs";
-import { isMcpCommand, mcpListArgs, mcpToggleArgs, parseMcpList, type McpServerView } from "./core/mcps";
+import { mcpListArgs, mcpToggleArgs, parseMcpList, type McpServerView } from "./core/mcps";
 import {
   needsKey,
   parseLoginOutcome,
@@ -111,7 +111,7 @@ import {
   type LineRange,
 } from "./core/prompt";
 import { HISTORY_MESSAGES, parseSessionHistory } from "./core/history";
-import { isSessionCommand, parseSessionList, type SessionEntry } from "./core/sessions";
+import { parseSessionList, type SessionEntry } from "./core/sessions";
 import { toolDiff } from "./core/preview";
 import {
   Transcript,
@@ -174,7 +174,7 @@ const UPDATE_RELEASE_NOTES = "Release notes";
 /// other command and skill is one the CLI expands. The terminal and the desktop
 /// app list the whole catalog, which is why this is not built from it.
 const PANEL_HELP =
-  "Panel commands: /model /reasoning /agent /trust (the footer's chips), /connect, /mcps, /session, /new, /attach, /usage. " +
+  "Panel commands: /model /reasoning /agent /trust (the footer's chips), /connect, /mcp, /session, /new, /attach, /usage. " +
   "A project's commands and skills are completed from `/` and run by the CLI — pick a skill to load its instructions.";
 
 /// What an update check left on the panel, for the one caller that has something
@@ -340,7 +340,7 @@ export class ChatController {
   /// whichever ones are attached.
   private dialog: DialogState | null = null;
   private servers: McpServerView[] = [];
-  /// The newest `/mcps` probe. A listing opened while an earlier probe is still
+  /// The newest `/mcp` probe. A listing opened while an earlier probe is still
   /// running supersedes it, so an answer that arrives afterwards is dropped
   /// instead of painting a list the newer probe has already replaced.
   private mcpProbe = 0;
@@ -1158,22 +1158,14 @@ export class ChatController {
   async send(text: string, busyMode: "queue" | "steer" = "queue"): Promise<void> {
     const message = text.trim();
     if (!message && !this.contextCount) return;
-    // `/mcps` and `/session` are the client's own commands: they open a dialog
-    // here rather than being shipped to the model as a prompt, the way the
-    // terminal and the desktop app answer them.
-    if (this.contextCount === 0 && isMcpCommand(message)) {
-      await this.showMcps();
-      return;
-    }
-    if (this.contextCount === 0 && isSessionCommand(message)) {
-      await this.openSessions();
-      return;
-    }
-    // The rest of the built-ins are the panel's own draws too — the footer's
-    // chips under another name — and a client command it has no action for is
-    // answered here rather than shipped to the model as a prompt. A configured
-    // command or a skill is deliberately left alone: the CLI expands it, which
-    // is what loads the skill.
+    // The built-ins are the panel's own draws — the footer's chips under another
+    // name, and `/mcp` and `/session` beside them — and the catalog is what says
+    // so: `oxide commands --json` declares each one's name and the front-ends
+    // that perform it, so the panel keeps no list of its own. A
+    // client command it has no action for is answered here rather than shipped
+    // to the model as a prompt, while a configured command or a skill is
+    // deliberately left alone: the CLI expands it, which is what loads the
+    // skill.
     if (this.contextCount === 0) {
       const route = routeCommand(await this.commands(), message);
       if (route?.kind === "action") {
@@ -1511,7 +1503,7 @@ export class ChatController {
     } else if (result.code !== 0) {
       const detail = (run?.stderr ?? []).filter(Boolean).join(" ").trim();
       const hint = /no api key|not logged in|authenticate/i.test(detail)
-        ? ' Run "Oxide: Open Terminal" and use /login there to connect a provider.'
+        ? ' Run "Oxide: Open Terminal" and use /connect there to connect a provider.'
         : "";
       this.showNotice(
         detail
@@ -1938,11 +1930,11 @@ export class ChatController {
     this.broadcast({ k: "dialog", dialog: null });
   }
 
-  /// The `/mcps` listing: every configured server with the state the core
+  /// The `/mcp` listing: every configured server with the state the core
   /// probed, painted in the panel's own dialog rather than a QuickPick that
   /// takes over the window. A row's button turns the server off (or back on) in
   /// the file that defines it, and the list is painted again from a fresh probe
-  /// — the same open, inspect, toggle flow the terminal's `/mcps` offers.
+  /// — the same open, inspect, toggle flow the terminal's `/mcp` offers.
   async showMcps(): Promise<void> {
     const cwd = this.cwd();
     // The listing and a toggle act on the files that define a project's
@@ -2644,7 +2636,7 @@ export class ChatController {
   }
 
   /// A built-in command the panel answers itself: `/model` and `/trust` are the
-  /// footer's chips, `/mcps`, `/session`, `/new` and `/attach` are the panel's
+  /// footer's chips, `/mcp`, `/session`, `/new` and `/attach` are the panel's
   /// own dialogs and pickers, and `/help` and `/usage` are what it can say
   /// about itself. Anything the panel has no action for (`/permissions`, the
   /// desktop's own `/theme`) is refused in `send` rather than sent on.

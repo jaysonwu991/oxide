@@ -388,7 +388,7 @@ impl SessionLog {
 
         // A summary needs the whole file parsed — the leaf path is only known
         // once the last line is read — so a store with a long history made a
-        // picker, the desktop sidebar or `/sessions` wait on the sum of every
+        // picker, the desktop sidebar or `/session` wait on the sum of every
         // session. Fan the files out across a bounded pool instead of one after
         // another, the way Pi loads session infos with bounded concurrency, and
         // sort once at the end.

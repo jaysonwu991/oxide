@@ -121,7 +121,7 @@ pub enum ChatItem {
     Error(String),
     Info(String),
     /// A titled list rendered as aligned rows with per-row status colors,
-    /// instead of one plain wrapped paragraph (`/mcps`, `/plugins`).
+    /// instead of one plain wrapped paragraph (`/mcp`, `/plugins`).
     Listing {
         title: String,
         rows: Vec<ListRow>,
@@ -139,7 +139,7 @@ pub enum ChatItem {
         url: String,
     },
     /// A background command still running, rendered as an animated progress bar
-    /// until its result replaces it (`/mcps`, `/plugins list`).
+    /// until its result replaces it (`/mcp`, `/plugins list`).
     Progress {
         label: String,
         since: Instant,
@@ -494,7 +494,7 @@ pub struct CommandHint {
     pub description: String,
 }
 
-/// Interactive session picker shown by `/resume` and `oxide -r`.
+/// Interactive session picker shown by `/session` and `oxide -r`.
 #[derive(Debug, Clone, Default)]
 pub struct SessionsState {
     pub all: Vec<SessionSummary>,

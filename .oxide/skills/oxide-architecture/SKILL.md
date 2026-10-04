@@ -53,7 +53,7 @@ description: Use when navigating or modifying the oxide internals — the agent 
 - `crates/core/src/llm/mod.rs` — module re-exports (`LlmClient`, `Message`,
   `ToolSpec`, ...).
 - `crates/core/src/auth.rs` — multi-provider credential store in `auth.json`,
-  behind the TUI `/login`, `/logout`, and `/connect` commands; the provider list
+  behind the TUI `/connect`, `/logout`, and `/connect` commands; the provider list
   and each provider's key URL come from `config::PROVIDERS`, and a provider with
   a browser login (`AuthStyle::Copilot`) is run through `device_flow_client`
   (`crates/core/src/llm/copilot.rs`) instead of being asked for a key. GitLab

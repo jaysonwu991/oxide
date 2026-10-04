@@ -156,7 +156,7 @@ describe("MCP dialog", () => {
   it("paints one row per server, in the name order the listing arrives in", () => {
     const dialog = mcpDialog(parseMcpList(listing));
     assert.equal(dialog.title, "MCP servers");
-    // It grows up from the composer: that is where the `/mcps` that opens it was
+    // It grows up from the composer: that is where the `/mcp` that opens it was
     // typed, so the listing stays where the words that asked for it are.
     assert.equal(dialog.pin, "footer");
     assert.equal(dialog.refreshLabel, "Recheck");

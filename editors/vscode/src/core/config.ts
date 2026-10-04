@@ -142,7 +142,7 @@ export function contextWindow(
 /// when the complete CLI catalog cannot load. A model id is sent to whichever
 /// provider the CLI has active, so a remembered model from another one would
 /// run against the wrong endpoint. Switching provider is the terminal's
-/// `/login`, which updates `config.json` and therefore this list.
+/// `/connect`, which updates `config.json` and therefore this list.
 export function modelsForProvider(
   summary: { models: { provider: string; model: string }[] } | null,
   provider: string,

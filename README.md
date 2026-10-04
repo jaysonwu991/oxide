@@ -83,7 +83,7 @@ and uninstalling are all covered in [docs/install.md](docs/install.md).
 oxide
 
 # Then connect a provider from inside the TUI
-/login
+/connect
 ```
 
 Or bring your own key from the environment:

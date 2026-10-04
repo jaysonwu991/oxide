@@ -983,7 +983,7 @@ async fn list_models(current_dir: &Path, json_output: bool, active_only: bool) -
         providers.retain(|(name, _)| auth::canonical_provider(name) == active);
     }
     if providers.is_empty() {
-        anyhow::bail!("no provider connected — run /login to add an API key");
+        anyhow::bail!("no provider connected — run /connect to add an API key");
     }
     let fetched = futures::future::join_all(providers.into_iter().map(
         |(name, provider_config)| async move {

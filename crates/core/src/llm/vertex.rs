@@ -135,7 +135,7 @@ pub async fn access_token(http: &reqwest::Client, credential: &str) -> Result<St
             bail!(
                 "the Vertex provider needs a credential — set GOOGLE_VERTEX_CREDENTIALS to the \
                  service-account key, GOOGLE_APPLICATION_CREDENTIALS to its path, or log in with \
-                 /login vertex"
+                 /connect vertex"
             );
         }
         // Not a key file and not a service account: whatever was stored is the

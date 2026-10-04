@@ -1,6 +1,6 @@
 // The provider table printed by `oxide providers --json`: the same rows the
 // desktop app's Connect dialog searches, drawn from the one table the core's
-// `known_providers()` holds and the terminal's `/login` dialog uses. A front-end
+// `known_providers()` holds and the terminal's `/connect` dialog uses. A front-end
 // that only spawns the binary keeps no copy of it — the CLI owns which providers
 // exist, which of them are stored, and which one `config.json` selects.
 //

@@ -308,7 +308,7 @@ fn select_stored_with(
     let name = canonical_provider(provider);
     let store = AuthStore::load_from(auth_path)?;
     let Some(key) = store.key(&name).map(str::to_string) else {
-        anyhow::bail!("no stored credentials for `{name}` — run `/login {name}` to add one");
+        anyhow::bail!("no stored credentials for `{name}` — run `/connect {name}` to add one");
     };
     crate::config::Config::set_active_provider_at(config_path, &name)?;
     Ok((name, key))

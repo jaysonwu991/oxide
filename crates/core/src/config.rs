@@ -1499,7 +1499,7 @@ impl Config {
                 _ => {}
             }
             let mut message = format!(
-                "no API key found for `{}`. Start the TUI and run `/login {}`, set {}, or add \"api_key\" to {}",
+                "no API key found for `{}`. Start the TUI and run `/connect {}`, set {}, or add \"api_key\" to {}",
                 self.provider,
                 self.provider,
                 self.preset()
@@ -1898,7 +1898,7 @@ impl Config {
     }
 
     /// Persists whether a permission-gated tool runs without asking, so the
-    /// next launch keeps the answer `/approvals on|off` gave.
+    /// next launch keeps the answer `/permissions on|off` gave.
     pub fn set_auto_approve_at(path: &Path, auto_approve: bool) -> Result<()> {
         Self::update_at(path, move |object| {
             object.insert(

@@ -218,13 +218,13 @@ export function activate(context: vscode.ExtensionContext): void {
     vscode.commands.registerCommand("oxide.setProjectTrust", guard(() => controller.setProjectTrust())),
     // The same provider table `/connect` opens in the composer, searched and
     // signed in through the CLI the panel drives: the credential lands where the
-    // terminal's `/login` puts it, so the login is shared rather than a second
+    // terminal's `/connect` puts it, so the login is shared rather than a second
     // one this extension keeps.
     vscode.commands.registerCommand(
       "oxide.connectProvider",
       guard(() => controller.openProviders()),
     ),
-    // The same list `/mcps` opens in the composer, so the picker is reachable
+    // The same list `/mcp` opens in the composer, so the picker is reachable
     // from the palette whether or not the user knows the slash command.
     vscode.commands.registerCommand("oxide.mcpServers", guard(() => controller.showMcps())),
     // Checking for a newer release is the installed CLI's own check, answered in

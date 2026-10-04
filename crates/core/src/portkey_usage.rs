@@ -264,7 +264,7 @@ pub fn status_text(settings: &UsageSettings, config: &Config) -> String {
     let provider = if config.is_portkey() {
         "portkey"
     } else {
-        "not Portkey — run /login portkey"
+        "not Portkey — run /connect portkey"
     };
     format!(
         "portkey usage bar: {}\nuser: {} (metadata `{}`) · budget: {} {} · provider: {provider} · api key: {key}\n{usage}",
