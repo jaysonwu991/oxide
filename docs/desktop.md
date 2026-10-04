@@ -54,7 +54,7 @@ crates/desktop/
 ```
 
 The `gui` feature is **off by default** so `cargo build` / `cargo test` /
-`cargo clippy` stay free of the Tauri dependency tree — `tauri`,
+`cargo clippy` stay free of the window's own dependencies — `opener`, `tauri`,
 `tauri-plugin-dialog` and `tauri-build` are all optional and the feature is what
 turns them on. `src/lib.rs` (the `at`, `manager` and `turn` modules) is what a
 plain `cargo test` runs; `commands.rs`, `approval.rs`, `ask.rs` and `bridge.rs`
@@ -742,9 +742,11 @@ Assistant replies render as Markdown: headings, ordered/unordered lists
 (including `- [ ]` tasks), blockquotes, rules, pipe tables, fenced code with
 lightweight syntax highlighting (Rust, JS/TS, Python, Go, Bash, JSON), and
 inline emphasis/code/links. Bare `http(s)://` URLs are auto-linked too, and
-clicking any link opens it in the system browser — navigation is denied inside
-the application window. Tool results render as panels; `write`/`edit`
-results include a colored diff.
+clicking any link opens it in the system browser through `open_url` — one call
+into the `opener` crate, which hands the URL to whatever the machine uses as its
+handler rather than a program this source picks per target — while navigation is
+denied inside the application window. Tool results render as panels;
+`write`/`edit` results include a colored diff.
 
 ## Check for updates
 

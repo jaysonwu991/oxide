@@ -1053,40 +1053,25 @@ pub async fn pick_folder(app: &AppHandle) -> CmdResult<Option<String>> {
     rx.await.map_err(err)
 }
 
-/// Opens an external link in the platform browser. The transcript renders URLs
+/// Opens an external link in the machine's browser. The transcript renders URLs
 /// as anchors, but the webview cannot navigate to a remote page, so a click is
 /// routed here instead of relying on `target="_blank"`.
+///
+/// The launch is `opener`'s: one call that hands the URL to whatever the machine
+/// uses as its handler — the shell on Windows, `open` on macOS, `xdg-open`
+/// elsewhere — which picks them by target inside the crate. A URL is that
+/// handler's own argument either way, never text a shell reads.
 pub fn open_url(url: &str) -> CmdResult<()> {
     let url = url.trim();
     if !is_openable_url(url) {
         return Err("Only http(s) links can be opened".to_string());
     }
-    open_in_browser(url).map_err(err)
+    opener::open(url).map_err(err)
 }
 
 fn is_openable_url(url: &str) -> bool {
     let scheme = url.to_ascii_lowercase();
     scheme.starts_with("https://") || scheme.starts_with("http://")
-}
-
-fn open_in_browser(url: &str) -> std::io::Result<()> {
-    #[cfg(target_os = "macos")]
-    let spawned = std::process::Command::new("open").arg(url).spawn();
-    // `cmd /C start` would let a URL with quotes or shell metacharacters be
-    // read as command text, so hand the URL to a handler that takes it as a
-    // plain argument instead.
-    #[cfg(target_os = "windows")]
-    let spawned = std::process::Command::new("rundll32")
-        .args(["url.dll,FileProtocolHandler", url])
-        .spawn();
-    #[cfg(all(unix, not(target_os = "macos")))]
-    let spawned = std::process::Command::new("xdg-open").arg(url).spawn();
-    #[cfg(not(any(unix, target_os = "windows")))]
-    let spawned: std::io::Result<std::process::Child> = Err(std::io::Error::new(
-        std::io::ErrorKind::Unsupported,
-        "opening links is not supported on this platform",
-    ));
-    spawned.map(|_| ())
 }
 
 /// Dispatches the stable command contract used by the window. The two
