@@ -481,6 +481,53 @@ const existing = [
 let threads = existing;
 let threadsError = null;
 
+const providerRows = [
+  {
+    name: "openai",
+    label: "OpenAI",
+    description: "GPT models",
+    keyUrl: "https://platform.openai.com/api-keys",
+    local: false,
+    stored: true,
+    active: true,
+  },
+  {
+    name: "anthropic",
+    label: "Anthropic",
+    description: "Claude models",
+    keyUrl: "https://console.anthropic.com/settings/keys",
+    local: false,
+    stored: false,
+    active: false,
+  },
+  {
+    name: "bedrock",
+    label: "Amazon Bedrock",
+    description: "Claude and Nova models on AWS",
+    keyUrl: "https://docs.aws.amazon.com/bedrock/",
+    local: false,
+    stored: false,
+    active: false,
+  },
+  {
+    name: "ollama",
+    label: "Ollama",
+    description: "Local models served by Ollama",
+    keyUrl: "",
+    local: true,
+    stored: false,
+    active: false,
+  },
+];
+// The providers the core's own listing hands the dialog (`oxide providers
+// --json`): a name to search on, a label, a description, and the state the row
+// shows beside it. The table holds every provider a client can connect — one of
+// them a server on this machine with no key at all — which is why the dialog
+// searches it rather than listing it. Nothing is connected on the way in: a
+// window that never opened the dialog has no providers, which is what the
+// sections above expect of `/logout`.
+let providersAnswer = [];
+
 // The sidebar's rows as `list_projects` answers them: registered folders first
 // (most recently opened first), then projects discovered from sessions. Nothing
 // is selected on the way in, so the stub carries two for the picker to offer.
@@ -646,6 +693,7 @@ const invoke = async (command, args = {}) => {
     // Everything the rest of `init`/selection asks for; none of it is what this
     // check is about, and all of it stays inside the stub.
     case "list_providers":
+      return providersAnswer;
     case "list_models":
     case "list_themes":
     case "list_sessions":
@@ -751,6 +799,7 @@ vm.runInThisContext(
     "\nglobalThis.__app = { send, runSlashCommand, state, createProjectState, ICONS," +
     " newChatFromSidebar, openProjects, renderProjects, pickProject, updateProjectChip, renderWelcome, recentThreads, loadProjects," +
     " openCreateProject, addCreateProjectTypedPath, saveCreateProject, openModels," +
+    " openConnect, renderProviders, saveConnect, renderLoginFields," +
     " refreshPaletteEntries, paletteMatches, renderPalette, runPaletteEntry," +
     " addAttachment, addAttachmentFiles, el, showQuestion, showQuestionStep, questionNext," +
     " answerQuestion, collectAnswers, requestAt, acceptAt, moveAt, closeAt, atKey," +
@@ -1691,6 +1740,7 @@ const scrolledRows = [
   ".project-list",
   ".palette-list",
   ".model-list",
+  ".provider-list",
   ".review-files",
 ];
 const laneWidth = Number(
@@ -5748,6 +5798,132 @@ check(
 );
 elementFor("update-close").onclick();
 app.installedUpdate.answer = null;
+
+// ---------- the connect dialog ----------
+
+// The provider table holds every provider a client can connect, so the dialog
+// searches it instead of making the reader walk the whole list: the box filters
+// the rows by name, label and description, the row it leaves selected is the one
+// Save connects, and the fields under it say what that provider needs — a server
+// on this machine is not asked for a key it has none of.
+console.log("the connect dialog");
+providersAnswer = providerRows;
+const providerList = elementFor("provider-list");
+const listedProviders = () => providerList.children;
+const providedRow = (index) => String(listedProviders()[index].innerHTML);
+const searchProviders = (query) => {
+  el("provider-filter").value = query;
+  el("provider-filter").fire("input");
+};
+calls.length = 0;
+await app.openConnect();
+check(
+  "opened the dialog on the provider already in use",
+  calls.some(([name]) => name === "list_providers") &&
+    app.state.providerName === "openai" &&
+    listedProviders().length === providerRows.length &&
+    listedProviders()[0].className.includes("active") &&
+    elementFor("connect-modal").hidden === false,
+  `${app.state.providerName} / ${listedProviders().length} / ${providedRow(0)}`,
+);
+check(
+  "named each provider by the name a login takes, and what state it is in",
+  providedRow(0).includes("openai") &&
+    providedRow(0).includes("in use") &&
+    providedRow(0).includes("stored") &&
+    providedRow(1).includes("anthropic") &&
+    !providedRow(1).includes("badge"),
+  `${providedRow(0)} | ${providedRow(1)}`,
+);
+check(
+  "answered the key field for the provider in use",
+  elementFor("login-key-field").hidden === false &&
+    elementFor("login-key-note").hidden === true &&
+    el("login-key").placeholder === "Leave empty to reuse the stored key",
+  `${el("login-key").placeholder} / ${elementFor("login-key-note").hidden}`,
+);
+// A search that hides the selected provider cannot leave it selected: the row
+// Save would connect is a row the reader can see.
+searchProviders("aws");
+check(
+  "searched the provider table by name and description",
+  listedProviders().length === 1 &&
+    providedRow(0).includes("Amazon Bedrock") &&
+    app.state.providerName === "bedrock",
+  `${listedProviders().length} / ${app.state.providerName} / ${providedRow(0)}`,
+);
+searchProviders("claude models");
+check(
+  "matched a label and a description as well as a name",
+  listedProviders().length === 1 &&
+    providedRow(0).includes("Anthropic") &&
+    app.state.providerName === "anthropic",
+  `${listedProviders().length} / ${app.state.providerName} / ${providedRow(0)}`,
+);
+searchProviders("nothing here");
+check(
+  "said so when no provider matches, and selected none",
+  listedProviders().length === 0 &&
+    app.state.providerName === "" &&
+    String(providerList.innerHTML).includes("No provider matches"),
+  `${listedProviders().length} / ${app.state.providerName} / ${providerList.innerHTML}`,
+);
+// A server on this machine is asked for no credential: the field goes and the
+// sentence that says why takes its place.
+searchProviders("ollama");
+check(
+  "asked a provider that needs no key for none",
+  app.state.providerName === "ollama" &&
+    elementFor("login-key-field").hidden === true &&
+    elementFor("login-key-note").hidden === false &&
+    String(elementFor("login-key-note").textContent).includes("no key needed"),
+  `${elementFor("login-key-field").hidden} / ${elementFor("login-key-note").textContent}`,
+);
+// The row the reader clicks is the provider Save connects, with a key typed for
+// the one before it dropped rather than sent to this one.
+searchProviders("");
+el("login-key").value = "sk-typed-for-openai";
+listedProviders()[1].onclick();
+check(
+  "took the row the reader clicked and dropped the key typed for another",
+  app.state.providerName === "anthropic" &&
+    listedProviders()[1].className.includes("active") &&
+    el("login-key").value === "" &&
+    el("login-key").placeholder === "Paste your API key",
+  `${app.state.providerName} / ${el("login-key").value} / ${el("login-key").placeholder}`,
+);
+calls.length = 0;
+el("login-key").value = "sk-ant-test";
+el("login-model").value = "claude-sonnet-4-5";
+await app.saveConnect();
+const loginCall = calls.find(([name]) => name === "login");
+check(
+  "connected the provider the search left selected",
+  loginCall !== undefined &&
+    loginCall[1].provider === "anthropic" &&
+    loginCall[1].key === "sk-ant-test" &&
+    loginCall[1].model === "claude-sonnet-4-5" &&
+    elementFor("connect-modal").hidden === true &&
+    el("login-key").value === "" &&
+    status() === "Connected Anthropic",
+  `${JSON.stringify(loginCall)} / ${status()}`,
+);
+// A filter that matches nothing leaves nothing to connect, and Save says so
+// rather than connecting whatever was selected before the search.
+calls.length = 0;
+searchProviders("nothing here");
+await app.saveConnect();
+check(
+  "refused to connect anything with no provider selected",
+  calls.length === 0 && status() === "Choose a provider first.",
+  `${JSON.stringify(calls.map(([name]) => name))} / ${status()}`,
+);
+searchProviders("");
+el("connect-modal").hidden = true;
+// The bridge section below has no provider table in front of it, the way a
+// window that never opened this dialog has none.
+providersAnswer = [];
+app.state.providers = [];
 
 // ---------- the bridge the window is reached through ----------
 
