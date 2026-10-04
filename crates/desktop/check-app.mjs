@@ -1,5 +1,6 @@
 // Checks the desktop front-end without a window: `ui/app.js` is loaded against
-// a stubbed DOM and the Tauri bridge, then driven the way the composer drives it.
+// a stubbed DOM and the bridge the window is reached through, then driven the
+// way the composer drives it.
 //
 //   node crates/desktop/check-app.mjs
 //
@@ -11,8 +12,8 @@
 // giving up on it), the reasoning picker (its rows, the level a row applies, and
 // the Escape and Close that put it away), and the `/` menu's dispatch of every built-in
 // the shared catalog offers — since a Rust test never runs the app's own
-// JavaScript. Every command it performs goes through the one Tauri command the
-// app registers, so a check in this file that reaches a command by name is
+// JavaScript. Every command it performs goes through the one command the app
+// answers on its bridge, so a check in this file that reaches a command by name is
 // reaching the same entry point the window does. The
 // catalog is read from the built CLI (`target/debug/oxide commands --json`)
 // when that binary is present, so a client command the palette offers but the
@@ -361,8 +362,8 @@ let updateAnswer = {
   advice: null,
   releaseUrl: "https://github.com/jaysonwu991/oxide/releases/tag/desktop-v0.34.0",
   asset: {
-    name: "Oxide_0.34.0_aarch64.dmg",
-    url: "https://github.com/jaysonwu991/oxide/releases/download/desktop-v0.34.0/Oxide_0.34.0_aarch64.dmg",
+    name: "macos-arm64-Oxide.dmg",
+    url: "https://github.com/jaysonwu991/oxide/releases/download/desktop-v0.34.0/macos-arm64-Oxide.dmg",
     digest: "sha256:86966d1b137203c9ed7366329eb708d02896abce279c3ef33a80d8257a1d68b7",
   },
 };
@@ -682,27 +683,31 @@ const document = {
 };
 
 globalThis.document = document;
-// The app listens for the events the Rust side emits; the handlers are kept so
-// the checks can emit one the way a finished turn does.
-const listeners = new Map();
 const invokes = [];
 globalThis.window = {
-  __TAURI__: {
-    // The page performs every command through the app's one Tauri command, so
-    // the stub unwraps what the page sent the way `oxide_invoke` does and logs
-    // the command the app was reached through: the checks below reach the
-    // fixture by the name in the page's own call.
-    core: {
-      invoke: (name, payload = {}) => {
-        invokes.push([name, payload]);
-        return invoke(payload.command, payload.args || {});
-      },
-    },
-    event: {
-      listen: async (name, handler) => {
-        if (!listeners.has(name)) listeners.set(name, []);
-        listeners.get(name).push(handler);
-      },
+  // The page speaks the preload bridge's own envelope rather than a generated
+  // one, so the stub is that bridge: a request the page hands to the host is
+  // recorded — the checks below reach the fixture by the name in the page's own
+  // call — answered the way `oxide_invoke` answers it, and the answer handed
+  // back the way the host hands one over. The user bridge is the one the page
+  // posts on; the event bridge is left out, as a webview that has one has the
+  // other, and the fallback is what the page reaches for without it.
+  __electrobun: {},
+  __electrobunHostBridge: {
+    postMessage(packet) {
+      packet = JSON.parse(packet);
+      invokes.push([packet.method, packet.params]);
+      const answer = invoke(packet.params.command, packet.params.args || {});
+      Promise.resolve(answer).then(
+        (payload) => receive({ type: "response", id: packet.id, success: true, payload }),
+        (error) =>
+          receive({
+            type: "response",
+            id: packet.id,
+            success: false,
+            error: String(error?.message || error),
+          }),
+      );
     },
   },
   innerWidth: 1280,
@@ -713,6 +718,8 @@ globalThis.window = {
   requestAnimationFrame: (callback) => setTimeout(callback, 0),
   localStorage: { getItem: () => null, setItem: () => {}, removeItem: () => {} },
 };
+/// Hands a packet to the page the way the host's own `evaluate_javascript` does.
+const receive = (packet) => globalThis.window.__electrobun.receiveMessageFromHost(packet);
 globalThis.localStorage = globalThis.window.localStorage;
 globalThis.requestAnimationFrame = globalThis.window.requestAnimationFrame;
 globalThis.matchMedia = globalThis.window.matchMedia;
@@ -760,9 +767,9 @@ vm.runInThisContext(
 const app = globalThis.__app;
 const status = () => String(elementFor("status-text").textContent);
 const projectCalls = (command) => calls.filter(([name]) => name === command);
-/// Delivers an event to the app the way Tauri does (`event.payload`).
+/// Delivers an event to the app the way the host does (`event.payload`).
 const emit = async (name, payload) => {
-  for (const handler of listeners.get(name) || []) await handler({ payload });
+  await receive({ type: "message", id: name, payload });
 };
 
 // ---------- what the window opens on ----------
@@ -5183,7 +5190,7 @@ check(
 );
 check(
   "named the artifact this machine would download",
-  updateBody().includes("Oxide_0.34.0_aarch64.dmg"),
+  updateBody().includes("macos-arm64-Oxide.dmg"),
   updateBody(),
 );
 check(
@@ -5243,7 +5250,7 @@ check(
 check(
   "reported what the install did, by tag and by file",
   updateBody().includes("desktop-v0.34.0") &&
-    updateBody().includes("Oxide_0.34.0_aarch64.dmg") &&
+    updateBody().includes("macos-arm64-Oxide.dmg") &&
     updateBody().includes("/Applications/Oxide.app"),
   updateBody(),
 );
@@ -5304,16 +5311,16 @@ check(
 check("offered no install for it", installButton.hidden === true);
 check("offered no advice it does not need", !updateBody().includes("update-advice"), updateBody());
 
-// A copy the app may not write over — a checkout's build, a system package, a
-// bundle an administrator installed — gets the advice the app composed instead
-// of an install button.
+// A copy the app may not write over — a checkout's build, a copy an
+// administrator installed — gets the advice the app composed instead of an
+// install button.
 updateAnswer = {
   ...OFFERED_UPDATE,
   installation: "source build",
   path: "",
   installable: false,
   advice:
-    "Download Oxide_0.34.0_aarch64.dmg from the release page and install it the way this copy was installed.",
+    "Download macos-arm64-Oxide.dmg from the release page and install it the way this copy was installed.",
 };
 await app.openUpdate();
 check(
@@ -5323,7 +5330,7 @@ check(
 );
 check(
   "named the download to use instead",
-  updateBody().includes("Oxide_0.34.0_aarch64.dmg") && updateBody().includes("source build"),
+  updateBody().includes("macos-arm64-Oxide.dmg") && updateBody().includes("source build"),
   updateBody(),
 );
 
@@ -5542,7 +5549,7 @@ const launchAnswer = {
   ok: true,
   version: "0.34.0",
   tag: "desktop-v0.34.0",
-  asset: "Oxide_0.34.0_aarch64.dmg",
+  asset: "macos-arm64-Oxide.dmg",
   path: "/Applications/Oxide.app",
   text: "Restart Oxide to run the new version.",
   pending: false,
@@ -5676,9 +5683,10 @@ app.installedUpdate.answer = null;
 
 // ---------- the bridge the window is reached through ----------
 
-// Every command the page performs goes through the one Tauri command the app
-// registers, with the command's own name and arguments inside it: the page
-// reaches no plugin's IPC directly, which is what keeps `pick_folder` and
+// Every command the page performs goes through the one command the app
+// answers on its bridge, with the command's own name and arguments inside it:
+// the page
+// reaches nothing else directly, which is what keeps `pick_folder` and
 // `open_url` answering with the state the other commands hold.
 console.log("the bridge");
 check(

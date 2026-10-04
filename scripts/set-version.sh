@@ -3,9 +3,11 @@
 #
 # The repository keeps a placeholder version (`0.0.0`); release CI calls this
 # with the pushed tag so the built CLI binary and desktop bundle report the tag
-# version. Patches the workspace version in `Cargo.toml` and the desktop
-# `tauri.conf.json` (which duplicates it), then it is up to the caller to
-# refresh `Cargo.lock` (e.g. `cargo update --workspace`).
+# version. Patches the workspace version in the root `Cargo.toml`, the desktop
+# package's own `Cargo.toml` (it is not a workspace member, so it does not read
+# the workspace's) and the desktop `electrobun.config.ts` (which duplicates it),
+# then it is up to the caller to refresh the lockfiles (e.g. `cargo update
+# --workspace`, and the same in `crates/desktop`).
 #
 # A tag may carry a component prefix so each component releases independently:
 # `v1.2.3` / `cli-v1.2.3` for the CLI, `desktop-v1.2.3` for the desktop app,
@@ -99,18 +101,43 @@ if not patched_cargo:
 with open(cargo_path, "w", encoding="utf-8") as handle:
     handle.writelines(lines)
 
-# tauri.conf.json: the app version the bundler writes into the platform bundle.
-config_path = f"{root}/crates/desktop/tauri.conf.json"
+# crates/desktop/Cargo.toml: the desktop package is excluded from the root
+# workspace, so it reports the version in its own manifest — the one the app
+# compares a release against at runtime.
+desktop_manifest = f"{root}/crates/desktop/Cargo.toml"
+with open(desktop_manifest, encoding="utf-8") as handle:
+    lines = handle.readlines()
+
+in_section = False
+patched_desktop = False
+for index, line in enumerate(lines):
+    stripped = line.strip()
+    if stripped.startswith("[") and stripped.endswith("]"):
+        in_section = stripped == "[package]"
+        continue
+    if in_section and re.match(r"^version\s*=", stripped):
+        indent = line[: len(line) - len(line.lstrip())]
+        lines[index] = f'{indent}version = "{version}"\n'
+        patched_desktop = True
+        break
+if not patched_desktop:
+    sys.exit("error: could not find version in [package] of crates/desktop/Cargo.toml")
+with open(desktop_manifest, "w", encoding="utf-8") as handle:
+    handle.writelines(lines)
+
+# electrobun.config.ts: the app version the Electrobun bundler writes into the
+# platform bundle (and the one the updater compares against a release).
+config_path = f"{root}/crates/desktop/electrobun.config.ts"
 with open(config_path, encoding="utf-8") as handle:
     config = handle.read()
 config, count = re.subn(
-    r'("version"\s*:\s*")[^"]*(")',
+    r'(version:\s*")[^"]*(")',
     lambda match: f"{match.group(1)}{version}{match.group(2)}",
     config,
     count=1,
 )
 if count != 1:
-    sys.exit("error: could not find version in tauri.conf.json")
+    sys.exit("error: could not find version in electrobun.config.ts")
 with open(config_path, "w", encoding="utf-8") as handle:
     handle.write(config)
 

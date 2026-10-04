@@ -3,6 +3,12 @@ resolver = "2"
 members = [
     "crates/core",
     "crates/cli",
+]
+# The desktop app owns its Cargo package: its main process is Electrobun's Rust
+# SDK, which Hutch projects into `.hutch/devkit/rust-sdk` when the project is
+# synced. A workspace member whose manifest named a path only a sync creates
+# would make every cargo command in the workspace need that sync first.
+exclude = [
     "crates/desktop",
 ]
 

@@ -38,26 +38,29 @@ cargo run -- -p "summarize this repository"
 | `cargo test` | Run the test suite. |
 | `cargo clippy --all-targets -- -D warnings` | Lint; warnings are errors. |
 | `cargo fmt` | Format the code. |
-| `cargo build -p oxide-desktop --features gui` | The desktop app (the `gui` feature is what pulls in Tauri; debug or `--release`). |
-| `cargo run -p oxide-desktop --features gui` | Build and launch the desktop app. |
+| `cd crates/desktop && hutch electrobun prepare && cargo test --lib --features gui` | The desktop shell's own tests (the `gui` feature is what pulls in Electrobun; the package is its own workspace). |
+| `cd crates/desktop && hutch electrobun dev` | Build the main process, lay out the app and launch it. |
 | `node crates/desktop/check-app.mjs` | Desktop front-end checks (`ui/app.js` against a stubbed DOM and bridge). |
-| `node crates/desktop/check-shell.mjs` | Desktop shell checks (command/event contract, Tauri config, capability, bundle). |
+| `node crates/desktop/check-shell.mjs` | Desktop shell checks (command/event contract, build config, bundle). |
 | `cd editors/vscode && pnpm test` | VS Code extension tests (`tsc -p .` then `node --test out/test/`). |
 
 Before opening a pull request, make sure `cargo fmt`, `cargo clippy`, and
 `cargo test` all pass. CI checks formatting with `cargo fmt --all -- --check`,
 runs clippy and tests with `--locked`, builds the release profile on Linux,
-macOS, and Windows, and builds the desktop app with its `gui` feature plus the
-two Node checks above on each platform.
+macOS, and Windows, and on each platform projects the desktop package's Electrobun
+devkit (`hutch electrobun prepare`), builds the window's main process with its
+`gui` feature, and runs the two Node checks above.
 
 ## Project layout
 
-The repository is a Cargo workspace with three Cargo packages: `oxide-core`
-(`crates/core`, shared agent core), `oxide` (`crates/cli`, the terminal binary:
-`main.rs`, `tui/`, `theme.rs`, `install.rs`, `update.rs`, `uninstall.rs`), and
-`oxide-desktop` (`crates/desktop`, the Tauri app plus the GUI-free library
-under it, documented in
-[`docs/desktop.md`](docs/desktop.md)). The VS Code extension under
+The repository is a Cargo workspace with two members — `oxide-core`
+(`crates/core`, shared agent core) and `oxide` (`crates/cli`, the terminal binary:
+`main.rs`, `tui/`, `theme.rs`, `install.rs`, `update.rs`, `uninstall.rs`) — plus
+`oxide-desktop` (`crates/desktop`), which is a workspace of its own: Electrobun's
+build owns the app binary's layout and version, so the package is `exclude`d from
+the root one and built from its own directory. It is the Electrobun window with a
+Rust main process plus the GUI-free library under it, documented in
+[`docs/desktop.md`](docs/desktop.md). The VS Code extension under
 `editors/vscode` is a separate pnpm/TypeScript package, not a Cargo workspace
 member, documented in [`docs/vscode.md`](docs/vscode.md). Every path below is
 relative to the repository root.
@@ -104,7 +107,7 @@ relative to the repository root.
 | `crates/desktop/src/turn.rs` | Starts an agent turn for a project (session resolution + `runner::spawn_agent`), returning the event stream, steering handles, and cancel flag. |
 | `crates/core/src/approval.rs` | The interactive approve/deny broker shared by the CLI's rpc mode: emits an `approval_request` event carrying a request id and resolves `deny`/`once`/`always` from the client's answer frame. The desktop brokers the same decisions through its Rust-host event sink in `crates/desktop/src/approval.rs`. |
 | `crates/core/src/approvals.rs` | The persisted side of an `always` answer: per-project `allow` rules in the shared `<config>/Oxide/approvals.json`, so the terminal, the desktop app and the VS Code extension stop asking for the same tool. |
-| `crates/desktop/src/commands.rs` | The window's commands (projects, sessions, turns, models, themes, providers, approvals), reached through the single `oxide_invoke` command; `crates/desktop/src/main.rs` is the Tauri entry point, `src/bridge.rs` the event channel, and `ui/` the HTML/CSS/JS front-end. |
+| `crates/desktop/src/commands.rs` | The window's commands (projects, sessions, turns, models, themes, providers, approvals), reached through the single `oxide_invoke` the page sends; `crates/desktop/src/main.rs` is the Electrobun entry point (the window, the menu, the event loop), `src/bridge.rs` the channel back to the page, and `ui/` the HTML/CSS/JS front-end. |
 | `editors/vscode/` | VS Code extension (separate pnpm/TypeScript package): a chat webview and editor actions that drive the installed `oxide` binary as `oxide --mode rpc` (its prompt, and the answer to a tool approval, are request frames on the process's stdin); `src/core/` is webview-free and unit tested under `node --test`. |
 | `.oxide/` | Project agents, commands, prompts, skills, and plugins (Oxide layout). |
 
@@ -208,7 +211,7 @@ Releases are automated by GitHub Actions:
    checksum, and publishes a GitHub Release with `install.sh` and `install.ps1`
    attached.
 3. `desktop.yml` triggers on `desktop-v*` tags (and manually), builds the
-   macOS, Linux, and Windows desktop bundles through `tauri-action`, and drafts
+   macOS arm64, Linux x64 and Windows x64 installers through Hutch, and drafts
    a release.
 4. `vscode.yml` triggers on `extension-v*` tags, runs the extension's type
    check and unit tests, builds `oxide-vscode-<version>.vsix`, and attaches it
@@ -241,8 +244,11 @@ labeled `vscode`; a change that also touches shared code (for example
 
 The repository keeps a placeholder version (`0.0.0`). On a tag, the matching
 workflow runs `scripts/set-version.sh "$GITHUB_REF_NAME"` followed by
-`cargo update --workspace`, so the built CLI binary or desktop bundle reports the
-tag version — there is no manual version bump. The VS Code extension is
+`cargo update --workspace`, so the built CLI binary or desktop app reports the
+tag version — there is no manual version bump. The desktop package is its own
+workspace, so `set-version.sh` writes its version into `crates/desktop/Cargo.toml`
+and `crates/desktop/electrobun.config.ts` (the two places the app reads it from)
+as well as the root one. The VS Code extension is
 versioned separately in `editors/vscode/package.json`; the script patches it
 there for an `extension-v*` tag. To cut a release, push the tag:
 

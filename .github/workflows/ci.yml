@@ -1,7 +1,7 @@
 name: ci
 
 # Pull-request and `main` checks for the whole repository: the Rust workspace
-# (formatting, clippy, tests), the Tauri desktop app's `gui` feature with its
+# (formatting, clippy, tests), the desktop app's `gui` feature with its
 # front-end checks, and the VS Code extension. This
 # workflow only verifies; the tag-triggered release workflows (`cli.yml`,
 # `desktop.yml`, and `vscode.yml`) build the shippable artifacts.
@@ -45,23 +45,37 @@ jobs:
       - run: cargo build --release --locked
 
   # The `gui` feature is off by default (so the plain workspace build stays
-  # Tauri-free), which means the `test` job above never compiles the desktop
-  # front-end. Build and lint it on each platform here, with the same Linux
-  # system libraries the release workflow installs, so a platform-specific
+  # window-free), which means the `test` job above never compiles the desktop
+  # app; the app's package is outside the workspace for the same reason, so its
+  # checks run from its own directory. Build and lint it on each platform, with
+  # the Linux libraries the Electrobun launcher needs, so a platform-specific
   # break is caught on the pull request instead of at tag time — and run the
   # front-end checks, since no Rust test runs the app's own JavaScript.
+  #
+  # The window shell's Rust SDK is not a published crate: Hutch projects this
+  # release's devkit into `crates/desktop/.hutch/devkit`, which is where the
+  # package's `electrobun` path dependency points, so the devkit is projected
+  # before anything is compiled.
   desktop:
     name: desktop (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-22.04, macos-latest, windows-latest]
+        # Electrobun supports Ubuntu 24.04 and later.
+        os: [ubuntu-24.04, macos-latest, windows-latest]
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
         with:
-          components: clippy
+          components: clippy, rustfmt
+      # The app's package is its own workspace, so it caches on its own; the
+      # root workspace's cache is restored beside it for the CLI the front-end
+      # checks read their catalog from.
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: desktop-app
+          workspaces: crates/desktop
       - uses: Swatinem/rust-cache@v2
         with:
           key: desktop
@@ -69,18 +83,49 @@ jobs:
         with:
           node-version: 22
       - name: Install Linux dependencies
-        if: matrix.os == 'ubuntu-22.04'
+        if: matrix.os == 'ubuntu-24.04'
         run: |
           sudo apt-get update
           sudo apt-get install -y \
+            build-essential \
+            cmake \
+            pkg-config \
+            libgtk-3-dev \
             libwebkit2gtk-4.1-dev \
-            libappindicator3-dev \
-            librsvg2-dev \
-            patchelf
+            libayatana-appindicator3-dev \
+            libpipewire-0.3-dev \
+            librsvg2-dev
+      - name: Install Hutch
+        if: matrix.os != 'windows-latest'
+        shell: bash
+        run: curl -fsSL https://hutch.blackboard.sh/hutch/install.sh | sh
+      - name: Install Hutch
+        if: matrix.os == 'windows-latest'
+        shell: pwsh
+        run: '& ([scriptblock]::Create((irm https://hutch.blackboard.sh/hutch/install.ps1)))'
+      # The launcher Hutch's installer writes, which is a `.exe` on Windows and
+      # sits at the same place on every platform; it is resolved rather than
+      # relied on being on `PATH`, since the installer only adds its directory
+      # to a *new* shell's environment.
+      - name: Find Hutch
+        shell: bash
+        run: |
+          launcher="$HOME/.hutch/bin/hutch"
+          if [ -x "${launcher}.exe" ]; then launcher="${launcher}.exe"; fi
+          echo "HUTCH=${launcher}" >> "${GITHUB_ENV}"
+      - name: Project the Electrobun devkit
+        working-directory: crates/desktop
+        shell: bash
+        run: '"${HUTCH}" electrobun prepare'
+      - name: Check formatting
+        working-directory: crates/desktop
+        run: cargo fmt -- --check
       - name: Lint the desktop app
-        run: cargo clippy -p oxide-desktop --features gui --all-targets --locked -- -D warnings
+        working-directory: crates/desktop
+        run: cargo clippy --features gui --all-targets --locked -- -D warnings
       - name: Test the desktop app
-        run: cargo test -p oxide-desktop --features gui --locked
+        working-directory: crates/desktop
+        run: cargo test --features gui --locked
       - name: Build the CLI the front-end checks read
         run: cargo build -p oxide --locked
       - name: Check the shell the window is opened by

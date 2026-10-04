@@ -2,7 +2,7 @@
 
 use crate::approval::ApprovalBroker;
 use crate::ask::AskBroker;
-use crate::bridge::EventSink;
+use crate::bridge::{EventSink, Host};
 use anyhow::Context;
 use oxide_core::agent::{AgentEvent, Cancel, Steering};
 use oxide_core::auth::{self, AuthStore};
@@ -27,8 +27,6 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
-use tauri::AppHandle;
-use tauri_plugin_dialog::DialogExt;
 use tokio::sync::Mutex;
 use tokio::task::AbortHandle;
 
@@ -76,6 +74,12 @@ impl DesktopState {
             next_run: AtomicU64::new(1),
             events,
         }
+    }
+
+    /// The window this app is, for the commands that are the app's own rather
+    /// than the project's — opening the folder chooser, restarting it.
+    pub fn host(&self) -> Arc<Host> {
+        self.events.host()
     }
 
     /// Keeps the newest word from the launch's own install and hands it to the
@@ -933,18 +937,17 @@ pub fn launch_update(state: &DesktopState) -> CmdResult<Option<Value>> {
 
 /// Restarts the app, which is what runs a release an install has put in place:
 /// the process running is still the build that started, so only a new one is the
-/// new version. Tauri relaunches this copy itself and exits this one, handing the
-/// request to the main loop rather than restarting from whatever thread asked.
+/// new version. The window's own handle starts that copy and stops this one's
+/// event loop.
 ///
 /// A turn is work this process owns — its tools write files and its stream is
 /// read here — so a restart is refused while one runs, the way the window refuses
 /// to replace the thread on screen mid-turn.
-pub async fn restart_app(app: &AppHandle, state: &DesktopState) -> CmdResult<()> {
+pub async fn restart_app(host: &Host, state: &DesktopState) -> CmdResult<()> {
     if !state.runs.lock().await.is_empty() {
         return Err("A turn is running; stop it before restarting Oxide.".to_string());
     }
-    app.request_restart();
-    Ok(())
+    host.restart()
 }
 
 /// Asks the open window to check for updates and show what it found. The macOS
@@ -953,8 +956,8 @@ pub async fn restart_app(app: &AppHandle, state: &DesktopState) -> CmdResult<()>
 /// and the menu item end at one dialog. Windows and Linux have no menu bar to put
 /// the item in, so the window's own button is the only way in there.
 #[cfg(target_os = "macos")]
-pub fn announce_check_updates(app: &AppHandle) {
-    let _ = EventSink::new(app.clone()).emit("check-updates", json!({}));
+pub fn announce_check_updates(host: &Host) {
+    let _ = host.emit("check-updates", json!({}));
 }
 
 /// Creates a new project with the given name and adds it to the registry.
@@ -1035,43 +1038,17 @@ fn command_value<T: Serialize>(result: CmdResult<T>) -> CmdResult<Value> {
 
 /// Opens the platform folder chooser. Used by the desktop's **Add** button when
 /// the path field is empty, so adding a project does not require typing an
-/// absolute path from memory.
-///
-/// The panel is the app's own (the dialog plugin's `NSOpenPanel`/GTK/Windows
-/// equivalent), not a chooser shelled out to `osascript`/`zenity`: a child
-/// process's panel opens as a background app, which can put it behind the
-/// window — or never show it at all where the platform refuses the request —
-/// and the user is left with a button that appears to do nothing.
-pub async fn pick_folder(app: &AppHandle) -> CmdResult<Option<String>> {
-    let (tx, rx) = tokio::sync::oneshot::channel();
-    app.dialog()
-        .file()
-        .set_title("Add a project to Oxide")
-        .pick_folder(move |path| {
-            let _ = tx.send(path.map(|path| path.to_string()));
-        });
-    rx.await.map_err(err)
+/// absolute path from memory. The window's own handle runs the panel.
+pub async fn pick_folder(host: &Host) -> CmdResult<Option<String>> {
+    host.pick_folder().await
 }
 
 /// Opens an external link in the machine's browser. The transcript renders URLs
 /// as anchors, but the webview cannot navigate to a remote page, so a click is
-/// routed here instead of relying on `target="_blank"`.
-///
-/// The launch is `opener`'s: one call that hands the URL to whatever the machine
-/// uses as its handler — the shell on Windows, `open` on macOS, `xdg-open`
-/// elsewhere — which picks them by target inside the crate. A URL is that
-/// handler's own argument either way, never text a shell reads.
-pub fn open_url(url: &str) -> CmdResult<()> {
-    let url = url.trim();
-    if !is_openable_url(url) {
-        return Err("Only http(s) links can be opened".to_string());
-    }
-    opener::open(url).map_err(err)
-}
-
-fn is_openable_url(url: &str) -> bool {
-    let scheme = url.to_ascii_lowercase();
-    scheme.starts_with("https://") || scheme.starts_with("http://")
+/// routed here instead of relying on `target="_blank"`. The launch is the
+/// window's own handle, which asks the platform for its own handler.
+pub fn open_url(host: &Host, url: &str) -> CmdResult<()> {
+    host.open_url(url)
 }
 
 /// Dispatches the stable command contract used by the window. The two
@@ -1080,7 +1057,7 @@ fn is_openable_url(url: &str) -> bool {
 /// stays below them.
 pub async fn dispatch(
     state: Arc<DesktopState>,
-    app: &AppHandle,
+    host: &Host,
     command: &str,
     args: Value,
 ) -> CmdResult<Value> {
@@ -1090,7 +1067,7 @@ pub async fn dispatch(
         "create_project" => command_value(
             create_project(arg(&args, "name")?, optional_arg(&args, "folders")?, &state).await,
         ),
-        "pick_folder" => command_value(pick_folder(app).await),
+        "pick_folder" => command_value(pick_folder(host).await),
         "remove_project" => command_value(remove_project(arg(&args, "id")?, &state).await),
         "list_sessions" => command_value(list_sessions(arg(&args, "project")?, &state).await),
         "all_sessions" => command_value(all_sessions(&state).await),
@@ -1200,8 +1177,8 @@ pub async fn dispatch(
         "check_updates" => command_value(check_updates().await),
         "install_update" => command_value(install_update().await),
         "launch_update" => command_value(launch_update(&state)),
-        "restart_app" => command_value(restart_app(app, &state).await),
-        "open_url" => command_value(open_url(&arg::<String>(&args, "url")?)),
+        "restart_app" => command_value(restart_app(host, &state).await),
+        "open_url" => command_value(open_url(host, &arg::<String>(&args, "url")?)),
         _ => Err(format!("unknown desktop command `{command}`")),
     }
 }
@@ -1351,16 +1328,6 @@ mod tests {
         // rather than resolving it to the directory the app was launched in.
         assert_eq!(palette_entries("   ").unwrap().len(), home.len());
         assert!(project_dir("  ").is_err());
-    }
-
-    #[test]
-    fn a_link_that_is_not_a_web_page_is_refused() {
-        assert!(is_openable_url("https://github.com/o/r/pull/7"));
-        assert!(is_openable_url("http://localhost:3000"));
-        assert!(is_openable_url("HTTPS://example.com"));
-        assert!(!is_openable_url("file:///etc/passwd"));
-        assert!(!is_openable_url("javascript:alert(1)"));
-        assert!(!is_openable_url(""));
     }
 
     #[test]

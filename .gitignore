@@ -20,8 +20,12 @@
 # Stray build output
 *.rlib
 
-# Tauri generated schemas and bundle output
-/crates/desktop/gen/
+# Desktop build output: Hutch projects the selected Electrobun devkit into
+# `.hutch/devkit/` (a copy of a release's SDK, not a source file), and a build
+# or a package lands in `build/` and `artifacts/`.
+/crates/desktop/.hutch/
+/crates/desktop/build/
+/crates/desktop/artifacts/
 /crates/desktop/target/
 
 # Session dumps captured into the repo root

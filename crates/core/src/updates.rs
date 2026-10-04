@@ -118,6 +118,11 @@ impl Component {
 
     /// The artifacts this platform installs from, most preferred first: the one
     /// an in-place install uses, then the downloads a user would pick by hand.
+    ///
+    /// The desktop app's names are the Electrobun installer's, which drop the
+    /// version: `macos-arm64-Oxide.dmg`, `win-x64-Oxide-Setup.zip`,
+    /// `linux-<arch>-Oxide-Setup.tar.gz`. macOS x64 is absent because Electrobun
+    /// publishes no Intel core to build it from.
     pub fn assets(self, tag: &str, platform: &str) -> Vec<String> {
         let version = release_version(tag);
         match self {
@@ -130,22 +135,10 @@ impl Component {
                 vec![format!("Oxide-{tag}-{platform}.{extension}")]
             }
             Self::Desktop => match platform {
-                "darwin-arm64" => vec![format!("Oxide_{version}_aarch64.dmg")],
-                "darwin-x64" => vec![format!("Oxide_{version}_x64.dmg")],
-                "linux-x64" => vec![
-                    format!("Oxide_{version}_amd64.AppImage"),
-                    format!("Oxide_{version}_amd64.deb"),
-                    format!("Oxide-{version}-1.x86_64.rpm"),
-                ],
-                "linux-arm64" => vec![
-                    format!("Oxide_{version}_aarch64.AppImage"),
-                    format!("Oxide_{version}_arm64.deb"),
-                    format!("Oxide-{version}-1.aarch64.rpm"),
-                ],
-                "win32-x64" => vec![
-                    format!("Oxide_{version}_x64-setup.exe"),
-                    format!("Oxide_{version}_x64_en-US.msi"),
-                ],
+                "darwin-arm64" => vec!["macos-arm64-Oxide.dmg".to_string()],
+                "linux-x64" => vec!["linux-x64-Oxide-Setup.tar.gz".to_string()],
+                "linux-arm64" => vec!["linux-arm64-Oxide-Setup.tar.gz".to_string()],
+                "win32-x64" => vec!["win-x64-Oxide-Setup.zip".to_string()],
                 _ => Vec::new(),
             },
             Self::Extension => vec![format!("oxide-vscode-{version}.vsix")],
@@ -925,35 +918,35 @@ mod tests {
 
         let desktop = Release::new(Component::Desktop, "desktop-v0.34.0", None, "darwin-arm64");
         assert_eq!(desktop.version, "0.34.0");
-        assert_eq!(desktop.asset, "Oxide_0.34.0_aarch64.dmg");
+        assert_eq!(desktop.asset, "macos-arm64-Oxide.dmg");
         assert_eq!(
             desktop.url("jaysonwu991/oxide"),
-            "https://github.com/jaysonwu991/oxide/releases/download/desktop-v0.34.0/Oxide_0.34.0_aarch64.dmg"
+            "https://github.com/jaysonwu991/oxide/releases/download/desktop-v0.34.0/macos-arm64-Oxide.dmg"
         );
         assert_eq!(
             desktop.page_url("jaysonwu991/oxide"),
             "https://github.com/jaysonwu991/oxide/releases/tag/desktop-v0.34.0"
         );
         for (platform, asset) in [
-            ("darwin-x64", "Oxide_0.34.0_x64.dmg"),
-            ("linux-x64", "Oxide_0.34.0_amd64.AppImage"),
-            ("linux-arm64", "Oxide_0.34.0_aarch64.AppImage"),
-            ("win32-x64", "Oxide_0.34.0_x64-setup.exe"),
+            ("linux-x64", "linux-x64-Oxide-Setup.tar.gz"),
+            ("linux-arm64", "linux-arm64-Oxide-Setup.tar.gz"),
+            ("win32-x64", "win-x64-Oxide-Setup.zip"),
         ] {
             assert_eq!(
                 Release::new(Component::Desktop, "desktop-v0.34.0", None, platform).asset,
                 asset
             );
         }
-        // The installers a user would pick by hand are named too, so a
-        // front-end can offer a download when it cannot install in place.
+        // There is no Intel Mac build to offer, so a check on one names no
+        // artifact at all rather than one that is not on the release.
+        assert!(Component::Desktop
+            .assets("desktop-v0.34.0", "darwin-x64")
+            .is_empty());
+        // The installer a user would pick by hand is named too, so a front-end
+        // can offer a download when it cannot install in place.
         assert_eq!(
             Component::Desktop.assets("desktop-v0.34.0", "linux-x64"),
-            [
-                "Oxide_0.34.0_amd64.AppImage",
-                "Oxide_0.34.0_amd64.deb",
-                "Oxide-0.34.0-1.x86_64.rpm",
-            ]
+            ["linux-x64-Oxide-Setup.tar.gz"]
         );
         assert!(Component::Desktop
             .assets("desktop-v0.34.0", "freebsd-x64")
@@ -1028,12 +1021,12 @@ mod tests {
         assert_eq!(value["installable"], serde_json::json!(true));
         assert_eq!(
             value["asset"]["name"],
-            serde_json::json!("Oxide_0.34.0_aarch64.dmg")
+            serde_json::json!("macos-arm64-Oxide.dmg")
         );
         assert_eq!(
             value["asset"]["url"],
             serde_json::json!(
-                "https://github.com/jaysonwu991/oxide/releases/download/desktop-v0.34.0/Oxide_0.34.0_aarch64.dmg"
+                "https://github.com/jaysonwu991/oxide/releases/download/desktop-v0.34.0/macos-arm64-Oxide.dmg"
             )
         );
         assert_eq!(value["asset"]["digest"], serde_json::json!(null));
@@ -1044,7 +1037,7 @@ mod tests {
         // A round trip is how the desktop app reads its own check back.
         let parsed: Check = serde_json::from_value(value).unwrap();
         assert_eq!(parsed.component, Component::Desktop);
-        assert_eq!(parsed.asset.unwrap().name, "Oxide_0.34.0_aarch64.dmg");
+        assert_eq!(parsed.asset.unwrap().name, "macos-arm64-Oxide.dmg");
         assert!(parsed.update_available);
 
         // A release of another component is not this one's to offer.
@@ -1068,18 +1061,18 @@ mod tests {
         let listed = serde_json::json!([{
             "tag_name": "desktop-v0.34.0",
             "assets": [
-                { "name": "Oxide_0.34.0_aarch64.dmg", "digest": "sha256:abc" },
-                { "name": "Oxide_0.34.0_x64.dmg", "digest": "sha256:def" }
+                { "name": "macos-arm64-Oxide.dmg", "digest": "sha256:abc" },
+                { "name": "linux-x64-Oxide-Setup.tar.gz", "digest": "sha256:def" }
             ]
         }]);
         assert_eq!(
-            asset_digest(&listed, "desktop-v0.34.0", "Oxide_0.34.0_aarch64.dmg").unwrap(),
+            asset_digest(&listed, "desktop-v0.34.0", "macos-arm64-Oxide.dmg").unwrap(),
             "sha256:abc"
         );
         // An asset the API records no digest for is left unverified rather
         // than refused.
-        assert!(asset_digest(&listed, "desktop-v0.34.0", "Oxide_0.34.0_amd64.AppImage").is_none());
-        assert!(asset_digest(&listed, "desktop-v0.33.0", "Oxide_0.34.0_aarch64.dmg").is_none());
+        assert!(asset_digest(&listed, "desktop-v0.34.0", "win-x64-Oxide-Setup.zip").is_none());
+        assert!(asset_digest(&listed, "desktop-v0.33.0", "macos-arm64-Oxide.dmg").is_none());
     }
 
     #[test]
@@ -1087,46 +1080,47 @@ mod tests {
         let releases = serde_json::json!([{
             "tag_name": "desktop-v0.34.0",
             "assets": [
-                { "name": "Oxide_0.34.0_amd64.deb", "digest": "sha256:deb" },
-                { "name": "Oxide_0.34.0_amd64.AppImage", "digest": "sha256:img" }
+                { "name": "linux-x64-Oxide-Setup.tar.gz", "digest": "sha256:linux" },
+                { "name": "macos-arm64-Oxide.dmg", "digest": "sha256:mac" }
             ]
         }]);
-        // The AppImage outranks the deb, and the release's own asset list is
-        // what says both are there.
+        // The release's own asset list is what says the artifact this platform
+        // installs is there, and its digest is what the download is checked
+        // against.
         let release = Release::listed(
             Component::Desktop,
             "desktop-v0.34.0",
             &releases,
             "linux-x64",
         );
-        assert_eq!(release.asset, "Oxide_0.34.0_amd64.AppImage");
-        assert_eq!(release.digest.as_deref(), Some("sha256:img"));
+        assert_eq!(release.asset, "linux-x64-Oxide-Setup.tar.gz");
+        assert_eq!(release.digest.as_deref(), Some("sha256:linux"));
 
-        // A release that published only the deb is installed from the deb
-        // rather than offered the AppImage it never built.
-        let deb_only = serde_json::json!([{
+        // A release that published no installer for this platform has nothing
+        // to offer rather than an artifact it never built.
+        let macos_only = serde_json::json!([{
             "tag_name": "desktop-v0.34.0",
-            "assets": [{ "name": "Oxide_0.34.0_amd64.deb" }]
+            "assets": [{ "name": "macos-arm64-Oxide.dmg" }]
         }]);
         let release = Release::listed(
             Component::Desktop,
             "desktop-v0.34.0",
-            &deb_only,
-            "linux-x64",
+            &macos_only,
+            "win32-x64",
         );
-        assert_eq!(release.asset, "Oxide_0.34.0_amd64.deb");
+        assert!(release.asset.is_empty());
         assert!(release.digest.is_none());
+        assert!(release.artifact(DEFAULT_REPO).is_none());
 
-        // A platform the release carries nothing for has no artifact at all,
-        // which a front-end reports instead of a URL that would 404.
+        // A platform the release does carry an artifact for is offered it, with
+        // the digest the listing records.
         let release = Release::listed(
             Component::Desktop,
             "desktop-v0.34.0",
-            &deb_only,
+            &macos_only,
             "darwin-arm64",
         );
-        assert!(release.asset.is_empty());
-        assert!(release.artifact(DEFAULT_REPO).is_none());
+        assert_eq!(release.asset, "macos-arm64-Oxide.dmg");
 
         // The extension ships one VSIX, whatever the machine.
         let vsix = serde_json::json!([{

@@ -4,9 +4,9 @@
 //! agent turn against a project using the shared `oxide-core` configuration,
 //! `at` answers the composer's `@path` completion, and `update` checks the
 //! app's own release train and installs it. All four build without any GUI
-//! dependency so they are unit tested like the rest of the workspace; the Tauri
-//! shell in `src/main.rs` is the only part that links a window, and it drives
-//! these four.
+//! dependency so they are unit tested like the rest of the workspace; the
+//! Electrobun shell in `src/main.rs` is the only part that links a window, and
+//! it drives these four.
 
 pub mod at;
 pub mod manager;
