@@ -104,6 +104,21 @@ event loop), which is deliberately not the usual macOS "stay resident" behavior:
 a resident app with no window would leave a turn streaming into nothing, with its
 approval and question requests unanswerable.
 
+The menu bar is the app's own, built in `main.rs` and handed to Electrobun as raw
+JSON (`label`/`action`/`role`/`submenu`/`enabled`) rather than through the SDK's
+typed builder, which fills in the fields the native side expects. Two
+consequences are load-bearing. The install happens once the window is up, since
+the native side builds the `NSMenu` against `NSApp` and that exists only after
+the event loop has started — installing it from `run()` before
+`Core::run_main_thread` is a null dereference at launch. And every item spells
+`enabled: true`: the raw path reads a missing `enabled` as `false`, so an item
+written without it is drawn greyed out and answers nothing, and a disabled
+top-level item takes its whole submenu down with it. An item carries a `role`
+*or* an `action`, never both — a role replaces the item's click selector, so the
+combination would silently do the role's own behavior instead of announcing
+`check-updates`. `check-shell.mjs` reads the menu back out of `main.rs` and holds
+all four rules.
+
 ## Interface
 
 The window follows a Codex-style layout. Every glyph it draws for itself is

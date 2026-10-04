@@ -83,8 +83,9 @@ fn run() -> Result<(), String> {
     // macOS keeps a menu bar open whatever the app is doing; Windows and Linux
     // show one only because an app asked for it, so the app does not gain a menu
     // bar for this one item — the sidebar's own button is the way in there.
-    #[cfg(target_os = "macos")]
-    core.set_application_menu_json(&menu_json(), Some(menu_clicked))?;
+    // The menu is set once the window is up (see [`create_window`]): the native
+    // side builds `NSMenu` against `NSApp`, which exists only after
+    // [`Core::run_main_thread`] has initialized the application.
 
     // The window has to be created after the event loop is running, so it is
     // built on a thread of its own.
@@ -164,6 +165,16 @@ fn create_window(
     if STATE.set(Arc::clone(&state)).is_err() {
         eprintln!("[oxide] the window was already built");
         return;
+    }
+
+    // With the window up, the app is running and its `NSApplication` exists, so
+    // the menu bar can be built — and a click on it has a window to reach, since
+    // the state it answers through is set first. Electrobun's native side calls
+    // `objc_setAssociatedObject(NSApp, …)` over the menu it parses, which is a
+    // null dereference before the application is initialized.
+    #[cfg(target_os = "macos")]
+    if let Err(error) = core.set_application_menu_json(&menu_json(), Some(menu_clicked)) {
+        eprintln!("[oxide] failed to set the application menu: {error}");
     }
 
     spawn_host_message_drain(core);
@@ -290,40 +301,49 @@ extern "C" fn menu_clicked(_id: u32, action: *const c_char) {
 fn menu_json() -> String {
     use serde_json::json;
 
+    // Every item is spelled `enabled: true`, the top-level ones included. The
+    // TypeScript SDK fills the field in as it serializes a menu, but this entry
+    // point is handed raw JSON and the native side reads a missing `enabled` as
+    // `false`: a menu built without it is drawn with its items greyed out and
+    // nothing to click — and a disabled top-level item takes its whole submenu
+    // with it, so every command under it stops answering.
     json!([
         {
             "label": "Oxide",
+            "enabled": true,
             "submenu": [
-                { "label": "About Oxide", "role": "about" },
+                { "label": "About Oxide", "role": "about", "enabled": true },
                 { "type": "divider" },
-                { "label": "Check for Updates…", "action": CHECK_FOR_UPDATES },
+                { "label": "Check for Updates…", "action": CHECK_FOR_UPDATES, "enabled": true },
                 { "type": "divider" },
-                { "label": "Hide Oxide", "role": "hide" },
-                { "label": "Hide Others", "role": "hideOthers" },
-                { "label": "Show All", "role": "showAll" },
+                { "label": "Hide Oxide", "role": "hide", "enabled": true },
+                { "label": "Hide Others", "role": "hideOthers", "enabled": true },
+                { "label": "Show All", "role": "showAll", "enabled": true },
                 { "type": "divider" },
-                { "label": "Quit Oxide", "role": "quit" },
+                { "label": "Quit Oxide", "role": "quit", "enabled": true },
             ],
         },
         {
             "label": "Edit",
+            "enabled": true,
             "submenu": [
-                { "label": "Undo", "role": "undo" },
-                { "label": "Redo", "role": "redo" },
+                { "label": "Undo", "role": "undo", "enabled": true },
+                { "label": "Redo", "role": "redo", "enabled": true },
                 { "type": "divider" },
-                { "label": "Cut", "role": "cut" },
-                { "label": "Copy", "role": "copy" },
-                { "label": "Paste", "role": "paste" },
-                { "label": "Select All", "role": "selectAll" },
+                { "label": "Cut", "role": "cut", "enabled": true },
+                { "label": "Copy", "role": "copy", "enabled": true },
+                { "label": "Paste", "role": "paste", "enabled": true },
+                { "label": "Select All", "role": "selectAll", "enabled": true },
             ],
         },
         {
             "label": "Window",
+            "enabled": true,
             "submenu": [
-                { "label": "Minimize", "role": "minimize" },
-                { "label": "Zoom", "role": "zoom" },
+                { "label": "Minimize", "role": "minimize", "enabled": true },
+                { "label": "Zoom", "role": "zoom", "enabled": true },
                 { "type": "divider" },
-                { "label": "Close", "role": "close" },
+                { "label": "Close", "role": "close", "enabled": true },
             ],
         },
     ])

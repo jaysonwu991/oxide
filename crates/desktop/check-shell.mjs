@@ -381,6 +381,54 @@ check(
   "",
 );
 
+// ---------- the menu bar ----------
+
+console.log("the menu bar");
+// The application menu is handed to Electrobun as raw JSON rather than through
+// the SDK's typed builder, and its native side reads a missing `enabled` as
+// `false`: an item spelled without it is drawn greyed out with nothing to
+// click, and a disabled top-level item takes the whole submenu under it with it
+// — the update item answered nothing until every item carried the field. Every
+// item the menu is written from is therefore read back here, so one added
+// without it fails in this check instead of in a reader's menu bar.
+const menu = shell.slice(shell.indexOf("fn menu_json"), shell.indexOf("fn cstr"));
+const menuItems = [...menu.matchAll(/\{([^{}]*)\}/g)].map(([, body]) => body.replace(/\s+/g, " ").trim());
+const labelled = menuItems.filter((body) => body.includes('"label"'));
+check(
+  "spells every menu item enabled",
+  labelled.length >= 10 && labelled.every((body) => body.includes('"enabled": true')),
+  labelled.filter((body) => !body.includes('"enabled": true')).join(" | "),
+);
+// The three menus that carry a submenu are written one field per line, so they
+// are held to the shape that names them and enables them in that order.
+const submenus = [...menu.matchAll(/\{\s*"label": "([^"]+)",\s*"enabled": true,\s*"submenu":/g)].map(
+  ([, label]) => label,
+);
+check(
+  "offers the app, Edit and Window menus",
+  submenus.join(", ") === "Oxide, Edit, Window",
+  submenus.join(", "),
+);
+// An item that carries both a role and an action loses the action: the native
+// side replaces the click selector with the role's own behaviour, so the menu
+// item that was meant to announce something would silently do the role instead.
+const dispatched = menuItems.filter((body) => body.includes('"action"'));
+check(
+  "leaves an action item to announce itself",
+  dispatched.length > 0 && dispatched.every((body) => !body.includes('"role"')),
+  dispatched.filter((body) => body.includes('"role"')).join(" | "),
+);
+// The menu is built against `NSApp`, which exists only once the native event
+// loop is running: installing it from `run()` before `run_main_thread` is a null
+// dereference at launch, so the install belongs to the window path that follows
+// it.
+check(
+  "builds the menu bar once the application exists",
+  code(shell).indexOf("set_application_menu_json") > code(shell).indexOf("fn create_window") &&
+    code(shell).indexOf("fn create_window") > code(shell).indexOf("run_main_thread"),
+  "",
+);
+
 // ---------- nothing left of the shell this replaced ----------
 
 console.log("the migration");
@@ -389,7 +437,11 @@ const walk = (dir) => {
   for (const entry of readdirSync(`${here}${dir}`, { withFileTypes: true })) {
     const path = `${dir}${entry.name}`;
     if (entry.isDirectory()) {
-      if (!["target", "gen", "node_modules", ".git", ".hutch", "build", "artifacts"].includes(entry.name))
+      if (
+        !["target", "gen", "node_modules", ".git", ".hutch", "build", "artifacts", ".cottontail-tmp"].includes(
+          entry.name,
+        )
+      )
         walk(`${path}/`);
       continue;
     }
@@ -422,9 +474,12 @@ check(
 );
 check(
   "keeps the build's own output out of the repository",
-  ["crates/desktop/.hutch/", "crates/desktop/build/", "crates/desktop/artifacts/"].every((path) =>
-    readFileSync(`${root}.gitignore`, "utf8").includes(path),
-  ),
+  [
+    "crates/desktop/.hutch/",
+    "crates/desktop/build/",
+    "crates/desktop/artifacts/",
+    "crates/desktop/.cottontail-tmp/",
+  ].every((path) => readFileSync(`${root}.gitignore`, "utf8").includes(path)),
 );
 
 console.log(failures.length ? `\n${failures.length} failed` : "\nall checks passed");
