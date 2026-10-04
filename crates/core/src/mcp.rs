@@ -1388,7 +1388,7 @@ mod tests {
 
         assert!(
             error.downcast_ref::<AuthorizationRequired>().is_some(),
-            "the failure names authorization, so `/mcps` can report needs-auth: {error:#}"
+            "the failure names authorization, so `/mcp` can report needs-auth: {error:#}"
         );
         let message = format!("{error:#}");
         assert!(

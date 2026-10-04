@@ -46,124 +46,146 @@ impl Kind {
     }
 }
 
-/// One built-in command. `name` is written without its slash.
+/// A front-end that offers the catalog's commands.
+///
+/// A client draws its `/` menu from the entries it is named in, so the one table
+/// says both what a command is called and which clients perform it. A command
+/// left out of a client's list is one that client would otherwise answer with a
+/// "not available here" note instead of an action.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FrontEnd {
+    /// The terminal UI (`oxide` with no mode flag).
+    Terminal,
+    /// The desktop app.
+    Desktop,
+    /// The VS Code extension's panel.
+    Panel,
+}
+
+impl FrontEnd {
+    /// Every front-end, in the order a listing names them.
+    pub const ALL: &'static [FrontEnd] = &[FrontEnd::Terminal, FrontEnd::Desktop, FrontEnd::Panel];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Terminal => "terminal",
+            Self::Desktop => "desktop",
+            Self::Panel => "panel",
+        }
+    }
+}
+
+/// One built-in command. `name` is written without its slash, and is the one
+/// spelling every client answers: a second spelling for the same draw is what a
+/// menu has to explain and a reader has to remember, so the catalog holds a name
+/// per command and nothing else.
 pub struct Builtin {
     pub name: &'static str,
-    /// Alternative spellings a client accepts, e.g. `mcps` for `mcp`.
-    pub aliases: &'static [&'static str],
     pub description: &'static str,
     /// An argument hint for autocomplete and help, e.g. `on|off|list|clear`.
     pub arguments: Option<&'static str>,
-    /// Commands a client may not be able to perform: the desktop app's theme
-    /// picker and provider logout live in its own UI, so a front-end that has no
-    /// action for them leaves them out of its menu rather than sending the name
-    /// to the model. Provider login is not one of them — every front-end draws
-    /// that picker over `oxide providers`.
-    pub desktop_only: bool,
+    /// The clients that perform it. A command only one client draws is named for
+    /// that client alone: an agent picker is VS Code's, the theme picker and
+    /// provider logout are the terminal's and the desktop app's. Provider login
+    /// is all three — each draws that picker over `oxide providers`.
+    pub front_ends: &'static [FrontEnd],
 }
 
-/// The commands every client offers. Order is the order they are shown in.
+impl Builtin {
+    /// Whether this client performs the command, which is what decides if it is
+    /// in that client's `/` menu.
+    pub fn offered_to(&self, front_end: FrontEnd) -> bool {
+        self.front_ends.contains(&front_end)
+    }
+}
+
+/// The commands the clients offer. Order is the order they are shown in.
 pub const BUILTINS: &[Builtin] = &[
     Builtin {
         name: "help",
-        aliases: &[],
         description: "List the commands and keyboard shortcuts",
         arguments: None,
-        desktop_only: false,
+        front_ends: FrontEnd::ALL,
     },
     Builtin {
         name: "mcp",
-        aliases: &["mcps"],
         description: "List MCP servers and their connection status",
         arguments: None,
-        desktop_only: false,
+        front_ends: FrontEnd::ALL,
     },
     Builtin {
         name: "model",
-        aliases: &[],
         description: "Choose the model to run",
         arguments: None,
-        desktop_only: false,
+        front_ends: FrontEnd::ALL,
     },
     Builtin {
         name: "reasoning",
-        aliases: &["thinking"],
         description: "Set the reasoning effort for this chat",
         arguments: Some("auto|off|low|medium|high"),
-        desktop_only: false,
+        front_ends: FrontEnd::ALL,
     },
     Builtin {
         name: "agent",
-        aliases: &[],
         description: "Choose the subagent this chat runs as",
         arguments: None,
-        desktop_only: false,
+        // The panel picks a subagent; a run's `--agent` is the CLI's own flag
+        // rather than a slash command, and the desktop app has no picker.
+        front_ends: &[FrontEnd::Panel],
     },
     Builtin {
         name: "permissions",
-        aliases: &["approvals"],
         description: "Review the tools allowed without prompting",
         arguments: Some("on|off|list|clear"),
-        desktop_only: false,
+        front_ends: &[FrontEnd::Terminal, FrontEnd::Desktop],
     },
     Builtin {
         name: "trust",
-        aliases: &["access"],
         description: "Decide whether this project's own resources load",
         arguments: None,
-        desktop_only: false,
+        front_ends: FrontEnd::ALL,
     },
     Builtin {
         name: "session",
-        aliases: &["sessions"],
         description: "Resume a session from this project",
         arguments: None,
-        desktop_only: false,
+        front_ends: FrontEnd::ALL,
     },
     Builtin {
         name: "new",
-        aliases: &["clear"],
         description: "Start a new session",
         arguments: None,
-        desktop_only: false,
+        front_ends: FrontEnd::ALL,
     },
     Builtin {
         name: "usage",
-        aliases: &["cost"],
         description: "Show this chat's tokens, cost and context",
         arguments: None,
-        desktop_only: false,
+        front_ends: FrontEnd::ALL,
     },
     Builtin {
         name: "attach",
-        aliases: &[],
         description: "Attach images, PDFs or files",
         arguments: None,
-        desktop_only: false,
+        front_ends: FrontEnd::ALL,
     },
     Builtin {
         name: "theme",
-        aliases: &[],
         description: "Choose the color theme",
         arguments: None,
-        desktop_only: true,
+        front_ends: &[FrontEnd::Terminal, FrontEnd::Desktop],
     },
     Builtin {
         name: "connect",
-        aliases: &["login"],
         description: "Sign in to a provider",
         arguments: Some("provider"),
-        // The desktop app, the terminal and the VS Code panel each draw this
-        // picker over `oxide providers` and write the credential with
-        // `oxide login`, so the command is not one a single front-end owns.
-        desktop_only: false,
+        front_ends: FrontEnd::ALL,
     },
     Builtin {
         name: "logout",
-        aliases: &[],
         description: "Forget a provider's stored credentials",
         arguments: Some("provider"),
-        desktop_only: true,
+        front_ends: &[FrontEnd::Terminal, FrontEnd::Desktop],
     },
 ];
 
@@ -171,43 +193,71 @@ pub const BUILTINS: &[Builtin] = &[
 #[derive(Debug, Clone, Serialize)]
 pub struct CommandEntry {
     pub name: String,
-    pub aliases: Vec<String>,
     pub description: String,
     /// An argument hint, or `None` when the command takes none. A client uses
     /// it to decide between running a command and completing it for editing.
     pub arguments: Option<String>,
     /// `client`, `prompt`, or `skill`.
     pub kind: String,
+    /// The front-ends that offer it: `terminal`, `desktop` and/or `panel`. A
+    /// client shows an entry it is named in and leaves the others out of its
+    /// menu, so a command one front-end performs is not offered by another as
+    /// something it cannot do.
+    pub front_ends: Vec<&'static str>,
+    /// The same fact for a client that predates `front_ends`: whether the VS Code
+    /// panel is *not* one of the front-ends that perform it. A client that reads
+    /// only this hides such a row from its menu, which is what it did with the
+    /// field when it meant "the desktop app's own command".
     pub desktop_only: bool,
     /// `builtin` for a client's own command, otherwise the scope the entry was
     /// discovered in (`project` or `global`).
     pub source: String,
 }
 
+/// Whether the panel is not one of the front-ends a command is offered to, which
+/// is what a client too old to read `front_ends` reads instead.
+fn desktop_only(front_ends: &[&'static str]) -> bool {
+    !front_ends.contains(&FrontEnd::Panel.label())
+}
+
+/// The front-ends a configured entry is offered to: a command, prompt template
+/// or skill is sent as a prompt, which every client can do.
+fn every_front_end() -> Vec<&'static str> {
+    FrontEnd::ALL
+        .iter()
+        .map(|front_end| front_end.label())
+        .collect()
+}
+
 impl CommandEntry {
     fn builtin(command: &Builtin) -> Self {
         Self {
             name: command.name.to_string(),
-            aliases: command
-                .aliases
-                .iter()
-                .map(|alias| alias.to_string())
-                .collect(),
             description: command.description.to_string(),
             arguments: command.arguments.map(str::to_string),
             kind: Kind::Client.label().to_string(),
-            desktop_only: command.desktop_only,
+            front_ends: command
+                .front_ends
+                .iter()
+                .map(|front_end| front_end.label())
+                .collect(),
+            desktop_only: desktop_only(
+                &command
+                    .front_ends
+                    .iter()
+                    .map(|front_end| front_end.label())
+                    .collect::<Vec<_>>(),
+            ),
             source: "builtin".to_string(),
         }
     }
 }
 
-/// The built-in command a name or alias refers to.
+/// The built-in command a name refers to, matched without its slash and without
+/// regard to case.
 pub fn builtin(name: &str) -> Option<&'static Builtin> {
     let name = name.trim().trim_start_matches('/').to_ascii_lowercase();
-    BUILTINS
-        .iter()
-        .find(|command| command.name == name || command.aliases.contains(&name.as_str()))
+    BUILTINS.iter().find(|command| command.name == name)
 }
 
 /// The built-ins alone: what a client offers when there is no project to read the
@@ -215,6 +265,36 @@ pub fn builtin(name: &str) -> Option<&'static Builtin> {
 /// need no folder, so a `/` menu asked for before one is chosen still has them.
 pub fn builtin_entries() -> Vec<CommandEntry> {
     BUILTINS.iter().map(CommandEntry::builtin).collect()
+}
+
+/// The built-ins one front-end performs, in the catalog's own order: the rows of
+/// its `/` menu, so a client names and describes them from here rather than from
+/// a list of its own that drifts.
+pub fn builtin_entries_for(front_end: FrontEnd) -> Vec<CommandEntry> {
+    BUILTINS
+        .iter()
+        .filter(|command| command.offered_to(front_end))
+        .map(CommandEntry::builtin)
+        .collect()
+}
+
+/// The input with its command rewritten to the catalog's own spelling, so a name
+/// typed in another case reaches the same arm. Only the first word is touched,
+/// and the rest of the line is left as typed.
+///
+/// Anything the catalog does not know comes back unchanged: a command that is
+/// the front-end's own, a configured command, prompt template or skill, and an
+/// ordinary message that happens to start with a slash.
+pub fn canonical_slash(raw: &str) -> String {
+    let Some(command) = raw.trim_start().strip_prefix('/') else {
+        return raw.to_string();
+    };
+    let end = command.find(char::is_whitespace).unwrap_or(command.len());
+    let (word, rest) = command.split_at(end);
+    match builtin(word) {
+        Some(builtin) => format!("/{}{rest}", builtin.name),
+        None => raw.to_string(),
+    }
 }
 
 /// Every entry a client shows for `cwd`: the built-ins, then the commands,
@@ -245,9 +325,9 @@ pub fn palette_with(cwd: &Path, project_trusted: bool) -> Vec<CommandEntry> {
     let global = configured(&global);
 
     for mut entry in configured(&project) {
-        // A configured entry that matches a built-in or an alias is unreachable
-        // — the client draws its own command first — so it is dropped rather
-        // than listed twice.
+        // A configured entry that matches a built-in is unreachable — the
+        // client draws its own command first — so it is dropped rather than
+        // listed twice.
         if builtin(&entry.name).is_some() {
             continue;
         }
@@ -278,7 +358,6 @@ fn scope_of(entry: &CommandEntry, global: &[CommandEntry]) -> &'static str {
 /// a name can be told apart from the global one it shadows.
 fn same_definition(left: &CommandEntry, right: &CommandEntry) -> bool {
     left.name == right.name
-        && left.aliases == right.aliases
         && left.description == right.description
         && left.arguments == right.arguments
         && left.kind == right.kind
@@ -293,7 +372,6 @@ fn configured(ecosystem: &ecosystem::Ecosystem) -> Vec<CommandEntry> {
     for command in &ecosystem.commands {
         entries.push(CommandEntry {
             name: command.name.clone(),
-            aliases: Vec::new(),
             description: command
                 .description
                 .clone()
@@ -301,6 +379,7 @@ fn configured(ecosystem: &ecosystem::Ecosystem) -> Vec<CommandEntry> {
                 .unwrap_or_else(|| summarize(&command.template)),
             arguments: takes_arguments(&command.template).then(|| "arguments".to_string()),
             kind: Kind::Prompt.label().to_string(),
+            front_ends: every_front_end(),
             desktop_only: false,
             source: String::new(),
         });
@@ -308,7 +387,6 @@ fn configured(ecosystem: &ecosystem::Ecosystem) -> Vec<CommandEntry> {
     for template in &ecosystem.prompt_templates {
         entries.push(CommandEntry {
             name: template.name.clone(),
-            aliases: Vec::new(),
             description: template
                 .description
                 .clone()
@@ -319,6 +397,7 @@ fn configured(ecosystem: &ecosystem::Ecosystem) -> Vec<CommandEntry> {
                 .clone()
                 .or_else(|| takes_arguments(&template.body).then(|| "arguments".to_string())),
             kind: Kind::Prompt.label().to_string(),
+            front_ends: every_front_end(),
             desktop_only: false,
             source: String::new(),
         });
@@ -334,7 +413,6 @@ fn configured(ecosystem: &ecosystem::Ecosystem) -> Vec<CommandEntry> {
         }
         entries.push(CommandEntry {
             name: skill.name.clone(),
-            aliases: Vec::new(),
             description: skill
                 .description
                 .clone()
@@ -345,6 +423,7 @@ fn configured(ecosystem: &ecosystem::Ecosystem) -> Vec<CommandEntry> {
             // than running it bare.
             arguments: Some("[arguments]".to_string()),
             kind: Kind::Skill.label().to_string(),
+            front_ends: every_front_end(),
             desktop_only: false,
             source: String::new(),
         });
@@ -389,12 +468,9 @@ pub fn list(cwd: &Path, json: bool) -> anyhow::Result<()> {
     Ok(())
 }
 
-/// `/name`, then its aliases and argument hint: `/reasoning (thinking) auto|off|low|medium|high`.
+/// `/name` and its argument hint: `/reasoning auto|off|low|medium|high`.
 fn label(entry: &CommandEntry) -> String {
     let mut label = format!("/{}", entry.name);
-    if !entry.aliases.is_empty() {
-        label.push_str(&format!(" ({})", entry.aliases.join(", ")));
-    }
     if let Some(arguments) = &entry.arguments {
         label.push(' ');
         label.push_str(arguments);
@@ -437,13 +513,65 @@ mod tests {
     }
 
     #[test]
-    fn builtins_resolve_by_name_and_alias() {
+    fn builtins_resolve_by_name() {
         assert_eq!(builtin("mcp").unwrap().name, "mcp");
-        assert_eq!(builtin("/mcps").unwrap().name, "mcp");
+        assert_eq!(builtin("/mcp").unwrap().name, "mcp");
         assert_eq!(builtin("MCP").unwrap().name, "mcp");
-        assert_eq!(builtin("approvals").unwrap().name, "permissions");
-        assert_eq!(builtin("clear").unwrap().name, "new");
         assert!(builtin("nope").is_none());
+        // A command has one spelling: a second name for the same draw is not
+        // something a client answers, nor the catalog resolves.
+        for command in BUILTINS {
+            assert_eq!(builtin(command.name).unwrap().name, command.name);
+        }
+        for retired in ["mcps", "approvals", "access", "thinking", "sessions"] {
+            assert!(builtin(retired).is_none(), "{retired}");
+        }
+    }
+
+    #[test]
+    fn a_slash_command_is_resolved_to_the_catalogs_spelling() {
+        assert_eq!(canonical_slash("/MCP"), "/mcp");
+        assert_eq!(canonical_slash("/mcp"), "/mcp");
+        assert_eq!(canonical_slash("/Reasoning high"), "/reasoning high");
+        // The rest of the line is what the user typed, and a spelling the
+        // catalog does not know — the terminal's own command, a configured one,
+        // a skill, an ordinary message — is passed through untouched.
+        assert_eq!(canonical_slash("/openai"), "/openai");
+        assert_eq!(canonical_slash("/hotkeys"), "/hotkeys");
+        assert_eq!(canonical_slash("/ship the branch"), "/ship the branch");
+        assert_eq!(canonical_slash("what is /mcp?"), "what is /mcp?");
+    }
+
+    #[test]
+    fn each_front_end_is_offered_the_commands_it_performs() {
+        let owns = |front_end, name: &str| {
+            builtin_entries_for(front_end)
+                .iter()
+                .any(|entry| entry.name == name)
+        };
+        assert!(owns(FrontEnd::Terminal, "theme"));
+        assert!(owns(FrontEnd::Terminal, "permissions"));
+        assert!(!owns(FrontEnd::Terminal, "agent"));
+        assert!(owns(FrontEnd::Desktop, "theme"));
+        assert!(!owns(FrontEnd::Desktop, "agent"));
+        assert!(!owns(FrontEnd::Panel, "theme"));
+        assert!(!owns(FrontEnd::Panel, "logout"));
+        assert!(owns(FrontEnd::Panel, "agent"));
+        // Nothing is offered to a front-end that does not offer it.
+        for command in BUILTINS {
+            for front_end in FrontEnd::ALL {
+                assert_eq!(
+                    owns(*front_end, command.name),
+                    command.offered_to(*front_end),
+                    "{} for {}",
+                    command.name,
+                    front_end.label()
+                );
+            }
+        }
+        assert!(builtin_entries_for(FrontEnd::Terminal)
+            .iter()
+            .all(|entry| entry.front_ends.contains(&FrontEnd::Terminal.label())));
     }
 
     #[test]
@@ -452,7 +580,6 @@ mod tests {
             assert!(!command.name.is_empty());
             assert!(!command.description.is_empty());
             assert!(!command.name.contains('/'));
-            assert!(!command.aliases.contains(&command.name));
         }
     }
 
@@ -474,7 +601,7 @@ mod tests {
             .all(|entry| entry.source == "builtin" && entry.kind == "client"));
         assert!(entries
             .iter()
-            .any(|entry| entry.name == "theme" && entry.desktop_only));
+            .any(|entry| entry.name == "theme" && entry.front_ends == ["terminal", "desktop"]));
         std::fs::remove_dir_all(&dir).ok();
     }
 
@@ -592,6 +719,9 @@ mod tests {
             "Pretend to pick a model.\n",
         )
         .unwrap();
+        // A project's own command that spells a retired alias is an ordinary
+        // command now: only a name the catalog holds is drawn by the client
+        // first, and `mcps` is no longer one of them.
         std::fs::write(
             dir.join(".oxide").join("commands").join("mcps.md"),
             "Pretend to list servers.\n",
@@ -611,7 +741,10 @@ mod tests {
                 .source,
             "builtin"
         );
-        assert!(!names(&entries).contains(&"mcps"));
+        assert_eq!(
+            entries.iter().filter(|entry| entry.name == "mcps").count(),
+            1
+        );
         std::fs::remove_dir_all(&dir).ok();
     }
 
@@ -647,10 +780,10 @@ mod tests {
     fn a_project_override_is_not_reported_as_global() {
         let entry = CommandEntry {
             name: "ship".to_string(),
-            aliases: Vec::new(),
             description: "Ship the branch".to_string(),
             arguments: Some("arguments".to_string()),
             kind: Kind::Prompt.label().to_string(),
+            front_ends: every_front_end(),
             desktop_only: false,
             source: String::new(),
         };
