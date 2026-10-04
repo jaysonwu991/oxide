@@ -236,6 +236,7 @@ describe("provider dialog", () => {
           local: false,
           stored: true,
           active: true,
+          credential: "key",
         },
         {
           name: "bedrock",
@@ -245,6 +246,7 @@ describe("provider dialog", () => {
           local: false,
           stored: false,
           active: false,
+          credential: "external",
         },
         {
           name: "ollama",
@@ -254,6 +256,7 @@ describe("provider dialog", () => {
           local: true,
           stored: false,
           active: false,
+          credential: "none",
         },
       ],
     }),
@@ -280,7 +283,7 @@ describe("provider dialog", () => {
     const rows = providerDialog(providers).rows;
     assert.deepEqual(
       rows.map((row) => row.status),
-      ["In use", "", "No key needed"],
+      ["In use", "Machine credential", "No key needed"],
     );
     assert.deepEqual(
       rows.map((row) => row.tone),

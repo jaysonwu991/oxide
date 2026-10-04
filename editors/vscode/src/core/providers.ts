@@ -8,6 +8,15 @@
 
 import { parseObject } from "./json";
 
+/// Where a provider's credential comes from, which is what decides whether a
+/// login asks for a key at all.
+///
+/// - `key`: one typed here and stored by the CLI (`auth.json`).
+/// - `external`: one the machine already holds — an AWS signing identity, a
+///   Google application-default file — read where it lives and never copied.
+/// - `none`: nothing to present; a model server on this machine.
+export type CredentialMode = "key" | "external" | "none";
+
 /// One row of `oxide providers --json`.
 export interface ProviderView {
   name: string;
@@ -21,6 +30,16 @@ export interface ProviderView {
   stored: boolean;
   /// Whether it is the provider `config.json` selects.
   active: boolean;
+  /// Where its credential comes from, so a provider the machine's own identity
+  /// authorizes is not asked for a key nothing would read.
+  credential: CredentialMode;
+}
+
+/// Whether a login for this provider asks for a key: an empty one is a login
+/// for a server on this machine and for a credential the machine already holds,
+/// and is refused for every provider that keeps a key in `auth.json`.
+export function needsKey(provider: ProviderView): boolean {
+  return !provider.local && provider.credential !== "external";
 }
 
 export function providersListArgs(): string[] {
@@ -54,9 +73,16 @@ export function parseProviders(raw: string): ProviderView[] {
       local: record.local === true,
       stored: record.stored === true,
       active: record.active === true,
+      // A CLI too old to answer this keeps the key field, which is what every
+      // provider it knows about takes.
+      credential: credentialOf(record.credential),
     });
   }
   return providers;
+}
+
+function credentialOf(value: unknown): CredentialMode {
+  return value === "external" || value === "none" ? value : "key";
 }
 
 /// The providers whose name, label or description mention the query, in the
@@ -102,6 +128,7 @@ export function providerState(provider: ProviderView): string {
   if (provider.active) return "In use";
   if (provider.stored) return "Stored";
   if (provider.local) return "No key needed";
+  if (provider.credential === "external") return "Machine credential";
   return "";
 }
 

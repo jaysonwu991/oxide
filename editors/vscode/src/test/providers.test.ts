@@ -8,6 +8,7 @@ import { describe, it } from "node:test";
 
 import {
   filterProviders,
+  needsKey,
   parseLoginOutcome,
   parseProviders,
   providerLoginArgs,
@@ -27,6 +28,7 @@ const LISTING = JSON.stringify({
       local: false,
       stored: true,
       active: true,
+      credential: "key",
     },
     {
       name: "bedrock",
@@ -36,6 +38,7 @@ const LISTING = JSON.stringify({
       local: false,
       stored: false,
       active: false,
+      credential: "external",
     },
     {
       name: "ollama",
@@ -45,6 +48,7 @@ const LISTING = JSON.stringify({
       local: true,
       stored: false,
       active: false,
+      credential: "none",
     },
   ],
 });
@@ -82,16 +86,39 @@ describe("provider listing", () => {
         local: false,
         stored: false,
         active: false,
+        // A CLI too old to answer this keeps the key field, which is what every
+        // provider it knows about takes.
+        credential: "key",
       },
     ]);
-    // An entry with no name at all is dropped rather than painted blank.
     assert.deepEqual(parseProviders('{"providers":[{"label":"Nameless"},3]}'), []);
+  });
+
+  it("reads where a credential comes from, the way the table declares it", () => {
+    const providers = parseProviders(LISTING);
+    assert.deepEqual(
+      providers.map((provider) => provider.credential),
+      ["key", "external", "none"],
+    );
+    // An answer this build has not seen is read as a key, which is the field a
+    // row it does not understand would otherwise be missing.
+    const odd = parseProviders('{"providers":[{"name":"x","credential":"vault"}]}');
+    assert.equal(odd[0].credential, "key");
+  });
+
+  it("asks for a key only where one is kept in the store", () => {
+    const [openai, bedrock, ollama] = parseProviders(LISTING);
+    assert.equal(needsKey(openai), true);
+    // An AWS signing identity is not something a dialog can collect, so the
+    // login for it goes straight through with no key.
+    assert.equal(needsKey(bedrock), false);
+    assert.equal(needsKey(ollama), false);
   });
 
   it("names the state a row carries beside it", () => {
     const providers = parseProviders(LISTING);
     assert.equal(providerState(providers[0]), "In use");
-    assert.equal(providerState(providers[1]), "");
+    assert.equal(providerState(providers[1]), "Machine credential");
     assert.equal(providerState(providers[2]), "No key needed");
     assert.equal(providerState({ ...providers[2], stored: true }), "Stored");
   });

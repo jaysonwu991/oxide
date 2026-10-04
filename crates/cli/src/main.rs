@@ -919,6 +919,11 @@ fn list_providers(json_output: bool) -> Result<()> {
         }
         if view.local {
             marks.push("no key needed");
+        } else if view.credential == auth::CredentialMode::External {
+            // A provider that signs with the machine's own identity is as usable
+            // without a key as a server on this machine, and says so here rather
+            // than reading as one that is waiting for a paste.
+            marks.push("machine credential");
         }
         let mark = if marks.is_empty() {
             String::new()

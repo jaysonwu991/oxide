@@ -3165,14 +3165,17 @@ function renderProviders() {
 }
 
 /// What the selected provider needs: a key field whose placeholder says what
-/// leaving it empty means, or the sentence that replaces it for a server on
-/// this machine, which has no credential to ask for.
+/// leaving it empty means, or the sentence that replaces it for a provider that
+/// asks for no key at all — a server on this machine, or one that authorizes
+/// with a credential the machine already holds, which is read where it lives and
+/// is not the key this box would collect.
 function renderLoginFields() {
   const provider = state.providers.find((one) => one.name === state.providerName);
   const field = el("login-key-field");
   const note = el("login-key-note");
-  field.hidden = Boolean(provider && provider.local);
-  note.hidden = !field.hidden;
+  const keyless = Boolean(provider && (provider.local || provider.credential === "external"));
+  field.hidden = keyless;
+  note.hidden = !keyless;
   if (!provider) {
     el("login-key").placeholder = "Paste your API key";
     return;
@@ -3182,6 +3185,8 @@ function renderLoginFields() {
     : "Paste your API key";
   if (provider.local) {
     note.textContent = `${provider.label} is a server on this machine — no key needed.`;
+  } else if (keyless) {
+    note.textContent = `${provider.label} authorizes with a credential this machine already has — no key needed.`;
   }
 }
 

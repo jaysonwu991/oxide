@@ -69,6 +69,7 @@ import {
 } from "./core/dialogs";
 import { isMcpCommand, mcpListArgs, mcpToggleArgs, parseMcpList, type McpServerView } from "./core/mcps";
 import {
+  needsKey,
   parseLoginOutcome,
   parseProviders,
   providerLoginArgs,
@@ -2036,7 +2037,7 @@ export class ChatController {
     if (!provider) return;
     const cwd = this.cwd() ?? os.homedir();
     let key = "";
-    if (!provider.local && !provider.stored) {
+    if (needsKey(provider) && !provider.stored) {
       const answer = await vscode.window.showInputBox({
         title: `Oxide: connect ${provider.label}`,
         prompt: provider.keyUrl

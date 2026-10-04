@@ -490,6 +490,7 @@ const providerRows = [
     local: false,
     stored: true,
     active: true,
+    credential: "key",
   },
   {
     name: "anthropic",
@@ -499,6 +500,7 @@ const providerRows = [
     local: false,
     stored: false,
     active: false,
+    credential: "key",
   },
   {
     name: "bedrock",
@@ -508,6 +510,7 @@ const providerRows = [
     local: false,
     stored: false,
     active: false,
+    credential: "external",
   },
   {
     name: "ollama",
@@ -517,15 +520,17 @@ const providerRows = [
     local: true,
     stored: false,
     active: false,
+    credential: "none",
   },
 ];
 // The providers the core's own listing hands the dialog (`oxide providers
-// --json`): a name to search on, a label, a description, and the state the row
-// shows beside it. The table holds every provider a client can connect — one of
-// them a server on this machine with no key at all — which is why the dialog
-// searches it rather than listing it. Nothing is connected on the way in: a
-// window that never opened the dialog has no providers, which is what the
-// sections above expect of `/logout`.
+// --json`): a name to search on, a label, a description, the state the row
+// shows beside it, and where its credential comes from — a key kept here, one
+// the machine already has, or none at all. The table holds every provider a
+// client can connect — one of them a server on this machine with no key at all
+// — which is why the dialog searches it rather than listing it. Nothing is
+// connected on the way in: a window that never opened the dialog has no
+// providers, which is what the sections above expect of `/logout`.
 let providersAnswer = [];
 
 // The sidebar's rows as `list_projects` answers them: registered folders first
@@ -5868,8 +5873,20 @@ check(
     String(providerList.innerHTML).includes("No provider matches"),
   `${listedProviders().length} / ${app.state.providerName} / ${providerList.innerHTML}`,
 );
-// A server on this machine is asked for no credential: the field goes and the
-// sentence that says why takes its place.
+// A provider the machine already has a credential for is asked for none either:
+// an AWS signing identity is not something this box could collect, and pasting
+// an OpenAI key into it would not be what the request signs with.
+searchProviders("bedrock");
+check(
+  "asked a provider its machine credential authorizes for no key",
+  app.state.providerName === "bedrock" &&
+    elementFor("login-key-field").hidden === true &&
+    elementFor("login-key-note").hidden === false &&
+    String(elementFor("login-key-note").textContent).includes("no key needed"),
+  `${elementFor("login-key-field").hidden} / ${elementFor("login-key-note").textContent}`,
+);
+// A server on this machine is asked for no credential either: the field goes
+// and the sentence that says why takes its place.
 searchProviders("ollama");
 check(
   "asked a provider that needs no key for none",
