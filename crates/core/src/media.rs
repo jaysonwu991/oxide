@@ -332,9 +332,10 @@ fn image_extension(mime: &str) -> &str {
     }
 }
 
-/// A private temporary directory for one image conversion. The name is random
-/// and the mode is owner-only, and it is removed on drop, so a predictable-name
-/// symlink cannot redirect the bytes written or read during a conversion.
+/// A private temporary directory for one image conversion. The name is random,
+/// the mode is owner-only on the platforms that have one, and it is removed on
+/// drop, so a predictable-name symlink cannot redirect the bytes written or read
+/// during a conversion.
 #[cfg(any(target_os = "macos", target_os = "linux", target_os = "windows"))]
 struct TempImageDir(PathBuf);
 
@@ -345,13 +346,13 @@ impl TempImageDir {
         getrandom::getrandom(&mut random).ok()?;
         let name: String = random.iter().map(|byte| format!("{byte:02x}")).collect();
         let dir = std::env::temp_dir().join(format!("oxide-image-{name}"));
-        let mut builder = std::fs::DirBuilder::new();
         #[cfg(unix)]
         {
             use std::os::unix::fs::DirBuilderExt;
-            builder.mode(0o700);
+            std::fs::DirBuilder::new().mode(0o700).create(&dir).ok()?;
         }
-        builder.create(&dir).ok()?;
+        #[cfg(not(unix))]
+        std::fs::DirBuilder::new().create(&dir).ok()?;
         Some(Self(dir))
     }
 
@@ -448,7 +449,10 @@ fn run_ok(command: &str, args: &[&str]) -> bool {
         .unwrap_or(false)
 }
 
-#[cfg(not(any(target_os = "macos", target_os = "linux", target_os = "windows")))]
+/// Windows has no image tool of its own, so an oversized image travels with the
+/// dimensions it was sent with; the front-ends downscale a paste before it is
+/// sent, which is where a Windows-sized screenshot is bounded.
+#[cfg(not(any(target_os = "macos", target_os = "linux")))]
 fn downscale_image(_bytes: &[u8], _mime: &str) -> Option<Vec<u8>> {
     None
 }
@@ -514,13 +518,13 @@ fn convert_image_to_png(bytes: &[u8], mime: &str) -> Option<Vec<u8>> {
     let dir = TempImageDir::new()?;
     let input = dir.write(&format!("input.{}", source_extension(mime)), bytes)?;
     let output = dir.path().join("output.png");
-    let input = power_shell_path(&input);
-    let output = power_shell_path(&output);
     let script = format!(
         "Add-Type -AssemblyName System.Drawing; \
-         $image = [System.Drawing.Image]::FromFile('{input}'); \
-         try {{ $image.Save('{output}', [System.Drawing.Imaging.ImageFormat]::Png) }} \
-         finally {{ $image.Dispose() }}"
+         $image = [System.Drawing.Image]::FromFile('{}'); \
+         try {{ $image.Save('{}', [System.Drawing.Imaging.ImageFormat]::Png) }} \
+         finally {{ $image.Dispose() }}",
+        power_shell_path(&input),
+        power_shell_path(&output)
     );
     let converted = run_ok(
         "powershell",
