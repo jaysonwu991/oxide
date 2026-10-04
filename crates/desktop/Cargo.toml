@@ -8,6 +8,7 @@ description = "Desktop app for Oxide: manage multiple projects and sessions"
 [features]
 default = []
 gui = [
+    "dep:opener",
     "dep:tauri",
     "dep:tauri-plugin-dialog",
     "dep:tauri-build",
@@ -21,6 +22,7 @@ reqwest.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 tokio.workspace = true
+opener = { version = "0.9", optional = true }
 tauri = { version = "2", optional = true }
 tauri-plugin-dialog = { version = "2", optional = true }
 

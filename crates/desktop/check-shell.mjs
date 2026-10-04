@@ -117,6 +117,15 @@ check(
   "starts the dialog plugin the app calls itself",
   /tauri_plugin_dialog::init\(\)/.test(shell),
 );
+// One call into a crate that picks the platform's handler for itself, rather
+// than a program this file's target chooses: a URL reaches that handler as its
+// own argument, so no branch here is one platform's and no shell reads the URL.
+const openUrl = commands.slice(commands.indexOf("pub fn open_url"), commands.indexOf("fn is_openable_url"));
+check(
+  "handed a link to the machine's own handler rather than a program chosen per target",
+  /opener::open\(url\)/.test(openUrl) && !/#\[cfg\(/.test(openUrl),
+  openUrl.replace(/\s+/g, " ").trim(),
+);
 
 // ---------- the window the page runs in ----------
 
@@ -190,7 +199,7 @@ const guiFeature = /^gui = \[([\s\S]*?)\]/m.exec(manifest)?.[1] ?? "";
 check(
   "builds the binary only where there is a webview to put it in",
   /\[\[bin\]\][\s\S]*?name = "oxide-desktop"[\s\S]*?required-features = \["gui"\]/.test(manifest) &&
-    ["dep:tauri", "dep:tauri-plugin-dialog", "dep:tauri-build"].every((on) =>
+    ["dep:opener", "dep:tauri", "dep:tauri-plugin-dialog", "dep:tauri-build"].every((on) =>
       guiFeature.includes(`"${on}"`),
     ),
   "",
