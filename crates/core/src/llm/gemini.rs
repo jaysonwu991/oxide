@@ -9,11 +9,14 @@ use std::collections::BTreeMap;
 
 /// Function calls Gemini streams, keyed by the order the parts arrive in.
 /// Gemini sends each call whole (its arguments are an object, not a JSON
-/// fragment), so a partial here is only ever written once.
+/// fragment), so a partial here is only ever written once. The signature a
+/// thinking-capable model puts on the call belongs to it and is carried through
+/// to the request that answers it.
 #[derive(Debug, Default)]
 pub(crate) struct PartialToolCall {
     name: String,
     arguments: String,
+    signature: Option<String>,
 }
 
 /// Translate the internal OpenAI-style conversation into a Gemini
@@ -153,7 +156,18 @@ pub fn apply_event(
                     Some(_) => call["args"].to_string(),
                     None => "{}".to_string(),
                 };
-                partials.insert(index, PartialToolCall { name, arguments });
+                // The signature on a function call belongs to that part and has
+                // to be handed back on it, so it is kept with the call rather
+                // than with the thinking text.
+                let signature = part["thoughtSignature"].as_str().map(str::to_string);
+                partials.insert(
+                    index,
+                    PartialToolCall {
+                        name,
+                        arguments,
+                        signature,
+                    },
+                );
             }
             _ if part["text"].is_string() => {
                 let text = part["text"].as_str().unwrap_or_default();
@@ -168,7 +182,9 @@ pub fn apply_event(
                     }
                 }
                 // The signature is recorded after the fragment it belongs to,
-                // so it lands on the block that fragment created.
+                // so it lands on the block that fragment created. A signature on
+                // a function call is not replayed here: it belongs to that part,
+                // and the call carries it.
                 if let Some(signature) = part["thoughtSignature"].as_str() {
                     set_thinking_signature(&mut turn.thinking, signature);
                 }
@@ -190,6 +206,7 @@ pub fn into_tool_calls(partials: BTreeMap<usize, PartialToolCall>) -> Vec<ToolCa
             // the function name when the result is replayed.
             id: format!("call_{index}"),
             kind: "function".to_string(),
+            signature: partial.signature,
             function: FunctionCall {
                 name: partial.name,
                 arguments: partial.arguments,
@@ -289,13 +306,21 @@ fn assistant_parts(message: &Message) -> Vec<Value> {
         for call in calls {
             let args = serde_json::from_str::<Value>(&call.function.arguments)
                 .unwrap_or_else(|_| json!({}));
-            parts.push(json!({
+            let mut part = json!({
                 "functionCall": { "name": call.function.name, "args": args },
-            }));
+            });
+            // A signature the model put on this call is handed back on the same
+            // part, since a thinking-capable model refuses a call whose
+            // signature went missing.
+            if let Some(signature) = call.signature.as_deref().filter(|s| !s.is_empty()) {
+                part["thoughtSignature"] = json!(signature);
+            }
+            parts.push(part);
         }
     }
     // A thought signature is replayed on the first part of the model turn it
-    // came from, which is where Gemini expects to find it.
+    // came from, which is where Gemini expects to find it. It belongs to the
+    // text it was streamed with, so it is never written over a call's own.
     if let Some(signature) = message
         .thinking
         .iter()
@@ -303,7 +328,10 @@ fn assistant_parts(message: &Message) -> Vec<Value> {
         .find_map(|block| block["signature"].as_str())
         .filter(|signature| !signature.is_empty())
     {
-        if let Some(first) = parts.first_mut() {
+        if let Some(first) = parts
+            .first_mut()
+            .filter(|part| part["functionCall"].is_null())
+        {
             first["thoughtSignature"] = json!(signature);
         }
     }
@@ -426,6 +454,7 @@ mod tests {
             vec![ToolCall {
                 id: "call_0".to_string(),
                 kind: "function".to_string(),
+                signature: None,
                 function: FunctionCall {
                     name: "read".to_string(),
                     arguments: "{\"path\":\"a.rs\"}".to_string(),
@@ -455,6 +484,7 @@ mod tests {
                 ToolCall {
                     id: "call_0".to_string(),
                     kind: "function".to_string(),
+                    signature: None,
                     function: FunctionCall {
                         name: "read".to_string(),
                         arguments: "{}".to_string(),
@@ -463,6 +493,7 @@ mod tests {
                 ToolCall {
                     id: "call_1".to_string(),
                     kind: "function".to_string(),
+                    signature: None,
                     function: FunctionCall {
                         name: "ls".to_string(),
                         arguments: "{}".to_string(),
@@ -543,6 +574,74 @@ mod tests {
         assert_eq!(calls.len(), 1);
         assert_eq!(calls[0].function.name, "grep");
         assert_eq!(calls[0].function.arguments, r#"{"pattern":"x"}"#);
+        assert!(calls[0].signature.is_none());
+    }
+
+    /// A thinking-capable model signs the function call it returns, and the
+    /// signature has to come back on that same part: a call that arrives with
+    /// one and is replayed without it is refused.
+    #[test]
+    fn keeps_and_replays_the_signature_a_function_call_arrived_with() {
+        let mut turn = AssistantTurn::default();
+        let mut partials = BTreeMap::new();
+        apply_event(
+            r#"{"candidates":[{"content":{"role":"model","parts":[{"thoughtSignature":"c2ln","functionCall":{"name":"read","args":{"path":"a.rs"}}}]},"finishReason":"STOP"}]}"#,
+            &mut turn,
+            &mut partials,
+            &mut |_| {},
+            &mut |_| {},
+        )
+        .unwrap();
+
+        let calls = into_tool_calls(partials);
+        assert_eq!(calls[0].signature.as_deref(), Some("c2ln"));
+        // The signature rides the call, not a thinking block, so a turn that
+        // only called a tool has nothing else carrying it.
+        assert!(turn
+            .thinking
+            .iter()
+            .all(|block| block["signature"].is_null()));
+
+        let assistant = Message::assistant("", calls);
+        let body = request_body(
+            &config(),
+            &[
+                Message::user("go"),
+                assistant,
+                Message::tool("call_0", "done"),
+            ],
+            &[],
+        );
+        let part = &body["contents"][1]["parts"][0];
+        assert_eq!(part["functionCall"]["name"], "read");
+        assert_eq!(part["thoughtSignature"], "c2ln");
+    }
+
+    /// A signature streamed with thinking text stays on the text part, and the
+    /// one a call arrived with is not written over by it.
+    #[test]
+    fn gives_each_part_back_its_own_signature() {
+        let mut turn = AssistantTurn::default();
+        let mut partials = BTreeMap::new();
+        apply_event(
+            r#"{"candidates":[{"content":{"role":"model","parts":[{"text":"weighing","thought":true,"thoughtSignature":"dGhv"},{"functionCall":{"name":"ls","args":{}},"thoughtSignature":"Y2FsbA=="}]}}]}"#,
+            &mut turn,
+            &mut partials,
+            &mut |_| {},
+            &mut |_| {},
+        )
+        .unwrap();
+
+        let calls = into_tool_calls(partials);
+        assert_eq!(calls[0].signature.as_deref(), Some("Y2FsbA=="));
+
+        let assistant = Message::assistant("ack", calls).with_thinking(turn.thinking.clone());
+        let body = request_body(&config(), &[Message::user("go"), assistant], &[]);
+        let parts = body["contents"][1]["parts"].as_array().unwrap();
+        assert_eq!(parts[0]["text"], "ack");
+        assert_eq!(parts[0]["thoughtSignature"], "dGhv");
+        assert_eq!(parts[1]["functionCall"]["name"], "ls");
+        assert_eq!(parts[1]["thoughtSignature"], "Y2FsbA==");
     }
 
     #[test]

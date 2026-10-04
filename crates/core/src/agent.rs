@@ -3700,6 +3700,7 @@ for line in sys.stdin:
         ToolCall {
             id: format!("call_{name}"),
             kind: "function".into(),
+            signature: None,
             function: crate::llm::FunctionCall {
                 name: name.into(),
                 arguments: "{}".into(),

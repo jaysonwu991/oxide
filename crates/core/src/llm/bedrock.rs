@@ -381,6 +381,7 @@ pub fn into_tool_calls(partials: BTreeMap<usize, PartialToolCall>) -> Vec<ToolCa
                 partial.id
             },
             kind: "function".to_string(),
+            signature: None,
             function: FunctionCall {
                 name: partial.name,
                 arguments: if partial.arguments.trim().is_empty() {
@@ -563,6 +564,7 @@ mod tests {
             vec![ToolCall {
                 id: "tooluse_x".to_string(),
                 kind: "function".to_string(),
+                signature: None,
                 function: FunctionCall {
                     name: "read".to_string(),
                     arguments: "{\"path\":\"a.rs\"}".to_string(),

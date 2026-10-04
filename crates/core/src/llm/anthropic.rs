@@ -244,6 +244,7 @@ pub fn into_tool_calls(partials: BTreeMap<usize, PartialToolCall>) -> Vec<ToolCa
                 partial.id
             },
             kind: "function".to_string(),
+            signature: None,
             function: FunctionCall {
                 name: partial.name,
                 arguments: partial.arguments,
@@ -437,6 +438,7 @@ mod tests {
         ToolCall {
             id: id.into(),
             kind: "function".into(),
+            signature: None,
             function: FunctionCall {
                 name: name.into(),
                 arguments: arguments.into(),

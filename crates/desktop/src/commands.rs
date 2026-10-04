@@ -1325,6 +1325,7 @@ mod tests {
         let call = ToolCall {
             id: "call_1".into(),
             kind: "function".into(),
+            signature: None,
             function: FunctionCall {
                 name: "bash".into(),
                 arguments: "{\"command\":\"ls\"}".into(),

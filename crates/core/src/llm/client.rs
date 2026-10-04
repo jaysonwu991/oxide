@@ -629,6 +629,7 @@ impl LlmClient {
                     p.id
                 },
                 kind: "function".to_string(),
+                signature: None,
                 function: FunctionCall {
                     name: p.name,
                     arguments: p.arguments,
@@ -1400,6 +1401,7 @@ mod tests {
         turn.tool_calls = vec![ToolCall {
             id: "call_0".into(),
             kind: "function".into(),
+            signature: None,
             function: FunctionCall {
                 name: "read".into(),
                 arguments: "{}".into(),
@@ -1500,6 +1502,7 @@ mod tests {
         let call = ToolCall {
             id: "call_0".into(),
             kind: "function".into(),
+            signature: None,
             function: FunctionCall {
                 name: "read".into(),
                 arguments: "{}".into(),
@@ -1533,6 +1536,7 @@ mod tests {
         let call = ToolCall {
             id: "call_0".into(),
             kind: "function".into(),
+            signature: None,
             function: FunctionCall {
                 name: "read".into(),
                 arguments: "{}".into(),
@@ -1612,6 +1616,7 @@ mod tests {
         let call = ToolCall {
             id: "call_0".into(),
             kind: "function".into(),
+            signature: None,
             function: FunctionCall {
                 name: "bash".into(),
                 arguments: "{}".into(),

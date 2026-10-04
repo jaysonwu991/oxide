@@ -1336,6 +1336,7 @@ mod tests {
                 vec![crate::llm::ToolCall {
                     id: "call_1".into(),
                     kind: "function".into(),
+                    signature: None,
                     function: crate::llm::FunctionCall {
                         name: "read".into(),
                         arguments: "{}".into(),
