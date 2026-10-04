@@ -71,10 +71,16 @@ source:
 
 ```sh
 cd crates/desktop
-pnpm install
-pnpm start        # development run
-pnpm run make     # packaged bundle
+hutch electrobun prepare      # project the Electrobun Rust SDK this package links
+hutch electrobun dev          # build the main process and open the window
+hutch electrobun build --env=stable   # an installer for this platform
 ```
+
+Hutch is Electrobun's own toolchain (`curl -fsSL
+https://hutch.blackboard.sh/hutch/install.sh | sh`), and the SDK the package
+links is projected into `crates/desktop/.hutch/devkit` by `prepare` rather than
+fetched as a crate. The package is its own workspace, so it is built from its
+own directory.
 
 See [desktop.md](desktop.md) for signing and packaging details.
 

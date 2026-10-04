@@ -1,14 +1,97 @@
-// Oxide desktop front-end. The window is Tauri's own webview and the page is
-// sandboxed against it: the project/session/config stores it reads are the
+// Oxide desktop front-end. The window is Electrobun's own webview and the page
+// is sandboxed against it: the project/session/config stores it reads are the
 // CLI's, reached through the app's commands rather than the filesystem.
+//
+// A command is performed by name: one packet carries the name and the arguments,
+// and its answer carries that command's own value or the reason it failed.
+// Everything a run has to say while one is in flight arrives as a packet of its
+// own, and a handler is given the event's own `payload`.
+//
+// Both directions are the envelope Electrobun's preload bridge already speaks:
+// a packet goes out on the user bridge, which the core queues for the main
+// process and the running app drains (`src/main.rs`), and the host answers
+// through `window.__electrobun.receiveMessageFromHost`, which the preload leaves
+// filling a queue until a page takes it over — this page does, since it speaks
+// the wire itself rather than going through `Electroview`'s typed RPC. A webview
+// whose preload installs no user bridge still has the event one, which carries
+// the packet as the `host-message` event it was written as; the app reads the
+// same packet off either.
+const userBridge = window.__electrobunHostBridge;
+const eventBridge = window.__electrobunSendToHost;
 
-// A command is performed by name: the app's one Tauri command carries the name
-// and the arguments, and answers with that command's own value or the reason it
-// failed. Everything a run has to say while one is in flight arrives on the
-// app's event channel, and a handler is given the event's own `payload`.
-const { invoke: tauriInvoke } = window.__TAURI__.core;
-const { listen } = window.__TAURI__.event;
-const invoke = (command, args = {}) => tauriInvoke("oxide_invoke", { command, args });
+function hostSend(packet) {
+  if (userBridge) return userBridge.postMessage(JSON.stringify(packet));
+  if (eventBridge) return eventBridge(packet);
+  throw new Error("This window has no channel to the app");
+}
+
+const pending = new Map();
+const listeners = new Map();
+let nextRequest = 1;
+
+// The preload sets the namespace up, and the page fills it in rather than
+// loading `Electroview`, whose typed RPC this window does not use. A webview
+// the preload ran in a sandboxed mode leaves nothing to fill in.
+if (!window.__electrobun) window.__electrobun = {};
+
+function deliver(packet) {
+  if (packet.type === "response") {
+    const waiting = pending.get(packet.id);
+    if (!waiting) return;
+    pending.delete(packet.id);
+    if (packet.success) waiting.resolve(packet.payload);
+    else waiting.reject(new Error(packet.error || "the command failed"));
+  }
+}
+
+// A message is handed to every handler in turn and awaited, so a handler that
+// paints a streamed reply has finished writing before the next one runs — and
+// the host's own paint is as far as the last frame it sent.
+async function receiveMessageFromHost(raw) {
+  let packet = raw;
+  if (typeof packet === "string") {
+    try {
+      packet = JSON.parse(packet);
+    } catch {
+      return;
+    }
+  }
+  if (!packet || typeof packet !== "object") return;
+  if (packet.type === "message") {
+    for (const handler of listeners.get(packet.id) || []) {
+      await handler({ event: packet.id, payload: packet.payload });
+    }
+    return;
+  }
+  deliver(packet);
+}
+
+window.__electrobun.receiveMessageFromHost = receiveMessageFromHost;
+window.__electrobun.receiveMessageFromBun = receiveMessageFromHost;
+
+// A message the host sends before this page has taken the channel over is kept
+// by the preload rather than dropped, and `init()` below is the point every
+// listener this file registers is in place.
+function drainPendingHostMessages() {
+  const queued = window.__electrobunPendingHostMessages;
+  if (!Array.isArray(queued) || !queued.length) return;
+  window.__electrobunPendingHostMessages = [];
+  for (const packet of queued) receiveMessageFromHost(packet);
+}
+
+function invoke(command, args = {}) {
+  const id = nextRequest++;
+  return new Promise((resolve, reject) => {
+    pending.set(id, { resolve, reject });
+    hostSend({ type: "request", id, method: "oxide_invoke", params: { command, args } });
+  });
+}
+
+async function listen(name, handler) {
+  const handlers = listeners.get(name) || [];
+  handlers.push(handler);
+  listeners.set(name, handlers);
+}
 
 const el = (id) => document.getElementById(id);
 
@@ -3389,8 +3472,7 @@ const launchDismissed = { yes: false };
 /// The resolution is `oxide_core::updates`, shared with the terminal, so the
 /// release this window offers is a release of this app and not of the CLI — and
 /// when this installation is one the app may replace (a bundle it can write to,
-/// the AppImage it runs from, the Windows installer's directory) the dialog
-/// installs it in place.
+/// an installation the Electrobun setup made) the dialog installs it in place.
 async function openUpdate() {
   el("update-title").textContent = "Updates";
   el("update-note").textContent = "";
@@ -4981,6 +5063,7 @@ function init() {
 }
 
 init();
+setTimeout(drainPendingHostMessages, 0);
 
 // ============================================================================
 // CodeX-style tree view rendering

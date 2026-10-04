@@ -11,7 +11,8 @@
 
 # Oxide
 
-A native Rust AI coding agent with a terminal UI, a Tauri desktop app, and a
+A native Rust AI coding agent with a terminal UI, an Electrobun desktop app,
+and a
 VS Code extension. Oxide streams from OpenAI-compatible and Anthropic models,
 runs a tool-using agent loop against your project, and understands its own
 `.oxide/` configuration layout out of the box, with Claude Code configuration
@@ -19,8 +20,10 @@ support for compatibility.
 
 ## Highlights
 
-- **Three front-ends, one core** — a ratatui terminal UI, a Tauri desktop app
-  (`crates/desktop`), and a VS Code extension (`editors/vscode`), all sharing the
+- **Three front-ends, one core** — a ratatui terminal UI, an Electrobun desktop
+  app
+  (`crates/desktop`) whose main process is Rust, and a VS Code extension
+  (`editors/vscode`), all sharing the
   same configuration, sessions, trust decisions, and MCP servers.
 - **Providers** — OpenAI-compatible (OpenAI, DeepSeek, Portkey, Z.AI/GLM, custom)
   and the Anthropic Messages API, with reasoning effort from `auto` to `high` and
@@ -108,8 +111,10 @@ Keyboard shortcuts, the transcript layout, and copy behavior are in
 
 ## Desktop app
 
-The `oxide-desktop` package (`crates/desktop`) is a Tauri front-end for the
-same `oxide-core` agent. It shares the CLI's configuration (`config.json`,
+The `oxide-desktop` package (`crates/desktop`) is an
+[Electrobun](https://electrobun.dev) front-end for the
+same `oxide-core` agent, with the main process written in Rust. It shares the
+CLI's configuration (`config.json`,
 `auth.json`, `settings.json`) and its session store, and adds a multi-project
 sidebar: any folder can be added, every project you have run the CLI in is
 discovered from its sessions, and each project lists its own threads alongside a
@@ -118,10 +123,13 @@ cross-repo view of recent ones. Chat runs the same agent loop through
 bridge to the Rust command layer.
 
 ```sh
-cargo run -p oxide-desktop --features gui
+cd crates/desktop
+hutch electrobun dev        # build the main process and open the window
+hutch electrobun build --env=stable   # an installer for this platform
 ```
 
-Prebuilt bundles are drafted under `desktop-v*`
+The package is its own workspace (`exclude`d from the root one), so it is built
+from its own directory. Prebuilt installers are drafted under `desktop-v*`
 [releases](https://github.com/jaysonwu991/oxide/releases). See
 [docs/desktop.md](docs/desktop.md) for the layout, approvals, change cards,
 shortcuts, signing, and packaging.
@@ -172,14 +180,15 @@ cargo clippy --all-targets -- -D warnings
 cargo fmt
 ```
 
-The workspace members are `crates/core` (shared agent core), `crates/cli` (the
-`oxide` terminal binary), and `crates/desktop` (the Tauri desktop app). The
-desktop's `gui` feature is off by default, so the plain workspace build stays
-free of the Tauri dependency tree; the VS Code extension is a separate pnpm
+The workspace members are `crates/core` (shared agent core) and `crates/cli` (the
+`oxide` terminal binary). `crates/desktop` is a workspace of its own — excluded
+from the root one, because Electrobun's build owns its binary's layout and
+version — so the plain workspace build stays free of the window's dependencies;
+the VS Code extension is a separate pnpm
 package:
 
 ```sh
-cargo build -p oxide-desktop --features gui
+cd crates/desktop && hutch electrobun prepare && cargo test
 node crates/desktop/check-app.mjs && node crates/desktop/check-shell.mjs
 cd editors/vscode && pnpm test
 ```

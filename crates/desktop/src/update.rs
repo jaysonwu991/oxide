@@ -8,9 +8,9 @@
 //! is left here is what only the running app knows: where this copy is
 //! installed, whether it may be replaced in place, and how.
 //!
-//! Nothing here touches Tauri, so both halves — whether this installation may be
-//! replaced, and putting a downloaded release in its place — are unit tested
-//! like the rest of the library.
+//! Nothing here touches Electrobun either, so both halves — whether this
+//! installation may be replaced, and putting a downloaded release in its place —
+//! are unit tested like the rest of the library.
 
 use anyhow::{bail, Context, Result};
 use oxide_core::update_notice::Notice;
@@ -31,15 +31,15 @@ pub fn current_version() -> &'static str {
 /// Where this copy of the app is installed, and how a release replaces it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Installation {
-    /// How a front-end names this installation: `app bundle`, `AppImage`,
-    /// `installer`, `system package` (a distribution's own build, which only
-    /// its package manager updates) or `source build` (a checkout's build).
+    /// How a front-end names this installation: `app bundle`, `installer` (the
+    /// Electrobun setup that made this copy), or `source build` (a checkout's
+    /// build, which the app does not replace).
     pub label: &'static str,
     /// What a release would replace, when this copy may be replaced at all.
     pub path: Option<PathBuf>,
-    /// Whether the app may write over this copy in place. A bundle an
-    /// administrator installed for every user of the machine is the case this
-    /// rules out.
+    /// Whether the app may write over this copy in place. An installation an
+    /// administrator made for every user of the machine is the case this rules
+    /// out, as is a distribution's own package.
     replaceable: bool,
     kind: Kind,
 }
@@ -50,10 +50,9 @@ pub struct Installation {
 enum Kind {
     /// A macOS `.app` bundle, replaced from the release's disk image.
     Bundle(PathBuf),
-    /// The AppImage this app is running from, replaced by writing its own file.
-    AppImage(PathBuf),
-    /// The Windows installer, run to put the release in place.
-    Installer,
+    /// An Electrobun installation of this app, replaced by the setup archive
+    /// the release publishes, which takes over from the installer that made it.
+    Setup,
     /// A copy the app does not replace: a source build, or a system package.
     None,
 }
@@ -79,20 +78,21 @@ impl Installation {
         }
         match &self.kind {
             Kind::Bundle(_) => asset.name.ends_with(".dmg"),
-            Kind::AppImage(_) => asset.name.ends_with(".AppImage"),
-            Kind::Installer => asset.name.ends_with("-setup.exe"),
+            Kind::Setup => {
+                asset.name.ends_with("-Setup.zip") || asset.name.ends_with("-Setup.tar.gz")
+            }
             Kind::None => false,
         }
     }
 
     /// Whether this copy is one the app replaces in place without being asked:
-    /// a bundle or an AppImage the user installed, which a new release simply
-    /// takes the place of. A Windows installer is not — it asks for elevation
-    /// and waits for the app to be closed, which is a thing to offer rather
+    /// a bundle the user installed, which a new release simply takes the place
+    /// of. An installer is not — it starts a setup that writes over the
+    /// installation and may ask for elevation, which is a thing to offer rather
     /// than to do behind the reader's back — and neither is a copy the app does
     /// not own at all.
     pub fn replaces_itself(&self) -> bool {
-        self.replaceable && matches!(self.kind, Kind::Bundle(_) | Kind::AppImage(_))
+        self.replaceable && matches!(self.kind, Kind::Bundle(_))
     }
 
     /// What to do instead, for a copy the app will not replace itself.
@@ -118,31 +118,45 @@ impl Installation {
 /// The installation this running app belongs to.
 pub fn installation() -> Installation {
     let executable = std::env::current_exe().unwrap_or_default();
-    let appimage = std::env::var_os("APPIMAGE")
-        .map(PathBuf::from)
-        .filter(|path| path.is_file());
-    let installer_dir = dirs::data_local_dir().map(|data| data.join("Programs").join("Oxide"));
-    installation_of(
-        &executable,
-        std::env::consts::OS,
-        appimage.as_deref(),
-        installer_dir.as_deref(),
-    )
+    installation_of(&executable, std::env::consts::OS, data_root().as_deref())
 }
 
+/// Where an installer puts an application: `%LOCALAPPDATA%` on Windows and
+/// `$XDG_DATA_HOME` (or `~/.local/share`) on Linux, which is the directory
+/// Electrobun's install roots sit under.
+fn data_root() -> Option<PathBuf> {
+    dirs::data_local_dir()
+}
+
+/// Where a setup archive is unpacked: beside the desktop's own state, which is
+/// not the installation the installer writes over.
+///
+/// It cannot be the run's own scratch directory. A Windows or Linux installer
+/// is started as a process of its own and reads the payload that sits beside
+/// it, and this side reports the launch and returns while that process is still
+/// going — a directory removed as the call returns would pull the payload out
+/// from under it. The path comes from the same module that resolves the
+/// registry, so it is the directory the app already owns.
+fn setup_staging() -> Result<PathBuf> {
+    let registry = oxide_core::workspaces::registry_path();
+    let directory = registry
+        .parent()
+        .context("the desktop's own directory could not be resolved")?;
+    Ok(directory.join("installer"))
+}
+
+/// The record an Electrobun install root carries: the uninstaller it was
+/// installed with, and the manifest that uninstaller reads.
+const INSTALL_MARKERS: [&str; 3] = [".electrobun-uninstall.json", "uninstall", "uninstall.exe"];
+
 /// The installation an executable belongs to. `os` is the platform's name,
-/// which is what decides which of a release's artifacts replaces it; the two
-/// paths are the machine's own — where an AppImage runs from, and the directory
-/// the Windows installer installs into — and are passed in so both are tested
-/// without either platform.
-pub fn installation_of(
-    executable: &Path,
-    os: &str,
-    appimage: Option<&Path>,
-    installer_dir: Option<&Path>,
-) -> Installation {
-    match os {
-        "macos" => match bundle_of(executable) {
+/// which is what decides which of a release's artifacts replaces it, and
+/// `data_root` is the machine's own directory of application data, which is
+/// where an Electrobun installer makes its install root — both are passed in
+/// so every platform's layout is tested without either platform.
+pub fn installation_of(executable: &Path, os: &str, data_root: Option<&Path>) -> Installation {
+    if os == "macos" {
+        return match bundle_of(executable) {
             Some(bundle) => Installation {
                 label: "app bundle",
                 replaceable: bundle.parent().is_some_and(writable),
@@ -150,35 +164,52 @@ pub fn installation_of(
                 kind: Kind::Bundle(bundle),
             },
             None => Installation::none("source build"),
+        };
+    }
+    match install_root_of(executable, data_root) {
+        Some(root) => Installation {
+            label: "installer",
+            replaceable: writable(&root),
+            path: Some(root),
+            kind: Kind::Setup,
         },
-        "linux" => match appimage {
-            Some(appimage) => Installation {
-                label: "AppImage",
-                replaceable: appimage.parent().is_some_and(writable),
-                path: Some(appimage.to_path_buf()),
-                kind: Kind::AppImage(appimage.to_path_buf()),
-            },
-            None => Installation::none("system package"),
-        },
-        "windows" => {
-            if installer_dir.is_some_and(|dir| executable.starts_with(dir)) {
-                Installation {
-                    label: "installer",
-                    path: executable.parent().map(Path::to_path_buf),
-                    replaceable: true,
-                    kind: Kind::Installer,
-                }
-            } else {
-                Installation::none("source build")
-            }
-        }
-        _ => Installation::none("source build"),
+        None => Installation::none("source build"),
     }
 }
 
-/// The `.app` bundle an executable belongs to. The app's layout puts the binary
-/// at `Oxide.app/Contents/MacOS/oxide-desktop`, so the bundle is three
-/// directories up — and only when that directory really is one, which is what
+/// The install root this executable lives in, out of Electrobun's layout:
+/// `<data root>/<identifier>/<install root>/…`, which the installer marks with
+/// the uninstaller it leaves behind. The marker is what tells an installed copy
+/// from one in a checkout, and the executable has to be inside the directory —
+/// another Electrobun application's install root says nothing about this one.
+fn install_root_of(executable: &Path, data_root: Option<&Path>) -> Option<PathBuf> {
+    let data_root = data_root?;
+    for identifiers in fs::read_dir(data_root).ok()?.flatten() {
+        if !identifiers.file_type().is_ok_and(|kind| kind.is_dir()) {
+            continue;
+        }
+        let Ok(roots) = fs::read_dir(identifiers.path()) else {
+            continue;
+        };
+        for root in roots.flatten() {
+            let path = root.path();
+            if !path.is_dir() || !executable.starts_with(&path) {
+                continue;
+            }
+            if INSTALL_MARKERS
+                .iter()
+                .any(|marker| path.join(marker).is_file())
+            {
+                return Some(path);
+            }
+        }
+    }
+    None
+}
+
+/// The `.app` bundle an executable belongs to. Electrobun's layout puts the
+/// running program at `Oxide.app/Contents/MacOS/launcher`, so the bundle is
+/// three directories up — and only when that directory really is one, which is what
 /// tells a released app from the binary beside it in a `target/debug` build.
 fn bundle_of(executable: &Path) -> Option<PathBuf> {
     let contents = executable.parent()?.parent()?;
@@ -345,7 +376,8 @@ pub async fn install_reporting(report: impl Fn(Progress)) -> Result<Value> {
         stage: "installing",
         version: release.version.clone(),
     });
-    let placed = install_downloaded(&installation, &release.version, &download, &work)?;
+    let staging = setup_staging()?;
+    let placed = install_downloaded(&installation, &release.version, &download, &work, &staging)?;
     notes.push(placed.note);
 
     Ok(json!({
@@ -390,6 +422,7 @@ fn install_downloaded(
     version: &str,
     download: &Path,
     work: &WorkDir,
+    staging: &Path,
 ) -> Result<Placed> {
     match &installation.kind {
         Kind::Bundle(bundle) => {
@@ -399,23 +432,19 @@ fn install_downloaded(
                 bundle.display()
             )))
         }
-        Kind::AppImage(target) => {
-            replace_file(download, target)?;
-            Ok(Placed::in_place(format!(
-                "Oxide {version} is in place at {}. Quit Oxide and open it again to run the new \
-                 version.",
-                target.display()
-            )))
-        }
-        Kind::Installer => {
-            // The installer owns the installation from here: it replaces the
-            // files and asks for the running app to be closed. Starting it is
-            // all this side can know — it may still be waiting for elevation,
-            // and it may be cancelled — so the release is reported as pending
-            // rather than installed.
-            Command::new(download)
+        Kind::Setup => {
+            // The setup archive holds the installer, which owns the
+            // installation from here: it writes over the files and waits for
+            // the running app to be closed. Starting it is all this side can
+            // know — it may still be waiting for elevation or on the reader —
+            // so the release is reported as pending rather than installed. It
+            // is unpacked outside the run's own work directory for the same
+            // reason: the installer reads the payload beside it while this app
+            // is still going, so that directory is not this call's to remove.
+            let program = unpack_setup(download, staging)?;
+            Command::new(&program)
                 .spawn()
-                .with_context(|| format!("running {}", download.display()))?;
+                .with_context(|| format!("running {}", program.display()))?;
             Ok(Placed {
                 note: format!(
                     "The Oxide {version} installer is running. Finish it, then open Oxide again \
@@ -429,6 +458,85 @@ fn install_downloaded(
             installation.label
         ),
     }
+}
+
+/// Unpacks a downloaded setup archive into `staging` and answers with the
+/// installer inside it.
+///
+/// Both the zip a Windows release publishes and the gzipped tar of a Linux one
+/// are read by the machine's own `tar`, which keeps the install step free of an
+/// archive dependency the app would otherwise carry for one file. What a
+/// previous install left there is removed first, so an interrupted one is a
+/// single directory rather than a pile.
+fn unpack_setup(archive: &Path, staging: &Path) -> Result<PathBuf> {
+    let _ = fs::remove_dir_all(staging);
+    let unpacked = staging.join("setup");
+    fs::create_dir_all(&unpacked).with_context(|| format!("creating {}", unpacked.display()))?;
+    let mut command = Command::new("tar");
+    command.arg("-xf").arg(archive).arg("-C").arg(&unpacked);
+    run(&mut command, "unpacking the downloaded installer")?;
+    let program = find_setup(&unpacked)?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(&program, fs::Permissions::from_mode(0o755))
+            .with_context(|| format!("making {} executable", program.display()))?;
+    }
+    Ok(program)
+}
+
+/// The installer an unpacked setup holds: the `installer` a Linux archive
+/// carries by name, or the `<App>-Setup.exe` a Windows zip holds — the payload
+/// beside it is not a program to run, so a name rather than a listing order is
+/// what picks one.
+fn find_setup(directory: &Path) -> Result<PathBuf> {
+    let mut found: Vec<PathBuf> = Vec::new();
+    for entry in fs::read_dir(directory)
+        .with_context(|| format!("reading {}", directory.display()))?
+        .flatten()
+    {
+        let path = entry.path();
+        if path.is_file() {
+            found.push(path);
+        }
+    }
+    found.sort();
+    if let Some(named) = found
+        .iter()
+        .find(|path| path.file_name() == Some(OsStr::new("installer")))
+    {
+        return Ok(named.clone());
+    }
+    if let Some(setup) = found.iter().find(|path| is_setup_executable(path)) {
+        return Ok(setup.clone());
+    }
+    let executables: Vec<&PathBuf> = found
+        .iter()
+        .filter(|path| path.extension() == Some(OsStr::new("exe")))
+        .collect();
+    match executables.as_slice() {
+        [only] => Ok((*only).clone()),
+        _ => bail!(
+            "the downloaded installer holds no single setup program in {}",
+            directory.display()
+        ),
+    }
+}
+
+/// A Windows setup executable is named after the app and ends in `Setup`: the
+/// release's own `Oxide-Setup.exe`, which is the program beside the payload it
+/// unpacks rather than the hidden copy of itself inside it.
+fn is_setup_executable(path: &Path) -> bool {
+    path.extension() == Some(OsStr::new("exe"))
+        && path
+            .file_stem()
+            .and_then(OsStr::to_str)
+            .map(|stem| {
+                stem.rsplit([' ', '-', '_'])
+                    .next()
+                    .is_some_and(|word| word.eq_ignore_ascii_case("setup"))
+            })
+            .unwrap_or(false)
 }
 
 /// Replaces a macOS app bundle with the one the release's disk image holds.
@@ -525,31 +633,6 @@ fn remove(path: &Path) {
     }
 }
 
-/// Writes a downloaded AppImage over the file this app runs from. The new file
-/// is written beside the old one, so the last step is a rename within one
-/// filesystem; the app that is running keeps reading the file it opened.
-fn replace_file(download: &Path, target: &Path) -> Result<()> {
-    let fresh = target.with_file_name(format!(
-        ".{}.new",
-        target
-            .file_name()
-            .map(|name| name.to_string_lossy().to_string())
-            .unwrap_or_else(|| "oxide".to_string())
-    ));
-    fs::copy(download, &fresh).with_context(|| format!("writing {}", fresh.display()))?;
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        fs::set_permissions(&fresh, fs::Permissions::from_mode(0o755))
-            .with_context(|| format!("making {} executable", fresh.display()))?;
-    }
-    if let Err(error) = fs::rename(&fresh, target) {
-        remove(&fresh);
-        return Err(error).with_context(|| format!("replacing {}", target.display()));
-    }
-    Ok(())
-}
-
 /// Runs a program the platform provides, reporting what it said when it fails.
 fn run(command: &mut Command, what: &str) -> Result<()> {
     let program = command.get_program().to_string_lossy().to_string();
@@ -601,6 +684,18 @@ mod tests {
         bundle
     }
 
+    /// An Electrobun installation: the install root under
+    /// `<data root>/<identifier>/<install root>/`, the marker the installer
+    /// leaves, and the app inside it.
+    fn installed_copy(data_root: &Path, identifier: &str, root: &str) -> (PathBuf, PathBuf) {
+        let directory = data_root.join(identifier).join(root);
+        fs::create_dir_all(&directory).unwrap();
+        fs::write(directory.join(".electrobun-uninstall.json"), b"{}").unwrap();
+        let binary = directory.join("oxide-desktop");
+        fs::write(&binary, b"binary").unwrap();
+        (directory, binary)
+    }
+
     fn left_behind(root: &Path, keep: &[&str]) -> Vec<String> {
         let mut names: Vec<String> = fs::read_dir(root)
             .unwrap()
@@ -617,14 +712,14 @@ mod tests {
         let root = temp_dir("bundle");
         let bundle = bundle_fixture(&root);
         let binary = bundle.join("Contents/MacOS/oxide-desktop");
-        let installation = installation_of(&binary, "macos", None, None);
+        let installation = installation_of(&binary, "macos", None);
         assert_eq!(installation.label, "app bundle");
         assert_eq!(installation.path.as_deref(), Some(bundle.as_path()));
 
         // The disk image is what replaces it, so the app installs the release
         // itself and there is nothing to advise instead.
         let check = check_for(
-            &release("Oxide_0.34.0_aarch64.dmg"),
+            &release("macos-arm64-Oxide.dmg"),
             &installation,
             "acme/oxide",
             "0.33.0",
@@ -642,7 +737,7 @@ mod tests {
         // Running the newest release has nothing to offer, whatever the
         // installation is.
         let fresh = check_for(
-            &release("Oxide_0.34.0_aarch64.dmg"),
+            &release("macos-arm64-Oxide.dmg"),
             &installation,
             "acme/oxide",
             "0.34.0",
@@ -658,12 +753,12 @@ mod tests {
         fs::create_dir_all(binary.parent().unwrap()).unwrap();
         fs::write(&binary, b"binary").unwrap();
 
-        let installation = installation_of(&binary, "macos", None, None);
+        let installation = installation_of(&binary, "macos", None);
         assert_eq!(installation.label, "source build");
         assert_eq!(installation.path, None);
 
         let check = check_for(
-            &release("Oxide_0.34.0_aarch64.dmg"),
+            &release("macos-arm64-Oxide.dmg"),
             &installation,
             "acme/oxide",
             "0.0.0",
@@ -673,90 +768,156 @@ mod tests {
             .advice
             .as_deref()
             .unwrap()
-            .contains("Oxide_0.34.0_aarch64.dmg"));
+            .contains("macos-arm64-Oxide.dmg"));
         fs::remove_dir_all(root).unwrap();
     }
 
     #[test]
-    fn an_appimage_is_replaced_where_it_runs_from() {
-        let root = temp_dir("appimage");
-        let image = root.join("Oxide.AppImage");
-        fs::write(&image, b"old image").unwrap();
-        // What a mounted AppImage runs from, which is not the file itself.
-        let binary = root.join("squashfs-root/oxide-desktop");
-        fs::create_dir_all(binary.parent().unwrap()).unwrap();
-        fs::write(&binary, b"binary").unwrap();
+    fn an_installed_copy_is_replaced_by_the_release_setup() {
+        let root = temp_dir("installed");
+        let data_root = root.join("data");
+        let (directory, binary) = installed_copy(&data_root, "dev.oxide.desktop", "stable");
 
-        let installation = installation_of(&binary, "linux", Some(&image), None);
-        assert_eq!(installation.label, "AppImage");
-        assert_eq!(installation.path.as_deref(), Some(image.as_path()));
-        assert!(
-            check_for(
-                &release("Oxide_0.34.0_amd64.AppImage"),
-                &installation,
-                "acme/oxide",
-                "0.33.0"
-            )
-            .installable
-        );
-
-        // A release whose package is not the AppImage is not something this
-        // copy installs from.
-        let deb = check_for(
-            &release("Oxide_0.34.0_amd64.deb"),
+        let installation = installation_of(&binary, "linux", Some(&data_root));
+        assert_eq!(installation.label, "installer");
+        assert_eq!(installation.path.as_deref(), Some(directory.as_path()));
+        assert!(installation.installable(
+            release("linux-x64-Oxide-Setup.tar.gz")
+                .artifact("acme/oxide")
+                .as_ref()
+        ));
+        // A Windows installation is the same shape, with the zip its setup
+        // ships in.
+        let windows = installation_of(&binary, "windows", Some(&data_root));
+        assert!(windows.installable(
+            release("win-x64-Oxide-Setup.zip")
+                .artifact("acme/oxide")
+                .as_ref()
+        ));
+        // An artifact that is not the setup is not what this copy installs
+        // from, and the reader is told which download to take instead.
+        let check = check_for(
+            &release("macos-arm64-Oxide.dmg"),
             &installation,
             "acme/oxide",
             "0.33.0",
         );
-        assert!(deb.update_available && !deb.installable);
-        assert!(deb.advice.is_some());
+        assert!(check.update_available && !check.installable);
+        assert!(check.advice.is_some());
+
+        // Only a bundle is replaced without being asked: a setup writes over
+        // the installation and may ask for elevation.
+        assert!(!installation.replaces_itself());
         fs::remove_dir_all(root).unwrap();
     }
 
     #[test]
-    fn a_linux_copy_that_is_not_an_appimage_names_the_download() {
-        let root = temp_dir("system");
+    fn the_setup_program_is_found_by_name_rather_than_by_order() {
+        // A Linux archive: the setup is the file the installer names itself.
+        let linux = temp_dir("setup-linux");
+        fs::write(linux.join("README"), b"how to install").unwrap();
+        fs::write(linux.join("installer"), b"#!/bin/sh\n").unwrap();
+        assert_eq!(find_setup(&linux).unwrap(), linux.join("installer"));
+        fs::remove_dir_all(&linux).unwrap();
+
+        // A Windows zip: the setup is the executable named after the app, and
+        // the payload the archive hides in its own directory — a program too,
+        // and one that sorts first — is not the one to start.
+        let windows = temp_dir("setup-windows");
+        fs::create_dir_all(windows.join(".installer")).unwrap();
+        fs::write(windows.join(".installer/Oxide-Setup.tar.zst"), b"payload").unwrap();
+        fs::write(windows.join("aaa-updater.exe"), b"payload").unwrap();
+        fs::write(windows.join("Oxide-Setup.exe"), b"setup").unwrap();
+        assert_eq!(
+            find_setup(&windows).unwrap(),
+            windows.join("Oxide-Setup.exe")
+        );
+        fs::remove_dir_all(&windows).unwrap();
+
+        // Nothing to run is reported rather than passed over.
+        let empty = temp_dir("setup-empty");
+        fs::write(empty.join("README"), b"nothing here").unwrap();
+        assert!(find_setup(&empty).is_err());
+        fs::remove_dir_all(&empty).unwrap();
+    }
+
+    #[test]
+    fn a_copy_outside_an_install_root_names_the_download() {
+        let root = temp_dir("outside");
+        let data_root = root.join("data");
+        // Another Electrobun application's installation: its uninstaller is not
+        // this app's, so an executable beside this one is not one this app
+        // replaces.
+        installed_copy(&data_root, "com.other.app", "stable");
         let binary = root.join("usr/lib/oxide/oxide-desktop");
         fs::create_dir_all(binary.parent().unwrap()).unwrap();
         fs::write(&binary, b"binary").unwrap();
 
-        let installation = installation_of(&binary, "linux", None, None);
-        assert_eq!(installation.label, "system package");
+        let installation = installation_of(&binary, "linux", Some(&data_root));
+        assert_eq!(installation.label, "source build");
 
         let check = check_for(
-            &release("Oxide_0.34.0_amd64.deb"),
+            &release("linux-x64-Oxide-Setup.tar.gz"),
             &installation,
             "acme/oxide",
             "0.33.0",
         );
         assert!(check.update_available && !check.installable);
         assert!(
-            check.advice.unwrap().contains("Oxide_0.34.0_amd64.deb"),
+            check
+                .advice
+                .unwrap()
+                .contains("linux-x64-Oxide-Setup.tar.gz"),
             "the download is named"
+        );
+
+        // An install root without its uninstaller record is not one either:
+        // nothing says an installer made it.
+        let unmarked = data_root.join("dev.oxide.desktop").join("stable");
+        fs::create_dir_all(&unmarked).unwrap();
+        let inside = unmarked.join("oxide-desktop");
+        fs::write(&inside, b"binary").unwrap();
+        assert_eq!(
+            installation_of(&inside, "linux", Some(&data_root)).label,
+            "source build"
         );
         fs::remove_dir_all(root).unwrap();
     }
 
     #[test]
-    fn the_windows_installer_owns_the_directory_it_installs_into() {
-        let root = temp_dir("windows");
-        let install_dir = root.join("Programs/Oxide");
-        let binary = install_dir.join("oxide-desktop.exe");
-        fs::create_dir_all(&install_dir).unwrap();
-        fs::write(&binary, b"binary").unwrap();
+    fn the_install_root_is_found_under_whatever_identifier_the_app_uses() {
+        // Electrobun's layout names the app's own directory after the identifier
+        // in its config, and the data directory is shared with every other
+        // Electrobun application: which root is this app's is answered by the
+        // executable being inside it, never by the name above it.
+        let root = temp_dir("identifier");
+        let data_root = root.join("data");
+        installed_copy(&data_root, "com.other.app", "stable");
+        let (directory, binary) = installed_copy(&data_root, "dev.oxide.desktop", "stable");
 
-        let installation = installation_of(&binary, "windows", None, Some(&install_dir));
+        let installation = installation_of(&binary, "linux", Some(&data_root));
         assert_eq!(installation.label, "installer");
-        assert_eq!(installation.path.as_deref(), Some(install_dir.as_path()));
-        // The setup is what replaces the installation it made; a release that
-        // published only an MSI has nothing the app can run itself.
+        assert_eq!(installation.path.as_deref(), Some(directory.as_path()));
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn a_windows_installation_is_found_by_its_install_root() {
+        let root = temp_dir("windows");
+        let data_root = root.join("LocalAppData");
+        let (directory, binary) = installed_copy(&data_root, "dev.oxide.desktop", "stable");
+
+        let installation = installation_of(&binary, "windows", Some(&data_root));
+        assert_eq!(installation.label, "installer");
+        assert_eq!(installation.path.as_deref(), Some(directory.as_path()));
+        // The setup is what replaces the installation it made.
         assert!(installation.installable(
-            release("Oxide_0.34.0_x64-setup.exe")
+            release("win-x64-Oxide-Setup.zip")
                 .artifact("acme/oxide")
                 .as_ref()
         ));
         assert!(!installation.installable(
-            release("Oxide_0.34.0_x64_en-US.msi")
+            release("macos-arm64-Oxide.dmg")
                 .artifact("acme/oxide")
                 .as_ref()
         ));
@@ -765,13 +926,31 @@ mod tests {
         let checkout = root.join("target/debug/oxide-desktop.exe");
         fs::create_dir_all(checkout.parent().unwrap()).unwrap();
         fs::write(&checkout, b"binary").unwrap();
-        let source = installation_of(&checkout, "windows", None, Some(&install_dir));
+        let source = installation_of(&checkout, "windows", Some(&data_root));
         assert_eq!(source.label, "source build");
         assert!(!source.installable(
-            release("Oxide_0.34.0_x64-setup.exe")
+            release("win-x64-Oxide-Setup.zip")
                 .artifact("acme/oxide")
                 .as_ref()
         ));
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn a_machine_with_no_data_directory_has_no_install_root() {
+        let root = temp_dir("no-data");
+        let binary = root.join("opt/oxide/oxide-desktop");
+        fs::create_dir_all(binary.parent().unwrap()).unwrap();
+        fs::write(&binary, b"binary").unwrap();
+
+        assert_eq!(
+            installation_of(&binary, "linux", None).label,
+            "source build"
+        );
+        assert_eq!(
+            installation_of(&binary, "windows", Some(&root.join("missing"))).label,
+            "source build"
+        );
         fs::remove_dir_all(root).unwrap();
     }
 
@@ -851,67 +1030,47 @@ mod tests {
         fs::remove_dir_all(root).unwrap();
     }
 
-    #[test]
-    fn a_downloaded_appimage_replaces_the_file_it_runs_from() {
-        let root = temp_dir("appimage-install");
-        let image = root.join("Oxide.AppImage");
-        fs::write(&image, b"old image").unwrap();
-        let download = root.join("downloaded");
-        fs::write(&download, b"new image").unwrap();
-        let installation = installation_of(
-            &root.join("squashfs-root/oxide-desktop"),
-            "linux",
-            Some(&image),
-            None,
-        );
-
-        let work = WorkDir::new().unwrap();
-        let placed = install_downloaded(&installation, "0.34.0", &download, &work).unwrap();
-
-        assert!(placed.note.contains("Oxide 0.34.0"), "{}", placed.note);
-        assert!(!placed.pending, "the file is in place, not pending");
-        assert_eq!(fs::read(&image).unwrap(), b"new image");
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            let mode = fs::metadata(&image).unwrap().permissions().mode();
-            assert_eq!(mode & 0o777, 0o755);
-        }
-        assert!(
-            left_behind(&root, &["Oxide.AppImage", "downloaded"]).is_empty(),
-            "nothing else is left"
-        );
-        fs::remove_dir_all(root).unwrap();
-    }
-
-    // A Windows installer is a process of its own, which this app starts and
-    // cannot wait on: it asks for elevation and for Oxide to be closed. What the
-    // install knows is that it is running, so that is what it reports rather
-    // than a version it cannot claim is in place.
+    // A setup is an installer process of its own, which this app starts and
+    // cannot wait on: it writes over the installation and asks for Oxide to be
+    // closed, and on Windows it may ask for elevation. What the install knows
+    // is that it is running, so that is what it reports rather than a version
+    // it cannot claim is in place.
     #[cfg(unix)]
     #[test]
-    fn a_windows_installer_is_reported_as_started_rather_than_installed() {
-        use std::os::unix::fs::PermissionsExt;
+    fn a_downloaded_setup_is_unpacked_and_its_installer_started() {
+        let root = temp_dir("setup-install");
+        let data_root = root.join("data");
+        let (_directory, binary) = installed_copy(&data_root, "dev.oxide.desktop", "stable");
+        let installation = installation_of(&binary, "linux", Some(&data_root));
 
-        let root = temp_dir("installer");
-        let directory = root.join("Programs/Oxide");
-        fs::create_dir_all(&directory).unwrap();
-        // The setup a Windows release publishes; on Unix a script stands in for
-        // the installer that is started and left to finish.
-        let setup = root.join("Oxide_0.34.0_x64-setup.exe");
-        fs::write(&setup, b"#!/bin/sh\nexit 0\n").unwrap();
-        let mut mode = fs::metadata(&setup).unwrap().permissions();
-        mode.set_mode(0o755);
-        fs::set_permissions(&setup, mode).unwrap();
-        let installation = installation_of(
-            &directory.join("oxide-desktop.exe"),
-            "windows",
-            None,
-            Some(&directory),
-        );
+        // The installer a release publishes, packed the way it is published: a
+        // program that leaves a mark, so the test can see it ran.
+        let held = root.join("setup-src");
+        fs::create_dir_all(&held).unwrap();
+        let marks = root.join("installed.txt");
+        let program = held.join("installer");
+        fs::write(
+            &program,
+            format!("#!/bin/sh\necho unpacked > {}\n", marks.display()),
+        )
+        .unwrap();
+        {
+            use std::os::unix::fs::PermissionsExt;
+            fs::set_permissions(&program, fs::Permissions::from_mode(0o755)).unwrap();
+        }
+        let download = root.join("linux-x64-Oxide-Setup.tar.gz");
+        let mut pack = Command::new("tar");
+        pack.arg("czf")
+            .arg(&download)
+            .arg("-C")
+            .arg(&held)
+            .arg("installer");
+        run(&mut pack, "packing the fixture").unwrap();
 
         let work = WorkDir::new().unwrap();
-        let placed = install_downloaded(&installation, "0.34.0", &setup, &work).unwrap();
+        let staging = root.join("staging");
+        let placed =
+            install_downloaded(&installation, "0.34.0", &download, &work, &staging).unwrap();
 
         assert!(placed.pending, "the installer owns what happens next");
         assert!(
@@ -919,7 +1078,84 @@ mod tests {
             "{}",
             placed.note
         );
+        let mut started = false;
+        for _ in 0..100 {
+            if marks.is_file() {
+                started = true;
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+        assert!(started, "the unpacked installer was started");
+
+        // The directory the installer reads its payload out of outlives the
+        // call that unpacked it: the process it belongs to is still running
+        // when the install returns, and the scratch directory it was not
+        // unpacked into is gone by then.
+        let staged = staging.join("setup/installer");
+        assert!(staged.is_file(), "{} is still there", staged.display());
+        let scratch = work.path().to_path_buf();
+        drop(work);
+        assert!(!scratch.exists(), "the run's own scratch is removed");
+        assert!(staged.is_file(), "and the installer is still there");
+
+        // A later install unpacks into the same directory without inheriting
+        // what the previous one left in it.
+        let leftover = staging.join("setup/from-an-older-release");
+        fs::write(&leftover, b"stale").unwrap();
+        unpack_setup(&download, &staging).unwrap();
+        assert!(!leftover.exists(), "the previous install's files are gone");
+        assert!(staged.is_file(), "and this install's installer is there");
         fs::remove_dir_all(root).unwrap();
+    }
+
+    // A setup archive that holds no installer is reported rather than started
+    // as nothing: a release whose layout changed is the reader's to know about.
+    #[cfg(unix)]
+    #[test]
+    fn an_archive_with_no_installer_in_it_is_refused() {
+        let root = temp_dir("empty-setup");
+        let data_root = root.join("data");
+        let (_directory, binary) = installed_copy(&data_root, "dev.oxide.desktop", "stable");
+        let installation = installation_of(&binary, "linux", Some(&data_root));
+
+        let held = root.join("setup-src");
+        fs::create_dir_all(&held).unwrap();
+        fs::write(held.join("README"), b"nothing here").unwrap();
+        let download = root.join("linux-x64-Oxide-Setup.tar.gz");
+        let mut pack = Command::new("tar");
+        pack.arg("czf")
+            .arg(&download)
+            .arg("-C")
+            .arg(&held)
+            .arg("README");
+        run(&mut pack, "packing the fixture").unwrap();
+
+        let work = WorkDir::new().unwrap();
+        let staging = root.join("staging");
+        let error =
+            install_downloaded(&installation, "0.34.0", &download, &work, &staging).unwrap_err();
+
+        assert!(
+            error.to_string().contains("holds no single setup program"),
+            "{error}"
+        );
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    // An installer is unpacked beside the app's own state, which is not the
+    // installation the installer would write over: it is a directory nobody
+    // replaces while the installer is reading the payload in it.
+    #[test]
+    fn a_setup_is_staged_beside_the_desktops_own_state() {
+        let staging = setup_staging().unwrap();
+        assert_eq!(staging.file_name(), Some(OsStr::new("installer")));
+        assert_eq!(
+            staging.parent(),
+            oxide_core::workspaces::registry_path().parent(),
+            "{} stays beside the registry the app writes",
+            staging.display()
+        );
     }
 
     #[test]
@@ -927,10 +1163,12 @@ mod tests {
         let root = temp_dir("refuse");
         let binary = root.join("target/debug/oxide-desktop");
         fs::create_dir_all(binary.parent().unwrap()).unwrap();
-        let installation = installation_of(&binary, "macos", None, None);
+        let installation = installation_of(&binary, "macos", None);
 
         let work = WorkDir::new().unwrap();
-        let error = install_downloaded(&installation, "0.34.0", &binary, &work).unwrap_err();
+        let staging = root.join("staging");
+        let error =
+            install_downloaded(&installation, "0.34.0", &binary, &work, &staging).unwrap_err();
 
         assert!(
             error
@@ -942,20 +1180,16 @@ mod tests {
     }
 
     // A launch installs a release on its own only where the app owns the copy
-    // it would write over, and only when the release is newer than the build
-    // running: everything else is the reader's to decide, through the dialog.
+    // it would write over — a bundle it can swap whole — and only when the
+    // release is newer than the build running: everything else is the reader's
+    // to decide, through the dialog.
     #[test]
     fn a_launch_installs_only_into_a_copy_it_owns() {
         let root = temp_dir("launch");
         let bundle = bundle_fixture(&root);
-        let bundle_install = installation_of(
-            &bundle.join("Contents/MacOS/oxide-desktop"),
-            "macos",
-            None,
-            None,
-        );
-        let notice =
-            Notice::from_release(&release("Oxide_0.34.0_aarch64.dmg"), "acme/oxide", 1_000);
+        let bundle_install =
+            installation_of(&bundle.join("Contents/MacOS/oxide-desktop"), "macos", None);
+        let notice = Notice::from_release(&release("macos-arm64-Oxide.dmg"), "acme/oxide", 1_000);
 
         // A bundle the user installed, with a newer release to hand: done
         // without asking, since the app is the one that put it there.
@@ -964,40 +1198,18 @@ mod tests {
         assert!(!launch_installs(&notice, "0.34.0", &bundle_install));
         assert!(!launch_installs(&notice, "0.35.0", &bundle_install));
 
-        // An AppImage is the app's own file just the same.
-        let image = root.join("Oxide.AppImage");
-        fs::write(&image, b"image").unwrap();
-        let appimage = installation_of(
-            &root.join("squashfs-root/oxide-desktop"),
-            "linux",
-            Some(&image),
-            None,
-        );
-        assert!(launch_installs(&notice, "0.33.0", &appimage));
-
-        // A checkout's build belongs to whoever is working in it, and a Windows
-        // installer asks for elevation and for the app to be closed — neither is
-        // a launch's to do.
-        let checkout = installation_of(
-            &root.join("target/debug/oxide-desktop"),
-            "macos",
-            None,
-            None,
-        );
+        // A checkout's build belongs to whoever is working in it.
+        let checkout = installation_of(&root.join("target/debug/oxide-desktop"), "macos", None);
         assert!(!launch_installs(&notice, "0.33.0", &checkout));
-        let directory = root.join("Programs/Oxide");
-        fs::create_dir_all(&directory).unwrap();
-        let installer = installation_of(
-            &directory.join("oxide-desktop.exe"),
-            "windows",
-            None,
-            Some(&directory),
-        );
-        assert!(!launch_installs(&notice, "0.33.0", &installer));
 
-        // A distribution's package is updated by its package manager.
-        let system = installation_of(&root.join("usr/bin/oxide-desktop"), "linux", None, None);
-        assert!(!launch_installs(&notice, "0.33.0", &system));
+        // An installation a setup made is not a launch's to replace either:
+        // that setup writes over the installation and may ask for elevation or
+        // for the app to be closed.
+        let data_root = root.join("data");
+        let (_directory, binary) = installed_copy(&data_root, "dev.oxide.desktop", "stable");
+        let installed = installation_of(&binary, "windows", Some(&data_root));
+        assert!(!launch_installs(&notice, "0.33.0", &installed));
+
         fs::remove_dir_all(root).unwrap();
     }
 

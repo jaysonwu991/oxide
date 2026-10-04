@@ -3,9 +3,15 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <!-- The policy is the shell's: `tauri.conf.json` injects it into this
-         document, where it can carry the hashes of Tauri's own scripts and the
-         `ipc:` source the app's commands are invoked over. -->
+    <!-- The page carries its own policy. Electrobun's build config has no
+         window-level CSP to inject one from, so the document is where it
+         lives, and `crates/desktop/check-shell.mjs` holds it: the page's own
+         script and sheet, the pictures it paints and nothing remote, and no
+         connection at all — the host it talks to is this window's preload. -->
+    <meta
+      http-equiv="Content-Security-Policy"
+      content="default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; font-src 'self'; connect-src 'none'; form-action 'none'; base-uri 'none'; frame-ancestors 'none'"
+    />
     <title>Oxide</title>
     <link rel="stylesheet" href="style.css" />
   </head>
