@@ -489,7 +489,8 @@ it.
 
 ## Attachments
 
-A message can carry images and PDFs, which the selected LLM reads as media. They are
+A message can carry images, PDFs and text files, which the selected LLM reads as media
+or as text. They are
 added by pasting an image into the composer, dropping files onto it, or from the
 **Attach** button or **Oxide: Add File or Selection to Chat**; on an image or PDF
 in the explorer, `addToChat` attaches it as media rather than trying to inline
@@ -511,13 +512,20 @@ The CLI takes attachment *paths*, so:
   disposed) and passes that path instead.
 
 The webview downscales an image's longest edge to 1568px on a canvas before it
-sends it on (`oxide_core::media::optimize_image` does the same on the CLI side),
+sends it on (`oxide_core::media::optimize_image` does the same on the CLI side
+on macOS and Linux, which have an image tool to resize with),
 so a retina screenshot does not travel as a data URL at full resolution. `src/core/attachments.ts`
-is pure: it reads a data URL's type, refuses anything but the image types the
-CLI sniffs (`png`, `jpg`/`jpeg`, `gif`, `webp`, `bmp`, and PDF), maps a type onto
-an extension, names a written file so it cannot escape its directory, and
-content-addresses the bytes so pasting the same screenshot twice stays one chip.
-At most eight attach to a message, and a duplicate is refused with a notice.
+is pure: it reads a data URL's type, maps a type onto the extension the CLI
+reads (the image types it takes — `png`, `jpg`/`jpeg`, `gif`, `webp`, `bmp` —
+plus the ones it converts, `tiff`, `heic`, `heif` and `avif`, plus PDF and any
+text shape the panel can name), names a written file so it cannot escape its
+directory, and content-addresses the bytes so pasting the same screenshot twice
+stays one chip. A data URL of a type neither the panel nor the CLI has a use for
+(a video, a tarball) is refused with a notice; a text shape is written out with
+an extension and rides along as the text the CLI attaches it as, and only the
+image formats a browser can paint get a thumbnail, so a TIFF shows a glyph
+instead of a thumbnail that cannot render. At most eight attach to a message,
+and a duplicate is refused with a notice.
 
 An attachment is bounded so it cannot be multiplied through the chat: a paste
 past the core's 20 MB limit (`oxide_core::media::MAX_ATTACHMENT_BYTES`) is
@@ -745,8 +753,13 @@ CLI reads (`images` in `core/rpc.ts`).
 
 Because the prompt is sent on stdin, a message's own `@path` references are
 resolved by the extension instead of the CLI: `@src/main.rs` becomes a context
-block, an image/PDF becomes an attachment, and a reference that does not resolve
-stays in the message. Duplicate references are collapsed, and trailing
+block, media (an image — including one the CLI converts — or a PDF) becomes an
+attachment, and a reference that does not resolve stays in the message. Whether a
+reference is media is read from the file's own head (`cli.ts::readFileHead` and
+`core/attachments.ts::sniffMediaMime`, the same bytes the CLI reads) rather than
+from its name, so a text file called `.tif` is inlined as its text and a
+screenshot saved without an extension attaches as an image; a file whose head
+cannot be read falls back to the extension. Duplicate references are collapsed, and trailing
 punctuation is not taken as part of the path. The composer's completion offers
 the paths that will resolve this way — a folder is only a step into one, and a
 reference that resolves to nothing is left for the model to read as text.

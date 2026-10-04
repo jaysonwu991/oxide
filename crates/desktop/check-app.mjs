@@ -2580,11 +2580,23 @@ check(
   pdf?.children[2]?.className === "att-remove" && pdf.children[2].innerHTML === app.ICONS.close,
   elementFor("attachments").outline(),
 );
-check("refused any other file", app.addAttachment("notes.txt", "data:text/plain;base64,AA") === false);
+// A text file rides along as its own text and a TIFF is an image the core
+// converts, so neither is turned away for its type; both wear the file glyph,
+// since there is no picture to draw for either.
 check(
-  "refused a format the webview cannot paint",
-  app.addAttachment("scan.tif", "data:image/tiff;base64,AA") === false &&
-    status() === "Only PNG, JPEG, GIF, WebP, BMP and PDF can be attached",
+  "kept a text attachment",
+  app.addAttachment("notes.txt", "data:text/plain;base64,YQ==") === true,
+  status(),
+);
+const notes = chips()[2];
+check(
+  "gave a text file the app's own file glyph instead of a thumbnail",
+  notes?.children[0]?.className === "att-file",
+  elementFor("attachments").outline(),
+);
+check(
+  "kept an image the core converts",
+  app.addAttachment("scan.tif", "data:image/tiff;base64,AA") === true,
   status(),
 );
 app.state.attachments = [];
@@ -2610,16 +2622,26 @@ check(
 );
 app.state.attachments = [];
 
-// The browser has already typed a picked file, so a format nothing here can
-// paint is refused before it is read: a TIFF with nothing readable behind it
-// would fail the read (and base64 itself) if the check came after it.
-await app.addAttachmentFiles([{ name: "scan.tif", size: 1024, type: "image/tiff" }]);
+// The type a browser declared is no gate: the core reads the bytes a data URL
+// carries, and a picked source file can arrive typed
+// `application/octet-stream`, so refusing on the declared type is how a valid
+// attachment never reaches it. The size is the one thing decided before the
+// read, which the file past the limit above shows.
+await app.addAttachmentFiles([
+  {
+    name: "notes.md",
+    size: 1024,
+    type: "application/octet-stream",
+    dataUrl: "data:application/octet-stream;base64,IyBub3Rlcwo=",
+  },
+]);
 check(
-  "refused a format the webview cannot paint without reading it",
-  app.state.attachments.length === 0 && status() === "Cannot attach scan.tif: image/tiff is not one of PNG, JPEG, GIF, WebP, BMP and PDF",
-  status(),
+  "attached a text file the browser typed as a generic blob",
+  app.state.attachments.length === 1 && app.state.attachments[0].name === "notes.md",
+  JSON.stringify(app.state.attachments),
 );
-// A blob the browser did not type is still decided by the data URL it becomes.
+app.state.attachments = [];
+// A blob the browser did not type is decided by the data URL it becomes.
 await app.addAttachmentFiles([
   { name: "shot.png", size: 1024, type: "", dataUrl: "data:image/png;base64,AA" },
 ]);

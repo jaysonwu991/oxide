@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { Buffer } from "node:buffer";
 import * as path from "node:path";
 import { describe, it } from "node:test";
 
@@ -24,6 +25,7 @@ import {
   type AtReferenceSources,
 } from "../core/prompt";
 import { filterSessions, isSessionCommand, parseSessionList, parseVersion } from "../core/sessions";
+import { sniffMediaMime } from "../core/attachments";
 import { resolveBinary, spawnPlan } from "../cli";
 
 /// One rendered diff row, laid out the way `oxide_core::diff` does it: a
@@ -297,6 +299,57 @@ describe("@ references", () => {
       expandAtReferences("@notes.md what now", sources).inlined,
       "--- notes.md ---\n# notes\nwhat now",
     );
+  });
+
+  // What a file holds decides, the way it does for the CLI that is handed the
+  // path: a screenshot saved without an extension is media and a text file
+  // called `.tif` is text.
+  describe("when the bytes are readable", () => {
+    const heads: Record<string, Uint8Array> = {
+      screenshot: Uint8Array.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]),
+      "notes.tif": Buffer.from("# notes\n"),
+      "scan.tif": Uint8Array.from([0x49, 0x49, 0x2a, 0x00]),
+    };
+    const sniffing: AtReferenceSources = {
+      resolve: (reference) => (reference in heads ? `/w/${reference}` : null),
+      read: (absolute) => Buffer.from(heads[absolute.slice(3)]).toString("utf8"),
+      label: (absolute) => absolute.slice(3),
+      media: (absolute) => {
+        const head = heads[absolute.slice(3)];
+        if (!head) return null;
+        if (sniffMediaMime(head)) return "media";
+        return head.includes(0) ? "media" : "text";
+      },
+    };
+
+    it("attaches a file by what it holds rather than what it is called", () => {
+      const result = expandAtReferences("what is this @screenshot", sniffing);
+      assert.deepEqual(result.attachments, ["/w/screenshot"]);
+      assert.deepEqual(result.blocks, []);
+      assert.equal(result.message, "what is this");
+    });
+
+    it("inlines a text file even when it is named `.tif`", () => {
+      const result = expandAtReferences("read @notes.tif", sniffing);
+      assert.deepEqual(result.attachments, []);
+      assert.deepEqual(result.blocks, [{ path: "notes.tif", text: "# notes\n" }]);
+    });
+
+    it("attaches a TIFF whose bytes say so", () => {
+      const result = expandAtReferences("look at @scan.tif", sniffing);
+      assert.deepEqual(result.attachments, ["/w/scan.tif"]);
+      assert.deepEqual(result.blocks, []);
+    });
+
+    it("falls back to the name for a file whose head cannot be read", () => {
+      const blind: AtReferenceSources = {
+        resolve: (reference) => (reference === "scan.tif" ? "/w/scan.tif" : null),
+        read: () => null,
+        label: (absolute) => absolute.slice(3),
+        media: () => null,
+      };
+      assert.deepEqual(expandAtReferences("@scan.tif", blind).attachments, ["/w/scan.tif"]);
+    });
   });
 
   it("collapses the blank a removed reference leaves behind", () => {

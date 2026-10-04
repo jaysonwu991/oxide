@@ -1244,7 +1244,7 @@ function bubble(kind, text, attachments = []) {
   const body = document.createElement("div");
   body.className = "body";
   body.innerHTML = kind === "assistant" ? renderMarkdown(text) : escapeHtml(text);
-  const images = attachments.filter((attachment) => isImageAttachment(attachment.dataUrl));
+  const images = attachments.filter((attachment) => isPaintableImage(attachment.dataUrl));
   if (images.length) {
     const strip = document.createElement("div");
     strip.className = "msg-attachments";
@@ -1592,18 +1592,26 @@ function dataUrlMime(dataUrl) {
   return match ? match[1].toLowerCase() : "";
 }
 
-/// Enforce the core's own limit (`media::MAX_ATTACHMENT_BYTES`) and accept only
-/// formats Oxide can send and this webview can paint, so an over-large file is refused
-/// before it is read into a data URL and a format nothing can draw never
-/// becomes a thumbnail the browser cannot render.
+/// Enforce the core's own limit (`media::MAX_ATTACHMENT_BYTES`): a file past it
+/// is refused before it is read into a data URL, since the bytes exist several
+/// times over once they do. Whether a file may travel is the core's call — it
+/// reads a file's own bytes (`media::load_attachment`: any image, a PDF, or any
+/// text file, with an image format a provider does not take converted rather
+/// than refused) — and the type a browser declared says nothing about what the
+/// file holds: a picked `.md` can arrive as `application/octet-stream`, and
+/// gating on that is how a valid attachment is turned away from the core that
+/// would have taken it.
 const MAX_ATTACHMENT_BYTES = 20 * 1024 * 1024;
-const ATTACHABLE_MIMES = [
+
+/// The image formats this webview can draw, which are the ones a chip shows a
+/// thumbnail for. Every other attachment — a TIFF the core converts, a PDF, a
+/// text file — wears the file glyph.
+const PAINTABLE_IMAGE_MIMES = [
   "image/png",
   "image/jpeg",
   "image/gif",
   "image/webp",
   "image/bmp",
-  "application/pdf",
 ];
 
 function formatBytes(bytes) {
@@ -1612,16 +1620,14 @@ function formatBytes(bytes) {
   return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
 }
 
-function isImageAttachment(dataUrl) {
-  return dataUrlMime(dataUrl).startsWith("image/");
+/// Whether a chip draws the picture itself rather than a file glyph. A TIFF or
+/// a HEIC is an image the core sends but this browser cannot paint.
+function isPaintableImage(dataUrl) {
+  return PAINTABLE_IMAGE_MIMES.includes(dataUrlMime(dataUrl));
 }
 
 function addAttachment(name, dataUrl) {
   const mime = dataUrlMime(dataUrl);
-  if (!ATTACHABLE_MIMES.includes(mime)) {
-    setStatus("Only PNG, JPEG, GIF, WebP, BMP and PDF can be attached");
-    return false;
-  }
   if (state.attachments.some((attachment) => attachment.dataUrl === dataUrl)) {
     setStatus("Already attached");
     return false;
@@ -1631,7 +1637,7 @@ function addAttachment(name, dataUrl) {
     return false;
   }
   state.attachments.push({
-    name: name || (mime === "application/pdf" ? "document.pdf" : "image"),
+    name: name || (mime === "application/pdf" ? "document.pdf" : "attachment"),
     dataUrl,
   });
   renderAttachments();
@@ -1698,15 +1704,9 @@ async function addAttachmentFiles(files) {
       );
       continue;
     }
-    // A blob the browser has typed says what it is before anything is read, so
-    // a format nothing here can paint (a TIFF, a HEIC) is refused rather than
-    // read into a data URL first; one it has not typed is left to the data URL
-    // it turns into.
-    const declared = (file.type || "").toLowerCase();
-    if (declared && !ATTACHABLE_MIMES.includes(declared)) {
-      setStatus(`Cannot attach ${file.name}: ${declared} is not one of PNG, JPEG, GIF, WebP, BMP and PDF`);
-      continue;
-    }
+    // Nothing but the size is decided before the read: the core reads the
+    // bytes the data URL carries, so a type the browser guessed at is no gate.
+    // It only says whether this webview might paint the chip as a picture.
     try {
       let dataUrl = await readFileAsDataUrl(file);
       const mime = dataUrlMime(dataUrl);
@@ -1727,7 +1727,7 @@ function renderAttachments() {
   state.attachments.forEach((attachment, index) => {
     const chip = document.createElement("div");
     chip.className = "attachment";
-    if (isImageAttachment(attachment.dataUrl)) {
+    if (isPaintableImage(attachment.dataUrl)) {
       chip.appendChild(openableImage(attachment.dataUrl, attachment.name));
     } else {
       const icon = document.createElement("div");

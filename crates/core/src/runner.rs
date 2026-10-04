@@ -73,9 +73,9 @@ pub fn resolve_command(config: &Config, prompt: &str) -> Prompt {
     }
 }
 
-/// Builds the user message, attaching inline images/PDFs referenced by the
-/// prompt, explicit attachment paths, and already-loaded media parts (the
-/// desktop sends pasted images as data URLs, which have no path on disk).
+/// Builds the user message, attaching the inline media and text referenced by
+/// the prompt, explicit attachment paths, and already-loaded content parts (the
+/// desktop sends pasted files as data URLs, which have no path on disk).
 pub fn build_user_message(
     prompt: &str,
     cwd: &Path,

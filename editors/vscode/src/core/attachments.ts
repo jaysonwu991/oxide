@@ -1,10 +1,12 @@
-// Attachments for the composer: an image or a PDF a message carries.
+// Attachments for the composer: an image, a PDF or a text file a message
+// carries.
 //
-// They travel to the CLI as `--image <path>`, which sniffs the type from the
-// file extension (`oxide_core::media::image_mime` / `is_pdf_path`) — but a
-// pasted screenshot only exists as a data URL inside the webview, so the host
-// writes it to a temporary file first (`src/attachments.ts`). Everything that
-// does not touch the filesystem lives here, where it is unit tested.
+// They travel to the CLI as `--image <path>`, which reads the type from the
+// file's own bytes (`oxide_core::media::image_mime_of_bytes` / `is_pdf_path`),
+// the same way `sniffMediaMime` here reads the head it is handed — but a pasted
+// screenshot only exists as a data URL inside the webview, so the host writes
+// it to a temporary file first (`src/attachments.ts`). Everything that does not
+// touch the filesystem lives here, where it is unit tested.
 
 import { Buffer } from "node:buffer";
 
@@ -29,22 +31,97 @@ export const MAX_ATTACHMENT_BYTES = 20 * 1024 * 1024;
 /// what it receives to the few KB it actually paints.
 export const MAX_PREVIEW_CHARS = 6_000_000;
 
-export type AttachmentKind = "image" | "pdf";
+export type AttachmentKind = "image" | "pdf" | "text";
 
-/// The extension the CLI recognizes per MIME type, which is how it decides an
-/// attachment's type. Mirrors `media::image_mime` plus the `pdf` check.
+/// The extension the CLI recognizes per media MIME type, which is how a file
+/// whose head cannot be read is named by its extension instead. Mirrors
+/// `media::image_mime_of_bytes` and the PDF header check: a TIFF, a HEIC and an
+/// AVIF are media too — the CLI converts them to a format a provider takes
+/// rather than refusing them.
 const EXTENSIONS: Record<string, string> = {
   "image/png": "png",
   "image/jpeg": "jpg",
   "image/gif": "gif",
   "image/webp": "webp",
   "image/bmp": "bmp",
+  "image/tiff": "tiff",
+  "image/heic": "heic",
+  "image/heif": "heif",
+  "image/avif": "avif",
   "application/pdf": "pdf",
 };
 
-/// The reverse of `EXTENSIONS`, with the alternate spelling the CLI accepts.
-const MIMES: Record<string, string> = { jpeg: "image/jpeg" };
+/// The image formats this webview can draw, which are the ones a chip shows a
+/// thumbnail for.
+const PAINTABLE_IMAGE_MIMES = new Set([
+  "image/png",
+  "image/jpeg",
+  "image/gif",
+  "image/webp",
+  "image/bmp",
+]);
+
+/// Text shapes a paste or a drop can carry. The CLI attaches any file that is
+/// not media as its own text, so these are written with an extension the file
+/// can be named by rather than being refused for having no picture in them.
+const TEXT_EXTENSIONS: Record<string, string> = {
+  "text/plain": "txt",
+  "text/markdown": "md",
+  "text/csv": "csv",
+  "text/html": "html",
+  "text/css": "css",
+  "text/xml": "xml",
+  "text/yaml": "yaml",
+  "text/javascript": "js",
+  "application/json": "json",
+  "application/xml": "xml",
+  "application/javascript": "js",
+  "application/x-yaml": "yaml",
+  "application/yaml": "yaml",
+  "application/toml": "toml",
+  "application/csv": "csv",
+  "application/sql": "sql",
+  "application/x-sh": "sh",
+};
+
+/// The reverse of `EXTENSIONS`, with the alternate spellings the CLI accepts.
+/// Media only: a text file is inlined as context by the extension itself, so it
+/// is not passed as an attachment path.
+const MIMES: Record<string, string> = { jpeg: "image/jpeg", tif: "image/tiff" };
 for (const [mime, extension] of Object.entries(EXTENSIONS)) MIMES[extension] = mime;
+
+/// How many bytes of a file are read to identify it, the window the CLI sniffs
+/// with (`oxide_core::media::SNIFF_BYTES`).
+export const SNIFF_BYTES = 4100;
+
+/// The media type a file's own bytes name, or `null` when they name none — the
+/// mirror of `oxide_core::media`'s sniff, which is what decides: a text file
+/// called `.tif` is not an image and a screenshot saved without an extension
+/// is one. Only the signatures are read here; the CLI's own read is the one
+/// that decides what a part becomes.
+export function sniffMediaMime(head: Uint8Array): string | null {
+  const bytes = head;
+  const starts = (prefix: readonly number[] | string): boolean => {
+    const expect = typeof prefix === "string" ? [...prefix].map((c) => c.charCodeAt(0)) : prefix;
+    return bytes.length >= expect.length && expect.every((byte, at) => bytes[at] === byte);
+  };
+  // A JPEG-LS is a shape no provider takes.
+  if (starts([0xff, 0xd8, 0xff]) && bytes[3] !== 0xf7) return "image/jpeg";
+  if (starts([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a])) return "image/png";
+  if (starts("GIF87a") || starts("GIF89a")) return "image/gif";
+  if (starts("RIFF") && String.fromCharCode(...bytes.slice(8, 12)) === "WEBP") return "image/webp";
+  if (starts("BM")) return "image/bmp";
+  if (starts([0x49, 0x49, 0x2a, 0x00]) || starts([0x4d, 0x4d, 0x00, 0x2a])) return "image/tiff";
+  if (starts("%PDF-")) return "application/pdf";
+  if (String.fromCharCode(...bytes.slice(4, 8)) !== "ftyp") return null;
+  const brand = String.fromCharCode(...bytes.slice(8, 12));
+  if (["heic", "heix", "hevc", "hevx", "heim", "heis", "hevm", "hevs"].includes(brand)) {
+    return "image/heic";
+  }
+  if (brand === "mif1" || brand === "msf1") return "image/heif";
+  if (brand === "avif" || brand === "avis") return "image/avif";
+  return null;
+}
 
 /// The MIME type of a data URL, lowercased, or `""` when it is not one.
 export function dataUrlMime(dataUrl: string): string {
@@ -52,19 +129,27 @@ export function dataUrlMime(dataUrl: string): string {
   return match ? match[1].trim().toLowerCase() : "";
 }
 
-/// `image` or `pdf` for the rich-media formats Oxide can send, `null` for
-/// anything it cannot take (text, a tarball, a video).
-export function attachmentKind(mime: string): AttachmentKind | null {
-  if (mime === "application/pdf") return "pdf";
-  return mime.startsWith("image/") ? "image" : null;
+/// Whether a chip draws the picture itself rather than a glyph. A TIFF or a
+/// HEIC is an image the CLI sends but this browser cannot paint.
+export function isPaintableImage(mime: string): boolean {
+  return PAINTABLE_IMAGE_MIMES.has(mime);
 }
 
-/// The extension to write a blob with, or `null` for a type the provider cannot
-/// take. A file without a recognized extension is not an attachment at all as
-/// far as the CLI is concerned, so this is also the guard on what may be
-/// attached.
+/// `image`, `pdf` or `text` for what the CLI can be handed, `null` for a type
+/// it has no use for (a video, a tarball).
+export function attachmentKind(mime: string): AttachmentKind | null {
+  if (mime === "application/pdf") return "pdf";
+  if (EXTENSIONS[mime]) return "image";
+  return attachmentExtension(mime) ? "text" : null;
+}
+
+/// The extension to write a blob with, or `null` for a type the CLI cannot
+/// take. A file without a recognized extension is not an attachment as far as
+/// the CLI is concerned, so this is also the guard on what may be attached.
 export function attachmentExtension(mime: string): string | null {
-  return EXTENSIONS[mime] ?? null;
+  if (EXTENSIONS[mime]) return EXTENSIONS[mime];
+  if (TEXT_EXTENSIONS[mime]) return TEXT_EXTENSIONS[mime];
+  return mime.startsWith("text/") ? "txt" : null;
 }
 
 /// Why another attachment cannot join the pending list, or `null` when it can:
@@ -80,9 +165,9 @@ export function attachmentRejection(
   return null;
 }
 
-/// The MIME type the CLI would read from a path, or `null` when the path is not
-/// an attachment. Mirrors `media::is_attachment_path`, including its tolerance
-/// for a Windows separator.
+/// The extension the CLI would read from a path, or `null` when the path is not
+/// media. Mirrors `media::is_attachment_path`, including its tolerance for a
+/// Windows separator, and its set: a TIFF or a HEIC is media the CLI converts.
 export function attachmentMimeForPath(file: string): string | null {
   const name = String(file || "").replace(/\\/g, "/").split("/").pop() ?? "";
   const dot = name.lastIndexOf(".");
@@ -114,7 +199,8 @@ export function decodeDataUrl(dataUrl: string): DecodedAttachment | null {
 
 /// A safe file name for a blob: the name the clipboard or the drop supplied,
 /// with anything that could escape the directory it is written to stripped, and
-/// the extension the CLI needs. An empty name falls back to `image`/`document`.
+/// the extension the CLI needs. An empty name falls back to `image`,
+/// `document` or `file`.
 export function attachmentFileName(name: string, mime: string): string {
   const extension = attachmentExtension(mime) ?? "bin";
   const cleaned = String(name || "")
@@ -124,7 +210,12 @@ export function attachmentFileName(name: string, mime: string): string {
     .replace(/[^A-Za-z0-9._ -]+/g, "-")
     .replace(/^[.\- ]+/, "")
     .trim();
-  const fallback = attachmentKind(mime) === "pdf" ? "document" : "image";
+  const fallback =
+    attachmentKind(mime) === "image"
+      ? "image"
+      : attachmentKind(mime) === "pdf"
+        ? "document"
+        : "file";
   const stem = (cleaned.slice(0, 80) || fallback).replace(/\.[^.]+$/, "");
   return `${stem || fallback}.${extension}`;
 }

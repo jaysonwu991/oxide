@@ -24,8 +24,10 @@ import {
   attachmentRejection,
   decodeDataUrl,
   formatBytes,
+  isPaintableImage,
   MAX_ATTACHMENT_BYTES,
   MAX_ATTACHMENTS,
+  sniffMediaMime,
   type AttachmentKind,
 } from "./core/attachments";
 import { AttachmentStore, previewForDataUrl, previewForFile } from "./attachments";
@@ -92,7 +94,6 @@ import {
   buildPrompt,
   contextLabel,
   expandAtReferences,
-  isAttachmentPath,
   relativePath,
   selectionLines,
   sliceLines,
@@ -113,6 +114,7 @@ import {
 } from "./core/protocol";
 import {
   isFile,
+  readFileHead,
   readTextFile,
   resolveBinary,
   runCapture,
@@ -918,7 +920,7 @@ export class ChatController {
   /// image or PDF travels as media, a text file is inlined as context, and
   /// anything else is refused rather than shipped as mojibake.
   addFile(file: string): ContextChip | null {
-    const mime = attachmentMimeForPath(file);
+    const mime = this.mediaMimeFor(file);
     if (mime) return this.addAttachmentFile(file, mime);
     const label = this.relativeTo(file);
     const text = readTextFile(file);
@@ -929,12 +931,21 @@ export class ChatController {
     return this.addContext({ path: label, text });
   }
 
+  /// The media type of a file the CLI can be handed, or `null` when it is not
+  /// media at all. The bytes decide what a file is — a text file called `.tif`
+  /// is not an image and a screenshot saved without an extension is one — and
+  /// the name is the hint for a file whose head cannot be read.
+  private mediaMimeFor(file: string): string | null {
+    const head = readFileHead(file);
+    return (head ? sniffMediaMime(head) : null) ?? attachmentMimeForPath(file);
+  }
+
   /// A pasted or dropped blob. The bytes are written to a temporary file
   /// because the CLI takes attachment paths (`--image`), not data URLs.
   addAttachment(dataUrl: string, name = ""): ContextChip | null {
     const decoded = decodeDataUrl(dataUrl);
     if (!decoded) {
-      this.showNotice("Only images and PDFs can be attached.", "warn");
+      this.showNotice("Only images, PDFs and text files can be attached.", "warn");
       return null;
     }
     const key = attachmentId(decoded.bytes);
@@ -959,15 +970,19 @@ export class ChatController {
       label,
       path: written.path,
       kind: decoded.kind,
-      // Only an image gets a thumbnail: a PDF would echo its whole data URL
-      // back to the view for nothing.
-      preview: decoded.kind === "image" ? previewForDataUrl(dataUrl) : null,
+      // Only a picture this webview can draw gets a thumbnail: a PDF would
+      // echo its whole data URL back for nothing, and a TIFF or a HEIC has
+      // nothing the browser can paint.
+      preview:
+        decoded.kind === "image" && isPaintableImage(decoded.mime)
+          ? previewForDataUrl(dataUrl)
+          : null,
       detail: `${written.detail} · pasted`,
     });
   }
 
-  /// An image or PDF that is already on disk, addressed by an absolute path
-  /// passed straight to `--image`.
+  /// Media that is already on disk, addressed by an absolute path passed
+  /// straight to `--image`: an image (including one the CLI converts) or a PDF.
   private addAttachmentFile(file: string, mime: string): ContextChip | null {
     const kind = attachmentKind(mime);
     if (!kind) return null;
@@ -993,7 +1008,7 @@ export class ChatController {
       label,
       path: file,
       kind,
-      preview: kind === "image" ? previewForFile(file, mime) : null,
+      preview: kind === "image" && isPaintableImage(mime) ? previewForFile(file, mime) : null,
       detail: `${formatBytes(size)} · ${this.relativeTo(file)}`,
     });
   }
@@ -1210,6 +1225,15 @@ export class ChatController {
       },
       read: (absolute) => readTextFile(absolute),
       label: (absolute) => relativePath(cwd, absolute),
+      // The bytes decide, the same way they do for the CLI that is handed the
+      // path: a file whose head holds a NUL is not text either, so it travels
+      // as an attachment and the CLI reports what it could not attach.
+      media: (absolute) => {
+        const head = readFileHead(absolute);
+        if (!head) return null;
+        if (sniffMediaMime(head)) return "media";
+        return head.includes(0) ? "media" : "text";
+      },
     });
 
     // Snapshot the composer: the running turn (or a failure restoring it)
@@ -1225,13 +1249,11 @@ export class ChatController {
     const carried = new Set([...blocks, ...expanded.blocks].map((block) => block.path));
     const active = tracked && !carried.has(tracked.path) ? tracked : null;
     const carriedBlocks = active ? [active, ...blocks] : blocks;
-    // An `@path` reference to an image or PDF is media, not prompt text — the
-    // same split the CLI's own `@file` expansion makes.
-    const referenced = carriedBlocks
-      .filter((block) => isAttachmentPath(block.path))
-      .map((block) => path.resolve(cwd, block.path))
-      .concat(expanded.attachments);
-    const prompt = buildPrompt(expanded.inlined, carriedBlocks.filter((block) => !isAttachmentPath(block.path)));
+    // A context chip is text by construction — a file the CLI would take as
+    // media becomes an attachment chip instead — so every block goes into the
+    // prompt and only the resolved `@` references travel as attachments.
+    const referenced = expanded.attachments;
+    const prompt = buildPrompt(expanded.inlined, carriedBlocks);
     const images = [...attached.map((chip) => chip.path), ...referenced];
     if (!prompt && images.length === 0) {
       this.showNotice(

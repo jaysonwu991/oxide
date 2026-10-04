@@ -961,8 +961,13 @@ describe("command contributions", () => {
       chat.indexOf("private ", chat.indexOf("private prepareSend(") + 1),
     );
     assert.ok(
-      prepare.includes("buildPrompt(expanded.inlined, carriedBlocks.filter("),
+      prepare.includes("buildPrompt(expanded.inlined, carriedBlocks)"),
       "@path blocks land where they were typed, not above the message",
+    );
+    assert.equal(
+      prepare.includes("isAttachmentPath"),
+      false,
+      "and a block stays prompt text whatever its name says — the CLI reads the bytes",
     );
     assert.ok(
       prepare.includes("if (!prompt && images.length === 0)"),

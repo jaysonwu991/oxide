@@ -1,7 +1,7 @@
 // Attachment plumbing: what a pasted blob is, what it may be written as, and
-// what the CLI will recognize once it is on disk. The CLI decides an
-// attachment's type from the file extension (`oxide_core::media::image_mime`),
-// so these shapes have to agree with it.
+// what the CLI will recognize once it is on disk. The CLI reads an attachment's
+// type from its own bytes (`oxide_core::media::image_mime_of_bytes`), so these
+// shapes have to agree with it.
 
 import assert from "node:assert/strict";
 import { Buffer } from "node:buffer";
@@ -21,9 +21,11 @@ import {
   dataUrlMime,
   decodeDataUrl,
   formatBytes,
+  isPaintableImage,
   MAX_ATTACHMENT_BYTES,
   MAX_ATTACHMENTS,
   MAX_PREVIEW_CHARS,
+  sniffMediaMime,
 } from "../core/attachments";
 
 const PNG = "data:image/png;base64,iVBORw0KGgo=";
@@ -63,20 +65,46 @@ describe("attachment kinds", () => {
     assert.equal(attachmentKind("application/pdf"), "pdf");
   });
 
-  it("refuses anything a provider cannot read as media", () => {
-    assert.equal(attachmentKind("text/plain"), null);
+  it("takes an image format the CLI converts as media too", () => {
+    assert.equal(attachmentKind("image/tiff"), "image");
+    assert.equal(attachmentKind("image/heic"), "image");
+    assert.equal(attachmentKind("image/avif"), "image");
+  });
+
+  it("takes a text file, which the CLI attaches as its own text", () => {
+    assert.equal(attachmentKind("text/plain"), "text");
+    assert.equal(attachmentKind("text/markdown"), "text");
+    assert.equal(attachmentKind("text/x-note"), "text");
+    assert.equal(attachmentKind("application/json"), "text");
+  });
+
+  it("refuses anything neither the CLI nor a provider can read", () => {
     assert.equal(attachmentKind("application/octet-stream"), null);
+    assert.equal(attachmentKind("video/mp4"), null);
+    assert.equal(attachmentKind("application/zip"), null);
     assert.equal(attachmentKind(""), null);
   });
 
-  it("maps a type onto the extension the CLI sniffs", () => {
+  it("maps a type onto the extension the CLI reads", () => {
     assert.equal(attachmentExtension("image/png"), "png");
     assert.equal(attachmentExtension("image/jpeg"), "jpg");
     assert.equal(attachmentExtension("application/pdf"), "pdf");
-    // A type without a recognized extension is not an attachment the CLI reads,
+    assert.equal(attachmentExtension("image/tiff"), "tiff");
+    assert.equal(attachmentExtension("image/heic"), "heic");
+    assert.equal(attachmentExtension("text/plain"), "txt");
+    assert.equal(attachmentExtension("text/markdown"), "md");
+    // A type with no extension the CLI reads is not an attachment at all,
     // however image-like it looks.
     assert.equal(attachmentExtension("image/svg+xml"), null);
-    assert.equal(attachmentExtension("image/tiff"), null);
+    assert.equal(attachmentExtension("image/x-raw"), null);
+  });
+
+  it("paints only the image formats a browser can draw", () => {
+    assert.equal(isPaintableImage("image/png"), true);
+    assert.equal(isPaintableImage("image/gif"), true);
+    assert.equal(isPaintableImage("image/tiff"), false);
+    assert.equal(isPaintableImage("image/heic"), false);
+    assert.equal(isPaintableImage("application/pdf"), false);
   });
 });
 
@@ -86,6 +114,9 @@ describe("attachmentMimeForPath", () => {
     assert.equal(attachmentMimeForPath("docs/spec.pdf"), "application/pdf");
     assert.equal(attachmentMimeForPath("photo.jpeg"), "image/jpeg");
     assert.equal(attachmentMimeForPath("C:\\Users\\me\\a.jpg"), "image/jpeg");
+    // Both spellings of a TIFF, since the CLI takes either.
+    assert.equal(attachmentMimeForPath("scan.tif"), "image/tiff");
+    assert.equal(attachmentMimeForPath("scan.TIFF"), "image/tiff");
   });
 
   it("treats a source file, a dotfile and an extensionless name as no attachment", () => {
@@ -93,6 +124,31 @@ describe("attachmentMimeForPath", () => {
     assert.equal(attachmentMimeForPath("Makefile"), null);
     assert.equal(attachmentMimeForPath(".png"), null);
     assert.equal(attachmentMimeForPath(""), null);
+  });
+});
+
+describe("sniffMediaMime", () => {
+  const bytes = (...values: number[]): Uint8Array => Uint8Array.from(values);
+  const ascii = (text: string): Uint8Array => Buffer.from(text, "latin1");
+
+  it("reads the format a file's own bytes name", () => {
+    assert.equal(sniffMediaMime(bytes(0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a)), "image/png");
+    assert.equal(sniffMediaMime(bytes(0xff, 0xd8, 0xff, 0xe0)), "image/jpeg");
+    assert.equal(sniffMediaMime(ascii("GIF89a")), "image/gif");
+    assert.equal(sniffMediaMime(ascii("RIFF\u0000\u0000\u0000\u0000WEBPVP8 ")), "image/webp");
+    assert.equal(sniffMediaMime(ascii("BM")), "image/bmp");
+    assert.equal(sniffMediaMime(bytes(0x49, 0x49, 0x2a, 0x00)), "image/tiff");
+    assert.equal(sniffMediaMime(bytes(0x4d, 0x4d, 0x00, 0x2a)), "image/tiff");
+    assert.equal(sniffMediaMime(ascii("%PDF-1.7\n")), "application/pdf");
+    assert.equal(sniffMediaMime(ascii("\u0000\u0000\u0000\u0018ftypheic\u0000\u0000\u0000\u0000heicmif1")), "image/heic");
+    assert.equal(sniffMediaMime(ascii("\u0000\u0000\u0000\u0018ftypavif\u0000\u0000\u0000\u0000avifmif1")), "image/avif");
+  });
+
+  it("names nothing for text, an MP4 or a JPEG-LS", () => {
+    assert.equal(sniffMediaMime(ascii("# notes\n")), null);
+    assert.equal(sniffMediaMime(ascii("\u0000\u0000\u0000\u0018ftypisom\u0000\u0000\u0000\u0000isomiso2")), null);
+    assert.equal(sniffMediaMime(bytes(0xff, 0xd8, 0xff, 0xf7)), null);
+    assert.equal(sniffMediaMime(new Uint8Array()), null);
   });
 });
 
@@ -112,8 +168,16 @@ describe("decodeDataUrl", () => {
   });
 
   it("refuses a type it cannot attach", () => {
-    assert.equal(decodeDataUrl("data:text/plain;base64,aGk="), null);
-    assert.equal(decodeDataUrl("data:image/tiff;base64,aGk="), null);
+    assert.equal(decodeDataUrl("data:video/mp4;base64,aGk="), null);
+    assert.equal(decodeDataUrl("data:image/svg+xml;base64,aGk="), null);
+  });
+
+  it("writes an image the CLI converts and a text file out too", () => {
+    const tiff = decodeDataUrl("data:image/tiff;base64,aGk=");
+    assert.equal(tiff?.kind, "image");
+    const text = decodeDataUrl("data:text/plain;base64,aGk=");
+    assert.equal(text?.kind, "text");
+    assert.equal(text?.bytes.toString(), "hi");
   });
 
   it("refuses a payload that is not base64", () => {

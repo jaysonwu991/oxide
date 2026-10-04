@@ -153,9 +153,9 @@ fn message_attachments(message: &Message) -> Vec<Value> {
 
 // ---------- projects ----------
 
-/// An image/PDF the desktop attached from the clipboard or a file picker. A
-/// pasted image has no on-disk path in the webview, so the bytes travel as a
-/// data URL.
+/// A media or text file the desktop attached from the clipboard or a file
+/// picker. A pasted image has no on-disk path in the webview, so the bytes
+/// travel as a data URL.
 #[derive(serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AttachmentInput {
@@ -165,8 +165,8 @@ pub struct AttachmentInput {
 }
 
 /// A refused attachment fails the send instead of vanishing from the message:
-/// a type neither the provider nor the webview takes, a payload that is not
-/// base64, or one past the limit the core enforces.
+/// a payload that is not base64, one past the limit the core enforces, or a
+/// payload that is neither an image, a PDF nor text (a video, a tarball).
 ///
 /// An `@path` reference to an image or a PDF that is in the project rides along
 /// the same way, which is what the terminal does with one — the reference stays
@@ -188,7 +188,7 @@ fn attachment_parts(
                 .ok_or_else(|| {
                     let limit = oxide_core::media::MAX_ATTACHMENT_BYTES / (1024 * 1024);
                     format!(
-                        "{name} could not be attached: attach a PNG, JPEG, GIF, WebP or BMP image or a PDF of at most {limit} MB"
+                        "{name} could not be attached: attach an image, a PDF or a text file of at most {limit} MB"
                     )
                 })?;
         parts.push(part);
@@ -1162,18 +1162,38 @@ mod tests {
     fn a_refused_attachment_names_the_types_and_the_limit() {
         let refused = attachment_parts(
             Some(vec![AttachmentInput {
-                data_url: "data:image/tiff;base64,AAAA".to_string(),
-                name: Some("scan.tif".to_string()),
+                data_url: "data:application/octet-stream;base64,AAAA".to_string(),
+                name: Some("archive.bin".to_string()),
             }]),
-            "look at scan.tif",
+            "look at archive.bin",
             Path::new("."),
         )
-        .expect_err("a TIFF is not attachable");
+        .expect_err("a binary payload is not attachable");
         assert_eq!(
             refused,
-            "scan.tif could not be attached: attach a PNG, JPEG, GIF, WebP or BMP image or a PDF \
-             of at most 20 MB"
+            "archive.bin could not be attached: attach an image, a PDF or a text file of at most \
+             20 MB"
         );
+    }
+
+    #[test]
+    fn a_text_payload_travels_as_its_own_text() {
+        let parts = attachment_parts(
+            Some(vec![AttachmentInput {
+                data_url: "data:text/plain;base64,aGVsbG8=".to_string(),
+                name: Some("notes.txt".to_string()),
+            }]),
+            "see the notes",
+            Path::new("."),
+        )
+        .expect("a text file is attachable");
+        match parts.as_slice() {
+            [ContentPart::Text { text }] => {
+                assert!(text.contains("<file name=\"notes.txt\">"), "{text}");
+                assert!(text.contains("hello"), "{text}");
+            }
+            other => panic!("expected one text part, got {other:?}"),
+        }
     }
 
     #[test]

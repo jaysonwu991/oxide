@@ -138,9 +138,9 @@ pub struct DiffPreview {
 }
 
 /// The result of running a tool: always a text payload, optionally plus media
-/// parts (images/PDFs) that the model should see as content. `terminate` lets a
-/// tool (or a `tool.execute.after` plugin hook) end the turn instead of asking
-/// the model to react to the result.
+/// content parts (an image, a PDF, or a file's own text) that the model should
+/// see as content. `terminate` lets a tool (or a `tool.execute.after` plugin
+/// hook) end the turn instead of asking the model to react to the result.
 #[derive(Debug, Clone, Default)]
 pub struct ToolOutput {
     pub text: String,
@@ -594,11 +594,7 @@ fn read_file(cwd: &Path, args: &Value) -> Result<ToolOutput> {
     }
     if media::is_attachment_path(&full) {
         let part = media::load_attachment(&full)?;
-        let kind = if media::is_pdf_path(&full) {
-            "pdf"
-        } else {
-            "image"
-        };
+        let kind = media::part_kind(&part).to_string();
         return Ok(ToolOutput::with_media(
             format!("attached {kind} {}", full.display()),
             vec![part],
@@ -3797,7 +3793,13 @@ mod tests {
         assert!(out.is_error, "{}", out.text);
         assert!(out.text.contains("reading") && out.text.contains("missing.txt"));
 
-        std::fs::write(dir.join("shot.png"), b"f").unwrap();
+        // The bytes decide, not the name: a PNG attaches, and a text file
+        // that merely ends in `.png` is read as the file it is.
+        let mut png = b"\x89PNG\r\n\x1a\n".to_vec();
+        png.extend_from_slice(&13u32.to_be_bytes());
+        png.extend_from_slice(b"IHDR");
+        png.extend_from_slice(&[0u8; 17]);
+        std::fs::write(dir.join("shot.png"), &png).unwrap();
         let out = execute(
             &call("read_file", json!({ "path": "shot.png" })),
             &dir,
@@ -3806,7 +3808,18 @@ mod tests {
         )
         .await;
         assert_eq!(out.media.len(), 1, "{out:?}");
-        assert!(out.text.contains("attached image"), "{}", out.text);
+        assert!(out.text.contains("attached image/png"), "{}", out.text);
+
+        std::fs::write(dir.join("notes.png"), b"f").unwrap();
+        let out = execute(
+            &call("read_file", json!({ "path": "notes.png" })),
+            &dir,
+            &mcp,
+            &progress,
+        )
+        .await;
+        assert!(out.media.is_empty(), "{out:?}");
+        assert_eq!(out.text, "1|f");
 
         std::fs::remove_dir_all(&dir).ok();
     }

@@ -1532,7 +1532,7 @@ fn handle_key(
                         let count = app.attachments.len();
                         app.show_status(format!("{count} attachment(s) pending"));
                     } else {
-                        app.show_status("image already attached");
+                        app.show_status("that attachment is already pending");
                     }
                 }
                 None => {
@@ -4330,7 +4330,7 @@ fn dequeue_messages(app: &mut App) {
         return;
     }
 
-    // A queued message's images/PDFs have no text form, so put them back with
+    // A queued message's attachments have no text form, so put them back with
     // the pending attachments rather than dropping them when the text is
     // edited.
     let mut restored_media = 0usize;
@@ -5426,16 +5426,23 @@ mod tests {
         };
         app.add_attachment(image("AAAA"));
         app.add_attachment(image("BBBB"));
+        // A text attachment is listed by the name its own wrapper carries.
+        app.add_attachment(crate::llm::ContentPart::Text {
+            text: "<file name=\"notes.csv\">\na,b\n</file>".to_string(),
+        });
 
         assert!(!handle_attach_command(&mut app, "hello"));
         assert!(handle_attach_command(&mut app, "/attach"));
         assert!(matches!(
             app.items.last(),
-            Some(ChatItem::Info(text)) if text.contains("pending attachments") && text.contains("2.")
+            Some(ChatItem::Info(text))
+                if text.contains("pending attachments")
+                    && text.contains("3.")
+                    && text.contains("notes.csv")
         ));
 
         assert!(handle_attach_command(&mut app, "/attachments remove 1"));
-        assert_eq!(app.attachments.len(), 1);
+        assert_eq!(app.attachments.len(), 2);
 
         assert!(handle_attach_command(&mut app, "/attach remove zzzz"));
         assert!(matches!(
@@ -5447,7 +5454,7 @@ mod tests {
         assert!(app.attachments.is_empty());
         assert!(matches!(
             app.items.last(),
-            Some(ChatItem::Info(text)) if text.contains("cleared 1")
+            Some(ChatItem::Info(text)) if text.contains("cleared 2")
         ));
     }
 

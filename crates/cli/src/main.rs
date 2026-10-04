@@ -140,7 +140,7 @@ struct Cli {
     #[arg(long, value_name = "PATH|ID")]
     fork: Option<String>,
 
-    /// Attach an image or PDF file to the prompt (repeatable)
+    /// Attach an image, a PDF or a text file to the prompt (repeatable)
     #[arg(long = "image", value_name = "PATH")]
     image: Vec<PathBuf>,
 
@@ -1086,7 +1086,7 @@ fn cli_approver(auto_approve: bool) -> Approver {
 }
 
 /// Builds the initial prompt from positional arguments, expanding `@file`
-/// references and returning any image/PDF attachments separately.
+/// references and returning any media attachments separately.
 /// Parses `--mode`, which selects an output mode like Pi: `json` or `rpc`
 /// (plus `print`/`text` for compatibility; `-p` also selects print mode).
 fn parse_mode(value: Option<&str>) -> Result<String> {

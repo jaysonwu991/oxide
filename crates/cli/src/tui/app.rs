@@ -668,8 +668,9 @@ impl MarketplacesState {
     }
 }
 
-/// One pending image/PDF attached to the next message. The id is content
-/// addressed, so pasting the same image twice replaces rather than duplicates.
+/// One pending attachment on the next message: an image, a PDF, or a text file
+/// the run carries as its own text. The id is content addressed, so pasting the
+/// same image twice replaces rather than duplicates.
 #[derive(Clone, Debug)]
 pub struct Attachment {
     pub id: String,
@@ -756,7 +757,7 @@ pub struct App {
 
 impl App {
     /// Adds a pending attachment, de-duplicating by content id. Returns `false`
-    /// when an identical image/PDF is already attached.
+    /// when an identical part is already attached.
     pub fn add_attachment(&mut self, part: ContentPart) -> bool {
         let id = media::attachment_id(&part);
         if self.attachments.iter().any(|existing| existing.id == id) {
