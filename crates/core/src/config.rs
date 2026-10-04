@@ -1,4 +1,4 @@
-use crate::auth::{canonical_provider, AuthStore};
+use crate::auth::AuthStore;
 use crate::ecosystem::{self, AgentDef, Ecosystem};
 use crate::memory::{MemoryStore, Scope};
 use anyhow::{Context, Result};
@@ -94,68 +94,706 @@ pub fn provider_configs(config: &Config) -> Vec<(String, Config)> {
     providers
 }
 
-/// The API dialect a provider speaks. OpenAI-compatible providers (OpenAI,
-/// DeepSeek, Portkey, and most others) share one client; Anthropic uses its own
-/// Messages API.
+/// The default `api-version` Azure OpenAI deployments are called with, used
+/// when none is configured.
+const AZURE_API_VERSION: &str = "2024-10-21";
+
+/// The API host GitHub Copilot serves a subscription from, used when the
+/// session exchange does not name an account's own endpoint.
+pub const COPILOT_API: &str = "https://api.githubcopilot.com";
+
+/// Which request URL is being built for a provider.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ProviderKind {
-    OpenAi,
-    Anthropic,
+pub enum Endpoint {
+    Chat,
+    Models,
 }
 
-/// Built-in defaults for a known provider name.
+/// The API dialect a provider speaks. Providers that share a wire format share
+/// one client implementation, so where a provider sits in [`PROVIDERS`] decides
+/// which client serves it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ProviderKind {
+    /// OpenAI's chat-completions wire. Azure OpenAI and GitHub Copilot speak it
+    /// too, with their own host and authentication.
+    OpenAi,
+    /// Anthropic's Messages API.
+    Anthropic,
+    /// Google's `generateContent` API, as served by the Gemini API and by
+    /// Vertex AI.
+    Gemini,
+    /// AWS Bedrock's Converse API.
+    Bedrock,
+}
+
+/// How a provider authenticates, and which host serves it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AuthStyle {
+    /// `Authorization: Bearer <key>`.
+    Bearer,
+    /// `x-api-key: <key>`, for Anthropic's Messages API.
+    XApiKey,
+    /// Portkey's `x-portkey-api-key` header plus an optional Config ID.
+    Portkey,
+    /// `x-goog-api-key: <key>`, for the Gemini API.
+    Google,
+    /// Azure OpenAI's `api-key` header and `?api-version=` query parameter.
+    Azure,
+    /// An OAuth access token for Vertex AI.
+    Vertex,
+    /// AWS SigV4, or a Bedrock bearer token when one is configured.
+    Aws,
+    /// The short-lived Copilot token minted from a stored GitHub token.
+    Copilot,
+    /// A GitLab Duo gateway token minted from a stored instance token, which is
+    /// what the AI gateway's proxy accepts.
+    Gitlab,
+}
+
+/// One provider: its identity, its aliases, its wire dialect, and the defaults
+/// a login fills in. This table is the single place a provider is declared —
+/// the login picker, the aliases, the environment variables and the client
+/// dispatch all read from it.
 #[derive(Debug, Clone, Copy)]
 pub struct ProviderPreset {
+    /// The canonical name, and the key its credential is stored under.
+    pub name: &'static str,
+    pub label: &'static str,
+    pub description: &'static str,
+    /// Where the reader gets a key.
+    pub key_url: &'static str,
+    /// Other spellings that resolve to this provider.
+    pub aliases: &'static [&'static str],
     pub kind: ProviderKind,
+    pub auth: AuthStyle,
     pub base_url: &'static str,
     pub base_url_env: &'static str,
     pub model: &'static str,
     pub key_env: &'static str,
+    /// Further variables consulted for the credential, in order, after
+    /// `key_env`.
+    pub extra_env: &'static [&'static str],
+    /// The models offered when the provider exposes no usable listing.
+    pub models: &'static [&'static str],
+    /// Whether the provider may run without a key (a server on this machine).
+    pub local: bool,
 }
 
 impl ProviderPreset {
     pub fn for_name(name: &str) -> Option<Self> {
         let name = canonical_provider(name);
-        let preset = match name.as_str() {
-            "openai" => Self {
-                kind: ProviderKind::OpenAi,
-                base_url: "https://api.openai.com/v1",
-                base_url_env: "OPENAI_BASE_URL",
-                model: "gpt-4o-mini",
-                key_env: "OPENAI_API_KEY",
-            },
-            "deepseek" => Self {
-                kind: ProviderKind::OpenAi,
-                base_url: "https://api.deepseek.com/v1",
-                base_url_env: "DEEPSEEK_BASE_URL",
-                model: "deepseek-chat",
-                key_env: "DEEPSEEK_API_KEY",
-            },
-            "portkey" => Self {
-                kind: ProviderKind::OpenAi,
-                base_url: "https://api.portkey.ai/v1",
-                base_url_env: "PORTKEY_BASE_URL",
-                model: "claude-sonnet-5",
-                key_env: "PORTKEY_API_KEY",
-            },
-            "anthropic" => Self {
-                kind: ProviderKind::Anthropic,
-                base_url: "https://api.anthropic.com/v1",
-                base_url_env: "ANTHROPIC_BASE_URL",
-                model: "claude-3-5-sonnet-latest",
-                key_env: "ANTHROPIC_API_KEY",
-            },
-            "zai" => Self {
-                kind: ProviderKind::OpenAi,
-                base_url: "https://api.z.ai/api/paas/v4",
-                base_url_env: "ZAI_BASE_URL",
-                model: "glm-5.3",
-                key_env: "ZAI_API_KEY",
-            },
-            _ => return None,
-        };
-        Some(preset)
+        PROVIDERS.iter().copied().find(|preset| preset.name == name)
     }
+
+    /// The preset whose host serves `base_url`, so a provider configured under
+    /// a name of its own (or a gateway pointed at a first-party API) is still
+    /// read for what it speaks. Compared by host, so a path or a version
+    /// segment does not decide it.
+    pub fn for_base_url(base_url: &str) -> Option<Self> {
+        let host = url_host(base_url)?;
+        PROVIDERS
+            .iter()
+            .copied()
+            .find(|preset| url_host(preset.base_url).as_deref() == Some(host.as_str()))
+    }
+
+    /// Every environment variable that may carry this provider's credential.
+    pub fn key_envs(&self) -> impl Iterator<Item = &'static str> {
+        std::iter::once(self.key_env).chain(self.extra_env.iter().copied())
+    }
+}
+
+/// The host of a URL, lowered, without the scheme, a port or any path.
+fn url_host(url: &str) -> Option<String> {
+    let rest = url.split_once("://").map(|(_, rest)| rest).unwrap_or(url);
+    let host = rest.split(['/', '?']).next()?.trim();
+    let host = host.rsplit('@').next()?.split(':').next()?.trim();
+    if host.is_empty() || !host.contains('.') {
+        return None;
+    }
+    Some(host.to_ascii_lowercase())
+}
+
+/// Every provider Oxide knows by name, in the order the login picker shows
+/// them: the APIs most readers reach for first, then the other hosted
+/// services, then the local servers and the ones that need a cloud account of
+/// their own. A provider that is not listed still works: naming it with
+/// `provider`, `base_url`, `model` and a key speaks the OpenAI-compatible wire
+/// by default.
+pub const PROVIDERS: &[ProviderPreset] = &[
+    ProviderPreset {
+        name: "openai",
+        label: "OpenAI",
+        description: "GPT models",
+        key_url: "https://platform.openai.com/api-keys",
+        aliases: &["gpt", "gpt-4", "gpt-4o"],
+        kind: ProviderKind::OpenAi,
+        auth: AuthStyle::Bearer,
+        base_url: "https://api.openai.com/v1",
+        base_url_env: "OPENAI_BASE_URL",
+        model: "gpt-4o-mini",
+        key_env: "OPENAI_API_KEY",
+        extra_env: &[],
+        models: &[],
+        local: false,
+    },
+    ProviderPreset {
+        name: "anthropic",
+        label: "Anthropic",
+        description: "Claude models",
+        key_url: "https://console.anthropic.com/settings/keys",
+        aliases: &["claude"],
+        kind: ProviderKind::Anthropic,
+        auth: AuthStyle::XApiKey,
+        base_url: "https://api.anthropic.com/v1",
+        base_url_env: "ANTHROPIC_BASE_URL",
+        model: "claude-3-5-sonnet-latest",
+        key_env: "ANTHROPIC_API_KEY",
+        extra_env: &[],
+        models: &[],
+        local: false,
+    },
+    ProviderPreset {
+        name: "deepseek",
+        label: "DeepSeek",
+        description: "DeepSeek chat and reasoning models",
+        key_url: "https://platform.deepseek.com/api_keys",
+        aliases: &[],
+        kind: ProviderKind::OpenAi,
+        auth: AuthStyle::Bearer,
+        base_url: "https://api.deepseek.com/v1",
+        base_url_env: "DEEPSEEK_BASE_URL",
+        model: "deepseek-chat",
+        key_env: "DEEPSEEK_API_KEY",
+        extra_env: &[],
+        models: &[],
+        local: false,
+    },
+    ProviderPreset {
+        name: "google",
+        label: "Google",
+        description: "Gemini models",
+        key_url: "https://aistudio.google.com/apikey",
+        aliases: &["gemini", "google-ai", "googleai"],
+        kind: ProviderKind::Gemini,
+        auth: AuthStyle::Google,
+        base_url: "https://generativelanguage.googleapis.com/v1beta",
+        base_url_env: "GEMINI_BASE_URL",
+        model: "gemini-2.0-flash",
+        key_env: "GEMINI_API_KEY",
+        extra_env: &["GOOGLE_API_KEY", "GOOGLE_GENERATIVE_AI_API_KEY"],
+        models: &[],
+        local: false,
+    },
+    ProviderPreset {
+        name: "portkey",
+        label: "Portkey",
+        description: "AI gateway and model routing",
+        key_url: "https://app.portkey.ai/api-keys",
+        aliases: &["port-key"],
+        kind: ProviderKind::OpenAi,
+        auth: AuthStyle::Portkey,
+        base_url: "https://api.portkey.ai/v1",
+        base_url_env: "PORTKEY_BASE_URL",
+        model: "claude-sonnet-5",
+        key_env: "PORTKEY_API_KEY",
+        extra_env: &[],
+        models: PORTKEY_FALLBACK_MODELS,
+        local: false,
+    },
+    ProviderPreset {
+        name: "zai",
+        label: "Z.AI",
+        description: "GLM models",
+        key_url: "https://z.ai/manage-apikey/apikey-list",
+        aliases: &["glm", "z.ai", "z-ai", "zhipu", "bigmodel"],
+        kind: ProviderKind::OpenAi,
+        auth: AuthStyle::Bearer,
+        base_url: "https://api.z.ai/api/paas/v4",
+        base_url_env: "ZAI_BASE_URL",
+        model: "glm-5.3",
+        key_env: "ZAI_API_KEY",
+        extra_env: &["ZHIPU_API_KEY", "GLM_API_KEY"],
+        models: GLM_FALLBACK_MODELS,
+        local: false,
+    },
+    ProviderPreset {
+        name: "xai",
+        label: "xAI",
+        description: "Grok models",
+        key_url: "https://console.x.ai",
+        aliases: &["grok", "x-ai"],
+        kind: ProviderKind::OpenAi,
+        auth: AuthStyle::Bearer,
+        base_url: "https://api.x.ai/v1",
+        base_url_env: "XAI_BASE_URL",
+        model: "grok-3",
+        key_env: "XAI_API_KEY",
+        extra_env: &[],
+        models: &[],
+        local: false,
+    },
+    ProviderPreset {
+        name: "mistral",
+        label: "Mistral",
+        description: "Mistral and Codestral models",
+        key_url: "https://console.mistral.ai/api-keys",
+        aliases: &[],
+        kind: ProviderKind::OpenAi,
+        auth: AuthStyle::Bearer,
+        base_url: "https://api.mistral.ai/v1",
+        base_url_env: "MISTRAL_BASE_URL",
+        model: "mistral-large-latest",
+        key_env: "MISTRAL_API_KEY",
+        extra_env: &[],
+        models: &[],
+        local: false,
+    },
+    ProviderPreset {
+        name: "openrouter",
+        label: "OpenRouter",
+        description: "One API for many models",
+        key_url: "https://openrouter.ai/settings/keys",
+        aliases: &[],
+        kind: ProviderKind::OpenAi,
+        auth: AuthStyle::Bearer,
+        base_url: "https://openrouter.ai/api/v1",
+        base_url_env: "OPENROUTER_BASE_URL",
+        model: "anthropic/claude-3.5-sonnet",
+        key_env: "OPENROUTER_API_KEY",
+        extra_env: &[],
+        models: &[],
+        local: false,
+    },
+    ProviderPreset {
+        name: "groq",
+        label: "Groq",
+        description: "Fast open-model inference",
+        key_url: "https://console.groq.com/keys",
+        aliases: &[],
+        kind: ProviderKind::OpenAi,
+        auth: AuthStyle::Bearer,
+        base_url: "https://api.groq.com/openai/v1",
+        base_url_env: "GROQ_BASE_URL",
+        model: "llama-3.3-70b-versatile",
+        key_env: "GROQ_API_KEY",
+        extra_env: &[],
+        models: &[],
+        local: false,
+    },
+    ProviderPreset {
+        name: "cerebras",
+        label: "Cerebras",
+        description: "Wafer-scale inference",
+        key_url: "https://cloud.cerebras.ai",
+        aliases: &[],
+        kind: ProviderKind::OpenAi,
+        auth: AuthStyle::Bearer,
+        base_url: "https://api.cerebras.ai/v1",
+        base_url_env: "CEREBRAS_BASE_URL",
+        model: "llama-3.3-70b",
+        key_env: "CEREBRAS_API_KEY",
+        extra_env: &[],
+        models: &[],
+        local: false,
+    },
+    ProviderPreset {
+        name: "together",
+        label: "Together AI",
+        description: "Open models",
+        key_url: "https://api.together.ai/settings/api-keys",
+        aliases: &["togetherai"],
+        kind: ProviderKind::OpenAi,
+        auth: AuthStyle::Bearer,
+        base_url: "https://api.together.xyz/v1",
+        base_url_env: "TOGETHER_BASE_URL",
+        model: "meta-llama/Llama-3.3-70B-Instruct-Turbo",
+        key_env: "TOGETHER_API_KEY",
+        extra_env: &[],
+        models: &[],
+        local: false,
+    },
+    ProviderPreset {
+        name: "fireworks",
+        label: "Fireworks AI",
+        description: "Open models",
+        key_url: "https://fireworks.ai/account/api-keys",
+        aliases: &["fireworks-ai"],
+        kind: ProviderKind::OpenAi,
+        auth: AuthStyle::Bearer,
+        base_url: "https://api.fireworks.ai/inference/v1",
+        base_url_env: "FIREWORKS_BASE_URL",
+        model: "accounts/fireworks/models/llama-v3p3-70b-instruct",
+        key_env: "FIREWORKS_API_KEY",
+        extra_env: &[],
+        models: &[],
+        local: false,
+    },
+    ProviderPreset {
+        name: "deepinfra",
+        label: "DeepInfra",
+        description: "Open models",
+        key_url: "https://deepinfra.com/dash/api_keys",
+        aliases: &[],
+        kind: ProviderKind::OpenAi,
+        auth: AuthStyle::Bearer,
+        base_url: "https://api.deepinfra.com/v1/openai",
+        base_url_env: "DEEPINFRA_BASE_URL",
+        model: "meta-llama/Llama-3.3-70B-Instruct",
+        key_env: "DEEPINFRA_API_KEY",
+        extra_env: &[],
+        models: &[],
+        local: false,
+    },
+    ProviderPreset {
+        name: "nebius",
+        label: "Nebius",
+        description: "Token Factory inference",
+        key_url: "https://studio.nebius.com",
+        aliases: &[],
+        kind: ProviderKind::OpenAi,
+        auth: AuthStyle::Bearer,
+        base_url: "https://api.studio.nebius.com/v1",
+        base_url_env: "NEBIUS_BASE_URL",
+        model: "meta-llama/Llama-3.3-70B-Instruct",
+        key_env: "NEBIUS_API_KEY",
+        extra_env: &[],
+        models: &[],
+        local: false,
+    },
+    ProviderPreset {
+        name: "baseten",
+        label: "Baseten",
+        description: "Model serving",
+        key_url: "https://app.baseten.co/settings/api_keys",
+        aliases: &[],
+        kind: ProviderKind::OpenAi,
+        auth: AuthStyle::Bearer,
+        base_url: "https://inference.baseten.co/v1",
+        base_url_env: "BASETEN_BASE_URL",
+        model: "meta-llama/Llama-3.3-70B-Instruct",
+        key_env: "BASETEN_API_KEY",
+        extra_env: &[],
+        models: &[],
+        local: false,
+    },
+    ProviderPreset {
+        name: "siliconflow",
+        label: "SiliconFlow",
+        description: "Open models",
+        key_url: "https://cloud.siliconflow.com/account/ak",
+        aliases: &[],
+        kind: ProviderKind::OpenAi,
+        auth: AuthStyle::Bearer,
+        base_url: "https://api.siliconflow.com/v1",
+        base_url_env: "SILICONFLOW_BASE_URL",
+        model: "Qwen/Qwen2.5-72B-Instruct",
+        key_env: "SILICONFLOW_API_KEY",
+        extra_env: &[],
+        models: &[],
+        local: false,
+    },
+    ProviderPreset {
+        name: "novita",
+        label: "NovitaAI",
+        description: "Open models",
+        key_url: "https://novita.ai/settings/key-management",
+        aliases: &["novita-ai"],
+        kind: ProviderKind::OpenAi,
+        auth: AuthStyle::Bearer,
+        base_url: "https://api.novita.ai/openai",
+        base_url_env: "NOVITA_BASE_URL",
+        model: "meta-llama/llama-3.3-70b-instruct",
+        key_env: "NOVITA_API_KEY",
+        extra_env: &[],
+        models: &[],
+        local: false,
+    },
+    ProviderPreset {
+        name: "nvidia",
+        label: "NVIDIA",
+        description: "NIM inference",
+        key_url: "https://build.nvidia.com",
+        aliases: &["nim"],
+        kind: ProviderKind::OpenAi,
+        auth: AuthStyle::Bearer,
+        base_url: "https://integrate.api.nvidia.com/v1",
+        base_url_env: "NVIDIA_BASE_URL",
+        model: "meta/llama-3.3-70b-instruct",
+        key_env: "NVIDIA_API_KEY",
+        extra_env: &[],
+        models: &[],
+        local: false,
+    },
+    ProviderPreset {
+        name: "upstage",
+        label: "Upstage",
+        description: "Solar models",
+        key_url: "https://console.upstage.ai",
+        aliases: &[],
+        kind: ProviderKind::OpenAi,
+        auth: AuthStyle::Bearer,
+        base_url: "https://api.upstage.ai/v1/solar",
+        base_url_env: "UPSTAGE_BASE_URL",
+        model: "solar-pro",
+        key_env: "UPSTAGE_API_KEY",
+        extra_env: &[],
+        models: &[],
+        local: false,
+    },
+    ProviderPreset {
+        name: "moonshot",
+        label: "Moonshot",
+        description: "Kimi models",
+        key_url: "https://platform.moonshot.ai/console/api-keys",
+        aliases: &["kimi", "moonshot-ai"],
+        kind: ProviderKind::OpenAi,
+        auth: AuthStyle::Bearer,
+        base_url: "https://api.moonshot.ai/v1",
+        base_url_env: "MOONSHOT_BASE_URL",
+        model: "kimi-k2-0711-preview",
+        key_env: "MOONSHOT_API_KEY",
+        extra_env: &[],
+        models: &[],
+        local: false,
+    },
+    ProviderPreset {
+        name: "alibaba",
+        label: "Alibaba",
+        description: "Qwen models on DashScope",
+        key_url: "https://bailian.console.alibabacloud.com",
+        aliases: &["qwen", "dashscope"],
+        kind: ProviderKind::OpenAi,
+        auth: AuthStyle::Bearer,
+        base_url: "https://dashscope-intl.aliyuncs.com/compatible-mode/v1",
+        base_url_env: "DASHSCOPE_BASE_URL",
+        model: "qwen-max",
+        key_env: "DASHSCOPE_API_KEY",
+        extra_env: &["QWEN_API_KEY"],
+        models: &[],
+        local: false,
+    },
+    ProviderPreset {
+        name: "minimax",
+        label: "MiniMax",
+        description: "MiniMax models",
+        key_url: "https://platform.minimax.io/user-center/basic-information/interface-key",
+        aliases: &[],
+        kind: ProviderKind::Anthropic,
+        auth: AuthStyle::XApiKey,
+        base_url: "https://api.minimax.io/anthropic/v1",
+        base_url_env: "MINIMAX_BASE_URL",
+        model: "MiniMax-M2",
+        key_env: "MINIMAX_API_KEY",
+        extra_env: &[],
+        models: &[],
+        local: false,
+    },
+    ProviderPreset {
+        name: "perplexity",
+        label: "Perplexity",
+        description: "Sonar models with search",
+        key_url: "https://www.perplexity.ai/settings/api",
+        aliases: &["pplx"],
+        kind: ProviderKind::OpenAi,
+        auth: AuthStyle::Bearer,
+        base_url: "https://api.perplexity.ai",
+        base_url_env: "PERPLEXITY_BASE_URL",
+        model: "sonar",
+        key_env: "PERPLEXITY_API_KEY",
+        extra_env: &[],
+        models: &[],
+        local: false,
+    },
+    ProviderPreset {
+        name: "cohere",
+        label: "Cohere",
+        description: "Command models",
+        key_url: "https://dashboard.cohere.com/api-keys",
+        aliases: &[],
+        kind: ProviderKind::OpenAi,
+        auth: AuthStyle::Bearer,
+        base_url: "https://api.cohere.ai/compatibility/v1",
+        base_url_env: "COHERE_BASE_URL",
+        model: "command-r-plus",
+        key_env: "COHERE_API_KEY",
+        extra_env: &[],
+        models: &[],
+        local: false,
+    },
+    ProviderPreset {
+        name: "vercel",
+        label: "Vercel AI Gateway",
+        description: "Routing across providers",
+        key_url: "https://vercel.com/dashboard/ai-gateway",
+        aliases: &["ai-gateway", "gateway"],
+        kind: ProviderKind::OpenAi,
+        auth: AuthStyle::Bearer,
+        base_url: "https://ai-gateway.vercel.sh/v1",
+        base_url_env: "AI_GATEWAY_BASE_URL",
+        model: "anthropic/claude-3.5-sonnet",
+        key_env: "AI_GATEWAY_API_KEY",
+        extra_env: &[],
+        models: &[],
+        local: false,
+    },
+    ProviderPreset {
+        name: "huggingface",
+        label: "Hugging Face",
+        description: "Inference router",
+        key_url: "https://huggingface.co/settings/tokens",
+        aliases: &["hf"],
+        kind: ProviderKind::OpenAi,
+        auth: AuthStyle::Bearer,
+        base_url: "https://router.huggingface.co/v1",
+        base_url_env: "HF_BASE_URL",
+        model: "meta-llama/Llama-3.3-70B-Instruct",
+        key_env: "HF_TOKEN",
+        extra_env: &["HUGGINGFACE_API_KEY"],
+        models: &[],
+        local: false,
+    },
+    ProviderPreset {
+        name: "ollama",
+        label: "Ollama",
+        description: "Local models via Ollama",
+        key_url: "https://ollama.com/download",
+        aliases: &[],
+        kind: ProviderKind::OpenAi,
+        auth: AuthStyle::Bearer,
+        base_url: "http://localhost:11434/v1",
+        base_url_env: "OLLAMA_BASE_URL",
+        model: "llama3.3",
+        key_env: "OLLAMA_API_KEY",
+        extra_env: &[],
+        models: &[],
+        local: true,
+    },
+    ProviderPreset {
+        name: "lmstudio",
+        label: "LM Studio",
+        description: "Local models via LM Studio",
+        key_url: "https://lmstudio.ai",
+        aliases: &["lm-studio"],
+        kind: ProviderKind::OpenAi,
+        auth: AuthStyle::Bearer,
+        base_url: "http://localhost:1234/v1",
+        base_url_env: "LMSTUDIO_BASE_URL",
+        model: "local-model",
+        key_env: "LMSTUDIO_API_KEY",
+        extra_env: &[],
+        models: &[],
+        local: true,
+    },
+    ProviderPreset {
+        name: "llamacpp",
+        label: "llama.cpp",
+        description: "Local models via llama.cpp",
+        key_url: "https://github.com/ggml-org/llama.cpp",
+        aliases: &["llama-cpp", "llama.cpp"],
+        kind: ProviderKind::OpenAi,
+        auth: AuthStyle::Bearer,
+        base_url: "http://localhost:8080/v1",
+        base_url_env: "LLAMACPP_BASE_URL",
+        model: "local-model",
+        key_env: "LLAMACPP_API_KEY",
+        extra_env: &[],
+        models: &[],
+        local: true,
+    },
+    ProviderPreset {
+        name: "vertex",
+        label: "Vertex AI",
+        description: "Gemini on Google Cloud",
+        key_url: "https://cloud.google.com/vertex-ai/docs/authentication",
+        aliases: &["google-vertex", "vertex-ai"],
+        kind: ProviderKind::Gemini,
+        auth: AuthStyle::Vertex,
+        base_url: "",
+        base_url_env: "VERTEX_BASE_URL",
+        model: "gemini-2.0-flash",
+        key_env: "GOOGLE_VERTEX_CREDENTIALS",
+        extra_env: &["GOOGLE_APPLICATION_CREDENTIALS"],
+        models: &[],
+        local: false,
+    },
+    ProviderPreset {
+        name: "bedrock",
+        label: "Amazon Bedrock",
+        description: "Claude and open models on AWS",
+        key_url: "https://docs.aws.amazon.com/bedrock/latest/userguide/security-iam.html",
+        aliases: &["amazon-bedrock", "aws-bedrock", "aws"],
+        kind: ProviderKind::Bedrock,
+        auth: AuthStyle::Aws,
+        base_url: "",
+        base_url_env: "BEDROCK_BASE_URL",
+        model: "anthropic.claude-3-5-sonnet-20241022-v2:0",
+        key_env: "AWS_BEARER_TOKEN_BEDROCK",
+        extra_env: &[],
+        models: &[],
+        local: false,
+    },
+    ProviderPreset {
+        name: "azure",
+        label: "Azure OpenAI",
+        description: "OpenAI models on Azure",
+        key_url: "https://portal.azure.com",
+        aliases: &["azure-openai", "azure-ai"],
+        kind: ProviderKind::OpenAi,
+        auth: AuthStyle::Azure,
+        base_url: "",
+        base_url_env: "AZURE_OPENAI_BASE_URL",
+        model: "",
+        key_env: "AZURE_API_KEY",
+        extra_env: &["AZURE_OPENAI_API_KEY"],
+        models: &[],
+        local: false,
+    },
+    ProviderPreset {
+        name: "github-copilot",
+        label: "GitHub Copilot",
+        description: "Copilot models on a GitHub subscription (paste a GitHub token)",
+        key_url: "https://github.com/settings/tokens",
+        aliases: &["copilot", "github"],
+        kind: ProviderKind::OpenAi,
+        auth: AuthStyle::Copilot,
+        base_url: COPILOT_API,
+        base_url_env: "COPILOT_BASE_URL",
+        model: "gpt-4o",
+        key_env: "GITHUB_TOKEN",
+        extra_env: &["GH_TOKEN"],
+        models: &[],
+        local: false,
+    },
+    ProviderPreset {
+        name: "gitlab",
+        label: "GitLab Duo",
+        description: "Duo models through the AI gateway (paste a personal access token)",
+        key_url: "https://gitlab.com/-/user_settings/personal_access_tokens",
+        aliases: &["gitlab-duo", "duo"],
+        kind: ProviderKind::OpenAi,
+        auth: AuthStyle::Gitlab,
+        base_url: "",
+        base_url_env: "GITLAB_AI_GATEWAY_URL",
+        model: "gpt-4o",
+        key_env: "GITLAB_TOKEN",
+        extra_env: &["GL_TOKEN"],
+        models: &[],
+        local: false,
+    },
+];
+
+/// Resolves a provider name or alias to the canonical name its credential is
+/// stored under. An unknown name is returned lowercased and trimmed, so a
+/// custom provider keeps the spelling it was configured with.
+pub fn canonical_provider(name: &str) -> String {
+    let name = name.trim().to_ascii_lowercase();
+    for preset in PROVIDERS {
+        if preset.name == name || preset.aliases.contains(&name.as_str()) {
+            return preset.name.to_string();
+        }
+    }
+    name
 }
 
 /// How much reasoning effort to ask the model for. `Auto` (the default) leaves
@@ -719,7 +1357,7 @@ impl Config {
         }
 
         if let Some(preset) = preset {
-            if let Some(key) = env_nonempty(preset.key_env) {
+            if let Some(key) = preset.key_envs().find_map(env_nonempty) {
                 config.api_key = key;
             }
         }
@@ -740,7 +1378,7 @@ impl Config {
             }
         }
         let openai_key_fallback = match preset {
-            Some(preset) => preset.kind == ProviderKind::OpenAi,
+            Some(preset) => preset.kind == ProviderKind::OpenAi && !preset.local,
             None => true,
         };
         if config.api_key.is_empty() && openai_key_fallback {
@@ -818,12 +1456,43 @@ impl Config {
     }
 
     pub fn require_api_key(&self) -> Result<&str> {
+        self.require_api_key_with(&|name| std::env::var(name).ok())
+    }
+
+    /// The same check with the environment injected, so the two providers whose
+    /// credential this config does not hold are decided the same way in a test
+    /// as at a run.
+    pub fn require_api_key_with(&self, env: &dyn Fn(&str) -> Option<String>) -> Result<&str> {
+        if self.api_key.trim().is_empty() && self.is_local_provider() {
+            // A model server on this machine is reached without a credential,
+            // so an empty key is not an error there.
+            return Ok(&self.api_key);
+        }
         if self.api_key.trim().is_empty() {
+            // Two providers keep their credential where this config does not
+            // read it: Bedrock signs with AWS credentials from the environment
+            // or `~/.aws/credentials`, and Vertex mints its token from a
+            // service-account file. An empty `api_key` is therefore not by
+            // itself a refusal — but a provider with nothing at all to sign
+            // with is refused here, before a turn starts, rather than after the
+            // reader has waited on it.
+            match self.auth_style() {
+                AuthStyle::Aws => {
+                    crate::llm::aws::credentials_from(env)?;
+                    return Ok(&self.api_key);
+                }
+                AuthStyle::Vertex if crate::llm::vertex::has_credential_with(env) => {
+                    return Ok(&self.api_key);
+                }
+                _ => {}
+            }
             let mut message = format!(
                 "no API key found for `{}`. Start the TUI and run `/login {}`, set {}, or add \"api_key\" to {}",
                 self.provider,
                 self.provider,
-                self.key_env_name(),
+                self.preset()
+                    .map(|preset| preset.key_envs().collect::<Vec<_>>().join(" or "))
+                    .unwrap_or_else(|| self.key_env_name().to_string()),
                 Self::config_path().display()
             );
             if let Ok(store) = AuthStore::load() {
@@ -917,6 +1586,173 @@ impl Config {
             .unwrap_or_else(|| self.base_url.clone())
     }
 
+    /// The absolute URL a chat request is posted to.
+    pub fn chat_url(&self) -> Result<String> {
+        self.endpoint_url(Endpoint::Chat)
+    }
+
+    /// The absolute URL the model listing is read from.
+    pub fn models_url(&self) -> Result<String> {
+        self.endpoint_url(Endpoint::Models)
+    }
+
+    /// Most providers append one path to `base_url`, while the ones that put the
+    /// model, the deployment or the account in the path — and the version in a
+    /// query — build the whole URL from what the configuration and the
+    /// environment hold. Naming a base URL by hand still overrides the host for
+    /// the ones with a derived one, so a private gateway or an emulator is
+    /// reached the same way.
+    fn endpoint_url(&self, endpoint: Endpoint) -> Result<String> {
+        let base = self.base_url.trim().trim_end_matches('/');
+        // GitLab Duo is reached through its own gateway's proxy rather than a
+        // host of its own, and that proxy is where both dialects live.
+        if self.auth_style() == AuthStyle::Gitlab {
+            let gateway = self.gitlab_gateway();
+            // Both proxies carry the provider's own list, so the one the model
+            // speaks is the one the listing is read from — the same base, and so
+            // the same headers, a turn with that model already uses.
+            let proxy = match self.provider_kind() {
+                ProviderKind::Anthropic => crate::llm::gitlab::anthropic_base(&gateway),
+                _ => crate::llm::gitlab::openai_base(&gateway),
+            };
+            return Ok(match endpoint {
+                Endpoint::Chat if self.provider_kind() == ProviderKind::Anthropic => {
+                    format!("{proxy}/messages")
+                }
+                Endpoint::Chat => format!("{proxy}/chat/completions"),
+                Endpoint::Models => format!("{proxy}/models"),
+            });
+        }
+        match self.provider_kind() {
+            ProviderKind::Anthropic => {
+                if base.is_empty() {
+                    anyhow::bail!(
+                        "the `{}` provider needs a base URL — set `base_url` in config.json",
+                        self.provider
+                    );
+                }
+                Ok(format!("{base}/messages"))
+            }
+            ProviderKind::Gemini => self.gemini_url(endpoint, base),
+            ProviderKind::Bedrock => Ok(String::new()),
+            ProviderKind::OpenAi if self.auth_style() == AuthStyle::Azure => {
+                self.azure_url(endpoint, base)
+            }
+            ProviderKind::OpenAi => {
+                if base.is_empty() {
+                    anyhow::bail!(
+                        "the `{}` provider needs a base URL — set `base_url` in config.json",
+                        self.provider
+                    );
+                }
+                Ok(match endpoint {
+                    Endpoint::Chat => format!("{base}/chat/completions"),
+                    Endpoint::Models => format!("{base}/models"),
+                })
+            }
+        }
+    }
+
+    /// Azure OpenAI reaches a deployment rather than a model, and pins the
+    /// request to an API version, so both the path and the query carry choices
+    /// the base URL does not.
+    fn azure_url(&self, endpoint: Endpoint, base: &str) -> Result<String> {
+        let host = if !base.is_empty() {
+            base.to_string()
+        } else if let Some(endpoint) = env_nonempty("AZURE_OPENAI_ENDPOINT") {
+            endpoint.trim_end_matches('/').to_string()
+        } else if let Some(resource) =
+            env_nonempty("AZURE_OPENAI_RESOURCE").or_else(|| env_nonempty("AZURE_RESOURCE_NAME"))
+        {
+            format!("https://{}.openai.azure.com", resource.trim_matches('.'))
+        } else {
+            anyhow::bail!(
+                "the Azure provider needs an endpoint — set AZURE_OPENAI_ENDPOINT, or a \
+                 `base_url` in config.json"
+            );
+        };
+        let version = env_nonempty("AZURE_OPENAI_API_VERSION")
+            .or_else(|| env_nonempty("AZURE_API_VERSION"))
+            .unwrap_or_else(|| AZURE_API_VERSION.to_string());
+        Ok(match endpoint {
+            Endpoint::Chat => {
+                let deployment = env_nonempty("AZURE_OPENAI_DEPLOYMENT")
+                    .unwrap_or_else(|| self.model.trim().to_string());
+                if deployment.is_empty() {
+                    anyhow::bail!(
+                        "the Azure provider needs a deployment — set a model (the deployment's \
+                         name) or AZURE_OPENAI_DEPLOYMENT"
+                    );
+                }
+                format!(
+                    "{host}/openai/deployments/{deployment}/chat/completions?api-version={version}"
+                )
+            }
+            Endpoint::Models => format!("{host}/openai/models?api-version={version}"),
+        })
+    }
+
+    /// Gemini on the Gemini API names the model in the path and streams from
+    /// `streamGenerateContent`; on Vertex the same API sits under a project and
+    /// a location. The key is a header on the first and an OAuth token on the
+    /// second, which the client supplies.
+    fn gemini_url(&self, endpoint: Endpoint, base: &str) -> Result<String> {
+        if self.auth_style() == AuthStyle::Vertex {
+            let (host, prefix) = self.vertex_target()?;
+            return Ok(match endpoint {
+                Endpoint::Chat => format!(
+                    "{host}{prefix}/publishers/google/models/{}:streamGenerateContent?alt=sse",
+                    self.model
+                ),
+                Endpoint::Models => {
+                    format!("{host}{prefix}/publishers/google/models")
+                }
+            });
+        }
+        if base.is_empty() {
+            anyhow::bail!(
+                "the `{}` provider needs a base URL — set `base_url` in config.json",
+                self.provider
+            );
+        }
+        Ok(match endpoint {
+            Endpoint::Chat => format!("{base}/models/{}:streamGenerateContent?alt=sse", self.model),
+            Endpoint::Models => format!("{base}/models"),
+        })
+    }
+
+    /// The Vertex host and the project path prefix a request goes under. The
+    /// project and location come from the environment the Google Cloud SDKs
+    /// read, unless a base URL was set by hand.
+    pub fn vertex_target(&self) -> Result<(String, String)> {
+        let base = self.base_url.trim().trim_end_matches('/');
+        let location = env_nonempty("GOOGLE_VERTEX_LOCATION")
+            .or_else(|| env_nonempty("GOOGLE_CLOUD_LOCATION"))
+            .or_else(|| env_nonempty("CLOUD_ML_REGION"))
+            .unwrap_or_else(|| "us-central1".to_string());
+        let host = if !base.is_empty() {
+            base.to_string()
+        } else if location == "global" {
+            "https://aiplatform.googleapis.com/v1".to_string()
+        } else {
+            format!("https://{location}-aiplatform.googleapis.com/v1")
+        };
+        if let Some(project) = env_nonempty("GOOGLE_VERTEX_PROJECT")
+            .or_else(|| env_nonempty("GOOGLE_CLOUD_PROJECT"))
+            .or_else(|| env_nonempty("CLOUD_ML_PROJECT_ID"))
+            .or_else(|| crate::llm::vertex::project_of(&self.api_key))
+        {
+            return Ok((
+                host,
+                format!("/projects/{}/locations/{location}", project.trim()),
+            ));
+        }
+        anyhow::bail!(
+            "the Vertex provider needs a project — set GOOGLE_VERTEX_PROJECT (and \
+             GOOGLE_VERTEX_LOCATION), or a `base_url` that already names one"
+        )
+    }
+
     /// Applies the optional settings chosen in the login dialog. Blank values
     /// keep the provider's current/default model, endpoint, or Config ID, and
     /// a Portkey Config ID is ignored for other providers.
@@ -967,6 +1803,7 @@ impl Config {
         let memory = self.provider_models.clone();
         let endpoints = self.provider_base_urls.clone();
         let base_url = self.base_url.clone();
+        let portkey_config = self.portkey_config.trim().to_string();
         let default_url =
             ProviderPreset::for_name(&provider).map(|preset| preset.base_url.to_string());
         Self::update_at(path, move |object| {
@@ -1002,6 +1839,15 @@ impl Config {
                 object.insert(
                     "provider_base_urls".to_string(),
                     serde_json::to_value(&endpoints).unwrap_or_else(|_| serde_json::json!({})),
+                );
+            }
+            // Portkey's Config ID is Portkey's own setting, so it travels with
+            // the selection whatever provider is active — a login that chose
+            // one would otherwise be routed only until the next launch.
+            if !portkey_config.is_empty() {
+                object.insert(
+                    "portkey_config".to_string(),
+                    serde_json::Value::String(portkey_config),
                 );
             }
         })
@@ -1079,14 +1925,73 @@ impl Config {
 
     /// The API dialect this configuration targets.
     pub fn provider_kind(&self) -> ProviderKind {
-        ProviderPreset::for_name(&self.provider)
+        let kind = self
+            .preset()
             .map(|preset| preset.kind)
-            .unwrap_or(ProviderKind::OpenAi)
+            .unwrap_or(ProviderKind::OpenAi);
+        // Duo reaches the gateway's two proxies, and the model says which one
+        // serves it: a Claude model is proxied to Anthropic, everything else to
+        // OpenAI.
+        if kind == ProviderKind::OpenAi
+            && self.auth_style() == AuthStyle::Gitlab
+            && self.model.trim().to_ascii_lowercase().starts_with("claude")
+        {
+            return ProviderKind::Anthropic;
+        }
+        kind
+    }
+
+    /// The preset behind the active provider name, when it is a known one.
+    pub fn preset(&self) -> Option<ProviderPreset> {
+        ProviderPreset::for_name(&self.provider)
+            .or_else(|| ProviderPreset::for_base_url(&self.base_url))
+    }
+
+    /// How this configuration authenticates, and which host serves it.
+    /// The GitLab instance a Duo credential is presented to — the service that
+    /// mints the gateway token, which is not the host a turn streams from.
+    pub fn gitlab_instance(&self) -> String {
+        env_nonempty("GITLAB_INSTANCE_URL")
+            .or_else(|| env_nonempty("GITLAB_URL"))
+            .map(|instance| instance.trim().trim_end_matches('/').to_string())
+            .unwrap_or_else(|| crate::llm::gitlab::INSTANCE.to_string())
+    }
+
+    /// The AI gateway a GitLab Duo request goes to, which a reader may point at
+    /// a self-managed instance's own gateway instead.
+    fn gitlab_gateway(&self) -> String {
+        let base = self.base_url.trim();
+        if !base.is_empty() {
+            return base.trim_end_matches('/').to_string();
+        }
+        env_nonempty("GITLAB_AI_GATEWAY_URL")
+            .map(|gateway| gateway.trim().trim_end_matches('/').to_string())
+            .unwrap_or_else(|| crate::llm::gitlab::GATEWAY.to_string())
+    }
+
+    pub fn auth_style(&self) -> AuthStyle {
+        self.preset()
+            .map(|preset| preset.auth)
+            .unwrap_or(AuthStyle::Bearer)
+    }
+
+    /// Whether the provider is a server on this machine, which may run without
+    /// a credential.
+    pub fn is_local_provider(&self) -> bool {
+        self.preset().map(|preset| preset.local).unwrap_or(false)
+    }
+
+    /// Whether the provider has no usable model-listing endpoint, so the
+    /// bundled catalog is what the picker shows instead of a failed request.
+    pub fn lists_no_models(&self) -> bool {
+        self.preset()
+            .map(|preset| !preset.models.is_empty())
+            .unwrap_or(false)
     }
 
     /// The environment variable that supplies the API key for this provider.
     pub fn key_env_name(&self) -> &'static str {
-        ProviderPreset::for_name(&self.provider)
+        self.preset()
             .map(|preset| preset.key_env)
             .unwrap_or("OPENAI_API_KEY")
     }
@@ -1122,14 +2027,12 @@ impl Config {
 
     /// The models bundled with a provider whose catalog cannot be listed.
     fn bundled_models(&self) -> Vec<String> {
-        let models: &[&str] = if self.is_portkey() {
-            PORTKEY_FALLBACK_MODELS
-        } else if self.is_zai() {
-            GLM_FALLBACK_MODELS
-        } else {
-            &[]
-        };
-        models.iter().map(|model| (*model).to_string()).collect()
+        self.preset()
+            .map(|preset| preset.models)
+            .unwrap_or(&[])
+            .iter()
+            .map(|model| (*model).to_string())
+            .collect()
     }
 
     pub fn model_catalog(&self) -> Vec<String> {
@@ -2031,6 +2934,37 @@ mod tests {
         std::fs::remove_dir_all(&dir).ok();
     }
 
+    /// A Portkey Config ID is chosen in the login dialog and lives in
+    /// `config.json` beside the provider, so a selection that is persisted
+    /// without it would send the next launch to the gateway unrouted.
+    #[test]
+    fn persist_selection_keeps_the_portkey_config_id() {
+        let dir = temp_dir("persist-portkey-config");
+        let path = dir.join("config.json");
+        std::fs::write(&path, r#"{"auto_approve":false}"#).unwrap();
+
+        let mut config = Config::default();
+        config.apply_provider("portkey", "pk-test");
+        config.apply_login_options("gpt-5.4", "", "pc-example");
+        config.persist_selection_at(&path).unwrap();
+
+        let stored: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        assert_eq!(stored["portkey_config"], "pc-example");
+        let reloaded: Config = serde_json::from_value(stored).unwrap();
+        assert_eq!(reloaded.portkey_config, "pc-example");
+
+        // A provider that is not Portkey leaves the remembered Config ID
+        // where it is, since it is Portkey's own setting.
+        config.apply_provider("openai", "sk-test");
+        config.persist_selection_at(&path).unwrap();
+        let stored: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        assert_eq!(stored["portkey_config"], "pc-example");
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
     #[test]
     fn set_auto_approve_rewrites_only_that_key() {
         let dir = temp_dir("set-auto-approve");
@@ -2482,6 +3416,116 @@ mod tests {
         std::fs::remove_dir_all(&base).ok();
     }
 
+    /// Bedrock signs with AWS credentials and Vertex mints its token from a
+    /// service-account file, so neither keeps its credential in this config. A
+    /// blank `api_key` is accepted where those exist and refused — naming what
+    /// to set — where they do not, before a turn starts rather than after it.
+    #[test]
+    fn a_credential_outside_the_config_is_read_before_a_run() {
+        let bedrock = Config {
+            provider: "bedrock".into(),
+            ..Config::default()
+        };
+        let signed = |name: &str| match name {
+            "AWS_ACCESS_KEY_ID" => Some("AKIAEXAMPLE".to_string()),
+            "AWS_SECRET_ACCESS_KEY" => Some("secret".to_string()),
+            _ => None,
+        };
+        assert_eq!(bedrock.require_api_key_with(&signed).unwrap(), "");
+        // Nothing in the environment, and a shared credentials file that is not
+        // there — the machine running the test must not decide the answer.
+        let absent = |name: &str| {
+            (name == "AWS_SHARED_CREDENTIALS_FILE")
+                .then(|| format!("/nonexistent-oxide-{}/credentials", std::process::id()))
+        };
+        let error = bedrock
+            .require_api_key_with(&absent)
+            .expect_err("nothing to sign with is an error");
+        assert!(error.to_string().contains("AWS_ACCESS_KEY_ID"), "{error}");
+
+        // A bearer token is the other way a Bedrock request is authorized, and
+        // a stored one rides on the key itself.
+        let stored = Config {
+            api_key: "bedrock-token".into(),
+            ..bedrock
+        };
+        assert_eq!(
+            stored.require_api_key_with(&|_| None).unwrap(),
+            "bedrock-token"
+        );
+
+        let vertex = Config {
+            provider: "vertex".into(),
+            ..Config::default()
+        };
+        let error = vertex
+            .require_api_key_with(&|_| None)
+            .expect_err("no credential is an error");
+        assert!(
+            error.to_string().contains("GOOGLE_VERTEX_CREDENTIALS"),
+            "{error}"
+        );
+    }
+
+    /// GitLab Duo is not a host of its own: the stored token is presented to an
+    /// instance, which mints the gateway token a turn is authorized with, and
+    /// the turn itself goes to the gateway's proxy — OpenAI's wire for an
+    /// OpenAI model, Anthropic's for a Claude one.
+    #[test]
+    fn a_gitlab_turn_is_sent_to_the_gateways_proxy() {
+        let _env = crate::env_lock::hold();
+        assert_eq!(canonical_provider("duo"), "gitlab");
+        assert_eq!(canonical_provider("gitlab-duo"), "gitlab");
+        let mut config = Config::default();
+        config.apply_provider("gitlab", "glpat-secret");
+        // A login leaves no endpoint of its own: the gateway names it.
+        assert_eq!(config.base_url, "");
+        let gitlab = &config;
+        assert_eq!(gitlab.provider_kind(), ProviderKind::OpenAi);
+        assert_eq!(gitlab.auth_style(), AuthStyle::Gitlab);
+        assert_eq!(
+            gitlab.chat_url().unwrap(),
+            "https://cloud.gitlab.com/ai/v1/proxy/openai/v1/chat/completions"
+        );
+        assert_eq!(
+            gitlab.models_url().unwrap(),
+            "https://cloud.gitlab.com/ai/v1/proxy/openai/v1/models"
+        );
+        assert_eq!(gitlab.gitlab_instance(), "https://gitlab.com");
+
+        let claude = Config {
+            model: "claude-sonnet-4-6".into(),
+            ..gitlab.clone()
+        };
+        assert_eq!(claude.provider_kind(), ProviderKind::Anthropic);
+        assert_eq!(
+            claude.chat_url().unwrap(),
+            "https://cloud.gitlab.com/ai/v1/proxy/anthropic/v1/messages"
+        );
+        // A Duo subscription lists the provider's own models, so a Claude model
+        // is listed by the proxy its turns go through.
+        assert_eq!(
+            claude.models_url().unwrap(),
+            "https://cloud.gitlab.com/ai/v1/proxy/anthropic/v1/models"
+        );
+
+        // A self-managed instance points the configuration at its own gateway.
+        let self_managed = Config {
+            base_url: "https://gitlab.example.com/".into(),
+            ..gitlab.clone()
+        };
+        assert_eq!(
+            self_managed.chat_url().unwrap(),
+            "https://gitlab.example.com/ai/v1/proxy/openai/v1/chat/completions"
+        );
+        // A model that is not Claude anywhere else is left alone.
+        let openai = Config {
+            model: "claude-sonnet-5".into(),
+            ..Config::default()
+        };
+        assert_eq!(openai.provider_kind(), ProviderKind::OpenAi);
+    }
+
     #[test]
     fn kind_and_key_env_resolve_from_config() {
         let anthropic = Config {
@@ -2497,5 +3541,82 @@ mod tests {
         };
         assert_eq!(custom.provider_kind(), ProviderKind::OpenAi);
         assert_eq!(custom.key_env_name(), "OPENAI_API_KEY");
+    }
+
+    /// The table is the only place a provider is declared, so a name or an
+    /// alias that two entries claim would silently shadow one of them in the
+    /// picker, in `--provider`, and in the credential store.
+    #[test]
+    fn every_provider_is_named_and_spelled_once() {
+        let mut names = std::collections::HashSet::new();
+        for preset in PROVIDERS {
+            assert!(
+                names.insert(preset.name),
+                "{} is declared twice",
+                preset.name
+            );
+            assert_eq!(
+                canonical_provider(preset.name),
+                preset.name,
+                "{} does not resolve to itself",
+                preset.name
+            );
+            assert!(
+                !preset.label.trim().is_empty(),
+                "{} has no label",
+                preset.name
+            );
+            assert!(
+                !preset.description.trim().is_empty(),
+                "{} has no description",
+                preset.name
+            );
+            assert!(
+                preset.key_url.starts_with("https://"),
+                "{} has no key URL",
+                preset.name
+            );
+            for alias in preset.aliases {
+                assert_ne!(
+                    *alias, preset.name,
+                    "{} lists itself as an alias",
+                    preset.name
+                );
+                assert!(names.insert(alias), "{alias} is claimed by two providers");
+                let resolved = ProviderPreset::for_name(alias)
+                    .unwrap_or_else(|| panic!("{alias} resolves to nothing"));
+                assert_eq!(resolved.name, preset.name, "{alias} resolves elsewhere");
+            }
+        }
+        // A local provider is reached without a key, so it is the only kind
+        // whose preset may offer a download page instead of a key page.
+        for preset in PROVIDERS.iter().filter(|preset| !preset.local) {
+            assert!(!preset.key_env.is_empty(), "{} has no key env", preset.name);
+        }
+    }
+
+    /// A provider's host is how a custom provider (or a gateway) is read for
+    /// the dialect it speaks, so a host that does not resolve is a provider
+    /// whose models are answered in the wrong format.
+    #[test]
+    fn every_hosted_provider_is_found_by_its_host() {
+        for preset in PROVIDERS
+            .iter()
+            .filter(|preset| !preset.base_url.is_empty() && !preset.local)
+        {
+            let found = ProviderPreset::for_base_url(preset.base_url)
+                .unwrap_or_else(|| panic!("{} is not found by its host", preset.name));
+            assert_eq!(
+                found.name, preset.name,
+                "{}'s host picks another provider",
+                preset.name
+            );
+        }
+        assert!(ProviderPreset::for_base_url("https://example.com/v1").is_none());
+        // A local server's host is `localhost` for all of them — they differ by
+        // port alone, which is not what a host names — so none is picked by it,
+        // and a custom provider pointed there is read as OpenAI-compatible,
+        // which is what the local presets speak anyway.
+        assert!(ProviderPreset::for_base_url("http://localhost:11434/v1").is_none());
     }
 }

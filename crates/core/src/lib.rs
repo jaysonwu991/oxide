@@ -45,3 +45,31 @@ pub mod trust;
 pub mod update_notice;
 pub mod updates;
 pub mod workspaces;
+
+/// A test that points a provider at a stub host writes the process environment,
+/// which every other test in the binary can see. One such test runs at a time.
+#[cfg(test)]
+pub(crate) mod env_lock {
+    use std::sync::atomic::{AtomicBool, Ordering};
+
+    static BUSY: AtomicBool = AtomicBool::new(false);
+
+    pub(crate) struct Held(());
+
+    /// Waits until no other holder has the environment, and keeps it until the
+    /// returned guard is dropped. A spin rather than a mutex because the same
+    /// guard has to be held by a test that awaits and by one that does not.
+    /// Sleeping between attempts keeps a waiter from starving the holder.
+    pub(crate) fn hold() -> Held {
+        while BUSY.swap(true, Ordering::SeqCst) {
+            std::thread::sleep(std::time::Duration::from_millis(1));
+        }
+        Held(())
+    }
+
+    impl Drop for Held {
+        fn drop(&mut self) {
+            BUSY.store(false, Ordering::SeqCst);
+        }
+    }
+}
