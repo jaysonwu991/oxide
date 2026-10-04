@@ -40,6 +40,111 @@ pub fn known_providers() -> &'static [ProviderOption] {
     })
 }
 
+/// One provider as a front-end's picker draws it: the table's own words, plus
+/// whether a credential is stored for it and whether it is the one in use. The
+/// desktop app, the VS Code panel and `oxide providers --json` all draw this
+/// listing rather than reading the provider table themselves.
+#[derive(Debug, Clone, Serialize, PartialEq)]
+pub struct ProviderView {
+    pub name: &'static str,
+    pub label: &'static str,
+    pub description: &'static str,
+    /// Where a key for this provider is issued.
+    #[serde(rename = "keyUrl")]
+    pub key_url: &'static str,
+    /// Whether the provider needs no credential (a server on this machine).
+    pub local: bool,
+    /// Whether a credential is already stored for it.
+    pub stored: bool,
+    /// Whether it is the provider `config.json` selects.
+    pub active: bool,
+}
+
+/// Every provider a picker lists, in the table's own order, each carrying the
+/// state a row shows beside it.
+pub fn provider_views() -> Vec<ProviderView> {
+    provider_views_at(&AuthStore::path(), &crate::config::Config::config_path())
+}
+
+fn provider_views_at(auth_path: &Path, config_path: &Path) -> Vec<ProviderView> {
+    let store = AuthStore::load_from(auth_path).unwrap_or_default();
+    let active = crate::config::Config::active_provider_at(config_path);
+    known_providers()
+        .iter()
+        .map(|option| ProviderView {
+            name: option.name,
+            label: option.label,
+            description: option.description,
+            key_url: option.key_url,
+            local: option.local,
+            stored: store.key(option.name).is_some(),
+            active: active.as_deref() == Some(option.name),
+        })
+        .collect()
+}
+
+/// What connecting a provider resolved to, which is what a front-end reports
+/// back after a login.
+#[derive(Debug, Clone, Serialize, PartialEq)]
+pub struct LoginOutcome {
+    pub provider: String,
+    pub label: String,
+    pub model: String,
+    /// Whether the provider needs no credential (a server on this machine).
+    pub local: bool,
+}
+
+/// Connects a provider the way the desktop app's Connect dialog and
+/// `oxide login` both do: stores the credential it was given (or reuses the
+/// stored one), switches the selection to the provider, and applies the model
+/// and endpoint the caller named without disturbing the ones it did not.
+pub fn login_provider(
+    provider: &str,
+    key: &str,
+    model: Option<&str>,
+    base_url: Option<&str>,
+    cwd: &Path,
+) -> Result<LoginOutcome> {
+    // The selection is read before the credential is stored: resolving a login
+    // writes the provider into `config.json`, and a config loaded after that
+    // would name the incoming provider as the outgoing one — losing the model
+    // and endpoint the previous one is remembered by.
+    let mut config = crate::config::Config::load(cwd, None, None, None, None)?;
+    let (name, credential) = resolve_login(provider, key)?;
+    apply_login_choice(&mut config, &name, &credential, model, base_url);
+    config.persist_selection_at(&crate::config::Config::config_path())?;
+    Ok(LoginOutcome {
+        label: provider_label(&name).to_string(),
+        local: is_local(&name),
+        provider: name,
+        model: config.model,
+    })
+}
+
+/// The selection a login leaves behind: the provider's own model and endpoint,
+/// with whatever the reader named substituted for them. Split out from
+/// [`login_provider`] because this is the whole of the decision and making it
+/// needs no filesystem.
+fn apply_login_choice(
+    config: &mut crate::config::Config,
+    provider: &str,
+    credential: &str,
+    model: Option<&str>,
+    base_url: Option<&str>,
+) {
+    config.apply_provider(provider, credential);
+    if let Some(model) = non_empty(model) {
+        config.model = model.to_string();
+    }
+    if let Some(url) = non_empty(base_url) {
+        config.base_url = url.to_string();
+    }
+}
+
+fn non_empty(value: Option<&str>) -> Option<&str> {
+    value.map(str::trim).filter(|value| !value.is_empty())
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AuthEntry {
     #[serde(rename = "type", default = "default_type")]
@@ -288,6 +393,77 @@ mod tests {
             provider_option("copilot").expect("copilot is offered").auth,
             AuthStyle::Copilot
         );
+    }
+
+    /// The picker's rows are the provider table plus what is on disk: the same
+    /// listing answers for the desktop app, the VS Code panel and the terminal.
+    #[test]
+    fn provider_views_pair_the_table_with_what_is_connected() {
+        let dir = temp_dir("provider-views");
+        let auth_path = dir.join("auth.json");
+        let config_path = dir.join("config.json");
+        let mut store = AuthStore::default();
+        store.set("openai", "sk-openai");
+        store.save_to(&auth_path).unwrap();
+        std::fs::write(&config_path, r#"{"provider":"anthropic"}"#).unwrap();
+
+        let views = provider_views_at(&auth_path, &config_path);
+        assert_eq!(views.len(), crate::config::PROVIDERS.len());
+        let row = |name: &str| views.iter().find(|view| view.name == name).unwrap();
+        assert!(row("openai").stored && !row("openai").active);
+        assert!(row("anthropic").active && !row("anthropic").stored);
+        assert!(row("ollama").local && !row("ollama").stored);
+        // A server on this machine is never held to a key it does not have, and
+        // the JSON a front-end reads carries the aliases it matches on.
+        let json = serde_json::to_value(row("openai")).unwrap();
+        assert_eq!(json["name"], "openai");
+        assert_eq!(json["keyUrl"], row("openai").key_url);
+        assert_eq!(json["active"], false);
+
+        // An unreadable store still lists every provider rather than nothing.
+        std::fs::write(&auth_path, "not json").unwrap();
+        assert_eq!(
+            provider_views_at(&auth_path, &config_path).len(),
+            views.len()
+        );
+        assert!(!provider_views_at(&auth_path, &config_path)[0].stored);
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// A login is the reader's own choice over the provider's defaults: the
+    /// model and endpoint they named win, and the ones they left alone are the
+    /// provider's, never the previous provider's gateway.
+    #[test]
+    fn a_login_keeps_every_choice_that_was_not_made() {
+        let mut config = crate::config::Config {
+            provider: "portkey".to_string(),
+            model: "gpt-4o".to_string(),
+            base_url: "https://gateway.example/v1".to_string(),
+            ..Default::default()
+        };
+
+        apply_login_choice(&mut config, "openai", "sk-openai", None, None);
+        assert_eq!(config.provider, "openai");
+        assert_eq!(config.base_url, "https://api.openai.com/v1");
+        assert_eq!(
+            config.provider_base_urls["portkey"],
+            "https://gateway.example/v1"
+        );
+
+        apply_login_choice(
+            &mut config,
+            "openai",
+            "sk-openai",
+            Some(" gpt-5.1 "),
+            Some("https://proxy.example/v1"),
+        );
+        assert_eq!(config.model, "gpt-5.1");
+        assert_eq!(config.base_url, "https://proxy.example/v1");
+
+        // An empty string is not a choice, so it cannot blank a remembered one.
+        apply_login_choice(&mut config, "openai", "sk-openai", Some("  "), Some(""));
+        assert_eq!(config.model, "gpt-5.1");
+        assert_eq!(config.base_url, "https://proxy.example/v1");
     }
 
     #[test]

@@ -1859,6 +1859,16 @@ impl Config {
         Self::set_active_field_at(path, "provider", provider)
     }
 
+    /// The provider `config.json` names, or `None` when the file names none.
+    /// A picker marks the row in use with it instead of loading the whole
+    /// config, which would discover a project the login has nothing to do with.
+    pub fn active_provider_at(path: &Path) -> Option<String> {
+        let text = std::fs::read_to_string(path).ok()?;
+        let root: serde_json::Value = serde_json::from_str(&text).ok()?;
+        let name = root.get("provider")?.as_str()?;
+        (!name.trim().is_empty()).then(|| canonical_provider(name))
+    }
+
     /// Persists the selected model in `config.json`, preserving other settings.
     pub fn set_active_model_at(path: &Path, model: &str) -> Result<()> {
         Self::set_active_field_at(path, "model", model)
