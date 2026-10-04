@@ -44,13 +44,12 @@ crates/desktop/
     manager.rs      project registry + session aggregation
     turn.rs         starts an agent turn against a project
     at.rs           the `@path` walk the composer completes from
-    commands.rs     the window's command dispatcher (needs `gui`)
-    approval.rs     interactive approve/deny broker (needs `gui`)
-    ask.rs          a skill's question broker (needs `gui`)
-    bridge.rs       the window, and where an event leaves it (needs `gui`)
-    update.rs       this app's own release train (needs `gui`)
-    main.rs         Electrobun entry point: the window, the menu, the loop (needs
-                    `gui`)
+    commands.rs     the window's command dispatcher
+    approval.rs     interactive approve/deny broker
+    ask.rs          a skill's question broker
+    bridge.rs       the window, and where an event leaves it
+    update.rs       this app's own release train
+    main.rs         Electrobun entry point: the window, the menu, the loop
   ui/               front-end: index.html, app.js, style.css
   electrobun.config.ts  app config: name, identifier, version, window, the copy
                         of `ui/` into `views/main/`, icons, entitlements, and the
@@ -371,12 +370,13 @@ state carried in, the page loaded out of the folder the build copies it into,
 the process ending with the window), the CSP is the page's own rather than one
 injected over it, `electrobun.config.ts` copies everything the page loads and
 names icons that are on disk, `set-version.sh` writes the version both the
-config and the Cargo manifest report, the `gui` feature is what builds the
-binary and what links the SDK the devkit projects (kept out of the workspace's
-own build), and the migration's own end: the only JavaScript in the crate is the
-front-end plus these two files and the build config, and nothing of the shell it
-replaced is left behind (`tauri.conf.json`, `capabilities/`, `build.rs`, `gen/`,
-`package.json`, `bun.lockb`, `node_modules`).
+config and the Cargo manifest report, the manifest declares the SDK the devkit
+projects as an ordinary dependency of `oxide-desktop` (so the build Hutch runs
+links it, and the package sitting outside the workspace keeps it out of the
+workspace's own build), and the migration's own end: the only JavaScript in the
+crate is the front-end plus these two files and the build config, and nothing of
+the shell it replaced is left behind (`tauri.conf.json`, `capabilities/`,
+`build.rs`, `gen/`, `package.json`, `bun.lockb`, `node_modules`).
 
 ## Sharing configuration with the CLI
 

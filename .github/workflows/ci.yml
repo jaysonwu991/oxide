@@ -1,7 +1,7 @@
 name: ci
 
 # Pull-request and `main` checks for the whole repository: the Rust workspace
-# (formatting, clippy, tests), the desktop app's `gui` feature with its
+# (formatting, clippy, tests), the desktop app with its
 # front-end checks, and the VS Code extension. This
 # workflow only verifies; the tag-triggered release workflows (`cli.yml`,
 # `desktop.yml`, and `vscode.yml`) build the shippable artifacts.
@@ -44,13 +44,12 @@ jobs:
       - run: cargo test --locked
       - run: cargo build --release --locked
 
-  # The `gui` feature is off by default (so the plain workspace build stays
-  # window-free), which means the `test` job above never compiles the desktop
-  # app; the app's package is outside the workspace for the same reason, so its
-  # checks run from its own directory. Build and lint it on each platform, with
-  # the Linux libraries the Electrobun launcher needs, so a platform-specific
-  # break is caught on the pull request instead of at tag time — and run the
-  # front-end checks, since no Rust test runs the app's own JavaScript.
+  # The desktop app is a workspace of its own, so the `test` job above never
+  # compiles it; its checks run from its own directory. Build and lint it on
+  # each platform, with the Linux libraries the Electrobun launcher needs, so a
+  # platform-specific break is caught on the pull request instead of at tag
+  # time — and run the front-end checks, since no Rust test runs the app's own
+  # JavaScript.
   #
   # The window shell's Rust SDK is not a published crate: Hutch projects this
   # release's devkit into `crates/desktop/.hutch/devkit`, which is where the

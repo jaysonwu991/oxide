@@ -48,8 +48,8 @@ Before opening a pull request, make sure `cargo fmt`, `cargo clippy`, and
 `cargo test` all pass. CI checks formatting with `cargo fmt --all -- --check`,
 runs clippy and tests with `--locked`, builds the release profile on Linux,
 macOS, and Windows, and on each platform projects the desktop package's Electrobun
-devkit (`hutch electrobun prepare`), builds the window's main process with its
-`gui` feature, and runs the two Node checks above.
+devkit (`hutch electrobun prepare`), builds the window's main process, and runs
+the two Node checks above.
 
 ## Project layout
 
@@ -203,7 +203,7 @@ Releases are automated by GitHub Actions:
 
 1. `ci.yml` runs on pushes to `main` and on pull requests: formatting, clippy,
    and the test suite plus a release build for the Rust workspace; the desktop
-   app's `gui` feature with its front-end and shell checks on Linux, macOS, and
+   app's main process with its front-end and shell checks on Linux, macOS, and
    Windows; and the
    VS Code extension's type check, unit tests, and `vsce package`.
 2. `cli.yml` triggers on `v*` tags, builds the supported CLI targets
