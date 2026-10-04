@@ -479,6 +479,22 @@ fn is_dequeue_shortcut(key: &KeyEvent) -> bool {
     }
 }
 
+/// Whether the input names `command` as a whole word: the name alone, or the
+/// name followed by whitespace and its arguments.
+///
+/// A dispatch arm matches its command this way rather than with a bare prefix,
+/// so a longer word is not silently taken for it — `/attachments` is not
+/// `/attach` with arguments, and `/plugin` is not `/plugins`: the catalog holds
+/// one name per command, so anything else is a message (or a configured
+/// command of that name) rather than a second spelling.
+fn names_command(raw: &str, command: &str) -> bool {
+    match raw.strip_prefix(command) {
+        Some("") => true,
+        Some(rest) => rest.starts_with(char::is_whitespace),
+        None => false,
+    }
+}
+
 /// Cycles the thinking level and records it on the session. Shared by the
 /// `Shift+Tab` (Pi's binding) and `Ctrl+R` (the pre-desktop binding) shortcuts.
 fn cycle_reasoning(app: &mut App, config: &mut Config, session: &mut Option<SessionLog>) {
@@ -870,18 +886,10 @@ fn handle_key(
                 }
                 return;
             }
-            if raw == "/plugins"
-                || raw.starts_with("/plugins ")
-                || raw == "/plugin"
-                || raw.starts_with("/plugin ")
-            {
+            if names_command(&raw, "/plugins") {
                 app.clear_input();
                 refresh_suggestions(app, config);
-                let args = raw
-                    .strip_prefix("/plugins")
-                    .or_else(|| raw.strip_prefix("/plugin"))
-                    .unwrap_or_default()
-                    .trim();
+                let args = raw.strip_prefix("/plugins").unwrap_or_default().trim();
                 let (verb, rest) = match args.split_once(char::is_whitespace) {
                     Some((verb, rest)) => (verb, rest.trim()),
                     None => (args, ""),
@@ -1124,7 +1132,7 @@ fn handle_key(
                 });
                 return;
             }
-            if raw == "/help" || raw == "/?" {
+            if raw == "/help" {
                 app.clear_input();
                 refresh_suggestions(app, config);
                 app.items.push(ChatItem::Info(help_text(config)));
@@ -2961,10 +2969,11 @@ fn resolve_provider_choice(value: &str) -> String {
 /// Handles `/attach [list|remove <id|n>|clear]`, editing the pending composer
 /// attachments. Returns whether the input was an attach command.
 fn handle_attach_command(app: &mut App, raw: &str) -> bool {
-    let Some(rest) = raw.strip_prefix("/attach") else {
+    if !names_command(raw, "/attach") {
         return false;
-    };
-    match rest.trim() {
+    }
+    let rest = raw.strip_prefix("/attach").unwrap_or_default().trim();
+    match rest {
         "" | "list" => app.items.push(ChatItem::Info(app.attachment_listing())),
         "clear" => {
             let removed = app.attachments.len();
@@ -5642,6 +5651,43 @@ mod tests {
         assert!(matches!(
             app.items.last(),
             Some(ChatItem::Info(text)) if text.contains("cleared 2")
+        ));
+    }
+
+    #[test]
+    fn a_command_is_matched_as_a_whole_word() {
+        assert!(names_command("/attach", "/attach"));
+        assert!(names_command("/attach remove 1", "/attach"));
+        assert!(names_command("/plugins marketplace update", "/plugins"));
+        // A longer word is another name, not this command with an argument:
+        // `/attachments` and `/plugin` are what the catalog retired, and a
+        // configured command of either name has to reach the agent.
+        assert!(!names_command("/attachments", "/attach"));
+        assert!(!names_command("/attachments remove 1", "/attach"));
+        assert!(!names_command("/attachfoo", "/attach"));
+        assert!(!names_command("/plugin", "/plugins"));
+        assert!(!names_command("/pluginsfoo", "/plugins"));
+    }
+
+    #[test]
+    fn a_retired_attach_spelling_is_left_to_the_prompt() {
+        let mut app = test_app();
+        app.add_attachment(crate::llm::ContentPart::Text {
+            text: "<file name=\"notes.csv\">\na,b\n</file>".to_string(),
+        });
+
+        for retired in ["/attachments", "/attachments remove 1", "/attachfoo"] {
+            assert!(!handle_attach_command(&mut app, retired), "{retired}");
+        }
+        // Nothing was listed, removed or complained about: the message is the
+        // agent's, so the composer's attachments are exactly as they were.
+        assert_eq!(app.attachments.len(), 1);
+        assert!(app.items.is_empty());
+
+        assert!(handle_attach_command(&mut app, "/attach list"));
+        assert!(matches!(
+            app.items.last(),
+            Some(ChatItem::Info(text)) if text.contains("notes.csv")
         ));
     }
 
