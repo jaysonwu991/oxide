@@ -220,10 +220,11 @@ jobs:
         shell: bash
         run: '"${HUTCH}" electrobun build --env=stable'
 
-      # The installers `docs/desktop.md` lists under **Release assets**, plus the
-      # update metadata a front-end resolves through. The `.tar.zst` archive and
-      # the delta patches are Electrobun's own updater payload and are left out:
-      # this app's updater installs the installer.
+      # The installers `docs/desktop.md` lists under **Release assets**. The
+      # `.tar.zst` archive, the delta patches and the update metadata that names
+      # them are Electrobun's own updater payload and are left out: this app's
+      # updater installs the installer, and metadata pointing at an archive the
+      # release does not carry is worse than none.
       - uses: actions/upload-artifact@v4
         with:
           name: oxide-desktop-${{ matrix.artifact }}
@@ -231,7 +232,6 @@ jobs:
             crates/desktop/artifacts/*.dmg
             crates/desktop/artifacts/*-Setup.zip
             crates/desktop/artifacts/*-Setup.tar.gz
-            crates/desktop/artifacts/*-update.json
           if-no-files-found: error
 
   release:

@@ -895,10 +895,11 @@ hutch electrobun dev                # a dev build, launched
 Each build writes to `crates/desktop/artifacts/`, flat and prefixed the way
 Electrobun names them: a `.dmg` on macOS, a `-Setup.zip` on Windows, a
 `-Setup.tar.gz` on Linux, each beside the `*.tar.zst` update archive and the
-`*-update.json` metadata of Electrobun's own updater. The release uploads the
-installer and the metadata but leaves the archive and the delta patches behind,
-since this app's updater installs the **installer** (see [Check for
-updates](#check-for-updates)) rather than applying Electrobun's update payload.
+`*-update.json` metadata of Electrobun's own updater. The release uploads only
+the installer, because this app's updater installs the **installer** (see [Check
+for updates](#check-for-updates)) rather than applying Electrobun's update
+payload: the archive, the delta patches and metadata naming an archive the
+release does not carry are all left behind.
 
 Builds are per-platform: a macOS build produces only the macOS artifacts, so a
 release is four builds (macOS arm64, Linux x64, Linux arm64, Windows x64), each
@@ -939,9 +940,10 @@ An unsigned app downloaded from the internet is quarantined by the browser and
 Gatekeeper may refuse it; a reader can clear it with
 `xattr -cr /Applications/Oxide.app`, which is what the release notes say. A
 signed and notarized release needs none of that, and Electrobun's own updater
-metadata (`*-update.json`, `*.tar.zst`) stays unused: this app updates itself
-from the plain installers the release publishes (see [Check for
-updates](#check-for-updates)) rather than from a manifest beside them.
+payload (`*-update.json` and the `*.tar.zst` it names) is not published at all:
+this app updates itself from the plain installers the release carries (see
+[Check for updates](#check-for-updates)) rather than from a manifest beside
+them.
 
 ## Signing secrets
 
@@ -1036,10 +1038,11 @@ from the CLI, so a CLI release never rebuilds these:
 There is no **macOS Intel** asset: Electrobun publishes no x64 core for macOS,
 so the app ships for Apple Silicon alone and `oxide` resolves no desktop release
 for `darwin-x64`. The Linux archive unpacks an executable named `installer`
-beside a README; the Windows zip carries the visible setup executable and the
-hidden payload it unpacks. A release also carries the `stable-<os>-<arch>-update.json`
-metadata Electrobun's own updater reads — this app's updater ignores it and
-installs the installer itself.
+beside a README; the Windows zip carries `Oxide-Setup.exe` and hides the payload
+it unpacks in a `.installer/` directory of its own. Electrobun's own updater
+payload — the `*.tar.zst` archive and the `*-update.json` metadata naming it —
+is not uploaded: this app's updater ignores it and installs the installer
+itself.
 
 The CLI archives (`Oxide-v<version>-<platform>.tar.gz` and
 `Oxide-v<version>-win32-x64.zip`) plus `install.sh`/`install.ps1` live in the
