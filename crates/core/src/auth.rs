@@ -1,49 +1,44 @@
+use crate::config::AuthStyle;
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
+use std::sync::OnceLock;
 
 const AUTH_FILE: &str = "auth.json";
+
+/// One provider as the login picker draws it, read from the single provider
+/// table in [`crate::config::PROVIDERS`].
 #[derive(Debug, Clone, Copy)]
 pub struct ProviderOption {
     pub name: &'static str,
     pub label: &'static str,
     pub description: &'static str,
     pub key_url: &'static str,
+    pub auth: AuthStyle,
+    /// Whether the provider needs no credential (a server on this machine).
+    pub local: bool,
 }
 
-pub const KNOWN_PROVIDERS: [ProviderOption; 5] = [
-    ProviderOption {
-        name: "openai",
-        label: "OpenAI",
-        description: "GPT models",
-        key_url: "https://platform.openai.com/api-keys",
-    },
-    ProviderOption {
-        name: "deepseek",
-        label: "DeepSeek",
-        description: "DeepSeek chat and reasoning models",
-        key_url: "https://platform.deepseek.com/api_keys",
-    },
-    ProviderOption {
-        name: "anthropic",
-        label: "Anthropic",
-        description: "Claude models",
-        key_url: "https://console.anthropic.com/settings/keys",
-    },
-    ProviderOption {
-        name: "portkey",
-        label: "Portkey",
-        description: "AI gateway and model routing",
-        key_url: "https://app.portkey.ai/api-keys",
-    },
-    ProviderOption {
-        name: "zai",
-        label: "Z.AI",
-        description: "GLM models",
-        key_url: "https://z.ai/manage-apikey/apikey-list",
-    },
-];
+/// Every provider the login picker offers, in the order the provider table
+/// declares them. Built once from that table, so a provider is never listed in
+/// one place and missing from another.
+pub fn known_providers() -> &'static [ProviderOption] {
+    static OPTIONS: OnceLock<Vec<ProviderOption>> = OnceLock::new();
+    OPTIONS.get_or_init(|| {
+        crate::config::PROVIDERS
+            .iter()
+            .map(|preset| ProviderOption {
+                name: preset.name,
+                label: preset.label,
+                description: preset.description,
+                key_url: preset.key_url,
+                auth: preset.auth,
+                local: preset.local,
+            })
+            .collect()
+    })
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AuthEntry {
@@ -123,6 +118,19 @@ impl AuthStore {
     }
 }
 
+/// The OAuth application a provider's browser login identifies itself as, or
+/// `None` for a provider whose login is a key the reader pastes. A provider
+/// that mints a short-lived credential from a stored one is the one that needs
+/// the flow; GitHub Copilot is the one today, exchanging its GitHub token for a
+/// Copilot session token per turn.
+pub fn device_flow_client(name: &str) -> Option<&'static str> {
+    let name = canonical_provider(name);
+    match provider_option(&name).map(|option| option.auth) {
+        Some(AuthStyle::Copilot) => Some(crate::llm::copilot::CLIENT_ID),
+        _ => None,
+    }
+}
+
 pub fn connect(provider: &str, key: &str) -> Result<String> {
     connect_with(
         &AuthStore::path(),
@@ -174,18 +182,11 @@ fn select_stored_with(
     Ok((name, key))
 }
 
-pub fn canonical_provider(name: &str) -> String {
-    match name.trim().to_ascii_lowercase().as_str() {
-        "gpt" | "gpt-4" | "gpt-4o" => "openai".to_string(),
-        "port-key" => "portkey".to_string(),
-        "glm" | "z.ai" | "z-ai" | "zhipu" | "bigmodel" => "zai".to_string(),
-        other => other.to_string(),
-    }
-}
+pub use crate::config::canonical_provider;
 
 pub fn provider_option(name: &str) -> Option<&'static ProviderOption> {
     let name = canonical_provider(name);
-    KNOWN_PROVIDERS.iter().find(|option| option.name == name)
+    known_providers().iter().find(|option| option.name == name)
 }
 
 pub fn provider_label(name: &str) -> &str {
@@ -220,18 +221,35 @@ mod tests {
         assert_eq!(canonical_provider("GLM"), "zai");
         assert_eq!(canonical_provider(" z.ai "), "zai");
         assert_eq!(canonical_provider("Zhipu"), "zai");
+        assert_eq!(canonical_provider("Grok"), "xai");
+        assert_eq!(canonical_provider("Gemini"), "google");
+        assert_eq!(canonical_provider("Claude"), "anthropic");
+        assert_eq!(canonical_provider("Amazon-Bedrock"), "bedrock");
+        // A provider nobody declared keeps the name it was configured with.
+        assert_eq!(canonical_provider("my-endpoint"), "my-endpoint");
     }
 
     #[test]
-    fn known_providers_include_zai() {
-        let names: Vec<&str> = KNOWN_PROVIDERS.iter().map(|option| option.name).collect();
+    fn known_providers_cover_every_declared_preset() {
+        // The picker lists the provider table itself, so a provider can never
+        // be declared without being offered at login.
+        assert_eq!(known_providers().len(), crate::config::PROVIDERS.len());
+        let names: Vec<&str> = known_providers().iter().map(|option| option.name).collect();
         assert_eq!(
             names,
-            vec!["openai", "deepseek", "anthropic", "portkey", "zai"]
+            crate::config::PROVIDERS
+                .iter()
+                .map(|preset| preset.name)
+                .collect::<Vec<_>>()
         );
         let zai = provider_option("glm").expect("glm resolves to the Z.AI preset");
         assert_eq!(zai.label, "Z.AI");
         assert!(zai.key_url.contains("z.ai"));
+        assert!(provider_option("ollama").expect("ollama is offered").local);
+        assert_eq!(
+            provider_option("copilot").expect("copilot is offered").auth,
+            AuthStyle::Copilot
+        );
     }
 
     #[test]
