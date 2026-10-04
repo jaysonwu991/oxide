@@ -144,10 +144,12 @@ template: |
   - **Linux arm64** — `linux-arm64-Oxide-Setup.AppImage`, or
     `linux-arm64-Oxide-Setup.tar.gz` to unpack by hand
 
-  On macOS the app is notarized when this release was built with an Apple
-  Developer certificate configured. If macOS reports it as **damaged** instead
-  of opening it — what a quarantined, unnotarized build looks like — clear the
-  download's quarantine flag and open it again:
+  On macOS the app is notarized only when this release was built with both an
+  Apple Developer certificate and an App Store Connect key configured; a build
+  carrying the certificate alone is signed but left unnotarized. If macOS
+  reports it as **damaged** instead of opening it — what a quarantined build
+  without a notarization ticket looks like — clear the download's quarantine
+  flag and open it again:
 
   ```sh
   xattr -dr com.apple.quarantine /Applications/Oxide.app
