@@ -1108,6 +1108,34 @@ Press Enter to confirm and Esc to cancel. The key is stored in `auth.json`
 to the running session and the next launch. `/connect` remains an alias of
 `/login`.
 
+### From a front-end
+
+The desktop app's **Connect** dialog and the VS Code panel's Connect Provider
+command draw the same table the TUI's picker does, from one definition:
+
+```console
+oxide providers --json          # every provider, and the state of each
+oxide login openai --json --key-stdin <key
+oxide login ollama              # a stored credential, or one that needs none
+```
+
+`oxide providers --json` prints `{ "active": <name|null>, "providers": [...] }`,
+where each row carries the `name` a login takes, the `label` and `description` a
+picker paints, the `keyUrl` a key is issued at, and `local`, `stored` and `active`
+— the state a row shows beside it. The human-readable form of the same listing is
+one tab-separated line per provider, marked `[in use]`, `[stored]` or
+`[no key needed]`.
+
+`oxide login <provider> [--key-stdin] [--model <m>] [--base-url <url>] [--json]`
+is what a front-end runs when a row is taken. The key is read from stdin rather
+than an argument — an argument is visible in the process listing and kept in a
+shell's history — and `--key-stdin` is what says to read one, so a stored or
+local provider is connected by name alone (Enter with an empty key does the same
+in the TUI). `--model` and `--base-url` are the settings step's values, and
+`--json` prints `{ provider, label, model, local }` for the caller to report.
+Either front-end writes `auth.json` and `config.json` through the same core, so a
+login in one is a login in the others; neither needs a project open.
+
 ### Several providers at once
 
 Credentials for different providers live side by side in `auth.json`, so you can

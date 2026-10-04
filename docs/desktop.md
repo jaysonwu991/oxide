@@ -520,6 +520,18 @@ via `auth::connect` (which also makes that provider active), or an existing
 stored provider via `auth::select_stored`. Model and base URL are persisted with
 `Config::persist_selection_at`, the same writer the CLI uses.
 
+The dialog is the provider table itself, read from `auth::provider_views()` — the
+one listing the CLI's `/login` picker and the VS Code panel draw — with a search
+box over it, since the table holds every provider a client can connect. A row
+names the provider the way a login takes it, and says what state it is in (`In
+use` for the active one, `No key needed` for a server on this machine). Opening it
+selects the provider in use, else the first stored one, else the first row, and a
+search that hides the selection moves it to the first visible row rather than
+leaving nothing selected. The selection is held by provider name, not by position,
+because the list is filtered while the reader types. A provider that needs no key
+is connected as it is — the key field and its note say which of the two is asked
+for.
+
 ## Multiple projects (cross-repo)
 
 `manager::DesktopManager` keeps a project registry at

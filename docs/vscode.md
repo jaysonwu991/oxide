@@ -138,14 +138,17 @@ desktop's, so the two can only drift together.
 
 `core/config.ts` resolves the same `<platform config dir>/Oxide` directory the
 CLI uses (falling back to the pre-migration lowercase directory), so a provider
-connected with the terminal's `/login` is immediately usable in the panel. The
-extension never writes that directory: the model, agent, reasoning, tools, and
-trust are VS Code settings (`oxide.*`) that become `--model` / `--agent` / …
-flags, and the CLI applies them to its own config.
+connected with the terminal's `/login` is immediately usable in the panel. For
+most of that directory the extension is a reader: the model, agent, reasoning,
+tools, and trust are VS Code settings (`oxide.*`) that become `--model` /
+`--agent` / … flags, and the CLI applies them to its own config.
 
-Provider logins stay in the CLI: run **Oxide: Open Terminal (TUI)** and `/login`
-there. The status bar reads `config.json` only to label the active
-provider/model.
+A login is the exception, and it is not written here either: **Oxide: Connect
+Provider**, `/connect` in the composer, or a row of the panel's provider table
+runs the installed CLI's own `oxide login <provider> --json --key-stdin`, which
+puts the credential in `auth.json` and the selection in `config.json` where every
+other front-end reads them. The status bar reads `config.json` only to label the
+active provider/model.
 
 ## MCP servers
 
@@ -684,10 +687,24 @@ completion, labelled *Commands and skills*.
   `/trust` (`/access`), `/mcps` (`/mcp`), `/session` (`/sessions`), `/new`,
   `/attach`, `/usage` (`/cost`) and `/help`.
 - A client command the panel has no action for — `/permissions`, the desktop
-  app's `/theme`, `/connect`, `/logout` — is answered in the transcript rather
-  than sent to the model as the text `/permissions`. Its row is left out of the
-  palette, and the desktop-only names are dropped with it, so a row is only ever
-  offered for something the panel or the CLI can actually do.
+  app's `/theme`, `/logout` — is answered in the transcript rather than sent to
+  the model as the text `/permissions`. Its row is left out of the palette, and
+  the desktop-only names are dropped with it, so a row is only ever offered for
+  something the panel or the CLI can actually do.
+- `/connect` (alias `/login`) opens the provider table in the panel: every
+  provider a client can connect, read from the CLI's own `oxide providers --json`
+  so the panel keeps no copy of it, with a search box over it and a `In use`,
+  `Stored` or `No key needed` word on the rows that have something to say. Taking
+  a row runs `oxide login <provider> --json` through the installed binary, with
+  the key — asked for in VS Code's own password box, so a secret never reaches a
+  document or a transcript — written to that process's stdin (`--key-stdin`)
+  rather than passed as an argument. A stored credential and a provider that needs
+  none are connected by name alone, and the credential lands in the same
+  `auth.json` the terminal's `/login` writes, so either one is a login in the
+  other. The footer's model chip is where the model is chosen afterwards. The
+  command is also contributed as **Oxide: Connect Provider** for the palette, and
+  no project has to be open — the configuration it writes lives beside the CLI's,
+  not in a folder.
 - Arguments after the name are the message, as they are in the terminal:
   `/session auth is broken` is a prompt the agent has something to say about, not
   the session listing.
