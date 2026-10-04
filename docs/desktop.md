@@ -524,13 +524,17 @@ The dialog is the provider table itself, read from `auth::provider_views()` — 
 one listing the CLI's `/login` picker and the VS Code panel draw — with a search
 box over it, since the table holds every provider a client can connect. A row
 names the provider the way a login takes it, and says what state it is in (`In
-use` for the active one, `No key needed` for a server on this machine). Opening it
+use` for the active one, `No key needed` for a server on this machine). Each row
+also carries where its credential comes from (`credential`: `key`, `external` or
+`none`), which is what decides whether the dialog asks for one at all. Opening it
 selects the provider in use, else the first stored one, else the first row, and a
 search that hides the selection moves it to the first visible row rather than
 leaving nothing selected. The selection is held by provider name, not by position,
 because the list is filtered while the reader types. A provider that needs no key
-is connected as it is — the key field and its note say which of the two is asked
-for.
+— a server on this machine, or one that authorizes with a credential this machine
+already holds — is connected as it is: the key field goes and a sentence saying
+why takes its place. A provider whose own credential is missing is asked for a
+key, and `login` reports what to set when the machine has neither.
 
 ## Multiple projects (cross-repo)
 

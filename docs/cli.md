@@ -1093,6 +1093,10 @@ Start `oxide` even without a key, then run `/login`:
   saving — a row left blank keeps the provider's default.
 - `/login deepseek` or `/login portkey` skips the picker. When that provider is
   already connected the command switches to it; otherwise it asks for the key.
+- Bedrock and Vertex ask for no key: they authorize with a credential this
+  machine already has — an AWS signing identity, Google's application-default
+  file — so `/login bedrock` is a login in itself. A machine without one says
+  what to set instead of asking for a key that would never be read.
 - A provider that authenticates by a browser flow instead of a pasted key asks
   for that instead: `/login github-copilot` shows a GitHub URL and a one-time
   code (also copied to the clipboard), waits for the approval, and stores the
@@ -1117,24 +1121,39 @@ command draw the same table the TUI's picker does, from one definition:
 oxide providers --json          # every provider, and the state of each
 oxide login openai --json --key-stdin <key
 oxide login ollama              # a stored credential, or one that needs none
+oxide login bedrock             # a credential this machine already has
 ```
 
 `oxide providers --json` prints `{ "active": <name|null>, "providers": [...] }`,
 where each row carries the `name` a login takes, the `label` and `description` a
 picker paints, the `keyUrl` a key is issued at, and `local`, `stored` and `active`
-— the state a row shows beside it. The human-readable form of the same listing is
-one tab-separated line per provider, marked `[in use]`, `[stored]` or
-`[no key needed]`.
+— the state a row shows beside it. Its `credential` says where a credential comes
+from, which is what decides whether a picker asks for a key at all:
+
+- `key` — a key typed here and kept in `auth.json`.
+- `external` — one this machine already holds, read where it lives and never
+  copied into the store: Bedrock's AWS signing identity (`AWS_ACCESS_KEY_ID` and
+  `AWS_SECRET_ACCESS_KEY`, or `~/.aws/credentials`) and Vertex's
+  application-default file (`GOOGLE_APPLICATION_CREDENTIALS`, or
+  `gcloud auth application-default login`). No key is asked for, and a login with
+  none stores nothing.
+- `none` — nothing to present; a model server on this machine.
+
+The human-readable form of the same listing is one tab-separated line per
+provider, marked `[in use]`, `[stored]`, `[no key needed]` or
+`[machine credential]`.
 
 `oxide login <provider> [--key-stdin] [--model <m>] [--base-url <url>] [--json]`
 is what a front-end runs when a row is taken. The key is read from stdin rather
 than an argument — an argument is visible in the process listing and kept in a
-shell's history — and `--key-stdin` is what says to read one, so a stored or
-local provider is connected by name alone (Enter with an empty key does the same
-in the TUI). `--model` and `--base-url` are the settings step's values, and
-`--json` prints `{ provider, label, model, local }` for the caller to report.
-Either front-end writes `auth.json` and `config.json` through the same core, so a
-login in one is a login in the others; neither needs a project open.
+shell's history — and `--key-stdin` is what says to read one, so a stored
+provider is connected by name alone, and so is one whose credential is the
+machine's own (Enter with an empty key does the same in the TUI). A provider
+whose own credential is missing is refused with what to set rather than asked for
+a key it would never read. `--model` and `--base-url` are the settings step's
+values, and `--json` prints `{ provider, label, model, local }` for the caller to
+report. Either front-end writes `auth.json` and `config.json` through the same
+core, so a login in one is a login in the others; neither needs a project open.
 
 ### Several providers at once
 

@@ -694,13 +694,16 @@ completion, labelled *Commands and skills*.
 - `/connect` (alias `/login`) opens the provider table in the panel: every
   provider a client can connect, read from the CLI's own `oxide providers --json`
   so the panel keeps no copy of it, with a search box over it and a `In use`,
-  `Stored` or `No key needed` word on the rows that have something to say. Taking
-  a row runs `oxide login <provider> --json` through the installed binary, with
-  the key — asked for in VS Code's own password box, so a secret never reaches a
-  document or a transcript — written to that process's stdin (`--key-stdin`)
-  rather than passed as an argument. A stored credential and a provider that needs
-  none are connected by name alone, and the credential lands in the same
-  `auth.json` the terminal's `/login` writes, so either one is a login in the
+  `Stored`, `No key needed` or `Machine credential` word on the rows that have
+  something to say. Taking a row runs `oxide login <provider> --json` through the
+  installed binary, with the key — asked for in VS Code's own password box, so a
+  secret never reaches a document or a transcript — written to that process's
+  stdin (`--key-stdin`) rather than passed as an argument. A stored credential, a
+  server on this machine and a provider the machine's own identity authorizes are
+  connected by name alone — the row's `credential` (`key`, `external`, `none`) is
+  what decides whether the box is put up at all, so Bedrock is never asked to
+  paste an AWS key the request does not read — and the credential lands in the
+  same `auth.json` the terminal's `/login` writes, so either one is a login in the
   other. The footer's model chip is where the model is chosen afterwards. The
   command is also contributed as **Oxide: Connect Provider** for the palette, and
   no project has to be open — the configuration it writes lives beside the CLI's,
