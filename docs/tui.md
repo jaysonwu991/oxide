@@ -38,6 +38,10 @@ back to what it is (`• image (png)`) where that cannot be written — with the
 ones past four folded into a `• N more` row so a long paste cannot push the box
 off the screen. The transcript line the message becomes names them the same way.
 
+An `@path` in the message attaches a file the same way, and a reference to one
+this app may not read is still an attachment: the refusal is reported with the
+grant to give rather than being sent to the model as the text it was typed as.
+
 Run `/hotkeys` for the in-app shortcut list and `/help` for commands, agents, and
 skills.
 

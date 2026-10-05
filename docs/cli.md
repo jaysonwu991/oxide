@@ -857,7 +857,10 @@ one back under the file it was queued from (`• /tmp/shot.png`) — a file's ow
 text included, which is a part of the message like an image rather than part of
 the text typed beside it. In a non-interactive run the same parts come from `--image <path>`
 and from `@path` references in the prompt, so
-`oxide -p "what changed here? @shot.png"` works without a terminal. The terminal
+`oxide -p "what changed here? @shot.png"` works without a terminal — a reference
+to a file whose bytes cannot be read is taken by its name, so a media reference
+the app may not read is reported with the grant to give rather than handed to
+the model as the literal `@path` it was typed as. The terminal
 completes a reference as it is typed: the
 project's own files and folders are offered above the composer (`↑`/`↓` walk the
 rows, Tab or Enter takes one, Escape closes the list), a folder keeps its token
