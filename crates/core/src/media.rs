@@ -78,6 +78,12 @@ pub const MAX_ATTACHMENT_BYTES: usize = 20 * 1024 * 1024;
 /// inside the payload only makes it stricter.
 const MAX_DATA_URL_CHARS: usize = MAX_ATTACHMENT_BYTES / 3 * 4;
 
+/// How long a pasted picture that came with no file name of its own is kept.
+/// Pi writes its pasteboard grabs to the temp directory; this keeps them beside
+/// the rest of the run's scratch under the config dir, and prunes them the way
+/// truncated tool output is pruned.
+const CLIPBOARD_RETENTION_SECS: u64 = 7 * 24 * 60 * 60;
+
 /// The image formats a provider takes as they stand — Pi's own normalized set,
 /// so a GIF keeps its animation and a PNG, a JPEG or a WebP travels untouched.
 /// Anything else sniffed as an image (a BMP, a TIFF, a HEIC) is converted to
@@ -682,12 +688,22 @@ pub fn attachment_id(part: &ContentPart) -> String {
         .collect()
 }
 
-/// A short human label for an attachment, shown in the `/attach` listing.
+/// A short human label for an attachment, shown in the `/attach` listing and
+/// in the composer's pending rows: an image is named by the kind of thing it
+/// is and its format, since one whose front-end holds no file name for it has
+/// only those to go by — a clipboard paste the pasteboard named nothing for is
+/// given a file of its own by [`clipboard`] and named by that path instead,
+/// so this is the fallback for a paste whose bytes could not be written.
 pub fn attachment_label(part: &ContentPart) -> String {
     match part {
-        ContentPart::ImageUrl { image_url } => data_url_media_type(&image_url.url)
-            .and_then(|media| media.rsplit('/').next().map(str::to_string))
-            .unwrap_or_else(|| "image".to_string()),
+        ContentPart::ImageUrl { image_url } => {
+            let format = data_url_media_type(&image_url.url)
+                .and_then(|media| media.rsplit('/').next().map(str::to_string));
+            match format {
+                Some(format) => format!("image ({format})"),
+                None => "image".to_string(),
+            }
+        }
         ContentPart::File { file } => file
             .filename
             .clone()
@@ -777,8 +793,13 @@ pub fn expand_path(raw: &str, cwd: &Path) -> PathBuf {
 /// to go with it.
 #[derive(Debug)]
 pub enum Clipboard {
-    /// The part to attach.
-    Attached(ContentPart),
+    /// The part to attach, with the file it is named by: the file a copy named,
+    /// or the one a pasteboard picture was written to when the copy named none
+    /// — a front-end shows a pending attachment by the file it came from.
+    Attached {
+        part: ContentPart,
+        path: Option<PathBuf>,
+    },
     /// Nothing on the pasteboard could be attached, with the types it holds when
     /// the read could name them — so a paste that finds nothing says what it did
     /// find, rather than the same thing for an empty clipboard and a copy it
@@ -798,6 +819,15 @@ pub enum Clipboard {
 /// that is here but cannot be attached — past the size limit, or a binary that
 /// is neither media nor text — is refused by name rather than replaced by that
 /// icon.
+///
+/// A paste that names no file — a picture copied straight from a preview window
+/// leaves only bytes on the pasteboard — is written under the config dir's own
+/// scratch and answered with that path, so a front-end shows it by a file the
+/// way it shows every other attachment instead of by what it happens to be. The
+/// name is the part's content id, the same one `/attach` lists it by, so the
+/// two agree; the scratch holds a week's pastes and is pruned as the next one
+/// arrives. Where it cannot be written the part is answered with no path rather
+/// than lost, and the front-end names it by what it is.
 pub fn clipboard() -> Clipboard {
     if let Some(path) = clipboard_file(clipboard_path()) {
         return attach(path);
@@ -809,8 +839,13 @@ pub fn clipboard() -> Clipboard {
     {
         return attach(path);
     }
-    if let Some(part) = clipboard_image() {
-        return Clipboard::Attached(part);
+    if let Some(picture) = clipboard_picture() {
+        let path = clipboard_dir()
+            .and_then(|dir| save_clipboard_image(&dir, &picture.part, &picture.bytes));
+        return Clipboard::Attached {
+            part: picture.part,
+            path,
+        };
     }
     match copy {
         Some(copy) => Clipboard::Nothing { types: copy.types },
@@ -821,7 +856,10 @@ pub fn clipboard() -> Clipboard {
 /// A copied file as the part to attach, or the reason it is not one.
 fn attach(path: PathBuf) -> Clipboard {
     match load_attachment(&path) {
-        Ok(part) => Clipboard::Attached(part),
+        Ok(part) => Clipboard::Attached {
+            part,
+            path: Some(path),
+        },
         Err(err) => Clipboard::Refused(format!("{err:#}")),
     }
 }
@@ -841,19 +879,65 @@ fn clipboard_file(path: Option<PathBuf>) -> Option<PathBuf> {
 /// Best-effort clipboard image grab. On macOS this asks the pasteboard through
 /// AppKit for the type it advertises, then takes `pngpaste`'s answer when it is
 /// installed and coerces the clipboard with `osascript` when that finds none; on
-/// Linux it needs `wl-paste` or `xclip`.
-pub fn clipboard_image() -> Option<ContentPart> {
+/// Linux it needs `wl-paste` or `xclip`. The bytes come back beside the part, so
+/// a caller with somewhere to put them can give a nameless paste a file name.
+struct Picture {
+    part: ContentPart,
+    bytes: Vec<u8>,
+}
+
+fn clipboard_picture() -> Option<Picture> {
     let bytes = clipboard_bytes()?;
     if bytes.is_empty() {
         return None;
     }
     let bytes = optimize_image(bytes, "image/png");
-    Some(ContentPart::ImageUrl {
+    let part = ContentPart::ImageUrl {
         image_url: ImageUrl {
             url: format!("data:image/png;base64,{}", base64_encode(&bytes)),
             detail: None,
         },
-    })
+    };
+    Some(Picture { part, bytes })
+}
+
+/// Writes a pasted picture beside the run's other scratch, named by its own
+/// content id — the id the `/attach` listing shows it by — so a paste the
+/// pasteboard named no file for is named like any other attachment, and a second
+/// paste of the same picture lands on the file already there rather than a
+/// copy. Best effort: the bytes are written where they can be, and a paste that
+/// cannot be written still attaches, named by what it is.
+fn save_clipboard_image(dir: &Path, part: &ContentPart, bytes: &[u8]) -> Option<PathBuf> {
+    std::fs::create_dir_all(dir).ok()?;
+    cleanup_clipboard(dir);
+    let path = dir.join(format!("{}.png", attachment_id(part)));
+    if !path.exists() {
+        std::fs::write(&path, bytes).ok()?;
+    }
+    Some(path)
+}
+
+fn clipboard_dir() -> Option<PathBuf> {
+    Some(crate::config::config_dir()?.join("clipboard"))
+}
+
+fn cleanup_clipboard(dir: &Path) {
+    let cutoff = std::time::SystemTime::now()
+        .checked_sub(std::time::Duration::from_secs(CLIPBOARD_RETENTION_SECS));
+    let Some(cutoff) = cutoff else {
+        return;
+    };
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let Ok(meta) = entry.metadata() else {
+            continue;
+        };
+        if meta.modified().map(|m| m < cutoff).unwrap_or(false) {
+            let _ = std::fs::remove_file(entry.path());
+        }
+    }
 }
 
 /// The file the clipboard holds, when a copy put a file URL on it. macOS only:
@@ -1564,7 +1648,10 @@ mod tests {
         std::fs::write(dir.join("notes.txt"), b"hello").unwrap();
 
         match attach(dir.join("notes.txt")) {
-            Clipboard::Attached(part) => assert_eq!(part_kind(&part), "text"),
+            Clipboard::Attached { part, path } => {
+                assert_eq!(part_kind(&part), "text");
+                assert_eq!(path.as_deref(), Some(dir.join("notes.txt").as_path()));
+            }
             other => panic!("a copied text file should attach: {other:?}"),
         }
         // A copy that names a folder is reported rather than passed over as an
@@ -1734,8 +1821,8 @@ mod tests {
         assert_eq!(attachment_id(&a), attachment_id(&b));
         assert_ne!(attachment_id(&a), attachment_id(&c));
         assert_eq!(attachment_id(&a).len(), 16);
-        assert_eq!(attachment_label(&a), "png");
-        assert_eq!(attachment_label(&c), "jpeg");
+        assert_eq!(attachment_label(&a), "image (png)");
+        assert_eq!(attachment_label(&c), "image (jpeg)");
         let document = ContentPart::File {
             file: FileData {
                 filename: Some("spec.pdf".into()),
@@ -1743,5 +1830,95 @@ mod tests {
             },
         };
         assert_eq!(attachment_label(&document), "spec.pdf");
+    }
+
+    /// A pasted picture the pasteboard named no file for is written beside the
+    /// run's other scratch, named by the same content id `/attach` lists it by,
+    /// so the composer shows a path the way it does for a file paste.
+    #[test]
+    fn a_pasted_picture_is_written_where_it_can_be_named() {
+        let image = |url: &str| ContentPart::ImageUrl {
+            image_url: ImageUrl {
+                url: url.to_string(),
+                detail: None,
+            },
+        };
+        let dir = std::env::temp_dir().join(format!("oxide_media_paste_{}", std::process::id()));
+        std::fs::remove_dir_all(&dir).ok();
+
+        let first = image("data:image/png;base64,AAAA");
+        let path = save_clipboard_image(&dir, &first, b"the payload").expect("a scratch file");
+        assert_eq!(path, dir.join(format!("{}.png", attachment_id(&first))));
+        assert_eq!(std::fs::read(&path).unwrap(), b"the payload");
+
+        // The same picture pasted again lands on the file already there rather
+        // than leaving a second copy of it behind.
+        assert_eq!(
+            save_clipboard_image(&dir, &first, b"the payload").as_deref(),
+            Some(path.as_path())
+        );
+        assert_eq!(std::fs::read_dir(&dir).unwrap().count(), 1);
+
+        // Two different pictures are named apart by their own bytes.
+        let second = save_clipboard_image(
+            &dir,
+            &image("data:image/png;base64,BBBB"),
+            b"another payload",
+        )
+        .expect("a scratch file");
+        assert_ne!(second, path);
+        assert_eq!(std::fs::read_dir(&dir).unwrap().count(), 2);
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// Nothing is remembered forever: the scratch is pruned on the next write,
+    /// the way truncated tool output is.
+    #[test]
+    fn a_pasted_picture_is_kept_for_a_week_and_no_longer() {
+        let dir =
+            std::env::temp_dir().join(format!("oxide_media_paste_age_{}", std::process::id()));
+        std::fs::remove_dir_all(&dir).ok();
+        std::fs::create_dir_all(&dir).unwrap();
+        let stale = dir.join("stale.png");
+        let fresh = dir.join("fresh.png");
+        std::fs::write(&stale, b"stale").unwrap();
+        std::fs::write(&fresh, b"fresh").unwrap();
+        let past = std::time::SystemTime::now()
+            - std::time::Duration::from_secs(CLIPBOARD_RETENTION_SECS + 24 * 60 * 60);
+        std::fs::File::options()
+            .write(true)
+            .open(&stale)
+            .unwrap()
+            .set_modified(past)
+            .unwrap();
+
+        cleanup_clipboard(&dir);
+
+        assert!(!stale.exists());
+        assert!(fresh.exists());
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// A paste whose bytes cannot be written still attaches — the name is the
+    /// only thing this costs — so a scratch directory the machine refuses
+    /// leaves the attachment with no path rather than losing it.
+    #[test]
+    fn a_paste_the_scratch_refuses_still_attaches() {
+        let dir = std::env::temp_dir().join(format!("oxide_media_paste_ro_{}", std::process::id()));
+        std::fs::remove_dir_all(&dir).ok();
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("not-a-directory");
+        std::fs::write(&file, b"x").unwrap();
+        let image = ContentPart::ImageUrl {
+            image_url: ImageUrl {
+                url: "data:image/png;base64,AAAA".to_string(),
+                detail: None,
+            },
+        };
+
+        assert!(save_clipboard_image(&file.join("clipboard"), &image, b"payload").is_none());
+
+        std::fs::remove_dir_all(&dir).ok();
     }
 }

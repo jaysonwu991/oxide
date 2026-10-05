@@ -6,6 +6,7 @@ use crate::plugin_registry::{MarketplaceOverview, MarketplacePluginOverview};
 use crate::session::SessionSummary;
 use crate::tools::DiffPreview;
 use ratatui::text::Line;
+use std::path::PathBuf;
 use std::process::Command;
 use std::time::Instant;
 
@@ -690,12 +691,25 @@ impl MarketplacesState {
 
 /// One pending attachment on the next message: an image, a PDF, or a text file
 /// the run carries as its own text. The id is content addressed, so pasting the
-/// same image twice replaces rather than duplicates.
+/// same image twice replaces rather than duplicates, and the path is the file a
+/// paste read it from, which is the name the composer shows it by.
 #[derive(Clone, Debug)]
 pub struct Attachment {
     pub id: String,
     pub label: String,
+    pub path: Option<PathBuf>,
     pub part: ContentPart,
+}
+
+impl Attachment {
+    /// The name this attachment is shown by: the file it was read from when a
+    /// paste named one, else what it is (`image (png)`, `spec.pdf`).
+    pub fn display(&self) -> String {
+        match &self.path {
+            Some(path) => path.display().to_string(),
+            None => self.label.clone(),
+        }
+    }
 }
 
 /// A tool call waiting for the user's answer. The question is asked in the
@@ -782,20 +796,49 @@ pub struct App {
 }
 
 impl App {
-    /// Adds a pending attachment, de-duplicating by content id. Returns `false`
-    /// when an identical part is already attached.
+    /// Adds a pending attachment, de-duplicating by content id. Returns whether
+    /// it was added; a part with no file to name it by is shown as what it is.
     pub fn add_attachment(&mut self, part: ContentPart) -> bool {
+        self.attach(part, None).is_some()
+    }
+
+    /// Adds a pending attachment read from `path`, returning the name it is
+    /// shown by, or `None` when the same part is already attached.
+    pub fn add_attachment_from(&mut self, part: ContentPart, path: PathBuf) -> Option<String> {
+        self.attach(part, Some(path))
+    }
+
+    /// Puts an attachment back in the composer with the file it was read from:
+    /// a queued message the run refused returns what it was sent with.
+    pub fn restore_attachment(&mut self, attachment: Attachment) {
+        if !self
+            .attachments
+            .iter()
+            .any(|existing| existing.id == attachment.id)
+        {
+            self.attachments.push(attachment);
+        }
+    }
+
+    fn attach(&mut self, part: ContentPart, path: Option<PathBuf>) -> Option<String> {
         let id = media::attachment_id(&part);
         if self.attachments.iter().any(|existing| existing.id == id) {
-            return false;
+            return None;
         }
         let label = media::attachment_label(&part);
-        self.attachments.push(Attachment { id, label, part });
-        true
+        let attachment = Attachment {
+            id,
+            label,
+            path,
+            part,
+        };
+        let name = attachment.display();
+        self.attachments.push(attachment);
+        Some(name)
     }
 
     /// Removes a pending attachment by exact id, a unique id prefix, or a 1-based
-    /// index. Returns the removed label when something matched.
+    /// index. Returns the name it was shown by when something matched.
     pub fn remove_attachment(&mut self, key: &str) -> Option<String> {
         let key = key.trim();
         if key.is_empty() {
@@ -803,7 +846,7 @@ impl App {
         }
         if let Ok(index) = key.parse::<usize>() {
             if (1..=self.attachments.len()).contains(&index) {
-                return Some(self.attachments.remove(index - 1).label);
+                return Some(self.attachments.remove(index - 1).display());
             }
         }
         let matches: Vec<usize> = self
@@ -814,17 +857,14 @@ impl App {
             .map(|(index, _)| index)
             .collect();
         match matches.as_slice() {
-            [index] => Some(self.attachments.remove(*index).label),
+            [index] => Some(self.attachments.remove(*index).display()),
             _ => None,
         }
     }
 
-    /// Takes every pending attachment's content part, leaving the list empty.
-    pub fn take_attachment_parts(&mut self) -> Vec<ContentPart> {
+    /// Takes every pending attachment, leaving the list empty.
+    pub fn take_attachments(&mut self) -> Vec<Attachment> {
         std::mem::take(&mut self.attachments)
-            .into_iter()
-            .map(|attachment| attachment.part)
-            .collect()
     }
 
     /// A one-line listing of the pending attachments for `/attach`.
@@ -838,7 +878,7 @@ impl App {
                 "  {}. {}  {}\n",
                 index + 1,
                 attachment.id,
-                attachment.label
+                attachment.display()
             ));
         }
         out.push_str("remove one with /attach remove <id|n>, or clear with /attach clear");
@@ -1405,17 +1445,53 @@ mod tests {
 
         // A unique id prefix removes one, and the remaining index is 1-based.
         let id = app.attachments[0].id.clone();
-        assert_eq!(app.remove_attachment(&id[..6]).as_deref(), Some("png"));
+        assert_eq!(
+            app.remove_attachment(&id[..6]).as_deref(),
+            Some("image (png)")
+        );
         assert_eq!(app.attachments.len(), 1);
-        assert_eq!(app.remove_attachment("1").as_deref(), Some("png"));
+        assert_eq!(app.remove_attachment("1").as_deref(), Some("image (png)"));
         assert!(app.attachments.is_empty());
         assert_eq!(app.remove_attachment("1"), None);
         assert_eq!(app.remove_attachment("zzzz"), None);
 
         app.add_attachment(image("CCCC"));
-        let parts = app.take_attachment_parts();
+        let parts = app.take_attachments();
         assert_eq!(parts.len(), 1);
         assert!(app.attachments.is_empty());
+    }
+
+    #[test]
+    fn a_file_paste_is_named_by_its_path_and_a_pathless_part_by_its_kind() {
+        let mut app = test_app();
+        let image = |data: &str| ContentPart::ImageUrl {
+            image_url: crate::llm::ImageUrl {
+                url: format!("data:image/png;base64,{data}"),
+                detail: None,
+            },
+        };
+
+        assert_eq!(
+            app.add_attachment_from(image("AAAA"), PathBuf::from("/tmp/shot.png"))
+                .as_deref(),
+            Some("/tmp/shot.png")
+        );
+        // A paste that named no file, and one whose part came back from a
+        // queue, fall back to what the attachment is.
+        assert!(app.add_attachment(image("BBBB")));
+        assert_eq!(app.attachments[1].display(), "image (png)");
+        assert_eq!(
+            app.add_attachment_from(image("AAAA"), PathBuf::from("/tmp/other.png")),
+            None,
+            "the same picture pasted twice stays one attachment"
+        );
+
+        let restored = app.take_attachments();
+        assert_eq!(restored.len(), 2);
+        app.restore_attachment(restored[0].clone());
+        app.restore_attachment(restored[0].clone());
+        assert_eq!(app.attachments.len(), 1, "a restore does not duplicate");
+        assert_eq!(app.attachments[0].display(), "/tmp/shot.png");
     }
 
     #[test]

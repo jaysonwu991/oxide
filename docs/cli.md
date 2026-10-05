@@ -825,20 +825,32 @@ WSL, where the terminal claims `Alt+Up` for scrollback.
 ## Attachments
 
 A message can carry images, PDFs and text files, which the selected LLM reads as
-media or as text. `Ctrl+V` pastes a clipboard image — or the file the copy names,
-so a screenshot copied from the Finder attaches the picture itself rather than
-the pasteboard's icon of the file, whichever record the copy left (a file URL, or
-the Finder's own alias record); a file copy that arrived from another machine
-leaves its URL behind without the file, and what the pasteboard itself carries is
-attached then. A copy this machine has that cannot be attached — a folder, a
-binary — is reported with the reason, and a clipboard holding no image and no
-file names the types it carries, so a paste that finds nothing says what it did
-find. `@path` names one on disk, and `/attach
-[list|remove <id|n>|clear]` lists and edits what is pending; a message queued
-while the agent is busy keeps the attachments it was queued with. In a
-non-interactive run the same parts come from `--image <path>` and from `@path`
-references in the prompt, so `oxide -p "what changed here? @shot.png"` works
-without a terminal. The terminal completes a reference as it is typed: the
+media or as text. What is pending is painted in the message box itself, one row
+per attachment above the text, named by the file it came from
+(`• /tmp/shot.png`), so what a message will carry is read where it is typed
+rather than counted beside it. A paste the pasteboard named no file for is
+written under the config dir (`clipboard/<id>.png`) and named by that path, so it
+reads like any other attachment and the id in its name is the one `/attach`
+lists it by; where that scratch cannot be written the row falls back to what the
+attachment is, `• image (png)`. Past four attachments the rest fold into a
+`• N more` row, so a long paste cannot push the box off the screen, and the
+transcript line the message ends up as names them the same way.
+
+`Ctrl+V` pastes a clipboard image — or the file the copy names, so a screenshot
+copied from the Finder attaches the picture itself rather than the pasteboard's
+icon of the file, whichever record the copy left (a file URL, or the Finder's
+own alias record); a file copy that arrived from another machine leaves its URL
+behind without the file, and what the pasteboard itself carries is attached then.
+A copy this machine has that cannot be attached — a folder, a binary — is
+reported with the reason, and a clipboard holding no image and no file names the
+types it carries, so a paste that finds nothing says what it did find. `@path`
+names one on disk, and `/attach [list|remove <id|n>|clear]` lists and edits what
+is pending; a message queued while the agent is busy keeps the attachments it was
+queued with, and pulling that message back into the box (`Alt+Up`) brings them
+back with it. In a non-interactive run the same parts come from `--image <path>`
+and from `@path` references in the prompt, so
+`oxide -p "what changed here? @shot.png"` works without a terminal. The terminal
+completes a reference as it is typed: the
 project's own files and folders are offered above the composer (`↑`/`↓` walk the
 rows, Tab or Enter takes one, Escape closes the list), a folder keeps its token
 open so the query goes on narrowing inside it, a file closes it with a space, and
@@ -1499,6 +1511,7 @@ Runtime state lives under the platform Oxide config directory:
 - `themes/<name>.json` — custom TUI themes
 - `plugins/` — installed plugin packages, marketplaces, and plugin state
 - `portkey-usage.json` — Portkey spend bar settings and API key (mode `0600`, override the path with `OXIDE_USAGE_FILE`)
+- `clipboard/<id>.png` — a picture pasted from the clipboard that named no file, so it has a path to be attached and shown by; retained 7 days
 - `truncated/` — full text of tool outputs that exceeded the line/byte cap, retained 7 days (override with `OXIDE_TRUNCATION_DIR`)
 
 Global ecosystem resources can additionally live under `~/.oxide/` and

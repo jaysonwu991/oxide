@@ -24,10 +24,19 @@ oxide
 
 The welcome area stacks the `OXIDE` wordmark above a short summary of the loaded
 ecosystem, context files, and MCP/plugin/memory state. The status row above the
-editor shows the current activity and elapsed time, and the footer shows the
+editor shows the current activity and elapsed time — what is pending travels in
+the box itself rather than being counted there — and the footer shows the
 project path with the Git branch and session name, cumulative usage (including
 cache and cost), context usage, and the current model and thinking level (plus a
 plugin status row when present, and the Portkey spend bar when it is enabled).
+
+The message box names what the message will carry: one row per pending
+attachment above the text, indented one column and named by the file it came
+from (`• /tmp/shot.png`) — a paste the pasteboard named no file for is written
+under the config dir (`clipboard/<id>.png`) and named by that path, falling
+back to what it is (`• image (png)`) where that cannot be written — with the
+ones past four folded into a `• N more` row so a long paste cannot push the box
+off the screen. The transcript line the message becomes names them the same way.
 
 Run `/hotkeys` for the in-app shortcut list and `/help` for commands, agents, and
 skills.
