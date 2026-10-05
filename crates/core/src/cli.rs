@@ -8,7 +8,7 @@ use crate::agent::AgentEvent;
 use crate::approval::ApprovalBroker;
 use crate::ask::{Answer, AskBroker};
 use crate::session::SessionLog;
-use anyhow::{Context, Result};
+use anyhow::Result;
 use serde_json::{json, Value};
 use std::io::{BufRead, Write};
 use std::path::{Path, PathBuf};
@@ -49,7 +49,7 @@ pub fn expand_file_args(cwd: &Path, args: &[String]) -> Result<FileArgs> {
             attachments.push(full);
         } else {
             let content = std::fs::read_to_string(&full)
-                .with_context(|| format!("reading @{}", full.display()))?;
+                .map_err(|err| crate::media::read_error(&full, &err))?;
             if !text.is_empty() {
                 text.push_str("\n\n");
             }
@@ -702,6 +702,35 @@ mod tests {
         assert!(args.text.contains("please"));
         assert!(args.attachments.is_empty());
 
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// A file argument this process may not read names the grant rather than
+    /// reporting the platform's errno on its own, the same reason the paste and
+    /// the `@path` reference in a message do.
+    #[cfg(unix)]
+    #[test]
+    fn an_at_argument_the_platform_withholds_names_the_grant() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = std::env::temp_dir().join(format!("oxide_cli_denied_{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("shot.png");
+        std::fs::write(&file, b"not an image").unwrap();
+        std::fs::set_permissions(&file, std::fs::Permissions::from_mode(0o000)).unwrap();
+
+        // Root reads a file whatever its mode says, and a runner that does would
+        // assert nothing.
+        if std::fs::read(&file).is_err() {
+            let Err(error) = expand_file_args(&dir, &["@shot.png".into()]) else {
+                panic!("a file this process may not read should be reported");
+            };
+            let reason = error.to_string();
+            assert!(reason.starts_with("reading "), "{reason}");
+            assert!(reason.contains("may not read that file"), "{reason}");
+        }
+
+        std::fs::set_permissions(&file, std::fs::Permissions::from_mode(0o600)).ok();
         std::fs::remove_dir_all(&dir).ok();
     }
 }

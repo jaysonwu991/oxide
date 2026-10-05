@@ -4,7 +4,7 @@
 //! base64 encoding, `@path` reference extraction, and a best-effort OS
 //! clipboard grab.
 use crate::llm::{ContentPart, FileData, ImageUrl};
-use anyhow::{Context, Result};
+use anyhow::Result;
 use sha2::{Digest, Sha256};
 use std::path::{Path, PathBuf};
 #[cfg(any(target_os = "macos", target_os = "linux", target_os = "windows"))]
@@ -240,11 +240,62 @@ pub fn is_pdf_path(path: &Path) -> bool {
 }
 
 /// Whether a path is one an attachment reads from, which is what a front-end
-/// asks before routing a file as media. Its bytes decide in every case — a
-/// `.tif` holding text is not an image and a `.pdf` holding text is not a
-/// document.
+/// asks before routing a file as media. Its bytes decide — a `.tif` holding
+/// text is not an image and a `.pdf` holding text is not a document — and a file
+/// whose bytes cannot be read at all is not media here, since nothing names it:
+/// `references_attachment` is the door for a reference, because a reference
+/// whose file cannot be read is the one that has to report the refusal rather
+/// than be passed over.
 pub fn is_attachment_path(path: &Path) -> bool {
-    is_image_path(path) || is_pdf_path(path)
+    read_head(path, SNIFF_BYTES).is_some_and(|head| head_is_media(&head))
+}
+
+/// Whether a buffer's own bytes name something the app attaches: an image a
+/// provider takes, one the OS image tools convert, or a PDF.
+fn head_is_media(head: &[u8]) -> bool {
+    image_mime_of_bytes(head).is_some() || head.starts_with(PDF_MAGIC)
+}
+
+/// Whether a reference names an attachment the app has to read: its bytes say
+/// media, or — the one case with no bytes to go on — its head cannot be read at
+/// all and its name claims a format the app attaches. A file whose bytes *are*
+/// read and name nothing is its own text, whatever it is called.
+fn references_attachment(path: &Path) -> bool {
+    match read_head(path, SNIFF_BYTES) {
+        Some(head) => head_is_media(&head),
+        None => name_claims_media(path),
+    }
+}
+
+/// Whether a path's name claims a format the app attaches, which is all there
+/// is to decide a file whose head cannot be read. The set is the sniff's own —
+/// a TIFF and a HEIC are media the OS image tools convert — plus the other
+/// spelling of each.
+fn name_claims_media(path: &Path) -> bool {
+    let Some(name) = path.file_name().and_then(|name| name.to_str()) else {
+        return false;
+    };
+    let Some((stem, extension)) = name.rsplit_once('.') else {
+        return false;
+    };
+    if stem.is_empty() {
+        return false;
+    }
+    matches!(
+        extension.to_ascii_lowercase().as_str(),
+        "png"
+            | "jpg"
+            | "jpeg"
+            | "gif"
+            | "webp"
+            | "bmp"
+            | "tif"
+            | "tiff"
+            | "heic"
+            | "heif"
+            | "avif"
+            | "pdf"
+    )
 }
 
 /// Long edge above which an image is downscaled before it is base64-encoded.
@@ -563,7 +614,7 @@ fn convert_image_to_png(_bytes: &[u8], _mime: &str) -> Option<Vec<u8>> {
 /// file whose head holds a NUL byte is refused rather than sent as mojibake.
 pub fn load_attachment(path: &Path) -> Result<ContentPart> {
     let size = std::fs::metadata(path)
-        .with_context(|| format!("reading {}", path.display()))?
+        .map_err(|err| read_error(path, &err))?
         .len();
     if size > MAX_ATTACHMENT_BYTES as u64 {
         anyhow::bail!(
@@ -573,9 +624,33 @@ pub fn load_attachment(path: &Path) -> Result<ContentPart> {
             human_bytes(MAX_ATTACHMENT_BYTES as u64)
         );
     }
-    let bytes = std::fs::read(path).with_context(|| format!("reading {}", path.display()))?;
+    let bytes = std::fs::read(path).map_err(|err| read_error(path, &err))?;
     part_from_bytes(&path.display().to_string(), bytes)
 }
+
+/// The reason a file could not be read, with a way out where the file itself
+/// looks innocent. A platform can withhold a file the user can plainly see —
+/// macOS keeps the Desktop, Documents and Downloads folders behind a per-app
+/// grant, so a read there answers `Operation not permitted` while the file is
+/// readable to its owner — and an errno on its own leaves the reader with
+/// nothing to act on: the app is the thing that has to be allowed, so the
+/// reason names the grant rather than only the refusal. Every read of a file a
+/// front-end is about to attach or inline goes through here, so no door this
+/// app takes to a file reports a bare errno.
+pub(crate) fn read_error(path: &Path, err: &std::io::Error) -> anyhow::Error {
+    let reason = format!("reading {}: {err}", path.display());
+    if err.kind() != std::io::ErrorKind::PermissionDenied {
+        return anyhow::anyhow!(reason);
+    }
+    anyhow::anyhow!("{reason}{PERMISSION_HINT}")
+}
+
+#[cfg(target_os = "macos")]
+const PERMISSION_HINT: &str = " — this app may not read that file: macOS keeps the Desktop, Documents and Downloads folders behind a per-app grant, so allow this app access under System Settings → Privacy & Security → Files and Folders, or copy the file into the project";
+
+#[cfg(not(target_os = "macos"))]
+const PERMISSION_HINT: &str =
+    " — this app may not read that file: check its permissions, or copy it into the project";
 
 /// The one place bytes become a part, so a file on disk and a data URL from a
 /// front-end are read the same way: an image, a PDF, or the file's own text.
@@ -650,9 +725,12 @@ fn file_text(name: &str, bytes: &[u8]) -> String {
     )
 }
 
-/// Extracts `@path` references from free-form input that point at existing
-/// attachment files (an image or a PDF — what the CLI reads as more than text).
-/// The input text is left untouched.
+/// Extracts `@path` references from free-form input that point at attachment
+/// files (an image or a PDF — what the CLI reads as more than text). A file
+/// whose head cannot be read is taken by its name, so a reference the app may
+/// not read is reported by whoever attaches it rather than being left in the
+/// message as the literal `@path` it was typed as. The input text is left
+/// untouched.
 pub fn referenced_attachments(input: &str, cwd: &Path) -> Vec<PathBuf> {
     let mut found = Vec::new();
     for token in input.split_whitespace() {
@@ -664,7 +742,7 @@ pub fn referenced_attachments(input: &str, cwd: &Path) -> Vec<PathBuf> {
             continue;
         }
         let path = expand_path(raw, cwd);
-        if path.is_file() && is_attachment_path(&path) {
+        if path.is_file() && references_attachment(&path) {
             found.push(path);
         }
     }
@@ -1562,8 +1640,80 @@ mod tests {
         let found = referenced_attachments("look at @shot.png and @notes.txt please", &dir);
         assert_eq!(found.len(), 1);
         assert!(found[0].ends_with("shot.png"));
+        // A readable file is what its bytes say it is, whatever it is called.
+        std::fs::write(dir.join("fake.png"), b"not an image").unwrap();
+        assert!(referenced_attachments("and @fake.png", &dir).is_empty());
 
         std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// The one case with no bytes to go on is a file this process cannot open
+    /// at all, and then its name is what decides it. The platform that withholds
+    /// such a file is what makes this reachable: a reference to it is reported
+    /// by whoever attaches it instead of reaching the model as literal text.
+    #[cfg(unix)]
+    #[test]
+    fn extracts_a_reference_whose_bytes_cannot_be_read() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = std::env::temp_dir().join(format!("oxide_media_refused_{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let shot = dir.join("shot.png");
+        let paper = dir.join("paper.pdf");
+        let notes = dir.join("notes.txt");
+        for file in [&shot, &paper, &notes] {
+            std::fs::write(file, ONE_PX_PNG).unwrap();
+            std::fs::set_permissions(file, std::fs::Permissions::from_mode(0o000)).unwrap();
+        }
+        std::fs::write(dir.join("fake.png"), b"not an image").unwrap();
+
+        // Root reads a file whatever its mode says, and a runner that does would
+        // read the bytes of every one of these and assert nothing.
+        if std::fs::read(&shot).is_err() {
+            let found = referenced_attachments(
+                "compare @shot.png with @paper.pdf, and @notes.txt and @fake.png too",
+                &dir,
+            );
+            let names: Vec<String> = found
+                .iter()
+                .map(|path| path.file_name().unwrap().to_string_lossy().into_owned())
+                .collect();
+            // The name decides these, not what is in them: `notes.txt` holds the
+            // same PNG bytes as `shot.png` and is left to travel as text.
+            assert_eq!(names, ["shot.png", "paper.pdf"]);
+        }
+
+        for file in [&shot, &paper, &notes] {
+            std::fs::set_permissions(file, std::fs::Permissions::from_mode(0o600)).ok();
+        }
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn a_name_claims_media_only_where_the_bytes_cannot() {
+        for name in [
+            "shot.png",
+            "SHOT.PNG",
+            "shot.jpeg",
+            "shot.jpg",
+            "shot.tif",
+            "shot.heic",
+            "photo.avif",
+            "paper.pdf",
+        ] {
+            assert!(name_claims_media(Path::new(name)), "{name}");
+        }
+        for name in [
+            "notes.txt",
+            "notes.md",
+            "shot.png.txt",
+            "png",
+            ".png",
+            "shot.",
+            "archive.tar.gz",
+        ] {
+            assert!(!name_claims_media(Path::new(name)), "{name}");
+        }
     }
 
     #[cfg(target_os = "macos")]
@@ -1667,6 +1817,60 @@ mod tests {
             other => panic!("a folder should be refused: {other:?}"),
         }
 
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn a_refused_read_names_the_grant_to_give_back() {
+        let refused = read_error(
+            Path::new("/tmp/shot.png"),
+            &std::io::Error::from(std::io::ErrorKind::PermissionDenied),
+        )
+        .to_string();
+        assert!(refused.starts_with("reading /tmp/shot.png: "), "{refused}");
+        assert!(refused.contains("may not read that file"), "{refused}");
+
+        // `Operation not permitted` is what a platform that withholds a file
+        // answers with, and it is the same kind to Rust as `Permission denied`.
+        #[cfg(unix)]
+        for errno in [1, 13] {
+            let err = std::io::Error::from_raw_os_error(errno);
+            assert_eq!(err.kind(), std::io::ErrorKind::PermissionDenied);
+            let reason = read_error(Path::new("/tmp/shot.png"), &err).to_string();
+            assert!(reason.contains("may not read that file"), "{reason}");
+        }
+
+        // Everything else is reported as it happened.
+        let missing = read_error(
+            Path::new("/tmp/shot.png"),
+            &std::io::Error::from(std::io::ErrorKind::NotFound),
+        )
+        .to_string();
+        assert!(!missing.contains("may not read"), "{missing}");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn an_attachment_the_platform_refuses_is_reported_with_the_hint() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = std::env::temp_dir().join(format!("oxide_media_denied_{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("shot.png");
+        std::fs::write(&file, b"f").unwrap();
+        std::fs::set_permissions(&file, std::fs::Permissions::from_mode(0o000)).unwrap();
+        // Root reads a file whatever its mode says, and a runner that does
+        // would assert nothing.
+        if std::fs::read(&file).is_err() {
+            match attach(file.clone()) {
+                Clipboard::Refused(reason) => {
+                    assert!(reason.contains("may not read that file"), "{reason}");
+                }
+                other => panic!("a file this process may not read should be refused: {other:?}"),
+            }
+        }
+
+        std::fs::set_permissions(&file, std::fs::Permissions::from_mode(0o600)).ok();
         std::fs::remove_dir_all(&dir).ok();
     }
 
