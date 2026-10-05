@@ -39,7 +39,12 @@ and renders symlink targets as `name -> target`. `find` and `grep` respect
 `.gitignore`, and `grep` matches a literal substring by default (set
 `regex: true` to treat `pattern` as a regular expression) and prefers `ripgrep`
 (`rg`) when it is on `PATH`, falling back to a dependency-free parallel walker
-that skips binary files.
+that skips binary files. A `read` the platform refuses — macOS keeps the
+Desktop, Documents and Downloads folders behind a per-app grant — is reported
+with the reason and the grant to give, naming the app the run was started from
+and the name that app's own bundle carries (so VS Code, whose bundle is
+`Visual Studio Code.app`, is named `Code`), since that is the app the settings
+pane lists and not `oxide` itself.
 
 `webfetch` converts HTML to Markdown (`format: "markdown"`, the default),
 readable plain text (`format: "text"`), or returns the raw body

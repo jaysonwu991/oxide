@@ -9,6 +9,8 @@ use sha2::{Digest, Sha256};
 use std::path::{Path, PathBuf};
 #[cfg(any(target_os = "macos", target_os = "linux", target_os = "windows"))]
 use std::process::Command;
+#[cfg(target_os = "macos")]
+use std::sync::OnceLock;
 
 const ALPHABET: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
 
@@ -642,7 +644,7 @@ pub(crate) fn read_error(path: &Path, err: &std::io::Error) -> anyhow::Error {
     if err.kind() != std::io::ErrorKind::PermissionDenied {
         return anyhow::anyhow!(reason);
     }
-    anyhow::anyhow!("{reason}{PERMISSION_HINT}")
+    anyhow::anyhow!("{reason}{}", permission_hint())
 }
 
 #[cfg(target_os = "macos")]
@@ -651,6 +653,158 @@ const PERMISSION_HINT: &str = " — this app may not read that file: macOS keeps
 #[cfg(not(target_os = "macos"))]
 const PERMISSION_HINT: &str =
     " — this app may not read that file: check its permissions, or copy it into the project";
+
+/// The way out of a refused read: the platform's own wording, with the app the
+/// grant belongs to named when it can be.
+fn permission_hint() -> String {
+    permission_hint_for(responsible_app())
+}
+
+/// [`permission_hint`] with the app already resolved, so the wording is
+/// testable without a process tree in the way. macOS answers a file access as
+/// the *responsible* app rather than as the process asking, so the grant is
+/// that app's to give; naming it turns a hint into something to act on.
+fn permission_hint_for(app: Option<String>) -> String {
+    match app {
+        Some(app) => format!(
+            " — this app may not read that file: macOS keeps the Desktop, Documents and Downloads folders behind a per-app grant, and the grant is for the app this run was started from — {app} — so allow {app} under System Settings → Privacy & Security → Files and Folders, or copy the file into the project"
+        ),
+        None => PERMISSION_HINT.to_string(),
+    }
+}
+
+/// How far up the process tree [`responsible_bundle`] looks for an app.
+#[cfg(target_os = "macos")]
+const MAX_ANCESTORS: usize = 16;
+
+/// The application whose grant macOS consults for this run's reads.
+///
+/// TCC answers an access as the process' *responsible* app — the app it was
+/// started from, not the binary asking, which is why the system's own log
+/// records a read from `~/.local/bin/oxide` as
+/// `responsible=/Applications/Visual Studio Code.app` — so the Files and
+/// Folders list holds that app and never `oxide`, and a hint that says "this
+/// app" sends the reader looking for a name that is not there. The nearest
+/// ancestor inside an application bundle is that app, named the way its own
+/// bundle names itself. Read once per run: the app that started this process is
+/// not going to change.
+#[cfg(target_os = "macos")]
+fn responsible_app() -> Option<String> {
+    static APP: OnceLock<Option<String>> = OnceLock::new();
+    APP.get_or_init(|| {
+        let table = Command::new("/bin/ps")
+            .args(["-axo", "pid=,ppid=,comm="])
+            .output()
+            .ok()
+            .filter(|output| output.status.success())?;
+        let bundle =
+            responsible_bundle(&String::from_utf8_lossy(&table.stdout), std::process::id())?;
+        app_name(&bundle)
+    })
+    .clone()
+}
+
+/// A platform with no per-app grant behind a refusal names no app.
+#[cfg(not(target_os = "macos"))]
+fn responsible_app() -> Option<String> {
+    None
+}
+
+/// The app above `start` in the table `/bin/ps -axo pid=,ppid=,comm=` prints:
+/// the outermost bundle on the path of the nearest ancestor that is inside
+/// one, since a helper lives inside the app it belongs to and it is that app
+/// the platform names. A run whose ancestors are none of them an app — over
+/// `ssh`, or detached — names nothing rather than guessing.
+#[cfg(target_os = "macos")]
+fn responsible_bundle(table: &str, start: u32) -> Option<PathBuf> {
+    let mut pid = start;
+    for _ in 0..MAX_ANCESTORS {
+        let (path, parent) = process_row(table, pid)?;
+        if let Some(app) = bundle_dir(path) {
+            return Some(app);
+        }
+        if parent <= 1 || parent == pid {
+            return None;
+        }
+        pid = parent;
+    }
+    None
+}
+
+/// One row of that table: the pid, the parent, then the executable's path —
+/// which is the whole rest of the line, spaces and all.
+#[cfg(target_os = "macos")]
+fn process_row(table: &str, pid: u32) -> Option<(&str, u32)> {
+    table.lines().find_map(|line| {
+        let (row, rest) = line.trim_start().split_once(' ')?;
+        if row.parse::<u32>().ok()? != pid {
+            return None;
+        }
+        let (parent, path) = rest.trim_start().split_once(' ')?;
+        Some((path, parent.parse::<u32>().ok()?))
+    })
+}
+
+/// The bundle a path is inside, as the directory it sits in: the first `.app`
+/// component with the bundle's `Contents` under it. Requiring `Contents` is what
+/// keeps a directory that merely ends in `.app` from being reported as the app
+/// to allow.
+#[cfg(target_os = "macos")]
+fn bundle_dir(path: &str) -> Option<PathBuf> {
+    use std::ffi::OsStr;
+    use std::path::Component;
+    let mut components = Path::new(path).components();
+    let mut dir = PathBuf::new();
+    while let Some(component) = components.next() {
+        dir.push(component);
+        let Component::Normal(name) = component else {
+            continue;
+        };
+        let name = name.to_string_lossy();
+        if name.len() > ".app".len()
+            && name.ends_with(".app")
+            && components.clone().next() == Some(Component::Normal(OsStr::new("Contents")))
+        {
+            return Some(dir);
+        }
+    }
+    None
+}
+
+/// What a bundle is called, the way the platform's own listing resolves it:
+/// `CFBundleDisplayName` out of the bundle's own `Info.plist`, then
+/// `CFBundleName`, then the directory it was left in. TCC reads those same two
+/// keys out of that same dictionary, and keys a grant on the bundle's identity
+/// rather than its path — so an app whose directory does not spell its name
+/// (VS Code sits in `Visual Studio Code.app` and calls itself `Code`) is named
+/// by what it says it is rather than by what the folder happens to be called.
+#[cfg(target_os = "macos")]
+fn app_name(bundle: &Path) -> Option<String> {
+    let plist = bundle.join("Contents/Info.plist");
+    ["CFBundleDisplayName", "CFBundleName"]
+        .into_iter()
+        .find_map(|key| plist_string(&plist, key))
+        .or_else(|| {
+            bundle
+                .file_stem()
+                .map(|stem| stem.to_string_lossy().into_owned())
+        })
+}
+
+/// One string out of a plist, asked of the platform's own reader so an XML
+/// plist and a binary one are read the same way here.
+#[cfg(target_os = "macos")]
+fn plist_string(plist: &Path, key: &str) -> Option<String> {
+    let output = Command::new("/usr/bin/plutil")
+        .args(["-extract", key, "raw", "-o", "-"])
+        .arg(plist)
+        .output()
+        .ok()
+        .filter(|output| output.status.success())?;
+    let value = String::from_utf8_lossy(&output.stdout);
+    let value = value.trim();
+    (!value.is_empty()).then(|| value.to_string())
+}
 
 /// The one place bytes become a part, so a file on disk and a data URL from a
 /// front-end are read the same way: an image, a PDF, or the file's own text.
@@ -1847,6 +2001,151 @@ mod tests {
         )
         .to_string();
         assert!(!missing.contains("may not read"), "{missing}");
+    }
+
+    #[test]
+    fn a_refused_read_names_the_app_that_holds_the_grant() {
+        const HEAD: &str = " — this app may not read that file: macOS keeps the Desktop, Documents and Downloads folders behind a per-app grant";
+        const TAIL: &str = " under System Settings → Privacy & Security → Files and Folders, or copy the file into the project";
+
+        let named = permission_hint_for(Some("Visual Studio Code".to_string()));
+        assert!(named.starts_with(HEAD), "{named}");
+        assert!(named.ends_with(TAIL), "{named}");
+        // The app is the one thing to allow, so it is named where the reader
+        // both learns why the read was refused and what to do about it.
+        assert_eq!(named.matches("Visual Studio Code").count(), 2, "{named}");
+
+        // The hint with no app above the run is the same wording around the
+        // same head and tail, so the two cannot drift apart.
+        assert_eq!(permission_hint_for(None), PERMISSION_HINT);
+        #[cfg(target_os = "macos")]
+        {
+            assert!(PERMISSION_HINT.starts_with(HEAD), "{PERMISSION_HINT}");
+            assert!(PERMISSION_HINT.ends_with(TAIL), "{PERMISSION_HINT}");
+        }
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn the_app_above_a_run_is_the_outermost_bundle_on_the_path() {
+        // `ps -axo pid=,ppid=,comm=` as macOS prints it: the pid, the parent,
+        // then the whole executable path — spaces and all.
+        let table = "  1     0 /sbin/launchd\n\
+  1630     1 /Applications/Visual Studio Code.app/Contents/MacOS/Code\n\
+  22956  1630 /Applications/Visual Studio Code.app/Contents/Frameworks/Code Helper.app/Contents/MacOS/Code Helper\n\
+  13042 22956 oxide\n\
+  17744 13042 sh";
+        assert_eq!(
+            responsible_bundle(table, 17744).as_deref(),
+            Some(Path::new("/Applications/Visual Studio Code.app"))
+        );
+
+        // This app's own harness is inside the app that started it.
+        let desktop = "  1     0 /sbin/launchd\n\
+  500     1 /Applications/Oxide.app/Contents/MacOS/Oxide\n\
+  501   500 /Applications/Oxide.app/Contents/Resources/harness/oxide-desktop";
+        assert_eq!(
+            responsible_bundle(desktop, 501).as_deref(),
+            Some(Path::new("/Applications/Oxide.app"))
+        );
+
+        // A run whose ancestors are none of them an app names nothing, as does
+        // a pid the table does not hold and an empty one.
+        let bare = "  1     0 /sbin/launchd\n  42     1 /usr/sbin/sshd\n  77    42 -zsh";
+        assert_eq!(responsible_bundle(bare, 77), None);
+        assert_eq!(responsible_bundle(table, 999), None);
+        assert_eq!(responsible_bundle("", 1), None);
+
+        // A directory that merely ends in `.app` is not an app bundle, and a
+        // helper inside one still belongs to the bundle around it.
+        assert_eq!(bundle_dir("/Users/jayson/notes.app/readme.md"), None);
+        assert_eq!(bundle_dir("/x/.app/Contents/MacOS/thing"), None);
+        assert_eq!(
+            bundle_dir("/System/Applications/Utilities/Terminal.app/Contents/MacOS/Terminal"),
+            Some(PathBuf::from("/System/Applications/Utilities/Terminal.app"))
+        );
+        assert_eq!(
+            bundle_dir(
+                "/Applications/Visual Studio Code.app/Contents/Frameworks/Code Helper.app/Contents/MacOS/Code Helper"
+            ),
+            Some(PathBuf::from("/Applications/Visual Studio Code.app"))
+        );
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn a_bundle_is_named_the_way_its_own_bundle_names_itself() {
+        let dir = std::env::temp_dir().join(format!("oxide_media_app_{}", std::process::id()));
+        let bundle = |name: &str, plist: Option<&str>| {
+            let bundle = dir.join(name);
+            let contents = bundle.join("Contents");
+            std::fs::create_dir_all(&contents).unwrap();
+            if let Some(plist) = plist {
+                std::fs::write(contents.join("Info.plist"), plist).unwrap();
+            }
+            bundle
+        };
+        let plist = |body: &str| {
+            format!(
+                "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<plist version=\"1.0\"><dict>{body}</dict></plist>\n"
+            )
+        };
+
+        // The name the bundle gives itself outranks the directory it was left
+        // in, which is the name the platform resolves and the one a grant is
+        // keyed on: VS Code sits in `Visual Studio Code.app` and names itself
+        // `Code`.
+        let named = bundle(
+            "Pretend.app",
+            Some(&plist("<key>CFBundleName</key><string>Spoken For</string>")),
+        );
+        assert_eq!(app_name(&named).as_deref(), Some("Spoken For"));
+
+        // The display name outranks the name, and an empty one is no name.
+        let both = bundle(
+            "Both.app",
+            Some(&plist(
+                "<key>CFBundleDisplayName</key><string>Shown</string>\
+                 <key>CFBundleName</key><string>Named</string>",
+            )),
+        );
+        assert_eq!(app_name(&both).as_deref(), Some("Shown"));
+        let blank = bundle(
+            "Blank.app",
+            Some(&plist(
+                "<key>CFBundleDisplayName</key><string></string>\
+                 <key>CFBundleName</key><string>Still Named</string>",
+            )),
+        );
+        assert_eq!(app_name(&blank).as_deref(), Some("Still Named"));
+
+        // A bundle that says nothing about itself is named by where it sits,
+        // as is one whose plist could not be read at all.
+        let silent = bundle(
+            "Silent.app",
+            Some(&plist("<key>CFBundleVersion</key><string>1</string>")),
+        );
+        assert_eq!(app_name(&silent).as_deref(), Some("Silent"));
+        let bare = bundle("Bare.app", None);
+        assert_eq!(app_name(&bare).as_deref(), Some("Bare"));
+
+        // A binary plist — the form many bundles ship — reads the same.
+        let packed = bundle(
+            "Packed.app",
+            Some(&plist(
+                "<key>CFBundleName</key><string>Packed Name</string>",
+            )),
+        );
+        let packed_plist = packed.join("Contents/Info.plist");
+        let status = std::process::Command::new("/usr/bin/plutil")
+            .args(["-convert", "binary1"])
+            .arg(&packed_plist)
+            .status()
+            .unwrap();
+        assert!(status.success());
+        assert_eq!(app_name(&packed).as_deref(), Some("Packed Name"));
+
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     #[cfg(unix)]
