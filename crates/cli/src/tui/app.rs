@@ -729,6 +729,15 @@ pub struct App {
     pub items: Vec<ChatItem>,
     pub history: Vec<Message>,
     pub attachments: Vec<Attachment>,
+    /// The file each queued message's attachment came from, by the id the
+    /// composer shows that attachment by — a part carries the bytes but not the
+    /// file they were read from, so pulling a queued message back with `Alt+Up`
+    /// would name a paste by what it is (`image (png)`) rather than by the file
+    /// it was, and would take a file's own text for the message text and drop
+    /// it. Matched back against the parts of the messages the queue still holds,
+    /// so an attachment whose message the run has already taken is dropped with
+    /// it instead of landing on a message that never carried it.
+    pub queued_attachments: Vec<(String, Option<PathBuf>)>,
     pub scroll: u16,
     pub auto_scroll: bool,
     pub view_height: u16,
@@ -899,6 +908,7 @@ impl App {
             items: Vec::new(),
             history: Vec::new(),
             attachments: Vec::new(),
+            queued_attachments: Vec::new(),
             scroll: 0,
             auto_scroll: true,
             view_height: 0,

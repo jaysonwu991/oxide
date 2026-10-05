@@ -846,8 +846,10 @@ reported with the reason, and a clipboard holding no image and no file names the
 types it carries, so a paste that finds nothing says what it did find. `@path`
 names one on disk, and `/attach [list|remove <id|n>|clear]` lists and edits what
 is pending; a message queued while the agent is busy keeps the attachments it was
-queued with, and pulling that message back into the box (`Alt+Up`) brings them
-back with it. In a non-interactive run the same parts come from `--image <path>`
+queued with, and pulling that message back into the box (`Alt+Up`) brings each
+one back under the file it was queued from (`• /tmp/shot.png`) — a file's own
+text included, which is a part of the message like an image rather than part of
+the text typed beside it. In a non-interactive run the same parts come from `--image <path>`
 and from `@path` references in the prompt, so
 `oxide -p "what changed here? @shot.png"` works without a terminal. The terminal
 completes a reference as it is typed: the

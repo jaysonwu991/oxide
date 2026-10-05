@@ -1242,6 +1242,7 @@ fn handle_key(
                 app.invalidate_render_cache();
                 app.steering = crate::agent::Steering::new();
                 app.follow_ups = crate::agent::Steering::new();
+                app.queued_attachments.clear();
                 match SessionLog::create(cwd) {
                     Ok(log) => {
                         app.items
@@ -4074,6 +4075,7 @@ fn switch_session(app: &mut App, session: &mut Option<SessionLog>, log: SessionL
             app.items.clear();
             app.input_history.clear();
             app.attachments.clear();
+            app.queued_attachments.clear();
             app.steering = crate::agent::Steering::new();
             app.follow_ups = crate::agent::Steering::new();
             app.assistant_open = false;
@@ -4396,6 +4398,14 @@ fn queue_while_busy(app: &mut App, raw: &str, cwd: &Path, follow_up: bool) {
         app.show_status("response finished; press Enter to send as the next turn");
         return;
     }
+    // The message carries the attachment's bytes; the file name it was shown by
+    // is the composer's own, so keep it beside the queue until `Alt+Up` puts the
+    // attachment back.
+    app.queued_attachments.extend(
+        composer
+            .into_iter()
+            .map(|attachment| (attachment.id, attachment.path)),
+    );
     app.remember_input(raw);
     app.clear_input();
     app.items.push(ChatItem::User(sent_message(raw, &names)));
@@ -4415,27 +4425,18 @@ fn dequeue_messages(app: &mut App) {
     let mut queued = app.steering.drain();
     queued.extend(app.follow_ups.drain());
     if queued.is_empty() {
+        // Nothing is waiting, so every recorded attachment belongs to a message
+        // the run has already consumed.
+        app.queued_attachments.clear();
         app.show_status("no queued messages to restore");
         return;
     }
 
     // A queued message's attachments have no text form, so put them back with
     // the pending attachments rather than dropping them when the text is
-    // edited.
-    let mut restored_media = 0usize;
-    for message in &queued {
-        if let Some(crate::llm::MessageContent::Parts(parts)) = &message.content {
-            for part in parts {
-                if !matches!(part, crate::llm::ContentPart::Text { .. })
-                    && app.add_attachment(part.clone())
-                {
-                    restored_media += 1;
-                }
-            }
-        }
-    }
+    // edited, named by the file each was queued from.
+    let (texts, restored_media) = restore_queued_messages(app, &queued);
 
-    let texts: Vec<String> = queued.iter().map(queued_text).collect();
     let current = app.input.trim_matches('\n');
     let combined = if current.trim().is_empty() {
         texts.join("\n\n")
@@ -4490,21 +4491,56 @@ fn sent_message(raw: &str, names: &[String]) -> String {
     shown
 }
 
-/// The user-visible text of a message, ignoring `[image]`/`[file]` markers that
-/// [`Message::display`] adds for media parts.
-fn queued_text(message: &Message) -> String {
-    match &message.content {
-        Some(crate::llm::MessageContent::Text(text)) => text.clone(),
-        Some(crate::llm::MessageContent::Parts(parts)) => parts
-            .iter()
-            .filter_map(|part| match part {
-                crate::llm::ContentPart::Text { text } => Some(text.as_str()),
-                _ => None,
-            })
-            .collect::<Vec<_>>()
-            .join("\n"),
-        None => String::new(),
+/// The text to put back for each queued message, with every attachment those
+/// messages carried restored to the composer and named by the file it was queued
+/// from — a part holds the bytes but not that name. Returns the texts in queue
+/// order and how many attachments came back.
+///
+/// A file's own text is a part of the message like an image, so what was typed
+/// is what the composer did not attach: the id of a part the composer queued as
+/// an attachment is in the record whether that part is an image, a document or a
+/// file's text, and the text parts left over are the message itself. An
+/// attachment the run has already consumed matches no part the queue still
+/// holds, so it is forgotten rather than landing on another message.
+fn restore_queued_messages(app: &mut App, queued: &[Message]) -> (Vec<String>, usize) {
+    let records = std::mem::take(&mut app.queued_attachments);
+    let mut texts = Vec::with_capacity(queued.len());
+    let mut restored = 0usize;
+    for message in queued {
+        let Some(crate::llm::MessageContent::Parts(parts)) = &message.content else {
+            texts.push(match &message.content {
+                Some(crate::llm::MessageContent::Text(text)) => text.clone(),
+                _ => String::new(),
+            });
+            continue;
+        };
+        let mut typed: Vec<&str> = Vec::new();
+        for part in parts {
+            let Some(record) = records
+                .iter()
+                .find(|record| record.0 == media::attachment_id(part))
+            else {
+                if let crate::llm::ContentPart::Text { text } = part {
+                    typed.push(text);
+                }
+                continue;
+            };
+            let before = app.attachments.len();
+            match &record.1 {
+                Some(path) => {
+                    app.add_attachment_from(part.clone(), path.clone());
+                }
+                None => {
+                    app.add_attachment(part.clone());
+                }
+            }
+            if app.attachments.len() > before {
+                restored += 1;
+            }
+        }
+        texts.push(typed.join("\n"));
     }
+    (texts, restored)
 }
 
 /// Copies the active mouse selection, if any, reporting the result. Returns
@@ -5170,6 +5206,7 @@ fn handle_agent_event(event: AgentEvent, app: &mut App) {
             // queues of its own, as the desktop and RPC hosts already create.
             app.steering = crate::agent::Steering::new();
             app.follow_ups = crate::agent::Steering::new();
+            app.queued_attachments.clear();
             app.workspace_paths = None;
             app.running_tool = None;
             app.subagent = None;
@@ -5774,12 +5811,15 @@ mod tests {
     fn dequeuing_a_queued_attachment_restores_it() {
         let mut app = test_app();
         app.busy = true;
-        app.add_attachment(crate::llm::ContentPart::ImageUrl {
-            image_url: crate::llm::ImageUrl {
-                url: "data:image/png;base64,AAAA".into(),
-                detail: None,
+        app.add_attachment_from(
+            crate::llm::ContentPart::ImageUrl {
+                image_url: crate::llm::ImageUrl {
+                    url: "data:image/png;base64,AAAA".into(),
+                    detail: None,
+                },
             },
-        });
+            PathBuf::from("/tmp/shot.png"),
+        );
         queue_while_busy(&mut app, "look", Path::new("."), false);
         assert!(app.attachments.is_empty());
         assert!(app
@@ -5795,6 +5835,11 @@ mod tests {
             1,
             "the image returns as a pending attachment"
         );
+        assert_eq!(
+            app.attachments[0].display(),
+            "/tmp/shot.png",
+            "named by the file it was queued from, not by what it is"
+        );
         assert!(
             !app.items
                 .iter()
@@ -5805,6 +5850,68 @@ mod tests {
             app.items.last(),
             Some(ChatItem::Status(text))
                 if text == "restored 1 queued message and 1 attachment to the editor"
+        ));
+    }
+
+    /// A file's own text is attached as a part of the message like an image, so
+    /// pulling the message back must not take it for the text that was typed —
+    /// the composer had it as an attachment and gets it back as one.
+    #[test]
+    fn dequeuing_returns_a_queued_text_attachment() {
+        let mut app = test_app();
+        app.busy = true;
+        app.add_attachment_from(
+            crate::llm::ContentPart::Text {
+                text: "<file name=\"notes.csv\">\na,b\n</file>".to_string(),
+            },
+            PathBuf::from("/tmp/notes.csv"),
+        );
+        queue_while_busy(&mut app, "look", Path::new("."), false);
+        assert!(app.attachments.is_empty());
+
+        dequeue_messages(&mut app);
+
+        assert_eq!(
+            app.input, "look",
+            "only what was typed goes back in the box"
+        );
+        assert_eq!(app.attachments.len(), 1, "the text file comes back");
+        assert_eq!(app.attachments[0].display(), "/tmp/notes.csv");
+    }
+
+    /// An attachment belongs to the message that carried it: once the run has
+    /// taken that message, the next `Alt+Up` must not put its file on a message
+    /// that never held it.
+    #[test]
+    fn an_attachment_the_run_took_is_not_restored_onto_another_message() {
+        let mut app = test_app();
+        app.busy = true;
+        app.add_attachment_from(
+            crate::llm::ContentPart::ImageUrl {
+                image_url: crate::llm::ImageUrl {
+                    url: "data:image/png;base64,AAAA".into(),
+                    detail: None,
+                },
+            },
+            PathBuf::from("/tmp/shot.png"),
+        );
+        queue_while_busy(&mut app, "steer this", Path::new("."), false);
+
+        // The run takes the steering message and its turn goes on.
+        app.steering.drain();
+        queue_while_busy(&mut app, "and then this", Path::new("."), false);
+
+        dequeue_messages(&mut app);
+
+        assert_eq!(app.input, "and then this");
+        assert!(
+            app.attachments.is_empty(),
+            "the file went with the message the run took: {:?}",
+            app.attachments
+        );
+        assert!(matches!(
+            app.items.last(),
+            Some(ChatItem::Status(text)) if text == "restored 1 queued message to the editor"
         ));
     }
 
