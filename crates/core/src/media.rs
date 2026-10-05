@@ -773,21 +773,57 @@ pub fn expand_path(raw: &str, cwd: &Path) -> PathBuf {
     }
 }
 
-/// The attachment the clipboard holds, for a front-end whose paste has no file
+/// What a paste found on the clipboard, for a front-end whose paste has no file
 /// to go with it.
-///
+#[derive(Debug)]
+pub enum Clipboard {
+    /// The part to attach.
+    Attached(ContentPart),
+    /// Nothing on the pasteboard could be attached, with the types it holds when
+    /// the read could name them — so a paste that finds nothing says what it did
+    /// find, rather than the same thing for an empty clipboard and a copy it
+    /// could not read.
+    Nothing { types: String },
+    /// A file the copy names and this machine has, which is not an attachment.
+    Refused(String),
+    /// The pasteboard could not be read at all.
+    Unreadable,
+}
+
 /// A copy from the Finder is preferred over its picture: the pasteboard also
 /// carries the copied file's *icon*, so grabbing the PNG-flavoured data would
 /// attach a placeholder image of the file instead of the file — a copied
 /// screenshot arrived as a `PNG`-document icon. The file is read the way any
 /// other attachment is, so a copied text file rides along as its own text; one
 /// that is here but cannot be attached — past the size limit, or a binary that
-/// is neither media nor text — is reported rather than replaced by that icon.
-pub fn clipboard_attachment() -> Option<ContentPart> {
+/// is neither media nor text — is refused by name rather than replaced by that
+/// icon.
+pub fn clipboard() -> Clipboard {
     if let Some(path) = clipboard_file(clipboard_path()) {
-        return load_attachment(&path).ok();
+        return attach(path);
     }
-    clipboard_image()
+    let copy = clipboard_copy();
+    if let Some(path) = copy
+        .as_ref()
+        .and_then(|copy| clipboard_file(copy.path.clone()))
+    {
+        return attach(path);
+    }
+    if let Some(part) = clipboard_image() {
+        return Clipboard::Attached(part);
+    }
+    match copy {
+        Some(copy) => Clipboard::Nothing { types: copy.types },
+        None => Clipboard::Unreadable,
+    }
+}
+
+/// A copied file as the part to attach, or the reason it is not one.
+fn attach(path: PathBuf) -> Clipboard {
+    match load_attachment(&path) {
+        Ok(part) => Clipboard::Attached(part),
+        Err(err) => Clipboard::Refused(format!("{err:#}")),
+    }
 }
 
 /// The file a clipboard copy names, when this machine can look at it.
@@ -857,6 +893,82 @@ return """#;
 #[cfg(not(target_os = "macos"))]
 fn clipboard_path() -> Option<PathBuf> {
     None
+}
+
+/// A copied file as the read behind [`clipboard_copy`] names it, with the
+/// pasteboard's own types alongside it.
+#[derive(Debug)]
+struct Copied {
+    path: Option<PathBuf>,
+    types: String,
+}
+
+/// The file a copy left on the pasteboard as an alias record.
+///
+/// This read is a script of its own, and it must not load AppKit: `use framework
+/// "AppKit"` points AppleScript's `the clipboard` at the Cocoa pasteboard, whose
+/// coercions know only the modern file URL types, so the alias record a
+/// Finder-style copy writes — the one `the clipboard as alias` reads — stops
+/// resolving the moment the framework is loaded, in the very script that would
+/// have read it. It is asked after the AppKit read above rather than before it,
+/// since a copy that also carries a picture is answered by that read.
+#[cfg(target_os = "macos")]
+fn clipboard_copy() -> Option<Copied> {
+    let output = Command::new("osascript")
+        .args(["-e", CLIPBOARD_COPY_SCRIPT])
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    copied_from(&String::from_utf8_lossy(&output.stdout))
+}
+
+#[cfg(not(target_os = "macos"))]
+fn clipboard_copy() -> Option<Copied> {
+    // Nothing but the image grab reads the pasteboard here, so the clipboard is
+    // reported as holding no file rather than as a pasteboard that could not be
+    // read at all.
+    Some(Copied {
+        path: None,
+        types: String::new(),
+    })
+}
+
+/// What [`clipboard_copy`] runs: the alias record it can coerce into a path, and
+/// otherwise the types the pasteboard holds, which is what a paste that found
+/// nothing has to report.
+#[cfg(target_os = "macos")]
+const CLIPBOARD_COPY_SCRIPT: &str = r#"try
+set f to (the clipboard as alias)
+return "file" & tab & (POSIX path of f)
+end try
+set ls to {}
+repeat with t in (clipboard info)
+set end of ls to ((item 1 of t) as text)
+end repeat
+set AppleScript's text item delimiters to ", "
+return "types" & tab & (ls as text)"#;
+
+/// What that script answered: one tagged line, `file<TAB><path>` or
+/// `types<TAB><name, name>`. Anything else is an answer nothing recognises,
+/// which is left to read as no answer at all rather than as an empty clipboard.
+#[cfg(target_os = "macos")]
+fn copied_from(output: &str) -> Option<Copied> {
+    // Only the line ending is taken off: the empty pasteboard answers
+    // `types<TAB>`, whose tab a trim of the whole tail would eat with it.
+    let (kind, value) = output.trim_end_matches(['\n', '\r']).split_once('\t')?;
+    match kind {
+        "file" => Some(Copied {
+            path: clipboard_path_from(value),
+            types: String::new(),
+        }),
+        "types" => Some(Copied {
+            path: None,
+            types: value.trim().to_string(),
+        }),
+        _ => None,
+    }
 }
 
 /// A clipboard file URL as a path. Existence is left to the caller: a file that
@@ -1385,6 +1497,35 @@ mod tests {
         assert_eq!(clipboard_path_from("   "), None);
     }
 
+    /// The read that finds the alias record a Finder-style copy writes. It is a
+    /// script of its own because a framework-loaded one cannot coerce that
+    /// record at all: `use framework "AppKit"` is what silently takes this read
+    /// away, which is why the script is asserted to be without it.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn reads_the_alias_record_a_framework_loaded_read_cannot_coerce() {
+        assert!(!CLIPBOARD_COPY_SCRIPT.contains("use framework"));
+        let copied = copied_from("file\t/Users/me/Desktop/My Shot.png\n").unwrap();
+        assert_eq!(
+            copied.path,
+            Some(PathBuf::from("/Users/me/Desktop/My Shot.png"))
+        );
+        assert_eq!(copied.types, "");
+        // Text coerced into a path is no path at all.
+        assert_eq!(copied_from("file\thello there").unwrap().path, None);
+        // A pasteboard holding no file reports what it does hold, so a paste
+        // that finds nothing can say what it found.
+        let copied = copied_from("types\tpublic.tiff, NeXT TIFF v4.0 pasteboard type\n").unwrap();
+        assert_eq!(copied.path, None);
+        assert_eq!(copied.types, "public.tiff, NeXT TIFF v4.0 pasteboard type");
+        assert_eq!(copied_from("types\t\n").unwrap().types, "");
+        // An answer nothing recognises is no answer at all rather than an empty
+        // clipboard, so it is left to read as a clipboard that could not be
+        // read.
+        assert!(copied_from("").is_none());
+        assert!(copied_from("hello there\n").is_none());
+    }
+
     #[test]
     fn a_clipboard_file_is_only_taken_from_this_machine() {
         let dir = std::env::temp_dir().join(format!("oxide_media_clip_{}", std::process::id()));
@@ -1414,6 +1555,32 @@ mod tests {
         // left to the coercing read below rather than read as a file.
         assert_eq!(appkit_output_name(""), None);
         assert_eq!(appkit_output_name("public.utf8-plain-text"), None);
+    }
+
+    #[test]
+    fn a_copied_file_that_is_not_an_attachment_is_refused_by_name() {
+        let dir = std::env::temp_dir().join(format!("oxide_media_attach_{}", std::process::id()));
+        std::fs::create_dir_all(dir.join("folder")).unwrap();
+        std::fs::write(dir.join("notes.txt"), b"hello").unwrap();
+
+        match attach(dir.join("notes.txt")) {
+            Clipboard::Attached(part) => assert_eq!(part_kind(&part), "text"),
+            other => panic!("a copied text file should attach: {other:?}"),
+        }
+        // A copy that names a folder is reported rather than passed over as an
+        // empty clipboard: the paste did find something, and that is what it
+        // tells the reader. The reason names the file it could not read, which
+        // is the part of it that is the same on every platform — the native
+        // error beside it is the platform's own words.
+        let folder = dir.join("folder");
+        match attach(folder.clone()) {
+            Clipboard::Refused(reason) => {
+                assert!(reason.contains(&folder.display().to_string()), "{reason}")
+            }
+            other => panic!("a folder should be refused: {other:?}"),
+        }
+
+        std::fs::remove_dir_all(&dir).ok();
     }
 
     #[test]

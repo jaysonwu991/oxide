@@ -824,13 +824,16 @@ WSL, where the terminal claims `Alt+Up` for scrollback.
 
 ## Attachments
 
-A message can carry images, PDFs and text files, which the selected LLM reads as media
-or as text. `Ctrl+V`
-pastes a clipboard image — or the file the clipboard holds, so a screenshot
-copied from the Finder attaches the picture itself rather than the pasteboard's
-icon of the file; a file copy that arrived from another machine leaves its URL
-behind without the file, and what the pasteboard itself carries is attached
-then — `@path` names one on disk, and `/attach
+A message can carry images, PDFs and text files, which the selected LLM reads as
+media or as text. `Ctrl+V` pastes a clipboard image — or the file the copy names,
+so a screenshot copied from the Finder attaches the picture itself rather than
+the pasteboard's icon of the file, whichever record the copy left (a file URL, or
+the Finder's own alias record); a file copy that arrived from another machine
+leaves its URL behind without the file, and what the pasteboard itself carries is
+attached then. A copy this machine has that cannot be attached — a folder, a
+binary — is reported with the reason, and a clipboard holding no image and no
+file names the types it carries, so a paste that finds nothing says what it did
+find. `@path` names one on disk, and `/attach
 [list|remove <id|n>|clear]` lists and edits what is pending; a message queued
 while the agent is busy keeps the attachments it was queued with. In a
 non-interactive run the same parts come from `--image <path>` and from `@path`

@@ -510,6 +510,17 @@ fn cycle_reasoning(app: &mut App, config: &mut Config, session: &mut Option<Sess
     });
 }
 
+/// What a paste says when the clipboard held nothing it could attach: the types
+/// the pasteboard does hold, since that is the one thing that tells a copy this
+/// read could not take from a clipboard that was empty.
+fn nothing_to_attach(types: &str) -> String {
+    if types.is_empty() {
+        "nothing to attach from the clipboard".to_string()
+    } else {
+        format!("nothing to attach from the clipboard (it holds {types})")
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 fn handle_key(
     key: KeyEvent,
@@ -1567,8 +1578,8 @@ fn handle_key(
             });
         }
         KeyCode::Char('v') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-            match media::clipboard_attachment() {
-                Some(part) => {
+            match media::clipboard() {
+                media::Clipboard::Attached(part) => {
                     if app.add_attachment(part) {
                         let count = app.attachments.len();
                         app.show_status(format!("{count} attachment(s) pending"));
@@ -1576,8 +1587,12 @@ fn handle_key(
                         app.show_status("that attachment is already pending");
                     }
                 }
-                None => {
-                    app.show_status("nothing to attach from the clipboard");
+                media::Clipboard::Nothing { types } => {
+                    app.show_status(nothing_to_attach(&types));
+                }
+                media::Clipboard::Refused(reason) => app.show_status(reason),
+                media::Clipboard::Unreadable => {
+                    app.show_status("the clipboard could not be read");
                 }
             }
         }
@@ -5183,6 +5198,20 @@ mod tests {
     fn settings_env_lock() -> std::sync::MutexGuard<'static, ()> {
         static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
         LOCK.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+
+    /// What a paste reports: the clipboard's own types are the one thing that
+    /// tells a copy this read could not take from a clipboard that was empty.
+    #[test]
+    fn a_paste_that_found_nothing_says_what_the_clipboard_held() {
+        assert_eq!(
+            nothing_to_attach(""),
+            "nothing to attach from the clipboard"
+        );
+        assert_eq!(
+            nothing_to_attach("public.tiff, NSStringPboardType"),
+            "nothing to attach from the clipboard (it holds public.tiff, NSStringPboardType)"
+        );
     }
 
     #[test]
