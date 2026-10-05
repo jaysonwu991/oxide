@@ -57,7 +57,7 @@ skills.
 | Shift+Tab | Cycle the thinking level: `auto` → `off` → `low` → `medium` → `high`. |
 | Ctrl+O | Expand or collapse tool-output details. |
 | Ctrl+T | Show or hide reasoning (`✦ Thinking`) blocks. |
-| Ctrl+V | Attach the clipboard's image, or the file a copy of one names — the Finder's own copy of a file attaches that file rather than its icon. |
+| Ctrl+V | Attach the clipboard's image, or the file a copy of one names — the Finder's own copy of a file attaches that file rather than its icon. A file this app may not read is reported with what to do about it: macOS gates the Desktop, Documents and Downloads folders behind a per-app grant. |
 | PgUp / PgDn / mouse wheel | Scroll the transcript. |
 | Ctrl+A | Jump to the start of the message box (when it is not empty). |
 | Ctrl+E | Jump to the end of the message box; when it is empty, scroll down one line. |

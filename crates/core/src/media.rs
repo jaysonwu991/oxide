@@ -4,7 +4,7 @@
 //! base64 encoding, `@path` reference extraction, and a best-effort OS
 //! clipboard grab.
 use crate::llm::{ContentPart, FileData, ImageUrl};
-use anyhow::{Context, Result};
+use anyhow::Result;
 use sha2::{Digest, Sha256};
 use std::path::{Path, PathBuf};
 #[cfg(any(target_os = "macos", target_os = "linux", target_os = "windows"))]
@@ -563,7 +563,7 @@ fn convert_image_to_png(_bytes: &[u8], _mime: &str) -> Option<Vec<u8>> {
 /// file whose head holds a NUL byte is refused rather than sent as mojibake.
 pub fn load_attachment(path: &Path) -> Result<ContentPart> {
     let size = std::fs::metadata(path)
-        .with_context(|| format!("reading {}", path.display()))?
+        .map_err(|err| read_error(path, &err))?
         .len();
     if size > MAX_ATTACHMENT_BYTES as u64 {
         anyhow::bail!(
@@ -573,9 +573,31 @@ pub fn load_attachment(path: &Path) -> Result<ContentPart> {
             human_bytes(MAX_ATTACHMENT_BYTES as u64)
         );
     }
-    let bytes = std::fs::read(path).with_context(|| format!("reading {}", path.display()))?;
+    let bytes = std::fs::read(path).map_err(|err| read_error(path, &err))?;
     part_from_bytes(&path.display().to_string(), bytes)
 }
+
+/// The reason a file could not be read, with a way out where the file itself
+/// looks innocent. A platform can withhold a file the user can plainly see —
+/// macOS keeps the Desktop, Documents and Downloads folders behind a per-app
+/// grant, so a read there answers `Operation not permitted` while the file is
+/// readable to its owner — and an errno on its own leaves the reader with
+/// nothing to act on: the app is the thing that has to be allowed, so the
+/// reason names the grant rather than only the refusal.
+fn read_error(path: &Path, err: &std::io::Error) -> anyhow::Error {
+    let reason = format!("reading {}: {err}", path.display());
+    if err.kind() != std::io::ErrorKind::PermissionDenied {
+        return anyhow::anyhow!(reason);
+    }
+    anyhow::anyhow!("{reason}{PERMISSION_HINT}")
+}
+
+#[cfg(target_os = "macos")]
+const PERMISSION_HINT: &str = " — this app may not read that file: macOS keeps the Desktop, Documents and Downloads folders behind a per-app grant, so allow this app access under System Settings → Privacy & Security → Files and Folders, or copy the file into the project";
+
+#[cfg(not(target_os = "macos"))]
+const PERMISSION_HINT: &str =
+    " — this app may not read that file: check its permissions, or copy it into the project";
 
 /// The one place bytes become a part, so a file on disk and a data URL from a
 /// front-end are read the same way: an image, a PDF, or the file's own text.
@@ -1667,6 +1689,60 @@ mod tests {
             other => panic!("a folder should be refused: {other:?}"),
         }
 
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn a_refused_read_names_the_grant_to_give_back() {
+        let refused = read_error(
+            Path::new("/tmp/shot.png"),
+            &std::io::Error::from(std::io::ErrorKind::PermissionDenied),
+        )
+        .to_string();
+        assert!(refused.starts_with("reading /tmp/shot.png: "), "{refused}");
+        assert!(refused.contains("may not read that file"), "{refused}");
+
+        // `Operation not permitted` is what a platform that withholds a file
+        // answers with, and it is the same kind to Rust as `Permission denied`.
+        #[cfg(unix)]
+        for errno in [1, 13] {
+            let err = std::io::Error::from_raw_os_error(errno);
+            assert_eq!(err.kind(), std::io::ErrorKind::PermissionDenied);
+            let reason = read_error(Path::new("/tmp/shot.png"), &err).to_string();
+            assert!(reason.contains("may not read that file"), "{reason}");
+        }
+
+        // Everything else is reported as it happened.
+        let missing = read_error(
+            Path::new("/tmp/shot.png"),
+            &std::io::Error::from(std::io::ErrorKind::NotFound),
+        )
+        .to_string();
+        assert!(!missing.contains("may not read"), "{missing}");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn an_attachment_the_platform_refuses_is_reported_with_the_hint() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = std::env::temp_dir().join(format!("oxide_media_denied_{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("shot.png");
+        std::fs::write(&file, b"f").unwrap();
+        std::fs::set_permissions(&file, std::fs::Permissions::from_mode(0o000)).unwrap();
+        // Root reads a file whatever its mode says, and a runner that does
+        // would assert nothing.
+        if std::fs::read(&file).is_err() {
+            match attach(file.clone()) {
+                Clipboard::Refused(reason) => {
+                    assert!(reason.contains("may not read that file"), "{reason}");
+                }
+                other => panic!("a file this process may not read should be refused: {other:?}"),
+            }
+        }
+
+        std::fs::set_permissions(&file, std::fs::Permissions::from_mode(0o600)).ok();
         std::fs::remove_dir_all(&dir).ok();
     }
 

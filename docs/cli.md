@@ -842,8 +842,14 @@ icon of the file, whichever record the copy left (a file URL, or the Finder's
 own alias record); a file copy that arrived from another machine leaves its URL
 behind without the file, and what the pasteboard itself carries is attached then.
 A copy this machine has that cannot be attached — a folder, a binary — is
-reported with the reason, and a clipboard holding no image and no file names the
-types it carries, so a paste that finds nothing says what it did find. `@path`
+reported with the reason, and so is one it may not read, with the grant to give
+beside it: macOS keeps the Desktop, Documents and Downloads folders behind a
+per-app grant, so a screenshot copied from a protected folder answers
+`Operation not permitted` and the paste says to let the app in under System
+Settings → Privacy & Security → Files and Folders, or to copy the file into the
+project, rather than leaving an errno to act on. A clipboard holding no image and
+no file names the types it carries, so a paste that finds nothing says what it
+did find. `@path`
 names one on disk, and `/attach [list|remove <id|n>|clear]` lists and edits what
 is pending; a message queued while the agent is busy keeps the attachments it was
 queued with, and pulling that message back into the box (`Alt+Up`) brings each
