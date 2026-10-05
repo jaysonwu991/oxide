@@ -14,6 +14,9 @@ use ratatui::Frame;
 
 const MIN_INPUT_ROWS: usize = 1;
 const MAX_INPUT_ROWS: usize = 12;
+/// Pending attachments the composer names before folding the rest into a
+/// count, so a long paste cannot push the message box off the screen.
+const MAX_ATTACHMENT_ROWS: usize = 4;
 /// Blank rows kept above the conversation so the first line (banner or chat)
 /// is not flush with the terminal's top edge.
 const MESSAGE_TOP_PAD: u16 = 1;
@@ -90,8 +93,7 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
 /// Messages, the composer, the footer, and - when the Portkey spend bar is
 /// enabled - one full-width row for it at the bottom of the screen.
 fn main_areas(area: Rect, app: &App) -> Vec<Rect> {
-    let input_width = area.width as usize;
-    let input_rows = input_rows(&app.input, input_width) as u16;
+    let input_rows = composer_content_rows(app, area.width as usize) as u16;
     let mut constraints = vec![
         Constraint::Min(3),
         // One gap row above the composer, the top and bottom rules, then
@@ -2523,9 +2525,9 @@ fn render_banner(width: usize, info: &[String], lines: &mut Vec<Line<'static>>) 
     render_banner_themed(width, &crate::theme::Theme::dark(), info, lines);
 }
 
-/// The composer rule while the agent is busy: the phase, elapsed time, pending
-/// attachment count (so a queued image is visible as part of the message), and
-/// the queued-message/dequeue hint Pi advertises.
+/// The composer rule while the agent is busy: the phase, elapsed time, and the
+/// queued-message/dequeue hint Pi advertises. What is attached waits in the
+/// box itself, so the rule does not count it.
 fn busy_status_text(app: &App) -> String {
     let secs = app
         .busy_since
@@ -2542,9 +2544,6 @@ fn busy_status_text(app: &App) -> String {
         );
     }
     let mut text = format!(" {} {} · {secs}s", spinner(app.busy_since), app.status);
-    if !app.attachments.is_empty() {
-        text.push_str(&format!(" · {} attachment(s)", app.attachments.len()));
-    }
     let queued = app.queued_count();
     if queued > 0 {
         text.push_str(&format!(
@@ -2574,13 +2573,8 @@ fn draw_input(frame: &mut Frame, app: &App, area: Rect) {
             busy_status_text(app),
             Style::default().fg(app.theme.tool),
         )]
-    } else if app.attachments.is_empty() {
-        Vec::new()
     } else {
-        vec![Span::styled(
-            format!(" {} attachment(s) ", app.attachments.len()),
-            Style::default().fg(border_color),
-        )]
+        Vec::new()
     };
     let title = truncate_spans(title, area.width.saturating_sub(2) as usize);
     let mut block = Block::default()
@@ -2594,19 +2588,33 @@ fn draw_input(frame: &mut Frame, app: &App, area: Rect) {
     frame.render_widget(block, area);
 
     let width = inner.width as usize;
+    // The attachments sit above the input as rows of their own, in as many as
+    // they take plus the blank row that keeps them off the message.
+    let attachments = attachment_rows_taken(app);
+    let mut input_area = inner;
+    if attachments > 0 {
+        let rows = attachment_rows(app, width);
+        let height = rows.len() as u16;
+        frame.render_widget(Paragraph::new(rows), Rect { height, ..inner });
+        input_area = Rect {
+            y: inner.y + height + 1,
+            height: inner.height.saturating_sub(height + 1),
+            ..inner
+        };
+    }
     let paragraph = Paragraph::new(composer_text(&app.input, &app.theme))
         .wrap(Wrap { trim: false })
-        .scroll((input_scroll(&app.input, app.input_cursor, width), 0));
-    frame.render_widget(paragraph, inner);
+        .scroll((composer_input_scroll(app, width), 0));
+    frame.render_widget(paragraph, input_area);
 
     // The composer stays editable while the agent runs so a message can be
     // typed and queued as steering, so keep its caret visible then too.
     if app.connect.is_none() && app.models.is_none() {
         let (cursor_row, cursor_column) =
             input_cursor_position(&app.input, app.input_cursor.min(app.input.len()), width);
-        let scroll = input_scroll(&app.input, app.input_cursor, width) as usize;
-        let x = inner.x + cursor_column.min(width.saturating_sub(1)) as u16;
-        let y = inner.y + cursor_row.saturating_sub(scroll) as u16;
+        let scroll = composer_input_scroll(app, width) as usize;
+        let x = input_area.x + cursor_column.min(width.saturating_sub(1)) as u16;
+        let y = input_area.y + cursor_row.saturating_sub(scroll) as u16;
         frame.set_cursor_position((x, y));
     }
 }
@@ -2621,6 +2629,82 @@ fn composer_text<'a>(input: &'a str, theme: &crate::theme::Theme) -> Text<'a> {
             .map(|line| Line::from(mention_spans(line, theme)))
             .collect::<Vec<_>>(),
     )
+}
+
+/// The composer's content rows: the attachments it names, the blank row that
+/// keeps them off the message, then the input itself.
+fn composer_content_rows(app: &App, width: usize) -> usize {
+    let attachments = attachment_rows_taken(app);
+    let spacer = usize::from(attachments > 0);
+    attachments + spacer + composer_input_rows(app, width)
+}
+
+/// The rows the composer's pending attachments take: one per attachment, named
+/// by the file it was read from or by what it is, with the ones past the cap
+/// folded into a count.
+fn attachment_rows(app: &App, width: usize) -> Vec<Line<'static>> {
+    let style = Style::default().fg(app.theme.dim);
+    let shown = app.attachments.len().min(MAX_ATTACHMENT_ROWS);
+    let mut rows = Vec::with_capacity(shown + 1);
+    for attachment in app.attachments.iter().take(shown) {
+        rows.push(Line::from(Span::styled(
+            format!(
+                " • {}",
+                shorten_name(&attachment.display(), width.saturating_sub(3))
+            ),
+            style,
+        )));
+    }
+    let hidden = app.attachments.len() - shown;
+    if hidden > 0 {
+        rows.push(Line::from(Span::styled(format!(" • {hidden} more"), style)));
+    }
+    rows
+}
+
+/// The rows those attachments take, whether or not they are painted.
+fn attachment_rows_taken(app: &App) -> usize {
+    let shown = app.attachments.len().min(MAX_ATTACHMENT_ROWS);
+    shown + usize::from(shown < app.attachments.len())
+}
+
+/// The input rows the composer shows: the attachments above it take their room
+/// from the input's own cap, so a message box that is already as tall as it
+/// goes does not grow past it.
+fn composer_input_rows(app: &App, width: usize) -> usize {
+    let room = MAX_INPUT_ROWS
+        .saturating_sub(attachment_rows_taken(app))
+        .max(MIN_INPUT_ROWS);
+    input_rows(&app.input, width).min(room)
+}
+
+/// The wrapped input row the composer scrolls to, so the caret stays inside
+/// the rows left below the attachments.
+fn composer_input_scroll(app: &App, width: usize) -> u16 {
+    input_scroll(
+        &app.input,
+        app.input_cursor,
+        width,
+        composer_input_rows(app, width),
+    )
+}
+
+/// Shortens a name to `width` columns, dropping the middle so the file name at
+/// the end of a long path is the part that survives.
+fn shorten_name(name: &str, width: usize) -> String {
+    let chars: Vec<char> = name.chars().collect();
+    if chars.len() <= width {
+        return name.to_string();
+    }
+    if width <= 1 {
+        return "…".to_string();
+    }
+    let tail = (width - 1) * 2 / 3;
+    let head = width - 1 - tail;
+    let mut short: String = chars[..head].iter().collect();
+    short.push('…');
+    short.extend(&chars[chars.len() - tail..]);
+    short
 }
 
 fn mention_spans<'a>(input: &'a str, theme: &crate::theme::Theme) -> Vec<Span<'a>> {
@@ -2662,9 +2746,11 @@ fn input_rows(input: &str, width: usize) -> usize {
         .clamp(MIN_INPUT_ROWS, MAX_INPUT_ROWS)
 }
 
-fn input_scroll(input: &str, cursor: usize, width: usize) -> u16 {
+/// The wrapped row an input scrolls to, so the caret stays within the `visible`
+/// rows the box shows of it.
+fn input_scroll(input: &str, cursor: usize, width: usize, visible: usize) -> u16 {
     let (row, _) = input_cursor_position(input, cursor.min(input.len()), width);
-    row.saturating_sub(MAX_INPUT_ROWS - 1) as u16
+    row.saturating_sub(visible.max(MIN_INPUT_ROWS) - 1) as u16
 }
 
 fn input_cursor_position(input: &str, cursor: usize, width: usize) -> (usize, usize) {
@@ -3415,12 +3501,16 @@ mod tests {
 
     #[test]
     fn input_scroll_follows_cursor() {
-        assert_eq!(input_scroll("hi", 2, 10), 0);
+        assert_eq!(input_scroll("hi", 2, 10, MAX_INPUT_ROWS), 0);
         assert_eq!(
-            input_scroll(&"a".repeat(200), 200, 10),
+            input_scroll(&"a".repeat(200), 200, 10, MAX_INPUT_ROWS),
             (20 - MAX_INPUT_ROWS) as u16
         );
-        assert_eq!(input_scroll(&"a".repeat(200), 5, 10), 0);
+        assert_eq!(input_scroll(&"a".repeat(200), 5, 10, MAX_INPUT_ROWS), 0);
+        // Fewer rows to show the same input in scrolls it further, and a box
+        // with none left still shows something.
+        assert_eq!(input_scroll(&"a".repeat(200), 200, 10, 5), 15);
+        assert_eq!(input_scroll(&"a".repeat(200), 200, 10, 0), 19);
     }
 
     #[test]
@@ -3460,24 +3550,113 @@ mod tests {
     }
 
     #[test]
-    fn busy_status_shows_pending_attachments() {
+    fn the_composer_names_what_is_attached_to_the_message() {
         let mut app = App::new("model".into(), "/tmp".into(), Reasoning::Auto);
         app.busy = true;
         app.status = "thinking...".into();
+        app.add_attachment_from(
+            crate::llm::ContentPart::ImageUrl {
+                image_url: crate::llm::ImageUrl {
+                    url: "data:image/png;base64,AAAA".into(),
+                    detail: None,
+                },
+            },
+            std::path::PathBuf::from("/tmp/shot.png"),
+        );
+
+        let rows = attachment_rows(&app, 80);
+        let text: String = rows
+            .iter()
+            .flat_map(|line| line.spans.iter())
+            .map(|span| span.content.as_ref())
+            .collect();
+        assert!(text.contains("/tmp/shot.png"), "{text}");
+
+        // The rule carries the phase and the hint, not a second count of what
+        // the box is already showing.
+        let status = busy_status_text(&app);
+        assert!(status.contains("thinking..."), "{status}");
+        assert!(!status.contains("attachment"), "{status}");
+        assert!(status.contains("Enter queue"), "{status}");
+    }
+
+    #[test]
+    fn a_paste_that_named_no_file_is_shown_by_what_it_is() {
+        let mut app = App::new("model".into(), "/tmp".into(), Reasoning::Auto);
         app.add_attachment(crate::llm::ContentPart::ImageUrl {
             image_url: crate::llm::ImageUrl {
                 url: "data:image/png;base64,AAAA".into(),
                 detail: None,
             },
         });
+        let rows = attachment_rows(&app, 80);
+        let text: String = rows
+            .iter()
+            .flat_map(|line| line.spans.iter())
+            .map(|span| span.content.as_ref())
+            .collect();
+        assert!(text.contains("image (png)"), "{text}");
+    }
 
-        let text = busy_status_text(&app);
-        assert!(text.contains("thinking..."), "{text}");
-        assert!(text.contains("1 attachment(s)"), "{text}");
+    #[test]
+    fn the_composer_folds_attachments_past_its_cap() {
+        let mut app = App::new("model".into(), "/tmp".into(), Reasoning::Auto);
+        for index in 0..MAX_ATTACHMENT_ROWS + 2 {
+            app.add_attachment_from(
+                crate::llm::ContentPart::ImageUrl {
+                    image_url: crate::llm::ImageUrl {
+                        url: format!("data:image/png;base64,AAAA{index}"),
+                        detail: None,
+                    },
+                },
+                std::path::PathBuf::from(format!("/tmp/{index}.png")),
+            );
+        }
 
-        app.attachments.clear();
-        let text = busy_status_text(&app);
-        assert!(!text.contains("attachment(s)"), "{text}");
+        assert_eq!(app.attachments.len(), MAX_ATTACHMENT_ROWS + 2);
+        assert_eq!(attachment_rows_taken(&app), MAX_ATTACHMENT_ROWS + 1);
+        assert_eq!(attachment_rows(&app, 80).len(), MAX_ATTACHMENT_ROWS + 1);
+        let last = attachment_rows(&app, 80).pop().unwrap();
+        assert!(
+            last.spans[0].content.ends_with("2 more"),
+            "{}",
+            last.spans[0].content
+        );
+    }
+
+    #[test]
+    fn attachments_take_their_rows_from_the_composer_and_not_from_the_screen() {
+        let mut app = App::new("model".into(), "/tmp".into(), Reasoning::Auto);
+        assert_eq!(composer_content_rows(&app, 80), MIN_INPUT_ROWS);
+
+        for index in 0..2 {
+            app.add_attachment_from(
+                crate::llm::ContentPart::ImageUrl {
+                    image_url: crate::llm::ImageUrl {
+                        url: format!("data:image/png;base64,AAAA{index}"),
+                        detail: None,
+                    },
+                },
+                std::path::PathBuf::from(format!("/tmp/{index}.png")),
+            );
+        }
+        // Two attachment rows, the blank row that keeps them off the message,
+        // and the input's own row.
+        assert_eq!(composer_content_rows(&app, 80), 2 + 1 + MIN_INPUT_ROWS);
+
+        // A long message still stops at the composer's cap, since the rows
+        // above it take their room from that cap.
+        app.input = "a".repeat(2000);
+        assert_eq!(composer_content_rows(&app, 10), 2 + 1 + MAX_INPUT_ROWS - 2);
+    }
+
+    #[test]
+    fn a_long_attachment_name_keeps_its_file_name() {
+        let name = "/Users/jayson/Desktop/one/two/three/a-very-long-name.png";
+        assert_eq!(shorten_name(name, 200), name);
+        assert_eq!(shorten_name(name, 20), "/Users/…ong-name.png");
+        assert_eq!(shorten_name(name, 20).chars().count(), 20);
+        assert_eq!(shorten_name("ab", 1), "…");
     }
 
     #[test]
@@ -5009,6 +5188,41 @@ mod tests {
             !line.contains("Esc clear"),
             "Esc answers while a tool waits"
         );
+    }
+
+    #[test]
+    fn the_composer_paints_its_attachments_above_the_message() {
+        use crate::config::Reasoning;
+        use ratatui::backend::{Backend, TestBackend};
+        use ratatui::Terminal;
+
+        let mut app = App::new("gpt-4o".into(), "/tmp/project".into(), Reasoning::Auto);
+        app.input = "look at this".into();
+        app.input_cursor = app.input.len();
+        app.add_attachment_from(
+            crate::llm::ContentPart::ImageUrl {
+                image_url: crate::llm::ImageUrl {
+                    url: "data:image/png;base64,AAAA".into(),
+                    detail: None,
+                },
+            },
+            std::path::PathBuf::from("/tmp/shot.png"),
+        );
+
+        let mut terminal = Terminal::new(TestBackend::new(60, 24)).unwrap();
+        terminal.draw(|frame| draw(frame, &mut app)).unwrap();
+        let buffer = terminal.backend().buffer();
+        let attachment = row_of(buffer, "/tmp/shot.png").expect("the attachment is named");
+        let message = row_of(buffer, "look at this").expect("the message is painted");
+        assert_eq!(message, attachment + 2, "a blank row keeps them apart");
+        // The caret is in the message, below what is attached to it.
+        let caret = terminal.backend_mut().get_cursor_position().unwrap();
+        assert_eq!(caret.y, message);
+
+        // A terminal too short for the rows the composer asks for must not
+        // panic, and the message box still takes its own frame.
+        let mut small = Terminal::new(TestBackend::new(20, 6)).unwrap();
+        small.draw(|frame| draw(frame, &mut app)).unwrap();
     }
 
     #[test]

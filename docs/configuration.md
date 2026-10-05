@@ -542,6 +542,7 @@ Runtime state lives under the platform Oxide config directory:
   shared by the terminal, the desktop app and the VS Code extension)
 - Truncated tool output: `truncated/` (retained 7 days; see
   `OXIDE_TRUNCATION_DIR`)
+- Pasted pictures that named no file: `clipboard/<id>.png` (retained 7 days)
 - Context compaction config: `compaction` in `settings.json` /
   `.oxide/settings.json`
 
