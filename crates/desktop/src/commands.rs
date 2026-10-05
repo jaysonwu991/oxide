@@ -164,6 +164,27 @@ pub struct AttachmentInput {
     pub name: Option<String>,
 }
 
+/// The system clipboard as an attachment for the page to add, in the shape of
+/// the attachments it already sends back (a data URL and the name it is shown
+/// by).
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ClipboardAttachment {
+    pub name: String,
+    pub data_url: String,
+}
+
+/// The system clipboard as an attachment, for a paste the webview could not
+/// read itself: macOS refuses a webview's read of a file in the Desktop,
+/// Documents or Downloads folder, but the harness reads the pasteboard through
+/// the same `media::clipboard` the terminal's Ctrl+V uses, so what the
+/// pasteboard itself carries is attached instead. `None` for a text paste or an
+/// empty clipboard.
+pub fn read_clipboard() -> CmdResult<Option<ClipboardAttachment>> {
+    Ok(oxide_core::media::clipboard_media()
+        .map(|(name, data_url)| ClipboardAttachment { name, data_url }))
+}
+
 /// A refused attachment fails the send instead of vanishing from the message:
 /// a payload that is not base64, one past the limit the core enforces, or a
 /// payload that is neither an image, a PDF nor text (a video, a tarball).
@@ -1039,6 +1060,7 @@ pub async fn dispatch(
             .await,
         ),
         "list_commands" => command_value(list_commands(arg(&args, "project")?).await),
+        "read_clipboard" => command_value(read_clipboard()),
         "at_suggestions" => command_value(
             at_suggestions(
                 arg(&args, "project")?,

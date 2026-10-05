@@ -777,6 +777,12 @@ pub struct App {
     pub context_used: u64,
     pub context_limit: u64,
     pub show_thinking: bool,
+    /// Whether the active provider is reached through a subscription, so the
+    /// footer marks its cost estimate `(sub)` the way Pi does.
+    pub subscription: bool,
+    /// Whether experimental features are on (`OXIDE_EXPERIMENTAL=1`), so the
+    /// footer carries Pi's `xp` marker.
+    pub experimental: bool,
     pub extension_statuses: std::collections::BTreeMap<String, String>,
     /// Settings for the Portkey spend bar, and the bar itself when enabled.
     pub usage_settings: crate::portkey_usage::UsageSettings,
@@ -944,6 +950,8 @@ impl App {
             context_used: 0,
             context_limit: 0,
             show_thinking: true,
+            subscription: false,
+            experimental: std::env::var("OXIDE_EXPERIMENTAL").as_deref() == Ok("1"),
             extension_statuses: std::collections::BTreeMap::new(),
             usage_settings: crate::portkey_usage::UsageSettings::default(),
             usage: None,

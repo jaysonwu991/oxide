@@ -1480,71 +1480,20 @@ fn draw_footer(frame: &mut Frame, app: &App, area: Rect) {
     );
 
     // Row two: usage on the left, the model and thinking level on the right.
-    let mut parts: Vec<String> = Vec::new();
-    if app.tokens_in > 0 {
-        parts.push(format!("↑{}", format_tokens(app.tokens_in)));
-    }
-    if app.tokens_out > 0 {
-        parts.push(format!("↓{}", format_tokens(app.tokens_out)));
-    }
-    if app.tokens_cache_read > 0 {
-        parts.push(format!("R{}", format_tokens(app.tokens_cache_read)));
-    }
-    if app.tokens_cache_write > 0 {
-        parts.push(format!("W{}", format_tokens(app.tokens_cache_write)));
-    }
-    if app.tokens_cache_read + app.tokens_cache_write > 0 {
-        if let Some(hit) = app.cache_hit_rate {
-            parts.push(format!("CH{hit:.1}%"));
-        }
-    }
-    if app.cost > 0.0 {
-        parts.push(format!("${:.3}", app.cost));
-    }
-
-    let mut left: Vec<Span<'static>> = Vec::new();
-    for part in &parts {
-        if !left.is_empty() {
-            left.push(Span::styled(" ", dim));
-        }
-        left.push(Span::styled(part.clone(), dim));
-    }
-    if app.context_limit > 0 {
-        if !left.is_empty() {
-            left.push(Span::styled(" ", dim));
-        }
-        let auto = if app.auto_compact { " (auto)" } else { "" };
-        let (text, color) = if app.context_used > 0 {
-            let pct = context_percent(app.context_used, app.context_limit);
-            (
-                format!("{pct}%/{}{auto}", format_tokens(app.context_limit)),
-                context_color(pct, &app.theme),
-            )
+    let left = footer_stats(app, dim);
+    let model = footer_model(app);
+    // The provider names which of several served the response, but only while
+    // the row still holds it: Pi drops it rather than squeezing the model.
+    let right = if app.available_providers > 1 && !app.provider.is_empty() {
+        let named = format!("({}) {model}", app.provider);
+        if spans_width(&left) + 2 + text_width(&named) <= width {
+            named
         } else {
-            (
-                format!("?/{}{auto}", format_tokens(app.context_limit)),
-                app.theme.dim,
-            )
-        };
-        left.push(Span::styled(text, Style::default().fg(color)));
-    }
-
-    let model = if app.model.is_empty() {
-        "no-model".to_string()
+            model
+        }
     } else {
-        app.model.clone()
+        model
     };
-    let mut right = model;
-    if app.show_thinking {
-        if app.reasoning == Reasoning::Off {
-            right.push_str(" • thinking off");
-        } else {
-            right.push_str(&format!(" • {}", app.reasoning.label()));
-        }
-    }
-    if app.available_providers > 1 && !app.provider.is_empty() {
-        right = format!("({}) {right}", app.provider);
-    }
     frame.render_widget(
         Paragraph::new(aligned_row(left, vec![Span::styled(right, dim)], width)),
         rows[1],
@@ -1565,6 +1514,105 @@ fn draw_footer(frame: &mut Frame, app: &App, area: Rect) {
             rows[2],
         );
     }
+}
+
+/// The stats half of the footer: cumulative token usage, the latest cache hit
+/// rate, the cost estimate — marked `(sub)` for a subscription provider, whose
+/// number is what the plan would have billed — the context gauge with Pi's one
+/// decimal, and Pi's `xp` marker when experimental features are on.
+fn footer_stats(app: &App, dim: Style) -> Vec<Span<'static>> {
+    let mut parts: Vec<Span<'static>> = Vec::new();
+    let push = |parts: &mut Vec<Span<'static>>, text: String, style: Style| {
+        if !parts.is_empty() {
+            parts.push(Span::styled(" ", dim));
+        }
+        parts.push(Span::styled(text, style));
+    };
+    if app.tokens_in > 0 {
+        push(
+            &mut parts,
+            format!("↑{}", format_tokens(app.tokens_in)),
+            dim,
+        );
+    }
+    if app.tokens_out > 0 {
+        push(
+            &mut parts,
+            format!("↓{}", format_tokens(app.tokens_out)),
+            dim,
+        );
+    }
+    if app.tokens_cache_read > 0 {
+        push(
+            &mut parts,
+            format!("R{}", format_tokens(app.tokens_cache_read)),
+            dim,
+        );
+    }
+    if app.tokens_cache_write > 0 {
+        push(
+            &mut parts,
+            format!("W{}", format_tokens(app.tokens_cache_write)),
+            dim,
+        );
+    }
+    if app.tokens_cache_read + app.tokens_cache_write > 0 {
+        if let Some(hit) = app.cache_hit_rate {
+            push(&mut parts, format!("CH{hit:.1}%"), dim);
+        }
+    }
+    if app.cost > 0.0 || app.subscription {
+        let sub = if app.subscription { " (sub)" } else { "" };
+        push(&mut parts, format!("${:.3}{sub}", app.cost), dim);
+    }
+    if app.context_limit > 0 {
+        let auto = if app.auto_compact { " (auto)" } else { "" };
+        let (text, color) = if app.context_used > 0 {
+            let pct = context_percent_tenths(app.context_used, app.context_limit);
+            (
+                format!("{pct:.1}%/{}{auto}", format_tokens(app.context_limit)),
+                context_color(pct, &app.theme),
+            )
+        } else {
+            (
+                format!("?/{}{auto}", format_tokens(app.context_limit)),
+                app.theme.dim,
+            )
+        };
+        push(&mut parts, text, Style::default().fg(color));
+    }
+    if app.experimental {
+        if !parts.is_empty() {
+            parts.push(Span::styled(" ", dim));
+        }
+        parts.push(Span::styled("•", dim));
+        parts.push(Span::raw(" "));
+        parts.push(Span::styled(
+            "xp",
+            Style::default()
+                .fg(app.theme.tool)
+                .add_modifier(Modifier::BOLD),
+        ));
+    }
+    parts
+}
+
+/// The model half of the footer: the active model and the thinking level the
+/// footer has room for.
+fn footer_model(app: &App) -> String {
+    let mut right = if app.model.is_empty() {
+        "no-model".to_string()
+    } else {
+        app.model.clone()
+    };
+    if app.show_thinking {
+        if app.reasoning == Reasoning::Off {
+            right.push_str(" • thinking off");
+        } else {
+            right.push_str(&format!(" • {}", app.reasoning.label()));
+        }
+    }
+    right
 }
 
 /// The Portkey spend bar: one full-width row with the user label and the
@@ -1589,17 +1637,52 @@ fn draw_usage_bar(frame: &mut Frame, app: &App, area: Rect) {
     frame.render_widget(Paragraph::new(Line::from(spans)).style(base), area);
 }
 
-/// Truncates to `width` with a three-dot ellipsis, matching Pi's footer.
+/// The display width of a span group in terminal cells: a CJK glyph is two
+/// columns, which is what the terminal gives it and what Pi measures.
+fn spans_width(spans: &[Span<'static>]) -> usize {
+    spans.iter().map(Span::width).sum()
+}
+
+/// The display width of a string in terminal cells.
+fn text_width(text: &str) -> usize {
+    unicode_width::UnicodeWidthStr::width(text)
+}
+
+/// The display width of one character, zero for a combining mark.
+fn char_width(ch: char) -> usize {
+    unicode_width::UnicodeWidthChar::width(ch).unwrap_or(0)
+}
+
+/// The longest prefix of `text` that fits in `width` display cells, never
+/// splitting a wide character.
+fn take_width(text: &str, width: usize) -> String {
+    let mut out = String::new();
+    let mut used = 0;
+    for ch in text.chars() {
+        let w = char_width(ch);
+        if used + w > width {
+            break;
+        }
+        out.push(ch);
+        used += w;
+    }
+    out
+}
+
+/// Truncates to `width` display cells with a three-dot ellipsis, matching Pi's
+/// footer. When the ellipsis will not fit it is itself clipped, so a very narrow
+/// row still ends in dots rather than the text it was truncating.
 fn truncate_dots(text: &str, width: usize) -> String {
-    if text.chars().count() <= width {
+    if width == 0 {
+        return String::new();
+    }
+    if text_width(text) <= width {
         return text.to_string();
     }
-    if width <= 3 {
-        return text.chars().take(width).collect();
+    if text_width("...") >= width {
+        return take_width("...", width);
     }
-    let mut out: String = text.chars().take(width - 3).collect();
-    out.push_str("...");
-    out
+    format!("{}...", take_width(text, width - 3))
 }
 
 /// Collapses control characters so an extension status stays on one line.
@@ -1607,23 +1690,37 @@ fn sanitize_status(text: &str) -> String {
     text.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
-/// Joins left- and right-aligned span groups on a single row, padding with a
-/// gap so the right group ends at `width`. Falls back to a truncated single
-/// line when there is not enough room for both.
+/// Joins the footer's stats and its model on one row the way Pi lays them out:
+/// the model right-aligned with at least two spaces before it, the stats
+/// truncated with a three-dot ellipsis when they fill the row, and the model
+/// truncated without one when only part of it fits. Widths are terminal cells,
+/// so a wide character is neither split nor counted as one.
 fn aligned_row(left: Vec<Span<'static>>, right: Vec<Span<'static>>, width: usize) -> Line<'static> {
-    let measure = |spans: &[Span<'static>]| -> usize {
-        spans.iter().map(|span| span.content.chars().count()).sum()
-    };
-    let left_width = measure(&left);
-    let right_width = measure(&right);
-    if left_width + right_width + 1 > width {
-        let mut spans = left;
-        spans.extend(right);
-        return Line::from(truncate_spans(spans, width));
+    const GAP: usize = 2;
+    let mut left = left;
+    let mut left_width = spans_width(&left);
+    if left_width > width {
+        left = truncate_spans_with(left, width, "...");
+        left_width = spans_width(&left);
     }
+    let right_width = spans_width(&right);
+    if left_width + GAP + right_width <= width {
+        let mut spans = left;
+        spans.push(Span::raw(" ".repeat(width - left_width - right_width)));
+        spans.extend(right);
+        return Line::from(spans);
+    }
+    let available = width.saturating_sub(left_width + GAP);
+    if available == 0 {
+        return Line::from(left);
+    }
+    let truncated = truncate_spans_with(right, available, "");
+    let truncated_width = spans_width(&truncated);
     let mut spans = left;
-    spans.push(Span::raw(" ".repeat(width - left_width - right_width)));
-    spans.extend(right);
+    spans.push(Span::raw(
+        " ".repeat(width.saturating_sub(left_width + truncated_width)),
+    ));
+    spans.extend(truncated);
     Line::from(spans)
 }
 
@@ -1649,27 +1746,53 @@ fn compact_tokens(value: u64) -> String {
 }
 
 fn truncate_spans(spans: Vec<Span<'static>>, width: usize) -> Vec<Span<'static>> {
-    let total: usize = spans.iter().map(|span| span.content.chars().count()).sum();
-    if total <= width {
+    truncate_spans_with(spans, width, "…")
+}
+
+/// Truncates a span group to `width` display cells, never splitting a wide
+/// character, and appends `ellipsis` when anything was dropped.
+fn truncate_spans_with(
+    spans: Vec<Span<'static>>,
+    width: usize,
+    ellipsis: &str,
+) -> Vec<Span<'static>> {
+    if spans_width(&spans) <= width {
         return spans;
     }
     if width == 0 {
         return Vec::new();
     }
 
-    let mut remaining = width - 1;
+    let ellipsis = take_width(ellipsis, width);
+    let budget = width.saturating_sub(text_width(&ellipsis));
+    let mut used = 0;
+    // A character that does not fit stops the whole read, not only its own
+    // span: continuing would skip the wide glyph and append a narrower later
+    // one, so the result would no longer be a prefix of the input. The partial
+    // span that hit the edge is kept.
+    let mut done = false;
     let mut truncated = Vec::new();
     for span in spans {
-        if remaining == 0 {
+        if done || used >= budget {
             break;
         }
-        let text: String = span.content.chars().take(remaining).collect();
-        remaining = remaining.saturating_sub(text.chars().count());
+        let mut text = String::new();
+        for ch in span.content.chars() {
+            let w = char_width(ch);
+            if used + w > budget {
+                done = true;
+                break;
+            }
+            text.push(ch);
+            used += w;
+        }
         if !text.is_empty() {
             truncated.push(Span::styled(text, span.style));
         }
     }
-    truncated.push(Span::raw("…"));
+    if !ellipsis.is_empty() {
+        truncated.push(Span::raw(ellipsis));
+    }
     truncated
 }
 
@@ -1723,15 +1846,21 @@ fn display_path(path: &str) -> String {
 }
 
 pub(crate) fn context_percent(used: u64, limit: u64) -> u64 {
-    (used as f64 / limit as f64 * 100.0).round() as u64
+    context_percent_tenths(used, limit).round() as u64
+}
+
+/// The context usage as a percentage with a decimal, which is what Pi's footer
+/// prints (`81.0%`). The rounded integer form is what `/usage` reports.
+pub(crate) fn context_percent_tenths(used: u64, limit: u64) -> f64 {
+    used as f64 / limit as f64 * 100.0
 }
 
 /// Context usage color escalates from muted to warning to error, matching Pi's
-/// `>90` / `>70` thresholds.
-fn context_color(pct: u64, theme: &crate::theme::Theme) -> Color {
-    if pct > 90 {
+/// `>90` / `>70` thresholds on the unrounded value.
+fn context_color(pct: f64, theme: &crate::theme::Theme) -> Color {
+    if pct > 90.0 {
         theme.error
-    } else if pct > 70 {
+    } else if pct > 70.0 {
         theme.tool
     } else {
         theme.dim
@@ -3692,6 +3821,20 @@ mod tests {
         assert!(text.ends_with('…'));
     }
 
+    /// A character that does not fit stops the whole read, not only its own
+    /// span: a later narrow glyph must not be appended after the wide one it
+    /// skipped, which would no longer be a prefix of the input.
+    #[test]
+    fn truncation_stops_at_the_first_character_that_does_not_fit() {
+        let spans = vec![Span::raw("ab"), Span::raw("漢"), Span::raw("c")];
+        let truncated = truncate_spans_with(spans, 3, "");
+        let text: String = truncated.iter().map(|span| span.content.as_ref()).collect();
+        assert_eq!(
+            text, "ab",
+            "the skipped wide glyph must not expose a later one"
+        );
+    }
+
     #[test]
     fn truncate_is_char_safe() {
         assert_eq!(truncate("hello", 10), "hello");
@@ -5054,6 +5197,88 @@ mod tests {
         assert!(row_of(buffer, "first second").is_some());
     }
 
+    /// A subscription provider's cost is an estimate of what the plan would be
+    /// billed, so Pi marks it `(sub)`; the marker is shown even before a turn
+    /// reports usage, which is the one thing that makes the number honest.
+    #[test]
+    fn footer_marks_a_subscription_cost() {
+        use crate::config::Reasoning;
+        use ratatui::backend::TestBackend;
+        use ratatui::Terminal;
+
+        let mut app = App::new("gpt-4o".into(), "/tmp/project".into(), Reasoning::Auto);
+        app.subscription = true;
+        let mut terminal = Terminal::new(TestBackend::new(80, 24)).unwrap();
+        terminal.draw(|frame| draw(frame, &mut app)).unwrap();
+        let buffer = terminal.backend().buffer();
+        let row = row_of(buffer, "$0.000").expect("subscription cost");
+        let footer: String = (0..buffer.area.width)
+            .map(|x| buffer[(x, row)].symbol())
+            .collect();
+        assert!(footer.contains("$0.000 (sub)"), "{footer}");
+    }
+
+    /// Experimental features wear Pi's `xp` marker after the context gauge.
+    #[test]
+    fn footer_marks_experimental_features() {
+        use crate::config::Reasoning;
+        use ratatui::backend::TestBackend;
+        use ratatui::Terminal;
+
+        let mut app = App::new("gpt-4o".into(), "/tmp/project".into(), Reasoning::Auto);
+        app.experimental = true;
+        let mut terminal = Terminal::new(TestBackend::new(80, 24)).unwrap();
+        terminal.draw(|frame| draw(frame, &mut app)).unwrap();
+        let buffer = terminal.backend().buffer();
+        assert!(row_of(buffer, "xp").is_some());
+    }
+
+    /// A wide glyph occupies two columns, so a footer that measured code points
+    /// would let a CJK model or session name overflow the row.
+    #[test]
+    fn footer_measures_wide_characters_in_columns() {
+        let wide = "한글".repeat(30);
+        assert_eq!(text_width(&wide), 120);
+        let out = truncate_dots(&wide, 93);
+        assert!(text_width(&out) <= 93, "{}", text_width(&out));
+        assert!(out.ends_with("..."));
+        // A wide character is never split in half.
+        assert!(out.chars().all(|ch| ch == '한' || ch == '글' || ch == '.'));
+
+        let line = aligned_row(
+            vec![Span::raw("↑1.2k")],
+            vec![Span::raw("模".repeat(30))],
+            60,
+        );
+        assert!(line.width() <= 60, "{}", line.width());
+    }
+
+    /// The provider is named to tell several apart, but Pi drops it when the
+    /// row cannot hold both it and the model rather than squeezing the model.
+    #[test]
+    fn footer_drops_the_provider_when_the_row_cannot_hold_it() {
+        use crate::config::Reasoning;
+        use ratatui::backend::TestBackend;
+        use ratatui::Terminal;
+
+        let mut app = App::new(
+            "a-model-name".into(),
+            "/tmp/project".into(),
+            Reasoning::Auto,
+        );
+        app.provider = "a-rather-long-provider-name".into();
+        app.available_providers = 2;
+        app.tokens_in = 123_456;
+        let mut terminal = Terminal::new(TestBackend::new(24, 24)).unwrap();
+        terminal.draw(|frame| draw(frame, &mut app)).unwrap();
+        let buffer = terminal.backend().buffer();
+        let row = row_of(buffer, "↑123k").expect("stats");
+        let footer: String = (0..buffer.area.width)
+            .map(|x| buffer[(x, row)].symbol())
+            .collect();
+        assert!(!footer.contains("provider"), "{footer}");
+    }
+
     #[test]
     fn assistant_reply_reflows_around_its_speaker_prefix() {
         use crate::config::Reasoning;
@@ -5154,7 +5379,8 @@ mod tests {
             .collect();
         assert!(footer.contains("↑108k"));
         assert!(footer.contains("↓4.8k"));
-        assert!(footer.contains("20%/100"));
+        // The context gauge carries Pi's one decimal.
+        assert!(footer.contains("20.0%/100"));
         assert!(footer.contains("(auto)"));
     }
 

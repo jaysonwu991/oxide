@@ -1997,6 +1997,15 @@ impl Config {
             .unwrap_or(AuthStyle::Bearer)
     }
 
+    /// Whether the active provider is reached through a subscription rather
+    /// than a metered API key, so the footer marks its cost estimate `(sub)`
+    /// the way Pi does. Copilot and GitLab Duo are both a plan a GitHub or
+    /// GitLab account already carries; the price table's number for their
+    /// models is what the plan would have cost, not a charge.
+    pub fn is_subscription(&self) -> bool {
+        matches!(self.auth_style(), AuthStyle::Copilot | AuthStyle::Gitlab)
+    }
+
     /// Whether the provider is a server on this machine, which may run without
     /// a credential.
     pub fn is_local_provider(&self) -> bool {
@@ -2764,6 +2773,21 @@ mod tests {
         assert_eq!(Reasoning::Low.budget_tokens(4096), Some(2048));
         assert_eq!(Reasoning::Off.budget_tokens(8192), None);
         assert_eq!(Reasoning::High.budget_tokens(1024), None);
+    }
+
+    /// Subscription-backed providers are billed as a plan, not metered per
+    /// token, so the footer marks their cost estimate the way Pi does. A
+    /// metered key and an unknown endpoint are not subscriptions.
+    #[test]
+    fn subscription_providers_are_marked_for_the_footer() {
+        let config = |provider: &str| Config {
+            provider: provider.to_string(),
+            ..Config::default()
+        };
+        assert!(config("github-copilot").is_subscription());
+        assert!(config("gitlab").is_subscription());
+        assert!(!config("openai").is_subscription());
+        assert!(!config("custom-endpoint").is_subscription());
     }
 
     #[test]

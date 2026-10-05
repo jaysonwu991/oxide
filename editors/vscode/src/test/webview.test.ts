@@ -314,7 +314,12 @@ class StubFileReader {
   onload: (() => void) | null = null;
   onerror: (() => void) | null = null;
 
-  readAsDataURL(file: { type: string }): void {
+  readAsDataURL(file: { type: string; unreadable?: boolean }): void {
+    // A file macOS refuses a webview access to has no bytes to hand over.
+    if (file.unreadable) {
+      this.onerror?.();
+      return;
+    }
     this.result = `data:${file.type};base64,QUJD`;
     this.onload?.();
   }
@@ -1471,6 +1476,28 @@ describe("webview composer", () => {
     assert.ok(attach, "the pasted image is sent to the host");
     assert.equal(attach.name, "shot.png");
     assert.equal(attach.data, "data:image/png;base64,QUJD");
+  });
+
+  it("asks the host to read the clipboard when a pasted file cannot be read", async () => {
+    // macOS refuses a webview's read of a copied file in the Desktop, Documents
+    // or Downloads folder; the host's read through the CLI reaches the
+    // pasteboard itself, so the paste attaches rather than failing.
+    const { byId, posted, send } = loadRenderer();
+    send(stateMessage());
+    byId.get("input")!.fire("paste", {
+      clipboardData: {
+        items: [
+          {
+            kind: "file",
+            getAsFile: () => ({ type: "image/png", name: "Earlier Lines.png", unreadable: true }),
+          },
+        ],
+      },
+      preventDefault: () => {},
+    });
+    await nextTick();
+    assert.equal(posted.some((message) => message.k === "attach"), false);
+    assert.deepEqual(last(posted), { k: "attachClipboard" });
   });
 
   it("downscales a pasted screenshot before sending it on", async () => {

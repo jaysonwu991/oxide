@@ -113,6 +113,12 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       case "attach":
         this.controller.addAttachment(message.data ?? "", message.name ?? "");
         return;
+      case "attachClipboard":
+        // The webview could not read a pasted file itself (macOS refuses a read
+        // in a protected folder); the host reads the clipboard through the CLI,
+        // which attaches what the pasteboard carries.
+        await this.controller.attachClipboard();
+        return;
       case "attachFiles":
         // A drop of files that exist on disk: the host decides whether each is
         // an image/PDF (media), text (context) or neither.

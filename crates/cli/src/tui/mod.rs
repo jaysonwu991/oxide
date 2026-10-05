@@ -136,6 +136,7 @@ async fn event_loop(
     );
     app.context_limit = context_limit(&config);
     app.provider = config.provider.clone();
+    app.subscription = config.is_subscription();
     app.auto_compact = config.compaction.enabled;
     app.available_providers = available_providers(&config);
     app.session_name = session.as_ref().and_then(|log| log.name());
@@ -508,6 +509,31 @@ fn cycle_reasoning(app: &mut App, config: &mut Config, session: &mut Option<Sess
     } else {
         format!("reasoning: {}", app.reasoning.label())
     });
+}
+
+/// Inserts the paths a paste named the way Pi does: one per line, with a space
+/// on either side when the cursor is against a word, so a path does not run
+/// into the text around it.
+fn insert_pasted_paths(app: &mut App, paths: &[PathBuf]) {
+    let text = paths
+        .iter()
+        .map(|path| path.display().to_string())
+        .collect::<Vec<_>>()
+        .join("\n");
+    let before = app.input[..app.input_cursor].chars().next_back();
+    let after = app.input[app.input_cursor..].chars().next();
+    let leading = if before.is_some_and(|ch| !ch.is_whitespace()) {
+        " "
+    } else {
+        ""
+    };
+    let trailing = if after.is_some_and(|ch| !ch.is_whitespace()) {
+        " "
+    } else {
+        ""
+    };
+    app.insert_input(&format!("{leading}{text}{trailing}"));
+    app.auto_scroll = true;
 }
 
 /// What a paste says when the clipboard held nothing it could attach: the types
@@ -1581,27 +1607,16 @@ fn handle_key(
             });
         }
         KeyCode::Char('v') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-            match media::clipboard() {
-                media::Clipboard::Attached { part, path } => {
-                    let added = match path {
-                        Some(path) => app.add_attachment_from(part, path),
-                        None => {
-                            let name = media::attachment_label(&part);
-                            app.add_attachment(part).then_some(name)
-                        }
-                    };
-                    match added {
-                        Some(name) => app.show_status(format!("attached {name}")),
-                        None => app.show_status("that attachment is already pending"),
-                    }
+            // Pi's own paste reads the clipboard as text to insert, not as an
+            // attachment: a copied file's path (or an image written to the
+            // scratch dir), else the clipboard text. The model reads the path.
+            match media::clipboard_paste() {
+                media::Paste::Paths(paths) => insert_pasted_paths(app, &paths),
+                media::Paste::Text(text) => {
+                    app.insert_input(&text);
+                    app.auto_scroll = true;
                 }
-                media::Clipboard::Nothing { types } => {
-                    app.show_status(nothing_to_attach(&types));
-                }
-                media::Clipboard::Refused(reason) => app.show_status(reason),
-                media::Clipboard::Unreadable => {
-                    app.show_status("the clipboard could not be read");
-                }
+                media::Paste::Empty { types } => app.show_status(nothing_to_attach(&types)),
             }
         }
         KeyCode::Char('u') if key.modifiers.contains(KeyModifiers::CONTROL) => {
@@ -4674,6 +4689,7 @@ fn switch_provider(app: &mut App, config: &mut Config, provider: &str) -> Result
 fn apply_model_state(app: &mut App, config: &Config) {
     app.model = config.model.clone();
     app.provider = config.provider.clone();
+    app.subscription = config.is_subscription();
     app.show_thinking = config.supports_reasoning();
     app.available_providers = available_providers(config);
 }
