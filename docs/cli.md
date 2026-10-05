@@ -847,9 +847,11 @@ beside it: macOS keeps the Desktop, Documents and Downloads folders behind a
 per-app grant, so a screenshot copied from a protected folder answers
 `Operation not permitted` and the paste names the app to let in under System
 Settings → Privacy & Security → Files and Folders — the app the run was started
-from, since macOS answers the access as that app rather than as `oxide`, so it is
-**Visual Studio Code** or the terminal that is listed rather than an entry of
-this binary's own — and offers to copy the file into the project, rather than
+from, since macOS answers the access as that app rather than as `oxide`, and named
+by what the bundle calls itself rather than by the folder it sits in, so VS Code
+is named **Code** (the `CFBundleDisplayName` its `Visual Studio Code.app`
+carries, which is the name the list resolves) and so is the terminal the run was
+started from — and offers to copy the file into the project, rather than
 leaving an errno to act on. A clipboard holding no image and
 no file names the types it carries, so a paste that finds nothing says what it
 did find. `@path`
