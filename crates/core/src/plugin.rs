@@ -156,6 +156,7 @@ impl PluginHost {
             .stdout(Stdio::piped())
             .stderr(Stdio::null())
             .kill_on_drop(true);
+        crate::child::detach_terminal(&mut command);
 
         match command.spawn() {
             Ok(mut child) => {
