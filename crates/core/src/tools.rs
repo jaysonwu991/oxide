@@ -3082,7 +3082,16 @@ mod tests {
         assert!(out.is_error, "{}", out.text);
         assert!(out.text.starts_with("reading "), "{}", out.text);
         assert!(out.text.contains("may not read that file"), "{}", out.text);
-        assert!(out.text.contains("System Settings"), "{}", out.text);
+        // The app to allow is named by the platform's own settings pane, so
+        // only macOS has that half of the hint to assert.
+        #[cfg(target_os = "macos")]
+        {
+            assert!(out.text.contains("System Settings"), "{}", out.text);
+        }
+        #[cfg(not(target_os = "macos"))]
+        {
+            assert!(out.text.contains("check its permissions"), "{}", out.text);
+        }
 
         std::fs::remove_dir_all(&dir).ok();
     }
