@@ -1131,12 +1131,7 @@ pub enum Paste {
 pub fn clipboard_paste() -> Paste {
     let named = clipboard_paths();
     if !named.is_empty() {
-        if named.iter().all(|path| !read_refused(path)) {
-            return Paste::Paths(named);
-        }
-        return Paste::Paths(vec![
-            saved_clipboard_picture().unwrap_or_else(|| named[0].clone())
-        ]);
+        return Paste::Paths(paste_paths(named));
     }
     let copy = clipboard_copy();
     if let Some(path) = copy.as_ref().and_then(|copy| copy.path.clone()) {
@@ -1154,6 +1149,35 @@ pub fn clipboard_paste() -> Paste {
             types: copy.map(|copy| copy.types).unwrap_or_default(),
         },
     }
+}
+
+/// The paths a copy named, with only the entries this process may not read
+/// replaced by the pasteboard's own picture: a multi-select copy keeps its
+/// readable siblings instead of losing every file because one is behind a
+/// grant, and the picture is written out once however many entries need it.
+fn paste_paths(named: Vec<PathBuf>) -> Vec<PathBuf> {
+    paste_paths_with(named, saved_clipboard_picture)
+}
+
+/// [`paste_paths`] with the picture already resolved, so the substitution is
+/// testable without a real pasteboard in the way.
+fn paste_paths_with(
+    named: Vec<PathBuf>,
+    mut picture: impl FnMut() -> Option<PathBuf>,
+) -> Vec<PathBuf> {
+    let mut fallback: Option<PathBuf> = None;
+    let mut paths = Vec::with_capacity(named.len());
+    for path in named {
+        if !read_refused(&path) {
+            paths.push(path);
+            continue;
+        }
+        let replacement = fallback
+            .get_or_insert_with(|| picture().unwrap_or_else(|| path.clone()))
+            .clone();
+        paths.push(replacement);
+    }
+    paths
 }
 
 /// The pasteboard's own picture written to the config dir's scratch, so a paste
@@ -2081,6 +2105,48 @@ mod tests {
         // nothing is an empty list rather than one empty path.
         assert!(clipboard_paths_from("hello there\n").is_empty());
         assert!(clipboard_paths_from("").is_empty());
+    }
+
+    /// A multi-select copy keeps its readable files when one entry is refused:
+    /// only that entry is replaced by the pasteboard's picture, which is
+    /// written out once however many entries need it.
+    #[cfg(unix)]
+    #[test]
+    fn a_refused_multi_select_copy_keeps_its_readable_paths() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = std::env::temp_dir().join(format!("oxide_media_paths_{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let readable = dir.join("a.png");
+        std::fs::write(&readable, b"f").unwrap();
+        let mut denied = Vec::new();
+        for name in ["b.png", "c.png"] {
+            let path = dir.join(name);
+            std::fs::write(&path, b"f").unwrap();
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o000)).unwrap();
+            denied.push(path);
+        }
+        let picture = dir.join("picture.png");
+        std::fs::write(&picture, b"p").unwrap();
+
+        // Root reads a file whatever its mode says, and a runner that does
+        // would assert nothing here.
+        if std::fs::read(&denied[0]).is_err() {
+            let mut written = 0;
+            let mut named = vec![readable.clone()];
+            named.extend(denied.iter().cloned());
+            let paths = paste_paths_with(named, || {
+                written += 1;
+                Some(picture.clone())
+            });
+            assert_eq!(paths, vec![readable, picture.clone(), picture]);
+            assert_eq!(written, 1, "the picture is written once, not per entry");
+        }
+
+        for path in &denied {
+            std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600)).ok();
+        }
+        std::fs::remove_dir_all(&dir).ok();
     }
 
     /// The read that finds the alias record a Finder-style copy writes. It is a

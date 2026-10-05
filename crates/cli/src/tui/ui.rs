@@ -1597,9 +1597,8 @@ fn footer_stats(app: &App, dim: Style) -> Vec<Span<'static>> {
     parts
 }
 
-/// The model half of the footer: the active model, the thinking level the
-/// footer has room for, and the physical model a virtual model routed to, which
-/// Pi shows after the alias it was selected as.
+/// The model half of the footer: the active model and the thinking level the
+/// footer has room for.
 fn footer_model(app: &App) -> String {
     let mut right = if app.model.is_empty() {
         "no-model".to_string()
@@ -1611,12 +1610,6 @@ fn footer_model(app: &App) -> String {
             right.push_str(" • thinking off");
         } else {
             right.push_str(&format!(" • {}", app.reasoning.label()));
-        }
-    }
-    if let Some((routed, level)) = &app.routed_model {
-        right.push_str(&format!(" → {routed}"));
-        if let Some(level) = level {
-            right.push_str(&format!(" • {}", level.label()));
         }
     }
     right
@@ -1773,15 +1766,21 @@ fn truncate_spans_with(
     let ellipsis = take_width(ellipsis, width);
     let budget = width.saturating_sub(text_width(&ellipsis));
     let mut used = 0;
+    // A character that does not fit stops the whole read, not only its own
+    // span: continuing would skip the wide glyph and append a narrower later
+    // one, so the result would no longer be a prefix of the input. The partial
+    // span that hit the edge is kept.
+    let mut done = false;
     let mut truncated = Vec::new();
     for span in spans {
-        if used >= budget {
+        if done || used >= budget {
             break;
         }
         let mut text = String::new();
         for ch in span.content.chars() {
             let w = char_width(ch);
             if used + w > budget {
+                done = true;
                 break;
             }
             text.push(ch);
@@ -3822,6 +3821,20 @@ mod tests {
         assert!(text.ends_with('…'));
     }
 
+    /// A character that does not fit stops the whole read, not only its own
+    /// span: a later narrow glyph must not be appended after the wide one it
+    /// skipped, which would no longer be a prefix of the input.
+    #[test]
+    fn truncation_stops_at_the_first_character_that_does_not_fit() {
+        let spans = vec![Span::raw("ab"), Span::raw("漢"), Span::raw("c")];
+        let truncated = truncate_spans_with(spans, 3, "");
+        let text: String = truncated.iter().map(|span| span.content.as_ref()).collect();
+        assert_eq!(
+            text, "ab",
+            "the skipped wide glyph must not expose a later one"
+        );
+    }
+
     #[test]
     fn truncate_is_char_safe() {
         assert_eq!(truncate("hello", 10), "hello");
@@ -5218,30 +5231,6 @@ mod tests {
         terminal.draw(|frame| draw(frame, &mut app)).unwrap();
         let buffer = terminal.backend().buffer();
         assert!(row_of(buffer, "xp").is_some());
-    }
-
-    /// A virtual model that routed its response names the physical model it
-    /// went to, after the alias it was selected as, the way Pi shows it.
-    #[test]
-    fn footer_names_the_model_a_virtual_model_routed_to() {
-        use crate::config::Reasoning;
-        use ratatui::backend::TestBackend;
-        use ratatui::Terminal;
-
-        let mut app = App::new("auto".into(), "/tmp/project".into(), Reasoning::High);
-        app.show_thinking = true;
-        app.routed_model = Some(("gpt-5.6-luna".into(), Some(Reasoning::Medium)));
-        let mut terminal = Terminal::new(TestBackend::new(120, 24)).unwrap();
-        terminal.draw(|frame| draw(frame, &mut app)).unwrap();
-        let buffer = terminal.backend().buffer();
-        let row = row_of(buffer, "gpt-5.6-luna").expect("routed model");
-        let footer: String = (0..buffer.area.width)
-            .map(|x| buffer[(x, row)].symbol())
-            .collect();
-        assert!(
-            footer.contains("auto • high → gpt-5.6-luna • medium"),
-            "{footer}"
-        );
     }
 
     /// A wide glyph occupies two columns, so a footer that measured code points

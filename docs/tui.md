@@ -29,9 +29,8 @@ the box itself rather than being counted there — and the footer shows the
 project path with the Git branch and session name, cumulative usage (including
 cache and cost — marked `(sub)` for a subscription-backed provider, whose number
 is what the plan would have billed), context usage with Pi's one decimal
-(colored above 70% and 90%), the current model and thinking level (plus the
-physical model a virtual model routed to), and Pi's `xp` marker when
-`OXIDE_EXPERIMENTAL=1`; the provider is named before the model only when several
+(colored above 70% and 90%), the current model and thinking level, and Pi's `xp`
+marker when `OXIDE_EXPERIMENTAL=1`; the provider is named before the model only when several
 providers are available and the row still holds it, and a plugin status row and
 the Portkey spend bar appear when present and enabled.
 

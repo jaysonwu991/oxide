@@ -783,10 +783,6 @@ pub struct App {
     /// Whether experimental features are on (`OXIDE_EXPERIMENTAL=1`), so the
     /// footer carries Pi's `xp` marker.
     pub experimental: bool,
-    /// The physical model a virtual model routed the latest response to, with
-    /// the thinking level it ran at, so the footer names where a routed model
-    /// actually went (`auto • high → gpt-5.6-luna • medium`).
-    pub routed_model: Option<(String, Option<Reasoning>)>,
     pub extension_statuses: std::collections::BTreeMap<String, String>,
     /// Settings for the Portkey spend bar, and the bar itself when enabled.
     pub usage_settings: crate::portkey_usage::UsageSettings,
@@ -956,7 +952,6 @@ impl App {
             show_thinking: true,
             subscription: false,
             experimental: std::env::var("OXIDE_EXPERIMENTAL").as_deref() == Ok("1"),
-            routed_model: None,
             extension_statuses: std::collections::BTreeMap::new(),
             usage_settings: crate::portkey_usage::UsageSettings::default(),
             usage: None,

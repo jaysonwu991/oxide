@@ -969,7 +969,7 @@ fn read_clipboard(json_output: bool) -> Result<()> {
             if json_output {
                 println!("null");
             } else {
-                println!("the clipboard holds no image, PDF or file to attach");
+                println!("the clipboard holds no image or PDF to attach");
             }
         }
     }
