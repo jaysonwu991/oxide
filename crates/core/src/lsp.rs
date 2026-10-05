@@ -145,13 +145,16 @@ impl LspManager {
 
 impl Server {
     async fn connect(config: ServerConfig, cwd: &Path) -> Result<Self> {
-        let mut child = tokio::process::Command::new(config.command)
+        let mut command = tokio::process::Command::new(config.command);
+        command
             .args(config.args)
             .current_dir(cwd)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::null())
-            .kill_on_drop(true)
+            .kill_on_drop(true);
+        crate::child::detach_terminal(&mut command);
+        let mut child = command
             .spawn()
             .with_context(|| format!("spawning {}", config.command))?;
         let stdin = child.stdin.take().context("lsp stdin unavailable")?;

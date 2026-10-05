@@ -604,6 +604,7 @@ impl McpConnection {
                 if let Some(dir) = cwd {
                     process.current_dir(dir);
                 }
+                crate::child::detach_terminal(&mut process);
                 let mut child = process
                     .spawn()
                     .with_context(|| format!("spawning MCP server `{}`", server.name))?;

@@ -2388,6 +2388,7 @@ async fn bash(cwd: &Path, args: &Value, progress: &Progress) -> Result<String> {
         shell.arg("-c").arg(command);
         shell
     };
+    crate::child::detach_terminal(&mut shell);
 
     let mut child = shell
         .current_dir(cwd)
@@ -4075,6 +4076,38 @@ mod tests {
             start.elapsed() < Duration::from_secs(5),
             "bash waited {:?} for a background process",
             start.elapsed()
+        );
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    // A program that asks the reader's terminal for an answer of its own (zsh's
+    // compinit, a credential prompt) is reached through `bash`, so the check
+    // needs a terminal on this end to mean anything.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_shell_command_cannot_reach_the_terminal() {
+        let dir = std::env::temp_dir().join(format!("oxide_bash_tty_{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let mcp = McpRegistry::default();
+        let progress = Progress::new(Arc::new(|_: &str| {}));
+
+        let out = execute(
+            &call(
+                "bash",
+                json!({
+                    "command": "if (exec 3<>/dev/tty) 2>/dev/null; then echo HAS_TTY; else echo NO_TTY; fi"
+                }),
+            ),
+            &dir,
+            &mcp,
+            &progress,
+        )
+        .await;
+        assert!(
+            out.text.contains("NO_TTY") && !out.text.contains("HAS_TTY"),
+            "a shell command reached the terminal: {}",
+            out.text
         );
 
         std::fs::remove_dir_all(&dir).ok();

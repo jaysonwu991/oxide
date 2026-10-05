@@ -12,6 +12,7 @@ pub mod ask;
 pub mod at;
 pub mod auth;
 pub mod changes;
+pub(crate) mod child;
 pub mod cli;
 pub mod clipboard;
 pub mod commands;

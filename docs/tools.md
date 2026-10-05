@@ -47,6 +47,16 @@ readable plain text (`format: "text"`), or returns the raw body
 paragraphs, lists, tables, links, images, inline and fenced code, blockquotes,
 and HTML entities.
 
+`bash` runs the command through a shell with stdin closed and its output
+captured, in a terminal of its own rather than the front-end's — a session on
+Unix, a console without a window of its own on Windows — so a command that asks
+the reader's terminal for an answer of its own — zsh's `compinit` asking whether
+to keep an insecure directory, a credential or passphrase prompt, a pager — fails
+with the reason in its own output (`compinit: initialization aborted`) instead of
+painting its prompt over the interface that started it and reading the keys typed
+there. The children that are not commands get the same treatment: an LSP server,
+an MCP server and the plugin host.
+
 ## Output limits
 
 Tool results are capped before they enter the model's context. The default cap is
