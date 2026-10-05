@@ -1569,9 +1569,14 @@ mod tests {
         }
         // A copy that names a folder is reported rather than passed over as an
         // empty clipboard: the paste did find something, and that is what it
-        // tells the reader.
-        match attach(dir.join("folder")) {
-            Clipboard::Refused(reason) => assert!(!reason.is_empty()),
+        // tells the reader. The reason names the file it could not read, which
+        // is the part of it that is the same on every platform — the native
+        // error beside it is the platform's own words.
+        let folder = dir.join("folder");
+        match attach(folder.clone()) {
+            Clipboard::Refused(reason) => {
+                assert!(reason.contains(&folder.display().to_string()), "{reason}")
+            }
             other => panic!("a folder should be refused: {other:?}"),
         }
 
