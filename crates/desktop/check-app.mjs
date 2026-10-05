@@ -532,6 +532,9 @@ const providerRows = [
 // connected on the way in: a window that never opened the dialog has no
 // providers, which is what the sections above expect of `/logout`.
 let providersAnswer = [];
+// What the harness' `read_clipboard` answers, for the paste a webview could not
+// read itself.
+let clipboardAnswer = null;
 
 // The sidebar's rows as `list_projects` answers them: registered folders first
 // (most recently opened first), then projects discovered from sessions. Nothing
@@ -711,6 +714,8 @@ const invoke = async (command, args = {}) => {
       return String(args.project || "").trim()
         ? catalog
         : catalog.filter((entry) => entry.source === "builtin");
+    case "read_clipboard":
+      return clipboardAnswer;
     default:
       return null;
   }
@@ -2706,6 +2711,28 @@ check(
   JSON.stringify(app.state.attachments),
 );
 app.state.attachments = [];
+
+// macOS refuses a webview's read of a copied file in the Desktop, Documents or
+// Downloads folder. A paste asks the harness, which reads the pasteboard the
+// way the terminal's Ctrl+V does; the picker never falls back, since a file the
+// reader chose is not the clipboard.
+clipboardAnswer = { name: "clipboard-icon.png", dataUrl: "data:image/png;base64,AA" };
+await app.addAttachmentFiles([{ name: "Earlier Lines.png", size: 1024, type: "image/png" }], {
+  fallbackToClipboard: true,
+});
+check(
+  "attached the pasteboard picture when a pasted file could not be read",
+  app.state.attachments.length === 1 && app.state.attachments[0].name === "clipboard-icon.png",
+  JSON.stringify(app.state.attachments),
+);
+app.state.attachments = [];
+await app.addAttachmentFiles([{ name: "Earlier Lines.png", size: 1024, type: "image/png" }]);
+check(
+  "did not reach for the clipboard for a file the reader picked",
+  app.state.attachments.length === 0,
+  JSON.stringify(app.state.attachments),
+);
+clipboardAnswer = null;
 
 // A chip is [thumbnail, name, remove]: each button is clicked on its own, and
 // the browser delivers the click to the one under the pointer rather than to

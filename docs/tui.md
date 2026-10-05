@@ -27,16 +27,23 @@ ecosystem, context files, and MCP/plugin/memory state. The status row above the
 editor shows the current activity and elapsed time — what is pending travels in
 the box itself rather than being counted there — and the footer shows the
 project path with the Git branch and session name, cumulative usage (including
-cache and cost), context usage, and the current model and thinking level (plus a
-plugin status row when present, and the Portkey spend bar when it is enabled).
+cache and cost — marked `(sub)` for a subscription-backed provider, whose number
+is what the plan would have billed), context usage with Pi's one decimal
+(colored above 70% and 90%), the current model and thinking level (plus the
+physical model a virtual model routed to), and Pi's `xp` marker when
+`OXIDE_EXPERIMENTAL=1`; the provider is named before the model only when several
+providers are available and the row still holds it, and a plugin status row and
+the Portkey spend bar appear when present and enabled.
 
 The message box names what the message will carry: one row per pending
 attachment above the text, indented one column and named by the file it came
-from (`• /tmp/shot.png`) — a paste the pasteboard named no file for is written
-under the config dir (`clipboard/<id>.png`) and named by that path, falling
-back to what it is (`• image (png)`) where that cannot be written — with the
-ones past four folded into a `• N more` row so a long paste cannot push the box
-off the screen. The transcript line the message becomes names them the same way.
+from (`• /tmp/shot.png`) — the `@path` references and `/attach` entries the run
+will read, with the ones past four folded into a `• N more` row so a long list
+cannot push the box off the screen, and a part with no file of its own named by
+what it is (`• image (png)`). `Ctrl+V` is the other way in: it inserts the
+clipboard's own text — a copied file's path, a clipboard image's scratch path, or
+plain text — and the model reads that path. The transcript line the message
+becomes names the attachments the same way.
 
 An `@path` in the message attaches a file the same way, and a reference to one
 this app may not read is still an attachment: the refusal is reported with the
@@ -61,7 +68,7 @@ skills.
 | Shift+Tab | Cycle the thinking level: `auto` → `off` → `low` → `medium` → `high`. |
 | Ctrl+O | Expand or collapse tool-output details. |
 | Ctrl+T | Show or hide reasoning (`✦ Thinking`) blocks. |
-| Ctrl+V | Attach the clipboard's image, or the file a copy of one names — the Finder's own copy of a file attaches that file rather than its icon. A file this app may not read is reported with what to do about it: macOS gates the Desktop, Documents and Downloads folders behind a per-app grant. |
+| Ctrl+V | Paste the clipboard into the message box the way Pi does: the path a copied file names (one per line for a multi-select copy), the scratch path a clipboard image is written to, or plain clipboard text. The model reads the path, so a pasted image arrives through its file rather than as a pending attachment. A file this app may not read is written out as the pasteboard's own picture instead, so the inserted path still points at something the run can read; where the pasteboard carries none, macOS gates the Desktop, Documents and Downloads folders behind a per-app grant. |
 | PgUp / PgDn / mouse wheel | Scroll the transcript. |
 | Ctrl+A | Jump to the start of the message box (when it is not empty). |
 | Ctrl+E | Jump to the end of the message box; when it is empty, scroll down one line. |

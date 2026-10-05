@@ -253,6 +253,12 @@ enum Command {
         #[command(subcommand)]
         action: ChangesAction,
     },
+    /// Read the system clipboard as an attachment for a front-end
+    Clipboard {
+        /// Print the attachment as JSON (`{"name":…,"dataUrl":…}`, or `null`)
+        #[arg(long)]
+        json: bool,
+    },
 }
 
 #[derive(Subcommand, Debug)]
@@ -666,6 +672,7 @@ async fn main() -> Result<()> {
                 list_models(&current_dir, json, active).await
             }
             Command::Providers { json } => list_providers(json),
+            Command::Clipboard { json } => read_clipboard(json),
             Command::Login {
                 provider,
                 key_stdin,
@@ -934,6 +941,37 @@ fn list_providers(json_output: bool) -> Result<()> {
             "{}\t{} — {}{}",
             view.name, view.label, view.description, mark
         );
+    }
+    Ok(())
+}
+
+/// Reads the system clipboard as an attachment for a front-end that draws its
+/// own composer but cannot link `oxide-core` — the VS Code panel. A webview's
+/// own paste reads a copied file's bytes directly, which macOS refuses for the
+/// Desktop, Documents and Downloads folders; the read behind this command goes
+/// through the same `media::clipboard` the terminal's Ctrl+V uses, so the
+/// pasteboard's own picture is attached rather than the paste failing. Nothing
+/// is printed on stdout for a text paste: a text file rides the normal paste
+/// and an empty clipboard has nothing to attach.
+fn read_clipboard(json_output: bool) -> Result<()> {
+    match oxide_core::media::clipboard_media() {
+        Some((name, data_url)) => {
+            if json_output {
+                println!(
+                    "{}",
+                    serde_json::to_string(&json!({ "name": name, "dataUrl": data_url }))?
+                );
+            } else {
+                println!("{name}");
+            }
+        }
+        None => {
+            if json_output {
+                println!("null");
+            } else {
+                println!("the clipboard holds no image, PDF or file to attach");
+            }
+        }
     }
     Ok(())
 }

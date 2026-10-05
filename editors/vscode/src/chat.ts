@@ -67,6 +67,7 @@ import {
   type LiveSession,
   type ModelChoice,
 } from "./core/dialogs";
+import { clipboardArgs, parseClipboardMedia } from "./core/clipboard";
 import { mcpListArgs, mcpToggleArgs, parseMcpList, type McpServerView } from "./core/mcps";
 import {
   needsKey,
@@ -1003,6 +1004,27 @@ export class ChatController {
           : null,
       detail: `${written.detail} · pasted`,
     });
+  }
+
+  /// The system clipboard read through the CLI, for a paste the webview could
+  /// not read itself. macOS refuses a webview's read of a copied file in the
+  /// Desktop, Documents or Downloads folder, and the webview cannot reach the
+  /// pasteboard's own picture; the CLI reads it the way its own Ctrl+V does, so
+  /// the same attachment lands here.
+  async attachClipboard(): Promise<void> {
+    const cwd = this.cwd() ?? os.homedir();
+    const result = await runCapture(this.binary(), clipboardArgs(), cwd);
+    if (result.error || result.code !== 0) {
+      const detail = result.error || firstLine(result.stderr) || `exit ${result.code}`;
+      this.showNotice(`Could not read the clipboard: ${detail}`, "warn");
+      return;
+    }
+    const media = parseClipboardMedia(result.stdout);
+    if (!media) {
+      this.showNotice("The clipboard holds no image or PDF to attach.", "warn");
+      return;
+    }
+    this.addAttachment(media.dataUrl, media.name);
   }
 
   /// Media that is already on disk, addressed by an absolute path passed

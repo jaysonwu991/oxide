@@ -1052,6 +1052,14 @@ pub enum Clipboard {
 /// is neither media nor text — is refused by name rather than replaced by that
 /// icon.
 ///
+/// A file this process may not read is the one refusal the pasteboard's own
+/// picture can answer: macOS keeps the Desktop, Documents and Downloads folders
+/// behind a per-app grant, so a screenshot copied out of one answers
+/// `Operation not permitted` while a tool that saved it and left a file URL
+/// beside it still carries the picture itself, which is what Pi reads. A
+/// refusal about the file's kind — a folder, a binary — is reported as it
+/// stands, since the pasteboard would only hold the file's icon.
+///
 /// A paste that names no file — a picture copied straight from a preview window
 /// leaves only bytes on the pasteboard — is written under the config dir's own
 /// scratch and answered with that path, so a front-end shows it by a file the
@@ -1062,27 +1070,144 @@ pub enum Clipboard {
 /// than lost, and the front-end names it by what it is.
 pub fn clipboard() -> Clipboard {
     if let Some(path) = clipboard_file(clipboard_path()) {
-        return attach(path);
+        return attach_or_picture(path);
     }
     let copy = clipboard_copy();
     if let Some(path) = copy
         .as_ref()
         .and_then(|copy| clipboard_file(copy.path.clone()))
     {
-        return attach(path);
+        return attach_or_picture(path);
     }
-    if let Some(picture) = clipboard_picture() {
-        let path = clipboard_dir()
-            .and_then(|dir| save_clipboard_image(&dir, &picture.part, &picture.bytes));
-        return Clipboard::Attached {
-            part: picture.part,
-            path,
-        };
-    }
-    match copy {
+    let fallback = match copy {
         Some(copy) => Clipboard::Nothing { types: copy.types },
         None => Clipboard::Unreadable,
+    };
+    picture_or(fallback)
+}
+
+/// The clipboard's media as the `(name, data_url)` a front-end attaches it by,
+/// or `None` when the pasteboard holds nothing a front-end can attach as media:
+/// a text file rides the normal paste, and an empty clipboard has nothing to
+/// send. This is the read `oxide clipboard --json` hands a front-end that cannot
+/// link the crate — the VS Code panel, whose webview can refuse a copied file
+/// the same way — and the desktop app reaches through its own command.
+pub fn clipboard_media() -> Option<(String, String)> {
+    let Clipboard::Attached { part, path } = clipboard() else {
+        return None;
+    };
+    let name = path
+        .as_ref()
+        .and_then(|path| path.file_name())
+        .map(|name| name.to_string_lossy().into_owned())
+        .unwrap_or_else(|| attachment_label(&part));
+    let data_url = match part {
+        ContentPart::ImageUrl { image_url } => image_url.url,
+        ContentPart::File { file } => file.file_data,
+        ContentPart::Text { .. } => return None,
+    };
+    Some((name, data_url))
+}
+
+/// What a paste puts in the composer, read the way Pi's own `Ctrl+V` reads the
+/// clipboard: the paths a copy names (all of them), then a clipboard image
+/// written to the scratch dir, then the clipboard text.
+#[derive(Debug, PartialEq, Eq)]
+pub enum Paste {
+    /// One path per line: every file a copy named, or the scratch file a
+    /// clipboard image was written to when no file was named.
+    Paths(Vec<PathBuf>),
+    /// Plain clipboard text, inserted as typed.
+    Text(String),
+    /// Nothing on the clipboard a composer can paste, with the types it holds
+    /// when the read could name them.
+    Empty { types: String },
+}
+
+/// The clipboard as the text a paste inserts, instead of the attachment
+/// [`clipboard`] builds. A file this process may not read is not inserted as a
+/// path the model would then fail to read: the pasteboard's own picture is
+/// written out in its place, the same grant fallback an attached paste made.
+pub fn clipboard_paste() -> Paste {
+    let named = clipboard_paths();
+    if !named.is_empty() {
+        if named.iter().all(|path| !read_refused(path)) {
+            return Paste::Paths(named);
+        }
+        return Paste::Paths(vec![
+            saved_clipboard_picture().unwrap_or_else(|| named[0].clone())
+        ]);
     }
+    let copy = clipboard_copy();
+    if let Some(path) = copy.as_ref().and_then(|copy| copy.path.clone()) {
+        if !read_refused(&path) {
+            return Paste::Paths(vec![path]);
+        }
+        return Paste::Paths(vec![saved_clipboard_picture().unwrap_or(path)]);
+    }
+    if let Some(path) = saved_clipboard_picture() {
+        return Paste::Paths(vec![path]);
+    }
+    match clipboard_text() {
+        Some(text) if !text.is_empty() => Paste::Text(text),
+        _ => Paste::Empty {
+            types: copy.map(|copy| copy.types).unwrap_or_default(),
+        },
+    }
+}
+
+/// The pasteboard's own picture written to the config dir's scratch, so a paste
+/// it named no file for has a path to insert; `None` when the pasteboard holds
+/// no image or the scratch cannot be written.
+fn saved_clipboard_picture() -> Option<PathBuf> {
+    let picture = clipboard_picture()?;
+    clipboard_dir().and_then(|dir| save_clipboard_image(&dir, &picture.part, &picture.bytes))
+}
+
+/// A copied file as the paste attaches it, or the pasteboard's own picture when
+/// the file is one this process may not read.
+fn attach_or_picture(path: PathBuf) -> Clipboard {
+    attach_or_picture_with(path, clipboard_picture)
+}
+
+/// [`attach_or_picture`] with the picture already resolved, so the fallback is
+/// testable without a real pasteboard in the way.
+fn attach_or_picture_with(path: PathBuf, picture: impl FnOnce() -> Option<Picture>) -> Clipboard {
+    match attach(path.clone()) {
+        refused @ Clipboard::Refused(_) if read_refused(&path) => picture_or_with(refused, picture),
+        other => other,
+    }
+}
+
+/// The pasteboard's own picture as an attachment, or `fallback` when it holds
+/// none. A picture with no file name of its own is written under the config
+/// dir's scratch so it is named like any other attachment, and a picture that
+/// cannot be written still attaches, named by what it is.
+fn picture_or(fallback: Clipboard) -> Clipboard {
+    picture_or_with(fallback, clipboard_picture)
+}
+
+fn picture_or_with(fallback: Clipboard, picture: impl FnOnce() -> Option<Picture>) -> Clipboard {
+    let Some(picture) = picture() else {
+        return fallback;
+    };
+    let path =
+        clipboard_dir().and_then(|dir| save_clipboard_image(&dir, &picture.part, &picture.bytes));
+    Clipboard::Attached {
+        part: picture.part,
+        path,
+    }
+}
+
+/// Whether a file the paste refused is refused for permission alone, which is
+/// the one refusal the pasteboard's own picture can answer. A directory is not
+/// one, and a file the size limit or the binary check refused still opens.
+fn read_refused(path: &Path) -> bool {
+    !path.is_dir()
+        && matches!(
+            std::fs::File::open(path),
+            Err(err) if err.kind() == std::io::ErrorKind::PermissionDenied
+        )
 }
 
 /// A copied file as the part to attach, or the reason it is not one.
@@ -1187,27 +1312,82 @@ fn cleanup_clipboard(dir: &Path) {
 /// nothing at all when there is none, so the image grab is only reached for a
 /// genuine picture.
 #[cfg(target_os = "macos")]
-fn clipboard_path() -> Option<PathBuf> {
+fn clipboard_paths() -> Vec<PathBuf> {
     const SCRIPT: &str = r#"use framework "AppKit"
 set pb to current application's NSPasteboard's generalPasteboard()
 set urls to pb's readObjectsForClasses:{current application's NSURL} options:(missing value)
-if urls is missing value then return ""
+set out to {}
+if urls is not missing value then
 repeat with u in urls
-if (u's isFileURL()) as boolean then return (u's |path|() as text)
+if (u's isFileURL()) as boolean then set end of out to (u's |path|() as text)
 end repeat
-return """#;
-    let output = Command::new("osascript")
-        .args(["-e", SCRIPT])
-        .output()
-        .ok()?;
-    if !output.status.success() {
-        return None;
-    }
-    clipboard_path_from(&String::from_utf8_lossy(&output.stdout))
+end if
+set AppleScript's text item delimiters to linefeed
+return out as text"#;
+    let output = Command::new("osascript").args(["-e", SCRIPT]).output().ok();
+    let Some(output) = output.filter(|output| output.status.success()) else {
+        return Vec::new();
+    };
+    clipboard_paths_from(&String::from_utf8_lossy(&output.stdout))
 }
 
 #[cfg(not(target_os = "macos"))]
+fn clipboard_paths() -> Vec<PathBuf> {
+    Vec::new()
+}
+
+/// The first file a copy names, which is what an attached paste takes; the
+/// whole list is [`clipboard_paths`].
 fn clipboard_path() -> Option<PathBuf> {
+    clipboard_paths().into_iter().next()
+}
+
+/// A newline-separated list of file URLs as [`clipboard_paths`] prints them.
+#[cfg(target_os = "macos")]
+fn clipboard_paths_from(output: &str) -> Vec<PathBuf> {
+    output.lines().filter_map(clipboard_path_from).collect()
+}
+
+/// The clipboard's plain text, which a paste falls back to when it names no
+/// file and holds no image.
+#[cfg(target_os = "macos")]
+fn clipboard_text() -> Option<String> {
+    let output = Command::new("pbpaste").output().ok()?;
+    output
+        .status
+        .success()
+        .then(|| String::from_utf8_lossy(&output.stdout).into_owned())
+        .filter(|text| !text.is_empty())
+}
+
+#[cfg(target_os = "linux")]
+fn clipboard_text() -> Option<String> {
+    let bytes = run_stdout("wl-paste", &["--no-newline", "--type", "text"])
+        .or_else(|| run_stdout("xclip", &["-selection", "clipboard", "-o"]))
+        .or_else(|| run_stdout("xsel", &["--clipboard", "--output"]))?;
+    let text = String::from_utf8_lossy(&bytes).into_owned();
+    (!text.is_empty()).then_some(text)
+}
+
+#[cfg(target_os = "windows")]
+fn clipboard_text() -> Option<String> {
+    let output = Command::new("powershell")
+        .args(["-NoProfile", "-Command", "Get-Clipboard -Raw"])
+        .output()
+        .ok()?;
+    output
+        .status
+        .success()
+        .then(|| {
+            String::from_utf8_lossy(&output.stdout)
+                .trim_end_matches(['\r', '\n'])
+                .to_string()
+        })
+        .filter(|text| !text.is_empty())
+}
+
+#[cfg(not(any(target_os = "macos", target_os = "linux", target_os = "windows")))]
+fn clipboard_text() -> Option<String> {
     None
 }
 
@@ -1885,6 +2065,24 @@ mod tests {
         assert_eq!(clipboard_path_from("   "), None);
     }
 
+    /// A multi-select Finder copy names every file, and a paste inserts them
+    /// all the way Pi does rather than only the first.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn reads_every_file_a_copy_names() {
+        assert_eq!(
+            clipboard_paths_from("/Users/me/a.png\n/Users/me/b c.pdf\n"),
+            vec![
+                PathBuf::from("/Users/me/a.png"),
+                PathBuf::from("/Users/me/b c.pdf"),
+            ]
+        );
+        // A pasteboard with no file URL is no path, and one that answered
+        // nothing is an empty list rather than one empty path.
+        assert!(clipboard_paths_from("hello there\n").is_empty());
+        assert!(clipboard_paths_from("").is_empty());
+    }
+
     /// The read that finds the alias record a Finder-style copy writes. It is a
     /// script of its own because a framework-loaded one cannot coerce that
     /// record at all: `use framework "AppKit"` is what silently takes this read
@@ -2170,6 +2368,101 @@ mod tests {
         }
 
         std::fs::set_permissions(&file, std::fs::Permissions::from_mode(0o600)).ok();
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// What the pasteboard's own picture is allowed to answer: only a read the
+    /// platform refused for permission, not a folder or a file the size limit
+    /// or the binary check turned away — those still open, so the paste reports
+    /// them by name rather than replacing them with the file's icon.
+    #[cfg(unix)]
+    #[test]
+    fn only_a_permission_refusal_is_left_to_the_pasteboard_picture() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = std::env::temp_dir().join(format!("oxide_media_picture_{}", std::process::id()));
+        std::fs::create_dir_all(dir.join("folder")).unwrap();
+        let readable = dir.join("shot.png");
+        std::fs::write(&readable, b"f").unwrap();
+        let denied = dir.join("denied.png");
+        std::fs::write(&denied, b"f").unwrap();
+        std::fs::set_permissions(&denied, std::fs::Permissions::from_mode(0o000)).unwrap();
+
+        // A file this process can read is not a refusal to fall back on, and a
+        // directory is not one either (a folder still opens on Unix).
+        assert!(!read_refused(&readable));
+        assert!(!read_refused(&dir.join("folder")));
+        // Root reads a file whatever its mode says, and a runner that does
+        // would assert nothing here.
+        if std::fs::read(&denied).is_err() {
+            assert!(read_refused(&denied));
+        }
+
+        // A refusal that is about the file's kind is never replaced by the
+        // pasteboard's picture, so it is reported without reading the clipboard
+        // (`read_refused` is false, so `attach_or_picture` never asks for one).
+        match attach_or_picture(dir.join("folder")) {
+            Clipboard::Refused(reason) => assert!(reason.contains("folder"), "{reason}"),
+            other => panic!("a copied folder should be refused: {other:?}"),
+        }
+
+        std::fs::set_permissions(&denied, std::fs::Permissions::from_mode(0o600)).ok();
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// A file the platform refuses is not where the paste stops: the picture the
+    /// pasteboard itself carries is attached instead, since that is the read Pi
+    /// makes and the file's own bytes are the one thing macOS will not give up.
+    #[cfg(unix)]
+    #[test]
+    fn a_permission_refusal_falls_back_to_the_pasteboard_picture() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = std::env::temp_dir().join(format!("oxide_media_fallback_{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let denied = dir.join("denied.png");
+        std::fs::write(&denied, b"f").unwrap();
+        std::fs::set_permissions(&denied, std::fs::Permissions::from_mode(0o000)).unwrap();
+        // Root reads a file whatever its mode says, and a runner that does would
+        // assert nothing here.
+        if std::fs::read(&denied).is_ok() {
+            std::fs::remove_dir_all(&dir).ok();
+            return;
+        }
+
+        let part = ContentPart::ImageUrl {
+            image_url: ImageUrl {
+                url: "data:image/png;base64,AAAA".to_string(),
+                detail: None,
+            },
+        };
+        let expected = part.clone();
+        let outcome = attach_or_picture_with(denied.clone(), || {
+            Some(Picture {
+                part: part.clone(),
+                bytes: b"the picture".to_vec(),
+            })
+        });
+        match outcome {
+            Clipboard::Attached { part, path } => {
+                assert_eq!(part, expected);
+                if let Some(path) = path {
+                    let _ = std::fs::remove_file(path);
+                }
+            }
+            other => panic!("a refused read should attach the pasteboard picture: {other:?}"),
+        }
+
+        // With no picture to take its place, the refusal and its grant hint
+        // stand rather than the paste reporting nothing.
+        match attach_or_picture_with(denied.clone(), || None) {
+            Clipboard::Refused(reason) => {
+                assert!(reason.contains("may not read that file"), "{reason}")
+            }
+            other => panic!("a refusal with no picture should stand: {other:?}"),
+        }
+
+        std::fs::set_permissions(&denied, std::fs::Permissions::from_mode(0o600)).ok();
         std::fs::remove_dir_all(&dir).ok();
     }
 

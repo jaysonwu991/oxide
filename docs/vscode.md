@@ -512,6 +512,13 @@ The CLI takes attachment *paths*, so:
   into one private temporary directory per window (removed when the window is
   disposed) and passes that path instead.
 
+A webview's own read of a copied file is refused by macOS when the file is in
+the Desktop, Documents or Downloads folder (the per-app grant covers the folder,
+not the app). A paste that fails there posts `attachClipboard` rather than a
+notice, and the host reads the system clipboard through the CLI's own
+`oxide clipboard --json` — the same read the terminal's `Ctrl+V` makes — so the
+pasteboard's own picture is attached instead of the paste failing.
+
 The webview downscales an image's longest edge to 1568px on a canvas before it
 sends it on (`oxide_core::media::optimize_image` does the same on the CLI side
 on macOS and Linux, which have an image tool to resize with),

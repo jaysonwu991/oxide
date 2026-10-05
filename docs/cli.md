@@ -828,33 +828,32 @@ A message can carry images, PDFs and text files, which the selected LLM reads as
 media or as text. What is pending is painted in the message box itself, one row
 per attachment above the text, named by the file it came from
 (`• /tmp/shot.png`), so what a message will carry is read where it is typed
-rather than counted beside it. A paste the pasteboard named no file for is
-written under the config dir (`clipboard/<id>.png`) and named by that path, so it
-reads like any other attachment and the id in its name is the one `/attach`
-lists it by; where that scratch cannot be written the row falls back to what the
-attachment is, `• image (png)`. Past four attachments the rest fold into a
-`• N more` row, so a long paste cannot push the box off the screen, and the
-transcript line the message ends up as names them the same way.
+rather than counted beside it. A `Ctrl+V` paste is the other way in: it inserts
+the clipboard's own text — a copied file's path, a clipboard image's scratch
+path, or plain text — and the model reads that path (see below). Past four
+attachments the rest fold into a `• N more` row, so a long list cannot push the
+box off the screen, and the transcript line the message ends up as names them
+the same way.
 
-`Ctrl+V` pastes a clipboard image — or the file the copy names, so a screenshot
-copied from the Finder attaches the picture itself rather than the pasteboard's
-icon of the file, whichever record the copy left (a file URL, or the Finder's
-own alias record); a file copy that arrived from another machine leaves its URL
-behind without the file, and what the pasteboard itself carries is attached then.
-A copy this machine has that cannot be attached — a folder, a binary — is
-reported with the reason, and so is one it may not read, with the grant to give
-beside it: macOS keeps the Desktop, Documents and Downloads folders behind a
-per-app grant, so a screenshot copied from a protected folder answers
-`Operation not permitted` and the paste names the app to let in under System
-Settings → Privacy & Security → Files and Folders — the app the run was started
-from, since macOS answers the access as that app rather than as `oxide`, and named
-by what the bundle calls itself rather than by the folder it sits in, so VS Code
-is named **Code** (the `CFBundleDisplayName` its `Visual Studio Code.app`
-carries, which is the name the list resolves) and so is the terminal the run was
-started from — and offers to copy the file into the project, rather than
-leaving an errno to act on. A clipboard holding no image and
-no file names the types it carries, so a paste that finds nothing says what it
-did find. `@path`
+`Ctrl+V` pastes the clipboard the way Pi does: the path a copied file names (one
+per line when a multi-select copy names several, or the Finder's own alias
+record), the scratch path a clipboard image is written to under the config dir
+(`clipboard/<id>.png`) when the copy named no file, or plain clipboard text. The
+model reads the path, so a pasted image arrives through its file rather than as a
+pending attachment. A file this app may not read is not inserted as a path the
+model would then fail on: the pasteboard's own picture is written out in its
+place, so the inserted path still points at something the run can read. macOS
+keeps the Desktop, Documents and Downloads folders behind a per-app grant, so a
+screenshot copied from a protected folder answers `Operation not permitted`; a
+Finder file copy leaves only the file's icon on the pasteboard, and granting the
+app access is still how the file itself is read — the paste names the app to let
+in under System Settings → Privacy & Security → Files and Folders (the app the
+run was started from, since macOS answers the access as that app rather than as
+`oxide`, named by what the bundle calls itself rather than by the folder it sits
+in, so VS Code is named **Code** and so is the terminal the run was started
+from), and offers to copy the file into the project rather than leaving an errno
+to act on. A clipboard holding no image and no file names the types it carries,
+so a paste that finds nothing says what it did find. `@path`
 names one on disk, and `/attach [list|remove <id|n>|clear]` lists and edits what
 is pending; a message queued while the agent is busy keeps the attachments it was
 queued with, and pulling that message back into the box (`Alt+Up`) brings each
@@ -865,7 +864,16 @@ and from `@path` references in the prompt, so
 `oxide -p "what changed here? @shot.png"` works without a terminal — a reference
 to a file whose bytes cannot be read is taken by its name, so a media reference
 the app may not read is reported with the grant to give rather than handed to
-the model as the literal `@path` it was typed as. The terminal
+the model as the literal `@path` it was typed as.
+
+A front-end that draws its own composer and cannot link `oxide-core` reads the
+same clipboard through `oxide clipboard --json`, which prints
+`{"name":…,"dataUrl":…}` for an image or a PDF and `null` for a text paste; the
+desktop app reads it through its own `read_clipboard` command. Both go through
+`media::clipboard`, whose grant fallback writes the pasteboard's own picture out
+when a copied file cannot be read, so a paste a webview could not read itself — macOS
+refuses a webview's read of a copied file in the Desktop, Documents or Downloads
+folder — attaches the pasteboard's own picture instead of failing. The terminal
 completes a reference as it is typed: the
 project's own files and folders are offered above the composer (`↑`/`↓` walk the
 rows, Tab or Enter takes one, Escape closes the list), a folder keeps its token

@@ -1699,7 +1699,8 @@ async function resizeImageDataUrl(dataUrl, mime) {
   }
 }
 
-async function addAttachmentFiles(files) {
+async function addAttachmentFiles(files, { fallbackToClipboard = false } = {}) {
+  let failed = false;
   for (const file of files) {
     if (file.size > MAX_ATTACHMENT_BYTES) {
       setStatus(
@@ -1718,9 +1719,27 @@ async function addAttachmentFiles(files) {
       }
       addAttachment(file.name, dataUrl);
     } catch (error) {
+      failed = true;
       setStatus(`Could not read ${file.name}: ${error}`);
     }
   }
+  // macOS refuses a webview's read of a file in the Desktop, Documents or
+  // Downloads folder, but the harness reads the pasteboard through the same
+  // core read the terminal's Ctrl+V uses, so what the pasteboard itself
+  // carries is attached rather than the paste failing.
+  if (failed && fallbackToClipboard) await addClipboardAttachment();
+}
+
+/// The clipboard as the harness reads it, for a paste the webview had no bytes
+/// for. A text paste never reaches here: only a paste that named a file does.
+async function addClipboardAttachment() {
+  let attachment;
+  try {
+    attachment = await invoke("read_clipboard");
+  } catch (error) {
+    return;
+  }
+  if (attachment) addAttachment(attachment.name, attachment.dataUrl);
 }
 
 function renderAttachments() {
@@ -5100,7 +5119,7 @@ function init() {
     }
     if (files.length) {
       event.preventDefault();
-      addAttachmentFiles(files);
+      addAttachmentFiles(files, { fallbackToClipboard: true });
     }
   });
   el("attach").onclick = () => el("attach-input").click();

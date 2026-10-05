@@ -2403,8 +2403,12 @@
   }
 
   /// A pasted or dropped blob. It is sent to the host as a data URL, which
-  /// writes it to a file the CLI can read (`--image <path>`).
-  async function attachBlob(file) {
+  /// writes it to a file the CLI can read (`--image <path>`). A paste that
+  /// cannot be read here — macOS refuses a webview's read of a copied file in
+  /// the Desktop, Documents or Downloads folder — asks the host to read the
+  /// clipboard through the CLI instead, which attaches what the pasteboard
+  /// itself carries.
+  async function attachBlob(file, { fallbackToClipboard = false } = {}) {
     const mime = file.type;
     if (!ATTACHABLE.includes(mime)) {
       vscode.postMessage({
@@ -2425,6 +2429,10 @@
       if (mime.startsWith("image/")) dataUrl = await resizeImageDataUrl(dataUrl, mime);
       vscode.postMessage({ k: "attach", name: file.name, data: dataUrl });
     } catch (error) {
+      if (fallbackToClipboard) {
+        vscode.postMessage({ k: "attachClipboard" });
+        return;
+      }
       vscode.postMessage({
         k: "notice",
         text: `Could not read ${file.name || "the attachment"}.`,
@@ -2459,7 +2467,7 @@
       .filter(Boolean);
     if (!files.length) return;
     event.preventDefault();
-    for (const file of files) void attachBlob(file);
+    for (const file of files) void attachBlob(file, { fallbackToClipboard: true });
   });
 
   function endDrag() {

@@ -119,6 +119,7 @@ oxide update [--check] [--component <cli|desktop|extension>] [--current <VERSION
 | `OXIDE_API_KEY` | API key. |
 | `OXIDE_REASONING` | Reasoning effort (`auto`, `off`, `low`, `medium`, `high`). |
 | `OXIDE_CONTEXT_LIMIT` | Override `context_window`, the model context window used for the footer's context percentage and compaction threshold. |
+| `OXIDE_EXPERIMENTAL` | Set to `1` to show Pi's `xp` marker in the footer. |
 | `OXIDE_COMPACTION_ENABLED` | Enable/disable automatic context compaction. |
 | `OXIDE_COMPACTION_RESERVE_TOKENS` | Tokens reserved for the response before compaction triggers. |
 | `OXIDE_COMPACTION_KEEP_RECENT_TOKENS` | Recent tokens kept verbatim when compacting. |
