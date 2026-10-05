@@ -618,7 +618,7 @@ fn read_file(cwd: &Path, args: &Value) -> Result<ToolOutput> {
     }
     .clamp(1, READ_MAX_LINES);
 
-    let bytes = std::fs::read(&full).with_context(|| format!("reading {}", full.display()))?;
+    let bytes = std::fs::read(&full).map_err(|err| media::read_error(&full, &err))?;
     let content = match String::from_utf8(bytes) {
         Ok(content) => content,
         Err(err) => {
@@ -3053,6 +3053,38 @@ mod tests {
             .collect();
         assert_eq!(names, vec!["atlassian", "confluence", "jira"]);
         assert_eq!(mcp.server_count(), 0);
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_refused_read_names_the_grant_to_give_back() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = std::env::temp_dir().join(format!("oxide_read_denied_{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("notes.txt");
+        std::fs::write(&file, b"hello").unwrap();
+        std::fs::set_permissions(&file, std::fs::Permissions::from_mode(0o000)).unwrap();
+        // Root reads a file whatever its mode says, and a runner that does so
+        // has nothing to assert.
+        if std::fs::read(&file).is_ok() {
+            std::fs::remove_dir_all(&dir).ok();
+            return;
+        }
+
+        let out = execute(
+            &call("read", json!({ "path": "notes.txt" })),
+            &dir,
+            &McpRegistry::default(),
+            &Progress::default(),
+        )
+        .await;
+        assert!(out.is_error, "{}", out.text);
+        assert!(out.text.starts_with("reading "), "{}", out.text);
+        assert!(out.text.contains("may not read that file"), "{}", out.text);
+        assert!(out.text.contains("System Settings"), "{}", out.text);
+
+        std::fs::remove_dir_all(&dir).ok();
     }
 
     #[tokio::test]
