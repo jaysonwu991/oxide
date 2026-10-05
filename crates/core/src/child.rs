@@ -8,10 +8,11 @@
 //! cells are not in the frame's buffer, so ratatui never repaints them and the
 //! prompt stays over the conversation, the composer and the message being typed
 //! in it — while the keys typed there answer the child instead. The children a
-//! run starts over pipes — a shell command, an LSP server, an MCP server, the
-//! plugin host — get a session of their own instead, so they have no controlling
-//! terminal to reach for; a program that needs one fails with the reason in its
-//! own captured output rather than painting over the interface that started it.
+//! run starts over pipes get a terminal of their own instead — a session on
+//! Unix, a console without a window on Windows — so the one the front-end draws
+//! on is not theirs to reach for; a program that needs a terminal fails with the
+//! reason in its own captured output rather than painting over the interface that
+//! started it.
 
 use tokio::process::Command;
 
@@ -29,18 +30,27 @@ pub(crate) fn detach_terminal(cmd: &mut Command) {
     }
 }
 
-/// A child on Windows reaches no terminal oxide draws on: its handles are
-/// pipes, and a console of its own is not the one the front-end owns.
-#[cfg(not(unix))]
+/// Windows keeps a child attached to the console the front-end is drawing on
+/// however its standard handles are redirected, where opening `CONOUT$` by name
+/// paints over the interface and `CONIN$` reads the keys typed into it, so the
+/// child is given a console of its own with no window on it.
+#[cfg(windows)]
+pub(crate) fn detach_terminal(cmd: &mut Command) {
+    const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+    cmd.creation_flags(CREATE_NO_WINDOW);
+}
+
+#[cfg(not(any(unix, windows)))]
 pub(crate) fn detach_terminal(_cmd: &mut Command) {}
 
-#[cfg(all(test, unix))]
+#[cfg(test)]
 mod tests {
     use super::*;
     use std::process::Stdio;
 
     /// Whether this process has a terminal for a child to inherit at all: a
     /// cargo run from a pipe can only prove the detached half.
+    #[cfg(unix)]
     fn terminal_available() -> bool {
         std::fs::OpenOptions::new()
             .read(true)
@@ -49,6 +59,7 @@ mod tests {
             .is_ok()
     }
 
+    #[cfg(unix)]
     async fn opens_the_terminal(detached: bool) -> bool {
         let mut cmd = Command::new("sh");
         cmd.arg("-c").arg("exec 3<>/dev/tty");
@@ -64,6 +75,7 @@ mod tests {
             .success()
     }
 
+    #[cfg(unix)]
     #[tokio::test]
     async fn a_child_over_pipes_cannot_reach_the_terminal() {
         assert!(
@@ -76,5 +88,25 @@ mod tests {
                 "a child with no session of its own inherits the reader's terminal"
             );
         }
+    }
+
+    /// A detached child is still a child: the detach must not take its pipes or
+    /// its exit status with it, on either platform.
+    #[tokio::test]
+    async fn a_detached_child_still_runs_and_writes_its_output() {
+        let mut cmd = Command::new(if cfg!(windows) { "cmd" } else { "sh" });
+        if cfg!(windows) {
+            cmd.args(["/C", "echo detached"]);
+        } else {
+            cmd.args(["-c", "echo detached"]);
+        }
+        detach_terminal(&mut cmd);
+        let output = cmd
+            .stdin(Stdio::null())
+            .output()
+            .await
+            .expect("running the child");
+        assert!(output.status.success(), "the child failed: {output:?}");
+        assert_eq!(String::from_utf8_lossy(&output.stdout).trim(), "detached");
     }
 }
