@@ -1707,7 +1707,12 @@ mod tests {
             "And a line of its own",
             "that goes on",
         ]);
-        let joins = [Join::Line, Join::Space, Join::Line, Join::Space];
+        let joins = [
+            Join::Line,
+            Join::Space { prefix: 0 },
+            Join::Line,
+            Join::Space { prefix: 0 },
+        ];
         let mut selection = Selection::new(0, 8);
         selection.cursor = (3, 12);
         assert_eq!(
@@ -1719,7 +1724,7 @@ mod tests {
     #[test]
     fn selection_text_joins_a_word_the_pane_broke_in_two() {
         let lines = lines(&["a-long-identif", "  ier-name"]);
-        let joins = [Join::Line, Join::Word];
+        let joins = [Join::Line, Join::Word { prefix: 0 }];
         let mut selection = Selection::new(0, 0);
         selection.cursor = (1, 11);
         assert_eq!(selection.text(&lines, &joins), "a-long-identifier-name");

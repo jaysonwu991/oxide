@@ -221,7 +221,11 @@ fn wrap_chars(chars: &[StyledChar], width: usize, first_width: usize) -> Vec<Row
             current.clear();
             pending_space = false;
             limit = width;
-            join = if space == 1 { Join::Space } else { Join::Word };
+            join = if space == 1 {
+                Join::Space { prefix: 0 }
+            } else {
+                Join::Word { prefix: 0 }
+            };
         }
         if current.is_empty() && word.len() > limit {
             let mut offset = 0;
@@ -232,7 +236,7 @@ fn wrap_chars(chars: &[StyledChar], width: usize, first_width: usize) -> Vec<Row
                     lines.push((coalesce(&current), join));
                     current.clear();
                     limit = width;
-                    join = Join::Word;
+                    join = Join::Word { prefix: 0 };
                 }
                 offset += take;
             }
@@ -328,10 +332,14 @@ impl<'a> Renderer<'a> {
         } else {
             self.take_first(width, indent_width(ambient))
         };
+        // Every row is drawn after the ambient decoration (a quote's `│ `, a
+        // list's hanging indent), and each row records how much of it to take
+        // back off when the row is copied.
+        let prefix = indent_width(ambient);
         for (line, join) in wrap_chars(&chars, rest, first) {
             let mut spans = ambient.to_vec();
             spans.extend(line);
-            self.push_join(spans, join);
+            self.push_join(spans, join.after(prefix));
         }
     }
 
@@ -1278,5 +1286,60 @@ mod tests {
         let prefix = vec![Span::raw("◆ oxide ")];
         let lines = render_with_prefix("## Summary", 40, prefix, &theme).lines;
         assert_eq!(text(&lines), "◆ oxide Summary");
+    }
+
+    /// What a copy of `markdown` carries, which is the rows put back together
+    /// without the pane's own wrapping.
+    fn copy(markdown: &str, width: usize) -> String {
+        let rows = render_body(markdown, width, 0, &Palette::new(&Theme::dark()));
+        crate::tui::rows::text(
+            rows.lines
+                .iter()
+                .zip(&rows.joins)
+                .map(|(line, join)| (text(std::slice::from_ref(line)), *join)),
+        )
+    }
+
+    #[test]
+    fn a_copy_of_a_wrapped_quote_carries_one_bar_however_narrow_the_pane_is() {
+        let body = "the refused read names the app that holds the grant, not the tool that asked";
+        for width in [24usize, 30, 40, 61] {
+            let panel = render(&format!("> {body}"), width, &Theme::dark());
+            assert!(panel.len() > 1, "the pane wrapped the quote at {width}");
+            let copied = copy(&format!("> {body}"), width);
+            assert_eq!(copied, format!("│ {body}"), "copied at {width}");
+            assert_eq!(copied.matches('│').count(), 1, "copied at {width}");
+        }
+    }
+
+    #[test]
+    fn a_copy_of_a_wrapped_quote_keeps_a_word_the_pane_split_in_two() {
+        let quote = "> the grant belongs to /Applications/Visual Studio Code.app and not to oxide";
+        let copied = copy(quote, 26);
+        assert_eq!(
+            copied,
+            "│ the grant belongs to /Applications/Visual Studio Code.app and not to oxide"
+        );
+    }
+
+    #[test]
+    fn a_copy_of_a_split_code_line_keeps_the_whitespace_inside_it() {
+        let rows = render_body(
+            "```\nreturn  answer;\n```",
+            8,
+            0,
+            &Palette::new(&Theme::dark()),
+        );
+        let rendered: Vec<String> = rows
+            .lines
+            .iter()
+            .map(|line| text(std::slice::from_ref(line)))
+            .collect();
+        assert_eq!(rendered.len(), 2, "the pane split the line: {rendered:?}");
+        assert_eq!(
+            rendered,
+            vec!["return  ".to_string(), "answer; ".to_string()]
+        );
+        assert_eq!(copy("```\nreturn  answer;\n```", 8), "return  answer;");
     }
 }

@@ -2170,14 +2170,13 @@ fn render_item_themed(
                 return;
             }
             let text = crate::tools::sanitize_terminal_output(text);
+            // Every row carries the indent, so the body reads as one block; the
+            // copy takes it back off the continuations it drew.
             for (segment, join) in wrap(text.trim(), width, 2) {
-                match join {
-                    Join::Line => lines.push(Line::from(vec![
-                        Span::raw("  "),
-                        Span::styled(segment, body_style),
-                    ])),
-                    join => lines.push_join(Line::from(Span::styled(segment, body_style)), join),
-                }
+                lines.push_join(
+                    Line::from(vec![Span::raw("  "), Span::styled(segment, body_style)]),
+                    join,
+                );
             }
         }
         ChatItem::Assistant(text) => {
@@ -2974,8 +2973,9 @@ fn action_lines(verb: &str, subject: &str, color: Color, bold: Modifier, width: 
         .iter()
         .map(|span| span.content.chars().count())
         .sum::<usize>();
-    let wrap_width = width.saturating_sub(indent).max(1);
-    let mut segments = wrap(subject, wrap_width, indent).into_iter();
+    // `wrap` reserves the indent itself, so the header wraps its subject at
+    // `width - indent` and the continuation rows below add that indent back.
+    let mut segments = wrap(subject, width, indent).into_iter();
     let (first, _) = segments.next().unwrap_or_default();
     let mut spans = prefix;
     if !first.is_empty() {
@@ -3568,9 +3568,9 @@ fn wrap_segment(raw: &str, width: usize, base: usize) -> Vec<WrapLine> {
         let join = if *first {
             Join::Line
         } else if text.starts_with(char::is_whitespace) || start > previous_end {
-            Join::Space
+            Join::Space { prefix: 0 }
         } else {
-            Join::Word
+            Join::Word { prefix: 0 }
         };
         *first = false;
         lines.push(WrapLine {
@@ -3801,6 +3801,80 @@ mod tests {
                 .map(|(line, join)| (line_text(line), *join)),
         );
         assert_eq!(copied, line);
+    }
+
+    #[test]
+    fn a_thinking_body_is_indented_on_every_row_it_wraps() {
+        let body =
+            "the refused read is behind a per-app grant the app above the run holds, so the \
+             hint names that app rather than the tool that failed to read it";
+        let mut rows = Rows::default();
+        render_item_themed(
+            &ChatItem::Thinking {
+                text: body.into(),
+                millis: None,
+            },
+            40,
+            false,
+            true,
+            &crate::theme::Theme::dark(),
+            None,
+            &mut rows,
+        );
+        let rendered: Vec<String> = rows.lines.iter().map(|line| line_text(line)).collect();
+        assert!(
+            rendered.len() > 2,
+            "the pane wrapped the body: {rendered:?}"
+        );
+        for row in &rendered[1..] {
+            assert!(
+                row.starts_with("  "),
+                "not indented under the header: {row:?}"
+            );
+        }
+        let copied = crate::tui::rows::text(
+            rows.lines
+                .iter()
+                .zip(&rows.joins)
+                .map(|(line, join)| (line_text(line), *join)),
+        );
+        assert!(copied.ends_with(body), "copied: {copied}");
+    }
+
+    #[test]
+    fn a_tool_action_wraps_its_subject_where_the_prefix_leaves_it() {
+        let width = 32;
+        let indent = "→ Read ".chars().count();
+        let subject = "count the words in here";
+        assert!(subject.chars().count() + indent <= width);
+        assert!(subject.chars().count() + 2 * indent > width);
+
+        let rows = action_lines("Read", subject, Color::Reset, Modifier::BOLD, width);
+        let rendered: Vec<String> = rows.lines.iter().map(|line| line_text(line)).collect();
+        assert_eq!(
+            rendered.len(),
+            1,
+            "the prefix is reserved once: {rendered:?}"
+        );
+
+        let long = "count the words in a much longer command line than that one";
+        let rows = action_lines("Read", long, Color::Reset, Modifier::BOLD, width);
+        let rendered: Vec<String> = rows.lines.iter().map(|line| line_text(line)).collect();
+        assert!(rendered.len() > 1, "the pane wrapped the command");
+        for row in &rendered {
+            assert!(
+                row.chars().count() <= width,
+                "{row:?} is wider than {width}"
+            );
+        }
+        assert!(rendered[1].starts_with(&" ".repeat(indent)));
+        let copied = crate::tui::rows::text(
+            rows.lines
+                .iter()
+                .zip(&rows.joins)
+                .map(|(line, join)| (line_text(line), *join)),
+        );
+        assert_eq!(copied, format!("→ Read {long}"));
     }
 
     #[test]

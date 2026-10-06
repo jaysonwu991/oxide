@@ -96,3 +96,10 @@ path or word it broke inside itself is put back together, and only a line the
 text itself starts begins a new line in the copy. Paste it into a terminal of
 another width, an editor or a chat and it reflows there, instead of arriving
 with this pane's breaks baked into it.
+
+Neither does the pane's own decoration reach the continuation rows: the indent
+a wrapped reasoning body hangs under is drawn on every row it wraps and a
+quote's `│ ` bar runs down all of them, but the copy leads with the bar (or
+with the indent) once and rejoins the rest onto that line. The whitespace a
+code line holds — two spaces in a string literal, say — is kept wherever the
+pane had to split it, since it belongs to the line and not to this pane.
