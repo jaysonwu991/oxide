@@ -943,7 +943,7 @@ that said in the dialog. The `.vsix` is then handed to VS Code itself —
 `workbench.extensions.installExtension` — because the editor owns what
 installing an extension means (where it goes, and whether the package is this
 extension at all), and the dialog reports what it put in place: `Oxide 0.34.0
-is installed`, `Was 0.33.0 · Installed extension-v0.34.0 ·
+is installed`, `Was 0.33.0 · Installed 0.34.0 ·
 oxide-vscode-0.34.0.vsix`, with **Restart Window** (which reloads the window,
 since the extension running here is the one that was there when it was
 replaced) and **Close**. The temporary directory does not outlive the install,

@@ -747,7 +747,7 @@ export function updateDialog(state: UpdateState): DialogState {
         "VS Code holds the new version; the extension running in this window is the one that was there when it was installed.",
       note: [
         check.current ? `Was ${check.current}` : "",
-        `Installed ${check.tag}`,
+        `Installed ${check.latest}`,
         check.asset?.name ?? "",
         "Restart this window to run it",
       ]
@@ -808,7 +808,7 @@ export function updateDialog(state: UpdateState): DialogState {
   const vsix = updateVsix(check);
   const notes = [
     check.current ? `Current ${check.current}` : "",
-    `Latest ${check.tag}`,
+    `Latest ${check.latest}`,
     vsix?.name ?? "",
     check.pinned ? "pinned" : "",
   ].filter(Boolean);

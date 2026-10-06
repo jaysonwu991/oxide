@@ -724,7 +724,7 @@ describe("update dialog", () => {
     assert.match(dialog.subtitle, /\.vsix/);
     assert.match(dialog.subtitle, /this release of the extension/);
     assert.match(dialog.note, /Current 0\.32\.0/);
-    assert.match(dialog.note, /Latest extension-v0\.34\.0/);
+    assert.match(dialog.note, /Latest 0\.34\.0/);
     assert.match(dialog.note, /oxide-vscode-0\.34\.0\.vsix/);
     assert.deepEqual(
       dialog.rows.map((row) => row.label),
@@ -776,7 +776,7 @@ describe("update dialog", () => {
     const dialog = updateDialog({ k: "installed", check });
     assert.equal(dialog.title, "Oxide 0.34.0 is installed");
     assert.match(dialog.note, /Was 0\.32\.0/);
-    assert.match(dialog.note, /Installed extension-v0\.34\.0/);
+    assert.match(dialog.note, /Installed 0\.34\.0/);
     assert.match(dialog.note, /Restart this window/);
     assert.deepEqual(
       dialog.rows.map((row) => row.action),

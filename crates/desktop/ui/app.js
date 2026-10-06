@@ -3698,7 +3698,7 @@ function paintUpdate(check, headline) {
     : "";
   const lines = [
     `Current ${mono(check.current)}`,
-    `Latest ${mono(check.tag)}`,
+    `Latest ${mono(check.latest)}`,
   ];
   if (check.installation || check.path) {
     lines.push(
@@ -3798,7 +3798,7 @@ function paintInstalled(answer) {
     ? "Finish the installer, then open Oxide again to run the new version."
     : "Restart Oxide to run the new version. The release is in place; the app running here is still the one that started.";
   const lines = [];
-  if (answer.tag) lines.push(`Release ${mono(answer.tag)}`);
+  if (answer.version) lines.push(`Release ${mono(answer.version)}`);
   if (answer.asset) lines.push(`Downloaded ${escapeHtml(answer.asset)}`);
   if (answer.path) lines.push(`<span class="update-path">${escapeHtml(answer.path)}</span>`);
   if (answer.text) lines.push(`<span class="update-advice">${escapeHtml(answer.text)}</span>`);
