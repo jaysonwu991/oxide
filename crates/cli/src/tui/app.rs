@@ -5,7 +5,7 @@ use crate::media;
 use crate::plugin_registry::{MarketplaceOverview, MarketplacePluginOverview};
 use crate::session::SessionSummary;
 use crate::tools::DiffPreview;
-use crate::tui::rows::{self, Join};
+use crate::tui::rows::{self, Join, RowLink};
 use ratatui::text::Line;
 use std::path::PathBuf;
 use std::process::Command;
@@ -822,6 +822,10 @@ pub struct App {
     /// which line breaks the pane drew and which the text has. Parallel to
     /// [`App::lines`]: every row pushed there is pushed here too.
     pub line_joins: Vec<Join>,
+    /// The links each rendered line draws, by the span of the line they are
+    /// drawn as. A labelled link reads as its label, so a click is answered
+    /// from here. Parallel to [`App::lines`] like [`App::line_joins`].
+    pub line_links: Vec<Vec<RowLink>>,
     pub line_offsets: Vec<usize>,
     pub render_dirty_from: Option<usize>,
     pub render_width: usize,
@@ -1005,6 +1009,7 @@ impl App {
             show_thinking_blocks: true,
             lines: Vec::new(),
             line_joins: Vec::new(),
+            line_links: Vec::new(),
             line_offsets: Vec::new(),
             render_dirty_from: Some(0),
             render_width: 0,
@@ -1086,6 +1091,7 @@ impl App {
     pub fn invalidate_render_cache(&mut self) {
         self.lines.clear();
         self.line_joins.clear();
+        self.line_links.clear();
         self.line_offsets.clear();
         self.render_dirty_from = Some(0);
         self.render_width = 0;
@@ -1227,6 +1233,7 @@ impl App {
     pub fn toggle_tool_output(&mut self) {
         self.expand_tools = !self.expand_tools;
         self.lines.clear();
+        self.line_links.clear();
         self.line_offsets.clear();
         self.render_dirty_from = Some(0);
     }
@@ -1236,6 +1243,7 @@ impl App {
     pub fn toggle_thinking_blocks(&mut self) {
         self.show_thinking_blocks = !self.show_thinking_blocks;
         self.lines.clear();
+        self.line_links.clear();
         self.line_offsets.clear();
         self.render_dirty_from = Some(0);
     }

@@ -39,11 +39,26 @@ impl Join {
     }
 }
 
-/// Rendered rows and, for each one, how it attaches to the row above it.
+/// A link a rendered row carries: the characters of the row it covers, and the
+/// URL they name. A labelled link is drawn as its label, so the target is
+/// nowhere in the row's text for a click to find and is recorded here instead.
+/// The range is what says *which* link the characters are, so two labels that
+/// read the same still name their own targets.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub struct RowLink {
+    pub start: usize,
+    pub end: usize,
+    pub url: String,
+}
+
+/// Rendered rows and, for each one, how it attaches to the row above it and
+/// the links it was drawn with.
 #[derive(Default)]
 pub struct Rows {
     pub lines: Vec<Line<'static>>,
     pub joins: Vec<Join>,
+    /// Parallel to [`Rows::lines`]: the links each row names, if any.
+    pub links: Vec<Vec<RowLink>>,
 }
 
 impl Rows {
@@ -54,47 +69,60 @@ impl Rows {
 
     /// A row carrying how the wrap continued it from the row above.
     pub fn push_join(&mut self, line: Line<'static>, join: Join) {
+        self.push_join_links(line, join, Vec::new());
+    }
+
+    /// A row carrying the links it was drawn with.
+    pub fn push_join_links(&mut self, line: Line<'static>, join: Join, links: Vec<RowLink>) {
         self.lines.push(line);
         self.joins.push(join);
+        self.links.push(links);
     }
 
     pub fn extend(&mut self, other: Rows) {
         self.lines.extend(other.lines);
         self.joins.extend(other.joins);
+        self.links.extend(other.links);
     }
 
     pub fn append(&mut self, other: &mut Rows) {
         self.lines.append(&mut other.lines);
         self.joins.append(&mut other.joins);
+        self.links.append(&mut other.links);
     }
 
-    /// Take the first row off, with the join it was drawn with, so a caller
-    /// that re-dresses it can put it back.
-    pub fn remove_first(&mut self) -> Option<(Line<'static>, Join)> {
+    /// Take the first row off, with the join and links it was drawn with, so a
+    /// caller that re-dresses it can put it back.
+    pub fn remove_first(&mut self) -> Option<(Line<'static>, Join, Vec<RowLink>)> {
         if self.lines.is_empty() {
             return None;
         }
         let join = self.joins.remove(0);
         let line = self.lines.remove(0);
-        Some((line, join))
+        let links = self.links.remove(0);
+        Some((line, join, links))
     }
 
-    /// Put a row at the top, as a line the text starts.
-    pub fn insert_first(&mut self, line: Line<'static>) {
+    /// Put a row at the top, as a line the text starts, with the links it was
+    /// drawn with.
+    pub fn insert_first(&mut self, line: Line<'static>, links: Vec<RowLink>) {
         self.lines.insert(0, line);
         self.joins.insert(0, Join::Line);
+        self.links.insert(0, links);
     }
 
     /// Drop the last row, with the join it was drawn with.
     pub fn pop(&mut self) {
         self.lines.pop();
         self.joins.pop();
+        self.links.pop();
     }
 
     /// Drop the first `count` rows.
     pub fn drain_front(&mut self, count: usize) {
         self.lines.drain(..count.min(self.lines.len()));
         self.joins.drain(..count.min(self.joins.len()));
+        self.links.drain(..count.min(self.links.len()));
     }
 
     pub fn is_empty(&self) -> bool {
@@ -284,5 +312,38 @@ mod tests {
             Join::Split { prefix: 2 }
         );
         assert_eq!(Join::Line.after(2), Join::Line);
+    }
+
+    fn link(url: &str) -> RowLink {
+        RowLink {
+            start: 0,
+            end: 4,
+            url: url.to_string(),
+        }
+    }
+
+    #[test]
+    fn a_rows_links_ride_along_with_it() {
+        let mut rows = Rows::default();
+        rows.push_join_links(Line::from("one"), Join::Line, vec![link("https://a")]);
+        rows.push(Line::from("two"));
+        rows.push(Line::from("three"));
+        rows.drain_front(1);
+        assert_eq!(rows.links, vec![Vec::new(), Vec::new()]);
+
+        let mut other = Rows::default();
+        other.push_join_links(Line::from("four"), Join::Line, vec![link("https://b")]);
+        rows.extend(other);
+        assert_eq!(rows.links.len(), rows.lines.len());
+        assert_eq!(rows.links[2], vec![link("https://b")]);
+
+        let (_, _, taken) = rows.remove_first().expect("a row to take");
+        assert!(taken.is_empty());
+        rows.insert_first(Line::from("zero"), vec![link("https://c")]);
+        assert_eq!(rows.links.len(), rows.lines.len());
+        assert_eq!(rows.links[0], vec![link("https://c")]);
+
+        rows.pop();
+        assert_eq!(rows.links.len(), rows.lines.len());
     }
 }

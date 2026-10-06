@@ -52,12 +52,14 @@ A context compaction renders as Pi's `[compaction]` block and a branch summary
 as `[branch]`, each folded to a one-line note with `Ctrl+O to expand` until
 `Ctrl+O` shows its text — the same key that unfolds tool output.
 
-A URL in a reply — written bare, as an `<autolink>`, or as the target of a
-labelled link — is clickable: a left click opens it in the system browser (and
-the click is not also a text selection). When you have scrolled away from the
-newest output, a `↓ Jump to latest message · End` row floats over the bottom of
-the transcript; click it or press `End` to return to the newest line, and it
-hides once the end is on screen.
+A URL in a reply is clickable: written bare or as an `<autolink>` the URL is
+the link itself, and a labelled link is drawn as its label alone — the target
+is not printed, as in the desktop app and the panel — with the whole label
+answering. A left click opens it in the system browser (and the click is not
+also a text selection). When you have scrolled away from the newest output, a
+`↓ Jump to latest message · End` row floats over the bottom of the transcript;
+click it or press `End` to return to the newest line, and it hides once the end
+is on screen.
 
 A message typed while the agent is busy waits above the message box as a dim
 `Steering: …` or `Follow-up: …` row, with a `↳ <key> to edit all queued messages`
