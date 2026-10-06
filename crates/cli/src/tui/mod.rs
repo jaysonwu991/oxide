@@ -5,6 +5,7 @@ pub mod ui;
 
 use crate::agent::{self, AgentEvent, Runtime};
 use crate::approval::{ApprovalBroker, Decision};
+use crate::catalog;
 use crate::config::{Config, Reasoning};
 use crate::ecosystem::AgentMode;
 use crate::install::InstallMethod;
@@ -259,9 +260,11 @@ async fn event_loop(
     let (usage_tx, mut usage_rx) =
         unbounded_channel::<Result<crate::portkey_usage::Snapshot, String>>();
     let (update_tx, mut update_rx) = unbounded_channel::<update_notice::Notice>();
+    let (catalog_tx, mut catalog_rx) = unbounded_channel::<catalog::ModelsByProvider>();
     let (login_tx, login_rx) = unbounded_channel::<LoginEvent>();
     let mut login_rx = Some(login_rx);
     spawn_update_notice(&update_tx, &cwd);
+    spawn_model_catalog(&catalog_tx, &cwd, &config.provider);
     if config.model_catalog.is_empty() {
         let warmups: Vec<Config> = model_providers(&config)
             .into_iter()
@@ -398,6 +401,15 @@ async fn event_loop(
             login_event = recv_opt(&mut login_rx) => {
                 if let Some(event) = login_event {
                     handle_login_event(event, &mut app, &mut config);
+                }
+            }
+            refreshed = catalog_rx.recv() => {
+                if let Some(windows) = refreshed {
+                    // A model the built-in table does not know gets its window
+                    // from the catalog the provider published, so the footer's
+                    // gauge is repainted with the window this run resolves.
+                    config.catalog_windows = windows;
+                    app.context_limit = context_limit(&config);
                 }
             }
             _ = tick.tick(), if app.busy => {
@@ -2022,6 +2034,27 @@ fn spawn_update_notice(update_tx: &UnboundedSender<update_notice::Notice>, cwd: 
         }
     });
     true
+}
+
+/// Starts the background look for the model catalogs a launch makes when the
+/// lookups are on: every provider this machine holds a credential for, so a
+/// model gets the window its provider published rather than the built-in
+/// table's conservative one, and so switching provider mid-session needs no
+/// lookup of its own. Only an answer that changed is handed back, since the
+/// remembered windows already reached this run through `Config::load`.
+fn spawn_model_catalog(
+    catalog_tx: &UnboundedSender<catalog::ModelsByProvider>,
+    cwd: &Path,
+    provider: &str,
+) {
+    let tx = catalog_tx.clone();
+    let cwd = cwd.to_path_buf();
+    let providers = catalog::launch_providers(provider);
+    tokio::spawn(async move {
+        if let Some(windows) = catalog::refresh_launch(&providers, Some(&cwd)).await {
+            let _ = tx.send(windows);
+        }
+    });
 }
 
 /// `/updates [on|off]`: whether a launch looks for a newer release of the CLI,

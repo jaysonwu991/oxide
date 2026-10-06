@@ -1006,6 +1006,26 @@ async function loadInfo() {
   }
 }
 
+/// The window a model resolves to is what a catalog that landed after this
+/// folder was opened changes, so the lookup is read again and the chip repainted
+/// from it — and nothing else is: the level the reader picked in the composer
+/// stays picked, since a background lookup is no reason to hand them the level
+/// the folder remembers. The model's own levels are left to the reasoning chip,
+/// which reads them for the model in use.
+async function refreshContextWindow() {
+  if (!state.project) return;
+  const project = state.project;
+  try {
+    const info = await invoke("project_info", { project });
+    if (project !== state.project || !info) return;
+    state.contextWindow = info.contextWindow || 0;
+    renderProjectMeta(info);
+  } catch {
+    // A window that could not be read again keeps the one it has: the next full
+    // load reports it, and a background lookup is not worth a note of its own.
+  }
+}
+
 /// The model the composer's own chip names, and the little the header adds: the
 /// provider is already that chip, so only what the user has to act on — a
 /// missing key, project resources left off — is written beside the title.
@@ -4651,6 +4671,13 @@ async function initEvents() {
   await listen("update-ready", (event) => handleUpdateReady(event.payload || {}));
   await listen("update-failed", (event) => handleUpdateFailed(event.payload || {}));
   await catchUpOnLaunchUpdate();
+  // The launch looks for the model catalog each logged-in provider publishes,
+  // which is where the window a model resolves to comes from: a catalog that
+  // landed after this folder was opened repaints the model chip with the window
+  // the next turn will actually use — and only that, since a full `loadInfo`
+  // also restores the level the folder remembers, which is the reader's choice
+  // only until they change it.
+  await listen("model-catalog", () => refreshContextWindow());
   await listen("question-request", (event) => showQuestion(event.payload || {}));
   // The request timed out with nobody answering, while the run it belongs to
   // may still be going: the dialog goes away so it does not offer an answer that

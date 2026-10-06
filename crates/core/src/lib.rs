@@ -11,6 +11,7 @@ pub mod approvals;
 pub mod ask;
 pub mod at;
 pub mod auth;
+pub mod catalog;
 pub mod changes;
 pub(crate) mod child;
 pub mod cli;

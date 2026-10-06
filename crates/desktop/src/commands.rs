@@ -6,6 +6,7 @@ use crate::bridge::{EventSink, Host};
 use anyhow::Context;
 use oxide_core::agent::{AgentEvent, Cancel, Steering};
 use oxide_core::auth::{self, AuthStore};
+use oxide_core::catalog;
 use oxide_core::cli::{event_json, session_header};
 use oxide_core::config::Config;
 use oxide_core::diff::{Diff, LineKind};
@@ -963,6 +964,19 @@ pub async fn auto_update(state: Arc<DesktopState>) {
     }
 }
 
+/// Starts the background look for the model catalogs a launch makes when the
+/// lookups are on: every provider this machine holds a credential for, so a
+/// model gets the window its provider published rather than the built-in
+/// table's conservative one. A window that is already open is told when the
+/// answer changed, since the model chip it draws carries that window and a
+/// reader keeps the app open for hours over one folder.
+pub async fn auto_catalog(state: Arc<DesktopState>) {
+    let providers = catalog::launch_providers(&active_provider());
+    if catalog::refresh_launch(&providers, None).await.is_some() {
+        let _ = state.events.emit("model-catalog", json!({}));
+    }
+}
+
 /// What the launch's own install has said so far, for a window that started
 /// listening after it began: the newest event it would have heard, or nothing
 /// when this launch installs nothing at all.
@@ -1046,6 +1060,32 @@ fn current_theme_name() -> String {
                 .map(str::to_string)
         })
         .unwrap_or_else(|| "dark".to_string())
+}
+
+/// The provider this launch runs on, by the same precedence `Config::load`
+/// applies: `OXIDE_PROVIDER` when it names one, else the one `config.json`
+/// selects. A launch's catalog look covers it as well as every stored
+/// credential, since the two providers that sign with a credential the machine
+/// already holds — Bedrock and Vertex — hold no key here and are the ones a
+/// catalog answers for most usefully.
+fn active_provider() -> String {
+    if let Some(provider) = std::env::var("OXIDE_PROVIDER")
+        .ok()
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+    {
+        return provider;
+    }
+    std::fs::read_to_string(Config::config_path())
+        .ok()
+        .and_then(|text| serde_json::from_str::<Value>(&text).ok())
+        .and_then(|value| {
+            value
+                .get("provider")
+                .and_then(Value::as_str)
+                .map(str::to_string)
+        })
+        .unwrap_or_else(|| "openai".to_string())
 }
 
 fn arg<T: DeserializeOwned>(args: &Value, name: &str) -> CmdResult<T> {
@@ -1367,6 +1407,27 @@ mod tests {
         // rather than resolving it to the directory the app was launched in.
         assert_eq!(palette_entries("   ").unwrap().len(), home.len());
         assert!(project_dir("  ").is_err());
+    }
+
+    #[test]
+    fn the_launchs_lookup_covers_the_provider_the_environment_names() {
+        // The launch reads the provider the same way a turn does, so a provider
+        // named in the environment is the one its lookup covers rather than the
+        // one the stored configuration happens to select.
+        static ENV: std::sync::Mutex<()> = std::sync::Mutex::new(());
+        let _guard = ENV.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        let previous = std::env::var("OXIDE_PROVIDER").ok();
+        std::env::set_var("OXIDE_PROVIDER", " bedrock ");
+        assert_eq!(active_provider(), "bedrock");
+        // A name of nothing but whitespace names no provider, so the stored
+        // selection stands.
+        std::env::set_var("OXIDE_PROVIDER", "  ");
+        assert_ne!(active_provider(), "  ");
+        assert!(!active_provider().trim().is_empty());
+        match previous {
+            Some(value) => std::env::set_var("OXIDE_PROVIDER", value),
+            None => std::env::remove_var("OXIDE_PROVIDER"),
+        }
     }
 
     #[test]

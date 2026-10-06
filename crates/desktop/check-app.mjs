@@ -615,6 +615,9 @@ const changeSidesError = new Map([
   ["design.md", "the file is no longer in the snapshot"],
 ]);
 let steerAccepted = true;
+// What `project_info` answers while a check asks for the folder's own facts,
+// and nothing everywhere else.
+let projectInfo = null;
 
 const invoke = async (command, args = {}) => {
   calls.push([command, args]);
@@ -726,6 +729,11 @@ const invoke = async (command, args = {}) => {
       return clipboardAnswer;
     case "reasoning_levels":
       return { ...reasoningAnswer, reasoningLevels: [...reasoningAnswer.reasoningLevels] };
+    case "project_info":
+      // A folder's own facts are answered only where a check needs what a real
+      // answer sets — the sections above set that state themselves, since the
+      // stub is what the window must not depend on.
+      return projectInfo;
     default:
       return null;
   }
@@ -1279,6 +1287,65 @@ check(
     elementFor("project-name").textContent === "oxide",
   `${app.state.project} / ${elementFor("project-name").textContent}`,
 );
+
+// The launch looks a provider's catalog up beside the window, so the answer
+// lands after a folder has been opened and the window the model chip carries
+// has already been read once. Only that window is read again: a full load of
+// the folder's facts would hand back the level the folder remembers, which is
+// the reader's own choice from the moment they pick one.
+console.log("the window the launch's catalog answered with");
+app.setIdle();
+// What the section above left the composer on, put back at the end of this one:
+// the level here is the check's own, not the composer's.
+const catalogLevel = {
+  reasoning: app.state.reasoning,
+  picked: app.state.reasoningPicked,
+};
+app.state.reasoningPicked = false;
+app.state.reasoning = "low";
+projectInfo = {
+  model: "deepseek-flash",
+  contextWindow: 2000000,
+  reasoning: "low",
+  reasoningLevels: [],
+  hasKey: true,
+  trust: null,
+};
+app.state.contextWindow = 128000;
+calls.length = 0;
+await emit("model-catalog", {});
+await nextTick();
+check(
+  "repainted the model chip with the window the catalog answered with",
+  app.state.contextWindow === 2000000 &&
+    elementFor("model").title === "model: deepseek-flash · 2.00M\nSwitch model",
+  `${app.state.contextWindow} / ${elementFor("model").title}`,
+);
+// The level picked while that lookup was in flight is the one the next turn is
+// sent with, so a background answer cannot take it back.
+app.state.reasoningPicked = true;
+app.state.reasoning = "high";
+await emit("model-catalog", {});
+await nextTick();
+check(
+  "left the level the reader picked while the lookup was in flight",
+  app.state.reasoning === "high" && app.state.reasoningPicked === true,
+  `${app.state.reasoning} / ${app.state.reasoningPicked}`,
+);
+projectInfo = null;
+el("prompt").value = "carry on";
+calls.length = 0;
+await app.send(false);
+const carried = projectCalls("send_prompt");
+check(
+  "sent the next turn with that level rather than the folder's own",
+  carried.length === 1 && carried[0][1].reasoning === "high",
+  JSON.stringify(carried.map(([, args]) => args.reasoning)),
+);
+app.setIdle();
+el("prompt").value = "";
+app.state.reasoning = catalogLevel.reasoning;
+app.state.reasoningPicked = catalogLevel.picked;
 
 // ---------- the composer's popovers ----------
 
