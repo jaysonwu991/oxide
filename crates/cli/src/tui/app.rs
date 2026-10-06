@@ -5,6 +5,7 @@ use crate::media;
 use crate::plugin_registry::{MarketplaceOverview, MarketplacePluginOverview};
 use crate::session::SessionSummary;
 use crate::tools::DiffPreview;
+use crate::tui::rows::{self, Join};
 use ratatui::text::Line;
 use std::path::PathBuf;
 use std::process::Command;
@@ -45,32 +46,47 @@ impl Selection {
     }
 
     /// The selected text extracted from the rendered lines, with trailing
-    /// whitespace trimmed from each line.
-    pub fn text(&self, lines: &[Line<'static>]) -> String {
+    /// whitespace trimmed from each line and each row the pane wrapped joined
+    /// back onto the one above it, so the copy carries the text's own line
+    /// breaks rather than the ones the viewport gave it.
+    pub fn text(&self, lines: &[Line<'static>], joins: &[Join]) -> String {
         if lines.is_empty() {
             return String::new();
         }
         let last = lines.len() - 1;
         let (start, end) = self.range();
         let stop = end.0.min(last);
-        let mut out: Vec<String> = Vec::new();
-        for (index, line) in lines.iter().enumerate().take(stop + 1).skip(start.0) {
-            let chars: Vec<char> = line
-                .spans
+        rows::text(
+            lines
                 .iter()
-                .flat_map(|span| span.content.chars())
-                .collect();
-            let from = if index == start.0 { start.1 } else { 0 }.min(chars.len());
-            let to = if index == end.0 {
-                end.1.saturating_add(1)
-            } else {
-                chars.len()
-            }
-            .clamp(from, chars.len());
-            let text: String = chars[from..to].iter().collect();
-            out.push(text.trim_end().to_string());
-        }
-        out.join("\n")
+                .enumerate()
+                .take(stop + 1)
+                .skip(start.0)
+                .map(|(index, line)| {
+                    let chars: Vec<char> = line
+                        .spans
+                        .iter()
+                        .flat_map(|span| span.content.chars())
+                        .collect();
+                    let from = if index == start.0 { start.1 } else { 0 }.min(chars.len());
+                    let to = if index == end.0 {
+                        end.1.saturating_add(1)
+                    } else {
+                        chars.len()
+                    }
+                    .clamp(from, chars.len());
+                    let text: String = chars[from..to].iter().collect();
+                    // The row the selection starts on is read from where the
+                    // caret landed, so it starts a line of its own whatever
+                    // the pane did above it.
+                    let join = if index == start.0 {
+                        Join::Line
+                    } else {
+                        joins.get(index).copied().unwrap_or(Join::Line)
+                    };
+                    (text, join)
+                }),
+        )
     }
 }
 
@@ -797,6 +813,10 @@ pub struct App {
     /// Whether reasoning blocks are shown in full or collapsed to a label.
     pub show_thinking_blocks: bool,
     pub lines: Vec<Line<'static>>,
+    /// How each rendered line attaches to the one above it, so a copy knows
+    /// which line breaks the pane drew and which the text has. Parallel to
+    /// [`App::lines`]: every row pushed there is pushed here too.
+    pub line_joins: Vec<Join>,
     pub line_offsets: Vec<usize>,
     pub render_dirty_from: Option<usize>,
     pub render_width: usize,
@@ -811,6 +831,22 @@ pub struct App {
 }
 
 impl App {
+    /// The whole rendered transcript as text: the pane's own line breaks are
+    /// joined back into the lines the text has, so a copy carries the text and
+    /// not the width the pane drew it at.
+    pub fn transcript_text(&self) -> String {
+        let rows = self.lines.iter().enumerate().map(|(index, line)| {
+            let text: String = line
+                .spans
+                .iter()
+                .map(|span| span.content.as_ref())
+                .collect();
+            let join = self.line_joins.get(index).copied().unwrap_or(Join::Line);
+            (text, join)
+        });
+        rows::text(rows).trim_matches('\n').to_string()
+    }
+
     /// Adds a pending attachment, de-duplicating by content id. Returns whether
     /// it was added; a part with no file to name it by is shown as what it is.
     pub fn add_attachment(&mut self, part: ContentPart) -> bool {
@@ -963,6 +999,7 @@ impl App {
             expand_tools: false,
             show_thinking_blocks: true,
             lines: Vec::new(),
+            line_joins: Vec::new(),
             line_offsets: Vec::new(),
             render_dirty_from: Some(0),
             render_width: 0,
@@ -1043,6 +1080,7 @@ impl App {
     /// Rebuild styled conversation lines after a visual setting changes.
     pub fn invalidate_render_cache(&mut self) {
         self.lines.clear();
+        self.line_joins.clear();
         self.line_offsets.clear();
         self.render_dirty_from = Some(0);
         self.render_width = 0;
@@ -1650,7 +1688,7 @@ mod tests {
         let lines = lines(&["hello world", "second line"]);
         let mut selection = Selection::new(0, 6);
         selection.cursor = (1, 5);
-        assert_eq!(selection.text(&lines), "world\nsecond");
+        assert_eq!(selection.text(&lines, &[]), "world\nsecond");
     }
 
     #[test]
@@ -1658,7 +1696,38 @@ mod tests {
         let lines = lines(&["alpha  ", "beta"]);
         let mut selection = Selection::new(1, 3);
         selection.cursor = (0, 0);
-        assert_eq!(selection.text(&lines), "alpha\nbeta");
+        assert_eq!(selection.text(&lines, &[]), "alpha\nbeta");
+    }
+
+    #[test]
+    fn selection_text_joins_the_line_breaks_the_pane_drew() {
+        let lines = lines(&[
+            "◆ Oxide Security is a thing that",
+            "  spans two lines here",
+            "And a line of its own",
+            "that goes on",
+        ]);
+        let joins = [
+            Join::Line,
+            Join::Space { prefix: 0 },
+            Join::Line,
+            Join::Space { prefix: 0 },
+        ];
+        let mut selection = Selection::new(0, 8);
+        selection.cursor = (3, 12);
+        assert_eq!(
+            selection.text(&lines, &joins),
+            "Security is a thing that spans two lines here\nAnd a line of its own that goes on"
+        );
+    }
+
+    #[test]
+    fn selection_text_joins_a_word_the_pane_broke_in_two() {
+        let lines = lines(&["a-long-identif", "  ier-name"]);
+        let joins = [Join::Line, Join::Word { prefix: 0 }];
+        let mut selection = Selection::new(0, 0);
+        selection.cursor = (1, 11);
+        assert_eq!(selection.text(&lines, &joins), "a-long-identifier-name");
     }
 
     #[test]
