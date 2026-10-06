@@ -441,6 +441,13 @@ fn is_newline_shortcut(key: &KeyEvent) -> bool {
     key.code == KeyCode::Enter && key.modifiers.contains(KeyModifiers::SHIFT)
 }
 
+/// Whether a composer Enter sent while the agent is busy names a follow-up
+/// rather than a steering message. `Alt+Enter` is Pi's `app.message.followUp`;
+/// a plain `Enter` steers the response being written.
+fn is_follow_up_enter(key: &KeyEvent) -> bool {
+    key.modifiers.contains(KeyModifiers::ALT)
+}
+
 /// Pi's `useWindowsKeybindings`: Windows itself, or Linux under WSL, where the
 /// terminal claims `Alt+Up` for its own scrollback.
 fn use_windows_keybindings() -> bool {
@@ -457,7 +464,7 @@ fn use_windows_keybindings_for(windows: bool, linux: bool, wsl: bool) -> bool {
 
 /// The dequeue shortcut as Pi spells it: `Alt+Up`, `Alt+Q` where the terminal
 /// owns `Alt+Up`, and `Option+Up` on macOS, where `Alt` is the Option key.
-fn dequeue_key_label() -> &'static str {
+pub(crate) fn dequeue_key_label() -> &'static str {
     dequeue_key_label_for(use_windows_keybindings(), cfg!(target_os = "macos"))
 }
 
@@ -679,9 +686,9 @@ fn handle_key(
             }
             if app.busy {
                 let raw = app.input.trim().to_string();
-                // Match the desktop composer: Queue is the safe default and
-                // steering the active response is a deliberate alternate.
-                queue_while_busy(app, &raw, cwd, !key.modifiers.contains(KeyModifiers::ALT));
+                // Pi's mapping: Enter steers the response being written, and
+                // Alt+Enter queues a follow-up for after the run finishes.
+                queue_while_busy(app, &raw, cwd, is_follow_up_enter(&key));
                 return;
             }
             let raw = app.input.trim().to_string();
@@ -1591,6 +1598,8 @@ fn handle_key(
                 ask: None,
                 steering: app.steering.clone(),
                 follow_ups: app.follow_ups.clone(),
+                steering_mode: config.steering_mode,
+                follow_up_mode: config.follow_up_mode,
                 cancel: crate::agent::Cancel::new(),
             };
             tokio::spawn(async move {
@@ -1884,7 +1893,7 @@ fn help_text(config: &Config) -> String {
             .map(|(left, description)| format!("  {left:<width$}  {description}")),
     );
     lines.push(format!(
-        "keys: Enter send/queue · Shift+Enter newline · Alt+Enter steer while busy · {} edit queued · Shift+Tab/Ctrl+R reasoning · Ctrl+O tool details · Ctrl+T thinking · Ctrl+V image · Ctrl+A/E message start/end · ↑/↓ history · PgUp/PgDn/wheel scroll · Ctrl+U/D half page · drag to select and copy · Ctrl+C copy selection/quit",
+        "keys: Enter send/steer · Shift+Enter newline · Alt+Enter queue for after · {} edit queued · Shift+Tab/Ctrl+R reasoning · Ctrl+O tool details · Ctrl+T thinking · Ctrl+V image · Ctrl+A/E message start/end · ↑/↓ history · PgUp/PgDn/wheel scroll · Ctrl+U/D half page · drag to select and copy · Ctrl+C copy selection/quit",
         dequeue_key_label()
     ));
     if !config.ecosystem.commands.is_empty() {
@@ -2698,9 +2707,9 @@ fn mask(key: &str) -> String {
 fn hotkeys_text() -> String {
     [
         "keyboard shortcuts:".to_string(),
-        "  Enter                 send (queues a follow-up while busy)".to_string(),
+        "  Enter                 send (steers the response while busy)".to_string(),
         "  Shift+Enter           insert a newline".to_string(),
-        "  Alt+Enter             steer the active response while busy".to_string(),
+        "  Alt+Enter             queue a follow-up while busy".to_string(),
         format!(
             "  {:<22}pull queued messages back into the editor",
             dequeue_key_label()
@@ -2889,7 +2898,7 @@ fn branch_in_place(
             Ok((summary, usage)) => {
                 let _ = log.branch_with_summary(
                     branch_from.as_deref(),
-                    summary,
+                    summary.clone(),
                     None,
                     Some(usage.into()),
                 );
@@ -2905,6 +2914,7 @@ fn branch_in_place(
                     history,
                     prompt,
                     message: format!("branched at message {index} — edit and resend"),
+                    summary: Some(summary),
                 });
             }
             Err(err) => {
@@ -2914,6 +2924,7 @@ fn branch_in_place(
                     history,
                     prompt,
                     message: "branch summary failed".to_string(),
+                    summary: None,
                 });
             }
         }
@@ -2928,12 +2939,18 @@ fn session_info(session: &Option<SessionLog>, history: &[Message]) -> String {
             let user = history.iter().filter(|m| m.role == "user").count();
             let assistant = history.iter().filter(|m| m.role == "assistant").count();
             let tools = history.iter().filter(|m| m.role == "tool").count();
+            let compactions = log
+                .entries()
+                .iter()
+                .filter(|entry| matches!(entry, crate::session::Entry::Compaction(_)))
+                .count();
             format!(
-                "session {}\nname: {}\nfile: {}\nentries: {}\nmessages: {} user · {} assistant · {} tool",
+                "session {}\nname: {}\nfile: {}\nentries: {}\ncompactions: {}\nmessages: {} user · {} assistant · {} tool",
                 log.id(),
                 name,
                 log.cwd(),
                 log.entries().len(),
+                compactions,
                 user,
                 assistant,
                 tools
@@ -4340,6 +4357,19 @@ fn handle_mouse(mouse: MouseEvent, app: &mut App, terminal_area: Rect) {
             } else if let Some((line, column)) =
                 ui::message_position_at(app, terminal_area, mouse.column, mouse.row)
             {
+                // A click on the jump row returns to the newest output; a click
+                // on a link opens the browser; anything else starts a text
+                // selection.
+                let area = ui::transcript_area(terminal_area, app);
+                if let Some(rect) = ui::jump_to_end_rect(app, area) {
+                    if mouse.row == rect.y
+                        && mouse.column >= rect.x
+                        && mouse.column < rect.x.saturating_add(rect.width)
+                    {
+                        app.scroll_to_bottom();
+                        return;
+                    }
+                }
                 app.selection = Some(Selection::new(line, column));
             }
         }
@@ -4355,17 +4385,31 @@ fn handle_mouse(mouse: MouseEvent, app: &mut App, terminal_area: Rect) {
             }
         }
         MouseEventKind::Up(MouseButton::Left) => {
-            // Copy-on-select: a drag copies the text and clears the highlight; a
-            // plain click just drops the (empty) selection.
+            // Copy-on-select: a drag copies the text and clears the highlight. A
+            // plain click drops the one-cell selection, and opens the browser
+            // when it landed on a link.
             if let Some(selection) = app.selection {
                 if selection.anchor == selection.cursor {
+                    let (line, column) = selection.anchor;
                     app.selection = None;
+                    if let Some(url) = ui::link_at(app, line, column) {
+                        open_url(app, &url);
+                    }
                 } else {
                     copy_selection(app);
                 }
             }
         }
         _ => {}
+    }
+}
+
+/// Opens a transcript link in the platform's browser, detached from the
+/// terminal, and says so in the transcript's tip line.
+fn open_url(app: &mut App, url: &str) {
+    match oxide_core::mcp_oauth::open_browser(url) {
+        Ok(_) => app.show_status(format!("opening {url}")),
+        Err(err) => app.show_status(format!("could not open {url}: {err}")),
     }
 }
 
@@ -4378,17 +4422,13 @@ fn queue_while_busy(app: &mut App, raw: &str, cwd: &Path, follow_up: bool) {
     // composer, since the latter will be resolved from the still-present text
     // on the next Enter.
     let composer = app.take_attachments();
-    let mut names: Vec<String> = composer.iter().map(Attachment::display).collect();
     let mut parts: Vec<ContentPart> = composer
         .iter()
         .map(|attachment| attachment.part.clone())
         .collect();
     for path in media::referenced_attachments(raw, cwd) {
         match media::load_attachment(&path) {
-            Ok(part) => {
-                names.push(path.display().to_string());
-                parts.push(part);
-            }
+            Ok(part) => parts.push(part),
             Err(err) => app
                 .items
                 .push(ChatItem::Error(format!("attachment: {err:#}"))),
@@ -4424,8 +4464,9 @@ fn queue_while_busy(app: &mut App, raw: &str, cwd: &Path, follow_up: bool) {
     );
     app.remember_input(raw);
     app.clear_input();
-    app.items.push(ChatItem::User(sent_message(raw, &names)));
-    app.auto_scroll = true;
+    // The queued message is not a transcript turn yet: it waits in the
+    // composer's `Steering:`/`Follow-up:` list (above the box) until the run
+    // delivers it, when `AgentEvent::Steered` paints it as a turn, like Pi.
     if follow_up {
         app.status = "queued as the next turn...".to_string();
     } else {
@@ -4438,8 +4479,8 @@ fn queue_while_busy(app: &mut App, raw: &str, cwd: &Path, follow_up: bool) {
 /// leads and whatever is already in the editor follows, so typing while busy
 /// then dequeuing reads as one message with the new text appended.
 fn dequeue_messages(app: &mut App) {
-    let mut queued = app.steering.drain();
-    queued.extend(app.follow_ups.drain());
+    let mut queued = app.steering.drain_all();
+    queued.extend(app.follow_ups.drain_all());
     if queued.is_empty() {
         // Nothing is waiting, so every recorded attachment belongs to a message
         // the run has already consumed.
@@ -5055,6 +5096,19 @@ fn handle_agent_event(event: AgentEvent, app: &mut App) {
         // Nothing was painted for it here, so a request nobody answered is not
         // announced either: the tool result already says so in the transcript.
         AgentEvent::QuestionClosed { .. } => {}
+        // A message typed while the run was busy has now been delivered. Until
+        // this point it lived in the composer's queued list, not the transcript,
+        // the way Pi holds pending messages above the editor.
+        AgentEvent::Steered { message, follow_up } => {
+            app.status = if follow_up {
+                "queued follow-up sent".to_string()
+            } else {
+                "steering message sent".to_string()
+            };
+            app.items
+                .push(ChatItem::User(message.display().unwrap_or_default()));
+            app.auto_scroll = true;
+        }
         AgentEvent::Text(delta) => {
             app.auto_scroll = true;
             // Clear any `retrying...` notice now that output is flowing again.
@@ -5188,6 +5242,7 @@ fn handle_agent_event(event: AgentEvent, app: &mut App) {
             history,
             prompt,
             message,
+            summary,
         } => {
             app.running_tool = None;
             app.busy = false;
@@ -5197,6 +5252,9 @@ fn handle_agent_event(event: AgentEvent, app: &mut App) {
             app.status = "ready".to_string();
             app.reset_history(history);
             app.set_input(prompt);
+            if let Some(summary) = summary {
+                app.items.push(ChatItem::Branch { summary });
+            }
             app.items.push(ChatItem::Info(message));
             app.auto_scroll = true;
         }
@@ -5380,7 +5438,7 @@ mod tests {
         answer_approval_input(&mut app, &broker, "target just that directory");
 
         assert!(!answered.await.unwrap(), "a denial refuses the tool");
-        let messages = steering.drain();
+        let messages = steering.drain_all();
         assert_eq!(messages.len(), 1);
         assert_eq!(
             messages[0].display().as_deref(),
@@ -5670,17 +5728,19 @@ mod tests {
 
         assert_eq!(app.queued_count(), 1);
         assert!(app.attachments.is_empty(), "attachments are consumed");
-        let mut queued = app.steering.drain();
+        let mut queued = app.steering.drain_all();
         let has_image = matches!(
             queued[0].content,
             Some(crate::llm::MessageContent::Parts(ref parts))
                 if parts.iter().any(|part| matches!(part, crate::llm::ContentPart::ImageUrl { .. }))
         );
         assert!(has_image, "the queued message carries the image");
-        assert!(app.items.iter().any(|item| matches!(
-            item,
-            ChatItem::User(text) if text == "look at this\n• image (png)"
-        )));
+        assert!(
+            !app.items
+                .iter()
+                .any(|item| matches!(item, ChatItem::User(_))),
+            "the queued message is not a transcript turn until the run delivers it"
+        );
 
         // Reading the queue above took the message out of it, so put it back:
         // pulling it back in is what the dequeue below tests.
@@ -5828,10 +5888,12 @@ mod tests {
         );
         queue_while_busy(&mut app, "look", Path::new("."), false);
         assert!(app.attachments.is_empty());
-        assert!(app
-            .items
-            .iter()
-            .any(|item| matches!(item, ChatItem::User(_))));
+        assert!(
+            !app.items
+                .iter()
+                .any(|item| matches!(item, ChatItem::User(_))),
+            "the queued message is not a transcript turn until the run delivers it"
+        );
 
         dequeue_messages(&mut app);
 
@@ -5904,7 +5966,7 @@ mod tests {
         queue_while_busy(&mut app, "steer this", Path::new("."), false);
 
         // The run takes the steering message and its turn goes on.
-        app.steering.drain();
+        app.steering.drain_all();
         queue_while_busy(&mut app, "and then this", Path::new("."), false);
 
         dequeue_messages(&mut app);
@@ -6424,6 +6486,15 @@ mod tests {
             KeyModifiers::SHIFT
         )));
         assert!(!is_newline_shortcut(&key(KeyCode::Enter)));
+    }
+
+    #[test]
+    fn enter_steers_and_alt_enter_queues_a_follow_up() {
+        assert!(!is_follow_up_enter(&key(KeyCode::Enter)));
+        assert!(is_follow_up_enter(&KeyEvent::new(
+            KeyCode::Enter,
+            KeyModifiers::ALT
+        )));
     }
 
     #[test]

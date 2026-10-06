@@ -812,15 +812,17 @@ messages to the editor` after a dequeue. Only the newest tip is kept, so repeate
 actions update one line rather than growing the transcript, matching Pi's
 `showStatus`.
 
-While the agent is busy, Enter safely queues the next turn after the current
-response and Alt+Enter deliberately steers before the agent's next model step.
-Both show up as your turns, and
-the status row adds `2 queued · Option+Up to edit`. Pressing that key empties the
+While the agent is busy, Enter steers the active response before the agent's
+next model step and Alt+Enter queues a follow-up for after the current response.
+Queued messages wait above the message box as `Steering: …` / `Follow-up: …`
+rows with a `↳ <key> to edit all queued messages` hint, and become turns in the
+transcript only when the run delivers them. Pressing the dequeue key empties the
 queues back into the message box — queued text first, whatever you were already
-typing after it — so you can extend a message before it is sent. Their entries are
-also removed from the transcript, since they were never sent. The key is `Alt+Up`
-(`Option+Up` on macOS, where `Alt` is the Option key) and `Alt+Q` on Windows and
-WSL, where the terminal claims `Alt+Up` for scrollback.
+typing after it — so you can extend a message before it is sent. The key is
+`Alt+Up` (`Option+Up` on macOS, where `Alt` is the Option key) and `Alt+Q` on
+Windows and WSL, where the terminal claims `Alt+Up` for scrollback. How many are
+handed over at once is set by `steeringMode`/`followUpMode` (see
+[Queued messages](configuration.md#queued-messages)).
 
 ## Attachments
 
@@ -1096,8 +1098,10 @@ Configure it under `compaction` in `settings.json` (global) or
 - `modelOverrides` — per `provider/model` budget overrides; omitted fields fall
   back to the ordinary settings.
 
-The model window is derived from the model when it is known, falling back to
-1000000; an explicit `context_window` in `config.json` overrides it.
+The model window is derived from the model when it is known (including the 1M
+windows Pi's catalog assigns), falling back to Pi's `128000`; a
+`modelContextWindows` entry in `settings.json` or an explicit `context_window`
+in `config.json` overrides it.
 `OXIDE_COMPACTION_ENABLED`, `OXIDE_COMPACTION_RESERVE_TOKENS`, and
 `OXIDE_COMPACTION_KEEP_RECENT_TOKENS` override the file settings, and
 `OXIDE_CONTEXT_LIMIT` overrides `context_window`. Manual compaction is available

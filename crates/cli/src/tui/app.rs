@@ -135,6 +135,11 @@ pub enum ChatItem {
         read_files: Vec<String>,
         modified_files: Vec<String>,
     },
+    /// Summary of the branch left behind by `/tree` or `/fork`, rendered like
+    /// Pi's `[branch]` block.
+    Branch {
+        summary: String,
+    },
     Error(String),
     Info(String),
     /// A titled list rendered as aligned rows with per-row status colors,

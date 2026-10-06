@@ -1194,6 +1194,8 @@ async fn run_print_text(mut rx: tokio::sync::mpsc::UnboundedReceiver<AgentEvent>
                 );
             }
             AgentEvent::Branch { .. } => {}
+            // Print mode has no transcript to paint the delivered turn in.
+            AgentEvent::Steered { .. } => {}
             AgentEvent::Error(message) => {
                 flush_stdout(&mut stdout, &mut pending)?;
                 eprintln!("\nerror: {message}");

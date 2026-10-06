@@ -21,6 +21,9 @@ const MAX_ATTACHMENT_ROWS: usize = 4;
 /// Blank rows kept above the conversation so the first line (banner or chat)
 /// is not flush with the terminal's top edge.
 const MESSAGE_TOP_PAD: u16 = 1;
+/// The one-row affordance shown when the reader has scrolled away from the
+/// newest output; clicking it (or pressing End) returns to the bottom.
+const JUMP_TO_END_LABEL: &str = " ↓ Jump to latest message · End ";
 const MAX_MODEL_ROWS: usize = 10;
 const MAX_SESSION_ROWS: usize = 12;
 const MAX_SUGGESTION_ROWS: usize = 8;
@@ -68,9 +71,10 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
     let areas = main_areas(frame.area(), app);
 
     draw_messages(frame, app, areas[0]);
-    draw_input(frame, app, areas[1]);
-    draw_footer(frame, app, areas[2]);
-    if let Some(area) = areas.get(3) {
+    draw_pending(frame, app, areas[1]);
+    draw_input(frame, app, areas[2]);
+    draw_footer(frame, app, areas[3]);
+    if let Some(area) = areas.get(4) {
         draw_usage_bar(frame, app, *area);
     }
 
@@ -91,12 +95,17 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
     }
 }
 
-/// Messages, the composer, the footer, and - when the Portkey spend bar is
-/// enabled - one full-width row for it at the bottom of the screen.
+/// Messages, the queued-message list, the composer, the footer, and - when the
+/// Portkey spend bar is enabled - one full-width row for it at the bottom of
+/// the screen.
 fn main_areas(area: Rect, app: &App) -> Vec<Rect> {
+    let pending_rows = pending_message_rows(app) as u16;
     let input_rows = composer_content_rows(app, area.width as usize) as u16;
     let mut constraints = vec![
         Constraint::Min(3),
+        // The queued steering/follow-up list above the composer, like Pi's
+        // pending messages above the editor.
+        Constraint::Length(pending_rows),
         // One gap row above the composer, the top and bottom rules, then
         // the wrapped input rows.
         Constraint::Length(input_rows + 3),
@@ -1898,9 +1907,11 @@ fn reasoning_color(reasoning: Reasoning, theme: &crate::theme::Theme) -> Color {
 fn draw_messages(frame: &mut Frame, app: &mut App, area: Rect) {
     let top_pad = MESSAGE_TOP_PAD.min(area.height);
     let inner = Rect {
-        x: area.x + 1,
+        x: area.x,
         y: area.y + top_pad,
-        width: area.width.saturating_sub(2),
+        // One column stays free on the right for the scrollbar's lane; the
+        // transcript itself is flush with the composer's rule on the left.
+        width: area.width.saturating_sub(1),
         height: area.height.saturating_sub(top_pad),
     };
 
@@ -1919,20 +1930,21 @@ fn draw_messages(frame: &mut Frame, app: &mut App, area: Rect) {
     let start = app.scroll as usize;
     let end = (start + view as usize).min(app.lines.len());
     // The transcript draws into the full area rather than the inset `inner`,
-    // wrapping every row in a styled space, because ratatui only writes cells
-    // whose style changed since the previous frame: a blank cell is blank in
-    // both, so a glyph the terminal left in an edge column - a stray cell from
-    // a reflow on resize, an overlay drawn outside the frame - survived every
-    // repaint and showed up as a one-column strip at the side of the pane.
-    // Padding every row of the area keeps the text where it was and makes the
-    // frame own every cell of the transcript.
+    // padding every row to the width with a styled space, because ratatui only
+    // writes cells whose style changed since the previous frame: a blank cell is
+    // blank in both, so a glyph the terminal left in an edge column - a stray
+    // cell from a reflow on resize, an overlay drawn outside the frame -
+    // survived every repaint and showed up as a one-column strip at the side of
+    // the pane. The row is not indented on the left: the first cell is the
+    // text's own, so the assistant reply, the table and the composer's rule all
+    // start on the same column.
     let edge = Style::default().fg(app.theme.assistant);
     let mut content = vec![edge_fill(area.width, edge); top_pad as usize];
     content.extend(
         selection_lines(app, start, end)
             .into_iter()
             .map(|mut line| {
-                line.spans.insert(0, Span::styled(" ", edge));
+                own_left_edge(&mut line, edge);
                 let used: usize = line
                     .spans
                     .iter()
@@ -1950,6 +1962,44 @@ fn draw_messages(frame: &mut Frame, app: &mut App, area: Rect) {
     // panel backgrounds from their text.
     let paragraph = Paragraph::new(content);
     frame.render_widget(paragraph, area);
+
+    // Pi floats a "jump to latest message" row over the bottom of a transcript
+    // the reader has scrolled away from; clicking it (or End) returns to the
+    // newest output.
+    if let Some(rect) = jump_to_end_rect(app, area) {
+        let style = Style::default()
+            .bg(app.theme.accent)
+            .fg(Color::Black)
+            .add_modifier(Modifier::BOLD);
+        frame.render_widget(
+            Paragraph::new(Line::from(Span::styled(JUMP_TO_END_LABEL, style))),
+            rect,
+        );
+    }
+}
+
+/// Styles the whitespace a row begins with so the frame owns its first cell.
+/// A row already starting with a visible glyph owns it; a row that begins with
+/// spaces (a list's hanging indent, a thinking body's) would otherwise be a
+/// plain space the frame never repaints, and a stray glyph from a reflow would
+/// survive there. Only the spaces are restyled, so the text does not move.
+fn own_left_edge(line: &mut Line<'static>, edge: Style) {
+    let Some(first) = line.spans.first_mut() else {
+        return;
+    };
+    let spaces = first.content.chars().take_while(|c| *c == ' ').count();
+    if spaces == 0 {
+        return;
+    }
+    if spaces == first.content.chars().count() {
+        first.style = first.style.patch(edge);
+        return;
+    }
+    let text: String = first.content.chars().collect();
+    let head: String = text.chars().take(spaces).collect();
+    let style = first.style.patch(edge);
+    first.content = text.chars().skip(spaces).collect::<String>().into();
+    line.spans.insert(0, Span::styled(head, style));
 }
 
 /// A blank row wide enough to span `width`, carrying `style` so the terminal
@@ -2031,13 +2081,13 @@ pub(crate) fn message_position_at(
     let areas = main_areas(terminal_area, app);
     let message_area = areas[0];
     let top_pad = MESSAGE_TOP_PAD.min(message_area.height);
-    if message_area.width <= 2 || message_area.height <= top_pad {
+    if message_area.width <= 1 || message_area.height <= top_pad {
         return None;
     }
     let inner = Rect {
-        x: message_area.x + 1,
+        x: message_area.x,
         y: message_area.y + top_pad,
-        width: message_area.width.saturating_sub(2),
+        width: message_area.width.saturating_sub(1),
         height: message_area.height.saturating_sub(top_pad),
     };
     if row < inner.y || row >= inner.y.saturating_add(inner.height) {
@@ -2047,6 +2097,128 @@ pub(crate) fn message_position_at(
     let column = column.clamp(inner.x, max_column) - inner.x;
     let line = app.scroll as usize + usize::from(row - inner.y);
     Some((line, usize::from(column)))
+}
+
+/// The transcript's own rect within the terminal.
+pub(crate) fn transcript_area(terminal_area: Rect, app: &App) -> Rect {
+    main_areas(terminal_area, app)[0]
+}
+
+/// The one-row "jump to latest message" affordance shown when the reader has
+/// scrolled away from the newest output. `None` while the end is already on
+/// screen, so the caller can render it or test a click against it.
+pub(crate) fn jump_to_end_rect(app: &App, area: Rect) -> Option<Rect> {
+    if app.auto_scroll || app.lines.is_empty() || area.height == 0 {
+        return None;
+    }
+    let view = app.view_height as usize;
+    if app.scroll as usize + view >= app.lines.len() {
+        return None;
+    }
+    let width = JUMP_TO_END_LABEL.chars().count() as u16;
+    if width > area.width {
+        return None;
+    }
+    Some(Rect {
+        x: area.x + (area.width - width) / 2,
+        y: area.bottom().saturating_sub(1),
+        width,
+        height: 1,
+    })
+}
+
+/// The URL the cell at `column` of rendered line `line` names, if any, so a
+/// click on a link opens the browser instead of starting a text selection.
+/// Covers a bare URL, a `[label](url)`'s visible target and an `<url>` autolink,
+/// since each leaves the URL in the row's text.
+pub(crate) fn link_at(app: &App, line: usize, column: usize) -> Option<String> {
+    let line = app.lines.get(line)?;
+    let text: String = line
+        .spans
+        .iter()
+        .map(|span| span.content.as_ref())
+        .collect();
+    let mut byte = 0usize;
+    let mut col = 0usize;
+    while byte < text.len() {
+        let rest = &text[byte..];
+        if let Some((len, url)) = crate::tui::markdown::take_bare_url(rest) {
+            let boundary = text[..byte]
+                .chars()
+                .next_back()
+                .map(|c| !c.is_alphanumeric())
+                .unwrap_or(true);
+            let width = url.chars().count();
+            if boundary {
+                // A rendered `label (url)` is one link: extend the clickable
+                // range back over the label so the whole link answers, as
+                // Pi's hyperlink does.
+                let mut start = col;
+                let before: Vec<char> = text[..byte].chars().collect();
+                if before.last() == Some(&'(') {
+                    let mut label = before[..before.len() - 1].to_vec();
+                    while label.last().map(|ch| ch.is_whitespace()).unwrap_or(false) {
+                        label.pop();
+                    }
+                    start = label
+                        .iter()
+                        .rposition(|ch| ch.is_whitespace())
+                        .map(|index| index + 1)
+                        .unwrap_or(0);
+                }
+                if column >= start && column < col + width {
+                    return Some(url.to_string());
+                }
+                byte += len;
+                col += width;
+                continue;
+            }
+        }
+        let ch = rest.chars().next()?;
+        byte += ch.len_utf8();
+        col += 1;
+    }
+    None
+}
+
+/// The number of rows the queued-message list takes: one line per queued
+/// message plus the dequeue hint, or nothing when both queues are empty.
+fn pending_message_rows(app: &App) -> usize {
+    if app.steering.is_empty() && app.follow_ups.is_empty() {
+        return 0;
+    }
+    app.queued_count() + 1
+}
+
+/// Draws the queued steering/follow-up messages above the composer, each named
+/// the way Pi names a pending message, with the key that pulls them back.
+fn draw_pending(frame: &mut Frame, app: &App, area: Rect) {
+    if area.height == 0 || area.width == 0 {
+        return;
+    }
+    let width = area.width.saturating_sub(1) as usize;
+    let style = Style::default().fg(app.theme.dim);
+    let mut rows = Vec::with_capacity(area.height as usize);
+    for (label, request) in [("Steering", &app.steering), ("Follow-up", &app.follow_ups)] {
+        for message in request.peek() {
+            let text = message.display().unwrap_or_default().replace('\n', " ");
+            rows.push(Line::from(Span::styled(
+                truncate(&format!(" {label}: {text}"), width),
+                style,
+            )));
+        }
+    }
+    rows.push(Line::from(Span::styled(
+        truncate(
+            &format!(
+                " ↳ {} to edit all queued messages",
+                crate::tui::dequeue_key_label()
+            ),
+            width,
+        ),
+        style,
+    )));
+    frame.render_widget(Paragraph::new(rows), area);
 }
 
 /// Incrementally rebuild rendered lines from the first item explicitly marked
@@ -2463,31 +2635,65 @@ fn render_item_themed(
             read_files,
             modified_files,
         } => {
-            lines.push(Line::from(vec![
-                Span::styled("✻ ", Style::default().fg(theme.accent).add_modifier(bold)),
-                Span::styled(
-                    format!(
-                        "Compacted {summarized} messages (~{} tokens)",
-                        compact_tokens(*tokens_before)
-                    ),
-                    Style::default().fg(theme.accent).add_modifier(bold),
-                ),
-            ]));
-            push_wrapped(lines, summary, width, Style::default().fg(theme.dim));
-            if !read_files.is_empty() {
+            // Pi keeps a compaction folded until asked for it: the transcript
+            // records that context was summarized rather than painting the whole
+            // checkpoint over the conversation. Ctrl+O is the same key that
+            // unfolds tool output.
+            lines.push(Line::from(Span::styled(
+                "[compaction]",
+                Style::default().fg(theme.accent).add_modifier(bold),
+            )));
+            let header = format!(
+                "Compacted {summarized} messages (~{} tokens)",
+                compact_tokens(*tokens_before)
+            );
+            if expand_tools {
+                push_wrapped(lines, &header, width, Style::default().fg(theme.dim));
+                push_wrapped(lines, summary, width, Style::default().fg(theme.dim));
+                if !read_files.is_empty() {
+                    push_wrapped(
+                        lines,
+                        &format!("read: {}", read_files.join(", ")),
+                        width,
+                        Style::default().fg(theme.info),
+                    );
+                }
+                if !modified_files.is_empty() {
+                    push_wrapped(
+                        lines,
+                        &format!("modified: {}", modified_files.join(", ")),
+                        width,
+                        Style::default().fg(theme.info),
+                    );
+                }
+            } else {
                 push_wrapped(
                     lines,
-                    &format!("read: {}", read_files.join(", ")),
+                    &format!("{header} · Ctrl+O to expand"),
                     width,
-                    Style::default().fg(theme.info),
+                    Style::default().fg(theme.dim),
                 );
             }
-            if !modified_files.is_empty() {
+        }
+        ChatItem::Branch { summary } => {
+            lines.push(Line::from(Span::styled(
+                "[branch]",
+                Style::default().fg(theme.accent).add_modifier(bold),
+            )));
+            if expand_tools {
                 push_wrapped(
                     lines,
-                    &format!("modified: {}", modified_files.join(", ")),
+                    "Branch summary",
                     width,
-                    Style::default().fg(theme.info),
+                    Style::default().fg(theme.dim).add_modifier(bold),
+                );
+                push_wrapped(lines, summary, width, Style::default().fg(theme.dim));
+            } else {
+                push_wrapped(
+                    lines,
+                    "Branch summary · Ctrl+O to expand",
+                    width,
+                    Style::default().fg(theme.dim),
                 );
             }
         }
@@ -2710,16 +2916,11 @@ fn busy_status_text(app: &App) -> String {
             crate::tui::APPROVAL_HINT
         );
     }
+    // The queued messages are named above the box; the rule only carries the
+    // working status and, once there is something to send, the two answers.
     let mut text = format!(" {} {} · {secs}s", spinner(app.busy_since), app.status);
-    let queued = app.queued_count();
-    if queued > 0 {
-        text.push_str(&format!(
-            " · {queued} queued · {} to edit",
-            crate::tui::dequeue_key_label()
-        ));
-    }
     if !app.input.trim().is_empty() || !app.attachments.is_empty() {
-        text.push_str(" · Enter queue · Alt+Enter steer");
+        text.push_str(" · Enter steer · Alt+Enter queue");
     }
     text.push_str(" · Esc clear · /exit quit ");
     text
@@ -3205,18 +3406,7 @@ fn readable_output(text: &str) -> String {
 /// A one-line affordance shown when a tool body is shortened, mirroring Pi's
 /// `... (N more lines, Ctrl+O to expand)` hint.
 fn collapsed_hint(hidden_lines: usize, color: Color, width: usize) -> Line<'static> {
-    collapsed_hint_with(hidden_lines, "more", color, width)
-}
-
-/// Like [`collapsed_hint`], but names which end of the output was dropped so a
-/// tail preview can say `earlier`.
-fn collapsed_hint_with(
-    hidden_lines: usize,
-    direction: &str,
-    color: Color,
-    width: usize,
-) -> Line<'static> {
-    let hint = format!("⋯ {hidden_lines} {direction} lines · Ctrl+O to expand");
+    let hint = format!("⋯ {hidden_lines} more lines · Ctrl+O to expand");
     Line::from(Span::styled(
         truncate(&hint, width),
         Style::default().fg(color),
@@ -3429,7 +3619,10 @@ fn push_tool_output(lines: &mut Rows, text: &str, width: usize, style: Style) {
 /// Default lines of a tool body shown before the `Ctrl+O` expand hint, so
 /// every panel stays short enough to scan.
 const TOOL_PREVIEW_LINES: usize = 10;
-/// Shell output is previewed from the tail, where errors and results land.
+/// Shell output is previewed from both ends: the head holds a command's primary
+/// output (the branch and recent commits of a `git …` chain, a build's first
+/// lines) and the tail holds its result or error, so neither end is lost.
+const BASH_PREVIEW_HEAD: usize = 5;
 const BASH_PREVIEW_LINES: usize = 5;
 /// Code search results benefit from more context than a shell tail.
 const GREP_PREVIEW_LINES: usize = 15;
@@ -3440,14 +3633,17 @@ const LIST_PREVIEW_LINES: usize = 20;
 #[derive(Clone, Copy)]
 enum Preview {
     Head(usize),
-    Tail(usize),
+    HeadTail { head: usize, tail: usize },
 }
 
-/// Per-tool preview budgets, mirroring Pi's renderers: a shell command keeps
-/// its tail, searches keep more lines, and everything else uses the default.
+/// Per-tool preview budgets: a shell command keeps both ends, searches keep more
+/// lines, and everything else uses the default.
 fn tool_preview(name: &str) -> Preview {
     match crate::tools::canonical_tool_name(name) {
-        "bash" => Preview::Tail(BASH_PREVIEW_LINES),
+        "bash" => Preview::HeadTail {
+            head: BASH_PREVIEW_HEAD,
+            tail: BASH_PREVIEW_LINES,
+        },
         "grep" => Preview::Head(GREP_PREVIEW_LINES),
         "find" | "ls" => Preview::Head(LIST_PREVIEW_LINES),
         _ => Preview::Head(TOOL_PREVIEW_LINES),
@@ -3469,7 +3665,8 @@ fn push_tool_body(
     let readable = readable_output(&crate::tools::sanitize_terminal_output(text));
     let all: Vec<&str> = readable.lines().collect();
     let limit = match preview {
-        Preview::Head(limit) | Preview::Tail(limit) => limit,
+        Preview::Head(limit) => limit,
+        Preview::HeadTail { head, tail } => head + tail,
     };
     if expand_tools || all.len() <= limit {
         push_tool_output(lines, &readable, width, style);
@@ -3482,15 +3679,12 @@ fn push_tool_body(
             lines.push(Line::from(""));
             lines.push(collapsed_hint(all.len() - limit, color, width));
         }
-        Preview::Tail(_) => {
-            lines.push(collapsed_hint_with(
-                all.len() - limit,
-                "earlier",
-                color,
-                width,
-            ));
+        Preview::HeadTail { head, tail } => {
+            push_tool_output(lines, &all[..head].join("\n"), width, style);
             lines.push(Line::from(""));
-            push_tool_output(lines, &all[all.len() - limit..].join("\n"), width, style);
+            lines.push(collapsed_hint(all.len() - head - tail, color, width));
+            lines.push(Line::from(""));
+            push_tool_output(lines, &all[all.len() - tail..].join("\n"), width, style);
         }
     }
 }
@@ -4023,13 +4217,66 @@ mod tests {
         assert_eq!(message_position_at(&app, area, 0, inner_y), Some((4, 0)));
         assert_eq!(
             message_position_at(&app, area, 3, inner_y + 2),
-            Some((6, 2))
+            Some((6, 3))
         );
         assert_eq!(message_position_at(&app, area, 0, message_area.y), None);
         assert_eq!(
             message_position_at(&app, area, 999, inner_y),
-            Some((4, usize::from(message_area.width - 2 - 1)))
+            Some((4, usize::from(message_area.width - 1 - 1)))
         );
+    }
+
+    #[test]
+    fn link_at_maps_a_clicked_column_to_its_url() {
+        let mut app = App::new("model".into(), "/tmp".into(), Reasoning::Auto);
+        app.lines = vec![
+            Line::from(vec![
+                Span::raw("see "),
+                Span::styled("https://example.com/path", Style::default().fg(Color::Blue)),
+                Span::raw(" now"),
+            ]),
+            Line::from("[docs](https://example.com)"),
+        ];
+        // "see " is four columns and the URL is 24, so it spans 4..28.
+        assert_eq!(
+            link_at(&app, 0, 4).as_deref(),
+            Some("https://example.com/path")
+        );
+        assert_eq!(
+            link_at(&app, 0, 27).as_deref(),
+            Some("https://example.com/path")
+        );
+        assert_eq!(link_at(&app, 0, 3), None);
+        assert_eq!(link_at(&app, 0, 28), None);
+        // A labelled link answers from its label as well as its target.
+        assert_eq!(link_at(&app, 1, 0).as_deref(), Some("https://example.com"));
+        assert_eq!(link_at(&app, 1, 7).as_deref(), Some("https://example.com"));
+    }
+
+    #[test]
+    fn jump_to_end_shows_only_when_scrolled_away() {
+        let mut app = App::new("model".into(), "/tmp".into(), Reasoning::Auto);
+        app.lines = (0..20)
+            .map(|index| Line::from(format!("row {index}")))
+            .collect();
+        app.view_height = 5;
+        let area = Rect::new(0, 0, 40, 10);
+
+        // Following the end: nothing to jump back to.
+        app.auto_scroll = true;
+        assert!(jump_to_end_rect(&app, area).is_none());
+
+        // Scrolled up with output below: the row is offered, centered.
+        app.auto_scroll = false;
+        app.scroll = 0;
+        let rect = jump_to_end_rect(&app, area).expect("indicator");
+        assert_eq!(rect.y, area.bottom() - 1);
+        assert_eq!(rect.height, 1);
+        assert!(rect.x > area.x);
+
+        // Back at the bottom: it goes away.
+        app.scroll = 15;
+        assert!(jump_to_end_rect(&app, area).is_none());
     }
 
     #[test]
@@ -4563,7 +4810,7 @@ mod tests {
     }
 
     #[test]
-    fn compaction_renders_summary_and_files() {
+    fn compaction_expanded_renders_summary_and_files() {
         let mut lines = Vec::new();
         render_item(
             &ChatItem::Compaction {
@@ -4578,11 +4825,63 @@ mod tests {
             &mut lines,
         );
         let text: String = lines.iter().map(line_text).collect::<Vec<_>>().join("\n");
+        assert!(text.contains("[compaction]"));
         assert!(text.contains("Compacted 12 messages"));
         assert!(text.contains("48.0k"));
         assert!(text.contains("Ship the release"));
         assert!(text.contains("read: src/a.rs"));
         assert!(text.contains("modified: src/b.rs"));
+    }
+
+    #[test]
+    fn compaction_collapsed_folds_the_checkpoint_away() {
+        let mut lines = Vec::new();
+        render_item(
+            &ChatItem::Compaction {
+                summary: "Ship the release".into(),
+                summarized: 12,
+                tokens_before: 48_000,
+                read_files: vec!["src/a.rs".into()],
+                modified_files: vec!["src/b.rs".into()],
+            },
+            80,
+            false,
+            &mut lines,
+        );
+        let text: String = lines.iter().map(line_text).collect::<Vec<_>>().join("\n");
+        assert!(text.contains("[compaction]"), "{text}");
+        assert!(text.contains("Ctrl+O to expand"), "{text}");
+        assert!(!text.contains("Ship the release"), "{text}");
+    }
+
+    #[test]
+    fn branch_expands_to_its_summary() {
+        let mut lines = Vec::new();
+        render_item(
+            &ChatItem::Branch {
+                summary: "Explored another approach".into(),
+            },
+            80,
+            true,
+            &mut lines,
+        );
+        let text: String = lines.iter().map(line_text).collect::<Vec<_>>().join("\n");
+        assert!(text.contains("[branch]"), "{text}");
+        assert!(text.contains("Branch summary"), "{text}");
+        assert!(text.contains("Explored another approach"), "{text}");
+
+        let mut folded = Vec::new();
+        render_item(
+            &ChatItem::Branch {
+                summary: "Explored another approach".into(),
+            },
+            80,
+            false,
+            &mut folded,
+        );
+        let folded: String = folded.iter().map(line_text).collect::<Vec<_>>().join("\n");
+        assert!(folded.contains("Ctrl+O to expand"), "{folded}");
+        assert!(!folded.contains("Explored another approach"), "{folded}");
     }
 
     #[test]
@@ -4721,7 +5020,8 @@ mod tests {
             .collect::<Vec<_>>()
             .join("\n");
 
-        // Shell output previews its tail so the newest lines and errors show.
+        // Shell output previews both ends: the head holds the primary output
+        // and the tail the result, with only the middle folded.
         let mut bash = Vec::new();
         render_item(
             &ChatItem::ToolProgress {
@@ -4733,10 +5033,12 @@ mod tests {
             &mut bash,
         );
         let text = panel_text(&bash);
+        assert!(text.contains("row-00"), "{text}");
+        assert!(text.contains("row-04"), "{text}");
+        assert!(!text.contains("row-05"), "{text}");
         assert!(text.contains("row-24"), "{text}");
         assert!(text.contains("row-20"), "{text}");
-        assert!(!text.contains("row-19"), "{text}");
-        assert!(text.contains("earlier lines"), "{text}");
+        assert!(text.contains("more lines"), "{text}");
         assert!(text.contains("Ctrl+O to expand"), "{text}");
 
         // Searches preview the first lines, with a larger budget than a shell.
@@ -4998,14 +5300,20 @@ mod tests {
         // blank rows included, has to appear in it.
         let updates = Buffer::empty(whole).diff(terminal.backend().buffer());
         for y in messages.y..messages.bottom() {
-            for x in [messages.x, messages.right() - 1] {
-                let cell = &terminal.backend().buffer()[(x, y)];
-                assert_eq!(cell.symbol(), " ", "({x},{y}) must stay blank");
-                assert!(
-                    updates.iter().any(|(cx, cy, _)| *cx == x && *cy == y),
-                    "({x},{y}) is never repainted"
-                );
-            }
+            // The right column is the scrollbar's lane, so it stays blank; the
+            // left column is the text's own, so it only has to be repainted.
+            let left = messages.x;
+            let right = messages.right() - 1;
+            assert!(
+                updates.iter().any(|(cx, cy, _)| *cx == left && *cy == y),
+                "({left},{y}) is never repainted"
+            );
+            let cell = &terminal.backend().buffer()[(right, y)];
+            assert_eq!(cell.symbol(), " ", "({right},{y}) must stay blank");
+            assert!(
+                updates.iter().any(|(cx, cy, _)| *cx == right && *cy == y),
+                "({right},{y}) is never repainted"
+            );
         }
     }
 
@@ -5239,29 +5547,37 @@ mod tests {
     }
 
     #[test]
-    fn a_running_tool_with_queued_messages_advertises_the_dequeue_key() {
+    fn queued_messages_show_above_the_composer_with_the_dequeue_key() {
         let mut app = App::new("m".into(), "/tmp".into(), Reasoning::Auto);
         app.busy = true;
         app.busy_since = Some(std::time::Instant::now());
         app.status = "thinking...".into();
+        app.steering
+            .push(crate::llm::Message::user("change course"));
         app.follow_ups
             .push(crate::llm::Message::user("one more thing"));
 
         let mut terminal =
-            ratatui::Terminal::new(ratatui::backend::TestBackend::new(120, 12)).unwrap();
+            ratatui::Terminal::new(ratatui::backend::TestBackend::new(120, 14)).unwrap();
         terminal.draw(|frame| draw(frame, &mut app)).unwrap();
-        let buffer = terminal.backend().buffer();
-        let row: String = buffer
+        let rows: Vec<String> = terminal
+            .backend()
+            .buffer()
             .content()
             .iter()
             .map(|cell| cell.symbol())
             .collect::<Vec<_>>()
             .chunks(120)
             .map(|row| row.concat())
-            .find(|row| row.contains("queued"))
-            .expect("a queued hint row");
-        assert!(row.contains("1 queued"), "{row}");
-        assert!(row.contains(crate::tui::dequeue_key_label()), "{row}");
+            .collect();
+        let text = rows.join("\n");
+        assert!(text.contains("Steering: change course"), "{text}");
+        assert!(text.contains("Follow-up: one more thing"), "{text}");
+        let hint = rows
+            .iter()
+            .find(|row| row.contains("queued messages"))
+            .expect("a dequeue hint row");
+        assert!(hint.contains(crate::tui::dequeue_key_label()), "{hint}");
     }
 
     #[test]
