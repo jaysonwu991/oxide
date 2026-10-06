@@ -950,7 +950,10 @@ pub fn open_browser(url: &str) -> std::io::Result<std::process::Child> {
 
 #[cfg(target_os = "windows")]
 pub fn open_browser(url: &str) -> std::io::Result<std::process::Child> {
-    spawn_browser(std::process::Command::new("cmd").args(["/C", "start", "", url]))
+    // `rundll32 url.dll,FileProtocolHandler` hands the URL to the shell's own
+    // protocol handler directly. `cmd /C start` would instead let `&`, `^` or
+    // `|` in an assistant-generated link run a second command.
+    spawn_browser(std::process::Command::new("rundll32").args(["url.dll,FileProtocolHandler", url]))
 }
 
 #[cfg(all(unix, not(target_os = "macos")))]
@@ -966,14 +969,17 @@ pub fn open_browser(_url: &str) -> std::io::Result<std::process::Child> {
     ))
 }
 
-/// Gives the opener no terminal of its own, so an opener that prints (or a
-/// browser launched in the foreground) cannot paint over the interface.
+/// Gives the opener a session with no controlling terminal (and, on Windows,
+/// no console), so an opener that prints, or a browser launched in the
+/// foreground, cannot read or paint over the interface. Null standard handles
+/// alone do not detach it from `/dev/tty` or `CONIN$`/`CONOUT$`.
 fn spawn_browser(command: &mut std::process::Command) -> std::io::Result<std::process::Child> {
     command
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .spawn()
+        .stderr(std::process::Stdio::null());
+    crate::child::detach_terminal_std(command);
+    command.spawn()
 }
 
 fn open_browser_notice(url: &str) {

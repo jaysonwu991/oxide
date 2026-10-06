@@ -4422,13 +4422,17 @@ fn queue_while_busy(app: &mut App, raw: &str, cwd: &Path, follow_up: bool) {
     // composer, since the latter will be resolved from the still-present text
     // on the next Enter.
     let composer = app.take_attachments();
+    let mut names: Vec<String> = composer.iter().map(Attachment::display).collect();
     let mut parts: Vec<ContentPart> = composer
         .iter()
         .map(|attachment| attachment.part.clone())
         .collect();
     for path in media::referenced_attachments(raw, cwd) {
         match media::load_attachment(&path) {
-            Ok(part) => parts.push(part),
+            Ok(part) => {
+                names.push(path.display().to_string());
+                parts.push(part);
+            }
             Err(err) => app
                 .items
                 .push(ChatItem::Error(format!("attachment: {err:#}"))),
@@ -4442,10 +4446,14 @@ fn queue_while_busy(app: &mut App, raw: &str, cwd: &Path, follow_up: bool) {
     } else {
         Message::user_parts(raw, parts)
     };
+    // The label the queue shows and the transcript paints at delivery names
+    // each attachment by the file it was queued from, which the message's parts
+    // do not carry.
+    let label = sent_message(raw, &names);
     let accepted = if follow_up {
-        app.follow_ups.push(message.clone())
+        app.follow_ups.push_labeled(message.clone(), label)
     } else {
-        app.steering.push(message.clone())
+        app.steering.push_labeled(message.clone(), label)
     };
     if !accepted {
         for attachment in composer {
@@ -5099,14 +5107,29 @@ fn handle_agent_event(event: AgentEvent, app: &mut App) {
         // A message typed while the run was busy has now been delivered. Until
         // this point it lived in the composer's queued list, not the transcript,
         // the way Pi holds pending messages above the editor.
-        AgentEvent::Steered { message, follow_up } => {
+        AgentEvent::Steered {
+            message,
+            label,
+            follow_up,
+        } => {
             app.status = if follow_up {
                 "queued follow-up sent".to_string()
             } else {
                 "steering message sent".to_string()
             };
-            app.items
-                .push(ChatItem::User(message.display().unwrap_or_default()));
+            // The records for this message's attachments are consumed with it,
+            // so a later dequeue does not try to restore them onto another
+            // turn. The label already names the files it carried.
+            if let Some(crate::llm::MessageContent::Parts(parts)) = &message.content {
+                app.queued_attachments
+                    .retain(|(id, _)| !parts.iter().any(|part| media::attachment_id(part) == *id));
+            }
+            let text = if label.is_empty() {
+                message.display().unwrap_or_default()
+            } else {
+                label
+            };
+            app.items.push(ChatItem::User(text));
             app.auto_scroll = true;
         }
         AgentEvent::Text(delta) => {
@@ -5760,6 +5783,47 @@ mod tests {
             Some(ChatItem::Status(text))
                 if text == "restored 1 queued message and 1 attachment to the editor"
         ));
+    }
+
+    #[test]
+    fn a_delivered_queued_message_paints_the_label_it_was_queued_with() {
+        let mut app = test_app();
+        app.busy = true;
+        app.add_attachment_from(
+            crate::llm::ContentPart::ImageUrl {
+                image_url: crate::llm::ImageUrl {
+                    url: "data:image/png;base64,AAAA".into(),
+                    detail: None,
+                },
+            },
+            PathBuf::from("/tmp/shot.png"),
+        );
+        queue_while_busy(&mut app, "look", Path::new("."), false);
+        // The queue keeps the label naming the file, not just `[image]`.
+        assert_eq!(
+            app.steering.labels(),
+            vec!["look\n• /tmp/shot.png".to_string()]
+        );
+        let label = app.steering.labels().remove(0);
+        let message = app.steering.drain_all().remove(0);
+
+        handle_agent_event(
+            AgentEvent::Steered {
+                message,
+                label,
+                follow_up: false,
+            },
+            &mut app,
+        );
+
+        assert!(matches!(
+            app.items.last(),
+            Some(ChatItem::User(text)) if text == "look\n• /tmp/shot.png"
+        ));
+        assert!(
+            app.queued_attachments.is_empty(),
+            "the delivered message consumes its records"
+        );
     }
 
     #[test]

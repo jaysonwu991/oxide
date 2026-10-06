@@ -2148,7 +2148,9 @@ pub(crate) fn link_at(app: &App, line: usize, column: usize) -> Option<String> {
                 .next_back()
                 .map(|c| !c.is_alphanumeric())
                 .unwrap_or(true);
-            let width = url.chars().count();
+            // Columns are terminal cells, so a wide CJK or emoji character
+            // takes two of them; measuring in chars would shift the hitbox.
+            let width = text_width(url);
             if boundary {
                 // A rendered `label (url)` is one link: extend the clickable
                 // range back over the label so the whole link answers, as
@@ -2156,14 +2158,14 @@ pub(crate) fn link_at(app: &App, line: usize, column: usize) -> Option<String> {
                 let mut start = col;
                 let before: Vec<char> = text[..byte].chars().collect();
                 if before.last() == Some(&'(') {
-                    let mut label = before[..before.len() - 1].to_vec();
+                    let mut label = &before[..before.len() - 1];
                     while label.last().map(|ch| ch.is_whitespace()).unwrap_or(false) {
-                        label.pop();
+                        label = &label[..label.len() - 1];
                     }
                     start = label
                         .iter()
                         .rposition(|ch| ch.is_whitespace())
-                        .map(|index| index + 1)
+                        .map(|index| label[..index + 1].iter().map(|ch| char_width(*ch)).sum())
                         .unwrap_or(0);
                 }
                 if column >= start && column < col + width {
@@ -2176,37 +2178,69 @@ pub(crate) fn link_at(app: &App, line: usize, column: usize) -> Option<String> {
         }
         let ch = rest.chars().next()?;
         byte += ch.len_utf8();
-        col += 1;
+        col += char_width(ch);
     }
     None
 }
 
+/// The most rows the queued-message list may take, so an unbounded queue
+/// cannot squeeze the transcript and composer off a short terminal.
+const MAX_PENDING_ROWS: usize = 6;
+
 /// The number of rows the queued-message list takes: one line per queued
-/// message plus the dequeue hint, or nothing when both queues are empty.
+/// message plus the dequeue hint, capped by [`MAX_PENDING_ROWS`], or nothing
+/// when both queues are empty.
 fn pending_message_rows(app: &App) -> usize {
     if app.steering.is_empty() && app.follow_ups.is_empty() {
         return 0;
     }
-    app.queued_count() + 1
+    (app.queued_count() + 1).min(MAX_PENDING_ROWS)
 }
 
 /// Draws the queued steering/follow-up messages above the composer, each named
-/// the way Pi names a pending message, with the key that pulls them back.
+/// the way Pi names a pending message, with the key that pulls them back. The
+/// list is text only (a `Steering` queue keeps the display label beside the
+/// message, so a media payload is never cloned for a frame), and it folds the
+/// overflow into a count when the area is too short to show every row.
 fn draw_pending(frame: &mut Frame, app: &App, area: Rect) {
     if area.height == 0 || area.width == 0 {
         return;
     }
     let width = area.width.saturating_sub(1) as usize;
     let style = Style::default().fg(app.theme.dim);
-    let mut rows = Vec::with_capacity(area.height as usize);
-    for (label, request) in [("Steering", &app.steering), ("Follow-up", &app.follow_ups)] {
-        for message in request.peek() {
-            let text = message.display().unwrap_or_default().replace('\n', " ");
-            rows.push(Line::from(Span::styled(
-                truncate(&format!(" {label}: {text}"), width),
-                style,
-            )));
+    let steering = app.steering.labels();
+    let follow_ups = app.follow_ups.labels();
+    let total = steering.len() + follow_ups.len();
+    let rows_available = area.height as usize;
+    // Keep the dequeue hint, and a fold row when not every message fits.
+    let shown = if total < rows_available {
+        total
+    } else {
+        rows_available.saturating_sub(2)
+    };
+    let mut rows = Vec::with_capacity(rows_available);
+    let push = |prefix: &str, label: &str, rows: &mut Vec<Line<'static>>| {
+        let text = label.replace('\n', " ");
+        rows.push(Line::from(Span::styled(
+            truncate(&format!(" {prefix}: {text}"), width),
+            style,
+        )));
+    };
+    for label in steering.iter().take(shown) {
+        push("Steering", label, &mut rows);
+    }
+    if shown > steering.len() {
+        for label in follow_ups.iter().take(shown - steering.len()) {
+            push("Follow-up", label, &mut rows);
         }
+    }
+    let hidden = total.saturating_sub(shown);
+    if hidden > 0 {
+        let noun = if hidden == 1 { "message" } else { "messages" };
+        rows.push(Line::from(Span::styled(
+            truncate(&format!(" ⋯ {hidden} more queued {noun}"), width),
+            style,
+        )));
     }
     rows.push(Line::from(Span::styled(
         truncate(
@@ -4254,6 +4288,20 @@ mod tests {
     }
 
     #[test]
+    fn link_at_counts_a_wide_character_as_two_cells() {
+        let mut app = App::new("model".into(), "/tmp".into(), Reasoning::Auto);
+        app.lines = vec![Line::from(vec![
+            Span::raw("日本 "),
+            Span::styled("https://example.com", Style::default().fg(Color::Blue)),
+        ])];
+        // "日本 " is five cells (2 + 2 + 1), so the URL starts at column 5.
+        assert_eq!(link_at(&app, 0, 4), None, "the space before the URL");
+        assert_eq!(link_at(&app, 0, 5).as_deref(), Some("https://example.com"));
+        assert_eq!(link_at(&app, 0, 23).as_deref(), Some("https://example.com"));
+        assert_eq!(link_at(&app, 0, 24), None);
+    }
+
+    #[test]
     fn jump_to_end_shows_only_when_scrolled_away() {
         let mut app = App::new("model".into(), "/tmp".into(), Reasoning::Auto);
         app.lines = (0..20)
@@ -5578,6 +5626,32 @@ mod tests {
             .find(|row| row.contains("queued messages"))
             .expect("a dequeue hint row");
         assert!(hint.contains(crate::tui::dequeue_key_label()), "{hint}");
+    }
+
+    #[test]
+    fn a_long_queue_folds_the_pending_area() {
+        let mut app = App::new("m".into(), "/tmp".into(), Reasoning::Auto);
+        app.busy = true;
+        for index in 0..20 {
+            app.steering
+                .push(crate::llm::Message::user(format!("steer {index}")));
+        }
+        // The area is capped, so a long queue cannot push the transcript and
+        // composer off a short terminal.
+        assert_eq!(pending_message_rows(&app), MAX_PENDING_ROWS);
+
+        let mut terminal =
+            ratatui::Terminal::new(ratatui::backend::TestBackend::new(120, 24)).unwrap();
+        terminal.draw(|frame| draw(frame, &mut app)).unwrap();
+        let text: String = terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect();
+        assert!(text.contains("more queued messages"), "{text}");
+        assert!(text.contains("to edit all queued messages"), "{text}");
     }
 
     #[test]
