@@ -13,6 +13,13 @@ import { emptyUsage } from "../core/protocol";
 /// The package root: this file compiles to `out/test/`.
 const root = path.join(__dirname, "..", "..");
 
+/// A source file as its own lines, whatever the checkout spells a line ending
+/// as: a Windows checkout turns every `\n` into `\r\n`, and these tests compare
+/// source text across several lines.
+function readSource(file: string): string {
+  return fs.readFileSync(file, "utf8").replace(/\r\n/g, "\n");
+}
+
 interface Manifest {
   contributes: {
     commands: { command: string; title: string; category?: string; icon?: string }[];
@@ -23,11 +30,11 @@ interface Manifest {
 }
 
 const manifest = JSON.parse(fs.readFileSync(path.join(root, "package.json"), "utf8")) as Manifest;
-const extension = fs.readFileSync(path.join(root, "src", "extension.ts"), "utf8");
-const chat = fs.readFileSync(path.join(root, "src", "chat.ts"), "utf8");
-const chatView = fs.readFileSync(path.join(root, "src", "chatView.ts"), "utf8");
-const renderer = fs.readFileSync(path.join(root, "media", "main.js"), "utf8");
-const dialogs = fs.readFileSync(path.join(root, "src", "core", "dialogs.ts"), "utf8");
+const extension = readSource(path.join(root, "src", "extension.ts"));
+const chat = readSource(path.join(root, "src", "chat.ts"));
+const chatView = readSource(path.join(root, "src", "chatView.ts"));
+const renderer = readSource(path.join(root, "media", "main.js"));
+const dialogs = readSource(path.join(root, "src", "core", "dialogs.ts"));
 
 describe("command contributions", () => {
   it("registers every command it contributes", () => {
