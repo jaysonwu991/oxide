@@ -323,7 +323,9 @@ pub async fn reasoning_levels(project: String, state: &DesktopState) -> CmdResul
         manager.config_for(&PathBuf::from(&project)).map_err(err)?
     };
     if config.reasoning_supported.is_none() {
-        let _ = LlmClient::new(config.clone()).list_models().await;
+        // Bypasses the TTL cache: a fresh entry the provider answered without
+        // effort metadata must not keep the model's own levels hidden.
+        let _ = LlmClient::new(config.clone()).refresh_models().await;
         config.reasoning_supported =
             oxide_core::llm::cached_model_reasoning(&config, &config.model);
     }

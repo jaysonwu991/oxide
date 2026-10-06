@@ -355,6 +355,10 @@ export class ChatController {
   /// The active model's advertised reasoning levels, read through the CLI.
   /// Empty until the answer arrives, when the built-in set stands in.
   private reasoningLevels: string[] = [];
+  /// The folder, model and provider those levels belong to. `refreshProject`
+  /// compares it so every path that repaints the footer — a setting, a folder,
+  /// a login — re-reads them rather than only the attach and the model pick.
+  private reasoningIdentity = "";
   /// The newest read of them, so a stale answer is dropped rather than
   /// repainting the chip with a model the panel has moved off.
   private reasoningProbe = 0;
@@ -463,12 +467,7 @@ export class ChatController {
   // ---------- views ----------
 
   attach(view: vscode.WebviewView): void {
-    const first = this.views.size === 0;
     this.views.add(view);
-    // The first pane warms the active model's reasoning levels in the
-    // background; the answer repaints the chip title and the picker. A warm
-    // cache answers without a request, so this is cheap after the first turn.
-    if (first) void this.refreshReasoning(true);
     // The webview asks for state once its script is listening (`ready`), so a
     // repainted panel always restores the whole transcript.
     view.onDidDispose(() => {
@@ -592,6 +591,18 @@ export class ChatController {
       return;
     }
     this.project = projectInfo(folder.uri.fsPath, this.trust(), this.deps);
+    // The reasoning levels belong to the active model, which the folder, the
+    // `oxide.model` setting or the provider can change. When the identity
+    // moves, the old model's levels are dropped before the new ones are read,
+    // so a failed read leaves the built-in set rather than the previous model's.
+    const identity = `${folder.uri.fsPath}\n${
+      this.setting<string>("model", "").trim() || this.project.model
+    }\n${this.project.provider}`;
+    if (identity !== this.reasoningIdentity) {
+      this.reasoningIdentity = identity;
+      this.reasoningLevels = [];
+      void this.refreshReasoning(true);
+    }
   }
 
   /// A setting or the workspace changed: the chips are stale until the shared
@@ -2817,9 +2828,6 @@ export class ChatController {
   private async applyDialogSetting(key: string, value: string): Promise<void> {
     this.closeDialog();
     await this.updateSetting(key, value.trim());
-    // A new model advertises its own levels, so the picker and the chip title
-    // are re-read rather than left on the previous model's set.
-    if (key === "model") void this.refreshReasoning(true);
   }
 
   // ---------- notices ----------

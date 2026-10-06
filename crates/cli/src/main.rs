@@ -61,7 +61,8 @@ struct Cli {
     #[arg(long, value_name = "MODE")]
     mode: Option<String>,
 
-    /// Reasoning effort: auto (default), off, low, medium, or high
+    /// Reasoning effort: auto (default), off, minimal, low, medium, high,
+    /// xhigh, or max
     #[arg(long, value_name = "LEVEL")]
     reasoning: Option<String>,
 
@@ -1128,14 +1129,25 @@ async fn list_reasoning(
 ) -> Result<()> {
     let mut config = Config::load(current_dir, model, None, None, None)?;
     if refresh && config.reasoning_supported.is_none() {
-        let _ = llm::LlmClient::new(config.clone()).list_models().await;
+        // Bypasses the TTL cache: a fresh entry the provider answered without
+        // effort metadata must not keep the model's own levels hidden.
+        let _ = llm::LlmClient::new(config.clone()).refresh_models().await;
         config.reasoning_supported = llm::cached_model_reasoning(&config, &config.model);
     }
-    let levels: Vec<&str> = config
-        .reasoning_levels()
-        .iter()
-        .map(|level| level.label())
-        .collect();
+    // Only a model whose listing actually advertised levels narrows a front-end;
+    // the name heuristic's guess is not the model's own word, so it is reported
+    // as `null` and the caller keeps its built-in set.
+    let advertised = config
+        .reasoning_supported
+        .as_ref()
+        .is_some_and(|meta| !meta.supported.is_empty());
+    let levels: Option<Vec<&str>> = advertised.then(|| {
+        config
+            .reasoning_levels()
+            .iter()
+            .map(|level| level.label())
+            .collect()
+    });
     if json_output {
         println!(
             "{}",
@@ -1145,14 +1157,14 @@ async fn list_reasoning(
                 "reasoningLevels": levels,
             }))?
         );
-    } else if levels.is_empty() {
-        println!("thinking: {}", config.reasoning.label());
-    } else {
+    } else if let Some(levels) = levels {
         println!(
             "thinking: {} (levels: {})",
             config.reasoning.label(),
             levels.join(", ")
         );
+    } else {
+        println!("thinking: {}", config.reasoning.label());
     }
     Ok(())
 }

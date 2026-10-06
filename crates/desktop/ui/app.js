@@ -212,6 +212,10 @@ const state = {
   // rather than on whichever field held it last.
   heldThread: null,
   reasoning: "auto",
+  // Whether the reader chose a level in this window, rather than the one the
+  // project's config loaded. Only an explicit pick overrides the level a
+  // resumed session recorded; otherwise the core restores the session's own.
+  reasoningPicked: false,
   // The levels the active model advertised, when its listing carried them. The
   // picker shows these instead of the full set, so it never offers a level the
   // model would clamp away.
@@ -981,7 +985,10 @@ async function loadInfo() {
     // The selection can change while the request is in flight; a late reply
     // must not replace the new project's trust state or open its dialog.
     if (project !== state.project) return;
+    // The project or model moved on, so a levels read still in flight is stale.
+    reasoningEpoch += 1;
     state.reasoning = info.reasoning;
+    state.reasoningPicked = false;
     state.reasoningLevels =
       Array.isArray(info.reasoningLevels) && info.reasoningLevels.length
         ? ["auto", ...info.reasoningLevels]
@@ -1960,7 +1967,7 @@ async function startPrompt(prompt, attachments, showBubble = true, target = null
       // used last, which is a thread they never chose — and one the sidebar
       // would go on listing unchanged.
       session: session || "new",
-      reasoning: state.reasoning,
+      reasoning: state.reasoningPicked ? state.reasoning : null,
       attachments: attachments.length ? attachments : null,
     });
   } catch (error) {
@@ -3299,6 +3306,10 @@ function renderModels() {
 // Where the keyboard was before the picker took it, the way the full-size
 // preview keeps its own.
 let reasoningReturnFocus = null;
+// The newest read of the model's levels. A response that arrives after the
+// project or model moved on is dropped rather than painting its levels over the
+// new selection's.
+let reasoningEpoch = 0;
 
 /// The picker the thinking chip opens: the level a turn thinks at is a choice
 /// rather than a step, and the panel's own chip offers the same list. A level
@@ -3316,10 +3327,14 @@ function openReasoning() {
   focusReasoning();
   // A cold model cache has no advertised levels yet; ask the host, which warms
   // it from the provider's listing, and repaint the open picker with the model's
-  // own levels. The built-in set stands until that answer arrives.
+  // own levels. The built-in set stands until that answer arrives, and a late
+  // answer for a project or model the reader has left is dropped.
   if (state.reasoningLevels) return Promise.resolve();
-  return invoke("reasoning_levels", { project: state.project })
+  const epoch = ++reasoningEpoch;
+  const project = state.project;
+  return invoke("reasoning_levels", { project })
     .then((info) => {
+      if (epoch !== reasoningEpoch || state.project !== project) return;
       if (info && Array.isArray(info.reasoningLevels) && info.reasoningLevels.length) {
         state.reasoningLevels = ["auto", ...info.reasoningLevels];
         if (!el("reasoning-modal").hidden) {
@@ -4553,6 +4568,7 @@ function toggleHelp() {
 /// picker's own row leaves the listing, whose mark would be out of date.
 function setReasoning(level) {
   state.reasoning = level;
+  state.reasoningPicked = true;
   updateChips();
   // A level set while the picker is up — `Ctrl+R`, or a row — moves the mark, so
   // the dialog never shows the level it has just left. The list is rebuilt to do
@@ -4571,7 +4587,10 @@ function pickReasoning(level) {
 }
 
 function cycleReasoning() {
-  setReasoning(REASONING[(REASONING.indexOf(state.reasoning) + 1) % REASONING.length]);
+  // Cycle the model's own levels when its listing narrowed them, so the cycle
+  // never steps onto a level the picker does not offer.
+  const levels = state.reasoningLevels || REASONING;
+  setReasoning(levels[(levels.indexOf(state.reasoning) + 1) % levels.length]);
 }
 
 async function initEvents() {

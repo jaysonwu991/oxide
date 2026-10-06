@@ -4097,6 +4097,13 @@ check(
   app.state.reasoning === heldLevel && elementFor("reasoning-modal").hidden === false,
   `${app.state.reasoning} / ${heldLevel} / ${elementFor("reasoning-modal").hidden}`,
 );
+// Until the reader picks a level, the window leaves the choice to the core so a
+// resumed session can restore the level it recorded.
+check(
+  "left the reasoning level to the thread until a row was picked",
+  app.state.reasoningPicked === false,
+  String(app.state.reasoningPicked),
+);
 // A shortcut that does change the level with the picker up moves its mark rather
 // than leaving the dialog showing the level it just left — and leaves the
 // keyboard on the mark, since the list is rebuilt to do it.
@@ -4114,9 +4121,10 @@ reasoningRow("medium").click();
 check(
   "took the level a row named and put the picker away",
   app.state.reasoning === "medium" &&
+    app.state.reasoningPicked === true &&
     elementFor("reasoning-modal").hidden === true &&
     elementFor("reasoning").getAttribute("aria-label") === "thinking: medium",
-  `${app.state.reasoning} / ${elementFor("reasoning-modal").hidden} / ${elementFor("reasoning").getAttribute("aria-label")}`,
+  `${app.state.reasoning} / ${app.state.reasoningPicked} / ${elementFor("reasoning-modal").hidden} / ${elementFor("reasoning").getAttribute("aria-label")}`,
 );
 // Every close path hands the keyboard back — the row here, Escape below — so a
 // reader who picked a level is not left at the top of the page.

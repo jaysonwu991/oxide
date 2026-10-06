@@ -412,7 +412,9 @@ fn thinking_config(config: &Config) -> Option<Value> {
         Reasoning::Off if config.model.to_ascii_lowercase().contains("pro") => budget(128),
         Reasoning::Off => budget(0),
         level if newest => gemini(match level {
-            Reasoning::Low => "low",
+            // Gemini 3 exposes only `low`/`high`, so the two cheapest levels
+            // both ask for `low` rather than `minimal` becoming the maximum.
+            Reasoning::Minimal | Reasoning::Low => "low",
             _ => "high",
         }),
         level => budget(level.budget_tokens(config.max_tokens).unwrap_or(1024)),
@@ -431,6 +433,30 @@ mod tests {
             max_tokens: 8192,
             ..Default::default()
         }
+    }
+
+    #[test]
+    fn gemini_3_maps_the_cheapest_levels_onto_low() {
+        let config = |reasoning: Reasoning| Config {
+            provider: "google".to_string(),
+            model: "gemini-3-pro".to_string(),
+            reasoning,
+            ..Config::default()
+        };
+        // Gemini 3 exposes only `low`/`high`; the least-and-lowest levels must
+        // not fall through to `high`.
+        assert_eq!(
+            thinking_config(&config(Reasoning::Minimal)),
+            Some(json!({ "thinkingLevel": "low", "includeThoughts": true }))
+        );
+        assert_eq!(
+            thinking_config(&config(Reasoning::Low)),
+            Some(json!({ "thinkingLevel": "low", "includeThoughts": true }))
+        );
+        assert_eq!(
+            thinking_config(&config(Reasoning::Max)),
+            Some(json!({ "thinkingLevel": "high", "includeThoughts": true }))
+        );
     }
 
     #[test]

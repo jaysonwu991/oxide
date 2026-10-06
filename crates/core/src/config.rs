@@ -1675,10 +1675,15 @@ impl Config {
     }
 
     /// The reasoning level a request should send: the chosen one clamped onto
-    /// the levels the model advertised. `auto` and a model that advertised
-    /// nothing keep the choice as-is (the provider default and the built-in
-    /// mapping respectively).
+    /// the levels the model advertised. `auto` and `off` are modes rather than
+    /// effort levels, so they are never clamped — a model that does not list
+    /// `off` still gets `thinking.type = disabled` where the provider supports
+    /// it (`deepseek_reasoning`). A model that advertised nothing keeps the
+    /// choice as-is too (the provider default and the built-in mapping).
     pub fn effective_reasoning(&self) -> Reasoning {
+        if matches!(self.reasoning, Reasoning::Auto | Reasoning::Off) {
+            return self.reasoning;
+        }
         match &self.reasoning_supported {
             Some(meta) if !meta.supported.is_empty() => self.reasoning.clamp_to(&meta.supported),
             _ => self.reasoning,
@@ -3246,6 +3251,30 @@ mod tests {
         assert_eq!(Reasoning::Auto.next_in(&choices), Reasoning::Off);
         assert_eq!(Reasoning::Max.next_in(&choices), Reasoning::Auto);
         assert_eq!(Reasoning::Medium.next_in(&choices), Reasoning::Auto);
+    }
+
+    #[test]
+    fn effective_reasoning_keeps_the_modes_off_a_models_own_levels() {
+        let config = |reasoning: Reasoning| Config {
+            reasoning,
+            reasoning_supported: Some(ModelReasoning {
+                supported: vec![Reasoning::Low, Reasoning::High, Reasoning::Max],
+                default: Some(Reasoning::High),
+            }),
+            ..Config::default()
+        };
+        // `off` is a mode, not an effort level: DeepSeek does not list it, but
+        // the request still has to disable thinking rather than clamp to `low`.
+        assert_eq!(config(Reasoning::Off).effective_reasoning(), Reasoning::Off);
+        assert_eq!(
+            config(Reasoning::Auto).effective_reasoning(),
+            Reasoning::Auto
+        );
+        assert_eq!(
+            config(Reasoning::Medium).effective_reasoning(),
+            Reasoning::High
+        );
+        assert_eq!(config(Reasoning::Max).effective_reasoning(), Reasoning::Max);
     }
 
     #[test]

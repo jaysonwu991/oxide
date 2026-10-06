@@ -18,6 +18,11 @@ use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 const MODEL_CACHE_TTL_SECS: u64 = 24 * 60 * 60;
+/// Bumped when the cached shape changes, so an entry written by an older build
+/// is refetched instead of served without the newer fields (a pre-reasoning
+/// cache deserializes `reasoning` as empty but would otherwise stay fresh for
+/// the whole TTL, hiding a model's advertised levels).
+const MODEL_CACHE_VERSION: u32 = 2;
 const MODEL_CACHE_FILE: &str = "model-cache.json";
 /// How many times a transient stream failure is retried before giving up.
 const MAX_STREAM_ATTEMPTS: u32 = 3;
@@ -114,6 +119,9 @@ struct ModelCache {
 struct CachedModels {
     updated_at: u64,
     models: Vec<String>,
+    /// The shape this entry was written with (see [`MODEL_CACHE_VERSION`]).
+    #[serde(default)]
+    version: u32,
     /// Reasoning levels advertised per model id, when the listing carried them.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     reasoning: BTreeMap<String, ModelReasoning>,
@@ -186,6 +194,19 @@ impl LlmClient {
                 None => Err(err),
             },
         }
+    }
+
+    /// Fetches the provider's catalog and writes it to the cache even when a
+    /// cached entry is still fresh. The reasoning warmers use it, since a fresh
+    /// entry that carries no effort metadata (a cache written before the field
+    /// existed, or one the provider answered without it) must not keep them from
+    /// asking again.
+    pub async fn refresh_models(&self) -> Result<Vec<String>> {
+        let (models, reasoning) = self.fetch_models().await?;
+        if !models.is_empty() {
+            store_cached_models(&model_cache_key(&self.config), &models, &reasoning);
+        }
+        Ok(self.config.merge_model_catalog(models))
     }
 
     /// The reasoning levels the provider advertised for `model`, read from the
@@ -905,7 +926,8 @@ impl LlmClient {
 
 impl CachedModels {
     fn is_fresh(&self) -> bool {
-        now_secs().saturating_sub(self.updated_at) < MODEL_CACHE_TTL_SECS
+        self.version == MODEL_CACHE_VERSION
+            && now_secs().saturating_sub(self.updated_at) < MODEL_CACHE_TTL_SECS
     }
 }
 
@@ -995,6 +1017,7 @@ fn store_cached_models(key: &str, models: &[String], reasoning: &BTreeMap<String
         CachedModels {
             updated_at: now_secs(),
             models: models.to_vec(),
+            version: MODEL_CACHE_VERSION,
             reasoning: reasoning.clone(),
         },
     );
@@ -2347,12 +2370,23 @@ mod tests {
         assert!(CachedModels {
             updated_at: current,
             models: vec!["model".into()],
+            version: MODEL_CACHE_VERSION,
+            reasoning: BTreeMap::new(),
+        }
+        .is_fresh());
+        // An entry written by an older build is refetched rather than served
+        // without the fields this build knows about.
+        assert!(!CachedModels {
+            updated_at: current,
+            models: vec!["model".into()],
+            version: MODEL_CACHE_VERSION - 1,
             reasoning: BTreeMap::new(),
         }
         .is_fresh());
         assert!(!CachedModels {
             updated_at: current.saturating_sub(MODEL_CACHE_TTL_SECS + 1),
             models: vec!["model".into()],
+            version: MODEL_CACHE_VERSION,
             reasoning: BTreeMap::new(),
         }
         .is_fresh());
