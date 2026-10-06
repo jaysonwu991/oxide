@@ -81,13 +81,36 @@ describe("command contributions", () => {
       probe.includes("if (!info || probe !== this.contextProbe) return;"),
       "by the read that superseded it",
     );
-    // It is read where the model identity moves, and repainted from there.
     const refresh = chat.slice(
       chat.indexOf("private refreshProject("),
       chat.indexOf("configurationChanged("),
     );
+    // A closed folder leaves nothing behind: the home state is not the folder
+    // it left, and reopening the same path reads for itself.
+    const closedFolder = refresh.slice(refresh.indexOf("if (!folder) {"), refresh.indexOf("    this.project = projectInfo("));
+    assert.ok(closedFolder.includes("this.contextWindow = null;"), "a closed folder drops the window");
+    assert.ok(closedFolder.includes('this.reasoningIdentity = "";'), "and the identity it was read for");
+    assert.ok(closedFolder.includes("this.contextProbe += 1;"), "and any answer still coming");
     assert.ok(refresh.includes("this.contextWindow = null;"), "the old model's window is dropped");
-    assert.ok(refresh.includes("void this.refreshContextWindow();"), "before the new one is read");
+    assert.ok(
+      refresh.includes("if (moved || recheckWindow) void this.refreshContextWindow();"),
+      "and the new one is read",
+    );
+    // The window composes a `modelContextWindows` override and the provider's
+    // catalog window, neither of which a read here can see change, so the paths
+    // that know the shared configuration may have moved ask for it again.
+    for (const call of [
+      'this.commandCache = null;\n    // A `modelContextWindows` override is one of those settings',
+      'changed a setting since the panel was painted.',
+      'written `.oxide/` files.\n    this.refreshProject(true);',
+      'A login also changes which catalog the window is resolved against.',
+    ]) {
+      assert.ok(chat.includes(call), `the recheck is asked for here: ${call.slice(0, 40)}`);
+    }
+    assert.ok(
+      (chat.match(/this\.refreshProject\(true\);/g) ?? []).length >= 4,
+      "and on every path that says the shared configuration moved",
+    );
     assert.ok(
       chat.includes("contextWindow: this.contextWindow ?? project?.contextWindow ?? 0"),
       "the footer paints the CLI's answer, with the shared files' window behind it",
