@@ -1322,6 +1322,7 @@ fn builtin_context_window(model: &str) -> Option<u64> {
         // DeepSeek
         ("deepseek-v3.2", 131_072),
         ("deepseek-v3", 131_072),
+        ("deepseek-flash", 1_000_000),
         ("deepseek-v4", 1_048_576),
         ("deepseek", 128_000),
         // Z.AI / GLM
@@ -2993,6 +2994,7 @@ mod tests {
             ("gemini-2.5-pro", 1_048_576),
             ("gemini-3.5-flash", 200_000),
             ("deepseek-chat", 128_000),
+            ("deepseek-flash", 1_000_000),
             ("deepseek-v4-pro", 1_048_576),
             ("glm-5.3", 1_000_000),
             ("glm-4.7", 204_800),
