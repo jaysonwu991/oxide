@@ -69,12 +69,12 @@ the context gauge and the automatic compaction threshold. When it is unset (or
 `0`), Oxide resolves the window the way Pi's model catalog does: the model's
 documented window from a built-in table — including the 1M windows Pi assigns
 (Gemini, `gpt-4.1`, `gpt-5.4` and later, Claude Sonnet 4.5/4.6, Opus 4.6 and
-later, GLM 5.2/5.3, DeepSeek V4, Kimi K3) — and Pi's `128000` fallback for a
-model the table does not know. A routed or Bedrock-spelled id matches by its
-basename, so `anthropic/claude-opus-4.7` and `us.anthropic.claude-sonnet-4-5-…`
-resolve to the same windows. Override one model with `modelContextWindows` in
-`settings.json`, the whole run with `context_window`, or one environment with
-`OXIDE_CONTEXT_LIMIT`.
+later, GLM 5.2/5.3, DeepSeek Flash and V4, Kimi K3) — and Pi's `128000`
+fallback for a model the table does not know. A routed or Bedrock-spelled id
+matches by its basename, so `anthropic/claude-opus-4.7` and
+`us.anthropic.claude-sonnet-4-5-…` resolve to the same windows. Override one
+model with `modelContextWindows` in `settings.json`, the whole run with
+`context_window`, or one environment with `OXIDE_CONTEXT_LIMIT`.
 
 ## CLI flags
 
