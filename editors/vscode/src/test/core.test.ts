@@ -11,6 +11,7 @@ import {
   modelContextWindow,
   modelsForProvider,
   parseConfigSummary,
+  type ConfigSummary,
 } from "../core/config";
 import { argumentDiff, canonicalTool, diffPreview, toolDiff } from "../core/preview";
 import {
@@ -857,39 +858,61 @@ describe("shared configuration", () => {
   });
 
   it("mirrors the CLI's configurable context window", () => {
-    // `Config::context_window`: the environment override wins, then an explicit
-    // `context_window`, then the model's known window, falling back to 1M, while
-    // the reply cap remains a lower bound.
-    assert.equal(contextWindow({ OXIDE_CONTEXT_LIMIT: "200000" }, null), 200000);
-    assert.equal(contextWindow({}, null), 1_000_000);
-    assert.equal(contextWindow({ OXIDE_CONTEXT_LIMIT: "1.5" }, null), 1_000_000);
-    assert.equal(
-      contextWindow(
-        {},
-        { provider: "", model: "", models: [], maxTokens: 8192, contextWindow: 1_050_000 },
-      ),
-      1_050_000,
-    );
-    assert.equal(
-      contextWindow(
-        {},
-        { provider: "", model: "", models: [], maxTokens: 1_000_000, contextWindow: 272_000 },
-      ),
-      1_000_000,
-    );
-    // Longest-prefix matching, and a fresh config with the default model gets
-    // that model's window rather than the 1M fallback.
+    // `Config::context_window`: the environment override wins, then the window
+    // the CLI resolved, then an explicit `context_window`, then the model's
+    // known window, falling back to the CLI's own 128k last resort, while the
+    // reply cap remains a lower bound.
+    const config = (fields: Partial<ConfigSummary> = {}): ConfigSummary => ({
+      provider: "",
+      model: "",
+      models: [],
+      maxTokens: 0,
+      contextWindow: 0,
+      ...fields,
+    });
+    const at = (
+      env: Record<string, string | undefined>,
+      model: string,
+      summary: ConfigSummary | null = null,
+      resolved?: number,
+    ) => contextWindow({ env, summary, model, resolved });
+
+    assert.equal(at({ OXIDE_CONTEXT_LIMIT: "200000" }, "gpt-4"), 200000);
+    assert.equal(at({}, "gpt-4"), 8_192);
+    assert.equal(at({ OXIDE_CONTEXT_LIMIT: "1.5" }, "gpt-4"), 8_192);
+    // A model the table does not know falls to the CLI's own last resort — not
+    // to 1M, which the panel used to inflate every unknown model with.
+    assert.equal(at({}, "totally-unknown"), 128_000);
+    assert.equal(at({}, "", config({ contextWindow: 1_050_000 })), 1_050_000);
+    // The reply cap is a floor, not a ceiling.
+    assert.equal(at({}, "", config({ maxTokens: 1_000_000, contextWindow: 272_000 })), 1_000_000);
+    // The CLI's own answer outranks everything this file can work out: only it
+    // reads a `modelContextWindows` override or the provider's catalog.
+    assert.equal(at({}, "glm-5.2", config(), 777_777), 777_777);
+    assert.equal(at({}, "glm-5.2", config(), 0), 1_048_576);
+    // The environment override still wins over it, as it does for the run.
+    assert.equal(at({ OXIDE_CONTEXT_LIMIT: "4096" }, "glm-5.2", config(), 777_777), 4_096);
+  });
+
+  it("matches a model's known window the way the CLI's table does", () => {
+    // Longest prefix wins, so `gpt-4o` and `gpt-4.1` do not fall under `gpt-4`.
     assert.equal(modelContextWindow("gpt-4o-mini"), 128_000);
-    assert.equal(modelContextWindow("gpt-4.1"), 1_000_000);
+    assert.equal(modelContextWindow("gpt-4.1"), 1_047_576);
     assert.equal(modelContextWindow("gpt-4-turbo"), 128_000);
-    assert.equal(modelContextWindow("claude-opus-5"), 0);
-    assert.equal(
-      contextWindow(
-        {},
-        { provider: "openai", model: "gpt-4o-mini", models: [], maxTokens: 8192, contextWindow: 0 },
-      ),
-      128_000,
-    );
+    assert.equal(modelContextWindow("claude-opus-5"), 1_000_000);
+    // The two ids #174 gave a 1M window: the panel's copy of the table used to
+    // answer 128_000 for both, which is what the footer painted.
+    assert.equal(modelContextWindow("deepseek-flash"), 1_000_000);
+    assert.equal(modelContextWindow("deepseek-v4-pro"), 1_048_576);
+    assert.equal(modelContextWindow("deepseek-chat"), 128_000);
+    // The spellings `context_window_candidates` accepts: a routed id and a
+    // Bedrock one resolve to the model the table names.
+    assert.equal(modelContextWindow("anthropic/claude-opus-4.5"), 200_000);
+    assert.equal(modelContextWindow("us.anthropic.claude-opus-4-6-v1"), 1_000_000);
+    assert.equal(modelContextWindow("us.anthropic.claude-opus-4-5-v1:0"), 200_000);
+    assert.equal(modelContextWindow("GLM-5.2"), 1_048_576);
+    assert.equal(modelContextWindow("not-a-model"), 0);
+    assert.equal(modelContextWindow(undefined), 0);
   });
 
   it("offers only the models remembered for the active provider", () => {

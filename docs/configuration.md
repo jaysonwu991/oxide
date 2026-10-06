@@ -87,6 +87,18 @@ the same windows. Override one model with `modelContextWindows` in
 `settings.json` or `OXIDE_MODEL_CATALOG=false`, which leaves the built-in table
 in charge — what an offline or air-gapped machine wants.
 
+A front-end that cannot link `oxide-core` prints the same resolution instead of
+keeping a table of its own:
+
+```sh
+oxide context --json [--model <MODEL>]     # {"model":…,"window":…}
+```
+
+The window is the model's, so `--model` answers for the model a caller would run
+with rather than the one in `config.json` — the VS Code panel passes its own
+`oxide.model` setting that way, which is what keeps its model chip and context
+gauge in step with the run.
+
 ## CLI flags
 
 ```

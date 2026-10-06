@@ -101,6 +101,7 @@ import {
   type PanelAction,
 } from "./core/palette";
 import { footerState, reasoningChoices, type FooterState } from "./core/footer";
+import { contextArgs, parseContextWindow } from "./core/context";
 import { projectInfo, sharedSettingsFor, type ProjectDeps, type ProjectInfo } from "./core/project";
 import {
   buildPrompt,
@@ -362,6 +363,14 @@ export class ChatController {
   /// The newest read of them, so a stale answer is dropped rather than
   /// repainting the chip with a model the panel has moved off.
   private reasoningProbe = 0;
+  /// The context window the CLI resolved for the model those levels belong to,
+  /// and the newest read of it. `null` until the answer arrives (or for a CLI
+  /// too old to know `oxide context`), when the window the shared files give
+  /// stands in. The CLI composes it from the shared settings overrides and the
+  /// provider's published catalog as well, which is why it is asked rather than
+  /// worked out here.
+  private contextWindow: number | null = null;
+  private contextProbe = 0;
   /// The provider table as the CLI last answered it, the search over it, and the
   /// newest read of it. Held rather than re-read per keystroke: a login changes
   /// what the rows say, so the table is read again when the dialog opens and
@@ -590,7 +599,12 @@ export class ChatController {
       this.project = null;
       return;
     }
-    this.project = projectInfo(folder.uri.fsPath, this.trust(), this.deps);
+    this.project = projectInfo(
+      folder.uri.fsPath,
+      this.trust(),
+      this.deps,
+      this.setting<string>("model", ""),
+    );
     // The reasoning levels belong to the active model, which the folder, the
     // `oxide.model` setting or the provider can change. When the identity
     // moves, the old model's levels are dropped before the new ones are read,
@@ -601,7 +615,9 @@ export class ChatController {
     if (identity !== this.reasoningIdentity) {
       this.reasoningIdentity = identity;
       this.reasoningLevels = [];
+      this.contextWindow = null;
       void this.refreshReasoning(true);
+      void this.refreshContextWindow();
     }
   }
 
@@ -627,7 +643,7 @@ export class ChatController {
     return footerState({
       model: this.setting<string>("model", "").trim() || project?.model || "",
       provider: project?.provider ?? "",
-      contextWindow: project?.contextWindow ?? 0,
+      contextWindow: this.contextWindow ?? project?.contextWindow ?? 0,
       reasoning: this.setting<string>("reasoning", "auto"),
       reasoningLevels: this.reasoningLevels.length ? this.reasoningLevels : undefined,
       agent,
@@ -664,6 +680,32 @@ export class ChatController {
       this.broadcast(this.stateMessage());
     } catch {
       // The built-in set stands.
+    }
+  }
+
+  /// Reads the context window the CLI resolves for the active model. Called
+  /// beside the reasoning read, so the model chip and the context gauge follow
+  /// the model the way the terminal's footer does. A stale answer is dropped,
+  /// and a CLI too old to know the command keeps the window the shared files
+  /// give.
+  private async refreshContextWindow(): Promise<void> {
+    const cwd = this.cwd();
+    if (!cwd) return;
+    const probe = ++this.contextProbe;
+    try {
+      const result = await runCapture(
+        this.binary(),
+        contextArgs(this.setting<string>("model", "")),
+        cwd,
+        30_000,
+      );
+      if (result.error || result.code !== 0) return;
+      const info = parseContextWindow(result.stdout);
+      if (!info || probe !== this.contextProbe) return;
+      this.contextWindow = info.window;
+      this.broadcast(this.stateMessage());
+    } catch {
+      // The window the shared files give stands.
     }
   }
 

@@ -63,6 +63,37 @@ describe("command contributions", () => {
     }
   });
 
+  it("asks the CLI for the context window rather than working it out", () => {
+    // The window composes the shared settings overrides and the provider's
+    // published catalog, which only the CLI reads; keeping a table here is what
+    // made the model chip report 128k for a model whose window is 1M.
+    assert.ok(
+      chat.includes("contextArgs(this.setting<string>(\"model\", \"\"))"),
+      "the probe asks for the window of the model a turn would run with",
+    );
+    assert.ok(chat.includes("parseContextWindow(result.stdout)"), "and reads the CLI's answer");
+    const probe = chat.slice(
+      chat.indexOf("private async refreshContextWindow("),
+      chat.indexOf("private threadTitle("),
+    );
+    assert.ok(probe.includes("const probe = ++this.contextProbe;"), "a stale answer is dropped");
+    assert.ok(
+      probe.includes("if (!info || probe !== this.contextProbe) return;"),
+      "by the read that superseded it",
+    );
+    // It is read where the model identity moves, and repainted from there.
+    const refresh = chat.slice(
+      chat.indexOf("private refreshProject("),
+      chat.indexOf("configurationChanged("),
+    );
+    assert.ok(refresh.includes("this.contextWindow = null;"), "the old model's window is dropped");
+    assert.ok(refresh.includes("void this.refreshContextWindow();"), "before the new one is read");
+    assert.ok(
+      chat.includes("contextWindow: this.contextWindow ?? project?.contextWindow ?? 0"),
+      "the footer paints the CLI's answer, with the shared files' window behind it",
+    );
+  });
+
   it("checks for the extension's own release through the installed CLI", () => {
     // The release the panel offers is the one the shared resolution in the CLI
     // picked, asked about this extension rather than about the CLI: the check is

@@ -469,7 +469,17 @@ it.
   `oxide reasoning --json` (`core/reasoning.ts`) in the background when a pane
   attaches and again after a model change — so the panel offers `low`/`high`/`max`
   for a DeepSeek model rather than the full built-in set, and falls back to that
-  set when the model advertised none. Session history remains
+  set when the model advertised none. The window the model chip names and the
+  context gauge is a fraction of is read the same way and at the same two
+  moments, through `oxide context --json` (`core/context.ts`): the window
+  composes a `modelContextWindows` override in the shared settings and the
+  window the provider's catalog published, neither of which this package reads,
+  so the CLI is asked rather than answered for. Its own table of known windows
+  serves only as the value painted before the answer lands and for a CLI too old
+  to know the command, and `test/context.test.ts` reads
+  `crates/core/src/config.rs` and holds the rows to it, which is what a stale
+  copy of that table used to make the chip report `128.0k` for a model whose
+  window is `1.0M`. Session history remains
   the history button in the header instead of taking a second footer slot.
 - **Composer** — the message box: the attachment strip, the textarea and the
   toolbar inside one bordered block. It starts two rows tall (`rows="2"`) and
