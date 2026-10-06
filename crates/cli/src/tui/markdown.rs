@@ -10,10 +10,11 @@ use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 
 use crate::theme::Theme;
+use crate::tui::rows::{Join, Rows};
 
-/// Renders `text` as styled lines that fit `width` columns, keeping `indent`
+/// Renders `text` as styled rows that fit `width` columns, keeping `indent`
 /// columns free on the first line for a prefix that shares it.
-fn render_body(text: &str, width: usize, indent: usize, palette: &Palette) -> Vec<Line<'static>> {
+fn render_body(text: &str, width: usize, indent: usize, palette: &Palette) -> Rows {
     let text = crate::tools::sanitize_terminal_output(text);
     let blocks = parse_blocks(&text, palette);
     let mut renderer = Renderer::new(width, palette);
@@ -33,18 +34,18 @@ pub(crate) fn render_with_prefix(
     width: usize,
     prefix: Vec<Span<'static>>,
     theme: &Theme,
-) -> Vec<Line<'static>> {
+) -> Rows {
     let indent: usize = prefix.iter().map(|span| span.content.chars().count()).sum();
     let palette = Palette::new(theme);
-    let mut lines = render_body(text, width, indent, &palette);
-    if lines.is_empty() {
-        return vec![Line::from(prefix)];
-    }
-    let first = lines.remove(0);
+    let mut rows = render_body(text, width, indent, &palette);
+    let Some((first, _)) = rows.remove_first() else {
+        rows.push(Line::from(prefix));
+        return rows;
+    };
     let mut spans = prefix;
     spans.extend(first.spans);
-    lines.insert(0, Line::from(spans));
-    lines
+    rows.insert_first(Line::from(spans));
+    rows
 }
 
 /// Colors and modifiers the renderer draws from, derived from the active theme.
@@ -173,21 +174,29 @@ fn spans_text(spans: &[Span<'static>]) -> String {
 /// Word-wraps a flat sequence of styled characters, collapsing runs of
 /// whitespace and hard-splitting words that are wider than the line. The first
 /// line may be given a narrower `first_width`, for content that shares it with
-/// a prefix that is not part of `chars`.
-fn wrap_chars(chars: &[StyledChar], width: usize, first_width: usize) -> Vec<Vec<Span<'static>>> {
+/// a prefix that is not part of `chars`. Every row after the first carries how
+/// it attaches to the row above it, so the copy can put the words back on the
+/// line the pane broke.
+fn wrap_chars(chars: &[StyledChar], width: usize, first_width: usize) -> Vec<Row> {
     let width = width.max(1);
     let mut limit = first_width.max(1);
-    let mut lines: Vec<Vec<Span<'static>>> = Vec::new();
+    let mut lines: Vec<Row> = Vec::new();
     let mut current: Vec<StyledChar> = Vec::new();
     let mut pending_space = false;
     let mut pending_space_style = Style::default();
+    // How the row being built attaches to the row above it, decided by the
+    // break that started it: the first row of the text is a line of its own.
+    let mut join = Join::Line;
     let mut i = 0;
     while i < chars.len() {
         if chars[i].ch == '\n' {
-            lines.push(coalesce(&current));
+            // A newline in the parsed inline text is a line the text itself
+            // starts, so the copy keeps the break.
+            lines.push((coalesce(&current), join));
             current.clear();
             pending_space = false;
             limit = width;
+            join = Join::Line;
             i += 1;
             continue;
         }
@@ -206,10 +215,13 @@ fn wrap_chars(chars: &[StyledChar], width: usize, first_width: usize) -> Vec<Vec
         let word = &chars[start..i];
         let space = usize::from(pending_space && !current.is_empty());
         if !current.is_empty() && current.len() + space + word.len() > limit {
-            lines.push(coalesce(&current));
+            // The pane broke here between two words, so the copy puts a space
+            // back; a word it had to split is joined with nothing at all.
+            lines.push((coalesce(&current), join));
             current.clear();
             pending_space = false;
             limit = width;
+            join = if space == 1 { Join::Space } else { Join::Word };
         }
         if current.is_empty() && word.len() > limit {
             let mut offset = 0;
@@ -217,9 +229,10 @@ fn wrap_chars(chars: &[StyledChar], width: usize, first_width: usize) -> Vec<Vec
                 let take = (word.len() - offset).min(limit);
                 current.extend_from_slice(&word[offset..offset + take]);
                 if offset + take < word.len() {
-                    lines.push(coalesce(&current));
+                    lines.push((coalesce(&current), join));
                     current.clear();
                     limit = width;
+                    join = Join::Word;
                 }
                 offset += take;
             }
@@ -235,15 +248,18 @@ fn wrap_chars(chars: &[StyledChar], width: usize, first_width: usize) -> Vec<Vec
         pending_space = false;
     }
     if !current.is_empty() || lines.is_empty() {
-        lines.push(coalesce(&current));
+        lines.push((coalesce(&current), join));
     }
     lines
 }
 
+/// One wrapped row: its spans, and how it attaches to the row above it.
+type Row = (Vec<Span<'static>>, Join);
+
 struct Renderer<'a> {
     width: usize,
     palette: &'a Palette,
-    lines: Vec<Line<'static>>,
+    rows: Rows,
     /// Width budget for the first line this renderer emits, for a speaker prefix
     /// that shares it. Consumed by the first line actually wrapped.
     first_width: Option<usize>,
@@ -254,7 +270,7 @@ impl<'a> Renderer<'a> {
         Self {
             width: width.max(1),
             palette,
-            lines: Vec::new(),
+            rows: Rows::default(),
             first_width: None,
         }
     }
@@ -269,20 +285,25 @@ impl<'a> Renderer<'a> {
         }
     }
 
-    fn finish(mut self) -> Vec<Line<'static>> {
+    fn finish(mut self) -> Rows {
         let is_blank =
             |line: &Line<'static>| line.spans.iter().all(|span| span.content.trim().is_empty());
-        while self.lines.last().map(is_blank).unwrap_or(false) {
-            self.lines.pop();
+        while self.rows.lines.last().map(is_blank).unwrap_or(false) {
+            self.rows.pop();
         }
-        let leading = self.lines.iter().take_while(|line| is_blank(line)).count();
-        self.lines.drain(..leading);
-        self.lines
+        let leading = self
+            .rows
+            .lines
+            .iter()
+            .take_while(|line| is_blank(line))
+            .count();
+        self.rows.drain_front(leading);
+        self.rows
     }
 
     fn blank(&mut self) {
-        if !self.lines.is_empty() {
-            self.lines.push(Line::from(""));
+        if !self.rows.is_empty() {
+            self.rows.push(Line::from(""));
         }
     }
 
@@ -291,7 +312,12 @@ impl<'a> Renderer<'a> {
     }
 
     fn push(&mut self, spans: Vec<Span<'static>>) {
-        self.lines.push(Line::from(spans));
+        self.rows.push(Line::from(spans));
+    }
+
+    /// A row the pane wrapped: its text is the rest of the line above it.
+    fn push_join(&mut self, spans: Vec<Span<'static>>, join: Join) {
+        self.rows.push_join(Line::from(spans), join);
     }
 
     fn wrap(&mut self, spans: &[Span<'static>], ambient: &[Span<'static>]) {
@@ -302,10 +328,10 @@ impl<'a> Renderer<'a> {
         } else {
             self.take_first(width, indent_width(ambient))
         };
-        for line in wrap_chars(&chars, rest, first) {
+        for (line, join) in wrap_chars(&chars, rest, first) {
             let mut spans = ambient.to_vec();
             spans.extend(line);
-            self.push(spans);
+            self.push_join(spans, join);
         }
     }
 
@@ -368,6 +394,7 @@ impl<'a> Renderer<'a> {
                 continue;
             }
             let mut offset = 0;
+            let mut first_row = true;
             while offset < chars.len() {
                 let take = (chars.len() - offset).min(limit);
                 let text: String = chars[offset..offset + take].iter().collect();
@@ -377,9 +404,19 @@ impl<'a> Renderer<'a> {
                     format!("{text}{}", " ".repeat(padding)),
                     self.palette.code_block,
                 ));
-                self.push(spans);
+                // A code line the pane split stays one line when it is copied,
+                // with the padding and the indent it was drawn after dropped.
+                let join = if first_row {
+                    Join::Line
+                } else {
+                    Join::Split {
+                        prefix: indent_width(ambient),
+                    }
+                };
+                self.push_join(spans, join);
                 limit = rest;
                 offset += take;
+                first_row = false;
             }
         }
     }
@@ -405,22 +442,26 @@ impl<'a> Renderer<'a> {
             sub.first_width = self.first_width.take();
             sub.render_blocks(blocks, &cont, false);
             let pending = sub.first_width.take();
-            let mut item_lines = sub.finish();
+            let mut item_rows = sub.finish();
 
-            if item_lines.is_empty() {
+            if item_rows.is_empty() {
                 let mut spans = ambient.to_vec();
                 spans.push(Span::styled(marker, self.palette.bullet));
                 self.push(spans);
                 self.first_width = pending;
                 continue;
             }
-            let first = item_lines.remove(0);
+            let Some((first, _)) = item_rows.remove_first() else {
+                continue;
+            };
             let stripped = strip_prefix(first, indent_width(&cont));
             let mut spans = ambient.to_vec();
             spans.push(Span::styled(marker, self.palette.bullet));
             spans.extend(stripped);
             self.push(spans);
-            self.lines.extend(item_lines);
+            // The rest of the item keeps the joins it was wrapped with, so a
+            // continuation of its first line is one line again when copied.
+            self.rows.append(&mut item_rows);
         }
     }
 
@@ -1054,7 +1095,7 @@ mod tests {
     use super::*;
 
     fn render(markdown: &str, width: usize, theme: &Theme) -> Vec<Line<'static>> {
-        render_with_prefix(markdown, width, Vec::new(), theme)
+        render_with_prefix(markdown, width, Vec::new(), theme).lines
     }
 
     fn text(lines: &[Line]) -> String {
@@ -1091,7 +1132,7 @@ mod tests {
     #[test]
     fn a_reply_that_fills_the_first_line_reflows_instead_of_orphaning_a_tail() {
         let body = "**Short answer: no code change is needed in either, but both do get the new behavior \u{2014} and I found one real asymmetry while checking, which I fixed.**";
-        let lines = render_with_prefix(body, 137, speaker_prefix(), &Theme::dark());
+        let lines = render_with_prefix(body, 137, speaker_prefix(), &Theme::dark()).lines;
         let rendered: Vec<String> = lines
             .iter()
             .map(|line| text(std::slice::from_ref(line)))
@@ -1123,7 +1164,7 @@ mod tests {
 
         for width in [16usize, 24, 40, 61, 80] {
             for body in bodies {
-                let lines = render_with_prefix(body, width, speaker_prefix(), &Theme::dark());
+                let lines = render_with_prefix(body, width, speaker_prefix(), &Theme::dark()).lines;
                 for line in &lines {
                     let rendered = text(std::slice::from_ref(line));
                     assert!(
@@ -1235,7 +1276,7 @@ mod tests {
     fn prefix_lands_inline_on_the_first_line() {
         let theme = Theme::dark();
         let prefix = vec![Span::raw("◆ oxide ")];
-        let lines = render_with_prefix("## Summary", 40, prefix, &theme);
+        let lines = render_with_prefix("## Summary", 40, prefix, &theme).lines;
         assert_eq!(text(&lines), "◆ oxide Summary");
     }
 }

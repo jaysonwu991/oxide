@@ -89,3 +89,10 @@ and repeated copies update that one line instead of stacking up. Copying writes 
 OSC 52 sequence, so it reaches the clipboard even over SSH or inside tmux or
 screen, and also tries the native helper (`pbcopy`/`osascript` on macOS,
 `wl-copy`/`xclip`/`xsel` on Linux) when one is available.
+
+What a copy carries is the text behind the wrap, not the rows it is drawn on:
+a line the transcript had to break at a space comes back as one line, a long
+path or word it broke inside itself is put back together, and only a line the
+text itself starts begins a new line in the copy. Paste it into a terminal of
+another width, an editor or a chat and it reflows there, instead of arriving
+with this pane's breaks baked into it.

@@ -1,5 +1,6 @@
 pub mod app;
 mod markdown;
+mod rows;
 pub mod ui;
 
 use crate::agent::{self, AgentEvent, Runtime};
@@ -4564,7 +4565,7 @@ fn copy_selection(app: &mut App) -> bool {
     let Some(selection) = app.selection.take() else {
         return false;
     };
-    let text = selection.text(&app.lines);
+    let text = selection.text(&app.lines, &app.line_joins);
     if text.trim().is_empty() {
         app.show_status("nothing to copy");
         return true;
@@ -4580,18 +4581,7 @@ fn copy_selection(app: &mut App) -> bool {
 /// visible transcript.
 fn copy_command(app: &mut App, all: bool) {
     let text = if all {
-        app.lines
-            .iter()
-            .map(|line| {
-                line.spans
-                    .iter()
-                    .map(|span| span.content.as_ref())
-                    .collect::<String>()
-            })
-            .collect::<Vec<_>>()
-            .join("\n")
-            .trim_matches('\n')
-            .to_string()
+        app.transcript_text()
     } else {
         match app.items.iter().rev().find_map(|item| match item {
             ChatItem::Assistant(text) if !text.trim().is_empty() => Some(text.clone()),

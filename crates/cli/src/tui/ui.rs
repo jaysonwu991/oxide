@@ -4,6 +4,7 @@ use crate::tui::app::{
     App, Authorization, ChatItem, ConnectState, ConnectStep, ListRow, MarketplacePane, Selection,
     SubagentState, Tone, UsageField,
 };
+use crate::tui::rows::{Join, Rows};
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span, Text};
@@ -2054,6 +2055,7 @@ pub(crate) fn message_position_at(
 fn sync_lines(app: &mut App, width: usize) {
     if app.render_width != width {
         app.lines.clear();
+        app.line_joins.clear();
         app.line_offsets.clear();
         app.render_dirty_from = Some(0);
         app.render_width = width;
@@ -2079,6 +2081,7 @@ fn sync_lines(app: &mut App, width: usize) {
         .copied()
         .unwrap_or(app.lines.len());
     app.lines.truncate(cut);
+    app.line_joins.truncate(cut);
     app.line_offsets.truncate(start);
 
     let running = app.running_tool.as_ref().map(|(name, started)| Running {
@@ -2087,8 +2090,7 @@ fn sync_lines(app: &mut App, width: usize) {
         subagent: app.subagent.as_ref(),
     });
     for index in start..count {
-        let offset = app.lines.len();
-        app.line_offsets.push(offset);
+        let mut rendered = Rows::default();
         render_item_themed(
             &app.items[index],
             width,
@@ -2096,10 +2098,16 @@ fn sync_lines(app: &mut App, width: usize) {
             app.show_thinking_blocks,
             &app.theme,
             running,
-            &mut app.lines,
+            &mut rendered,
         );
-        if app.lines.len() > offset {
+        let offset = app.lines.len();
+        app.line_offsets.push(offset);
+        if !rendered.is_empty() {
+            app.lines.append(&mut rendered.lines);
+            app.line_joins.append(&mut rendered.joins);
+            // The blank row between two items is the layout's, not the text's.
             app.lines.push(Line::from(""));
+            app.line_joins.push(Join::Line);
         }
     }
     app.render_dirty_from = None;
@@ -2121,19 +2129,21 @@ fn render_item_themed(
     expand_thinking: bool,
     theme: &crate::theme::Theme,
     running: Option<Running<'_>>,
-    lines: &mut Vec<Line<'static>>,
+    lines: &mut Rows,
 ) {
     let bold = Modifier::BOLD;
     match item {
         ChatItem::Banner { info } => render_banner_themed(width, theme, info, lines),
-        ChatItem::User(text) => {
-            let prefix = vec![
+        ChatItem::User(text) => lines.extend(wrapped_with_prefix(
+            vec![
                 Span::styled("❯ ", Style::default().fg(theme.user).add_modifier(bold)),
                 Span::styled("you", Style::default().fg(theme.user).add_modifier(bold)),
                 Span::styled(" ", Style::default()),
-            ];
-            lines.extend(wrapped_with_prefix(prefix, text, width, Style::default()));
-        }
+            ],
+            text,
+            width,
+            Style::default(),
+        )),
         ChatItem::Thinking { text, millis } => {
             // Pi renders reasoning as italic, muted text with no panel or
             // background, and collapses it to a bare label once hidden.
@@ -2160,11 +2170,14 @@ fn render_item_themed(
                 return;
             }
             let text = crate::tools::sanitize_terminal_output(text);
-            for line in wrap(text.trim(), width.saturating_sub(2).max(1)) {
-                lines.push(Line::from(vec![
-                    Span::raw("  "),
-                    Span::styled(line, body_style),
-                ]));
+            for (segment, join) in wrap(text.trim(), width, 2) {
+                match join {
+                    Join::Line => lines.push(Line::from(vec![
+                        Span::raw("  "),
+                        Span::styled(segment, body_style),
+                    ])),
+                    join => lines.push_join(Line::from(Span::styled(segment, body_style)), join),
+                }
             }
         }
         ChatItem::Assistant(text) => {
@@ -2185,7 +2198,7 @@ fn render_item_themed(
         }
         ChatItem::Tool { name, args } => {
             let inner = box_inner_width(width);
-            let mut panel: Vec<Line<'static>> = Vec::new();
+            let mut panel = Rows::default();
             if let Some(path) = file_tool_path(name, args) {
                 let (verb, color) = if matches!(
                     crate::tools::canonical_tool_name(name),
@@ -2248,7 +2261,7 @@ fn render_item_themed(
             push_bg_panel(lines, panel, width, theme.tool_pending_bg);
         }
         ChatItem::ToolProgress { name, output } => {
-            let mut panel: Vec<Line<'static>> = Vec::new();
+            let mut panel = Rows::default();
             if crate::tools::canonical_tool_name(name) != "bash" {
                 panel.push(Line::from(vec![
                     Span::styled("⋯ ", Style::default().fg(theme.info)),
@@ -2278,7 +2291,7 @@ fn render_item_themed(
             millis,
         } => {
             let inner = box_inner_width(width);
-            let mut panel: Vec<Line<'static>> = Vec::new();
+            let mut panel = Rows::default();
             let mut bg = theme.tool_success_bg;
             let command = bash_command(name, args);
             if let Some(diff) = diff {
@@ -2555,7 +2568,7 @@ fn render_update_themed(
     version: &str,
     command: &str,
     url: &str,
-    lines: &mut Vec<Line<'static>>,
+    lines: &mut Rows,
 ) {
     let rule = Style::default().fg(theme.accent);
     let rule_line = || Line::from(Span::styled("─".repeat(width.max(1)), rule));
@@ -2587,7 +2600,7 @@ fn render_banner_themed(
     width: usize,
     theme: &crate::theme::Theme,
     info: &[String],
-    lines: &mut Vec<Line<'static>>,
+    lines: &mut Rows,
 ) {
     let art_width = BANNER
         .iter()
@@ -2638,7 +2651,7 @@ fn art_style(index: usize, theme: &crate::theme::Theme) -> Style {
 
 #[cfg(test)]
 fn render_item(item: &ChatItem, width: usize, expand_tools: bool, lines: &mut Vec<Line<'static>>) {
-    render_item_themed(
+    item_lines(
         item,
         width,
         expand_tools,
@@ -2649,9 +2662,35 @@ fn render_item(item: &ChatItem, width: usize, expand_tools: bool, lines: &mut Ve
     );
 }
 
+/// The plain lines one item renders to, which is what the tests assert on.
+#[cfg(test)]
+fn item_lines(
+    item: &ChatItem,
+    width: usize,
+    expand_tools: bool,
+    show_thinking: bool,
+    theme: &crate::theme::Theme,
+    running: Option<Running>,
+    lines: &mut Vec<Line<'static>>,
+) {
+    let mut rows = Rows::default();
+    render_item_themed(
+        item,
+        width,
+        expand_tools,
+        show_thinking,
+        theme,
+        running,
+        &mut rows,
+    );
+    lines.extend(rows.lines);
+}
+
 #[cfg(test)]
 fn render_banner(width: usize, info: &[String], lines: &mut Vec<Line<'static>>) {
-    render_banner_themed(width, &crate::theme::Theme::dark(), info, lines);
+    let mut rows = Rows::default();
+    render_banner_themed(width, &crate::theme::Theme::dark(), info, &mut rows);
+    lines.extend(rows.lines);
 }
 
 /// The composer rule while the agent is busy: the phase, elapsed time, and the
@@ -2870,7 +2909,7 @@ fn push_composer_token<'a>(spans: &mut Vec<Span<'a>>, token: &'a str, mention: S
 }
 
 fn input_rows(input: &str, width: usize) -> usize {
-    wrap(input, width)
+    wrap(input, width, 0)
         .len()
         .clamp(MIN_INPUT_ROWS, MAX_INPUT_ROWS)
 }
@@ -2922,13 +2961,7 @@ fn file_tool_path(name: &str, args: &str) -> Option<String> {
 /// tool-call text.
 /// Render a tool action header, hanging-indenting continuations under the
 /// subject so a long command stays attached to its `Run`/`Ran` verb.
-fn action_lines(
-    verb: &str,
-    subject: &str,
-    color: Color,
-    bold: Modifier,
-    width: usize,
-) -> Vec<Line<'static>> {
+fn action_lines(verb: &str, subject: &str, color: Color, bold: Modifier, width: usize) -> Rows {
     let prefix = vec![
         Span::styled("→ ", Style::default().fg(color)),
         Span::styled(
@@ -2942,18 +2975,22 @@ fn action_lines(
         .map(|span| span.content.chars().count())
         .sum::<usize>();
     let wrap_width = width.saturating_sub(indent).max(1);
-    let mut segments = wrap(subject, wrap_width).into_iter();
-    let first = segments.next().unwrap_or_default();
+    let mut segments = wrap(subject, wrap_width, indent).into_iter();
+    let (first, _) = segments.next().unwrap_or_default();
     let mut spans = prefix;
     if !first.is_empty() {
         spans.push(Span::styled(first, Style::default().fg(color)));
     }
-    let mut out = vec![Line::from(spans)];
-    for segment in segments {
-        out.push(Line::from(Span::styled(
-            format!("{}{segment}", " ".repeat(indent)),
-            Style::default().fg(color),
-        )));
+    let mut out = Rows::default();
+    out.push(Line::from(spans));
+    for (segment, join) in segments {
+        out.push_join(
+            Line::from(Span::styled(
+                format!("{}{segment}", " ".repeat(indent)),
+                Style::default().fg(color),
+            )),
+            join,
+        );
     }
     out
 }
@@ -2966,12 +3003,12 @@ fn wrapped_with_prefix(
     subject: &str,
     width: usize,
     continuation: Style,
-) -> Vec<Line<'static>> {
+) -> Rows {
     let head: String = prefix.iter().map(|span| span.content.as_ref()).collect();
     let subject = crate::tools::sanitize_terminal_output(subject);
-    let wrapped = wrap(&format!("{head}{subject}"), width.max(1));
-    let mut out = Vec::with_capacity(wrapped.len());
-    for (index, line) in wrapped.into_iter().enumerate() {
+    let wrapped = wrap(&format!("{head}{subject}"), width, 0);
+    let mut out = Rows::default();
+    for (index, (line, join)) in wrapped.into_iter().enumerate() {
         if index == 0 && line.starts_with(&head) {
             let rest = line[head.len()..].to_string();
             let mut spans = prefix.clone();
@@ -2980,7 +3017,7 @@ fn wrapped_with_prefix(
             }
             out.push(Line::from(spans));
         } else {
-            out.push(Line::from(Span::styled(line, continuation)));
+            out.push_join(Line::from(Span::styled(line, continuation)), join);
         }
     }
     if out.is_empty() {
@@ -3107,17 +3144,12 @@ fn box_inner_width(width: usize) -> usize {
 
 /// Render `body` as a background-filled panel, matching Pi's tool renderer.
 /// Every row is padded to the full width so the fill reads as a solid block.
-fn push_bg_panel(
-    lines: &mut Vec<Line<'static>>,
-    body: Vec<Line<'static>>,
-    width: usize,
-    bg: Color,
-) {
+fn push_bg_panel(lines: &mut Rows, body: Rows, width: usize, bg: Color) {
     let outer = width.max(BOX_MIN_WIDTH);
     let inner = box_inner_width(width);
     let fill = Style::default().bg(bg);
     lines.push(Line::from(Span::styled(" ".repeat(outer), fill)));
-    for line in body {
+    for (line, join) in body.lines.into_iter().zip(body.joins) {
         let used: usize = line
             .spans
             .iter()
@@ -3132,7 +3164,9 @@ fn push_bg_panel(
                 .map(|span| Span::styled(span.content, span.style.bg(bg))),
         );
         spans.push(Span::styled(format!("{} ", " ".repeat(pad)), fill));
-        lines.push(Line::from(spans));
+        // The fill and padding around a panel row are the box, not text: the
+        // copy trims them off and the row keeps the join it was drawn with.
+        lines.push_join(Line::from(spans), join);
     }
     lines.push(Line::from(Span::styled(" ".repeat(outer), fill)));
 }
@@ -3211,10 +3245,10 @@ fn diff_body(
     expand_tools: bool,
     width: usize,
     theme: &crate::theme::Theme,
-) -> (Vec<Line<'static>>, Option<usize>) {
+) -> (Rows, Option<usize>) {
     let text = crate::tools::sanitize_terminal_output(&diff.text);
     if text.trim().is_empty() {
-        return (Vec::new(), None);
+        return (Rows::default(), None);
     }
     let all: Vec<&str> = text.lines().collect();
     let limit = if expand_tools {
@@ -3222,15 +3256,15 @@ fn diff_body(
     } else {
         DIFF_PREVIEW_LINES.min(all.len())
     };
-    let body: Vec<Line<'static>> = all[..limit]
-        .iter()
-        .map(|line| {
-            Line::from(Span::styled(
-                truncate(line, width),
-                diff_line_style(line, theme),
-            ))
-        })
-        .collect();
+    // Every row of a diff is a line of the diff, even when the pane is too
+    // narrow for it: a row that does not fit is truncated rather than wrapped.
+    let mut body = Rows::default();
+    for line in &all[..limit] {
+        body.push(Line::from(Span::styled(
+            truncate(line, width),
+            diff_line_style(line, theme),
+        )));
+    }
     let hidden = (limit < all.len()).then_some(all.len() - limit);
     (body, hidden)
 }
@@ -3243,30 +3277,31 @@ fn diff_line_style(line: &str, theme: &crate::theme::Theme) -> Style {
     }
 }
 
-fn push_wrapped<'a>(lines: &mut Vec<Line<'a>>, text: &str, width: usize, style: Style) {
+/// A row that fits is a line of the text; one that does not is continuation
+/// rows, which the copy joins back onto the line they came from.
+fn push_wrapped(lines: &mut Rows, text: &str, width: usize, style: Style) {
     let text = crate::tools::sanitize_terminal_output(text);
-    for wrapped in wrap(&text, width.max(1)) {
-        lines.push(Line::from(Span::styled(wrapped, style)));
+    for (segment, join) in wrap(&text, width, 0) {
+        lines.push_join(Line::from(Span::styled(segment, style)), join);
     }
 }
 
 /// Wrap one paragraph with a leading indent, so the continuations of a detail
-/// or note stay visually attached to the row they belong to.
-fn push_indented_wrapped<'a>(
-    lines: &mut Vec<Line<'a>>,
-    text: &str,
-    indent: usize,
-    width: usize,
-    style: Style,
-) {
+/// or note stay visually attached to the row they belong to. Every row carries
+/// the indent the pane drew it with, which the copy takes back off, so the
+/// paragraph is copied as the words it is rather than as the shape it took.
+fn push_indented_wrapped(lines: &mut Rows, text: &str, indent: usize, width: usize, style: Style) {
     let text = crate::tools::sanitize_terminal_output(text);
     let width = width.max(1);
     let indent = indent.min(width.saturating_sub(1));
-    for segment in wrap(&text, width.saturating_sub(indent).max(1)) {
-        lines.push(Line::from(vec![
-            Span::raw(" ".repeat(indent)),
-            Span::styled(segment, style),
-        ]));
+    for (segment, join) in wrap(&text, width, indent) {
+        lines.push_join(
+            Line::from(vec![
+                Span::raw(" ".repeat(indent)),
+                Span::styled(segment, style),
+            ]),
+            join,
+        );
     }
 }
 
@@ -3290,7 +3325,7 @@ fn render_listing(
     rows: &[ListRow],
     width: usize,
     theme: &crate::theme::Theme,
-    lines: &mut Vec<Line<'static>>,
+    lines: &mut Rows,
 ) {
     let width = width.max(1);
     push_wrapped(
@@ -3370,7 +3405,7 @@ const TOOL_WRAP_INDENT: usize = 2;
 /// Wrap a tool output body for display in a panel. Lines that fit are emitted
 /// unchanged; wrapped continuations are indented so `grep`/`bash` output keeps
 /// its `file:line:` structure readable.
-fn push_tool_output(lines: &mut Vec<Line<'static>>, text: &str, width: usize, style: Style) {
+fn push_tool_output(lines: &mut Rows, text: &str, width: usize, style: Style) {
     let width = width.max(1);
     let indent = TOOL_WRAP_INDENT.min(width.saturating_sub(1));
     for raw in text.split('\n') {
@@ -3378,18 +3413,15 @@ fn push_tool_output(lines: &mut Vec<Line<'static>>, text: &str, width: usize, st
             lines.push(Line::from(Span::styled(raw.to_string(), style)));
             continue;
         }
-        for (index, segment) in wrap(raw, width.saturating_sub(indent).max(1))
-            .into_iter()
-            .enumerate()
-        {
-            if index == 0 {
-                lines.push(Line::from(Span::styled(segment, style)));
-            } else {
-                lines.push(Line::from(Span::styled(
-                    format!("{}{segment}", " ".repeat(indent)),
-                    style,
-                )));
-            }
+        // The continuation rows are indented so a long `file:line:` entry stays
+        // visually attached to its own match; the copy strips that indent again
+        // and puts the words back on the row they belong to.
+        for (segment, join) in wrap(raw, width, indent) {
+            let segment = match join {
+                Join::Line => segment,
+                _ => format!("{}{segment}", " ".repeat(indent)),
+            };
+            lines.push_join(Line::from(Span::styled(segment, style)), join);
         }
     }
 }
@@ -3427,7 +3459,7 @@ fn tool_preview(name: &str) -> Preview {
 /// hint to expand. A tail preview puts the hint first so the newest lines read
 /// last, like Pi's shell renderer.
 fn push_tool_body(
-    lines: &mut Vec<Line<'static>>,
+    lines: &mut Rows,
     text: &str,
     width: usize,
     style: Style,
@@ -3469,6 +3501,7 @@ struct WrapLine {
     text: String,
     start: usize,
     end: usize,
+    join: Join,
 }
 
 /// Wraps text the same way ratatui's `Paragraph` does, reporting the source
@@ -3495,6 +3528,7 @@ fn wrap_segment(raw: &str, width: usize, base: usize) -> Vec<WrapLine> {
             text: String::new(),
             start: base,
             end: base,
+            join: Join::Line,
         }];
     }
     let chars: Vec<(char, usize)> = raw
@@ -3510,17 +3544,40 @@ fn wrap_segment(raw: &str, width: usize, base: usize) -> Vec<WrapLine> {
     let mut pending_ws: Vec<(char, usize)> = Vec::new();
     let mut ws_width = 0usize;
     let mut non_ws_prev = false;
+    // The first row of a segment starts a line of the text; every row after it
+    // is one the pane wrapped, which is what the copy needs to know.
+    let mut first = true;
 
-    fn flush(line: &mut Vec<(char, usize)>, lines: &mut Vec<WrapLine>, base: usize) {
+    fn flush(
+        line: &mut Vec<(char, usize)>,
+        lines: &mut Vec<WrapLine>,
+        base: usize,
+        first: &mut bool,
+    ) {
         if line.is_empty() {
             return;
         }
         let start = line.first().map(|&(_, index)| index).unwrap_or(base);
         let end = line.last().map(|&(_, index)| index + 1).unwrap_or(start);
+        let text: String = line.iter().map(|&(ch, _)| ch).collect();
+        // The row continues the one above it unless the text starts a new line
+        // here. The wrap broke at whitespace — which the row may carry at its
+        // start or have had dropped before it — when it did not split a word,
+        // and a split leaves the two rows contiguous in the source.
+        let previous_end = lines.last().map(|previous| previous.end).unwrap_or(start);
+        let join = if *first {
+            Join::Line
+        } else if text.starts_with(char::is_whitespace) || start > previous_end {
+            Join::Space
+        } else {
+            Join::Word
+        };
+        *first = false;
         lines.push(WrapLine {
-            text: line.iter().map(|&(ch, _)| ch).collect(),
+            text,
             start,
             end,
+            join,
         });
         line.clear();
     }
@@ -3544,7 +3601,7 @@ fn wrap_segment(raw: &str, width: usize, base: usize) -> Vec<WrapLine> {
 
         if line_full || pending_word_overflow {
             let mut remaining = width.saturating_sub(line_width);
-            flush(&mut pending_line, &mut lines, base);
+            flush(&mut pending_line, &mut lines, base, &mut first);
             line_width = 0;
             while !pending_ws.is_empty() && remaining > 0 {
                 ws_width = ws_width.saturating_sub(1);
@@ -3568,27 +3625,43 @@ fn wrap_segment(raw: &str, width: usize, base: usize) -> Vec<WrapLine> {
 
     pending_line.append(&mut pending_ws);
     pending_line.append(&mut pending_word);
-    flush(&mut pending_line, &mut lines, base);
+    flush(&mut pending_line, &mut lines, base, &mut first);
     if lines.is_empty() {
         lines.push(WrapLine {
             text: String::new(),
             start: base,
             end: base,
+            join: Join::Line,
         });
     }
     lines
 }
 
-fn wrap(text: &str, width: usize) -> Vec<String> {
-    wrap_layout(text, width)
+/// Wraps `text` the way ratatui's `Paragraph` does, reserving `indent` columns
+/// on the left of every row the wrap continues. Alongside each row's text comes
+/// how it attaches to the row above it: a row the pane wrapped — not one the
+/// text itself starts — carries the separator its copy needs, so the line the
+/// pane happened to break is not the line the reader gets back.
+fn wrap(text: &str, width: usize, indent: usize) -> Vec<(String, Join)> {
+    let width = width.max(1);
+    let content = width.saturating_sub(indent).max(1);
+    wrap_layout(text, content)
         .into_iter()
-        .map(|line| line.text)
+        .map(|line| (line.text, line.join))
         .collect()
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The rows a wrap produced, which is what the assertions read.
+    fn segments(text: &str, width: usize) -> Vec<String> {
+        wrap(text, width, 0)
+            .into_iter()
+            .map(|(segment, _)| segment)
+            .collect()
+    }
 
     #[test]
     fn input_rows_grows_and_clamps() {
@@ -3651,11 +3724,83 @@ mod tests {
 
     #[test]
     fn whitespace_only_input_stays_on_one_line() {
-        assert_eq!(wrap(" ", 10), vec![" "]);
-        assert_eq!(wrap("   ", 10), vec!["   "]);
+        assert_eq!(segments(" ", 10), [" "]);
+        assert_eq!(segments("   ", 10), ["   "]);
         assert_eq!(input_rows(" ", 10), MIN_INPUT_ROWS);
         assert_eq!(input_cursor_position(" ", 1, 10), (0, 1));
         assert_eq!(input_cursor_position("  ", 2, 10), (0, 2));
+    }
+
+    #[test]
+    fn a_copy_is_the_same_text_however_wide_the_pane_is() {
+        let line = "reading /Users/jayson/Desktop/Earlier Lines.png: Operation not permitted (os error 1) \
+             — this app may not read that file: macOS keeps the Desktop, Documents and Downloads \
+             folders behind a per-app grant, so allow this app under System Settings, or copy the \
+             file into the project";
+        let mut app = App::new("model".into(), "/tmp".into(), Reasoning::Auto);
+        app.items.push(ChatItem::ToolResult {
+            name: "read".into(),
+            args: "{\"filePath\":\"/Users/jayson/Desktop/Earlier Lines.png\"}".into(),
+            output: line.into(),
+            is_error: true,
+            diff: None,
+            millis: 0,
+        });
+
+        let mut copies = Vec::new();
+        let mut rows = Vec::new();
+        for width in [40, 60, 100] {
+            sync_lines(&mut app, width);
+            rows.push(app.lines.len());
+            copies.push(app.transcript_text());
+        }
+
+        assert!(
+            rows[0] != rows[1] && rows[1] != rows[2],
+            "the pane re-wrapped: {rows:?}"
+        );
+        assert_eq!(copies[0], copies[1], "the width is not part of the text");
+        assert_eq!(copies[1], copies[2], "the width is not part of the text");
+        assert!(
+            copies[0].contains(line),
+            "the copy is the line the tool printed: {}",
+            copies[0]
+        );
+    }
+
+    #[test]
+    fn a_copy_carries_a_wrapped_paragraph_as_the_text_it_is() {
+        let paragraph = "Reading the file was refused because the folder it sits in is behind a \
+             per-app grant the run was never allowed to use, and the hint names the app to allow \
+             rather than the tool that failed to read it";
+        let mut app = App::new("model".into(), "/tmp".into(), Reasoning::Auto);
+        app.items.push(ChatItem::Assistant(paragraph.into()));
+        sync_lines(&mut app, 60);
+
+        assert!(app.lines.len() > 2, "the pane wrapped the paragraph");
+        let copied = app.transcript_text();
+        assert!(copied.ends_with(paragraph), "copied: {copied}");
+    }
+
+    #[test]
+    fn a_copy_rejoins_a_tool_line_the_pane_wrapped() {
+        let line = "/Users/jayson/Desktop/Earlier Lines.png: Operation not permitted (os error 1)";
+        let mut rows = Rows::default();
+        push_tool_output(&mut rows, line, 40, Style::default());
+
+        assert!(rows.lines.len() > 1, "the pane wrapped the line");
+        let rendered: Vec<String> = rows.lines.iter().map(|line| line_text(line)).collect();
+        assert!(
+            rendered[0].starts_with('/') && rendered[1].starts_with("  "),
+            "the pane still hangs the continuation off its line: {rendered:?}"
+        );
+        let copied = crate::tui::rows::text(
+            rows.lines
+                .iter()
+                .zip(&rows.joins)
+                .map(|(line, join)| (line_text(line), *join)),
+        );
+        assert_eq!(copied, line);
     }
 
     #[test]
@@ -3945,8 +4090,11 @@ mod tests {
 
     #[test]
     fn wrap_prefers_word_boundaries() {
-        assert_eq!(wrap("the quick brown fox", 9), ["the quick", "brown fox"]);
-        assert_eq!(wrap("a".repeat(25).as_str(), 10).len(), 3);
+        assert_eq!(
+            segments("the quick brown fox", 9),
+            ["the quick", "brown fox"]
+        );
+        assert_eq!(segments("a".repeat(25).as_str(), 10).len(), 3);
     }
 
     #[test]
@@ -4008,8 +4156,9 @@ mod tests {
                 .note("local: npx some-server --with-a-fairly-long-argument-list"),
         ];
 
-        let mut wide = Vec::new();
-        render_listing("MCP servers (3)", &rows, 120, &theme, &mut wide);
+        let mut wide_rows = Rows::default();
+        render_listing("MCP servers (3)", &rows, 120, &theme, &mut wide_rows);
+        let wide = wide_rows.lines;
         assert_eq!(line_text(&wide[0]), "· MCP servers (3)");
         assert_eq!(wide[0].spans.last().unwrap().style.fg, Some(theme.info));
         let connected = wide
@@ -4035,8 +4184,9 @@ mod tests {
         assert_eq!(tone_of("Needs Auth"), Some(theme.tool));
         assert_eq!(tone_of("Disabled"), Some(theme.dim));
 
-        let mut narrow = Vec::new();
-        render_listing("MCP servers (3)", &rows, 48, &theme, &mut narrow);
+        let mut narrow_rows = Rows::default();
+        render_listing("MCP servers (3)", &rows, 48, &theme, &mut narrow_rows);
+        let narrow = narrow_rows.lines;
         for line in &narrow {
             assert!(
                 line_text(line).chars().count() <= 48,
@@ -4068,7 +4218,7 @@ mod tests {
     fn streaming_thinking_block_shows_its_body_italic() {
         let theme = crate::theme::Theme::dark();
         let mut lines = Vec::new();
-        render_item_themed(
+        item_lines(
             &ChatItem::Thinking {
                 text: "because the file moved".into(),
                 millis: None,
@@ -4108,7 +4258,7 @@ mod tests {
     fn hidden_thinking_block_collapses_to_a_hint() {
         let theme = crate::theme::Theme::dark();
         let mut lines = Vec::new();
-        render_item_themed(
+        item_lines(
             &ChatItem::Thinking {
                 text: "because the file moved".into(),
                 millis: Some(1500),
@@ -4131,7 +4281,7 @@ mod tests {
     fn empty_thinking_block_renders_only_its_label() {
         let theme = crate::theme::Theme::dark();
         let mut lines = Vec::new();
-        render_item_themed(
+        item_lines(
             &ChatItem::Thinking {
                 text: "  ".into(),
                 millis: None,
@@ -4905,7 +5055,7 @@ mod tests {
             tools: 7,
         };
         let mut lines = Vec::new();
-        render_item_themed(
+        item_lines(
             &ChatItem::Tool {
                 name: "task".into(),
                 args: r#"{"prompt":"review the diff","subagent_type":"rust-reviewer"}"#.into(),
@@ -4966,7 +5116,7 @@ mod tests {
     #[test]
     fn a_status_tip_renders_dim_without_a_bullet() {
         let mut lines = Vec::new();
-        render_item_themed(
+        item_lines(
             &ChatItem::Status("copied 12 chars".into()),
             80,
             false,
@@ -4984,7 +5134,7 @@ mod tests {
     #[test]
     fn an_update_notice_names_the_release_the_command_and_the_changelog() {
         let mut lines = Vec::new();
-        render_item_themed(
+        item_lines(
             &ChatItem::Update {
                 version: "0.34.0".into(),
                 command: "oxide update".into(),
@@ -5043,7 +5193,7 @@ mod tests {
     #[test]
     fn a_finished_tool_has_no_elapsed_or_activity() {
         let mut lines = Vec::new();
-        render_item_themed(
+        item_lines(
             &ChatItem::Tool {
                 name: "task".into(),
                 args: r#"{"prompt":"x","subagent_type":"rust-reviewer"}"#.into(),
@@ -5066,7 +5216,7 @@ mod tests {
     #[test]
     fn running_bash_shows_live_elapsed() {
         let mut lines = Vec::new();
-        render_item_themed(
+        item_lines(
             &ChatItem::Tool {
                 name: "bash".into(),
                 args: r#"{"command":"sleep 30"}"#.into(),
@@ -5082,7 +5232,7 @@ mod tests {
 
         // A different tool's elapsed must not leak onto this call.
         let mut lines = Vec::new();
-        render_item_themed(
+        item_lines(
             &ChatItem::Tool {
                 name: "bash".into(),
                 args: r#"{"command":"ls"}"#.into(),
@@ -5729,6 +5879,14 @@ mod wrap_parity_tests {
     use ratatui::backend::TestBackend;
     use ratatui::Terminal;
 
+    /// The rows a wrap produced, which is what the parity check compares.
+    fn segments(text: &str, width: usize) -> Vec<String> {
+        wrap(text, width, 0)
+            .into_iter()
+            .map(|(segment, _)| segment)
+            .collect()
+    }
+
     fn ratatui_lines(text: &str, width: u16, height: u16) -> Vec<String> {
         let backend = TestBackend::new(width, height);
         let mut terminal = Terminal::new(backend).unwrap();
@@ -5795,7 +5953,7 @@ mod wrap_parity_tests {
         ];
         for text in texts {
             for width in 4u16..30 {
-                let ours: Vec<String> = wrap(text, width as usize)
+                let ours: Vec<String> = segments(text, width as usize)
                     .into_iter()
                     .map(|line| line.trim_end().to_string())
                     .filter(|line| !line.is_empty())
