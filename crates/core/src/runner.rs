@@ -125,6 +125,8 @@ pub async fn spawn_agent(run: AgentRun, tx: UnboundedSender<AgentEvent>) -> Join
         ask,
         steering,
         follow_ups,
+        steering_mode: config.steering_mode,
+        follow_up_mode: config.follow_up_mode,
         cancel,
     };
 

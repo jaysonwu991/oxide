@@ -58,9 +58,8 @@ page is the detail behind it, and the task-by-task guides live in
   `<server>__<tool>`.
 - Agent-harness niceties: read-only tool calls in a batch run in parallel while
   preserving model order, `bash` output streams into the UI as it arrives, and
-  typing while the agent works can queue or steer it between steps. Enter safely
-  queues a follow-up while busy; Alt+Enter deliberately steers the active
-  response.
+  typing while the agent works can queue or steer it between steps. Enter steers
+  the active response while busy; Alt+Enter queues a follow-up for after it.
 - Read-only runs via the tool allowlist, e.g.
   `oxide -t read,grep,find,ls -p "review this"`.
 - Tool selection: `--tools`/`-t` allowlists and `--exclude-tools`/`-x` disables
@@ -162,7 +161,8 @@ so local-only files like `.claude/settings.local.json` stay out of the PR.
   a `(timeout Ns)` hint when the call sets one, a live `Elapsed Ns` while it
   runs, and a `Took Nms` duration afterwards (any other tool that runs for at
   least 500 ms is timed too). Long output is previewed with a
-  `⋯ <lines> more/earlier lines · Ctrl+O to expand` affordance, `read` results
+  `⋯ <lines> more lines · Ctrl+O to expand` affordance (a shell call keeps both
+  its first and last lines, folding only the middle), `read` results
   preview the file contents, file edits show a colored line-numbered diff, user
   and assistant turns render their label inline with the message text, and the
   system prompt nudges the model to batch reads instead of re-reading the same

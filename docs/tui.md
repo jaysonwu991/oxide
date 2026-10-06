@@ -48,6 +48,25 @@ An `@path` in the message attaches a file the same way, and a reference to one
 this app may not read is still an attachment: the refusal is reported with the
 grant to give rather than being sent to the model as the text it was typed as.
 
+A context compaction renders as Pi's `[compaction]` block and a branch summary
+as `[branch]`, each folded to a one-line note with `Ctrl+O to expand` until
+`Ctrl+O` shows its text — the same key that unfolds tool output.
+
+A URL in a reply — written bare, as an `<autolink>`, or as the target of a
+labelled link — is clickable: a left click opens it in the system browser (and
+the click is not also a text selection). When you have scrolled away from the
+newest output, a `↓ Jump to latest message · End` row floats over the bottom of
+the transcript; click it or press `End` to return to the newest line, and it
+hides once the end is on screen.
+
+A message typed while the agent is busy waits above the message box as a dim
+`Steering: …` or `Follow-up: …` row, with a `↳ <key> to edit all queued messages`
+hint, rather than appearing in the transcript — it becomes a turn there when the
+run delivers it. `Alt+Up` (`Alt+Q` on Windows and WSL, `Option+Up` on macOS)
+pulls them all back into the box. How many are handed over at once is set by
+`steeringMode`/`followUpMode` (see
+[configuration](configuration.md#queued-messages)).
+
 Run `/hotkeys` for the in-app shortcut list and `/help` for commands, agents, and
 skills.
 
@@ -55,9 +74,9 @@ skills.
 
 | Key | Action |
 | --- | --- |
-| Enter | Send a message; while the agent is busy, queue a follow-up after the current response. |
+| Enter | Send a message; while the agent is busy, steer the active response before its next model step. |
 | Shift+Enter | Insert a newline without sending. |
-| Alt+Enter | While busy, steer the active response before its next model step. |
+| Alt+Enter | While busy, queue a follow-up for after the current response. |
 | Alt+Up / Option+Up | Pull every queued message back into the message box to edit or extend it (`Alt+Q` on Windows and WSL, where the terminal owns `Alt+Up`). |
 | Esc | Clear the input, or refuse a tool waiting for an approval. In dialogs, cancel or close. |
 | `/` | Open slash-command autocomplete. |
@@ -65,7 +84,7 @@ skills.
 | Tab | Complete the selected slash-command (including fixed arguments such as `/notify sound on`) or `@path` suggestion. |
 | Up / Down | Move through the suggestion list, or recall input history when it is closed. |
 | Shift+Tab | Cycle the thinking level: `auto` → `off` → `low` → `medium` → `high`. |
-| Ctrl+O | Expand or collapse tool-output details. |
+| Ctrl+O | Expand or collapse tool-output details, and compaction/branch summaries. |
 | Ctrl+T | Show or hide reasoning (`✦ Thinking`) blocks. |
 | Ctrl+V | Paste the clipboard into the message box the way Pi does: the path a copied file names (one per line for a multi-select copy), the scratch path a clipboard image is written to, or plain clipboard text. The model reads the path, so a pasted image arrives through its file rather than as a pending attachment. A file this app may not read is written out as the pasteboard's own picture instead, so the inserted path still points at something the run can read; where the pasteboard carries none, macOS gates the Desktop, Documents and Downloads folders behind a per-app grant. |
 | PgUp / PgDn / mouse wheel | Scroll the transcript. |

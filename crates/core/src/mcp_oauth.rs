@@ -273,7 +273,7 @@ impl OAuthState {
             "[mcp] authorizing `{}` — opening browser; if it does not open, visit:\n{url}",
             self.name
         ));
-        open_browser(&url);
+        open_browser_notice(&url);
         let code = wait_for_code(listener, &state, &self.name).await?;
 
         let mut form = vec![
@@ -940,21 +940,50 @@ fn base64url(input: &[u8]) -> String {
     output
 }
 
-fn open_browser(url: &str) {
-    #[cfg(target_os = "macos")]
-    let result = std::process::Command::new("open").arg(url).spawn();
-    #[cfg(target_os = "windows")]
-    let result = std::process::Command::new("cmd")
-        .args(["/C", "start", "", url])
-        .spawn();
-    #[cfg(all(unix, not(target_os = "macos")))]
-    let result = std::process::Command::new("xdg-open").arg(url).spawn();
-    #[cfg(not(any(unix, target_os = "windows")))]
-    let result: std::io::Result<std::process::Child> = Err(std::io::Error::new(
+/// Opens `url` in the platform's browser, detached from this process's
+/// terminal. Shared by the MCP OAuth flow and a transcript link a reader
+/// clicks; the caller decides how to report a failure.
+#[cfg(target_os = "macos")]
+pub fn open_browser(url: &str) -> std::io::Result<std::process::Child> {
+    spawn_browser(std::process::Command::new("open").arg(url))
+}
+
+#[cfg(target_os = "windows")]
+pub fn open_browser(url: &str) -> std::io::Result<std::process::Child> {
+    // `rundll32 url.dll,FileProtocolHandler` hands the URL to the shell's own
+    // protocol handler directly. `cmd /C start` would instead let `&`, `^` or
+    // `|` in an assistant-generated link run a second command.
+    spawn_browser(std::process::Command::new("rundll32").args(["url.dll,FileProtocolHandler", url]))
+}
+
+#[cfg(all(unix, not(target_os = "macos")))]
+pub fn open_browser(url: &str) -> std::io::Result<std::process::Child> {
+    spawn_browser(std::process::Command::new("xdg-open").arg(url))
+}
+
+#[cfg(not(any(unix, target_os = "windows")))]
+pub fn open_browser(_url: &str) -> std::io::Result<std::process::Child> {
+    Err(std::io::Error::new(
         std::io::ErrorKind::Unsupported,
         "unsupported platform",
-    ));
-    if let Err(err) = result {
+    ))
+}
+
+/// Gives the opener a session with no controlling terminal (and, on Windows,
+/// no console), so an opener that prints, or a browser launched in the
+/// foreground, cannot read or paint over the interface. Null standard handles
+/// alone do not detach it from `/dev/tty` or `CONIN$`/`CONOUT$`.
+fn spawn_browser(command: &mut std::process::Command) -> std::io::Result<std::process::Child> {
+    command
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null());
+    crate::child::detach_terminal_std(command);
+    command.spawn()
+}
+
+fn open_browser_notice(url: &str) {
+    if let Err(err) = open_browser(url) {
         crate::notice::warn(format!("[mcp] could not open a browser: {err}"));
     }
 }

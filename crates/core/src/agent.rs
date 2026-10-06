@@ -27,6 +27,39 @@ pub type RunFuture = Pin<Box<dyn Future<Output = ()> + Send>>;
 pub type Approver =
     Arc<dyn Fn(String, String) -> Pin<Box<dyn Future<Output = bool> + Send>> + Send + Sync>;
 
+/// How a queue's messages are delivered, Pi's `steeringMode`/`followUpMode`.
+/// `one-at-a-time` (the default) hands over one message per opportunity so the
+/// model answers each before the next arrives; `all` hands over the queue at
+/// once.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum QueueMode {
+    All,
+    #[default]
+    OneAtATime,
+}
+
+impl QueueMode {
+    /// Parses Pi's spelling; an unknown value is rejected so the caller can
+    /// keep its default.
+    pub fn parse(value: &str) -> Option<Self> {
+        match value.trim().to_ascii_lowercase().as_str() {
+            "all" => Some(Self::All),
+            "one-at-a-time" => Some(Self::OneAtATime),
+            _ => None,
+        }
+    }
+}
+
+/// A message waiting in a [`Steering`] queue, with the label a front-end shows
+/// it by. The label travels with the message so a delivered turn can name the
+/// files it carried — a content part holds the bytes, not the path the composer
+/// read them from.
+#[derive(Clone, Debug)]
+pub struct Queued {
+    pub message: Message,
+    pub label: String,
+}
+
 /// A queue of user messages typed while the agent is busy. They are injected
 /// into the conversation between steps, so the model sees the guidance without
 /// interrupting the in-flight tool batch.
@@ -37,8 +70,19 @@ pub struct Steering {
 
 #[derive(Default)]
 struct SteeringState {
-    messages: Vec<Message>,
+    messages: Vec<Queued>,
     closed: bool,
+}
+
+impl SteeringState {
+    /// The messages due now, honoring `mode`.
+    fn take(&mut self, mode: QueueMode) -> Vec<Queued> {
+        match mode {
+            QueueMode::All => std::mem::take(&mut self.messages),
+            QueueMode::OneAtATime if self.messages.is_empty() => Vec::new(),
+            QueueMode::OneAtATime => vec![self.messages.remove(0)],
+        }
+    }
 }
 
 impl Steering {
@@ -46,23 +90,71 @@ impl Steering {
         Self::default()
     }
 
-    /// Adds a message while the turn can still consume it. `false` means the
-    /// run has made its final queue decision, so a client must start the
-    /// message as a new turn instead of reporting it as accepted.
+    /// Adds a message while the turn can still consume it, labelled by its own
+    /// display. `false` means the run has made its final queue decision, so a
+    /// client must start the message as a new turn instead of reporting it as
+    /// accepted.
     pub fn push(&self, message: Message) -> bool {
+        let label = message.display().unwrap_or_default();
+        self.push_labeled(message, label)
+    }
+
+    /// Adds a message with the label a front-end shows it by (a queued message
+    /// names the file each attachment was read from, which the message itself
+    /// does not carry).
+    pub fn push_labeled(&self, message: Message, label: String) -> bool {
         self.queue.lock().is_ok_and(|mut state| {
             if state.closed {
                 return false;
             }
-            state.messages.push(message);
+            state.messages.push(Queued { message, label });
             true
         })
     }
 
-    pub fn drain(&self) -> Vec<Message> {
+    /// The messages due now, dropping their labels.
+    pub fn drain(&self, mode: QueueMode) -> Vec<Message> {
+        self.drain_labeled(mode)
+            .into_iter()
+            .map(|queued| queued.message)
+            .collect()
+    }
+
+    /// The messages due now, with the label each is shown by.
+    pub fn drain_labeled(&self, mode: QueueMode) -> Vec<Queued> {
         self.queue
             .lock()
-            .map(|mut state| std::mem::take(&mut state.messages))
+            .map(|mut state| state.take(mode))
+            .unwrap_or_default()
+    }
+
+    /// Every queued message, whatever the mode, for a front-end that pulls the
+    /// whole queue back into the composer.
+    pub fn drain_all(&self) -> Vec<Message> {
+        self.queue
+            .lock()
+            .map(|mut state| {
+                std::mem::take(&mut state.messages)
+                    .into_iter()
+                    .map(|queued| queued.message)
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
+    /// The label of every queued message, oldest first, for a front-end that
+    /// lists the queue without cloning the messages (a media part can hold a
+    /// multi-megabyte data URL).
+    pub fn labels(&self) -> Vec<String> {
+        self.queue
+            .lock()
+            .map(|state| {
+                state
+                    .messages
+                    .iter()
+                    .map(|queued| queued.label.clone())
+                    .collect()
+            })
             .unwrap_or_default()
     }
 
@@ -81,19 +173,21 @@ impl Steering {
     fn drain_at_response(
         &self,
         follow_ups: &Self,
+        steering_mode: QueueMode,
+        follow_up_mode: QueueMode,
         close_if_empty: bool,
-    ) -> (Vec<Message>, Vec<Message>) {
+    ) -> (Vec<Queued>, Vec<Queued>) {
         let Ok(mut steering) = self.queue.lock() else {
             return (Vec::new(), Vec::new());
         };
         let Ok(mut follow_ups) = follow_ups.queue.lock() else {
             return (Vec::new(), Vec::new());
         };
-        let steered = std::mem::take(&mut steering.messages);
+        let steered = steering.take(steering_mode);
         if !steered.is_empty() {
             return (steered, Vec::new());
         }
-        let queued = std::mem::take(&mut follow_ups.messages);
+        let queued = follow_ups.take(follow_up_mode);
         if close_if_empty && queued.is_empty() {
             steering.closed = true;
             follow_ups.closed = true;
@@ -110,8 +204,15 @@ impl Steering {
         };
         first.closed = true;
         second.closed = true;
-        let mut pending = std::mem::take(&mut first.messages);
-        pending.extend(std::mem::take(&mut second.messages));
+        let mut pending: Vec<Message> = std::mem::take(&mut first.messages)
+            .into_iter()
+            .map(|queued| queued.message)
+            .collect();
+        pending.extend(
+            std::mem::take(&mut second.messages)
+                .into_iter()
+                .map(|queued| queued.message),
+        );
         pending
     }
 
@@ -164,6 +265,9 @@ pub struct Runtime {
     pub ask: Option<Asker>,
     pub steering: Steering,
     pub follow_ups: Steering,
+    /// How each queue is delivered, from `steeringMode`/`followUpMode`.
+    pub steering_mode: QueueMode,
+    pub follow_up_mode: QueueMode,
     pub cancel: Cancel,
 }
 
@@ -258,6 +362,17 @@ pub enum AgentEvent {
         history: Vec<Message>,
         prompt: String,
         message: String,
+        /// The summary written for the branch being left, when one was made.
+        summary: Option<String>,
+    },
+    /// A user message typed while the run was busy has been delivered into the
+    /// conversation. The front-end paints it as a turn now, not when it was
+    /// queued; `follow_up` says which queue it came from, and `label` is the
+    /// text it was shown by while queued (naming its attachments).
+    Steered {
+        message: Message,
+        label: String,
+        follow_up: bool,
     },
     Error(String),
     Finished(Vec<Message>),
@@ -438,13 +553,17 @@ pub fn run_subagent(
                     history,
                     prompt,
                     message,
+                    summary,
                 } => {
                     let _ = tx.send(AgentEvent::Branch {
                         history,
                         prompt,
                         message,
+                        summary,
                     });
                 }
+                // The subagent's own delivery is not the main transcript's.
+                AgentEvent::Steered { .. } => {}
                 AgentEvent::Error(message) => {
                     let _ = tx.send(AgentEvent::Error(message));
                 }
@@ -513,6 +632,10 @@ async fn run_loop(
     // Whether the held summary is still the newest message, which is what lets
     // the re-check merge into it rather than start a second one.
     let mut held_is_tail = false;
+    // A response boundary that already injected a steering message sets this so
+    // the top-of-loop poll does not immediately take the next one too: under
+    // `one-at-a-time` only one queued message may precede a model call.
+    let mut skip_steering_poll = false;
 
     loop {
         if runtime.cancel.is_cancelled() {
@@ -524,17 +647,29 @@ async fn run_loop(
             finish(&runtime, &tx, messages, depth);
             return;
         }
-        for steered in runtime.steering.drain() {
-            // A held summary is committed first, so a queued message cannot
-            // land in the log ahead of the summary it followed in the thread.
-            if let Some((held, held_usage)) = held_summary.take() {
-                record_usage(&runtime.session, depth, &held, held_usage);
-                held_is_tail = false;
+        if !skip_steering_poll {
+            for queued in runtime.steering.drain_labeled(runtime.steering_mode) {
+                let Queued {
+                    message: steered,
+                    label,
+                } = queued;
+                // A held summary is committed first, so a queued message cannot
+                // land in the log ahead of the summary it followed in the thread.
+                if let Some((held, held_usage)) = held_summary.take() {
+                    record_usage(&runtime.session, depth, &held, held_usage);
+                    held_is_tail = false;
+                }
+                auto_load_mcp_for_user_text(&runtime, std::iter::once(&steered)).await;
+                let _ = tx.send(AgentEvent::Steered {
+                    message: steered.clone(),
+                    label,
+                    follow_up: false,
+                });
+                record(&runtime.session, depth, &steered);
+                messages.push(steered);
             }
-            auto_load_mcp_for_user_text(&runtime, std::iter::once(&steered)).await;
-            record(&runtime.session, depth, &steered);
-            messages.push(steered);
         }
+        skip_steering_poll = false;
 
         // Pi-style auto-compaction: once the outgoing context approaches the
         // model window, replace older turns with a summary and keep the recent
@@ -777,9 +912,12 @@ async fn run_loop(
             // The final empty check and closing the input queues are one atomic
             // decision. A sender racing this boundary is therefore either
             // included below or told to start a new turn.
-            let (mut steered, mut follow_ups) = runtime
-                .steering
-                .drain_at_response(&runtime.follow_ups, false);
+            let (mut steered, mut follow_ups) = runtime.steering.drain_at_response(
+                &runtime.follow_ups,
+                runtime.steering_mode,
+                runtime.follow_up_mode,
+                false,
+            );
             let mut queued = !steered.is_empty() || !follow_ups.is_empty();
 
             // A reminder is only due on a plain answer with nothing queued. The
@@ -810,9 +948,12 @@ async fn run_loop(
             // queues and close them under the same locks so a last-moment
             // sender is either included or reliably rejected.
             if !queued {
-                let (late_steering, late_follow_ups) = runtime
-                    .steering
-                    .drain_at_response(&runtime.follow_ups, true);
+                let (late_steering, late_follow_ups) = runtime.steering.drain_at_response(
+                    &runtime.follow_ups,
+                    runtime.steering_mode,
+                    runtime.follow_up_mode,
+                    true,
+                );
                 steered.extend(late_steering);
                 follow_ups.extend(late_follow_ups);
                 queued = !steered.is_empty() || !follow_ups.is_empty();
@@ -849,10 +990,29 @@ async fn run_loop(
                 finish(&runtime, &tx, messages, depth);
                 return;
             }
-            for message in steered.into_iter().chain(follow_ups) {
+            for queued in steered {
+                let Queued { message, label } = queued;
+                let _ = tx.send(AgentEvent::Steered {
+                    message: message.clone(),
+                    label,
+                    follow_up: false,
+                });
                 record(&runtime.session, depth, &message);
                 messages.push(message);
             }
+            for queued in follow_ups {
+                let Queued { message, label } = queued;
+                let _ = tx.send(AgentEvent::Steered {
+                    message: message.clone(),
+                    label,
+                    follow_up: true,
+                });
+                record(&runtime.session, depth, &message);
+                messages.push(message);
+            }
+            // Only one queued message precedes the next model call under
+            // `one-at-a-time`; the poll resumes after that response.
+            skip_steering_poll = true;
             continue;
         }
 
@@ -2310,6 +2470,7 @@ async fn task_inner(
             | AgentEvent::Usage { .. }
             | AgentEvent::Compaction { .. }
             | AgentEvent::Branch { .. }
+            | AgentEvent::Steered { .. }
             | AgentEvent::SubagentActivity { .. }
             | AgentEvent::ThinkingDelta(_)
             | AgentEvent::Thought { .. } => {}
@@ -2867,6 +3028,8 @@ mod tests {
             ask: None,
             steering: Steering::new(),
             follow_ups: Steering::new(),
+            steering_mode: QueueMode::OneAtATime,
+            follow_up_mode: QueueMode::OneAtATime,
             cancel: Cancel::new(),
         }
     }
@@ -3252,6 +3415,56 @@ mod tests {
             Some("final".to_string())
         );
         assert_eq!(server.await.unwrap().len(), 2);
+    }
+
+    /// `one-at-a-time` must hand over one steering message per model call: a
+    /// response boundary that takes one may not be followed by the top-of-loop
+    /// poll taking the next before the request it belongs to.
+    #[tokio::test]
+    async fn one_at_a_time_delivers_one_steering_message_per_model_call() {
+        let (addr, server) = sse_server(vec![
+            answer_body("one"),
+            answer_body("two"),
+            answer_body("three"),
+        ])
+        .await;
+        let config = Config {
+            provider: "deepseek".into(),
+            model: "deepseek-flash".into(),
+            base_url: format!("http://{addr}"),
+            api_key: "sk-test".into(),
+            ..Config::default()
+        };
+        let runtime = test_runtime().await;
+        runtime.steering.push(Message::user("STEER_ONE"));
+        runtime.steering.push(Message::user("STEER_TWO"));
+        runtime.steering.push(Message::user("STEER_THREE"));
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+
+        run(
+            config,
+            std::env::temp_dir(),
+            vec![Message::user("hi")],
+            tx,
+            runtime,
+        )
+        .await;
+
+        let bodies = server.await.unwrap();
+        assert_eq!(bodies.len(), 3, "one request per delivery");
+        assert!(bodies[0].contains("STEER_ONE"), "{}", bodies[0]);
+        assert!(!bodies[0].contains("STEER_TWO"), "{}", bodies[0]);
+        assert!(bodies[1].contains("STEER_TWO"), "{}", bodies[1]);
+        assert!(!bodies[1].contains("STEER_THREE"), "{}", bodies[1]);
+        assert!(bodies[2].contains("STEER_THREE"), "{}", bodies[2]);
+
+        let mut delivered = 0;
+        while let Ok(event) = rx.try_recv() {
+            if matches!(event, AgentEvent::Steered { .. }) {
+                delivered += 1;
+            }
+        }
+        assert_eq!(delivered, 3);
     }
 
     /// The regression from a real session: the model edited a file and
@@ -4678,15 +4891,32 @@ for line in sys.stdin:
     }
 
     #[test]
-    fn steering_queue_drains_in_order() {
+    fn steering_queue_drains_one_at_a_time_in_order() {
         let steering = Steering::new();
         steering.push(Message::user("first"));
         steering.push(Message::user("second"));
-        let drained = steering.drain();
-        assert_eq!(drained.len(), 2);
+        let drained = steering.drain(QueueMode::OneAtATime);
+        assert_eq!(drained.len(), 1);
         assert_eq!(drained[0].display().as_deref(), Some("first"));
-        assert_eq!(drained[1].display().as_deref(), Some("second"));
-        assert!(steering.drain().is_empty());
+        let drained = steering.drain(QueueMode::OneAtATime);
+        assert_eq!(drained.len(), 1);
+        assert_eq!(drained[0].display().as_deref(), Some("second"));
+        assert!(steering.drain(QueueMode::OneAtATime).is_empty());
+    }
+
+    #[test]
+    fn all_mode_drains_the_whole_queue() {
+        let steering = Steering::new();
+        steering.push(Message::user("first"));
+        steering.push(Message::user("second"));
+        assert_eq!(steering.drain(QueueMode::All).len(), 2);
+        assert!(steering.drain(QueueMode::All).is_empty());
+        assert_eq!(QueueMode::parse("all"), Some(QueueMode::All));
+        assert_eq!(
+            QueueMode::parse("one-at-a-time"),
+            Some(QueueMode::OneAtATime)
+        );
+        assert_eq!(QueueMode::parse("nonsense"), None);
     }
 
     #[test]
@@ -4695,10 +4925,10 @@ for line in sys.stdin:
         let follow_ups = Steering::new();
         steering.push(Message::user("steer"));
         follow_ups.push(Message::user("later"));
-        assert_eq!(steering.drain().len(), 1);
-        assert_eq!(follow_ups.drain().len(), 1);
-        assert!(steering.drain().is_empty());
-        assert!(follow_ups.drain().is_empty());
+        assert_eq!(steering.drain(QueueMode::OneAtATime).len(), 1);
+        assert_eq!(follow_ups.drain(QueueMode::OneAtATime).len(), 1);
+        assert!(steering.drain(QueueMode::OneAtATime).is_empty());
+        assert!(follow_ups.drain(QueueMode::OneAtATime).is_empty());
     }
 
     #[test]
@@ -4706,7 +4936,12 @@ for line in sys.stdin:
         let steering = Steering::new();
         let follow_ups = Steering::new();
 
-        let (steered, queued) = steering.drain_at_response(&follow_ups, true);
+        let (steered, queued) = steering.drain_at_response(
+            &follow_ups,
+            QueueMode::OneAtATime,
+            QueueMode::OneAtATime,
+            true,
+        );
 
         assert!(steered.is_empty());
         assert!(queued.is_empty());
@@ -4720,7 +4955,12 @@ for line in sys.stdin:
         let follow_ups = Steering::new();
         assert!(steering.push(Message::user("change course")));
 
-        let (steered, queued) = steering.drain_at_response(&follow_ups, true);
+        let (steered, queued) = steering.drain_at_response(
+            &follow_ups,
+            QueueMode::OneAtATime,
+            QueueMode::OneAtATime,
+            true,
+        );
 
         assert_eq!(steered.len(), 1);
         assert!(queued.is_empty());
@@ -4732,7 +4972,12 @@ for line in sys.stdin:
         let steering = Steering::new();
         let follow_ups = Steering::new();
 
-        let (steered, queued) = steering.drain_at_response(&follow_ups, false);
+        let (steered, queued) = steering.drain_at_response(
+            &follow_ups,
+            QueueMode::OneAtATime,
+            QueueMode::OneAtATime,
+            false,
+        );
 
         assert!(steered.is_empty());
         assert!(queued.is_empty());

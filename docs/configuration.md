@@ -62,12 +62,15 @@ so a long-thinking turn recovers instead of ending in an empty response.
 
 `context_window` is the model's full context window in tokens, and controls both
 the context gauge and the automatic compaction threshold. When it is unset (or
-`0`), Oxide uses the documented window of a known model from a small built-in
-table and falls back to `1000000` for an unknown one, so a fresh configuration
-compacts before a model with a smaller window rejects the request. Set it
-explicitly to override the derived value — a larger window retains more
-conversation before compaction. `OXIDE_CONTEXT_LIMIT` overrides it for one
-environment.
+`0`), Oxide resolves the window the way Pi's model catalog does: the model's
+documented window from a built-in table — including the 1M windows Pi assigns
+(Gemini, `gpt-4.1`, `gpt-5.4` and later, Claude Sonnet 4.5/4.6, Opus 4.6 and
+later, GLM 5.2/5.3, DeepSeek V4, Kimi K3) — and Pi's `128000` fallback for a
+model the table does not know. A routed or Bedrock-spelled id matches by its
+basename, so `anthropic/claude-opus-4.7` and `us.anthropic.claude-sonnet-4-5-…`
+resolve to the same windows. Override one model with `modelContextWindows` in
+`settings.json`, the whole run with `context_window`, or one environment with
+`OXIDE_CONTEXT_LIMIT`.
 
 ## CLI flags
 
@@ -489,7 +492,12 @@ walks back from the newest message until `keepRecentTokens` is reached and
 summarizes the older span into a structured handoff (goal, progress, decisions,
 next steps, critical context, plus cumulative read/modified file lists), keeping
 the most recent tokens verbatim. A cut never separates a tool call from its
-result.
+result. When the cut lands inside a user turn, the request that opened the turn
+and the work before the cut are summarized on their own as a split-turn prefix
+and merged into the checkpoint, so the request is not lost; a later compaction
+updates the previous checkpoint instead of writing a fresh one, and a
+summarization response is capped at a fraction of `reserveTokens` so it cannot
+spend the whole response budget.
 
 Settings live under `compaction` in `settings.json` (global) or
 `.oxide/settings.json` (project):
@@ -518,6 +526,25 @@ appends it as a `branch_summary` entry. `/tree <n>` branches the current session
 in place (alternatives stay in the file); `/fork <n>` creates a new session
 seeded with the summary.
 
+### Queued messages
+
+While the agent is busy, `Enter` steers the response being written: the message
+is delivered after the current assistant turn's tool calls, before the next
+model call. `Alt+Enter` queues a follow-up, delivered only once the run has
+finished. Queued messages are listed above the message box as `Steering: …` /
+`Follow-up: …`, and `Alt+Up` (`Alt+Q` on Windows and WSL, `Option+Up` on macOS)
+pulls them all back into the box to edit or extend.
+
+`steeringMode` and `followUpMode` in `settings.json` decide how a non-empty
+queue is handed over, matching Pi:
+
+- `"one-at-a-time"` (default) — one message per opportunity, so the model
+  answers each before the next is delivered.
+- `"all"` — the whole queue at once.
+
+The project `.oxide/settings.json` wins per key, and an unknown value keeps the
+default.
+
 ## Data locations
 
 Runtime state lives under the platform Oxide config directory:
@@ -533,7 +560,8 @@ Runtime state lives under the platform Oxide config directory:
 - Plugins: `plugins/` (installed plugin packages, marketplaces, and state)
 - Portkey usage bar: `portkey-usage.json` (mode `0600`; see `OXIDE_USAGE_FILE`)
 - Settings: `settings.json` (e.g. `defaultProjectTrust`, `compaction`,
-  `modelPrices`, `hideThinkingBlock`)
+  `modelPrices`, `modelContextWindows`, `steeringMode`, `followUpMode`,
+  `hideThinkingBlock`)
 - Updates: `updates.json` (the newest release of each component the last launch
   found, so the launch notice needs no network wait; see `OXIDE_UPDATES_FILE`)
 - Themes: `themes/<name>.json`

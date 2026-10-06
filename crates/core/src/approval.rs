@@ -287,7 +287,7 @@ mod tests {
         assert!(broker.resolve(id, "deny", Some("use a narrower command")));
         assert!(!requested.await.unwrap());
 
-        let steered = steering.drain();
+        let steered = steering.drain(crate::agent::QueueMode::OneAtATime);
         assert_eq!(steered.len(), 1);
         assert_eq!(
             steered[0].display().as_deref(),

@@ -43,6 +43,32 @@ pub(crate) fn detach_terminal(cmd: &mut Command) {
 #[cfg(not(any(unix, windows)))]
 pub(crate) fn detach_terminal(_cmd: &mut Command) {}
 
+/// The same detach for a `std::process::Command`: a browser launcher must not
+/// sit on the terminal the front-end is drawing on either, even though it is
+/// started with null standard handles.
+#[cfg(unix)]
+pub(crate) fn detach_terminal_std(cmd: &mut std::process::Command) {
+    use std::os::unix::process::CommandExt;
+    // SAFETY: only `setsid`, a raw syscall that reads no shared state, runs in
+    // the child between fork and exec.
+    unsafe {
+        cmd.pre_exec(|| match libc::setsid() {
+            -1 => Err(std::io::Error::last_os_error()),
+            _ => Ok(()),
+        });
+    }
+}
+
+#[cfg(windows)]
+pub(crate) fn detach_terminal_std(cmd: &mut std::process::Command) {
+    use std::os::windows::process::CommandExt;
+    const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+    cmd.creation_flags(CREATE_NO_WINDOW);
+}
+
+#[cfg(not(any(unix, windows)))]
+pub(crate) fn detach_terminal_std(_cmd: &mut std::process::Command) {}
+
 #[cfg(test)]
 mod tests {
     use super::*;

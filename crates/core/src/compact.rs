@@ -166,6 +166,11 @@ pub fn needs_compaction(context_tokens: u64, context_window: u64, budget: Budget
 #[derive(Debug, Clone)]
 pub struct Preparation {
     pub messages_to_summarize: Vec<Message>,
+    /// When the cut lands inside a turn (the kept tail starts with an assistant
+    /// or tool message), the part of that turn before the cut. Pi summarizes it
+    /// on its own and merges it into the history summary so the request that
+    /// opened the turn is not lost.
+    pub turn_prefix: Vec<Message>,
     pub first_kept: usize,
     pub previous_summary: Option<String>,
     pub details: CompactionDetails,
@@ -205,11 +210,33 @@ pub fn prepare(
         return None;
     }
 
-    let messages_to_summarize = messages[start..cut].to_vec();
+    // A turn starts at a user message. Cutting inside a turn (the kept tail
+    // begins with an assistant or tool result) leaves that turn's earlier half
+    // out of the kept tail, so it is summarized on its own and merged in, the
+    // way Pi handles a split user-message span.
+    let mut turn_prefix = Vec::new();
+    let mut history_end = cut;
+    if messages[cut].role != "user" {
+        if let Some(turn_start) = (start..cut)
+            .rev()
+            .find(|&index| messages[index].role == "user")
+        {
+            history_end = turn_start;
+            turn_prefix = messages[turn_start..cut].to_vec();
+        }
+    }
+    let messages_to_summarize = messages[start..history_end].to_vec();
+    if messages_to_summarize.is_empty() && turn_prefix.is_empty() {
+        return None;
+    }
+
     let mut details = previous
         .map(|compaction| compaction.details.clone())
         .unwrap_or_default();
     let (read, modified) = extract_file_ops(&messages_to_summarize);
+    merge_files(&mut details.read_files, read);
+    merge_files(&mut details.modified_files, modified);
+    let (read, modified) = extract_file_ops(&turn_prefix);
     merge_files(&mut details.read_files, read);
     merge_files(&mut details.modified_files, modified);
 
@@ -218,8 +245,9 @@ pub fn prepare(
         previous_summary: previous.map(|compaction| compaction.summary.clone()),
         details,
         tokens_before,
-        summarized: messages_to_summarize.len(),
+        summarized: messages_to_summarize.len() + turn_prefix.len(),
         messages_to_summarize,
+        turn_prefix,
     })
 }
 
@@ -394,16 +422,92 @@ the work. Use exactly this Markdown structure:
 Be concise but complete. Preserve exact file paths, commands, code changes and \
 unresolved tasks.";
 
-/// Generates a compaction summary for the prepared span. `instructions`
-/// optionally focuses the summary (from `/compact <instructions>`).
-async fn generate_summary(
+/// Sent instead of [`SUMMARY_INSTRUCTIONS`] when an earlier summary exists, so
+/// the model updates that checkpoint rather than writing a fresh one. Mirrors
+/// Pi's `UPDATE_SUMMARIZATION_PROMPT`.
+const UPDATE_SUMMARY_INSTRUCTIONS: &str = "\
+The messages above are NEW conversation messages to incorporate into the existing \
+summary provided in <previous-summary> tags. PRESERVE all existing information, \
+add new progress, decisions and context, move completed items to Done, and update \
+Next Steps. Use exactly this Markdown structure:
+
+## Goal
+[Preserve existing goals, add new ones if the task expanded]
+
+## Constraints & Preferences
+- [Preserve existing, add new ones discovered]
+
+## Progress
+### Done
+- [x] [Include previously done items AND newly completed items]
+
+### In Progress
+- [ ] [Current work]
+
+### Blocked
+- [Current blockers, remove resolved ones]
+
+## Key Decisions
+- **[Decision]**: [Brief rationale]
+
+## Next Steps
+1. [Update based on current state]
+
+## Critical Context
+- [Preserve important context, add new if needed]
+
+Keep each section concise. Preserve exact file paths, function names and error \
+messages.";
+
+/// The prefix of a split user-message span: the request that opened the turn and
+/// the progress made before the kept tail begins. Mirrors Pi's
+/// `TURN_PREFIX_SUMMARIZATION_PROMPT`.
+const TURN_PREFIX_SUMMARY_INSTRUCTIONS: &str = "\
+The messages above are earlier context from an ongoing conversation. Later \
+messages are stored separately and do not need to be reconstructed. Create a \
+concise checkpoint of the user's request and the progress shown above so the \
+conversation can continue with the necessary context.
+
+## Original Request
+[What did the user ask for?]
+
+## Progress So Far
+- [Key decisions and work completed in these messages]
+
+## Context Needed to Continue
+- [Information from these messages needed to understand the later work]
+
+Only summarize information explicitly present above. Do not infer or recreate \
+later messages.";
+
+/// Caps a summarization response the way Pi does: a fraction of the reserved
+/// response budget, never above the model's configured output limit.
+fn summary_max_tokens(budget: Option<Budget>, config: &Config, factor: f64) -> u32 {
+    let reserved = budget.map(|budget| budget.reserve_tokens).unwrap_or(0) as f64 * factor;
+    let ceiling = if config.max_tokens > 0 {
+        config.max_tokens as f64
+    } else {
+        f64::INFINITY
+    };
+    reserved.min(ceiling).floor().max(1.0) as u32
+}
+
+/// One summarization call: the system prompt, the prompt text, and a capped
+/// output budget. A one-off summary is not worth caching.
+async fn complete_summary(
     config: &Config,
-    preparation: &Preparation,
-    instructions: Option<&str>,
+    prompt: String,
+    max_tokens: u32,
 ) -> Result<(String, Usage)> {
-    let user = summary_prompt(preparation, instructions);
-    let messages = vec![Message::system(SUMMARY_SYSTEM_PROMPT), Message::user(user)];
-    let client = LlmClient::new(config.clone());
+    let mut config = config.clone();
+    if max_tokens > 0 {
+        config.max_tokens = max_tokens;
+    }
+    let messages = vec![
+        Message::system(SUMMARY_SYSTEM_PROMPT),
+        Message::user(prompt),
+    ];
+    let client = LlmClient::new(config);
     let mut summary = String::new();
     let turn = {
         let mut ignore_thinking = |_: String| {};
@@ -421,34 +525,129 @@ async fn generate_summary(
     Ok((summary.trim().to_string(), turn.usage))
 }
 
+/// Generates the summary for one span. `instructions` optionally focuses the
+/// summary (from `/compact <instructions>`).
+async fn generate_summary(
+    config: &Config,
+    messages: &[Message],
+    previous_summary: Option<&str>,
+    details: &CompactionDetails,
+    instructions: Option<&str>,
+    max_tokens: u32,
+) -> Result<(String, Usage)> {
+    let user = summary_prompt(messages, previous_summary, details, instructions);
+    complete_summary(config, user, max_tokens).await
+}
+
+/// Generates the checkpoint for the prefix of a split user-message span.
+async fn generate_turn_prefix_summary(
+    config: &Config,
+    messages: &[Message],
+    max_tokens: u32,
+) -> Result<(String, Usage)> {
+    let transcript = serialize_conversation(messages);
+    let prompt = format!(
+        "# Conversation\n{transcript}\n\n# Instructions\n{TURN_PREFIX_SUMMARY_INSTRUCTIONS}"
+    );
+    complete_summary(config, prompt, max_tokens).await
+}
+
+fn combine_usage(base: Usage, extra: Usage) -> Usage {
+    Usage {
+        input: base.input + extra.input,
+        output: base.output + extra.output,
+        cache_read: base.cache_read + extra.cache_read,
+        cache_write: base.cache_write + extra.cache_write,
+        reasoning: base.reasoning + extra.reasoning,
+        cost: base.cost + extra.cost,
+    }
+}
+
+/// Summarizes a prepared span, merging the history summary with the checkpoint
+/// of a split turn's prefix when the cut landed inside one.
+async fn summarize_preparation(
+    config: &Config,
+    preparation: &Preparation,
+    budget: Budget,
+    instructions: Option<&str>,
+) -> Result<(String, Usage)> {
+    let history_cap = summary_max_tokens(Some(budget), config, 0.8);
+    if preparation.turn_prefix.is_empty() {
+        return generate_summary(
+            config,
+            &preparation.messages_to_summarize,
+            preparation.previous_summary.as_deref(),
+            &preparation.details,
+            instructions,
+            history_cap,
+        )
+        .await;
+    }
+    let (history, history_usage) = if preparation.messages_to_summarize.is_empty() {
+        (
+            preparation
+                .previous_summary
+                .clone()
+                .unwrap_or_else(|| "No prior history.".to_string()),
+            None,
+        )
+    } else {
+        let (text, usage) = generate_summary(
+            config,
+            &preparation.messages_to_summarize,
+            preparation.previous_summary.as_deref(),
+            &preparation.details,
+            instructions,
+            history_cap,
+        )
+        .await?;
+        (text, Some(usage))
+    };
+    let prefix_cap = summary_max_tokens(Some(budget), config, 0.5);
+    let (prefix, prefix_usage) =
+        generate_turn_prefix_summary(config, &preparation.turn_prefix, prefix_cap).await?;
+    let summary = format!("{history}\n\n---\n\n**Turn Context (split turn):**\n\n{prefix}");
+    let usage = history_usage.map_or(prefix_usage, |usage| combine_usage(usage, prefix_usage));
+    Ok((summary, usage))
+}
+
 /// Builds the summarizer's user message: transcript first, then the request to
 /// summarize, so the final instruction is not "continue this conversation".
-fn summary_prompt(preparation: &Preparation, instructions: Option<&str>) -> String {
-    let transcript = serialize_conversation(&preparation.messages_to_summarize);
+fn summary_prompt(
+    messages: &[Message],
+    previous_summary: Option<&str>,
+    details: &CompactionDetails,
+    instructions: Option<&str>,
+) -> String {
+    let transcript = serialize_conversation(messages);
     let mut user = String::new();
     user.push_str("<conversation>\n");
     user.push_str(&transcript);
     user.push_str("\n</conversation>\n\n");
-    if let Some(previous) = &preparation.previous_summary {
+    if let Some(previous) = previous_summary {
         user.push_str("<previous-summary>\n");
         user.push_str(previous);
         user.push_str("\n</previous-summary>\n\n");
     }
-    if !preparation.details.read_files.is_empty() {
+    if !details.read_files.is_empty() {
         user.push_str("Files read so far:\n");
-        for path in &preparation.details.read_files {
+        for path in &details.read_files {
             user.push_str(&format!("- {path}\n"));
         }
         user.push('\n');
     }
-    if !preparation.details.modified_files.is_empty() {
+    if !details.modified_files.is_empty() {
         user.push_str("Files modified so far:\n");
-        for path in &preparation.details.modified_files {
+        for path in &details.modified_files {
             user.push_str(&format!("- {path}\n"));
         }
         user.push('\n');
     }
-    user.push_str(SUMMARY_INSTRUCTIONS);
+    user.push_str(if previous_summary.is_some() {
+        UPDATE_SUMMARY_INSTRUCTIONS
+    } else {
+        SUMMARY_INSTRUCTIONS
+    });
     if let Some(instructions) = instructions.map(str::trim).filter(|text| !text.is_empty()) {
         user.push_str("\n\nAdditional focus: ");
         user.push_str(instructions);
@@ -469,7 +668,8 @@ pub async fn generate(
     let Some(preparation) = prepare(messages, compactions, budget, tokens_before) else {
         return Ok(None);
     };
-    let (summary, usage) = generate_summary(config, &preparation, instructions).await?;
+    let (summary, usage) =
+        summarize_preparation(config, &preparation, budget, instructions).await?;
     if summary.is_empty() {
         anyhow::bail!("summarizer returned an empty summary");
     }
@@ -497,13 +697,15 @@ pub async fn summarize_branch(
     merge_files(&mut details.modified_files, modified);
     let preparation = Preparation {
         messages_to_summarize: messages.to_vec(),
+        turn_prefix: Vec::new(),
         first_kept: messages.len(),
         previous_summary: previous_summary.map(str::to_string),
         details,
         tokens_before: estimate_tokens(messages) as u64,
         summarized: messages.len(),
     };
-    generate_summary(config, &preparation, None).await
+    let budget = config.compaction.resolve(&config.provider, &config.model);
+    summarize_preparation(config, &preparation, budget, None).await
 }
 
 /// Compacts a message list into `[summary, ...kept]` for callers that rewrite
@@ -522,7 +724,7 @@ pub async fn compact_messages(
     let Some(preparation) = prepare(&messages, &[], budget, tokens_before) else {
         return Ok(messages);
     };
-    let (summary, _) = generate_summary(config, &preparation, instructions).await?;
+    let (summary, _) = summarize_preparation(config, &preparation, budget, instructions).await?;
     let mut compacted = Vec::with_capacity(expected_view_len(&messages, preparation.first_kept));
     compacted.push(Message::user(format!("[conversation summary]\n{summary}")));
     compacted.extend_from_slice(&messages[preparation.first_kept..]);
@@ -729,21 +931,20 @@ mod tests {
 
     #[test]
     fn summary_prompt_puts_the_request_after_the_conversation() {
-        let preparation = Preparation {
-            messages_to_summarize: vec![
-                Message::user("build the thing"),
-                Message::assistant("Done.", vec![]),
-            ],
-            first_kept: 2,
-            previous_summary: Some("earlier summary".into()),
-            details: CompactionDetails {
-                read_files: vec!["/a.rs".into()],
-                modified_files: vec!["/b.rs".into()],
-            },
-            tokens_before: 10,
-            summarized: 2,
+        let details = CompactionDetails {
+            read_files: vec!["/a.rs".into()],
+            modified_files: vec!["/b.rs".into()],
         };
-        let prompt = summary_prompt(&preparation, Some("focus on tests"));
+        let messages = vec![
+            Message::user("build the thing"),
+            Message::assistant("Done.", vec![]),
+        ];
+        let prompt = summary_prompt(
+            &messages,
+            Some("earlier summary"),
+            &details,
+            Some("focus on tests"),
+        );
 
         // The transcript is wrapped and the summarize request comes last, so a
         // model cannot mistake the final assistant turn for the instruction.
@@ -765,6 +966,73 @@ mod tests {
                 .ends_with("Additional focus: focus on tests"),
             "{prompt}"
         );
+        // A previous summary updates that checkpoint instead of writing a fresh one.
+        assert!(prompt.contains("NEW conversation messages"), "{prompt}");
+    }
+
+    #[test]
+    fn summary_prompt_without_previous_uses_the_initial_format() {
+        let prompt = summary_prompt(
+            &[Message::user("build the thing")],
+            None,
+            &CompactionDetails::default(),
+            None,
+        );
+        assert!(
+            prompt.contains("Create a structured context checkpoint"),
+            "{prompt}"
+        );
+        assert!(!prompt.contains("NEW conversation messages"), "{prompt}");
+    }
+
+    #[test]
+    fn prepare_splits_a_turn_when_the_cut_lands_inside_one() {
+        // The newest messages exceed the budget, so the cut lands inside the
+        // second user turn; its opening request is the turn prefix.
+        let messages = vec![
+            Message::user("first request with plenty of words to estimate"),
+            Message::assistant("first answer with plenty of words to estimate", vec![]),
+            Message::user("second request"),
+            Message::assistant("second answer with words to estimate", vec![]),
+            Message::assistant("second answer continues with words", vec![]),
+        ];
+        let preparation = prepare(
+            &messages,
+            &[],
+            Budget {
+                enabled: true,
+                reserve_tokens: 10,
+                keep_recent_tokens: 1,
+            },
+            100,
+        )
+        .unwrap();
+        assert_eq!(preparation.turn_prefix[0].role, "user");
+        assert_eq!(preparation.messages_to_summarize[0].role, "user");
+        assert_eq!(preparation.first_kept, 4);
+        let prefix_len = preparation.turn_prefix.len();
+        let history_len = preparation.messages_to_summarize.len();
+        assert_eq!(preparation.summarized, prefix_len + history_len);
+    }
+
+    #[test]
+    fn prepare_cutting_at_a_user_message_is_not_a_split_turn() {
+        let messages: Vec<Message> = (0..8)
+            .map(|index| Message::user(format!("message {index} with words for the estimate")))
+            .collect();
+        let preparation = prepare(
+            &messages,
+            &[],
+            Budget {
+                enabled: true,
+                reserve_tokens: 10,
+                keep_recent_tokens: 20,
+            },
+            100,
+        )
+        .unwrap();
+        assert!(preparation.turn_prefix.is_empty());
+        assert_eq!(messages[preparation.first_kept].role, "user");
     }
 
     #[test]

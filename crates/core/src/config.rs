@@ -1074,8 +1074,20 @@ pub struct Config {
     pub memory: MemoryStore,
     #[serde(skip)]
     pub compaction: crate::compact::CompactionConfig,
+    /// How queued steering and follow-up messages are delivered, from
+    /// `steeringMode`/`followUpMode` in settings. Pi defaults both to
+    /// `one-at-a-time`.
+    #[serde(skip)]
+    pub steering_mode: crate::agent::QueueMode,
+    #[serde(skip)]
+    pub follow_up_mode: crate::agent::QueueMode,
     #[serde(skip)]
     pub prices: BTreeMap<String, crate::pricing::ModelPrice>,
+    /// Per-model context windows from `modelContextWindows` in `settings.json`
+    /// (global, then project), so a gateway can correct a model the built-in
+    /// table does not know. Empty uses the built-in table alone.
+    #[serde(skip)]
+    pub model_context_windows: BTreeMap<String, u64>,
     /// Whether a finished agent turn raises a desktop toast, and whether it
     /// plays the system alert sound.
     #[serde(skip)]
@@ -1109,46 +1121,263 @@ fn default_max_tokens() -> u32 {
     8192
 }
 
-/// The window used when the model is not in the built-in table. Kept large
-/// because a large window is the common case for the providers Oxide targets;
-/// a model with a smaller documented window is capped by
-/// [`builtin_context_window`], so a fresh configuration does not defer
-/// compaction past the provider's real limit.
+/// The window used when a model is in neither the built-in table nor a
+/// `modelContextWindows` override. Pi's `provider-composer` falls back to
+/// 128,000 for a model whose definition leaves `contextWindow` unset; the
+/// conservative default keeps a fresh configuration from deferring compaction
+/// past the provider's real limit.
 fn default_context_window() -> u64 {
-    1_000_000
+    128_000
 }
 
-/// The input context window of a known model, matched by its longest prefix so
-/// `gpt-4o` and `gpt-4.1` do not fall under `gpt-4`. `None` for a model not in
-/// the table, which keeps [`default_context_window`]. The values are the
-/// providers' documented windows; a gateway that exposes a different one is
-/// answered by setting `context_window` explicitly.
+/// The input context windows of known models, matched by longest prefix so
+/// `claude-sonnet-4` and `claude-sonnet-4-5` do not share a window. The values
+/// are the models.dev figures Pi's bundled catalog ships, so a model Pi gives a
+/// 1M window gets one here too. A gateway that exposes a different window is
+/// answered by `modelContextWindows` in settings or the `context_window` key.
 fn builtin_context_window(model: &str) -> Option<u64> {
     const WINDOWS: &[(&str, u64)] = &[
+        // OpenAI
         ("gpt-3.5", 16_385),
-        ("gpt-4.1", 1_000_000),
+        ("gpt-4.1", 1_047_576),
         ("gpt-4o", 128_000),
         ("gpt-4-turbo", 128_000),
         ("gpt-4", 8_192),
         ("o1", 200_000),
         ("o3", 200_000),
         ("o4-mini", 200_000),
+        ("gpt-5.4-mini", 400_000),
+        ("gpt-5.4-nano", 400_000),
+        ("gpt-5.4", 1_050_000),
+        ("gpt-5.5", 1_050_000),
+        ("gpt-5.6", 1_050_000),
+        ("gpt-5.2-chat", 128_000),
+        ("gpt-5.3-chat", 128_000),
+        ("gpt-5-chat", 128_000),
+        ("gpt-5", 400_000),
+        // Anthropic
+        ("claude-fable-5", 1_000_000),
+        ("claude-3.5", 200_000),
         ("claude-3-5", 200_000),
         ("claude-3-7", 200_000),
         ("claude-3-opus", 200_000),
         ("claude-3-sonnet", 200_000),
         ("claude-3-haiku", 200_000),
-        ("deepseek", 128_000),
-        ("glm-4", 128_000),
-        ("glm-5", 128_000),
+        ("claude-haiku-4.5", 200_000),
+        ("claude-haiku-4-5", 200_000),
+        ("claude-opus-4.1", 200_000),
+        ("claude-opus-4-1", 200_000),
+        ("claude-opus-4.5", 200_000),
+        ("claude-opus-4-5", 200_000),
+        ("claude-opus-4.6", 1_000_000),
+        ("claude-opus-4-6", 1_000_000),
+        ("claude-opus-4.7", 1_000_000),
+        ("claude-opus-4-7", 1_000_000),
+        ("claude-opus-4.8", 1_000_000),
+        ("claude-opus-4-8", 1_000_000),
+        ("claude-opus-4", 200_000),
+        ("claude-opus-5", 1_000_000),
+        ("claude-sonnet-4.5", 1_000_000),
+        ("claude-sonnet-4-5", 1_000_000),
+        ("claude-sonnet-4.6", 1_000_000),
+        ("claude-sonnet-4-6", 1_000_000),
+        ("claude-sonnet-4", 200_000),
+        ("claude-sonnet-5", 1_000_000),
+        // Google
+        ("gemini-3.1-flash-lite-image", 65_536),
+        ("gemini-3.1-flash-live", 131_072),
+        ("gemini-3.5-flash-lite", 1_048_576),
+        ("gemini-3.5-flash", 200_000),
+        ("gemini-3-pro-image", 65_536),
         ("gemini", 1_048_576),
+        // DeepSeek
+        ("deepseek-v3.2", 131_072),
+        ("deepseek-v3", 131_072),
+        ("deepseek-v4", 1_048_576),
+        ("deepseek", 128_000),
+        // Z.AI / GLM
+        ("glm-5.3", 1_000_000),
+        ("glm-5.2", 1_048_576),
+        ("glm-5.1", 204_800),
+        ("glm-5-turbo", 200_000),
+        ("glm-5", 204_800),
+        ("glm-4.7", 204_800),
+        ("glm-4.6", 204_800),
+        ("glm-4", 128_000),
+        // xAI
+        ("grok-4.20", 2_000_000),
+        ("grok-4.3", 1_000_000),
+        ("grok-4.5", 500_000),
+        ("grok-4.6", 500_000),
+        ("grok-4.7", 500_000),
+        ("grok-build", 256_000),
+        ("grok-3", 131_072),
+        ("grok", 131_072),
+        // Moonshot
+        ("kimi-for-coding", 1_048_576),
+        ("kimi-k3", 1_048_576),
+        ("kimi-k2.7", 262_144),
+        ("kimi-k2", 131_072),
+        // Mistral, Meta, Cohere, Upstage
+        ("mistral-large", 262_144),
+        ("mistral", 131_072),
+        ("llama-3.3", 131_072),
+        ("llama-3.1", 131_072),
+        ("command-r", 128_000),
+        ("solar-pro", 524_288),
+        // Alibaba Qwen
+        ("qwen3.7", 1_000_000),
+        ("qwen3.6", 1_000_000),
+        ("qwen3.5", 1_000_000),
+        ("qwen3-coder", 262_144),
+        ("qwen3-max", 262_144),
+        ("qwen3", 131_072),
+        ("qwen-plus", 1_000_000),
+        ("qwen-max", 32_768),
+        ("qwen", 32_768),
     ];
-    let model = model.trim().to_ascii_lowercase();
-    WINDOWS
-        .iter()
-        .filter(|(prefix, _)| model.starts_with(prefix))
-        .max_by_key(|(prefix, _)| prefix.len())
-        .map(|(_, window)| *window)
+    lookup_context_window(WINDOWS.iter().copied(), model)
+}
+
+/// Selects the window from `entries` whose key is the longest prefix of the
+/// model id, its basename (`anthropic/claude-opus-4.5`), or a Bedrock-style
+/// vendor id (`us.anthropic.claude-opus-4-6-v1`). Case-insensitive.
+fn lookup_context_window<'a>(
+    entries: impl Iterator<Item = (&'a str, u64)>,
+    model: &str,
+) -> Option<u64> {
+    let candidates = context_window_candidates(model);
+    entries
+        .filter(|(key, window)| {
+            *window > 0
+                && candidates
+                    .iter()
+                    .any(|candidate| candidate.starts_with(*key))
+        })
+        .max_by_key(|(key, _)| key.len())
+        .map(|(_, window)| window)
+}
+
+/// The spellings of a model id a table key may match: the id itself, the part
+/// after the last `/`, and the part after any leading vendor/region prefixes
+/// (`us.anthropic.claude-…`). Lowercased, in match order.
+fn context_window_candidates(model: &str) -> Vec<String> {
+    const VENDORS: [&str; 24] = [
+        "anthropic",
+        "openai",
+        "xai",
+        "spacexai",
+        "moonshotai",
+        "mistral",
+        "qwen",
+        "meta",
+        "cohere",
+        "amazon",
+        "ai21",
+        "deepseek",
+        "zai",
+        "z-ai",
+        "google",
+        "us",
+        "eu",
+        "apac",
+        "in",
+        "jp",
+        "au",
+        "global",
+        "bedrock",
+        "vertex",
+    ];
+    let normalized = model.trim().to_ascii_lowercase();
+    let mut candidates = vec![normalized.clone()];
+    let basename = normalized.rsplit('/').next().unwrap_or(&normalized);
+    if basename != normalized {
+        candidates.push(basename.to_string());
+    }
+    let mut vendorless = basename.to_string();
+    while let Some((head, rest)) = vendorless.split_once('.') {
+        if !VENDORS.contains(&head) {
+            break;
+        }
+        vendorless = rest.to_string();
+    }
+    if vendorless != basename && vendorless != normalized {
+        candidates.push(vendorless);
+    }
+    candidates
+}
+
+/// Loads per-model context windows from `modelContextWindows` in the global
+/// `settings.json` and the project `.oxide/settings.json` (project wins),
+/// mirroring `modelPrices` in [`crate::pricing`].
+fn load_model_context_windows(cwd: &Path) -> BTreeMap<String, u64> {
+    let mut windows = BTreeMap::new();
+    let mut paths = Vec::new();
+    if let Some(dir) = config_dir() {
+        paths.push(dir.join("settings.json"));
+    }
+    if let Some(root) = crate::ecosystem::project_root(cwd) {
+        paths.push(root.join(".oxide").join("settings.json"));
+    }
+    for path in paths {
+        let Ok(text) = std::fs::read_to_string(&path) else {
+            continue;
+        };
+        let Ok(value) = serde_json::from_str::<serde_json::Value>(&text) else {
+            continue;
+        };
+        let Some(map) = value
+            .get("modelContextWindows")
+            .and_then(serde_json::Value::as_object)
+        else {
+            continue;
+        };
+        for (model, window) in map {
+            if let Some(window) = window.as_u64().filter(|window| *window > 0) {
+                windows.insert(model.to_ascii_lowercase(), window);
+            }
+        }
+    }
+    windows
+}
+
+/// Reads `steeringMode`/`followUpMode` from the global and project
+/// `settings.json` (project wins per key). Both default to Pi's
+/// `one-at-a-time`.
+fn load_queue_modes(cwd: &Path) -> (crate::agent::QueueMode, crate::agent::QueueMode) {
+    use crate::agent::QueueMode;
+    let mut steering = QueueMode::OneAtATime;
+    let mut follow_up = QueueMode::OneAtATime;
+    let mut paths = Vec::new();
+    if let Some(dir) = config_dir() {
+        paths.push(dir.join("settings.json"));
+    }
+    if let Some(root) = crate::ecosystem::project_root(cwd) {
+        paths.push(root.join(".oxide").join("settings.json"));
+    }
+    for path in paths {
+        let Ok(text) = std::fs::read_to_string(&path) else {
+            continue;
+        };
+        let Ok(value) = serde_json::from_str::<serde_json::Value>(&text) else {
+            continue;
+        };
+        if let Some(mode) = value
+            .get("steeringMode")
+            .and_then(serde_json::Value::as_str)
+            .and_then(QueueMode::parse)
+        {
+            steering = mode;
+        }
+        if let Some(mode) = value
+            .get("followUpMode")
+            .and_then(serde_json::Value::as_str)
+            .and_then(QueueMode::parse)
+        {
+            follow_up = mode;
+        }
+    }
+    (steering, follow_up)
 }
 
 fn default_true() -> bool {
@@ -1236,7 +1465,10 @@ impl Default for Config {
             active_agent: None,
             memory: MemoryStore::default(),
             compaction: crate::compact::CompactionConfig::default(),
+            steering_mode: crate::agent::QueueMode::OneAtATime,
+            follow_up_mode: crate::agent::QueueMode::OneAtATime,
             prices: crate::pricing::defaults(),
+            model_context_windows: BTreeMap::new(),
             notify: crate::notify::NotifyConfig::default(),
             tool_filter: crate::cli::ToolFilter::default(),
             ephemeral: false,
@@ -1279,10 +1511,11 @@ impl Config {
 
     /// The model's context window, used for the Pi-style context percentage
     /// and compaction threshold. `OXIDE_CONTEXT_LIMIT` overrides it, then an
-    /// explicit `context_window`, then the model's documented window, then the
-    /// [`default_context_window`] fallback. Keep the window at least as large
-    /// as the response cap for compatibility with older configurations that
-    /// used `max_tokens` to raise the window.
+    /// explicit `context_window`, then a `modelContextWindows` override, then
+    /// the model's catalog window, then the [`default_context_window`]
+    /// fallback. Keep the window at least as large as the response cap for
+    /// compatibility with older configurations that used `max_tokens` to raise
+    /// the window.
     pub fn context_window(&self) -> u64 {
         std::env::var("OXIDE_CONTEXT_LIMIT")
             .ok()
@@ -1291,6 +1524,13 @@ impl Config {
             .unwrap_or_else(|| {
                 let configured = if self.context_window > 0 {
                     self.context_window
+                } else if let Some(window) = lookup_context_window(
+                    self.model_context_windows
+                        .iter()
+                        .map(|(key, window)| (key.as_str(), *window)),
+                    &self.model,
+                ) {
+                    window
                 } else {
                     builtin_context_window(&self.model).unwrap_or_else(default_context_window)
                 };
@@ -1423,6 +1663,8 @@ impl Config {
         config.memory = MemoryStore::load(cwd);
         config.compaction = crate::compact::load_config(cwd);
         config.prices = crate::pricing::load(cwd);
+        config.model_context_windows = load_model_context_windows(cwd);
+        (config.steering_mode, config.follow_up_mode) = load_queue_modes(cwd);
         config.notify = crate::notify::load_config(cwd);
         if let Some(name) = agent {
             config.activate_agent(&name)?;
@@ -2533,21 +2775,33 @@ mod tests {
 
     #[test]
     fn context_window_derives_from_the_model() {
-        // The default model's own documented window, not the large fallback,
-        // so a fresh configuration compacts before the provider rejects the
-        // request.
+        // The default model's own catalog window, so a fresh configuration
+        // compacts before the provider rejects the request.
         let config = Config::default();
         assert_eq!(config.context_window, 0);
         assert_eq!(config.context_window(), 128_000);
 
-        // Longest-prefix matching: `gpt-4.1` and `gpt-4-turbo` do not fall
-        // under `gpt-4`.
+        // Pi's catalog windows, including the models it gives a 1M window.
+        // Longest-prefix matching keeps `claude-sonnet-4` (200k) apart from
+        // `claude-sonnet-4-5` (1M), and `gpt-4` apart from `gpt-4.1`.
         for (model, window) in [
-            ("gpt-4.1", 1_000_000),
+            ("gpt-4.1", 1_047_576),
             ("gpt-4-turbo", 128_000),
             ("gpt-4o-mini", 128_000),
+            ("gpt-5", 400_000),
+            ("gpt-5.4", 1_050_000),
+            ("claude-sonnet-4", 200_000),
+            ("claude-sonnet-4-5", 1_000_000),
+            ("claude-opus-4.5", 200_000),
+            ("claude-opus-4.7", 1_000_000),
+            ("gemini-2.5-pro", 1_048_576),
+            ("gemini-3.5-flash", 200_000),
             ("deepseek-chat", 128_000),
-            ("glm-5.3", 128_000),
+            ("deepseek-v4-pro", 1_048_576),
+            ("glm-5.3", 1_000_000),
+            ("glm-4.7", 204_800),
+            ("grok-4.5", 500_000),
+            ("kimi-k3", 1_048_576),
         ] {
             let config = Config {
                 model: model.to_string(),
@@ -2556,18 +2810,44 @@ mod tests {
             assert_eq!(config.context_window(), window, "{model}");
         }
 
-        // A model the table does not know keeps the 1M fallback, and an
-        // explicit value always wins over both.
+        // A routed or vendor-spelled id is matched by its basename.
+        for (model, window) in [
+            ("anthropic/claude-opus-4.7", 1_000_000),
+            ("anthropic/claude-sonnet-4", 200_000),
+            ("us.anthropic.claude-sonnet-4-5-20250929-v1:0", 1_000_000),
+            ("meta-llama/Llama-3.3-70B-Instruct-Turbo", 131_072),
+        ] {
+            let config = Config {
+                model: model.to_string(),
+                ..Config::default()
+            };
+            assert_eq!(config.context_window(), window, "{model}");
+        }
+
+        // A model neither the table nor a setting knows falls back to Pi's
+        // 128k, and an explicit value always wins over both.
         let unknown = Config {
-            model: "claude-opus-5".to_string(),
+            model: "totally-unknown-model".to_string(),
             ..Config::default()
         };
-        assert_eq!(unknown.context_window(), 1_000_000);
+        assert_eq!(unknown.context_window(), 128_000);
         let explicit = Config {
             context_window: 300_000,
             ..Config::default()
         };
         assert_eq!(explicit.context_window(), 300_000);
+    }
+
+    #[test]
+    fn model_context_window_override_beats_the_table() {
+        let mut overrides = BTreeMap::new();
+        overrides.insert("claude-sonnet-4".to_string(), 500_000);
+        let config = Config {
+            model: "claude-sonnet-4-5".to_string(),
+            model_context_windows: overrides,
+            ..Config::default()
+        };
+        assert_eq!(config.context_window(), 500_000);
     }
 
     #[test]

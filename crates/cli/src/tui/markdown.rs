@@ -1034,6 +1034,22 @@ fn parse_inline_into(text: &str, style: Style, palette: &Palette, out: &mut Vec<
             }
         }
 
+        // A URL written without brackets is still a link, like Pi's autolink
+        // handling; the reader can click it to open the browser.
+        if let Some((len, url)) = take_bare_url(rest) {
+            let boundary = text[..i]
+                .chars()
+                .next_back()
+                .map(|c| !c.is_alphanumeric())
+                .unwrap_or(true);
+            if boundary {
+                flush(&mut literal, style, out);
+                out.push(Span::styled(url.to_string(), palette.link));
+                i += len;
+                continue;
+            }
+        }
+
         let ch = rest.chars().next().unwrap();
         literal.push(ch);
         i += ch.len_utf8();
@@ -1086,6 +1102,24 @@ fn parse_link(rest: &str, style: Style, palette: &Palette) -> Option<(usize, Vec
 
 fn is_url(text: &str) -> bool {
     text.starts_with("http://") || text.starts_with("https://") || text.starts_with("mailto:")
+}
+
+/// The bare URL beginning `rest` and the bytes it spans. Trailing sentence
+/// punctuation is left to the surrounding text so the link it produces ends at
+/// the URL.
+pub(crate) fn take_bare_url(rest: &str) -> Option<(usize, &str)> {
+    if !is_url(rest) {
+        return None;
+    }
+    let end = rest
+        .char_indices()
+        .find(|(_, ch)| {
+            ch.is_whitespace() || matches!(ch, '<' | '>' | '"' | '\'' | '`' | ')' | ']')
+        })
+        .map(|(index, _)| index)
+        .unwrap_or(rest.len());
+    let url = rest[..end].trim_end_matches(['.', ',', ';', ':', '!', '?']);
+    (!url.is_empty()).then_some((url.len(), url))
 }
 
 fn looks_like_tag(text: &str) -> bool {
@@ -1260,6 +1294,28 @@ mod tests {
     fn links_show_their_target() {
         let body = render_text("[docs](https://example.com)", 80);
         assert_eq!(body, "docs (https://example.com)");
+    }
+
+    #[test]
+    fn bare_urls_are_styled_as_links() {
+        let theme = Theme::dark();
+        let lines = render("see https://example.com now", 80, &theme);
+        let span = lines[0]
+            .spans
+            .iter()
+            .find(|span| span.content.contains("https://example.com"))
+            .expect("url span");
+        assert!(span.style.add_modifier.contains(Modifier::UNDERLINED));
+        assert_eq!(text(&lines), "see https://example.com now");
+
+        // A URL glued to a word is not a link, and a trailing period stays text.
+        let lines = render("xhttps://example.com", 80, &theme);
+        assert!(!lines[0]
+            .spans
+            .iter()
+            .any(|span| span.style.add_modifier.contains(Modifier::UNDERLINED)));
+        let lines = render("see https://example.com.", 80, &theme);
+        assert_eq!(text(&lines), "see https://example.com.");
     }
 
     #[test]

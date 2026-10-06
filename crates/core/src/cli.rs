@@ -281,6 +281,9 @@ pub fn event_json(event: &AgentEvent) -> Option<Value> {
             "delayMs": delay_ms,
         }),
         AgentEvent::Branch { .. } => return None,
+        // A message the client already knows it queued: it painted the turn
+        // when it sent it, so the delivery is not repeated back to it.
+        AgentEvent::Steered { .. } => return None,
         // Nested `task` activity is progress for the interactive view; the
         // task's own result already carries everything a script needs.
         AgentEvent::SubagentActivity { .. } => return None,
