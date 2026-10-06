@@ -4,7 +4,7 @@ use crate::tui::app::{
     App, Authorization, ChatItem, ConnectState, ConnectStep, ListRow, MarketplacePane, Selection,
     SubagentState, Tone, UsageField,
 };
-use crate::tui::rows::{Join, Rows};
+use crate::tui::rows::{Join, RowLink, Rows};
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span, Text};
@@ -2129,15 +2129,17 @@ pub(crate) fn jump_to_end_rect(app: &App, area: Rect) -> Option<Rect> {
 
 /// The URL the cell at `column` of rendered line `line` names, if any, so a
 /// click on a link opens the browser instead of starting a text selection.
-/// Covers a bare URL, a `[label](url)`'s visible target and an `<url>` autolink,
-/// since each leaves the URL in the row's text.
+/// A labelled link is drawn as its label — the target is not in the row's text
+/// — so it answers from what the renderer recorded; a bare URL and an `<url>`
+/// autolink leave the URL in the text and are found there.
 pub(crate) fn link_at(app: &App, line: usize, column: usize) -> Option<String> {
-    let line = app.lines.get(line)?;
-    let text: String = line
-        .spans
-        .iter()
-        .map(|span| span.content.as_ref())
-        .collect();
+    let row = app.lines.get(line)?;
+    if let Some(links) = app.line_links.get(line) {
+        if let Some(url) = row_link_at(links, row, column) {
+            return Some(url);
+        }
+    }
+    let text: String = row.spans.iter().map(|span| span.content.as_ref()).collect();
     let mut byte = 0usize;
     let mut col = 0usize;
     while byte < text.len() {
@@ -2179,6 +2181,30 @@ pub(crate) fn link_at(app: &App, line: usize, column: usize) -> Option<String> {
         let ch = rest.chars().next()?;
         byte += ch.len_utf8();
         col += char_width(ch);
+    }
+    None
+}
+
+/// The URL one of a row's own links names at `column`, from what the renderer
+/// recorded when it drew the row.
+fn row_link_at(links: &[RowLink], line: &Line<'_>, column: usize) -> Option<String> {
+    if links.is_empty() {
+        return None;
+    }
+    let mut col = 0usize;
+    for (index, span) in line.spans.iter().enumerate() {
+        for (offset, ch) in span.content.chars().enumerate() {
+            let width = char_width(ch);
+            if let Some(link) = links
+                .iter()
+                .find(|link| link.span == index && offset >= link.start && offset < link.end)
+            {
+                if column >= col && column < col + width {
+                    return Some(link.url.clone());
+                }
+            }
+            col += width;
+        }
     }
     None
 }
@@ -2262,6 +2288,7 @@ fn sync_lines(app: &mut App, width: usize) {
     if app.render_width != width {
         app.lines.clear();
         app.line_joins.clear();
+        app.line_links.clear();
         app.line_offsets.clear();
         app.render_dirty_from = Some(0);
         app.render_width = width;
@@ -2288,6 +2315,7 @@ fn sync_lines(app: &mut App, width: usize) {
         .unwrap_or(app.lines.len());
     app.lines.truncate(cut);
     app.line_joins.truncate(cut);
+    app.line_links.truncate(cut);
     app.line_offsets.truncate(start);
 
     let running = app.running_tool.as_ref().map(|(name, started)| Running {
@@ -2311,9 +2339,11 @@ fn sync_lines(app: &mut App, width: usize) {
         if !rendered.is_empty() {
             app.lines.append(&mut rendered.lines);
             app.line_joins.append(&mut rendered.joins);
+            app.line_links.append(&mut rendered.links);
             // The blank row between two items is the layout's, not the text's.
             app.lines.push(Line::from(""));
             app.line_joins.push(Join::Line);
+            app.line_links.push(Vec::new());
         }
     }
     app.render_dirty_from = None;
@@ -4257,6 +4287,40 @@ mod tests {
         assert_eq!(
             message_position_at(&app, area, 999, inner_y),
             Some((4, usize::from(message_area.width - 1 - 1)))
+        );
+    }
+
+    #[test]
+    fn a_click_on_a_labels_row_answers_with_its_target() {
+        let mut app = App::new("model".into(), "/tmp".into(), Reasoning::Auto);
+        app.items.push(ChatItem::Assistant(
+            "The turn is [#176 fix(cli,desktop,vscode): name a release by its version, not its tag]\
+             (https://github.com/jaysonwu991/oxide/pull/176) \
+             and it changed two files."
+                .into(),
+        ));
+        sync_lines(&mut app, 40);
+
+        let text: String = app.lines[0]
+            .spans
+            .iter()
+            .map(|span| span.content.as_ref())
+            .collect();
+        assert!(text.contains("#176"), "the label is drawn: {text}");
+        assert!(
+            !app.transcript_text().contains("github.com"),
+            "the target is not part of the text: {}",
+            app.transcript_text()
+        );
+
+        let start = text[..text.find("#176").expect("the label")]
+            .chars()
+            .map(char_width)
+            .sum::<usize>();
+        assert_eq!(link_at(&app, 0, 0), None, "the speaker label is not a link");
+        assert_eq!(
+            link_at(&app, 0, start + 1).as_deref(),
+            Some("https://github.com/jaysonwu991/oxide/pull/176")
         );
     }
 

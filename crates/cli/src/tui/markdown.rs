@@ -10,14 +10,14 @@ use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 
 use crate::theme::Theme;
-use crate::tui::rows::{Join, Rows};
+use crate::tui::rows::{Join, RowLink, Rows};
 
 /// Renders `text` as styled rows that fit `width` columns, keeping `indent`
 /// columns free on the first line for a prefix that shares it.
 fn render_body(text: &str, width: usize, indent: usize, palette: &Palette) -> Rows {
     let text = crate::tools::sanitize_terminal_output(text);
-    let blocks = parse_blocks(&text, palette);
-    let mut renderer = Renderer::new(width, palette);
+    let (blocks, links) = parse_blocks(&text, palette);
+    let mut renderer = Renderer::new(width, palette, links);
     renderer.first_width = Some(width.saturating_sub(indent));
     renderer.render_blocks(&blocks, &[], true);
     renderer.finish()
@@ -38,13 +38,23 @@ pub(crate) fn render_with_prefix(
     let indent: usize = prefix.iter().map(|span| span.content.chars().count()).sum();
     let palette = Palette::new(theme);
     let mut rows = render_body(text, width, indent, &palette);
-    let Some((first, _)) = rows.remove_first() else {
+    let Some((first, _, links)) = rows.remove_first() else {
         rows.push(Line::from(prefix));
         return rows;
     };
     let mut spans = prefix;
+    // The links were recorded against the body's own spans, which now sit
+    // behind the prefix that shares the line.
+    let shift = spans.len();
+    let links = links
+        .into_iter()
+        .map(|link| RowLink {
+            span: link.span + shift,
+            ..link
+        })
+        .collect();
     spans.extend(first.spans);
-    rows.insert_first(Line::from(spans));
+    rows.insert_first(Line::from(spans), links);
     rows
 }
 
@@ -55,7 +65,6 @@ struct Palette {
     inline_code: Style,
     code_block: Style,
     link: Style,
-    link_url: Style,
     bullet: Style,
     quote: Style,
     rule: Style,
@@ -76,7 +85,6 @@ impl Palette {
             link: Style::default()
                 .fg(theme.accent)
                 .add_modifier(Modifier::UNDERLINED),
-            link_url: Style::default().fg(theme.dim),
             bullet: Style::default().fg(theme.accent),
             quote: Style::default().fg(theme.dim),
             rule: Style::default().fg(theme.dim),
@@ -86,6 +94,26 @@ impl Palette {
             dim: Style::default().fg(theme.dim),
         }
     }
+}
+
+/// The links a reply drew, by the label each was drawn under: a link reads as
+/// its label alone, so the row it lands on keeps the target for the click.
+type Links = Vec<(String, String)>;
+
+/// The URL the link-style text `label` names. A label the pane wrapped is drawn
+/// as one span per row, each holding a piece of it, so a piece that names
+/// exactly one label answers as well — unless the piece is a URL of its own,
+/// which is drawn as a link whether or not a label holds it.
+fn link_url(links: &[(String, String)], label: &str) -> Option<String> {
+    if let Some((_, url)) = links.iter().find(|(text, _)| text == label) {
+        return Some(url.clone());
+    }
+    if is_url(label) {
+        return None;
+    }
+    let mut pieces = links.iter().filter(|(text, _)| text.contains(label));
+    let (_, url) = pieces.next()?;
+    pieces.next().is_none().then(|| url.clone())
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -263,6 +291,8 @@ type Row = (Vec<Span<'static>>, Join);
 struct Renderer<'a> {
     width: usize,
     palette: &'a Palette,
+    /// The links this reply drew, by label, for the rows that carry one.
+    links: Links,
     rows: Rows,
     /// Width budget for the first line this renderer emits, for a speaker prefix
     /// that shares it. Consumed by the first line actually wrapped.
@@ -270,10 +300,11 @@ struct Renderer<'a> {
 }
 
 impl<'a> Renderer<'a> {
-    fn new(width: usize, palette: &'a Palette) -> Self {
+    fn new(width: usize, palette: &'a Palette, links: Links) -> Self {
         Self {
             width: width.max(1),
             palette,
+            links,
             rows: Rows::default(),
             first_width: None,
         }
@@ -316,12 +347,36 @@ impl<'a> Renderer<'a> {
     }
 
     fn push(&mut self, spans: Vec<Span<'static>>) {
-        self.rows.push(Line::from(spans));
+        self.push_join(spans, Join::Line);
     }
 
-    /// A row the pane wrapped: its text is the rest of the line above it.
+    /// A row the pane wrapped: its text is the rest of the line above it. Every
+    /// row records the links it draws, since the URL of a labelled link is not
+    /// part of the row's text.
     fn push_join(&mut self, spans: Vec<Span<'static>>, join: Join) {
-        self.rows.push_join(Line::from(spans), join);
+        let links = self.row_links(&spans);
+        self.rows.push_join_links(Line::from(spans), join, links);
+    }
+
+    /// The links a row draws: every span the palette drew as a link, with the
+    /// URL its label names.
+    fn row_links(&self, spans: &[Span<'static>]) -> Vec<RowLink> {
+        if self.links.is_empty() {
+            return Vec::new();
+        }
+        spans
+            .iter()
+            .enumerate()
+            .filter(|(_, span)| span.style == self.palette.link)
+            .filter_map(|(span, drawn)| {
+                link_url(&self.links, &drawn.content).map(|url| RowLink {
+                    span,
+                    start: 0,
+                    end: drawn.content.chars().count(),
+                    url,
+                })
+            })
+            .collect()
     }
 
     fn wrap(&mut self, spans: &[Span<'static>], ambient: &[Span<'static>]) {
@@ -446,7 +501,7 @@ impl<'a> Renderer<'a> {
             let mut cont = ambient.to_vec();
             cont.push(Span::raw(" ".repeat(marker_width)));
 
-            let mut sub = Renderer::new(self.width, self.palette);
+            let mut sub = Renderer::new(self.width, self.palette, self.links.clone());
             sub.first_width = self.first_width.take();
             sub.render_blocks(blocks, &cont, false);
             let pending = sub.first_width.take();
@@ -459,7 +514,7 @@ impl<'a> Renderer<'a> {
                 self.first_width = pending;
                 continue;
             }
-            let Some((first, _)) = item_rows.remove_first() else {
+            let Some((first, _, _)) = item_rows.remove_first() else {
                 continue;
             };
             let stripped = strip_prefix(first, indent_width(&cont));
@@ -544,11 +599,11 @@ impl<'a> Renderer<'a> {
         };
         let mut spans = ambient.to_vec();
         for (index, width) in widths.iter().enumerate() {
-            let cell = cells
+            let cell: &[Span<'static>] = cells
                 .get(index)
-                .map(|spans| spans_text(spans))
-                .unwrap_or_default();
-            spans.push(Span::styled(pad_cell(&cell, *width), style));
+                .map(|spans| spans.as_slice())
+                .unwrap_or(&[]);
+            spans.extend(pad_spans(cell, *width, style));
             if index + 1 < widths.len() {
                 spans.push(Span::raw(" ".repeat(gap)));
             }
@@ -578,18 +633,35 @@ fn strip_prefix(mut line: Line<'static>, count: usize) -> Vec<Span<'static>> {
     out
 }
 
-fn pad_cell(text: &str, width: usize) -> String {
-    let count = text.chars().count();
-    if count > width {
-        if width == 0 {
-            return String::new();
+/// A cell's spans, padded or shortened to `width`, keeping the styles they were
+/// parsed with so a link in the cell is still drawn as the link's own span.
+fn pad_spans(spans: &[Span<'static>], width: usize, style: Style) -> Vec<Span<'static>> {
+    let count = span_width(spans);
+    if count <= width {
+        let mut out = spans.to_vec();
+        if count < width {
+            out.push(Span::styled(" ".repeat(width - count), style));
         }
-        let mut truncated: String = text.chars().take(width.saturating_sub(1)).collect();
-        truncated.push('…');
-        truncated
-    } else {
-        format!("{text}{}", " ".repeat(width - count))
+        return out;
     }
+    if width == 0 {
+        return Vec::new();
+    }
+    let mut remaining = width - 1;
+    let mut out = Vec::new();
+    for span in spans {
+        if remaining == 0 {
+            break;
+        }
+        let take = span.content.chars().count().min(remaining);
+        out.push(Span::styled(
+            span.content.chars().take(take).collect::<String>(),
+            span.style,
+        ));
+        remaining -= take;
+    }
+    out.push(Span::styled("…", style));
+    out
 }
 
 fn leading_indent(line: &str) -> usize {
@@ -731,12 +803,14 @@ fn starts_block(line: &str) -> bool {
         || list_marker(line).is_some()
 }
 
-fn parse_blocks(text: &str, palette: &Palette) -> Vec<Block> {
+fn parse_blocks(text: &str, palette: &Palette) -> (Vec<Block>, Links) {
     let lines: Vec<String> = text.lines().map(|line| line.to_string()).collect();
-    parse_lines(&lines, palette)
+    let mut links = Links::new();
+    let blocks = parse_lines(&lines, palette, &mut links);
+    (blocks, links)
 }
 
-fn parse_lines(lines: &[String], palette: &Palette) -> Vec<Block> {
+fn parse_lines(lines: &[String], palette: &Palette, links: &mut Links) -> Vec<Block> {
     let mut blocks = Vec::new();
     let mut i = 0;
     while i < lines.len() {
@@ -768,11 +842,16 @@ fn parse_lines(lines: &[String], palette: &Palette) -> Vec<Block> {
                 inner.push(rest.strip_prefix(' ').unwrap_or(rest).to_string());
                 i += 1;
             }
-            blocks.push(Block::Quote(parse_lines(&inner, palette)));
+            blocks.push(Block::Quote(parse_lines(&inner, palette, links)));
             continue;
         }
         if let Some(text) = heading(line) {
-            blocks.push(Block::Heading(parse_inline(text, palette.heading, palette)));
+            blocks.push(Block::Heading(parse_inline(
+                text,
+                palette.heading,
+                palette,
+                links,
+            )));
             i += 1;
             continue;
         }
@@ -782,13 +861,13 @@ fn parse_lines(lines: &[String], palette: &Palette) -> Vec<Block> {
             continue;
         }
         if list_marker(line).is_some() {
-            let (block, next) = parse_list(lines, i, palette);
+            let (block, next) = parse_list(lines, i, palette, links);
             blocks.push(block);
             i = next;
             continue;
         }
         if is_table_start(lines, i) {
-            let (block, next) = parse_table(lines, i, palette);
+            let (block, next) = parse_table(lines, i, palette, links);
             blocks.push(block);
             i = next;
             continue;
@@ -799,7 +878,12 @@ fn parse_lines(lines: &[String], palette: &Palette) -> Vec<Block> {
             if current.trim().is_empty() || starts_block(current) || is_table_start(lines, i) {
                 break;
             }
-            paragraph.push(parse_inline(current.trim_end(), palette.text, palette));
+            paragraph.push(parse_inline(
+                current.trim_end(),
+                palette.text,
+                palette,
+                links,
+            ));
             i += 1;
         }
         blocks.push(Block::Paragraph(paragraph));
@@ -807,7 +891,12 @@ fn parse_lines(lines: &[String], palette: &Palette) -> Vec<Block> {
     blocks
 }
 
-fn parse_list(lines: &[String], start: usize, palette: &Palette) -> (Block, usize) {
+fn parse_list(
+    lines: &[String],
+    start: usize,
+    palette: &Palette,
+    links: &mut Links,
+) -> (Block, usize) {
     let base = list_marker(&lines[start]).map(|m| m.indent).unwrap_or(0);
     let mut items: Vec<Vec<Block>> = Vec::new();
     let mut ordered = false;
@@ -870,7 +959,7 @@ fn parse_list(lines: &[String], start: usize, palette: &Palette) -> (Block, usiz
                 break;
             }
         }
-        items.push(parse_lines(&item, palette));
+        items.push(parse_lines(&item, palette, links));
     }
     (
         Block::List {
@@ -894,10 +983,15 @@ fn task_text(content: &str) -> String {
     content.to_string()
 }
 
-fn parse_table(lines: &[String], start: usize, palette: &Palette) -> (Block, usize) {
+fn parse_table(
+    lines: &[String],
+    start: usize,
+    palette: &Palette,
+    links: &mut Links,
+) -> (Block, usize) {
     let header = split_cells(&lines[start])
         .iter()
-        .map(|cell| parse_inline(cell, palette.table_header, palette))
+        .map(|cell| parse_inline(cell, palette.table_header, palette, links))
         .collect();
     let mut rows = Vec::new();
     let mut i = start + 2;
@@ -905,7 +999,7 @@ fn parse_table(lines: &[String], start: usize, palette: &Palette) -> (Block, usi
         rows.push(
             split_cells(&lines[i])
                 .iter()
-                .map(|cell| parse_inline(cell, palette.text, palette))
+                .map(|cell| parse_inline(cell, palette.text, palette, links))
                 .collect(),
         );
         i += 1;
@@ -913,9 +1007,14 @@ fn parse_table(lines: &[String], start: usize, palette: &Palette) -> (Block, usi
     (Block::Table { header, rows }, i)
 }
 
-fn parse_inline(text: &str, style: Style, palette: &Palette) -> Vec<Span<'static>> {
+fn parse_inline(
+    text: &str,
+    style: Style,
+    palette: &Palette,
+    links: &mut Links,
+) -> Vec<Span<'static>> {
     let mut out = Vec::new();
-    parse_inline_into(text, style, palette, &mut out);
+    parse_inline_into(text, style, palette, links, &mut out);
     coalesce_spans(out)
 }
 
@@ -925,7 +1024,13 @@ fn flush(literal: &mut String, style: Style, out: &mut Vec<Span<'static>>) {
     }
 }
 
-fn parse_inline_into(text: &str, style: Style, palette: &Palette, out: &mut Vec<Span<'static>>) {
+fn parse_inline_into(
+    text: &str,
+    style: Style,
+    palette: &Palette,
+    links: &mut Links,
+    out: &mut Vec<Span<'static>>,
+) {
     let mut literal = String::new();
     let mut i = 0;
     while i < text.len() {
@@ -961,6 +1066,7 @@ fn parse_inline_into(text: &str, style: Style, palette: &Palette, out: &mut Vec<
                     &rest[2..2 + end],
                     style.add_modifier(Modifier::BOLD),
                     palette,
+                    links,
                     out,
                 );
                 i += 2 + end + 2;
@@ -975,6 +1081,7 @@ fn parse_inline_into(text: &str, style: Style, palette: &Palette, out: &mut Vec<
                     &stripped[..end],
                     style.add_modifier(Modifier::CROSSED_OUT),
                     palette,
+                    links,
                     out,
                 );
                 i += 2 + end + 2;
@@ -989,6 +1096,7 @@ fn parse_inline_into(text: &str, style: Style, palette: &Palette, out: &mut Vec<
                     &rest[1..1 + end],
                     style.add_modifier(Modifier::ITALIC),
                     palette,
+                    links,
                     out,
                 );
                 i += 1 + end + 1;
@@ -1003,6 +1111,7 @@ fn parse_inline_into(text: &str, style: Style, palette: &Palette, out: &mut Vec<
                     &rest[1..1 + end],
                     style.add_modifier(Modifier::ITALIC),
                     palette,
+                    links,
                     out,
                 );
                 i += 1 + end + 1;
@@ -1011,7 +1120,7 @@ fn parse_inline_into(text: &str, style: Style, palette: &Palette, out: &mut Vec<
         }
 
         if rest.starts_with("![") || rest.starts_with('[') {
-            if let Some((len, spans)) = parse_link(rest, style, palette) {
+            if let Some((len, spans)) = parse_link(rest, style, palette, links) {
                 flush(&mut literal, style, out);
                 out.extend(spans);
                 i += len;
@@ -1071,7 +1180,16 @@ fn match_underscore(haystack: &str) -> Option<usize> {
     None
 }
 
-fn parse_link(rest: &str, style: Style, palette: &Palette) -> Option<(usize, Vec<Span<'static>>)> {
+/// The label a link is drawn as, and the URL it names. The target is recorded
+/// with the palette rather than drawn, so a link reads as its label the way it
+/// does in every other front-end, and a click is answered from what was
+/// recorded.
+fn parse_link(
+    rest: &str,
+    style: Style,
+    palette: &Palette,
+    links: &mut Links,
+) -> Option<(usize, Vec<Span<'static>>)> {
     if rest.starts_with("[^") || rest.starts_with("[ ") {
         return None;
     }
@@ -1086,17 +1204,19 @@ fn parse_link(rest: &str, style: Style, palette: &Palette) -> Option<(usize, Vec
     let mut spans = Vec::new();
     if image {
         spans.push(Span::styled("🖼 ", palette.dim));
-        let text = if label.is_empty() { url } else { label };
-        spans.push(Span::styled(text.to_string(), palette.link));
-    } else {
-        parse_inline_into(label, style, palette, &mut spans);
-        for span in spans.iter_mut() {
-            span.style = palette.link;
-        }
-        if !url.is_empty() && url != label {
-            spans.push(Span::styled(format!(" ({url})"), palette.link_url));
-        }
     }
+    let label_start = spans.len();
+    parse_inline_into(label, style, palette, links, &mut spans);
+    if spans.len() == label_start {
+        spans.push(Span::styled(url.to_string(), palette.link));
+    }
+    for span in spans[label_start..].iter_mut() {
+        span.style = palette.link;
+    }
+    if !url.is_empty() {
+        links.push((spans_text(&spans[label_start..]), url.to_string()));
+    }
+
     Some((close + 1 + 1 + url_end + 1, spans))
 }
 
@@ -1291,9 +1411,97 @@ mod tests {
     }
 
     #[test]
-    fn links_show_their_target() {
-        let body = render_text("[docs](https://example.com)", 80);
-        assert_eq!(body, "docs (https://example.com)");
+    fn a_link_reads_as_its_label_and_keeps_its_target_beside_the_row() {
+        let theme = Theme::dark();
+        let rows = render_with_prefix(
+            "see [docs](https://example.com) now",
+            80,
+            Vec::new(),
+            &theme,
+        );
+        assert_eq!(
+            rows.lines
+                .iter()
+                .map(|line| line
+                    .spans
+                    .iter()
+                    .map(|span| span.content.as_ref())
+                    .collect::<String>())
+                .collect::<Vec<_>>()
+                .join("\n"),
+            "see docs now"
+        );
+        assert_eq!(
+            rows.links,
+            vec![vec![RowLink {
+                span: 1,
+                start: 0,
+                end: 4,
+                url: "https://example.com".to_string(),
+            }]]
+        );
+    }
+
+    #[test]
+    fn a_label_the_pane_wrapped_still_names_its_target() {
+        let theme = Theme::dark();
+        let rows = render_with_prefix(
+            "[a release by its version](https://example.com/pull/176)",
+            18,
+            Vec::new(),
+            &theme,
+        );
+        assert!(rows.lines.len() > 1, "the label wrapped");
+        assert_eq!(rows.links.len(), rows.lines.len());
+        assert!(
+            rows.links.iter().all(|links| links.len() == 1),
+            "every row of the label names its target: {:?}",
+            rows.links
+        );
+    }
+
+    #[test]
+    fn a_link_a_speaker_prefix_shares_the_line_still_names_its_target() {
+        let rows = render_with_prefix(
+            "see [docs](https://example.com)",
+            80,
+            speaker_prefix(),
+            &Theme::dark(),
+        );
+        let link = rows.links[0].first().expect("the link's row");
+        assert_eq!(rows.lines[0].spans[link.span].content.as_ref(), "docs");
+        assert_eq!(link.url, "https://example.com");
+    }
+
+    #[test]
+    fn a_link_in_a_table_names_its_target_too() {
+        let theme = Theme::dark();
+        let rows = render_with_prefix(
+            "| pr | state |\n| --- | --- |\n| [#176](https://example.com/176) | open |",
+            60,
+            Vec::new(),
+            &theme,
+        );
+        let (row, link) = rows
+            .links
+            .iter()
+            .enumerate()
+            .flat_map(|(row, links)| links.iter().map(move |link| (row, link)))
+            .find(|(_, link)| link.url == "https://example.com/176")
+            .expect("the table cell's link");
+        assert_eq!(rows.lines[row].spans[link.span].content.as_ref(), "#176");
+    }
+
+    #[test]
+    fn an_image_is_drawn_as_a_picture_and_a_link_without_a_label_as_its_url() {
+        assert_eq!(
+            render_text("![shot](https://example.com/a.png)", 80),
+            "🖼 shot"
+        );
+        assert_eq!(
+            render_text("[](https://example.com)", 80),
+            "https://example.com"
+        );
     }
 
     #[test]
