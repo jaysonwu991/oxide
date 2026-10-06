@@ -91,6 +91,7 @@ import {
 } from "./core/updates";
 import { downloadUpdate, removeDownload, type Download } from "./updates";
 import { modelsListArgs, parseModelCatalog } from "./core/models";
+import { parseReasoning, reasoningArgs } from "./core/reasoning";
 import { changeArgs, diffPlan, undoArgs, type DiffPlan } from "./core/changes";
 import {
   commandRows,
@@ -99,7 +100,7 @@ import {
   type CommandEntry,
   type PanelAction,
 } from "./core/palette";
-import { footerState, REASONING_LEVELS, type FooterState } from "./core/footer";
+import { footerState, reasoningChoices, type FooterState } from "./core/footer";
 import { projectInfo, sharedSettingsFor, type ProjectDeps, type ProjectInfo } from "./core/project";
 import {
   buildPrompt,
@@ -351,6 +352,12 @@ export class ChatController {
   private modelQuery = "";
   private modelNote = "";
   private modelProbe = 0;
+  /// The active model's advertised reasoning levels, read through the CLI.
+  /// Empty until the answer arrives, when the built-in set stands in.
+  private reasoningLevels: string[] = [];
+  /// The newest read of them, so a stale answer is dropped rather than
+  /// repainting the chip with a model the panel has moved off.
+  private reasoningProbe = 0;
   /// The provider table as the CLI last answered it, the search over it, and the
   /// newest read of it. Held rather than re-read per keystroke: a login changes
   /// what the rows say, so the table is read again when the dialog opens and
@@ -456,7 +463,12 @@ export class ChatController {
   // ---------- views ----------
 
   attach(view: vscode.WebviewView): void {
+    const first = this.views.size === 0;
     this.views.add(view);
+    // The first pane warms the active model's reasoning levels in the
+    // background; the answer repaints the chip title and the picker. A warm
+    // cache answers without a request, so this is cheap after the first turn.
+    if (first) void this.refreshReasoning(true);
     // The webview asks for state once its script is listening (`ready`), so a
     // repainted panel always restores the whole transcript.
     view.onDidDispose(() => {
@@ -606,6 +618,7 @@ export class ChatController {
       provider: project?.provider ?? "",
       contextWindow: project?.contextWindow ?? 0,
       reasoning: this.setting<string>("reasoning", "auto"),
+      reasoningLevels: this.reasoningLevels.length ? this.reasoningLevels : undefined,
       agent,
       agentCount: project?.agents.length ?? 0,
       access: project?.access ?? "untrusted",
@@ -616,6 +629,31 @@ export class ChatController {
       autoCompact: project?.autoCompact ?? true,
       usage: this.transcript.usage,
     });
+  }
+
+  /// Reads the active model's own reasoning levels through the CLI. Called in
+  /// the background when a pane attaches, and with `refresh` after a model
+  /// change so the picker and the chip title follow the model. A stale answer
+  /// is dropped, and a CLI too old to know the command keeps the built-in set.
+  private async refreshReasoning(refresh: boolean): Promise<void> {
+    const cwd = this.cwd();
+    if (!cwd) return;
+    const probe = ++this.reasoningProbe;
+    try {
+      const result = await runCapture(
+        this.binary(),
+        reasoningArgs(refresh, this.setting<string>("model", "")),
+        cwd,
+        30_000,
+      );
+      if (result.error || result.code !== 0) return;
+      const info = parseReasoning(result.stdout);
+      if (!info || probe !== this.reasoningProbe) return;
+      this.reasoningLevels = info.levels;
+      this.broadcast(this.stateMessage());
+    } catch {
+      // The built-in set stands.
+    }
   }
 
   /// The thread's title: a known session name, else a one-line summary of the
@@ -2749,7 +2787,10 @@ export class ChatController {
 
   async setReasoning(): Promise<void> {
     this.showDialog(
-      reasoningDialog(this.setting<string>("reasoning", "auto"), REASONING_LEVELS),
+      reasoningDialog(
+        this.setting<string>("reasoning", "auto"),
+        reasoningChoices({ reasoningLevels: this.reasoningLevels }),
+      ),
     );
   }
 
@@ -2776,6 +2817,9 @@ export class ChatController {
   private async applyDialogSetting(key: string, value: string): Promise<void> {
     this.closeDialog();
     await this.updateSetting(key, value.trim());
+    // A new model advertises its own levels, so the picker and the chip title
+    // are re-read rather than left on the previous model's set.
+    if (key === "model") void this.refreshReasoning(true);
   }
 
   // ---------- notices ----------

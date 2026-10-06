@@ -404,7 +404,7 @@ fn thinking_config(config: &Config) -> Option<Value> {
     let gemini = |level: &str| Some(json!({ "thinkingLevel": level, "includeThoughts": true }));
     let budget = |tokens: u32| Some(json!({ "thinkingBudget": tokens, "includeThoughts": true }));
     let newest = config.model.to_ascii_lowercase().contains("gemini-3");
-    match config.reasoning {
+    match config.effective_reasoning() {
         Reasoning::Auto => None,
         // A model that always thinks rejects a disabled budget, so the lowest
         // one it accepts is asked for instead.

@@ -1898,9 +1898,9 @@ fn reasoning_color(reasoning: Reasoning, theme: &crate::theme::Theme) -> Color {
     match reasoning {
         Reasoning::Auto => theme.thinking_low,
         Reasoning::Off => theme.thinking_off,
-        Reasoning::Low => theme.thinking_low,
+        Reasoning::Minimal | Reasoning::Low => theme.thinking_low,
         Reasoning::Medium => theme.thinking_medium,
-        Reasoning::High => theme.thinking_high,
+        Reasoning::High | Reasoning::Xhigh | Reasoning::Max => theme.thinking_high,
     }
 }
 

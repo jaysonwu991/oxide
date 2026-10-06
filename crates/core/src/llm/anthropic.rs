@@ -93,7 +93,7 @@ pub fn request_body(config: &Config, messages: &[Message], tools: &[ToolSpec]) -
         body["tools"] = json!(specs);
     }
     let adaptive = supports_adaptive_thinking(&config.model);
-    match config.reasoning {
+    match config.effective_reasoning() {
         Reasoning::Off => {}
         Reasoning::Auto if adaptive => {
             body["thinking"] = json!({ "type": "adaptive" });

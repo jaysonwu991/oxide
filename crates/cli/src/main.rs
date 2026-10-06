@@ -18,7 +18,7 @@ use agent::{AgentEvent, Approver, Cancel, Steering};
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
 use cli::RpcRequest;
-use config::Config;
+use config::{Config, Reasoning};
 use serde_json::json;
 use session::SessionLog;
 use std::io::{self, IsTerminal, Read, Write};
@@ -224,6 +224,20 @@ enum Command {
         /// Query only the active provider (for latency-sensitive clients)
         #[arg(long)]
         active: bool,
+    },
+    /// Print the active model's reasoning levels and current choice
+    Reasoning {
+        /// Print the listing as JSON
+        #[arg(long)]
+        json: bool,
+        /// Warm the model cache from the provider before answering, so a
+        /// front-end that never opens the model picker still learns the
+        /// model's own levels
+        #[arg(long)]
+        refresh: bool,
+        /// Read the levels for this model rather than the active one
+        #[arg(long, value_name = "MODEL")]
+        model: Option<String>,
     },
     /// List the providers a client can connect
     Providers {
@@ -671,6 +685,14 @@ async fn main() -> Result<()> {
                 let current_dir = std::env::current_dir().context("resolving current directory")?;
                 list_models(&current_dir, json, active).await
             }
+            Command::Reasoning {
+                json,
+                refresh,
+                model,
+            } => {
+                let current_dir = std::env::current_dir().context("resolving current directory")?;
+                list_reasoning(&current_dir, json, refresh, model).await
+            }
             Command::Providers { json } => list_providers(json),
             Command::Clipboard { json } => read_clipboard(json),
             Command::Login {
@@ -723,6 +745,12 @@ async fn main() -> Result<()> {
     // for compatibility; `-p`/`--print` also selects print mode). There is no
     // permission mode; use `--tools`/`--exclude-tools` for a read-only run.
     let mode = parse_mode(cli.mode.as_deref())?;
+    // A run that names a level explicitly keeps it; a resumed session restores
+    // the one it was last left at instead of reverting to the stored default.
+    let reasoning_explicit = cli.reasoning.is_some()
+        || std::env::var("OXIDE_REASONING")
+            .map(|value| !value.trim().is_empty())
+            .unwrap_or(false);
     let config = Config::load(&cwd, cli.model, cli.provider, cli.agent, cli.reasoning)?;
     let mut config = config;
     config.ephemeral = cli.no_session;
@@ -799,6 +827,13 @@ async fn main() -> Result<()> {
         }
         (_, session) => session,
     };
+    if !reasoning_explicit {
+        if let Some(level) = session.as_ref().and_then(SessionLog::thinking_level) {
+            if let Some(parsed) = Reasoning::parse(&level) {
+                config.reasoning = parsed;
+            }
+        }
+    }
 
     let mode = mode.as_str();
     let positional = cli.messages;
@@ -1077,6 +1112,47 @@ async fn list_models(current_dir: &Path, json_output: bool, active_only: bool) -
                 }
             }
         }
+    }
+    Ok(())
+}
+
+/// Prints the active model's reasoning levels and current choice, so a front-end
+/// that cannot link oxide-core (the VS Code panel) narrows its picker the way
+/// the terminal and desktop do. The levels come from the model cache; with
+/// `--refresh` a cold cache is warmed from the provider's listing first.
+async fn list_reasoning(
+    current_dir: &Path,
+    json_output: bool,
+    refresh: bool,
+    model: Option<String>,
+) -> Result<()> {
+    let mut config = Config::load(current_dir, model, None, None, None)?;
+    if refresh && config.reasoning_supported.is_none() {
+        let _ = llm::LlmClient::new(config.clone()).list_models().await;
+        config.reasoning_supported = llm::cached_model_reasoning(&config, &config.model);
+    }
+    let levels: Vec<&str> = config
+        .reasoning_levels()
+        .iter()
+        .map(|level| level.label())
+        .collect();
+    if json_output {
+        println!(
+            "{}",
+            serde_json::to_string(&json!({
+                "current": config.reasoning.label(),
+                "supportsReasoning": config.supports_reasoning(),
+                "reasoningLevels": levels,
+            }))?
+        );
+    } else if levels.is_empty() {
+        println!("thinking: {}", config.reasoning.label());
+    } else {
+        println!(
+            "thinking: {} (levels: {})",
+            config.reasoning.label(),
+            levels.join(", ")
+        );
     }
     Ok(())
 }
@@ -1767,5 +1843,36 @@ mod tests {
         // The provider is required, so an empty login fails rather than
         // silently connecting whatever was last used.
         assert!(Cli::try_parse_from(["oxide", "login"]).is_err());
+    }
+
+    #[test]
+    fn parses_a_reasoning_listing() {
+        let cli = Cli::try_parse_from(["oxide", "reasoning", "--json"]).unwrap();
+        assert!(matches!(
+            cli.command,
+            Some(Command::Reasoning {
+                json: true,
+                refresh: false,
+                model: None,
+            })
+        ));
+
+        let cli = Cli::try_parse_from([
+            "oxide",
+            "reasoning",
+            "--json",
+            "--refresh",
+            "--model",
+            "glm-5",
+        ])
+        .unwrap();
+        assert!(matches!(
+            cli.command,
+            Some(Command::Reasoning {
+                json: true,
+                refresh: true,
+                model: Some(model),
+            }) if model == "glm-5"
+        ));
     }
 }

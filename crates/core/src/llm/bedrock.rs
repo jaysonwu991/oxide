@@ -558,7 +558,7 @@ fn thinking_fields(config: &Config) -> Option<Value> {
     if !config.model.to_ascii_lowercase().contains("anthropic") {
         return None;
     }
-    let budget = match config.reasoning {
+    let budget = match config.effective_reasoning() {
         Reasoning::Auto => return None,
         // Thinking cannot be turned off here, so the smallest budget the API
         // accepts stands in for `off`.

@@ -748,8 +748,8 @@ spend before answering:
 | Level | Behavior |
 | --- | --- |
 | `auto` (default) | Uses provider-native behavior. Newer Claude models use adaptive thinking; other providers receive no forced effort. |
-| `off` | Never request reasoning. |
-| `low` / `medium` / `high` | Force that level of effort. |
+| `off` | Never request reasoning (the lowest effort a model that cannot fully disable thinking accepts). |
+| `minimal` / `low` / `medium` / `high` / `xhigh` / `max` | Force that level of effort. |
 
 Explicit levels map to OpenAI-compatible `reasoning_effort`, newer Anthropic
 adaptive thinking with `output_config.effort`, or legacy Anthropic
@@ -757,18 +757,39 @@ extended-thinking `budget_tokens` (scaled by level and kept below `max_tokens`).
 Thinking blocks returned by Anthropic are replayed on later turns so multi-step
 tool use keeps its reasoning context.
 
+### The model's own levels
+
+When a provider's model listing advertises the effort levels a model accepts
+(DeepSeek returns `effort.supported_levels` and `effort.default_level` beside
+each id), Oxide reads them into the model cache and uses them: the TUI's cycle
+and the desktop picker offer exactly those levels, and a level the model does not
+accept is clamped onto the nearest one it does — walking up first, so `medium`
+on a model with only `low`/`high`/`max` becomes `high`, matching Pi. The level
+is re-read from the cache when a model or provider is selected and before a turn,
+and on every process start, so a listing fetched once keeps working offline.
+
 GLM is the exception: Z.AI selects thinking with `thinking.type` and accepts only
 its own `reasoning_effort` levels (`low`, `high`, and `max` on the GLM-5.3
 series). `auto` leaves the provider default, `off` sends
 `thinking.type = "disabled"`, `low` → `low`, `medium` → `high`, and `high` →
-`max`. GLM-5.3 always thinks, so `off` there asks for the lowest effort instead
-of an unsupported `disabled`.
+`high` (choose `max` for the top level). GLM-5.3 always thinks, so `off` there
+asks for the lowest effort instead of an unsupported `disabled`.
 
-Set the starting level with `--reasoning auto|off|low|medium|high`, the
-`OXIDE_REASONING` environment variable, or `"reasoning": "..."` in `config.json`.
-In the TUI, press Shift+Tab to cycle auto → off → low → medium → high; the current
-level is shown in the footer (for models that support reasoning) and colors the
-composer rules.
+DeepSeek's own API (not a DeepSeek model behind a gateway) also selects thinking
+with `thinking.type`, and accepts only `low`, `high` and `max`. `off` sends
+`thinking.type = "disabled"` rather than omitting the object, which would leave
+the model thinking at its own default; `minimal` and `low` send `low`, `medium`
+and `high` send `high`, and `xhigh` and `max` send `max`, each with
+`thinking.type = "enabled"`.
+
+Set the starting level with `--reasoning auto|off|minimal|low|medium|high|xhigh|max`,
+the `OXIDE_REASONING` environment variable, or `"reasoning": "..."` in
+`config.json`. In the TUI, press Shift+Tab to cycle `auto` → the model's levels
+(the built-in set is `off` → `minimal` → `low` → `medium` → `high` → `xhigh` →
+`max`); the current level is shown in the footer (for models that support
+reasoning) and colors the composer rules. Resuming a session restores the level
+that session was last left at — a level chosen with Shift+Tab or `/reasoning`
+outlives the process — unless the run names one with `--reasoning`/`OXIDE_REASONING`.
 
 ### Reasoning in the transcript
 
