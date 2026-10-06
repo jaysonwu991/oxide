@@ -240,6 +240,15 @@ enum Command {
         #[arg(long, value_name = "MODEL")]
         model: Option<String>,
     },
+    /// Print the context window a run resolves for the active model
+    Context {
+        /// Print the window as JSON
+        #[arg(long)]
+        json: bool,
+        /// Read the window for this model rather than the active one
+        #[arg(long, value_name = "MODEL")]
+        model: Option<String>,
+    },
     /// List the providers a client can connect
     Providers {
         /// Print the listing as JSON
@@ -693,6 +702,10 @@ async fn main() -> Result<()> {
             } => {
                 let current_dir = std::env::current_dir().context("resolving current directory")?;
                 list_reasoning(&current_dir, json, refresh, model).await
+            }
+            Command::Context { json, model } => {
+                let current_dir = std::env::current_dir().context("resolving current directory")?;
+                show_context(&current_dir, json, model)
             }
             Command::Providers { json } => list_providers(json),
             Command::Clipboard { json } => read_clipboard(json),
@@ -1165,6 +1178,26 @@ async fn list_reasoning(
         );
     } else {
         println!("thinking: {}", config.reasoning.label());
+    }
+    Ok(())
+}
+
+/// Prints the context window a run resolves for the active model, so a front-end
+/// that cannot link oxide-core (the VS Code panel) reports the same window the
+/// run measures against rather than keeping a table of its own: the
+/// `OXIDE_CONTEXT_LIMIT` override, the configured window, a
+/// `modelContextWindows` entry, the provider's published catalog and the
+/// built-in table, in the order [`Config::context_window`] applies them.
+fn show_context(current_dir: &Path, json_output: bool, model: Option<String>) -> Result<()> {
+    let config = Config::load(current_dir, model, None, None, None)?;
+    let window = config.context_window();
+    if json_output {
+        println!(
+            "{}",
+            serde_json::to_string(&json!({ "model": config.model, "window": window }))?
+        );
+    } else {
+        println!("context: {window} (model: {})", config.model);
     }
     Ok(())
 }
@@ -1883,6 +1916,27 @@ mod tests {
             Some(Command::Reasoning {
                 json: true,
                 refresh: true,
+                model: Some(model),
+            }) if model == "glm-5"
+        ));
+    }
+
+    #[test]
+    fn parses_a_context_listing() {
+        let cli = Cli::try_parse_from(["oxide", "context", "--json"]).unwrap();
+        assert!(matches!(
+            cli.command,
+            Some(Command::Context {
+                json: true,
+                model: None,
+            })
+        ));
+
+        let cli = Cli::try_parse_from(["oxide", "context", "--json", "--model", "glm-5"]).unwrap();
+        assert!(matches!(
+            cli.command,
+            Some(Command::Context {
+                json: true,
                 model: Some(model),
             }) if model == "glm-5"
         ));

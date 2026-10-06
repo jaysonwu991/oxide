@@ -13,6 +13,13 @@ import { emptyUsage } from "../core/protocol";
 /// The package root: this file compiles to `out/test/`.
 const root = path.join(__dirname, "..", "..");
 
+/// A source file as its own lines, whatever the checkout spells a line ending
+/// as: a Windows checkout turns every `\n` into `\r\n`, and these tests compare
+/// source text across several lines.
+function readSource(file: string): string {
+  return fs.readFileSync(file, "utf8").replace(/\r\n/g, "\n");
+}
+
 interface Manifest {
   contributes: {
     commands: { command: string; title: string; category?: string; icon?: string }[];
@@ -23,11 +30,11 @@ interface Manifest {
 }
 
 const manifest = JSON.parse(fs.readFileSync(path.join(root, "package.json"), "utf8")) as Manifest;
-const extension = fs.readFileSync(path.join(root, "src", "extension.ts"), "utf8");
-const chat = fs.readFileSync(path.join(root, "src", "chat.ts"), "utf8");
-const chatView = fs.readFileSync(path.join(root, "src", "chatView.ts"), "utf8");
-const renderer = fs.readFileSync(path.join(root, "media", "main.js"), "utf8");
-const dialogs = fs.readFileSync(path.join(root, "src", "core", "dialogs.ts"), "utf8");
+const extension = readSource(path.join(root, "src", "extension.ts"));
+const chat = readSource(path.join(root, "src", "chat.ts"));
+const chatView = readSource(path.join(root, "src", "chatView.ts"));
+const renderer = readSource(path.join(root, "media", "main.js"));
+const dialogs = readSource(path.join(root, "src", "core", "dialogs.ts"));
 
 describe("command contributions", () => {
   it("registers every command it contributes", () => {
@@ -61,6 +68,60 @@ describe("command contributions", () => {
     for (const chip of state.chips) {
       assert.ok(chat.includes(`case "${chip.id}":`), `the ${chip.id} chip is handled`);
     }
+  });
+
+  it("asks the CLI for the context window rather than working it out", () => {
+    // The window composes the shared settings overrides and the provider's
+    // published catalog, which only the CLI reads; keeping a table here is what
+    // made the model chip report 128k for a model whose window is 1M.
+    assert.ok(
+      chat.includes("contextArgs(this.setting<string>(\"model\", \"\"))"),
+      "the probe asks for the window of the model a turn would run with",
+    );
+    assert.ok(chat.includes("parseContextWindow(result.stdout)"), "and reads the CLI's answer");
+    const probe = chat.slice(
+      chat.indexOf("private async refreshContextWindow("),
+      chat.indexOf("private threadTitle("),
+    );
+    assert.ok(probe.includes("const probe = ++this.contextProbe;"), "a stale answer is dropped");
+    assert.ok(
+      probe.includes("if (!info || probe !== this.contextProbe) return;"),
+      "by the read that superseded it",
+    );
+    const refresh = chat.slice(
+      chat.indexOf("private refreshProject("),
+      chat.indexOf("configurationChanged("),
+    );
+    // A closed folder leaves nothing behind: the home state is not the folder
+    // it left, and reopening the same path reads for itself.
+    const closedFolder = refresh.slice(refresh.indexOf("if (!folder) {"), refresh.indexOf("    this.project = projectInfo("));
+    assert.ok(closedFolder.includes("this.contextWindow = null;"), "a closed folder drops the window");
+    assert.ok(closedFolder.includes('this.reasoningIdentity = "";'), "and the identity it was read for");
+    assert.ok(closedFolder.includes("this.contextProbe += 1;"), "and any answer still coming");
+    assert.ok(refresh.includes("this.contextWindow = null;"), "the old model's window is dropped");
+    assert.ok(
+      refresh.includes("if (moved || recheckWindow) void this.refreshContextWindow();"),
+      "and the new one is read",
+    );
+    // The window composes a `modelContextWindows` override and the provider's
+    // catalog window, neither of which a read here can see change, so the paths
+    // that know the shared configuration may have moved ask for it again.
+    for (const call of [
+      'this.commandCache = null;\n    // A `modelContextWindows` override is one of those settings',
+      'changed a setting since the panel was painted.',
+      'written `.oxide/` files.\n    this.refreshProject(true);',
+      'A login also changes which catalog the window is resolved against.',
+    ]) {
+      assert.ok(chat.includes(call), `the recheck is asked for here: ${call.slice(0, 40)}`);
+    }
+    assert.ok(
+      (chat.match(/this\.refreshProject\(true\);/g) ?? []).length >= 4,
+      "and on every path that says the shared configuration moved",
+    );
+    assert.ok(
+      chat.includes("contextWindow: this.contextWindow ?? project?.contextWindow ?? 0"),
+      "the footer paints the CLI's answer, with the shared files' window behind it",
+    );
   });
 
   it("checks for the extension's own release through the installed CLI", () => {

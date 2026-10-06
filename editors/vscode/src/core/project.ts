@@ -5,6 +5,11 @@
 // Every read is injected, so the whole thing is testable without a filesystem,
 // and every read is best-effort: a missing or malformed file degrades the chip
 // it feeds instead of failing the panel.
+//
+// `model` is the model a turn would run with when it is not `config.json`'s
+// own (the `oxide.model` setting), since the context window is that model's.
+// The window the CLI resolves — which also sees the shared settings overrides
+// and the provider's published catalog — is read separately and outranks it.
 
 import * as path from "node:path";
 
@@ -50,7 +55,12 @@ export interface ProjectInfo {
   configPath: string;
 }
 
-export function projectInfo(folder: string, trust: TrustSetting, deps: ProjectDeps): ProjectInfo {
+export function projectInfo(
+  folder: string,
+  trust: TrustSetting,
+  deps: ProjectDeps,
+  model = "",
+): ProjectInfo {
   const configPath = path.join(deps.configDir, "config.json");
   const config = parseConfigSummary(deps.read(configPath));
   const root = projectRoot(folder, deps);
@@ -65,7 +75,13 @@ export function projectInfo(folder: string, trust: TrustSetting, deps: ProjectDe
     provider: config?.provider ?? "",
     model: config?.model ?? "",
     models: config?.models ?? [],
-    contextWindow: contextWindow(deps.env, config),
+    // The window is the model's, and a turn runs with `oxide.model` when the
+    // setting names one, so the override decides it rather than `config.json`.
+    contextWindow: contextWindow({
+      env: deps.env,
+      summary: config,
+      model: model.trim() || config?.model || "",
+    }),
     access,
     savedTrust,
     defaultTrust: settings.defaultTrust,

@@ -104,8 +104,18 @@ describe("projectInfo", () => {
     assert.equal(info.model, "glm-5");
     assert.deepEqual(info.models, [{ provider: "zai", model: "glm-5" }]);
     // With no `context_window`, the window is the model's, as in the CLI.
-    assert.equal(info.contextWindow, 128_000);
+    assert.equal(info.contextWindow, 204_800);
     assert.equal(info.configPath, path.join(configDir, "config.json"));
+  });
+
+  it("resolves the window for the model a turn would run with", () => {
+    const deps = tree({
+      [path.join(configDir, "config.json")]: '{"provider":"zai","model":"glm-5"}',
+    });
+    // An `oxide.model` override reaches the CLI as `--model`, so the window is
+    // that model's rather than `config.json`'s.
+    assert.equal(projectInfo(pkg, "default", deps, "deepseek-flash").contextWindow, 1_000_000);
+    assert.equal(projectInfo(pkg, "default", deps).contextWindow, 204_800);
   });
 
   it("lets OXIDE_CONTEXT_LIMIT override the window", () => {
@@ -230,6 +240,8 @@ describe("projectInfo", () => {
     assert.equal(info.model, "");
     assert.equal(info.branch, "");
     assert.deepEqual(info.agents, []);
-    assert.equal(info.contextWindow, 1_000_000);
+    // The CLI's own last resort, not the 1M the panel used to inflate an
+    // unconfigured window with.
+    assert.equal(info.contextWindow, 128_000);
   });
 });

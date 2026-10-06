@@ -101,6 +101,7 @@ import {
   type PanelAction,
 } from "./core/palette";
 import { footerState, reasoningChoices, type FooterState } from "./core/footer";
+import { contextArgs, parseContextWindow } from "./core/context";
 import { projectInfo, sharedSettingsFor, type ProjectDeps, type ProjectInfo } from "./core/project";
 import {
   buildPrompt,
@@ -362,6 +363,14 @@ export class ChatController {
   /// The newest read of them, so a stale answer is dropped rather than
   /// repainting the chip with a model the panel has moved off.
   private reasoningProbe = 0;
+  /// The context window the CLI resolved for the model those levels belong to,
+  /// and the newest read of it. `null` until the answer arrives (or for a CLI
+  /// too old to know `oxide context`), when the window the shared files give
+  /// stands in. The CLI composes it from the shared settings overrides and the
+  /// provider's published catalog as well, which is why it is asked rather than
+  /// worked out here.
+  private contextWindow: number | null = null;
+  private contextProbe = 0;
   /// The provider table as the CLI last answered it, the search over it, and the
   /// newest read of it. Held rather than re-read per keystroke: a login changes
   /// what the rows say, so the table is read again when the dialog opens and
@@ -584,13 +593,34 @@ export class ChatController {
   /// Re-reads the shared configuration the footer reports. Called when the
   /// panel is painted, when a turn starts or ends (the agent may have created a
   /// branch or written `.oxide/` files) and when a setting changes.
-  private refreshProject(): void {
+  ///
+  /// `recheckWindow` re-reads the context window even when the model identity
+  /// has not moved. The window also composes a `modelContextWindows` override in
+  /// the shared settings and the window the provider's catalog published, and no
+  /// read here can see either change, so the paths that know the shared
+  /// configuration may have moved say so. The reasoning levels are not re-read
+  /// on that path: with `--refresh` they cost a provider request, and only the
+  /// model's own identity decides them.
+  private refreshProject(recheckWindow = false): void {
     const folder = this.folder();
     if (!folder) {
+      // Nothing is open, so nothing of the folder just closed belongs on the
+      // home state, and reopening it has to read for itself rather than be
+      // answered out of what the last one left behind.
       this.project = null;
+      this.reasoningIdentity = "";
+      this.reasoningLevels = [];
+      this.contextWindow = null;
+      this.reasoningProbe += 1;
+      this.contextProbe += 1;
       return;
     }
-    this.project = projectInfo(folder.uri.fsPath, this.trust(), this.deps);
+    this.project = projectInfo(
+      folder.uri.fsPath,
+      this.trust(),
+      this.deps,
+      this.setting<string>("model", ""),
+    );
     // The reasoning levels belong to the active model, which the folder, the
     // `oxide.model` setting or the provider can change. When the identity
     // moves, the old model's levels are dropped before the new ones are read,
@@ -598,11 +628,14 @@ export class ChatController {
     const identity = `${folder.uri.fsPath}\n${
       this.setting<string>("model", "").trim() || this.project.model
     }\n${this.project.provider}`;
-    if (identity !== this.reasoningIdentity) {
+    const moved = identity !== this.reasoningIdentity;
+    if (moved) {
       this.reasoningIdentity = identity;
       this.reasoningLevels = [];
+      this.contextWindow = null;
       void this.refreshReasoning(true);
     }
+    if (moved || recheckWindow) void this.refreshContextWindow();
   }
 
   /// A setting or the workspace changed: the chips are stale until the shared
@@ -617,6 +650,10 @@ export class ChatController {
     // there is that the trust decision or the CLI's configuration may have
     // moved, and a skill the menu lists is loaded by the CLI at the far end.
     this.commandCache = null;
+    // A `modelContextWindows` override is one of those settings, and only the
+    // CLI can see it, so the window is read again here rather than only when
+    // the model moves.
+    this.refreshProject(true);
     this.syncActiveEditor();
     this.broadcast(this.stateMessage());
   }
@@ -627,7 +664,7 @@ export class ChatController {
     return footerState({
       model: this.setting<string>("model", "").trim() || project?.model || "",
       provider: project?.provider ?? "",
-      contextWindow: project?.contextWindow ?? 0,
+      contextWindow: this.contextWindow ?? project?.contextWindow ?? 0,
       reasoning: this.setting<string>("reasoning", "auto"),
       reasoningLevels: this.reasoningLevels.length ? this.reasoningLevels : undefined,
       agent,
@@ -664,6 +701,32 @@ export class ChatController {
       this.broadcast(this.stateMessage());
     } catch {
       // The built-in set stands.
+    }
+  }
+
+  /// Reads the context window the CLI resolves for the active model. Called
+  /// beside the reasoning read, so the model chip and the context gauge follow
+  /// the model the way the terminal's footer does. A stale answer is dropped,
+  /// and a CLI too old to know the command keeps the window the shared files
+  /// give.
+  private async refreshContextWindow(): Promise<void> {
+    const cwd = this.cwd();
+    if (!cwd) return;
+    const probe = ++this.contextProbe;
+    try {
+      const result = await runCapture(
+        this.binary(),
+        contextArgs(this.setting<string>("model", "")),
+        cwd,
+        30_000,
+      );
+      if (result.error || result.code !== 0) return;
+      const info = parseContextWindow(result.stdout);
+      if (!info || probe !== this.contextProbe) return;
+      this.contextWindow = info.window;
+      this.broadcast(this.stateMessage());
+    } catch {
+      // The window the shared files give stands.
     }
   }
 
@@ -1300,8 +1363,10 @@ export class ChatController {
       return null;
     }
     // The agent may have written `.oxide/` files, committed, or the user may
-    // have changed a setting since the panel was painted.
-    this.refreshProject();
+    // have changed a setting since the panel was painted. `.oxide/settings.json`
+    // is where a `modelContextWindows` override would go, so the window is read
+    // again before the turn resolves its own.
+    this.refreshProject(true);
 
     // A prompt sent on stdin skips the CLI's own `@file` expansion, so the
     // references are resolved here and become ordinary context blocks.
@@ -1597,7 +1662,7 @@ export class ChatController {
     }
 
     // The run may have created a branch, committed, or written `.oxide/` files.
-    this.refreshProject();
+    this.refreshProject(true);
     // A turn is where files appear, so the completion's list of them is taken
     // again rather than answering out of what the project held when it started —
     // and the same goes for a command or a skill the agent wrote into `.oxide/`.
@@ -2145,7 +2210,8 @@ export class ChatController {
     // The provider, its default model and its endpoint are what `config.json`
     // now selects, and the next turn reads that file: the footer's chips are
     // repainted from it so the panel says what the next message will run on.
-    this.refreshProject();
+    // A login also changes which catalog the window is resolved against.
+    this.refreshProject(true);
     this.showNotice(`Connected ${label}.`);
     this.onDidChange.fire();
     this.broadcast(this.stateMessage());

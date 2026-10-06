@@ -75,6 +75,7 @@ See [A turn's changes](cli.md#a-turns-changes).
 oxide mcp list --json       # the server listing a front-end draws
 oxide commands --json       # the slash-command catalog
 oxide models --json         # normalized provider catalogs
+oxide context --json        # the window a run resolves for the active model
 oxide providers --json      # every provider, and which are stored or in use
 oxide login openai --json --key-stdin <key   # connect one (key on stdin)
 ```
