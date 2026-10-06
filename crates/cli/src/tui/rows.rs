@@ -39,13 +39,13 @@ impl Join {
     }
 }
 
-/// A link a rendered row carries: the row's own span it is drawn as, the
-/// character range of that span it covers, and the URL it names. A labelled
-/// link is drawn as its label, so the target is nowhere in the row's text for
-/// a click to find and is recorded here instead.
+/// A link a rendered row carries: the characters of the row it covers, and the
+/// URL they name. A labelled link is drawn as its label, so the target is
+/// nowhere in the row's text for a click to find and is recorded here instead.
+/// The range is what says *which* link the characters are, so two labels that
+/// read the same still name their own targets.
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub struct RowLink {
-    pub span: usize,
     pub start: usize,
     pub end: usize,
     pub url: String,
@@ -316,7 +316,6 @@ mod tests {
 
     fn link(url: &str) -> RowLink {
         RowLink {
-            span: 0,
             start: 0,
             end: 4,
             url: url.to_string(),

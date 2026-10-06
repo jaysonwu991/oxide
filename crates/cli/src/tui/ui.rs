@@ -2186,24 +2186,28 @@ pub(crate) fn link_at(app: &App, line: usize, column: usize) -> Option<String> {
 }
 
 /// The URL one of a row's own links names at `column`, from what the renderer
-/// recorded when it drew the row.
+/// recorded when it drew the row. A link covers the characters it was drawn
+/// over, and the column the pointer is on is measured in cells, so the row's
+/// characters are walked the way they are painted.
 fn row_link_at(links: &[RowLink], line: &Line<'_>, column: usize) -> Option<String> {
     if links.is_empty() {
         return None;
     }
     let mut col = 0usize;
-    for (index, span) in line.spans.iter().enumerate() {
-        for (offset, ch) in span.content.chars().enumerate() {
+    let mut index = 0usize;
+    for span in &line.spans {
+        for ch in span.content.chars() {
             let width = char_width(ch);
             if let Some(link) = links
                 .iter()
-                .find(|link| link.span == index && offset >= link.start && offset < link.end)
+                .find(|link| index >= link.start && index < link.end)
             {
                 if column >= col && column < col + width {
                     return Some(link.url.clone());
                 }
             }
             col += width;
+            index += 1;
         }
     }
     None
@@ -4321,6 +4325,68 @@ mod tests {
         assert_eq!(
             link_at(&app, 0, start + 1).as_deref(),
             Some("https://github.com/jaysonwu991/oxide/pull/176")
+        );
+    }
+
+    #[test]
+    fn two_links_that_read_the_same_open_their_own_targets() {
+        let mut app = App::new("model".into(), "/tmp".into(), Reasoning::Auto);
+        app.items.push(ChatItem::Assistant(
+            "See [docs](https://example.com/a) and [docs](https://example.com/b).".into(),
+        ));
+        sync_lines(&mut app, 80);
+
+        let text: String = app.lines[0]
+            .spans
+            .iter()
+            .map(|span| span.content.as_ref())
+            .collect();
+        let columns: Vec<usize> = text
+            .match_indices("docs")
+            .map(|(byte, _)| text[..byte].chars().map(char_width).sum::<usize>())
+            .collect();
+        assert_eq!(columns.len(), 2, "both labels are drawn: {text}");
+        assert_eq!(
+            link_at(&app, 0, columns[0]).as_deref(),
+            Some("https://example.com/a")
+        );
+        assert_eq!(
+            link_at(&app, 0, columns[1]).as_deref(),
+            Some("https://example.com/b")
+        );
+        assert_eq!(
+            link_at(&app, 0, columns[1] + 4).as_deref(),
+            None,
+            "the text after the label is not the link"
+        );
+    }
+
+    #[test]
+    fn links_written_side_by_side_both_answer() {
+        let mut app = App::new("model".into(), "/tmp".into(), Reasoning::Auto);
+        app.items.push(ChatItem::Assistant(
+            "See [one](https://example.com/1)[two](https://example.com/2) here.".into(),
+        ));
+        sync_lines(&mut app, 80);
+
+        let text: String = app.lines[0]
+            .spans
+            .iter()
+            .map(|span| span.content.as_ref())
+            .collect();
+        let at = |needle: &str| {
+            text[..text.find(needle).expect("the label")]
+                .chars()
+                .map(char_width)
+                .sum::<usize>()
+        };
+        assert_eq!(
+            link_at(&app, 0, at("one")).as_deref(),
+            Some("https://example.com/1")
+        );
+        assert_eq!(
+            link_at(&app, 0, at("two")).as_deref(),
+            Some("https://example.com/2")
         );
     }
 
