@@ -937,8 +937,8 @@ same check the terminal's `oxide update --check --json --component desktop`
 performs,
 served by the shared resolution in `oxide_core::updates`, so the release it
 offers is the desktop release and not the oxide command line's own newest tag.
-The dialog shows the version the app runs now, the tag it would install
-(`desktop-v0.34.0`), and the installer it would fetch —
+The dialog shows the version the app runs now, the version it would install
+(`0.34.0`), and the installer it would fetch —
 `macos-arm64-Oxide.dmg` on this Mac, the `-Setup.AppImage` on Linux, the
 `-Setup.exe` on Windows — then **Install**, **Release notes** (the release page,
 in the system browser) and **Close**. It does not update the `oxide` command

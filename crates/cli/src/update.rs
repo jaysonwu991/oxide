@@ -90,7 +90,7 @@ fn check_of(
             format!(
                 "Update available: no build of {} is published for this platform; install it from \
                  the release page.",
-                release.tag
+                release.version
             )
         }
     });
@@ -145,16 +145,16 @@ async fn run_for(options: Options, executable: &Path, repo: &str) -> Result<()> 
         println!("Current: {current}");
     }
     if options.version.is_some() {
-        println!("Target: {}", release.tag);
+        println!("Target: {}", release.version);
     } else {
-        println!("Latest: {}", release.tag);
+        println!("Latest: {}", release.version);
     }
 
     if !check.update_available {
         if component == Component::Cli {
             println!(
                 "Already up to date; rerun with --force to reinstall {}.",
-                release.tag
+                release.version
             );
         } else {
             println!("{} is up to date.", component.label());
@@ -197,7 +197,7 @@ async fn run_for(options: Options, executable: &Path, repo: &str) -> Result<()> 
     if release.asset.is_empty() {
         bail!(
             "{} carries no build for {platform}; see {} for the downloads this release has",
-            release.tag,
+            release.version,
             release.page_url(repo)
         );
     }
@@ -234,7 +234,7 @@ async fn run_for(options: Options, executable: &Path, repo: &str) -> Result<()> 
         record_install(executable, repo, &release.version);
     }
 
-    println!("Updated {} to {}", executable.display(), release.tag);
+    println!("Updated {} to {}", executable.display(), release.version);
     if matches!(method, InstallMethod::Cargo) {
         println!(
             "Note: cargo still records the version it installed; rebuild from source to update it"
@@ -298,7 +298,7 @@ async fn archive(
     bail!(
         "{} is not published for {}; see https://github.com/{repo}/releases",
         release.asset,
-        release.tag
+        release.version
     )
 }
 
@@ -606,7 +606,7 @@ mod tests {
                 .advice
                 .as_deref()
                 .unwrap()
-                .contains("no build of v0.34.0 is published"),
+                .contains("no build of 0.34.0 is published"),
             "{:?}",
             check.advice
         );

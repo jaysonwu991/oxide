@@ -5475,7 +5475,9 @@ check(
 );
 check(
   "showed what this machine has and what the release is",
-  updateBody().includes("0.33.0") && updateBody().includes("desktop-v0.34.0"),
+  updateBody().includes("Current <code>0.33.0</code>") &&
+    updateBody().includes("Latest <code>0.34.0</code>") &&
+    !updateBody().includes("desktop-v0.34.0"),
   updateBody(),
 );
 check(
@@ -5543,8 +5545,8 @@ check(
   JSON.stringify(calls.map(([name]) => name)),
 );
 check(
-  "reported what the install did, by tag and by file",
-  updateBody().includes("desktop-v0.34.0") &&
+  "reported what the install did, by version and by file",
+  updateBody().includes("Release <code>0.34.0</code>") &&
     updateBody().includes("macos-arm64-Oxide.dmg") &&
     updateBody().includes("/Applications/Oxide.app"),
   updateBody(),
@@ -5714,7 +5716,7 @@ check(
 );
 check(
   "named that release on the row it reported",
-  updateBody().includes("desktop-v0.35.0"),
+  updateBody().includes("Release <code>0.35.0</code>"),
   updateBody(),
 );
 installedVersion = null;

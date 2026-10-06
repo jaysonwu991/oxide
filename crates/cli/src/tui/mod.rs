@@ -2076,7 +2076,7 @@ fn handle_updates_command(
         let seen = match &notice {
             Some(notice) => format!(
                 "newest seen {} ({})",
-                notice.tag,
+                notice.version,
                 relative_time(ui::now_secs(), notice.checked_at)
             ),
             None => "no release seen yet".to_string(),
@@ -7482,7 +7482,7 @@ mod tests {
             })
             .expect("the status line");
         assert!(info.contains("update check: on"), "{info}");
-        assert!(info.contains("newest seen v99.9.9"), "{info}");
+        assert!(info.contains("newest seen 99.9.9"), "{info}");
         assert!(info.contains("usage: /updates [on|off]"), "{info}");
         // `cargo test` runs out of `target/`, which no release replaces: the
         // notice says so instead of offering an install that would not work.
