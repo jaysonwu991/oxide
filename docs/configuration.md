@@ -66,15 +66,26 @@ so a long-thinking turn recovers instead of ending in an empty response.
 
 `context_window` is the model's full context window in tokens, and controls both
 the context gauge and the automatic compaction threshold. When it is unset (or
-`0`), Oxide resolves the window the way Pi's model catalog does: the model's
-documented window from a built-in table — including the 1M windows Pi assigns
-(Gemini, `gpt-4.1`, `gpt-5.4` and later, Claude Sonnet 4.5/4.6, Opus 4.6 and
-later, GLM 5.2/5.3, DeepSeek Flash and V4, Kimi K3) — and Pi's `128000`
-fallback for a model the table does not know. A routed or Bedrock-spelled id
-matches by its basename, so `anthropic/claude-opus-4.7` and
-`us.anthropic.claude-sonnet-4-5-…` resolve to the same windows. Override one
-model with `modelContextWindows` in `settings.json`, the whole run with
-`context_window`, or one environment with `OXIDE_CONTEXT_LIMIT`.
+`0`), Oxide resolves the window the way Pi does: the model catalog the provider
+publishes on `pi.dev`, then a built-in table of documented windows, then Pi's
+`128000` fallback. The catalog is fetched in the background when a run starts,
+revalidated with an ETag and remembered in `model-catalog.json` beside
+`config.json`, so a launch reads the windows from disk and never waits on the
+network for them; it is looked up again only once the remembered answer is four
+hours old. That is what gives a model released since this binary was built, or
+one a gateway spells its own way, the window its provider actually published —
+including where a provider offers less than its own default, as Bedrock does
+with Claude Sonnet 4.5's 200k against Anthropic's 1M. A model the catalog does
+not hold falls back to the built-in table — including the 1M windows Pi
+assigns (Gemini, `gpt-4.1`, `gpt-5.4` and later, Claude Sonnet 4.5/4.6,
+Opus 4.6 and later, GLM 5.2/5.3, DeepSeek Flash and V4, Kimi K3). A routed
+or Bedrock-spelled id matches by its basename, so
+`anthropic/claude-opus-4.7` and `us.anthropic.claude-sonnet-4-5-…` resolve to
+the same windows. Override one model with `modelContextWindows` in
+`settings.json`, the whole run with `context_window`, or one environment with
+`OXIDE_CONTEXT_LIMIT`; turn the catalog off with `modelCatalog: false` in
+`settings.json` or `OXIDE_MODEL_CATALOG=false`, which leaves the built-in table
+in charge — what an offline or air-gapped machine wants.
 
 ## CLI flags
 
@@ -134,6 +145,9 @@ oxide update [--check] [--component <cli|desktop|extension>] [--current <VERSION
 | `OXIDE_NOTIFY_ON_COMPLETE` / `OXIDE_NOTIFY_SOUND` | Override the desktop-notification flags (`/notify`). |
 | `OXIDE_SETTINGS_FILE` | Override the global `settings.json` path the TUI writes. |
 | `OXIDE_CHECK_FOR_UPDATES` | Enable/disable the launch's look for a newer CLI release (`/updates`). |
+| `OXIDE_MODEL_CATALOG` | Enable/disable the launch's look for the provider model catalogs (`modelCatalog` in `settings.json`). |
+| `OXIDE_MODEL_CATALOG_FILE` | Override the `model-catalog.json` path the remembered catalogs are kept in. |
+| `OXIDE_MODEL_CATALOG_URL` | Override the `https://pi.dev` base URL the catalogs are fetched from. |
 | `OXIDE_UPDATES_FILE` | Override the `updates.json` path the launch notice is remembered in. |
 | `OXIDE_USAGE_FILE` | Override the `portkey-usage.json` path for the Portkey spend bar. |
 | `PORTKEY_CONFIG` | Optional Portkey config ID sent as `x-portkey-config`. |
@@ -578,6 +592,10 @@ Runtime state lives under the platform Oxide config directory:
 - Main configuration: `config.json`
 - Credentials: `auth.json`
 - Cached provider model lists: `model-cache.json` (refreshed after 24 hours)
+- Remembered model catalogs: `model-catalog.json` (the context windows the
+  provider catalogs published, by provider and model; refreshed after four
+  hours — see `OXIDE_MODEL_CATALOG` and
+  [context windows](#max_tokens-and-context_window))
 - MCP OAuth tokens: `mcp-oauth/<server>.json` (mode `0600`)
 - Sessions: `sessions/<project>/<timestamp>_<id>.jsonl` (Pi-style entry trees)
 - Snapshots: `snapshots/<project>/` (bare git repo)
@@ -586,8 +604,8 @@ Runtime state lives under the platform Oxide config directory:
 - Plugins: `plugins/` (installed plugin packages, marketplaces, and state)
 - Portkey usage bar: `portkey-usage.json` (mode `0600`; see `OXIDE_USAGE_FILE`)
 - Settings: `settings.json` (e.g. `defaultProjectTrust`, `compaction`,
-  `modelPrices`, `modelContextWindows`, `steeringMode`, `followUpMode`,
-  `hideThinkingBlock`)
+  `modelPrices`, `modelContextWindows`, `modelCatalog`, `steeringMode`,
+  `followUpMode`, `hideThinkingBlock`)
 - Updates: `updates.json` (the newest release of each component the last launch
   found, so the launch notice needs no network wait; see `OXIDE_UPDATES_FILE`)
 - Themes: `themes/<name>.json`

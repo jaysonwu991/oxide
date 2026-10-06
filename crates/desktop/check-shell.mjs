@@ -311,7 +311,32 @@ check(
     /dispatch\(Arc::clone\(&state\), &host, &command, args\)\.await/.test(engine) &&
     /host\.respond\(id, answer\)/.test(engine) &&
     /DesktopManager::load_lossy/.test(engine) &&
-    /auto_update\(Arc::clone\(&state\)\)/.test(engine),
+    /auto_update\(Arc::clone\(&state\)\)/.test(engine) &&
+    /auto_catalog\(Arc::clone\(&state\)\)/.test(engine),
+);
+// The launch that looks for the catalog is the launch that repaints what it
+// changes: the window the model chip carries comes from the catalog, so the
+// page is told an answer landed rather than waiting for the next folder open —
+// and it repaints only that window, since a full reload would also hand back
+// the level the reader picked while the lookup was in flight.
+check(
+  "told the window when the launch's own catalog lookup landed",
+  /pub async fn auto_catalog\(state: Arc<DesktopState>\)/.test(commands) &&
+    /catalog::launch_providers\(&active_provider\(\)\)/.test(commands) &&
+    /catalog::refresh_launch\(&providers, None\)\.await\.is_some\(\)/.test(commands) &&
+    /state\.events\.emit\("model-catalog", json!\(\{\}\)\)/.test(commands) &&
+    /listen\("model-catalog", \(\) => refreshContextWindow\(\)\)/.test(app) &&
+    !/listen\("model-catalog", \(\) => loadInfo\(\)\)/.test(app) &&
+    /async function refreshContextWindow\(\)/.test(app) &&
+    /state\.contextWindow = info\.contextWindow \|\| 0/.test(app),
+);
+// The provider the launch's own lookup covers is the one the turn runs on, so
+// it is read the way the run reads it rather than from `config.json` alone.
+check(
+  "read the provider the launch's lookup covers the way a run reads it",
+  /fn active_provider\(\) -> String \{/.test(commands) &&
+    /std::env::var\("OXIDE_PROVIDER"\)/.test(commands) &&
+    /std::fs::read_to_string\(Config::config_path\(\)\)/.test(commands),
 );
 check(
   "kept the answer and the announcement the same two shapes",

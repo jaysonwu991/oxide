@@ -56,6 +56,11 @@ fn run() -> Result<(), String> {
     // emitted, since the page subscribes to the channel after the install has
     // started.
     runtime.spawn(commands::auto_update(Arc::clone(&state)));
+    // The context window a model resolves to comes from the catalog its provider
+    // published, so the launch looks for a newer one beside the update check:
+    // without it a model released since this build keeps the built-in table's
+    // conservative window for the life of the session.
+    runtime.spawn(commands::auto_catalog(Arc::clone(&state)));
 
     // The window owns this process's lifetime: it spawned it, so its stdin
     // closing is the app quitting.

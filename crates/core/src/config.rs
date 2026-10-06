@@ -1217,6 +1217,13 @@ pub struct Config {
     /// table does not know. Empty uses the built-in table alone.
     #[serde(skip)]
     pub model_context_windows: BTreeMap<String, u64>,
+    /// The windows the provider catalogs Oxide remembers hold — the pi.dev
+    /// provider id, then a model id — which is what gives a model the built-in
+    /// table does not know its own window rather than the 128k fallback. Read
+    /// once from [`crate::catalog`] at load, and empty when nothing has been
+    /// looked up yet.
+    #[serde(skip)]
+    pub catalog_windows: BTreeMap<String, BTreeMap<String, u64>>,
     /// Whether a finished agent turn raises a desktop toast, and whether it
     /// plays the system alert sound.
     #[serde(skip)]
@@ -1371,8 +1378,9 @@ fn builtin_context_window(model: &str) -> Option<u64> {
 
 /// Selects the window from `entries` whose key is the longest prefix of the
 /// model id, its basename (`anthropic/claude-opus-4.5`), or a Bedrock-style
-/// vendor id (`us.anthropic.claude-opus-4-6-v1`). Case-insensitive.
-fn lookup_context_window<'a>(
+/// vendor id (`us.anthropic.claude-opus-4-6-v1`). Case-insensitive on both
+/// sides: a key may be spelled the way one endpoint serves the model.
+pub(crate) fn lookup_context_window<'a>(
     entries: impl Iterator<Item = (&'a str, u64)>,
     model: &str,
 ) -> Option<u64> {
@@ -1382,57 +1390,76 @@ fn lookup_context_window<'a>(
             *window > 0
                 && candidates
                     .iter()
-                    .any(|candidate| candidate.starts_with(*key))
+                    .any(|candidate| starts_with_ignore_case(candidate, key))
         })
         .max_by_key(|(key, _)| key.len())
         .map(|(_, window)| window)
 }
 
+/// Whether `candidate` begins with `key`, ASCII case aside. Byte length decides
+/// the prefix, so a key that would split a character is no prefix of it.
+fn starts_with_ignore_case(candidate: &str, key: &str) -> bool {
+    candidate
+        .get(..key.len())
+        .is_some_and(|head| head.eq_ignore_ascii_case(key))
+}
+
+/// The part of a model id that names the model itself, with the vendor and
+/// region prefixes off (`us.anthropic.claude-opus-4-6-v1` →
+/// `claude-opus-4-6-v1`), so two spellings of one model can be compared.
+/// Lowercased, since a table key is matched case-insensitively.
+pub(crate) fn vendorless(model: &str) -> &str {
+    let mut rest = model.rsplit('/').next().unwrap_or(model);
+    while let Some((head, tail)) = rest.split_once('.') {
+        if !VENDORS.contains(&head.to_ascii_lowercase().as_str()) {
+            break;
+        }
+        rest = tail;
+    }
+    rest
+}
+
+/// The vendor and region prefixes a model id may carry.
+const VENDORS: [&str; 24] = [
+    "anthropic",
+    "openai",
+    "xai",
+    "spacexai",
+    "moonshotai",
+    "mistral",
+    "qwen",
+    "meta",
+    "cohere",
+    "amazon",
+    "ai21",
+    "deepseek",
+    "zai",
+    "z-ai",
+    "google",
+    "us",
+    "eu",
+    "apac",
+    "in",
+    "jp",
+    "au",
+    "global",
+    "bedrock",
+    "vertex",
+];
+
 /// The spellings of a model id a table key may match: the id itself, the part
 /// after the last `/`, and the part after any leading vendor/region prefixes
 /// (`us.anthropic.claude-…`). Lowercased, in match order.
 fn context_window_candidates(model: &str) -> Vec<String> {
-    const VENDORS: [&str; 24] = [
-        "anthropic",
-        "openai",
-        "xai",
-        "spacexai",
-        "moonshotai",
-        "mistral",
-        "qwen",
-        "meta",
-        "cohere",
-        "amazon",
-        "ai21",
-        "deepseek",
-        "zai",
-        "z-ai",
-        "google",
-        "us",
-        "eu",
-        "apac",
-        "in",
-        "jp",
-        "au",
-        "global",
-        "bedrock",
-        "vertex",
-    ];
     let normalized = model.trim().to_ascii_lowercase();
     let mut candidates = vec![normalized.clone()];
     let basename = normalized.rsplit('/').next().unwrap_or(&normalized);
     if basename != normalized {
         candidates.push(basename.to_string());
     }
-    let mut vendorless = basename.to_string();
-    while let Some((head, rest)) = vendorless.split_once('.') {
-        if !VENDORS.contains(&head) {
-            break;
-        }
-        vendorless = rest.to_string();
-    }
-    if vendorless != basename && vendorless != normalized {
-        candidates.push(vendorless);
+    let stripped = vendorless(&normalized);
+    if stripped != basename && stripped != normalized {
+        candidates.push(stripped.to_string());
     }
     candidates
 }
@@ -1600,6 +1627,7 @@ impl Default for Config {
             follow_up_mode: crate::agent::QueueMode::OneAtATime,
             prices: crate::pricing::defaults(),
             model_context_windows: BTreeMap::new(),
+            catalog_windows: BTreeMap::new(),
             notify: crate::notify::NotifyConfig::default(),
             tool_filter: crate::cli::ToolFilter::default(),
             ephemeral: false,
@@ -1694,10 +1722,10 @@ impl Config {
     /// The model's context window, used for the Pi-style context percentage
     /// and compaction threshold. `OXIDE_CONTEXT_LIMIT` overrides it, then an
     /// explicit `context_window`, then a `modelContextWindows` override, then
-    /// the model's catalog window, then the [`default_context_window`]
-    /// fallback. Keep the window at least as large as the response cap for
-    /// compatibility with older configurations that used `max_tokens` to raise
-    /// the window.
+    /// the provider's remembered catalog window, then the built-in table, then
+    /// the [`default_context_window`] fallback. Keep the window at least as
+    /// large as the response cap for compatibility with older configurations
+    /// that used `max_tokens` to raise the window.
     pub fn context_window(&self) -> u64 {
         std::env::var("OXIDE_CONTEXT_LIMIT")
             .ok()
@@ -1713,11 +1741,24 @@ impl Config {
                     &self.model,
                 ) {
                     window
+                } else if let Some(window) = self.catalog_window() {
+                    window
                 } else {
                     builtin_context_window(&self.model).unwrap_or_else(default_context_window)
                 };
                 configured.max(self.max_tokens as u64)
             })
+    }
+
+    /// The window the active provider's remembered catalog gives this model,
+    /// which is how a model released since this binary was built — or one a
+    /// gateway spells its own way — gets its own window instead of the built-in
+    /// table's conservative one.
+    pub fn catalog_window(&self) -> Option<u64> {
+        let models = self
+            .catalog_windows
+            .get(crate::catalog::provider_id(&self.provider)?)?;
+        crate::catalog::window_for(models, &self.model)
     }
 
     pub fn config_path() -> PathBuf {
@@ -1849,6 +1890,7 @@ impl Config {
         config.compaction = crate::compact::load_config(cwd);
         config.prices = crate::pricing::load(cwd);
         config.model_context_windows = load_model_context_windows(cwd);
+        config.catalog_windows = crate::catalog::windows();
         (config.steering_mode, config.follow_up_mode) = load_queue_modes(cwd);
         config.notify = crate::notify::load_config(cwd);
         if let Some(name) = agent {
@@ -3037,11 +3079,149 @@ mod tests {
     }
 
     #[test]
+    fn a_remembered_catalog_gives_a_model_the_table_does_not_know_its_window() {
+        // What the provider's own catalog published, which is where a model
+        // released since this binary was built gets its window rather than the
+        // conservative fallback.
+        let catalog = BTreeMap::from([
+            (
+                "deepseek".to_string(),
+                BTreeMap::from([
+                    ("deepseek-v5-pro".to_string(), 1_000_000),
+                    ("deepseek-chat".to_string(), 163_840),
+                ]),
+            ),
+            (
+                "amazon-bedrock".to_string(),
+                BTreeMap::from([
+                    (
+                        "us.anthropic.claude-sonnet-4-5-20250929-v1:0".to_string(),
+                        200_000,
+                    ),
+                    ("amazon.nova-pro-v1:0".to_string(), 300_000),
+                ]),
+            ),
+        ]);
+
+        // A model the built-in table has no entry for — it matches the
+        // provider's generic entry — and one it does: the catalog's own answer
+        // is the one that is used either way.
+        let released = Config {
+            provider: "deepseek".to_string(),
+            model: "deepseek-v5-pro".to_string(),
+            catalog_windows: catalog.clone(),
+            ..Config::default()
+        };
+        assert_eq!(builtin_context_window("deepseek-v5-pro"), Some(128_000));
+        assert_eq!(released.catalog_window(), Some(1_000_000));
+        assert_eq!(released.context_window(), 1_000_000);
+        let chat = Config {
+            provider: "deepseek".to_string(),
+            model: "deepseek-chat".to_string(),
+            catalog_windows: catalog.clone(),
+            ..Config::default()
+        };
+        assert_eq!(builtin_context_window("deepseek-chat"), Some(128_000));
+        assert_eq!(chat.context_window(), 163_840);
+
+        // A region the built-in table reads as the model's own window, which
+        // the provider's catalog knows is truncated there.
+        let region = Config {
+            provider: "bedrock".to_string(),
+            model: "us.anthropic.claude-sonnet-4-5-20250929-v1:0".to_string(),
+            catalog_windows: catalog.clone(),
+            ..Config::default()
+        };
+        assert_eq!(
+            builtin_context_window("us.anthropic.claude-sonnet-4-5-20250929-v1:0"),
+            Some(1_000_000)
+        );
+        assert_eq!(region.context_window(), 200_000);
+        // And a Bedrock spelling of a model the catalog holds under its own id.
+        let spelled = Config {
+            provider: "bedrock".to_string(),
+            model: "amazon.nova-pro-v1:0".to_string(),
+            catalog_windows: catalog.clone(),
+            ..Config::default()
+        };
+        assert_eq!(spelled.context_window(), 300_000);
+
+        // And a run that spells the model by its name alone, while the catalog
+        // holds the region and the release it was dated with: the longer key
+        // answers for the id the run holds instead of being passed over for it.
+        let short = Config {
+            provider: "bedrock".to_string(),
+            model: "anthropic.claude-sonnet-4-5".to_string(),
+            catalog_windows: catalog.clone(),
+            ..Config::default()
+        };
+        assert_eq!(short.catalog_window(), Some(200_000));
+        assert_eq!(short.context_window(), 200_000);
+
+        // A model the catalog does not hold falls back to the table, and a
+        // provider pi.dev publishes no catalog for is not consulted at all.
+        let unlisted = Config {
+            provider: "deepseek".to_string(),
+            model: "deepseek-v4-pro".to_string(),
+            catalog_windows: catalog.clone(),
+            ..Config::default()
+        };
+        assert_eq!(unlisted.catalog_window(), None);
+        assert_eq!(unlisted.context_window(), 1_048_576);
+        let no_catalog = Config {
+            provider: "portkey".to_string(),
+            model: "deepseek-chat".to_string(),
+            catalog_windows: catalog,
+            ..Config::default()
+        };
+        assert_eq!(no_catalog.catalog_window(), None);
+        assert_eq!(no_catalog.context_window(), 128_000);
+    }
+
+    #[test]
+    fn a_setting_still_outranks_a_remembered_catalog() {
+        let catalog = BTreeMap::from([(
+            "deepseek".to_string(),
+            BTreeMap::from([("deepseek-v5-pro".to_string(), 1_000_000)]),
+        )]);
+        let overrides = BTreeMap::from([("deepseek-v5-pro".to_string(), 64_000)]);
+        let config = Config {
+            provider: "deepseek".to_string(),
+            model: "deepseek-v5-pro".to_string(),
+            model_context_windows: overrides,
+            catalog_windows: catalog.clone(),
+            ..Config::default()
+        };
+        assert_eq!(config.context_window(), 64_000);
+
+        let explicit = Config {
+            provider: "deepseek".to_string(),
+            model: "deepseek-v5-pro".to_string(),
+            context_window: 300_000,
+            catalog_windows: catalog,
+            ..Config::default()
+        };
+        assert_eq!(explicit.context_window(), 300_000);
+    }
+
+    #[test]
     fn model_context_window_override_beats_the_table() {
         let mut overrides = BTreeMap::new();
         overrides.insert("claude-sonnet-4".to_string(), 500_000);
         let config = Config {
             model: "claude-sonnet-4-5".to_string(),
+            model_context_windows: overrides,
+            ..Config::default()
+        };
+        assert_eq!(config.context_window(), 500_000);
+    }
+
+    #[test]
+    fn a_configured_window_is_matched_whatever_case_either_side_is_spelled_in() {
+        let mut overrides = BTreeMap::new();
+        overrides.insert("Claude-Sonnet-4".to_string(), 500_000);
+        let config = Config {
+            model: "CLAUDE-SONNET-4-5".to_string(),
             model_context_windows: overrides,
             ..Config::default()
         };
