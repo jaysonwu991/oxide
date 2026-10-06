@@ -506,8 +506,18 @@ fn names_command(raw: &str, command: &str) -> bool {
 
 /// Cycles the thinking level and records it on the session. Shared by the
 /// `Shift+Tab` (Pi's binding) and `Ctrl+R` (the pre-desktop binding) shortcuts.
+/// Re-reads the active model's advertised reasoning levels from the model
+/// cache, so the levels the background listing warmed are in effect for the
+/// next turn and the next cycle rather than only for a fresh process.
+fn refresh_reasoning(config: &mut Config) {
+    config.reasoning_supported = crate::llm::cached_model_reasoning(config, &config.model);
+}
+
 fn cycle_reasoning(app: &mut App, config: &mut Config, session: &mut Option<SessionLog>) {
-    config.reasoning = config.reasoning.next();
+    refresh_reasoning(config);
+    // The model's own advertised levels when the listing carried them, else
+    // the built-in set, so the cycle never offers a level the model rejects.
+    config.reasoning = config.reasoning.next_in(&config.reasoning_levels());
     app.reasoning = config.reasoning;
     if let Some(log) = session.as_ref() {
         let _ = log.append_thinking_level(config.reasoning.label());
@@ -614,7 +624,7 @@ fn handle_key(
     }
 
     if app.sessions.is_some() {
-        handle_sessions_key(key, app, cwd, session);
+        handle_sessions_key(key, app, config, cwd, session);
         return;
     }
 
@@ -1363,12 +1373,21 @@ fn handle_key(
             }
             if raw == "/reasoning" || raw.starts_with("/reasoning ") {
                 app.clear_input();
+                refresh_reasoning(config);
                 refresh_suggestions(app, config);
                 let requested = raw.strip_prefix("/reasoning").unwrap_or_default().trim();
                 if requested.is_empty() {
+                    let mut names = vec!["auto".to_string()];
+                    names.extend(
+                        config
+                            .reasoning_levels()
+                            .iter()
+                            .map(|level| level.label().to_string()),
+                    );
                     app.items.push(ChatItem::Info(format!(
-                        "thinking: {}; usage: /reasoning <off|low|medium|high|auto>",
-                        config.reasoning.label()
+                        "thinking: {}; usage: /reasoning <{}>",
+                        config.reasoning.label(),
+                        names.join("|")
                     )));
                     return;
                 }
@@ -1378,8 +1397,16 @@ fn handle_key(
                         if let Some(log) = session.as_ref() {
                             let _ = log.append_thinking_level(level.label());
                         }
-                        app.items
-                            .push(ChatItem::Info(format!("thinking set to {}", level.label())));
+                        let effective = config.effective_reasoning();
+                        let note = if effective != level {
+                            format!(" (model uses {})", effective.label())
+                        } else {
+                            String::new()
+                        };
+                        app.items.push(ChatItem::Info(format!(
+                            "thinking set to {}{note}",
+                            level.label()
+                        )));
                     }
                     None => app.items.push(ChatItem::Error(format!(
                         "unknown thinking level `{requested}`",
@@ -1581,6 +1608,7 @@ fn handle_key(
 
             let (tx, new_rx) = unbounded_channel();
             *rx = Some(new_rx);
+            refresh_reasoning(config);
             let config = config.clone();
             let cwd = cwd.to_path_buf();
             let history = app.history.clone();
@@ -3359,6 +3387,11 @@ const COMMAND_ARGS: &[(&str, &[ArgSpec])] = &[
                 children: &[],
             },
             ArgSpec {
+                value: "minimal",
+                description: "minimal effort",
+                children: &[],
+            },
+            ArgSpec {
                 value: "low",
                 description: "low effort",
                 children: &[],
@@ -3371,6 +3404,16 @@ const COMMAND_ARGS: &[(&str, &[ArgSpec])] = &[
             ArgSpec {
                 value: "high",
                 description: "high effort",
+                children: &[],
+            },
+            ArgSpec {
+                value: "xhigh",
+                description: "extra-high effort",
+                children: &[],
+            },
+            ArgSpec {
+                value: "max",
+                description: "maximum effort",
                 children: &[],
             },
         ],
@@ -3701,7 +3744,13 @@ fn handle_models_key(key: KeyEvent, app: &mut App, config: &mut Config) {
     }
 }
 
-fn handle_sessions_key(key: KeyEvent, app: &mut App, cwd: &Path, session: &mut Option<SessionLog>) {
+fn handle_sessions_key(
+    key: KeyEvent,
+    app: &mut App,
+    config: &mut Config,
+    cwd: &Path,
+    session: &mut Option<SessionLog>,
+) {
     let Some(mut state) = app.sessions.take() else {
         return;
     };
@@ -3823,7 +3872,7 @@ fn handle_sessions_key(key: KeyEvent, app: &mut App, cwd: &Path, session: &mut O
         KeyCode::Enter => {
             if let Some(summary) = state.selected_session() {
                 match SessionLog::open(summary.path.clone()) {
-                    Ok(log) => switch_session(app, session, log),
+                    Ok(log) => switch_session(app, config, session, log),
                     Err(err) => {
                         app.items.push(ChatItem::Error(format!("session: {err:#}")));
                         app.status = "ready".to_string();
@@ -4101,7 +4150,21 @@ fn handle_marketplaces_key(key: KeyEvent, app: &mut App, marketplaces_tx: &Marke
     }
 }
 
-fn switch_session(app: &mut App, session: &mut Option<SessionLog>, log: SessionLog) {
+fn switch_session(
+    app: &mut App,
+    config: &mut Config,
+    session: &mut Option<SessionLog>,
+    log: SessionLog,
+) {
+    // A resumed thread restores the thinking level it was last left at, so the
+    // footer and the next turn agree with what the thread recorded.
+    if let Some(parsed) = log
+        .thinking_level()
+        .and_then(|level| Reasoning::parse(&level))
+    {
+        config.reasoning = parsed;
+        app.reasoning = parsed;
+    }
     match log.messages() {
         Ok(messages) => {
             let id = log.id().to_string();
@@ -4719,6 +4782,7 @@ fn switch_provider(app: &mut App, config: &mut Config, provider: &str) -> Result
     let (name, key) = crate::auth::select_stored(provider)?;
     config.apply_provider(&name, &key);
     config.persist_selection_at(&Config::config_path())?;
+    refresh_reasoning(config);
     apply_model_state(app, config);
     Ok(name)
 }
@@ -4743,6 +4807,7 @@ fn select_model(app: &mut App, config: &mut Config, choice: &ModelChoice) -> Res
     }
     config.model = choice.model.clone();
     config.persist_selection_at(&Config::config_path())?;
+    refresh_reasoning(config);
     apply_model_state(app, config);
     Ok(())
 }

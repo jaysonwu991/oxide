@@ -1,5 +1,6 @@
 use crate::config::{
-    glm_forces_thinking, supports_adaptive_thinking, AuthStyle, Config, ProviderKind, Reasoning,
+    glm_forces_thinking, supports_adaptive_thinking, AuthStyle, Config, ModelReasoning,
+    ProviderKind, Reasoning,
 };
 use crate::llm::anthropic;
 use crate::llm::types::{
@@ -17,6 +18,11 @@ use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 const MODEL_CACHE_TTL_SECS: u64 = 24 * 60 * 60;
+/// Bumped when the cached shape changes, so an entry written by an older build
+/// is refetched instead of served without the newer fields (a pre-reasoning
+/// cache deserializes `reasoning` as empty but would otherwise stay fresh for
+/// the whole TTL, hiding a model's advertised levels).
+const MODEL_CACHE_VERSION: u32 = 2;
 const MODEL_CACHE_FILE: &str = "model-cache.json";
 /// How many times a transient stream failure is retried before giving up.
 const MAX_STREAM_ATTEMPTS: u32 = 3;
@@ -90,6 +96,18 @@ struct ModelList {
 #[derive(Debug, serde::Deserialize)]
 struct ModelEntry {
     id: String,
+    /// DeepSeek (and other OpenAI-compatible catalogs) advertise the reasoning
+    /// levels a model accepts beside its id. Missing on providers that do not.
+    #[serde(default)]
+    effort: Option<ModelEffort>,
+}
+
+#[derive(Debug, serde::Deserialize)]
+struct ModelEffort {
+    #[serde(default)]
+    supported_levels: Vec<String>,
+    #[serde(default)]
+    default_level: Option<String>,
 }
 
 #[derive(Debug, Default, serde::Serialize, serde::Deserialize)]
@@ -101,6 +119,12 @@ struct ModelCache {
 struct CachedModels {
     updated_at: u64,
     models: Vec<String>,
+    /// The shape this entry was written with (see [`MODEL_CACHE_VERSION`]).
+    #[serde(default)]
+    version: u32,
+    /// Reasoning levels advertised per model id, when the listing carried them.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    reasoning: BTreeMap<String, ModelReasoning>,
 }
 
 /// Callbacks the client invokes while a turn streams, so the caller can show
@@ -159,9 +183,9 @@ impl LlmClient {
         }
 
         match self.fetch_models().await {
-            Ok(models) => {
+            Ok((models, reasoning)) => {
                 if !models.is_empty() {
-                    store_cached_models(&cache_key, &models);
+                    store_cached_models(&cache_key, &models, &reasoning);
                 }
                 Ok(self.config.merge_model_catalog(models))
             }
@@ -172,7 +196,27 @@ impl LlmClient {
         }
     }
 
-    async fn fetch_models(&self) -> Result<Vec<String>> {
+    /// Fetches the provider's catalog and writes it to the cache even when a
+    /// cached entry is still fresh. The reasoning warmers use it, since a fresh
+    /// entry that carries no effort metadata (a cache written before the field
+    /// existed, or one the provider answered without it) must not keep them from
+    /// asking again.
+    pub async fn refresh_models(&self) -> Result<Vec<String>> {
+        let (models, reasoning) = self.fetch_models().await?;
+        if !models.is_empty() {
+            store_cached_models(&model_cache_key(&self.config), &models, &reasoning);
+        }
+        Ok(self.config.merge_model_catalog(models))
+    }
+
+    /// The reasoning levels the provider advertised for `model`, read from the
+    /// model cache. `None` when the listing carried none, the cache is cold, or
+    /// the model is not in it.
+    pub fn model_reasoning(&self, model: &str) -> Option<ModelReasoning> {
+        cached_model_reasoning(&self.config, model)
+    }
+
+    async fn fetch_models(&self) -> Result<(Vec<String>, BTreeMap<String, ModelReasoning>)> {
         // A Copilot account is served from the endpoint its own session names,
         // and that session is what authorizes the listing too.
         let copilot = match self.config.auth_style() {
@@ -260,7 +304,7 @@ impl LlmClient {
         if !status.is_success() {
             let body = response.text().await.unwrap_or_default();
             if self.config.is_portkey() && status == reqwest::StatusCode::FORBIDDEN {
-                return Ok(self.config.model_catalog());
+                return Ok((self.config.model_catalog(), BTreeMap::new()));
             }
             // Z.AI does not document a model listing endpoint, so a missing or
             // restricted one falls back to the bundled catalog.
@@ -270,7 +314,7 @@ impl LlmClient {
                     reqwest::StatusCode::FORBIDDEN | reqwest::StatusCode::NOT_FOUND
                 )
             {
-                return Ok(self.config.model_catalog());
+                return Ok((self.config.model_catalog(), BTreeMap::new()));
             }
             // Vertex has no listing an ordinary account can call, and a Bedrock
             // account without `bedrock:ListFoundationModels` answers the same
@@ -279,7 +323,7 @@ impl LlmClient {
             if matches!(self.config.provider_kind(), ProviderKind::Bedrock)
                 || self.config.auth_style() == AuthStyle::Vertex
             {
-                return Ok(self.config.model_catalog());
+                return Ok((self.config.model_catalog(), BTreeMap::new()));
             }
             anyhow::bail!("provider returned {status}: {}", body.trim());
         }
@@ -288,20 +332,35 @@ impl LlmClient {
             Ok(value) => value,
             // The listing endpoint is undocumented at Z.AI, so an unexpected
             // shape falls back to the bundled catalog like a missing one.
-            Err(_) if self.config.is_zai() => return Ok(self.config.model_catalog()),
+            Err(_) if self.config.is_zai() => {
+                return Ok((self.config.model_catalog(), BTreeMap::new()))
+            }
             Err(err) => return Err(err).context("parsing model list"),
         };
-        let mut models: Vec<String> = match self.config.provider_kind() {
-            ProviderKind::Gemini => gemini::parse_model_list(&value),
-            ProviderKind::Bedrock => bedrock::parse_model_list(&value),
+        let mut models: Vec<String>;
+        let mut reasoning: BTreeMap<String, ModelReasoning> = BTreeMap::new();
+        match self.config.provider_kind() {
+            ProviderKind::Gemini => models = gemini::parse_model_list(&value),
+            ProviderKind::Bedrock => models = bedrock::parse_model_list(&value),
             _ => {
                 let list: ModelList = serde_json::from_value(value)?;
-                list.data.into_iter().map(|model| model.id).collect()
+                models = Vec::with_capacity(list.data.len());
+                for model in list.data {
+                    if let Some(effort) = model.effort {
+                        if let Some(meta) = ModelReasoning::from_effort(
+                            &effort.supported_levels,
+                            effort.default_level.as_deref(),
+                        ) {
+                            reasoning.insert(model.id.clone(), meta);
+                        }
+                    }
+                    models.push(model.id);
+                }
             }
-        };
+        }
         models.sort();
         models.dedup();
-        Ok(models)
+        Ok((models, reasoning))
     }
 
     /// Signs a request with AWS SigV4 for `service`, or attaches the Bedrock
@@ -867,7 +926,8 @@ impl LlmClient {
 
 impl CachedModels {
     fn is_fresh(&self) -> bool {
-        now_secs().saturating_sub(self.updated_at) < MODEL_CACHE_TTL_SECS
+        self.version == MODEL_CACHE_VERSION
+            && now_secs().saturating_sub(self.updated_at) < MODEL_CACHE_TTL_SECS
     }
 }
 
@@ -916,6 +976,13 @@ fn parse_query(query: &str) -> Vec<(String, String)> {
         .collect()
 }
 
+/// The reasoning levels `model` advertised in the provider's listing, read
+/// from the model cache without making a request. `None` when the listing
+/// carried none, the cache is cold, or the model is not in it.
+pub fn cached_model_reasoning(config: &Config, model: &str) -> Option<ModelReasoning> {
+    cached_models(&model_cache_key(config)).and_then(|entry| entry.reasoning.get(model).cloned())
+}
+
 fn model_cache_key(config: &Config) -> String {
     let identity = format!(
         "{}\n{}\n{}",
@@ -937,7 +1004,7 @@ fn cached_models(key: &str) -> Option<CachedModels> {
     load_model_cache(&path).entries.get(key).cloned()
 }
 
-fn store_cached_models(key: &str, models: &[String]) {
+fn store_cached_models(key: &str, models: &[String], reasoning: &BTreeMap<String, ModelReasoning>) {
     let Some(path) = model_cache_path() else {
         return;
     };
@@ -950,6 +1017,8 @@ fn store_cached_models(key: &str, models: &[String]) {
         CachedModels {
             updated_at: now_secs(),
             models: models.to_vec(),
+            version: MODEL_CACHE_VERSION,
+            reasoning: reasoning.clone(),
         },
     );
     let Some(parent) = path.parent() else {
@@ -1139,8 +1208,11 @@ fn openai_reasoning(
     if config.is_zai() {
         return glm_reasoning(config);
     }
+    if config.is_deepseek_api() {
+        return deepseek_reasoning(config);
+    }
     let adaptive = config.is_portkey() && supports_adaptive_thinking(&config.model);
-    match config.reasoning {
+    match config.effective_reasoning() {
         Reasoning::Off => (None, None, None),
         Reasoning::Auto if adaptive => {
             (None, Some(serde_json::json!({ "type": "adaptive" })), None)
@@ -1152,6 +1224,29 @@ fn openai_reasoning(
             Some(serde_json::json!({ "effort": level.effort() })),
         ),
         level => (level.effort().map(str::to_string), None, None),
+    }
+}
+
+/// DeepSeek's own API toggles thinking with `thinking.type` and accepts only
+/// `low`, `high` and `max` as a `reasoning_effort`: `off` has to disable the
+/// object explicitly (omitting it leaves the model's default, which thinks),
+/// and oxide's `medium` maps onto `high` rather than being sent as a level the
+/// API does not know and silently falling back to that default.
+fn deepseek_reasoning(
+    config: &Config,
+) -> (
+    Option<String>,
+    Option<serde_json::Value>,
+    Option<serde_json::Value>,
+) {
+    let effort = |level: &str| Some(level.to_string());
+    let enabled = || Some(serde_json::json!({ "type": "enabled" }));
+    match config.effective_reasoning() {
+        Reasoning::Auto => (None, None, None),
+        Reasoning::Off => (None, Some(serde_json::json!({ "type": "disabled" })), None),
+        Reasoning::Minimal | Reasoning::Low => (effort("low"), enabled(), None),
+        Reasoning::Medium | Reasoning::High => (effort("high"), enabled(), None),
+        Reasoning::Xhigh | Reasoning::Max => (effort("max"), enabled(), None),
     }
 }
 
@@ -1168,13 +1263,13 @@ fn glm_reasoning(
 ) {
     let effort = |level: &str| Some(level.to_string());
     let enabled = || Some(serde_json::json!({ "type": "enabled" }));
-    match config.reasoning {
+    match config.effective_reasoning() {
         Reasoning::Auto => (None, None, None),
         Reasoning::Off if glm_forces_thinking(&config.model) => (effort("low"), enabled(), None),
         Reasoning::Off => (None, Some(serde_json::json!({ "type": "disabled" })), None),
-        Reasoning::Low => (effort("low"), enabled(), None),
-        Reasoning::Medium => (effort("high"), enabled(), None),
-        Reasoning::High => (effort("max"), enabled(), None),
+        Reasoning::Minimal | Reasoning::Low => (effort("low"), enabled(), None),
+        Reasoning::Medium | Reasoning::High => (effort("high"), enabled(), None),
+        Reasoning::Xhigh | Reasoning::Max => (effort("max"), enabled(), None),
     }
 }
 
@@ -1683,9 +1778,14 @@ mod tests {
     /// catalog offered is the one that config routes to.
     #[tokio::test]
     async fn a_portkey_model_listing_uses_the_gateways_own_key() {
-        let (addr, server) = json_server(vec![
-            serde_json::json!({"data": [{"id": "gpt-5.4"}, {"id": "claude-sonnet-5"}]}).to_string(),
-        ])
+        let (addr, server) = json_server(vec![serde_json::json!({"data": [
+            {"id": "gpt-5.4", "effort": {
+                "supported_levels": ["minimal", "low", "medium", "high"],
+                "default_level": "medium",
+            }},
+            {"id": "claude-sonnet-5"},
+        ]})
+        .to_string()])
         .await;
         let config = Config {
             provider: "portkey".into(),
@@ -1696,9 +1796,21 @@ mod tests {
             ..Config::default()
         };
         let client = LlmClient::new(config);
-        let models = client.fetch_models().await.unwrap();
+        let (models, reasoning) = client.fetch_models().await.unwrap();
 
         assert_eq!(models, ["claude-sonnet-5", "gpt-5.4"]);
+        let advertised = reasoning.get("gpt-5.4").unwrap();
+        assert_eq!(
+            advertised.supported,
+            vec![
+                Reasoning::Minimal,
+                Reasoning::Low,
+                Reasoning::Medium,
+                Reasoning::High
+            ]
+        );
+        assert_eq!(advertised.default, Some(Reasoning::Medium));
+        assert!(!reasoning.contains_key("claude-sonnet-5"));
         let sent = server.await.unwrap().remove(0);
         assert!(sent.starts_with("GET /v1/models"), "{sent}");
         let lower = sent.to_ascii_lowercase();
@@ -1782,12 +1894,86 @@ mod tests {
     #[test]
     fn explicit_reasoning_uses_openai_compatible_effort() {
         let config = Config {
-            provider: "deepseek".into(),
-            model: "deepseek-reasoner".into(),
+            provider: "custom".into(),
+            model: "reasoning-model".into(),
             reasoning: Reasoning::Low,
             ..Config::default()
         };
         assert_eq!(openai_reasoning(&config), (Some("low".into()), None, None));
+    }
+
+    #[test]
+    fn advertised_levels_clamp_the_effort_a_request_sends() {
+        let config = Config {
+            provider: "custom".into(),
+            model: "reasoning-model".into(),
+            reasoning: Reasoning::Medium,
+            reasoning_supported: Some(ModelReasoning {
+                supported: vec![Reasoning::Low, Reasoning::High],
+                default: Some(Reasoning::High),
+            }),
+            ..Config::default()
+        };
+        // The model advertised no `medium`, so the request walks up to `high`.
+        assert_eq!(openai_reasoning(&config), (Some("high".into()), None, None));
+        let body = serde_json::to_value(openai_request(&config, &[Message::user("hi")], &[], None))
+            .unwrap();
+        assert_eq!(body["reasoning_effort"], "high");
+    }
+
+    #[test]
+    fn deepseek_toggles_thinking_and_maps_its_own_levels() {
+        let config = |reasoning: Reasoning| Config {
+            provider: "deepseek".into(),
+            model: "deepseek-flash".into(),
+            reasoning,
+            ..Config::default()
+        };
+        // `off` has to disable thinking explicitly: a request that omits the
+        // object leaves the model's own default, which thinks.
+        assert_eq!(
+            openai_reasoning(&config(Reasoning::Off)),
+            (None, Some(serde_json::json!({ "type": "disabled" })), None)
+        );
+        assert_eq!(
+            openai_reasoning(&config(Reasoning::Low)),
+            (
+                Some("low".into()),
+                Some(serde_json::json!({ "type": "enabled" })),
+                None
+            )
+        );
+        // DeepSeek accepts only low/high/max, so `medium` maps onto `high`.
+        assert_eq!(
+            openai_reasoning(&config(Reasoning::Medium)),
+            (
+                Some("high".into()),
+                Some(serde_json::json!({ "type": "enabled" })),
+                None
+            )
+        );
+        assert_eq!(
+            openai_reasoning(&config(Reasoning::High)),
+            (
+                Some("high".into()),
+                Some(serde_json::json!({ "type": "enabled" })),
+                None
+            )
+        );
+        assert_eq!(
+            openai_reasoning(&config(Reasoning::Auto)),
+            (None, None, None)
+        );
+
+        let body = serde_json::to_value(openai_request(
+            &config(Reasoning::Off),
+            &[Message::user("hi")],
+            &[],
+            None,
+        ))
+        .unwrap();
+        assert_eq!(body["thinking"]["type"], "disabled");
+        assert!(body.get("reasoning_effort").is_none());
     }
 
     #[test]
@@ -1812,6 +1998,14 @@ mod tests {
         );
         assert_eq!(
             openai_reasoning(&config("glm-5.3", Reasoning::High)),
+            (
+                Some("high".into()),
+                Some(serde_json::json!({ "type": "enabled" })),
+                None
+            )
+        );
+        assert_eq!(
+            openai_reasoning(&config("glm-5.3", Reasoning::Max)),
             (
                 Some("max".into()),
                 Some(serde_json::json!({ "type": "enabled" })),
@@ -2136,7 +2330,7 @@ mod tests {
             ..Config::default()
         };
         let client = LlmClient::new(config);
-        let models = client.fetch_models().await.unwrap();
+        let (models, _) = client.fetch_models().await.unwrap();
         std::env::remove_var("GITLAB_INSTANCE_URL");
         std::env::remove_var("GITLAB_AI_GATEWAY_URL");
 
@@ -2175,12 +2369,25 @@ mod tests {
         let current = now_secs();
         assert!(CachedModels {
             updated_at: current,
-            models: vec!["model".into()]
+            models: vec!["model".into()],
+            version: MODEL_CACHE_VERSION,
+            reasoning: BTreeMap::new(),
+        }
+        .is_fresh());
+        // An entry written by an older build is refetched rather than served
+        // without the fields this build knows about.
+        assert!(!CachedModels {
+            updated_at: current,
+            models: vec!["model".into()],
+            version: MODEL_CACHE_VERSION - 1,
+            reasoning: BTreeMap::new(),
         }
         .is_fresh());
         assert!(!CachedModels {
             updated_at: current.saturating_sub(MODEL_CACHE_TTL_SECS + 1),
-            models: vec!["model".into()]
+            models: vec!["model".into()],
+            version: MODEL_CACHE_VERSION,
+            reasoning: BTreeMap::new(),
         }
         .is_fresh());
     }

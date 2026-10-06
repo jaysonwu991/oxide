@@ -464,7 +464,12 @@ it.
 - **Controls** — four icon-only buttons for model, reasoning, agent and project
   access. Each keeps its complete current value and action in its tooltip and
   accessible name. A click posts a `control` message that the controller routes
-  to the same in-panel picker as the matching command. Session history remains
+  to the same in-panel picker as the matching command. The reasoning chip's own
+  picker offers the levels the active model advertised, read through
+  `oxide reasoning --json` (`core/reasoning.ts`) in the background when a pane
+  attaches and again after a model change — so the panel offers `low`/`high`/`max`
+  for a DeepSeek model rather than the full built-in set, and falls back to that
+  set when the model advertised none. Session history remains
   the history button in the header instead of taking a second footer slot.
 - **Composer** — the message box: the attachment strip, the textarea and the
   toolbar inside one bordered block. It starts two rows tall (`rows="2"`) and

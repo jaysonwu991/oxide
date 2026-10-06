@@ -535,6 +535,14 @@ let providersAnswer = [];
 // What the harness' `read_clipboard` answers, for the paste a webview could not
 // read itself.
 let clipboardAnswer = null;
+// What the harness' `reasoning_levels` answers, which is the active model's own
+// levels read from the model cache. The full set stands in for a model whose
+// listing advertised nothing; a check below narrows it.
+let reasoningAnswer = {
+  reasoning: "auto",
+  reasoningLevels: ["off", "minimal", "low", "medium", "high", "xhigh", "max"],
+  supportsReasoning: true,
+};
 
 // The sidebar's rows as `list_projects` answers them: registered folders first
 // (most recently opened first), then projects discovered from sessions. Nothing
@@ -716,6 +724,8 @@ const invoke = async (command, args = {}) => {
         : catalog.filter((entry) => entry.source === "builtin");
     case "read_clipboard":
       return clipboardAnswer;
+    case "reasoning_levels":
+      return { ...reasoningAnswer, reasoningLevels: [...reasoningAnswer.reasoningLevels] };
     default:
       return null;
   }
@@ -819,7 +829,7 @@ vm.runInThisContext(
     " loadSessions, renderProjectsTree, renderSessions, renderMcps, openSession, renderProjectMeta, updateSendState, toggleBusyMessageMode, setBusy, setIdle," +
     " loadMcps, openSessions," +
     " listedSessions, selectSessionFromTree, removeSession," +
-    " updateChips," +
+    " updateChips, openReasoning," +
     " startTool, finishTool, toggleTool, openUpdate, installUpdate, installedUpdate, catchUpOnLaunchUpdate, launchDismissed, renderMarkdown, SCROLLBAR_LINGER };\n",
 );
 
@@ -4087,6 +4097,13 @@ check(
   app.state.reasoning === heldLevel && elementFor("reasoning-modal").hidden === false,
   `${app.state.reasoning} / ${heldLevel} / ${elementFor("reasoning-modal").hidden}`,
 );
+// Until the reader picks a level, the window leaves the choice to the core so a
+// resumed session can restore the level it recorded.
+check(
+  "left the reasoning level to the thread until a row was picked",
+  app.state.reasoningPicked === false,
+  String(app.state.reasoningPicked),
+);
 // A shortcut that does change the level with the picker up moves its mark rather
 // than leaving the dialog showing the level it just left — and leaves the
 // keyboard on the mark, since the list is rebuilt to do it.
@@ -4104,9 +4121,10 @@ reasoningRow("medium").click();
 check(
   "took the level a row named and put the picker away",
   app.state.reasoning === "medium" &&
+    app.state.reasoningPicked === true &&
     elementFor("reasoning-modal").hidden === true &&
     elementFor("reasoning").getAttribute("aria-label") === "thinking: medium",
-  `${app.state.reasoning} / ${elementFor("reasoning-modal").hidden} / ${elementFor("reasoning").getAttribute("aria-label")}`,
+  `${app.state.reasoning} / ${app.state.reasoningPicked} / ${elementFor("reasoning-modal").hidden} / ${elementFor("reasoning").getAttribute("aria-label")}`,
 );
 // Every close path hands the keyboard back — the row here, Escape below — so a
 // reader who picked a level is not left at the top of the page.
@@ -4132,6 +4150,20 @@ check(
     document.activeElement === elementFor("reasoning"),
   `${elementFor("reasoning-modal").hidden} / ${document.activeElement?.id}`,
 );
+// A model whose listing advertised its own levels narrows the picker to those,
+// so it never offers a level the run would clamp away. The window reads the
+// levels the host warmed from the listing before painting the rows.
+reasoningAnswer.reasoningLevels = ["off", "low", "high", "max"];
+app.state.reasoningLevels = null;
+await app.openReasoning();
+check(
+  "narrowed the picker to the levels the model advertised",
+  reasoningNames().join(" ") === "auto off low high max",
+  `${reasoningNames().join(" ")} / reasoningAnswer=${JSON.stringify(reasoningAnswer.reasoningLevels)}`,
+);
+document.fire("keydown", { key: "Escape", preventDefault() {} });
+reasoningAnswer.reasoningLevels = ["off", "minimal", "low", "medium", "high", "xhigh", "max"];
+app.state.reasoningLevels = null;
 // There is nothing to pick before a project is open — the level would be
 // replaced by the one that project's config resolves to — so the chip gives the
 // answer the app's other project-bound commands give.
@@ -4161,7 +4193,7 @@ check(
 await app.runSlashCommand("/reasoning nope");
 check(
   "named the levels when the argument is not one",
-  status() === "Reasoning must be one of auto, off, low, medium, high.",
+  status() === "Reasoning must be one of auto, off, minimal, low, medium, high, xhigh, max.",
   status(),
 );
 elementFor("reasoning").click();

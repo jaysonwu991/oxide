@@ -657,6 +657,21 @@ impl SessionLog {
         self.append_entry(entry)
     }
 
+    /// The newest thinking level recorded on the active path, if any. Resuming
+    /// a session restores it, so a level chosen with Shift+Tab or `/reasoning`
+    /// outlives the process rather than reverting to `auto`. The raw leaf path
+    /// is walked (not [`Self::context`], which drops entries before the latest
+    /// compaction) since a level change is not a message the compaction
+    /// summarizes away.
+    pub fn thinking_level(&self) -> Option<String> {
+        let state = self.state();
+        let path = leaf_path_with(&state.entries, state.leaf_id.as_deref(), &state.by_id);
+        path.iter().rev().find_map(|entry| match entry {
+            Entry::ThinkingLevelChange(entry) => Some(entry.thinking_level.clone()),
+            _ => None,
+        })
+    }
+
     /// The messages the model sees: the leaf path with the latest compaction
     /// applied.
     pub fn messages(&self) -> Result<Vec<Message>> {
@@ -1312,6 +1327,22 @@ mod tests {
         assert!(texts.contains(&"three".to_string()));
         assert!(texts.contains(&"four".to_string()));
         assert!(!texts.contains(&"one".to_string()));
+
+        std::fs::remove_dir_all(&dir).ok();
+        std::fs::remove_dir_all(&cwd).ok();
+    }
+
+    #[test]
+    fn the_newest_thinking_level_on_the_path_is_reported() {
+        let dir = temp_dir("thinking_level");
+        let cwd = temp_dir("thinking_level_proj");
+        let log = SessionLog::create_in(&dir, &cwd).unwrap();
+        assert_eq!(log.thinking_level(), None);
+        log.append(&Message::user("one")).unwrap();
+        log.append_thinking_level("low").unwrap();
+        log.append(&Message::assistant("two", vec![])).unwrap();
+        log.append_thinking_level("high").unwrap();
+        assert_eq!(log.thinking_level().as_deref(), Some("high"));
 
         std::fs::remove_dir_all(&dir).ok();
         std::fs::remove_dir_all(&cwd).ok();

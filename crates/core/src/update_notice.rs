@@ -285,6 +285,7 @@ mod tests {
 
     #[tokio::test]
     async fn a_fresh_answer_is_what_a_launch_reads_without_looking_again() {
+        let _env = crate::env_lock::hold();
         let dir = temp_dir("latest");
         let path = dir.join(FILE_NAME);
         // A version no release will ever carry, so an answer read from the store

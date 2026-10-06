@@ -46,7 +46,8 @@ pub async fn start_turn(
     reasoning: Option<String>,
     inline: Vec<ContentPart>,
 ) -> Result<Turn> {
-    let config = crate::manager::load_project_config_with(project, reasoning)
+    let reasoning_given = reasoning.is_some();
+    let mut config = crate::manager::load_project_config_with(project, reasoning)
         .with_context(|| format!("loading configuration for {}", project.display()))?;
     config.require_api_key()?;
 
@@ -63,6 +64,15 @@ pub async fn start_turn(
     let title = oxide_core::title::summarize(&prompt, oxide_core::title::TITLE_LIMIT);
     let (history, log) = runner::begin_session(project, session, ephemeral, &prompt, &[], &inline)?;
     let session_id = log.as_ref().map(|entry| entry.id().to_string());
+    // A resumed thread restores the thinking level it was last left at, unless
+    // the turn named one, matching the CLI.
+    if !reasoning_given {
+        if let Some(level) = log.as_ref().and_then(SessionLog::thinking_level) {
+            if let Some(parsed) = oxide_core::config::Reasoning::parse(&level) {
+                config.reasoning = parsed;
+            }
+        }
+    }
 
     let steering = Steering::new();
     let follow_ups = Steering::new();

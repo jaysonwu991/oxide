@@ -83,7 +83,7 @@ skills.
 | `@` | Open file/folder path autocomplete to add a file to the prompt. |
 | Tab | Complete the selected slash-command (including fixed arguments such as `/notify sound on`) or `@path` suggestion. |
 | Up / Down | Move through the suggestion list, or recall input history when it is closed. |
-| Shift+Tab | Cycle the thinking level: `auto` → `off` → `low` → `medium` → `high`. |
+| Shift+Tab | Cycle the thinking level: `auto` → the model's own levels when its listing advertised them, else `off` → `minimal` → `low` → `medium` → `high` → `xhigh` → `max`. |
 | Ctrl+O | Expand or collapse tool-output details, and compaction/branch summaries. |
 | Ctrl+T | Show or hide reasoning (`✦ Thinking`) blocks. |
 | Ctrl+V | Paste the clipboard into the message box the way Pi does: the path a copied file names (one per line for a multi-select copy), the scratch path a clipboard image is written to, or plain clipboard text. The model reads the path, so a pasted image arrives through its file rather than as a pending attachment. A file this app may not read is written out as the pasteboard's own picture instead, so the inserted path still points at something the run can read; where the pasteboard carries none, macOS gates the Desktop, Documents and Downloads folders behind a per-app grant. |

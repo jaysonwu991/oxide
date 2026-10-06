@@ -1273,6 +1273,7 @@ mod tests {
 
     #[test]
     fn interpolates_environment_variables() {
+        let _env = crate::env_lock::hold();
         std::env::set_var("OXIDE_MCP_TEST", "secret");
         assert_eq!(interpolate("Bearer {env:OXIDE_MCP_TEST}"), "Bearer secret");
         assert_eq!(interpolate("plain"), "plain");

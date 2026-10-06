@@ -821,52 +821,91 @@ pub enum Reasoning {
     #[default]
     Auto,
     Off,
+    Minimal,
     Low,
     Medium,
     High,
+    Xhigh,
+    Max,
 }
 
 impl Reasoning {
-    /// Parses a user-supplied level, accepting common aliases.
+    /// Parses a user-supplied level, accepting common aliases. `minimal`,
+    /// `xhigh` and `max` are the provider levels the model listings advertise.
     pub fn parse(value: &str) -> Option<Self> {
+        Self::from_provider_label(value).or_else(|| match value.trim() {
+            "" | "default" => Some(Reasoning::Auto),
+            _ => None,
+        })
+    }
+
+    /// Parses the spelling a provider advertises for a level (`low`, `high`,
+    /// `max`, `minimal`, `xhigh`, `none`, …). Used both for user input and for
+    /// the `effort.supported_levels` a model listing carries.
+    pub fn from_provider_label(value: &str) -> Option<Self> {
         match value.trim().to_ascii_lowercase().replace('_', "-").as_str() {
-            "" | "auto" | "default" => Some(Reasoning::Auto),
-            "off" | "none" | "disabled" => Some(Reasoning::Off),
-            "low" | "minimal" | "small" => Some(Reasoning::Low),
+            "auto" | "default" => Some(Reasoning::Auto),
+            "off" | "none" | "disabled" | "disable" => Some(Reasoning::Off),
+            "minimal" | "min" | "small" => Some(Reasoning::Minimal),
+            "low" => Some(Reasoning::Low),
             "medium" | "med" => Some(Reasoning::Medium),
-            "high" | "xhigh" | "x-high" => Some(Reasoning::High),
+            "high" => Some(Reasoning::High),
+            "xhigh" | "x-high" | "x_high" => Some(Reasoning::Xhigh),
+            "max" | "maximum" => Some(Reasoning::Max),
             _ => None,
         }
     }
+
+    /// Every explicit level, cheapest first. `Auto` is a mode rather than a
+    /// level, so it is left out; the provider default is the model's own.
+    pub const LEVELS: [Reasoning; 7] = [
+        Reasoning::Off,
+        Reasoning::Minimal,
+        Reasoning::Low,
+        Reasoning::Medium,
+        Reasoning::High,
+        Reasoning::Xhigh,
+        Reasoning::Max,
+    ];
 
     /// A short lowercase label used in the UI and CLI.
     pub fn label(self) -> &'static str {
         match self {
             Reasoning::Auto => "auto",
             Reasoning::Off => "off",
+            Reasoning::Minimal => "minimal",
             Reasoning::Low => "low",
             Reasoning::Medium => "medium",
             Reasoning::High => "high",
+            Reasoning::Xhigh => "xhigh",
+            Reasoning::Max => "max",
         }
     }
 
-    /// The cycle used by the TUI (auto → off → low → medium → high).
+    /// The cycle used by the TUI (auto → off → minimal → low → medium → high →
+    /// xhigh → max).
     pub fn next(self) -> Self {
         match self {
             Reasoning::Auto => Reasoning::Off,
-            Reasoning::Off => Reasoning::Low,
+            Reasoning::Off => Reasoning::Minimal,
+            Reasoning::Minimal => Reasoning::Low,
             Reasoning::Low => Reasoning::Medium,
             Reasoning::Medium => Reasoning::High,
-            Reasoning::High => Reasoning::Auto,
+            Reasoning::High => Reasoning::Xhigh,
+            Reasoning::Xhigh => Reasoning::Max,
+            Reasoning::Max => Reasoning::Auto,
         }
     }
 
     /// The OpenAI-compatible `reasoning_effort` value, if any.
     pub fn effort(self) -> Option<&'static str> {
         match self {
+            Reasoning::Minimal => Some("minimal"),
             Reasoning::Low => Some("low"),
             Reasoning::Medium => Some("medium"),
             Reasoning::High => Some("high"),
+            Reasoning::Xhigh => Some("xhigh"),
+            Reasoning::Max => Some("max"),
             Reasoning::Auto | Reasoning::Off => None,
         }
     }
@@ -874,13 +913,98 @@ impl Reasoning {
     /// The Anthropic extended-thinking budget in tokens, if enabled.
     pub fn budget_tokens(self, max_tokens: u32) -> Option<u32> {
         let desired = match self {
+            Reasoning::Minimal => 1024,
             Reasoning::Low => 2048,
             Reasoning::Medium => 6144,
             Reasoning::High => 12_288,
+            Reasoning::Xhigh => 16_384,
+            Reasoning::Max => 24_576,
             Reasoning::Auto | Reasoning::Off => return None,
         };
         let budget = desired.min(max_tokens.saturating_sub(1024));
         (budget >= 1024).then_some(budget)
+    }
+
+    /// The index of a level in [`Self::LEVELS`], used to clamp an unsupported
+    /// choice onto the nearest one the model advertises.
+    fn rank(self) -> Option<usize> {
+        Self::LEVELS.iter().position(|level| *level == self)
+    }
+
+    /// The next level in a front-end's cycle: `auto`, then the model's own
+    /// levels in order, wrapping back to `auto`. A current level outside the
+    /// cycle (a stale config after a model switch) starts it at `auto`.
+    pub fn next_in(self, levels: &[Reasoning]) -> Self {
+        let mut choices = Vec::with_capacity(levels.len() + 1);
+        choices.push(Reasoning::Auto);
+        for level in levels {
+            if *level != Reasoning::Auto && !choices.contains(level) {
+                choices.push(*level);
+            }
+        }
+        match choices.iter().position(|level| *level == self) {
+            Some(index) => choices[(index + 1) % choices.len()],
+            None => Reasoning::Auto,
+        }
+    }
+
+    /// The nearest level a model that advertises `supported` accepts. An
+    /// unsupported level walks up first (so `medium` on a model with only
+    /// `low`/`high`/`max` becomes `high`), then down, matching Pi's clamp.
+    /// `Auto` and an empty set are left alone.
+    pub fn clamp_to(self, supported: &[Reasoning]) -> Self {
+        if supported.is_empty() || supported.contains(&self) {
+            return self;
+        }
+        let Some(rank) = self.rank() else {
+            return self;
+        };
+        for candidate in &Self::LEVELS[rank..] {
+            if supported.contains(candidate) {
+                return *candidate;
+            }
+        }
+        for candidate in Self::LEVELS[..rank].iter().rev() {
+            if supported.contains(candidate) {
+                return *candidate;
+            }
+        }
+        self
+    }
+}
+
+/// The reasoning levels a model advertises, read from the provider's model
+/// listing when it carries them (`effort.supported_levels`/`default_level`).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub struct ModelReasoning {
+    /// The explicit levels the model accepts, in the provider's order.
+    #[serde(default)]
+    pub supported: Vec<Reasoning>,
+    /// The provider's own default level, when it named one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub default: Option<Reasoning>,
+}
+
+impl ModelReasoning {
+    /// Parses DeepSeek/OpenAI-style `effort` metadata. Unknown level spellings
+    /// are ignored rather than guessed at, so a future level does not become a
+    /// level the request builder would send wrongly.
+    pub fn from_effort(supported_levels: &[String], default_level: Option<&str>) -> Option<Self> {
+        let supported: Vec<Reasoning> = supported_levels
+            .iter()
+            .filter_map(|level| Reasoning::from_provider_label(level))
+            .filter(|level| *level != Reasoning::Auto)
+            .collect();
+        let default = default_level.and_then(Reasoning::from_provider_label);
+        if supported.is_empty() && default.is_none() {
+            return None;
+        }
+        Some(Self { supported, default })
+    }
+
+    /// Whether the model advertised any explicit level at all.
+    pub fn is_empty(&self) -> bool {
+        self.supported.is_empty() && self.default.is_none()
     }
 }
 
@@ -1066,6 +1190,11 @@ pub struct Config {
     pub auto_approve: bool,
     #[serde(default)]
     pub reasoning: Reasoning,
+    /// The levels the active model advertised in the provider's listing, when
+    /// it carried them. Read from the model cache; not persisted with the
+    /// config, since it belongs to the provider's catalog rather than a choice.
+    #[serde(skip)]
+    pub reasoning_supported: Option<ModelReasoning>,
     #[serde(skip)]
     pub ecosystem: Ecosystem,
     #[serde(skip)]
@@ -1461,6 +1590,7 @@ impl Default for Config {
             context_window: 0,
             auto_approve: true,
             reasoning: Reasoning::default(),
+            reasoning_supported: None,
             ecosystem: Ecosystem::default(),
             active_agent: None,
             memory: MemoryStore::default(),
@@ -1489,8 +1619,15 @@ impl Config {
     }
 
     /// Whether the active model is known to support a thinking/reasoning level.
-    /// The footer appends ` • <level>` only for these, like Pi's `model.reasoning`.
+    /// A level the provider advertised settles it; otherwise the model-name
+    /// heuristic below is used. The footer appends ` • <level>` only for these,
+    /// like Pi's `model.reasoning`.
     pub fn supports_reasoning(&self) -> bool {
+        if let Some(meta) = &self.reasoning_supported {
+            if !meta.is_empty() {
+                return true;
+            }
+        }
         let model = self.model.to_ascii_lowercase();
         const REASONING: [&str; 12] = [
             "o1",
@@ -1507,6 +1644,50 @@ impl Config {
             "sonnet",
         ];
         REASONING.iter().any(|prefix| model.starts_with(prefix))
+    }
+
+    /// The explicit levels the active model accepts, cheapest first, with
+    /// `off` always offered (a model that cannot fully disable thinking still
+    /// has a lowest-effort answer for it). A model whose listing carried levels
+    /// returns exactly those; otherwise the built-in set is offered for a model
+    /// the name heuristic recognizes, and a model known not to reason keeps
+    /// only `off`.
+    pub fn reasoning_levels(&self) -> Vec<Reasoning> {
+        let mut levels = vec![Reasoning::Off];
+        if let Some(meta) = &self.reasoning_supported {
+            if !meta.supported.is_empty() {
+                for level in &meta.supported {
+                    if *level != Reasoning::Off && !levels.contains(level) {
+                        levels.push(*level);
+                    }
+                }
+                return levels;
+            }
+        }
+        if self.supports_reasoning() {
+            for level in Reasoning::LEVELS {
+                if level != Reasoning::Off {
+                    levels.push(level);
+                }
+            }
+        }
+        levels
+    }
+
+    /// The reasoning level a request should send: the chosen one clamped onto
+    /// the levels the model advertised. `auto` and `off` are modes rather than
+    /// effort levels, so they are never clamped — a model that does not list
+    /// `off` still gets `thinking.type = disabled` where the provider supports
+    /// it (`deepseek_reasoning`). A model that advertised nothing keeps the
+    /// choice as-is too (the provider default and the built-in mapping).
+    pub fn effective_reasoning(&self) -> Reasoning {
+        if matches!(self.reasoning, Reasoning::Auto | Reasoning::Off) {
+            return self.reasoning;
+        }
+        match &self.reasoning_supported {
+            Some(meta) if !meta.supported.is_empty() => self.reasoning.clamp_to(&meta.supported),
+            _ => self.reasoning,
+        }
     }
 
     /// The model's context window, used for the Pi-style context percentage
@@ -1653,10 +1834,13 @@ impl Config {
         if let Some(value) = reasoning.or_else(|| env_nonempty("OXIDE_REASONING")) {
             config.reasoning = Reasoning::parse(&value).with_context(|| {
                 format!(
-                    "unknown reasoning level `{value}` (expected auto, off, low, medium, or high)"
+                    "unknown reasoning level `{value}` (expected auto, off, minimal, low, medium, high, xhigh, or max)"
                 )
             })?;
         }
+        // A model whose provider listing advertised reasoning levels carries
+        // them here, so the UI and the request clamp use the model's own set.
+        config.reasoning_supported = crate::llm::cached_model_reasoning(&config, &config.model);
         config.default_project_trust = load_default_project_trust();
         config.workspaces = crate::workspaces::Workspaces::load(cwd);
         config.ecosystem = ecosystem::load(cwd);
@@ -2296,6 +2480,18 @@ impl Config {
                 .to_ascii_lowercase()
                 .contains("api.deepseek.com")
             || self.model.to_ascii_lowercase().contains("deepseek")
+    }
+
+    /// Whether the request goes straight to DeepSeek's own API, where the
+    /// `thinking` object controls reasoning and only `low`/`high`/`max` are
+    /// accepted. A DeepSeek model behind a gateway (OpenRouter, Portkey)
+    /// speaks that gateway's shape instead, so it is left to the generic path.
+    pub fn is_deepseek_api(&self) -> bool {
+        canonical_provider(&self.provider) == "deepseek"
+            || self
+                .base_url
+                .to_ascii_lowercase()
+                .contains("api.deepseek.com")
     }
 
     /// The models bundled with a provider whose catalog cannot be listed.
@@ -3020,17 +3216,80 @@ mod tests {
     fn reasoning_parses_aliases_and_cycles() {
         assert_eq!(Reasoning::parse("auto"), Some(Reasoning::Auto));
         assert_eq!(Reasoning::parse("OFF"), Some(Reasoning::Off));
-        assert_eq!(Reasoning::parse("small"), Some(Reasoning::Low));
+        assert_eq!(Reasoning::parse("small"), Some(Reasoning::Minimal));
         assert_eq!(Reasoning::parse("medium"), Some(Reasoning::Medium));
-        assert_eq!(Reasoning::parse("xhigh"), Some(Reasoning::High));
+        assert_eq!(Reasoning::parse("xhigh"), Some(Reasoning::Xhigh));
+        assert_eq!(Reasoning::parse("max"), Some(Reasoning::Max));
         assert_eq!(Reasoning::parse("nonsense"), None);
 
         assert_eq!(Reasoning::default(), Reasoning::Auto);
         assert_eq!(Reasoning::Auto.next(), Reasoning::Off);
-        assert_eq!(Reasoning::Off.next(), Reasoning::Low);
+        assert_eq!(Reasoning::Off.next(), Reasoning::Minimal);
+        assert_eq!(Reasoning::Minimal.next(), Reasoning::Low);
         assert_eq!(Reasoning::Low.next(), Reasoning::Medium);
         assert_eq!(Reasoning::Medium.next(), Reasoning::High);
-        assert_eq!(Reasoning::High.next(), Reasoning::Auto);
+        assert_eq!(Reasoning::High.next(), Reasoning::Xhigh);
+        assert_eq!(Reasoning::Xhigh.next(), Reasoning::Max);
+        assert_eq!(Reasoning::Max.next(), Reasoning::Auto);
+    }
+
+    #[test]
+    fn reasoning_clamps_onto_the_levels_a_model_advertises() {
+        let deepseek = [Reasoning::Low, Reasoning::High, Reasoning::Max];
+        assert_eq!(Reasoning::Low.clamp_to(&deepseek), Reasoning::Low);
+        assert_eq!(Reasoning::Medium.clamp_to(&deepseek), Reasoning::High);
+        assert_eq!(Reasoning::Xhigh.clamp_to(&deepseek), Reasoning::Max);
+        assert_eq!(Reasoning::Auto.clamp_to(&deepseek), Reasoning::Auto);
+        assert_eq!(Reasoning::Max.clamp_to(&[]), Reasoning::Max);
+
+        let choices = [
+            Reasoning::Off,
+            Reasoning::Low,
+            Reasoning::High,
+            Reasoning::Max,
+        ];
+        assert_eq!(Reasoning::Auto.next_in(&choices), Reasoning::Off);
+        assert_eq!(Reasoning::Max.next_in(&choices), Reasoning::Auto);
+        assert_eq!(Reasoning::Medium.next_in(&choices), Reasoning::Auto);
+    }
+
+    #[test]
+    fn effective_reasoning_keeps_the_modes_off_a_models_own_levels() {
+        let config = |reasoning: Reasoning| Config {
+            reasoning,
+            reasoning_supported: Some(ModelReasoning {
+                supported: vec![Reasoning::Low, Reasoning::High, Reasoning::Max],
+                default: Some(Reasoning::High),
+            }),
+            ..Config::default()
+        };
+        // `off` is a mode, not an effort level: DeepSeek does not list it, but
+        // the request still has to disable thinking rather than clamp to `low`.
+        assert_eq!(config(Reasoning::Off).effective_reasoning(), Reasoning::Off);
+        assert_eq!(
+            config(Reasoning::Auto).effective_reasoning(),
+            Reasoning::Auto
+        );
+        assert_eq!(
+            config(Reasoning::Medium).effective_reasoning(),
+            Reasoning::High
+        );
+        assert_eq!(config(Reasoning::Max).effective_reasoning(), Reasoning::Max);
+    }
+
+    #[test]
+    fn model_reasoning_reads_advertised_effort_metadata() {
+        let meta = ModelReasoning::from_effort(
+            &["low".into(), "high".into(), "max".into(), "bogus".into()],
+            Some("high"),
+        )
+        .unwrap();
+        assert_eq!(
+            meta.supported,
+            vec![Reasoning::Low, Reasoning::High, Reasoning::Max]
+        );
+        assert_eq!(meta.default, Some(Reasoning::High));
+        assert!(ModelReasoning::from_effort(&[], None).is_none());
     }
 
     #[test]

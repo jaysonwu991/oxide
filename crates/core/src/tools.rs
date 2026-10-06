@@ -4343,11 +4343,10 @@ mod tests {
         std::fs::remove_dir_all(&dir).ok();
         std::fs::create_dir_all(&dir).unwrap();
         let fake_fd = dir.join("fd");
-        std::fs::write(
-            &fake_fd,
-            "#!/bin/sh\nprintf 'first.txt\\nsecond.txt\\n'\nexit 2\n",
-        )
-        .unwrap();
+        // Exactly the limit, then a failure. The collector reaches EOF and reads
+        // the exit status instead of racing a kill at the limit, which would
+        // accept the output as "killed at the limit" depending on timing.
+        std::fs::write(&fake_fd, "#!/bin/sh\nprintf 'first.txt\\n'\nexit 2\n").unwrap();
         let mut permissions = std::fs::metadata(&fake_fd).unwrap().permissions();
         permissions.set_mode(0o755);
         std::fs::set_permissions(&fake_fd, permissions).unwrap();

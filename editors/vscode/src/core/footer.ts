@@ -32,6 +32,10 @@ export interface FooterInput {
   provider: string;
   contextWindow: number;
   reasoning: string;
+  /// The active model's own advertised levels, when `oxide reasoning` answered
+  /// them. The chip title names these rather than the built-in set; the dialog
+  /// and the cycle use them too.
+  reasoningLevels?: readonly string[];
   agent: string;
   /// How many agents were discovered, for the agent chip's tooltip.
   agentCount: number;
@@ -45,12 +49,31 @@ export interface FooterInput {
   usage: UsageTotals;
 }
 
-/// The cycle used by the TUI and the desktop app.
-export const REASONING_LEVELS = ["auto", "off", "low", "medium", "high"];
+/// The cycle used by the TUI and the desktop app. A model whose listing
+/// advertised its own levels narrows this set; the CLI clamps a level the model
+/// does not accept onto the nearest one it does.
+export const REASONING_LEVELS = [
+  "auto",
+  "off",
+  "minimal",
+  "low",
+  "medium",
+  "high",
+  "xhigh",
+  "max",
+];
 
-export function nextReasoning(current: string): string {
-  const index = REASONING_LEVELS.indexOf(current);
-  return REASONING_LEVELS[(index + 1) % REASONING_LEVELS.length];
+export function nextReasoning(current: string, levels: readonly string[] = REASONING_LEVELS): string {
+  const index = levels.indexOf(current);
+  return levels[(index + 1) % levels.length];
+}
+
+/// The levels a chip's tooltip, the picker and the cycle offer: `auto` plus the
+/// model's own advertised levels, or the built-in set when none was advertised.
+export function reasoningChoices(input: Pick<FooterInput, "reasoningLevels">): readonly string[] {
+  const advertised = input.reasoningLevels;
+  if (!advertised || advertised.length === 0) return REASONING_LEVELS;
+  return ["auto", ...advertised.filter((level) => level !== "auto")];
 }
 
 export function footerState(input: FooterInput): FooterState {
@@ -65,7 +88,7 @@ export function footerState(input: FooterInput): FooterState {
       {
         id: "reasoning",
         label: `thinking: ${input.reasoning}`,
-        title: `Reasoning effort (--reasoning): ${REASONING_LEVELS.join(" → ")}. Click to choose a level.`,
+        title: `Reasoning effort (--reasoning): ${reasoningChoices(input).join(" → ")}. Click to choose a level.`,
       },
       {
         id: "agent",

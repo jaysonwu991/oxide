@@ -280,17 +280,60 @@ pub async fn set_project_trust(
     Ok(project_info_value(&config, &path))
 }
 
+/// The levels the active model's own listing advertised, or `null` when it
+/// advertised none (so a front-end keeps its built-in set rather than treating
+/// the name heuristic's guess as if the model had said it).
+fn advertised_reasoning_levels(config: &Config) -> Value {
+    let advertised = config
+        .reasoning_supported
+        .as_ref()
+        .is_some_and(|meta| !meta.supported.is_empty());
+    if advertised {
+        json!(config
+            .reasoning_levels()
+            .iter()
+            .map(|level| level.label())
+            .collect::<Vec<_>>())
+    } else {
+        Value::Null
+    }
+}
+
 fn project_info_value(config: &Config, project: &Path) -> Value {
     let trust = oxide_desktop::manager::project_trust(config, project);
     json!({
         "provider": config.provider,
         "model": config.model,
         "reasoning": config.reasoning.label(),
+        "reasoningLevels": advertised_reasoning_levels(config),
         "supportsReasoning": config.supports_reasoning(),
         "contextWindow": config.context_window(),
         "hasKey": !config.api_key.is_empty(),
         "trust": trust,
     })
+}
+
+/// The active model's reasoning levels, for the picker the thinking chip opens.
+/// The model cache is warmed from the provider's listing when it is cold, so the
+/// picker narrows the first time it is opened rather than only after a model
+/// catalog was fetched.
+pub async fn reasoning_levels(project: String, state: &DesktopState) -> CmdResult<Value> {
+    let mut config = {
+        let manager = state.manager.lock().await;
+        manager.config_for(&PathBuf::from(&project)).map_err(err)?
+    };
+    if config.reasoning_supported.is_none() {
+        // Bypasses the TTL cache: a fresh entry the provider answered without
+        // effort metadata must not keep the model's own levels hidden.
+        let _ = LlmClient::new(config.clone()).refresh_models().await;
+        config.reasoning_supported =
+            oxide_core::llm::cached_model_reasoning(&config, &config.model);
+    }
+    Ok(json!({
+        "reasoning": config.reasoning.label(),
+        "reasoningLevels": advertised_reasoning_levels(&config),
+        "supportsReasoning": config.supports_reasoning(),
+    }))
 }
 
 // ---------- mcp servers ----------
@@ -1047,6 +1090,7 @@ pub async fn dispatch(
         "list_sessions" => command_value(list_sessions(arg(&args, "project")?, &state).await),
         "all_sessions" => command_value(all_sessions(&state).await),
         "project_info" => command_value(project_info(arg(&args, "project")?, &state).await),
+        "reasoning_levels" => command_value(reasoning_levels(arg(&args, "project")?, &state).await),
         "set_project_trust" => command_value(
             set_project_trust(arg(&args, "project")?, arg(&args, "trusted")?, &state).await,
         ),

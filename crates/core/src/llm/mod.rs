@@ -8,5 +8,5 @@ pub(crate) mod gitlab;
 mod types;
 pub(crate) mod vertex;
 
-pub use client::{LlmClient, NoAnswer, Retry, StreamHooks};
+pub use client::{cached_model_reasoning, LlmClient, NoAnswer, Retry, StreamHooks};
 pub use types::*;

@@ -47,11 +47,15 @@ setting (`oxide.askApprovals`) rather than this one. See [Permissions](cli.md#pe
 `reasoning` controls how much reasoning effort Oxide requests. `auto` (the
 default) leaves reasoning behavior and effort to the provider/model. Newer Claude
 models use adaptive thinking without a forced effort; other APIs receive no
-effort override. `off`, `low`, `medium`, and `high` force a level using
-OpenAI-compatible `reasoning_effort`, Anthropic adaptive thinking with
-`output_config.effort`, or a legacy Anthropic thinking budget as appropriate. In
-the TUI press Shift+Tab to cycle levels; `--reasoning` and `OXIDE_REASONING` set
-the starting level. See [Reasoning](cli.md#reasoning).
+effort override. `off`, `minimal`, `low`, `medium`, `high`, `xhigh`, and `max`
+force a level using OpenAI-compatible `reasoning_effort`, Anthropic adaptive
+thinking with `output_config.effort`, or a legacy Anthropic thinking budget as
+appropriate; direct DeepSeek and Z.AI use their `thinking.type` object instead.
+A model whose provider listing advertised its own effort levels narrows the set
+to those (see [the model's own levels](cli.md#the-models-own-levels)). In the TUI
+press Shift+Tab to cycle levels; `--reasoning` and `OXIDE_REASONING` set the
+starting level, and resuming a session restores the level recorded on it. See
+[Reasoning](cli.md#reasoning).
 
 ### max_tokens and context_window
 
@@ -93,7 +97,7 @@ oxide update [--check] [--component <cli|desktop|extension>] [--current <VERSION
 | `--ask-approvals` | Ask before a permission-gated tool runs: in the TUI the question is answered in the composer, and in `--mode rpc` it goes to the client as an `approval_request`. |
 | `--no-ask-approvals` | Run gated tools without asking, overriding `auto_approve` for this run. |
 | `--ask-questions` | Send `question_request` frames to `--mode rpc` clients (skill `ask` tool questions); without it the `ask` tool is not offered. |
-| `--reasoning <LEVEL>` | Reasoning effort: `auto` (default), `off`, `low`, `medium`, or `high`. |
+| `--reasoning <LEVEL>` | Reasoning effort: `auto` (default), `off`, `minimal`, `low`, `medium`, `high`, `xhigh`, or `max`. |
 | `--system-prompt <TEXT>` | Replace the default system prompt for this run. |
 | `--append-system-prompt <TEXT>` | Append text to the system prompt (repeatable). |
 | `--no-context-files` | Disable `AGENTS.md`/`CLAUDE.md` context-file discovery. |
@@ -120,7 +124,7 @@ oxide update [--check] [--component <cli|desktop|extension>] [--current <VERSION
 | `OXIDE_MODEL` | Model name. |
 | `OXIDE_BASE_URL` | API base URL. |
 | `OXIDE_API_KEY` | API key. |
-| `OXIDE_REASONING` | Reasoning effort (`auto`, `off`, `low`, `medium`, `high`). |
+| `OXIDE_REASONING` | Reasoning effort (`auto`, `off`, `minimal`, `low`, `medium`, `high`, `xhigh`, `max`). |
 | `OXIDE_CONTEXT_LIMIT` | Override `context_window`, the model context window used for the footer's context percentage and compaction threshold. |
 | `OXIDE_EXPERIMENTAL` | Set to `1` to show Pi's `xp` marker in the footer. |
 | `OXIDE_COMPACTION_ENABLED` | Enable/disable automatic context compaction. |
@@ -209,7 +213,8 @@ Four dialects are implemented, and a provider speaks one of them:
 
 Reasoning is translated per dialect: `reasoning_effort` on OpenAI-compatible
 endpoints, adaptive or extended thinking on Anthropic, `thinkingConfig` on
-Gemini, `thinking.type` on Z.AI, `additionalModelRequestFields` on Bedrock.
+Gemini, `thinking.type` on Z.AI and DeepSeek's own API,
+`additionalModelRequestFields` on Bedrock.
 
 ### Google and Vertex AI
 
@@ -386,13 +391,34 @@ falls back to a bundled list of current GLM models.
 
 GLM selects thinking with `thinking.type` rather than `reasoning_effort`, and the
 GLM-5.3 series only accepts `low`, `high`, or `max`. `/reasoning` therefore maps
-`low` to `low`, `medium` to `high`, and `high` to `max`; `off` disables thinking
-where the model allows it and asks for the lowest effort on GLM-5.3, which always
-thinks. GLM prices ship in the built-in table, so the footer's `$cost` works out
-of the box.
+`minimal` and `low` to `low`, `medium` and `high` to `high`, and `xhigh` and
+`max` to `max`; `off` disables thinking where the model allows it and asks for
+the lowest effort on GLM-5.3, which always thinks. GLM prices ship in the
+built-in table, so the footer's `$cost` works out of the box.
 
 For the mainland-China BigModel endpoint
 (`https://open.bigmodel.cn/api/paas/v4`), set `ZAI_BASE_URL` or `base_url`.
+
+### DeepSeek
+
+Run `/connect deepseek`, or set `DEEPSEEK_API_KEY`, then pick a model with
+`/models`. The preset talks to `https://api.deepseek.com/v1` and defaults to
+`deepseek-chat`. DeepSeek's chat and reasoning models are one thinking model:
+the API toggles thinking with `thinking.type` and accepts `low`, `high`, or
+`max` as its `reasoning_effort`. `/reasoning off` therefore sends
+`thinking.type = "disabled"` (omitting the object would leave the model thinking
+at its own default), and the explicit levels send `thinking.type = "enabled"`
+with `minimal`/`low` → `low`, `medium`/`high` → `high`, and `xhigh`/`max` →
+`max`. The model's listing advertises exactly `low`/`high`/`max`, so Oxide reads
+those and clamps `medium` onto `high` rather than sending a level the API does
+not know. Because the thinking mode expects
+every earlier assistant message to carry its `reasoning_content`, Oxide replays
+the thinking it captured on all of them, with an empty string where a turn
+thought nothing.
+
+A DeepSeek model accessed through a gateway (Portkey, OpenRouter) keeps that
+gateway's reasoning shape rather than the DeepSeek `thinking` object; only the
+provider preset or an `api.deepseek.com` endpoint uses the shape above.
 
 ## Context files and the system prompt
 

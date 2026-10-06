@@ -10,6 +10,7 @@ import {
   footerState,
   formatCost,
   nextReasoning,
+  reasoningChoices,
   usageLine,
   type FooterInput,
 } from "../core/footer";
@@ -141,7 +142,37 @@ describe("footer formatting", () => {
 
   it("cycles reasoning the way the terminal's Shift+Tab does", () => {
     assert.equal(nextReasoning("auto"), "off");
-    assert.equal(nextReasoning("high"), "auto");
+    assert.equal(nextReasoning("high"), "xhigh");
+    assert.equal(nextReasoning("max"), "auto");
     assert.equal(nextReasoning("junk"), "auto");
+    // A narrowed cycle walks only the levels the model advertised.
+    const deepseek = ["auto", "off", "low", "high", "max"];
+    assert.equal(nextReasoning("high", deepseek), "max");
+    assert.equal(nextReasoning("max", deepseek), "auto");
+    assert.equal(nextReasoning("medium", deepseek), "auto");
+  });
+
+  it("narrows the offered levels to the model's own when it advertised them", () => {
+    assert.deepEqual(reasoningChoices({}), [
+      "auto",
+      "off",
+      "minimal",
+      "low",
+      "medium",
+      "high",
+      "xhigh",
+      "max",
+    ]);
+    assert.deepEqual(reasoningChoices({ reasoningLevels: ["off", "low", "high", "max"] }), [
+      "auto",
+      "off",
+      "low",
+      "high",
+      "max",
+    ]);
+    const title = footerState(
+      input({ reasoningLevels: ["off", "low", "high", "max"] }),
+    ).chips.find((entry) => entry.id === "reasoning")?.title;
+    assert.match(title ?? "", /auto → off → low → high → max/);
   });
 });

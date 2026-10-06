@@ -122,7 +122,7 @@ pub const BUILTINS: &[Builtin] = &[
     Builtin {
         name: "reasoning",
         description: "Set the reasoning effort for this chat",
-        arguments: Some("auto|off|low|medium|high"),
+        arguments: Some("auto|off|minimal|low|medium|high|xhigh|max"),
         front_ends: FrontEnd::ALL,
     },
     Builtin {
@@ -468,7 +468,7 @@ pub fn list(cwd: &Path, json: bool) -> anyhow::Result<()> {
     Ok(())
 }
 
-/// `/name` and its argument hint: `/reasoning auto|off|low|medium|high`.
+/// `/name` and its argument hint: `/reasoning auto|off|minimal|low|medium|high|xhigh|max`.
 fn label(entry: &CommandEntry) -> String {
     let mut label = format!("/{}", entry.name);
     if let Some(arguments) = &entry.arguments {
