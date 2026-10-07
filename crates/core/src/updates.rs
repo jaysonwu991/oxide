@@ -203,6 +203,13 @@ pub struct Check {
     pub release_url: String,
     /// The artifact this platform installs, when the release carries one.
     pub asset: Option<Artifact>,
+    /// The release's own notes — the Markdown changelog the release job wrote
+    /// — when it carried any. A dialog shows them rather than sending the
+    /// reader to the release page to read what a release changed.
+    pub notes: Option<String>,
+    /// The day the release was published, `YYYY-MM-DD`, when the API said. A
+    /// manifest carries no date, so this is `None` for a pinned release.
+    pub released_at: Option<String>,
 }
 
 impl Check {
@@ -229,6 +236,8 @@ impl Check {
             advice: None,
             release_url: release.page_url(repo),
             asset: release.artifact(repo),
+            notes: release.notes.clone(),
+            released_at: release.released_at.clone(),
         }
     }
 }
@@ -241,6 +250,12 @@ pub struct Release {
     pub asset: String,
     /// The `sha256:…` digest the release records for `asset`, when it has one.
     pub digest: Option<String>,
+    /// The release's own notes, as GitHub holds them: the changelog a dialog
+    /// paints. `None` for a release that was not read from the API — a pinned
+    /// version, or the manifest the installers read.
+    pub notes: Option<String>,
+    /// The day the release was published, `YYYY-MM-DD`.
+    pub released_at: Option<String>,
 }
 
 impl Release {
@@ -257,6 +272,8 @@ impl Release {
             version: release_version(tag),
             asset,
             digest: None,
+            notes: None,
+            released_at: None,
         }
     }
 
@@ -273,11 +290,15 @@ impl Release {
     ) -> Self {
         let asset = listed_asset(releases, tag, component, platform).unwrap_or_default();
         let digest = asset_digest(releases, tag, &asset);
+        let notes = listed_text(releases, tag, "body");
+        let released_at = listed_text(releases, tag, "published_at").map(|stamp| day_of(&stamp));
         Self {
             tag: tag.to_string(),
             version: release_version(tag),
             asset,
             digest,
+            notes,
+            released_at,
         }
     }
 
@@ -437,6 +458,27 @@ pub fn newest_tag(releases: &serde_json::Value, component: Component) -> Option<
         .filter_map(|tag| parse_version(tag).map(|version| (version, tag)))
         .max_by(|(left, _), (right, _)| compare(left, right))
         .map(|(_, tag)| tag.to_string())
+}
+
+/// One text field of one release, as GitHub reports it: `body` is the notes a
+/// dialog paints, and `published_at` the day the release went out. A field that
+/// is missing or blank is nothing to show rather than an empty section.
+fn listed_text(releases: &serde_json::Value, tag: &str, key: &str) -> Option<String> {
+    releases
+        .as_array()?
+        .iter()
+        .find(|release| release.get("tag_name").and_then(|name| name.as_str()) == Some(tag))?
+        .get(key)?
+        .as_str()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string)
+}
+
+/// The day part of a GitHub timestamp — `2026-10-06T09:15:00Z` reads as
+/// `2026-10-06` — which is what a dialog shows under the version.
+fn day_of(stamp: &str) -> String {
+    stamp.split(['T', ' ']).next().unwrap_or(stamp).to_string()
 }
 
 /// The `sha256:…` GitHub records for one asset of one release.
@@ -640,6 +682,22 @@ pub async fn fetch(
 /// nothing needs; the byte count is returned so a caller can say how big the
 /// download was.
 pub async fn download(client: &reqwest::Client, url: &str, destination: &Path) -> Result<u64> {
+    download_reporting(client, url, destination, |_, _| true).await
+}
+
+/// The same download, reporting how far it has got.
+///
+/// `progress` is handed the bytes written and the size the response announced,
+/// and is asked after every chunk whether to go on: a caller whose reader has
+/// cancelled answers `false` and the download stops where it is rather than
+/// finishing out of view. Nothing is left behind either way — a stopped
+/// download only ever wrote its own scratch file.
+pub async fn download_reporting(
+    client: &reqwest::Client,
+    url: &str,
+    destination: &Path,
+    mut progress: impl FnMut(u64, Option<u64>) -> bool,
+) -> Result<u64> {
     let mut response = client
         .get(url)
         .send()
@@ -649,6 +707,7 @@ pub async fn download(client: &reqwest::Client, url: &str, destination: &Path) -
     if !status.is_success() {
         bail!("{url} returned {status}");
     }
+    let total = response.content_length();
     if let Some(parent) = destination.parent() {
         tokio::fs::create_dir_all(parent)
             .await
@@ -667,6 +726,9 @@ pub async fn download(client: &reqwest::Client, url: &str, destination: &Path) -
             .await
             .with_context(|| format!("writing {}", destination.display()))?;
         written += chunk.len() as u64;
+        if !progress(written, total) {
+            bail!("the download of {url} was cancelled");
+        }
     }
     tokio::io::AsyncWriteExt::flush(&mut file)
         .await
@@ -1140,6 +1202,54 @@ mod tests {
         }]);
         let release = Release::listed(Component::Extension, "extension-v0.34.0", &vsix, "");
         assert_eq!(release.asset, "oxide-vscode-0.34.0.vsix");
+    }
+
+    #[test]
+    fn a_listed_release_carries_the_notes_a_dialog_paints() {
+        // What a release changed is the release job's own words — the body the
+        // API holds — and the day it went out is beside them, so the dialog does
+        // not have to send the reader to the release page to read either.
+        let releases = serde_json::json!([{
+            "tag_name": "desktop-v0.34.0",
+            "body": "## What's changed\n\n- Fixed the sidebar\n",
+            "published_at": "2026-10-06T09:15:00Z",
+            "assets": [{ "name": "macos-arm64-Oxide.dmg" }]
+        }]);
+        let release = Release::listed(
+            Component::Desktop,
+            "desktop-v0.34.0",
+            &releases,
+            "darwin-arm64",
+        );
+        assert_eq!(
+            release.notes.as_deref(),
+            Some("## What's changed\n\n- Fixed the sidebar")
+        );
+        assert_eq!(release.released_at.as_deref(), Some("2026-10-06"));
+
+        let check = Check::new(Component::Desktop, &release, "0.33.0", false, DEFAULT_REPO);
+        assert_eq!(check.notes, release.notes);
+        assert_eq!(check.released_at.as_deref(), Some("2026-10-06"));
+
+        // A release nobody wrote notes for, and a body that is only whitespace,
+        // leave nothing to paint rather than an empty section — and a release
+        // that was not read from the API has neither, since a manifest carries
+        // no changelog.
+        let silent = serde_json::json!([{
+            "tag_name": "desktop-v0.34.0",
+            "body": "   \n",
+            "assets": [{ "name": "macos-arm64-Oxide.dmg" }]
+        }]);
+        let release = Release::listed(
+            Component::Desktop,
+            "desktop-v0.34.0",
+            &silent,
+            "darwin-arm64",
+        );
+        assert!(release.notes.is_none());
+        assert!(release.released_at.is_none());
+        let pinned = Release::new(Component::Desktop, "desktop-v0.34.0", None, "darwin-arm64");
+        assert!(pinned.notes.is_none() && pinned.released_at.is_none());
     }
 
     #[test]

@@ -77,8 +77,8 @@ impl DesktopState {
         }
     }
 
-    /// Keeps the newest word from the launch's own install and hands it to the
-    /// window, which may not be listening for it yet.
+    /// Keeps the newest word from the install this process is running and hands
+    /// it to the window, which may not be listening for it yet.
     fn announce_launch_update(&self, event: &'static str, payload: Value) {
         let mut slot = self
             .launch_update
@@ -92,19 +92,21 @@ impl DesktopState {
     }
 }
 
-/// The newest thing a launch's own install has said, as the window would have
-/// heard it.
+/// The newest thing the install this process is running has said, as the window
+/// would have heard it.
 ///
-/// The install starts from `setup`, before the page has loaded and subscribed to
-/// the event channel, so its first events can be emitted into a window that has
-/// nothing listening — and the one that must not be lost is the report that a
-/// release is in place, since the restart that runs it is offered nowhere else.
-/// Keeping the newest event beside the state lets a window that has just started
-/// listening ask what it missed and paint exactly what it would have heard.
+/// The launch's own install starts from `setup`, before the page has loaded and
+/// subscribed to the event channel, so its first events can be emitted into a
+/// window that has nothing listening — and the one that must not be lost is the
+/// report that a release is in place, since the restart that runs it is offered
+/// nowhere else. Keeping the newest event beside the state lets a window that
+/// has just started listening ask what it missed and paint exactly what it
+/// would have heard. The dialog's own install travels the same way, so a window
+/// never has two accounts of one install.
 #[derive(Clone, Debug)]
 pub struct LaunchUpdate {
-    /// The event's own name: `update-progress`, `update-ready` or
-    /// `update-failed`.
+    /// The event's own name: `update-available`, `update-progress`,
+    /// `update-ready` or `update-failed`.
     pub event: &'static str,
     pub payload: Value,
 }
@@ -919,8 +921,58 @@ pub async fn check_updates() -> CmdResult<Value> {
 /// platform installs is downloaded, verified against the digest its release
 /// published, and put in this installation's place, so the window offers the
 /// update the app itself would run.
-pub async fn install_update() -> CmdResult<Value> {
-    update::install().await.map_err(err)
+///
+/// The install reports itself as it goes, the same events the launch's own
+/// install emits, because the window paints one progress bar for whichever of
+/// them is running — and a reader who put the dialog away is still waiting on
+/// the answer below. A cancel the window asked for is an answer of its own
+/// rather than a failure: nothing went wrong, and the release is where it was.
+///
+/// `token` is the install's own name, which the window mints so that a cancel it
+/// asks for before this task has been polled still addresses this install — and
+/// every event carries it back, so the window can cancel an install it did not
+/// start by the same name.
+pub async fn install_update(state: &DesktopState, token: Option<String>) -> CmdResult<Value> {
+    let token = token.unwrap_or_else(update::new_token);
+    let named = token.clone();
+    let answer = update::install_reporting(&token, move |progress| {
+        state.announce_launch_update(
+            "update-progress",
+            json!({
+                "stage": progress.stage,
+                "version": progress.version,
+                "received": progress.received,
+                "total": progress.total,
+                "token": named,
+            }),
+        );
+    })
+    .await;
+    match answer {
+        Ok(answer) => {
+            state.announce_launch_update("update-ready", answer.clone());
+            Ok(answer)
+        }
+        // The dialog the reader cancelled in is already gone, so this is not
+        // news to the window that asked — but it is what the install last said,
+        // and a window that starts listening afterwards would otherwise read a
+        // download that stopped as one still going.
+        Err(error) if update::was_cancelled(&error) => {
+            state.announce_launch_update("update-failed", json!({ "cancelled": true }));
+            Ok(json!({ "ok": false, "cancelled": true }))
+        }
+        Err(error) => Err(error.to_string()),
+    }
+}
+
+/// Stops the install running under `token`, which is what the dialog's Cancel
+/// asks for: the download stops where it is, nothing is put in place, and the
+/// release is offered again by the next check. The token is the install's own,
+/// so a cancel cannot reach an install the reader was not watching — and one
+/// asked for before the install had started is still that install's.
+pub fn cancel_update(token: String) -> CmdResult<Value> {
+    update::cancel(&token);
+    Ok(json!({}))
 }
 
 /// The update a launch installs on its own, the way a desktop app that keeps
@@ -930,10 +982,14 @@ pub async fn install_update() -> CmdResult<Value> {
 /// through the answer the shared store remembered, so a launch costs at most one
 /// request every six hours, and only where `checkForUpdates` allows it — and when
 /// it is newer than this build and this copy is one the app replaces in place, it
-/// is downloaded, verified and put there without a dialog. The window hears every
-/// step, so a release that has landed is a row the reader can restart into rather
-/// than a promise the app cannot keep: the process running is still the build that
-/// started, whatever is on disk.
+/// is downloaded, verified and put there without being asked. The window hears
+/// every step rather than asking, so what has landed is the restart the dialog
+/// offers rather than a promise the app cannot keep: the process running is still
+/// the build that started, whatever is on disk.
+///
+/// A copy the app does not replace in place — a Windows setup, a distribution's
+/// package, a checkout's build — is left to the dialog's own check, since only
+/// the reader can decide to install one of those.
 pub async fn auto_update(state: Arc<DesktopState>) {
     if !update_notice::enabled_in(None) {
         return;
@@ -948,16 +1004,41 @@ pub async fn auto_update(state: Arc<DesktopState>) {
     if !update::launch_installs(&notice, update::current_version(), &installation) {
         return;
     }
+    // A release the app is about to put in place is one the reader is told
+    // about: the dialog opens on what is running, and its first step is either
+    // the release with its notes or — while the install below is already
+    // working — the download it is watching.
+    state.announce_launch_update(
+        "update-available",
+        json!({ "version": notice.version, "tag": notice.tag, "url": notice.url }),
+    );
+    // The token is this install's own name, and it goes out with every stage so
+    // the window can stop an install nobody in the window asked for.
+    let token = update::new_token();
     let steps = state.clone();
-    let answer = update::install_reporting(move |progress| {
+    let named = token.clone();
+    let answer = update::install_reporting(&token, move |progress| {
         steps.announce_launch_update(
             "update-progress",
-            json!({ "stage": progress.stage, "version": progress.version }),
+            json!({
+                "stage": progress.stage,
+                "version": progress.version,
+                "received": progress.received,
+                "total": progress.total,
+                "token": named,
+            }),
         );
     })
     .await;
     match answer {
         Ok(answer) => state.announce_launch_update("update-ready", answer),
+        // A cancel is the reader's own doing, and the dialog it came from has
+        // already closed — but what the install last said has to be the cancel,
+        // since a window that starts listening later would otherwise read a
+        // download that stopped as one still going.
+        Err(error) if update::was_cancelled(&error) => {
+            state.announce_launch_update("update-failed", json!({ "cancelled": true }))
+        }
         Err(error) => {
             state.announce_launch_update("update-failed", json!({ "message": error.to_string() }))
         }
@@ -977,9 +1058,9 @@ pub async fn auto_catalog(state: Arc<DesktopState>) {
     }
 }
 
-/// What the launch's own install has said so far, for a window that started
-/// listening after it began: the newest event it would have heard, or nothing
-/// when this launch installs nothing at all.
+/// What the install this process is running has said so far, for a window that
+/// started listening after it began: the newest event it would have heard, or
+/// nothing when no install has run at all.
 pub fn launch_update(state: &DesktopState) -> CmdResult<Option<Value>> {
     let slot = state
         .launch_update
@@ -1235,7 +1316,10 @@ pub async fn dispatch(
         }
         "set_theme" => command_value(set_theme(arg(&args, "project")?, arg(&args, "name")?).await),
         "check_updates" => command_value(check_updates().await),
-        "install_update" => command_value(install_update().await),
+        "install_update" => {
+            command_value(install_update(&state, optional_arg(&args, "token")?).await)
+        }
+        "cancel_update" => command_value(cancel_update(arg(&args, "token")?)),
         "launch_update" => command_value(launch_update(&state)),
         "restart_app" => command_value(restart_app(host, &state).await),
         _ => Err(format!("unknown desktop command `{command}`")),

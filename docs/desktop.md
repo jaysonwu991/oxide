@@ -120,8 +120,9 @@ and `form-action`/`base-uri`/`frame-ancestors` `'none'`).
 
 Events travel the other way as packets of their own: the engine announces
 `agent-start`, `agent-event`, `agent-end`, `approval-request`, `question-request`
-and `question-closed`, which `app.js` listens for, plus `update-progress`,
-`update-ready` and `update-failed` from a launch's own install (see
+and `question-closed`, which `app.js` listens for, plus `update-available`,
+`update-progress`, `update-ready` and `update-failed` from the install this
+process is running — the launch's own, or the one the window asked for (see
 [The update a launch performs itself](#the-update-a-launch-performs-itself)), and
 the window raises `check-updates` from its menu item so the page performs the
 check and paints one dialog (see [Check for updates](#check-for-updates)). One
@@ -937,15 +938,45 @@ same check the terminal's `oxide update --check --json --component desktop`
 performs,
 served by the shared resolution in `oxide_core::updates`, so the release it
 offers is the desktop release and not the oxide command line's own newest tag.
-The dialog shows the version the app runs now, the version it would install
-(`0.34.0`), and the installer it would fetch —
-`macos-arm64-Oxide.dmg` on this Mac, the `-Setup.AppImage` on Linux, the
-`-Setup.exe` on Windows — then **Install**, **Release notes** (the release page,
-in the system browser) and **Close**. It does not update the `oxide` command
-line, and the terminal, the panel and the desktop app each update their own
-installation.
+It does not update the `oxide` command line, and the terminal, the panel and the
+desktop app each update their own installation.
 
-**Install** downloads that artifact — re-resolved at the click, so what is
+One dialog holds the three steps of one install, and only the step's own actions
+are on screen, so nothing offered belongs to a step the reader has left:
+
+- **Update Available (v0.34.0)** — what the release changed, drawn from the
+  release's own notes (`Check::notes`, the body GitHub holds) under the version
+  and the day it went out (`released_at`), with the facts under them: the version
+  this app runs, the version it would install (`0.34.0`), the installation the
+  app found itself in and its path, and the installer it would fetch —
+  `macos-arm64-Oxide.dmg` on this Mac, the `-Setup.AppImage` on Linux, the
+  `-Setup.exe` on Windows. **Update** appears only where this copy may be written
+  over from inside the app; **Release notes** — the release page, in the system
+  browser — appears where it may not, and where the release carried no notes to
+  draw; **Dismiss** closes it.
+- **Downloading update** — a bar that fills from the stages the engine reports
+  (`update-progress`, carrying the bytes written and the size the response
+  announced; a release that announced no size shows the bar working and the bytes
+  instead of a fraction, and the stages on either side of the transfer carry no
+  bytes and so no bar), with **Download in background**, which puts the dialog
+  away without stopping the download, and **Cancel**, which stops it. Cancel is
+  offered while the install can still be stopped — looking the release up,
+  downloading it, checking its checksum — and not once the release is being put
+  in place, where stopping halfway is an installation lost; the step's own title
+  names the stage it has reached. It names the install
+  it is about (`cancel_update` with the token the window minted, or the one the
+  engine reported for an install nobody in the window asked for), so a cancel
+  asked for before that install had begun is still its own and one asked for a
+  release ago is not the next install's. Nothing is put in place either way, and
+  the next check offers the release again.
+- **Restart and install update** — `Update downloaded. You need to restart Oxide
+  to install the update.` The process running is still the build that started, so
+  **Restart and install update** is the `restart_app` command and **Later** puts
+  the dialog away with the install in place: the next check reports what is left
+  to do rather than offering it again. A Windows setup, which this app starts and
+  cannot wait on, is reported as running instead, with **Close** alone.
+
+**Update** downloads that artifact — re-resolved at the click, so what is
 installed is the release that is newest then — verifies it against the SHA-256
 GitHub reports for the asset, and puts it in this installation's place the way
 this copy was installed. A macOS `.app` bundle is replaced from the release's disk
@@ -1006,13 +1037,12 @@ What does run is the dialog's own install — the same download, the same
 checksum, the same swap — with one install at a time, so a second launch cannot
 race the first.
 
-The window reports it as a row above the sidebar's foot rather than a dialog,
-since nobody asked for this one: the stages arrive as `update-progress` events
-and the row follows them (`Looking for a new release…`, `Downloading Oxide
-0.36.0…`, `Verifying…`, `Installing…`), ending at `Oxide 0.36.0 is installed.`
-with **Restart** beside it. The install starts with the engine, before the page
-has loaded and subscribed to the event channel, so each step is kept beside the
-app's
+The window is told rather than asking: `update-available` names the release the
+launch found and opens the dialog on it, and the install's own steps follow as
+`update-progress` events — so the reader watches the download in the same dialog
+the button opens, and is left with the restart that runs what landed. The install
+starts with the engine, before the page has loaded and subscribed to the event
+channel, so each event is kept beside the app's
 state as well as emitted and the page asks for the newest one as it starts
 (`launch_update`): the report the restart hangs on is not one to have missed,
 and a window that opened mid-install paints exactly what it would have heard.
@@ -1025,16 +1055,16 @@ AppImage's own file from `$APPIMAGE` when that is what is running), so the relea
 just put in place is the one that runs. A turn is work this process
 owns — its tools write
 files and its stream is read here — so a restart mid-turn is refused the way
-replacing the thread on screen is refused, and the row says so. The ✕ puts the
-row away without stopping the install, and it puts it away for the rest of the
-launch: what the row says goes on arriving, and a row that came back with the
-next stage is one the reader cannot dismiss. Because the window remembers the
+replacing the thread on screen is refused, and the dialog says so.
+**Later** and **Download in background** put the dialog away without stopping
+anything, and the install goes on: what is left when it lands opens the dialog
+again on the restart, since the window keeps no row of its own for an install
+nobody in the window asked for. An install that could not finish is repainted
+into the dialog when that is what the reader is looking at — the step it was on
+is not left standing over an install that has ended — and is the line under the
+composer when it is not. Because the window remembers the
 release it installed, a later **Check for Updates…** reports that install rather
-than offering to repeat it — including a dialog that was already open when the
-launch's install landed, which is repaired with the install rather than left
-offering a release that is by then on disk. A launch's install that could not
-finish reports itself in a line under the composer instead of a dialog, and the
-dialog's own button is the one to ask again with.
+than offering to repeat it. The dialog's own button is the one to ask again with.
 
 ## Packaging
 

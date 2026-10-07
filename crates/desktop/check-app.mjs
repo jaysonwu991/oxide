@@ -366,6 +366,11 @@ let updateAnswer = {
     url: "https://github.com/jaysonwu991/oxide/releases/download/desktop-v0.34.0/macos-arm64-Oxide.dmg",
     digest: "sha256:86966d1b137203c9ed7366329eb708d02896abce279c3ef33a80d8257a1d68b7",
   },
+  // The release's own notes, as the API holds them: the changelog the dialog
+  // paints instead of sending the reader to the release page for it.
+  notes:
+    "## What's changed\n\n- **Fixed** the sidebar squashing a long thread title\n- Added `oxide context`\n\nSee [#174](https://github.com/jaysonwu991/oxide/pull/174).",
+  releasedAt: "2026-10-06",
 };
 let updateError = null;
 // The check's answer as a fresh machine gives it. A test that leaves one behind
@@ -374,6 +379,17 @@ const OFFERED_UPDATE = { ...updateAnswer };
 // An install that could not finish is a rejected `install_update`, which is what
 // the app's own download, check or replacement reports.
 let installError = null;
+// A cancel the shell could not take, which is the one failure the dialog has no
+// step for: it is the reader's own request going nowhere.
+let cancelError = null;
+// Whether an install in flight has been asked to stop, which is what the shell
+// answers it with when it lands: a cancelled install put nothing in place.
+let installCancelled = false;
+// The names the window gave the installs it asked for, and the names a cancel
+// addressed. A cancel only reaches an install that answers to its own name, so
+// a test can tell whether the two halves agree on which install is which.
+const installTokens = [];
+const cancelledTokens = [];
 // The version a successful install leaves behind, when a test wants one other
 // than the release the check resolved: the app resolves the release again as it
 // installs, so one published between the check and the click is what lands.
@@ -682,10 +698,19 @@ const invoke = async (command, args = {}) => {
       return answer;
     }
     case "install_update": {
-      if (installError) throw installError;
+      installTokens.push(String((args && args.token) || ""));
       if (installsHeld > 0) {
         installsHeld -= 1;
         await new Promise((resolve) => heldInstalls.push(resolve));
+      }
+      // A release that cannot be fetched, verified or put in place is reported
+      // once the install is under way, which is where a real one fails.
+      if (installError) throw installError;
+      // A cancel the window asked for while this was in flight: the app answers
+      // with the cancel rather than a release, since nothing was put in place.
+      if (installCancelled) {
+        installCancelled = false;
+        return { ok: false, cancelled: true };
       }
       const version = installedVersion || updateAnswer.latest;
       const tag = `desktop-v${version}`;
@@ -706,6 +731,15 @@ const invoke = async (command, args = {}) => {
           ? `The Oxide ${version} installer is running. Finish it, then open Oxide again to run the new version.`
           : `Oxide ${version} is in ${path}. Quit Oxide and open it again to run the new version.`,
       };
+    }
+    case "cancel_update": {
+      if (cancelError) throw cancelError;
+      const token = String((args && args.token) || "");
+      cancelledTokens.push(token);
+      // A cancel addresses one install: the one that answers to that name, and
+      // no other.
+      if (token !== "" && installTokens.includes(token)) installCancelled = true;
+      return {};
     }
     case "launch_update":
       return launchHeard;
@@ -838,7 +872,9 @@ vm.runInThisContext(
     " loadMcps, openSessions," +
     " listedSessions, selectSessionFromTree, removeSession," +
     " updateChips, openReasoning," +
-    " startTool, finishTool, toggleTool, openUpdate, installUpdate, installedUpdate, catchUpOnLaunchUpdate, launchDismissed, renderMarkdown, SCROLLBAR_LINGER };\n",
+    " startTool, finishTool, toggleTool, openUpdate, installUpdate, cancelUpdate," +
+    " installedUpdate, catchUpOnLaunchUpdate, handleUpdateProgress, handleUpdateReady, handleUpdateFailed," +
+    " renderMarkdown, SCROLLBAR_LINGER };\n",
 );
 
 const app = globalThis.__app;
@@ -1821,6 +1857,7 @@ check(
 const scrolledRows = [
   ".conversation",
   ".question-body",
+  ".update-changelog",
   ".projects-tree",
   ".mcp-list",
   ".session-list",
@@ -1933,42 +1970,48 @@ check(
   String(shellAt('id="update-modal"')),
 );
 check(
-  "gave the dialog a title, a note, a body and its own actions",
+  "gave the dialog a title, a note, a body, the release's notes and its own actions",
   /<p class="dialog-sub" id="update-note">/.test(shell) &&
     shellAt('id="update-note"') < shellAt('id="update-body"') &&
-    shellAt('id="update-body"') < shellAt('id="update-close"') &&
-    shellAt('id="update-notes"') < shellAt('id="update-close"') &&
+    shellAt('id="update-body"') < shellAt('id="update-changelog"') &&
+    shellAt('id="update-changelog"') < shellAt('id="update-progress"') &&
+    shellAt('id="update-progress"') < shellAt('id="update-page"') &&
+    shellAt('id="update-page"') < shellAt('id="update-close"') &&
     shellAt('id="update-close"') < shellAt('id="update-install"'),
   `${shellAt('id="update-body"')} / ${shellAt('id="update-close"')}`,
 );
 check(
   "offered nothing before the check has answered",
-  /id="update-notes" class="ghost" hidden/.test(shell) &&
-    /id="update-install" class="primary" hidden/.test(shell),
-  shell.slice(shellAt('id="update-notes"') - 20, shellAt('id="update-install"') + 40),
+  /id="update-page" class="ghost" hidden/.test(shell) &&
+    /id="update-install" class="primary" hidden/.test(shell) &&
+    /id="update-changelog" class="update-changelog" hidden/.test(shell) &&
+    /id="update-progress" class="update-progress" hidden/.test(shell),
+  shell.slice(shellAt('id="update-changelog"') - 20, shellAt('id="update-install"') + 40),
 );
-// A release the launch installed on its own is not the app that is running, so
-// what is left to do is a restart: the dialog offers it beside the install it
-// replaced, and only one of the two is ever on screen.
+// One dialog holds the three steps of one install, so each step's own actions
+// are in it: the release that is out (Dismiss and Update), the download as it
+// happens (Cancel and Download in background), and the restart that runs what
+// landed (Later and Restart). Only one step is ever on screen, which is what
+// `app.js` shows and hides by id.
 check(
-  "offered the restart that runs an install, beside the install it replaced",
-  /id="update-restart" class="primary" hidden/.test(shell) &&
+  "carried every step's own way out of the one dialog",
+  ["update-later", "update-cancel", "update-background"].every((id) =>
+    new RegExp(`id="${id}" class="ghost" hidden`).test(shell),
+  ) &&
+    /id="update-restart" class="primary" hidden/.test(shell) &&
+    shellAt('id="update-later"') < shellAt('id="update-install"') &&
     shellAt('id="update-install"') < shellAt('id="update-restart"'),
-  shell.slice(shellAt('id="update-install"'), shellAt('id="update-restart"') + 40),
+  shell.slice(shellAt('id="update-later"'), shellAt('id="update-restart"') + 40),
 );
-// An install nobody in the window asked for has to be visible without opening a
-// dialog, so its row is the sidebar's own — between the projects it lists and
-// the foot — with the restart that runs it beside a glyph that puts the row
-// away without stopping the install.
+// The bar's own fill is what moves, so the box that holds it is the piece of
+// chrome the app repaints rather than the whole dialog: a stage reported while
+// the reader is elsewhere must not rebuild the buttons under their pointer.
 check(
-  "put the launch's own install in the sidebar, between the projects and its foot",
-  /<div id="update-banner" class="update-banner" role="status" hidden>/.test(shell) &&
-    shellAt('class="sidebar"') < shellAt('id="update-banner"') &&
-    shellAt('id="update-banner"') < shellAt('class="sidebar-foot"') &&
-    /id="update-banner-restart" class="primary small" hidden/.test(shell) &&
-    /id="update-banner-dismiss"[^>]*title="Dismiss/.test(shell) &&
-    /<\/svg>$/.test(buttonFor("update-banner-dismiss")),
-  String(shellAt('id="update-banner"')),
+  "drew the update's progress bar inside the dialog",
+  /<div id="update-progress" class="update-progress" hidden>\s*<div id="update-progress-fill" class="update-progress-fill">/.test(
+    shell,
+  ),
+  String(shellAt('id="update-progress-fill"')),
 );
 
 // ---------- `@path` completion ----------
@@ -5450,27 +5493,46 @@ check(
 
 // The dialog is the app's own and so is the release it offers: the desktop's
 // `desktop-v*` train, resolved by the shared `oxide_core::updates`, with the
-// artifact this machine installs — never the CLI's release list.
+// artifact this machine installs — never the CLI's release list. One dialog
+// holds the three steps of one install, and what a reader decides on is what the
+// release changed, so the release's own notes are in it rather than on a page in
+// a browser.
 console.log("check for updates");
 app.state.project = "/home/dev/Projects/oxide";
 const updateTitle = () => String(elementFor("update-title").textContent);
 const updateBody = () => String(elementFor("update-body").innerHTML);
 const updateNote = () => String(elementFor("update-note").textContent);
+const changelog = () => elementFor("update-changelog");
+const changelogHtml = () => String(elementFor("update-changelog").innerHTML);
 const installButton = elementFor("update-install");
+const restartButton = elementFor("update-restart");
+const closeButton = elementFor("update-close");
+const laterButton = elementFor("update-later");
+const cancelButton = elementFor("update-cancel");
+const backgroundButton = elementFor("update-background");
+const pageButton = elementFor("update-page");
+const progressBox = elementFor("update-progress");
+const progressFill = elementFor("update-progress-fill");
+const updateOpen = () => elementFor("update-modal").hidden === false;
+const offered = (button) => button.hidden === false;
 
 calls.length = 0;
 elementFor("update").onclick(press({ target: elementFor("update") }));
-check("asked the app's own update check", projectCalls("check_updates").length === 1, JSON.stringify(calls.map(([name]) => name)));
-check("opened the dialog from the sidebar's own button", elementFor("update-modal").hidden === false);
+check(
+  "asked the app's own update check",
+  projectCalls("check_updates").length === 1,
+  JSON.stringify(calls.map(([name]) => name)),
+);
+check("opened the dialog from the sidebar's own button", updateOpen(), String(elementFor("update-modal").hidden));
 await nextTick();
 check(
   "named the release the app's own train resolved",
-  updateTitle() === "Oxide 0.34.0 is available",
+  updateTitle() === "Update Available (v0.34.0)",
   updateTitle(),
 );
 check(
   "said what installing does and what picks the new version up",
-  /this app's place/.test(updateNote()) && /quit and opened again/.test(updateNote()),
+  /this app's place/.test(updateNote()) && /restarted/.test(updateNote()),
   updateNote(),
 );
 check(
@@ -5491,51 +5553,197 @@ check(
   updateBody(),
 );
 check(
-  "offered the install this installation can do",
-  installButton.hidden === false && installButton.textContent === "Install 0.34.0",
+  "offered the release its own train resolved",
+  offered(installButton) && installButton.textContent === "Update",
   `${installButton.hidden} / ${installButton.textContent}`,
 );
+// What the release changed is the thing a reader decides on, and the release job
+// already wrote it as Markdown: the dialog draws it under the version and the day
+// it went out rather than sending them to the release page for it.
 check(
-  "offered the desktop release's own page",
-  elementFor("update-notes").hidden === false,
+  "drew the release's own notes under the version and its date",
+  offered(changelog()) &&
+    changelogHtml().includes("Oxide 0.34.0") &&
+    changelogHtml().includes("2026-10-06") &&
+    changelogHtml().includes("<h2>What&#39;s changed</h2>") &&
+    changelogHtml().includes("<li>") &&
+    changelogHtml().includes("<code>oxide context</code>"),
+  changelogHtml().slice(0, 200),
 );
-
-calls.length = 0;
-await elementFor("update-notes").onclick();
 check(
-  "opened that release in the browser through the app",
-  projectCalls("open_url")[0]?.[1]?.url === updateAnswer.releaseUrl &&
-    updateAnswer.releaseUrl.includes("desktop-v0.34.0"),
-  JSON.stringify(projectCalls("open_url")),
+  "made a link in the notes one the window's own click handling opens",
+  /<a href="https:\/\/github.com\/jaysonwu991\/oxide\/pull\/174"[^>]*>#174<\/a>/.test(changelogHtml()),
+  changelogHtml(),
+);
+check(
+  "offered no release page for a release it can install and has read",
+  offered(pageButton) === false,
+  `${pageButton.hidden} / ${changelogHtml().slice(0, 80)}`,
+);
+check(
+  "offered the release that is out and one way to leave it",
+  closeButton.textContent === "Dismiss" && !offered(restartButton) && !offered(cancelButton),
+  `${closeButton.textContent} / ${restartButton.hidden} / ${cancelButton.hidden}`,
 );
 
 // Installing is the app's own: it downloads the artifact its release train
-// publishes for this machine, verifies it and replaces this copy in place.
+// publishes for this machine, verifies it against the release's digest, and
+// replaces this copy in place. The dialog turns into the download it started,
+// with the progress bar a release of this size needs.
+console.log("the download the dialog started");
 calls.length = 0;
-await installButton.onclick();
-check("ran the app's own install", projectCalls("install_update").length === 1, JSON.stringify(calls.map(([name]) => name)));
+holdNextInstall();
+const installing = installButton.onclick();
 check(
-  "did not ask the CLI-shaped check what landed",
-  projectCalls("check_updates").length === 0,
-  JSON.stringify(calls.map(([name]) => name)),
+  "turned the dialog into the download it started",
+  updateTitle() === "Downloading update" && offered(cancelButton) && offered(backgroundButton),
+  `${updateTitle()} / ${cancelButton.hidden} / ${backgroundButton.hidden}`,
 );
 check(
-  "reported the release the install put in place",
-  updateTitle() === "Oxide 0.34.0 is installed",
-  updateTitle(),
+  "stopped offering the install it is already running",
+  !offered(installButton) && !offered(closeButton),
+  `${installButton.hidden} / ${closeButton.hidden}`,
 );
+// The step is one step to the reader, but the engine's own stage is what the
+// line under it says: resolving the release and checking its checksum are not a
+// download, and saying they are is a sentence the reader can watch be wrong.
 check(
-  "told the reader what to do to run it",
-  /Restart Oxide to run the new version/.test(updateNote()),
+  "said what the engine is doing rather than calling every stage a download",
+  /Oxide 0.34.0 is being looked up/.test(updateNote()) && /restarted/.test(updateNote()),
   updateNote(),
 );
-// The restart is the dialog's own action then: the install put the release in
-// place, and only a new process runs it.
-const restartButton = elementFor("update-restart");
+await emit("update-progress", {
+  stage: "downloading",
+  version: "0.34.0",
+  received: 12 * 1024 * 1024,
+  total: 48 * 1024 * 1024,
+});
 check(
-  "offered the restart that runs it",
-  restartButton.hidden === false && installButton.hidden === true,
-  `${restartButton.hidden} / ${installButton.hidden}`,
+  "followed the stage the download reached",
+  /Oxide 0.34.0 is being downloaded and put in place/.test(updateNote()),
+  updateNote(),
+);
+check(
+  "filled the bar from the stage the app reported",
+  offered(progressBox) &&
+    progressBox.classList.contains("indeterminate") === false &&
+    progressFill.style.width === "25%",
+  `${progressBox.hidden} / ${progressFill.style.width}`,
+);
+check(
+  "said how far the download has got",
+  updateBody().includes("macos-arm64-Oxide.dmg") &&
+    updateBody().includes("12.0 MB of 48.0 MB") &&
+    updateBody().includes("25%"),
+  updateBody(),
+);
+check(
+  "ran the app's own install",
+  projectCalls("install_update").length === 1,
+  JSON.stringify(calls.map(([name]) => name)),
+);
+// A release whose size nobody announced has no fraction to draw, so the bar
+// works and the line carries the bytes instead of an invented percentage.
+await emit("update-progress", {
+  stage: "downloading",
+  version: "0.34.0",
+  received: 3 * 1024 * 1024,
+  total: null,
+});
+check(
+  "showed a download of an unknown size working rather than a fraction of it",
+  progressBox.classList.contains("indeterminate") === true &&
+    updateBody().includes("3.0 MB downloaded") &&
+    !updateBody().includes("%"),
+  `${progressBox.classList.contains("indeterminate")} / ${updateBody()}`,
+);
+// The bar and the bytes are the transfer's. The stages on either side of it
+// carry none, and painting their zeroes would replace a bar that had filled with
+// one that has just started, over the words "0.0 MB downloaded" — a number going
+// backwards in front of the reader.
+await emit("update-progress", { stage: "verifying", version: "0.34.0" });
+check(
+  "took the finished bar away rather than starting it over",
+  progressBox.hidden === true &&
+    !updateBody().includes("0.0 MB") &&
+    updateBody().includes("is being verified"),
+  `${progressBox.hidden} / ${updateBody()}`,
+);
+check(
+  "kept the cancel while the release can still be let go of",
+  offered(cancelButton) && offered(backgroundButton),
+  `${cancelButton.hidden} / ${backgroundButton.hidden}`,
+);
+// Once the release is being put in place the swap is under way, and an install
+// stopped in the middle of it is an installation lost: the dialog stops offering
+// to stop it rather than closing on an install that goes on without the reader.
+await emit("update-progress", { stage: "installing", version: "0.34.0" });
+check(
+  "stopped offering to stop an install that can no longer be stopped",
+  !offered(cancelButton) && offered(backgroundButton) && progressBox.hidden === true,
+  `${cancelButton.hidden} / ${backgroundButton.hidden} / ${progressBox.hidden}`,
+);
+check(
+  "named the step it had reached rather than the one it had finished",
+  updateTitle() === "Installing update" && updateBody().includes("is being put in place"),
+  `${updateTitle()} / ${updateBody()}`,
+);
+
+// Sending the download to the background is putting the dialog away rather than
+// stopping the install: the reader is told where it got to when it lands, and
+// nothing is asked of the app.
+calls.length = 0;
+backgroundButton.onclick();
+check(
+  "put the dialog away without stopping the install",
+  elementFor("update-modal").hidden === true &&
+    projectCalls("cancel_update").length === 0 &&
+    projectCalls("install_update").length === 0,
+  JSON.stringify(calls.map(([name]) => name)),
+);
+await emit("update-progress", {
+  stage: "downloading",
+  version: "0.34.0",
+  received: 20 * 1024 * 1024,
+  total: 48 * 1024 * 1024,
+});
+check(
+  "left the dialog the reader put away away, whatever the install reports next",
+  elementFor("update-modal").hidden === true,
+  String(elementFor("update-modal").hidden),
+);
+
+// The release is on disk and the process is not, so what the dialog asks for is
+// the restart that runs it — which is the step a download that finished in the
+// background comes back as, since the window keeps no row of its own for it.
+releaseHeldInstalls();
+await installing;
+check(
+  "came back as the restart the install left to do",
+  updateOpen() && updateTitle() === "Restart and install update",
+  `${elementFor("update-modal").hidden} / ${updateTitle()}`,
+);
+check(
+  "said what is left to do about it",
+  updateNote() === "Update downloaded. You need to restart Oxide to install the update.",
+  updateNote(),
+);
+check(
+  "offered the restart beside the way to put it off",
+  offered(restartButton) && offered(laterButton) && !offered(installButton) && !offered(cancelButton),
+  `${restartButton.hidden} / ${laterButton.hidden} / ${installButton.hidden}`,
+);
+check(
+  "reported the release the install put in place, by version and by file",
+  updateBody().includes("Release <code>0.34.0</code>") &&
+    updateBody().includes("macos-arm64-Oxide.dmg") &&
+    updateBody().includes("/Applications/Oxide.app"),
+  updateBody(),
+);
+check(
+  "took the notes away with the decision they were for",
+  offered(changelog()) === false && offered(progressBox) === false,
+  `${changelog().hidden} / ${progressBox.hidden}`,
 );
 calls.length = 0;
 await restartButton.onclick();
@@ -5544,23 +5752,35 @@ check(
   projectCalls("restart_app").length === 1,
   JSON.stringify(calls.map(([name]) => name)),
 );
+// A turn owns the process — its tools write files and its stream is read here —
+// so a restart is refused while one runs rather than killing a live run.
+app.state.busy = true;
+elementFor("status-text").textContent = "";
+calls.length = 0;
+await restartButton.onclick();
 check(
-  "reported what the install did, by version and by file",
-  updateBody().includes("Release <code>0.34.0</code>") &&
-    updateBody().includes("macos-arm64-Oxide.dmg") &&
-    updateBody().includes("/Applications/Oxide.app"),
-  updateBody(),
+  "refused a restart while a turn was running",
+  projectCalls("restart_app").length === 0 && /A turn is running/.test(status()),
+  `${JSON.stringify(calls.map(([name]) => name))} / ${status()}`,
 );
+app.state.busy = false;
+// Putting it off is putting the dialog away, not forgetting the install: the
+// next check reports what is left to do rather than offering it again, since the
+// build running here is still the one that started.
+laterButton.onclick();
+check("put the restart away without forgetting it", elementFor("update-modal").hidden === true);
+calls.length = 0;
+await app.openUpdate();
 check(
-  "stopped offering an install that has happened",
-  installButton.hidden === true && updateTitle() !== "Oxide 0.34.0 is up to date",
-  `${installButton.hidden} / ${updateTitle()}`,
+  "answered a later check with the install rather than the release",
+  updateTitle() === "Restart and install update" &&
+    projectCalls("check_updates").length === 1 &&
+    !offered(installButton),
+  `${updateTitle()} / ${JSON.stringify(calls.map(([name]) => name))}`,
 );
-// A window that installed a release keeps that install for the rest of the
-// session: the build running here is still the older one, so a later check
-// resolves the release again. The checks below start from a window that has not
-// installed it.
 app.installedUpdate.answer = null;
+closeButton.onclick();
+check("closed it from its own button", elementFor("update-modal").hidden === true);
 
 // A check that could not reach GitHub is a failure the app names, not an
 // up-to-date machine.
@@ -5580,8 +5800,8 @@ check(
 );
 check(
   "offered no install and no stale release page for it",
-  installButton.hidden === true && elementFor("update-notes").hidden === true,
-  `${installButton.hidden} / ${elementFor("update-notes").hidden}`,
+  !offered(installButton) && !offered(pageButton),
+  `${installButton.hidden} / ${pageButton.hidden}`,
 );
 updateError = "no <release> & no network";
 await app.openUpdate();
@@ -5605,12 +5825,12 @@ check(
   updateBody().includes("0.34.0") && updateBody().includes("/Applications/Oxide.app"),
   updateBody(),
 );
-check("offered no install for it", installButton.hidden === true);
+check("offered no update for an app that has none", !offered(installButton));
 check("offered no advice it does not need", !updateBody().includes("update-advice"), updateBody());
 
 // A copy the app may not write over — a checkout's build, a copy an
 // administrator installed — gets the advice the app composed instead of an
-// install button.
+// Update button, and the release page it is installed from.
 updateAnswer = {
   ...OFFERED_UPDATE,
   installation: "source build",
@@ -5622,13 +5842,22 @@ updateAnswer = {
 await app.openUpdate();
 check(
   "let the app decide an installation it cannot replace",
-  installButton.hidden === true && updateBody().includes("update-advice"),
+  !offered(installButton) && updateBody().includes("update-advice"),
   `${installButton.hidden} / ${updateBody()}`,
 );
 check(
   "named the download to use instead",
   updateBody().includes("macos-arm64-Oxide.dmg") && updateBody().includes("source build"),
   updateBody(),
+);
+check("left the release page reachable for a copy that needs it", offered(pageButton));
+calls.length = 0;
+await pageButton.onclick();
+check(
+  "opened that release in the browser through the app",
+  projectCalls("open_url")[0]?.[1]?.url === updateAnswer.releaseUrl &&
+    updateAnswer.releaseUrl.includes("desktop-v0.34.0"),
+  JSON.stringify(projectCalls("open_url")),
 );
 
 // An install that fails reports the app's own error, and the dialog goes back
@@ -5643,7 +5872,12 @@ check(
   updateTitle(),
 );
 check("showed why the install failed", updateBody().includes("hdiutil failed"), updateBody());
-check("left the release page reachable", elementFor("update-notes").hidden === false);
+check("left the release page reachable", offered(pageButton));
+check(
+  "offered the install again rather than a half-installed state",
+  !offered(restartButton) && !offered(laterButton) && offered(closeButton),
+  `${restartButton.hidden} / ${closeButton.hidden}`,
+);
 installError = null;
 
 // The macOS menu item has no page of its own, so it asks the window for the
@@ -5654,28 +5888,54 @@ await emit("check-updates", {});
 await nextTick();
 check(
   "opened the same dialog from the menu item's own event",
-  elementFor("update-modal").hidden === false && projectCalls("check_updates").length === 1,
+  updateOpen() && projectCalls("check_updates").length === 1,
   JSON.stringify(calls.map(([name]) => name)),
 );
 // Escape closes every overlay, which is where the dialog's own id has to be.
 document.fire("keydown", { key: "Escape" });
 check("closed it on Escape", elementFor("update-modal").hidden === true);
-// A second press must not start a second install over the same installation.
+
+// A second press must not start a second install over the same installation: the
+// one already running is the one the click adopts, which is the download in
+// front of the reader rather than a check about a build being replaced.
+console.log("an install and the check that overlaps it");
 updateAnswer = OFFERED_UPDATE;
+app.installedUpdate.answer = null;
 await app.openUpdate();
 await nextTick();
-calls.length = 0;
-const [first, second] = [app.installUpdate(), app.installUpdate()];
-await Promise.all([first, second]);
+check("offered the release before installing it", updateTitle() === "Update Available (v0.34.0)", updateTitle());
+holdNextInstall();
+const firstInstall = app.installUpdate();
+await nextTick();
+const afterFirst = projectCalls("install_update").length;
+const secondInstall = app.installUpdate();
 check(
-  "ran one install at a time",
-  projectCalls("install_update").length === 1,
-  JSON.stringify(calls.map(([name]) => name)),
+  "adopted the install already running rather than starting a second",
+  afterFirst === 1 &&
+    projectCalls("install_update").length === 1 &&
+    updateTitle() === "Downloading update" &&
+    offered(backgroundButton),
+  `${afterFirst} / ${projectCalls("install_update").length} / ${updateTitle()}`,
 );
-check("reported the install that ran", updateTitle() === "Oxide 0.34.0 is installed", updateTitle());
+// A dialog asked for while an install works is about the build that started —
+// the release it would resolve is the one being put in place — so what it paints
+// is the install rather than a check nobody is waiting on.
+calls.length = 0;
+await app.openUpdate();
+check(
+  "answered the sidebar's own button with the install it is running",
+  projectCalls("check_updates").length === 0 && updateTitle() === "Downloading update",
+  `${JSON.stringify(calls.map(([name]) => name))} / ${updateTitle()}`,
+);
+releaseHeldInstalls();
+await Promise.all([firstInstall, secondInstall]);
+check(
+  "reported the one install that ran",
+  updateTitle() === "Restart and install update" && projectCalls("install_update").length === 0,
+  `${updateTitle()} / ${JSON.stringify(calls.map(([name]) => name))}`,
+);
+elementFor("update-modal").hidden = true;
 app.installedUpdate.answer = null;
-elementFor("update-close").onclick();
-check("closed it from its own button", elementFor("update-modal").hidden === true);
 
 // The check is asked for from two places — the sidebar button and the macOS menu
 // item — and either can be pressed again before the first answer arrives. The
@@ -5697,7 +5957,7 @@ releaseHeldChecks();
 await Promise.all([stale, fresh]);
 check(
   "dropped the answer for the check it had already moved past",
-  updateTitle() === "Oxide 0.34.0 is up to date" && installButton.hidden === true,
+  updateTitle() === "Oxide 0.34.0 is up to date" && !offered(installButton),
   `${updateTitle()} / ${installButton.hidden}`,
 );
 
@@ -5707,140 +5967,190 @@ check(
 installedVersion = "0.35.0";
 updateAnswer = OFFERED_UPDATE;
 await app.openUpdate();
-check("offered the release the check resolved", updateTitle() === "Oxide 0.34.0 is available");
+await nextTick();
+check("offered the release the check resolved", updateTitle() === "Update Available (v0.34.0)", updateTitle());
 await installButton.onclick();
 check(
   "reported the version that landed rather than the one it offered",
-  updateTitle() === "Oxide 0.35.0 is installed",
-  updateTitle(),
-);
-check(
-  "named that release on the row it reported",
   updateBody().includes("Release <code>0.35.0</code>"),
   updateBody(),
 );
 installedVersion = null;
-updateAnswer = OFFERED_UPDATE;
 app.installedUpdate.answer = null;
 
-// A check started while an install worked asked about the build that was
-// running when it started, so it resolves the release the install was putting
-// in place and would offer it a second time. The install is the newer word on
-// this installation — it is what the window will be running after the restart —
-// and its report stays, whether it arrives before or after that check.
-console.log("an install and the check that overlaps it");
+// Cancel is the reader stopping the download: the app is told to stop, the
+// dialog goes away with it, and nothing is reported as having gone wrong —
+// since nothing did.
+console.log("cancelling a download");
 updateAnswer = OFFERED_UPDATE;
 await app.openUpdate();
-check(
-  "offered the release before installing it",
-  updateTitle() === "Oxide 0.34.0 is available",
-  updateTitle(),
-);
+await nextTick();
 holdNextInstall();
-const installing = installButton.onclick();
+const cancelled = app.installUpdate();
 await nextTick();
-holdNextCheck();
-const overlapping = app.openUpdate();
-await nextTick();
-releaseHeldInstalls();
-await installing;
 check(
-  "reported the install that finished while a check was in flight",
-  updateTitle() === "Oxide 0.34.0 is installed",
+  "turned the dialog into the download it started",
+  updateTitle() === "Downloading update",
   updateTitle(),
 );
-releaseHeldChecks();
-await overlapping;
+calls.length = 0;
+elementFor("status-text").textContent = "";
+cancelButton.onclick();
 check(
-  "kept the install's report when the check that overlapped it answered",
-  updateTitle() === "Oxide 0.34.0 is installed" && installButton.hidden === true,
-  `${updateTitle()} / ${installButton.hidden}`,
+  "asked the app to stop the download",
+  projectCalls("cancel_update").length === 1,
+  JSON.stringify(calls.map(([name]) => name)),
+);
+// A cancel names the install it is about rather than "whatever is running": the
+// window offers Cancel the moment it has asked for an install, so that request
+// can reach the engine before the install it belongs to has been polled — and a
+// name the engine can match is what keeps it from being lost to that ordering.
+check(
+  "named the install it is cancelling",
+  installTokens[installTokens.length - 1] === cancelledTokens[cancelledTokens.length - 1] &&
+    String(cancelledTokens[cancelledTokens.length - 1]).startsWith("ui-"),
+  `${JSON.stringify(installTokens)} / ${JSON.stringify(cancelledTokens)}`,
 );
 check(
-  "stopped offering the release it had just installed",
-  installButton.hidden === true && !/is available/.test(updateTitle()),
-  `${installButton.hidden} / ${updateTitle()}`,
+  "closed the dialog the reader stopped it in",
+  elementFor("update-modal").hidden === true,
+  String(elementFor("update-modal").hidden),
 );
-// A check asked for afterwards is about the same installation, and the release
-// it resolves is the one on disk: the dialog repeats what the install did
-// rather than offering it again.
+releaseHeldInstalls();
+await cancelled;
+await emit("update-failed", { cancelled: true });
+await nextTick();
+check(
+  "reported no failure for a download the reader stopped",
+  elementFor("update-modal").hidden === true && status() === "",
+  `${elementFor("update-modal").hidden} / ${status()}`,
+);
+// A release that is still out is offered again by the next check, since nothing
+// was put in place.
 calls.length = 0;
 await app.openUpdate();
 check(
-  "answered a later check with the install rather than the release",
-  updateTitle() === "Oxide 0.34.0 is installed" && projectCalls("check_updates").length === 1,
-  `${updateTitle()} / ${JSON.stringify(calls.map(([name]) => name))}`,
+  "offered the release again after a cancel",
+  updateTitle() === "Update Available (v0.34.0)" && offered(installButton),
+  `${updateTitle()} / ${installButton.hidden}`,
 );
-app.installedUpdate.answer = null;
+closeButton.onclick();
 
-// The Windows installer is a program of its own, which this app starts and
-// cannot wait on: it asks for elevation and for Oxide to be closed, and it can
-// be cancelled. The dialog reports the launch it is, never a version in place.
-installedVersion = "0.34.0";
-installPending = true;
+// An install can go wrong once it is under way, and the engine says so through
+// the dialog the reader is watching it in: the step it was on is not left
+// standing over an install that has ended, and the failure is not dropped for
+// having arrived after the install reported a stage of its own.
+console.log("an install that goes wrong under the dialog");
 updateAnswer = OFFERED_UPDATE;
 await app.openUpdate();
-await installButton.onclick();
+await nextTick();
+installError = "mounting the downloaded disk image: hdiutil failed with exit status: 1";
+holdNextInstall();
+const failing = installButton.onclick();
+await nextTick();
+await emit("update-progress", {
+  stage: "downloading",
+  version: "0.34.0",
+  received: 4 * 1024 * 1024,
+  total: 8 * 1024 * 1024,
+});
 check(
-  "reported a started installer as running rather than installed",
-  updateTitle() === "The Oxide 0.34.0 installer is running",
-  updateTitle(),
+  "showed the download before it went wrong",
+  updateTitle() === "Downloading update" && progressFill.style.width === "50%",
+  `${updateTitle()} / ${progressFill.style.width}`,
+);
+releaseHeldInstalls();
+await failing;
+check(
+  "reported the failure over the step it left behind",
+  updateTitle() === "Could not install the update" &&
+    updateBody().includes("hdiutil failed") &&
+    !offered(cancelButton) &&
+    !offered(backgroundButton),
+  `${updateTitle()} / ${updateBody()} / ${cancelButton.hidden}`,
 );
 check(
-  "said what finishes that install",
-  /Finish the installer/.test(updateNote()) && !/is installed/.test(updateBody()),
-  `${updateNote()} / ${updateBody()}`,
+  "offered no restart for an install that never landed",
+  !offered(restartButton) && offered(closeButton),
+  `${restartButton.hidden} / ${closeButton.hidden}`,
 );
-check(
-  "offered no second install while one is running",
-  installButton.hidden === true,
-  String(installButton.hidden),
-);
-// The installer owns this machine's copy of the app: it asks for elevation and
-// for Oxide to be closed, so there is no release in place for a restart to run.
-check(
-  "offered no restart for an install the installer owns",
-  restartButton.hidden === true && installButton.hidden === true,
-  String(restartButton.hidden),
-);
-installedVersion = null;
-installPending = false;
+installError = null;
+closeButton.onclick();
+// And one that went wrong while the dialog was away is not silence: the reader
+// is told the same way an install nobody is watching tells them, in a line under
+// the composer.
+console.log("an install that goes wrong while nobody is looking");
 app.installedUpdate.answer = null;
+elementFor("status-text").textContent = "";
 updateAnswer = OFFERED_UPDATE;
+await app.openUpdate();
+await nextTick();
+holdNextInstall();
+const behind = app.installUpdate();
+await nextTick();
+backgroundButton.onclick();
+installError = "the download did not verify against the release's checksum";
+releaseHeldInstalls();
+await behind;
+check(
+  "reported an install that failed behind a closed dialog as a line",
+  elementFor("update-modal").hidden === true &&
+    /Could not install the update: .*the download did not verify/.test(status()),
+  `${elementFor("update-modal").hidden} / ${status()}`,
+);
+installError = null;
+elementFor("status-text").textContent = "";
 
 // ---------- the update a launch installs on its own ----------
 
 // The app keeps itself current the way its other front-ends check for one, so
-// the window is told about an install rather than asking: each step arrives as
-// an event nobody in the window clicked for, and what is left when a release
-// lands is the restart that runs it. The row is the sidebar's own, since the
-// window may be showing a conversation when it appears.
+// the window is told about an install rather than asking: the release it found
+// opens the dialog, each step arrives as a stage, and what is left when a release
+// lands is the restart that runs it.
 console.log("the update a launch installs on its own");
-const banner = elementFor("update-banner");
-const bannerText = () => String(elementFor("update-banner-text").textContent);
-const bannerRestart = elementFor("update-banner-restart");
+app.installedUpdate.answer = null;
+elementFor("update-modal").hidden = true;
+elementFor("status-text").textContent = "";
 
-// A window that has just opened has nothing to say about an install yet.
-check(
-  "said nothing about an install before the shell reported one",
-  banner.hidden === true,
-  String(banner.hidden),
-);
-
-await emit("update-progress", { stage: "downloading", version: "0.34.0" });
+// The launch's own event names the release rather than carrying its notes, since
+// the notes are the release's and the window asks for what it draws.
+calls.length = 0;
+await emit("update-available", {
+  version: "0.34.0",
+  tag: "desktop-v0.34.0",
+  url: "https://github.com/jaysonwu991/oxide/releases/tag/desktop-v0.34.0",
+});
 await nextTick();
 check(
-  "told the reader about the install the launch started",
-  banner.hidden === false && /Downloading Oxide 0.34.0/.test(bannerText()),
-  `${banner.hidden} / ${bannerText()}`,
+  "opened the dialog on the release the launch found",
+  updateOpen() && projectCalls("check_updates").length === 1,
+  `${elementFor("update-modal").hidden} / ${JSON.stringify(calls.map(([name]) => name))}`,
+);
+check(
+  "painted the release with what it changed",
+  updateTitle() === "Update Available (v0.34.0)" && offered(changelog()) && offered(installButton),
+  `${updateTitle()} / ${changelog().hidden} / ${installButton.hidden}`,
+);
+
+await emit("update-progress", {
+  stage: "downloading",
+  version: "0.34.0",
+  received: 1024 * 1024,
+  total: 4 * 1024 * 1024,
+});
+await nextTick();
+check(
+  "showed the download the launch started",
+  updateTitle() === "Downloading update" && progressFill.style.width === "25%",
+  `${updateTitle()} / ${progressFill.style.width}`,
 );
 check(
   "offered no restart for a release that is not in place yet",
-  bannerRestart.hidden === true,
-  String(bannerRestart.hidden),
+  !offered(restartButton) && offered(cancelButton) && offered(backgroundButton),
+  `${restartButton.hidden} / ${cancelButton.hidden}`,
 );
 
-// The release is on disk and the process is not: what the row offers is the
+// The release is on disk and the process is not: what the dialog offers is the
 // restart that runs it.
 const launchAnswer = {
   ok: true,
@@ -5848,135 +6158,102 @@ const launchAnswer = {
   tag: "desktop-v0.34.0",
   asset: "macos-arm64-Oxide.dmg",
   path: "/Applications/Oxide.app",
-  text: "Restart Oxide to run the new version.",
+  text: "Oxide 0.34.0 is in /Applications/Oxide.app. Quit Oxide and open it again to run the new version.",
   pending: false,
 };
 await emit("update-ready", launchAnswer);
 await nextTick();
 check(
-  "said the release was installed, and left the restart to do it",
-  banner.hidden === false &&
-    /Oxide 0.34.0 is installed/.test(bannerText()) &&
-    bannerRestart.hidden === false,
-  `${banner.hidden} / ${bannerText()} / ${bannerRestart.hidden}`,
+  "opened the restart for the release the launch put in place",
+  updateTitle() === "Restart and install update" && offered(restartButton) && offered(laterButton),
+  `${updateTitle()} / ${restartButton.hidden} / ${laterButton.hidden}`,
 );
 calls.length = 0;
-await bannerRestart.onclick();
+await restartButton.onclick();
 check(
-  "restarted the app from the row the launch painted",
+  "restarted the app from the dialog the launch opened",
   projectCalls("restart_app").length === 1,
   JSON.stringify(calls.map(([name]) => name)),
 );
 
-// A turn owns the process — its tools write files and its stream is read here —
-// so a restart is refused while one runs rather than killing a live run.
-app.state.busy = true;
-elementFor("status-text").textContent = "";
-calls.length = 0;
-await bannerRestart.onclick();
-check(
-  "refused a restart while a turn was running",
-  projectCalls("restart_app").length === 0 && /A turn is running/.test(status()),
-  `${JSON.stringify(calls.map(([name]) => name))} / ${status()}`,
-);
-app.state.busy = false;
-
-// The install is remembered the way a click's own install is, so a check that
-// resolves the release now on disk reports it instead of offering it again.
-calls.length = 0;
-updateAnswer = OFFERED_UPDATE;
-await app.openUpdate();
-check(
-  "answered the dialog's own check with the install the launch performed",
-  updateTitle() === "Oxide 0.34.0 is installed" &&
-    installButton.hidden === true &&
-    restartButton.hidden === false,
-  `${updateTitle()} / ${installButton.hidden} / ${restartButton.hidden}`,
-);
-elementFor("update-close").onclick();
-app.installedUpdate.answer = null;
-
-// The row belongs to the window rather than to the install: putting it away
-// stops nothing, and an install that could not finish is a line rather than a
-// dialog nobody asked for.
-calls.length = 0;
-await elementFor("update-banner-dismiss").onclick();
-check(
-  "put the row away without stopping the install",
-  banner.hidden === true && calls.length === 0,
-  `${banner.hidden} / ${JSON.stringify(calls.map(([name]) => name))}`,
-);
-await emit("update-failed", { message: "the download did not verify" });
-await nextTick();
-check(
-  "reported an install that failed as a line, not a dialog",
-  banner.hidden === true &&
-    elementFor("update-modal").hidden === true &&
-    /The download did not verify|did not verify/.test(status()),
-  `${banner.hidden} / ${elementFor("update-modal").hidden} / ${status()}`,
-);
-elementFor("status-text").textContent = "";
-
 // A window that opened after the install started heard none of it: the events
-// were emitted into a page that was not listening, and the one that must not be
-// missed is the report the restart hangs on. The shell keeps the newest of them
-// beside its state, and the page asks for what it has already said as it starts,
-// from the same channel every other command travels on.
-app.launchDismissed.yes = false;
+// were emitted into a page that was not listening, and the ones that must not be
+// missed are the stage it is on and the report the restart hangs on. The shell
+// keeps the newest of them beside its state, and the page asks for what it has
+// already said as it starts, from the same channel every other command travels
+// on.
+app.installedUpdate.answer = null;
+elementFor("update-modal").hidden = true;
 check(
   "asked what the launch's install had already said as it started",
   invokes.some(([, payload]) => payload.command === "launch_update"),
   JSON.stringify(invokes.map(([, payload]) => payload.command).slice(0, 4)),
 );
+launchHeard = {
+  event: "update-progress",
+  payload: { stage: "downloading", version: "0.34.0", received: 0, total: 0 },
+};
+await app.catchUpOnLaunchUpdate();
+check(
+  "opened the dialog on the install a page that started late missed",
+  updateOpen() && updateTitle() === "Downloading update",
+  `${elementFor("update-modal").hidden} / ${updateTitle()}`,
+);
+elementFor("update-modal").hidden = true;
 launchHeard = { event: "update-ready", payload: launchAnswer };
 await app.catchUpOnLaunchUpdate();
 check(
-  "painted the install a page that opened late would have missed",
-  banner.hidden === false &&
-    /Oxide 0.34.0 is installed/.test(bannerText()) &&
-    bannerRestart.hidden === false,
-  `${banner.hidden} / ${bannerText()} / ${bannerRestart.hidden}`,
+  "painted the install a page that started late would have missed",
+  updateOpen() && updateTitle() === "Restart and install update" && offered(restartButton),
+  `${elementFor("update-modal").hidden} / ${updateTitle()} / ${restartButton.hidden}`,
 );
-
-// What the row says goes on arriving — the install is still working — so a
-// dismissal is kept apart from it: a row that came back with the next stage is
-// one the reader cannot put away.
-calls.length = 0;
-await elementFor("update-banner-dismiss").onclick();
-await emit("update-progress", { stage: "installing", version: "0.34.0" });
-await nextTick();
+elementFor("update-modal").hidden = true;
+// A launch's install that could not finish nobody asked for, so it is a line
+// rather than a dialog nobody opened — and asking again is what the window's own
+// Check for Updates… is for.
+launchHeard = { event: "update-failed", payload: { message: "the download did not verify" } };
+elementFor("status-text").textContent = "";
+await app.catchUpOnLaunchUpdate();
 check(
-  "left the row the reader put away away, whatever the install reports next",
-  banner.hidden === true,
-  String(banner.hidden),
+  "reported an install that failed as a line, not a dialog",
+  elementFor("update-modal").hidden === true && /did not verify/.test(status()),
+  `${elementFor("update-modal").hidden} / ${status()}`,
 );
 launchHeard = null;
-app.launchDismissed.yes = false;
-
-// A dialog opened while the launch's install was running was asked about the
-// build that started, so it offers the release the install has just put in
-// place: the install is the newest word on the dialog too, and its Install row is
-// one that would install what is already there.
+elementFor("status-text").textContent = "";
 app.installedUpdate.answer = null;
-updateAnswer = { ...OFFERED_UPDATE };
+
+// An install nobody in the window asked for is cancelled by the name the engine
+// gave it, which the window learns from the stage that install reports: the two
+// halves agree on which install a cancel is about without the window having had
+// to ask for it.
+console.log("the install the window was only told about");
+elementFor("update-modal").hidden = true;
+await emit("update-progress", {
+  stage: "downloading",
+  version: "0.34.0",
+  received: 1024,
+  total: 2048,
+  token: "launch-1-1",
+});
+await nextTick();
 calls.length = 0;
 await app.openUpdate();
 check(
-  "offered the release the dialog's own check resolved",
-  installButton.hidden === false && restartButton.hidden === true,
-  `${installButton.hidden} / ${restartButton.hidden}`,
+  "answered the sidebar's own button with the install it was told about",
+  projectCalls("check_updates").length === 0 &&
+    updateTitle() === "Downloading update" &&
+    offered(cancelButton),
+  `${JSON.stringify(calls.map(([name]) => name))} / ${updateTitle()} / ${cancelButton.hidden}`,
 );
-await emit("update-ready", launchAnswer);
-await nextTick();
+calls.length = 0;
+cancelButton.onclick();
 check(
-  "repaired the open dialog with the install that landed under it",
-  updateTitle() === "Oxide 0.34.0 is installed" &&
-    installButton.hidden === true &&
-    restartButton.hidden === false,
-  `${updateTitle()} / ${installButton.hidden} / ${restartButton.hidden}`,
+  "cancelled it by the name the engine gave it",
+  cancelledTokens[cancelledTokens.length - 1] === "launch-1-1" &&
+    projectCalls("cancel_update").length === 1,
+  `${JSON.stringify(cancelledTokens)} / ${JSON.stringify(calls.map(([name]) => name))}`,
 );
-elementFor("update-close").onclick();
-app.installedUpdate.answer = null;
 
 // ---------- the connect dialog ----------
 

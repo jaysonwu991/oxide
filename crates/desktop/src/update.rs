@@ -20,7 +20,8 @@ use std::ffi::OsStr;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::Mutex;
 
 /// The version this build reports. Release CI writes the tag version in before
 /// building, so a released bundle answers with the release it came from.
@@ -300,13 +301,6 @@ pub fn launch_installs(notice: &Notice, current: &str, installation: &Installati
     notice.is_update_for(current) && installation.replaces_itself()
 }
 
-/// Installs the newest release of the app, for a caller with no progress to
-/// show — `restart` is what runs it either way. See [`install_reporting`] for
-/// what the install does, step by step.
-pub async fn install() -> Result<Value> {
-    install_reporting(|_| {}).await
-}
-
 /// What an install is doing, reported as it goes so a front-end can paint the
 /// wait rather than leave a release that is being put in place unexplained.
 #[derive(Debug, Clone)]
@@ -316,6 +310,73 @@ pub struct Progress {
     pub stage: &'static str,
     /// The release being installed, known once it has been resolved.
     pub version: String,
+    /// How much of the release has been written, and the size the response
+    /// announced. They are what a progress bar moves on, and both are empty
+    /// outside the download: `total` is `None` when no size was announced.
+    pub received: u64,
+    pub total: Option<u64>,
+}
+
+impl Progress {
+    /// A step that carries no download: the ones before the release is
+    /// fetched and the ones after it is on disk.
+    fn step(stage: &'static str, version: impl Into<String>) -> Self {
+        Self {
+            stage,
+            version: version.into(),
+            received: 0,
+            total: None,
+        }
+    }
+}
+
+/// What an install a reader cancelled reports. A cancel is not a failure — the
+/// reader asked for it — so the callers that would otherwise paint one look for
+/// this first.
+pub const CANCELLED: &str = "the update was cancelled";
+
+/// The install a reader asked to stop, by the token that install runs under.
+///
+/// A token rather than a flag the next install wipes: the window offers Cancel
+/// as soon as it has asked for an install, so `cancel_update` can reach this side
+/// before the install's own task has been polled — a cancel that names its
+/// install is not lost to that reset, and one asked for a release ago is not the
+/// next install's to obey. `None` until somebody asks.
+static CANCEL_TOKEN: Mutex<Option<String>> = Mutex::new(None);
+
+/// A token no other install in this process shares, for an install nobody in the
+/// window asked for — the launch's own — which the window learns from the events
+/// and cancels by like any other.
+pub fn new_token() -> String {
+    static NEXT: AtomicU64 = AtomicU64::new(0);
+    format!(
+        "launch-{}-{}",
+        std::process::id(),
+        NEXT.fetch_add(1, Ordering::SeqCst) + 1
+    )
+}
+
+/// Whether an error an install reported is a cancel rather than a failure.
+pub fn was_cancelled(error: &anyhow::Error) -> bool {
+    error.to_string() == CANCELLED
+}
+
+/// Asks the install running under `token` to stop, whether it is downloading or
+/// about to start. Nothing happens when no install carries that token, and what
+/// has been downloaded is left in this run's scratch, which is removed as the
+/// install returns.
+pub fn cancel(token: &str) {
+    let mut cancelled = CANCEL_TOKEN
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    *cancelled = Some(token.to_string());
+}
+
+fn cancelled(token: &str) -> bool {
+    CANCEL_TOKEN
+        .lock()
+        .map(|held| held.as_deref() == Some(token))
+        .unwrap_or(false)
 }
 
 /// An install in flight, process-wide. The launch installs a release without
@@ -348,13 +409,19 @@ impl Drop for InstallGuard {
 /// The release is resolved again rather than taken from the check, so one
 /// published in the meantime is the one that lands, and the download is checked
 /// against the digest its release published before it goes anywhere near this
-/// installation.
-pub async fn install_reporting(report: impl Fn(Progress)) -> Result<Value> {
+/// installation. `token` is the install's own name, which is what a reader's
+/// cancel addresses: the download reports itself as it goes and is where a
+/// cancel mostly lands, and the two places it can still be honoured before
+/// anything is put in place — before the release is resolved and after it has
+/// been verified — are checked as well.
+pub async fn install_reporting(token: &str, report: impl Fn(Progress)) -> Result<Value> {
     let _installing = InstallGuard::take()?;
-    report(Progress {
-        stage: "checking",
-        version: String::new(),
-    });
+    // A cancel that arrived while this install was still on its way here: the
+    // window offered the button the moment it asked for the install.
+    if cancelled(token) {
+        bail!(CANCELLED);
+    }
+    report(Progress::step("checking", ""));
     let client = updates::client()?;
     let repo = updates::repo();
     let release = resolve(&client, &repo).await?;
@@ -372,26 +439,52 @@ pub async fn install_reporting(report: impl Fn(Progress)) -> Result<Value> {
         );
     }
 
-    report(Progress {
-        stage: "downloading",
-        version: release.version.clone(),
-    });
+    report(Progress::step("downloading", release.version.clone()));
     let work = WorkDir::new()?;
     let download = work.path().join(&release.asset);
-    let bytes = updates::download(&client, &release.url(&repo), &download).await?;
+    let mut reported = 0u64;
+    let bytes = updates::download_reporting(
+        &client,
+        &release.url(&repo),
+        &download,
+        |received, total| {
+            // A bar moves in percent, and a release that announced no size
+            // moves in whole megabytes. One event per chunk would be thousands
+            // of them for a bundle, each one a packet the window repaints.
+            let step = total.map(|total| (total / 100).max(1)).unwrap_or(1 << 20);
+            if received / step != reported / step {
+                reported = received;
+                report(Progress {
+                    stage: "downloading",
+                    version: release.version.clone(),
+                    received,
+                    total,
+                });
+            }
+            !cancelled(token)
+        },
+    )
+    .await;
+    let bytes = match bytes {
+        Ok(bytes) => bytes,
+        // The reader stopped it, which is not a failure to report but is still
+        // not a release to go on installing: nothing has been put in place.
+        Err(_) if cancelled(token) => bail!(CANCELLED),
+        Err(error) => return Err(error),
+    };
     let mut notes = Vec::new();
-    report(Progress {
-        stage: "verifying",
-        version: release.version.clone(),
-    });
+    report(Progress::step("verifying", release.version.clone()));
     match release.digest.as_deref() {
         Some(digest) => updates::verify_sha256(&download, digest)?,
         None => notes.push("no checksum was published for this release".to_string()),
     }
-    report(Progress {
-        stage: "installing",
-        version: release.version.clone(),
-    });
+    // The last moment a cancel is the reader's to make: past this the release is
+    // being put in place, and stopping halfway through a swap is how an
+    // installation is lost rather than how an install is stopped.
+    if cancelled(token) {
+        bail!(CANCELLED);
+    }
+    report(Progress::step("installing", release.version.clone()));
     let placed = install_downloaded(
         &installation,
         &release.version,
@@ -681,6 +774,8 @@ mod tests {
             version: "0.34.0".to_string(),
             asset: asset.to_string(),
             digest: Some(format!("sha256:{}", "0".repeat(64))),
+            notes: None,
+            released_at: None,
         }
     }
 
@@ -1263,5 +1358,57 @@ mod tests {
         // once a launch's own install has finished.
         drop(held);
         assert!(InstallGuard::take().is_ok());
+    }
+
+    // A cancel is not a failure, and both callers of an install tell it from one
+    // by the error it reports — the desktop command, which answers the window
+    // with it, and the launch, which says nothing at all about it — so the words
+    // the install bails with are the contract.
+    #[test]
+    fn a_cancel_is_told_from_a_failure_to_install() {
+        let cancelled = anyhow::anyhow!(CANCELLED);
+        assert!(was_cancelled(&cancelled));
+        assert!(!was_cancelled(&anyhow::anyhow!(
+            "mounting the downloaded disk image: hdiutil failed with exit status: 1"
+        )));
+        assert!(!was_cancelled(&anyhow::anyhow!(
+            "an Oxide update is already being installed"
+        )));
+    }
+
+    // The cancel a reader asks for names one install, and it is the one that
+    // answers to that name: not whatever is running by the time it arrives — the
+    // window offers Cancel the moment it has asked for an install, so the cancel
+    // can reach this side first — and not the install after it.
+    #[test]
+    fn a_cancel_addresses_the_install_it_names() {
+        let first = new_token();
+        let second = new_token();
+        assert_ne!(first, second, "two installs are never the same install");
+        assert!(!cancelled(&first) && !cancelled(&second));
+
+        cancel(&first);
+        assert!(
+            cancelled(&first),
+            "the install it names is the one it stops"
+        );
+        assert!(
+            !cancelled(&second),
+            "and the install after it is not the one it stops"
+        );
+
+        cancel(&second);
+        assert!(cancelled(&second));
+    }
+
+    // The steps that are not a download carry no byte counts, which is what the
+    // dialog reads to decide between a determinate bar and one that works.
+    #[test]
+    fn a_step_that_is_not_a_download_reports_no_bytes() {
+        let step = Progress::step("verifying", "0.34.0");
+        assert_eq!(step.stage, "verifying");
+        assert_eq!(step.version, "0.34.0");
+        assert_eq!(step.received, 0);
+        assert_eq!(step.total, None);
     }
 }

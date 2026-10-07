@@ -847,24 +847,53 @@ check(
     /launch_installs\(/.test(commands),
 );
 // Every step of an install reports itself, and the page paints those stages as
-// the row above the sidebar's foot: a stage renamed here is a row the window
-// never fills in, and a stage the window paints that nothing reports is a wait
-// with nothing to say.
+// the dialog's download step: a stage renamed here is one the window never fills
+// in, and a stage the window paints that nothing reports is a wait with nothing
+// to say. The steps are written two ways — a struct literal for the download,
+// which carries its own byte counts, and `Progress::step` for the ones that are
+// just a stage — so both spellings are read.
 const stages = [
-  ...new Set([...update.matchAll(/stage: "([a-z]+)"/g)].map(([, name]) => name)),
+  ...new Set(
+    [...update.matchAll(/(?:stage: |Progress::step\()"([a-z]+)"/g)].map(([, name]) => name),
+  ),
 ].sort();
 check(
   "reported each step of an install to the window",
   JSON.stringify(stages) === JSON.stringify(["checking", "downloading", "installing", "verifying"]) &&
     /"stage": progress\.stage/.test(commands) &&
+    /"received": progress\.received/.test(commands) &&
+    /"total": progress\.total/.test(commands) &&
     /announce_launch_update\(\s*"update-progress"/.test(commands) &&
     /announce_launch_update\("update-ready"/.test(commands) &&
     /announce_launch_update\("update-failed"/.test(commands) &&
-    ["update-progress", "update-ready", "update-failed"].every((name) =>
+    /announce_launch_update\(\s*"update-available"/.test(commands) &&
+    ["update-available", "update-progress", "update-ready", "update-failed"].every((name) =>
       app.includes(`listen("${name}"`),
     ) &&
     /fn launch_update\(/.test(commands),
   stages.join(", "),
+);
+
+// A cancel names the install it is about, and the name is the window's own: the
+// reader can ask to stop an install in the moment between the request going out
+// and the install starting, so a flag the next install clears would lose that
+// request, and a name the two halves agree on is what a cancel is addressed by.
+// The engine's own installs carry a name of their own, which the window learns
+// from the stage it reports.
+check(
+  "named the install a cancel is about, both ways round",
+  /static CANCEL_TOKEN: Mutex<Option<String>>/.test(update) &&
+    /pub fn cancel\(token: &str\)/.test(update) &&
+    /fn cancelled\(token: &str\) -> bool/.test(update) &&
+    /pub fn new_token\(\) -> String/.test(update) &&
+    /install_reporting\(&token, move \|progress\|/.test(commands) &&
+    /"token": named/.test(commands) &&
+    /install_update\(&state, optional_arg\(&args, "token"\)\?\)/.test(commands) &&
+    /cancel_update\(arg\(&args, "token"\)\?\)/.test(commands) &&
+    /invoke\("install_update", \{ token: install\.token \}\)/.test(app) &&
+    /invoke\("cancel_update", \{ token \}\)/.test(app) &&
+    /\(payload && payload\.token\)/.test(app),
+  "the cancel's own name",
 );
 
 // ---------- the migration's own end ----------
