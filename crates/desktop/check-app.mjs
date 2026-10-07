@@ -385,6 +385,11 @@ let cancelError = null;
 // Whether an install in flight has been asked to stop, which is what the shell
 // answers it with when it lands: a cancelled install put nothing in place.
 let installCancelled = false;
+// The names the window gave the installs it asked for, and the names a cancel
+// addressed. A cancel only reaches an install that answers to its own name, so
+// a test can tell whether the two halves agree on which install is which.
+const installTokens = [];
+const cancelledTokens = [];
 // The version a successful install leaves behind, when a test wants one other
 // than the release the check resolved: the app resolves the release again as it
 // installs, so one published between the check and the click is what lands.
@@ -693,11 +698,14 @@ const invoke = async (command, args = {}) => {
       return answer;
     }
     case "install_update": {
-      if (installError) throw installError;
+      installTokens.push(String((args && args.token) || ""));
       if (installsHeld > 0) {
         installsHeld -= 1;
         await new Promise((resolve) => heldInstalls.push(resolve));
       }
+      // A release that cannot be fetched, verified or put in place is reported
+      // once the install is under way, which is where a real one fails.
+      if (installError) throw installError;
       // A cancel the window asked for while this was in flight: the app answers
       // with the cancel rather than a release, since nothing was put in place.
       if (installCancelled) {
@@ -726,7 +734,11 @@ const invoke = async (command, args = {}) => {
     }
     case "cancel_update": {
       if (cancelError) throw cancelError;
-      installCancelled = true;
+      const token = String((args && args.token) || "");
+      cancelledTokens.push(token);
+      // A cancel addresses one install: the one that answers to that name, and
+      // no other.
+      if (token !== "" && installTokens.includes(token)) installCancelled = true;
       return {};
     }
     case "launch_update":
@@ -5645,6 +5657,37 @@ check(
     !updateBody().includes("%"),
   `${progressBox.classList.contains("indeterminate")} / ${updateBody()}`,
 );
+// The bar and the bytes are the transfer's. The stages on either side of it
+// carry none, and painting their zeroes would replace a bar that had filled with
+// one that has just started, over the words "0.0 MB downloaded" — a number going
+// backwards in front of the reader.
+await emit("update-progress", { stage: "verifying", version: "0.34.0" });
+check(
+  "took the finished bar away rather than starting it over",
+  progressBox.hidden === true &&
+    !updateBody().includes("0.0 MB") &&
+    updateBody().includes("is being verified"),
+  `${progressBox.hidden} / ${updateBody()}`,
+);
+check(
+  "kept the cancel while the release can still be let go of",
+  offered(cancelButton) && offered(backgroundButton),
+  `${cancelButton.hidden} / ${backgroundButton.hidden}`,
+);
+// Once the release is being put in place the swap is under way, and an install
+// stopped in the middle of it is an installation lost: the dialog stops offering
+// to stop it rather than closing on an install that goes on without the reader.
+await emit("update-progress", { stage: "installing", version: "0.34.0" });
+check(
+  "stopped offering to stop an install that can no longer be stopped",
+  !offered(cancelButton) && offered(backgroundButton) && progressBox.hidden === true,
+  `${cancelButton.hidden} / ${backgroundButton.hidden} / ${progressBox.hidden}`,
+);
+check(
+  "named the step it had reached rather than the one it had finished",
+  updateTitle() === "Installing update" && updateBody().includes("is being put in place"),
+  `${updateTitle()} / ${updateBody()}`,
+);
 
 // Sending the download to the background is putting the dialog away rather than
 // stopping the install: the reader is told where it got to when it lands, and
@@ -5958,6 +6001,16 @@ check(
   projectCalls("cancel_update").length === 1,
   JSON.stringify(calls.map(([name]) => name)),
 );
+// A cancel names the install it is about rather than "whatever is running": the
+// window offers Cancel the moment it has asked for an install, so that request
+// can reach the engine before the install it belongs to has been polled — and a
+// name the engine can match is what keeps it from being lost to that ordering.
+check(
+  "named the install it is cancelling",
+  installTokens[installTokens.length - 1] === cancelledTokens[cancelledTokens.length - 1] &&
+    String(cancelledTokens[cancelledTokens.length - 1]).startsWith("ui-"),
+  `${JSON.stringify(installTokens)} / ${JSON.stringify(cancelledTokens)}`,
+);
 check(
   "closed the dialog the reader stopped it in",
   elementFor("update-modal").hidden === true,
@@ -5982,6 +6035,71 @@ check(
   `${updateTitle()} / ${installButton.hidden}`,
 );
 closeButton.onclick();
+
+// An install can go wrong once it is under way, and the engine says so through
+// the dialog the reader is watching it in: the step it was on is not left
+// standing over an install that has ended, and the failure is not dropped for
+// having arrived after the install reported a stage of its own.
+console.log("an install that goes wrong under the dialog");
+updateAnswer = OFFERED_UPDATE;
+await app.openUpdate();
+await nextTick();
+installError = "mounting the downloaded disk image: hdiutil failed with exit status: 1";
+holdNextInstall();
+const failing = installButton.onclick();
+await nextTick();
+await emit("update-progress", {
+  stage: "downloading",
+  version: "0.34.0",
+  received: 4 * 1024 * 1024,
+  total: 8 * 1024 * 1024,
+});
+check(
+  "showed the download before it went wrong",
+  updateTitle() === "Downloading update" && progressFill.style.width === "50%",
+  `${updateTitle()} / ${progressFill.style.width}`,
+);
+releaseHeldInstalls();
+await failing;
+check(
+  "reported the failure over the step it left behind",
+  updateTitle() === "Could not install the update" &&
+    updateBody().includes("hdiutil failed") &&
+    !offered(cancelButton) &&
+    !offered(backgroundButton),
+  `${updateTitle()} / ${updateBody()} / ${cancelButton.hidden}`,
+);
+check(
+  "offered no restart for an install that never landed",
+  !offered(restartButton) && offered(closeButton),
+  `${restartButton.hidden} / ${closeButton.hidden}`,
+);
+installError = null;
+closeButton.onclick();
+// And one that went wrong while the dialog was away is not silence: the reader
+// is told the same way an install nobody is watching tells them, in a line under
+// the composer.
+console.log("an install that goes wrong while nobody is looking");
+app.installedUpdate.answer = null;
+elementFor("status-text").textContent = "";
+updateAnswer = OFFERED_UPDATE;
+await app.openUpdate();
+await nextTick();
+holdNextInstall();
+const behind = app.installUpdate();
+await nextTick();
+backgroundButton.onclick();
+installError = "the download did not verify against the release's checksum";
+releaseHeldInstalls();
+await behind;
+check(
+  "reported an install that failed behind a closed dialog as a line",
+  elementFor("update-modal").hidden === true &&
+    /Could not install the update: .*the download did not verify/.test(status()),
+  `${elementFor("update-modal").hidden} / ${status()}`,
+);
+installError = null;
+elementFor("status-text").textContent = "";
 
 // ---------- the update a launch installs on its own ----------
 
@@ -6104,6 +6222,38 @@ check(
 launchHeard = null;
 elementFor("status-text").textContent = "";
 app.installedUpdate.answer = null;
+
+// An install nobody in the window asked for is cancelled by the name the engine
+// gave it, which the window learns from the stage that install reports: the two
+// halves agree on which install a cancel is about without the window having had
+// to ask for it.
+console.log("the install the window was only told about");
+elementFor("update-modal").hidden = true;
+await emit("update-progress", {
+  stage: "downloading",
+  version: "0.34.0",
+  received: 1024,
+  total: 2048,
+  token: "launch-1-1",
+});
+await nextTick();
+calls.length = 0;
+await app.openUpdate();
+check(
+  "answered the sidebar's own button with the install it was told about",
+  projectCalls("check_updates").length === 0 &&
+    updateTitle() === "Downloading update" &&
+    offered(cancelButton),
+  `${JSON.stringify(calls.map(([name]) => name))} / ${updateTitle()} / ${cancelButton.hidden}`,
+);
+calls.length = 0;
+cancelButton.onclick();
+check(
+  "cancelled it by the name the engine gave it",
+  cancelledTokens[cancelledTokens.length - 1] === "launch-1-1" &&
+    projectCalls("cancel_update").length === 1,
+  `${JSON.stringify(cancelledTokens)} / ${JSON.stringify(calls.map(([name]) => name))}`,
+);
 
 // ---------- the connect dialog ----------
 

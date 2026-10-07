@@ -927,8 +927,15 @@ pub async fn check_updates() -> CmdResult<Value> {
 /// them is running — and a reader who put the dialog away is still waiting on
 /// the answer below. A cancel the window asked for is an answer of its own
 /// rather than a failure: nothing went wrong, and the release is where it was.
-pub async fn install_update(state: &DesktopState) -> CmdResult<Value> {
-    let answer = update::install_reporting(|progress| {
+///
+/// `token` is the install's own name, which the window mints so that a cancel it
+/// asks for before this task has been polled still addresses this install — and
+/// every event carries it back, so the window can cancel an install it did not
+/// start by the same name.
+pub async fn install_update(state: &DesktopState, token: Option<String>) -> CmdResult<Value> {
+    let token = token.unwrap_or_else(update::new_token);
+    let named = token.clone();
+    let answer = update::install_reporting(&token, move |progress| {
         state.announce_launch_update(
             "update-progress",
             json!({
@@ -936,6 +943,7 @@ pub async fn install_update(state: &DesktopState) -> CmdResult<Value> {
                 "version": progress.version,
                 "received": progress.received,
                 "total": progress.total,
+                "token": named,
             }),
         );
     })
@@ -957,11 +965,13 @@ pub async fn install_update(state: &DesktopState) -> CmdResult<Value> {
     }
 }
 
-/// Stops the install in flight, which is what the dialog's Cancel asks for: the
-/// download stops where it is, nothing is put in place, and the release is
-/// offered again by the next check.
-pub fn cancel_update() -> CmdResult<Value> {
-    update::cancel();
+/// Stops the install running under `token`, which is what the dialog's Cancel
+/// asks for: the download stops where it is, nothing is put in place, and the
+/// release is offered again by the next check. The token is the install's own,
+/// so a cancel cannot reach an install the reader was not watching — and one
+/// asked for before the install had started is still that install's.
+pub fn cancel_update(token: String) -> CmdResult<Value> {
+    update::cancel(&token);
     Ok(json!({}))
 }
 
@@ -1002,8 +1012,12 @@ pub async fn auto_update(state: Arc<DesktopState>) {
         "update-available",
         json!({ "version": notice.version, "tag": notice.tag, "url": notice.url }),
     );
+    // The token is this install's own name, and it goes out with every stage so
+    // the window can stop an install nobody in the window asked for.
+    let token = update::new_token();
     let steps = state.clone();
-    let answer = update::install_reporting(move |progress| {
+    let named = token.clone();
+    let answer = update::install_reporting(&token, move |progress| {
         steps.announce_launch_update(
             "update-progress",
             json!({
@@ -1011,6 +1025,7 @@ pub async fn auto_update(state: Arc<DesktopState>) {
                 "version": progress.version,
                 "received": progress.received,
                 "total": progress.total,
+                "token": named,
             }),
         );
     })
@@ -1301,8 +1316,10 @@ pub async fn dispatch(
         }
         "set_theme" => command_value(set_theme(arg(&args, "project")?, arg(&args, "name")?).await),
         "check_updates" => command_value(check_updates().await),
-        "install_update" => command_value(install_update(&state).await),
-        "cancel_update" => command_value(cancel_update()),
+        "install_update" => {
+            command_value(install_update(&state, optional_arg(&args, "token")?).await)
+        }
+        "cancel_update" => command_value(cancel_update(arg(&args, "token")?)),
         "launch_update" => command_value(launch_update(&state)),
         "restart_app" => command_value(restart_app(host, &state).await),
         _ => Err(format!("unknown desktop command `{command}`")),

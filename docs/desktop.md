@@ -957,10 +957,18 @@ are on screen, so nothing offered belongs to a step the reader has left:
 - **Downloading update** — a bar that fills from the stages the engine reports
   (`update-progress`, carrying the bytes written and the size the response
   announced; a release that announced no size shows the bar working and the bytes
-  instead of a fraction), with **Download in background**, which puts the dialog
-  away without stopping the download, and **Cancel**, which stops it:
-  `cancel_update` sets the flag the download checks between its chunks, so nothing
-  is put in place and the next check offers the release again.
+  instead of a fraction, and the stages on either side of the transfer carry no
+  bytes and so no bar), with **Download in background**, which puts the dialog
+  away without stopping the download, and **Cancel**, which stops it. Cancel is
+  offered while the install can still be stopped — looking the release up,
+  downloading it, checking its checksum — and not once the release is being put
+  in place, where stopping halfway is an installation lost; the step's own title
+  names the stage it has reached. It names the install
+  it is about (`cancel_update` with the token the window minted, or the one the
+  engine reported for an install nobody in the window asked for), so a cancel
+  asked for before that install had begun is still its own and one asked for a
+  release ago is not the next install's. Nothing is put in place either way, and
+  the next check offers the release again.
 - **Restart and install update** — `Update downloaded. You need to restart Oxide
   to install the update.` The process running is still the build that started, so
   **Restart and install update** is the `restart_app` command and **Later** puts
@@ -1051,11 +1059,12 @@ replacing the thread on screen is refused, and the dialog says so.
 **Later** and **Download in background** put the dialog away without stopping
 anything, and the install goes on: what is left when it lands opens the dialog
 again on the restart, since the window keeps no row of its own for an install
-nobody in the window asked for. Because the window remembers the
+nobody in the window asked for. An install that could not finish is repainted
+into the dialog when that is what the reader is looking at — the step it was on
+is not left standing over an install that has ended — and is the line under the
+composer when it is not. Because the window remembers the
 release it installed, a later **Check for Updates…** reports that install rather
-than offering to repeat it. A launch's install that could not
-finish reports itself in a line under the composer instead of a dialog, and the
-dialog's own button is the one to ask again with.
+than offering to repeat it. The dialog's own button is the one to ask again with.
 
 ## Packaging
 

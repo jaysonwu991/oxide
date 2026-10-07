@@ -874,6 +874,28 @@ check(
   stages.join(", "),
 );
 
+// A cancel names the install it is about, and the name is the window's own: the
+// reader can ask to stop an install in the moment between the request going out
+// and the install starting, so a flag the next install clears would lose that
+// request, and a name the two halves agree on is what a cancel is addressed by.
+// The engine's own installs carry a name of their own, which the window learns
+// from the stage it reports.
+check(
+  "named the install a cancel is about, both ways round",
+  /static CANCEL_TOKEN: Mutex<Option<String>>/.test(update) &&
+    /pub fn cancel\(token: &str\)/.test(update) &&
+    /fn cancelled\(token: &str\) -> bool/.test(update) &&
+    /pub fn new_token\(\) -> String/.test(update) &&
+    /install_reporting\(&token, move \|progress\|/.test(commands) &&
+    /"token": named/.test(commands) &&
+    /install_update\(&state, optional_arg\(&args, "token"\)\?\)/.test(commands) &&
+    /cancel_update\(arg\(&args, "token"\)\?\)/.test(commands) &&
+    /invoke\("install_update", \{ token: install\.token \}\)/.test(app) &&
+    /invoke\("cancel_update", \{ token \}\)/.test(app) &&
+    /\(payload && payload\.token\)/.test(app),
+  "the cancel's own name",
+);
+
 // ---------- the migration's own end ----------
 
 console.log("the migration");

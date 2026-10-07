@@ -3792,27 +3792,68 @@ function paintChangelog(check) {
 /// is being fetched and put in place — so the title names that step and the line
 /// under it says what the engine is doing with it, since looking the release up
 /// and checking its checksum are not a download.
+///
+/// The stages that carry no bytes carry no bar either: a bar filled to 25% that
+/// was replaced by an indeterminate one reading "0.0 MB downloaded" the moment
+/// the transfer ended is a number going backwards in front of the reader.
 function paintDownloading(install) {
   const version = install.version || (updateCheck && updateCheck.latest) || "";
   const named = version ? `Oxide ${version}` : "The release";
+  const stage = install.stage || "downloading";
+  const transferring = stage === "downloading";
   const doing =
     {
       checking: `${named} is being looked up`,
       verifying: `${named} is being verified`,
       installing: `${named} is being put in place`,
-    }[install.stage] ||
+    }[stage] ||
     (version
       ? `Oxide ${version} is being downloaded and put in place`
       : "The release is being downloaded and put in place");
-  updateHead("Downloading update", `${doing}. The app keeps running until it is restarted.`);
-  paintProgressBar(install);
-  updateButtons({ "update-cancel": true, "update-background": true });
+  updateHead(
+    stage === "installing" ? "Installing update" : "Downloading update",
+    `${doing}. The app keeps running until it is restarted.`,
+  );
+  paintProgressBar(transferring ? install : null);
+  const lines = [];
+  if (transferring) {
+    const asset = (updateCheck && updateCheck.asset && updateCheck.asset.name) || "";
+    if (asset) lines.push(`Downloading ${escapeHtml(asset)}`);
+    lines.push(downloadedLine(install));
+  } else {
+    lines.push(escapeHtml(doing));
+  }
+  el("update-body").innerHTML = lines
+    .map((line) => `<div class="update-line">${line}</div>`)
+    .join("");
+  // Cancel is offered while the install can still be stopped, and no longer once
+  // it cannot: the swap that puts the release in place is not a step to interrupt
+  // halfway, so a button that closed the dialog while the install went on would
+  // be one promising something it cannot do.
+  updateButtons({
+    "update-cancel": UPDATE_CANCELABLE.includes(stage),
+    "update-background": true,
+  });
 }
 
-/// The bar and the two lines beside it: what is being downloaded and how far it
-/// has got. A release that announced its size moves a determinate bar; one that
-/// did not shows the bar working and the bytes written, since there is no
-/// fraction to draw.
+/// The stages of an install a reader can still stop: the release can be let go of
+/// while it is being looked up, while it is on its way and while it is being
+/// checked — and not once it is being put in place.
+const UPDATE_CANCELABLE = ["checking", "downloading", "verifying"];
+
+/// How far the transfer has got, in the words a reader reads it in: a fraction of
+/// a size the response announced, or the bytes alone when it announced none.
+function downloadedLine(install) {
+  const total = Number(install.total) || 0;
+  const received = Number(install.received) || 0;
+  if (total <= 0) return `${megabytes(received)} downloaded`;
+  const share = Math.min(100, Math.round((received / total) * 100));
+  return `${megabytes(received)} of ${megabytes(total)} \u00b7 ${share}%`;
+}
+
+/// The bar, which is the transfer's own: it moves with the bytes written, works
+/// while none have been announced, and is taken away when there is nothing being
+/// downloaded. Nothing else on screen is this function's to write.
 function paintProgressBar(install) {
   const box = el("update-progress");
   if (!install) {
@@ -3826,17 +3867,6 @@ function paintProgressBar(install) {
   el("update-progress-fill").style.width = `${known ? share : 100}%`;
   box.classList.toggle("indeterminate", !known);
   box.hidden = false;
-  const asset = (updateCheck && updateCheck.asset && updateCheck.asset.name) || "";
-  const lines = [];
-  if (asset) lines.push(`Downloading ${escapeHtml(asset)}`);
-  lines.push(
-    known
-      ? `${megabytes(received)} of ${megabytes(total)} \u00b7 ${share}%`
-      : `${megabytes(received)} downloaded`,
-  );
-  el("update-body").innerHTML = lines
-    .map((line) => `<div class="update-line">${line}</div>`)
-    .join("");
 }
 
 function megabytes(bytes) {
@@ -3856,33 +3886,40 @@ async function installUpdate() {
     paintDownloading(updateInstall);
     return;
   }
-  updateInstall = {
+  const install = {
+    // The name this install answers to, minted here rather than read off the
+    // engine: the reader can ask to stop it in the moment between this request
+    // going out and the install starting, and a cancel that names its install is
+    // that one's to obey whatever order the two requests arrive in.
+    token: newUpdateToken(),
     stage: "checking",
     version: (updateCheck && updateCheck.latest) || "",
     received: 0,
     total: 0,
   };
+  updateInstall = install;
   // The install owns the dialog until it reports: a check started meanwhile —
   // the sidebar button is still there — is a look at the installation as it was
   // when the check started, which the install's own report outranks.
-  const probe = ++updateProbe;
-  paintDownloading(updateInstall);
+  updateProbe += 1;
+  paintDownloading(install);
   let answer;
   try {
-    answer = await invoke("install_update");
+    answer = await invoke("install_update", { token: install.token });
   } catch (error) {
     answer = { ok: false, text: String(error) };
   }
   // The reader stopped it, in a dialog they have already closed: there is
   // nothing here to report.
   if (answer && answer.cancelled === true) return;
+  // What gates this report is the install the window is showing, not the check
+  // counter: the engine reports its stages through the same dialog, so a counter
+  // that moved under them would drop the very answer that says how the install
+  // ended.
+  if (!updateInstall || updateInstall.token !== install.token) return;
   if (!answer || answer.ok !== true) {
     updateInstall = null;
-    if (probe !== updateProbe || el("update-modal").hidden) return;
-    paintUpdateFailure(
-      "Could not install the update",
-      (answer && answer.text) || "The install did not finish.",
-    );
+    reportUpdateFailure((answer && answer.text) || "The install did not finish.");
     return;
   }
   // The install owns the dialog from here, whatever a check started while it
@@ -3891,14 +3928,43 @@ async function installUpdate() {
   handleUpdateReady(answer);
 }
 
-/// Stops the download the dialog is watching. The reader asked for it, so
-/// nothing is put in place and nothing is reported as having gone wrong: the
-/// next check offers the release again.
+/// The name this window gives each install it asks for, which is what a cancel
+/// addresses. The seed is a page's own: a window opened again starts its count
+/// over, and a name left behind by the window before it is not one it can
+/// cancel by accident.
+const UPDATE_TOKEN_SEED = `${Date.now().toString(36)}-`;
+let updateTokens = 0;
+
+function newUpdateToken() {
+  updateTokens += 1;
+  return `ui-${UPDATE_TOKEN_SEED}${updateTokens}`;
+}
+
+/// Stops the install the dialog is watching. The reader asked for it, so nothing
+/// is put in place and nothing is reported as having gone wrong: the next check
+/// offers the release again.
 function cancelUpdate() {
+  const token = updateInstall && updateInstall.token;
   updateInstall = null;
   updateProbe += 1;
   el("update-modal").hidden = true;
-  invoke("cancel_update").catch((error) => setStatus(`Could not stop the update: ${error}`));
+  if (!token) return;
+  invoke("cancel_update", { token }).catch((error) =>
+    setStatus(`Could not stop the update: ${error}`),
+  );
+}
+
+/// An install that went wrong, wherever the reader is: the dialog is repainted
+/// when it is the one they are looking at, so the step it was on is not left
+/// standing over an install that has ended — and when it is not, the same words
+/// go to the line under the composer, which is where an install nobody is
+/// watching reports itself.
+function reportUpdateFailure(text) {
+  if (el("update-modal").hidden) {
+    setStatus(`Could not install the update: ${text}`);
+    return;
+  }
+  paintUpdateFailure("Could not install the update", text);
 }
 
 /// Reports an install that landed. The version named is the one the install
@@ -3969,13 +4035,26 @@ function handleUpdateAvailable() {
 /// A step of an install. The dialog paints it when it is on screen and simply
 /// remembers it otherwise: a reader who put the dialog away is still owed the
 /// restart that runs what lands, which is reported on its own below.
+///
+/// The engine names the install a stage belongs to, and the window keeps that
+/// name: the install it asked for keeps its own object — the click that started
+/// it is waiting on the same one — while an install it was only told about (the
+/// launch's own) is adopted under the name the engine gave it, which is what its
+/// Cancel then addresses.
 function handleUpdateProgress(payload) {
-  updateInstall = {
+  const token = (payload && payload.token) || "";
+  const reported = {
     stage: (payload && payload.stage) || "",
     version: (payload && payload.version) || "",
     received: (payload && payload.received) || 0,
     total: (payload && payload.total) || 0,
+    token: token || (updateInstall && updateInstall.token) || "",
   };
+  if (updateInstall && (!token || updateInstall.token === token)) {
+    Object.assign(updateInstall, reported);
+  } else {
+    updateInstall = reported;
+  }
   // The install is newer news than any check still in flight: a dialog that
   // painted the release over the download the reader is watching would be
   // asking about a build that is already being replaced.
@@ -3996,10 +4075,12 @@ function handleUpdateReady(answer) {
   paintInstalled(answer);
 }
 
-/// An install that could not finish, or one the reader stopped. Nobody asked
-/// for the first, so it is a line rather than a dialog — and asking again is
-/// what Check for Updates… is for. The second is what the reader did ask for,
-/// and the dialog they asked it in is already gone.
+/// An install that could not finish, or one the reader stopped. A failure the
+/// reader is watching is repainted into the dialog it was watching it in — the
+/// step it was on must not be left standing over an install that has ended — and
+/// one that arrived while the dialog was away is the same line under the composer
+/// the launch's own install reports itself by. A cancel is neither: the reader
+/// asked for it, and the dialog they asked it in is already gone.
 function handleUpdateFailed(payload) {
   updateInstall = null;
   updateProbe += 1;
@@ -4007,7 +4088,7 @@ function handleUpdateFailed(payload) {
     el("update-modal").hidden = true;
     return;
   }
-  setStatus(`Could not install the update: ${(payload && payload.message) || "unknown error"}`);
+  reportUpdateFailure((payload && payload.message) || "unknown error");
 }
 
 /// Asks what the install this process is running has already said.
