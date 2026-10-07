@@ -847,20 +847,27 @@ check(
     /launch_installs\(/.test(commands),
 );
 // Every step of an install reports itself, and the page paints those stages as
-// the row above the sidebar's foot: a stage renamed here is a row the window
-// never fills in, and a stage the window paints that nothing reports is a wait
-// with nothing to say.
+// the dialog's download step: a stage renamed here is one the window never fills
+// in, and a stage the window paints that nothing reports is a wait with nothing
+// to say. The steps are written two ways — a struct literal for the download,
+// which carries its own byte counts, and `Progress::step` for the ones that are
+// just a stage — so both spellings are read.
 const stages = [
-  ...new Set([...update.matchAll(/stage: "([a-z]+)"/g)].map(([, name]) => name)),
+  ...new Set(
+    [...update.matchAll(/(?:stage: |Progress::step\()"([a-z]+)"/g)].map(([, name]) => name),
+  ),
 ].sort();
 check(
   "reported each step of an install to the window",
   JSON.stringify(stages) === JSON.stringify(["checking", "downloading", "installing", "verifying"]) &&
     /"stage": progress\.stage/.test(commands) &&
+    /"received": progress\.received/.test(commands) &&
+    /"total": progress\.total/.test(commands) &&
     /announce_launch_update\(\s*"update-progress"/.test(commands) &&
     /announce_launch_update\("update-ready"/.test(commands) &&
     /announce_launch_update\("update-failed"/.test(commands) &&
-    ["update-progress", "update-ready", "update-failed"].every((name) =>
+    /announce_launch_update\(\s*"update-available"/.test(commands) &&
+    ["update-available", "update-progress", "update-ready", "update-failed"].every((name) =>
       app.includes(`listen("${name}"`),
     ) &&
     /fn launch_update\(/.test(commands),

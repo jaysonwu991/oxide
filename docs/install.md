@@ -141,7 +141,9 @@ overrides both for one launch). Only the TUI shows it — a `-p`/`--mode json`/
 
 `--check --json` prints that report as JSON — `component`, `current`, `latest`,
 `tag`, `pinned`, `updateAvailable`, `installation`, `installable`, `path`,
-`advice`, `releaseUrl` and the `asset` (its `name`, `url` and the `digest`
+`advice`, `releaseUrl`, `notes` and `releasedAt` (the release's own Markdown
+changelog and the day it went out, which a dialog draws so the reader reads what
+changed without leaving it) and the `asset` (its `name`, `url` and the `digest`
 GitHub reports) — which is what a front-end reads instead of parsing the prose.
 `--component <cli|desktop|extension>` and `--current <VERSION>` decide which
 release train the report is about and what it is compared against: the CLI's own

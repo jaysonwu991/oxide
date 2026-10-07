@@ -3595,60 +3595,57 @@ async function clearApprovals() {
 /// The check the dialog is showing, so the Release notes button opens the
 /// release the body was painted from rather than one read again.
 let updateCheck = null;
-/// An install in flight. The CLI replaces itself on disk, and two of them
-/// running over one binary is the one thing this dialog must not allow.
-let installingUpdate = false;
+/// The install the dialog is showing, as the shell reports it — `{ stage,
+/// version, received, total }` — or null while none is running. One install at
+/// a time is the app's own rule, which the engine holds, so this is also what
+/// says a click on Update has nothing to start: a click while this is set
+/// adopts the install already under way rather than starting a second one.
+let updateInstall = null;
 /// The check the dialog is waiting on. The menu item and the sidebar button ask
 /// the same question and either may be pressed again before the first answer
 /// arrives, so every request takes a number: a reply for a number the dialog has
 /// moved past is dropped rather than painted over the newer answer — which would
-/// show a release, or a failure, from a question nobody is waiting on.
+/// show a release, or a failure, from a question nobody is waiting on. An
+/// install reporting itself takes the dialog over the same way, since a check
+/// asked for while one works is about a build that is already being replaced.
 let updateProbe = 0;
-/// The install this dialog has finished, if any. The window is still the build
+/// The install this session finished, if any. The window is still the build
 /// that started, so a check compares against that older version and keeps
 /// resolving the release now on disk; while the install is remembered, a check
-/// that answers with that release reports what happened instead of offering the
-/// same install again. Held in an object so a front-end check can put the dialog
-/// back to the state a fresh window is in.
+/// that answers with that release reports what is left to do rather than
+/// offering the same install again. Held in an object so a front-end check can
+/// put the dialog back to the state a fresh window is in.
 const installedUpdate = { answer: null };
-/// The install a launch performs on its own, as the shell reported it: null
-/// while there is none, `{ stage, version }` while one works, `{ answer }` once a
-/// release is in place. The app keeps itself current the way its other front-ends
-/// check for one, so the window is told rather than asking.
-let launchUpdate = null;
-/// Whether the reader has put this launch's row away. Kept apart from the
-/// install's own state, since what the row says goes on arriving — and a row that
-/// came back on the next stage would be one the reader cannot dismiss, which is
-/// not what a dismissal means.
-const launchDismissed = { yes: false };
 
-/// Checks the app's own release train (`desktop-v*`) and offers to install it.
-/// The resolution is `oxide_core::updates`, shared with the terminal, so the
-/// release this window offers is a release of this app and not of the CLI — and
-/// when this installation is one the app may replace (a bundle it can write to,
-/// an AppImage, an installation this app's own installer made) the dialog
-/// installs it in place.
+/// Opens the dialog on the app's own release train (`desktop-v*`) and offers to
+/// install it. The resolution is `oxide_core::updates`, shared with the
+/// terminal, so the release this window offers is a release of this app and not
+/// of the CLI — and when this installation is one the app may replace (a bundle
+/// it can write to, an AppImage, an installation this app's own installer made)
+/// the dialog installs it in place.
+///
+/// What it paints is the step an install is at, when there is one to be at: the
+/// launch installs a release on its own, and a download already running is what
+/// the reader is being shown.
 async function openUpdate() {
-  el("update-title").textContent = "Updates";
-  el("update-note").textContent = "";
-  el("update-body").innerHTML = checkingLine();
-  el("update-notes").hidden = true;
-  el("update-install").hidden = true;
-  el("update-install").disabled = true;
-  el("update-restart").hidden = true;
   closeOverlays("update-modal");
   el("update-modal").hidden = false;
   // A fresh check replaces the release the last one resolved, so a check that
   // fails does not leave a Release notes button pointing at the old release.
   updateCheck = null;
   const probe = ++updateProbe;
+  if (updateInstall) {
+    paintDownloading(updateInstall);
+    return;
+  }
+  paintChecking();
   const answer = await readUpdate();
   // The dialog may have been closed while the check was in flight, and a
   // repaint here would put it back; a check started since — the menu and the
   // button pressed one after the other — owns the dialog now.
   if (probe !== updateProbe || el("update-modal").hidden) return;
   if (answer.failed) paintUpdateFailure("Could not check for updates", answer.failed);
-  else paintUpdate(answer.check, "");
+  else paintUpdate(answer.check);
 }
 
 /// Runs the check and reports either its answer or what went wrong, so both
@@ -3665,18 +3662,54 @@ function checkingLine() {
   return '<div class="update-line">Checking the newest release…</div>';
 }
 
-/// Paints what the check found. `headline` replaces the title when the dialog is
-/// reporting an install that just landed rather than a release that is out.
-function paintUpdate(check, headline) {
+/// Sets the one heading and the one line under it, which every step writes and
+/// none may leave behind from the step before it.
+function updateHead(title, note) {
+  el("update-title").textContent = title;
+  el("update-note").textContent = note || "";
+}
+
+/// The one button of each step, so only the actions that belong to the step on
+/// screen are offered: a control the reader cannot use yet, or can no longer
+/// use, is not one to hand them.
+const UPDATE_BUTTONS = [
+  "update-page",
+  "update-close",
+  "update-later",
+  "update-cancel",
+  "update-background",
+  "update-install",
+  "update-restart",
+];
+
+function updateButtons(shown) {
+  for (const id of UPDATE_BUTTONS) {
+    el(id).hidden = !shown[id];
+    el(id).disabled = false;
+  }
+  el("update-close").textContent = "Close";
+}
+
+/// The dialog before anything is known: the check is in flight, and the only
+/// thing to do about it is leave.
+function paintChecking() {
+  updateHead("Updates", "");
+  el("update-body").innerHTML = checkingLine();
+  paintChangelog(null);
+  paintProgressBar(null);
+  updateButtons({ "update-close": true });
+}
+
+/// Paints what the check found: the release that is out with what it changed,
+/// or the version this build is on and nothing to do about it.
+function paintUpdate(check) {
   updateCheck = check || null;
-  const box = el("update-body");
   if (!check) {
-    el("update-title").textContent = "Updates";
-    el("update-note").textContent = "";
-    box.innerHTML = "";
-    el("update-notes").hidden = true;
-    el("update-install").hidden = true;
-    el("update-restart").hidden = true;
+    updateHead("Updates", "");
+    el("update-body").innerHTML = "";
+    paintChangelog(null);
+    paintProgressBar(null);
+    updateButtons({ "update-close": true });
     return;
   }
   // An install this session finished is the newest word on this installation,
@@ -3688,18 +3721,38 @@ function paintUpdate(check, headline) {
     paintInstalled(installed);
     return;
   }
-  el("update-title").textContent =
-    headline ||
-    (check.updateAvailable
-      ? `Oxide ${check.latest} is available`
-      : `Oxide ${check.current} is up to date`);
-  el("update-note").textContent = check.updateAvailable
-    ? "Installing downloads the release for this machine and puts it in this app's place. The running app keeps running until it is quit and opened again."
-    : "";
-  const lines = [
-    `Current ${mono(check.current)}`,
-    `Latest ${mono(check.latest)}`,
-  ];
+  const available = check.updateAvailable === true;
+  updateHead(
+    available ? `Update Available (v${check.latest})` : `Oxide ${check.current} is up to date`,
+    available
+      ? "Installing downloads the release for this machine and puts it in this app's place. " +
+          "The app keeps running until it is restarted."
+      : "",
+  );
+  paintFacts(check);
+  paintChangelog(check);
+  paintProgressBar(null);
+  // Only the app itself decides whether it can replace this installation: a
+  // copy in a system directory, a distribution's package or a checkout's build
+  // cannot be written over, and the advice line above is the way to install
+  // instead. The release page is where that copy is installed from, and where
+  // the notes are when the release carried none of its own.
+  const install = available && check.installable === true;
+  updateButtons({
+    "update-close": true,
+    "update-page": Boolean(check.releaseUrl) && (!install || !check.notes),
+    "update-install": install,
+  });
+  if (available) el("update-close").textContent = "Dismiss";
+  // The button says what it does rather than naming the release again: the
+  // dialog's own title already carries the version it is about.
+  if (install) el("update-install").textContent = "Update";
+}
+
+/// The facts a check leaves: what this machine has, what the release is, and
+/// which installation the app found itself in.
+function paintFacts(check) {
+  const lines = [`Current ${mono(check.current)}`, `Latest ${mono(check.latest)}`];
   if (check.installation || check.path) {
     lines.push(
       `<span class="update-path">${escapeHtml(check.installation || "unknown")} \u00b7 ${escapeHtml(check.path || "")}</span>`,
@@ -3709,62 +3762,122 @@ function paintUpdate(check, headline) {
     lines.push(`Download ${escapeHtml(check.asset.name)}`);
   }
   if (check.advice) lines.push(`<span class="update-advice">${escapeHtml(check.advice)}</span>`);
-  box.innerHTML = lines.map((line) => `<div class="update-line">${line}</div>`).join("");
-  const notes = el("update-notes");
-  notes.hidden = !check.releaseUrl;
-  const install = el("update-install");
-  // Only the app itself decides whether it can replace this installation: a
-  // copy in a system directory, a distribution's package or a checkout's build
-  // cannot be written over, and the advice line above is the way to install
-  // instead.
-  install.hidden = !(check.updateAvailable && check.installable);
-  install.disabled = false;
-  install.textContent = check.updateAvailable ? `Install ${check.latest}` : "Install";
-  // A release that is only offered has not been installed, so there is nothing
-  // to restart into yet.
-  el("update-restart").hidden = true;
+  el("update-body").innerHTML = lines
+    .map((line) => `<div class="update-line">${line}</div>`)
+    .join("");
 }
 
-/// A failure to check or to install: the CLI's own words, which say which of the
-/// two it was — a release lookup that could not reach GitHub, or a download that
-/// did not verify.
-function paintUpdateFailure(title, text) {
-  el("update-title").textContent = title;
-  el("update-note").textContent =
-    title === "Could not check for updates"
-      ? "The check asks GitHub for the newest release, so a machine with no network — or a request the network refuses — says so here."
-      : "";
-  el("update-body").innerHTML = `<div class="update-error">${escapeHtml(text)}</div>`;
-  el("update-notes").hidden = updateCheck === null || !updateCheck.releaseUrl;
-  el("update-install").hidden = true;
-  el("update-restart").hidden = true;
+/// The release's own notes, under the version and the day it went out: what a
+/// reader wants before deciding to install is what changed, and the release job
+/// already wrote it as Markdown. A release that carried none says nothing here
+/// rather than leaving an empty box behind.
+function paintChangelog(check) {
+  const box = el("update-changelog");
+  const notes = String((check && check.notes) || "").trim();
+  if (!check || !notes) {
+    box.hidden = true;
+    box.innerHTML = "";
+    return;
+  }
+  const date = check.releasedAt
+    ? `<span class="update-changelog-date">${escapeHtml(check.releasedAt)}</span>`
+    : "";
+  box.innerHTML =
+    `<div class="update-changelog-head"><span class="update-changelog-version">Oxide ${escapeHtml(check.latest)}</span>${date}</div>` +
+    `<div class="update-changelog-body">${renderMarkdown(notes)}</div>`;
+  box.hidden = false;
+}
+
+/// The download as it happens. The step is one step to the reader — the release
+/// is being fetched and put in place — so the title names that step and the line
+/// under it says what the engine is doing with it, since looking the release up
+/// and checking its checksum are not a download.
+function paintDownloading(install) {
+  const version = install.version || (updateCheck && updateCheck.latest) || "";
+  const named = version ? `Oxide ${version}` : "The release";
+  const doing =
+    {
+      checking: `${named} is being looked up`,
+      verifying: `${named} is being verified`,
+      installing: `${named} is being put in place`,
+    }[install.stage] ||
+    (version
+      ? `Oxide ${version} is being downloaded and put in place`
+      : "The release is being downloaded and put in place");
+  updateHead("Downloading update", `${doing}. The app keeps running until it is restarted.`);
+  paintProgressBar(install);
+  updateButtons({ "update-cancel": true, "update-background": true });
+}
+
+/// The bar and the two lines beside it: what is being downloaded and how far it
+/// has got. A release that announced its size moves a determinate bar; one that
+/// did not shows the bar working and the bytes written, since there is no
+/// fraction to draw.
+function paintProgressBar(install) {
+  const box = el("update-progress");
+  if (!install) {
+    box.hidden = true;
+    return;
+  }
+  const total = Number(install.total) || 0;
+  const received = Number(install.received) || 0;
+  const known = total > 0;
+  const share = known ? Math.min(100, Math.round((received / total) * 100)) : 0;
+  el("update-progress-fill").style.width = `${known ? share : 100}%`;
+  box.classList.toggle("indeterminate", !known);
+  box.hidden = false;
+  const asset = (updateCheck && updateCheck.asset && updateCheck.asset.name) || "";
+  const lines = [];
+  if (asset) lines.push(`Downloading ${escapeHtml(asset)}`);
+  lines.push(
+    known
+      ? `${megabytes(received)} of ${megabytes(total)} \u00b7 ${share}%`
+      : `${megabytes(received)} downloaded`,
+  );
+  el("update-body").innerHTML = lines
+    .map((line) => `<div class="update-line">${line}</div>`)
+    .join("");
+}
+
+function megabytes(bytes) {
+  return `${(Number(bytes) / (1024 * 1024)).toFixed(1)} MB`;
 }
 
 /// Installs the release the dialog offered: the app downloads the artifact its
 /// own release train publishes for this platform, checks it against the digest
 /// that release carries, and puts it in this installation's place.
 async function installUpdate() {
-  if (installingUpdate) return;
-  // The install owns the dialog until it reports, and it is what says whether
-  // one is running at all: the click that asks for a second install while this
-  // one works answers with this one's result. A check asked for meanwhile — the
-  // sidebar button is still there — is a look at the installation as it was
+  // One install at a time, and this is what says which one: an install already
+  // running — the launch's own, or one this window started — is the one the
+  // click adopts, since a second over the same installation is what the app's
+  // own guard refuses and the download in front of the reader is the one they
+  // asked for.
+  if (updateInstall) {
+    paintDownloading(updateInstall);
+    return;
+  }
+  updateInstall = {
+    stage: "checking",
+    version: (updateCheck && updateCheck.latest) || "",
+    received: 0,
+    total: 0,
+  };
+  // The install owns the dialog until it reports: a check started meanwhile —
+  // the sidebar button is still there — is a look at the installation as it was
   // when the check started, which the install's own report outranks.
   const probe = ++updateProbe;
-  installingUpdate = true;
-  const install = el("update-install");
-  install.disabled = true;
-  install.textContent = "Installing…";
-  el("update-body").innerHTML =
-    '<div class="update-line">Downloading the release for this machine and putting it in place…</div>';
+  paintDownloading(updateInstall);
   let answer;
   try {
     answer = await invoke("install_update");
   } catch (error) {
     answer = { ok: false, text: String(error) };
   }
-  installingUpdate = false;
+  // The reader stopped it, in a dialog they have already closed: there is
+  // nothing here to report.
+  if (answer && answer.cancelled === true) return;
   if (!answer || answer.ok !== true) {
+    updateInstall = null;
     if (probe !== updateProbe || el("update-modal").hidden) return;
     paintUpdateFailure(
       "Could not install the update",
@@ -3775,134 +3888,159 @@ async function installUpdate() {
   // The install owns the dialog from here, whatever a check started while it
   // worked has to say: that check asked about the build running when it
   // started, and the release it would offer is the one now in place.
-  installedUpdate.answer = answer;
-  if (el("update-modal").hidden) return;
-  paintInstalled(answer);
+  handleUpdateReady(answer);
+}
+
+/// Stops the download the dialog is watching. The reader asked for it, so
+/// nothing is put in place and nothing is reported as having gone wrong: the
+/// next check offers the release again.
+function cancelUpdate() {
+  updateInstall = null;
+  updateProbe += 1;
+  el("update-modal").hidden = true;
+  invoke("cancel_update").catch((error) => setStatus(`Could not stop the update: ${error}`));
 }
 
 /// Reports an install that landed. The version named is the one the install
 /// itself resolved and put on disk rather than the one that was offered a
 /// download ago, since a release published in between is the one that went on.
-/// The running app is still the build that started, so the note says what to do
-/// about that instead of claiming this window is already the new version.
+/// The running app is still the build that started, so what the dialog asks for
+/// is the restart that runs the release rather than claiming this window is
+/// already the new version.
 function paintInstalled(answer) {
   // A Windows installer is a program this app starts and cannot wait on: it
   // asks for elevation and for Oxide to be closed, and the user may cancel it.
   // What is known here is that it is running, so that is what the dialog says
   // rather than a version it cannot claim is in place.
   const pending = answer.pending === true;
-  el("update-title").textContent = pending
-    ? `The Oxide ${answer.version} installer is running`
-    : `Oxide ${answer.version} is installed`;
-  el("update-note").textContent = pending
-    ? "Finish the installer, then open Oxide again to run the new version."
-    : "Restart Oxide to run the new version. The release is in place; the app running here is still the one that started.";
+  updateHead(
+    pending ? `The Oxide ${answer.version} installer is running` : "Restart and install update",
+    pending
+      ? "Finish the installer, then open Oxide again to run the new version."
+      : "Update downloaded. You need to restart Oxide to install the update.",
+  );
   const lines = [];
   if (answer.version) lines.push(`Release ${mono(answer.version)}`);
   if (answer.asset) lines.push(`Downloaded ${escapeHtml(answer.asset)}`);
   if (answer.path) lines.push(`<span class="update-path">${escapeHtml(answer.path)}</span>`);
   if (answer.text) lines.push(`<span class="update-advice">${escapeHtml(answer.text)}</span>`);
-  el("update-body").innerHTML = lines.map((line) => `<div class="update-line">${line}</div>`).join("");
-  el("update-notes").hidden = !updateCheck || !updateCheck.releaseUrl;
-  el("update-install").hidden = true;
+  el("update-body").innerHTML = lines
+    .map((line) => `<div class="update-line">${line}</div>`)
+    .join("");
+  paintChangelog(null);
+  paintProgressBar(null);
   // Only a release this app put in place is one to restart into: a Windows
   // installer owns what happens next, and the app it asks to be closed is this
   // one.
-  el("update-restart").hidden = pending;
+  updateButtons(
+    pending ? { "update-close": true } : { "update-later": true, "update-restart": true },
+  );
 }
 
-// ---------- the launch's own update ----------
+/// A failure to check or to install: the CLI's own words, which say which of the
+/// two it was — a release lookup that could not reach GitHub, or a download that
+/// did not verify.
+function paintUpdateFailure(title, text) {
+  updateHead(
+    title,
+    title === "Could not check for updates"
+      ? "The check asks GitHub for the newest release, so a machine with no network — or a request the network refuses — says so here."
+      : "",
+  );
+  el("update-body").innerHTML = `<div class="update-error">${escapeHtml(text)}</div>`;
+  paintChangelog(null);
+  paintProgressBar(null);
+  updateButtons({
+    "update-close": true,
+    "update-page": Boolean(updateCheck && updateCheck.releaseUrl),
+  });
+}
 
-/// The launch looked for a release of this app and is installing one without
-/// being asked, so the window hears about it rather than asking: each step
-/// arrives as a stage, and what is left when it lands is the restart that runs
-/// it.
+// ---------- the install the shell reports ----------
+
+/// The launch looked for a release of this app and is installing one on its own,
+/// so the window hears about it rather than asking — and the dialog is where a
+/// reader is told. It is opened on what the install is doing; each step after
+/// this one arrives as a stage of its own.
+function handleUpdateAvailable() {
+  return openUpdate();
+}
+
+/// A step of an install. The dialog paints it when it is on screen and simply
+/// remembers it otherwise: a reader who put the dialog away is still owed the
+/// restart that runs what lands, which is reported on its own below.
 function handleUpdateProgress(payload) {
-  launchUpdate = {
+  updateInstall = {
     stage: (payload && payload.stage) || "",
     version: (payload && payload.version) || "",
+    received: (payload && payload.received) || 0,
+    total: (payload && payload.total) || 0,
   };
-  paintLaunchUpdate();
+  // The install is newer news than any check still in flight: a dialog that
+  // painted the release over the download the reader is watching would be
+  // asking about a build that is already being replaced.
+  updateProbe += 1;
+  if (!el("update-modal").hidden) paintDownloading(updateInstall);
 }
 
+/// An install that landed. The running app is still the build that started, so
+/// the dialog is opened on the restart that runs what is now on disk — even for
+/// a download the reader sent to the background, since this is the one thing
+/// left to do about it and the window keeps no row of its own for it.
 function handleUpdateReady(answer) {
-  // The dialog reports an install this window performed from the same place a
-  // click's own install is remembered: a check that resolves the release now on
-  // disk reports the install rather than offering it a second time.
   installedUpdate.answer = answer;
-  launchUpdate = { answer };
-  paintLaunchUpdate();
-  // A dialog the reader opened while this install ran was asked about the build
-  // that started — the release it resolved is the one now on disk — so its own
-  // Install row would put the same release there twice. The install is the newest
-  // word on the dialog too, and it is repaired rather than left offering it.
-  if (!el("update-modal").hidden) paintInstalled(answer);
+  updateInstall = null;
+  updateProbe += 1;
+  closeOverlays("update-modal");
+  el("update-modal").hidden = false;
+  paintInstalled(answer);
 }
 
-/// A launch's own install that could not finish. Nobody asked for it, so it is
-/// a line rather than a dialog — and asking again is what the window's own Check
-/// for Updates… is for.
+/// An install that could not finish, or one the reader stopped. Nobody asked
+/// for the first, so it is a line rather than a dialog — and asking again is
+/// what Check for Updates… is for. The second is what the reader did ask for,
+/// and the dialog they asked it in is already gone.
 function handleUpdateFailed(payload) {
-  launchUpdate = null;
-  paintLaunchUpdate();
+  updateInstall = null;
+  updateProbe += 1;
+  if (payload && payload.cancelled === true) {
+    el("update-modal").hidden = true;
+    return;
+  }
   setStatus(`Could not install the update: ${(payload && payload.message) || "unknown error"}`);
 }
 
-/// Paints where the launch's own install got to, or what it left to do. A
-/// release installed in the background is not the app that is running — the
-/// process is still the build that started — so the row ends in the restart that
-/// runs it.
-function paintLaunchUpdate() {
-  const banner = el("update-banner");
-  if (!launchUpdate || launchDismissed.yes) {
-    banner.hidden = true;
-    return;
-  }
-  const answer = launchUpdate.answer;
-  const stage =
-    {
-      checking: "Looking for",
-      downloading: "Downloading",
-      verifying: "Verifying",
-      installing: "Installing",
-    }[launchUpdate.stage] || "Installing";
-  el("update-banner-text").textContent = answer
-    ? `Oxide ${answer.version} is installed.`
-    : launchUpdate.version
-      ? `${stage} Oxide ${launchUpdate.version}…`
-      : "Looking for a new release…";
-  el("update-banner-restart").hidden = !answer;
-  banner.hidden = false;
-}
-
-/// The row is the window's own, so it can be put away without stopping what it
-/// names: the install goes on either way, and a release already in place is
-/// offered again by Check for Updates…, which reports the install rather than
-/// offering to repeat it. The dismissal lasts the rest of the launch, since a row
-/// that returned with the next stage is one the reader cannot put away.
-function dismissLaunchUpdate() {
-  launchDismissed.yes = true;
-  launchUpdate = null;
-  paintLaunchUpdate();
-}
-
-/// Asks what the launch's own install has already said.
+/// Asks what the install this process is running has already said.
 ///
-/// The install starts before this page does, so its first steps were emitted into
-/// a window with nothing listening; the newest of them is kept beside the app's
-/// state for exactly this window, and the report the restart hangs on is not one
-/// to miss. What it answers is painted through the same handlers the events go to,
-/// since it is the event it would have heard.
+/// The launch's own install starts before this page does, so its first steps were
+/// emitted into a window with nothing listening; the newest of them is kept
+/// beside the app's state for exactly this window, and the report the restart
+/// hangs on is not one to miss. What it answers is painted through the same
+/// handlers the events go to, since it is the event it would have heard — and
+/// the steps that do not open the dialog themselves are opened here, because a
+/// window that has just started is one nobody has dismissed it in.
 function catchUpOnLaunchUpdate() {
   return invoke("launch_update")
     .then((heard) => {
       if (!heard || !heard.event) return;
       const payload = heard.payload || {};
-      if (heard.event === "update-progress") handleUpdateProgress(payload);
-      else if (heard.event === "update-ready") handleUpdateReady(payload);
-      else if (heard.event === "update-failed") handleUpdateFailed(payload);
+      if (heard.event === "update-available") return handleUpdateAvailable(payload);
+      if (heard.event === "update-ready") return handleUpdateReady(payload);
+      if (heard.event === "update-failed") return handleUpdateFailed(payload);
+      if (heard.event === "update-progress") return openInstallUpdate(payload);
     })
     .catch(() => {});
+}
+
+/// Opens the dialog on an install already running: the reader is being shown the
+/// download rather than asked to start one.
+function openInstallUpdate(payload) {
+  handleUpdateProgress(payload);
+  if (el("update-modal").hidden) {
+    closeOverlays("update-modal");
+    el("update-modal").hidden = false;
+  }
+  paintDownloading(updateInstall);
 }
 
 /// Restarts Oxide, which is what runs a release an install has put in place: the
@@ -4663,10 +4801,13 @@ async function initEvents() {
   // The macOS menu item has no page of its own to paint into, so it asks the
   // window for the dialog the sidebar's own button opens.
   await listen("check-updates", () => openUpdate());
-  // The launch installs a release on its own, so these are the window's side of
-  // an install nobody in the window asked for — and the install starts before
-  // this page does, so what it has already said is asked for rather than waited
-  // on, once the listeners above are in place to hear the rest.
+  // The install this process is running reports itself here, whether it is the
+  // launch's own or one the window asked for, and the dialog is its surface: the
+  // release that is out, the download as it happens, and the restart that runs
+  // what landed. The install starts before this page does, so what it has already
+  // said is asked for rather than waited on, once the listeners above are in
+  // place to hear the rest.
+  await listen("update-available", () => handleUpdateAvailable());
   await listen("update-progress", (event) => handleUpdateProgress(event.payload || {}));
   await listen("update-ready", (event) => handleUpdateReady(event.payload || {}));
   await listen("update-failed", (event) => handleUpdateFailed(event.payload || {}));
@@ -5076,12 +5217,18 @@ function init() {
   el("mcps-close").onclick = () => (el("mcps-modal").hidden = true);
   el("mcps-refresh").onclick = () => loadMcps();
   el("update").onclick = openUpdate;
-  el("update-close").onclick = () => (el("update-modal").hidden = true);
-  el("update-notes").onclick = openReleaseNotes;
+  // Every step's own way out, which is the step it is on: Dismiss and Later put
+  // the dialog away without touching the install, Download in background does
+  // the same for a download that is still running, and Cancel is the one that
+  // stops it.
+  const closeUpdate = () => (el("update-modal").hidden = true);
+  el("update-close").onclick = closeUpdate;
+  el("update-later").onclick = closeUpdate;
+  el("update-background").onclick = closeUpdate;
+  el("update-page").onclick = openReleaseNotes;
   el("update-install").onclick = installUpdate;
+  el("update-cancel").onclick = cancelUpdate;
   el("update-restart").onclick = restartApp;
-  el("update-banner-restart").onclick = restartApp;
-  el("update-banner-dismiss").onclick = dismissLaunchUpdate;
   el("sessions-close").onclick = () => (el("sessions-modal").hidden = true);
   el("sessions-new").onclick = () => {
     el("sessions-modal").hidden = true;
