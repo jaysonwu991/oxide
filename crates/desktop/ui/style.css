@@ -694,49 +694,15 @@ body.resizing { cursor: col-resize; user-select: none; }
    moving into a box leaves its border alone, so every box looks the same
    whether the caret is in it or not. */
 .composer.filled { border-color: color-mix(in srgb, var(--dim) 40%, transparent); }
-/* The head row of the composer's box: the folder the message goes to, the
-   repository it sits in and the machine it runs on, with the context status at
-   the end of the row. Everything there is about the folder rather than about the
-   message, so the row is read before anything is typed below it. */
-.composer-head {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  padding: 2px 2px 8px;
-}
-/* A fact about the folder: its glyph and its value in the row's own dim text,
-   rather than a chip the reader would try to press. */
-.composer-info {
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
-  min-width: 0;
-  color: var(--faint);
-  font-size: 11.5px;
-}
-.composer-info svg { display: block; flex: none; }
-/* The branch keeps the chips' own mono face: it is a name the reader matches
-   against a terminal rather than a sentence, and it is cut rather than wrapped
-   when a project's branch is longer than the room beside the folder. */
-#git-branch {
-  color: var(--dim);
-  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-  max-width: 200px;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-/* The context status: a ring filled to the percent of the window the thread's
-   last request used, escalating the way the terminal footer's own percentage and
-   the panel's gauge do — its dim tone, amber past 70%, the error color past 90%
-   — from the end of the row, which is where Codex keeps its own. */
+/* The context reading on the status line: a ring filled to the percent of the
+   window the thread's last request used, with that percent beside it, escalating
+   the way the terminal footer's own percentage and the panel's gauge do — its
+   dim tone, amber past 70%, the error color past 90%. */
 .context-ring {
   display: inline-flex;
   align-items: center;
-  justify-content: center;
+  gap: 5px;
   flex: none;
-  margin-left: auto;
-  padding-left: 8px;
   color: var(--dim);
 }
 .context-ring svg { display: block; }
@@ -925,14 +891,22 @@ body.resizing { cursor: col-resize; user-select: none; }
    mark the active row: a shield is a shield whichever decision is saved, so the
    color is what says which one it is. */
 .chip.active { color: var(--accent); border-color: var(--accent); }
-/* The project chip is the one control on the bar that names where the message
-   goes rather than what it carries, so it keeps its words and takes the accent
-   while no project is open — it is then the app's way into a first thread. The
-   marker is the chip's own rather than the sheet's `.empty`, which centers the
-   placeholder it belongs to. */
-.project-chip { display: inline-flex; align-items: center; gap: 6px; max-width: 220px; }
+/* The project chip stands on the status line as the one control there: it names
+   where the message goes rather than what it was sent with, so it keeps its
+   words and takes the accent while no project is open — it is then the app's way
+   into a first thread. The marker is the chip's own rather than the sheet's
+   `.empty`, which centers the placeholder it belongs to. */
+.project-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  max-width: 220px;
+  flex: 0 1 auto;
+  min-width: 0;
+}
 .project-chip.unset { color: var(--accent); border-color: var(--accent); }
 .project-chip .chip-name {
+  min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -952,6 +926,10 @@ body.resizing { cursor: col-resize; user-select: none; }
 .send.enabled { background: var(--text); color: var(--bg); }
 .send.enabled:hover { filter: brightness(1.15); }
 
+/* The status line under the composer's box: where the turn runs — the folder the
+   message goes to, the branch that folder is on and the machine it runs on —
+   beside the window's own status, with what the thread has spent and how much of
+   its window that took at the end of the row. */
 #status {
   max-width: 780px;
   margin: 6px auto 0;
@@ -959,9 +937,55 @@ body.resizing { cursor: col-resize; user-select: none; }
   color: var(--faint);
   font-size: 11.5px;
   display: flex;
-  gap: 16px;
+  align-items: center;
+  gap: 12px;
+  min-width: 0;
 }
-#status .spend { margin-left: auto; }
+#status .spend { margin-left: auto; flex: none; white-space: nowrap; }
+/* The folder's own facts, grouped so they give up room together: a branch longer
+   than the row cuts itself with an ellipsis rather than pushing the totals and
+   the context reading off the end. */
+.status-facts {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: 0 1 auto;
+  min-width: 0;
+}
+/* A fact about the folder: its glyph and its value in the row's own dim text,
+   rather than a chip the reader would try to press. It is a value rather than a
+   sentence, so it never wraps onto a second line — the row is one line of facts
+   and readings whatever the folder's own names are. */
+.status-fact {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  flex: none;
+  min-width: 0;
+  white-space: nowrap;
+  color: var(--faint);
+  font-size: 11.5px;
+}
+.status-fact svg { display: block; flex: none; }
+/* The branch is the fact that gives way when the row runs out of room — it is the
+   name that can be arbitrarily long — and it gives way first, so the chip that
+   says where the message goes keeps its own name as long as the row can hold it.
+   It is cut with an ellipsis rather than wrapped, since the row is one line
+   whatever the folder's own names are — the glyph and the name go together, so a
+   branch with no room left leaves nothing behind rather than a stray glyph. */
+#git { flex: 0 3 auto; overflow: hidden; }
+#git-branch {
+  color: var(--dim);
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  max-width: 200px;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+/* The percent the arc is filled to, beside it: the arc and the number are one
+   reading, so the number wears the color of the level the arc is drawn in. */
+#context-percent { font-variant-numeric: tabular-nums; }
 
 /* ---------- dialogs ---------- */
 

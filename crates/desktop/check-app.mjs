@@ -1445,56 +1445,77 @@ check(
     shellAt('id="sessions-modal"') < shellAt('class="composer"'),
   `${shellAt('id="projects-modal"')} / ${shellAt('id="mcps-modal"')} / ${shellAt('id="sessions-modal"')} / ${shellAt('class="composer"')}`,
 );
-// The project chip sits at the top of the composer's box, on the bar the folder
-// rides with: the branch it is on and the machine the turn runs on are readouts
-// beside it, and the context ring is at the end of the row. It carries words
-// rather than a glyph, since with nothing open it is how a first thread starts,
-// and the chips that describe the message stay on the row below it.
-const composerHead = shell.slice(
-  shell.indexOf('class="composer-head"'),
-  shell.indexOf('id="attachments"'),
+// Where the turn runs — the folder the message goes to, the branch that folder
+// is on and the machine it runs on — is the status line's own business, under the
+// box: the message box is the first thing in the composer, and the row beneath it
+// is read for where the turn happens, the window's own status and what the thread
+// has spent. The folder carries words rather than a glyph, since with nothing
+// open it is how a first thread starts, and the chips that describe the message
+// stay on the composer's row above it.
+const statusLine = shell.slice(
+  shell.indexOf('<footer id="status"'),
+  shell.indexOf("</footer>"),
 );
 check(
-  "put the folder, the branch and the machine on the composer's own bar",
-  composerHead.includes('id="project"') &&
-    /<span id="project-name"[^>]*>[^<]+<\/span>/.test(composerHead) &&
-    composerHead.includes('id="git-branch"') &&
-    composerHead.includes('id="machine"') &&
-    composerHead.includes("This computer") &&
-    composerHead.includes('id="context-ring"') &&
-    shell.indexOf('class="composer-head"') < shell.indexOf('<textarea id="prompt"') &&
-    shell.indexOf('id="project"') < shell.indexOf('id="attach"'),
-  composerHead.slice(0, 420),
+  "moved the folder, the branch and the machine onto the status line",
+  !shell.includes('class="composer-head"') &&
+    statusLine.includes('id="project"') &&
+    /<span id="project-name"[^>]*>[^<]+<\/span>/.test(statusLine) &&
+    statusLine.includes('id="git-branch"') &&
+    statusLine.includes('id="machine"') &&
+    statusLine.includes("This computer") &&
+    statusLine.includes('id="context-ring"') &&
+    shell.indexOf('<textarea id="prompt"') < shell.indexOf('<footer id="status"') &&
+    shell.indexOf('id="attach"') < shell.indexOf('id="project"'),
+  statusLine.slice(0, 420),
 );
-// The bar's own rows are the composer's first ones — the folder is read before
-// anything is typed below it — and none of them is a control: the branch is a
-// fact about the folder, the machine is the one environment this app runs in, and
-// the ring is a reading, each with its words in a tooltip rather than in a
-// handler.
+// The row's own facts are readouts rather than controls — the branch is a fact
+// about the folder, the machine is the one environment this app runs in, and the
+// context reading is a reading — each with its words in a tooltip rather than a
+// handler; the folder chip beside them is the one control there.
 check(
-  "left the bar's own readouts without handlers",
-  composerHead.includes('<span id="git"') &&
-    !/id="(git|context-ring)"[^>]*onclick/.test(composerHead) &&
-    /id="git"[^>]*hidden/.test(composerHead) &&
-    /id="context-ring"[^>]*hidden/.test(composerHead),
-  composerHead.slice(0, 420),
+  "left the row's own readouts without handlers",
+  statusLine.includes('<span id="git"') &&
+    !/id="(git|context-ring)"[^>]*onclick/.test(statusLine) &&
+    /id="git"[^>]*hidden/.test(statusLine) &&
+    /id="context-ring"[^>]*hidden/.test(statusLine),
+  statusLine.slice(0, 420),
 );
-// The bar is one row read left to right — the folder, the branch, the machine —
-// with the context ring at its end, and the arc escalates through the same two
-// thresholds the terminal's footer colors its own percentage by: dim on its own,
-// the theme's amber past 70% and its error color past 90%.
+// The context reading ends the row — after the totals, which are what take the
+// row's own auto margin — and the arc escalates through the same two thresholds
+// the terminal's footer colors its own percentage by: dim on its own, the theme's
+// amber past 70% and its error color past 90%. The percent beside the arc is part
+// of that one reading rather than a second one, so the totals do not spell it out
+// as well.
 check(
-  "kept the ring at the bar's end, in the color of the level",
-  /\.composer-head \{[^}]*display: flex;/.test(sheet) &&
-    /\.context-ring \{[^}]*margin-left: auto;/.test(sheet) &&
+  "kept the context reading at the status line's end, in the color of the level",
+  /\.context-ring \{[^}]*display: inline-flex;/.test(sheet) &&
+    !/\.context-ring \{[^}]*margin-left: auto;/.test(sheet) &&
+    /#status \.spend \{ margin-left: auto;/.test(sheet) &&
+    shellAt('id="usage"') < shellAt('id="context-ring"') &&
+    statusLine.includes('id="context-percent"') &&
+    !/bits\.push\(`ctx \$\{/.test(source) &&
     /\.context-ring\[data-level="warn"\] \{ color: var\(--tool\); \}/.test(sheet) &&
     /\.context-ring\[data-level="high"\] \{ color: var\(--error\); \}/.test(sheet),
   sheet.slice(sheet.indexOf(".context-ring"), sheet.indexOf(".context-ring") + 200),
 );
+// The row is one line of facts and readings, however long the folder's own names
+// are: each fact keeps the room it needs and none of them wraps, while the branch
+// — the name that can be arbitrarily long — is the one that gives way, cut with an
+// ellipsis and clipped with its glyph when there is nothing left for it, so a
+// squeezed row leaves neither a second line nor a stray mark.
+check(
+  "held the row to one line, with the branch the fact that gives way",
+  /\.status-fact \{[^}]*flex: none;[^}]*white-space: nowrap;/.test(sheet) &&
+    /#status \.spend \{[^}]*white-space: nowrap;/.test(sheet) &&
+    /#git \{ flex: 0 3 auto; overflow: hidden; \}/.test(sheet) &&
+    /#git-branch \{[^}]*min-width: 0;[^}]*text-overflow: ellipsis;/.test(sheet),
+  sheet.slice(sheet.indexOf("#git {"), sheet.indexOf("#git {") + 200),
+);
 // The chip that asks for a folder wears a marker of its own rather than the
-// sheet's placeholder class: `.empty` centers whatever wears it, and on this
-// full-width row that put the chip in the middle of the box the moment the ring
-// — the row's other auto margin — went away with the folder.
+// sheet's placeholder class: `.empty` centers whatever wears it, and on the
+// status line — a full-width row whose other auto margin belongs to the totals —
+// that put the chip in the middle of the row the moment the folder went away.
 check(
   "gave the folder chip a marker of its own rather than the app's empty state",
   source.includes('el("project").classList.toggle("unset", !open)') &&
@@ -4904,10 +4925,10 @@ check(
     projectCalls("git_info").length === 1,
   `${el("git-branch").textContent} / ${JSON.stringify(calls.map(([name]) => name))}`,
 );
-// The context status: the ring is filled to the percent the footer's own usage
-// line draws, so the two never disagree about how much of the window is spent,
-// and the numbers behind the arc are in its tooltip — the percent, the tokens the
-// last request took and the window they were counted against.
+// The context reading: the arc is filled to the percent the totals line draws
+// the spend from, so the two never disagree about how much of the window is gone,
+// the percent is spelled out beside the arc, and the tokens behind both are in
+// the reading's tooltip.
 app.state.contextWindow = 128000;
 const ringFill = () => {
   const [filled, whole] = String(el("context-ring-fill").getAttribute("stroke-dasharray"))
@@ -4917,14 +4938,15 @@ const ringFill = () => {
 };
 app.handleEvent({ type: "usage", usage: { input: 30000, output: 40, cost: 0.01 } });
 check(
-  "filled the ring to the percent the usage line draws",
-  el("usage").textContent === "↑ 30000 ↓ 40 · $0.0100 · ctx 23%" &&
+  "filled the ring to the percent it spells out beside the arc",
+  el("usage").textContent === "↑ 30000 ↓ 40 · $0.0100" &&
     el("context-ring").hidden === false &&
     Math.round(ringFill()) === 23 &&
+    el("context-percent").textContent === "23%" &&
     el("context-ring").title === "23% · 30.0k/128.0k" &&
     el("context-ring").dataset.level === "ok" &&
     el("context-ring").getAttribute("aria-label") === "context window: 23% · 30.0k/128.0k",
-  `${el("usage").textContent} / ${el("context-ring-fill").getAttribute("stroke-dasharray")} / ${el("context-ring").title}`,
+  `${el("usage").textContent} / ${el("context-percent").textContent} / ${el("context-ring-fill").getAttribute("stroke-dasharray")} / ${el("context-ring").title}`,
 );
 // The arc escalates through the same two thresholds the terminal's footer and
 // the panel's own gauge color by, so the color reads the same in all three.
@@ -4937,16 +4959,18 @@ check(
   warned === "warn" && high === "high" && Math.round(ringFill()) === 94,
   `${warned} / ${high} / ${ringFill().toFixed(1)}`,
 );
-// A thread that has spent nothing yet has no percentage: the ring is drawn empty
-// and the tooltip names the window it would be measured against.
+// A thread that has spent nothing yet has no percentage: the ring is drawn empty,
+// nothing is spelled out beside it, and the tooltip names the window it would be
+// measured against.
 app.handleEvent({ type: "usage", usage: {} });
 check(
   "drew an empty ring for a window nothing has been counted against",
   el("context-ring").hidden === false &&
     Math.round(ringFill()) === 0 &&
+    el("context-percent").textContent === "" &&
     el("context-ring").dataset.level === "ok" &&
     el("context-ring").title === "No request yet · 128.0k window",
-  `${ringFill()} / ${el("context-ring").title}`,
+  `${ringFill()} / ${el("context-percent").textContent} / ${el("context-ring").title}`,
 );
 // A thread opened again draws its ring from the request it was last run with,
 // which the core hands over beside the thread's totals: an empty ring would say
@@ -4963,12 +4987,13 @@ sessionUsage = {
 app.state.session = null;
 await app.openSession({ id: "a1b2c3d4", cwd: barProject, name: "the bar" });
 check(
-  "drew the ring from what the thread was last run with",
+  "drew the context reading from what the thread was last run with",
   el("context-ring").hidden === false &&
     Math.round(ringFill()) === 50 &&
-    el("usage").textContent === "↑ 120 ↓ 30 · $0.0100 · ctx 50%" &&
+    el("usage").textContent === "↑ 120 ↓ 30 · $0.0100" &&
+    el("context-percent").textContent === "50%" &&
     el("context-ring").title === "50% · 64.0k/128.0k",
-  `${el("usage").textContent} / ${el("context-ring-fill").getAttribute("stroke-dasharray")} / ${el("context-ring").title}`,
+  `${el("usage").textContent} / ${el("context-percent").textContent} / ${el("context-ring-fill").getAttribute("stroke-dasharray")} / ${el("context-ring").title}`,
 );
 sessionUsage = null;
 // The window a ring measures against belongs to the folder on screen: switching
@@ -4983,16 +5008,18 @@ check(
   "dropped the window of the folder being left",
   app.state.contextWindow === 0 &&
     el("context-ring").title === "No request yet" &&
+    el("context-percent").textContent === "" &&
     Math.round(ringFill()) === 0,
-  `${app.state.contextWindow} / ${el("context-ring").title}`,
+  `${app.state.contextWindow} / ${el("context-percent").textContent} / ${el("context-ring").title}`,
 );
 // Nothing is open, so there is no branch to name, no turn to place and no window
 // to measure a request against: the chip that takes a folder is the whole row, and
 // it is the reader's to act on rather than a value among others.
 app.clearSelectedProject();
 check(
-  "left the folder chip alone on the bar with nothing open",
+  "left the folder chip alone on the status line with nothing open",
   el("context-ring").hidden === true &&
+    el("context-percent").textContent === "" &&
     el("git").hidden === true &&
     el("machine").hidden === true &&
     el("project-name").textContent === "Choose a project" &&
@@ -5548,8 +5575,9 @@ check(
   app.state.project === "/home/dev/Projects/oxide" &&
     app.state.session === "dd44ee55" &&
     /start one here/.test(el("transcript").outline()) &&
-    el("usage").textContent === "↑ 30000 ↓ 40 · $0.0100 · ctx 23%",
-  `${app.state.project} / ${app.state.session} / ${el("transcript").outline()} / ${el("usage").textContent}`,
+    el("usage").textContent === "↑ 30000 ↓ 40 · $0.0100" &&
+    el("context-percent").textContent === "23%",
+  `${app.state.project} / ${app.state.session} / ${el("transcript").outline()} / ${el("usage").textContent} / ${el("context-percent").textContent}`,
 );
 app.setIdle();
 app.state.parked = null;

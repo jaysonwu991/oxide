@@ -221,7 +221,7 @@ const state = {
   // model would clamp away.
   reasoningLevels: null,
   contextWindow: 0,
-  // The repository the bar names: what `git_info` answered for the folder on
+  // The repository the row names: what `git_info` answered for the folder on
   // screen, read when the folder changes, when a turn ends and when the reader
   // comes back to the window.
   git: null,
@@ -331,26 +331,25 @@ function setUsage({
   paintUsage();
 }
 
-/// The usage line under the composer and the bar's ring, drawn from the thread's
-/// own totals and the window in force on screen — the one place either is worked
-/// out, so the word `ctx 23%` and the ring beside it can never disagree.
+/// The usage line under the composer, drawn from the thread's own totals and the
+/// window in force on screen — the same totals the context reading at the end of
+/// the row is measured from, so what the thread spent and the fraction of its
+/// window that took can never disagree.
 function paintUsage() {
   const totals = state.usage;
-  const percent = usagePercent(totals);
   if (totals) {
     const bits = [`↑ ${totals.input} ↓ ${totals.output}`];
     if (totals.cacheRead || totals.cacheWrite) {
       bits.push(`R ${totals.cacheRead} W ${totals.cacheWrite}`);
     }
     if (totals.cost) bits.push(`$${Number(totals.cost).toFixed(4)}`);
-    if (percent != null) bits.push(`ctx ${percent.toFixed(0)}%`);
     el("usage").textContent = bits.join(" · ");
   } else {
     el("usage").textContent = "";
   }
-  // The bar's ring is that same percentage drawn as an arc rather than as a word,
-  // so the row above the box is painted from the totals wherever they move.
-  paintBar();
+  // The context reading is painted from these totals wherever they move, rather
+  // than from a second reading of its own.
+  paintStatusFacts();
 }
 
 /// The percent of the window the thread's own totals are measured against: the
@@ -1003,9 +1002,10 @@ async function selectProject(project) {
   setStatus("Ready");
   renderProjectsTree(); // Update tree view instead of dropdown
   resetTranscript();
-  // The folder moved, so the bar's own facts have to be read again rather than
-  // carried over from the folder being left. The ring is painted with the rest
-  // of the row by the reset, and again when the folder's own window arrives.
+  // The folder moved, so the status line's own facts have to be read again rather
+  // than carried over from the folder being left. The context reading is painted
+  // with the rest of the row by the reset, and again when the folder's own window
+  // arrives.
   loadGit();
   await Promise.all([loadInfo(), loadSessions(), loadTheme()]);
 }
@@ -1131,14 +1131,13 @@ function updateChips() {
   updateRunBanner();
 }
 
-/// The composer's project chip names the folder the message goes to, and asks for
-/// one while there is none: a project is not selected for the reader on the way
-/// in, so the chip is where they pick it. It keeps its words rather than hiding
-/// them in a tooltip, since with nothing open it reads as the action it is. The
-/// marker it wears in that state is its own (`unset`): the sheet's `.empty` is the
-/// app's placeholder class, which centers whatever wears it — and this chip sits
-/// on a full-width row, where that put it in the middle of the box the moment the
-/// ring beside it went away.
+/// The project chip names the folder the message goes to, and asks for one while
+/// there is none: a project is not selected for the reader on the way in, so the
+/// chip is where they pick it. It keeps its words rather than hiding them in a
+/// tooltip, since with nothing open it reads as the action it is. The marker it
+/// wears in that state is its own (`unset`): the sheet's `.empty` is the app's
+/// placeholder class, which centers whatever wears it — and this chip stands on
+/// the status line, a full-width row whose own auto margin belongs to the totals.
 function updateProjectChip() {
   const open = Boolean(state.project);
   const name = open ? projectNameOf(state.project) : "Choose a project";
@@ -1176,14 +1175,14 @@ function contextLevel(percent) {
   return percent > 70 ? "warn" : "ok";
 }
 
-/// The repository the bar names — read again when the folder changes, when a
+/// The repository the row names — read again when the folder changes, when a
 /// turn ends, since a run may switch branch, and when the reader comes back to
 /// the window, since a branch switched in a terminal is theirs to see here.
 async function loadGit() {
   const project = state.project;
   if (!project) {
     state.git = null;
-    paintBar();
+    paintStatusFacts();
     return;
   }
   try {
@@ -1192,21 +1191,22 @@ async function loadGit() {
     state.git = info || null;
   } catch {
     // A folder whose repository could not be read has no branch to show, which
-    // is the same bar as a folder that is in no repository at all: the row says
+    // is the same row as a folder that is in no repository at all: the row says
     // what it knows and nothing else.
     if (project !== state.project) return;
     state.git = null;
   }
-  paintBar();
+  paintStatusFacts();
 }
 
-/// The composer's bar above the message box: the branch the folder is on, the
-/// machine the turn runs on, and the context ring filled to the percent the usage
-/// line under the composer draws — one reading of one folder, painted in one
-/// place. Nothing but the folder chip is shown before a folder is open, since
-/// there is no turn to place and no window to measure: the row then says the one
-/// thing the reader can act on.
-function paintBar() {
+/// The status line's facts, under the composer's box: the branch the folder is
+/// on, the machine the turn runs on, and the context reading the row ends with —
+/// an arc filled to the percent the thread's totals come to, with that percent
+/// spelled out beside it and the tokens and the window behind it in its tooltip.
+/// Nothing but the folder chip is shown before a folder is open, since there is
+/// no turn to place and no window to measure: the row then says the one thing the
+/// reader can act on.
+function paintStatusFacts() {
   const open = Boolean(state.project);
   el("machine").hidden = !open;
   const info = state.git;
@@ -1236,6 +1236,9 @@ function paintBar() {
     `${((length * spent) / 100).toFixed(2)} ${length.toFixed(2)}`,
   );
   ring.dataset.level = contextLevel(percent);
+  // The percent the arc is filled to, beside it: the number and the arc are one
+  // reading, and a thread that has spent nothing yet has none to spell out.
+  el("context-percent").textContent = percent == null ? "" : `${percent.toFixed(0)}%`;
   const limit = state.contextWindow ? formatTokens(state.contextWindow) : "";
   let label = "No request yet";
   if (percent != null) {
@@ -1328,8 +1331,9 @@ async function openSession(session) {
         cacheWrite: data.usage.cacheWrite,
         cost: data.usage.cost,
         // The prompt of the newest recorded request is the context the thread was
-        // last run with, so a thread opened again draws its `ctx` — and the bar's
-        // ring — from that rather than from nothing until the next turn runs.
+        // last run with, so a thread opened again draws its context reading — the
+        // arc and the percent beside it — from that rather than from nothing until
+        // the next turn runs.
         prompt: data.usage.contextTokens || 0,
       });
     }
@@ -5006,7 +5010,7 @@ async function initEvents() {
     renderChanges(event.payload || {});
     resetTurn();
     // A turn is where the branch under the composer can change — the model runs
-    // git like any other command — so the bar is read again before the next
+    // git like any other command — so the row is read again before the next
     // message is composed against it.
     loadGit();
     await loadSessions();
@@ -5506,7 +5510,7 @@ function init() {
   );
   document.addEventListener("mouseup", finishEditorControlPress, true);
   // The reader comes back to the window from a terminal where they may have
-  // switched branch: the bar's own facts are read again, since nothing here told
+  // switched branch: the row's own facts are read again, since nothing here told
   // this window that they changed.
   window.addEventListener("focus", () => {
     loadGit();
@@ -5845,14 +5849,14 @@ function clearSelectedProject() {
   state.session = null;
   state.trust = null;
   // Nothing is open, so there is no repository to name and no window to measure
-  // a request against: the bar keeps the folder chip, which is the way into one.
+  // a request against: the row keeps the folder chip, which is the way into one.
   state.git = null;
   el("project-meta").textContent = "";
   el("trust-modal").hidden = true;
   updateTrustButton();
   updateChips();
   setStatus("Ready");
-  paintBar();
+  paintStatusFacts();
   resetTranscript();
 }
 
