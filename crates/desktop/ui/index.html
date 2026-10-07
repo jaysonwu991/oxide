@@ -156,13 +156,14 @@
         </section>
 
         <div id="composer" class="composer">
-          <!-- The bar above the message box names where the turn runs, the way
-               Codex's own does: the folder on screen, the branch it is on, and
-               the machine it runs on, with the context status at its end. The
-               folder is the composer's own control — a project is not chosen
-               for the reader on the way in, so the chip is where one is picked
-               — while the branch and the machine are readouts of the folder. -->
-          <div class="composer-head">
+          <!-- The composer's own top row names where the turn will run, the way
+               Codex's own composer does: the folder the message goes to and the
+               branch that folder is on, beside the window's own status, with what
+               the thread has spent and the context reading that spend is measured
+               against at the end of the row. The folder is a control (a project
+               is not chosen for the reader on the way in, so the chip is where
+               one is picked) while the branch is a readout of the folder. -->
+          <div class="composer-facts">
             <button
               id="project"
               class="chip project-chip"
@@ -172,23 +173,12 @@
             <!-- The branch is read out of the repository's own HEAD, so it
                  names a worktree's branch or the commit a detached HEAD is on;
                  a folder that is not a repository has none to name, and the
-                 chip goes away rather than saying nothing. The glyph is the one
+                 fact goes away rather than saying nothing. The glyph is the one
                  the panel's own footer draws for it. -->
-            <span id="git" class="composer-info" hidden
+            <span id="git" class="fact" hidden
               ><svg viewBox="0 0 16 16" width="13" height="13" aria-hidden="true"><circle cx="4" cy="3" r="1.5" fill="none" stroke="currentColor" stroke-width="1.3"/><circle cx="4" cy="13" r="1.5" fill="none" stroke="currentColor" stroke-width="1.3"/><circle cx="12" cy="5" r="1.5" fill="none" stroke="currentColor" stroke-width="1.3"/><path d="M4 4.5v7M5.5 11c4 0 6.5-1.5 6.5-4.5" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/></svg><span id="git-branch"></span></span>
-            <!-- Where the turn runs: this app has one environment, a folder on
-                 the machine the window is on, and it says so the way Codex
-                 does rather than leaving the reader to assume a cloud. It is
-                 shown with a folder open — there is no turn to place before
-                 one — which leaves the chip alone on the row. -->
-            <span id="machine" class="composer-info" title="Runs in a folder on this computer" hidden
-              ><svg viewBox="0 0 16 16" width="13" height="13" aria-hidden="true"><path d="M2.6 9.6V3.4a1 1 0 0 1 1-1h8.8a1 1 0 0 1 1 1v6.2a1 1 0 0 1-1 1H3.6a1 1 0 0 1-1-1Z" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linejoin="round"/><path d="M5.8 13.6h4.4M8 10.6v3" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/></svg><span>This computer</span></span>
-            <!-- The context status: a ring filled to the window the thread's own
-                 request used, in the color of the level, with the number and the
-                 window behind it in its tooltip — the same escalation the
-                 terminal's footer and the panel's own gauge color by. -->
             <span id="context-ring" class="context-ring" role="img" hidden
-              ><svg viewBox="0 0 16 16" width="18" height="18" aria-hidden="true"><circle cx="8" cy="8" r="6.2" fill="none" stroke="currentColor" stroke-width="1.6" opacity="0.3" /><circle id="context-ring-fill" cx="8" cy="8" r="6.2" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" transform="rotate(-90 8 8)" stroke-dasharray="0 38.96" /></svg></span>
+              ><svg viewBox="0 0 16 16" width="18" height="18" aria-hidden="true"><circle cx="8" cy="8" r="6.2" fill="none" stroke="currentColor" stroke-width="1.6" opacity="0.3" /><circle id="context-ring-fill" cx="8" cy="8" r="6.2" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" transform="rotate(-90 8 8)" stroke-dasharray="0 38.96" /></svg><span id="context-percent"></span></span>
           </div>
           <div id="attachments" class="attachments" hidden></div>
           <textarea id="prompt" placeholder="Ask Oxide…"></textarea>
@@ -240,6 +230,21 @@
               ><svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true"><circle cx="8" cy="8" r="6" fill="none" stroke="currentColor" stroke-width="1.3"/><path d="M6.4 6.2a1.6 1.6 0 1 1 2.2 1.5c-.5.2-.7.5-.7 1.1v.3" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/><path d="M8 11v.01" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/></svg></button>
             </div>
             <div class="composer-right">
+              <!-- The window's own status, at the end of the composer's own row:
+                   an icon for the state — a dot while there is nothing to
+                   report, the spinner while a turn runs, the warning triangle a
+                   failure wears — with the words beside it only when there are
+                   words to read, since `Ready` is the icon's own tooltip. -->
+              <span id="status" class="status" role="status">
+                <span id="status-icon" class="status-icon" aria-hidden="true"></span>
+                <span id="status-text"></span>
+              </span>
+              <!-- What the chat has spent, laid out the way the terminal
+                   footer lays its own line out: the tokens, the cache it read
+                   and wrote, the hit rate the provider reported and the spend.
+                   The context reading is the ring on the row above rather than a
+                   second word here. -->
+              <span id="usage" class="spend"></span>
               <button
                 id="stop"
                 class="icon danger"
@@ -257,10 +262,6 @@
             </div>
           </div>
         </div>
-        <footer id="status">
-          <span id="status-text">Ready</span>
-          <span id="usage" class="spend"></span>
-        </footer>
       </div>
     </main>
 

@@ -274,43 +274,58 @@ The regions, top to bottom:
   only once it has output behind it, so a card showing everything it printed
   stays the text it looks like instead of offering a fold that does nothing, and
   `write`/`edit` results get a colored diff.
-- **Composer** — a floating rounded box whose top row, the bar above the message
-  box, names where the turn will run the way Codex's own bar does: the folder's
-  chip, the branch the folder is on, and the machine the turn runs on — this app
-  has one environment, a folder on this computer, and it says so rather than
-  leaving the reader to assume a cloud, shown with a folder open rather than
-  before one, since there is no turn to place until then. The branch is read out of the
+- **Composer** — a floating rounded box holding the message and what goes with it:
+  the attachment strip, the message box itself and the icon row of chips. Its own
+  top row names where the turn will run, the way Codex's own composer does: the
+  folder's chip and the branch that folder is on, beside the window's status, the
+  thread's totals and the context reading at the end of the row. The app claims no
+  machine — a folder on this computer is the one environment it has, so a readout
+  saying so is a constant rather than a fact about the folder. The branch is read out of the
   repository's own `.git/HEAD` (`oxide_desktop::git::view`) rather than by
   running git, so a worktree or a submodule is answered through the `gitdir:`
   file that points at its real `HEAD`, a detached `HEAD` is named by the commit
   it is on, and a folder that is in no repository has no branch to name at all,
-  which the bar draws by leaving that chip out rather than by saying nothing. It
+  which the row draws by leaving that fact out rather than by saying nothing. It
   is a fact about the folder rather than a control, so it is a plain readout with
   its words in a tooltip (`On branch main` and the repository's own path), it is
   read again when the folder changes, when a turn ends — a run may switch branch
   — and when the reader comes back to the window, since a branch switched in a
-  terminal is theirs to see here. The right end of that row is the context
-  status: a ring filled to the percent of the window the thread's last request
-  used, which is the same number the usage line under the composer draws, so the
-  two never disagree, with the percent, the tokens it took and the window itself
-  in its tooltip and accessible name. The arc escalates through the terminal's
-  own thresholds — its dim tone on its own, the theme's amber past 70% of the
-  window and its error colour past 90% — and an empty ring means a thread that
-  has spent nothing yet, since the numbers behind it are this conversation's
-  rather than the window's ([Usage](#usage)). The row below it is icon-first, the
+  terminal is theirs to see here. The branch is the one fact that gives way when
+  the row runs out of room: it is the name that can be arbitrarily long, so it is
+  cut with an ellipsis while the folder, the window's own status and the totals
+  keep the room they need, and the row stays one line whatever the
+  folder's own names are. The right end of that row is the context reading: a ring
+  filled to the percent of the window the thread's last request used, with that
+  percent spelled out beside the arc — it is one reading rather than two, which is
+  why the totals line does not spell out `ctx` as well — and the tokens the
+  request took and the window itself in its tooltip and accessible name. The arc
+  escalates through the terminal's own thresholds — its dim tone on its own, the
+  theme's amber past 70% of the window and its error colour past 90% — and an
+  empty ring means a thread that has spent nothing yet, since the numbers behind
+  it are this conversation's rather than the window's ([Usage](#usage)). The
+  composer's own row is icon-first, the
   way the VS Code panel's is: the attach paperclip, the model, the thinking
   level and the trust shield lead, then — after a rule of its own — the app's own
   dialogs as icon buttons in the extension's own style: a plug that opens
   **Connect**, a padlock for the saved tool approvals, and a
   circled `?` for the shortcut help, each with the words in its tooltip and its
-  `aria-label`. The project chip is the one control on that bar that keeps its
-  words on the face of it — **Choose a project** while none is open, else the
+  `aria-label`. The project chip is the one control on the status line that keeps
+  its words on the face of it — **Choose a project** while none is open, else the
   folder's name, accented in the first case the way the model picker marks the row
   in use — because with nothing open it is how a first thread starts rather than a
   value to look up (see
   [Multiple projects](#multiple-projects-cross-repo)); with nothing open it is
-  also the whole row, and it wears a marker of its own (`unset`) rather than the
-  sheet's `.empty`, whose `margin: auto` centers the placeholders it belongs to.
+  also the only control on the row, and it wears a marker of its own (`unset`)
+  rather than the sheet's `.empty`, whose `margin: auto` centers the placeholders
+  it belongs to.
+  The box's own bottom row ends with the two readouts the window has to give: the
+  status — an icon rather than a sentence, a dot while there is nothing to report,
+  the spinner while a turn runs and the warning triangle a failure wears, in the
+  theme's error colour, with the words beside it only when there are words to read
+  (`Ready` is the icon's own tooltip, which is what the terminal's footer says by
+  saying nothing) — and what the chat has spent, laid out the way the terminal
+  footer lays its own line out ([Usage](#usage)). A long failure is cut with an
+  ellipsis rather than allowed to push the totals and the controls off the row.
   The controls the extension's own row carries come first and in
   its order, and the glyphs the two front-ends share — the paperclip, the `+`,
   the send arrow, the stop square, the refresh arrow, the close `✕`, the MCP
@@ -834,9 +849,28 @@ worked out where the totals are painted rather than where the event arrived: the
 run's `prompt` count travels with its thread and the window is the one in force on
 screen, so a turn in another folder counts its own tokens while the reader is
 looking at a project with a window of its own, and its gauge is its own again when
-the strip brings its thread back. The same percentage is drawn as the ring at the
-end of the composer's own bar, in the colour of the level (the theme's dim, amber
-past 70%, error past 90%), with the tokens and the window in its tooltip.
+the strip brings its thread back. The same percentage is drawn at the end of the
+composer's own top row: an arc filled to it with the percent
+spelled out beside it (the totals beside them draw what the chat spent,
+and the fraction of the window that took is this one reading rather than a second
+word among them), in the colour of the level (the theme's dim, amber past 70%,
+error past 90%), with the tokens and the window in its tooltip.
+
+The totals line is the terminal footer's own line, segment for segment and in its
+order: the tokens the chat has spent, the cache it read and wrote, the hit rate
+the provider reported, and the spend — marked ` (sub)` for a provider whose
+credential is a plan rather than a metered key, where the price table's number is
+what the plan would have billed. A segment nobody reported is left out rather than
+drawn as a zero, the numbers are abbreviated the way the terminal abbreviates them
+(under a thousand as they are, then `1.2k`, `123k`, `1.2M`, `66M`), and the tokens
+are the chat's rather than the step's: each `usage` event is added to the last, so
+a long run reads as one conversation and the line does not fall back to one step's
+numbers when a turn ends. The per-provider fact the ` (sub)` marker needs reaches
+the window as `subscription` on `project_info`, the way the provider table is the
+one place a provider is declared. The `prompt` a step reports is not accumulated —
+it is the context that request was sent with, which is what the ring measures — and
+a step that read no cache keeps the rate the warm one reported, the same rule
+`UsageTotals::cache_hit_rate` follows.
 
 ## Themes
 
