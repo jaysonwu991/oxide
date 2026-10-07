@@ -318,6 +318,14 @@ The regions, top to bottom:
   also the only control on the row, and it wears a marker of its own (`unset`)
   rather than the sheet's `.empty`, whose `margin: auto` centers the placeholders
   it belongs to.
+  The box's own bottom row ends with the two readouts the window has to give: the
+  status — an icon rather than a sentence, a dot while there is nothing to report,
+  the spinner while a turn runs and the warning triangle a failure wears, in the
+  theme's error colour, with the words beside it only when there are words to read
+  (`Ready` is the icon's own tooltip, which is what the terminal's footer says by
+  saying nothing) — and what the chat has spent, laid out the way the terminal
+  footer lays its own line out ([Usage](#usage)). A long failure is cut with an
+  ellipsis rather than allowed to push the totals and the controls off the row.
   The controls the extension's own row carries come first and in
   its order, and the glyphs the two front-ends share — the paperclip, the `+`,
   the send arrow, the stop square, the refresh arrow, the close `✕`, the MCP
@@ -843,10 +851,26 @@ screen, so a turn in another folder counts its own tokens while the reader is
 looking at a project with a window of its own, and its gauge is its own again when
 the strip brings its thread back. The same percentage is drawn at the end of the
 composer's own top row: an arc filled to it with the percent
-spelled out beside it (the totals beside them draw what the thread spent,
+spelled out beside it (the totals beside them draw what the chat spent,
 and the fraction of the window that took is this one reading rather than a second
 word among them), in the colour of the level (the theme's dim, amber past 70%,
 error past 90%), with the tokens and the window in its tooltip.
+
+The totals line is the terminal footer's own line, segment for segment and in its
+order: the tokens the chat has spent, the cache it read and wrote, the hit rate
+the provider reported, and the spend — marked ` (sub)` for a provider whose
+credential is a plan rather than a metered key, where the price table's number is
+what the plan would have billed. A segment nobody reported is left out rather than
+drawn as a zero, the numbers are abbreviated the way the terminal abbreviates them
+(under a thousand as they are, then `1.2k`, `123k`, `1.2M`, `66M`), and the tokens
+are the chat's rather than the step's: each `usage` event is added to the last, so
+a long run reads as one conversation and the line does not fall back to one step's
+numbers when a turn ends. The per-provider fact the ` (sub)` marker needs reaches
+the window as `subscription` on `project_info`, the way the provider table is the
+one place a provider is declared. The `prompt` a step reports is not accumulated —
+it is the context that request was sent with, which is what the ring measures — and
+a step that read no cache keeps the rate the warm one reported, the same rule
+`UsageTotals::cache_hit_rate` follows.
 
 ## Themes
 

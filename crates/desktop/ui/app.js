@@ -162,6 +162,15 @@ const ICONS = {
       '<path d="M12 2v10" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/>',
   ),
   mark: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 2.4 21.6 12 12 21.6 2.4 12Z" fill="currentColor"/></svg>',
+  // The composer's own status badge: a dot for a window with nothing to report,
+  // and the triangle a failure wears. Drawn here rather than shared with the
+  // panel, which has no status badge of its own.
+  dot: glyph('<circle cx="8" cy="8" r="3.2" fill="currentColor"/>', 16),
+  alert: glyph(
+    `<path d="M8 2.4 14.5 13.4H1.5L8 2.4Z" ${STROKE_16}/>` +
+      `<path d="M8 6.4v3.2M8 11.8v.01" ${STROKE_16}/>`,
+    16,
+  ),
 };
 
 /// The check a chosen row wears, or nothing at all on a row that is not the one
@@ -221,6 +230,14 @@ const state = {
   // model would clamp away.
   reasoningLevels: null,
   contextWindow: 0,
+  // Whether the credential is a plan rather than a metered key, which the usage
+  // line marks ` (sub)` the way the terminal footer does.
+  subscription: false,
+  // What the window's own status is saying, and which state its icon wears when
+  // no turn is running: read by `paintStatus`. The words are dropped while it is
+  // the idle placeholder, so the badge is the icon alone.
+  statusText: "",
+  statusLevel: "info",
   // The repository the row names: what `git_info` answered for the folder on
   // screen, read when the folder changes, when a turn ends and when the reader
   // comes back to the window.
@@ -292,26 +309,88 @@ function baseName(path) {
   return trimmed.split(/[\\/]/).pop() || trimmed;
 }
 
-function setStatus(text) {
-  el("status-text").textContent = text;
+/// The window's own status, at the end of the composer's row. It is a state
+/// rather than a message: the words a caller passes are painted when there are
+/// words to read, while the idle placeholder (`Ready`) is the icon alone, with
+/// the word in its tooltip — the same thing the CLI's footer says by saying
+/// nothing while nothing is happening. `level` is the state the icon wears when
+/// no turn is running: `info` on its own, `error` for what went wrong.
+function setStatus(text, level = "info") {
+  state.statusText = text;
+  state.statusLevel = level;
+  paintStatus();
 }
 
-/// The totals a `usage` event carries, as the footer draws them. The provider
-/// reports `input` as the uncached prompt, and the cached prefix still occupies
-/// the window, so the two are carried as the raw `prompt`: the percentage is a
-/// measure of a window, and which window that is is a question about where the
-/// totals are painted rather than about where the event arrived (see
-/// `paintUsage`).
-function usageTotals(event) {
+/// The status badge: the icon for the state — the spinner while a turn runs,
+/// the warning triangle a failure wears, a dot otherwise — and the words beside
+/// it when they are not the idle placeholder.
+function paintStatus() {
+  const busy = Boolean(state.busy || state.sendView);
+  const level = busy ? "busy" : state.statusLevel;
+  const badge = el("status");
+  badge.dataset.level = level;
+  if (level !== "busy") {
+    el("status-icon").innerHTML = level === "error" ? ICONS.alert : ICONS.dot;
+  }
+  const text = state.statusText || "";
+  el("status-text").textContent = text;
+  el("status-text").hidden = text === IDLE_STATUS;
+  badge.title = text;
+  badge.setAttribute("aria-label", text || IDLE_STATUS);
+}
+
+/// The word the window is idle under: the words are dropped for it and the icon
+/// speaks, since a row that says `Ready` is a row saying nothing.
+const IDLE_STATUS = "Ready";
+
+/// The tokens the CLI's footer abbreviates with, in its own steps: under a
+/// thousand as they are, then `1.2k`, `123k`, `1.2M`, `66M`. One rule for the
+/// window — the totals line and the context reading both read through it — so a
+/// number reads here the way it reads in the terminal.
+function formatTokens(count) {
+  const value = Number(count) || 0;
+  if (value < 1_000) return String(value);
+  if (value < 10_000) return `${(value / 1_000).toFixed(1)}k`;
+  if (value < 1_000_000) return `${Math.round(value / 1_000)}k`;
+  if (value < 10_000_000) return `${(value / 1_000_000).toFixed(1)}M`;
+  return `${Math.round(value / 1_000_000)}M`;
+}
+
+/// One step's usage added to the totals a thread has spent. The terminal's footer
+/// counts the whole conversation, so the tokens, the cache and the spend are
+/// cumulative here too — kept as a rule over a totals object rather than over the
+/// window's state, since a thread parked with a running turn keeps its own. The
+/// `prompt` is that step's own prompt, which is the context the request was sent
+/// with — the one number a total cannot carry — and the cache hit rate belongs to
+/// the step that reported cache traffic, so a cold step leaves the warm one's rate
+/// in place (the same rule `UsageTotals::cache_hit_rate` and the panel follow).
+function addTotals(spent, event) {
   const usage = event.usage || {};
+  const input = Number(usage.input) || 0;
+  const output = Number(usage.output) || 0;
+  const cacheRead = Number(usage.cacheRead) || 0;
+  const cacheWrite = Number(usage.cacheWrite) || 0;
+  const cost = Number(usage.cost) || 0;
+  const prompt = input + cacheRead + cacheWrite;
+  const before = spent || {};
+  const cacheHitRate =
+    cacheRead + cacheWrite > 0 && prompt > 0
+      ? (cacheRead / prompt) * 100
+      : before.cacheHitRate ?? null;
   return {
-    input: usage.input,
-    output: usage.output,
-    cacheRead: usage.cacheRead,
-    cacheWrite: usage.cacheWrite,
-    cost: usage.cost,
-    prompt: (usage.input || 0) + (usage.cacheRead || 0) + (usage.cacheWrite || 0),
+    input: (before.input || 0) + input,
+    output: (before.output || 0) + output,
+    cacheRead: (before.cacheRead || 0) + cacheRead,
+    cacheWrite: (before.cacheWrite || 0) + cacheWrite,
+    cost: (before.cost || 0) + cost,
+    prompt,
+    cacheHitRate,
   };
+}
+
+/// A step of the thread the reader is in, added to what the window is showing.
+function addUsage(event) {
+  setUsage(addTotals(state.usage, event));
 }
 
 function setUsage({
@@ -321,32 +400,39 @@ function setUsage({
   cacheWrite = 0,
   cost = 0,
   prompt = 0,
+  cacheHitRate = null,
 }) {
   // What the thread has spent, held so one the reader leaves can take its own
   // totals with it and paint them back on return. The percentage is not kept
   // beside them: it is a fraction of the window in force where they are drawn
   // (see `usagePercent`), so a folder switched under a parked run cannot label
   // its thread with the window of the folder the reader left.
-  state.usage = { input, output, cacheRead, cacheWrite, cost, prompt };
+  state.usage = { input, output, cacheRead, cacheWrite, cost, prompt, cacheHitRate };
   paintUsage();
 }
 
-/// The usage line under the composer, drawn from the thread's own totals and the
-/// window in force on screen — the same totals the context reading at the end of
-/// the row is measured from, so what the thread spent and the fraction of its
-/// window that took can never disagree.
+/// The usage line, drawn the way the terminal footer draws its own: the tokens
+/// the chat has spent, the cache it read and wrote, the hit rate the provider
+/// reported, and the spend — marked ` (sub)` for a provider whose credential is
+/// a plan rather than a metered key, where the price table's number is what the
+/// plan would have billed. Every segment is left out instead of drawn as a zero,
+/// and the context reading is the ring on the row above rather than a second word
+/// here. The totals are the same ones that ring is measured from, so what the
+/// chat spent and the fraction of its window that took can never disagree.
 function paintUsage() {
   const totals = state.usage;
+  const bits = [];
   if (totals) {
-    const bits = [`↑ ${totals.input} ↓ ${totals.output}`];
-    if (totals.cacheRead || totals.cacheWrite) {
-      bits.push(`R ${totals.cacheRead} W ${totals.cacheWrite}`);
+    if (totals.input) bits.push(`↑${formatTokens(totals.input)}`);
+    if (totals.output) bits.push(`↓${formatTokens(totals.output)}`);
+    if (totals.cacheRead) bits.push(`R${formatTokens(totals.cacheRead)}`);
+    if (totals.cacheWrite) bits.push(`W${formatTokens(totals.cacheWrite)}`);
+    if (totals.cacheHitRate != null) bits.push(`CH${totals.cacheHitRate.toFixed(1)}%`);
+    if (totals.cost > 0 || state.subscription) {
+      bits.push(`$${Number(totals.cost || 0).toFixed(3)}${state.subscription ? " (sub)" : ""}`);
     }
-    if (totals.cost) bits.push(`$${Number(totals.cost).toFixed(4)}`);
-    el("usage").textContent = bits.join(" · ");
-  } else {
-    el("usage").textContent = "";
   }
+  el("usage").textContent = bits.join(" ");
   // The context reading is painted from these totals wherever they move, rather
   // than from a second reading of its own.
   paintComposerFacts();
@@ -902,7 +988,7 @@ async function loadProjects() {
     // is closed and opened again.
     if (!el("projects-modal").hidden) renderProjects();
   } catch (error) {
-    setStatus(`Failed to load projects: ${error}`);
+    setStatus(`Failed to load projects: ${error}`, "error");
   }
 }
 
@@ -1027,6 +1113,9 @@ async function loadInfo() {
         ? ["auto", ...info.reasoningLevels]
         : null;
     state.contextWindow = info.contextWindow || 0;
+    // A plan rather than a metered key: the spend is what the plan would have
+    // billed, and the usage line says so.
+    state.subscription = Boolean(info.subscription);
     state.trust = info.trust || null;
     updateChips();
     renderProjectMeta(info);
@@ -1119,7 +1208,7 @@ async function answerTrust(trusted) {
         : "Project resources left untrusted",
     );
   } catch (error) {
-    setStatus(`Trust update failed: ${error}`);
+    setStatus(`Trust update failed: ${error}`, "error");
   }
 }
 
@@ -1156,14 +1245,6 @@ function labelControl(id, label, hint) {
   const chip = el(id);
   chip.title = hint ? `${label}\n${hint}` : label;
   chip.setAttribute("aria-label", label);
-}
-
-/// A context window in the compact shape the panel's chip uses for it, so the
-/// same number reads the same way in both front-ends.
-function formatTokens(count) {
-  if (count < 1000) return String(count);
-  if (count < 1000000) return `${(count / 1000).toFixed(1)}k`;
-  return `${(count / 1000000).toFixed(2)}M`;
 }
 
 /// The levels the context colors escalate through, which the terminal's footer
@@ -1265,7 +1346,7 @@ async function loadSessions() {
     repaintWelcome();
     return "";
   } catch (error) {
-    setStatus(`Failed to load threads: ${error}`);
+    setStatus(`Failed to load threads: ${error}`, "error");
     state.sessionsError = String(error);
     // The home state is painted before either listing answers, so a store that
     // cannot be read still lets the folders that did arrive repaint it: the
@@ -1331,12 +1412,14 @@ async function openSession(session) {
         // The prompt of the newest recorded request is the context the thread was
         // last run with, so a thread opened again draws its context reading — the
         // arc and the percent beside it — from that rather than from nothing until
-        // the next turn runs.
+        // the next turn runs, and the hit rate the store kept is what the totals
+        // line's `CH` shows.
         prompt: data.usage.contextTokens || 0,
+        cacheHitRate: data.usage.cacheHitRate ?? null,
       });
     }
   } catch (error) {
-    setStatus(`Failed to open thread: ${error}`);
+    setStatus(`Failed to open thread: ${error}`, "error");
   }
   loadSessions();
 }
@@ -1537,6 +1620,9 @@ function setBusy() {
   state.busy = true;
   state.busyMessageMode = "queue";
   updateSendState();
+  // The status badge's icon is the state: a turn starting turns it into the
+  // spinner, wherever the words it is wearing came from.
+  paintStatus();
 }
 
 function setIdle() {
@@ -1554,6 +1640,7 @@ function setIdle() {
   state.sendView = null;
   updateSendState();
   updateRunBanner();
+  paintStatus();
 }
 
 /// Whether the thread the transcript is showing is the one the turn on the window
@@ -1891,7 +1978,7 @@ async function addAttachmentFiles(files, { fallbackToClipboard = false } = {}) {
       addAttachment(file.name, dataUrl);
     } catch (error) {
       failed = true;
-      setStatus(`Could not read ${file.name}: ${error}`);
+      setStatus(`Could not read ${file.name}: ${error}`, "error");
     }
   }
   // macOS refuses a webview's read of a file in the Desktop, Documents or
@@ -2124,7 +2211,7 @@ async function startPrompt(prompt, attachments, showBubble = true, target = null
       attachments: attachments.length ? attachments : null,
     });
   } catch (error) {
-    setStatus(`Error: ${error}`);
+    setStatus(`Error: ${error}`, "error");
     setIdle();
   }
 }
@@ -2669,7 +2756,7 @@ async function undoChanges(card) {
       after: card.after,
     });
   } catch (error) {
-    setStatus(`Could not undo: ${error}`);
+    setStatus(`Could not undo: ${error}`, "error");
     return;
   }
   card.undone = true;
@@ -2913,9 +3000,14 @@ function handleEvent(event) {
   // totals it shows are the read thread's own, so the run's wait with its thread.
   if (event.type === FOOTER_EVENT && !viewingRun()) {
     const parked = state.parked;
-    const totals = usageTotals(event);
-    if (parked && parked.session === state.runSession) parked.usage = totals;
-    else setUsage(totals);
+    // A run's step belongs to the thread it is in: while that thread is parked,
+    // its own totals wait with it rather than being painted under the thread
+    // being read.
+    if (parked && parked.session === state.runSession) {
+      parked.usage = addTotals(parked.usage, event);
+      return;
+    }
+    addUsage(event);
     return;
   }
   switch (event.type) {
@@ -2963,14 +3055,14 @@ function handleEvent(event) {
       setStatus(`Retrying (${event.attempt}/${event.maxAttempts})…`);
       break;
     case "usage": {
-      setUsage(usageTotals(event));
+      addUsage(event);
       break;
     }
     case "compaction":
       setStatus(`Compacted ${event.summarized} earlier messages`);
       break;
     case "error":
-      setStatus(`Error: ${event.message}`);
+      setStatus(`Error: ${event.message}`, "error");
       break;
     default:
       break;
@@ -3398,7 +3490,7 @@ async function saveConnect() {
     await loadInfo();
     setStatus(`Connected ${provider.label}`);
   } catch (error) {
-    setStatus(`Login failed: ${error}`);
+    setStatus(`Login failed: ${error}`, "error");
   }
 }
 
@@ -3591,7 +3683,7 @@ async function openThemes() {
     renderThemes(entries, themes.current);
   } catch (error) {
     box.innerHTML = "";
-    setStatus(`Themes failed: ${error}`);
+    setStatus(`Themes failed: ${error}`, "error");
   }
 }
 
@@ -3646,7 +3738,7 @@ async function selectTheme(name, row) {
       if (check) setCheck(check, isActive);
     }
   } catch (error) {
-    setStatus(`Theme failed: ${error}`);
+    setStatus(`Theme failed: ${error}`, "error");
   }
 }
 
@@ -4083,7 +4175,7 @@ function cancelUpdate() {
   el("update-modal").hidden = true;
   if (!token) return;
   invoke("cancel_update", { token }).catch((error) =>
-    setStatus(`Could not stop the update: ${error}`),
+    setStatus(`Could not stop the update: ${error}`, "error"),
   );
 }
 
@@ -4094,7 +4186,7 @@ function cancelUpdate() {
 /// watching reports itself.
 function reportUpdateFailure(text) {
   if (el("update-modal").hidden) {
-    setStatus(`Could not install the update: ${text}`);
+    setStatus(`Could not install the update: ${text}`, "error");
     return;
   }
   paintUpdateFailure("Could not install the update", text);
@@ -4263,7 +4355,7 @@ function openInstallUpdate(payload) {
 /// the way starting a new thread is.
 function restartApp() {
   if (busyRefusal("restarting Oxide")) return;
-  invoke("restart_app").catch((error) => setStatus(`Could not restart Oxide: ${error}`));
+  invoke("restart_app").catch((error) => setStatus(`Could not restart Oxide: ${error}`, "error"));
 }
 
 /// Opens the release the dialog is showing in the platform browser, the way a
@@ -4271,7 +4363,7 @@ function restartApp() {
 function openReleaseNotes() {
   if (!updateCheck || !updateCheck.releaseUrl) return;
   invoke("open_url", { url: updateCheck.releaseUrl }).catch((error) =>
-    setStatus(`Could not open link: ${error}`),
+    setStatus(`Could not open link: ${error}`, "error"),
   );
 }
 
@@ -4368,7 +4460,7 @@ async function toggleMcp(server, button) {
     setStatus("Ready");
   } catch (error) {
     button.disabled = false;
-    setStatus(`Could not change ${server.name}: ${error}`);
+    setStatus(`Could not change ${server.name}: ${error}`, "error");
   }
 }
 
@@ -5525,7 +5617,7 @@ function init() {
     if (!link) return;
     event.preventDefault();
     invoke("open_url", { url: link.getAttribute("href") }).catch((error) =>
-      setStatus(`Could not open link: ${error}`),
+      setStatus(`Could not open link: ${error}`, "error"),
     );
   });
 
@@ -5645,6 +5737,9 @@ function init() {
   });
 
   updateChips();
+  // The window starts idle: the badge's own icon is what says so, with the word
+  // it stands for in its tooltip.
+  setStatus(IDLE_STATUS);
   updateSendState();
   renderWelcome();
   initEvents();

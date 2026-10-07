@@ -708,7 +708,7 @@ body.resizing { cursor: col-resize; user-select: none; }
   color: var(--faint);
   font-size: 11.5px;
 }
-.composer-facts .spend { margin-left: auto; flex: none; white-space: nowrap; }
+.composer-facts .context-ring { margin-left: auto; }
 /* A fact about the folder: its glyph and its value in the row's own dim text,
    rather than a chip the reader would try to press. It is a value rather than a
    sentence, so it never wraps onto a second line — the row is one line of facts
@@ -893,7 +893,47 @@ body.resizing { cursor: col-resize; user-select: none; }
 .composer-bar { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
 /* Stop and the message action share this corner. While work is running, the
    Queue/Steer choice appears beside Send only when there is context to send. */
-.composer-right { display: flex; align-items: center; justify-content: flex-end; gap: 6px; }
+.composer-right { display: flex; align-items: center; justify-content: flex-end; gap: 10px; min-width: 0; flex: 0 10 auto; }
+/* The controls in that corner are the row's fixed points — a chip that shrinks is
+   a control that moves under the pointer — so a squeezed row gives up the words
+   of its status first, which is what the weight above decides. */
+.composer-right > button { flex: none; }
+/* The window's own status and what the chat has spent: the two readouts the row
+   ends with, before the controls that send. Both are chrome about the turn rather
+   than a word from the conversation, so both wear the window's dim tone. */
+.status {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  color: var(--faint);
+  font-size: 11.5px;
+}
+.status-icon { display: block; width: 12px; height: 12px; flex: none; color: var(--dim); }
+.status-icon svg { display: block; width: 12px; height: 12px; }
+/* The state the icon carries: a failure is the theme's own error color, and a
+   turn running is the spinner the sidebar's rows use, drawn in the accent. */
+.status[data-level="error"] .status-icon { color: var(--error); }
+.status[data-level="busy"] .status-icon {
+  width: 11px;
+  height: 11px;
+  border: 1.5px solid var(--accent);
+  border-top-color: transparent;
+  border-radius: 50%;
+  animation: spin 0.7s linear infinite;
+}
+/* The words a status has to say, when it has any: one line the reader scans rather
+   than a paragraph, so it is bounded and cut with an ellipsis — its tooltip keeps
+   it whole — instead of being allowed to squeeze the row's controls into a second
+   line. */
+#status-text {
+  max-width: 180px;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+#usage { color: var(--faint); font-size: 11.5px; white-space: nowrap; flex: none; }
 .busy-message-mode {
   min-width: 54px;
   text-align: center;

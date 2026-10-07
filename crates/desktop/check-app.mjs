@@ -911,7 +911,7 @@ vm.runInThisContext(
     " updateChips, openReasoning," +
     " startTool, finishTool, toggleTool, openUpdate, installUpdate, cancelUpdate," +
     " installedUpdate, catchUpOnLaunchUpdate, handleUpdateProgress, handleUpdateReady, handleUpdateFailed," +
-    " renderMarkdown, SCROLLBAR_LINGER };\n",
+    " renderMarkdown, SCROLLBAR_LINGER, setUsage, setStatus, paintStatus };\n",
 );
 
 const app = globalThis.__app;
@@ -1391,7 +1391,7 @@ await nextTick();
 check(
   "repainted the model chip with the window the catalog answered with",
   app.state.contextWindow === 2000000 &&
-    elementFor("model").title === "model: deepseek-flash · 2.00M\nSwitch model",
+    elementFor("model").title === "model: deepseek-flash · 2.0M\nSwitch model",
   `${app.state.contextWindow} / ${elementFor("model").title}`,
 );
 // The level picked while that lookup was in flight is the one the next turn is
@@ -1491,15 +1491,42 @@ check(
 // as well.
 check(
   "kept the context reading at the row's end, in the color of the level",
-  /\.context-ring \{[^}]*display: inline-flex;/.test(sheet) &&
-    !/\.context-ring \{[^}]*margin-left: auto;/.test(sheet) &&
-    /\.composer-facts \.spend \{ margin-left: auto;/.test(sheet) &&
-    shellAt('id="usage"') < shellAt('id="context-ring"') &&
+  /\n\.context-ring \{[^}]*display: inline-flex;/.test(sheet) &&
+    !/\n\.context-ring \{[^}]*margin-left: auto;/.test(sheet) &&
+    /\.composer-facts \.context-ring \{ margin-left: auto; \}/.test(sheet) &&
+    shellAt('id="context-percent"') < shellAt('id="usage"') &&
     factsRow.includes('id="context-percent"') &&
     !/bits\.push\(`ctx \$\{/.test(source) &&
     /\.context-ring\[data-level="warn"\] \{ color: var\(--tool\); \}/.test(sheet) &&
     /\.context-ring\[data-level="high"\] \{ color: var\(--error\); \}/.test(sheet),
-  sheet.slice(sheet.indexOf(".context-ring"), sheet.indexOf(".context-ring") + 200),
+  sheet.slice(sheet.indexOf("\n.context-ring {"), sheet.indexOf("\n.context-ring {") + 200),
+);
+// The window's own status is a badge at the end of the composer's own row: an
+// icon for the state, with the words beside it only when there are words to read
+// — `Ready` is the icon's tooltip — and what the chat has spent drawn beside it
+// the way the terminal footer draws its own line.
+const badgeRow = shell.slice(shellAt('id="status"'), shellAt('id="send"'));
+check(
+  "shipped the status badge and the totals in the composer's own row",
+  shellAt('class="composer-facts"') < shellAt('id="status"') &&
+    shellAt('id="status"') < shellAt('id="usage"') &&
+    shellAt('id="usage"') < shellAt('id="send"') &&
+    shellAt('id="status-icon"') < shellAt('id="status-text"') &&
+    /id="status"[^>]*role="status"/.test(badgeRow) &&
+    /id="status-icon"[^>]*aria-hidden="true"/.test(badgeRow),
+  badgeRow.slice(0, 320),
+);
+// The state the badge wears: the spinner the sidebar's rows use while a turn is
+// running, the theme's error color for a failure, and the window's own dim tone
+// for the readout — chrome about the turn rather than a word from the
+// conversation.
+check(
+  "drew the badge's states in the window's own chrome",
+  /\.status \{[^}]*color: var\(--faint\);[^}]*font-size: 11.5px;/.test(sheet) &&
+    /\.status\[data-level="error"\] \.status-icon \{ color: var\(--error\); \}/.test(sheet) &&
+    /\.status\[data-level="busy"\] \.status-icon \{[^}]*animation: spin/.test(sheet) &&
+    /#usage \{ color: var\(--faint\); font-size: 11.5px;/.test(sheet),
+  sheet.slice(sheet.indexOf(".status {"), sheet.indexOf(".status {") + 220),
 );
 // The row is one line of facts and readings, however long the folder's own names
 // are: each fact keeps the room it needs and none of them wraps, while the branch
@@ -1509,7 +1536,8 @@ check(
 check(
   "held the row to one line, with the branch the fact that gives way",
   /\.fact \{[^}]*flex: none;[^}]*white-space: nowrap;/.test(sheet) &&
-    /\.composer-facts \.spend \{[^}]*white-space: nowrap;/.test(sheet) &&
+    /#usage \{[^}]*white-space: nowrap;/.test(sheet) &&
+    /#status-text \{[^}]*max-width: 180px;[^}]*text-overflow: ellipsis;/.test(sheet) &&
     /#git \{ flex: 0 3 auto; overflow: hidden; \}/.test(sheet) &&
     /#git-branch \{[^}]*min-width: 0;[^}]*text-overflow: ellipsis;/.test(sheet),
   sheet.slice(sheet.indexOf("#git {"), sheet.indexOf("#git {") + 200),
@@ -4225,8 +4253,8 @@ check(
 // the name a screen reader reads — the way the extension's own chips carry it.
 check(
   "named the composer's chip for the model it would run",
-  elementFor("model").getAttribute("aria-label") === "model: deepseek-flash · 128.0k" &&
-    elementFor("model").title === "model: deepseek-flash · 128.0k\nSwitch model",
+  elementFor("model").getAttribute("aria-label") === "model: deepseek-flash · 128k" &&
+    elementFor("model").title === "model: deepseek-flash · 128k\nSwitch model",
   `${elementFor("model").getAttribute("aria-label")} / ${JSON.stringify(elementFor("model").title)}`,
 );
 app.state.reasoning = "high";
@@ -4937,10 +4965,9 @@ check(
     projectCalls("git_info").length === 1,
   `${el("git-branch").textContent} / ${JSON.stringify(calls.map(([name]) => name))}`,
 );
-// The context reading: the arc is filled to the percent the totals line draws
-// the spend from, so the two never disagree about how much of the window is gone,
-// the percent is spelled out beside the arc, and the tokens behind both are in
-// the reading's tooltip.
+// The context reading: the arc is filled to the percent the totals are measured
+// from — the newest request's own prompt over the window in force — the percent
+// is spelled out beside it, and the tokens behind both are in its tooltip.
 app.state.contextWindow = 128000;
 const ringFill = () => {
   const [filled, whole] = String(el("context-ring-fill").getAttribute("stroke-dasharray"))
@@ -4948,23 +4975,23 @@ const ringFill = () => {
     .map(Number);
   return (filled / whole) * 100;
 };
-app.handleEvent({ type: "usage", usage: { input: 30000, output: 40, cost: 0.01 } });
+app.setUsage({ input: 30000, output: 40, cost: 0.01, prompt: 30000 });
 check(
   "filled the ring to the percent it spells out beside the arc",
-  el("usage").textContent === "↑ 30000 ↓ 40 · $0.0100" &&
+  el("usage").textContent === "↑30k ↓40 $0.010" &&
     el("context-ring").hidden === false &&
     Math.round(ringFill()) === 23 &&
     el("context-percent").textContent === "23%" &&
-    el("context-ring").title === "23% · 30.0k/128.0k" &&
+    el("context-ring").title === "23% · 30k/128k" &&
     el("context-ring").dataset.level === "ok" &&
-    el("context-ring").getAttribute("aria-label") === "context window: 23% · 30.0k/128.0k",
+    el("context-ring").getAttribute("aria-label") === "context window: 23% · 30k/128k",
   `${el("usage").textContent} / ${el("context-percent").textContent} / ${el("context-ring-fill").getAttribute("stroke-dasharray")} / ${el("context-ring").title}`,
 );
 // The arc escalates through the same two thresholds the terminal's footer and
 // the panel's own gauge color by, so the color reads the same in all three.
-app.handleEvent({ type: "usage", usage: { input: 100000, output: 40 } });
+app.setUsage({ input: 130000, output: 40, prompt: 100000 });
 const warned = el("context-ring").dataset.level;
-app.handleEvent({ type: "usage", usage: { input: 120000, output: 40 } });
+app.setUsage({ input: 250000, output: 40, prompt: 120000 });
 const high = el("context-ring").dataset.level;
 check(
   "escalated the ring at the same two thresholds as the other front-ends",
@@ -4974,14 +5001,14 @@ check(
 // A thread that has spent nothing yet has no percentage: the ring is drawn empty,
 // nothing is spelled out beside it, and the tooltip names the window it would be
 // measured against.
-app.handleEvent({ type: "usage", usage: {} });
+app.setUsage({});
 check(
   "drew an empty ring for a window nothing has been counted against",
   el("context-ring").hidden === false &&
     Math.round(ringFill()) === 0 &&
     el("context-percent").textContent === "" &&
     el("context-ring").dataset.level === "ok" &&
-    el("context-ring").title === "No request yet · 128.0k window",
+    el("context-ring").title === "No request yet · 128k window",
   `${ringFill()} / ${el("context-percent").textContent} / ${el("context-ring").title}`,
 );
 // A thread opened again draws its ring from the request it was last run with,
@@ -4993,6 +5020,7 @@ sessionUsage = {
   cacheRead: 0,
   cacheWrite: 0,
   cost: 0.01,
+  cacheHitRate: null,
   messageCount: 2,
   contextTokens: 64000,
 };
@@ -5002,12 +5030,63 @@ check(
   "drew the context reading from what the thread was last run with",
   el("context-ring").hidden === false &&
     Math.round(ringFill()) === 50 &&
-    el("usage").textContent === "↑ 120 ↓ 30 · $0.0100" &&
+    el("usage").textContent === "↑120 ↓30 $0.010" &&
     el("context-percent").textContent === "50%" &&
-    el("context-ring").title === "50% · 64.0k/128.0k",
+    el("context-ring").title === "50% · 64k/128k",
   `${el("usage").textContent} / ${el("context-percent").textContent} / ${el("context-ring-fill").getAttribute("stroke-dasharray")} / ${el("context-ring").title}`,
 );
 sessionUsage = null;
+// The line counts the chat, the way the terminal footer counts it: each step is
+// added to the last rather than replacing it, so a long run reads as one
+// conversation. The prompt stays the step's own — that is the context the request
+// was sent with, and the one number a total cannot carry — and a step that read
+// no cache keeps the rate the warm one reported, the same rule
+// `UsageTotals::cache_hit_rate` follows.
+app.setUsage({});
+app.handleEvent({
+  type: "usage",
+  usage: { input: 1000, output: 20, cacheRead: 3000, cacheWrite: 0, cost: 0.001 },
+});
+app.handleEvent({ type: "usage", usage: { input: 500, output: 10, cost: 0.002 } });
+check(
+  "counted the chat the way the terminal footer counts it",
+  app.state.usage.input === 1500 &&
+    app.state.usage.output === 30 &&
+    app.state.usage.cacheRead === 3000 &&
+    app.state.usage.cacheWrite === 0 &&
+    Math.abs(app.state.usage.cost - 0.003) < 1e-9 &&
+    app.state.usage.prompt === 500 &&
+    app.state.usage.cacheHitRate === 75 &&
+    el("usage").textContent === "↑1.5k ↓30 R3.0k CH75.0% $0.003",
+  `${JSON.stringify(app.state.usage)} / ${el("usage").textContent}`,
+);
+// The tokens are abbreviated the way the CLI's own footer abbreviates them — 999
+// stays itself, then `1.2k`, `123k`, `1.2M`, `66M` — so a number reads the same
+// here as it does in the terminal.
+app.setUsage({
+  input: 999,
+  output: 164817,
+  cacheRead: 66249728,
+  cacheWrite: 1234,
+  cost: 0,
+  prompt: 96,
+  cacheHitRate: 45.04,
+});
+check(
+  "shortened the numbers the way the terminal's own footer does",
+  el("usage").textContent === "↑999 ↓165k R66M W1.2k CH45.0%",
+  el("usage").textContent,
+);
+// A plan rather than a metered key: the spend is what the plan would have
+// billed, which the terminal footer marks ` (sub)`.
+app.state.subscription = true;
+app.setUsage({ input: 10, cost: 0, prompt: 10 });
+check(
+  "marked the spend of a plan the way the terminal footer does",
+  el("usage").textContent === "↑10 $0.000 (sub)",
+  el("usage").textContent,
+);
+app.state.subscription = false;
 // The window a ring measures against belongs to the folder on screen: switching
 // folders drops it, so the thread the new folder opens is not labeled with the
 // window of the folder just left — and shows no window at all until that folder's
@@ -5038,6 +5117,58 @@ check(
     !el("project").classList.contains("empty"),
   `${el("context-ring").hidden} / ${el("git").hidden} / ${el("project-name").textContent} / ${el("project").className}`,
 );
+
+// ---------- the window's own status ----------
+
+console.log("the status badge");
+// The status is a badge rather than a sentence: an icon for the state with the
+// words beside it when there are words to read. The idle placeholder is the icon
+// alone, with the word in its tooltip — which is what the terminal's footer says
+// by saying nothing while nothing is happening — a turn running is the spinner,
+// and a failure wears the triangle in the error color with its words still there
+// to read.
+app.setStatus("Ready");
+check(
+  "drew the idle status as a dot with its word in the tooltip",
+  el("status").dataset.level === "info" &&
+    el("status-icon").innerHTML === app.ICONS.dot &&
+    el("status-text").hidden === true &&
+    el("status-text").textContent === "Ready" &&
+    el("status").title === "Ready" &&
+    el("status").getAttribute("aria-label") === "Ready",
+  `${el("status").dataset.level} / ${el("status-text").hidden} / ${el("status").title}`,
+);
+app.setBusy();
+check(
+  "spun the badge while a turn runs",
+  el("status").dataset.level === "busy" && el("status-text").hidden === true,
+  `${el("status").dataset.level} / ${el("status-text").hidden}`,
+);
+app.setIdle();
+app.setStatus("Queued as the next turn.");
+check(
+  "kept the words of a status that has them",
+  el("status").dataset.level === "info" &&
+    el("status-icon").innerHTML === app.ICONS.dot &&
+    el("status-text").hidden === false &&
+    el("status-text").textContent === "Queued as the next turn.",
+  `${el("status").dataset.level} / ${el("status-text").hidden} / ${el("status-text").textContent}`,
+);
+const heldThreads = threads;
+threadsError = "permission denied";
+await app.loadSessions();
+check(
+  "wore the error state for a status that reports a failure",
+  el("status").dataset.level === "error" &&
+    el("status-icon").innerHTML === app.ICONS.alert &&
+    el("status-text").hidden === false &&
+    el("status-text").textContent === "Failed to load threads: Error: permission denied",
+  `${el("status").dataset.level} / ${el("status-text").textContent}`,
+);
+threadsError = null;
+threads = heldThreads;
+await app.loadSessions();
+app.setStatus("Ready");
 
 // ---------- a turn running in another thread ----------
 
@@ -5575,7 +5706,9 @@ check(
 // The strip takes the reader back to the run's own folder, whose window arrives
 // from that folder's own `project_info` — which the stub answers here the way a
 // real one does — so the parked totals are drawn against the window they belong
-// to rather than against the one the folder being read had.
+// to rather than against the one the folder being read had. The tokens are the
+// thread's own: what it had spent when the turn started, plus the step that ran
+// while the reader was away, which is what the terminal footer counts.
 projectInfo = projectFacts(128000);
 calls.length = 0;
 el("run-banner").click();
@@ -5586,7 +5719,7 @@ check(
   app.state.project === "/home/dev/Projects/oxide" &&
     app.state.session === "dd44ee55" &&
     /start one here/.test(el("transcript").outline()) &&
-    el("usage").textContent === "↑ 30000 ↓ 40 · $0.0100" &&
+    el("usage").textContent === "↑34k ↓160 $0.030" &&
     el("context-percent").textContent === "23%",
   `${app.state.project} / ${app.state.session} / ${el("transcript").outline()} / ${el("usage").textContent} / ${el("context-percent").textContent}`,
 );

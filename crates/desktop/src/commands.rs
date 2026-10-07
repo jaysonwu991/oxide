@@ -313,6 +313,10 @@ fn project_info_value(config: &Config, project: &Path) -> Value {
         "reasoningLevels": advertised_reasoning_levels(config),
         "supportsReasoning": config.supports_reasoning(),
         "contextWindow": config.context_window(),
+        // Whether the credential is a plan rather than a metered key: the usage
+        // line marks the spend ` (sub)` the way the terminal footer does, and
+        // that is a fact about the provider rather than about the number.
+        "subscription": config.is_subscription(),
         "hasKey": !config.api_key.is_empty(),
         "trust": trust,
     })
@@ -1347,6 +1351,20 @@ pub async fn dispatch(
 mod tests {
     use super::*;
     use oxide_core::llm::{FunctionCall, ToolCall};
+
+    #[test]
+    fn a_plan_provider_says_so_where_the_usage_line_reads_it() {
+        let plan: Config =
+            serde_json::from_value(json!({ "provider": "github-copilot" })).expect("a config");
+        assert!(project_info_value(&plan, Path::new("."))["subscription"]
+            .as_bool()
+            .expect("the flag travels"));
+        let metered: Config =
+            serde_json::from_value(json!({ "provider": "openai" })).expect("a config");
+        assert!(!project_info_value(&metered, Path::new("."))["subscription"]
+            .as_bool()
+            .expect("the flag travels"));
+    }
 
     #[test]
     fn a_refused_attachment_names_the_types_and_the_limit() {
