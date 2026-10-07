@@ -2526,6 +2526,14 @@
     const link = target.closest("a[href]");
     if (link) {
       event.preventDefault();
+      // VS Code's own webview host opens every http(s) link it sees clicked —
+      // its `handleInnerClick` posts `did-click-link` to the workbench, which
+      // hands the URL to the opener service — and it does not ask whether the
+      // page has already dealt with that click. A click let through to it as
+      // well would open a second browser tab beside this one, so it stops at
+      // this listener, short of the host's own (a bubble listener on the inner
+      // frame's window, which stopping propagation never reaches).
+      event.stopPropagation();
       vscode.postMessage({ k: "openUrl", url: link.getAttribute("href") || "" });
       return;
     }
