@@ -151,22 +151,23 @@ so local-only files like `.claude/settings.local.json` stay out of the PR.
 - Compact, bounded output: tool bodies render as background-filled panels with
   a short, readable preview by default (compact JSON is expanded, and long
   output is cut to a per-tool budget: shell tail 5 lines, `read` 10, `grep` 15,
-  `find`/`ls` 20), colored by state (pending, success, or error), with long
-  action lines and wrapped output continuations aligned so the full text stays
-  readable, and tool results are capped by lines and bytes before they enter the
-  model's context. Capped output is saved to disk with a pointer so it stays
-  recoverable.
+  `find`/`ls` 20 — a shell keeps its tail and every other tool its head, the way
+  Pi's renderers keep them), colored by state (pending, success, or error), with
+  long action lines and wrapped output continuations aligned so the full text
+  stays readable, and tool results are capped by lines and bytes before they
+  enter the model's context. Capped output is saved to disk with a pointer so it
+  stays recoverable.
 - Compact agent transcript: shell calls render as `→ Run <command>` and finish
   as `→ Ran <command> · exit <code>` (`→ Run failed …` on a non-zero exit), with
   a `(timeout Ns)` hint when the call sets one, a live `Elapsed Ns` while it
   runs, and a `Took Nms` duration afterwards (any other tool that runs for at
-  least 500 ms is timed too). Long output is previewed with a
-  `⋯ <lines> more lines · Ctrl+O to expand` affordance (a shell call keeps both
-  its first and last lines, folding only the middle), `read` results
-  preview the file contents, file edits show a colored line-numbered diff, user
-  and assistant turns render their label inline with the message text, and the
-  system prompt nudges the model to batch reads instead of re-reading the same
-  paths.
+  least 500 ms is timed too). Long output is previewed with Pi's own
+  `... (<lines> more lines, Ctrl+O to expand)` affordance below a head preview
+  and a `... (<lines> earlier lines, Ctrl+O to expand)` one above a shell
+  result's tail, `read` results preview the file contents, file edits show a
+  colored line-numbered diff, user and assistant turns render their label inline
+  with the message text, and the system prompt nudges the model to batch reads
+  instead of re-reading the same paths.
 - Visible work in progress: reasoning streams into the transcript as a muted
   italic `✦ Thinking` block that closes with `✦ Thought for 1.4s`, so work done
   before the answer is no longer invisible. Ctrl+T collapses reasoning blocks to
