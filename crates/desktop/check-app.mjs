@@ -967,7 +967,7 @@ check(
 check(
   "named the composer's chip as the way to pick a folder",
   elementFor("project-name").textContent === "Choose a project" &&
-    elementFor("project").classList.contains("empty") &&
+    elementFor("project").classList.contains("unset") &&
     /Pick the folder/.test(String(elementFor("project").title)),
   `${elementFor("project-name").textContent} / ${elementFor("project").title}`,
 );
@@ -1071,7 +1071,7 @@ check(
   app.state.project === projectRows[1].path &&
     elementFor("projects-modal").hidden === true &&
     elementFor("project-name").textContent === "elsewhere" &&
-    !elementFor("project").classList.contains("empty"),
+    !elementFor("project").classList.contains("unset"),
   `${app.state.project} / ${elementFor("project-name").textContent}`,
 );
 // Picking the project already open only puts the picker away: selecting it again
@@ -1459,6 +1459,7 @@ check(
   composerHead.includes('id="project"') &&
     /<span id="project-name"[^>]*>[^<]+<\/span>/.test(composerHead) &&
     composerHead.includes('id="git-branch"') &&
+    composerHead.includes('id="machine"') &&
     composerHead.includes("This computer") &&
     composerHead.includes('id="context-ring"') &&
     shell.indexOf('class="composer-head"') < shell.indexOf('<textarea id="prompt"') &&
@@ -1489,6 +1490,18 @@ check(
     /\.context-ring\[data-level="warn"\] \{ color: var\(--tool\); \}/.test(sheet) &&
     /\.context-ring\[data-level="high"\] \{ color: var\(--error\); \}/.test(sheet),
   sheet.slice(sheet.indexOf(".context-ring"), sheet.indexOf(".context-ring") + 200),
+);
+// The chip that asks for a folder wears a marker of its own rather than the
+// sheet's placeholder class: `.empty` centers whatever wears it, and on this
+// full-width row that put the chip in the middle of the box the moment the ring
+// — the row's other auto margin — went away with the folder.
+check(
+  "gave the folder chip a marker of its own rather than the app's empty state",
+  source.includes('el("project").classList.toggle("unset", !open)') &&
+    !/el\("project"\)\.classList\.toggle\("empty"/.test(source) &&
+    /\.project-chip\.unset \{/.test(sheet) &&
+    /\.empty \{[^}]*margin: auto;/.test(sheet),
+  `${source.indexOf('classList.toggle("unset", !open)')} / ${sheet.indexOf(".project-chip.unset")}`,
 );
 // A project is not selected for the reader on the way in, so the box a message
 // is typed into is not gated behind one in the markup either.
@@ -4827,6 +4840,7 @@ check(
     el("git").hidden === false &&
     el("git-branch").textContent === "main" &&
     el("git").title === `On branch main\n${gitAnswer.root}` &&
+    el("machine").hidden === false &&
     projectCalls("git_info").length > 0,
   `${JSON.stringify(app.state.git)} / ${el("git-branch").textContent} / ${el("git").title}`,
 );
@@ -4972,15 +4986,19 @@ check(
     Math.round(ringFill()) === 0,
   `${app.state.contextWindow} / ${el("context-ring").title}`,
 );
-// Nothing is open, so there is no window to measure anything against: the ring
-// goes with the folder, and the chip that takes one stays.
+// Nothing is open, so there is no branch to name, no turn to place and no window
+// to measure a request against: the chip that takes a folder is the whole row, and
+// it is the reader's to act on rather than a value among others.
 app.clearSelectedProject();
 check(
-  "took the ring away with the folder it belongs to",
+  "left the folder chip alone on the bar with nothing open",
   el("context-ring").hidden === true &&
     el("git").hidden === true &&
-    el("project-name").textContent === "Choose a project",
-  `${el("context-ring").hidden} / ${el("git").hidden} / ${el("project-name").textContent}`,
+    el("machine").hidden === true &&
+    el("project-name").textContent === "Choose a project" &&
+    el("project").classList.contains("unset") &&
+    !el("project").classList.contains("empty"),
+  `${el("context-ring").hidden} / ${el("git").hidden} / ${el("machine").hidden} / ${el("project-name").textContent} / ${el("project").className}`,
 );
 
 // ---------- a turn running in another thread ----------

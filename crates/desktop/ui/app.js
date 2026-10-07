@@ -348,7 +348,9 @@ function paintUsage() {
   } else {
     el("usage").textContent = "";
   }
-  renderContextRing(percent);
+  // The bar's ring is that same percentage drawn as an arc rather than as a word,
+  // so the row above the box is painted from the totals wherever they move.
+  paintBar();
 }
 
 /// The percent of the window the thread's own totals are measured against: the
@@ -1132,12 +1134,16 @@ function updateChips() {
 /// The composer's project chip names the folder the message goes to, and asks for
 /// one while there is none: a project is not selected for the reader on the way
 /// in, so the chip is where they pick it. It keeps its words rather than hiding
-/// them in a tooltip, since with nothing open it reads as the action it is.
+/// them in a tooltip, since with nothing open it reads as the action it is. The
+/// marker it wears in that state is its own (`unset`): the sheet's `.empty` is the
+/// app's placeholder class, which centers whatever wears it — and this chip sits
+/// on a full-width row, where that put it in the middle of the box the moment the
+/// ring beside it went away.
 function updateProjectChip() {
   const open = Boolean(state.project);
   const name = open ? projectNameOf(state.project) : "Choose a project";
   el("project-name").textContent = name;
-  el("project").classList.toggle("empty", !open);
+  el("project").classList.toggle("unset", !open);
   el("project").title = open
     ? `project: ${name}\nSwitch the folder this window runs in`
     : "Choose a project\nPick the folder this window runs in";
@@ -1177,7 +1183,7 @@ async function loadGit() {
   const project = state.project;
   if (!project) {
     state.git = null;
-    renderGit();
+    paintBar();
     return;
   }
   try {
@@ -1191,40 +1197,39 @@ async function loadGit() {
     if (project !== state.project) return;
     state.git = null;
   }
-  renderGit();
+  paintBar();
 }
 
-/// The branch a turn in this folder will run on. It is a fact about the folder
-/// rather than a control, so a folder with no repository — and one whose HEAD
-/// holds a commit rather than a branch — is named by whatever there is to name
-/// and has no chip when there is nothing.
-function renderGit() {
+/// The composer's bar above the message box: the branch the folder is on, the
+/// machine the turn runs on, and the context ring filled to the percent the usage
+/// line under the composer draws — one reading of one folder, painted in one
+/// place. Nothing but the folder chip is shown before a folder is open, since
+/// there is no turn to place and no window to measure: the row then says the one
+/// thing the reader can act on.
+function paintBar() {
+  const open = Boolean(state.project);
+  el("machine").hidden = !open;
   const info = state.git;
-  const branch = info && info.repo ? info.branch || info.detached : "";
+  const branch = open && info?.repo ? info.branch || info.detached : "";
   const chip = el("git");
   chip.hidden = !branch;
   el("git-branch").textContent = branch;
-  if (!branch) return;
-  const root = info.root ? `\n${info.root}` : "";
-  chip.title = info.branch
-    ? `On branch ${branch}${root}`
-    : `HEAD is detached at ${branch}${root}`;
-}
+  if (branch) {
+    const root = info.root ? `\n${info.root}` : "";
+    chip.title = info.branch
+      ? `On branch ${branch}${root}`
+      : `HEAD is detached at ${branch}${root}`;
+  }
 
-/// The context status the bar carries: the ring is filled to the percent of the
-/// window the thread's last request used, in the color of the level, and the
-/// numbers behind that arc — the percent, the tokens it took and the window
-/// itself — are in its tooltip, since the usage line under the composer is where
-/// this chat's totals are written out.
-function renderContextRing(percent) {
   const ring = el("context-ring");
-  ring.hidden = !state.project;
-  if (!state.project) return;
+  ring.hidden = !open;
+  if (!open) return;
   const fill = el("context-ring-fill");
   // The ring's own circumference, read off the circle the sheet draws rather
   // than kept beside it: a dash as long as the circle is the ring at 100%, so
   // the filled part is what the thread's last request took of the window.
   const length = 2 * Math.PI * (Number(fill.getAttribute("r")) || 6.2);
+  const percent = usagePercent(state.usage);
   const spent = percent == null ? 0 : Math.max(0, Math.min(percent, 100));
   fill.setAttribute(
     "stroke-dasharray",
@@ -5847,7 +5852,7 @@ function clearSelectedProject() {
   updateTrustButton();
   updateChips();
   setStatus("Ready");
-  renderGit();
+  paintBar();
   resetTranscript();
 }
 

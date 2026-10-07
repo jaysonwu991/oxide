@@ -925,11 +925,13 @@ body.resizing { cursor: col-resize; user-select: none; }
    mark the active row: a shield is a shield whichever decision is saved, so the
    color is what says which one it is. */
 .chip.active { color: var(--accent); border-color: var(--accent); }
-/* The project chip is the one control on the row that names where the message
+/* The project chip is the one control on the bar that names where the message
    goes rather than what it carries, so it keeps its words and takes the accent
-   while no project is open — it is then the app's way into a first thread. */
+   while no project is open — it is then the app's way into a first thread. The
+   marker is the chip's own rather than the sheet's `.empty`, which centers the
+   placeholder it belongs to. */
 .project-chip { display: inline-flex; align-items: center; gap: 6px; max-width: 220px; }
-.project-chip.empty { color: var(--accent); border-color: var(--accent); }
+.project-chip.unset { color: var(--accent); border-color: var(--accent); }
 .project-chip .chip-name {
   overflow: hidden;
   text-overflow: ellipsis;

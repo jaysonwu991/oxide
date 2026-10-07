@@ -146,19 +146,27 @@ mod tests {
     /// something else sits under is a directory, and the rest is not there.
     fn view_over(root: &str, entries: &[(&str, &str)]) -> GitView {
         let map = files(entries);
-        view_with(Path::new(root), &|path| {
+        view_with(&rooted(root), &|path| {
             if let Some(text) = map.get(path) {
                 return Entry::Text(text.clone());
             }
-            let under = format!("{}/", path.display());
-            if map
-                .keys()
-                .any(|key| key.display().to_string().starts_with(&under))
-            {
+            // Compared as paths rather than as strings, so the separator a
+            // platform joins with is not a second rule to keep in step with it.
+            if map.keys().any(|key| key.starts_with(path)) {
                 return Entry::Directory;
             }
             Entry::Missing
         })
+    }
+
+    /// A path as the platform writes it, for an expectation that would otherwise
+    /// be spelled the way this machine happens to join one.
+    fn rooted(path: &str) -> PathBuf {
+        PathBuf::from(path)
+    }
+
+    fn root_of(path: &str) -> String {
+        rooted(path).display().to_string()
     }
 
     #[test]
@@ -171,7 +179,7 @@ mod tests {
             view,
             GitView {
                 repo: true,
-                root: "/work/app".to_string(),
+                root: root_of("/work/app"),
                 branch: "fix/bar".to_string(),
                 detached: String::new(),
             }
@@ -186,7 +194,7 @@ mod tests {
         );
         assert!(view.repo);
         assert_eq!(view.branch, "main");
-        assert_eq!(view.root, "/work/app");
+        assert_eq!(view.root, root_of("/work/app"));
     }
 
     #[test]
@@ -205,7 +213,7 @@ mod tests {
             ],
         );
         assert_eq!(view.branch, "feature");
-        assert_eq!(view.root, "/work/app.worktrees/feature");
+        assert_eq!(view.root, root_of("/work/app.worktrees/feature"));
     }
 
     /// A submodule's pointer is relative to the folder the `.git` file sits in,
@@ -251,7 +259,7 @@ mod tests {
             ],
         );
         assert!(view.repo);
-        assert_eq!(view.root, "/work/app/vendor/lib");
+        assert_eq!(view.root, root_of("/work/app/vendor/lib"));
         assert_eq!(view.branch, "");
         assert_eq!(view.detached, "");
     }

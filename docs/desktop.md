@@ -278,7 +278,8 @@ The regions, top to bottom:
   box, names where the turn will run the way Codex's own bar does: the folder's
   chip, the branch the folder is on, and the machine the turn runs on — this app
   has one environment, a folder on this computer, and it says so rather than
-  leaving the reader to assume a cloud. The branch is read out of the
+  leaving the reader to assume a cloud, shown with a folder open rather than
+  before one, since there is no turn to place until then. The branch is read out of the
   repository's own `.git/HEAD` (`oxide_desktop::git::view`) rather than by
   running git, so a worktree or a submodule is answered through the `gitdir:`
   file that points at its real `HEAD`, a detached `HEAD` is named by the commit
@@ -307,7 +308,9 @@ The regions, top to bottom:
   folder's name, accented in the first case the way the model picker marks the row
   in use — because with nothing open it is how a first thread starts rather than a
   value to look up (see
-  [Multiple projects](#multiple-projects-cross-repo)).
+  [Multiple projects](#multiple-projects-cross-repo)); with nothing open it is
+  also the whole row, and it wears a marker of its own (`unset`) rather than the
+  sheet's `.empty`, whose `margin: auto` centers the placeholders it belongs to.
   The controls the extension's own row carries come first and in
   its order, and the glyphs the two front-ends share — the paperclip, the `+`,
   the send arrow, the stop square, the refresh arrow, the close `✕`, the MCP
