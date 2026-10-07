@@ -300,7 +300,8 @@ function setStatus(text) {
 /// reports `input` as the uncached prompt, and the cached prefix still occupies
 /// the window, so the two are carried as the raw `prompt`: the percentage is a
 /// measure of a window, and which window that is is a question about where the
-/// totals are painted rather than about where the event arrived (see `setUsage`).
+/// totals are painted rather than about where the event arrived (see
+/// `paintUsage`).
 function usageTotals(event) {
   const usage = event.usage || {};
   return {
@@ -320,27 +321,42 @@ function setUsage({
   cacheWrite = 0,
   cost = 0,
   prompt = 0,
-  contextPct = null,
 }) {
-  // The window the percentage is a fraction of is the one in force where the
-  // totals are drawn, not the one that happened to be open when the event
-  // arrived: a run in another folder counts its tokens while the reader is
-  // looking at a project with a window of its own — and its totals come back to
-  // the folder they belong to, since the strip opens the run's own first.
-  if (contextPct == null && prompt > 0 && state.contextWindow > 0) {
-    contextPct = (prompt / state.contextWindow) * 100;
+  // What the thread has spent, held so one the reader leaves can take its own
+  // totals with it and paint them back on return. The percentage is not kept
+  // beside them: it is a fraction of the window in force where they are drawn
+  // (see `usagePercent`), so a folder switched under a parked run cannot label
+  // its thread with the window of the folder the reader left.
+  state.usage = { input, output, cacheRead, cacheWrite, cost, prompt };
+  paintUsage();
+}
+
+/// The usage line under the composer and the bar's ring, drawn from the thread's
+/// own totals and the window in force on screen — the one place either is worked
+/// out, so the word `ctx 23%` and the ring beside it can never disagree.
+function paintUsage() {
+  const totals = state.usage;
+  const percent = usagePercent(totals);
+  if (totals) {
+    const bits = [`↑ ${totals.input} ↓ ${totals.output}`];
+    if (totals.cacheRead || totals.cacheWrite) {
+      bits.push(`R ${totals.cacheRead} W ${totals.cacheWrite}`);
+    }
+    if (totals.cost) bits.push(`$${Number(totals.cost).toFixed(4)}`);
+    if (percent != null) bits.push(`ctx ${percent.toFixed(0)}%`);
+    el("usage").textContent = bits.join(" · ");
+  } else {
+    el("usage").textContent = "";
   }
-  // What the footer is showing, held so a thread the reader leaves can take its
-  // own totals with it and paint them back on return.
-  state.usage = { input, output, cacheRead, cacheWrite, cost, prompt, contextPct };
-  const bits = [`↑ ${input} ↓ ${output}`];
-  if (cacheRead || cacheWrite) bits.push(`R ${cacheRead} W ${cacheWrite}`);
-  if (cost) bits.push(`$${Number(cost).toFixed(4)}`);
-  if (contextPct != null && state.contextWindow) bits.push(`ctx ${contextPct.toFixed(0)}%`);
-  el("usage").textContent = bits.join(" · ");
-  // The bar's ring is the same percentage as a gauge rather than as a word, so
-  // it is painted from the totals wherever they move.
-  renderContextRing();
+  renderContextRing(percent);
+}
+
+/// The percent of the window the thread's own totals are measured against: the
+/// prompt of its newest request over the window in force where they are drawn,
+/// and nothing at all until both are known.
+function usagePercent(totals) {
+  if (!totals || !totals.prompt || !state.contextWindow) return null;
+  return (totals.prompt / state.contextWindow) * 100;
 }
 
 function setThreadTitle(text) {
@@ -973,6 +989,10 @@ async function selectProject(project) {
   state.session = null;
   state.trust = null;
   state.pendingSends = [];
+  // The window the ring measures against belonged to the folder being left, and
+  // the one arriving is not known until its own facts do: left in place it would
+  // label this folder's thread with another folder's window.
+  state.contextWindow = 0;
   if (wasOpen) clearAttachments();
   el("projects-modal").hidden = true;
   el("trust-modal").hidden = true;
@@ -1009,10 +1029,10 @@ async function loadInfo() {
     updateChips();
     renderProjectMeta(info);
     updateTrustButton();
-    // The window the ring is a fraction of arrives with the folder's own facts,
-    // so the tooltip says the window a turn will be measured against rather than
-    // the one the last folder had.
-    renderContextRing();
+    // The window the thread's own totals are measured against arrives with the
+    // folder's own facts, so the usage line and the ring are drawn again from
+    // it: an empty window until now is why neither could name a percentage.
+    paintUsage();
     if (state.trust && state.trust.awaiting) showTrust(state.trust);
   } catch (error) {
     if (project !== state.project) return;
@@ -1035,7 +1055,7 @@ async function refreshContextWindow() {
     if (project !== state.project || !info) return;
     state.contextWindow = info.contextWindow || 0;
     renderProjectMeta(info);
-    renderContextRing();
+    paintUsage();
   } catch {
     // A window that could not be read again keeps the one it has: the next full
     // load reports it, and a background lookup is not worth a note of its own.
@@ -1196,7 +1216,7 @@ function renderGit() {
 /// numbers behind that arc — the percent, the tokens it took and the window
 /// itself — are in its tooltip, since the usage line under the composer is where
 /// this chat's totals are written out.
-function renderContextRing() {
+function renderContextRing(percent) {
   const ring = el("context-ring");
   ring.hidden = !state.project;
   if (!state.project) return;
@@ -1205,7 +1225,6 @@ function renderContextRing() {
   // than kept beside it: a dash as long as the circle is the ring at 100%, so
   // the filled part is what the thread's last request took of the window.
   const length = 2 * Math.PI * (Number(fill.getAttribute("r")) || 6.2);
-  const percent = state.usage?.contextPct ?? null;
   const spent = percent == null ? 0 : Math.max(0, Math.min(percent, 100));
   fill.setAttribute(
     "stroke-dasharray",
@@ -1303,6 +1322,10 @@ async function openSession(session) {
         cacheRead: data.usage.cacheRead,
         cacheWrite: data.usage.cacheWrite,
         cost: data.usage.cost,
+        // The prompt of the newest recorded request is the context the thread was
+        // last run with, so a thread opened again draws its `ctx` — and the bar's
+        // ring — from that rather than from nothing until the next turn runs.
+        prompt: data.usage.contextTokens || 0,
       });
     }
   } catch (error) {
@@ -1320,9 +1343,9 @@ function resetTranscript() {
   el("transcript").innerHTML = "";
   el("usage").textContent = "";
   state.usage = null;
-  // The totals a thread carried leave with it, so the ring goes back to what a
-  // fresh conversation shows: a window with nothing spent against it yet.
-  renderContextRing();
+  // The totals a thread carried leave with it, so the line and the ring go back
+  // to what a fresh conversation shows: a window with nothing spent yet.
+  paintUsage();
   setThreadTitle("");
   renderWelcome();
   updateRunBanner();

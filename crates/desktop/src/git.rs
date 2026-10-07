@@ -30,41 +30,46 @@ pub struct GitView {
 /// wins, so a folder inside a clone reports that clone's branch and a submodule
 /// reports its own rather than its parent's.
 pub fn view(folder: &Path) -> GitView {
-    view_with(folder, &read_file)
+    view_with(folder, &read_entry)
 }
 
 /// The same read over injected file reads, so every layout can be held by tests
-/// without a repository on the machine that runs them. A directory answers
-/// nothing, which is how a `.git` directory is told from a `.git` file.
-fn view_with(folder: &Path, read: &dyn Fn(&Path) -> Option<String>) -> GitView {
+/// without a repository on the machine that runs them.
+fn view_with(folder: &Path, entry: &dyn Fn(&Path) -> Entry) -> GitView {
     let mut view = GitView::default();
     for dir in folder.ancestors() {
         let dot_git = dir.join(".git");
-        let head = match read(&dot_git.join("HEAD")) {
-            Some(head) => head,
-            None => {
-                // A worktree stores an absolute path; a submodule's is relative
-                // to the folder the `.git` file sits in.
-                let Some(git_dir) = read(&dot_git).as_deref().and_then(git_dir_of) else {
-                    continue;
-                };
-                let git_dir = if git_dir.is_absolute() {
-                    git_dir
-                } else {
-                    dir.join(git_dir)
-                };
-                match read(&git_dir.join("HEAD")) {
-                    Some(head) => head,
-                    None => continue,
-                }
+        let head = match entry(&dot_git) {
+            // A checkout keeps its HEAD in a `.git` directory of its own.
+            Entry::Directory => Some(entry(&dot_git.join("HEAD"))),
+            // A worktree or a submodule points at the directory that does: an
+            // absolute path for the one, one relative to this folder for the
+            // other.
+            Entry::Text(pointer) => {
+                let git_dir = git_dir_of(&pointer).map(|git_dir| {
+                    if git_dir.is_absolute() {
+                        git_dir
+                    } else {
+                        dir.join(git_dir)
+                    }
+                });
+                Some(git_dir.map_or(Entry::Missing, |git_dir| entry(&git_dir.join("HEAD"))))
             }
+            Entry::Missing => None,
         };
+        let Some(head) = head else { continue };
+        // A `.git` is where the walk ends, whether or not its HEAD can be read:
+        // this folder belongs to that repository, and the branch of one above it
+        // is not this folder's — a submodule whose git directory is gone has no
+        // branch to show rather than its parent's.
         view.repo = true;
         view.root = dir.display().to_string();
-        match branch_of(&head) {
-            Some(Branch::Named(name)) => view.branch = name,
-            Some(Branch::Detached(id)) => view.detached = id,
-            None => {}
+        if let Entry::Text(head) = head {
+            match branch_of(&head) {
+                Some(Branch::Named(name)) => view.branch = name,
+                Some(Branch::Detached(id)) => view.detached = id,
+                None => {}
+            }
         }
         break;
     }
@@ -86,7 +91,9 @@ fn branch_of(head: &str) -> Option<Branch> {
         let name = name.strip_prefix("refs/heads/").unwrap_or(name);
         return (!name.is_empty()).then(|| Branch::Named(name.to_string()));
     }
-    let hex = line.len() >= 7 && line.len() <= 40 && line.chars().all(|c| c.is_ascii_hexdigit());
+    // Git's two object formats: a SHA-1 id is 40 hex characters and a SHA-256 is
+    // 64, so a repository on either names the commit it is detached at.
+    let hex = line.len() >= 7 && line.len() <= 64 && line.chars().all(|c| c.is_ascii_hexdigit());
     hex.then(|| Branch::Detached(line[..7].to_string()))
 }
 
@@ -100,8 +107,27 @@ fn git_dir_of(text: &str) -> Option<PathBuf> {
     (!path.as_os_str().is_empty()).then_some(path)
 }
 
-fn read_file(path: &Path) -> Option<String> {
-    std::fs::read_to_string(path).ok()
+/// What a path the walk asks about is. A `.git` directory and a `.git` file are
+/// both repositories while a directory answers no text of its own, so the two
+/// are told apart — and told apart from a folder with no repository above it.
+enum Entry {
+    Text(String),
+    Directory,
+    Missing,
+}
+
+fn read_entry(path: &Path) -> Entry {
+    if path.is_dir() {
+        return Entry::Directory;
+    }
+    match std::fs::read_to_string(path) {
+        Ok(text) => Entry::Text(text),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Entry::Missing,
+        // A marker that is here but cannot be read is still a repository whose
+        // HEAD is out of reach: the walk stops on it rather than stepping over
+        // it to a repository above.
+        Err(_) => Entry::Text(String::new()),
+    }
 }
 
 #[cfg(test)]
@@ -116,9 +142,23 @@ mod tests {
             .collect()
     }
 
+    /// The fixture's filesystem: a path a test wrote is that file's text, a path
+    /// something else sits under is a directory, and the rest is not there.
     fn view_over(root: &str, entries: &[(&str, &str)]) -> GitView {
         let map = files(entries);
-        view_with(Path::new(root), &|path| map.get(path).cloned())
+        view_with(Path::new(root), &|path| {
+            if let Some(text) = map.get(path) {
+                return Entry::Text(text.clone());
+            }
+            let under = format!("{}/", path.display());
+            if map
+                .keys()
+                .any(|key| key.display().to_string().starts_with(&under))
+            {
+                return Entry::Directory;
+            }
+            Entry::Missing
+        })
     }
 
     #[test]
@@ -196,6 +236,39 @@ mod tests {
         );
         assert_eq!(view.branch, "");
         assert_eq!(view.detached, "9cdea1c");
+    }
+
+    /// A repository whose HEAD cannot be read is where the walk ends: a
+    /// submodule whose git directory is gone belongs to that repository rather
+    /// than to the parent clone, so the parent's branch is not shown for it.
+    #[test]
+    fn a_repository_with_no_readable_head_stops_the_walk() {
+        let view = view_over(
+            "/work/app/vendor/lib",
+            &[
+                ("/work/app/.git/HEAD", "ref: refs/heads/main\n"),
+                ("/work/app/vendor/lib/.git", "gitdir: ../.git/modules/lib\n"),
+            ],
+        );
+        assert!(view.repo);
+        assert_eq!(view.root, "/work/app/vendor/lib");
+        assert_eq!(view.branch, "");
+        assert_eq!(view.detached, "");
+    }
+
+    /// A SHA-256 repository's object ids are 64 hex characters, so a detached
+    /// HEAD there is named by its commit the same way a SHA-1 one is.
+    #[test]
+    fn a_sha256_detached_head_is_named_by_its_commit() {
+        let view = view_over(
+            "/work/app",
+            &[(
+                "/work/app/.git/HEAD",
+                "d2b90c9f5f3a4e6c8d1b0a7e2f4c9d3a5b8e0f1c7a4d6e9b2c5f8031a7d4e6b\n",
+            )],
+        );
+        assert_eq!(view.branch, "");
+        assert_eq!(view.detached, "d2b90c9");
     }
 
     #[test]

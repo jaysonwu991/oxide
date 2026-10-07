@@ -438,6 +438,12 @@ pub async fn session_messages(project: String, id: String) -> CmdResult<Value> {
             "cost": totals.cost,
             "cacheHitRate": totals.cache_hit_rate,
             "messageCount": messages.len(),
+            // The prompt tokens of the newest recorded request, which is the
+            // context the thread was last run with: a front-end that opens a
+            // stored thread again draws its own gauge from this rather than
+            // reading zero until the next turn (the same field `oxide sessions
+            // show --json` reports to the one that cannot link the core).
+            "contextTokens": log.context_tokens(),
         },
     }))
 }

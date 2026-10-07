@@ -643,6 +643,21 @@ let gitAnswer = {
   detached: "",
 };
 let gitError = null;
+// What `session_messages` answers for a stored thread's own totals, and nothing
+// everywhere else.
+let sessionUsage = null;
+// What a real `project_info` answers for a folder, for the sections that need the
+// window a turn would resolve rather than the stub's silence.
+const projectFacts = (contextWindow) => ({
+  provider: "openai",
+  model: "gpt-4.1",
+  reasoning: "auto",
+  reasoningLevels: null,
+  supportsReasoning: false,
+  contextWindow,
+  hasKey: true,
+  trust: { required: false, trusted: false, awaiting: false },
+});
 
 const invoke = async (command, args = {}) => {
   calls.push([command, args]);
@@ -683,7 +698,7 @@ const invoke = async (command, args = {}) => {
       return {
         header: { id: args.id, name: target?.name || null },
         messages: [],
-        usage: null,
+        usage: sessionUsage,
       };
     }
     case "change_sides": {
@@ -890,7 +905,7 @@ vm.runInThisContext(
     " resetTranscript, renderChanges, closeReview, undoChanges," +
     " updateRunBanner, viewingRun, openRun, handleEvent, removeProject, clearSelectedProject, selectProject," +
     " loadSessions, renderProjectsTree, renderSessions, renderMcps, openSession, renderProjectMeta, updateSendState, toggleBusyMessageMode, setBusy, setIdle," +
-    " loadGit, renderGit, renderContextRing," +
+    " loadGit," +
     " loadMcps, openSessions," +
     " listedSessions, selectSessionFromTree, removeSession," +
     " updateChips, openReasoning," +
@@ -4919,6 +4934,44 @@ check(
     el("context-ring").title === "No request yet · 128.0k window",
   `${ringFill()} / ${el("context-ring").title}`,
 );
+// A thread opened again draws its ring from the request it was last run with,
+// which the core hands over beside the thread's totals: an empty ring would say
+// the conversation had spent nothing when it had spent most of its window.
+sessionUsage = {
+  input: 120,
+  output: 30,
+  cacheRead: 0,
+  cacheWrite: 0,
+  cost: 0.01,
+  messageCount: 2,
+  contextTokens: 64000,
+};
+app.state.session = null;
+await app.openSession({ id: "a1b2c3d4", cwd: barProject, name: "the bar" });
+check(
+  "drew the ring from what the thread was last run with",
+  el("context-ring").hidden === false &&
+    Math.round(ringFill()) === 50 &&
+    el("usage").textContent === "↑ 120 ↓ 30 · $0.0100 · ctx 50%" &&
+    el("context-ring").title === "50% · 64.0k/128.0k",
+  `${el("usage").textContent} / ${el("context-ring-fill").getAttribute("stroke-dasharray")} / ${el("context-ring").title}`,
+);
+sessionUsage = null;
+// The window a ring measures against belongs to the folder on screen: switching
+// folders drops it, so the thread the new folder opens is not labeled with the
+// window of the folder just left — and shows no window at all until that folder's
+// own facts arrive.
+app.state.contextWindow = 128000;
+app.state.session = null;
+projectInfo = null;
+await app.selectProject({ name: "elsewhere", path: "/tmp/elsewhere" });
+check(
+  "dropped the window of the folder being left",
+  app.state.contextWindow === 0 &&
+    el("context-ring").title === "No request yet" &&
+    Math.round(ringFill()) === 0,
+  `${app.state.contextWindow} / ${el("context-ring").title}`,
+);
 // Nothing is open, so there is no window to measure anything against: the ring
 // goes with the folder, and the chip that takes one stays.
 app.clearSelectedProject();
@@ -5463,13 +5516,14 @@ check(
     app.state.usage?.input !== 30000,
   `${JSON.stringify(app.state.parked?.usage)} / ${JSON.stringify(app.state.usage)}`,
 );
-// The strip takes the reader back to the run's own folder, whose window is the
-// one a real `project_info` answers for it with — the stub answers no window, so
-// the one the switch would set is set here, and the percentage is drawn against
-// it rather than against the window of the folder being read.
-app.state.contextWindow = 128000;
+// The strip takes the reader back to the run's own folder, whose window arrives
+// from that folder's own `project_info` — which the stub answers here the way a
+// real one does — so the parked totals are drawn against the window they belong
+// to rather than against the one the folder being read had.
+projectInfo = projectFacts(128000);
 calls.length = 0;
 el("run-banner").click();
+await nextTick();
 await nextTick();
 check(
   "opened the run's own folder and drew its tokens against that window",
@@ -5482,6 +5536,7 @@ check(
 app.setIdle();
 app.state.parked = null;
 app.state.session = null;
+projectInfo = null;
 threads = existing;
 el("transcript").innerHTML = "";
 
