@@ -322,10 +322,10 @@ fn project_info_value(config: &Config, project: &Path) -> Value {
     })
 }
 
-/// The branch a turn in this folder runs on, for the composer's bar. Read from
-/// the repository itself rather than by asking git, so a folder that is not a
-/// clone answers with no repository at all instead of a failure — there is no
-/// branch to name, which the bar draws as no chip.
+/// The branch a turn in this folder runs on, for the composer's top row. Read
+/// from the repository itself rather than by asking git, so a folder that is not
+/// a clone answers with no repository at all instead of a failure — there is no
+/// branch to name, which the row draws by leaving the fact out.
 pub fn git_info(project: String) -> CmdResult<oxide_desktop::GitView> {
     Ok(oxide_desktop::git::view(&project_dir(&project)?))
 }
@@ -1531,7 +1531,7 @@ mod tests {
     }
 
     #[test]
-    fn the_bar_reads_a_branch_from_the_folder_and_refuses_nothing_but_no_folder() {
+    fn the_top_row_reads_a_branch_from_the_folder_and_refuses_nothing_but_no_folder() {
         let root = std::env::temp_dir().join(format!("oxide_git_info_{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&root);
         std::fs::create_dir_all(root.join(".git")).expect("creating the fixture");
@@ -1539,7 +1539,7 @@ mod tests {
         let view = git_info(root.display().to_string()).expect("a repository answers");
         assert_eq!(view.branch, "main");
         // A folder that is no repository is an answer with nothing in it rather
-        // than a failure: the bar hides the chip it has nothing to say with.
+        // than a failure: the row leaves the fact out instead.
         let plain =
             std::env::temp_dir().join(format!("oxide_git_info_plain_{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&plain);

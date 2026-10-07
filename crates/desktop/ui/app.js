@@ -251,7 +251,7 @@ const state = {
   pendingApproval: null,
   pendingQuestion: null,
   trust: null,
-  // What the footer's usage line is showing, which is the open thread's own
+  // What the composer's usage line is showing, which is the open thread's own
   // totals rather than the window's: a run in another thread carries them while
   // its thread is parked (see `parkRun`).
   usage: null,
@@ -1226,7 +1226,7 @@ function updateChips() {
 /// tooltip, since with nothing open it reads as the action it is. The marker it
 /// wears in that state is its own (`unset`): the sheet's `.empty` is the app's
 /// placeholder class, which centers whatever wears it — and this chip sits on the
-/// composer's top row, whose remaining auto margin belongs to the totals.
+/// composer's top row, whose remaining auto margin belongs to the context ring.
 function updateProjectChip() {
   const open = Boolean(state.project);
   const name = open ? projectNameOf(state.project) : "Choose a project";
@@ -2531,7 +2531,8 @@ function renderStoredTranscript(container, messages) {
 
 // ---------- turn changes ----------
 
-// Rows a card shows before the rest are folded behind a "+N more files" button.
+// Rows a card shows before the rest are folded behind a "Show N more files"
+// button.
 const CHANGES_VISIBLE = 5;
 
 // The badge per status, spelling the core's `ChangeStatus`.
@@ -4182,7 +4183,7 @@ function cancelUpdate() {
 /// An install that went wrong, wherever the reader is: the dialog is repainted
 /// when it is the one they are looking at, so the step it was on is not left
 /// standing over an install that has ended — and when it is not, the same words
-/// go to the line under the composer, which is where an install nobody is
+/// go to the composer's own status line, which is where an install nobody is
 /// watching reports itself.
 function reportUpdateFailure(text) {
   if (el("update-modal").hidden) {
@@ -4303,8 +4304,8 @@ function handleUpdateReady(answer) {
 /// An install that could not finish, or one the reader stopped. A failure the
 /// reader is watching is repainted into the dialog it was watching it in — the
 /// step it was on must not be left standing over an install that has ended — and
-/// one that arrived while the dialog was away is the same line under the composer
-/// the launch's own install reports itself by. A cancel is neither: the reader
+/// one that arrived while the dialog was away is the same status line the
+/// launch's own install reports itself by. A cancel is neither: the reader
 /// asked for it, and the dialog they asked it in is already gone.
 function handleUpdateFailed(payload) {
   updateInstall = null;
@@ -5099,9 +5100,9 @@ async function initEvents() {
     setStatus("Ready");
     renderChanges(event.payload || {});
     resetTurn();
-    // A turn is where the branch under the composer can change — the model runs
-    // git like any other command — so the row is read again before the next
-    // message is composed against it.
+    // A turn is where the branch the composer's top row reads can change — the
+    // model runs git like any other command — so the row is read again before
+    // the next message is composed against it.
     loadGit();
     await loadSessions();
     await startNextPendingSend();

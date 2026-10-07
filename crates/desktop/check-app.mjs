@@ -4879,10 +4879,10 @@ check(
 );
 app.state.session = null;
 
-// ---------- the bar above the composer ----------
+// ---------- the composer's own top row ----------
 
-console.log("the composer's bar");
-// What the bar says about the folder a turn runs in: the branch it is on, where
+console.log("the composer's top row");
+// What the row says about the folder a turn runs in: the branch it is on, where
 // that was read from, and the window the thread's own tokens are counted against.
 // None of it is a control — the branch is a fact about the folder — so what a
 // check can drive is the read behind it and the ring's own painting.

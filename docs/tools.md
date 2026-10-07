@@ -79,17 +79,17 @@ re-asked for less.
 through instead of being cut off.
 
 `bash` keeps the **tail** so the exit code and recent errors survive; an MCP
-result keeps **both ends**, half the budget apiece with a
-`…N lines, N bytes truncated…` marker between them, because a server's answer
-puts its summary at the top and its totals (a `nextPageToken`, a count) at the
-bottom — keeping one end alone discards the half the next call needs. Every other
-tool keeps the head.
+result keeps **both ends** — half the lines from each end, with the byte budget
+split three-to-one in the head's favour — and a `[truncated: N lines, M bytes;
+full: <path>]` marker between them, because a server's answer puts its summary
+at the top and its totals (a `nextPageToken`, a count) at the bottom — keeping
+one end alone discards the half the next call needs. Every other tool keeps the
+head.
 
 When output is dropped, the full text is written under `truncated/` in the Oxide
-config directory and the result includes the path plus a hint to grep it or `read`
-it with an offset, so the model can recover detail without re-running the tool.
-Set `OXIDE_TRUNCATION_DIR` to change where those files go; they are retained for
-7 days.
+config directory and the result names that file, so the model can recover the
+dropped detail without re-running the tool. Set `OXIDE_TRUNCATION_DIR` to change
+where those files go; they are retained for 7 days.
 
 ## Concurrency and steering
 
@@ -100,8 +100,8 @@ unknown remote effects stays sequential. Results are recorded in the model's
 original call order. `bash` streams stdout and stderr line by line into the TUI
 (and to stderr in `-p` mode) before the final combined output.
 
-While the agent is busy, pressing Enter uses Codex's safe default: it queues the
-current input as the next turn after the current response finishes. Alt+Enter
-deliberately steers instead, injecting the message before the agent's next model
-step. A `tool.execute.after` plugin can also request termination for the batch
+While the agent is busy, pressing Enter steers the response being written,
+injecting the message before the agent's next model step. Alt+Enter queues the
+current input as the next turn after the current response finishes instead. A
+`tool.execute.after` plugin can also request termination for the batch
 with `output.terminate = true`.
