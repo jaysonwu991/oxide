@@ -694,11 +694,12 @@ body.resizing { cursor: col-resize; user-select: none; }
    moving into a box leaves its border alone, so every box looks the same
    whether the caret is in it or not. */
 .composer.filled { border-color: color-mix(in srgb, var(--dim) 40%, transparent); }
-/* The composer's own top row: the folder the message goes to and the branch that
-   folder is on, beside the window's own status, with what the thread has spent
-   and the context reading that spend is measured against at the end of the row.
-   Everything there is about where the turn runs rather than about the message, so
-   it is read before anything is typed below it. */
+/* The composer's own top row: the folder the message goes to, the branch that
+   folder is on, and the context reading that spend is measured against at the end
+   of the row. Everything here is about where the turn runs rather than about the
+   message, so it is read before anything is typed below it — the window's own
+   status and what the thread has spent are on the row below, beside the
+   controls. */
 .composer-facts {
   display: flex;
   align-items: center;
@@ -1456,7 +1457,7 @@ body.resizing { cursor: col-resize; user-select: none; }
 
 /* ---------- composer popovers ---------- */
 
-/* `/mcps` and `/sessions` open out of the composer rather than over the window:
+/* `/mcp` and `/session` open out of the composer rather than over the window:
    each popover sits directly above it inside `.composer-wrap`, so it grows
    upward from the composer's top edge, stays attached to it, and scrolls its
    own list once it has taken its share of the height. Nothing is dimmed, so the
@@ -1529,7 +1530,7 @@ body.resizing { cursor: col-resize; user-select: none; }
 
 /* ---------- sessions ---------- */
 
-/* `/sessions`: the threads stored for this project, the same list the sidebar
+/* `/session`: the threads stored for this project, the same list the sidebar
    draws beside the project, reachable from the composer. */
 .session-list { display: flex; flex-direction: column; gap: 2px; max-height: 46vh; overflow-y: auto; }
 .session-row {

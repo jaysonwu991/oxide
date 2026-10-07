@@ -110,9 +110,9 @@ function createWindow(): BrowserWindow {
   window.once("ready-to-show", () => window.show());
 
   // The window shows the app's own page and nothing else. It never navigates:
-  // a link in a reply is opened in the machine's browser through the harness's
-  // own `open_url`, and a page that tried to navigate this window away would be
-  // replacing the app.
+  // a link in a reply is opened in the machine's browser through `open_url`,
+  // which is this process's own to answer rather than the harness's, and a page
+  // that tried to navigate this window away would be replacing the app.
   window.webContents.setWindowOpenHandler(() => ({ action: "deny" }));
   window.webContents.on("will-navigate", (event) => event.preventDefault());
   window.webContents.on("will-attach-webview", (event) => event.preventDefault());

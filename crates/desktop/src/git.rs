@@ -1,4 +1,4 @@
-//! The repository the composer's bar names.
+//! The repository the composer's top row names.
 //!
 //! The branch is read out of the repository's own `HEAD` file rather than by
 //! running git: naming the branch costs a file read, works on a machine with no
@@ -11,7 +11,7 @@
 use serde::Serialize;
 use std::path::{Path, PathBuf};
 
-/// What the bar says about the folder's repository. A folder that is not inside
+/// What the row says about the folder's repository. A folder that is not inside
 /// one has no branch, and a detached HEAD has no branch either — it is named by
 /// the commit it is on — so each of those is a field of its own rather than an
 /// empty branch that would read as a name.

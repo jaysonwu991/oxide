@@ -38,9 +38,11 @@ variables, then `config.json` and provider presets. For API keys, the order is
 `config.json`; OpenAI-compatible providers also accept `OPENAI_API_KEY` as a
 last fallback. `OXIDE_BASE_URL` overrides the selected provider's base-URL
 variable, which overrides the file. Behavior settings live in `config.json`
-(global); the global `settings.json` (and the project `.oxide/settings.json`)
-supply `defaultProjectTrust`, `compaction`, `modelPrices`, `hideThinkingBlock`,
-`notifyOnComplete`, `notifySound`, and `checkForUpdates`.
+(global); `defaultProjectTrust` and `hideThinkingBlock` come from the global
+`settings.json`, while `compaction`, `modelPrices`, `modelContextWindows`,
+`modelCatalog`, `steeringMode`, `followUpMode`, `notifyOnComplete`, `notifySound`
+and `checkForUpdates` are read from it with the project `.oxide/settings.json`
+winning per key.
 
 Installed plugin packages (see [Plugins and hooks](#plugins-and-hooks)) load
 after global resources and before project resources, so project entries still
@@ -57,10 +59,15 @@ increasing precedence:
 4. Project `<root>/.mcp.json`
 5. Project `<root>/.oxide/mcp.json`
 
-The `oxide mcp` management commands only write the native files:
+`oxide mcp add` and `add-json` write the native files alone:
 `<root>/.oxide/mcp.json` for `--scope project` and `~/.oxide/mcp.json` for
-`--scope global`. The Claude Code and platform-config files listed above are read
-(for `list`, `get`, `auth`, and `remove`), never written.
+`--scope global`. Since the native file outranks the rest of its scope, adding a
+name the project already defines in `.mcp.json` writes an override rather than
+editing that file. Every other command acts on the file that defines the server,
+whichever source that is: `list`, `get` and `auth` read it, and `remove`,
+`disable` and `enable` rewrite it in place — so a server configured in a Claude
+Code or platform-config file is edited there rather than duplicated into a
+native one. A pinned `--scope` keeps them inside that scope.
 
 ### Manage from the CLI
 
@@ -1546,6 +1553,10 @@ Runtime state lives under the platform Oxide config directory:
 - `config.json` — provider and behavior settings
 - `auth.json` — stored API keys (mode `0600`)
 - `model-cache.json` — provider model lists (refreshed after 24 hours)
+- `model-catalog.json` — the context windows each provider's own catalog
+  published, remembered per provider and refreshed after four hours (override the
+  path with `OXIDE_MODEL_CATALOG_FILE`)
+- `approvals.json` — the tools each project allows without prompting
 - `mcp-oauth/<server>.json` — OAuth tokens for remote MCP servers (mode `0600`)
 - `sessions/<project>/<timestamp>_<id>.jsonl` — Pi-style session entry trees
 - `snapshots/<project>/` — shadow-git snapshots for `/undo` and `/redo`, and for

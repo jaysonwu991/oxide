@@ -349,7 +349,7 @@ impl Default for ConnectState {
     }
 }
 
-/// One editable row of the `/usage` dialog.
+/// One editable row of the `/spend` dialog.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum UsageField {
     Enabled,
@@ -390,7 +390,7 @@ impl UsageField {
     }
 }
 
-/// The `/usage` dialog: a form over a working copy of the Portkey spend-bar
+/// The `/spend` dialog: a form over a working copy of the Portkey spend-bar
 /// settings that is committed when the dialog closes.
 #[derive(Debug, Clone)]
 pub struct UsageState {
@@ -808,7 +808,7 @@ pub struct App {
     /// Settings for the Portkey spend bar, and the bar itself when enabled.
     pub usage_settings: crate::portkey_usage::UsageSettings,
     pub usage: Option<crate::portkey_usage::UsageBar>,
-    /// The `/usage` settings dialog, open while some field is being edited.
+    /// The `/spend` settings dialog, open while some field is being edited.
     pub usage_modal: Option<UsageState>,
     pub session_name: Option<String>,
     pub theme: crate::theme::Theme,

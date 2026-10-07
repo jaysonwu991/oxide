@@ -4,8 +4,14 @@ use serde_json::{json, Map, Value};
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
-/// Configuration scope for `oxide mcp` commands. `project` writes to the
-/// project's `.oxide/mcp.json`; `global` writes to `~/.oxide/mcp.json`.
+/// Configuration scope for `oxide mcp` commands: which files a command searches,
+/// and where a pinned write lands. `project` covers the project's own
+/// `.mcp.json` and `.oxide/mcp.json`; `global` covers the machine's —
+/// `~/.claude.json`, `~/.oxide/mcp.json` and the platform config dir's
+/// `mcp.json`. `add` and `add-json` always write the native file for the scope
+/// (`<root>/.oxide/mcp.json` or `~/.oxide/mcp.json`), so adding a name the
+/// project already defines in `.mcp.json` writes an override; `remove`,
+/// `disable` and `enable` rewrite whichever file in the scope defines it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Scope {
     Project,

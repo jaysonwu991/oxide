@@ -42,10 +42,11 @@ see [docs/vscode.md](vscode.md)) is a separate pnpm package that drives the
 ```
 crates/desktop/
   src/              the engine (Rust): the harness the window starts
-    lib.rs          the library it is built from: at, manager, turn
+    lib.rs          the library it is built from: at, git, manager, turn, update
     manager.rs      project registry + session aggregation
     turn.rs         starts an agent turn against a project
     at.rs           the `@path` walk the composer completes from
+    git.rs          the branch the composer's top row reads, out of .git/HEAD
     commands.rs     the `oxide_invoke` dispatcher, and the update path
     approval.rs     interactive approve/deny broker
     ask.rs          a skill's question broker
@@ -72,8 +73,8 @@ crates/desktop/
 ```
 
 The engine has no window dependency at all: it links `oxide-core` and the crates
-around it, and nothing of Electron's. `src/lib.rs` (the `at`, `manager` and
-`turn` modules) is what its unit tests cover, while `commands.rs`, `update.rs`,
+around it, and nothing of Electron's. `src/lib.rs` (the `at`, `git`, `manager`,
+`turn` and `update` modules) is what its unit tests cover, while `commands.rs`,
 `approval.rs`, `ask.rs`, `bridge.rs` and `main.rs` are declared by `main.rs`, so
 their tests run with `cargo test` from `crates/desktop` — which is what
 `.github/workflows/ci.yml` runs on each platform, beside the window's own type
@@ -119,11 +120,11 @@ The page's own `Content-Security-Policy` in `ui/index.html` is the window's
 and `form-action`/`base-uri`/`frame-ancestors` `'none'`).
 
 Events travel the other way as packets of their own: the engine announces
-`agent-start`, `agent-event`, `agent-end`, `approval-request`, `question-request`
-and `question-closed`, which `app.js` listens for, plus `update-available`,
-`update-progress`, `update-ready` and `update-failed` from the install this
-process is running — the launch's own, or the one the window asked for (see
-[The update a launch performs itself](#the-update-a-launch-performs-itself)), and
+`agent-start`, `agent-event`, `agent-end`, `approval-request`, `question-request`,
+`question-closed` and `model-catalog`, which `app.js` listens for, plus
+`update-available`, `update-progress`, `update-ready` and `update-failed` from the
+install this process is running — the launch's own, or the one the window asked for
+(see [The update a launch performs itself](#the-update-a-launch-performs-itself)), and
 the window raises `check-updates` from its menu item so the page performs the
 check and paints one dialog (see [Check for updates](#check-for-updates)). One
 more is the window's own to carry out rather than the page's — `restart` — and it
@@ -277,10 +278,10 @@ The regions, top to bottom:
 - **Composer** — a floating rounded box holding the message and what goes with it:
   the attachment strip, the message box itself and the icon row of chips. Its own
   top row names where the turn will run, the way Codex's own composer does: the
-  folder's chip and the branch that folder is on, beside the window's status, the
-  thread's totals and the context reading at the end of the row. The app claims no
-  machine — a folder on this computer is the one environment it has, so a readout
-  saying so is a constant rather than a fact about the folder. The branch is read out of the
+  folder's chip, the branch that folder is on, and the context reading at the end
+  of the row. There is no readout for the machine the turn runs on: a folder on
+  this computer is the one environment the app has, so a fact saying so would be a
+  constant rather than a fact about the folder. The branch is read out of the
   repository's own `.git/HEAD` (`oxide_desktop::git::view`) rather than by
   running git, so a worktree or a submodule is answered through the `gitdir:`
   file that points at its real `HEAD`, a detached `HEAD` is named by the commit
@@ -292,8 +293,8 @@ The regions, top to bottom:
   — and when the reader comes back to the window, since a branch switched in a
   terminal is theirs to see here. The branch is the one fact that gives way when
   the row runs out of room: it is the name that can be arbitrarily long, so it is
-  cut with an ellipsis while the folder, the window's own status and the totals
-  keep the room they need, and the row stays one line whatever the
+  cut with an ellipsis while the folder and the context reading keep the room they
+  need, and the row stays one line whatever the
   folder's own names are. The right end of that row is the context reading: a ring
   filled to the percent of the window the thread's last request used, with that
   percent spelled out beside the arc — it is one reading rather than two, which is
@@ -309,7 +310,7 @@ The regions, top to bottom:
   dialogs as icon buttons in the extension's own style: a plug that opens
   **Connect**, a padlock for the saved tool approvals, and a
   circled `?` for the shortcut help, each with the words in its tooltip and its
-  `aria-label`. The project chip is the one control on the status line that keeps
+  `aria-label`. The project chip is the one control on that row that keeps
   its words on the face of it — **Choose a project** while none is open, else the
   folder's name, accented in the first case the way the model picker marks the row
   in use — because with nothing open it is how a first thread starts rather than a
@@ -505,7 +506,8 @@ rather than a hand-kept list: every `invoke("…")` in `app.js` has an arm in
 `src/commands.rs` (and every arm is one the page performs, or a listed one kept
 for a client that calls the app rather than the page), the events `commands.rs`,
 `approval.rs`, `ask.rs` and `turn.rs` emit are exactly the events `app.js`
-listens for (plus the two the window takes off the packet channel itself), the
+listens for (plus the one the window takes off the packet channel itself — the
+`restart` a finished install asks for), the
 page reaches the engine through `oxide_invoke` over the bridge its preload
 installs (`__electrobunHostBridge`, `__electrobun.receiveMessageFromHost` and
 the pending-messages queue — the names the page has always read, and no name it
@@ -563,8 +565,9 @@ stored provider via `auth::select_stored`. Model and base URL are persisted with
 The dialog is the provider table itself, read from `auth::provider_views()` — the
 one listing the CLI's `/connect` picker and the VS Code panel draw — with a search
 box over it, since the table holds every provider a client can connect. A row
-names the provider the way a login takes it, and says what state it is in (`In
-use` for the active one, `No key needed` for a server on this machine). Each row
+names the provider the way a login takes it, and says what state it is in (`in
+use` for the active one, else `stored` for one whose credential is saved), with
+`no key needed` in place of the key field for a server on this machine. Each row
 also carries where its credential comes from (`credential`: `key`, `external` or
 `none`), which is what decides whether the dialog asks for one at all. Opening it
 selects the provider in use, else the first stored one, else the first row, and a
@@ -590,7 +593,7 @@ sidebar shows two kinds of project:
 Each row shows its session count. Clicking a project selects it and reveals its
 sessions nested underneath; clicking a session opens that thread (switching to
 its project first when the selection differs). The transcript is loaded with
-`session_messages` (`SessionLog::open_id`).
+`session_messages` (`SessionLog::open_ref`).
 
 The window does not select a project for the reader: nothing is open at launch,
 and the transcript shows the app's **home state** — the composer ready to type
@@ -779,8 +782,8 @@ card at all.
 
 - **The card** — the header says `Edited N files` with the turn's `+`/`−`
 totals; each row carries the `A`/`M`/`D` badge, the path and its own counts. Five
-rows are shown with a `+N more files` button for the rest, and the header's
-caret collapses the card.
+rows are shown, with `Show N more files` for the rest and `Show less` to fold them
+back, and the header's caret collapses the card.
 - **Review** — opens the turn over the whole window: its files on the left, and
 on the right the selected file's two sides — the state the run found, read out
 of the snapshot at the card's own baseline, against what is on disk now, aligned
@@ -817,15 +820,17 @@ clicks it, so the same change is not painted twice.
 
 ## Models and reasoning
 
-The top bar exposes the same controls the CLI has:
+The composer's own chips expose the same controls the CLI has:
 
 - **Model** — opens a picker backed by `list_models`, which uses
   `oxide_core::config::provider_configs` (shared with the CLI's `/models`) to
   fetch every logged-in provider's catalog. Choosing one calls `set_model`,
   which applies it through `apply_provider` / `apply_login_options` and
   persists with `Config::persist_selection_at`.
-- **Reasoning** — opens a picker listing `auto`, `off`, `low`, `medium` and
-  `high` with the level in use marked, the way the panel's own thinking chip does.
+- **Reasoning** — opens a picker listing the active model's own advertised
+  levels with the level in use marked, the way the panel's own thinking chip does,
+  falling back to the built-in set (`auto`, `off`, `minimal`, `low`, `medium`,
+  `high`, `xhigh`, `max`) when the model advertised none.
   It is a `role="dialog"` / `aria-modal` panel named by its own title: the
   keyboard goes to the level in use when it opens and comes back to the chip
   whatever closes it, so a reader who picked a level is not left behind the
@@ -851,10 +856,10 @@ screen, so a turn in another folder counts its own tokens while the reader is
 looking at a project with a window of its own, and its gauge is its own again when
 the strip brings its thread back. The same percentage is drawn at the end of the
 composer's own top row: an arc filled to it with the percent
-spelled out beside it (the totals beside them draw what the chat spent,
-and the fraction of the window that took is this one reading rather than a second
-word among them), in the colour of the level (the theme's dim, amber past 70%,
-error past 90%), with the tokens and the window in its tooltip.
+spelled out beside it — the fraction of the window that took is this one reading
+rather than a second word among the totals the line below draws, which is why the
+totals line spells out no `ctx` — in the colour of the level (the theme's dim,
+amber past 70%, error past 90%), with the tokens and the window in its tooltip.
 
 The totals line is the terminal footer's own line, segment for segment and in its
 order: the tokens the chat has spent, the cache it read and wrote, the hit rate
@@ -881,8 +886,11 @@ resolves every slot to a `#rrggbb` string; the desktop maps them onto CSS
 variables. Slots cover the surfaces (`background`, `sidebar`, `panel`,
 `panel_2`, `panel_3`, `border`, `text`, `dim`, `faint`) as well as the semantic
 colors (`accent`, `user`, `assistant`, `success`, `tool`, `error`, `info`,
-`tool_pending_bg`, `thinking_*`). A custom theme file overrides only the slots it
-sets, on top of Dark. `set_theme` writes the `theme` key in `config.json`, which
+`tool_pending_bg`) — the `thinking_*`, `tool_success_bg`/`tool_error_bg` and
+`usage_bar_*` slots a theme file may also carry are the terminal's own, and a
+thinking block is painted in `--faint` here. A custom theme file overrides only
+the slots it sets, on top of Dark. `set_theme` writes the `theme` key in
+`config.json`, which
 the CLI already reads as its startup default, and the choice is re-applied on
 launch. The **Theme** dialog lists each theme with a swatch strip of its key
 colors, the theme name, and a ✓ on the active one; selecting a row applies it
@@ -983,9 +991,9 @@ it is one platform's. Navigation is denied inside the
 window for the same reason: it shows the page it was built with and nowhere
 else, so a link in a reply is a browser tab rather than a remote document
 painted in the app (`setWindowOpenHandler` denies every popup, and
-`will-navigate`/`will-attach-webview` are prevented). Tool results render as
-panels;
-`write`/`edit` results include a colored diff.
+`will-navigate`/`will-attach-webview` are prevented). A tool result is a card of
+that same column (see [Interface](#interface)): a finished call is a line with its
+output behind it, and `write`/`edit` results include a colored diff.
 
 ## Check for updates
 
@@ -1092,7 +1100,7 @@ AppImage. A checkout's build, a distribution's package, a copy an administrator
 put in place for every user, and a Windows installation a setup made (which
 takes over the files and waits for the app to be closed) all leave the launch
 alone: nothing is written over behind the reader's back, and the dialog's own
-**Install** stays the way in.
+**Update** stays the way in.
 What does run is the dialog's own install — the same download, the same
 checksum, the same swap — with one install at a time, so a second launch cannot
 race the first.
@@ -1121,8 +1129,8 @@ anything, and the install goes on: what is left when it lands opens the dialog
 again on the restart, since the window keeps no row of its own for an install
 nobody in the window asked for. An install that could not finish is repainted
 into the dialog when that is what the reader is looking at — the step it was on
-is not left standing over an install that has ended — and is the line under the
-composer when it is not. Because the window remembers the
+is not left standing over an install that has ended — and goes to the composer's
+own status line when it is not. Because the window remembers the
 release it installed, a later **Check for Updates…** reports that install rather
 than offering to repeat it. The dialog's own button is the one to ask again with.
 

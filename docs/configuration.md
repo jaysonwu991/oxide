@@ -213,15 +213,17 @@ variable and the wire dialect come from the table.
 | `lmstudio` | `lm-studio` | OpenAI-compatible | `local-model` | `http://localhost:1234/v1` | `LMSTUDIO_API_KEY` |
 | `llamacpp` | `llama-cpp`, `llama.cpp` | OpenAI-compatible | `local-model` | `http://localhost:8080/v1` | `LLAMACPP_API_KEY` |
 | `vertex` | `google-vertex`, `vertex-ai` | Gemini `generateContent` | `gemini-2.0-flash` | derived from the project and location | `GOOGLE_VERTEX_CREDENTIALS`, `GOOGLE_APPLICATION_CREDENTIALS` |
-| `bedrock` | `amazon-bedrock`, `aws-bedrock`, `aws` | Bedrock Converse | `anthropic.claude-3-5-sonnet-20241022-v2:0` | `https://bedrock.<region>.amazonaws.com` | `AWS_BEARER_TOKEN_BEDROCK` (or AWS SigV4 credentials) |
+| `bedrock` | `amazon-bedrock`, `aws-bedrock`, `aws` | Bedrock Converse | `anthropic.claude-3-5-sonnet-20241022-v2:0` | `https://bedrock-runtime.<region>.amazonaws.com` | `AWS_BEARER_TOKEN_BEDROCK` (or AWS SigV4 credentials) |
 | `azure` | `azure-openai`, `azure-ai` | Azure OpenAI | `&mdash;` | your resource's endpoint | `AZURE_API_KEY`, `AZURE_OPENAI_API_KEY` |
 | `github-copilot` | `copilot`, `github` | OpenAI-compatible | `gpt-4o` | `https://api.githubcopilot.com` | `GITHUB_TOKEN`, `GH_TOKEN` |
 | `gitlab` | `gitlab-duo`, `duo` | OpenAI-compatible (Anthropic for a Claude model) | `gpt-4o` | the AI gateway's proxy | `GITLAB_TOKEN`, `GL_TOKEN` |
 
 A provider that is not in the table still works the same way: set `provider`,
 `base_url`, `model` and a key, and it is treated as an OpenAI-compatible
-endpoint under the name you gave it (`oxider` reads `OXIDER_API_KEY` for it, and
-remembers its model and endpoint separately from every other provider). Naming a
+endpoint under the name you gave it (a key with no preset behind it is read from
+`OPENAI_API_KEY`, or from `OXIDE_API_KEY`, which any provider accepts, and the
+model and endpoint it uses are remembered separately from every other provider).
+Naming a
 known provider's host as the `base_url` of a custom provider also gets that
 host's dialect, so a gateway in front of a first-party API is still spoken to the
 right way.
@@ -274,7 +276,9 @@ is what is looked for.
   `AWS_PROFILE`, default `default`).
 
 `AWS_REGION` (or `AWS_DEFAULT_REGION`) names the region and defaults to
-`us-east-1`. The endpoint is `bedrock.<region>.amazonaws.com`, and the model id
+`us-east-1`. A turn streams from `bedrock-runtime.<region>.amazonaws.com`, while
+the `/models` listing asks the control plane at `bedrock.<region>.amazonaws.com`,
+and the model id
 is Bedrock's own — `anthropic.claude-3-5-sonnet-20241022-v2:0` by default, with
 `amazon.`, `meta.` or `mistral.` ids for the open models. `/models` lists the
 foundation models the account can actually invoke.

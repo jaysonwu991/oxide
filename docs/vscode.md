@@ -20,15 +20,29 @@ editors/vscode/
     chatView.ts       WebviewViewProvider: HTML shell, CSP, message bridge
     cli.ts            process layer: binary lookup, startTurn, runCapture
     attachments.ts    thumbnails and the temp files pasted blobs are written to
+    updates.ts        the extension's own install: fetch, verify, hand to VS Code
     core/             pure, webview-free logic (unit tested under node)
       protocol.ts     wire events -> transcript state machine -> view messages
       views.ts        view ids shared by the manifest and the provider
       approvals.ts    an approval request, its tool titles and its answers
       questions.ts    a skill's question request, its answers and its label
       args.ts         VS Code settings -> `oxide` argv
+      rpc.ts          the rpc request frames written to the child's stdin
       prompt.ts       prompt assembly, @path expansion, attachments
       attachments.ts  attachment types, extensions, naming and data URLs
       preview.ts      write/edit/patch diff previews
+      changes.ts      a finished turn's `turn_changes`, and its Undo
+      history.ts      a resumed thread's stored conversation
+      at.ts           the `@` completion's token and ranking
+      palette.ts      the `/` palette's catalog rows and their routing
+      dialogs.ts      the panel's own dialogs, composed as data
+      mcps.ts         `oxide mcp list --json` parsing
+      providers.ts    `oxide providers --json` parsing
+      models.ts       `oxide models --json` parsing
+      reasoning.ts    `oxide reasoning --json` (the model's own levels)
+      context.ts      `oxide context --json` (the window a run resolves)
+      updates.ts      `oxide update --check --json` parsing
+      clipboard.ts    `oxide clipboard --json`, the paste a webview cannot read
       config.ts       shared config-dir resolution (read-only)
       settings.ts     settings.json / .oxide/settings.json reads (read-only)
       trust.ts        trust.json resolution and the access decision
@@ -79,7 +93,7 @@ the thread's summarized title — the resumed session's name when the dialog kne
 one, else the first message sent condensed to one line (Markdown stripped, cut
 at a word boundary), else **New chat** — next to icon buttons for a new chat
 and for resuming one, whose tooltips — and `aria-label`s, the names a screen
-reader reads out — say **New chat** and **Resume a session**; the model is the
+reader reads out — say **New chat** and **Session history**; the model is the
 footer's first chip rather than a second line under the title, and the
 composer's **Attach**, **Stop** and **Send** are icons too, so the only text in
 the chrome is the phase and the numbers. The phase
@@ -123,7 +137,8 @@ closes the completion list or stops a turn.
 Both icons are the desktop app's: `media/oxide.svg` redraws the mark inside
 `crates/desktop/icons/icon.png` — a cyan diamond (`#5fd7ff`) with a dark rim
 (`#2d2d3a`), at the same proportions relative to its box (the cyan diamond
-spans 62.5% of the canvas, the rim reaches 71.9%) — and `media/icon.png` is the
+spans 62.5% of the canvas in both, the rim reaching 71.9% across the PNG and
+67.2% as the stroked path in the SVG) — and `media/icon.png` is the
 desktop's `128x128.png` byte for byte, which is what the Extensions view and the
 Marketplace listing show.
 
@@ -350,15 +365,17 @@ the `session` header supplies the id reused for the next message with
 with a `quit` frame when `agent_end` arrives, so the process exits on its own.
 
 - **Queue / stop** — a message sent while a turn runs is queued and started
-  after it finishes; **Stop** kills the process (SIGTERM, then SIGKILL after 3
-  s). The session on disk is intact, so the next message continues the thread.
+  after it finishes, unless the toolbar's toggle is set to **Steer**, which
+  injects it before the model's next step; **Stop** kills the process (SIGTERM,
+  then SIGKILL after 3 s). The session on disk is intact, so the next message
+  continues the thread.
 - **Approvals** — with `oxide.askApprovals` on (the default) a turn starts with
   `--ask-approvals`, so a tool a permission rule holds comes back as an
   `approval_request` event instead of running. The turn waits: a card appears in
   the transcript naming the tool, what it would do (`Run a shell command`) and
   the command or path it would touch, with **Deny** / **Allow once** / **Always
   allow**. The answer travels back over the same pipe as an `approval` frame
-  (`Approve` in `core/approvals.ts`; `chat.ts::approve` → `cli.ts`), and
+  (`approvalFrame` in `core/rpc.ts`; `chat.ts::approve` → `cli.ts`), and
   **Always allow** is remembered by the CLI's own broker in
   `<config>/Oxide/approvals.json` — the file the terminal and the desktop app
   read — so the question does not come back for that tool in that project. An
@@ -400,8 +417,9 @@ with a `quit` frame when `agent_end` arrives, so the process exits on its own.
   strip's **Open** would otherwise put another project's conversation on screen.
 - **Usage** — `usage` events accumulate input/output/cache tokens and cost for
   the usage line, and the latest one sets the context gauge (its prompt tokens
-  over the window), which is `OXIDE_CONTEXT_LIMIT` when it is set else the
-  config's `context_window`, else the model's known window (1M when unknown).
+  over the window), which is `OXIDE_CONTEXT_LIMIT` when it is set, else the window
+  `oxide context --json` resolved, else the config's `context_window`, else the
+  model's known window, falling back to the CLI's own 128k.
 
 ### The thread a turn is in
 
@@ -470,11 +488,13 @@ it.
   attaches and again after a model change — so the panel offers `low`/`high`/`max`
   for a DeepSeek model rather than the full built-in set, and falls back to that
   set when the model advertised none. The window the model chip names and the
-  context gauge is a fraction of is read the same way and at the same two
-  moments, through `oxide context --json` (`core/context.ts`): the window
-  composes a `modelContextWindows` override in the shared settings and the
-  window the provider's catalog published, neither of which this package reads,
-  so the CLI is asked rather than answered for. Its own table of known windows
+  context gauge is a fraction of is read through `oxide context --json`
+  (`core/context.ts`) at those same two moments and again whenever the shared
+  configuration may have moved — a settings change, the start or the end of a
+  turn, and a login — because the window composes a `modelContextWindows`
+  override in the shared settings and the window the provider's catalog
+  published, neither of which this package reads, so the CLI is asked rather
+  than answered for, and a value read before either moved would be stale. Its own table of known windows
   serves only as the value painted before the answer lands and for a CLI too old
   to know the command, and `test/context.test.ts` reads
   `crates/core/src/config.rs` and holds the rows to it, which is what a stale
@@ -485,12 +505,15 @@ it.
   toolbar inside one bordered block. It starts two rows tall (`rows="2"`) and
   grows with the message up to 200px, where it scrolls instead.
 - **Toolbar** — the **Attach** icon (the file picker), the live phase with an
-  elapsed timer while a turn runs, and one action in the corner that swaps
-  rather than sitting beside a second button: **Stop** while a turn runs with
-  nothing to say, **Send** — which reads as **Queue** — the moment the box holds
-  something. The desktop app swaps the same two the same way, so the button the
-  reader is aiming at does not move as the box is typed into; an attachment is
-  something to send too, while a context chip on its own is not.
+  elapsed timer while a turn runs, and the corner action, which swaps rather
+  than sitting beside a second button: **Stop** while a turn runs with nothing
+  to say, **Send** the moment the box holds something. While a turn runs and
+  there is something to send, **Queue**/**Steer** appears beside it — the
+  desktop app's own choice, drawn the same way: **Queue** is the safe default
+  that waits for the current response, and a click flips it to **Steer**, which
+  injects the message before the model's next step. The corner button does not
+  move as the box is typed into; an attachment is something to send too, while a
+  context chip on its own is not.
 - **Branch** — the repository the folder sits in, read from `.git/HEAD` rather
   than through the Git extension, so it needs no other extension installed; a
   worktree's or submodule's `gitdir:` pointer is followed to the real HEAD.
@@ -1116,7 +1139,9 @@ pnpm run package   # vsce package -> oxide-vscode-<version>.vsix
 ```
 
 Press <kbd>F5</kbd> with the folder open to launch an Extension Development
-Host. The tests cover the pure modules only: argv building, prompt assembly and
+Host (the repository ships no launch configuration, so VS Code asks which
+environment to run the first time — **VS Code Extension Development** is the
+one). The tests cover the pure modules only: argv building, prompt assembly and
 `@path` expansion (a reference's line range among them, down to the lines its
 block carries and the range a file that shrank leaves in the message), the `@`
 completion's token and rows (`test/at.test.ts`),
