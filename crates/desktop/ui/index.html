@@ -156,21 +156,44 @@
         </section>
 
         <div id="composer" class="composer">
+          <!-- The bar above the message box names where the turn runs, the way
+               Codex's own does: the folder on screen, the branch it is on, and
+               the machine it runs on, with the context status at its end. The
+               folder is the composer's own control — a project is not chosen
+               for the reader on the way in, so the chip is where one is picked
+               — while the branch and the machine are readouts of the folder. -->
+          <div class="composer-head">
+            <button
+              id="project"
+              class="chip project-chip"
+              title="Choose a project&#10;Pick the folder this window runs in"
+              aria-label="Choose a project"
+            ><svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true"><path d="M1.9 12.5V4c0-.6.5-1.1 1.1-1.1h2.4c.3 0 .6.1.8.4l1.2 1.5h5.6c.6 0 1.1.5 1.1 1.1v6.6c0 .6-.5 1.1-1.1 1.1H3c-.6 0-1.1-.5-1.1-1.1Z" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/></svg><span id="project-name" class="chip-name">Choose a project</span></button>
+            <!-- The branch is read out of the repository's own HEAD, so it
+                 names a worktree's branch or the commit a detached HEAD is on;
+                 a folder that is not a repository has none to name, and the
+                 chip goes away rather than saying nothing. The glyph is the one
+                 the panel's own footer draws for it. -->
+            <span id="git" class="composer-info" hidden
+              ><svg viewBox="0 0 16 16" width="13" height="13" aria-hidden="true"><circle cx="4" cy="3" r="1.5" fill="none" stroke="currentColor" stroke-width="1.3"/><circle cx="4" cy="13" r="1.5" fill="none" stroke="currentColor" stroke-width="1.3"/><circle cx="12" cy="5" r="1.5" fill="none" stroke="currentColor" stroke-width="1.3"/><path d="M4 4.5v7M5.5 11c4 0 6.5-1.5 6.5-4.5" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/></svg><span id="git-branch"></span></span>
+            <!-- Where the turn runs: this app has one environment, a folder on
+                 the machine the window is on, and it says so the way Codex
+                 does rather than leaving the reader to assume a cloud. It is
+                 shown with a folder open — there is no turn to place before
+                 one — which leaves the chip alone on the row. -->
+            <span id="machine" class="composer-info" title="Runs in a folder on this computer" hidden
+              ><svg viewBox="0 0 16 16" width="13" height="13" aria-hidden="true"><path d="M2.6 9.6V3.4a1 1 0 0 1 1-1h8.8a1 1 0 0 1 1 1v6.2a1 1 0 0 1-1 1H3.6a1 1 0 0 1-1-1Z" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linejoin="round"/><path d="M5.8 13.6h4.4M8 10.6v3" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/></svg><span>This computer</span></span>
+            <!-- The context status: a ring filled to the window the thread's own
+                 request used, in the color of the level, with the number and the
+                 window behind it in its tooltip — the same escalation the
+                 terminal's footer and the panel's own gauge color by. -->
+            <span id="context-ring" class="context-ring" role="img" hidden
+              ><svg viewBox="0 0 16 16" width="18" height="18" aria-hidden="true"><circle cx="8" cy="8" r="6.2" fill="none" stroke="currentColor" stroke-width="1.6" opacity="0.3" /><circle id="context-ring-fill" cx="8" cy="8" r="6.2" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" transform="rotate(-90 8 8)" stroke-dasharray="0 38.96" /></svg></span>
+          </div>
           <div id="attachments" class="attachments" hidden></div>
           <textarea id="prompt" placeholder="Ask Oxide…"></textarea>
           <div class="composer-bar">
             <div class="composer-left">
-              <!-- The folder every other control on this row applies to, and the
-                   app's way into a first thread: a project is not selected for
-                   the reader on the way in, so the chip asks which one. It
-                   carries its words rather than a tooltip, since with nothing
-                   open it reads as the action it is. -->
-              <button
-                id="project"
-                class="chip project-chip"
-                title="Choose a project&#10;Pick the folder this window runs in"
-                aria-label="Choose a project"
-              ><svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true"><path d="M1.9 12.5V4c0-.6.5-1.1 1.1-1.1h2.4c.3 0 .6.1.8.4l1.2 1.5h5.6c.6 0 1.1.5 1.1 1.1v6.6c0 .6-.5 1.1-1.1 1.1H3c-.6 0-1.1-.5-1.1-1.1Z" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/></svg><span id="project-name" class="chip-name">Choose a project</span></button>
               <button
                 id="attach"
                 class="chip chip-icon"

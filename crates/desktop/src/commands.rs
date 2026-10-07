@@ -302,6 +302,8 @@ fn advertised_reasoning_levels(config: &Config) -> Value {
     }
 }
 
+/// What the header's own line adds to the model chip: the window the model
+/// resolves to, the trust state, and what the user has to act on.
 fn project_info_value(config: &Config, project: &Path) -> Value {
     let trust = oxide_desktop::manager::project_trust(config, project);
     json!({
@@ -314,6 +316,14 @@ fn project_info_value(config: &Config, project: &Path) -> Value {
         "hasKey": !config.api_key.is_empty(),
         "trust": trust,
     })
+}
+
+/// The branch a turn in this folder runs on, for the composer's bar. Read from
+/// the repository itself rather than by asking git, so a folder that is not a
+/// clone answers with no repository at all instead of a failure — there is no
+/// branch to name, which the bar draws as no chip.
+pub fn git_info(project: String) -> CmdResult<oxide_desktop::GitView> {
+    Ok(oxide_desktop::git::view(&project_dir(&project)?))
 }
 
 /// The active model's reasoning levels, for the picker the thinking chip opens.
@@ -428,6 +438,12 @@ pub async fn session_messages(project: String, id: String) -> CmdResult<Value> {
             "cost": totals.cost,
             "cacheHitRate": totals.cache_hit_rate,
             "messageCount": messages.len(),
+            // The prompt tokens of the newest recorded request, which is the
+            // context the thread was last run with: a front-end that opens a
+            // stored thread again draws its own gauge from this rather than
+            // reading zero until the next turn (the same field `oxide sessions
+            // show --json` reports to the one that cannot link the core).
+            "contextTokens": log.context_tokens(),
         },
     }))
 }
@@ -1211,6 +1227,7 @@ pub async fn dispatch(
         "list_sessions" => command_value(list_sessions(arg(&args, "project")?, &state).await),
         "all_sessions" => command_value(all_sessions(&state).await),
         "project_info" => command_value(project_info(arg(&args, "project")?, &state).await),
+        "git_info" => command_value(git_info(arg(&args, "project")?)),
         "reasoning_levels" => command_value(reasoning_levels(arg(&args, "project")?, &state).await),
         "set_project_trust" => command_value(
             set_project_trust(arg(&args, "project")?, arg(&args, "trusted")?, &state).await,
@@ -1491,6 +1508,32 @@ mod tests {
         // rather than resolving it to the directory the app was launched in.
         assert_eq!(palette_entries("   ").unwrap().len(), home.len());
         assert!(project_dir("  ").is_err());
+    }
+
+    #[test]
+    fn the_bar_reads_a_branch_from_the_folder_and_refuses_nothing_but_no_folder() {
+        let root = std::env::temp_dir().join(format!("oxide_git_info_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(root.join(".git")).expect("creating the fixture");
+        std::fs::write(root.join(".git/HEAD"), "ref: refs/heads/main\n").expect("writing HEAD");
+        let view = git_info(root.display().to_string()).expect("a repository answers");
+        assert_eq!(view.branch, "main");
+        // A folder that is no repository is an answer with nothing in it rather
+        // than a failure: the bar hides the chip it has nothing to say with.
+        let plain =
+            std::env::temp_dir().join(format!("oxide_git_info_plain_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&plain);
+        std::fs::create_dir_all(&plain).expect("creating the plain folder");
+        let view = git_info(plain.display().to_string()).expect("a plain folder answers");
+        assert!(!view.repo && view.branch.is_empty());
+        // No folder at all is refused rather than resolved to the directory the
+        // app was launched in.
+        assert_eq!(
+            git_info("   ".to_string()).unwrap_err(),
+            "select a project first"
+        );
+        let _ = std::fs::remove_dir_all(&plain);
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     #[test]

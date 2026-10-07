@@ -694,6 +694,54 @@ body.resizing { cursor: col-resize; user-select: none; }
    moving into a box leaves its border alone, so every box looks the same
    whether the caret is in it or not. */
 .composer.filled { border-color: color-mix(in srgb, var(--dim) 40%, transparent); }
+/* The head row of the composer's box: the folder the message goes to, the
+   repository it sits in and the machine it runs on, with the context status at
+   the end of the row. Everything there is about the folder rather than about the
+   message, so the row is read before anything is typed below it. */
+.composer-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 2px 2px 8px;
+}
+/* A fact about the folder: its glyph and its value in the row's own dim text,
+   rather than a chip the reader would try to press. */
+.composer-info {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+  color: var(--faint);
+  font-size: 11.5px;
+}
+.composer-info svg { display: block; flex: none; }
+/* The branch keeps the chips' own mono face: it is a name the reader matches
+   against a terminal rather than a sentence, and it is cut rather than wrapped
+   when a project's branch is longer than the room beside the folder. */
+#git-branch {
+  color: var(--dim);
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  max-width: 200px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+/* The context status: a ring filled to the percent of the window the thread's
+   last request used, escalating the way the terminal footer's own percentage and
+   the panel's gauge do — its dim tone, amber past 70%, the error color past 90%
+   — from the end of the row, which is where Codex keeps its own. */
+.context-ring {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: none;
+  margin-left: auto;
+  padding-left: 8px;
+  color: var(--dim);
+}
+.context-ring svg { display: block; }
+.context-ring[data-level="warn"] { color: var(--tool); }
+.context-ring[data-level="high"] { color: var(--error); }
 .composer textarea {
   width: 100%;
   border: none;
@@ -877,11 +925,13 @@ body.resizing { cursor: col-resize; user-select: none; }
    mark the active row: a shield is a shield whichever decision is saved, so the
    color is what says which one it is. */
 .chip.active { color: var(--accent); border-color: var(--accent); }
-/* The project chip is the one control on the row that names where the message
+/* The project chip is the one control on the bar that names where the message
    goes rather than what it carries, so it keeps its words and takes the accent
-   while no project is open — it is then the app's way into a first thread. */
+   while no project is open — it is then the app's way into a first thread. The
+   marker is the chip's own rather than the sheet's `.empty`, which centers the
+   placeholder it belongs to. */
 .project-chip { display: inline-flex; align-items: center; gap: 6px; max-width: 220px; }
-.project-chip.empty { color: var(--accent); border-color: var(--accent); }
+.project-chip.unset { color: var(--accent); border-color: var(--accent); }
 .project-chip .chip-name {
   overflow: hidden;
   text-overflow: ellipsis;
