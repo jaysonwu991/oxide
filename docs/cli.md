@@ -61,7 +61,9 @@ increasing precedence:
 
 `oxide mcp add` and `add-json` write the native files alone:
 `<root>/.oxide/mcp.json` for `--scope project` and `~/.oxide/mcp.json` for
-`--scope global`. Every other command acts on the file that defines the server,
+`--scope global`. Since the native file outranks the rest of its scope, adding a
+name the project already defines in `.mcp.json` writes an override rather than
+editing that file. Every other command acts on the file that defines the server,
 whichever source that is: `list`, `get` and `auth` read it, and `remove`,
 `disable` and `enable` rewrite it in place — so a server configured in a Claude
 Code or platform-config file is edited there rather than duplicated into a

@@ -79,17 +79,19 @@ re-asked for less.
 through instead of being cut off.
 
 `bash` keeps the **tail** so the exit code and recent errors survive; an MCP
-result keeps **both ends** — half the lines from each end, with the byte budget
-split three-to-one in the head's favour — and a `[truncated: N lines, M bytes;
-full: <path>]` marker between them, because a server's answer puts its summary
-at the top and its totals (a `nextPageToken`, a count) at the bottom — keeping
-one end alone discards the half the next call needs. Every other tool keeps the
-head.
+result keeps **both ends** — half the lines from each end when the line cap is
+what bites, and an even split of the bytes when one long line (a server's JSON)
+is what exceeds it — with `…N lines, M bytes truncated…` where the middle went,
+because a server's answer puts its summary at the top and its totals (a
+`nextPageToken`, a count) at the bottom — keeping one end alone discards the
+half the next call needs. Every other tool keeps the head.
 
 When output is dropped, the full text is written under `truncated/` in the Oxide
-config directory and the result names that file, so the model can recover the
-dropped detail without re-running the tool. Set `OXIDE_TRUNCATION_DIR` to change
-where those files go; they are retained for 7 days.
+config directory and the result is headed `[truncated: N lines, M bytes; full:
+<path>]` (`full:` is left out when nothing could be saved), so the model can
+recover the dropped detail without re-running the tool. Set
+`OXIDE_TRUNCATION_DIR` to change where those files go; they are retained for
+7 days.
 
 ## Concurrency and steering
 

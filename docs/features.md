@@ -27,8 +27,10 @@ page is the detail behind it, and the task-by-task guides live in
   See [Providers](configuration.md#providers).
 - Reasoning effort: `auto` (default), `off`, `minimal`, `low`, `medium`, `high`,
   `xhigh` or `max` — `off` always, then the levels the active model's own
-  listing advertises (the built-in set when it advertises none) — cycled in the
-  TUI with Shift+Tab or set with `--reasoning` / `OXIDE_REASONING`.
+  listing advertises; a model whose listing advertises none falls back to the
+  built-in effort levels when Oxide recognizes it as a reasoning model, and
+  otherwise offers `auto` and `off` alone. Cycled in the TUI with Shift+Tab or
+  set with `--reasoning` / `OXIDE_REASONING`.
   `auto` uses the provider/model's native behavior; explicit levels map to
   OpenAI-compatible effort, Anthropic adaptive thinking, or legacy extended
   thinking as appropriate.
