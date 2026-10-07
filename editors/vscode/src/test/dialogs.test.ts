@@ -146,6 +146,27 @@ describe("settings dialogs", () => {
     assert.match(here.rows[1].detail, /Available from portkey \(active\)/);
   });
 
+  /// The same id under two providers is two rows, and each carries the pair its
+  /// action switches to: a value of the bare id would make the later row resolve
+  /// to the first provider that serves that id.
+  it("keeps two providers' rows for one model id apart", () => {
+    const dialog = modelDialog("", "anthropic", "", [
+      { provider: "anthropic", model: "claude-sonnet-5" },
+      { provider: "openrouter", model: "claude-sonnet-5" },
+    ]);
+    assert.deepEqual(
+      dialog.rows.map((row) => row.label),
+      ["Oxide config default", "claude-sonnet-5", "claude-sonnet-5"],
+    );
+    assert.deepEqual(
+      dialog.rows.slice(1).map((row) => row.value),
+      ["anthropic:claude-sonnet-5", "openrouter:claude-sonnet-5"],
+    );
+    // A model typed by hand has no provider here, so it stays the id itself.
+    const typed = modelDialog("", "anthropic", "", [], "glm-5x");
+    assert.equal(typed.rows[typed.rows.length - 1].value, "glm-5x");
+  });
+
   it("searches the config fallback by its complete visible label", () => {
     for (const query of ["oxide", "default", "config"]) {
       const dialog = modelDialog("claude-opus-5", "portkey", "", [], query);

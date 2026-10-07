@@ -250,6 +250,13 @@ pre,
   margin: 0 0 14px;
 }
 
+/* The row is turned off explicitly: a `display` of its own beats the browser's
+   own rule for the attribute, and a folder that was closed again would leave the
+   suggestions it built on screen behind the ruled-out invitation. */
+.empty .suggestions[hidden] {
+  display: none;
+}
+
 .empty .suggestions button {
   display: block;
   width: 100%;

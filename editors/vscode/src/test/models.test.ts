@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 
-import { modelsListArgs, parseModelCatalog } from "../core/models";
+import { modelChoiceId, modelsListArgs, parseModelCatalog, parseModelChoice } from "../core/models";
 
 describe("model catalog", () => {
   it("asks the CLI for every logged-in provider's catalog", () => {
@@ -73,6 +73,34 @@ describe("model catalog", () => {
       JSON.stringify({ active: "zai", providers: [{ active: true, models: ["glm-5"] }] }),
     );
     assert.deepEqual(catalog?.models, [{ provider: "zai", model: "glm-5" }]);
+  });
+
+  /// Two providers can serve the same model id, so a row carries the pair rather
+  /// than the id: the action has to switch to the provider whose row was clicked,
+  /// not to the first entry that happens to match the id.
+  it("tells the same model id apart under two providers", () => {
+    const models = [
+      { provider: "openrouter", model: "claude-sonnet-5" },
+      { provider: "anthropic", model: "claude-sonnet-5" },
+    ];
+    assert.equal(modelChoiceId("anthropic", "claude-sonnet-5"), "anthropic:claude-sonnet-5");
+    assert.deepEqual(parseModelChoice(models, "anthropic:claude-sonnet-5"), {
+      provider: "anthropic",
+      model: "claude-sonnet-5",
+    });
+    assert.deepEqual(parseModelChoice(models, "openrouter:claude-sonnet-5"), {
+      provider: "openrouter",
+      model: "claude-sonnet-5",
+    });
+    // A row with no provider of its own, and a model typed into the search box,
+    // name no provider: the caller falls back to the one in use.
+    assert.equal(modelChoiceId("", "glm-5"), "glm-5");
+    assert.equal(parseModelChoice(models, "glm-5"), null);
+    assert.equal(parseModelChoice(models, "  "), null);
+    // The pair is composed and compared rather than split, since a model id may
+    // carry the separator itself.
+    const dated = [{ provider: "openai", model: "gpt-4o:2024-08-06" }];
+    assert.deepEqual(parseModelChoice(dated, "openai:gpt-4o:2024-08-06"), dated[0]);
   });
 
   it("refuses output that is not a catalog", () => {

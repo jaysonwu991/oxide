@@ -17,6 +17,7 @@
 // Like the other readers here it is tolerant: a field that is missing or of the
 // wrong type reads as empty rather than throwing mid-turn.
 
+import { dataUrlMime, isPaintableImage } from "./attachments";
 import { emptyUsage, type ReplayEntry, type SentChip, type UsageTotals } from "./protocol";
 
 export interface SessionHistory {
@@ -135,17 +136,24 @@ export function parseSessionHistory(json: string): SessionHistory | null {
 }
 
 /// The media one stored message carried, as the chips a sent bubble shows: the
-/// name the store kept and the data URL the CLI reports, which is what the
-/// transcript paints a picture from. An attachment with neither reads as nothing
-/// rather than as a chip with an empty name.
+/// name the store kept, and the bytes the CLI reports where they are a picture
+/// this webview can draw. A PDF or a document travels the same way — both are
+/// `ContentPart` payloads with a data URL — so the type decides: a chip whose
+/// preview was a PDF would be a picture the browser paints as a broken image
+/// instead of the name the reader is promised. An attachment with neither reads
+/// as nothing rather than as a chip with an empty name.
 function storedAttachments(value: unknown): SentChip[] {
   if (!Array.isArray(value)) return [];
   const chips: SentChip[] = [];
   for (const entry of value) {
     const record = obj(entry);
     const label = str(record.name).trim() || "attachment";
-    const preview = str(record.dataUrl).trim();
-    chips.push({ label, preview: preview || null });
+    const dataUrl = str(record.dataUrl).trim();
+    const mime = dataUrlMime(dataUrl);
+    chips.push({
+      label,
+      preview: dataUrl && isPaintableImage(mime) ? dataUrl : null,
+    });
   }
   return chips;
 }

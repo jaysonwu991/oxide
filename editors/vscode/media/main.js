@@ -680,7 +680,9 @@
     entry.el.classList.toggle("expanded", Boolean(entry.expanded));
     if (item.running) {
       setFold(entry, false);
-      const elapsed = entry.started ? Date.now() - entry.started : 0;
+      // The call's own start, carried in the item: a card rebuilt from a `state`
+      // message counts from the call rather than from the moment it was painted.
+      const elapsed = item.startedAt ? Date.now() - item.startedAt : 0;
       entry.state.innerHTML = `<span class="spinner"></span>${elapsed > 1000 ? formatDuration(elapsed) : ""}`;
       setOutput(entry.pre, item.output, true);
       entry.hint.hidden = true;
@@ -691,9 +693,10 @@
     // did not record whether it landed, so the card marks the call as unrecorded
     // rather than claiming the success (`✔`) or the failure (`✖`) it cannot know.
     const mark = item.unknown ? "•" : item.isError ? "✖" : "✔";
-    // What the call took, kept beside its counts: a stored call took no time
-    // here, so it carries none.
-    const spent = entry.elapsed ? ` ${formatDuration(entry.elapsed)}` : "";
+    // What the call took, kept beside its counts — measured by the host where
+    // the call began, so a repaint and the other pane agree. A stored call took
+    // no time here and carries none.
+    const spent = item.elapsed ? ` ${formatDuration(item.elapsed)}` : "";
     entry.state.textContent = `${mark}${counts ? ` ${counts}` : ""}${spent}`;
     entry.state.title = item.unknown ? "Resumed thread: how this call ended was not recorded" : "";
     entry.inline = Boolean(item.diff);
@@ -1306,8 +1309,7 @@
     if (item.kind === "approval") return approvalNode(item);
     if (item.kind === "question") return questionNode(item);
     if (item.kind === "changes") return changesCard(item);
-    const card = toolCard(item);
-    return { ...card, started: item.running ? Date.now() : 0 };
+    return toolCard(item);
   }
 
   function renderAssistant(entry) {
@@ -1435,13 +1437,6 @@
         const entry = entries.get(message.id);
         if (!entry) return;
         Object.assign(entry.item, message.patch);
-        // The runtime is read once, as the call ends: the entry knows when it
-        // started, and a repaint later — unfolding the card's diff, say — would
-        // otherwise report a duration that keeps growing.
-        if (entry.started && !entry.item.running) {
-          entry.elapsed = Date.now() - entry.started;
-          entry.started = 0;
-        }
         paintTool(entry);
         scrollDown(false);
         return;

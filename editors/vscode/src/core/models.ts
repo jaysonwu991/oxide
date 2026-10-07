@@ -31,6 +31,29 @@ export function modelsListArgs(): string[] {
   return ["models", "--json"];
 }
 
+/// A model's id as a **choice**: qualified by the provider that serves it, since
+/// the same id can be offered by more than one logged-in provider and a row
+/// carrying the id alone could not say which one the reader picked. A model
+/// typed by hand belongs to no provider here, and is its own id.
+///
+/// The pair is composed and compared rather than split: a model id may contain
+/// the separator (`gpt-4o:2024-08-06`), so the caller matches against the same
+/// composition instead of parsing one.
+export function modelChoiceId(provider: string, model: string): string {
+  return provider ? `${provider}:${model}` : model;
+}
+
+/// The model a choice names, or `null` for an id no provider in the listing
+/// offers (one typed into the dialog's search box).
+export function parseModelChoice(
+  models: readonly { provider: string; model: string }[],
+  choice: string,
+): { provider: string; model: string } | null {
+  const wanted = choice.trim();
+  if (!wanted) return null;
+  return models.find((entry) => modelChoiceId(entry.provider, entry.model) === wanted) ?? null;
+}
+
 /// Parses the listing. A CLI too old to know `--json` prints its human table, so
 /// a body that is not the listing yields null rather than a catalog with no
 /// models in it.

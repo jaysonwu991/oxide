@@ -202,11 +202,14 @@ describe("Transcript", () => {
       arguments: '{"path":"src/a.rs","edits":[]}',
     });
     const item = push(pushed[0]);
-    assert.equal(item.kind, "tool");
+    assert.ok(item.kind === "tool", "the push is a tool card");
     assert.equal(card(transcript).running, true);
     assert.equal(card(transcript).diff, "diff-text");
     assert.equal(card(transcript).args, '{"path":"src/a.rs","edits":[]}');
     assert.equal(transcript.status, "Running edit…");
+    // The card carries when the call began, so a pane that paints the same
+    // transcript again counts from the call rather than from its own paint.
+    assert.equal(typeof item.startedAt, "number");
 
     const live = transcript.apply({
       type: "tool_execution_update",
@@ -221,13 +224,17 @@ describe("Transcript", () => {
       result: "Successfully replaced 1 block(s) in src/a.rs.",
       isError: false,
     });
-    assert.deepEqual(patched(ended[0]).patch, {
-      output: "Successfully replaced 1 block(s) in src/a.rs.",
-      running: false,
-      isError: false,
-    });
+    const patch = patched(ended[0]).patch;
+    assert.equal(patch.output, "Successfully replaced 1 block(s) in src/a.rs.");
+    assert.equal(patch.running, false);
+    assert.equal(patch.isError, false);
+    // What the call took is measured where it began and takes the start off the
+    // card with it, so nothing goes on counting a call that is over.
+    assert.equal(typeof patch.elapsed, "number");
+    assert.equal(patch.startedAt, null);
     assert.equal(card(transcript).running, false);
     assert.equal(card(transcript).output, "Successfully replaced 1 block(s) in src/a.rs.");
+    assert.equal(card(transcript).startedAt, undefined);
   });
 
   it("marks a failed tool call and keeps its output", () => {

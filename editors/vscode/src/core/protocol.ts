@@ -99,6 +99,16 @@ export interface ToolItem {
   /// The raw `arguments` JSON the model produced.
   args: string;
   output: string;
+  /// When the call began, in Unix milliseconds, while it is running; `null`
+  /// once it has settled, when the number to paint is `elapsed`.
+  ///
+  /// Carried in the transcript rather than timed by the view, so a card rebuilt
+  /// from a `state` message — a second pane attaching, a thread switch — still
+  /// counts from the call rather than from the card, and both panes report the
+  /// same time. Absent on a stored thread's cards: they took no time here.
+  startedAt?: number | null;
+  /// What the call took, in milliseconds, once it has settled.
+  elapsed?: number | null;
   /// A preview of the file change (`write`/`edit`/`patch`), already rendered in
   /// the same compact line format `oxide_core::diff` uses.
   diff: string | null;
@@ -203,8 +213,12 @@ export interface ChangesItem {
   rows: ChangeRow[];
 }
 
+/// What a tool card's own state changes to: the result, which way it ended, and
+/// the time it took, which is measured here as the call ends. `startedAt` is in
+/// the patch so a card that a `state` message painted from a stale item has its
+/// start taken off it rather than left counting.
 export type ToolPatch = Partial<
-  Pick<ToolItem, "output" | "diff" | "running" | "isError" | "name" | "args">
+  Pick<ToolItem, "output" | "diff" | "running" | "isError" | "name" | "args" | "startedAt" | "elapsed">
 >;
 
 /// One turn of a stored thread, as `oxide sessions show --json` reports it and
@@ -1001,6 +1015,7 @@ export class Transcript {
       diff: this.lookupDiff(name, parseArgs(raw)),
       running: true,
       isError: false,
+      startedAt: Date.now(),
     };
     this.items.push(item);
     this.status = `Running ${name}…`;
@@ -1044,6 +1059,10 @@ export class Transcript {
     if (result) tool.output = result;
     tool.running = false;
     tool.isError = isError;
+    // The call is over, so the card keeps the time it took rather than the
+    // moment it began: nothing else reads the start once it has settled.
+    const elapsed = tool.startedAt ? Math.max(0, Date.now() - tool.startedAt) : undefined;
+    delete tool.startedAt;
     // The diff was built from the call's own arguments, before it ran, so a call
     // that failed never made that change: dropping it leaves the card showing
     // what went wrong instead of counting lines that are not on disk. A call
@@ -1061,6 +1080,11 @@ export class Transcript {
           running: false,
           isError,
           ...(dropped ? { diff: null } : {}),
+          // What the call took, measured where it began. `null` (rather than an
+          // absent field) is what takes a start off a card a `state` message
+          // painted from a stale item.
+          startedAt: null,
+          elapsed: elapsed ?? null,
         },
       },
     ];

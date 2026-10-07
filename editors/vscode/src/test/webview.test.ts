@@ -3399,10 +3399,15 @@ describe("webview tool card", () => {
     assert.equal(card.classList.contains("foldable"), true, "there is a rest to open");
   });
 
-  it("keeps what the call took beside what it changed", async () => {
+  it("keeps what the call took beside what it changed", () => {
     const { byId, send } = loadRenderer();
     send(stateMessage());
     const transcript = byId.get("transcript")!;
+    // The start travels in the item rather than being stamped when the card was
+    // built, and the runtime is the host's own measurement: the card paints what
+    // it is handed, so two panes and a repaint cannot disagree about a call that
+    // ran for a while.
+    const startedAt = Date.now() - 2_400;
     send({
       k: "push",
       item: {
@@ -3412,28 +3417,68 @@ describe("webview tool card", () => {
         args: JSON.stringify({ path: "src/main.rs" }),
         output: "",
         running: true,
+        startedAt,
       },
     });
     const card = find(transcript, "tool")!;
     const state = card.querySelector(".tstate")!;
     assert.match(state.innerHTML, /spinner/, "a running card shows the spinner, not a result");
+    // The live counter appears past a second, and counts from the call: the
+    // card was painted now, and the call began 2.4s ago.
+    assert.equal(state.innerHTML, '<span class="spinner"></span>2.4s', "counting from the call");
 
-    // The call takes the time it takes, so the card is left running for a
-    // moment before its result lands, the way a real one would.
-    await new Promise((resolve) => setTimeout(resolve, 12));
     send({
       k: "patch",
       id: 9,
-      patch: { output: "done", running: false, isError: false, diff: "@@ -1 +1 @@\n-a\n+b" },
+      patch: {
+        output: "done",
+        running: false,
+        isError: false,
+        diff: "@@ -1 +1 @@\n-a\n+b",
+        startedAt: null,
+        elapsed: 240,
+      },
     });
-    assert.match(state.textContent, /^✔ \+1 −1 \d+ms$/, state.textContent);
+    // The finished card paints the number it was handed, not a second reading of
+    // the clock: this call is measured at 240ms where it began.
+    assert.match(state.textContent, /^✔ \+1 −1 240ms$/, state.textContent);
 
-    // Unfolding the card repaints it: the runtime it took is what the call
-    // took, not the time since it started.
-    const rest = state.textContent;
-    await new Promise((resolve) => setTimeout(resolve, 12));
+    // Unfolding the card repaints it: the runtime it took is the one the call
+    // was measured for, not the time since the card was painted.
     transcript.fire("click", { target: card.querySelector(".thead")! });
-    assert.equal(state.textContent, rest, "a repaint does not age the number");
+    assert.equal(state.textContent, "✔ +1 −1 240ms", "a repaint does not age the number");
+  });
+
+  it("carries the runtime it was handed through a rebuilt transcript", () => {
+    // A pane that attaches mid-thread is painted from one `state` message, and a
+    // thread switch rebuilds the list: the runtime is the item's, so the card
+    // that comes back says what the call took rather than starting again.
+    const { byId, send } = loadRenderer();
+    send(stateMessage());
+    send({
+      k: "state",
+      items: [
+        {
+          id: 9,
+          kind: "tool",
+          name: "edit",
+          args: "{}",
+          output: "done",
+          running: false,
+          isError: false,
+          elapsed: 1_400,
+        },
+      ],
+    });
+    const state = find(byId.get("transcript")!, "tool")!.querySelector(".tstate")!;
+    assert.equal(state.textContent, "✔ 1.4s");
+    // ...and a stored card, which took no time here, carries none.
+    send({
+      k: "state",
+      items: [{ id: 10, kind: "tool", name: "read", args: "{}", output: "x", running: false, unknown: true }],
+    });
+    const stored = find(byId.get("transcript")!, "tool")!.querySelector(".tstate")!;
+    assert.equal(stored.textContent, "•");
   });
 
   it("draws no fold on a card that already shows everything it has", () => {
@@ -3593,6 +3638,11 @@ describe("webview welcome page", () => {
     // heard from the host yet offers nothing it cannot run.
     assert.match(shell, /id="empty-suggestions" class="suggestions" hidden/);
     assert.doesNotMatch(shell, /<button[^>]*data-prompt/);
+    // The row is laid out as a flex column, and an author-level `display` beats
+    // the browser's own rule for `hidden` — so the attribute has an explicit rule
+    // of its own, or a folder that was closed again would leave the suggestions
+    // it built on screen behind the ruled-out invitation.
+    assert.match(style, /\.empty \.suggestions\[hidden\] \{[^}]*display: none;[^}]*\}/s);
   });
 
   it("stays up while the page only carries a line about it", () => {

@@ -1345,8 +1345,8 @@ describe("command contributions", () => {
       "after the switch landed rather than before it",
     );
     assert.ok(
-      apply.includes("this.modelCatalog.find((entry) => entry.model === picked)?.provider"),
-      "the provider comes from the row's own catalog entry",
+      apply.includes("parseModelChoice(this.modelCatalog, choice)"),
+      "the provider comes from the row's own qualified choice",
     );
     assert.ok(
       apply.includes('return this.applyDialogSetting("model", picked)'),

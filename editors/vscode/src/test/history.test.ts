@@ -62,6 +62,7 @@ describe("stored session history", () => {
             attachments: [
               { name: "image", dataUrl: "data:image/png;base64,QUJD" },
               { name: "spec.pdf", dataUrl: "data:application/pdf;base64,REVG" },
+              { name: "scan.tiff", dataUrl: "data:image/tiff;base64,VEk=" },
             ],
           },
         ],
@@ -73,8 +74,12 @@ describe("stored session history", () => {
         kind: "user",
         text: "what is this?\n[image]",
         attachments: [
+          // Only a picture this webview can draw keeps its bytes: a PDF's and a
+          // TIFF's data URL would be painted as a broken image where the chip
+          // promises a name.
           { label: "image", preview: "data:image/png;base64,QUJD" },
-          { label: "spec.pdf", preview: "data:application/pdf;base64,REVG" },
+          { label: "spec.pdf", preview: null },
+          { label: "scan.tiff", preview: null },
         ],
       },
     ]);

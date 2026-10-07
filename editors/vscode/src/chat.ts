@@ -101,7 +101,7 @@ import {
   type UpdateMemory,
 } from "./core/updates";
 import { downloadUpdate, removeDownload, type Download } from "./updates";
-import { modelsListArgs, parseModelCatalog } from "./core/models";
+import { modelsListArgs, parseModelCatalog, parseModelChoice } from "./core/models";
 import { parseReasoning, reasoningArgs } from "./core/reasoning";
 import { changeArgs, diffPlan, undoArgs, type DiffPlan } from "./core/changes";
 import {
@@ -3113,10 +3113,15 @@ export class ChatController {
   /// and then leaves the panel's own `oxide.model` override unset, since the
   /// config now names exactly the model that was picked. A model of the provider
   /// in use is the panel's setting alone, which is what every other row does.
-  private async applyModel(model: string): Promise<void> {
-    const picked = model.trim();
+  private async applyModel(choice: string): Promise<void> {
+    // The row's value is the provider-qualified choice, so the pick resolves to
+    // the provider it was listed under even where two of them serve the same id.
+    // A model typed into the search box belongs to no provider in the listing and
+    // is the panel's own override for the provider in use.
+    const selected = parseModelChoice(this.modelCatalog, choice);
+    const picked = selected?.model ?? choice.trim();
     const active = this.project?.provider ?? "";
-    const provider = this.modelCatalog.find((entry) => entry.model === picked)?.provider ?? "";
+    const provider = selected?.provider ?? "";
     if (!picked || !provider || provider === active) {
       return this.applyDialogSetting("model", picked);
     }

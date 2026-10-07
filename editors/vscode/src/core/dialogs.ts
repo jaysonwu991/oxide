@@ -14,6 +14,7 @@
 
 import { mcpStateLabel, type McpServerView } from "./mcps";
 import { filterProviders, providerState, type ProviderView } from "./providers";
+import { modelChoiceId } from "./models";
 import { filterSessions, type SessionEntry } from "./sessions";
 import { updateVsix, type UpdateCheck } from "./updates";
 
@@ -290,7 +291,11 @@ export function modelDialog(
           ]
         : []),
       ...known.map((entry) =>
-        row(entry.model, entry.model, {
+        // The value is the provider-qualified choice rather than the bare id:
+        // two providers can offer the same id, and the row has to say which one
+        // it is so the action switches to that provider rather than to the first
+        // entry that happens to match.
+        row(modelChoiceId(entry.provider, entry.model), entry.model, {
           detail: entry.provider
             ? `Available from ${entry.provider}${entry.provider === provider ? " (active)" : ""}`
             : "Current model override",

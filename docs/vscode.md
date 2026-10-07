@@ -639,7 +639,9 @@ scrolled past as a file name. A thread replayed out of the store carries them
 too: `oxide sessions show --json` reports what each stored message carried under
 `name` and `dataUrl`, the same two field names the desktop app's own view of a
 stored thread uses, so a resumed conversation shows its pictures rather than a
-list of file names.
+list of file names. Only a picture this webview can paint keeps its bytes — a
+PDF and a document travel as the same kind of data URL, and a chip whose preview
+was one would be painted as a broken image where it promises a name.
 
 The reads are best effort: a missing or malformed file blanks the value it
 feeds — the model chip falls back to `config.json`, the branch and agent names
@@ -663,7 +665,10 @@ plugins, then the global directories. The model picker asks `oxide models --json
 for every logged-in provider's normalized catalog, the same source as the TUI's
 and the desktop app's pickers: the models of the provider in use come first, each
 row names the provider it belongs to, and taking a row from another one switches
-to it — `oxide login <provider> --json --model <model>`, which reuses that
+to it — the row's value is the provider-qualified choice (`models.ts::modelChoiceId`,
+composed and compared rather than split, since a model id may contain the
+separator itself), because two providers can offer the same model id and a row
+carrying the id alone could not say which of them the reader picked — `oxide login <provider> --json --model <model>`, which reuses that
 provider's stored credential and writes the selection to `config.json`, with the
 panel's own `oxide.model` override left unset so the two cannot name different
 models. A provider whose catalog could not be listed is named in the dialog's own
@@ -1010,8 +1015,13 @@ markers itself, the way `oxide_core::changes` does, so a card's numbers and a
 change row's agree. The host still composes that diff (`core/preview.ts`); what
 changed is when the webview paints it. A card that has settled also keeps what
 the call took beside those counts (`240ms`, `1.4s`, the desktop app's own
-format), read once as the call ends rather than at each repaint: a card replayed
-from the store took no time here and carries none.
+format). The start travels in the transcript item rather than being stamped when
+a card is painted — `ToolItem.startedAt` while the call runs, `elapsed` once it
+ends, both measured in `core/protocol.ts` — so a card rebuilt from a `state`
+message (a second pane attaching, a thread switch) counts from the call rather
+than from the card, and the live counter under a running card counts from the
+same instant. A card replayed out of the store took no time here and carries
+none.
 
 ## Check for updates
 
