@@ -1361,9 +1361,11 @@ mod tests {
             .expect("the flag travels"));
         let metered: Config =
             serde_json::from_value(json!({ "provider": "openai" })).expect("a config");
-        assert!(!project_info_value(&metered, Path::new("."))["subscription"]
-            .as_bool()
-            .expect("the flag travels"));
+        assert!(
+            !project_info_value(&metered, Path::new("."))["subscription"]
+                .as_bool()
+                .expect("the flag travels")
+        );
     }
 
     #[test]
