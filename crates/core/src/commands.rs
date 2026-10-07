@@ -137,7 +137,10 @@ pub const BUILTINS: &[Builtin] = &[
         name: "permissions",
         description: "Review the tools allowed without prompting",
         arguments: Some("on|off|list|clear"),
-        front_ends: &[FrontEnd::Terminal, FrontEnd::Desktop],
+        // All three: the panel lists and clears the same `approvals.json`
+        // through `oxide approvals`, so a rule an `Always allow` saved here is
+        // taken back where it was given rather than in another window.
+        front_ends: FrontEnd::ALL,
     },
     Builtin {
         name: "trust",
@@ -185,7 +188,9 @@ pub const BUILTINS: &[Builtin] = &[
         name: "logout",
         description: "Forget a provider's stored credentials",
         arguments: Some("provider"),
-        front_ends: &[FrontEnd::Terminal, FrontEnd::Desktop],
+        // The panel signs in through `oxide login`, so it signs out through
+        // `oxide logout`: a connection it made is one it can take back.
+        front_ends: FrontEnd::ALL,
     },
 ];
 
@@ -555,7 +560,8 @@ mod tests {
         assert!(owns(FrontEnd::Desktop, "theme"));
         assert!(!owns(FrontEnd::Desktop, "agent"));
         assert!(!owns(FrontEnd::Panel, "theme"));
-        assert!(!owns(FrontEnd::Panel, "logout"));
+        assert!(owns(FrontEnd::Panel, "logout"));
+        assert!(owns(FrontEnd::Panel, "permissions"));
         assert!(owns(FrontEnd::Panel, "agent"));
         // Nothing is offered to a front-end that does not offer it.
         for command in BUILTINS {

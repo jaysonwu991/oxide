@@ -59,12 +59,25 @@ export function emptyUsage(): UsageTotals {
   };
 }
 
+/// What a sent message carried, as the chips under its bubble name it: the file
+/// or the attachment's name, and — where the message carried an image the host
+/// could read a picture of — the thumbnail that goes with it, so the transcript
+/// shows what was sent rather than only what it was called.
+export interface SentChip {
+  label: string;
+  /// A data URL for the copy the composer's own chip was painted from, `null`
+  /// for anything there is no picture of — a context file, a PDF, a text file.
+  /// It rides the `state` messages with the item it belongs to, the way the
+  /// composer's chips do, so a thread that carried images repaints with them.
+  preview?: string | null;
+}
+
 export interface UserItem {
   id: number;
   kind: "user";
   text: string;
   /// Context the turn was sent with, shown as a chip under the bubble.
-  context: string[];
+  context: SentChip[];
 }
 
 export interface AssistantItem {
@@ -200,7 +213,7 @@ export type ToolPatch = Partial<
 /// are as much of it as what was said, and a thread whose tail is mostly tool
 /// steps would otherwise replay as a bubble or two.
 export type ReplayEntry =
-  | { kind: "user"; text: string }
+  | { kind: "user"; text: string; attachments?: SentChip[] }
   | { kind: "assistant"; text: string }
   | { kind: "tool"; name: string; args: string; output: string; isError: boolean };
 
@@ -241,6 +254,10 @@ export interface TranscriptState {
   context: ContextChip[];
   attachments: AttachmentChip[];
   sessionId: string | null;
+  /// The project root a turn would run in, or `null` with no folder open — a
+  /// turn is refused then, so the home state says which of the two it is
+  /// instead of inviting a message that cannot be sent.
+  folder: string | null;
   /// The thread's summarized title: the session name or a one-line summary of
   /// the first thing the user sent, shown in the header. Empty for a thread
   /// that has not been written to yet.
@@ -462,11 +479,16 @@ function bound(text: string, max: number): string {
   return `${kept.trimEnd()}…`;
 }
 
-/// Renders a byte count for the footer (`1.2k`, `34`).
+/// Renders a byte count the way the terminal footer does (`1.2k`, `123k`,
+/// `1.2M`, `66M`): the decimal is dropped once the number is large enough that
+/// it says nothing, so a model window and a token count read the same in both
+/// front-ends.
 export function formatTokens(count: number): string {
-  if (count < 1000) return String(count);
-  if (count < 1_000_000) return `${(count / 1000).toFixed(1)}k`;
-  return `${(count / 1_000_000).toFixed(2)}M`;
+  if (count < 1_000) return String(count);
+  if (count < 10_000) return `${(count / 1_000).toFixed(1)}k`;
+  if (count < 1_000_000) return `${Math.round(count / 1_000)}k`;
+  if (count < 10_000_000) return `${(count / 1_000_000).toFixed(1)}M`;
+  return `${Math.round(count / 1_000_000)}M`;
 }
 
 /// Turns one agent event into the messages the view applies.
@@ -492,6 +514,7 @@ export class Transcript {
     context: ContextChip[];
     attachments: AttachmentChip[];
     title: string;
+    folder: string | null;
     binary: string;
     showThinking: boolean;
     footer: FooterState;
@@ -529,19 +552,19 @@ export class Transcript {
       if (item.kind !== "user") continue;
       const text = summarizeTitle(item.text);
       if (text) return text;
-      if (!fallback) fallback = item.context.find((label) => label.trim()) ?? "";
+      if (!fallback) fallback = item.context.find((chip) => chip.label.trim())?.label ?? "";
     }
     return fallback;
   }
 
-  pushUser(text: string, context: ContextChip[]): ViewMessage[] {
+  pushUser(text: string, labels: SentChip[]): ViewMessage[] {
     this.currentAssistant = null;
     this.currentThinking = null;
     const item: UserItem = {
       id: this.nextId++,
       kind: "user",
       text,
-      context: context.map((chip) => chip.label),
+      context: labels.map((chip) => ({ label: chip.label, preview: chip.preview ?? null })),
     };
     this.items.push(item);
     return [{ k: "push", item }];
@@ -567,7 +590,7 @@ export class Transcript {
   /// sends one `state` message afterwards, so nothing is painted per entry.
   replay(entries: ReplayEntry[]): void {
     for (const entry of entries) {
-      if (entry.kind === "user") this.pushUser(entry.text, []);
+      if (entry.kind === "user") this.pushUser(entry.text, entry.attachments ?? []);
       else if (entry.kind === "assistant") this.pushAssistant(entry.text);
       else this.pushTool(entry.name, entry.args, entry.output, entry.isError);
     }

@@ -25,8 +25,19 @@
 
   const transcript = $("transcript");
   const empty = $("empty");
+  const emptyLead = $("empty-lead");
+  const suggestions = $("empty-suggestions");
   const input = $("input");
-  const sendButton = $("send");
+
+  /// What the home state offers a reader with nothing to say yet, each filling
+  /// the composer rather than sending: the desktop app's own four, in its own
+  /// words, so a fresh panel reads the same in both front-ends.
+  const SUGGESTIONS = [
+    "Explain this codebase and its architecture.",
+    "Find and fix the highest-priority bug in this repository.",
+    "Add tests for the most important untested code path.",
+    "Review the working tree changes and summarize the risks.",
+  ];  const sendButton = $("send");
   const stopButton = $("stop");
   const busyModeButton = $("busy-message-mode");
   const statusLabel = $("status");
@@ -680,7 +691,10 @@
     // did not record whether it landed, so the card marks the call as unrecorded
     // rather than claiming the success (`✔`) or the failure (`✖`) it cannot know.
     const mark = item.unknown ? "•" : item.isError ? "✖" : "✔";
-    entry.state.textContent = `${mark}${counts ? ` ${counts}` : ""}`;
+    // What the call took, kept beside its counts: a stored call took no time
+    // here, so it carries none.
+    const spent = entry.elapsed ? ` ${formatDuration(entry.elapsed)}` : "";
+    entry.state.textContent = `${mark}${counts ? ` ${counts}` : ""}${spent}`;
     entry.state.title = item.unknown ? "Resumed thread: how this call ended was not recorded" : "";
     entry.inline = Boolean(item.diff);
     if (item.diff && !entry.diffEl) {
@@ -1040,6 +1054,15 @@
     for (const [position, block] of entry.blocks.entries()) {
       block.hidden = position !== index;
     }
+    // A question with nothing to pick is answered in the reader's own words, so
+    // the caret goes where the answer goes. One that offers options is left
+    // alone, so a keystroke is not taken by a field nobody was asked to fill in,
+    // and a repaint that finds the caret already in the field never interrupts
+    // the answer being typed into it.
+    const shown = entry.blocks[index];
+    const free = shown ? shown.querySelector(".qfree") : null;
+    const options = Array.isArray(question.options) ? question.options : [];
+    if (free && !options.length && document.activeElement !== free) free.focus();
     paintQuestionActions(entry);
   }
 
@@ -1216,6 +1239,33 @@
     if (note) note.hidden = !entry.item.undone;
   }
 
+  /// A chip under a sent bubble: the file or attachment's name, and — for an
+  /// image the composer had a thumbnail of — the picture itself, which opens the
+  /// full-size one the way the composer's own chip does. What was sent is what
+  /// the reader scrolls back to, rather than the name it was filed under.
+  function sentChip(chip) {
+    if (!chip.preview) {
+      const named = document.createElement("span");
+      named.className = "chip";
+      named.textContent = chip.label;
+      return named;
+    }
+    const el = document.createElement("button");
+    el.type = "button";
+    el.className = "chip pic";
+    el.title = `${chip.label} · open the full-size image`;
+    el.setAttribute("aria-label", `Open ${chip.label || "the image"}`);
+    const image = document.createElement("img");
+    image.src = chip.preview;
+    image.alt = chip.label || "";
+    // WebKit drags a picture out of the page by default, and a drag that starts
+    // on it is the one gesture whose click the webview withholds.
+    image.draggable = false;
+    el.appendChild(image);
+    el.addEventListener("click", () => openImage(chip.preview, chip.label));
+    return el;
+  }
+
   function itemNode(item) {
     if (item.kind === "user") {
       const wrap = document.createElement("div");
@@ -1227,11 +1277,8 @@
       if (item.context && item.context.length) {
         const list = document.createElement("div");
         list.className = "ctx";
-        for (const label of item.context) {
-          const chip = document.createElement("span");
-          chip.className = "chip";
-          chip.textContent = label;
-          list.appendChild(chip);
+        for (const chip of item.context) {
+          list.appendChild(sentChip(chip));
         }
         wrap.appendChild(list);
       }
@@ -1306,6 +1353,37 @@
     return item.kind !== "notice";
   }
 
+  /// The home state, which the folder open decides: with one it is the
+  /// invitation and the suggestions, each filling the composer; without one
+  /// there is nowhere to run, so the page says so instead of inviting a message
+  /// the send would refuse.
+  function paintHome(folder) {
+    const open = Boolean(folder);
+    emptyLead.textContent = open
+      ? "Ask Oxide to make a change, explain code, or run something."
+      : "Open a folder to run Oxide: sessions and context are per project.";
+    if (open && !suggestions.children.length) {
+      for (const text of SUGGESTIONS) {
+        const button = document.createElement("button");
+        button.type = "button";
+        button.dataset.prompt = text;
+        button.textContent = text;
+        suggestions.appendChild(button);
+      }
+    }
+    suggestions.hidden = !open;
+  }
+
+  /// Fills the composer with a suggestion, which is where the reader then edits
+  /// or sends it: the same four the desktop app offers, in the same words.
+  function fillComposer(text) {
+    input.value = text;
+    closeCompletion();
+    resizeInput();
+    updateSendState();
+    input.focus();
+  }
+
   function apply(message) {
     // Measured before anything grows, so it reflects the frame the reader is
     // looking at rather than the output that has just arrived, and so a scroll
@@ -1322,6 +1400,7 @@
         empty.hidden = message.items.some(isConversation);
         transcript.classList.toggle("hide-thinking", message.showThinking === false);
         titleLabel.textContent = message.title || "New chat";
+        paintHome(message.folder);
         for (const item of message.items) appendItem(item, false);
         setStatus(message.status, message.busy, message.queued);
         setRun(message.run);
@@ -1356,6 +1435,13 @@
         const entry = entries.get(message.id);
         if (!entry) return;
         Object.assign(entry.item, message.patch);
+        // The runtime is read once, as the call ends: the entry knows when it
+        // started, and a repaint later — unfolding the card's diff, say — would
+        // otherwise report a duration that keeps growing.
+        if (entry.started && !entry.item.running) {
+          entry.elapsed = Date.now() - entry.started;
+          entry.started = 0;
+        }
         paintTool(entry);
         scrollDown(false);
         return;
@@ -2496,6 +2582,14 @@
   });
 
   sendButton.addEventListener("click", () => submit());
+  // A suggestion is a message to start from rather than a message to send: it
+  // goes into the box, where the reader names the file or narrows the question.
+  suggestions.addEventListener("click", (event) => {
+    const target = event.target;
+    if (!(target instanceof Element)) return;
+    const button = target.closest("[data-prompt]");
+    if (button) fillComposer(button.dataset.prompt || "");
+  });
   busyModeButton.addEventListener("click", () => {
     busyMessageMode = busyMessageMode === "queue" ? "steer" : "queue";
     updateSendState();

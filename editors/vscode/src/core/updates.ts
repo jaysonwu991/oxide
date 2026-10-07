@@ -58,7 +58,12 @@ export const UPDATE_COMPONENT = "extension";
 /// a run that failed prints an error, so a body that is not the check yields
 /// null rather than a check whose empty fields the dialog would paint as a
 /// release with no version.
-export function parseUpdateCheck(output: string): UpdateCheck | null {
+///
+/// `expect` is the component the caller asked about: the CLI prints which train
+/// it answered for, so a check read for the wrong one — an older CLI that ignored
+/// `--component` — is no answer rather than the panel reporting the CLI's release
+/// as its own.
+export function parseUpdateCheck(output: string, expect = ""): UpdateCheck | null {
   const text = output.trim();
   if (!text) return null;
   let value: unknown;
@@ -73,8 +78,10 @@ export function parseUpdateCheck(output: string): UpdateCheck | null {
   // A check without a version is not a check: everything the dialog says hangs
   // off the release the CLI resolved.
   if (!latest) return null;
+  const component = stringOf(record.component);
+  if (expect && component && component !== expect) return null;
   return {
-    component: stringOf(record.component),
+    component,
     current: stringOf(record.current),
     latest,
     tag: stringOf(record.tag) || `v${latest}`,
@@ -167,6 +174,15 @@ export function updateCheckArgs(current: string): string[] {
   const args = ["update", "--check", "--json", "--component", UPDATE_COMPONENT];
   if (current) args.push("--current", current);
   return args;
+}
+
+/// The same check asked about the CLI's own train (`cli-v*`→ the CLI's tags),
+/// which is the binary every turn runs through. No `--current` is passed: the CLI
+/// answers with the version of the binary that is running, so the row that
+/// updates it can say which version is behind without this side reading a
+/// version out of a process listing.
+export function cliCheckArgs(): string[] {
+  return ["update", "--check", "--json", "--component", "cli"];
 }
 
 /// The install a CLI too old to answer the check is offered. The panel's own

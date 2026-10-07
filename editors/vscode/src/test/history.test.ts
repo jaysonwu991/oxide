@@ -48,6 +48,55 @@ describe("stored session history", () => {
     assert.equal(history.shown, 4);
   });
 
+  it("keeps the media a stored message carried", () => {
+    // `oxide sessions show --json` reports what a message carried under the same
+    // two field names the desktop app's own view of a stored thread uses, so a
+    // resumed conversation shows the pictures in it rather than a list of names.
+    const history = parseSessionHistory(
+      JSON.stringify({
+        ...payload,
+        messages: [
+          {
+            role: "user",
+            content: "what is this?\n[image]",
+            attachments: [
+              { name: "image", dataUrl: "data:image/png;base64,QUJD" },
+              { name: "spec.pdf", dataUrl: "data:application/pdf;base64,REVG" },
+            ],
+          },
+        ],
+      }),
+    );
+    assert.ok(history);
+    assert.deepEqual(history.entries, [
+      {
+        kind: "user",
+        text: "what is this?\n[image]",
+        attachments: [
+          { label: "image", preview: "data:image/png;base64,QUJD" },
+          { label: "spec.pdf", preview: "data:application/pdf;base64,REVG" },
+        ],
+      },
+    ]);
+  });
+
+  it("reads an attachment with no picture as its name alone", () => {
+    // A CLI that names the media without the bytes still says what was carried:
+    // the chip is the name it reports rather than a chip with nothing in it.
+    const history = parseSessionHistory(
+      JSON.stringify({
+        ...payload,
+        messages: [
+          { role: "user", content: "see this", attachments: [{ name: "chart.png" }] },
+        ],
+      }),
+    );
+    assert.ok(history);
+    assert.deepEqual(history.entries, [
+      { kind: "user", text: "see this", attachments: [{ label: "chart.png", preview: null }] },
+    ]);
+  });
+
   it("pairs each call with the result that answered it", () => {
     const history = parseSessionHistory(
       JSON.stringify({

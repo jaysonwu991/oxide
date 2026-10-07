@@ -15,6 +15,19 @@ export interface ContextWindowInfo {
   model: string;
   /// The input window in tokens.
   window: number;
+  /// The provider a run in this folder would go to.
+  provider: string;
+  /// Whether a turn would find a credential at all — the CLI's own question,
+  /// the one it settles before a run starts, so the panel can say so before the
+  /// reader sends rather than after a failed turn. Absent on a CLI too old to
+  /// answer it, which reads as "unknown" rather than as "no".
+  hasKey: boolean | null;
+  /// Whether the credential is a plan rather than a metered key, which is what
+  /// the usage line marks ` (sub)`.
+  subscription: boolean;
+  /// The variables a key for this provider could come from, for the words that
+  /// say what to set.
+  keyEnv: string[];
 }
 
 export function contextArgs(model = ""): string[] {
@@ -29,6 +42,10 @@ export function contextArgs(model = ""): string[] {
 /// Reads the window out of the CLI's answer. Anything that is not a positive
 /// number (a CLI too old to know the command, a partial write) reads as no
 /// answer, so the caller keeps its own fallback rather than painting a zero.
+///
+/// The credential and plan facts ride the same answer: a front-end that has to
+/// resolve a model's window has already asked about this project, and one read
+/// that is right beats two that can disagree.
 export function parseContextWindow(raw: string): ContextWindowInfo | null {
   const root = parseObject(raw);
   if (!root) return null;
@@ -37,5 +54,11 @@ export function parseContextWindow(raw: string): ContextWindowInfo | null {
   return {
     model: typeof root.model === "string" ? root.model : "",
     window: Math.floor(window),
+    provider: typeof root.provider === "string" ? root.provider : "",
+    hasKey: typeof root.hasKey === "boolean" ? root.hasKey : null,
+    subscription: root.subscription === true,
+    keyEnv: Array.isArray(root.keyEnv)
+      ? root.keyEnv.filter((name): name is string => typeof name === "string" && name !== "")
+      : [],
   };
 }

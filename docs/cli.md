@@ -738,6 +738,11 @@ permission:
   which every front-end reads — the TUI included — so the question does not come
   back for that tool in that repository. An answer that never arrives is denied
   after five minutes so a turn cannot hang.
+- `oxide approvals list [--project <dir>] [--json]` prints the tools a project
+  allows without prompting, and `oxide approvals clear [--project <dir>]`
+  forgets every one of them. That is the same store the prompts write, so a rule
+  saved anywhere can be reviewed and taken back anywhere — including from a
+  front-end that cannot link `oxide-core`, which is why the command exists.
 
 Questions are the other side of that: the model can ask *you* something through
 the `ask` tool, which the desktop app and the VS Code panel answer with a dialog
@@ -1042,6 +1047,11 @@ decision is saved; non-interactive runs use `defaultProjectTrust` (in
 - `--approve`/`-a` and `--no-approve` override for one run.
 - `/trust [show|off]` saves a decision for the current directory to `trust.json`
   (the closest saved decision on the current or a parent path applies).
+- `oxide trust show [--project <dir>] [--json]` reports the decision a project
+  resolves to and whether it has resources that need one, and `oxide trust set
+  <trusted|untrusted> [--project <dir>]` writes it to the same `trust.json` —
+  the door for a front-end that cannot link `oxide-core`, so a decision made in
+  the desktop app, the panel or the terminal is one decision rather than three.
 - Context files always load regardless of trust.
 
 ## Themes
@@ -1235,6 +1245,13 @@ a key it would never read. `--model` and `--base-url` are the settings step's
 values, and `--json` prints `{ provider, label, model, local }` for the caller to
 report. Either front-end writes `auth.json` and `config.json` through the same
 core, so a login in one is a login in the others; neither needs a project open.
+
+`oxide logout [provider] [--json]` is the other direction: it forgets the
+credential the named provider — the active one by default — is stored with, and
+when that was the provider in use it switches to the first other logged-in one,
+as the TUI's `/logout` does, so a session is never left signing with a provider
+that has nothing to sign with. `--json` prints
+`{ provider, label, removed, active, switchedTo }`.
 
 ### Several providers at once
 

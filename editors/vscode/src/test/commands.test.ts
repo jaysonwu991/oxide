@@ -63,6 +63,7 @@ describe("command contributions", () => {
       savedTrust: undefined,
       branch: "",
       autoCompact: true,
+      subscription: false,
       usage: emptyUsage(),
     });
     for (const chip of state.chips) {
@@ -149,8 +150,16 @@ describe("command contributions", () => {
     );
     assert.ok(chat.includes("updateCheckArgs(this.version)"), "the check is the CLI's, about this panel");
     assert.ok(
-      chat.includes("parseUpdateCheck(result.stdout)"),
-      "reading the answer rather than scraping the prose",
+      chat.includes("parseUpdateCheck(result.stdout, UPDATE_COMPONENT)"),
+      "reading the answer rather than scraping the prose, and only for this extension's own train",
+    );
+    // The CLI is the other half of the installation and the binary the panel
+    // reads GitHub through, so the same dialog says when it is behind too — and
+    // its row is `oxide update`, the command that replaces it.
+    assert.ok(chat.includes("cliCheckArgs()"), "the CLI's own train is asked about");
+    assert.ok(
+      chat.includes('parseUpdateCheck(result.stdout, "cli")'),
+      "by the component the answer names",
     );
     // What is installed is the VSIX the check resolved — downloaded here and
     // handed to VS Code — rather than a release archive installed by a process
@@ -1284,6 +1293,147 @@ describe("command contributions", () => {
         history.includes("if (this.transcript !== target) return;") &&
         history.includes("target.replay(history.entries);"),
       "a history lands in the thread it was read for",
+    );
+  });
+
+  it("sends the picture an attachment was sent with to the transcript", () => {
+    // The composer's own chip holds a copy small enough to paint; the bubble
+    // under the sent message takes it with the label, so what was sent is what
+    // the reader scrolls back to rather than its file name.
+    assert.ok(
+      chat.includes("...attached.map((chip) => ({ label: chip.label, preview: chip.preview })),"),
+      "the labels carry the attachment's own picture",
+    );
+    assert.ok(
+      renderer.includes("openImage(chip.preview, chip.label)"),
+      "and the thumbnail opens it full size, the way the composer's chip does",
+    );
+    assert.ok(
+      renderer.includes("image.draggable = false;"),
+      "a picture whose drag would swallow the click says not to be dragged",
+    );
+  });
+
+  it("tells the home state whether there is a folder to run in", () => {
+    // Without one a send is refused, so the page says which of the two it is
+    // instead of inviting a message that cannot be sent.
+    assert.ok(
+      chat.includes("folder: this.folder()?.uri.fsPath ?? null,"),
+      "the state carries the folder a turn would run in",
+    );
+    const home = renderer.slice(renderer.indexOf("function paintHome("), renderer.indexOf("function apply("));
+    assert.ok(home.includes("suggestions.hidden = !open;"), "and the suggestions need one");
+    assert.ok(
+      home.includes('"Open a folder to run Oxide: sessions and context are per project."'),
+      "with the same words the refused send uses",
+    );
+  });
+
+  it("takes a model of another provider as a switch, not only a choice", () => {
+    // The selection lives in `config.json` and only the CLI writes it, so a row
+    // from another provider runs a login with the model — reusing whatever
+    // credential that provider has stored — and leaves the panel's own
+    // `oxide.model` unset, so the two cannot name different models.
+    const apply = chat.slice(
+      chat.indexOf("private async applyModel("),
+      chat.indexOf("private async applyTrust("),
+    );
+    assert.ok(apply.includes("providerLoginArgs(provider, false, picked)"), "a login carries the model");
+    assert.ok(apply.includes('await this.updateSetting("model", "")'), "the override is left unset");
+    assert.ok(
+      apply.indexOf('await this.updateSetting("model", "")') > apply.indexOf("runCapture("),
+      "after the switch landed rather than before it",
+    );
+    assert.ok(
+      apply.includes("this.modelCatalog.find((entry) => entry.model === picked)?.provider"),
+      "the provider comes from the row's own catalog entry",
+    );
+    assert.ok(
+      apply.includes('return this.applyDialogSetting("model", picked)'),
+      "and the provider in use is still a setting alone",
+    );
+  });
+
+  it("saves the trust decision where every front-end reads it", () => {
+    // The panel writes `trust.json` through the CLI and leaves its own setting
+    // unset: a decision is one decision rather than a second opinion beside the
+    // terminal's.
+    const apply = chat.slice(
+      chat.indexOf("private async applyTrust("),
+      chat.indexOf("private showNotice("),
+    );
+    assert.ok(
+      apply.includes("trustSetArgs(decision, folder)"),
+      "the decision is written through `oxide trust set`",
+    );
+    assert.ok(
+      apply.includes('await this.updateSetting("projectTrust", "default")'),
+      "and the panel follows the store rather than forcing it",
+    );
+    assert.ok(
+      apply.includes('this.applyDialogSetting("projectTrust", "default")'),
+      "while the row that says so writes nothing else",
+    );
+  });
+
+  it("reviews the saved rules and signs providers out through the CLI", () => {
+    // Both listings are the CLI's own answers, read and written where every
+    // front-end reads them, so a rule or a credential given anywhere is visible
+    // and revocable here.
+    const approvals = chat.slice(
+      chat.indexOf("async showApprovals("),
+      chat.indexOf("private async clearApprovals("),
+    );
+    assert.ok(approvals.length > 0, "the listing is a section of the controller");
+    assert.ok(approvals.includes("approvalsArgs(cwd)") && approvals.includes("parseApprovals("), "the listing is read");
+    assert.ok(
+      approvals.includes('if (this.dialog?.kind !== "permissions") return;'),
+      "and a read superseded by a closed listing paints nothing",
+    );
+    const clear = chat.slice(
+      chat.indexOf("private async clearApprovals("),
+      chat.indexOf("private async connectProvider("),
+    );
+    assert.ok(clear.length > 0, "clearing is a section of the controller");
+    assert.ok(clear.includes("approvalsClearArgs(cwd)"), "the Clear row runs the CLI's own clear");
+    const logout = chat.slice(
+      chat.indexOf("private async logoutProvider("),
+      chat.indexOf("async showApprovals("),
+    );
+    assert.ok(logout.length > 0, "signing out is a section of the controller");
+    assert.ok(logout.includes("providerLogoutArgs(name)"), "a row signs the provider out");
+    assert.ok(
+      logout.includes("this.refreshProject(true)"),
+      "and the selection the CLI may have moved is read again",
+    );
+  });
+
+  it("says so before the send when the provider has no key", () => {
+    // The desktop app carries a `no API key` line; here it is a transcript note,
+    // said once per folder and provider — a repaint or a second turn must not
+    // repeat it — and cleared as soon as the CLI finds a credential, so
+    // reconnecting says it afresh rather than never again.
+    const report = chat.slice(
+      chat.indexOf("private reportMissingKey("),
+      chat.indexOf("private threadTitle("),
+    );
+    assert.ok(report.length > 0, "the note is a section of the controller");
+    assert.ok(
+      report.includes("if (info.hasKey !== false) {") && report.includes("this.missingKey = null;"),
+      "a credential clears the note, and an older CLI that cannot answer one says nothing",
+    );
+    assert.ok(
+      report.includes("const key = `${cwd}|${info.provider}`;") &&
+        report.includes("if (this.missingKey === key) return;"),
+      "and it is said once per folder and provider",
+    );
+    assert.ok(
+      report.includes("info.keyEnv.join(\" or \")"),
+      "naming the variables the CLI's own refusal names",
+    );
+    assert.ok(
+      report.includes('this.showNotice(') && report.includes('"warn"'),
+      "as a warning the reader can scroll back to",
     );
   });
 

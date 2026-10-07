@@ -49,6 +49,7 @@ editors/vscode/
       git.ts          the branch, read from .git/HEAD
       agents.ts       agent names for `--agent`
       plugins.ts      installed plugins, whose agents `--agent` also resolves
+      permissions.ts  `oxide approvals` — the saved "always allow" rules
       json.ts         a tolerant JSON object reader
       project.ts      the on-disk state the footer reports
       footer.ts       footer chips, usage line and context gauge
@@ -107,6 +108,16 @@ the terminal's and the desktop app's). The view-title actions (`oxide.newSession
 `oxide.resumeSession`) carry the codicon `$(add)` and `$(history)` for the same
 reason, so VS Code draws them as icons instead of inline text.
 
+The page a thread starts on is the desktop app's home state in the panel's own
+room: the invitation, the four things to start from the desktop app offers —
+each one filling the message box to be edited rather than sending itself — and
+the line about how this panel runs a turn. Which of the two it is depends on the
+folder: with none open there is nowhere to run, so the invitation is replaced by
+`Open a folder to run Oxide: sessions and context are per project.` — the same
+words the refused send uses — and the suggestions are left out, since a message
+sent with no folder is refused. `TranscriptState.folder` is what the host tells
+the page, so the panel says it before the send rather than after it.
+
 `oxide.openChat` also sits on the editor's own toolbar: the manifest contributes
 it to `editor/title` (`resourceScheme == file`, since an output or diff tab has
 nothing to go with it), so the mark at the top right of a file's tab brings the
@@ -154,9 +165,18 @@ desktop's, so the two can only drift together.
 `core/config.ts` resolves the same `<platform config dir>/Oxide` directory the
 CLI uses (falling back to the pre-migration lowercase directory), so a provider
 connected with the terminal's `/connect` is immediately usable in the panel. For
-most of that directory the extension is a reader: the model, agent, reasoning,
-tools, and trust are VS Code settings (`oxide.*`) that become `--model` /
-`--agent` / … flags, and the CLI applies them to its own config.
+most of that directory the extension is a reader: the model, agent, reasoning
+and tools are VS Code settings (`oxide.*`) that become `--model` / `--agent` / …
+flags, and the CLI applies them to its own config.
+
+Trust is not one of those settings any more. The panel's **Project access**
+dialog writes the same `trust.json` the terminal's `/trust` and the desktop app
+write — through `oxide trust set <trusted|untrusted> --project <folder>`, since
+only the CLI should write that store — and leaves the `oxide.projectTrust`
+setting unset, so the panel follows the saved decision rather than holding a
+second answer. A folder trusted in one front-end is trusted in all of them; the
+setting remains as a manual default for a user who wants one, and `resolveAccess`
+still reads it first when it is set.
 
 A login is the exception, and it is not written here either: **Oxide: Connect
 Provider**, `/connect` in the composer, or a row of the panel's provider table
@@ -384,6 +404,18 @@ with a `quit` frame when `agent_end` arrives, so the process exits on its own.
   The flag is passed explicitly in either direction, so `oxide.askApprovals`
   decides for a panel run; `askApprovals` in the shared `settings.json` still
   decides for the terminal and the desktop app.
+  What is already allowed is a listing of its own: `/permissions` in the composer
+  (and the same command in the catalog this panel draws) reads the project's
+  rules through `oxide approvals list --project <folder> --json` and paints them
+  in a card, with a **Clear all** row that runs `oxide approvals clear`. The
+  rules are the shared store's, so one an `Always allow` here saved is listed
+  here, and one the terminal saved can be taken back here — no front-end has to
+  be left to review what it agreed to.
+  The same goes for signing out: `/logout` lists the providers this machine holds
+  a credential for — from `oxide providers --json`, the table `/connect` draws —
+  and a row runs `oxide logout <name>`, which is the call the terminal's own
+  `/logout` makes, switching to another logged-in provider when the one being
+  signed out was in use.
 - **Questions** — a turn always starts with `--ask-questions`, so a skill that
   needs a decision reaches the panel instead of the model guessing. The `ask`
   tool's request arrives as a `question_request` event and becomes a card in the
@@ -394,7 +426,9 @@ with a `quit` frame when `agent_end` arrives, so the process exits on its own.
   with a description under each label and, for a single choice, a row asking for
   an answer in the user's own words with its field under it, so a question with
   no options is still answerable and the typed text answers it instead of riding
-  beside a picked label. **Next** walks to the question after this one (**Back**
+  beside a picked label — a question with nothing to pick shows the step with the
+  caret already in that field, since typing is the whole of the answer, while one
+  that offers options is left alone. **Next** walks to the question after this one (**Back**
   returns to it, keeping what was already answered), and the last step's
   **Submit** posts the whole set as a `question` frame (`core/questions.ts`;
   `chat.ts::answerQuestion` → `cli.ts`), while **Dismiss** answers with nothing
@@ -419,7 +453,16 @@ with a `quit` frame when `agent_end` arrives, so the process exits on its own.
   the usage line, and the latest one sets the context gauge (its prompt tokens
   over the window), which is `OXIDE_CONTEXT_LIMIT` when it is set, else the window
   `oxide context --json` resolved, else the config's `context_window`, else the
-  model's known window, falling back to the CLI's own 128k.
+  model's known window, falling back to the CLI's own 128k. The same read says
+  whether that credential is a plan rather than a metered key, which the line
+  marks ` (sub)` the way the terminal's footer does — the price table's number is
+  what the plan would have billed rather than money owed. The read also answers
+  whether a turn would find a key at all: when it would not, the transcript says
+  so once per folder and provider (`No API key for <provider>: run /connect
+  <provider> to store one, or set <VAR>.`, naming the variables the CLI's own
+  refusal names) rather than leaving it to be discovered by sending a message and
+  waiting for the failure — the note the desktop app carries, said before the
+  send instead of after it.
 
 ### The thread a turn is in
 
@@ -498,8 +541,8 @@ it.
   serves only as the value painted before the answer lands and for a CLI too old
   to know the command, and `test/context.test.ts` reads
   `crates/core/src/config.rs` and holds the rows to it, which is what a stale
-  copy of that table used to make the chip report `128.0k` for a model whose
-  window is `1.0M`. Session history remains
+  copy of that table used to make the chip report `128k` for a model whose
+  window is `1M`. Session history remains
   the history button in the header instead of taking a second footer slot.
 - **Composer** — the message box: the attachment strip, the textarea and the
   toolbar inside one bordered block. It starts two rows tall (`rows="2"`) and
@@ -520,7 +563,11 @@ it.
 - **Gauge** — the last request's prompt tokens over the context window, amber
   past 70% and red past 90% (the terminal's thresholds).
 - **Usage line** — `↑input · ↓output · RcacheRead · WcacheWrite · CHhit% · $cost
-  · ctx %/window (auto)`, matching the terminal's footer segments. `CH` is the
+  · ctx %/window (auto)`, matching the terminal's footer segments. The counts are
+  abbreviated the way the terminal abbreviates them — `999`, `1.2k`, `123k`,
+  `1.2M`, `66M` (`formatTokens`, the same steps as the CLI's `format_tokens`),
+  so a model window and a token count read the same in both front-ends, and a
+  model whose window is a million tokens reads `1.0M` rather than `1.00M`. `CH` is the
   latest request's cache hit rate (`cache_read / prompt`), the same number
   `UsageTotals::cache_hit_rate` reports, and a step that reads no cache leaves
   the previous rate in place; `(auto)` marks auto-compaction as on, and the
@@ -584,6 +631,16 @@ The chips and the text attachments share one id space and travel in one
 follow-up keeps the attachments it was queued with, and a turn that never started
 hands them back to the composer instead of losing them.
 
+What a message carried is still there after it is sent: the bubble under it
+repeats the chips it went with — the picture where the attachment had one, the
+file's name otherwise — and a picture opens the same full-size preview the
+composer's chip does, so a screenshot in a conversation is read rather than
+scrolled past as a file name. A thread replayed out of the store carries them
+too: `oxide sessions show --json` reports what each stored message carried under
+`name` and `dataUrl`, the same two field names the desktop app's own view of a
+stored thread uses, so a resumed conversation shows its pictures rather than a
+list of file names.
+
 The reads are best effort: a missing or malformed file blanks the value it
 feeds — the model chip falls back to `config.json`, the branch and agent names
 to empty — and never throws in the middle of a turn. `trust.ts` resolves
@@ -602,11 +659,17 @@ permissions inside a project the user did not trust. Installed plugins are read
 too, from the CLI's own plugin state (`plugins/config.json`, enabled entries
 with a live directory and manifest), because `ecosystem::load_enabled_plugins`
 loads their `agents/` ahead of project resources — the order is project, then
-plugins, then the global directories. The model picker asks `oxide models
---json --active` for the active provider's complete normalized catalog, the same source
-as the TUI and desktop pickers. It keeps remembered models as a fallback when a
-catalog refresh fails and accepts a custom ID; models from another provider are
-not mixed in because a per-turn model override runs against the active provider.
+plugins, then the global directories. The model picker asks `oxide models --json`
+for every logged-in provider's normalized catalog, the same source as the TUI's
+and the desktop app's pickers: the models of the provider in use come first, each
+row names the provider it belongs to, and taking a row from another one switches
+to it — `oxide login <provider> --json --model <model>`, which reuses that
+provider's stored credential and writes the selection to `config.json`, with the
+panel's own `oxide.model` override left unset so the two cannot name different
+models. A provider whose catalog could not be listed is named in the dialog's own
+note rather than dropped, the remembered models stand in when the whole read
+fails, and a model ID typed by hand is still a row (it runs against the provider
+in use, which the row says).
 
 ## The file you are editing
 
@@ -727,18 +790,18 @@ completion, labelled *Commands and skills*.
   command with no arguments is the exception — the panel performs it on the spot,
   through the same switch the matching footer chip uses, so a chip and its
   command cannot drift apart. `/model`, `/reasoning`, `/agent`, `/trust`, `/mcp`,
-  `/session`, `/new`, `/attach`, `/usage` and `/help` — each under the one name
-  the catalog declares.
+  `/permissions`, `/connect`, `/logout`, `/session`, `/new`, `/attach`, `/usage`
+  and `/help` — each under the one name the catalog declares.
 - Which built-ins are rows at all is the catalog's answer, not this panel's: each
   entry carries the `front_ends` that perform it, and only those naming `panel`
-  are offered — so `/agent` is here, while `/permissions` and the desktop app's
-  `/theme` and `/logout` are not, since a row is only ever drawn for something
-  this composer performs or the CLI expands. A name outside that set is still
-  refused if it is typed out in full: `/permissions` is answered in the
-  transcript (`/permissions is not one this panel runs — use the terminal.`)
-  rather than sent to the model as the text `/permissions`, which the CLI would
-  hand the agent as a prompt. A CLI that predates the field prints `desktop_only`
-  instead, which is what a released extension falls back to.
+  are offered — so `/agent`, and now `/permissions` and `/logout`, are here, while
+  the desktop app's `/theme` and the terminal's `/spend` are not: a row is only
+  ever drawn for something this composer performs or the CLI expands. A name
+  outside that set is still refused if it is typed out in full: `/theme` is
+  answered in the transcript (`/theme is not one this panel runs — use the
+  terminal.`) rather than sent to the model as the text `/theme`, which the CLI
+  would hand the agent as a prompt. A CLI that predates the field prints
+  `desktop_only` instead, which is what a released extension falls back to.
 - `/connect` opens the provider table in the panel: every
   provider a client can connect, read from the CLI's own `oxide providers --json`
   so the panel keeps no copy of it, with a search box over it and a `In use`,
@@ -945,7 +1008,10 @@ and its state the `+`/`−` counts — and keeps its own diff for the reader who
 clicks it, so the same change is not painted twice. `media/main.js` counts the
 markers itself, the way `oxide_core::changes` does, so a card's numbers and a
 change row's agree. The host still composes that diff (`core/preview.ts`); what
-changed is when the webview paints it.
+changed is when the webview paints it. A card that has settled also keeps what
+the call took beside those counts (`240ms`, `1.4s`, the desktop app's own
+format), read once as the call ends rather than at each repaint: a card replayed
+from the store took no time here and carries none.
 
 ## Check for updates
 
@@ -961,6 +1027,21 @@ which file that release publishes for it, whether it is newer than this
 window's — is the shared `oxide_core::updates` rules the terminal's own update
 reads, while what is installed is this editor's extension rather than the
 command line the panel, the terminal and the desktop app all run.
+
+The CLI is the other half of that installation, and the binary every turn runs
+through — and the one this check reaches GitHub with — so the same dialog
+reports it: `oxide update --check --json --component cli` is asked without
+`--current`, since the CLI answers with the version of the binary that is
+running, and a release newer than it is a note (`CLI 0.32.0 → 0.34.0`) and, where
+that copy can be written over from inside the editor (`installable`), a row that
+runs `oxide update`, which is the command the terminal uses. A Homebrew
+installation or a distribution package has no row — the check's own advice names
+what to do instead (`brew upgrade oxide`) — since a row that installed nothing
+would be a click doing nothing. An answer about one train is never read as the
+other's: the check prints the component it is about, and the panel keeps only the
+answer that names the one it asked for. A check a launch makes by itself asks
+about this extension alone, since its answer raises a notification rather than
+this dialog.
 
 A release resolved as a VSIX is a row — **Install 0.34.0**, naming
 `oxide-vscode-0.34.0.vsix` — and a release with nothing this panel can install
@@ -1156,6 +1237,11 @@ the titles a card shows and the request frames the CLI reads, in
 form among them, which is the dismissal Dismiss posts, and the answers an earlier
 step kept when a later one is submitted), the title and settled label a card
 carries, and the frames the CLI reads — in
+`test/permissions.test.ts`, the saved rules `/permissions` lists and clears (the
+arguments name the folder, and an answer that is not a listing reads as no rules)
+in `test/models.test.ts`, the catalog the picker groups (every provider, the one
+in use first, a model tagged with the provider a pick switches to, and one
+provider's failure kept as a note while the rest list) in
 `test/views.test.ts`, that the chat view ids the host
 registers match the views `package.json` contributes, in `test/brand.test.ts`,
 that the two icons stay the desktop app's, in `test/commands.test.ts`, that
@@ -1185,7 +1271,11 @@ commands the panel owns are performed (checked against the real catalog in
 `test/webview.test.ts`, that `media/main.js` — plain JavaScript with no type
 checking — paints the footer, the chips, the attachment strip, the approval
 card, a question card's steps, options and free-text fields and the answers a
-click posts, splices the host's reference into the box at the caret and leaves
+click posts, a question answered in the reader's own words with the caret
+already in its field, a sent message with the picture it carried and the
+full-size one that opens from it, the home state's own lead and its four
+suggestions filling the box, a settled card's runtime beside its counts,
+splices the host's reference into the box at the caret and leaves
 it there for the next thing typed, tells the host when the pane takes the
 keyboard and when it gives it up, and leaves a modified Escape (the host's own
 keybinding) to the editor,
@@ -1201,7 +1291,9 @@ opens, from the ✕ in its head row, the backdrop or <kbd>Esc</kbd>), the tracke
 own, and the rows of the `@` completion with the keys that walk, take and close
 them — the `@` rows and the palette's side by side, since the two share one
 list, and the palette row carries the name, the arguments hint, the description
-and what the row is — and the disabled
+and what the row is — and the saved-approvals listing with its own Clear row, the
+stored-provider listing a sign-out is taken from, and the update dialog's CLI row
+beside the extension's — and the disabled
 state of Send from its messages when it runs against a DOM stub, and that the
 composer's corner holds one action that swaps between Send and Stop rather than
 two visible buttons, and that the
@@ -1230,9 +1322,9 @@ writes to, a session's age and size, the row that closes the open thread and the
 actions — is covered in
 `test/dialogs.test.ts`, which needs neither a webview nor a CLI. What a resumed
 thread reads back — `oxide sessions show --json` parsed into the turns the panel
-replays, a call paired with the result that answered it, and the totals the
-footer shows, including the output of a CLI that answered with nothing — is
-covered in `test/history.test.ts`.
+replays, a call paired with the result that answered it, the media a stored
+message carried with it, and the totals the footer shows, including the output of
+a CLI that answered with nothing — is covered in `test/history.test.ts`.
 
 A turn's own thread is held to source-level checks for the same reason the `send`
 routing is: the controller cannot be loaded without `vscode`, so the assertions

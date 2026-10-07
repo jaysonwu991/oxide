@@ -15,9 +15,11 @@ import { describe, it } from "node:test";
 import {
   BACKGROUND_CHECK_MS,
   backgroundAction,
+  cliCheckArgs,
   parseUpdateCheck,
   rejectsCheck,
   shouldBackgroundCheck,
+  UPDATE_COMPONENT,
   updateCheckArgs,
   updateInstallArgs,
   updateVsix,
@@ -67,6 +69,37 @@ describe("update check", () => {
     assert.equal(check.asset?.name, "oxide-vscode-0.34.0.vsix");
     assert.match(check.asset?.url ?? "", /extension-v0\.34\.0\/oxide-vscode-0\.34\.0\.vsix$/);
     assert.match(check.asset?.digest ?? "", /^sha256:[0-9a-f]{64}$/);
+  });
+
+  /// The other train the panel's dialog reports: the CLI itself, which is the
+  /// binary every turn runs through and the one this panel reaches GitHub with.
+  /// It is asked without `--current` — the CLI answers with the version of the
+  /// binary that is running — and the component the answer names is what keeps
+  /// one train's release from being read as the other's.
+  it("asks about the CLI's own train, and reads only that answer", () => {
+    assert.deepEqual(cliCheckArgs(), ["update", "--check", "--json", "--component", "cli"]);
+    const cliAnswer = JSON.stringify({
+      component: "cli",
+      current: "0.32.0",
+      latest: "0.34.0",
+      tag: "v0.34.0",
+      updateAvailable: true,
+      installable: true,
+      path: "/home/me/.local/bin/oxide",
+      advice: "Run oxide update.",
+      asset: { name: "oxide-x86_64.tar.gz", url: "https://example/x", digest: "" },
+    });
+    assert.equal(parseUpdateCheck(cliAnswer, "cli")?.latest, "0.34.0");
+    // The extension's own answer read as the CLI's — an older CLI that ignored
+    // `--component` — is no answer, rather than the panel reporting the CLI's
+    // release as its own.
+    for (const expect of [UPDATE_COMPONENT, "desktop"]) {
+      assert.equal(parseUpdateCheck(cliAnswer, expect), null, expect);
+    }
+    // A check that does not say which train it is stays readable: the field
+    // arrives with the CLI that learned `--component`, and the panel asks for
+    // one train at a time anyway.
+    assert.equal(parseUpdateCheck(JSON.stringify({ latest: "0.34.0" }), "cli")?.latest, "0.34.0");
   });
 
   it("picks the VSIX out of the release", () => {

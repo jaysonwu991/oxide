@@ -217,6 +217,25 @@ enum Command {
         #[arg(long)]
         json: bool,
     },
+    /// Review the tools a project allows without prompting
+    Approvals {
+        #[command(subcommand)]
+        action: ApprovalsAction,
+    },
+    /// Forget a provider's stored credentials
+    Logout {
+        /// Provider name, as `oxide providers` lists it (the active one by
+        /// default)
+        provider: Option<String>,
+        /// Print the result as JSON
+        #[arg(long)]
+        json: bool,
+    },
+    /// Decide whether a project's own resources load
+    Trust {
+        #[command(subcommand)]
+        action: TrustAction,
+    },
     /// List models available from connected providers
     Models {
         /// Print provider catalogs as JSON
@@ -280,6 +299,52 @@ enum Command {
     /// Read the system clipboard as an attachment for a front-end
     Clipboard {
         /// Print the attachment as JSON (`{"name":…,"dataUrl":…}`, or `null`)
+        #[arg(long)]
+        json: bool,
+    },
+}
+
+#[derive(Subcommand, Debug)]
+enum ApprovalsAction {
+    /// List the tools this project allows without prompting
+    List {
+        /// Project directory (defaults to the current one)
+        #[arg(long)]
+        project: Option<PathBuf>,
+        /// Print the listing as JSON
+        #[arg(long)]
+        json: bool,
+    },
+    /// Forget every saved rule for this project
+    Clear {
+        /// Project directory (defaults to the current one)
+        #[arg(long)]
+        project: Option<PathBuf>,
+        /// Print the result as JSON
+        #[arg(long)]
+        json: bool,
+    },
+}
+
+#[derive(Subcommand, Debug)]
+enum TrustAction {
+    /// Report the decision this project resolves to
+    Show {
+        /// Project directory (defaults to the current one)
+        #[arg(long)]
+        project: Option<PathBuf>,
+        /// Print the decision as JSON
+        #[arg(long)]
+        json: bool,
+    },
+    /// Save a decision for this project, the way the terminal's `/trust` does
+    Set {
+        /// `trusted` or `untrusted`
+        decision: String,
+        /// Project directory (defaults to the current one)
+        #[arg(long)]
+        project: Option<PathBuf>,
+        /// Print the decision as JSON
         #[arg(long)]
         json: bool,
     },
@@ -691,6 +756,23 @@ async fn main() -> Result<()> {
                 let current_dir = std::env::current_dir().context("resolving current directory")?;
                 commands::list(&current_dir, json)
             }
+            Command::Approvals { action } => match action {
+                ApprovalsAction::List { project, json } => {
+                    list_approvals(project_dir(project)?, json)
+                }
+                ApprovalsAction::Clear { project, json } => {
+                    clear_approvals(project_dir(project)?, json)
+                }
+            },
+            Command::Logout { provider, json } => logout(provider, json),
+            Command::Trust { action } => match action {
+                TrustAction::Show { project, json } => show_trust(project_dir(project)?, json),
+                TrustAction::Set {
+                    decision,
+                    project,
+                    json,
+                } => set_trust(project_dir(project)?, &decision, json),
+            },
             Command::Models { json, active } => {
                 let current_dir = std::env::current_dir().context("resolving current directory")?;
                 list_models(&current_dir, json, active).await
@@ -951,6 +1033,191 @@ async fn main() -> Result<()> {
     }
 }
 
+/// The project directory a subcommand acts on: the one it was given, or the
+/// process's own working directory, which is what a front-end that runs the CLI
+/// in a folder expects.
+fn project_dir(project: Option<PathBuf>) -> Result<PathBuf> {
+    match project {
+        Some(path) => Ok(path),
+        None => std::env::current_dir().context("resolving current directory"),
+    }
+}
+
+/// The tools a project allows without prompting, and forgetting them again.
+/// The rules live in the shared `approvals.json`, so a front-end that cannot
+/// link `oxide-core` — the VS Code panel — reads and edits them here rather
+/// than keeping a copy of the store.
+fn list_approvals(project: PathBuf, json_output: bool) -> Result<()> {
+    let mut store = oxide_core::approvals::ApprovalStore::load();
+    let tools = store.list(&project);
+    if json_output {
+        println!(
+            "{}",
+            serde_json::to_string(&json!({
+                "project": project.display().to_string(),
+                "tools": tools,
+            }))?
+        );
+        return Ok(());
+    }
+    if tools.is_empty() {
+        println!("{}: no tools allowed without prompting", project.display());
+        return Ok(());
+    }
+    println!("{}:", project.display());
+    for tool in tools {
+        println!("  {tool}");
+    }
+    Ok(())
+}
+
+fn clear_approvals(project: PathBuf, json_output: bool) -> Result<()> {
+    let mut store = oxide_core::approvals::ApprovalStore::load();
+    let tools = store.list(&project);
+    store.clear(&project)?;
+    if json_output {
+        println!(
+            "{}",
+            serde_json::to_string(&json!({
+                "project": project.display().to_string(),
+                "cleared": tools.len(),
+            }))?
+        );
+        return Ok(());
+    }
+    println!(
+        "forgot {} allowed tool{} for {}",
+        tools.len(),
+        if tools.len() == 1 { "" } else { "s" },
+        project.display()
+    );
+    Ok(())
+}
+
+/// Forgets a provider's stored credential. Removing the provider in use switches
+/// to another logged-in one the way the terminal's `/logout` does, so a session
+/// is never left pointing at a provider with nothing to sign with.
+fn logout(provider: Option<String>, json_output: bool) -> Result<()> {
+    let config = Config::load(&std::env::current_dir()?, None, None, None, None)?;
+    let requested = match provider {
+        Some(name) => auth::canonical_provider(&name),
+        None => auth::canonical_provider(&config.provider),
+    };
+    if requested.is_empty() {
+        anyhow::bail!("no provider connected — run /connect to add one");
+    }
+    let mut store = auth::AuthStore::load()?;
+    if !store.remove(&requested) {
+        if json_output {
+            println!(
+                "{}",
+                serde_json::to_string(&json!({
+                    "provider": requested,
+                    "removed": false,
+                    "message": format!("no stored credentials for {requested}"),
+                }))?
+            );
+            return Ok(());
+        }
+        anyhow::bail!("no stored credentials for {requested}");
+    }
+    store.save()?;
+    let was_active = auth::canonical_provider(&config.provider) == requested;
+    let next = if was_active {
+        // The next stored provider the way the terminal picks it: the first the
+        // store lists. Nothing left leaves the selection alone, and the next run
+        // says what is missing.
+        match auth::stored_providers().into_iter().next() {
+            Some(next) => auth::select_stored(&next).ok().map(|(name, _)| name),
+            None => None,
+        }
+    } else {
+        None
+    };
+    let label = auth::provider_label(&requested);
+    if json_output {
+        println!(
+            "{}",
+            serde_json::to_string(&json!({
+                "provider": requested,
+                "label": label,
+                "removed": true,
+                "active": was_active,
+                "switchedTo": next,
+            }))?
+        );
+        return Ok(());
+    }
+    match (&next, was_active) {
+        (Some(name), _) => println!(
+            "logged out of {label} — switched to {}",
+            auth::provider_label(name)
+        ),
+        (None, true) => println!("logged out of {label} — run /connect to reconnect"),
+        (None, false) => println!("logged out of {label}"),
+    }
+    Ok(())
+}
+
+/// Reports and saves a project's own trust decision, the same `trust.json` the
+/// terminal's `/trust` and the desktop app write, so a decision made in one
+/// front-end is the one the others read.
+fn show_trust(project: PathBuf, json_output: bool) -> Result<()> {
+    let decision = oxide_core::trust::project_decision(&project);
+    let trusted = decision.is_trusted();
+    if json_output {
+        println!(
+            "{}",
+            serde_json::to_string(&json!({
+                "project": project.display().to_string(),
+                "trusted": trusted,
+                "requiresTrust": oxide_core::trust::requires_trust(&project),
+            }))?
+        );
+        return Ok(());
+    }
+    println!(
+        "{}: {}",
+        project.display(),
+        if trusted { "trusted" } else { "untrusted" }
+    );
+    Ok(())
+}
+
+/// The decision a `trust set` argument names. The words a reader may reach for
+/// are accepted, and anything else is refused with the two that are canonical
+/// rather than written down as a decision nobody made.
+fn parse_trust_decision(value: &str) -> Result<bool> {
+    match value.trim().to_ascii_lowercase().as_str() {
+        "trusted" | "trust" | "always" | "yes" => Ok(true),
+        "untrusted" | "never" | "no" => Ok(false),
+        other => anyhow::bail!("unknown decision `{other}` — use `trusted` or `untrusted`"),
+    }
+}
+
+fn set_trust(project: PathBuf, decision: &str, json_output: bool) -> Result<()> {
+    let trusted = parse_trust_decision(decision)?;
+    let mut store = oxide_core::trust::TrustStore::load()?;
+    store.set(&project, trusted);
+    store.save()?;
+    if json_output {
+        println!(
+            "{}",
+            serde_json::to_string(&json!({
+                "project": project.display().to_string(),
+                "trusted": trusted,
+            }))?
+        );
+        return Ok(());
+    }
+    println!(
+        "{}: {}",
+        project.display(),
+        if trusted { "trusted" } else { "untrusted" }
+    );
+    Ok(())
+}
+
 /// Prints the providers a picker draws, from the single provider table in the
 /// core, with the state a row shows beside it. A front-end that cannot link
 /// `oxide-core` — the VS Code panel drives this binary — reads the listing here
@@ -1188,18 +1455,52 @@ async fn list_reasoning(
 /// `OXIDE_CONTEXT_LIMIT` override, the configured window, a
 /// `modelContextWindows` entry, the provider's published catalog and the
 /// built-in table, in the order [`Config::context_window`] applies them.
+///
+/// It answers the credential and plan facts in the same breath, since a
+/// front-end that has to resolve a model's window has already asked about this
+/// project: whether the run would find a key at all (`hasKey`, the same
+/// question [`Config::require_api_key`] settles before a turn starts, so a
+/// panel can say so before the reader sends rather than after), the variables a
+/// key could come from, and whether the credential is a plan rather than a
+/// metered key (`subscription`, which is what the spend line marks ` (sub)`).
 fn show_context(current_dir: &Path, json_output: bool, model: Option<String>) -> Result<()> {
     let config = Config::load(current_dir, model, None, None, None)?;
-    let window = config.context_window();
     if json_output {
         println!(
             "{}",
-            serde_json::to_string(&json!({ "model": config.model, "window": window }))?
+            serde_json::to_string(&context_view(&config, &|name| std::env::var(name).ok()))?
         );
     } else {
-        println!("context: {window} (model: {})", config.model);
+        println!(
+            "context: {} (model: {})",
+            config.context_window(),
+            config.model
+        );
     }
     Ok(())
+}
+
+/// The facts a run resolves for this project, as the JSON a front-end reads: the
+/// window the model's requests are measured against, and the credential and plan
+/// behind them. The environment is injected so the rules are testable without
+/// this machine's own variables deciding the answer — the same reason
+/// [`Config::require_api_key_with`] takes one.
+fn context_view(config: &Config, env: &dyn Fn(&str) -> Option<String>) -> serde_json::Value {
+    json!({
+        "model": config.model,
+        "window": config.context_window(),
+        "provider": config.provider,
+        // The run's own question rather than a reading of the key field: a server
+        // on this machine and a provider that signs with the machine's identity
+        // are as usable without one, and a key in `config.json` counts where the
+        // auth store does not.
+        "hasKey": config.require_api_key_with(env).is_ok(),
+        "subscription": config.is_subscription(),
+        "keyEnv": config
+            .preset()
+            .map(|preset| preset.key_envs().collect::<Vec<_>>())
+            .unwrap_or_default(),
+    })
 }
 
 async fn run_print(
@@ -1630,9 +1931,83 @@ async fn turn_changes(
 #[cfg(test)]
 mod tests {
     use super::{
-        parse_mode, resolve_auto_approve, turn_changes, Cli, Command, MarketplaceAction,
-        PluginAction,
+        context_view, parse_mode, parse_trust_decision, resolve_auto_approve, turn_changes,
+        ApprovalsAction, Cli, Command, MarketplaceAction, PluginAction, TrustAction,
     };
+    use oxide_core::config::Config;
+
+    /// What `context --json` answers, which a front-end that cannot link
+    /// `oxide-core` reads for three things it cannot resolve itself: the window a
+    /// run measures against, whether the run would find a credential at all (said
+    /// before a message is sent rather than after it fails), and whether that
+    /// credential is a plan the spend line should mark ` (sub)`. The environment
+    /// is injected, so this machine's own variables decide nothing here.
+    #[test]
+    fn context_view_carries_the_window_and_the_credential_facts() {
+        let keyed = Config {
+            provider: "zai".into(),
+            model: "glm-5".into(),
+            api_key: "sk-test".into(),
+            ..Config::default()
+        };
+        let with_key = context_view(&keyed, &|_| None);
+        assert_eq!(with_key["provider"], "zai");
+        assert_eq!(with_key["model"], "glm-5");
+        assert!(with_key["window"].as_u64().unwrap_or(0) > 0);
+        assert_eq!(with_key["hasKey"], true);
+        assert_eq!(with_key["subscription"], false);
+        assert_eq!(
+            with_key["keyEnv"],
+            serde_json::json!(["ZAI_API_KEY", "ZHIPU_API_KEY", "GLM_API_KEY"]),
+            "every variable a key could come from, in the table's own order"
+        );
+
+        // Nothing in the config: the run would refuse, and the answer says so
+        // where the panel can read it before a message is sent. A key that came
+        // from the environment is already in `api_key` — `Config::load` resolves
+        // one before either store — so what this instance is about is the
+        // credential the config does *not* hold.
+        let bare = Config {
+            provider: "zai".into(),
+            api_key: String::new(),
+            ..Config::default()
+        };
+        assert_eq!(context_view(&bare, &|_| None)["hasKey"], false);
+        // A provider that signs with the machine's own identity is as usable
+        // without one, which is the other half of the question: Bedrock's AWS
+        // credentials are read where they live (the environment, else
+        // `~/.aws/credentials`) rather than stored here.
+        let bedrock = Config {
+            provider: "bedrock".into(),
+            api_key: String::new(),
+            ..Config::default()
+        };
+        assert_eq!(context_view(&bedrock, &|_| None)["hasKey"], false);
+        let signed = context_view(&bedrock, &|name| match name {
+            "AWS_ACCESS_KEY_ID" => Some("AKIATEST".to_string()),
+            "AWS_SECRET_ACCESS_KEY" => Some("secret".to_string()),
+            _ => None,
+        });
+        assert_eq!(signed["hasKey"], true);
+
+        // A plan rather than a metered key: the price table's number is what it
+        // would have billed, which the panel marks ` (sub)`.
+        let plan = Config {
+            provider: "github-copilot".into(),
+            api_key: "ghu_test".into(),
+            ..Config::default()
+        };
+        assert_eq!(context_view(&plan, &|_| None)["subscription"], true);
+
+        // A server on this machine needs no credential at all, so an empty key
+        // is not a missing one.
+        let local = Config {
+            provider: "ollama".into(),
+            api_key: String::new(),
+            ..Config::default()
+        };
+        assert_eq!(context_view(&local, &|_| None)["hasKey"], true);
+    }
     use clap::Parser;
 
     #[test]
@@ -1836,6 +2211,64 @@ mod tests {
                 active: true
             })
         ));
+    }
+
+    /// The three commands that let a front-end which cannot link `oxide-core`
+    /// take back what it handed out: the rules an `Always allow` saved, a
+    /// provider's credential, and a project's trust decision.
+    #[test]
+    fn parses_the_commands_a_front_end_takes_back_with() {
+        let cli = Cli::try_parse_from(["oxide", "approvals", "list", "--json"]).unwrap();
+        match cli.command {
+            Some(Command::Approvals {
+                action:
+                    ApprovalsAction::List {
+                        json: true,
+                        project,
+                    },
+            }) => assert!(project.is_none()),
+            other => panic!("unexpected {other:?}"),
+        }
+
+        let cli = Cli::try_parse_from(["oxide", "approvals", "clear", "--project", "/work/oxide"])
+            .unwrap();
+        match cli.command {
+            Some(Command::Approvals {
+                action: ApprovalsAction::Clear { project, .. },
+            }) => assert_eq!(project.unwrap().to_str(), Some("/work/oxide")),
+            other => panic!("unexpected {other:?}"),
+        }
+
+        // A logout names a provider, or leaves it to the one in use.
+        let cli = Cli::try_parse_from(["oxide", "logout", "--json"]).unwrap();
+        assert!(matches!(
+            cli.command,
+            Some(Command::Logout {
+                provider: None,
+                json: true
+            })
+        ));
+
+        let cli = Cli::try_parse_from(["oxide", "trust", "set", "untrusted", "--json"]).unwrap();
+        match cli.command {
+            Some(Command::Trust {
+                action:
+                    TrustAction::Set {
+                        decision,
+                        json: true,
+                        ..
+                    },
+            }) => assert_eq!(decision, "untrusted"),
+            other => panic!("unexpected {other:?}"),
+        }
+
+        // A decision is written in the words the store holds, and anything else
+        // is refused rather than guessed at.
+        assert!(parse_trust_decision("trusted").unwrap());
+        assert!(parse_trust_decision(" Always ").unwrap());
+        assert!(!parse_trust_decision("untrusted").unwrap());
+        assert!(!parse_trust_decision("no").unwrap());
+        assert!(parse_trust_decision("maybe").is_err());
     }
 
     #[test]

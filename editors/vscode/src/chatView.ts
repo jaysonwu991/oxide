@@ -360,7 +360,8 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
 </section>
 <main id="transcript" tabindex="0">
   <div id="empty" class="empty">
-    <p>Ask Oxide to make a change, explain code, or run something.</p>
+    <p id="empty-lead">Ask Oxide to make a change, explain code, or run something.</p>
+    <div id="empty-suggestions" class="suggestions" hidden></div>
     <p class="hint">Runs use the same configuration, sessions and project trust as the terminal: <code>oxide</code> starts a turn with <code>--mode rpc</code>, so a tool that needs your approval waits for an answer here.</p>
   </div>
 </main>

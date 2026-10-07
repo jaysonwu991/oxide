@@ -240,6 +240,33 @@ pre,
   border-radius: 3px;
 }
 
+/* The four things to start from, which take the composer's own box: a reader
+   who has nothing to say yet picks one and edits it, the way the desktop app's
+   home state offers the same four. */
+.empty .suggestions {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin: 0 0 14px;
+}
+
+.empty .suggestions button {
+  display: block;
+  width: 100%;
+  text-align: left;
+  padding: 7px 10px;
+  border: 1px solid var(--vscode-panel-border, rgba(128, 128, 128, 0.35));
+  border-radius: 6px;
+  background: var(--vscode-input-background, rgba(128, 128, 128, 0.1));
+  color: var(--vscode-foreground);
+  font-family: inherit;
+  font-size: 0.95em;
+}
+
+.empty .suggestions button:hover {
+  border-color: var(--vscode-focusBorder, var(--vscode-charts-blue, #4a9eff));
+}
+
 .msg {
   margin: 0 0 14px;
 }
@@ -275,6 +302,31 @@ pre,
   border: 1px solid var(--vscode-panel-border, rgba(128, 128, 128, 0.35));
   border-radius: 10px;
   padding: 0 6px;
+}
+
+/* The picture a sent message carried: the chip's own label is its tooltip, so
+   the copy of what was sent is what the reader scrolls back to. */
+.ctx .chip.pic {
+  padding: 0;
+  border: none;
+  border-radius: 6px;
+  line-height: 0;
+  cursor: zoom-in;
+}
+
+.ctx .chip.pic img {
+  width: 96px;
+  height: 96px;
+  object-fit: cover;
+  border: 1px solid var(--vscode-panel-border, rgba(128, 128, 128, 0.35));
+  border-radius: 6px;
+  -webkit-user-drag: none;
+  user-select: none;
+}
+
+.ctx .chip.pic:hover img,
+.ctx .chip.pic:focus-visible img {
+  border-color: var(--vscode-focusBorder, var(--vscode-charts-blue, #4a9eff));
 }
 
 .assistant .body > :first-child {

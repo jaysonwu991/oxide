@@ -17,7 +17,7 @@
 // Like the other readers here it is tolerant: a field that is missing or of the
 // wrong type reads as empty rather than throwing mid-turn.
 
-import { emptyUsage, type ReplayEntry, type UsageTotals } from "./protocol";
+import { emptyUsage, type ReplayEntry, type SentChip, type UsageTotals } from "./protocol";
 
 export interface SessionHistory {
   id: string;
@@ -98,7 +98,16 @@ export function parseSessionHistory(json: string): SessionHistory | null {
       }
       continue;
     }
-    if (role === "user" && text.trim()) entries.push({ kind: "user", text });
+    if (role === "user" && text.trim()) {
+      // The media the message carried, which the store keeps beside its text:
+      // without it a resumed thread reads as a list of file names where the
+      // pictures were, and the CLI's own view of a stored message reports the
+      // same two fields under the same names as the desktop app's.
+      const attachments = storedAttachments(message.attachments);
+      entries.push(
+        attachments.length ? { kind: "user", text, attachments } : { kind: "user", text },
+      );
+    }
   }
 
   const usage = obj(root.usage);
@@ -123,6 +132,22 @@ export function parseSessionHistory(json: string): SessionHistory | null {
       cacheHit: typeof cacheHit === "number" && Number.isFinite(cacheHit) ? cacheHit : null,
     },
   };
+}
+
+/// The media one stored message carried, as the chips a sent bubble shows: the
+/// name the store kept and the data URL the CLI reports, which is what the
+/// transcript paints a picture from. An attachment with neither reads as nothing
+/// rather than as a chip with an empty name.
+function storedAttachments(value: unknown): SentChip[] {
+  if (!Array.isArray(value)) return [];
+  const chips: SentChip[] = [];
+  for (const entry of value) {
+    const record = obj(entry);
+    const label = str(record.name).trim() || "attachment";
+    const preview = str(record.dataUrl).trim();
+    chips.push({ label, preview: preview || null });
+  }
+  return chips;
 }
 
 /// How many of a thread's messages the panel replays. A long thread would

@@ -34,6 +34,7 @@ const noState = {
   context: [],
   attachments: [],
   title: "oxide",
+  folder: "/work/oxide",
   binary: "oxide",
   showThinking: true,
   footer: {

@@ -526,13 +526,26 @@ describe("Transcript", () => {
 
   it("records the user turn and the context it carried", () => {
     const transcript = new Transcript();
-    const message = push(transcript.pushUser("fix this", [{ id: 1, label: "src/a.rs:10-12" }])[0]);
+    const message = push(transcript.pushUser("fix this", [{ label: "src/a.rs:10-12" }])[0]);
     assert.deepEqual(message, {
       id: 1,
       kind: "user",
       text: "fix this",
-      context: ["src/a.rs:10-12"],
+      context: [{ label: "src/a.rs:10-12", preview: null }],
     });
+  });
+
+  it("keeps the picture an attachment was sent with", () => {
+    const transcript = new Transcript();
+    const item = push(
+      transcript.pushUser("what is this?", [
+        { label: "screenshot.png", preview: "data:image/png;base64,AAAA" },
+      ])[0],
+    );
+    assert.ok(item.kind === "user", "the message is a user turn");
+    assert.deepEqual(item.context, [
+      { label: "screenshot.png", preview: "data:image/png;base64,AAAA" },
+    ]);
   });
 
   it("replays a stored thread's turns as finished items", () => {
@@ -839,7 +852,7 @@ describe("Transcript", () => {
 
   it("names a media-only first message from its attachment", () => {
     const transcript = new Transcript();
-    transcript.pushUser("", [{ id: 1, label: "screenshot.png" }]);
+    transcript.pushUser("", [{ label: "screenshot.png" }]);
     assert.equal(transcript.title(), "screenshot.png", "an image-only send names the file");
     transcript.pushUser("Explain this diagram", []);
     assert.equal(
@@ -887,6 +900,7 @@ describe("Transcript", () => {
         { id: 8, label: "shot.png", kind: "image", preview: "data:image/png;base64,AA", detail: "4 B · pasted" },
       ],
       title: "Fix the build",
+      folder: "/work/oxide",
       binary: "/usr/local/bin/oxide",
       showThinking: false,
       footer,
@@ -897,6 +911,7 @@ describe("Transcript", () => {
     assert.equal(state.queued, 1);
     assert.equal(state.showThinking, false);
     assert.equal(state.title, "Fix the build");
+    assert.equal(state.folder, "/work/oxide");
     assert.deepEqual(state.attachments, [
       { id: 8, label: "shot.png", kind: "image", preview: "data:image/png;base64,AA", detail: "4 B · pasted" },
     ]);

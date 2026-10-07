@@ -29,9 +29,9 @@ export interface CommandEntry {
   /// catalog declares them. Empty in a CLI that predates the field.
   frontEnds: string[];
   /// The same fact as a client too old to read `frontEnds` saw it: true when
-  /// this panel is not one of the front-ends that perform the command (its
-  /// `/theme` and `/logout`, and the terminal's `/permissions`). Kept because a
-  /// released extension is answered by whichever CLI is installed.
+  /// this panel is not one of the front-ends that perform the command (the
+  /// desktop app's `/theme`, the terminal's `/spend` and `/plugins`). Kept
+  /// because a released extension is answered by whichever CLI is installed.
   desktopOnly: boolean;
 }
 
@@ -54,10 +54,12 @@ export type PanelAction =
   | "help"
   | "mcp"
   | "provider"
+  | "logout"
   | "model"
   | "reasoning"
   | "agent"
   | "trust"
+  | "permissions"
   | "session"
   | "new"
   | "attach"
@@ -136,8 +138,8 @@ export function paletteCommands(
 /// Whether the panel offers an entry at all: every configured command and
 /// skill, and the built-in commands this panel performs. A client command is a
 /// row only where the catalog names this panel among the front-ends that run it
-/// — the terminal's `/permissions` and the desktop app's `/theme` are not rows
-/// here, since taking one would send text the CLI hands the model.
+/// — the desktop app's `/theme` and the terminal's `/spend` are not rows here,
+/// since taking one would send text the CLI hands the model.
 function offered(entry: CommandEntry): boolean {
   if (entry.kind !== "client") return true;
   if (entry.frontEnds.length) return entry.frontEnds.includes(PANEL);
@@ -208,6 +210,15 @@ export function panelCommand(name: string): PanelAction | null {
     // it with its own dialog rather than sending the text on as a prompt.
     case "connect":
       return "provider";
+    // Signing out is the CLI's own `logout`, which is what the panel's dialog
+    // runs: a connection made here is one that can be taken back here.
+    case "logout":
+      return "logout";
+    // The saved "Always allow" rules live in the shared `approvals.json`; the
+    // panel lists and clears them through `oxide approvals`, the way it reads
+    // the rest of the store rather than keeping a copy.
+    case "permissions":
+      return "permissions";
     case "model":
       return "model";
     case "reasoning":
@@ -232,10 +243,10 @@ export function panelCommand(name: string): PanelAction | null {
 /// What the panel does with a message before it is sent.
 ///
 /// A bare `/name` naming a client command never reaches the model: the panel
-/// performs it, or — for one it has no action for, like the terminal's
-/// `/permissions` — says so, rather than sending text the CLI would hand the
-/// agent as a prompt. `null` for everything else, which is what the CLI
-/// expands: a configured command, a skill, or an ordinary message.
+/// performs it, or — for one it has no action for, like the desktop app's
+/// `/theme` — says so, rather than sending text the CLI would hand the agent as
+/// a prompt. `null` for everything else, which is what the CLI expands: a
+/// configured command, a skill, or an ordinary message.
 ///
 /// Only a bare name routes, so `/session auth is broken` stays a message the
 /// agent has something to say about, as it does in the terminal.

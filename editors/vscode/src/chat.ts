@@ -33,6 +33,7 @@ import {
 import { AttachmentStore, previewForDataUrl, previewForFile } from "./attachments";
 import { atSuggestions, atToken } from "./core/at";
 import { isApprovalDecision, type ApprovalDecision } from "./core/approvals";
+import { trustSetArgs } from "./core/trust";
 import { modelsForProvider } from "./core/config";
 import type { QuestionAnswer } from "./core/questions";
 import {
@@ -41,17 +42,21 @@ import {
   APPLY_MODEL,
   APPLY_REASONING,
   APPLY_TRUST,
+  APPROVALS_CLEAR,
   CHANGES_UNDO_CONFIRM,
   CLOSE_DIALOG,
   CONTINUE_SESSION,
   deleteSessionDialog,
+  logoutDialog,
   MCP_REFRESH,
   MCP_TOGGLE,
   NEW_SESSION,
   mcpDialog,
   modelDialog,
   OPEN_SESSION,
+  permissionsDialog,
   providerDialog,
+  PROVIDER_LOGOUT,
   PROVIDER_SELECT,
   SESSION_DELETE,
   SESSION_DELETE_CONFIRM,
@@ -60,6 +65,7 @@ import {
   trustDialog,
   undoChangesDialog,
   UPDATE_INSTALL,
+  UPDATE_CLI,
   UPDATE_NOTES,
   UPDATE_RELOAD,
   updateDialog,
@@ -68,20 +74,25 @@ import {
   type ModelChoice,
 } from "./core/dialogs";
 import { clipboardArgs, parseClipboardMedia } from "./core/clipboard";
+import { approvalsArgs, approvalsClearArgs, parseApprovals } from "./core/permissions";
 import { mcpListArgs, mcpToggleArgs, parseMcpList, type McpServerView } from "./core/mcps";
 import {
   needsKey,
   parseLoginOutcome,
+  parseLogoutOutcome,
   parseProviders,
   providerLoginArgs,
+  providerLogoutArgs,
   providersListArgs,
   type ProviderView,
 } from "./core/providers";
 import {
   backgroundAction,
+  cliCheckArgs,
   parseUpdateCheck,
   rejectsCheck,
   shouldBackgroundCheck,
+  UPDATE_COMPONENT,
   updateCheckArgs,
   updateInstallArgs,
   updateVsix,
@@ -101,7 +112,7 @@ import {
   type PanelAction,
 } from "./core/palette";
 import { footerState, reasoningChoices, type FooterState } from "./core/footer";
-import { contextArgs, parseContextWindow } from "./core/context";
+import { contextArgs, parseContextWindow, type ContextWindowInfo } from "./core/context";
 import { projectInfo, sharedSettingsFor, type ProjectDeps, type ProjectInfo } from "./core/project";
 import {
   buildPrompt,
@@ -122,6 +133,7 @@ import {
   type ChangesItem,
   type ContextChip,
   type RunThread,
+  type SentChip,
   type ViewMessage,
   type WireEvent,
 } from "./core/protocol";
@@ -281,8 +293,9 @@ interface PreparedSend {
   prompt: string;
   /// Absolute image/PDF paths carried in the RPC frame.
   images: string[];
-  /// The chips the user bubble names under the message.
-  labels: ContextChip[];
+  /// The chips the user bubble names under the message, with the picture of any
+  /// attachment that has one.
+  labels: SentChip[];
   /// The raw context chips and attachments, restored if the turn fails to start.
   context: Chip[];
   attachments: Attachment[];
@@ -371,6 +384,14 @@ export class ChatController {
   /// worked out here.
   private contextWindow: number | null = null;
   private contextProbe = 0;
+  /// Whether the credential this folder runs with is a plan rather than a
+  /// metered key, which is what the usage line marks ` (sub)`. Read with the
+  /// window, since the CLI resolves both from the same config.
+  private subscription = false;
+  /// The folder and provider the missing-key note was last said for, so a
+  /// repaint or a second turn does not repeat it, and `null` while the run has
+  /// a key to sign with.
+  private missingKey: string | null = null;
   /// The provider table as the CLI last answered it, the search over it, and the
   /// newest read of it. Held rather than re-read per keystroke: a login changes
   /// what the rows say, so the table is read again when the dialog opens and
@@ -379,6 +400,17 @@ export class ChatController {
   private providerQuery = "";
   private providerNote = "";
   private providerProbe = 0;
+  /// The `/logout` listing: its own filter and note, and the newest read of the
+  /// table behind it. Separate from the login table's so closing one dialog and
+  /// opening the other does not carry a query into rows it was not typed for.
+  private logoutQuery = "";
+  private logoutNote = "";
+  private logoutProbe = 0;
+  /// The saved approvals `/permissions` last read: the tools this project runs
+  /// without asking, as the CLI answered them.
+  private approvals: string[] = [];
+  private approvalsNote = "";
+  private approvalsProbe = 0;
   private sessions: SessionEntry[] = [];
   /// The filter the open session listing is showing. The rows are the store's
   /// own answer, so the search box only decides which of them are painted —
@@ -573,6 +605,7 @@ export class ChatController {
         context: this.chips(),
         attachments: this.attachmentChips(),
         title: this.threadTitle(),
+        folder: this.folder()?.uri.fsPath ?? null,
         binary: this.binary(),
         showThinking: this.setting<boolean>("showThinking", true),
         footer: this.footer(),
@@ -675,6 +708,7 @@ export class ChatController {
       savedTrust: project?.savedTrust,
       branch: project?.branch ?? "",
       autoCompact: project?.autoCompact ?? true,
+      subscription: this.subscription,
       usage: this.transcript.usage,
     });
   }
@@ -709,6 +743,12 @@ export class ChatController {
   /// the model the way the terminal's footer does. A stale answer is dropped,
   /// and a CLI too old to know the command keeps the window the shared files
   /// give.
+  ///
+  /// The same answer carries the credential and plan facts — whether a turn
+  /// would find a key at all, and whether the credential is a plan the spend
+  /// line should mark ` (sub)` — so the panel says what the desktop app says
+  /// before a send rather than after a failed turn, and one read stays right
+  /// rather than two drifting.
   private async refreshContextWindow(): Promise<void> {
     const cwd = this.cwd();
     if (!cwd) return;
@@ -724,10 +764,34 @@ export class ChatController {
       const info = parseContextWindow(result.stdout);
       if (!info || probe !== this.contextProbe) return;
       this.contextWindow = info.window;
+      this.subscription = info.subscription;
+      this.reportMissingKey(cwd, info);
       this.broadcast(this.stateMessage());
     } catch {
       // The window the shared files give stands.
     }
+  }
+
+  /// Says so, in the transcript, when the provider this folder runs against has
+  /// no credential: the desktop app's own note, and the one thing a reader
+  /// would otherwise learn by sending a message and waiting for the CLI to
+  /// refuse it. Said once per folder and provider — a repaint, a settings change
+  /// or a second turn must not repeat it — and `null` again as soon as a key is
+  /// found, so reconnecting says it afresh.
+  private reportMissingKey(cwd: string, info: ContextWindowInfo): void {
+    if (info.hasKey !== false) {
+      this.missingKey = null;
+      return;
+    }
+    const key = `${cwd}|${info.provider}`;
+    if (this.missingKey === key) return;
+    this.missingKey = key;
+    const provider = info.provider || "the active provider";
+    const env = info.keyEnv.length ? info.keyEnv.join(" or ") : "its API key variable";
+    this.showNotice(
+      `No API key for ${provider}: run /connect ${provider} to store one, or set ${env}.`,
+      "warn",
+    );
   }
 
   /// The thread's title: a known session name, else a one-line summary of the
@@ -1419,10 +1483,12 @@ export class ChatController {
       prompt,
       images,
       labels: [
-        ...(active ? [{ id: 0, label: contextLabel(active) }] : []),
-        ...chips.map((chip) => ({ id: chip.id, label: chip.label })),
-        ...attached.map((chip) => ({ id: chip.id, label: chip.label })),
-        ...expanded.blocks.map((block) => ({ id: 0, label: contextLabel(block) })),
+        ...(active ? [{ label: contextLabel(active) }] : []),
+        ...chips.map((chip) => ({ label: chip.label })),
+        // An attachment's picture rides with its label: the bubble under a sent
+        // message shows the screenshot that was sent rather than its file name.
+        ...attached.map((chip) => ({ label: chip.label, preview: chip.preview })),
+        ...expanded.blocks.map((block) => ({ label: contextLabel(block) })),
       ],
       context: chips,
       attachments: attached,
@@ -2154,6 +2220,109 @@ export class ChatController {
     this.showProviders();
   }
 
+  /// `/logout`: the providers this machine holds a credential for, read from the
+  /// same listing `/connect` draws, and signed out by `oxide logout` — the CLI
+  /// call the terminal's own `/logout` makes, so the panel can take back a
+  /// connection it made (or one the terminal did).
+  async openLogout(): Promise<void> {
+    const cwd = this.cwd() ?? os.homedir();
+    this.logoutQuery = "";
+    this.logoutNote = "";
+    const probe = ++this.logoutProbe;
+    void vscode.window.setStatusBarMessage("Oxide: listing providers…", 20_000);
+    this.showLogout("Listing providers…");
+    const result = await runCapture(this.binary(), providersListArgs(), cwd);
+    if (probe !== this.logoutProbe) return;
+    if (this.dialog?.kind !== "logout") return;
+    if (result.error || result.code !== 0) {
+      const detail = result.error || firstLine(result.stderr) || `exit ${result.code}`;
+      const failed = `Could not list providers: ${detail}`;
+      this.showNotice(failed, "error");
+      this.showLogout(failed);
+      return;
+    }
+    this.providers = parseProviders(result.stdout);
+    this.showLogout();
+  }
+
+  private showLogout(note = ""): void {
+    if (note) this.logoutNote = note;
+    this.showDialog(logoutDialog(this.providers, this.logoutQuery, this.logoutNote));
+  }
+
+  private searchLogout(text: string): void {
+    if (this.dialog?.kind !== "logout" || text === this.logoutQuery) return;
+    this.logoutQuery = text;
+    this.showLogout();
+  }
+
+  /// A stored provider, taken: its credential is forgotten. A provider the panel
+  /// is running on switches to another logged-in one inside the CLI, so the next
+  /// turn is not left signing with a provider that has nothing to sign with.
+  private async logoutProvider(name: string): Promise<void> {
+    const cwd = this.cwd() ?? os.homedir();
+    const result = await runCapture(this.binary(), providerLogoutArgs(name), cwd);
+    if (result.error || result.code !== 0) {
+      const detail = result.error || firstLine(result.stderr) || `exit ${result.code}`;
+      this.showNotice(`Could not sign out of ${name}: ${detail}`, "error");
+      return;
+    }
+    // What `config.json` selects may have moved, so the footer's chips and the
+    // model's window are read again rather than left naming the provider that
+    // just went away.
+    this.refreshProject(true);
+    this.showNotice(logoutNotice(name, result.stdout));
+    this.onDidChange.fire();
+    this.broadcast(this.stateMessage());
+    return this.openLogout();
+  }
+
+  /// `/permissions`: the tools this project allows without prompting, listed
+  /// from the shared `approvals.json` through `oxide approvals`. The rules are
+  /// the ones an `Always allow` answer saved, wherever that answer was given.
+  async showApprovals(): Promise<void> {
+    const cwd = this.cwd();
+    if (!cwd) {
+      this.showNotice("Open a folder first.", "error");
+      return;
+    }
+    const probe = ++this.approvalsProbe;
+    this.approvalsNote = "";
+    this.showDialog(permissionsDialog(cwd, this.approvals, "Reading saved approvals…"));
+    const result = await runCapture(this.binary(), approvalsArgs(cwd), cwd);
+    if (probe !== this.approvalsProbe) return;
+    if (this.dialog?.kind !== "permissions") return;
+    if (result.error || result.code !== 0) {
+      const detail = result.error || firstLine(result.stderr) || `exit ${result.code}`;
+      this.approvals = [];
+      this.approvalsNote = `Could not read the saved approvals: ${detail}`;
+      this.showDialog(permissionsDialog(cwd, [], this.approvalsNote));
+      return;
+    }
+    this.approvals = parseApprovals(result.stdout).tools;
+    this.showDialog(permissionsDialog(cwd, this.approvals, this.approvalsNote));
+  }
+
+  /// The listing's own row: forget every rule this project has, which is the one
+  /// thing the panel's copy of the store can do that the terminal's `/permissions
+  /// clear` cannot do more locally.
+  private async clearApprovals(): Promise<void> {
+    const cwd = this.cwd();
+    if (!cwd) {
+      this.showNotice("Open a folder before clearing approvals.", "error");
+      return;
+    }
+    const result = await runCapture(this.binary(), approvalsClearArgs(cwd), cwd);
+    if (result.error || result.code !== 0) {
+      const detail = result.error || firstLine(result.stderr) || `exit ${result.code}`;
+      this.showNotice(`Could not clear the saved approvals: ${detail}`, "error");
+      return;
+    }
+    this.approvals = [];
+    this.showNotice("Forgot every tool this project allowed without prompting.");
+    return this.showApprovals();
+  }
+
   /// A row of the provider table, taken: sign in to the provider it names. A
   /// provider with a stored credential and one that is a server on this machine
   /// are connected as they are — the key is asked for only where one is needed —
@@ -2253,7 +2422,7 @@ export class ChatController {
       const detail = result.error || firstLine(result.stderr) || `exit ${result.code}`;
       return { k: "failed", message: detail };
     }
-    const check = parseUpdateCheck(result.stdout);
+    const check = parseUpdateCheck(result.stdout, UPDATE_COMPONENT);
     if (!check) {
       return {
         k: "failed",
@@ -2261,6 +2430,18 @@ export class ChatController {
       };
     }
     return { k: "check", check };
+  }
+
+  /// The same check asked about the CLI's own train. It is the binary every turn
+  /// runs through and the one this panel reads GitHub through, so a release of it
+  /// newer than the installation is worth knowing; a check that cannot answer — a
+  /// CLI too old for `--component`, a network that is down — leaves the dialog as
+  /// it was rather than reporting a failure the reader did not ask about.
+  private async readCliCheck(): Promise<UpdateCheck | null> {
+    const cwd = this.cwd() ?? os.homedir();
+    const result = await runCapture(this.binary(), cliCheckArgs(), cwd, UPDATE_CHECK_TIMEOUT);
+    if (result.error || result.code !== 0) return null;
+    return parseUpdateCheck(result.stdout, "cli");
   }
 
   /// Asks the installed CLI which release of this extension is newest, and
@@ -2315,7 +2496,13 @@ export class ChatController {
         "info",
       );
     }
-    this.showDialog(updateDialog({ k: "ready", check }));
+    // Asked for by hand: the CLI's own train is read in the same breath, so the
+    // dialog that reports versions reports the one every turn runs through. A
+    // check a launch makes by itself does not do this — it is about this
+    // extension, and its answer raises a notification rather than a dialog.
+    const cli = await this.readCliCheck();
+    if (probe !== this.updateProbe) return { k: "superseded" };
+    this.showDialog(updateDialog({ k: "ready", check, cli }));
     return { k: "release", check };
   }
 
@@ -2695,6 +2882,10 @@ export class ChatController {
         return this.toggleMcp(value);
       case UPDATE_INSTALL:
         return this.installUpdate();
+      case UPDATE_CLI:
+        // The same call the row a CLI too old to be checked is offered: this is
+        // `oxide update`, which is what replaces the binary either way.
+        return this.installLegacyCli();
       case UPDATE_RELOAD:
         return this.reloadWindow();
       case UPDATE_NOTES:
@@ -2707,16 +2898,20 @@ export class ChatController {
         return this.deleteSession(value);
       case PROVIDER_SELECT:
         return this.connectProvider(value);
+      case PROVIDER_LOGOUT:
+        return this.logoutProvider(value);
+      case APPROVALS_CLEAR:
+        return this.clearApprovals();
       case CHANGES_UNDO_CONFIRM:
         return this.restoreTurn(value);
       case APPLY_MODEL:
-        return this.applyDialogSetting("model", value);
+        return this.applyModel(value);
       case APPLY_AGENT:
         return this.applyDialogSetting("agent", value);
       case APPLY_REASONING:
         return this.applyDialogSetting("reasoning", value);
       case APPLY_TRUST:
-        return this.applyDialogSetting("projectTrust", value);
+        return this.applyTrust(value);
       case CLOSE_DIALOG:
         return this.closeDialog();
       default:
@@ -2773,10 +2968,11 @@ export class ChatController {
   }
 
   /// A built-in command the panel answers itself: `/model` and `/trust` are the
-  /// footer's chips, `/mcp`, `/session`, `/new` and `/attach` are the panel's
-  /// own dialogs and pickers, and `/help` and `/usage` are what it can say
-  /// about itself. Anything the panel has no action for (`/permissions`, the
-  /// desktop's own `/theme`) is refused in `send` rather than sent on.
+  /// footer's chips, `/mcp`, `/session`, `/new`, `/permissions` and `/logout`
+  /// are the panel's own dialogs and pickers, and `/help` and `/usage` are what
+  /// it can say about itself. Anything the panel has no action for (the desktop
+  /// app's own `/theme`, the terminal's `/spend`) is refused in `send` rather
+  /// than sent on.
   private async runPanelCommand(action: PanelAction): Promise<void> {
     switch (action) {
       case "help":
@@ -2786,6 +2982,10 @@ export class ChatController {
         return this.showMcps();
       case "provider":
         return this.openProviders();
+      case "logout":
+        return this.openLogout();
+      case "permissions":
+        return this.showApprovals();
       case "session":
         // Opens rather than toggles: the header's button is the control that
         // swaps, and a command that names the history should not answer by
@@ -2829,11 +3029,14 @@ export class ChatController {
     const catalog = result.code === 0 && !result.error ? parseModelCatalog(result.stdout) : null;
     if (catalog) {
       this.modelCatalog = mergeModels(catalog.models, this.modelCatalog);
-      this.modelNote = catalog.error
-        ? `Could not refresh models: ${firstLine(catalog.error)}`
+      // One provider whose catalog could not be listed is said, since the rows
+      // for it are the ones missing rather than the whole listing having failed.
+      const failed = catalog.errors.map((entry) => `${entry.provider}: ${firstLine(entry.error)}`);
+      this.modelNote = failed.length
+        ? `Could not list ${failed.join("; ")}`
         : this.modelCatalog.length
           ? ""
-          : "The active provider returned no models; enter a model ID below.";
+          : "No provider returned models; enter a model ID below.";
     } else {
       const detail = result.error || firstLine(result.stderr) || "the CLI returned no catalog";
       this.modelNote = `Could not load the full catalog: ${detail}. Remembered models are still available.`;
@@ -2871,8 +3074,13 @@ export class ChatController {
     );
   }
 
+  /// The folder's own access as the panel last read it, for the trust dialog's
+  /// marker and the footer's chip.
   async setProjectTrust(): Promise<void> {
-    this.showDialog(trustDialog(this.trust()));
+    this.refreshProject();
+    this.showDialog(
+      trustDialog({ setting: this.trust(), saved: this.project?.savedTrust }),
+    );
   }
 
   /// Search belongs to whichever in-panel listing is open. For model and agent
@@ -2883,6 +3091,8 @@ export class ChatController {
         return this.searchSessions(text);
       case "provider":
         return this.searchProviders(text);
+      case "logout":
+        return this.searchLogout(text);
       case "model":
         this.modelQuery = text;
         return this.showModelDialog();
@@ -2894,6 +3104,83 @@ export class ChatController {
   private async applyDialogSetting(key: string, value: string): Promise<void> {
     this.closeDialog();
     await this.updateSetting(key, value.trim());
+  }
+
+  /// The model dialog's answer. A model the catalog lists under another provider
+  /// is a switch as well as a choice: the selection lives in `config.json` and
+  /// only the CLI can move it, so the row runs `oxide login <provider> --model
+  /// <model>` — which reuses the credential that provider is already stored with —
+  /// and then leaves the panel's own `oxide.model` override unset, since the
+  /// config now names exactly the model that was picked. A model of the provider
+  /// in use is the panel's setting alone, which is what every other row does.
+  private async applyModel(model: string): Promise<void> {
+    const picked = model.trim();
+    const active = this.project?.provider ?? "";
+    const provider = this.modelCatalog.find((entry) => entry.model === picked)?.provider ?? "";
+    if (!picked || !provider || provider === active) {
+      return this.applyDialogSetting("model", picked);
+    }
+    this.closeDialog();
+    const cwd = this.cwd();
+    if (!cwd) {
+      this.showNotice("Open a folder before switching providers.", "error");
+      return;
+    }
+    const result = await runCapture(
+      this.binary(),
+      providerLoginArgs(provider, false, picked),
+      cwd,
+      30_000,
+    );
+    if (result.error || result.code !== 0) {
+      const detail = result.error || firstLine(result.stderr) || `exit ${result.code}`;
+      this.showNotice(`Could not switch to ${provider}: ${detail}`, "error");
+      return;
+    }
+    const outcome = parseLoginOutcome(result.stdout);
+    // The provider, its model and its endpoint are what `config.json` selects
+    // now, so the chips and the window are read again from it; the panel's own
+    // override goes, or it would name a model the provider it just left serves.
+    await this.updateSetting("model", "");
+    this.refreshProject(true);
+    this.showNotice(
+      `Switched to ${outcome?.label || provider} on ${picked}.`,
+    );
+    this.onDidChange.fire();
+    this.broadcast(this.stateMessage());
+  }
+
+  /// The trust dialog's answer. `default` is the panel following whatever the
+  /// store says; the other two are a decision, which is written to the shared
+  /// `trust.json` — the file the terminal's `/trust` and the desktop app read —
+  /// so one front-end's answer is not a second opinion. The panel's own override
+  /// is left unset either way, since a saved decision is the one every reader
+  /// shares and a forced setting is exactly what let the two disagree.
+  private async applyTrust(value: string): Promise<void> {
+    const decision = value.trim();
+    if (decision !== "trusted" && decision !== "untrusted") {
+      return this.applyDialogSetting("projectTrust", "default");
+    }
+    const folder = this.folder()?.uri.fsPath;
+    if (!folder) {
+      this.closeDialog();
+      this.showNotice("Open a folder before deciding its access.", "error");
+      return;
+    }
+    this.closeDialog();
+    const result = await runCapture(this.binary(), trustSetArgs(decision, folder), folder);
+    if (result.error || result.code !== 0) {
+      const detail = result.error || firstLine(result.stderr) || `exit ${result.code}`;
+      this.showNotice(`Could not save the trust decision: ${detail}`, "error");
+      return;
+    }
+    await this.updateSetting("projectTrust", "default");
+    this.refreshProject();
+    this.showNotice(
+      decision === "trusted"
+        ? "This folder is trusted: its .oxide agents, commands, skills and plugins load everywhere."
+        : "This folder is declined: its own resources stay unloaded everywhere.",
+    );
   }
 
   // ---------- notices ----------
@@ -2993,6 +3280,19 @@ function trimLines(block: ContextBlock): { block: ContextBlock; cut: boolean } {
 function firstLine(text: string): string {
   const line = text.split("\n").find((entry) => entry.trim());
   return line ? line.trim() : "";
+}
+
+/// What a logout is reported as: the provider it forgot, and the one the CLI
+/// switched to when the provider in use was the one signed out. The CLI's own
+/// answer is what says which, so a provider that had no stored credential is
+/// reported as that rather than as a successful sign-out.
+function logoutNotice(name: string, stdout: string): string {
+  const outcome = parseLogoutOutcome(stdout);
+  const label = outcome?.label || name;
+  if (outcome && !outcome.removed) return `No stored credential for ${label}.`;
+  return outcome?.switchedTo
+    ? `Signed out of ${label} — now using ${outcome.switchedTo}.`
+    : `Signed out of ${label}.`;
 }
 
 /// The CLI's report ends with its outcome (`Already up to date; rerun with
