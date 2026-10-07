@@ -221,6 +221,10 @@ const state = {
   // model would clamp away.
   reasoningLevels: null,
   contextWindow: 0,
+  // The repository the bar names: what `git_info` answered for the folder on
+  // screen, read when the folder changes, when a turn ends and when the reader
+  // comes back to the window.
+  git: null,
   providers: [],
   // The provider the connect dialog has selected, kept by name rather than by
   // row: the list is filtered as the reader searches, so a row's position says
@@ -334,6 +338,9 @@ function setUsage({
   if (cost) bits.push(`$${Number(cost).toFixed(4)}`);
   if (contextPct != null && state.contextWindow) bits.push(`ctx ${contextPct.toFixed(0)}%`);
   el("usage").textContent = bits.join(" · ");
+  // The bar's ring is the same percentage as a gauge rather than as a word, so
+  // it is painted from the totals wherever they move.
+  renderContextRing();
 }
 
 function setThreadTitle(text) {
@@ -974,6 +981,10 @@ async function selectProject(project) {
   setStatus("Ready");
   renderProjectsTree(); // Update tree view instead of dropdown
   resetTranscript();
+  // The folder moved, so the bar's own facts have to be read again rather than
+  // carried over from the folder being left. The ring is painted with the rest
+  // of the row by the reset, and again when the folder's own window arrives.
+  loadGit();
   await Promise.all([loadInfo(), loadSessions(), loadTheme()]);
 }
 
@@ -998,6 +1009,10 @@ async function loadInfo() {
     updateChips();
     renderProjectMeta(info);
     updateTrustButton();
+    // The window the ring is a fraction of arrives with the folder's own facts,
+    // so the tooltip says the window a turn will be measured against rather than
+    // the one the last folder had.
+    renderContextRing();
     if (state.trust && state.trust.awaiting) showTrust(state.trust);
   } catch (error) {
     if (project !== state.project) return;
@@ -1020,6 +1035,7 @@ async function refreshContextWindow() {
     if (project !== state.project || !info) return;
     state.contextWindow = info.contextWindow || 0;
     renderProjectMeta(info);
+    renderContextRing();
   } catch {
     // A window that could not be read again keeps the one it has: the next full
     // load reports it, and a background lookup is not worth a note of its own.
@@ -1125,6 +1141,90 @@ function formatTokens(count) {
   return `${(count / 1000000).toFixed(2)}M`;
 }
 
+/// The levels the context colors escalate through, which the terminal's footer
+/// and the panel's own gauge use too: the arc says the same thing in every
+/// front-end rather than each drawing its own thresholds.
+function contextLevel(percent) {
+  if (percent == null) return "ok";
+  if (percent > 90) return "high";
+  return percent > 70 ? "warn" : "ok";
+}
+
+/// The repository the bar names — read again when the folder changes, when a
+/// turn ends, since a run may switch branch, and when the reader comes back to
+/// the window, since a branch switched in a terminal is theirs to see here.
+async function loadGit() {
+  const project = state.project;
+  if (!project) {
+    state.git = null;
+    renderGit();
+    return;
+  }
+  try {
+    const info = await invoke("git_info", { project });
+    if (project !== state.project) return;
+    state.git = info || null;
+  } catch {
+    // A folder whose repository could not be read has no branch to show, which
+    // is the same bar as a folder that is in no repository at all: the row says
+    // what it knows and nothing else.
+    if (project !== state.project) return;
+    state.git = null;
+  }
+  renderGit();
+}
+
+/// The branch a turn in this folder will run on. It is a fact about the folder
+/// rather than a control, so a folder with no repository — and one whose HEAD
+/// holds a commit rather than a branch — is named by whatever there is to name
+/// and has no chip when there is nothing.
+function renderGit() {
+  const info = state.git;
+  const branch = info && info.repo ? info.branch || info.detached : "";
+  const chip = el("git");
+  chip.hidden = !branch;
+  el("git-branch").textContent = branch;
+  if (!branch) return;
+  const root = info.root ? `\n${info.root}` : "";
+  chip.title = info.branch
+    ? `On branch ${branch}${root}`
+    : `HEAD is detached at ${branch}${root}`;
+}
+
+/// The context status the bar carries: the ring is filled to the percent of the
+/// window the thread's last request used, in the color of the level, and the
+/// numbers behind that arc — the percent, the tokens it took and the window
+/// itself — are in its tooltip, since the usage line under the composer is where
+/// this chat's totals are written out.
+function renderContextRing() {
+  const ring = el("context-ring");
+  ring.hidden = !state.project;
+  if (!state.project) return;
+  const fill = el("context-ring-fill");
+  // The ring's own circumference, read off the circle the sheet draws rather
+  // than kept beside it: a dash as long as the circle is the ring at 100%, so
+  // the filled part is what the thread's last request took of the window.
+  const length = 2 * Math.PI * (Number(fill.getAttribute("r")) || 6.2);
+  const percent = state.usage?.contextPct ?? null;
+  const spent = percent == null ? 0 : Math.max(0, Math.min(percent, 100));
+  fill.setAttribute(
+    "stroke-dasharray",
+    `${((length * spent) / 100).toFixed(2)} ${length.toFixed(2)}`,
+  );
+  ring.dataset.level = contextLevel(percent);
+  const limit = state.contextWindow ? formatTokens(state.contextWindow) : "";
+  let label = "No request yet";
+  if (percent != null) {
+    label = `${percent.toFixed(0)}% · ${formatTokens(state.usage?.prompt || 0)}${
+      limit ? `/${limit}` : ""
+    }`;
+  } else if (limit) {
+    label = `No request yet · ${limit} window`;
+  }
+  ring.title = label;
+  ring.setAttribute("aria-label", `context window: ${label}`);
+}
+
 // ---------- threads ----------
 
 /// Loads the shared session store, keeping why it could not be read for the
@@ -1220,6 +1320,9 @@ function resetTranscript() {
   el("transcript").innerHTML = "";
   el("usage").textContent = "";
   state.usage = null;
+  // The totals a thread carried leave with it, so the ring goes back to what a
+  // fresh conversation shows: a window with nothing spent against it yet.
+  renderContextRing();
   setThreadTitle("");
   renderWelcome();
   updateRunBanner();
@@ -4874,6 +4977,10 @@ async function initEvents() {
     setStatus("Ready");
     renderChanges(event.payload || {});
     resetTurn();
+    // A turn is where the branch under the composer can change — the model runs
+    // git like any other command — so the bar is read again before the next
+    // message is composed against it.
+    loadGit();
     await loadSessions();
     await startNextPendingSend();
   });
@@ -5370,6 +5477,12 @@ function init() {
     true,
   );
   document.addEventListener("mouseup", finishEditorControlPress, true);
+  // The reader comes back to the window from a terminal where they may have
+  // switched branch: the bar's own facts are read again, since nothing here told
+  // this window that they changed.
+  window.addEventListener("focus", () => {
+    loadGit();
+  });
   window.addEventListener("blur", () => {
     editorControlPress = null;
     justBlurredEditor = null;
@@ -5703,11 +5816,15 @@ function clearSelectedProject() {
   state.projectName = "";
   state.session = null;
   state.trust = null;
+  // Nothing is open, so there is no repository to name and no window to measure
+  // a request against: the bar keeps the folder chip, which is the way into one.
+  state.git = null;
   el("project-meta").textContent = "";
   el("trust-modal").hidden = true;
   updateTrustButton();
   updateChips();
   setStatus("Ready");
+  renderGit();
   resetTranscript();
 }
 

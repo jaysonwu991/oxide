@@ -634,6 +634,15 @@ let steerAccepted = true;
 // What `project_info` answers while a check asks for the folder's own facts,
 // and nothing everywhere else.
 let projectInfo = null;
+// What `git_info` answers for the folder's repository: the bar's own read, so a
+// check can drive a branch, a worktree or a folder that is no repository.
+let gitAnswer = {
+  repo: true,
+  root: "/home/dev/Projects/oxide",
+  branch: "main",
+  detached: "",
+};
+let gitError = null;
 
 const invoke = async (command, args = {}) => {
   calls.push([command, args]);
@@ -768,6 +777,10 @@ const invoke = async (command, args = {}) => {
       // answer sets — the sections above set that state themselves, since the
       // stub is what the window must not depend on.
       return projectInfo;
+    case "git_info":
+      if (gitError) throw gitError;
+      if (!String(args.project || "").trim()) throw "select a project first";
+      return { ...gitAnswer };
     default:
       return null;
   }
@@ -822,7 +835,15 @@ globalThis.window = {
   },
   innerWidth: 1280,
   innerHeight: 900,
-  addEventListener: () => {},
+  // The window keeps the listeners the page puts on it, so a check can fire the
+  // one event only the reader can cause — coming back to the window.
+  listeners: {},
+  addEventListener(type, handler) {
+    (this.listeners[type] ||= []).push(handler);
+  },
+  fire(type, event) {
+    for (const handler of this.listeners[type] || []) handler(event);
+  },
   history: { replaceState: () => {} },
   matchMedia: () => ({ matches: false, addEventListener: () => {} }),
   requestAnimationFrame: (callback) => setTimeout(callback, 0),
@@ -869,6 +890,7 @@ vm.runInThisContext(
     " resetTranscript, renderChanges, closeReview, undoChanges," +
     " updateRunBanner, viewingRun, openRun, handleEvent, removeProject, clearSelectedProject, selectProject," +
     " loadSessions, renderProjectsTree, renderSessions, renderMcps, openSession, renderProjectMeta, updateSendState, toggleBusyMessageMode, setBusy, setIdle," +
+    " loadGit, renderGit, renderContextRing," +
     " loadMcps, openSessions," +
     " listedSessions, selectSessionFromTree, removeSession," +
     " updateChips, openReasoning," +
@@ -1408,19 +1430,50 @@ check(
     shellAt('id="sessions-modal"') < shellAt('class="composer"'),
   `${shellAt('id="projects-modal"')} / ${shellAt('id="mcps-modal"')} / ${shellAt('id="sessions-modal"')} / ${shellAt('class="composer"')}`,
 );
-// The project chip sits in the composer's own row, before the controls that
-// describe the message: it is the folder the message goes to. It carries words
-// rather than a glyph, since with nothing open it is how a first thread starts.
-const composerBar = shell.slice(
-  shell.indexOf('class="composer-bar"'),
-  shell.indexOf('id="send"'),
+// The project chip sits at the top of the composer's box, on the bar the folder
+// rides with: the branch it is on and the machine the turn runs on are readouts
+// beside it, and the context ring is at the end of the row. It carries words
+// rather than a glyph, since with nothing open it is how a first thread starts,
+// and the chips that describe the message stay on the row below it.
+const composerHead = shell.slice(
+  shell.indexOf('class="composer-head"'),
+  shell.indexOf('id="attachments"'),
 );
 check(
-  "put the project chip in the composer's row, with its own words",
-  composerBar.includes('id="project"') &&
-    /<span id="project-name"[^>]*>[^<]+<\/span>/.test(composerBar) &&
+  "put the folder, the branch and the machine on the composer's own bar",
+  composerHead.includes('id="project"') &&
+    /<span id="project-name"[^>]*>[^<]+<\/span>/.test(composerHead) &&
+    composerHead.includes('id="git-branch"') &&
+    composerHead.includes("This computer") &&
+    composerHead.includes('id="context-ring"') &&
+    shell.indexOf('class="composer-head"') < shell.indexOf('<textarea id="prompt"') &&
     shell.indexOf('id="project"') < shell.indexOf('id="attach"'),
-  composerBar.slice(0, 420),
+  composerHead.slice(0, 420),
+);
+// The bar's own rows are the composer's first ones — the folder is read before
+// anything is typed below it — and none of them is a control: the branch is a
+// fact about the folder, the machine is the one environment this app runs in, and
+// the ring is a reading, each with its words in a tooltip rather than in a
+// handler.
+check(
+  "left the bar's own readouts without handlers",
+  composerHead.includes('<span id="git"') &&
+    !/id="(git|context-ring)"[^>]*onclick/.test(composerHead) &&
+    /id="git"[^>]*hidden/.test(composerHead) &&
+    /id="context-ring"[^>]*hidden/.test(composerHead),
+  composerHead.slice(0, 420),
+);
+// The bar is one row read left to right — the folder, the branch, the machine —
+// with the context ring at its end, and the arc escalates through the same two
+// thresholds the terminal's footer colors its own percentage by: dim on its own,
+// the theme's amber past 70% and its error color past 90%.
+check(
+  "kept the ring at the bar's end, in the color of the level",
+  /\.composer-head \{[^}]*display: flex;/.test(sheet) &&
+    /\.context-ring \{[^}]*margin-left: auto;/.test(sheet) &&
+    /\.context-ring\[data-level="warn"\] \{ color: var\(--tool\); \}/.test(sheet) &&
+    /\.context-ring\[data-level="high"\] \{ color: var\(--error\); \}/.test(sheet),
+  sheet.slice(sheet.indexOf(".context-ring"), sheet.indexOf(".context-ring") + 200),
 );
 // A project is not selected for the reader on the way in, so the box a message
 // is typed into is not gated behind one in the markup either.
@@ -1566,6 +1619,7 @@ const sharedGlyphs = {
   close: "M18 6 6 18M6 6l12 12",
   power: "M18.36 6.64a9 9 0 1 1-12.73 0",
   model: "m8 1.8 5.5 3.1v6.2L8 14.2l-5.5-3.1V4.9L8 1.8Z",
+  branch: "M4 4.5v7M5.5 11c4 0 6.5-1.5 6.5-4.5",
   reasoning:
     "M8 1.7 9 5l3.3 1L9 7l-1 3.3L7 7 3.7 6 7 5l1-3.3ZM12.7 9.3l.6 1.8 1.7.6-1.7.6-.6 1.7-.6-1.7-1.8-.6 1.8-.6.6-1.8ZM3.5 10.2l.5 1.3 1.3.5-1.3.5-.5 1.3-.5-1.3-1.3-.5 1.3-.5.5-1.3Z",
   access:
@@ -4734,6 +4788,147 @@ check(
   JSON.stringify(sends()[0]?.[1]),
 );
 app.state.session = null;
+
+// ---------- the bar above the composer ----------
+
+console.log("the composer's bar");
+// What the bar says about the folder a turn runs in: the branch it is on, where
+// that was read from, and the window the thread's own tokens are counted against.
+// None of it is a control — the branch is a fact about the folder — so what a
+// check can drive is the read behind it and the ring's own painting.
+const barProject = "/home/dev/Projects/oxide";
+app.state.projects = [{ name: "oxide", path: barProject, registered: true }];
+app.state.project = null;
+app.state.session = null;
+app.state.runSession = null;
+app.state.sendView = null;
+app.state.parked = null;
+app.resetTranscript();
+calls.length = 0;
+await app.selectProject({ name: "oxide", path: barProject });
+check(
+  "named the branch of the folder that was opened",
+  app.state.git?.branch === "main" &&
+    el("git").hidden === false &&
+    el("git-branch").textContent === "main" &&
+    el("git").title === `On branch main\n${gitAnswer.root}` &&
+    projectCalls("git_info").length > 0,
+  `${JSON.stringify(app.state.git)} / ${el("git-branch").textContent} / ${el("git").title}`,
+);
+// A folder that is in no repository has no branch to name: the chip goes away
+// rather than saying nothing, and the rest of the row — the folder, the machine,
+// the ring — stays.
+gitAnswer = { repo: false, root: "", branch: "", detached: "" };
+await app.loadGit();
+check(
+  "hid the branch in a folder that is no repository",
+  el("git").hidden === true &&
+    el("git-branch").textContent === "" &&
+    el("project-name").textContent === "oxide",
+  `${el("git").hidden} / ${el("git-branch").textContent} / ${el("project-name").textContent}`,
+);
+// A read that failed leaves no chip behind either, rather than naming the branch
+// the folder had a moment ago: the row says what it knows, and about this folder's
+// repository it knows nothing.
+gitError = "permission denied";
+await app.loadGit();
+check(
+  "left no branch behind when the read failed",
+  app.state.git === null && el("git").hidden === true && el("git-branch").textContent === "",
+  `${JSON.stringify(app.state.git)} / ${el("git").hidden} / ${el("git-branch").textContent}`,
+);
+gitError = null;
+// A detached HEAD has no branch at all: it is named by the commit it is on, and
+// the tooltip says which of the two the chip is showing.
+gitAnswer = { repo: true, root: barProject, branch: "", detached: "9cdea1c" };
+await app.loadGit();
+check(
+  "named a detached HEAD by its commit",
+  el("git").hidden === false &&
+    el("git-branch").textContent === "9cdea1c" &&
+    el("git").title === `HEAD is detached at 9cdea1c\n${barProject}`,
+  `${el("git-branch").textContent} / ${el("git").title}`,
+);
+// A branch switched in a terminal reaches this window through nothing but the
+// reader coming back to it, which is where the banner's own facts are read again.
+gitAnswer = { repo: true, root: barProject, branch: "feat/desktop-bar", detached: "" };
+calls.length = 0;
+window.fire("focus");
+await nextTick();
+check(
+  "read the branch again when the reader came back to the window",
+  el("git-branch").textContent === "feat/desktop-bar" &&
+    projectCalls("git_info").length === 1 &&
+    projectCalls("git_info")[0][1].project === barProject,
+  `${el("git-branch").textContent} / ${JSON.stringify(calls.map(([name]) => name))}`,
+);
+// A turn is where the branch can change — the model runs git like any other
+// command — so the bar is read again as the turn ends rather than left saying
+// where the folder stood before it.
+gitAnswer = { repo: true, root: barProject, branch: "fix/a-turn-switched-it", detached: "" };
+calls.length = 0;
+await emit("agent-end", { runId: 72, project: barProject });
+await nextTick();
+check(
+  "read the branch again when a turn ended",
+  el("git-branch").textContent === "fix/a-turn-switched-it" &&
+    projectCalls("git_info").length === 1,
+  `${el("git-branch").textContent} / ${JSON.stringify(calls.map(([name]) => name))}`,
+);
+// The context status: the ring is filled to the percent the footer's own usage
+// line draws, so the two never disagree about how much of the window is spent,
+// and the numbers behind the arc are in its tooltip — the percent, the tokens the
+// last request took and the window they were counted against.
+app.state.contextWindow = 128000;
+const ringFill = () => {
+  const [filled, whole] = String(el("context-ring-fill").getAttribute("stroke-dasharray"))
+    .split(" ")
+    .map(Number);
+  return (filled / whole) * 100;
+};
+app.handleEvent({ type: "usage", usage: { input: 30000, output: 40, cost: 0.01 } });
+check(
+  "filled the ring to the percent the usage line draws",
+  el("usage").textContent === "↑ 30000 ↓ 40 · $0.0100 · ctx 23%" &&
+    el("context-ring").hidden === false &&
+    Math.round(ringFill()) === 23 &&
+    el("context-ring").title === "23% · 30.0k/128.0k" &&
+    el("context-ring").dataset.level === "ok" &&
+    el("context-ring").getAttribute("aria-label") === "context window: 23% · 30.0k/128.0k",
+  `${el("usage").textContent} / ${el("context-ring-fill").getAttribute("stroke-dasharray")} / ${el("context-ring").title}`,
+);
+// The arc escalates through the same two thresholds the terminal's footer and
+// the panel's own gauge color by, so the color reads the same in all three.
+app.handleEvent({ type: "usage", usage: { input: 100000, output: 40 } });
+const warned = el("context-ring").dataset.level;
+app.handleEvent({ type: "usage", usage: { input: 120000, output: 40 } });
+const high = el("context-ring").dataset.level;
+check(
+  "escalated the ring at the same two thresholds as the other front-ends",
+  warned === "warn" && high === "high" && Math.round(ringFill()) === 94,
+  `${warned} / ${high} / ${ringFill().toFixed(1)}`,
+);
+// A thread that has spent nothing yet has no percentage: the ring is drawn empty
+// and the tooltip names the window it would be measured against.
+app.handleEvent({ type: "usage", usage: {} });
+check(
+  "drew an empty ring for a window nothing has been counted against",
+  el("context-ring").hidden === false &&
+    Math.round(ringFill()) === 0 &&
+    el("context-ring").dataset.level === "ok" &&
+    el("context-ring").title === "No request yet · 128.0k window",
+  `${ringFill()} / ${el("context-ring").title}`,
+);
+// Nothing is open, so there is no window to measure anything against: the ring
+// goes with the folder, and the chip that takes one stays.
+app.clearSelectedProject();
+check(
+  "took the ring away with the folder it belongs to",
+  el("context-ring").hidden === true &&
+    el("git").hidden === true &&
+    el("project-name").textContent === "Choose a project",
+  `${el("context-ring").hidden} / ${el("git").hidden} / ${el("project-name").textContent}`,
+);
 
 // ---------- a turn running in another thread ----------
 
