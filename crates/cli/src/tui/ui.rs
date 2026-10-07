@@ -3471,10 +3471,21 @@ fn readable_output(text: &str) -> String {
         .join("\n")
 }
 
-/// A one-line affordance shown when a tool body is shortened, mirroring Pi's
-/// `... (N more lines, Ctrl+O to expand)` hint.
+/// A one-line affordance shown when a tool body is shortened, in Pi's own
+/// `... (N more lines, Ctrl+O to expand)` shape.
 fn collapsed_hint(hidden_lines: usize, color: Color, width: usize) -> Line<'static> {
-    let hint = format!("⋯ {hidden_lines} more lines · Ctrl+O to expand");
+    collapsed_hint_with(hidden_lines, "more", color, width)
+}
+
+/// Like [`collapsed_hint`], but names the end the fold dropped, so a tail
+/// preview reads `earlier lines` the way Pi's shell renderer does.
+fn collapsed_hint_with(
+    hidden_lines: usize,
+    direction: &str,
+    color: Color,
+    width: usize,
+) -> Line<'static> {
+    let hint = format!("... ({hidden_lines} {direction} lines, Ctrl+O to expand)");
     Line::from(Span::styled(
         truncate(&hint, width),
         Style::default().fg(color),
@@ -3687,10 +3698,8 @@ fn push_tool_output(lines: &mut Rows, text: &str, width: usize, style: Style) {
 /// Default lines of a tool body shown before the `Ctrl+O` expand hint, so
 /// every panel stays short enough to scan.
 const TOOL_PREVIEW_LINES: usize = 10;
-/// Shell output is previewed from both ends: the head holds a command's primary
-/// output (the branch and recent commits of a `git …` chain, a build's first
-/// lines) and the tail holds its result or error, so neither end is lost.
-const BASH_PREVIEW_HEAD: usize = 5;
+/// Shell output is previewed from its tail, where a command's result and any
+/// error land, as Pi's own shell renderer does.
 const BASH_PREVIEW_LINES: usize = 5;
 /// Code search results benefit from more context than a shell tail.
 const GREP_PREVIEW_LINES: usize = 15;
@@ -3701,17 +3710,14 @@ const LIST_PREVIEW_LINES: usize = 20;
 #[derive(Clone, Copy)]
 enum Preview {
     Head(usize),
-    HeadTail { head: usize, tail: usize },
+    Tail(usize),
 }
 
-/// Per-tool preview budgets: a shell command keeps both ends, searches keep more
-/// lines, and everything else uses the default.
+/// Per-tool preview budgets: a shell command keeps its newest lines, searches
+/// keep more from the top, and everything else uses the default.
 fn tool_preview(name: &str) -> Preview {
     match crate::tools::canonical_tool_name(name) {
-        "bash" => Preview::HeadTail {
-            head: BASH_PREVIEW_HEAD,
-            tail: BASH_PREVIEW_LINES,
-        },
+        "bash" => Preview::Tail(BASH_PREVIEW_LINES),
         "grep" => Preview::Head(GREP_PREVIEW_LINES),
         "find" | "ls" => Preview::Head(LIST_PREVIEW_LINES),
         _ => Preview::Head(TOOL_PREVIEW_LINES),
@@ -3733,8 +3739,7 @@ fn push_tool_body(
     let readable = readable_output(&crate::tools::sanitize_terminal_output(text));
     let all: Vec<&str> = readable.lines().collect();
     let limit = match preview {
-        Preview::Head(limit) => limit,
-        Preview::HeadTail { head, tail } => head + tail,
+        Preview::Head(limit) | Preview::Tail(limit) => limit,
     };
     if expand_tools || all.len() <= limit {
         push_tool_output(lines, &readable, width, style);
@@ -3747,12 +3752,14 @@ fn push_tool_body(
             lines.push(Line::from(""));
             lines.push(collapsed_hint(all.len() - limit, color, width));
         }
-        Preview::HeadTail { head, tail } => {
-            push_tool_output(lines, &all[..head].join("\n"), width, style);
-            lines.push(Line::from(""));
-            lines.push(collapsed_hint(all.len() - head - tail, color, width));
-            lines.push(Line::from(""));
-            push_tool_output(lines, &all[all.len() - tail..].join("\n"), width, style);
+        Preview::Tail(_) => {
+            lines.push(collapsed_hint_with(
+                all.len() - limit,
+                "earlier",
+                color,
+                width,
+            ));
+            push_tool_output(lines, &all[all.len() - limit..].join("\n"), width, style);
         }
     }
 }
@@ -5198,8 +5205,8 @@ mod tests {
             .collect::<Vec<_>>()
             .join("\n");
 
-        // Shell output previews both ends: the head holds the primary output
-        // and the tail the result, with only the middle folded.
+        // Shell output previews its tail, where the result and any error land,
+        // with Pi's own hint above it naming the lines it dropped.
         let mut bash = Vec::new();
         render_item(
             &ChatItem::ToolProgress {
@@ -5211,13 +5218,14 @@ mod tests {
             &mut bash,
         );
         let text = panel_text(&bash);
-        assert!(text.contains("row-00"), "{text}");
-        assert!(text.contains("row-04"), "{text}");
-        assert!(!text.contains("row-05"), "{text}");
-        assert!(text.contains("row-24"), "{text}");
+        assert!(!text.contains("row-00"), "{text}");
+        assert!(!text.contains("row-19"), "{text}");
         assert!(text.contains("row-20"), "{text}");
-        assert!(text.contains("more lines"), "{text}");
-        assert!(text.contains("Ctrl+O to expand"), "{text}");
+        assert!(text.contains("row-24"), "{text}");
+        assert!(
+            text.contains("... (20 earlier lines, Ctrl+O to expand)"),
+            "{text}"
+        );
 
         // Searches preview the first lines, with a larger budget than a shell.
         let mut grep = Vec::new();
@@ -5234,7 +5242,10 @@ mod tests {
         assert!(text.contains("row-00"), "{text}");
         assert!(text.contains("row-14"), "{text}");
         assert!(!text.contains("row-15"), "{text}");
-        assert!(text.contains("Ctrl+O to expand"), "{text}");
+        assert!(
+            text.contains("... (10 more lines, Ctrl+O to expand)"),
+            "{text}"
+        );
 
         let mut expanded = Vec::new();
         render_item(
