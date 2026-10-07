@@ -445,7 +445,7 @@ fn draw_connect(frame: &mut Frame, app: &App) {
     }
 }
 
-/// The `/usage` settings dialog: a labeled form over the Portkey spend-bar
+/// The `/spend` settings dialog: a labeled form over the Portkey spend-bar
 /// settings. The selected row is edited in place and the terminal cursor is
 /// placed at the end of its value, including the masked API key.
 fn draw_usage(frame: &mut Frame, app: &App) {

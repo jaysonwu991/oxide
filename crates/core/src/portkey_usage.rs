@@ -1,6 +1,6 @@
 //! The Portkey spend status bar.
 //!
-//! `/usage` configures it; the settings live in `portkey-usage.json` in the
+//! `/spend` configures it; the settings live in `portkey-usage.json` in the
 //! Oxide config directory (mode 0600, since they hold an API key). The bar reads
 //! the spend of the logged-in Portkey account, so it only runs while the active
 //! provider is Portkey with a usable credential. Today's and the month's spend
@@ -47,7 +47,7 @@ impl Currency {
         }
     }
 
-    /// Parses a `/usage currency` argument (`$`, `¥`, `usd`, `cny`, `rmb`).
+    /// Parses a `/spend currency` argument (`$`, `¥`, `usd`, `cny`, `rmb`).
     pub fn parse(text: &str) -> Option<Self> {
         match text.trim().to_ascii_lowercase().as_str() {
             "$" | "usd" | "dollar" | "dollars" => Some(Currency::Usd),
@@ -150,7 +150,7 @@ impl UsageSettings {
         Ok(())
     }
 
-    /// The API key used for usage queries: the one set with `/usage key`, or
+    /// The API key used for usage queries: the one set with `/spend key`, or
     /// else the active Portkey credential once the user logged in.
     pub fn effective_key<'a>(&'a self, config: &'a Config) -> Option<&'a str> {
         let key = self.api_key.trim();
@@ -210,7 +210,7 @@ impl UsageBar {
         }
     }
 
-    /// Copies the user, budget, and currency after a `/usage` change.
+    /// Copies the user, budget, and currency after a `/spend` change.
     pub fn update(&mut self, settings: &UsageSettings) {
         self.user = settings.user.trim().to_string();
         self.budget = settings.budget;
@@ -250,17 +250,17 @@ impl UsageBar {
     }
 }
 
-/// The `/usage` status block shown in the transcript.
+/// The `/spend` status block shown in the transcript.
 pub fn status_text(settings: &UsageSettings, config: &Config) -> String {
     let key = if !settings.api_key.trim().is_empty() {
-        "set with /usage key"
+        "set with /spend key"
     } else if settings.effective_key(config).is_some() {
         "from the active Portkey provider"
     } else {
-        "missing — set it with /usage key <pk-...>"
+        "missing — set it with /spend key <pk-...>"
     };
-    let usage = "/usage on|off · /usage user <firstname.lastname> · /usage key <pk-...> · \
-                 /usage budget <amount|off> · /usage currency <usd|cny> · /usage metadata <key>";
+    let usage = "/spend on|off · /spend user <firstname.lastname> · /spend key <pk-...> · \
+                 /spend budget <amount|off> · /spend currency <usd|cny> · /spend metadata <key>";
     let provider = if config.is_portkey() {
         "portkey"
     } else {
@@ -672,7 +672,7 @@ mod tests {
         assert!(text.contains("user: (unset)"));
         assert!(text.contains("api key: missing"));
         assert!(text.contains("provider: not Portkey"));
-        assert!(text.contains("/usage currency <usd|cny>"));
+        assert!(text.contains("/spend currency <usd|cny>"));
 
         let enabled = UsageSettings {
             enabled: true,
