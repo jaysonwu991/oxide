@@ -275,13 +275,12 @@ The regions, top to bottom:
   stays the text it looks like instead of offering a fold that does nothing, and
   `write`/`edit` results get a colored diff.
 - **Composer** — a floating rounded box holding the message and what goes with it:
-  the attachment strip, the message box itself and the icon row of chips.
-  Where the turn will run is the status line's business, under the box, and it
-  names it the way Codex's own composer does: the folder's chip, the branch that
-  folder is on, and the machine the turn runs on — this app
-  has one environment, a folder on this computer, and it says so rather than
-  leaving the reader to assume a cloud, shown with a folder open rather than
-  before one, since there is no turn to place until then. The branch is read out of the
+  the attachment strip, the message box itself and the icon row of chips. Its own
+  top row names where the turn will run, the way Codex's own composer does: the
+  folder's chip and the branch that folder is on, beside the window's status, the
+  thread's totals and the context reading at the end of the row. The app claims no
+  machine — a folder on this computer is the one environment it has, so a readout
+  saying so is a constant rather than a fact about the folder. The branch is read out of the
   repository's own `.git/HEAD` (`oxide_desktop::git::view`) rather than by
   running git, so a worktree or a submodule is answered through the `gitdir:`
   file that points at its real `HEAD`, a detached `HEAD` is named by the commit
@@ -293,8 +292,8 @@ The regions, top to bottom:
   — and when the reader comes back to the window, since a branch switched in a
   terminal is theirs to see here. The branch is the one fact that gives way when
   the row runs out of room: it is the name that can be arbitrarily long, so it is
-  cut with an ellipsis while the folder, the machine, the window's own status and
-  the totals keep the room they need, and the row stays one line whatever the
+  cut with an ellipsis while the folder, the window's own status and the totals
+  keep the room they need, and the row stays one line whatever the
   folder's own names are. The right end of that row is the context reading: a ring
   filled to the percent of the window the thread's last request used, with that
   percent spelled out beside the arc — it is one reading rather than two, which is
@@ -843,10 +842,10 @@ run's `prompt` count travels with its thread and the window is the one in force 
 screen, so a turn in another folder counts its own tokens while the reader is
 looking at a project with a window of its own, and its gauge is its own again when
 the strip brings its thread back. The same percentage is drawn at the end of the
-status line, under the composer's box: an arc filled to it with the percent
-spelled out beside it (the totals line beside them draws what the thread spent,
+composer's own top row: an arc filled to it with the percent
+spelled out beside it (the totals beside them draw what the thread spent,
 and the fraction of the window that took is this one reading rather than a second
-word on that line), in the colour of the level (the theme's dim, amber past 70%,
+word among them), in the colour of the level (the theme's dim, amber past 70%,
 error past 90%), with the tokens and the window in its tooltip.
 
 ## Themes

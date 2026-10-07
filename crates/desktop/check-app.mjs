@@ -1445,41 +1445,43 @@ check(
     shellAt('id="sessions-modal"') < shellAt('class="composer"'),
   `${shellAt('id="projects-modal"')} / ${shellAt('id="mcps-modal"')} / ${shellAt('id="sessions-modal"')} / ${shellAt('class="composer"')}`,
 );
-// Where the turn runs — the folder the message goes to, the branch that folder
-// is on and the machine it runs on — is the status line's own business, under the
-// box: the message box is the first thing in the composer, and the row beneath it
-// is read for where the turn happens, the window's own status and what the thread
-// has spent. The folder carries words rather than a glyph, since with nothing
-// open it is how a first thread starts, and the chips that describe the message
-// stay on the composer's row above it.
-const statusLine = shell.slice(
-  shell.indexOf('<footer id="status"'),
-  shell.indexOf("</footer>"),
+// The composer's own top row names where the turn runs — the folder the message
+// goes to and the branch that folder is on — beside the window's status, what the
+// thread has spent and the context reading that spend is measured against. It is
+// the composer's first row, read before anything is typed below it, and the
+// folder carries words rather than a glyph, since with nothing open it is how a
+// first thread starts. The app claims no machine: a folder on this computer is the
+// one environment it has, so a readout saying so is a constant rather than a fact.
+const factsRow = shell.slice(
+  shell.indexOf('<div class="composer-facts">'),
+  shell.indexOf('<div id="attachments"'),
 );
 check(
-  "moved the folder, the branch and the machine onto the status line",
+  "put the folder and the branch on the composer's own top row",
   !shell.includes('class="composer-head"') &&
-    statusLine.includes('id="project"') &&
-    /<span id="project-name"[^>]*>[^<]+<\/span>/.test(statusLine) &&
-    statusLine.includes('id="git-branch"') &&
-    statusLine.includes('id="machine"') &&
-    statusLine.includes("This computer") &&
-    statusLine.includes('id="context-ring"') &&
-    shell.indexOf('<textarea id="prompt"') < shell.indexOf('<footer id="status"') &&
-    shell.indexOf('id="attach"') < shell.indexOf('id="project"'),
-  statusLine.slice(0, 420),
+    !shell.includes('id="machine"') &&
+    !shell.includes("This computer") &&
+    factsRow.includes('id="project"') &&
+    /<span id="project-name"[^>]*>[^<]+<\/span>/.test(factsRow) &&
+    factsRow.includes('id="git-branch"') &&
+    factsRow.includes('id="context-ring"') &&
+    shell.indexOf('<div class="composer-facts">') <
+      shell.indexOf('<textarea id="prompt"') &&
+    shell.indexOf('id="composer"') < shell.indexOf('<div class="composer-facts">') &&
+    shell.indexOf('id="project"') < shell.indexOf('id="attach"'),
+  factsRow.slice(0, 420),
 );
 // The row's own facts are readouts rather than controls — the branch is a fact
-// about the folder, the machine is the one environment this app runs in, and the
-// context reading is a reading — each with its words in a tooltip rather than a
-// handler; the folder chip beside them is the one control there.
+// about the folder and the context reading is a reading — each with its words in a
+// tooltip rather than a handler; the folder chip beside them is the one control
+// there.
 check(
   "left the row's own readouts without handlers",
-  statusLine.includes('<span id="git"') &&
-    !/id="(git|context-ring)"[^>]*onclick/.test(statusLine) &&
-    /id="git"[^>]*hidden/.test(statusLine) &&
-    /id="context-ring"[^>]*hidden/.test(statusLine),
-  statusLine.slice(0, 420),
+  factsRow.includes('<span id="git"') &&
+    !/id="(git|context-ring)"[^>]*onclick/.test(factsRow) &&
+    /id="git"[^>]*hidden/.test(factsRow) &&
+    /id="context-ring"[^>]*hidden/.test(factsRow),
+  factsRow.slice(0, 420),
 );
 // The context reading ends the row — after the totals, which are what take the
 // row's own auto margin — and the arc escalates through the same two thresholds
@@ -1488,12 +1490,12 @@ check(
 // of that one reading rather than a second one, so the totals do not spell it out
 // as well.
 check(
-  "kept the context reading at the status line's end, in the color of the level",
+  "kept the context reading at the row's end, in the color of the level",
   /\.context-ring \{[^}]*display: inline-flex;/.test(sheet) &&
     !/\.context-ring \{[^}]*margin-left: auto;/.test(sheet) &&
-    /#status \.spend \{ margin-left: auto;/.test(sheet) &&
+    /\.composer-facts \.spend \{ margin-left: auto;/.test(sheet) &&
     shellAt('id="usage"') < shellAt('id="context-ring"') &&
-    statusLine.includes('id="context-percent"') &&
+    factsRow.includes('id="context-percent"') &&
     !/bits\.push\(`ctx \$\{/.test(source) &&
     /\.context-ring\[data-level="warn"\] \{ color: var\(--tool\); \}/.test(sheet) &&
     /\.context-ring\[data-level="high"\] \{ color: var\(--error\); \}/.test(sheet),
@@ -1506,16 +1508,27 @@ check(
 // squeezed row leaves neither a second line nor a stray mark.
 check(
   "held the row to one line, with the branch the fact that gives way",
-  /\.status-fact \{[^}]*flex: none;[^}]*white-space: nowrap;/.test(sheet) &&
-    /#status \.spend \{[^}]*white-space: nowrap;/.test(sheet) &&
+  /\.fact \{[^}]*flex: none;[^}]*white-space: nowrap;/.test(sheet) &&
+    /\.composer-facts \.spend \{[^}]*white-space: nowrap;/.test(sheet) &&
     /#git \{ flex: 0 3 auto; overflow: hidden; \}/.test(sheet) &&
     /#git-branch \{[^}]*min-width: 0;[^}]*text-overflow: ellipsis;/.test(sheet),
   sheet.slice(sheet.indexOf("#git {"), sheet.indexOf("#git {") + 200),
 );
+// The row is chrome about the turn rather than a word from the conversation, so it
+// wears the window's dim tone and its small size — the tone the status line it
+// replaced carried, which the row would otherwise inherit from the box as a
+// message's own text, leaving `Ready` and the totals reading as something the
+// reply said.
+check(
+  "kept the row in the window's own dim text",
+  /\.composer-facts \{[^}]*color: var\(--faint\);[^}]*font-size: 11.5px;/.test(sheet) &&
+    /\.fact \{[^}]*color: var\(--faint\);[^}]*font-size: 11.5px;/.test(sheet),
+  sheet.slice(sheet.indexOf(".composer-facts {"), sheet.indexOf(".composer-facts {") + 200),
+);
 // The chip that asks for a folder wears a marker of its own rather than the
 // sheet's placeholder class: `.empty` centers whatever wears it, and on the
-// status line — a full-width row whose other auto margin belongs to the totals —
-// that put the chip in the middle of the row the moment the folder went away.
+// composer's top row — whose other auto margin belongs to the totals — that put
+// the chip in the middle of the row the moment the folder went away.
 check(
   "gave the folder chip a marker of its own rather than the app's empty state",
   source.includes('el("project").classList.toggle("unset", !open)') &&
@@ -3554,7 +3567,7 @@ check(
 // Everything in the conversation sits in one measured column — the reply, a card
 // a call or a turn left, the thinking block, the composer's box and its status
 // line — so the window's edges line up rather than each row picking its own.
-const columnCarriers = [".msg {", ".tool {", ".changes {", ".thinking {", ".composer {", "#status {", ".popover {"];
+const columnCarriers = [".msg {", ".tool {", ".changes {", ".thinking {", ".composer {", ".popover {"];
 const columnWidth = (selector) => {
   const at = sheet.indexOf(selector);
   if (at < 0) return "";
@@ -4861,13 +4874,12 @@ check(
     el("git").hidden === false &&
     el("git-branch").textContent === "main" &&
     el("git").title === `On branch main\n${gitAnswer.root}` &&
-    el("machine").hidden === false &&
     projectCalls("git_info").length > 0,
   `${JSON.stringify(app.state.git)} / ${el("git-branch").textContent} / ${el("git").title}`,
 );
-// A folder that is in no repository has no branch to name: the chip goes away
-// rather than saying nothing, and the rest of the row — the folder, the machine,
-// the ring — stays.
+// A folder that is in no repository has no branch to name: the fact goes away
+// rather than saying nothing, and the rest of the row — the folder and the ring —
+// stays.
 gitAnswer = { repo: false, root: "", branch: "", detached: "" };
 await app.loadGit();
 check(
@@ -5017,15 +5029,14 @@ check(
 // it is the reader's to act on rather than a value among others.
 app.clearSelectedProject();
 check(
-  "left the folder chip alone on the status line with nothing open",
+  "left the folder chip alone on the row with nothing open",
   el("context-ring").hidden === true &&
     el("context-percent").textContent === "" &&
     el("git").hidden === true &&
-    el("machine").hidden === true &&
     el("project-name").textContent === "Choose a project" &&
     el("project").classList.contains("unset") &&
     !el("project").classList.contains("empty"),
-  `${el("context-ring").hidden} / ${el("git").hidden} / ${el("machine").hidden} / ${el("project-name").textContent} / ${el("project").className}`,
+  `${el("context-ring").hidden} / ${el("git").hidden} / ${el("project-name").textContent} / ${el("project").className}`,
 );
 
 // ---------- a turn running in another thread ----------

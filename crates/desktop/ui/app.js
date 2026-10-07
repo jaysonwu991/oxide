@@ -349,7 +349,7 @@ function paintUsage() {
   }
   // The context reading is painted from these totals wherever they move, rather
   // than from a second reading of its own.
-  paintStatusFacts();
+  paintComposerFacts();
 }
 
 /// The percent of the window the thread's own totals are measured against: the
@@ -1002,7 +1002,7 @@ async function selectProject(project) {
   setStatus("Ready");
   renderProjectsTree(); // Update tree view instead of dropdown
   resetTranscript();
-  // The folder moved, so the status line's own facts have to be read again rather
+  // The folder moved, so the composer's own top row has to be read again rather
   // than carried over from the folder being left. The context reading is painted
   // with the rest of the row by the reset, and again when the folder's own window
   // arrives.
@@ -1136,8 +1136,8 @@ function updateChips() {
 /// chip is where they pick it. It keeps its words rather than hiding them in a
 /// tooltip, since with nothing open it reads as the action it is. The marker it
 /// wears in that state is its own (`unset`): the sheet's `.empty` is the app's
-/// placeholder class, which centers whatever wears it — and this chip stands on
-/// the status line, a full-width row whose own auto margin belongs to the totals.
+/// placeholder class, which centers whatever wears it — and this chip sits on the
+/// composer's top row, whose remaining auto margin belongs to the totals.
 function updateProjectChip() {
   const open = Boolean(state.project);
   const name = open ? projectNameOf(state.project) : "Choose a project";
@@ -1182,7 +1182,7 @@ async function loadGit() {
   const project = state.project;
   if (!project) {
     state.git = null;
-    paintStatusFacts();
+    paintComposerFacts();
     return;
   }
   try {
@@ -1196,19 +1196,17 @@ async function loadGit() {
     if (project !== state.project) return;
     state.git = null;
   }
-  paintStatusFacts();
+  paintComposerFacts();
 }
 
-/// The status line's facts, under the composer's box: the branch the folder is
-/// on, the machine the turn runs on, and the context reading the row ends with —
-/// an arc filled to the percent the thread's totals come to, with that percent
-/// spelled out beside it and the tokens and the window behind it in its tooltip.
-/// Nothing but the folder chip is shown before a folder is open, since there is
-/// no turn to place and no window to measure: the row then says the one thing the
-/// reader can act on.
-function paintStatusFacts() {
+/// The composer's own top row, above the message box: the branch the folder is on
+/// and the context reading the row ends with — an arc filled to the percent the
+/// thread's totals come to, with that percent spelled out beside it and the tokens
+/// and the window behind it in its tooltip. Nothing but the folder chip is shown
+/// before a folder is open, since there is no turn to place and no window to
+/// measure: the row then says the one thing the reader can act on.
+function paintComposerFacts() {
   const open = Boolean(state.project);
-  el("machine").hidden = !open;
   const info = state.git;
   const branch = open && info?.repo ? info.branch || info.detached : "";
   const chip = el("git");
@@ -5856,7 +5854,7 @@ function clearSelectedProject() {
   updateTrustButton();
   updateChips();
   setStatus("Ready");
-  paintStatusFacts();
+  paintComposerFacts();
   resetTranscript();
 }
 
