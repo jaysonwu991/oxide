@@ -2694,6 +2694,61 @@ describe("webview questions", () => {
   });
 });
 
+describe("webview links", () => {
+  /// A reply's link is an anchor, and VS Code's own webview host opens every
+  /// http(s) anchor it sees clicked: its `handleInnerClick` posts
+  /// `did-click-link` to the workbench, which hands the URL to the opener
+  /// service, and it does not ask whether the page has already dealt with that
+  /// click. The panel asks the host to open the link itself, so a click left to
+  /// reach the host's own listener would be two browser tabs for one click.
+  it("opens the link a click landed on, and stops the click there", () => {
+    const { byId, posted, send } = loadRenderer();
+    send(stateMessage());
+    const transcript = byId.get("transcript")!;
+    const anchor = new StubElement("a");
+    anchor.setAttribute("href", "https://github.com/jaysonwu991/oxide/pull/176");
+    transcript.appendChild(anchor);
+
+    let stopped = 0;
+    let prevented = 0;
+    const before = posted.length;
+    transcript.fire("click", {
+      target: anchor,
+      preventDefault: () => {
+        prevented += 1;
+      },
+      stopPropagation: () => {
+        stopped += 1;
+      },
+    });
+
+    assert.deepEqual(shape(posted.slice(before)), [
+      { k: "openUrl", url: "https://github.com/jaysonwu991/oxide/pull/176" },
+    ]);
+    assert.equal(prevented, 1, "the webview is told not to navigate");
+    assert.equal(stopped, 1, "and the host's own link handler never sees the click");
+  });
+
+  it("leaves a click that is not a link to the rest of the panel", () => {
+    const { byId, posted, send } = loadRenderer();
+    send(stateMessage());
+    const transcript = byId.get("transcript")!;
+
+    let stopped = 0;
+    const before = posted.length;
+    transcript.fire("click", {
+      target: transcript,
+      preventDefault: () => {},
+      stopPropagation: () => {
+        stopped += 1;
+      },
+    });
+
+    assert.equal(stopped, 0);
+    assert.equal(posted.length, before);
+  });
+});
+
 describe("webview change cards", () => {
   /// The card a turn's `turn_changes` frame becomes: what the run changed, the
   /// rows the host composed, and the baseline every diff is drawn against. The

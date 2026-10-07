@@ -1077,7 +1077,12 @@ which path to send.
 
 Links in a reply open in the system browser (`chatView.ts::openUrl`), since a
 webview cannot navigate to a remote page; a path in a tool card opens in the
-editor, but only inside the workspace.
+editor, but only inside the workspace. The click is stopped at the panel's own
+listener (`event.stopPropagation()`) rather than left to bubble: VS Code's own
+webview host opens every http(s) anchor it sees clicked — its
+`handleInnerClick` posts `did-click-link` to the workbench, which hands the URL
+to the opener service — and it does not ask whether the page has already dealt
+with that click, so one click reaching both would be two browser tabs.
 
 The transcript follows the newest line on its own, and stops doing so the moment
 you scroll up to read something earlier — scrolling back to the bottom picks it
