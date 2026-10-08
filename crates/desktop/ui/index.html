@@ -155,16 +155,41 @@
           <div id="sessions-list" class="session-list"></div>
         </section>
 
-        <div id="composer" class="composer">
-          <!-- The composer's own top row names where the turn will run, the way
-               Codex's own composer does: the folder the message goes to and the
-               branch that folder is on, with the context reading that spend is
-               measured against at the end of the row. The folder is a control (a
-               project is not chosen for the reader on the way in, so the chip is
-               where one is picked) while the branch is a readout of the folder.
-               The window's own status and what the thread has spent are the row
-               below this one, beside the controls. -->
-          <div class="composer-facts">
+        <!-- The composer's own top row, in a bar of its own on the box's own
+             top edge, the way Codex's own composer carries it: the folder the
+             message goes to, the branch that folder is on, and the context
+             reading that spend is measured against, with what the thread has
+             spent laid out beside it, at the end of the row.
+             Everything here is about where the
+             turn runs rather than about the message, so it is read before
+             anything is typed below it — the window's own status and what the
+             thread has spent are the row inside the box, beside the controls.
+             The folder is a control (a project is not chosen for the reader on
+             the way in, so the chip is where one is picked) while the branch is
+             a readout of the folder. -->
+        <div class="composer-strip">
+          <!-- The Queue/Steer bar: how a message typed while a turn runs is
+               delivered. The marked way is the one Enter sends with and the other
+               way is the one its own key sends, so a message can be queued or
+               steered without moving the mark first — and the key each option
+               carries is the one that does it, which is why the hints travel with
+               the mark. -->
+          <div id="mode-bar" class="strip-mode" hidden>
+            <button
+              id="mode-queue"
+              class="mode-option"
+              title="Queue as the next turn after the current response (Enter)"
+              aria-label="Queue as the next turn after the current response"
+            >Queue<span class="mode-key mode-key-enter" aria-hidden="true">⏎</span><span class="mode-key mode-key-alt" aria-hidden="true">⌥⏎</span></button>
+            <button
+              id="mode-steer"
+              class="mode-option"
+              title="Steer the active response (Enter)"
+              aria-label="Steer the active response"
+            >Steer<span class="mode-key mode-key-enter" aria-hidden="true">⏎</span><span class="mode-key mode-key-alt" aria-hidden="true">⌥⏎</span></button>
+          </div>
+          <!-- The folder's own facts, below it. -->
+          <div class="strip-facts">
             <button
               id="project"
               class="chip project-chip"
@@ -178,9 +203,20 @@
                  the panel's own footer draws for it. -->
             <span id="git" class="fact" hidden
               ><svg viewBox="0 0 16 16" width="13" height="13" aria-hidden="true"><circle cx="4" cy="3" r="1.5" fill="none" stroke="currentColor" stroke-width="1.3"/><circle cx="4" cy="13" r="1.5" fill="none" stroke="currentColor" stroke-width="1.3"/><circle cx="12" cy="5" r="1.5" fill="none" stroke="currentColor" stroke-width="1.3"/><path d="M4 4.5v7M5.5 11c4 0 6.5-1.5 6.5-4.5" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/></svg><span id="git-branch"></span></span>
+            <!-- What the chat has spent, laid out the way the terminal footer
+                 lays its own line out — the tokens, the cache it read and wrote,
+                 the hit rate the provider reported and the spend — held against the
+                 context reading it belongs with: the two are one group at the row's
+                 end, and the totals are what take the row's own auto margin, so the
+                 row ends with the reading whether or not there is anything to
+                 count. -->
+            <span id="usage" class="spend"></span>
             <span id="context-ring" class="context-ring" role="img" hidden
               ><svg viewBox="0 0 16 16" width="18" height="18" aria-hidden="true"><circle cx="8" cy="8" r="6.2" fill="none" stroke="currentColor" stroke-width="1.6" opacity="0.3" /><circle id="context-ring-fill" cx="8" cy="8" r="6.2" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" transform="rotate(-90 8 8)" stroke-dasharray="0 38.96" /></svg><span id="context-percent"></span></span>
           </div>
+        </div>
+
+        <div id="composer" class="composer">
           <div id="attachments" class="attachments" hidden></div>
           <textarea id="prompt" placeholder="Ask Oxide…"></textarea>
           <div class="composer-bar">
@@ -240,12 +276,6 @@
                 <span id="status-icon" class="status-icon" aria-hidden="true"></span>
                 <span id="status-text"></span>
               </span>
-              <!-- What the chat has spent, laid out the way the terminal
-                   footer lays its own line out: the tokens, the cache it read
-                   and wrote, the hit rate the provider reported and the spend.
-                   The context reading is the ring on the row above rather than a
-                   second word here. -->
-              <span id="usage" class="spend"></span>
               <button
                 id="stop"
                 class="icon danger"
@@ -253,12 +283,6 @@
                 title="Stop"
                 aria-label="Stop"
               ><svg viewBox="0 0 16 16" width="13" height="13" aria-hidden="true"><rect x="4" y="4" width="8" height="8" rx="1.7" fill="currentColor"/></svg></button>
-              <button
-                id="busy-message-mode"
-                class="chip busy-message-mode"
-                hidden
-                title="Queue this message as the next turn after the current response"
-              >Queue</button>
               <button id="send" class="send" disabled title="Send (Enter)" aria-label="Send"><svg viewBox="0 0 16 16" width="15" height="15" aria-hidden="true"><path d="M8 13.4V3.4M4 7.4 8 3.4l4 4" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg></button>
             </div>
           </div>

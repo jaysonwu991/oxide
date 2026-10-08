@@ -565,7 +565,60 @@ describe("webview footer", () => {
     assert.equal(message.control, "reasoning");
   });
 
-  it("paints the branch, the usage line and the gauge under the composer", () => {
+  /// The composer's own top row is a bar of its own on the box's top edge, the
+  /// way the desktop app carries it: the branch the folder is on, with what the
+  /// thread has spent of its window and the gauge that draws the same reading held
+  /// at the row's end. The bar carries no control of its own: the settings this
+  /// panel holds are the editor's, and the chips in the toolbar below are where
+  /// they are reached. Nothing is left under the box — the readout that line
+  /// carried is the bar's own now, next to the gauge it belongs with.
+  it("carries the branch, the usage and the gauge on the bar above the box", () => {
+    const strip = shell.slice(shell.indexOf('<div id="strip"'), shell.indexOf('<div id="composer">'));
+    assert.match(strip, /class="composer-strip"/);
+    for (const id of ["branch-wrap", "usage", "gauge"]) {
+      assert.match(strip, new RegExp(`id="${id}"`), id);
+    }
+    // The Queue/Steer row is the bar's own top row, above the folder's facts and
+    // hidden until a turn runs: each option carries the key that sends it, and
+    // the pair of hints is what travels with the mark.
+    const mode = strip.slice(strip.indexOf('<div id="mode-bar"'), strip.indexOf('<div class="strip-facts">'));
+    assert.match(mode, /id="mode-bar" class="strip-mode" hidden/);
+    assert.match(mode, /id="mode-queue" class="mode-option"/);
+    assert.match(mode, /id="mode-steer" class="mode-option"/);
+    assert.equal((mode.match(/mode-key-enter/g) ?? []).length, 2);
+    assert.equal((mode.match(/mode-key-alt/g) ?? []).length, 2);
+    assert.doesNotMatch(shell, /id="busy-message-mode"/);
+    assert.match(style, /\.strip-mode \{[^}]*border-bottom: 1px solid/s);
+    assert.match(style, /\.mode-option\.active \{[^}]*color: var\(--vscode-focusBorder\);/s);
+    assert.match(style, /\.mode-option\.active \.mode-key-enter \{ display: inline; \}/);
+    assert.match(style, /\.mode-option\.active \.mode-key-alt \{ display: none; \}/);
+    assert.match(style, /#mode-bar\[hidden\],/);
+    assert.ok(
+      strip.indexOf('id="usage"') < strip.indexOf('id="gauge"'),
+      "the readout stands next to the gauge it is measured against",
+    );
+    // The row of facts carries nothing to press; the only controls on the bar are
+    // the two the Queue/Steer row is made of.
+    const factsRow = strip.slice(strip.indexOf('<div class="strip-facts">'));
+    assert.doesNotMatch(factsRow, /<button/, "the folder's facts carry nothing to press");
+    assert.equal((strip.match(/<button/g) ?? []).length, 2);
+    assert.doesNotMatch(shell, /id="footline"/, "nothing is left under the box");
+    // The bar is narrower than the box and centered on it, so its edges stand where
+    // the box's own text column does (the box's 760px less the 10px it pads each
+    // side, or the same 20px off a narrow side bar's own width) and the box reads as
+    // the wider of the two.
+    assert.match(style, /\.composer-strip \{[^}]*width: calc\(100% - 20px\);/s);
+    assert.match(style, /\.composer-strip \{[^}]*max-width: 740px;/s);
+    assert.match(style, /#composer \{[^}]*max-width: 760px;/s);
+    assert.match(style, /\.composer-strip \{[^}]*border-radius: 16px 16px 0 0;/s);
+    assert.match(style, /#composer \{[^}]*border-radius: 0 0 16px 16px;/s);
+    // The readout takes the row's own auto margin, so the gauge rides at the end
+    // after it and the branch takes whatever room is left.
+    assert.match(style, /\.composer-strip \.usage \{ margin-left: auto; \}/);
+    assert.doesNotMatch(style, /#footline/);
+  });
+
+  it("paints the branch, the usage line and the gauge the host hands it", () => {
     const { byId, send } = loadRenderer();
     send(stateMessage());
     assert.equal(byId.get("branch")!.textContent, "main");
@@ -728,10 +781,17 @@ describe("webview composer", () => {
     assert.equal(byId.get("send")!.hidden, false);
     assert.equal(byId.get("send")!.disabled, false);
     assert.equal(byId.get("send")!.getAttribute("aria-label"), "Queue");
-    assert.equal(byId.get("busy-message-mode")!.hidden, false);
-    assert.equal(byId.get("busy-message-mode")!.textContent, "Queue");
-    byId.get("busy-message-mode")!.fire("click");
-    assert.equal(byId.get("busy-message-mode")!.textContent, "Steer");
+    // The Queue/Steer bar carries the choice the corner used to: the marked way
+    // is the one Enter sends with, and each option says which key sends it.
+    assert.equal(byId.get("mode-bar")!.hidden, false);
+    assert.equal(byId.get("mode-queue")!.classList.contains("active"), true);
+    assert.equal(byId.get("mode-steer")!.classList.contains("active"), false);
+    assert.equal(byId.get("mode-queue")!.title, "Queue as the next turn after the current response (Enter)");
+    assert.equal(byId.get("mode-steer")!.title, "Steer the active response (Alt+Enter)");
+    byId.get("mode-steer")!.fire("click");
+    assert.equal(byId.get("mode-steer")!.classList.contains("active"), true);
+    assert.equal(byId.get("mode-queue")!.title, "Queue as the next turn after the current response (Alt+Enter)");
+    assert.equal(byId.get("mode-steer")!.title, "Steer the active response (Enter)");
     assert.equal(byId.get("send")!.getAttribute("aria-label"), "Steer");
     byId.get("input")!.value = "";
     byId.get("input")!.fire("input");
@@ -1038,13 +1098,34 @@ describe("webview composer", () => {
     const input = byId.get("input")!;
     input.value = "use the new API";
     input.fire("input");
-    byId.get("busy-message-mode")!.fire("click");
+    byId.get("mode-steer")!.fire("click");
     byId.get("send")!.fire("click");
     assert.deepEqual(last(posted), { k: "send", text: "use the new API", mode: "steer" });
 
     input.value = "one more thing";
     input.fire("input");
-    assert.equal(byId.get("busy-message-mode")!.textContent, "Queue");
+    assert.equal(byId.get("mode-queue")!.classList.contains("active"), true);
+  });
+
+  it("sends the other way from the key beside the mark", () => {
+    const { byId, posted, send } = loadRenderer();
+    send(stateMessage({ busy: true, status: "Thinking…" }));
+    const input = byId.get("input")!;
+    // Alt+Enter is the key the unmarked option carries: the mark stays where it
+    // is and the message goes the other way.
+    input.value = "steer this";
+    input.fire("input");
+    input.fire("keydown", { key: "Enter", shiftKey: false, altKey: true, preventDefault: () => {} });
+    assert.deepEqual(last(posted), { k: "send", text: "steer this", mode: "steer" });
+    assert.equal(byId.get("mode-queue")!.classList.contains("active"), true, "the mark did not move");
+
+    // With the mark moved to Steer, the plain key is the one that steers and the
+    // modified one queues.
+    byId.get("mode-steer")!.fire("click");
+    input.value = "queue this";
+    input.fire("input");
+    input.fire("keydown", { key: "Enter", shiftKey: false, altKey: true, preventDefault: () => {} });
+    assert.deepEqual(last(posted), { k: "send", text: "queue this", mode: "queue" });
   });
 
   it("asks the host what the caret is in once an @ is typed", () => {
@@ -1666,18 +1747,18 @@ describe("webview run strip", () => {
     assert.equal(byId.get("send")!.hidden, true, "nothing typed here is sent");
     assert.equal(byId.get("stop")!.hidden, false, "Stop is still reachable");
     assert.equal(
-      byId.get("busy-message-mode")!.hidden,
+      byId.get("mode-bar")!.hidden,
       true,
       "and there is no queue-or-steer choice to make here",
     );
 
     // Back in the run's own thread — the strip is gone with it — the corner is
-    // the queue/steer one it always was.
+    // the queue/steer one it always was, with the bar above it.
     send(stateMessage({ busy: true, status: "Thinking…" }));
     assert.equal(byId.get("send")!.hidden, false);
     assert.equal(byId.get("send")!.getAttribute("aria-label"), "Queue");
     assert.equal(byId.get("stop")!.hidden, true);
-    assert.equal(byId.get("busy-message-mode")!.hidden, false);
+    assert.equal(byId.get("mode-bar")!.hidden, false);
   });
 });
 

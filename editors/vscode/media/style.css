@@ -108,6 +108,7 @@ button.icon.danger:hover:not(:disabled) {
    and a dialog's Recheck is hidden until the host offers a label. Without this
    both of the corner's actions would sit side by side. A change card's folded
    rows and Undo are hidden the same way, from the same kind of `display`. */
+#mode-bar[hidden],
 button.icon[hidden],
 .change-row[hidden],
 .changes-more[hidden],
@@ -1485,22 +1486,6 @@ footer {
   padding: 2px 0 2px;
 }
 
-.busy-message-mode {
-  min-width: 52px;
-  height: 26px;
-  padding: 0 9px;
-  border: 1px solid var(--vscode-button-secondaryBackground, var(--vscode-panel-border));
-  border-radius: 999px;
-  color: var(--vscode-descriptionForeground);
-  background: transparent;
-  font-size: 11px;
-}
-
-.busy-message-mode:hover {
-  color: var(--vscode-foreground);
-  border-color: var(--vscode-focusBorder);
-}
-
 /* Attach, stop and send are icon-only; their shape comes from `button.icon`. */
 
 #status {
@@ -1558,18 +1543,95 @@ footer {
   pointer-events: none;
 }
 
-/* The dim line under the composer: the usage the provider reported, the
-   context gauge, and the branch on the right. */
-#footline {
+/* The composer's own top row is a bar of its own on the box's top edge, the way
+   the desktop app carries its own: a surface of the theme's own widget color,
+   rounded at the top and narrower than the box, centered on it so its edges stand
+   where the box's own text column does — 20px narrower, the 10px the box pads each
+   side, in a narrow side bar as much as a wide one. It names the branch the folder
+   is on, with what the thread has spent of its window and the gauge that draws the
+   same reading at the end of the row. */
+.composer-strip {
   display: flex;
-  align-items: center;
-  gap: 8px;
-  margin-top: 5px;
-  min-height: 1em;
+  flex-direction: column;
+  align-items: stretch;
+  width: calc(100% - 20px);
+  max-width: 740px;
+  margin-left: auto;
+  margin-right: auto;
+  padding: 3px 4px 3px 8px;
+  background: var(--vscode-editorWidget-background, var(--vscode-input-background));
+  border: 1px solid var(--vscode-input-border, var(--vscode-panel-border, rgba(128, 128, 128, 0.35)));
+  border-bottom: none;
+  border-radius: 16px 16px 0 0;
   color: var(--vscode-descriptionForeground);
   font-family: var(--vscode-editor-font-family, monospace);
   font-size: 0.75em;
 }
+
+/* The row of facts, one line whatever the branch's own name is. */
+.strip-facts {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+/* The Queue/Steer bar: the way a message typed while a turn runs is delivered,
+   on the top row of the bar above the box and ruled off from the folder's facts
+   below it. It is the choice the composer's own corner used to keep in a chip,
+   and it is up exactly while there is a turn to deliver into. */
+.strip-mode {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+  padding-bottom: 3px;
+  margin-bottom: 3px;
+  border-bottom: 1px solid var(--vscode-panel-border, rgba(128, 128, 128, 0.25));
+}
+
+.mode-option {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 1px 8px;
+  border: 1px solid transparent;
+  border-radius: 999px;
+  color: var(--vscode-descriptionForeground);
+  background: transparent;
+  font-family: inherit;
+  font-size: 0.85em;
+}
+
+.mode-option:hover {
+  color: var(--vscode-foreground);
+  border-color: var(--vscode-panel-border, rgba(128, 128, 128, 0.35));
+}
+
+/* The marked way is the one Enter sends with — the accent the model picker marks
+   the row in use with, not a colour of its own. */
+.mode-option.active {
+  color: var(--vscode-focusBorder);
+  border-color: var(--vscode-focusBorder);
+}
+
+/* The key each option carries is the key that sends it, so the hints travel with
+   the mark: the marked way is Enter's, the other way is its own. */
+.mode-key {
+  color: var(--vscode-descriptionForeground);
+  font-family: var(--vscode-editor-font-family, monospace);
+}
+
+.mode-option.active .mode-key { color: inherit; }
+.mode-key-enter { display: none; }
+.mode-option.active .mode-key-enter { display: inline; }
+.mode-option.active .mode-key-alt { display: none; }
+
+/* The row's end belongs to the two readings that belong together: what the thread
+   has spent of its window and the gauge that draws it. The usage is the first of
+   them and so takes the row's own auto margin, which holds the gauge at the end
+   after it, and the branch takes whatever room is left. */
+.composer-strip .usage { margin-left: auto; }
 
 .usage {
   display: flex;
@@ -1580,9 +1642,8 @@ footer {
   min-width: 0;
 }
 
-/* The clamp belongs to the wrap, not to the label inside it: the wrap is a flex
-   item of `#footline`, whose width is definite, while the wrap's own width is
-   its content's — so a percentage on the label would resolve against the text it
+/* The clamp belongs to the wrap, not to the label inside it: the wrap's own width
+   is its content's, so a percentage on the label would resolve against the text it
    is meant to bound and cut `main` down to `m…`. */
 .branch-wrap {
   display: inline-flex;
@@ -1593,8 +1654,6 @@ footer {
 }
 
 #usage-text {
-  /* The line wraps rather than scrolling: a hidden `$cost` or `ctx` is worse
-     than a second line in a narrow side bar. */
   overflow-wrap: anywhere;
 }
 
@@ -2310,8 +2369,7 @@ footer {
   background: var(--vscode-editor-background);
 }
 
-#composer,
-#footline {
+#composer {
   width: 100%;
   max-width: 760px;
   margin-left: auto;
@@ -2320,9 +2378,15 @@ footer {
 
 #composer {
   padding: 8px 10px 6px;
-  border-radius: 16px;
+  border-radius: 0 0 16px 16px;
   background: var(--vscode-input-background);
   box-shadow: 0 1px 0 rgba(255, 255, 255, 0.025) inset;
+}
+
+/* The bar on the box's top edge lifts with the box while the caret is in it, so
+   the two surfaces stay one shape. */
+.composer-strip:has(+ #composer:focus-within) {
+  border-color: var(--vscode-focusBorder);
 }
 
 #input {
@@ -2377,17 +2441,8 @@ button.icon {
   padding: 3px 5px;
 }
 
-.meta-chip,
-.busy-message-mode {
+.meta-chip {
   border-radius: 999px;
-}
-
-#footline {
-  margin-top: 6px;
-  padding: 0 4px;
-  min-height: 12px;
-  font-size: 0.7em;
-  opacity: 0.78;
 }
 
 .usage,

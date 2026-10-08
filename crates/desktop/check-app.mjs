@@ -693,6 +693,16 @@ const invoke = async (command, args = {}) => {
     case "remove_project":
       projectRows = projectRows.filter((row) => row.id !== args.id);
       return projectRows.map((row) => ({ ...row }));
+    case "reorder_projects": {
+      if (reorderError) throw reorderError;
+      // The app keeps the order it was given and answers with the listing as it
+      // now stands, which is what the sidebar is painted from.
+      const byId = new Map(projectRows.map((row) => [row.id, row]));
+      const ordered = (args.ids || []).map((id) => byId.get(id)).filter(Boolean);
+      const rest = projectRows.filter((row) => !(args.ids || []).includes(row.id));
+      projectRows = [...ordered, ...rest];
+      return projectRows.map((row) => ({ ...row }));
+    }
     case "session_messages": {
       const target = (threads || []).find((session) => session.id === args.id);
       return {
@@ -822,6 +832,9 @@ const document = {
 
 globalThis.document = document;
 const invokes = [];
+/// A reorder the app refuses, so the sidebar's own answer to a failed write is
+/// assertable.
+let reorderError = null;
 globalThis.window = {
   // The page speaks the preload bridge's own envelope rather than a generated
   // one, so the stub is that bridge: a request the page hands to the host is
@@ -904,7 +917,7 @@ vm.runInThisContext(
     " showApproval," +
     " resetTranscript, renderChanges, closeReview, undoChanges," +
     " updateRunBanner, viewingRun, openRun, handleEvent, removeProject, clearSelectedProject, selectProject," +
-    " loadSessions, renderProjectsTree, renderSessions, renderMcps, openSession, renderProjectMeta, updateSendState, toggleBusyMessageMode, setBusy, setIdle," +
+    " loadSessions, renderProjectsTree, renderSessions, renderMcps, openSession, renderProjectMeta, updateSendState, setBusyMessageMode, setBusy, setIdle," +
     " loadGit," +
     " loadMcps, openSessions," +
     " listedSessions, selectSessionFromTree, removeSession," +
@@ -1442,60 +1455,101 @@ check(
   shellAt('class="composer-wrap"') < shellAt('id="projects-modal"') &&
     shellAt('id="projects-modal"') < shellAt('id="mcps-modal"') &&
     shellAt('id="mcps-modal"') < shellAt('id="sessions-modal"') &&
-    shellAt('id="sessions-modal"') < shellAt('class="composer"'),
-  `${shellAt('id="projects-modal"')} / ${shellAt('id="mcps-modal"')} / ${shellAt('id="sessions-modal"')} / ${shellAt('class="composer"')}`,
+    shellAt('id="sessions-modal"') < shellAt('class="composer-strip"') &&
+    shellAt('class="composer-strip"') < shellAt('id="composer"'),
+  `${shellAt('id="projects-modal"')} / ${shellAt('id="mcps-modal"')} / ${shellAt('id="sessions-modal"')} / ${shellAt('class="composer-strip"')}`,
 );
-// The composer's own top row names where the turn runs — the folder the message
-// goes to and the branch that folder is on — beside the window's status, what the
-// thread has spent and the context reading that spend is measured against. It is
-// the composer's first row, read before anything is typed below it, and the
-// folder carries words rather than a glyph, since with nothing open it is how a
-// first thread starts. The app claims no machine: a folder on this computer is the
-// one environment it has, so a readout saying so is a constant rather than a fact.
-const factsRow = shell.slice(
-  shell.indexOf('<div class="composer-facts">'),
-  shell.indexOf('<div id="attachments"'),
+// The composer's own top row is a bar of its own — the strip — sitting on the
+// box's own top edge the way Codex's composer carries its own row: it names
+// where the turn runs, the folder the message goes to and the branch that folder
+// is on, with the context reading that spend is measured against at the end of
+// the row. It is read before anything is
+// typed below it, and the folder carries words rather than a glyph, since with
+// nothing open it is how a first thread starts. The app claims no machine: a
+// folder on this computer is the one environment it has, so a readout saying so
+// is a constant rather than a fact.
+const strip = shell.slice(
+  shell.indexOf('<div class="composer-strip">'),
+  shellAt('id="composer"'),
 );
 check(
   "put the folder and the branch on the composer's own top row",
   !shell.includes('class="composer-head"') &&
     !shell.includes('id="machine"') &&
     !shell.includes("This computer") &&
-    factsRow.includes('id="project"') &&
-    /<span id="project-name"[^>]*>[^<]+<\/span>/.test(factsRow) &&
-    factsRow.includes('id="git-branch"') &&
-    factsRow.includes('id="context-ring"') &&
-    shell.indexOf('<div class="composer-facts">') <
-      shell.indexOf('<textarea id="prompt"') &&
-    shell.indexOf('id="composer"') < shell.indexOf('<div class="composer-facts">') &&
+    strip.includes('id="project"') &&
+    /<span id="project-name"[^>]*>[^<]+<\/span>/.test(strip) &&
+    strip.includes('id="git-branch"') &&
+    strip.includes('id="context-ring"') &&
+    !strip.includes('id="settings"') &&
+    shell.indexOf('<div class="composer-strip">') < shell.indexOf('<div id="composer"') &&
+    shell.indexOf('<div id="composer"') < shell.indexOf('<textarea id="prompt"') &&
     shell.indexOf('id="project"') < shell.indexOf('id="attach"'),
-  factsRow.slice(0, 420),
+  strip.slice(0, 420),
 );
 // The row's own facts are readouts rather than controls — the branch is a fact
 // about the folder and the context reading is a reading — each with its words in a
-// tooltip rather than a handler; the folder chip beside them is the one control
-// there.
+// tooltip rather than a handler; the folder chip beside them is the row's one
+// control, and the only other controls the bar carries are the two the Queue/Steer
+// row is made of.
+const facts = strip.slice(
+  strip.indexOf('<div class="strip-facts">'),
+  strip.lastIndexOf('        </div>'),
+);
+// The Queue/Steer bar: the way a message typed while a turn runs is delivered,
+// on the top row of the bar above the box — the choice the composer's own corner
+// used to keep in a chip — ruled off from the folder's facts below it and on
+// screen exactly while there is a turn to deliver into. Each option carries the
+// key that sends it, and the pair of hints travels with the mark: the marked way
+// is Enter's, the other way is its own, so the mark never lies about the keys.
+const modeBar = strip.slice(
+  strip.indexOf('<div id="mode-bar"'),
+  strip.indexOf('<div class="strip-facts">'),
+);
+check(
+  "put the Queue/Steer bar on the top row of the bar above the box",
+  modeBar.includes('class="strip-mode"') &&
+    /id="mode-bar"[^>]*hidden/.test(modeBar) &&
+    shellAt('id="mode-bar"') < shellAt('class="strip-facts"') &&
+    modeBar.includes('id="mode-queue"') &&
+    modeBar.includes('id="mode-steer"') &&
+    (modeBar.match(/mode-key-enter/g) || []).length === 2 &&
+    (modeBar.match(/mode-key-alt/g) || []).length === 2 &&
+    !shell.includes('id="busy-message-mode"') &&
+    /\.strip-mode \{[^}]*border-bottom: 1px solid var\(--border\);/.test(sheet) &&
+    /\.mode-option\.active \{ color: var\(--accent\); border-color: var\(--accent\); \}/.test(sheet) &&
+    /\.mode-key-enter \{ display: none; \}/.test(sheet) &&
+    /\.mode-option\.active \.mode-key-enter \{ display: inline; \}/.test(sheet) &&
+    /\.mode-option\.active \.mode-key-alt \{ display: none; \}/.test(sheet),
+  modeBar.slice(0, 320),
+);
 check(
   "left the row's own readouts without handlers",
-  factsRow.includes('<span id="git"') &&
-    !/id="(git|context-ring)"[^>]*onclick/.test(factsRow) &&
-    /id="git"[^>]*hidden/.test(factsRow) &&
-    /id="context-ring"[^>]*hidden/.test(factsRow),
-  factsRow.slice(0, 420),
+  facts.includes('<span id="git"') &&
+    !/id="(git|context-ring)"[^>]*onclick/.test(facts) &&
+    /id="git"[^>]*hidden/.test(facts) &&
+    /id="context-ring"[^>]*hidden/.test(facts) &&
+    /<button[^>]*id="project"/.test(facts) &&
+    (facts.match(/<button/g) || []).length === 1 &&
+    (strip.match(/<button/g) || []).length === 3,
+  facts.slice(0, 420),
 );
-// The context reading ends the row — after the totals, which are what take the
-// row's own auto margin — and the arc escalates through the same two thresholds
-// the terminal's footer colors its own percentage by: dim on its own, the theme's
-// amber past 70% and its error color past 90%. The percent beside the arc is part
-// of that one reading rather than a second one, so the totals do not spell it out
-// as well.
+// The context reading ends the row, held there by the totals that share it: what
+// the chat has spent takes the row's own auto margin and the reading rides after
+// it, which is the group the reader compares. The arc escalates through the same
+// two thresholds the terminal's footer colors its own percentage by: dim on its
+// own, the theme's amber past 70% and its error color past 90%. The percent beside
+// the arc is part of that one reading rather than a second one, so the totals do
+// not spell it out as well.
 check(
   "kept the context reading at the row's end, in the color of the level",
   /\n\.context-ring \{[^}]*display: inline-flex;/.test(sheet) &&
     !/\n\.context-ring \{[^}]*margin-left: auto;/.test(sheet) &&
-    /\.composer-facts \.context-ring \{ margin-left: auto; \}/.test(sheet) &&
-    shellAt('id="context-percent"') < shellAt('id="usage"') &&
-    factsRow.includes('id="context-percent"') &&
+    /\.composer-strip #usage \{ margin-left: auto; \}/.test(sheet) &&
+    !/\.strip-end/.test(`${shell}\n${sheet}`) &&
+    shellAt('id="usage"') < shellAt('id="context-percent"') &&
+    strip.includes('id="usage"') &&
+    strip.includes('id="context-percent"') &&
     !/bits\.push\(`ctx \$\{/.test(source) &&
     /\.context-ring\[data-level="warn"\] \{ color: var\(--tool\); \}/.test(sheet) &&
     /\.context-ring\[data-level="high"\] \{ color: var\(--error\); \}/.test(sheet),
@@ -1503,14 +1557,15 @@ check(
 );
 // The window's own status is a badge at the end of the composer's own row: an
 // icon for the state, with the words beside it only when there are words to read
-// — `Ready` is the icon's tooltip — and what the chat has spent drawn beside it
-// the way the terminal footer draws its own line.
+// — `Ready` is the icon's tooltip. What the chat has spent is not this row's any
+// more: the row belongs to the turn and its controls, while the totals read out
+// the chat and sit beside the context reading they are measured against.
 const badgeRow = shell.slice(shellAt('id="status"'), shellAt('id="send"'));
 check(
-  "shipped the status badge and the totals in the composer's own row",
-  shellAt('class="composer-facts"') < shellAt('id="status"') &&
-    shellAt('id="status"') < shellAt('id="usage"') &&
-    shellAt('id="usage"') < shellAt('id="send"') &&
+  "shipped the status badge in the composer's own row",
+  shellAt('class="composer-strip"') < shellAt('id="status"') &&
+    !badgeRow.includes('id="usage"') &&
+    shellAt('id="status"') < shellAt('id="send"') &&
     shellAt('id="status-icon"') < shellAt('id="status-text"') &&
     /id="status"[^>]*role="status"/.test(badgeRow) &&
     /id="status-icon"[^>]*aria-hidden="true"/.test(badgeRow),
@@ -1549,14 +1604,36 @@ check(
 // reply said.
 check(
   "kept the row in the window's own dim text",
-  /\.composer-facts \{[^}]*color: var\(--faint\);[^}]*font-size: 11.5px;/.test(sheet) &&
+  /\.composer-strip \{[^}]*color: var\(--faint\);[^}]*font-size: 11.5px;/.test(sheet) &&
     /\.fact \{[^}]*color: var\(--faint\);[^}]*font-size: 11.5px;/.test(sheet),
-  sheet.slice(sheet.indexOf(".composer-facts {"), sheet.indexOf(".composer-facts {") + 200),
+  sheet.slice(sheet.indexOf(".composer-strip {"), sheet.indexOf(".composer-strip {") + 200),
 );
-// The chip that asks for a folder wears a marker of its own rather than the
-// sheet's placeholder class: `.empty` centers whatever wears it, and on the
-// composer's top row — whose other auto margin belongs to the totals — that put
-// the chip in the middle of the row the moment the folder went away.
+// The row is a surface of its own rather than the box's first line: a bar on the
+// box's own top edge, narrower than the box and centered on it, so its edges stand
+// where the box's own text column does and the box reads as the wider of the two
+// at any window width — rounded at the top and open at the bottom, with the box
+// rounded at the bottom and open at the top, so the two read as one shape with the
+// box's own top border as the line between them. The bar's surface is a step off
+// the box's, which is what makes it read as a bar.
+check(
+  "sat the row on the box's own top edge as a bar of its own",
+  /\.composer-strip \{[^}]*width: calc\(100% - 24px\);[^}]*max-width: 756px;[^}]*margin: 0 auto;[^}]*background: var\(--panel-2\);[^}]*border: 1px solid var\(--border\);[^}]*border-bottom: none;[^}]*border-radius: 16px 16px 0 0;/.test(
+    sheet,
+  ) &&
+    /\.composer \{[^}]*max-width: 780px;[^}]*margin: 0 auto;[^}]*border-radius: 0 0 16px 16px;/.test(sheet),
+  sheet.slice(sheet.indexOf(".composer-strip {"), sheet.indexOf(".composer-strip {") + 260),
+);
+// The bar carries no control of its own: the window's settings live where they
+// always did — the sidebar's foot, the composer's own row — so the bar is the
+// folder's chip and the folder's facts, and nothing else to press.
+check(
+  "kept the bar down to the folder's chip and the folder's facts",
+  !/id="settings"/.test(shell) &&
+    !/settings-modal/.test(shell) &&
+    !/\.settings-(row|list|label|detail)/.test(sheet) &&
+    !/SETTINGS_ROWS|toggleSettings/.test(source),
+  sheet.slice(sheet.indexOf(".composer-strip {"), sheet.indexOf(".composer-strip {") + 200),
+);
 check(
   "gave the folder chip a marker of its own rather than the app's empty state",
   source.includes('el("project").classList.toggle("unset", !open)') &&
@@ -1907,6 +1984,18 @@ check(
     return rule.includes("color:") && !hiddenAtRest(rule);
   }),
   drawnOnTheRow.map((selector) => rowRule(selector).replace(/\s+/g, " ")).join(" | "),
+);
+// The row the arrangement is dragged by says so: the whole row takes the grab
+// cursor, the row in the air is dimmed, and the row under the pointer wears the
+// line the project would land on — drawn inside its own box, so nothing in the
+// list moves as the mark does.
+check(
+  "drew the arrangement's own mark on the row it would land on",
+  /\.project-item \{[^}]*cursor: grab;/.test(sheet) &&
+    /\.project-item\.dragging \{ opacity: 0\.5; \}/.test(sheet) &&
+    /\.project-item\.drop-before \{ box-shadow: inset 0 2px 0 var\(--accent\); \}/.test(sheet) &&
+    /\.project-item\.drop-after \{ box-shadow: inset 0 -2px 0 var\(--accent\); \}/.test(sheet),
+  sheet.slice(sheet.indexOf(".project-item {"), sheet.indexOf(".project-item {") + 240),
 );
 // A thread's row carries its title and its ✕, and nothing else: the `⌘1`…`⌘9`
 // badge it used to wear named a key the row does not have to list — the
@@ -4700,48 +4789,60 @@ check(
 );
 app.setBusy();
 check(
-  "offered Stop alone while a turn runs with an empty box",
+  "offered Stop in the corner and the Queue/Steer bar above the box",
   elementFor("stop").hidden === false &&
     elementFor("send").hidden === true &&
-    elementFor("busy-message-mode").hidden === true,
-  `send ${elementFor("send").hidden} / stop ${elementFor("stop").hidden} / mode ${elementFor("busy-message-mode").hidden}`,
+    elementFor("mode-bar").hidden === false,
+  `send ${elementFor("send").hidden} / stop ${elementFor("stop").hidden} / bar ${elementFor("mode-bar").hidden}`,
+);
+check(
+  "marked Queue by default, with each option carrying the key that sends it",
+  elementFor("mode-queue").classList.contains("active") === true &&
+    elementFor("mode-steer").classList.contains("active") === false &&
+    elementFor("mode-queue").title === "Queue as the next turn after the current response (Enter)" &&
+    elementFor("mode-steer").title === "Steer the active response (Alt+Enter)" &&
+    elementFor("mode-queue").getAttribute("aria-label") ===
+      "Queue as the next turn after the current response (Enter)",
+  `${elementFor("mode-queue").title} / ${elementFor("mode-steer").title}`,
 );
 elementFor("prompt").value = "keep going";
 app.updateSendState();
 check(
-  "offered Queue by default once there was new context",
+  "sent the marked way from the corner once there was new context",
   elementFor("send").hidden === false &&
     elementFor("send").disabled === false &&
     elementFor("stop").hidden === true &&
-    elementFor("busy-message-mode").hidden === false &&
-    elementFor("busy-message-mode").textContent === "Queue" &&
     elementFor("send").title === "Queue as the next turn (Enter)",
-  `${elementFor("busy-message-mode").textContent} / ${elementFor("send").title}`,
+  elementFor("send").title,
 );
-elementFor("busy-message-mode").onclick();
+elementFor("mode-steer").onclick();
 check(
-  "made steering a deliberate visible choice",
-  elementFor("busy-message-mode").textContent === "Steer" &&
+  "made steering a deliberate visible choice, and moved the keys with it",
+  elementFor("mode-steer").classList.contains("active") === true &&
+    elementFor("mode-queue").classList.contains("active") === false &&
+    elementFor("mode-steer").title === "Steer the active response (Enter)" &&
+    elementFor("mode-queue").title ===
+      "Queue as the next turn after the current response (Alt+Enter)" &&
     elementFor("send").title === "Steer the active response (Enter)",
-  `${elementFor("busy-message-mode").textContent} / ${elementFor("send").title}`,
+  `${elementFor("mode-steer").title} / ${elementFor("mode-queue").title}`,
 );
 elementFor("prompt").value = "";
 app.updateSendState();
 check(
-  "went back to Stop when the box was emptied again",
+  "kept the bar up while the turn ran, whatever the box held",
   elementFor("stop").hidden === false &&
     elementFor("send").hidden === true &&
-    elementFor("busy-message-mode").hidden === true,
-  `send ${elementFor("send").hidden} / stop ${elementFor("stop").hidden} / mode ${elementFor("busy-message-mode").hidden}`,
+    elementFor("mode-bar").hidden === false,
+  `send ${elementFor("send").hidden} / stop ${elementFor("stop").hidden} / bar ${elementFor("mode-bar").hidden}`,
 );
 app.setIdle();
 check(
   "gave Send back, alone, when the turn ended",
   elementFor("send").hidden === false &&
     elementFor("stop").hidden === true &&
-    elementFor("busy-message-mode").hidden === true &&
+    elementFor("mode-bar").hidden === true &&
     elementFor("send").title === "Send (Enter)",
-  `${elementFor("send").title} / stop ${elementFor("stop").hidden}`,
+  `${elementFor("send").title} / stop ${elementFor("stop").hidden} / bar ${elementFor("mode-bar").hidden}`,
 );
 // The accessible name follows the action the button performs, so a screen
 // reader hears what the click will do rather than the label it was built with.
@@ -4750,7 +4851,7 @@ app.setBusy();
 elementFor("prompt").value = "keep going";
 app.updateSendState();
 const queuedLabel = cornerLabel();
-elementFor("busy-message-mode").onclick();
+elementFor("mode-steer").onclick();
 const steeredLabel = cornerLabel();
 app.setIdle();
 elementFor("prompt").value = "";
@@ -4783,7 +4884,7 @@ check(
 calls.length = 0;
 elementFor("prompt").value = "change direction now";
 app.updateSendState();
-elementFor("busy-message-mode").onclick();
+elementFor("mode-steer").onclick();
 elementFor("send").onclick({ detail: 1 });
 await nextTick();
 runningMessage = projectCalls("steer_run").at(-1);
@@ -4792,6 +4893,33 @@ check(
   runningMessage?.[1]?.followUp === false,
   JSON.stringify(runningMessage),
 );
+
+// The key beside the mark sends the other way, which is the whole point of
+// carrying both: a message can be steered without moving the mark first.
+calls.length = 0;
+elementFor("prompt").value = "steer this one";
+app.updateSendState();
+await app.send(true);
+await nextTick();
+runningMessage = projectCalls("steer_run").at(-1);
+check(
+  "sent the other way from the key beside the mark",
+  runningMessage?.[1]?.followUp === false,
+  JSON.stringify(runningMessage),
+);
+calls.length = 0;
+elementFor("prompt").value = "queue this one";
+app.updateSendState();
+elementFor("mode-steer").onclick();
+await app.send(true);
+await nextTick();
+runningMessage = projectCalls("steer_run").at(-1);
+check(
+  "queued from that key with the mark on the other option",
+  runningMessage?.[1]?.followUp === true,
+  JSON.stringify(runningMessage),
+);
+elementFor("mode-queue").onclick();
 
 // A response can finish between drawing Send and the app receiving the
 // message. Codex keeps that prompt and starts it as the next turn; it must not
@@ -5302,8 +5430,8 @@ check(
   "offered Stop alone in a thread the turn is not running in",
   elementFor("send").hidden === true &&
     elementFor("stop").hidden === false &&
-    elementFor("busy-message-mode").hidden === true,
-  `send ${elementFor("send").hidden} / stop ${elementFor("stop").hidden} / mode ${elementFor("busy-message-mode").hidden}`,
+    elementFor("mode-bar").hidden === true,
+  `send ${elementFor("send").hidden} / stop ${elementFor("stop").hidden} / bar ${elementFor("mode-bar").hidden}`,
 );
 calls.length = 0;
 elementFor("send").onclick({ detail: 1 });
@@ -5605,8 +5733,8 @@ check(
   "offered Stop alone while the turn had not named the thread it is in",
   elementFor("send").hidden === true &&
     elementFor("stop").hidden === false &&
-    elementFor("busy-message-mode").hidden === true,
-  `send ${elementFor("send").hidden} / stop ${elementFor("stop").hidden} / mode ${elementFor("busy-message-mode").hidden}`,
+    elementFor("mode-bar").hidden === true,
+  `send ${elementFor("send").hidden} / stop ${elementFor("stop").hidden} / bar ${elementFor("mode-bar").hidden}`,
 );
 calls.length = 0;
 elementFor("send").onclick({ detail: 1 });
@@ -6851,6 +6979,153 @@ app.state.providers = [];
 // the page
 // reaches nothing else directly, which is what keeps `pick_folder` and
 // `open_url` answering with the state the other commands hold.
+// ---------- the arrangement the sidebar is dragged into ----------
+
+// A project's row is the handle for the order the sidebar lists its folders in:
+// dragging it moves the row — and the threads under it — to where the pointer
+// lets go, and the app writes that order down where the next launch reads it.
+console.log("dragging a project into place");
+// A known arrangement to drag in: the folder added here, another one, and a
+// folder discovered from a session, in the order the fixture answers with.
+projectRows = [
+  { id: "/home/dev/Projects/oxide", path: "/home/dev/Projects/oxide", name: "oxide", registered: true, exists: true, session_count: 2, last_session_at: 1, last_opened_at: 9 },
+  { id: "/tmp/elsewhere", path: "/tmp/elsewhere", name: "elsewhere", registered: false, exists: true, session_count: 1, last_session_at: 2, last_opened_at: null },
+  { id: "/tmp/third", path: "/tmp/third", name: "third", registered: true, exists: true, session_count: 0, last_session_at: 0, last_opened_at: 3 },
+];
+await app.loadProjects();
+const rowsOf = () => elementFor("projects-tree").children.map((group) => group.children[0]);
+const listedIds = () => app.state.projects.map((project) => project.id);
+const rowIds = () => rowsOf().map((row) => row.dataset.project).join("|");
+await app.renderProjectsTree();
+const startedWith = listedIds();
+check(
+  "made each project's row the handle for the arrangement",
+  rowsOf().length === app.state.projects.length &&
+    rowsOf().every((row) => row.draggable === true && Boolean(row.dataset.project)) &&
+    rowIds() === startedWith.join("|"),
+  `${rowIds()} / ${startedWith.join("|")}`,
+);
+// The pointer above a row's own middle lands above it; below lands below. The
+// stub's rows are all the same box (0..40), so 5 is above and 35 is below.
+const over = (y) => ({
+  clientY: y,
+  preventDefault() {
+    this.refused = true;
+  },
+  dataTransfer: null,
+});
+const draggedRow = rowsOf()[1];
+const targetRow = rowsOf()[0];
+draggedRow.fire("dragstart", over(5));
+check(
+  "said which row is in the air",
+  draggedRow.classList.contains("dragging") === true &&
+    draggedRow.dataset.project === startedWith[1],
+  `${draggedRow.className} / ${draggedRow.dataset.project}`,
+);
+const above = over(5);
+targetRow.fire("dragover", above);
+check(
+  "drew the line the row would land on, above the row's own middle",
+  targetRow.classList.contains("drop-before") === true &&
+    targetRow.classList.contains("drop-after") === false &&
+    above.refused === true,
+  `${targetRow.className} / refused ${above.refused}`,
+);
+const below = over(35);
+targetRow.fire("dragover", below);
+check(
+  "moved that line below the row once the pointer passed its middle",
+  targetRow.classList.contains("drop-after") === true &&
+    targetRow.classList.contains("drop-before") === false,
+  targetRow.className,
+);
+calls.length = 0;
+targetRow.fire("drop", over(5));
+await nextTick();
+await nextTick();
+check(
+  "moved the row to where it was dropped",
+  listedIds()[0] === draggedRow.dataset.project,
+  listedIds().join(" | "),
+);
+check(
+  "wrote the whole order down where the next launch reads it",
+  JSON.stringify(projectCalls("reorder_projects").at(-1)?.[1]?.ids) ===
+    JSON.stringify(listedIds()),
+  JSON.stringify(projectCalls("reorder_projects").at(-1)?.[1]),
+);
+check(
+  "painted the tree in the order it now has",
+  rowIds() === listedIds().join("|"),
+  `${rowIds()} / ${listedIds().join("|")}`,
+);
+draggedRow.fire("dragend", over(5));
+check(
+  "took the mark off when the drag ended",
+  rowsOf().every(
+    (row) =>
+      row.classList.contains("drop-before") === false &&
+      row.classList.contains("drop-after") === false &&
+      row.classList.contains("dragging") === false,
+  ),
+  rowIds(),
+);
+// Letting the row go without dropping it takes the mark off the row it was over.
+const wander = rowsOf()[2];
+const hovered = rowsOf()[0];
+wander.fire("dragstart", over(5));
+hovered.fire("dragover", over(5));
+const marked = hovered.classList.contains("drop-before");
+wander.fire("dragend", over(5));
+check(
+  "took the line off when the row was let go without a drop",
+  marked === true &&
+    rowsOf().every(
+      (row) =>
+        row.classList.contains("drop-before") === false &&
+        row.classList.contains("drop-after") === false,
+    ),
+  rowIds(),
+);
+// A drop that would leave the order as it is writes nothing: the row is put back
+// exactly where it came from, which is no reason to touch the file.
+const above2 = rowsOf()[0];
+const moved2 = rowsOf()[1];
+calls.length = 0;
+moved2.fire("dragstart", over(35));
+above2.fire("dragover", over(35));
+above2.fire("drop", over(35));
+await nextTick();
+check(
+  "wrote nothing for a drop that leaves the order as it is",
+  projectCalls("reorder_projects").length === 0 && rowIds() === listedIds().join("|"),
+  `${projectCalls("reorder_projects").length} / ${rowIds()} / ${listedIds().join("|")}`,
+);
+moved2.fire("dragend", over(35));
+// A write the app refuses puts the order it had back, and says why, rather than
+// leaving the window showing an arrangement that was never saved.
+const before = listedIds();
+const first = rowsOf()[0];
+const last = rowsOf()[rowsOf().length - 1];
+reorderError = "permission denied";
+calls.length = 0;
+first.fire("dragstart", over(35));
+last.fire("dragover", over(35));
+last.fire("drop", over(35));
+await nextTick();
+await nextTick();
+check(
+  "put the order back when the write failed, and said so",
+  JSON.stringify(listedIds()) === JSON.stringify(before) &&
+    String(elementFor("status-text").textContent).includes("Could not reorder projects") &&
+    elementFor("status").dataset.level === "error",
+  `${listedIds().join(" | ")} / ${elementFor("status-text").textContent}`,
+);
+first.fire("dragend", over(35));
+reorderError = null;
+await app.renderProjectsTree();
+
 console.log("the bridge");
 check(
   "reached the app through its own command, never a plugin's",

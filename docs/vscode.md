@@ -385,10 +385,10 @@ the `session` header supplies the id reused for the next message with
 with a `quit` frame when `agent_end` arrives, so the process exits on its own.
 
 - **Queue / stop** — a message sent while a turn runs is queued and started
-  after it finishes, unless the toolbar's toggle is set to **Steer**, which
-  injects it before the model's next step; **Stop** kills the process (SIGTERM,
-  then SIGKILL after 3 s). The session on disk is intact, so the next message
-  continues the thread.
+  after it finishes, unless the bar's mark is on **Steer** (or its key was used),
+  which injects it before the model's next step; **Stop** kills the process
+  (SIGTERM, then SIGKILL after 3 s). The session on disk is intact, so the next
+  message continues the thread.
 - **Approvals** — with `oxide.askApprovals` on (the default) a turn starts with
   `--ask-approvals`, so a tool a permission rule holds comes back as an
   `approval_request` event instead of running. The turn waits: a card appears in
@@ -519,8 +519,12 @@ and the webview only paints it, so the footer reads the same in both panes and
 is unit tested without a webview.
 
 It is arranged the way the composer is used, from the top down: the chips that
-describe the next turn, the composer itself, and the dim line of numbers under
-it.
+describe the next turn, the bar on the composer's own top edge, and the composer
+itself. The bar carries the branch, the usage readout and the gauge that draws the
+same reading, and nothing to press: the settings this panel holds are the editor's,
+and the chips in the toolbar below are where they are reached. Nothing is left
+under the box — the line that was there carried the readout the bar now holds
+beside its gauge.
 
 - **Controls** — four icon-only buttons for model, reasoning, agent and project
   access. Each keeps its complete current value and action in its tooltip and
@@ -544,26 +548,44 @@ it.
   copy of that table used to make the chip report `128k` for a model whose
   window is `1M`. Session history remains
   the history button in the header instead of taking a second footer slot.
+- **Bar** — a bar of its own sitting on the composer's top edge, carrying the
+  branch the folder is on and the context gauge at the end of the row, the way
+  the desktop app carries its own top row. It is a surface of the theme's widget
+  colour with the box's top border as the line between them, and it is narrower
+  than the box and centered on it — 20px narrower, the 10px the box pads each
+  side, so its edges stand where the box's own text column does and the box reads
+  as the wider of the two in a narrow side bar as much as a wide one. The branch
+    is the row's flexible cell, so a long one is cut with an ellipsis rather than
+  wrapped.
 - **Composer** — the message box: the attachment strip, the textarea and the
   toolbar inside one bordered block. It starts two rows tall (`rows="2"`) and
   grows with the message up to 200px, where it scrolls instead.
 - **Toolbar** — the **Attach** icon (the file picker), the live phase with an
   elapsed timer while a turn runs, and the corner action, which swaps rather
   than sitting beside a second button: **Stop** while a turn runs with nothing
-  to say, **Send** the moment the box holds something. While a turn runs and
-  there is something to send, **Queue**/**Steer** appears beside it — the
-  desktop app's own choice, drawn the same way: **Queue** is the safe default
-  that waits for the current response, and a click flips it to **Steer**, which
-  injects the message before the model's next step. The corner button does not
-  move as the box is typed into; an attachment is something to send too, while a
-  context chip on its own is not.
+  to say, **Send** the moment the box holds something. The corner button does
+  not move as the box is typed into; an attachment is something to send too,
+  while a context chip on its own is not.
+- **Queue / Steer** — the bar's own top row, up while a turn runs in the thread
+  on screen, the way the desktop app carries it: the marked option is the way
+  `Enter` and **Send** deliver the message, the other is the way `Alt+Enter`
+  does, and a click moves the mark. The key hints travel with the mark, so the
+  marked option always reads `Enter` — **Queue** is the default, which waits for
+  the current response, and **Steer** injects the message before the model's
+  next step.
 - **Branch** — the repository the folder sits in, read from `.git/HEAD` rather
   than through the Git extension, so it needs no other extension installed; a
-  worktree's or submodule's `gitdir:` pointer is followed to the real HEAD.
+  worktree's or submodule's `gitdir:` pointer is followed to the real HEAD. It is
+  painted on the bar above the box, the way the desktop app shows it.
 - **Gauge** — the last request's prompt tokens over the context window, amber
-  past 70% and red past 90% (the terminal's thresholds).
-- **Usage line** — `↑input · ↓output · RcacheRead · WcacheWrite · CHhit% · $cost
-  · ctx %/window (auto)`, matching the terminal's footer segments. The counts are
+  past 70% and red past 90% (the terminal's thresholds), painted beside the
+  branch on the bar above the box.
+- **Usage** — the percent of the window the thread has used, painted on the bar
+  beside the gauge that draws the same reading, the way the desktop app paints its
+  context ring beside its own totals; the line itself —
+  `↑input · ↓output · RcacheRead · WcacheWrite · CHhit% · $cost · ctx %/window
+  (auto)`, matching the terminal's footer segments — is its tooltip and the name a
+  screen reader reads. The counts are
   abbreviated the way the terminal abbreviates them — `999`, `1.2k`, `123k`,
   `1.2M`, `66M` (`formatTokens`, the same steps as the CLI's `format_tokens`),
   so a model window and a token count read the same in both front-ends, and a
@@ -1203,7 +1225,7 @@ you scroll up to read something earlier — scrolling back to the bottom picks i
 up again. Two details make that work: text deltas are painted on an animation
 frame, so the scroll that follows one is taken after that paint rather than
 before it, and the pane gets shorter whenever the composer grows (an attachment
-chip, a taller message box, a usage line that wraps), so a resize puts the
+chip, a taller message box), so a resize puts the
 newest line back on screen. A running command's own output box is capped at 40vh
 and follows its last line the same way, since writing its text back would
 otherwise reset it to the top.

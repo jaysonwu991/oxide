@@ -1584,20 +1584,14 @@ function updateSendState() {
   // reader is back in it (the header's strip is the way there), and the typed
   // text is kept rather than sent.
   const here = viewingRun();
-  const hasBusyMessage = state.busy && hasText && here;
-  const mode = el("busy-message-mode");
+  const busyHere = state.busy && here;
   el("composer").classList.toggle("filled", hasText);
   el("send").classList.toggle("enabled", hasText);
   el("send").disabled = !hasText;
   el("send").hidden = state.busy && (!hasText || !here);
   el("stop").hidden = !state.busy || (hasText && here);
-  mode.hidden = !hasBusyMessage;
-  mode.textContent = state.busyMessageMode === "steer" ? "Steer" : "Queue";
-  mode.title = state.busyMessageMode === "steer"
-    ? "Steer the active response; click to queue instead"
-    : "Queue as the next turn after the current response; click to steer instead";
-  mode.setAttribute("aria-label", mode.title);
-  el("send").title = hasBusyMessage
+  paintModeBar(busyHere);
+  el("send").title = busyHere
     ? state.busyMessageMode === "steer"
       ? "Steer the active response (Enter)"
       : "Queue as the next turn (Enter)"
@@ -1607,12 +1601,40 @@ function updateSendState() {
   // label the button was built with.
   el("send").setAttribute(
     "aria-label",
-    hasBusyMessage ? (state.busyMessageMode === "steer" ? "Steer" : "Queue") : "Send",
+    busyHere ? (state.busyMessageMode === "steer" ? "Steer" : "Queue") : "Send",
   );
 }
 
-function toggleBusyMessageMode() {
-  state.busyMessageMode = state.busyMessageMode === "queue" ? "steer" : "queue";
+/// The Queue/Steer bar on the composer's own top row: the way a message typed
+/// while a turn runs is delivered. It is up exactly while there is a turn to
+/// deliver into in the thread on screen — a run in another thread is reached by
+/// opening it, and the bar would be a choice about a message this composer
+/// refuses to send. The marked way is the one Enter sends with, so it is the one
+/// the key hints follow: the marked option carries `Enter`, the other its own
+/// key, and either can be picked with the pointer.
+function paintModeBar(busyHere) {
+  const bar = el("mode-bar");
+  bar.hidden = !busyHere;
+  const queue = state.busyMessageMode !== "steer";
+  el("mode-queue").classList.toggle("active", queue);
+  el("mode-steer").classList.toggle("active", !queue);
+  const keys = (marked) => (marked ? "Enter" : "Alt+Enter");
+  const notes = [
+    ["mode-queue", "Queue as the next turn after the current response", queue],
+    ["mode-steer", "Steer the active response", !queue],
+  ];
+  for (const [id, label, marked] of notes) {
+    const option = el(id);
+    const title = `${label} (${keys(marked)})`;
+    option.title = title;
+    option.setAttribute("aria-label", title);
+  }
+}
+
+/// The two ways in, from the bar or from a key: the mark is what Enter sends
+/// with, and the other way is what its own key sends.
+function setBusyMessageMode(mode) {
+  state.busyMessageMode = mode === "steer" ? "steer" : "queue";
   updateSendState();
 }
 
@@ -2087,7 +2109,7 @@ function openableImage(dataUrl, name) {
   return button;
 }
 
-async function send(followUp = false) {
+async function send(opposite = false) {
   const textarea = el("prompt");
   const prompt = textarea.value.trim();
   const attachments = attachmentPayload();
@@ -2130,9 +2152,11 @@ async function send(followUp = false) {
       setStatus(`A turn is running in “${runThreadLabel()}”; open it to queue or steer, or stop it.`);
       return;
     }
-    // An explicit shortcut can always queue; the ordinary Send action follows
-    // the visible choice beside it.
-    followUp = followUp || state.busyMessageMode === "queue";
+    // The bar's own mark is what Enter and Send follow; the key beside the mark
+    // sends the other way, so a message can be queued or steered without moving
+    // the mark first.
+    const markedQueue = state.busyMessageMode === "queue";
+    const followUp = opposite ? !markedQueue : markedQueue;
     textarea.value = "";
     clearAttachments();
     clearWelcome();
@@ -5491,7 +5515,8 @@ function init() {
   el("connect").onclick = openConnect;
 
   el("send").onclick = () => send(false);
-  el("busy-message-mode").onclick = toggleBusyMessageMode;
+  el("mode-queue").onclick = () => setBusyMessageMode("queue");
+  el("mode-steer").onclick = () => setBusyMessageMode("steer");
   el("stop").onclick = stop;
   // The header's own line about the turn that is running while another thread is
   // on screen: the click opens that thread, so the Queue or Steer it takes is in
@@ -5772,6 +5797,80 @@ function orderedSessions() {
   return ordered;
 }
 
+/// The project whose row is in the air, and the row it would land on. A drop is
+/// a move of the whole row — the project and the threads under it — rather than
+/// of a thread, which is why this is one id and not a list.
+let draggedProjectId = null;
+let dropMarkedRow = null;
+
+/// The projects in the order a drop would leave them: the dragged row taken out
+/// and put back beside the row it was dropped on, above or below that row's own
+/// middle. `null` when the row is the one being dragged, when either is no
+/// longer in the list, or when the drop would leave the order as it is — so a
+/// drag that ends where it started writes nothing.
+function reorderedProjects(projects, fromId, toId, after) {
+  if (!fromId || fromId === toId) return null;
+  const moved = projects.find((project) => project.id === fromId);
+  const rest = projects.filter((project) => project.id !== fromId);
+  const at = rest.findIndex((project) => project.id === toId);
+  if (!moved || at < 0) return null;
+  rest.splice(after ? at + 1 : at, 0, moved);
+  if (rest.every((project, index) => project.id === projects[index].id)) return null;
+  return rest;
+}
+
+/// Where a drop on this row would land: below its own middle, or above it. It is
+/// `null` when nothing is being dragged and when the row is the one in the air,
+/// which is the row that cannot be dropped onto itself.
+function dropAfter(event, row) {
+  if (!draggedProjectId || draggedProjectId === row.dataset.project) return null;
+  const box = row.getBoundingClientRect();
+  return event.clientY > box.top + box.height / 2;
+}
+
+/// The line the row would land on, which is the only mark a drag leaves: the
+/// sidebar is not rebuilt while a row is in the air, so the mark is kept as the
+/// row it was put on rather than looked up again.
+function markDrop(row, after) {
+  clearDropMark();
+  dropMarkedRow = row;
+  row.classList.add(after ? "drop-after" : "drop-before");
+}
+
+function clearDropMark() {
+  if (!dropMarkedRow) return;
+  dropMarkedRow.classList.remove("drop-before", "drop-after");
+  dropMarkedRow = null;
+}
+
+function clearDropMarkOf(row) {
+  if (dropMarkedRow !== row) return;
+  clearDropMark();
+}
+
+/// Puts a dragged project where it was dropped, and the threads under it with
+/// it: the sidebar is painted from the new order at once — a drop that waited on
+/// the disk would show the row snapping back and forth — and the app is what
+/// makes that order the sidebar's own. A call that fails puts the order it had
+/// back and says why, rather than leaving the window showing an arrangement that
+/// was never written.
+async function dropProject(fromId, toId, after) {
+  const next = reorderedProjects(state.projects, fromId, toId, after);
+  if (!next) return;
+  const before = state.projects;
+  state.projects = next;
+  renderProjectsTree();
+  try {
+    state.projects = await invoke("reorder_projects", {
+      ids: next.map((project) => project.id),
+    });
+  } catch (error) {
+    state.projects = before;
+    setStatus(`Could not reorder projects: ${error}`, "error");
+  }
+  renderProjectsTree();
+}
+
 async function renderProjectsTree() {
   const container = el("projects-tree");
   if (!container) return;
@@ -5846,6 +5945,40 @@ async function renderProjectsTree() {
     projectItem.onclick = () => {
       selectProject(project);
     };
+
+    // The row is what the arrangement is dragged by: the whole row moves — the
+    // project and the threads under it — and the app writes the order down.
+    projectItem.dataset.project = project.id;
+    projectItem.draggable = true;
+    projectItem.addEventListener("dragstart", (event) => {
+      draggedProjectId = project.id;
+      projectItem.classList.add("dragging");
+      // A drag with nothing on the clipboard is one some browsers refuse to
+      // start at all, so the row puts its own name there.
+      event.dataTransfer?.setData("text/plain", project.name);
+      if (event.dataTransfer) event.dataTransfer.effectAllowed = "move";
+    });
+    projectItem.addEventListener("dragend", () => {
+      draggedProjectId = null;
+      clearDropMark();
+      projectItem.classList.remove("dragging");
+    });
+    projectItem.addEventListener("dragover", (event) => {
+      const after = dropAfter(event, projectItem);
+      if (after === null) return;
+      // This is what says the row will take a drop at all.
+      event.preventDefault();
+      if (event.dataTransfer) event.dataTransfer.dropEffect = "move";
+      markDrop(projectItem, after);
+    });
+    projectItem.addEventListener("dragleave", () => clearDropMarkOf(projectItem));
+    projectItem.addEventListener("drop", (event) => {
+      const after = dropAfter(event, projectItem);
+      clearDropMark();
+      if (after === null) return;
+      event.preventDefault();
+      dropProject(draggedProjectId, project.id, after);
+    });
     
     projectGroup.appendChild(projectItem);
     

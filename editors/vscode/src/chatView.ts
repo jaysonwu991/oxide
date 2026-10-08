@@ -366,6 +366,17 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
   </div>
 </main>
 <footer>
+  <div id="strip" class="composer-strip">
+    <div id="mode-bar" class="strip-mode" hidden>
+      <button id="mode-queue" class="mode-option" title="Queue as the next turn after the current response (Enter)" aria-label="Queue as the next turn after the current response">Queue<span class="mode-key mode-key-enter" aria-hidden="true">⏎</span><span class="mode-key mode-key-alt" aria-hidden="true">⌥⏎</span></button>
+      <button id="mode-steer" class="mode-option" title="Steer the active response (Enter)" aria-label="Steer the active response">Steer<span class="mode-key mode-key-enter" aria-hidden="true">⏎</span><span class="mode-key mode-key-alt" aria-hidden="true">⌥⏎</span></button>
+    </div>
+    <div class="strip-facts">
+      <span id="branch-wrap" class="branch-wrap" hidden><span class="foot-icon" aria-hidden="true"><svg viewBox="0 0 16 16"><circle cx="4" cy="3" r="1.5"/><circle cx="4" cy="13" r="1.5"/><circle cx="12" cy="5" r="1.5"/><path d="M4 4.5v7M5.5 11c4 0 6.5-1.5 6.5-4.5"/></svg></span><span id="branch"></span></span>
+      <span id="usage" class="usage"><span id="usage-text" role="note" tabindex="0"></span></span>
+      <span id="gauge" class="gauge" hidden><span id="gauge-fill"></span></span>
+    </div>
+  </div>
   <div id="composer">
     <div id="at" class="at-list" role="listbox" aria-label="Files and folders" hidden></div>
     <div id="chips" class="chips" hidden></div>
@@ -378,15 +389,9 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       <span id="elapsed" hidden></span>
       <span class="spacer"></span>
       <button id="stop" class="icon danger" hidden title="Stop the running turn (Esc)" aria-label="Stop">${ICONS.stop}</button>
-      <button id="busy-message-mode" class="busy-message-mode" hidden title="Queue as the next turn after the current response">Queue</button>
       <button id="send" class="icon primary" disabled title="Send (Enter)" aria-label="Send">${ICONS.send}</button>
     </div>
     <div id="dropzone" hidden><span>Drop files to attach</span></div>
-  </div>
-  <div id="footline">
-    <span id="usage" class="usage"><span class="foot-icon" aria-hidden="true"><svg viewBox="0 0 16 16"><circle cx="8" cy="8" r="5.5"/><path d="M8 5v3.4l2.2 1.4"/></svg></span><span id="usage-text" role="note" tabindex="0"></span></span>
-    <span id="gauge" class="gauge" hidden><span id="gauge-fill"></span></span>
-    <span id="branch-wrap" class="branch-wrap" hidden><span class="foot-icon" aria-hidden="true"><svg viewBox="0 0 16 16"><circle cx="4" cy="3" r="1.5"/><circle cx="4" cy="13" r="1.5"/><circle cx="12" cy="5" r="1.5"/><path d="M4 4.5v7M5.5 11c4 0 6.5-1.5 6.5-4.5"/></svg></span><span id="branch"></span></span>
   </div>
 </footer>
 <div id="image-view" class="overlay image-overlay" role="dialog" aria-modal="true" aria-label="Image preview" hidden>

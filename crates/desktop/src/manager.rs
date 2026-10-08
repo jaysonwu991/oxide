@@ -11,6 +11,7 @@ use oxide_core::config::Config;
 use oxide_core::session::{SessionLog, SessionSummary};
 use oxide_core::trust::{DefaultTrust, TrustStore};
 use serde::{Deserialize, Serialize};
+use std::cmp::Ordering;
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -48,6 +49,14 @@ pub struct ProjectView {
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct ProjectRegistry {
     pub projects: Vec<Project>,
+    /// The order the reader dragged the sidebar into, by [`ProjectView::id`], —
+    /// a registered folder's canonical path or a discovered one's session `cwd`.
+    /// A folder this does not name is one the reader has not placed — a newly
+    /// added or newly discovered one — and is listed after the ones that are,
+    /// by the same rules the whole list used before anything was dragged, so a
+    /// registry that has never been arranged behaves exactly as it always did.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub order: Vec<String>,
 }
 
 /// How a project's local resources (agents, commands, skills, plugins, MCP)
@@ -207,6 +216,25 @@ impl DesktopManager {
         Ok(removed)
     }
 
+    /// Records the order the reader dragged the sidebar into: the ids exactly as
+    /// the sidebar listed them, top to bottom. Ids are kept as given — a
+    /// discovered folder is not in `projects` and still has a place to keep — and
+    /// return whether the order changed.
+    pub fn reorder(&mut self, ids: &[String]) -> Result<bool> {
+        let mut order: Vec<String> = Vec::new();
+        for id in ids {
+            if !id.is_empty() && !order.iter().any(|each| each == id) {
+                order.push(id.clone());
+            }
+        }
+        if order == self.registry.order {
+            return Ok(false);
+        }
+        self.registry.order = order;
+        self.persist()?;
+        Ok(true)
+    }
+
     /// Records that a project was just opened.
     pub fn touch(&mut self, id: &str) -> Result<()> {
         if let Some(project) = self
@@ -282,9 +310,17 @@ impl DesktopManager {
             });
         }
 
-        // Registered projects first (by last opened), then discovered ones by
-        // most recent activity.
+        // The order the reader arranged, then — for everything they have not
+        // placed — registered projects first (by last opened), then discovered
+        // ones by most recent activity.
+        let rank = |id: &str| self.registry.order.iter().position(|each| each == id);
         views.sort_by(|a, b| {
+            match (rank(&a.id), rank(&b.id)) {
+                (Some(left), Some(right)) => return left.cmp(&right),
+                (Some(_), None) => return Ordering::Less,
+                (None, Some(_)) => return Ordering::Greater,
+                (None, None) => {}
+            }
             b.registered
                 .cmp(&a.registered)
                 .then(
@@ -535,6 +571,84 @@ mod tests {
         assert!(manager.registered().is_empty());
         assert!(!manager.remove_project("nothing").unwrap());
         std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn reorder_holds_the_order_dragged_and_leaves_unplaced_folders_after_it() {
+        let store = temp_store();
+        let mut manager = DesktopManager::load_from(store.clone()).unwrap();
+        let root = std::env::temp_dir().join(format!("oxide_proj_order_{}", std::process::id()));
+        let (first, second, third) = (root.join("first"), root.join("second"), root.join("third"));
+        for dir in [&first, &second, &third] {
+            std::fs::create_dir_all(dir).unwrap();
+        }
+        let a = manager.add_project(&first).unwrap();
+        let b = manager.add_project(&second).unwrap();
+        let listed = |manager: &DesktopManager| {
+            manager
+                .overview_with(&[])
+                .into_iter()
+                .map(|view| view.id)
+                .collect::<Vec<_>>()
+        };
+
+        // The first drag writes the order the sidebar listed, whatever the rules
+        // would have said, and dragging to the same place again is not a write.
+        assert!(manager.reorder(&[b.id.clone(), a.id.clone()]).unwrap());
+        assert_eq!(listed(&manager), vec![b.id.clone(), a.id.clone()]);
+        assert!(!manager.reorder(&[b.id.clone(), a.id.clone()]).unwrap());
+
+        // A folder the reader has not placed is listed after the ones they have —
+        // even a folder just added, which the old rule would have floated to the
+        // top — so the arrangement is what the sidebar keeps.
+        let c = manager.add_project(&third).unwrap();
+        assert_eq!(
+            listed(&manager),
+            vec![b.id.clone(), a.id.clone(), c.id.clone()]
+        );
+
+        // The arrangement is the file's rather than the process's.
+        let reloaded = DesktopManager::load_from(store.clone()).unwrap();
+        assert_eq!(
+            listed(&reloaded),
+            vec![b.id.clone(), a.id.clone(), c.id.clone()]
+        );
+
+        // A discovered folder has a place to keep even though it is not in the
+        // registry: ids are written exactly as the sidebar listed them.
+        let elsewhere = "/tmp/from-terminal-order";
+        assert!(manager
+            .reorder(&[
+                elsewhere.to_string(),
+                c.id.clone(),
+                b.id.clone(),
+                a.id.clone()
+            ])
+            .unwrap());
+        // The listing with that folder's session in it puts it where it was
+        // dropped, ahead of the registered ones...
+        let with_session: Vec<String> = manager
+            .overview_with(&[summary(elsewhere, 5)])
+            .into_iter()
+            .map(|view| view.id)
+            .collect();
+        assert_eq!(
+            with_session,
+            vec![
+                elsewhere.to_string(),
+                c.id.clone(),
+                b.id.clone(),
+                a.id.clone()
+            ]
+        );
+        // ...and they are still in the order the reader dragged without it.
+        assert_eq!(
+            listed(&manager),
+            vec![c.id.clone(), b.id.clone(), a.id.clone()]
+        );
+
+        std::fs::remove_dir_all(&root).ok();
+        let _ = std::fs::remove_dir_all(store.parent().unwrap());
     }
 
     #[test]
