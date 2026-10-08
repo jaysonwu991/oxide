@@ -11,7 +11,7 @@ use oxide_core::config::Config;
 use oxide_core::session::{SessionLog, SessionSummary};
 use oxide_core::trust::{DefaultTrust, TrustStore};
 use serde::{Deserialize, Serialize};
-use std::cmp::Ordering;
+use std::cmp::Reverse;
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -312,24 +312,23 @@ impl DesktopManager {
 
         // The order the reader arranged, then — for everything they have not
         // placed — registered projects first (by last opened), then discovered
-        // ones by most recent activity.
+        // ones by most recent activity. A row's place in that order is a scan of
+        // the names the reader dragged rather than a field on the row, so the
+        // whole key is read once per row (`sort_by_cached_key`) instead of on
+        // every comparison. A folder the reader has not placed has no rank at all,
+        // which is the first component of the key rather than the second, so an
+        // unplaced row is listed after the placed ones rather than before them.
         let rank = |id: &str| self.registry.order.iter().position(|each| each == id);
-        views.sort_by(|a, b| {
-            match (rank(&a.id), rank(&b.id)) {
-                (Some(left), Some(right)) => return left.cmp(&right),
-                (Some(_), None) => return Ordering::Less,
-                (None, Some(_)) => return Ordering::Greater,
-                (None, None) => {}
-            }
-            b.registered
-                .cmp(&a.registered)
-                .then(
-                    b.last_opened_at
-                        .unwrap_or(0)
-                        .cmp(&a.last_opened_at.unwrap_or(0)),
-                )
-                .then(b.last_session_at.cmp(&a.last_session_at))
-                .then(a.name.to_lowercase().cmp(&b.name.to_lowercase()))
+        views.sort_by_cached_key(|view| {
+            let placed = rank(&view.id);
+            (
+                placed.is_none(),
+                placed,
+                Reverse(view.registered),
+                Reverse(view.last_opened_at.unwrap_or(0)),
+                Reverse(view.last_session_at),
+                view.name.to_lowercase(),
+            )
         });
         views
     }

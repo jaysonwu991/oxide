@@ -4805,6 +4805,15 @@ check(
       "Queue as the next turn after the current response (Enter)",
   `${elementFor("mode-queue").title} / ${elementFor("mode-steer").title}`,
 );
+// The mark is a state rather than a word: the accent says which way is marked to
+// a reader looking at the bar, and `aria-pressed` says the same thing to a screen
+// reader instead of leaving the mark to the stylesheet alone.
+check(
+  "announced the mark as a state rather than leaving it to the stylesheet",
+  elementFor("mode-queue").getAttribute("aria-pressed") === "true" &&
+    elementFor("mode-steer").getAttribute("aria-pressed") === "false",
+  `${elementFor("mode-queue").getAttribute("aria-pressed")} / ${elementFor("mode-steer").getAttribute("aria-pressed")}`,
+);
 elementFor("prompt").value = "keep going";
 app.updateSendState();
 check(
@@ -4818,7 +4827,9 @@ check(
 elementFor("mode-steer").onclick();
 check(
   "made steering a deliberate visible choice, and moved the keys with it",
-  elementFor("mode-steer").classList.contains("active") === true &&
+  elementFor("mode-steer").getAttribute("aria-pressed") === "true" &&
+    elementFor("mode-queue").getAttribute("aria-pressed") === "false" &&
+    elementFor("mode-steer").classList.contains("active") === true &&
     elementFor("mode-queue").classList.contains("active") === false &&
     elementFor("mode-steer").title === "Steer the active response (Enter)" &&
     elementFor("mode-queue").title ===
@@ -7088,6 +7099,27 @@ check(
     ),
   rowIds(),
 );
+// A row is made of children, and crossing from one to the next is a `dragleave`
+// of the row they belong to: the line comes off only when the pointer has really
+// left the row, so it does not flicker as the pointer moves over the row's name.
+const crossing = rowsOf()[1];
+const over_ = rowsOf()[0];
+crossing.fire("dragstart", over(5));
+over_.fire("dragover", over(5));
+const markedRow = over_.classList.contains("drop-before");
+over_.fire("dragleave", { relatedTarget: over_.children[1] });
+check(
+  "kept the line while the pointer crossed the row's own children",
+  markedRow === true && over_.classList.contains("drop-before") === true,
+  `${markedRow} / ${over_.className}`,
+);
+over_.fire("dragleave", { relatedTarget: rowsOf()[2] });
+check(
+  "took the line off when the pointer left the row",
+  over_.classList.contains("drop-before") === false,
+  over_.className,
+);
+crossing.fire("dragend", over(5));
 // A drop that would leave the order as it is writes nothing: the row is put back
 // exactly where it came from, which is no reason to touch the file.
 const above2 = rowsOf()[0];

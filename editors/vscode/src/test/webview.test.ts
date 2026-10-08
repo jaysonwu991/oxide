@@ -18,6 +18,17 @@ const renderer = fs.readFileSync(path.join(root, "media", "main.js"), "utf8");
 const shell = fs.readFileSync(path.join(root, "src", "chatView.ts"), "utf8");
 const style = fs.readFileSync(path.join(root, "media", "style.css"), "utf8");
 
+/// The markup between two markers, the markers left out — with both asserted to
+/// be there, so a renamed element fails as the marker it moved away from rather
+/// than as a substring of whatever part of the shell the slice landed on.
+function between(text: string, from: string, to: string): string {
+  const start = text.indexOf(from);
+  const end = text.indexOf(to, start + 1);
+  assert.ok(start >= 0, `the shell still declares ${from}`);
+  assert.ok(end > start, `the shell still declares ${to} after ${from}`);
+  return text.slice(start, end);
+}
+
 /// Every element the HTML shell declares, with the `hidden` attribute it starts
 /// with, so the stubbed document matches the real one and a renamed id fails
 /// here.
@@ -573,7 +584,7 @@ describe("webview footer", () => {
   /// they are reached. Nothing is left under the box — the readout that line
   /// carried is the bar's own now, next to the gauge it belongs with.
   it("carries the branch, the usage and the gauge on the bar above the box", () => {
-    const strip = shell.slice(shell.indexOf('<div id="strip"'), shell.indexOf('<div id="composer">'));
+    const strip = between(shell, '<div id="strip"', '<div id="composer">');
     assert.match(strip, /class="composer-strip"/);
     for (const id of ["branch-wrap", "usage", "gauge"]) {
       assert.match(strip, new RegExp(`id="${id}"`), id);
@@ -581,7 +592,7 @@ describe("webview footer", () => {
     // The Queue/Steer row is the bar's own top row, above the folder's facts and
     // hidden until a turn runs: each option carries the key that sends it, and
     // the pair of hints is what travels with the mark.
-    const mode = strip.slice(strip.indexOf('<div id="mode-bar"'), strip.indexOf('<div class="strip-facts">'));
+    const mode = between(strip, '<div id="mode-bar"', '<div class="strip-facts">');
     assert.match(mode, /id="mode-bar" class="strip-mode" hidden/);
     assert.match(mode, /id="mode-queue" class="mode-option"/);
     assert.match(mode, /id="mode-steer" class="mode-option"/);
@@ -599,7 +610,9 @@ describe("webview footer", () => {
     );
     // The row of facts carries nothing to press; the only controls on the bar are
     // the two the Queue/Steer row is made of.
-    const factsRow = strip.slice(strip.indexOf('<div class="strip-facts">'));
+    const facts = strip.indexOf('<div class="strip-facts">');
+    assert.ok(facts >= 0, "the bar still declares the row of facts");
+    const factsRow = strip.slice(facts);
     assert.doesNotMatch(factsRow, /<button/, "the folder's facts carry nothing to press");
     assert.equal((strip.match(/<button/g) ?? []).length, 2);
     assert.doesNotMatch(shell, /id="footline"/, "nothing is left under the box");
@@ -788,8 +801,14 @@ describe("webview composer", () => {
     assert.equal(byId.get("mode-steer")!.classList.contains("active"), false);
     assert.equal(byId.get("mode-queue")!.title, "Queue as the next turn after the current response (Enter)");
     assert.equal(byId.get("mode-steer")!.title, "Steer the active response (Alt+Enter)");
+    // The mark is a state rather than a word, so it is announced as one rather
+    // than left to the class the sheet paints the accent from.
+    assert.equal(byId.get("mode-queue")!.getAttribute("aria-pressed"), "true");
+    assert.equal(byId.get("mode-steer")!.getAttribute("aria-pressed"), "false");
     byId.get("mode-steer")!.fire("click");
     assert.equal(byId.get("mode-steer")!.classList.contains("active"), true);
+    assert.equal(byId.get("mode-steer")!.getAttribute("aria-pressed"), "true");
+    assert.equal(byId.get("mode-queue")!.getAttribute("aria-pressed"), "false");
     assert.equal(byId.get("mode-queue")!.title, "Queue as the next turn after the current response (Alt+Enter)");
     assert.equal(byId.get("mode-steer")!.title, "Steer the active response (Enter)");
     assert.equal(byId.get("send")!.getAttribute("aria-label"), "Steer");

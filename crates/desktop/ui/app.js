@@ -1628,6 +1628,10 @@ function paintModeBar(busyHere) {
     const title = `${label} (${keys(marked)})`;
     option.title = title;
     option.setAttribute("aria-label", title);
+    // Which way is marked is a state rather than a word: the accent says it to a
+    // reader looking at the bar, and this says the same thing to a screen reader
+    // rather than leaving the mark to the stylesheet alone.
+    option.setAttribute("aria-pressed", marked ? "true" : "false");
   }
 }
 
@@ -5843,6 +5847,16 @@ function clearDropMark() {
   dropMarkedRow = null;
 }
 
+/// Whether a node is the row itself or one of the things it is made of: a drag
+/// across a row crosses its own children, and each of those is a `dragleave` of
+/// the row around it.
+function isInside(node, root) {
+  for (let each = node; each; each = each.parentNode) {
+    if (each === root) return true;
+  }
+  return false;
+}
+
 function clearDropMarkOf(row) {
   if (dropMarkedRow !== row) return;
   clearDropMark();
@@ -5971,7 +5985,14 @@ async function renderProjectsTree() {
       if (event.dataTransfer) event.dataTransfer.dropEffect = "move";
       markDrop(projectItem, after);
     });
-    projectItem.addEventListener("dragleave", () => clearDropMarkOf(projectItem));
+    projectItem.addEventListener("dragleave", (event) => {
+      // A row is made of children — its glyph, its name, its count, its own
+      // buttons — and crossing from one to the next is a `dragleave` of the row
+      // they belong to, so the line comes off only when the pointer has really
+      // left the row.
+      if (isInside(event.relatedTarget, projectItem)) return;
+      clearDropMarkOf(projectItem);
+    });
     projectItem.addEventListener("drop", (event) => {
       const after = dropAfter(event, projectItem);
       clearDropMark();

@@ -1793,6 +1793,10 @@
       const title = `${label} (${marked ? "Enter" : "Alt+Enter"})`;
       option.title = title;
       option.setAttribute("aria-label", title);
+      // Which way is marked is a state rather than a word: the accent says it to
+      // a reader looking at the bar, and this says the same thing to a screen
+      // reader rather than leaving the mark to the stylesheet alone.
+      option.setAttribute("aria-pressed", marked ? "true" : "false");
     }
   }
 
