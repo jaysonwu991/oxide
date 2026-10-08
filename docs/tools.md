@@ -84,7 +84,20 @@ what bites, and an even split of the bytes when one long line (a server's JSON)
 is what exceeds it — with `…N lines, M bytes truncated…` where the middle went,
 because a server's answer puts its summary at the top and its totals (a
 `nextPageToken`, a count) at the bottom — keeping one end alone discards the
-half the next call needs. Every other tool keeps the head.
+half the next call needs.
+
+A server's JSON answer is the one exception: instead of cutting it at a byte
+offset — which leaves a fragment that starts and ends mid-token, parses as
+nothing, and says nothing about how much of the answer was dropped — it is
+elided at its largest array. The records that fit are kept from both ends
+(three quarters from the front), a marker element names the rest
+(`… 659 of 800 records omitted …`), and the result is headed `[truncated: 659 of
+800 records omitted, 92812 bytes; full: <path>]`. What reaches the model is
+still the same document, so it can see the record count, read the samples it was
+given, and narrow the next query itself instead of paying for the same answer
+twice. The elision only applies when a record actually has to go: an answer that
+is over budget because a server pretty-printed it comes back whole and
+compacted, with no marker at all. Every other tool keeps the head.
 
 When output is dropped, the full text is written under `truncated/` in the Oxide
 config directory and the result is headed `[truncated: N lines, M bytes; full:

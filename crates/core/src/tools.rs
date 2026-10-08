@@ -2714,9 +2714,10 @@ enum Keep {
 
 /// Cap tool output so a single result cannot dominate the context window. The
 /// preview uses a tool-specific line and byte budget, kept from the end
-/// [`Keep`] names for that tool. When content is dropped, the full text is
-/// saved under the Oxide config dir and the result points at it so the model
-/// can inspect the full output without re-running the tool.
+/// [`Keep`] names for that tool, and a server's JSON answer is elided on record
+/// boundaries rather than at a byte offset. When content is dropped, the full
+/// text is saved under the Oxide config dir and the result points at it so the
+/// model can inspect the full output without re-running the tool.
 fn truncate(name: &str, output: String) -> String {
     truncate_into(name, output, truncation_dir().as_deref())
 }
@@ -2726,6 +2727,21 @@ fn truncate_into(name: &str, output: String, dir: Option<&Path>) -> String {
     let lines: Vec<&str> = output.lines().collect();
     if output.len() <= max_bytes && lines.len() <= max_lines {
         return output;
+    }
+
+    if is_mcp_tool(name) {
+        if let Some(elision) = elide_records(&output, max_bytes) {
+            if elision.clause.is_empty() {
+                return elision.text;
+            }
+            let mut result = format!("[truncated: {}", elision.clause);
+            if let Some(path) = dir.and_then(|dir| save_truncated(dir, &output)) {
+                result.push_str(&format!("; full: {}", path.display()));
+            }
+            result.push_str("]\n");
+            result.push_str(&elision.text);
+            return result;
+        }
     }
 
     let keep = keep_end(name);
@@ -2884,6 +2900,146 @@ fn cut_middle(text: &str, max_bytes: usize) -> (&str, &str, usize) {
         return (text, "", 0);
     }
     (&text[..end], &text[start..], start - end)
+}
+
+/// Which end of an MCP result's JSON answer to elide around. Returned by
+/// [`elide_records`].
+struct RecordElision {
+    /// The `[truncated: …]` clause naming what the document left out, empty when
+    /// every record survived and only whitespace was dropped.
+    clause: String,
+    /// The document that stands in for the whole one.
+    text: String,
+}
+
+/// One step along the path to an array inside a parsed document.
+#[derive(Clone)]
+enum Step {
+    Key(String),
+    Index(usize),
+}
+
+/// Elides a JSON document at its largest array, keeping the records from both
+/// ends that fit `max_bytes` and naming the ones between them.
+///
+/// A server answers with one document, so cutting it at a byte offset leaves a
+/// fragment that parses as nothing: it starts and ends mid-token, carries no
+/// record count, and says nothing about how much of the answer is missing. A
+/// model that cannot tell how much it is looking at narrows the question and
+/// pays for the answer a second time, which costs far more than the elision
+/// saves. Cutting on record boundaries keeps the envelope, both ends of the list
+/// and the number left out.
+///
+/// `None` when the text is not JSON, holds no array, or cannot be brought inside
+/// the budget with one record kept.
+fn elide_records(text: &str, max_bytes: usize) -> Option<RecordElision> {
+    let original = text.len();
+    let value: Value = serde_json::from_str(text).ok()?;
+    let (path, total) = largest_array(&value)?;
+    if total == 0 {
+        return None;
+    }
+
+    // The most records that still fit. Keeping more only grows the document,
+    // so the search walks up to the largest count that comes in under budget.
+    let (mut low, mut high) = (0, total);
+    while low < high {
+        let mid = low + (high - low).div_ceil(2);
+        if elided(&value, &path, mid)?.len() <= max_bytes {
+            low = mid;
+        } else {
+            high = mid - 1;
+        }
+    }
+    if low == 0 {
+        return None;
+    }
+
+    let text = elided(&value, &path, low)?;
+    let clause = if low == total {
+        String::new()
+    } else {
+        format!(
+            "{} of {} records omitted, {} bytes",
+            total - low,
+            total,
+            original.saturating_sub(text.len())
+        )
+    };
+    Some(RecordElision { clause, text })
+}
+
+/// The document with `keep` of the array's records kept — three quarters from
+/// the front, the rest from the back — and a marker between them naming what was
+/// left out. The marker is a string element, so what comes back is still the
+/// same document rather than a fragment of one.
+fn elided(value: &Value, path: &[Step], keep: usize) -> Option<String> {
+    let mut document = value.clone();
+    let items = stepped(&mut document, path)?.as_array_mut()?;
+    let total = items.len();
+    let head = (keep * 3).div_ceil(4);
+    let tail = keep - head;
+
+    let mut kept: Vec<Value> = Vec::with_capacity(keep + 1);
+    kept.extend_from_slice(&items[..head]);
+    if keep < total {
+        kept.push(Value::String(format!(
+            "… {} of {total} records omitted …",
+            total - keep
+        )));
+    }
+    kept.extend_from_slice(&items[total - tail..]);
+    *items = kept;
+
+    serde_json::to_string(&document).ok()
+}
+
+/// The largest array in a document and how many records it holds, by the bytes
+/// it takes to serialize.
+fn largest_array(value: &Value) -> Option<(Vec<Step>, usize)> {
+    fn walk(value: &Value, path: &mut Vec<Step>, best: &mut (usize, Option<Vec<Step>>, usize)) {
+        match value {
+            Value::Array(items) => {
+                let size = serde_json::to_string(items)
+                    .map(|text| text.len())
+                    .unwrap_or(0);
+                if best.1.is_none() || size > best.0 {
+                    best.0 = size;
+                    best.1 = Some(path.clone());
+                    best.2 = items.len();
+                }
+                for (index, item) in items.iter().enumerate() {
+                    path.push(Step::Index(index));
+                    walk(item, path, best);
+                    path.pop();
+                }
+            }
+            Value::Object(map) => {
+                for (key, item) in map {
+                    path.push(Step::Key(key.clone()));
+                    walk(item, path, best);
+                    path.pop();
+                }
+            }
+            _ => {}
+        }
+    }
+
+    let mut best = (0, None, 0);
+    walk(value, &mut Vec::new(), &mut best);
+    best.1.map(|path| (path, best.2))
+}
+
+/// Follows a [`Step`] path into a parsed document.
+fn stepped<'a>(value: &'a mut Value, path: &[Step]) -> Option<&'a mut Value> {
+    let mut node = value;
+    for step in path {
+        node = match step {
+            Step::Key(key) => node.as_object_mut()?.get_mut(key)?,
+            Step::Index(index) => node.as_array_mut()?.get_mut(*index)?,
+        };
+    }
+    Some(node)
 }
 
 /// Which end of a tool's output to keep. An MCP tool is named
@@ -4488,6 +4644,142 @@ mod tests {
         // A result that fits the MCP budget but not the generic one is kept whole.
         let output = "y".repeat(MAX_OUTPUT_BYTES + 100);
         assert_eq!(truncate_into("server__tool", output.clone(), None), output);
+    }
+
+    /// A server's answer in the shape New Relic's NRQL tools return, which is
+    /// what put the worst results into the recorded sessions: one envelope, one
+    /// array of small homogeneous records.
+    fn nrql_records(count: usize) -> String {
+        let rows = (0..count)
+            .map(|i| {
+                format!(
+                    "{{\"facet\":\"lightcone-6dc5566c4f-{i:04}\",\"beginTimeSeconds\":1790908800,\"\
+                     endTimeSeconds\":1790910000,\"k8s.pod.name\":\"lightcone-6dc5566c4f-{i:04}\",\"\
+                     p95\":{{\"95\":1504.0}},\"spans\":{i}}}"
+                )
+            })
+            .collect::<Vec<_>>()
+            .join(",");
+        format!(
+            "{{\"result\":{{\"data\":{{\"actor\":{{\"account\":{{\"nrql\":{{\"results\":[{rows}]}}}}}}}}}}}}"
+        )
+    }
+
+    #[test]
+    fn a_large_json_answer_is_elided_on_record_boundaries() {
+        let dir = std::env::temp_dir().join(format!("oxide_elide_{}", std::process::id()));
+        std::fs::remove_dir_all(&dir).ok();
+        let output = nrql_records(600);
+        assert!(output.len() > MCP_OUTPUT_BYTES, "a payload worth eliding");
+
+        let result = truncate_into("newrelic__execute_nrql_query", output.clone(), Some(&dir));
+        assert!(result.starts_with("[truncated:"), "{result:.120}");
+        assert!(result.len() <= MCP_OUTPUT_BYTES + 200, "{}", result.len());
+        assert!(result.contains("; full:"), "{result:.120}");
+
+        // What reaches the model is still the document, not a fragment of one:
+        // the envelope survives and the array still parses.
+        let (header, body) = result.split_once("]\n").expect("a marker line");
+        let document: Value = serde_json::from_str(body).expect("the answer still parses");
+        let rows = document["result"]["data"]["actor"]["account"]["nrql"]["results"]
+            .as_array()
+            .expect("the array survived");
+
+        // Both ends of the list are kept, and the marker between them says how
+        // many records are missing, so a reader can tell what it is not seeing.
+        assert_eq!(rows[0]["facet"], json!("lightcone-6dc5566c4f-0000"));
+        assert_eq!(
+            rows[rows.len() - 1]["facet"],
+            json!("lightcone-6dc5566c4f-0599")
+        );
+        let kept = rows.len() - 1;
+        let marker = rows
+            .iter()
+            .find_map(Value::as_str)
+            .expect("a marker element");
+        assert_eq!(marker, format!("… {} of 600 records omitted …", 600 - kept));
+        // The header repeats the same count, so a reader that never opens the
+        // array still knows how much of the answer it is missing.
+        assert!(
+            header.contains(&format!("{} of 600 records omitted", 600 - kept)),
+            "{header}"
+        );
+
+        // The whole answer is what was saved, not the elided one.
+        let saved: Vec<_> = std::fs::read_dir(&dir).unwrap().flatten().collect();
+        assert_eq!(saved.len(), 1, "{saved:?}");
+        assert_eq!(std::fs::read_to_string(saved[0].path()).unwrap(), output);
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn elision_keeps_the_envelope_and_a_few_records_when_they_are_huge() {
+        // Records big enough that only a handful fit: the document is still
+        // whole, so the counts and the shape reach the model.
+        let output = format!(
+            "{{\"rows\":[{}],\"total\":300}}",
+            (0..300)
+                .map(|i| format!("{{\"id\":{i},\"blob\":\"{}\"}}", "z".repeat(500)))
+                .collect::<Vec<_>>()
+                .join(",")
+        );
+        let result = truncate_into("server__tool", output, None);
+        let body = result.split_once("]\n").expect("a marker line").1;
+        let document: Value = serde_json::from_str(body).expect("still parses");
+        assert_eq!(document["total"], json!(300));
+        let rows = document["rows"].as_array().unwrap();
+        assert!(rows.len() > 1, "kept a record: {}", rows.len());
+        assert_eq!(rows[0]["id"], json!(0));
+        assert_eq!(rows[rows.len() - 1]["id"], json!(299));
+    }
+
+    #[test]
+    fn a_root_level_array_is_elided_too() {
+        // Some servers answer with the list itself rather than an envelope, so
+        // the array to elide is the document.
+        let output = format!(
+            "[{}]",
+            (0..2_000)
+                .map(|i| format!("{{\"id\":{i},\"route\":\"/v1/search/{i}\"}}"))
+                .collect::<Vec<_>>()
+                .join(",")
+        );
+        let result = truncate_into("server__tool", output, None);
+        let (header, body) = result.split_once("]\n").expect("a marker line");
+        assert!(header.contains("of 2000 records omitted"), "{header}");
+        let rows: Vec<Value> = serde_json::from_str(body).expect("still parses");
+        assert_eq!(rows[0]["id"], json!(0));
+        assert_eq!(rows[rows.len() - 1]["id"], json!(1999));
+        assert!(rows.iter().any(Value::is_string), "named the gap");
+    }
+
+    #[test]
+    fn an_answer_with_no_array_still_uses_the_byte_cut() {
+        // One huge record is not a listing: there is no record boundary to cut
+        // on, so the middle preview is still what stands in for it.
+        let output = format!("{{\"body\":\"{}\"}}", "q".repeat(MCP_OUTPUT_BYTES * 4));
+        let result = truncate_into("server__tool", output, None);
+        assert!(result.contains("truncated…"), "{result:.160}");
+        assert!(result.len() <= MCP_OUTPUT_BYTES + 200, "{}", result.len());
+    }
+
+    #[test]
+    fn a_pretty_printed_answer_that_fits_is_compacted_rather_than_cut() {
+        // Whitespace is the only thing over budget, so nothing is dropped and
+        // no marker is drawn: the answer is returned whole.
+        let output = format!(
+            "{{\n  \"rows\": [\n{}\n  ]\n}}",
+            (0..1_500)
+                .map(|i| format!("    {{\"id\": {i}}}"))
+                .collect::<Vec<_>>()
+                .join(",\n")
+        );
+        assert!(output.len() > MCP_OUTPUT_BYTES);
+        let result = truncate_into("server__tool", output, None);
+        assert!(!result.starts_with("[truncated:"), "{result:.120}");
+        let document: Value = serde_json::from_str(&result).expect("still parses");
+        assert_eq!(document["rows"].as_array().unwrap().len(), 1_500);
+        assert!(result.len() <= MCP_OUTPUT_BYTES, "{}", result.len());
     }
 
     #[test]
