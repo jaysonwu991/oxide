@@ -2940,9 +2940,23 @@ fn elide_records(text: &str, max_bytes: usize) -> Option<RecordElision> {
         return None;
     }
 
-    // The most records that still fit. Keeping more only grows the document,
-    // so the search walks up to the largest count that comes in under budget.
-    let (mut low, mut high) = (0, total);
+    // A document that is over budget only because the server pretty-printed it
+    // comes back whole and compact, with nothing dropped and no marker. It is
+    // checked before the search rather than by it: dropping the marker is what
+    // makes the last candidate smaller than the one below it, so a search that
+    // still had `total` in range could walk past the answer and down to zero.
+    let whole = elided(&value, &path, total)?;
+    if whole.len() <= max_bytes {
+        return Some(RecordElision {
+            clause: String::new(),
+            text: whole,
+        });
+    }
+
+    // The most records that still fit. Every candidate here keeps a record out
+    // and puts the marker in, so the length only grows with the count the search
+    // walks up to.
+    let (mut low, mut high) = (0, total - 1);
     while low < high {
         let mid = low + (high - low).div_ceil(2);
         if elided(&value, &path, mid)?.len() <= max_bytes {
@@ -2956,17 +2970,15 @@ fn elide_records(text: &str, max_bytes: usize) -> Option<RecordElision> {
     }
 
     let text = elided(&value, &path, low)?;
-    let clause = if low == total {
-        String::new()
-    } else {
-        format!(
+    Some(RecordElision {
+        clause: format!(
             "{} of {} records omitted, {} bytes",
             total - low,
             total,
             original.saturating_sub(text.len())
-        )
-    };
-    Some(RecordElision { clause, text })
+        ),
+        text,
+    })
 }
 
 /// The document with `keep` of the array's records kept — three quarters from
@@ -4751,6 +4763,48 @@ mod tests {
         assert_eq!(rows[0]["id"], json!(0));
         assert_eq!(rows[rows.len() - 1]["id"], json!(1999));
         assert!(rows.iter().any(Value::is_string), "named the gap");
+    }
+
+    #[test]
+    fn a_compact_answer_that_fits_comes_back_whole() {
+        // The second record is smaller than the marker that would stand in for
+        // it, so the complete (compact) document is *smaller* than the
+        // `total - 1` candidate that drops a record for the marker. The
+        // search has to rule the whole document out before it starts: with
+        // `total` in range the predicate is not monotonic, and the search can
+        // walk down to zero and hand back the byte-cut fragment for a document
+        // that fits.
+        let envelope = "[{\"id\":1,\"blob\":\"\"},{\"id\":2}]".len();
+        let blob = "z".repeat(MCP_OUTPUT_BYTES - 10 - envelope);
+        let output = format!(
+            "[\n  {{\n    \"id\": 1,\n    \"blob\": \"{blob}\"\n  }},\n  {{\n    \"id\": 2\n  }}\n]"
+        );
+        let compact =
+            serde_json::to_string(&serde_json::from_str::<Value>(&output).unwrap()).unwrap();
+        assert!(
+            compact.len() <= MCP_OUTPUT_BYTES,
+            "the compact document fits: {}",
+            compact.len()
+        );
+        assert!(
+            output.len() > MCP_OUTPUT_BYTES,
+            "the original does not: {}",
+            output.len()
+        );
+
+        let value: Value = serde_json::from_str(&output).unwrap();
+        let whole = elided(&value, &[], 2).expect("the whole document");
+        let dropped = elided(&value, &[], 1).expect("one record dropped");
+        assert_eq!(whole.len(), compact.len());
+        assert!(
+            dropped.len() > whole.len(),
+            "the marker costs more than the record it replaces: {} vs {}",
+            dropped.len(),
+            whole.len()
+        );
+
+        let result = truncate_into("server__tool", output, None);
+        assert_eq!(result, compact, "the whole document, compacted");
     }
 
     #[test]
