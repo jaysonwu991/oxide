@@ -81,12 +81,52 @@ describe("contextArgs", () => {
 
 describe("parseContextWindow", () => {
   it("reads the window the CLI resolved", () => {
-    assert.deepEqual(parseContextWindow('{"model":"deepseek-flash","window":1000000}'), {
-      model: "deepseek-flash",
-      window: 1_000_000,
-    });
+    assert.deepEqual(
+      parseContextWindow('{"model":"deepseek-flash","window":1000000}'),
+      {
+        model: "deepseek-flash",
+        window: 1_000_000,
+        provider: "",
+        hasKey: null,
+        subscription: false,
+        keyEnv: [],
+      },
+    );
     // A model the CLI did not name is still an answer about the window.
-    assert.deepEqual(parseContextWindow('{"window":200000}'), { model: "", window: 200_000 });
+    assert.deepEqual(parseContextWindow('{"window":200000}'), {
+      model: "",
+      window: 200_000,
+      provider: "",
+      hasKey: null,
+      subscription: false,
+      keyEnv: [],
+    });
+  });
+
+  /// The credential and plan facts ride the same answer: the panel says what
+  /// the desktop app says — `no API key` before a send, ` (sub)` on the spend —
+  /// from the one read it already makes for the window.
+  it("reads the credential and plan facts the CLI resolves", () => {
+    assert.deepEqual(
+      parseContextWindow(
+        '{"model":"m","window":200000,"provider":"anthropic","hasKey":false,' +
+          '"subscription":true,"keyEnv":["ANTHROPIC_API_KEY","OXIDE_API_KEY"]}',
+      ),
+      {
+        model: "m",
+        window: 200_000,
+        provider: "anthropic",
+        hasKey: false,
+        subscription: true,
+        keyEnv: ["ANTHROPIC_API_KEY", "OXIDE_API_KEY"],
+      },
+    );
+    // A CLI too old to answer either leaves the question open (`null`) rather
+    // than reporting a key nobody checked for.
+    const old = parseContextWindow('{"window":200000}');
+    assert.equal(old?.hasKey, null);
+    assert.equal(old?.subscription, false);
+    assert.deepEqual(old?.keyEnv, []);
   });
 
   it("reads anything else as no answer, so the caller's fallback stands", () => {

@@ -43,7 +43,16 @@ const CATALOG = `[
     "kind": "client",
     "desktop_only": false,
     "source": "builtin",
-    "front_ends": ["terminal", "desktop"]
+    "front_ends": ["terminal", "desktop", "panel"]
+  },
+  {
+    "name": "logout",
+    "description": "Forget a provider's stored credentials",
+    "arguments": "provider",
+    "kind": "client",
+    "desktop_only": false,
+    "source": "builtin",
+    "front_ends": ["terminal", "desktop", "panel"]
   },
   {
     "name": "theme",
@@ -107,6 +116,7 @@ describe("command catalog", () => {
       "model",
       "mcp",
       "permissions",
+      "logout",
       "theme",
       "connect",
       "build",
@@ -115,15 +125,15 @@ describe("command catalog", () => {
     ]);
     assert.equal(entries[0].arguments, "");
     assert.equal(entries[2].arguments, "on|off|list|clear");
-    assert.equal(entries[3].desktopOnly, true);
-    assert.equal(entries[4].desktopOnly, false, "a provider login is not the desktop's alone");
+    assert.equal(entries[4].desktopOnly, true);
+    assert.equal(entries[5].desktopOnly, false, "a provider login is not the desktop's alone");
     // The front-ends a command is offered to: the theme picker is not this
     // panel's, and a configured command is sent as a prompt by every client.
-    assert.deepEqual(entries[3].frontEnds, ["terminal", "desktop"]);
-    assert.deepEqual(entries[2].frontEnds, ["terminal", "desktop"]);
-    assert.deepEqual(entries[6].frontEnds, ["terminal", "desktop", "panel"]);
-    assert.equal(entries[6].kind, "skill");
-    assert.equal(entries[6].source, "project");
+    assert.deepEqual(entries[4].frontEnds, ["terminal", "desktop"]);
+    assert.deepEqual(entries[2].frontEnds, ["terminal", "desktop", "panel"]);
+    assert.deepEqual(entries[7].frontEnds, ["terminal", "desktop", "panel"]);
+    assert.equal(entries[7].kind, "skill");
+    assert.equal(entries[7].source, "project");
   });
 
   it("yields nothing for a CLI that prints something other than the listing", () => {
@@ -174,12 +184,13 @@ describe("palette queries", () => {
   it("offers the configured commands and skills, and the built-ins it can run", () => {
     const query = paletteCommands(catalog(), "");
     // The catalog names the front-ends that perform a command, and this panel is
-    // one of them for these; `/permissions` and `/theme` are the terminal's and
-    // the desktop app's, so neither is a row here — taking one would send text
-    // the CLI hands the model.
+    // one of them for these; `/theme` is the desktop app's, so it is not a row
+    // here — taking one would send text the CLI hands the model.
     assert.deepEqual(names(query), [
       "model",
       "mcp",
+      "permissions",
+      "logout",
       "connect",
       "build",
       "oxide-architecture",
@@ -267,7 +278,8 @@ describe("panel commands", () => {
     assert.equal(panelCommand("connect"), "provider");
     assert.equal(panelCommand("/CONNECT"), "provider");
     assert.equal(panelCommand("usage"), "usage");
-    assert.equal(panelCommand("permissions"), null);
+    assert.equal(panelCommand("permissions"), "permissions");
+    assert.equal(panelCommand("/LOGOUT"), "logout");
     assert.equal(panelCommand("theme"), null);
     assert.equal(panelCommand("ship"), null);
     // One spelling per command: a retired spelling names nothing here, and a
@@ -300,6 +312,17 @@ describe("panel commands", () => {
     assert.deepEqual(routeCommand(entries, "/model"), { kind: "action", action: "model" });
     assert.deepEqual(routeCommand(entries, "/mcp"), { kind: "action", action: "mcp" });
     assert.deepEqual(routeCommand(entries, "/session"), { kind: "action", action: "session" });
+    // The rules an `Always allow` saved, and the providers this machine holds a
+    // credential for, are the panel's own listings now: the catalog names it as
+    // one of the front-ends that runs them, so nothing has to leave the editor.
+    assert.deepEqual(routeCommand(entries, "/permissions"), {
+      kind: "action",
+      action: "permissions",
+    });
+    assert.deepEqual(routeCommand(entries, "/logout"), {
+      kind: "action",
+      action: "logout",
+    });
     assert.deepEqual(routeCommand(entries, "  /SESSION  "), { kind: "action", action: "session" });
     assert.equal(routeCommand(entries, "/mcp list"), null, "arguments are the agent's");
     assert.equal(routeCommand(entries, "/session fe0031b1"), null);
@@ -315,12 +338,6 @@ describe("panel commands", () => {
     // refuse, it is a message the CLI expands like any other.
     assert.equal(routeCommand(entries, "/mcps"), null);
     assert.equal(routeCommand(entries, "/approvals"), null);
-    // A client command with no action here names the command it refused, so the
-    // notice can say which one it was.
-    assert.deepEqual(routeCommand(entries, "/permissions"), {
-      kind: "refused",
-      name: "permissions",
-    });
     // The desktop's own command is refused: the panel cannot pick a theme.
     assert.deepEqual(routeCommand(entries, "/theme"), { kind: "refused", name: "theme" });
   });

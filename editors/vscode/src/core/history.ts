@@ -17,7 +17,8 @@
 // Like the other readers here it is tolerant: a field that is missing or of the
 // wrong type reads as empty rather than throwing mid-turn.
 
-import { emptyUsage, type ReplayEntry, type UsageTotals } from "./protocol";
+import { dataUrlMime, isPaintableImage } from "./attachments";
+import { emptyUsage, type ReplayEntry, type SentChip, type UsageTotals } from "./protocol";
 
 export interface SessionHistory {
   id: string;
@@ -98,7 +99,16 @@ export function parseSessionHistory(json: string): SessionHistory | null {
       }
       continue;
     }
-    if (role === "user" && text.trim()) entries.push({ kind: "user", text });
+    if (role === "user" && text.trim()) {
+      // The media the message carried, which the store keeps beside its text:
+      // without it a resumed thread reads as a list of file names where the
+      // pictures were, and the CLI's own view of a stored message reports the
+      // same two fields under the same names as the desktop app's.
+      const attachments = storedAttachments(message.attachments);
+      entries.push(
+        attachments.length ? { kind: "user", text, attachments } : { kind: "user", text },
+      );
+    }
   }
 
   const usage = obj(root.usage);
@@ -123,6 +133,29 @@ export function parseSessionHistory(json: string): SessionHistory | null {
       cacheHit: typeof cacheHit === "number" && Number.isFinite(cacheHit) ? cacheHit : null,
     },
   };
+}
+
+/// The media one stored message carried, as the chips a sent bubble shows: the
+/// name the store kept, and the bytes the CLI reports where they are a picture
+/// this webview can draw. A PDF or a document travels the same way — both are
+/// `ContentPart` payloads with a data URL — so the type decides: a chip whose
+/// preview was a PDF would be a picture the browser paints as a broken image
+/// instead of the name the reader is promised. An attachment with neither reads
+/// as nothing rather than as a chip with an empty name.
+function storedAttachments(value: unknown): SentChip[] {
+  if (!Array.isArray(value)) return [];
+  const chips: SentChip[] = [];
+  for (const entry of value) {
+    const record = obj(entry);
+    const label = str(record.name).trim() || "attachment";
+    const dataUrl = str(record.dataUrl).trim();
+    const mime = dataUrlMime(dataUrl);
+    chips.push({
+      label,
+      preview: dataUrl && isPaintableImage(mime) ? dataUrl : null,
+    });
+  }
+  return chips;
 }
 
 /// How many of a thread's messages the panel replays. A long thread would

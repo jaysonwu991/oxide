@@ -14,6 +14,7 @@
 
 import { mcpStateLabel, type McpServerView } from "./mcps";
 import { filterProviders, providerState, type ProviderView } from "./providers";
+import { modelChoiceId } from "./models";
 import { filterSessions, type SessionEntry } from "./sessions";
 import { updateVsix, type UpdateCheck } from "./updates";
 
@@ -71,10 +72,12 @@ export type DialogPin = "header" | "footer";
 export type DialogKind =
   | "update"
   | "provider"
+  | "logout"
   | "model"
   | "agent"
   | "reasoning"
   | "trust"
+  | "permissions"
   | "mcp"
   | "sessions"
   | "delete"
@@ -127,6 +130,11 @@ export const CLOSE_DIALOG = "dialogClose";
 /// A row of the provider table: signing in to the provider it names, which is
 /// how the panel connects one without the terminal.
 export const PROVIDER_SELECT = "providerSelect";
+/// The row that forgets a provider's credential (`/logout`), which is the other
+/// half of connecting one here.
+export const PROVIDER_LOGOUT = "providerLogout";
+/// The row that forgets every saved "Always allow" rule for this project.
+export const APPROVALS_CLEAR = "approvalsClear";
 export const APPLY_MODEL = "applyModel";
 export const APPLY_AGENT = "applyAgent";
 export const APPLY_REASONING = "applyReasoning";
@@ -136,6 +144,9 @@ export const APPLY_TRUST = "applyTrust";
 /// a row, so a dialog that is only reporting has nothing to press.
 export const UPDATE_INSTALL = "updateInstall";
 export const UPDATE_NOTES = "updateNotes";
+/// The row that updates the CLI rather than this extension: `oxide update`,
+/// which works on any version and is the command the terminal uses.
+export const UPDATE_CLI = "updateCli";
 /// Restarts the window, which is what puts the freshly installed extension in
 /// charge: the code in this window is the one that was running when it was
 /// replaced.
@@ -231,6 +242,12 @@ export function providerDialog(
 /// Model selection stays attached to the composer. The search field doubles as
 /// custom input: a value not in the provider catalog becomes a row the user
 /// can deliberately choose.
+///
+/// Every logged-in provider's catalog is listed, grouped by the provider's name
+/// in each row's detail, with the one in use first — the desktop app's picker
+/// draws the same table. `provider` is the one `config.json` selects: a row from
+/// another one is a switch as well as a choice, which the controller performs
+/// through `oxide login` when it is taken.
 export function modelDialog(
   configured: string,
   provider: string,
@@ -251,11 +268,14 @@ export function modelDialog(
     !needle ||
     configLabel.toLowerCase().includes(needle) ||
     configured.toLowerCase().includes(needle);
+  const elsewhere = known.some((entry) => entry.provider && entry.provider !== provider);
   return {
     kind: "model",
     pin: "footer",
     title: "Model",
-    subtitle: "Choose a model available from the active provider, or enter any model ID.",
+    subtitle: elsewhere
+      ? "Choose a model from any provider you have connected. Picking one from another provider switches to it, which the terminal and the desktop app read too."
+      : "Choose a model available from the active provider, or enter any model ID.",
     note,
     rows: [
       ...(configMatches
@@ -271,9 +291,22 @@ export function modelDialog(
           ]
         : []),
       ...known.map((entry) =>
-        row(entry.model, entry.model, {
-          detail: entry.provider ? `Available from ${entry.provider}` : "Current model override",
-          status: entry.model === current ? "Current" : entry.provider || provider,
+        // The value is the provider-qualified choice rather than the bare id:
+        // two providers can offer the same id, and the row has to say which one
+        // it is so the action switches to that provider rather than to the first
+        // entry that happens to match.
+        row(modelChoiceId(entry.provider, entry.model), entry.model, {
+          detail: entry.provider
+            ? `Available from ${entry.provider}${entry.provider === provider ? " (active)" : ""}`
+            : "Current model override",
+          status:
+            entry.model === current
+              ? "Current"
+              : entry.provider && entry.provider !== provider
+                ? entry.provider
+                : entry.provider === provider
+                  ? "in use"
+                  : "",
           tone: "muted",
           action: APPLY_MODEL,
         }),
@@ -371,20 +404,133 @@ export function reasoningDialog(current: string, levels: readonly string[]): Dia
   );
 }
 
-export function trustDialog(current: string): DialogState {
+/// The `/permissions` dialog: the tools this project allows without prompting,
+/// read from the shared `approvals.json` through `oxide approvals`. The rows are
+/// the rules an `Always allow` saved, wherever it was answered — the terminal,
+/// the desktop app or this panel — so a rule given here is visible here and a
+/// rule given elsewhere can be taken back here.
+///
+/// `project` is the folder the rules belong to, since the store is per project:
+/// a listing for another one would be a different set of rules under the same
+/// heading.
+export function permissionsDialog(
+  project: string,
+  tools: readonly string[],
+  note = "",
+): DialogState {
+  const empty = tools.length
+    ? ""
+    : project
+      ? `No tool is allowed without prompting in ${project}. An “Always allow” answer adds one.`
+      : "Open a folder first.";
+  return {
+    kind: "permissions",
+    // Opened from the composer's row, where `/permissions` is typed.
+    pin: "footer",
+    title: "Saved approvals",
+    subtitle: "Tools this project runs without asking. Clearing forgets every rule here.",
+    note: note || empty,
+    rows: [
+      ...tools.map((tool) =>
+        row(tool, tool, {
+          detail: `Runs without asking in ${project}`,
+          status: "allowed",
+          tone: "ok",
+          action: "",
+        }),
+      ),
+      ...(tools.length
+        ? [
+            row("clear", "Clear all", {
+              detail: `Forget ${tools.length} rule${tools.length === 1 ? "" : "s"} for this project`,
+              tone: "muted",
+              action: APPROVALS_CLEAR,
+              kind: "action" as DialogRowKind,
+            }),
+          ]
+        : []),
+    ],
+    count: tools.length,
+    search: false,
+    query: "",
+    refreshLabel: "",
+    refreshAction: "",
+  };
+}
+
+/// The `/logout` dialog: the providers this machine holds a credential for. A
+/// provider is signed out by the row that names it, so the panel can take back
+/// what it — or the terminal, or the desktop app — connected.
+export function logoutDialog(
+  providers: readonly ProviderView[],
+  query = "",
+  note = "",
+): DialogState {
+  const stored = filterProviders(providers, query).filter((provider) => provider.stored);
+  const empty = providers.some((provider) => provider.stored)
+    ? `No stored credential matches “${query.trim()}”.`
+    : "No provider has a stored credential. /connect adds one.";
+  return {
+    kind: "logout",
+    pin: "footer",
+    title: "Stored providers",
+    subtitle:
+      "Sign out of a provider. The credential is removed where it is stored, and a turn that used it switches to another logged-in provider.",
+    note: note || (stored.length ? "" : empty),
+    rows: stored.map((provider) =>
+      row(provider.name, provider.label, {
+        detail: [provider.name, provider.description].filter(Boolean).join(" · "),
+        status: provider.active ? "in use" : "stored",
+        tone: provider.active ? "ok" : "muted",
+        action: PROVIDER_LOGOUT,
+      }),
+    ),
+    count: stored.length,
+    search: true,
+    query,
+    searchPlaceholder: "Search stored providers…",
+    refreshLabel: "",
+    refreshAction: "",
+  };
+}
+
+export function trustDialog(state: { setting: string; saved: boolean | undefined }): DialogState {
+  // The row that describes what is in force: the panel's own override first,
+  // then the decision saved for this folder, then the default. The rows write
+  // the shared `trust.json` — the store the terminal's `/trust` and the desktop
+  // app read — so a decision made here is a decision everywhere, and the
+  // override is left unset rather than holding a second answer.
+  const current =
+    state.setting === "always"
+      ? "trusted"
+      : state.setting === "never"
+        ? "untrusted"
+        : state.saved === true
+          ? "trusted"
+          : state.saved === false
+            ? "untrusted"
+            : "default";
   return choiceDialog(
     "trust",
     "Project access",
-    "Choose whether this workspace's .oxide agents, commands, skills and plugins may load.",
+    "This folder's own .oxide agents, commands, skills and plugins load only when it is trusted. A decision is saved in trust.json, so the terminal and the desktop app read it too.",
     APPLY_TRUST,
     [
       {
         value: "default",
-        label: "Use saved decision",
+        label: "Use the saved decision",
         detail: "Follow trust.json or defaultProjectTrust",
       },
-      { value: "always", label: "Always trust", detail: "Pass --approve for this workspace" },
-      { value: "never", label: "Never trust", detail: "Pass --no-approve for this workspace" },
+      {
+        value: "trusted",
+        label: "Trust this folder",
+        detail: "Write trust.json — every front-end reads the same decision",
+      },
+      {
+        value: "untrusted",
+        label: "Never trust this folder",
+        detail: "Write trust.json — every front-end reads the same decision",
+      },
     ],
     current,
   );
@@ -689,8 +835,11 @@ export type UpdateState =
   /// could not reach GitHub leaves the installation alone, while a failed
   /// install may have left a half-downloaded release behind.
   | { k: "failed"; stage: "check" | "install"; message: string }
-  /// The check resolved a release.
-  | { k: "ready"; check: UpdateCheck }
+  /// The check resolved a release. `cli` is the same check asked about the CLI's
+  /// own train, which is the binary every turn runs through: the panel reaches
+  /// GitHub through it, and a release of it that is newer than the one installed
+  /// is worth saying here, where the reader is already looking at versions.
+  | { k: "ready"; check: UpdateCheck; cli: UpdateCheck | null }
   /// The installed CLI is older than this panel: it does not know `--json`, so
   /// there is no release to report — but `oxide update` still updates it, which
   /// is what `text` (the CLI's own refusal) is shown under. `headline` replaces
@@ -804,7 +953,7 @@ export function updateDialog(state: UpdateState): DialogState {
     };
   }
 
-  const { check } = state;
+  const { check, cli } = state;
   const vsix = updateVsix(check);
   const notes = [
     check.current ? `Current ${check.current}` : "",
@@ -812,6 +961,18 @@ export function updateDialog(state: UpdateState): DialogState {
     vsix?.name ?? "",
     check.pinned ? "pinned" : "",
   ].filter(Boolean);
+  // The CLI is the other half of this installation, and the one this panel reads
+  // GitHub through: a release of it that is newer than the binary on the machine
+  // is said here rather than left for a turn to notice. Its own advice names what
+  // to do where this panel cannot write it (a Homebrew installation).
+  const cliRow = cli && cli.updateAvailable ? cli : null;
+  if (cliRow) {
+    notes.push(
+      cliRow.installable
+        ? `CLI ${cliRow.current || "older"} → ${cliRow.latest}`
+        : cliRow.advice || `CLI ${cliRow.current || "older"} → ${cliRow.latest}`,
+    );
+  }
   // A release this panel cannot install itself — one with no build for this
   // platform, or an artifact that is not a VSIX — is reported with the check's
   // own sentence, which names what to install by hand: the row it would belong
@@ -823,6 +984,14 @@ export function updateDialog(state: UpdateState): DialogState {
       row(vsix.name, `Install ${check.latest}`, {
         detail: `Downloads and installs ${vsix.name}`,
         action: UPDATE_INSTALL,
+      }),
+    );
+  }
+  if (cliRow?.installable) {
+    rows.push(
+      row(cliRow.latest, `Update the oxide CLI to ${cliRow.latest}`, {
+        detail: `Runs oxide update — replaces the ${cliRow.current || "installed"} binary every turn runs through`,
+        action: UPDATE_CLI,
       }),
     );
   }
@@ -840,14 +1009,19 @@ export function updateDialog(state: UpdateState): DialogState {
       action: CLOSE_DIALOG,
     }),
   );
+  const title = check.updateAvailable
+    ? `Oxide ${check.latest} is available`
+    : cliRow?.installable
+      ? `The oxide CLI ${cliRow!.latest} is available`
+      : `Oxide ${check.current || check.latest} is up to date`;
   return {
     ...empty,
-    title: check.updateAvailable
-      ? `Oxide ${check.latest} is available`
-      : `Oxide ${check.current || check.latest} is up to date`,
+    title,
     subtitle: check.updateAvailable
       ? "Installing downloads this release of the extension — the .vsix published on its own release train — and hands it to VS Code, which runs it from the next window on."
-      : `Oxide ${check.current || check.latest} is the newest released version of this extension.`,
+      : cliRow?.installable
+        ? `This extension is current. The oxide CLI this panel runs every turn through is at ${cliRow!.current || "an older release"}: updating it is one row, and it is the binary the terminal and the desktop app share.`
+        : `Oxide ${check.current || check.latest} is the newest released version of this extension.`,
     note: notes.join(" · "),
     rows,
   };

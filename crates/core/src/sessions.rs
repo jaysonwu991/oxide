@@ -2,7 +2,7 @@
 
 use crate::compact;
 use crate::config::Config;
-use crate::llm::{Message, MessageContent};
+use crate::llm::{ContentPart, Message, MessageContent};
 use crate::session::{project_dir, SessionLog, SessionSummary, UsageTotals};
 use anyhow::{Context, Result};
 use serde_json::{json, Value};
@@ -223,9 +223,35 @@ fn message_view(message: &Message) -> Value {
             .as_ref()
             .map(MessageContent::display)
             .unwrap_or_default(),
+        "attachments": message_attachments(message),
         "toolCalls": calls,
         "toolCallId": message.tool_call_id,
     })
+}
+
+/// Media the message carried, so a reopened thread can still preview it instead
+/// of reducing it to the `[image]` marker in `content`. The desktop app's own
+/// view of a stored thread carries the same two fields under the same names,
+/// which is what its doc comment promises and what a front-end that reads one
+/// reads the other by.
+fn message_attachments(message: &Message) -> Vec<Value> {
+    let Some(MessageContent::Parts(parts)) = &message.content else {
+        return Vec::new();
+    };
+    parts
+        .iter()
+        .filter_map(|part| match part {
+            ContentPart::ImageUrl { image_url } => Some(json!({
+                "name": "image",
+                "dataUrl": image_url.url,
+            })),
+            ContentPart::File { file } => Some(json!({
+                "name": file.filename.clone().unwrap_or_else(|| "document".into()),
+                "dataUrl": file.file_data,
+            })),
+            ContentPart::Text { .. } => None,
+        })
+        .collect()
 }
 
 /// One message as text: its content, or a note naming the tools it called when
@@ -374,7 +400,7 @@ fn relative_age(now: u64, then: u64) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::llm::{FunctionCall, ToolCall};
+    use crate::llm::{FunctionCall, ImageUrl, ToolCall};
     use std::path::PathBuf;
 
     fn summary() -> SessionSummary {
@@ -475,6 +501,37 @@ mod tests {
         assert_eq!(view["usage"]["cacheRead"], 900);
         assert_eq!(view["usage"]["contextTokens"], 1_000);
         assert_eq!(view["usage"]["cacheHitRate"], 90.0);
+    }
+
+    #[test]
+    fn a_stored_message_reports_the_media_it_carried() {
+        // The desktop app's own view of a stored thread reports `name` and
+        // `dataUrl` under the same field names, and its doc comment promises the
+        // two agree; a front-end that replays a thread gets the media from here
+        // or reduces a screenshot to the `[image]` marker `content` holds.
+        let mut conversation = conversation();
+        conversation[0] = Message::user_parts(
+            "what is this?",
+            vec![ContentPart::ImageUrl {
+                image_url: ImageUrl {
+                    url: "data:image/png;base64,QUJD".into(),
+                    detail: None,
+                },
+            }],
+        );
+        let out = render_show(&conversation, &summary(), totals(), 0, None, true);
+        let view: Value = serde_json::from_str(out.trim()).unwrap();
+        assert!(view["messages"][0]["content"]
+            .as_str()
+            .unwrap()
+            .contains("[image]"));
+        assert_eq!(
+            view["messages"][0]["attachments"],
+            json!([{ "name": "image", "dataUrl": "data:image/png;base64,QUJD" }])
+        );
+        // A message with no media carries an empty list rather than nothing, so
+        // a reader can tell the two apart without guessing.
+        assert_eq!(view["messages"][1]["attachments"], json!([]));
     }
 
     #[test]

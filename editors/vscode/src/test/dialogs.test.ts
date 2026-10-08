@@ -11,23 +11,28 @@ import {
   APPLY_MODEL,
   APPLY_REASONING,
   APPLY_TRUST,
+  APPROVALS_CLEAR,
   CHANGES_UNDO_CONFIRM,
   CLOSE_DIALOG,
   CONTINUE_SESSION,
   deleteSessionDialog,
+  logoutDialog,
   MCP_TOGGLE,
   modelDialog,
   NEW_SESSION,
+  permissionsDialog,
   reasoningDialog,
   mcpDialog,
   OPEN_SESSION,
   providerDialog,
+  PROVIDER_LOGOUT,
   PROVIDER_SELECT,
   SESSION_DELETE,
   SESSION_DELETE_CONFIRM,
   sessionDialog,
   trustDialog,
   undoChangesDialog,
+  UPDATE_CLI,
   UPDATE_INSTALL,
   UPDATE_NOTES,
   UPDATE_RELOAD,
@@ -105,13 +110,61 @@ describe("settings dialogs", () => {
     assert.equal(active.rows[0].label, "Oxide config default");
     assert.match(active.rows[0].detail, /claude-opus-5/);
     assert.equal(active.rows[0].status, "");
-    assert.equal(active.rows[1].status, "portkey");
+    // The provider in use says so on its rows; another provider's row names it,
+    // which is the tag a pick switches to.
+    assert.equal(active.rows[1].status, "in use");
+    // The model in use is marked wherever it came from, rather than by the
+    // provider that happens to be selected.
     assert.equal(active.rows[2].status, "Current");
     assert.equal(active.count, 2);
     assert.ok(active.rows.every((entry) => entry.action === APPLY_MODEL));
+    // A listing that reaches another provider says so: picking one of its rows
+    // is a switch, not only a choice.
+    assert.match(active.subtitle, /switches to it/);
 
     const configured = modelDialog("claude-opus-5", "portkey", "", []);
     assert.equal(configured.rows[0].status, "Current");
+    assert.match(configured.subtitle, /active provider/);
+
+    // Another provider's model is named, which is the tag a pick switches to.
+    const elsewhere = modelDialog(
+      "claude-opus-5",
+      "portkey",
+      "",
+      [{ model: "glm-5", provider: "zai" }],
+    );
+    assert.equal(elsewhere.rows[1].status, "zai");
+    assert.match(elsewhere.rows[1].detail, /Available from zai/);
+    // ...and the provider in use says so on its own rows.
+    const here = modelDialog(
+      "claude-opus-5",
+      "portkey",
+      "",
+      [{ model: "claude-opus-5", provider: "portkey" }],
+    );
+    assert.equal(here.rows[1].status, "in use");
+    assert.match(here.rows[1].detail, /Available from portkey \(active\)/);
+  });
+
+  /// The same id under two providers is two rows, and each carries the pair its
+  /// action switches to: a value of the bare id would make the later row resolve
+  /// to the first provider that serves that id.
+  it("keeps two providers' rows for one model id apart", () => {
+    const dialog = modelDialog("", "anthropic", "", [
+      { provider: "anthropic", model: "claude-sonnet-5" },
+      { provider: "openrouter", model: "claude-sonnet-5" },
+    ]);
+    assert.deepEqual(
+      dialog.rows.map((row) => row.label),
+      ["Oxide config default", "claude-sonnet-5", "claude-sonnet-5"],
+    );
+    assert.deepEqual(
+      dialog.rows.slice(1).map((row) => row.value),
+      ["anthropic:claude-sonnet-5", "openrouter:claude-sonnet-5"],
+    );
+    // A model typed by hand has no provider here, so it stays the id itself.
+    const typed = modelDialog("", "anthropic", "", [], "glm-5x");
+    assert.equal(typed.rows[typed.rows.length - 1].value, "glm-5x");
   });
 
   it("searches the config fallback by its complete visible label", () => {
@@ -144,11 +197,97 @@ describe("settings dialogs", () => {
     assert.equal(reasoning.rows.find((entry) => entry.value === "medium")?.status, "Current");
     assert.ok(reasoning.rows.every((entry) => entry.action === APPLY_REASONING));
 
-    const trust = trustDialog("always");
+    // The decision is the shared store's, so the row that describes what is in
+    // force is the saved one; a setting that forces trust is marked too, since
+    // it is what the next run passes.
+    const trust = trustDialog({ setting: "default", saved: true });
     assert.equal(trust.pin, "footer");
-    assert.deepEqual(trust.rows.map((entry) => entry.value), ["default", "always", "never"]);
+    assert.deepEqual(trust.rows.map((entry) => entry.value), [
+      "default",
+      "trusted",
+      "untrusted",
+    ]);
     assert.equal(trust.rows[1].status, "Current");
     assert.ok(trust.rows.every((entry) => entry.action === APPLY_TRUST));
+    assert.equal(trustDialog({ setting: "never", saved: true }).rows[2].status, "Current");
+    assert.equal(
+      trustDialog({ setting: "default", saved: undefined }).rows[0].status,
+      "Current",
+    );
+  });
+});
+
+describe("saved approvals and stored providers", () => {
+  const stored = parseProviders(
+    JSON.stringify({
+      active: "openai",
+      providers: [
+        { name: "openai", label: "OpenAI", description: "GPT models", stored: true, active: true },
+        { name: "zai", label: "Z.ai", description: "GLM models", stored: true, active: false },
+        { name: "ollama", label: "Ollama", description: "Local models", local: true },
+      ],
+    }),
+  );
+
+  it("lists the rules an `Always allow` saved, and how to forget them", () => {
+    const dialog = permissionsDialog("/work/oxide", ["bash", "edit"]);
+    assert.equal(dialog.title, "Saved approvals");
+    // `/permissions` is typed into the composer, so the listing grows up from
+    // there rather than covering the transcript it is about.
+    assert.equal(dialog.pin, "footer");
+    assert.deepEqual(
+      dialog.rows.map((row) => row.value),
+      ["bash", "edit", "clear"],
+    );
+    // The rules are rows of their own, and the way out is the one action.
+    assert.deepEqual(
+      dialog.rows.map((row) => row.action),
+      ["", "", APPROVALS_CLEAR],
+    );
+    assert.deepEqual(
+      dialog.rows.map((row) => row.kind),
+      ["", "", "action"],
+    );
+    // The count is what is listed, not the row that clears it.
+    assert.equal(dialog.count, 2);
+    assert.match(dialog.rows[0].detail, /\/work\/oxide/);
+  });
+
+  it("says what an empty listing means rather than looking broken", () => {
+    const empty = permissionsDialog("/work/oxide", []);
+    assert.deepEqual(empty.rows, []);
+    assert.equal(empty.count, 0);
+    assert.match(empty.note, /No tool is allowed without prompting in \/work\/oxide/);
+    // With no folder there is no project to have rules in, which is a different
+    // answer from a project with none.
+    assert.match(permissionsDialog("", []).note, /Open a folder first/);
+  });
+
+  it("lists only the providers a credential is stored for", () => {
+    const dialog = logoutDialog(stored);
+    assert.equal(dialog.title, "Stored providers");
+    assert.equal(dialog.pin, "footer");
+    // Signing out of a provider the machine cannot hold a key for is not a row:
+    // a model server on this machine and a machine credential have nothing to
+    // remove.
+    assert.deepEqual(
+      dialog.rows.map((row) => row.label),
+      ["OpenAI", "Z.ai"],
+    );
+    assert.deepEqual(
+      dialog.rows.map((row) => row.action),
+      [PROVIDER_LOGOUT, PROVIDER_LOGOUT],
+    );
+    assert.equal(dialog.rows[0].status, "in use");
+    assert.equal(dialog.rows[1].status, "stored");
+    assert.equal(dialog.count, 2);
+    assert.equal(dialog.search, true);
+    // A search over an empty set says which empty set it is.
+    assert.match(logoutDialog(stored, "zzz").note, /No stored credential matches/);
+    assert.match(
+      logoutDialog(stored.filter((provider) => !provider.stored)).note,
+      /No provider has a stored credential/,
+    );
   });
 });
 
@@ -712,7 +851,7 @@ describe("update dialog", () => {
   };
 
   it("offers the extension's own release, as the VSIX it is", () => {
-    const dialog = updateDialog({ k: "ready", check });
+    const dialog = updateDialog({ k: "ready", check, cli: null });
     assert.equal(dialog.kind, "update");
     // It hangs near the composer, where the panel's own commands open, rather
     // than covering the transcript it is not about.
@@ -742,11 +881,59 @@ describe("update dialog", () => {
     assert.equal(dialog.refreshLabel, "", "rechecking is the command, not a row");
   });
 
+  /// The CLI is the other half of the installation, and the binary every turn
+  /// runs through: the same dialog says when it is behind, and the row that
+  /// updates it is `oxide update` — the command the terminal uses, and the one
+  /// the panel's own check reads GitHub with.
+  it("offers the CLI's own release beside the extension's", () => {
+    const cli: UpdateCheck = {
+      ...check,
+      component: "cli",
+      current: "0.32.0",
+      latest: "0.34.0",
+      tag: "v0.34.0",
+      installable: true,
+      path: "/home/me/.local/bin/oxide",
+      advice: "Update available: run `oxide update`.",
+      asset: { name: "oxide-x86_64.tar.gz", url: "https://example/x", digest: "" },
+    };
+    const dialog = updateDialog({ k: "ready", check, cli });
+    assert.deepEqual(
+      dialog.rows.map((row) => row.action),
+      [UPDATE_INSTALL, UPDATE_CLI, UPDATE_NOTES, CLOSE_DIALOG],
+    );
+    assert.match(dialog.note, /CLI 0\.32\.0 → 0\.34\.0/);
+    assert.match(dialog.rows[1].detail, /oxide update/);
+
+    // A CLI the panel cannot write — a Homebrew installation, a distribution
+    // package — has no row to press: the check's own sentence names what to do
+    // instead, and offering a row would be a click that does nothing.
+    const refused = updateDialog({ k: "ready", check, cli: { ...cli, installable: false } });
+    assert.deepEqual(
+      refused.rows.map((row) => row.action),
+      [UPDATE_INSTALL, UPDATE_NOTES, CLOSE_DIALOG],
+    );
+    assert.match(refused.note, /oxide update/);
+
+    // An extension that is current while the CLI is behind is still worth a
+    // dialog: the CLI is what this panel reads GitHub through.
+    const stale = updateDialog({
+      k: "ready",
+      check: { ...check, updateAvailable: false, current: "0.34.0", advice: "" },
+      cli,
+    });
+    assert.equal(stale.title, "The oxide CLI 0.34.0 is available");
+    assert.deepEqual(
+      stale.rows.map((row) => row.action),
+      [UPDATE_CLI, UPDATE_NOTES, CLOSE_DIALOG],
+    );
+  });
+
   it("reports a release with nothing this panel can install", () => {
     // A release whose artifact is not a VSIX — or which has none for this
     // platform — has no install row: the check's own sentence names what to
     // install by hand, and it is the only thing the dialog can say about it.
-    const dialog = updateDialog({ k: "ready", check: { ...check, asset: null } });
+    const dialog = updateDialog({ k: "ready", cli: null, check: { ...check, asset: null } });
     assert.equal(dialog.title, "Oxide 0.34.0 is available");
     assert.deepEqual(
       dialog.rows.map((row) => row.action),
@@ -758,6 +945,7 @@ describe("update dialog", () => {
   it("says the extension is current when there is nothing newer", () => {
     const dialog = updateDialog({
       k: "ready",
+      cli: null,
       check: { ...check, current: "0.34.0", updateAvailable: false, advice: "" },
     });
     assert.equal(dialog.title, "Oxide 0.34.0 is up to date");

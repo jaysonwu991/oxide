@@ -24,6 +24,15 @@ export function parseTrustStore(raw: string | null): TrustStore {
   return store;
 }
 
+/// The decision the panel's trust dialog writes: `oxide trust set <decision>
+/// --project <folder> --json`, the CLI call that saves it where every front-end
+/// reads it. The folder is named rather than inherited so the decision belongs to
+/// the project the panel is showing rather than to the process's own working
+/// directory.
+export function trustSetArgs(decision: "trusted" | "untrusted", project: string): string[] {
+  return ["trust", "set", decision, "--json", "--project", project];
+}
+
 /// The saved decision for `folder` or its closest ancestor with one. `realpath`
 /// canonicalizes a path, because that is what the CLI stores; a path that does
 /// not resolve keeps its spelling so an unreadable ancestor still matches.

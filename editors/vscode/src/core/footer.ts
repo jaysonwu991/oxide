@@ -46,6 +46,10 @@ export interface FooterInput {
   savedTrust: boolean | undefined;
   branch: string;
   autoCompact: boolean;
+  /// Whether the credential is a plan rather than a metered key: the price
+  /// table's number is what the plan would have billed, which the terminal
+  /// marks ` (sub)` and so does this.
+  subscription: boolean;
   usage: UsageTotals;
 }
 
@@ -123,7 +127,9 @@ export function usageLine(input: FooterInput): string {
   if (usage.cacheWrite) parts.push(`W${formatTokens(usage.cacheWrite)}`);
   if (usage.cacheHit !== null) parts.push(`CH${usage.cacheHit.toFixed(1)}%`);
   const cost = formatCost(usage.cost);
-  if (cost) parts.push(cost);
+  // A plan's number is what it would have billed rather than money owed, so it
+  // is marked the way the terminal's footer marks it.
+  if (cost) parts.push(input.subscription ? `${cost} (sub)` : cost);
   if (input.contextWindow > 0) {
     const auto = input.autoCompact ? " (auto)" : "";
     const limit = formatTokens(input.contextWindow);

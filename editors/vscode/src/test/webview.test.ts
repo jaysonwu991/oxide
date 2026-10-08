@@ -87,6 +87,8 @@ class StubElement {
   type = "";
   src = "";
   alt = "";
+  /// What the DOM defaults to: an image is draggable unless it says otherwise.
+  draggable = true;
   placeholder = "";
   spellcheck = false;
   rows = 0;
@@ -2096,6 +2098,7 @@ describe("webview dialogs", () => {
     // and posts the action a row carries — the check itself is the command's.
     const offered = updateDialog({
       k: "ready",
+      cli: null,
       check: {
         component: "extension",
         current: "0.32.0",
@@ -2142,6 +2145,7 @@ describe("webview dialogs", () => {
       k: "dialog",
       dialog: updateDialog({
         k: "ready",
+        cli: null,
         check: {
           component: "extension",
           current: "0.32.0",
@@ -2507,7 +2511,7 @@ describe("webview questions", () => {
   });
 
   it("asks for free text where no options are offered", () => {
-    const { byId, send } = loadRenderer();
+    const { active, byId, send } = loadRenderer();
     send(stateMessage());
     const transcript = byId.get("transcript")!;
     send({
@@ -2523,6 +2527,9 @@ describe("webview questions", () => {
     const card = find(transcript, "question")!;
     assert.deepEqual(fields(card), []);
     assert.equal(find(card, "qfree")!.placeholder, "Type your answer…");
+    // Nothing to pick, so the caret is where the answer goes rather than
+    // waiting to be clicked into.
+    assert.equal(active(), find(card, "qfree"));
     // Nothing to hint at, and the card's own title already asks the question.
     assert.equal(find(card, "qhint")!.hidden, true);
     assert.equal(find(card, "qtext")!.hidden, true);
@@ -3392,6 +3399,88 @@ describe("webview tool card", () => {
     assert.equal(card.classList.contains("foldable"), true, "there is a rest to open");
   });
 
+  it("keeps what the call took beside what it changed", () => {
+    const { byId, send } = loadRenderer();
+    send(stateMessage());
+    const transcript = byId.get("transcript")!;
+    // The start travels in the item rather than being stamped when the card was
+    // built, and the runtime is the host's own measurement: the card paints what
+    // it is handed, so two panes and a repaint cannot disagree about a call that
+    // ran for a while.
+    const startedAt = Date.now() - 2_400;
+    send({
+      k: "push",
+      item: {
+        id: 9,
+        kind: "tool",
+        name: "edit",
+        args: JSON.stringify({ path: "src/main.rs" }),
+        output: "",
+        running: true,
+        startedAt,
+      },
+    });
+    const card = find(transcript, "tool")!;
+    const state = card.querySelector(".tstate")!;
+    assert.match(state.innerHTML, /spinner/, "a running card shows the spinner, not a result");
+    // The live counter appears past a second, and counts from the call: the
+    // card was painted now, and the call began 2.4s ago.
+    assert.equal(state.innerHTML, '<span class="spinner"></span>2.4s', "counting from the call");
+
+    send({
+      k: "patch",
+      id: 9,
+      patch: {
+        output: "done",
+        running: false,
+        isError: false,
+        diff: "@@ -1 +1 @@\n-a\n+b",
+        startedAt: null,
+        elapsed: 240,
+      },
+    });
+    // The finished card paints the number it was handed, not a second reading of
+    // the clock: this call is measured at 240ms where it began.
+    assert.match(state.textContent, /^✔ \+1 −1 240ms$/, state.textContent);
+
+    // Unfolding the card repaints it: the runtime it took is the one the call
+    // was measured for, not the time since the card was painted.
+    transcript.fire("click", { target: card.querySelector(".thead")! });
+    assert.equal(state.textContent, "✔ +1 −1 240ms", "a repaint does not age the number");
+  });
+
+  it("carries the runtime it was handed through a rebuilt transcript", () => {
+    // A pane that attaches mid-thread is painted from one `state` message, and a
+    // thread switch rebuilds the list: the runtime is the item's, so the card
+    // that comes back says what the call took rather than starting again.
+    const { byId, send } = loadRenderer();
+    send(stateMessage());
+    send({
+      k: "state",
+      items: [
+        {
+          id: 9,
+          kind: "tool",
+          name: "edit",
+          args: "{}",
+          output: "done",
+          running: false,
+          isError: false,
+          elapsed: 1_400,
+        },
+      ],
+    });
+    const state = find(byId.get("transcript")!, "tool")!.querySelector(".tstate")!;
+    assert.equal(state.textContent, "✔ 1.4s");
+    // ...and a stored card, which took no time here, carries none.
+    send({
+      k: "state",
+      items: [{ id: 10, kind: "tool", name: "read", args: "{}", output: "x", running: false, unknown: true }],
+    });
+    const stored = find(byId.get("transcript")!, "tool")!.querySelector(".tstate")!;
+    assert.equal(stored.textContent, "•");
+  });
+
   it("draws no fold on a card that already shows everything it has", () => {
     const { byId, send } = loadRenderer();
     send(stateMessage());
@@ -3444,10 +3533,118 @@ describe("webview tool card", () => {
   });
 });
 
+describe("webview sent messages", () => {
+  it("shows a picture a message carried, not only its file name", () => {
+    const { byId, send } = loadRenderer();
+    const preview = "data:image/png;base64,QUJD";
+    send({
+      k: "push",
+      item: {
+        id: 1,
+        kind: "user",
+        text: "what is this?",
+        context: [
+          { label: "src/main.rs", preview: null },
+          { label: "screenshot.png", preview },
+        ],
+      },
+    });
+    const list = find(byId.get("transcript")!, "ctx")!;
+    // A file the message carried is still its name.
+    assert.equal(list.children[0].tagName, "span");
+    assert.equal(list.children[0].textContent, "src/main.rs");
+    // An image is the picture: the name is the chip's tooltip rather than what
+    // it is painted as.
+    const picture = list.children[1];
+    assert.equal(picture.tagName, "button");
+    assert.equal(picture.className, "chip pic");
+    assert.equal(picture.textContent, "");
+    assert.equal(picture.children[0].tagName, "img");
+    assert.equal(picture.children[0].src, preview);
+    assert.equal(picture.children[0].alt, "screenshot.png");
+    // WebKit drags a picture out of the page by default, and that drag is the
+    // one gesture whose click it withholds.
+    assert.equal(picture.children[0].draggable, false);
+    assert.equal(picture.getAttribute("aria-label"), "Open screenshot.png");
+  });
+
+  it("opens a sent picture full size from its thumbnail", () => {
+    const { byId, send } = loadRenderer();
+    const preview = "data:image/png;base64,QUJDRA==";
+    send({
+      k: "push",
+      item: { id: 1, kind: "user", text: "", context: [{ label: "shot.png", preview }] },
+    });
+    assert.equal(byId.get("image-view")!.hidden, true);
+    find(byId.get("transcript")!, "pic")!.fire("click");
+    assert.equal(byId.get("image-view")!.hidden, false);
+    assert.equal(byId.get("image-view-img")!.src, preview);
+    assert.equal(byId.get("image-view-img")!.alt, "shot.png");
+    assert.equal(byId.get("image-view-name")!.textContent, "shot.png");
+  });
+});
+
 /// The block the panel starts on, which is the page a closed thread returns
 /// you to: `#empty` is the new-chat page, and a notice is painted on it rather
 /// than instead of it.
 describe("webview welcome page", () => {
+  /// The home state the desktop app's own page paints, in the panel's own
+  /// words: the suggestions are the four that app offers, and they fill the
+  /// composer rather than sending anything.
+  it("offers the same four things to start from, filling the composer", () => {
+    const { byId, send } = loadRenderer();
+    send(stateMessage({ folder: "/work/oxide" }));
+    const row = byId.get("empty-suggestions")!;
+    assert.equal(row.hidden, false, "a folder is open, so there is somewhere to run");
+    assert.equal(byId.get("empty-lead")!.textContent, "Ask Oxide to make a change, explain code, or run something.");
+    const buttons = row.children;
+    assert.equal(buttons.length, 4);
+    const first = "Explain this codebase and its architecture.";
+    assert.equal(buttons[0].textContent, first);
+
+    // A suggestion goes into the box: taking one is not sending it.
+    const input = byId.get("input")!;
+    row.fire("click", { target: buttons[0] });
+    assert.equal(input.value, first);
+    assert.equal(byId.get("send")!.disabled, false, "the box now holds something to send");
+    assert.equal(byId.get("transcript")!.scrollTop >= 0, true);
+  });
+
+  /// With no folder there is nowhere to run, so the page says what to do rather
+  /// than inviting a message the send would refuse.
+  it("says a folder has to be open before anything can run", () => {
+    const { byId, send } = loadRenderer();
+    send(stateMessage({ folder: null }));
+    assert.equal(byId.get("empty-suggestions")!.hidden, true);
+    assert.equal(
+      byId.get("empty-lead")!.textContent,
+      "Open a folder to run Oxide: sessions and context are per project.",
+    );
+
+    // Opening one puts the invitation and the suggestions back.
+    send(stateMessage({ folder: "/work/oxide" }));
+    assert.equal(byId.get("empty-suggestions")!.hidden, false);
+    assert.equal(
+      byId.get("empty-lead")!.textContent,
+      "Ask Oxide to make a change, explain code, or run something.",
+    );
+  });
+
+  it("declares the home state's own parts", () => {
+    for (const id of ["empty-lead", "empty-suggestions"]) {
+      assert.match(shell, new RegExp(`id="${id}"`), id);
+    }
+    // Hidden in the markup and filled by the renderer, so a panel that has not
+    // heard from the host yet offers nothing it cannot run.
+    assert.match(shell, /id="empty-suggestions" class="suggestions" hidden/);
+    assert.doesNotMatch(shell, /<button[^>]*data-prompt/);
+    // The row is laid out as a flex column, and an author-level `display` beats
+    // the browser's own rule for `hidden` — so the attribute has an explicit rule
+    // of its own, or a folder that was closed again would leave the suggestions
+    // it built on screen behind the ruled-out invitation.
+    assert.match(style, /\.empty \.suggestions\[hidden\] \{[^}]*display: none;[^}]*\}/s);
+  });
+
   it("stays up while the page only carries a line about it", () => {
     const { byId, send } = loadRenderer();
     send(stateMessage());

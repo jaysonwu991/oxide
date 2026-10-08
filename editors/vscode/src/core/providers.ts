@@ -49,8 +49,43 @@ export function providersListArgs(): string[] {
 /// The arguments one login is run with. The key is never an argument — it would
 /// be visible in the process listing and kept in a shell's history — so it goes
 /// to the CLI on stdin with `--key-stdin`, which is what that flag is for.
-export function providerLoginArgs(name: string, withKey: boolean): string[] {
-  return ["login", name, "--json", ...(withKey ? ["--key-stdin"] : [])];
+///
+/// `model` names the model the selection resolves to, which is how a row of the
+/// model picker that belongs to another provider switches to it: the provider is
+/// resolved from the credential already stored for it, and the model travels with
+/// the same call.
+export function providerLoginArgs(name: string, withKey: boolean, model = ""): string[] {
+  const args = ["login", name, "--json", ...(withKey ? ["--key-stdin"] : [])];
+  if (model.trim()) args.push("--model", model.trim());
+  return args;
+}
+
+/// The arguments one logout is run with: `oxide logout <name> --json` forgets
+/// the credential the CLI stored, wherever it was stored from, and switches to
+/// another logged-in provider when the one being signed out is the one in use.
+export function providerLogoutArgs(name: string): string[] {
+  return ["logout", name, "--json"];
+}
+
+/// What `oxide logout <name> --json` answered.
+export interface LogoutOutcome {
+  provider: string;
+  label: string;
+  /// Whether a credential was actually removed.
+  removed: boolean;
+  /// The provider the CLI switched to, when the one signed out was in use.
+  switchedTo: string;
+}
+
+export function parseLogoutOutcome(raw: string): LogoutOutcome | null {
+  const root = parseObject(raw);
+  if (!root || typeof root.provider !== "string") return null;
+  return {
+    provider: root.provider,
+    label: stringOf(root.label) || root.provider,
+    removed: root.removed === true,
+    switchedTo: stringOf(root.switchedTo),
+  };
 }
 
 /// Parses the listing. A CLI older than this panel prints its human table, and a

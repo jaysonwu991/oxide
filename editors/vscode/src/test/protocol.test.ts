@@ -202,11 +202,14 @@ describe("Transcript", () => {
       arguments: '{"path":"src/a.rs","edits":[]}',
     });
     const item = push(pushed[0]);
-    assert.equal(item.kind, "tool");
+    assert.ok(item.kind === "tool", "the push is a tool card");
     assert.equal(card(transcript).running, true);
     assert.equal(card(transcript).diff, "diff-text");
     assert.equal(card(transcript).args, '{"path":"src/a.rs","edits":[]}');
     assert.equal(transcript.status, "Running edit…");
+    // The card carries when the call began, so a pane that paints the same
+    // transcript again counts from the call rather than from its own paint.
+    assert.equal(typeof item.startedAt, "number");
 
     const live = transcript.apply({
       type: "tool_execution_update",
@@ -221,13 +224,17 @@ describe("Transcript", () => {
       result: "Successfully replaced 1 block(s) in src/a.rs.",
       isError: false,
     });
-    assert.deepEqual(patched(ended[0]).patch, {
-      output: "Successfully replaced 1 block(s) in src/a.rs.",
-      running: false,
-      isError: false,
-    });
+    const patch = patched(ended[0]).patch;
+    assert.equal(patch.output, "Successfully replaced 1 block(s) in src/a.rs.");
+    assert.equal(patch.running, false);
+    assert.equal(patch.isError, false);
+    // What the call took is measured where it began and takes the start off the
+    // card with it, so nothing goes on counting a call that is over.
+    assert.equal(typeof patch.elapsed, "number");
+    assert.equal(patch.startedAt, null);
     assert.equal(card(transcript).running, false);
     assert.equal(card(transcript).output, "Successfully replaced 1 block(s) in src/a.rs.");
+    assert.equal(card(transcript).startedAt, undefined);
   });
 
   it("marks a failed tool call and keeps its output", () => {
@@ -526,13 +533,26 @@ describe("Transcript", () => {
 
   it("records the user turn and the context it carried", () => {
     const transcript = new Transcript();
-    const message = push(transcript.pushUser("fix this", [{ id: 1, label: "src/a.rs:10-12" }])[0]);
+    const message = push(transcript.pushUser("fix this", [{ label: "src/a.rs:10-12" }])[0]);
     assert.deepEqual(message, {
       id: 1,
       kind: "user",
       text: "fix this",
-      context: ["src/a.rs:10-12"],
+      context: [{ label: "src/a.rs:10-12", preview: null }],
     });
+  });
+
+  it("keeps the picture an attachment was sent with", () => {
+    const transcript = new Transcript();
+    const item = push(
+      transcript.pushUser("what is this?", [
+        { label: "screenshot.png", preview: "data:image/png;base64,AAAA" },
+      ])[0],
+    );
+    assert.ok(item.kind === "user", "the message is a user turn");
+    assert.deepEqual(item.context, [
+      { label: "screenshot.png", preview: "data:image/png;base64,AAAA" },
+    ]);
   });
 
   it("replays a stored thread's turns as finished items", () => {
@@ -839,7 +859,7 @@ describe("Transcript", () => {
 
   it("names a media-only first message from its attachment", () => {
     const transcript = new Transcript();
-    transcript.pushUser("", [{ id: 1, label: "screenshot.png" }]);
+    transcript.pushUser("", [{ label: "screenshot.png" }]);
     assert.equal(transcript.title(), "screenshot.png", "an image-only send names the file");
     transcript.pushUser("Explain this diagram", []);
     assert.equal(
@@ -887,6 +907,7 @@ describe("Transcript", () => {
         { id: 8, label: "shot.png", kind: "image", preview: "data:image/png;base64,AA", detail: "4 B · pasted" },
       ],
       title: "Fix the build",
+      folder: "/work/oxide",
       binary: "/usr/local/bin/oxide",
       showThinking: false,
       footer,
@@ -897,6 +918,7 @@ describe("Transcript", () => {
     assert.equal(state.queued, 1);
     assert.equal(state.showThinking, false);
     assert.equal(state.title, "Fix the build");
+    assert.equal(state.folder, "/work/oxide");
     assert.deepEqual(state.attachments, [
       { id: 8, label: "shot.png", kind: "image", preview: "data:image/png;base64,AA", detail: "4 B · pasted" },
     ]);

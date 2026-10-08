@@ -14,7 +14,7 @@ import {
   usageLine,
   type FooterInput,
 } from "../core/footer";
-import { emptyUsage, type UsageTotals } from "../core/protocol";
+import { emptyUsage, formatTokens, type UsageTotals } from "../core/protocol";
 
 function usage(overrides: Partial<UsageTotals> = {}): UsageTotals {
   return { ...emptyUsage(), ...overrides };
@@ -34,6 +34,7 @@ function input(overrides: Partial<FooterInput> = {}): FooterInput {
     savedTrust: undefined,
     branch: "",
     autoCompact: true,
+    subscription: false,
     usage: usage(),
     ...overrides,
   };
@@ -48,7 +49,7 @@ function chip(state: ReturnType<typeof footerState>, id: string): string {
 describe("footerState", () => {
   it("labels the model, thinking level, agent and access", () => {
     const state = footerState(input());
-    assert.equal(chip(state, "model"), "model: glm-5 · 128.0k");
+    assert.equal(chip(state, "model"), "model: glm-5 · 128k");
     assert.equal(chip(state, "reasoning"), "thinking: auto");
     assert.equal(chip(state, "agent"), "agent: default");
     assert.equal(chip(state, "access"), "access: untrusted");
@@ -102,22 +103,64 @@ describe("usageLine", () => {
         }),
       }),
     );
-    assert.equal(line, "↑1.2k · ↓340 · R12.0k · W900 · CH12.5% · $0.01 · ctx 75%/128.0k (auto)");
+    assert.equal(line, "↑1.2k · ↓340 · R12k · W900 · CH12.5% · $0.01 · ctx 75%/128k (auto)");
+  });
+
+  /// A plan rather than a metered key: the price table's number is what the plan
+  /// would have billed rather than money owed, which the terminal's footer marks
+  /// ` (sub)` — the fact comes from the CLI with the window, so the panel says it
+  /// for the credential the run actually resolves.
+  it("marks the spend of a plan the way the terminal footer does", () => {
+    const line = usageLine(
+      input({
+        contextWindow: 0,
+        subscription: true,
+        usage: usage({ input: 10, cost: 0.012 }),
+      }),
+    );
+    assert.equal(line, "↑10 · $0.01 (sub)");
+    // A metered key is not marked: the number is money owed.
+    assert.equal(
+      usageLine(input({ contextWindow: 0, usage: usage({ input: 10, cost: 0.012 }) })),
+      "↑10 · $0.01",
+    );
+    // Nothing to mark when there is nothing to spend.
+    assert.equal(usageLine(input({ contextWindow: 0, subscription: true })), "");
   });
 
   it("marks the context line as manual when auto-compaction is off", () => {
     const line = usageLine(input({ autoCompact: false, usage: usage({ contextTokens: 1_000 }) }));
-    assert.equal(line, "ctx 1%/128.0k");
+    assert.equal(line, "ctx 1%/128k");
   });
 
   it("asks for the window before anything has run", () => {
-    assert.equal(usageLine(input({})), "ctx ?/128.0k (auto)");
+    assert.equal(usageLine(input({})), "ctx ?/128k (auto)");
     assert.equal(usageLine(input({ contextWindow: 0 })), "");
+  });
+
+  it("shortens the numbers the way the terminal's own footer does", () => {
+    // The same steps the CLI's `format_tokens` walks: 999 stays itself, then
+    // `1.2k`, `123k`, `1.2M`, `66M` — so a window and a token count read the
+    // same in the panel as in the terminal.
+    assert.equal(
+      usageLine(
+        input({
+          contextWindow: 0,
+          usage: usage({ input: 999, output: 164_817, cacheRead: 66_249_728, cacheWrite: 1_234 }),
+        }),
+      ),
+      "↑999 · ↓165k · R66M · W1.2k",
+    );
+    assert.equal(formatTokens(1_200), "1.2k");
+    assert.equal(formatTokens(128_000), "128k");
+    assert.equal(formatTokens(1_000_000), "1.0M");
+    assert.equal(formatTokens(1_048_576), "1.0M");
+    assert.equal(formatTokens(66_249_728), "66M");
   });
 
   it("hides the cache hit rate until the provider reports one", () => {
     const line = usageLine(input({ usage: usage({ input: 10, cacheRead: 0 }) }));
-    assert.equal(line, "↑10 · ctx ?/128.0k (auto)");
+    assert.equal(line, "↑10 · ctx ?/128k (auto)");
   });
 });
 

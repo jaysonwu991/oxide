@@ -1731,6 +1731,17 @@ for (const [name, path] of Object.entries(sharedGlyphs)) {
 // and the mark the app signs an answer with. Each is held in `ICONS` and sized
 // by the sheet, and each of the two `sharedGlyphs` it also uses is the panel's
 // own path rather than a look-alike.
+//
+// The home state's four suggestions are the page a new window opens on, so the
+// panel's own copy of them is held beside this one: the same words in both
+// front-ends, checked rather than trusted to stay in step.
+for (const suggestion of SUGGESTIONS) {
+  check(
+    `offered the panel “${suggestion}” to start from`,
+    extensionIcons.includes(suggestion),
+    suggestion,
+  );
+}
 const windowGlyphs = {
   folder: "M20.2 19.4a1.8 1.8 0 0 0 1.8-1.8v-8",
   file: "M14 3H7a2 2 0 0 0-2 2v14",
