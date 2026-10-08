@@ -39,7 +39,9 @@
     "Review the working tree changes and summarize the risks.",
   ];  const sendButton = $("send");
   const stopButton = $("stop");
-  const busyModeButton = $("busy-message-mode");
+  const modeBar = $("mode-bar");
+  const modeQueue = $("mode-queue");
+  const modeSteer = $("mode-steer");
   const statusLabel = $("status");
   const elapsedLabel = $("elapsed");
   const usageRow = $("usage");
@@ -1772,6 +1774,37 @@
   /// since the CLI is asked for a follow-up turn rather than steering the one in
   /// flight. The desktop app swaps the same two the same way, so the button the
   /// reader is aiming at does not move as the box is typed into.
+  /// The Queue/Steer bar on the composer's own top row: the way a message typed
+  /// while a turn runs is delivered. It is up exactly while there is a turn to
+  /// deliver into in the thread on screen — a run in another thread is reached by
+  /// opening it, and the bar would be a choice about a message this composer
+  /// refuses to send. The marked way is the one Enter sends with, so the key
+  /// hints follow the mark: the marked option carries `Enter`, the other its own
+  /// key, and either can be picked with the pointer.
+  function paintModeBar(busyHere) {
+    modeBar.hidden = !busyHere;
+    const queue = busyMessageMode === "queue";
+    modeQueue.classList.toggle("active", queue);
+    modeSteer.classList.toggle("active", !queue);
+    for (const [option, label, marked] of [
+      [modeQueue, "Queue as the next turn after the current response", queue],
+      [modeSteer, "Steer the active response", !queue],
+    ]) {
+      const title = `${label} (${marked ? "Enter" : "Alt+Enter"})`;
+      option.title = title;
+      option.setAttribute("aria-label", title);
+      // Which way is marked is a state rather than a word: the accent says it to
+      // a reader looking at the bar, and this says the same thing to a screen
+      // reader rather than leaving the mark to the stylesheet alone.
+      option.setAttribute("aria-pressed", marked ? "true" : "false");
+    }
+  }
+
+  function setBusyMessageMode(mode) {
+    busyMessageMode = mode === "steer" ? "steer" : "queue";
+    updateSendState();
+  }
+
   function updateSendState() {
     const hasText = Boolean(input.value.trim()) || pendingCount() > 0;
     // The corner's own actions belong to the thread this composer is showing. A
@@ -1784,11 +1817,7 @@
     sendButton.disabled = !hasText;
     sendButton.hidden = busy && (!hasText || !here);
     stopButton.hidden = !busy || (hasText && here);
-    busyModeButton.hidden = !busy || !hasText || !here;
-    busyModeButton.textContent = busyMessageMode === "steer" ? "Steer" : "Queue";
-    busyModeButton.title = busyMessageMode === "steer"
-      ? "Steer the active response; click to queue instead"
-      : "Queue as the next turn after the current response; click to steer instead";
+    paintModeBar(busy && here);
     const action = busyMessageMode === "steer" ? "Steer the active response" : "Queue as the next turn";
     sendButton.title = busy ? `${action} (Enter)` : "Send (Enter)";
     sendButton.setAttribute("aria-label", busy ? busyMessageMode === "steer" ? "Steer" : "Queue" : "Send");
@@ -2129,7 +2158,7 @@
     input.style.overflowY = input.scrollHeight > MAX_INPUT_HEIGHT ? "auto" : "hidden";
   }
 
-  function submit() {
+  function submit(opposite = false) {
     const text = input.value;
     if (!text.trim() && pendingCount() === 0) return;
     // The corner offers Stop alone while the run is in another thread, and Enter
@@ -2139,7 +2168,12 @@
     // typed here is still here when it is opened. The host refuses the same send
     // in the same words, for anything that reaches it another way.
     if (busy && runAway()) return;
-    const mode = busy ? busyMessageMode : "queue";
+    // The bar's own mark is what Enter and the corner follow; the key beside the
+    // mark sends the other way, so a message can be queued or steered without
+    // moving the mark first.
+    const markedQueue = busyMessageMode === "queue";
+    const queue = opposite ? !markedQueue : markedQueue;
+    const mode = busy && !queue ? "steer" : "queue";
     input.value = "";
     busyMessageMode = "queue";
     closeCompletion();
@@ -2409,7 +2443,7 @@
     }
     if (event.key === "Enter" && !event.shiftKey) {
       event.preventDefault();
-      submit();
+      submit(event.altKey);
       return;
     }
     // A modified Escape is VS Code's (`Cmd+Esc` toggles the caret between the
@@ -2585,10 +2619,10 @@
     const button = target.closest("[data-prompt]");
     if (button) fillComposer(button.dataset.prompt || "");
   });
-  busyModeButton.addEventListener("click", () => {
-    busyMessageMode = busyMessageMode === "queue" ? "steer" : "queue";
-    updateSendState();
-  });
+  // The Queue/Steer bar: the mark is what Enter sends with, the other option is
+  // what its own key sends, and either can be picked with the pointer.
+  modeQueue.addEventListener("click", () => setBusyMessageMode("queue"));
+  modeSteer.addEventListener("click", () => setBusyMessageMode("steer"));
   stopButton.addEventListener("click", () => vscode.postMessage({ k: "stop" }));
   $("new-session").addEventListener("click", () => vscode.postMessage({ k: "newSession" }));
   historyButton.addEventListener("click", () => vscode.postMessage({ k: "resumeSession" }));

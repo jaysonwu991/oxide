@@ -46,7 +46,7 @@ crates/desktop/
     manager.rs      project registry + session aggregation
     turn.rs         starts an agent turn against a project
     at.rs           the `@path` walk the composer completes from
-    git.rs          the branch the composer's top row reads, out of .git/HEAD
+    git.rs          the branch the composer's own bar reads, out of .git/HEAD
     commands.rs     the `oxide_invoke` dispatcher, and the update path
     approval.rs     interactive approve/deny broker
     ask.rs          a skill's question broker
@@ -276,61 +276,79 @@ The regions, top to bottom:
   stays the text it looks like instead of offering a fold that does nothing, and
   `write`/`edit` results get a colored diff.
 - **Composer** — a floating rounded box holding the message and what goes with it:
-  the attachment strip, the message box itself and the icon row of chips. Its own
-  top row names where the turn will run, the way Codex's own composer does: the
-  folder's chip, the branch that folder is on, and the context reading at the end
-  of the row. There is no readout for the machine the turn runs on: a folder on
+  the attachment strip, the message box itself and the icon row of chips, with a
+  bar of its own sitting on the box's top edge — the way Codex's own composer
+  carries its top row, and the way the VS Code panel carries its own. That bar is
+  narrower than the box and centered on it, 24px narrower (the 12px the box pads
+  each side), so its edges stand where the box's own text column does and the box
+  reads as the wider of the two in a narrow window as much as a wide one. It
+  names where the turn will run: the
+  folder's chip, the branch that folder is on, and the context reading held against
+  its end of the row — and nothing else, since the window's settings stay in the
+  sidebar's foot and the box's own row. There is no readout for
+  the machine the turn runs on: a folder on
   this computer is the one environment the app has, so a fact saying so would be a
   constant rather than a fact about the folder. The branch is read out of the
   repository's own `.git/HEAD` (`oxide_desktop::git::view`) rather than by
   running git, so a worktree or a submodule is answered through the `gitdir:`
   file that points at its real `HEAD`, a detached `HEAD` is named by the commit
   it is on, and a folder that is in no repository has no branch to name at all,
-  which the row draws by leaving that fact out rather than by saying nothing. It
+  which the bar draws by leaving that fact out rather than by saying nothing. It
   is a fact about the folder rather than a control, so it is a plain readout with
   its words in a tooltip (`On branch main` and the repository's own path), it is
   read again when the folder changes, when a turn ends — a run may switch branch
   — and when the reader comes back to the window, since a branch switched in a
   terminal is theirs to see here. The branch is the one fact that gives way when
-  the row runs out of room: it is the name that can be arbitrarily long, so it is
+  the bar runs out of room: it is the name that can be arbitrarily long, so it is
   cut with an ellipsis while the folder and the context reading keep the room they
-  need, and the row stays one line whatever the
-  folder's own names are. The right end of that row is the context reading: a ring
+  need, and the bar stays one line whatever the
+  folder's own names are. The end of that bar is the context reading: a ring
   filled to the percent of the window the thread's last request used, with that
   percent spelled out beside the arc — it is one reading rather than two, which is
   why the totals line does not spell out `ctx` as well — and the tokens the
   request took and the window itself in its tooltip and accessible name. The arc
   escalates through the terminal's own thresholds — its dim tone on its own, the
   theme's amber past 70% of the window and its error colour past 90% — and an
-  empty ring means a thread that has spent nothing yet, since the numbers behind
-  it are this conversation's rather than the window's ([Usage](#usage)). The
-  composer's own row is icon-first, the
+    empty ring means a thread that has spent nothing yet, since the numbers behind
+  it are this conversation's rather than the window's ([Usage](#usage)). What the
+  chat has spent ends the bar beside that reading, laid out the way the terminal
+  footer lays its own line out — the two are one group, and the totals are what
+  take the row's own auto margin — so a reader comparing the context a thread is
+  using against what it has cost finds both in the same place. Beyond that the bar
+  is the folder's chip and the folder's facts: it carries no control of its own, so
+  the window's settings stay where they were — the theme and the release check in
+  the sidebar's foot, the rest in the box's own row — rather than being gathered
+  onto the bar as well. The
+  box's own row is icon-first, the
   way the VS Code panel's is: the attach paperclip, the model, the thinking
   level and the trust shield lead, then — after a rule of its own — the app's own
   dialogs as icon buttons in the extension's own style: a plug that opens
   **Connect**, a padlock for the saved tool approvals, and a
   circled `?` for the shortcut help, each with the words in its tooltip and its
-  `aria-label`. The project chip is the one control on that row that keeps
+  `aria-label`. The project chip is the one control on that bar that keeps
   its words on the face of it — **Choose a project** while none is open, else the
   folder's name, accented in the first case the way the model picker marks the row
   in use — because with nothing open it is how a first thread starts rather than a
   value to look up (see
-  [Multiple projects](#multiple-projects-cross-repo)); with nothing open it is
-  also the only control on the row, and it wears a marker of its own (`unset`)
+    [Multiple projects](#multiple-projects-cross-repo)); with nothing open it is
+  also all there is on the bar, since the branch and the reading go away with the
+  folder, and it wears a marker of its own (`unset`)
   rather than the sheet's `.empty`, whose `margin: auto` centers the placeholders
   it belongs to.
-  The box's own bottom row ends with the two readouts the window has to give: the
+    The box's own bottom row ends with the one readout the box has to give: the
   status — an icon rather than a sentence, a dot while there is nothing to report,
   the spinner while a turn runs and the warning triangle a failure wears, in the
   theme's error colour, with the words beside it only when there are words to read
   (`Ready` is the icon's own tooltip, which is what the terminal's footer says by
-  saying nothing) — and what the chat has spent, laid out the way the terminal
-  footer lays its own line out ([Usage](#usage)). A long failure is cut with an
-  ellipsis rather than allowed to push the totals and the controls off the row.
+  saying nothing). What the chat has spent is not this row's any more: the row
+  belongs to the turn and the controls that send, while the totals read out the
+  chat and stand beside the context reading they are measured against, on the bar
+  above the box ([Usage](#usage)). A long failure is cut with an
+  ellipsis rather than allowed to push the controls off the row.
   The controls the extension's own row carries come first and in
   its order, and the glyphs the two front-ends share — the paperclip, the `+`,
   the send arrow, the stop square, the refresh arrow, the close `✕`, the MCP
-  power switch, the model's cube, the thinking sparkles and the trust shield —
+    power switch, the model's cube, the thinking sparkles and the trust shield —
   are the same paths in both, which `check-app.mjs` holds beside the
   extension's own sources so a control drawn one way here and another there
   fails the check. The box itself says whether it is holding something: its
@@ -339,11 +357,12 @@ The regions, top to bottom:
   looks the same whether the caret is in it or not, and the engine's own focus
   ring is suppressed with `outline: none`. One
   action sits on the right, which swaps rather than sitting beside a second
-  button: **Stop** while a turn runs and there is nothing to say, **Send**
-  beside **Queue**/**Steer** the moment there is — and only **Stop** while that
+  button: **Stop** while a turn runs and there is nothing to say and **Send** the
+  moment there is — and only **Stop** while that
   turn is running in a thread this composer is not showing, since a message
   typed here would be steered into a run whose reply belongs to the
-  conversation being read. Every
+  conversation being read. The way a message is delivered is the bar's own, at
+  the top of the composer. Every
   control is wired to a plain `click` — each button, native radio/checkbox,
   sidebar/list row, change card, and attachment thumbnail — and no control is
   revealed by hovering it: a `:hover` rule in this window is a highlight (a
@@ -490,16 +509,19 @@ node crates/desktop/check-app.mjs
 node crates/desktop/check-shell.mjs
 ```
 
-`check-app.mjs` loads `ui/app.js` against a stubbed DOM and a stubbed bridge. It covers the `/mcp` listing (including the state colors, a failed
+`check-app.mjs` loads `ui/app.js` against a stubbed DOM and a stubbed bridge. It covers the sidebar's arrangement (the drag of a row, the line it lands on, the order written down and the one put back when the write fails), the `/mcp` listing (including the state colors, a failed
 probe and a toggle), the `/session` dialog (this project's threads only, the
 row that resumes one, the empty case, and a store that could not be read), the
 project it opens on (no project at all, the picker's rows, and the folder a
 picked row opens), the **Create project** dialog, and every client command in the
 catalog — a command the app does not perform has to be answered here rather
 than sent to the model as a prompt. It also reads `ui/index.html` to check what
-no stub can: that both listings are attached to the composer (inside
-`.composer-wrap`, above `.composer`) instead of floating over the window, and
-that each header button is an icon with a title.
+no stub can: that the listings the composer opens are attached to the composer
+(inside `.composer-wrap`, above the bar on the box's top edge) instead of floating
+over the window, that each header button is an icon with a title, and that the
+composer's own top row is a bar above the box rather than its first line — one
+narrower than the box, carrying the folder's chip and the folder's facts and
+nothing to press.
 
 `check-shell.mjs` joins the two halves the stubs separate, reading the sources
 rather than a hand-kept list: every `invoke("…")` in `app.js` has an arm in
@@ -594,6 +616,23 @@ Each row shows its session count. Clicking a project selects it and reveals its
 sessions nested underneath; clicking a session opens that thread (switching to
 its project first when the selection differs). The transcript is loaded with
 `session_messages` (`SessionLog::open_ref`).
+
+The rows are the reader's to arrange: a project's row is what the order is
+dragged by, and the whole row moves — the project and the threads under it — to
+wherever the pointer lets go. The row under the pointer wears the line the
+project would land on (above its own middle, or below it), the row in the air is
+dimmed, and the sidebar is painted from the new order at once rather than
+waiting on the disk. What makes that order the sidebar's own is
+`reorder_projects`: the ids exactly as the rows listed them — a **discovered**
+folder is not in the registry and still has a place to keep — written into
+`order` in `projects.json` and answered with the listing as it now stands, which
+is what the window repaints from. A write that fails puts the order it had back
+and says why, rather than leaving the reader with an arrangement that was never
+saved. A folder the order does not name is one the reader has not placed — a
+folder added or discovered since — and is listed after the ones they have, so an
+arrangement is what the sidebar keeps; until anything is dragged the listing is
+exactly what it always was (added folders by last opened, then discovered ones by
+most recent activity), and `order` is absent from the file entirely.
 
 The window does not select a project for the reader: nothing is open at launch,
 and the transcript shows the app's **home state** — the composer ready to type
@@ -712,13 +751,13 @@ event channel serializes events with
   (`oxide_core::agent::Cancel`): the loop finishes the current step — recording
   a result for any planned tool calls so the session stays a valid
   call/result sequence — and ends cleanly, with a 5-second force-abort fallback
-  if it is stuck. While the turn is active, typing new context replaces Stop
-  with Send and an explicit **Queue** / **Steer** choice. Queue is the safe
+    if it is stuck. While the turn is active, the **Queue** / **Steer** bar carries
+  the choice. Queue is the safe
   default: it waits until the current response finishes, then becomes the next
   turn. Steer injects a course correction before the agent's next model step. `steer_run` pushes into the
   selected follow-up or interleaved steering queue, then the composer returns to
-  Queue so a later message cannot redirect work accidentally. `Alt+Enter`
-  remains a direct Queue shortcut.
+  Queue so a later message cannot redirect work accidentally
+  ([Queue and Steer](#queue-and-steer)).
 - **Reading another thread while a turn runs** — a turn belongs to the thread
   it started in and to no other, and that is kept apart from the thread on
   screen: the run's id and title live in `state.runSession` / `state.runTitle`
@@ -855,14 +894,15 @@ run's `prompt` count travels with its thread and the window is the one in force 
 screen, so a turn in another folder counts its own tokens while the reader is
 looking at a project with a window of its own, and its gauge is its own again when
 the strip brings its thread back. The same percentage is drawn at the end of the
-composer's own top row: an arc filled to it with the percent
+composer's own top row, the bar above the box: an arc filled to it with the percent
 spelled out beside it — the fraction of the window that took is this one reading
-rather than a second word among the totals the line below draws, which is why the
-totals line spells out no `ctx` — in the colour of the level (the theme's dim,
-amber past 70%, error past 90%), with the tokens and the window in its tooltip.
+rather than a second word among the totals beside it, which is why the totals line
+spells out no `ctx` — in the colour of the level (the theme's dim, amber past 70%,
+error past 90%), with the tokens and the window in its tooltip, and the totals
+themselves laid out to its left ([Usage](#usage)).
 
-The totals line is the terminal footer's own line, segment for segment and in its
-order: the tokens the chat has spent, the cache it read and wrote, the hit rate
+The totals line, in the bar above the box, is the terminal footer's own line,
+segment for segment and in its order: the tokens the chat has spent, the cache it read and wrote, the hit rate
 the provider reported, and the spend — marked ` (sub)` for a provider whose
 credential is a plan rather than a metered key, where the price table's number is
 what the plan would have billed. A segment nobody reported is left out rather than
@@ -896,13 +936,36 @@ launch. The **Theme** dialog lists each theme with a swatch strip of its key
 colors, the theme name, and a ✓ on the active one; selecting a row applies it
 immediately and persists it.
 
+## Queue and Steer
+
+While a turn runs in the thread on screen, the top row of the composer's bar
+carries the two ways a message typed now can be delivered, each with the key
+that sends it:
+
+- **Queue** waits for the current response and becomes the next turn after it.
+  It is the safe default, and it is what `Enter` and **Send** do while the mark
+  is on it.
+- **Steer** injects the message before the agent's next model step, so a
+  correction reaches the model rather than waiting its turn.
+
+The marked option is the one `Enter` and **Send** follow; the other is what its
+own key does, and the key hints travel with the mark, so the marked option always
+reads `Enter` and the other `Alt+Enter`. Clicking either moves the mark, and the
+composer goes back to Queue once a message has gone — a later message cannot
+redirect work by accident.
+
+The bar is up exactly while there is a turn to deliver into in the thread on
+screen. A turn running in another thread is reached by opening it (the header
+names it), and a message typed here is refused rather than steered into a run
+whose reply would land in a conversation nobody is reading.
+
 ## Keyboard shortcuts
 
 | Key | Action |
 | --- | --- |
-| `Enter` | Send with the selected Queue or Steer behavior |
+| `Enter` | Send — with the marked Queue/Steer way while a turn runs |
 | `Shift+Enter` | Newline |
-| `Alt+Enter` | Queue a follow-up while busy |
+| `Alt+Enter` | Send the other way while a turn runs (the unmarked option) |
 | `Shift+Tab` / `Ctrl+R` | Cycle reasoning (the thinking chip opens the level picker) |
 | `Ctrl+K` | Model picker |
 | `Ctrl+/` | Shortcut help |

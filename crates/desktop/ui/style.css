@@ -685,31 +685,93 @@ body.resizing { cursor: col-resize; user-select: none; }
   margin: 0 auto;
   background: var(--panel);
   border: 1px solid var(--border);
-  border-radius: 16px;
+  border-radius: 0 0 16px 16px;
   padding: 10px 12px;
   transition: border-color 0.15s, box-shadow 0.15s;
 }
 /* The box that holds what is about to be sent says so: a border lift while it
-   has text or an attachment in it. Nothing is painted for focus — the caret
+   has text or an attachment in it, and the bar on its top edge lifts with it so
+   the two surfaces stay one shape. Nothing is painted for focus — the caret
    moving into a box leaves its border alone, so every box looks the same
    whether the caret is in it or not. */
 .composer.filled { border-color: color-mix(in srgb, var(--dim) 40%, transparent); }
-/* The composer's own top row: the folder the message goes to, the branch that
-   folder is on, and the context reading that spend is measured against at the end
-   of the row. Everything here is about where the turn runs rather than about the
-   message, so it is read before anything is typed below it — the window's own
-   status and what the thread has spent are on the row below, beside the
-   controls. */
-.composer-facts {
+.composer-wrap:has(.composer.filled) .composer-strip {
+  border-color: color-mix(in srgb, var(--dim) 40%, transparent);
+}
+/* The composer's own top row is a bar of its own sitting on the box's top edge,
+   the way Codex's composer carries its own: a surface of its own, rounded at the
+   top, with the box's own top border as the line between them. It is narrower than
+   the box and centered on it — 24px narrower, the 12px the box pads each side —
+   so its edges stand where the box's own text column does and the box reads as the
+   wider of the two, in a narrow window as much as a wide one. It is a column, so
+   the Queue/Steer bar can sit on top of the folder's own facts while a turn runs;
+   the facts themselves are about where the turn runs rather than about the message,
+   so they are read before anything is typed below them — the window's own status
+   is the row inside the box, beside the controls. */
+.composer-strip {
+  width: calc(100% - 24px);
+  max-width: 756px;
+  margin: 0 auto;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  padding: 3px 6px 3px 10px;
+  background: var(--panel-2);
+  border: 1px solid var(--border);
+  border-bottom: none;
+  border-radius: 16px 16px 0 0;
+  color: var(--faint);
+  font-size: 11.5px;
+}
+/* The row of facts, one line whatever the folder's own names are. */
+.strip-facts {
   display: flex;
   align-items: center;
   gap: 12px;
   min-width: 0;
-  padding: 2px 2px 8px;
+}
+/* The Queue/Steer bar: the way a message typed while a turn runs is delivered,
+   at the top of the bar above the box and ruled off from the folder's facts
+   below it. It is the choice the composer's own corner used to keep in a chip,
+   and it is on screen exactly while there is a turn to deliver into. */
+.strip-mode {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+  padding: 0 0 3px;
+  margin-bottom: 3px;
+  border-bottom: 1px solid var(--border);
+}
+.mode-option {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 1px 8px;
+  border: 1px solid transparent;
+  border-radius: 999px;
   color: var(--faint);
   font-size: 11.5px;
 }
-.composer-facts .context-ring { margin-left: auto; }
+.mode-option:hover { color: var(--text); background: var(--panel-3); }
+/* The marked way is the one Enter sends with — the accent the pickers mark the
+   row in use with, not a colour of its own. */
+.mode-option.active { color: var(--accent); border-color: var(--accent); }
+/* The key each option carries is the key that sends it, so the hints travel with
+   the mark: the marked way is Enter's, the other way is its own. */
+.mode-key {
+  color: var(--faint);
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+.mode-option.active .mode-key { color: var(--accent); }
+.mode-key-enter { display: none; }
+.mode-option.active .mode-key-enter { display: inline; }
+.mode-option.active .mode-key-alt { display: none; }
+/* The row's end belongs to the two readings that belong together: what the chat
+   has spent and the context it was spent against. The totals are the first of
+   them and so take the row's own auto margin, which holds the reading at the end
+   after them whether or not the thread has anything to count yet. */
+.composer-strip #usage { margin-left: auto; }
 /* A fact about the folder: its glyph and its value in the row's own dim text,
    rather than a chip the reader would try to press. It is a value rather than a
    sentence, so it never wraps onto a second line — the row is one line of facts
@@ -899,9 +961,11 @@ body.resizing { cursor: col-resize; user-select: none; }
    a control that moves under the pointer — so a squeezed row gives up the words
    of its status first, which is what the weight above decides. */
 .composer-right > button { flex: none; }
-/* The window's own status and what the chat has spent: the two readouts the row
-   ends with, before the controls that send. Both are chrome about the turn rather
-   than a word from the conversation, so both wear the window's dim tone. */
+/* The window's own status: the readout the box's row ends with, before the
+   controls that send. It is chrome about the turn rather than a word from the
+   conversation, so it wears the window's dim tone — as do the totals, which read
+   out the chat rather than the turn and stand beside the context reading on the
+   bar above the box. */
 .status {
   display: inline-flex;
   align-items: center;
@@ -934,11 +998,9 @@ body.resizing { cursor: col-resize; user-select: none; }
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-#usage { color: var(--faint); font-size: 11.5px; white-space: nowrap; flex: none; }
-.busy-message-mode {
-  min-width: 54px;
-  text-align: center;
-}
+/* What the chat has spent: the terminal footer's own line, in the window's dim
+tone, with tabular figures so a count that grows does not shift the row it ends. */
+#usage { color: var(--faint); font-size: 11.5px; font-variant-numeric: tabular-nums; white-space: nowrap; flex: none; }
 #stop {
   width: 30px;
   height: 30px;
@@ -1365,6 +1427,10 @@ body.resizing { cursor: col-resize; user-select: none; }
    foot of this sheet): the rows end beside it instead of under it. */
 .projects-tree { flex: 1; overflow-y: auto; padding: 4px 14px 4px 8px; display: flex; flex-direction: column; gap: 2px; }
 .project-group { display: flex; flex-direction: column; gap: 1px; }
+/* A project's row is what the arrangement is dragged by: the row takes the grab
+   cursor, the row being moved in the air says so, and the row under the pointer
+   wears the line the project would land on. The line is drawn inside the row's
+   own box (`inset`) so nothing in the list moves as the mark does. */
 .project-item {
   position: relative;
   display: flex;
@@ -1372,10 +1438,13 @@ body.resizing { cursor: col-resize; user-select: none; }
   gap: 6px;
   padding: 8px 54px 8px 10px;
   border-radius: 6px;
-  cursor: pointer;
+  cursor: grab;
   user-select: none;
   transition: background 0.15s;
 }
+.project-item.dragging { opacity: 0.5; }
+.project-item.drop-before { box-shadow: inset 0 2px 0 var(--accent); }
+.project-item.drop-after { box-shadow: inset 0 -2px 0 var(--accent); }
 .project-item:hover { background: var(--panel-2); }
 .project-item.active { background: var(--panel-3); box-shadow: inset 2px 0 0 var(--accent); }
 .project-item .icon { font-size: 12px; color: var(--dim); width: 16px; display: flex; align-items: center; justify-content: center; }

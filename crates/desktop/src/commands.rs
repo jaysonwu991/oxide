@@ -260,6 +260,19 @@ pub async fn remove_project(id: String, state: &DesktopState) -> CmdResult<Vec<P
     manager.overview().map_err(err)
 }
 
+/// Records the order the reader dragged the sidebar into, and answers with the
+/// listing as it now stands — the same shape `remove_project` answers with, so
+/// the sidebar is painted from what the app actually holds rather than from the
+/// order the page guessed.
+pub async fn reorder_projects(
+    ids: Vec<String>,
+    state: &DesktopState,
+) -> CmdResult<Vec<ProjectView>> {
+    let mut manager = state.manager.lock().await;
+    manager.reorder(&ids).map_err(err)?;
+    manager.overview().map_err(err)
+}
+
 /// Provider/model resolved from the same `config.json` the CLI uses, plus the
 /// project's trust state so the UI can prompt before loading project resources.
 pub async fn project_info(project: String, state: &DesktopState) -> CmdResult<Value> {
@@ -1228,6 +1241,7 @@ pub async fn dispatch(
             create_project(arg(&args, "name")?, optional_arg(&args, "folders")?, &state).await,
         ),
         "remove_project" => command_value(remove_project(arg(&args, "id")?, &state).await),
+        "reorder_projects" => command_value(reorder_projects(arg(&args, "ids")?, &state).await),
         "list_sessions" => command_value(list_sessions(arg(&args, "project")?, &state).await),
         "all_sessions" => command_value(all_sessions(&state).await),
         "project_info" => command_value(project_info(arg(&args, "project")?, &state).await),
