@@ -258,12 +258,21 @@ export interface AttachmentChip extends ContextChip {
   detail: string;
 }
 
+/// A follow-up waiting above the composer while the current response finishes.
+export interface QueuedMessage {
+  index: number;
+  text: string;
+  attachmentCount: number;
+}
+
 /// Everything the webview needs to repaint from scratch.
 export interface TranscriptState {
   items: Item[];
   status: string;
   busy: boolean;
   queued: number;
+  queue: QueuedMessage[];
+  followUpBehavior: "queue" | "steer";
   usage: UsageTotals;
   context: ContextChip[];
   attachments: AttachmentChip[];
@@ -336,6 +345,8 @@ export type ViewMessage =
       status: string;
       busy: boolean;
       queued: number;
+      queue: QueuedMessage[];
+      followUpBehavior: "queue" | "steer";
       footer: FooterState;
       /// The thread's summarized title. It changes the moment the first message
       /// is sent, before a `state` message repaints the view, so the header's
@@ -351,6 +362,7 @@ export type ViewMessage =
   /// The composer's pending context and attachments, which travel together:
   /// one removal message addresses either list by chip id.
   | { k: "context"; context: ContextChip[]; attachments: AttachmentChip[] }
+  | { k: "composer"; text: string }
   /// The dialog the panel paints over the transcript — the MCP server list, the
   /// session history — or `null` to close it. `core/dialogs.ts` composes it, so
   /// the view only paints the rows and posts back the action one carries; the
@@ -525,6 +537,8 @@ export class Transcript {
 
   state(extra: {
     queued: number;
+    queue?: QueuedMessage[];
+    followUpBehavior?: "queue" | "steer";
     context: ContextChip[];
     attachments: AttachmentChip[];
     title: string;
@@ -541,6 +555,8 @@ export class Transcript {
       usage: this.usage,
       sessionId: this.sessionId,
       ...extra,
+      queue: extra.queue ?? [],
+      followUpBehavior: extra.followUpBehavior ?? "queue",
     };
   }
 
@@ -637,11 +653,26 @@ export class Transcript {
 
   /// The current status/footer line. The controller sends this after applying
   /// a batch so the view never sees a stale busy flag or queue count.
-  statusMessage(queued: number, footer: FooterState): ViewMessage {
+  statusMessage(
+    queueOrCount: QueuedMessage[] | number,
+    behaviorOrFooter: "queue" | "steer" | FooterState,
+    maybeFooter?: FooterState,
+  ): ViewMessage {
     // While a turn runs the status names the activity; otherwise the agent is
     // idle and the outcome is in the transcript.
     const status = this.busy ? (this.status === "Idle" ? "Thinking…" : this.status) : "Idle";
-    return { k: "status", status, busy: this.busy, queued, footer };
+    const queue = Array.isArray(queueOrCount) ? queueOrCount : [];
+    const followUpBehavior = typeof behaviorOrFooter === "string" ? behaviorOrFooter : "queue";
+    const footer = typeof behaviorOrFooter === "string" ? (maybeFooter as FooterState) : behaviorOrFooter;
+    return {
+      k: "status",
+      status,
+      busy: this.busy,
+      queued: Array.isArray(queueOrCount) ? queue.length : queueOrCount,
+      queue,
+      followUpBehavior,
+      footer,
+    };
   }
 
   /// Applies one wire event, returning the view updates it implies.

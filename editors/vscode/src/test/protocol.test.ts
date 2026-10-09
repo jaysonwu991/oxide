@@ -489,6 +489,8 @@ describe("Transcript", () => {
       status: "Idle",
       busy: false,
       queued: 0,
+      queue: [],
+      followUpBehavior: "queue",
       footer,
     });
   });
@@ -501,6 +503,8 @@ describe("Transcript", () => {
       status: "Thinking…",
       busy: true,
       queued: 2,
+      queue: [],
+      followUpBehavior: "queue",
       footer,
     });
     transcript.apply({ type: "tool_call", toolName: "bash", arguments: "{}" });

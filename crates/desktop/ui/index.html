@@ -168,26 +168,6 @@
              the way in, so the chip is where one is picked) while the branch is
              a readout of the folder. -->
         <div class="composer-strip">
-          <!-- The Queue/Steer bar: how a message typed while a turn runs is
-               delivered. The marked way is the one Enter sends with and the other
-               way is the one its own key sends, so a message can be queued or
-               steered without moving the mark first — and the key each option
-               carries is the one that does it, which is why the hints travel with
-               the mark. -->
-          <div id="mode-bar" class="strip-mode" hidden>
-            <button
-              id="mode-queue"
-              class="mode-option"
-              title="Queue as the next turn after the current response (Enter)"
-              aria-label="Queue as the next turn after the current response"
-            >Queue<span class="mode-key mode-key-enter" aria-hidden="true">⏎</span><span class="mode-key mode-key-alt" aria-hidden="true">⌥⏎</span></button>
-            <button
-              id="mode-steer"
-              class="mode-option"
-              title="Steer the active response (Enter)"
-              aria-label="Steer the active response"
-            >Steer<span class="mode-key mode-key-enter" aria-hidden="true">⏎</span><span class="mode-key mode-key-alt" aria-hidden="true">⌥⏎</span></button>
-          </div>
           <!-- The folder's own facts, below it. -->
           <div class="strip-facts">
             <button
@@ -217,6 +197,7 @@
         </div>
 
         <div id="composer" class="composer">
+          <div id="queue-list" class="queued-messages" aria-label="Queued messages" hidden></div>
           <div id="attachments" class="attachments" hidden></div>
           <textarea id="prompt" placeholder="Ask Oxide…"></textarea>
           <div class="composer-bar">
@@ -465,9 +446,9 @@
       <div class="dialog">
         <h2>Keyboard shortcuts</h2>
         <table class="shortcuts">
-          <tr><td>Enter</td><td>Send with the selected Queue or Steer behavior</td></tr>
+          <tr><td>Enter</td><td>Send with the default follow-up behavior</td></tr>
           <tr><td>Shift+Enter</td><td>Newline</td></tr>
-          <tr><td>Alt+Enter</td><td>Queue a follow-up while busy</td></tr>
+          <tr><td>⌘⇧Enter / Ctrl+Shift+Enter</td><td>Use the opposite follow-up behavior once</td></tr>
           <tr><td>⌘V / Ctrl+V</td><td>Attach a clipboard image</td></tr>
           <tr><td>⌘1…⌘9 / Ctrl+1…9</td><td>Open the thread at that place in the sidebar</td></tr>
           <tr><td>Shift+Tab / Ctrl+R</td><td>Cycle reasoning</td></tr>

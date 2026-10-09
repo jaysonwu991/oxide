@@ -108,7 +108,7 @@ button.icon.danger:hover:not(:disabled) {
    and a dialog's Recheck is hidden until the host offers a label. Without this
    both of the corner's actions would sit side by side. A change card's folded
    rows and Undo are hidden the same way, from the same kind of `display`. */
-#mode-bar[hidden],
+.queued-messages[hidden],
 button.icon[hidden],
 .change-row[hidden],
 .changes-more[hidden],
@@ -1576,56 +1576,46 @@ footer {
   min-width: 0;
 }
 
-/* The Queue/Steer bar: the way a message typed while a turn runs is delivered,
-   on the top row of the bar above the box and ruled off from the folder's facts
-   below it. It is the choice the composer's own corner used to keep in a chip,
-   and it is up exactly while there is a turn to deliver into. */
-.strip-mode {
+/* Follow-ups waiting for the active response, matching Codex Desktop's rail. */
+.queued-messages {
   display: flex;
-  align-items: center;
-  gap: 4px;
-  min-width: 0;
-  padding-bottom: 3px;
-  margin-bottom: 3px;
+  flex-direction: column;
+  gap: 2px;
+  margin: 0 0 7px;
+  padding-bottom: 6px;
   border-bottom: 1px solid var(--vscode-panel-border, rgba(128, 128, 128, 0.25));
 }
 
-.mode-option {
-  display: inline-flex;
+.queued-message {
+  display: flex;
   align-items: center;
-  gap: 5px;
-  padding: 1px 8px;
-  border: 1px solid transparent;
-  border-radius: 999px;
+  gap: 8px;
+  min-width: 0;
+  padding: 3px 2px;
   color: var(--vscode-descriptionForeground);
+}
+
+.queued-message[draggable="true"] { cursor: grab; }
+.queued-message-text {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.queued-message-actions { display: inline-flex; gap: 3px; }
+.queued-message-actions button,
+.queue-behavior {
+  border: 0;
   background: transparent;
-  font-family: inherit;
-  font-size: 0.85em;
-}
-
-.mode-option:hover {
-  color: var(--vscode-foreground);
-  border-color: var(--vscode-panel-border, rgba(128, 128, 128, 0.35));
-}
-
-/* The marked way is the one Enter sends with — the accent the model picker marks
-   the row in use with, not a colour of its own. */
-.mode-option.active {
-  color: var(--vscode-focusBorder);
-  border-color: var(--vscode-focusBorder);
-}
-
-/* The key each option carries is the key that sends it, so the hints travel with
-   the mark: the marked way is Enter's, the other way is its own. */
-.mode-key {
   color: var(--vscode-descriptionForeground);
-  font-family: var(--vscode-editor-font-family, monospace);
+  font: inherit;
+  font-size: 0.82em;
+  cursor: pointer;
 }
-
-.mode-option.active .mode-key { color: inherit; }
-.mode-key-enter { display: none; }
-.mode-option.active .mode-key-enter { display: inline; }
-.mode-option.active .mode-key-alt { display: none; }
+.queued-message-actions button:hover,
+.queue-behavior:hover { color: var(--vscode-foreground); }
+.queue-behavior { align-self: flex-end; }
 
 /* The row's end belongs to the two readings that belong together: what the thread
    has spent of its window and the gauge that draws it. The usage is the first of

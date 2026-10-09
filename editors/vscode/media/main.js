@@ -37,11 +37,10 @@
     "Find and fix the highest-priority bug in this repository.",
     "Add tests for the most important untested code path.",
     "Review the working tree changes and summarize the risks.",
-  ];  const sendButton = $("send");
+  ];
+  const sendButton = $("send");
   const stopButton = $("stop");
-  const modeBar = $("mode-bar");
-  const modeQueue = $("mode-queue");
-  const modeSteer = $("mode-steer");
+  const queueBox = $("queue");
   const statusLabel = $("status");
   const elapsedLabel = $("elapsed");
   const usageRow = $("usage");
@@ -90,8 +89,9 @@
   const thumbnails = new Map();
   const thumbnailNodes = new Map();
   let busy = false;
-  let busyMessageMode = "queue";
+  let followUpBehavior = "queue";
   let queued = 0;
+  let queuedMessages = [];
   /// The turn's own thread when it is not the one on screen (`state.run`):
   /// `{ sessionId, title, running }`, or null while the panel's own transcript
   /// is the run's. It is what the strip paints and what stops the composer
@@ -1406,7 +1406,7 @@
         titleLabel.textContent = message.title || "New chat";
         paintHome(message.folder);
         for (const item of message.items) appendItem(item, false);
-        setStatus(message.status, message.busy, message.queued);
+        setStatus(message.status, message.busy, message.queued, message.queue, message.followUpBehavior);
         setRun(message.run);
         setFooter(message.footer);
         setChips(message.context, message.attachments);
@@ -1471,7 +1471,7 @@
         return;
       }
       case "status":
-        setStatus(message.status, message.busy, message.queued);
+        setStatus(message.status, message.busy, message.queued, message.queue, message.followUpBehavior);
         setRun(message.run);
         setFooter(message.footer);
         // The title changes when the first message is sent, before the next
@@ -1483,6 +1483,9 @@
         return;
       case "context":
         setChips(message.context, message.attachments);
+        return;
+      case "composer":
+        fillComposer(message.text || "");
         return;
       case "dialog":
         setDialog(message.dialog);
@@ -1529,6 +1532,7 @@
       runStrip.removeAttribute("aria-label");
       runStrip.title = "";
     }
+    paintQueue();
     // The corner follows: a message typed here while the run is in another
     // thread has nowhere on screen to be answered, so the panel offers Stop
     // alone — the host refuses the send in the same words the desktop app does.
@@ -1540,10 +1544,12 @@
     return Boolean(runThread);
   }
 
-  function setStatus(text, isBusy, queuedCount) {
+  function setStatus(text, isBusy, queuedCount, queue, behavior) {
     busy = Boolean(isBusy);
-    if (!busy) busyMessageMode = "queue";
+    followUpBehavior = behavior === "steer" ? "steer" : "queue";
     queued = queuedCount || 0;
+    queuedMessages = Array.isArray(queue) ? queue : [];
+    paintQueue();
     const label = queued > 0 ? `${text} · ${queued} queued` : text;
     // The phase is only worth a line while there is one: the TUI reserves its
     // status row for a running turn too, and an idle panel says nothing rather
@@ -1781,30 +1787,6 @@
   /// refuses to send. The marked way is the one Enter sends with, so the key
   /// hints follow the mark: the marked option carries `Enter`, the other its own
   /// key, and either can be picked with the pointer.
-  function paintModeBar(busyHere) {
-    modeBar.hidden = !busyHere;
-    const queue = busyMessageMode === "queue";
-    modeQueue.classList.toggle("active", queue);
-    modeSteer.classList.toggle("active", !queue);
-    for (const [option, label, marked] of [
-      [modeQueue, "Queue as the next turn after the current response", queue],
-      [modeSteer, "Steer the active response", !queue],
-    ]) {
-      const title = `${label} (${marked ? "Enter" : "Alt+Enter"})`;
-      option.title = title;
-      option.setAttribute("aria-label", title);
-      // Which way is marked is a state rather than a word: the accent says it to
-      // a reader looking at the bar, and this says the same thing to a screen
-      // reader rather than leaving the mark to the stylesheet alone.
-      option.setAttribute("aria-pressed", marked ? "true" : "false");
-    }
-  }
-
-  function setBusyMessageMode(mode) {
-    busyMessageMode = mode === "steer" ? "steer" : "queue";
-    updateSendState();
-  }
-
   function updateSendState() {
     const hasText = Boolean(input.value.trim()) || pendingCount() > 0;
     // The corner's own actions belong to the thread this composer is showing. A
@@ -1817,10 +1799,44 @@
     sendButton.disabled = !hasText;
     sendButton.hidden = busy && (!hasText || !here);
     stopButton.hidden = !busy || (hasText && here);
-    paintModeBar(busy && here);
-    const action = busyMessageMode === "steer" ? "Steer the active response" : "Queue as the next turn";
+    const action = followUpBehavior === "steer" ? "Steer the active response" : "Queue as the next turn";
     sendButton.title = busy ? `${action} (Enter)` : "Send (Enter)";
-    sendButton.setAttribute("aria-label", busy ? busyMessageMode === "steer" ? "Steer" : "Queue" : "Send");
+    sendButton.setAttribute("aria-label", busy ? followUpBehavior === "steer" ? "Steer" : "Queue" : "Send");
+  }
+
+  function paintQueue() {
+    queueBox.innerHTML = "";
+    queueBox.hidden = queuedMessages.length === 0 || runAway();
+    for (const message of queuedMessages) {
+      const row = document.createElement("div");
+      row.className = "queued-message";
+      row.draggable = queuedMessages.length > 1;
+      row.dataset.index = String(message.index);
+      const text = document.createElement("span");
+      text.className = "queued-message-text";
+      text.textContent = message.text || "Attachment";
+      if (message.attachmentCount) text.title = `${message.attachmentCount} attachment(s)`;
+      const actions = document.createElement("span");
+      actions.className = "queued-message-actions";
+      for (const [action, label] of [["steer", "Steer"], ["edit", "Edit"], ["delete", "Delete"]]) {
+        const button = document.createElement("button");
+        button.type = "button";
+        button.textContent = label;
+        button.dataset.action = action;
+        button.dataset.index = String(message.index);
+        actions.appendChild(button);
+      }
+      row.append(text, actions);
+      queueBox.appendChild(row);
+    }
+    if (queuedMessages.length) {
+      const behavior = document.createElement("button");
+      behavior.type = "button";
+      behavior.className = "queue-behavior";
+      behavior.dataset.action = "behavior";
+      behavior.textContent = followUpBehavior === "queue" ? "Turn off queueing" : "Turn on queueing";
+      queueBox.appendChild(behavior);
+    }
   }
 
   // ---------- dialogs ----------
@@ -2168,14 +2184,12 @@
     // typed here is still here when it is opened. The host refuses the same send
     // in the same words, for anything that reaches it another way.
     if (busy && runAway()) return;
-    // The bar's own mark is what Enter and the corner follow; the key beside the
-    // mark sends the other way, so a message can be queued or steered without
-    // moving the mark first.
-    const markedQueue = busyMessageMode === "queue";
-    const queue = opposite ? !markedQueue : markedQueue;
+    // Enter follows the saved behavior; Cmd/Ctrl+Shift+Enter inverts it for
+    // this message without changing the preference.
+    const defaultQueue = followUpBehavior === "queue";
+    const queue = opposite ? !defaultQueue : defaultQueue;
     const mode = busy && !queue ? "steer" : "queue";
     input.value = "";
-    busyMessageMode = "queue";
     closeCompletion();
     resizeInput();
     updateSendState();
@@ -2441,9 +2455,14 @@
         return;
       }
     }
+    if (event.key === "Enter" && busy && event.shiftKey && (event.metaKey || event.ctrlKey)) {
+      event.preventDefault();
+      submit(true);
+      return;
+    }
     if (event.key === "Enter" && !event.shiftKey) {
       event.preventDefault();
-      submit(event.altKey);
+      submit(false);
       return;
     }
     // A modified Escape is VS Code's (`Cmd+Esc` toggles the caret between the
@@ -2619,10 +2638,34 @@
     const button = target.closest("[data-prompt]");
     if (button) fillComposer(button.dataset.prompt || "");
   });
-  // The Queue/Steer bar: the mark is what Enter sends with, the other option is
-  // what its own key sends, and either can be picked with the pointer.
-  modeQueue.addEventListener("click", () => setBusyMessageMode("queue"));
-  modeSteer.addEventListener("click", () => setBusyMessageMode("steer"));
+  queueBox.addEventListener("click", (event) => {
+    const button = event.target instanceof Element ? event.target.closest("[data-action]") : null;
+    if (!button) return;
+    vscode.postMessage({
+      k: "queueAction",
+      action: button.dataset.action,
+      index: Number(button.dataset.index ?? -1),
+    });
+  });
+  let draggedQueueIndex = -1;
+  queueBox.addEventListener("dragstart", (event) => {
+    const row = event.target instanceof Element ? event.target.closest(".queued-message") : null;
+    draggedQueueIndex = row ? Number(row.dataset.index) : -1;
+  });
+  queueBox.addEventListener("dragover", (event) => event.preventDefault());
+  queueBox.addEventListener("drop", (event) => {
+    event.preventDefault();
+    const row = event.target instanceof Element ? event.target.closest(".queued-message") : null;
+    const target = row ? Number(row.dataset.index) : -1;
+    if (draggedQueueIndex < 0 || target < 0 || target === draggedQueueIndex) return;
+    vscode.postMessage({
+      k: "queueAction",
+      action: "move",
+      index: draggedQueueIndex,
+      direction: target - draggedQueueIndex,
+    });
+    draggedQueueIndex = -1;
+  });
   stopButton.addEventListener("click", () => vscode.postMessage({ k: "stop" }));
   $("new-session").addEventListener("click", () => vscode.postMessage({ k: "newSession" }));
   historyButton.addEventListener("click", () => vscode.postMessage({ k: "resumeSession" }));

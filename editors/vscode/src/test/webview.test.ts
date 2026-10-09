@@ -589,32 +589,17 @@ describe("webview footer", () => {
     for (const id of ["branch-wrap", "usage", "gauge"]) {
       assert.match(strip, new RegExp(`id="${id}"`), id);
     }
-    // The Queue/Steer row is the bar's own top row, above the folder's facts and
-    // hidden until a turn runs: each option carries the key that sends it, and
-    // the pair of hints is what travels with the mark.
-    const mode = between(strip, '<div id="mode-bar"', '<div class="strip-facts">');
-    assert.match(mode, /id="mode-bar" class="strip-mode" hidden/);
-    assert.match(mode, /id="mode-queue" class="mode-option"/);
-    assert.match(mode, /id="mode-steer" class="mode-option"/);
-    assert.equal((mode.match(/mode-key-enter/g) ?? []).length, 2);
-    assert.equal((mode.match(/mode-key-alt/g) ?? []).length, 2);
-    assert.doesNotMatch(shell, /id="busy-message-mode"/);
-    assert.match(style, /\.strip-mode \{[^}]*border-bottom: 1px solid/s);
-    assert.match(style, /\.mode-option\.active \{[^}]*color: var\(--vscode-focusBorder\);/s);
-    assert.match(style, /\.mode-option\.active \.mode-key-enter \{ display: inline; \}/);
-    assert.match(style, /\.mode-option\.active \.mode-key-alt \{ display: none; \}/);
-    assert.match(style, /#mode-bar\[hidden\],/);
+    assert.doesNotMatch(strip, /id="mode-bar"|id="mode-queue"|id="mode-steer"/);
     assert.ok(
       strip.indexOf('id="usage"') < strip.indexOf('id="gauge"'),
       "the readout stands next to the gauge it is measured against",
     );
-    // The row of facts carries nothing to press; the only controls on the bar are
-    // the two the Queue/Steer row is made of.
+    // The row of facts carries nothing to press.
     const facts = strip.indexOf('<div class="strip-facts">');
     assert.ok(facts >= 0, "the bar still declares the row of facts");
     const factsRow = strip.slice(facts);
     assert.doesNotMatch(factsRow, /<button/, "the folder's facts carry nothing to press");
-    assert.equal((strip.match(/<button/g) ?? []).length, 2);
+    assert.equal((strip.match(/<button/g) ?? []).length, 0);
     assert.doesNotMatch(shell, /id="footline"/, "nothing is left under the box");
     // The bar is narrower than the box and centered on it, so its edges stand where
     // the box's own text column does (the box's 760px less the 10px it pads each
@@ -794,24 +779,6 @@ describe("webview composer", () => {
     assert.equal(byId.get("send")!.hidden, false);
     assert.equal(byId.get("send")!.disabled, false);
     assert.equal(byId.get("send")!.getAttribute("aria-label"), "Queue");
-    // The Queue/Steer bar carries the choice the corner used to: the marked way
-    // is the one Enter sends with, and each option says which key sends it.
-    assert.equal(byId.get("mode-bar")!.hidden, false);
-    assert.equal(byId.get("mode-queue")!.classList.contains("active"), true);
-    assert.equal(byId.get("mode-steer")!.classList.contains("active"), false);
-    assert.equal(byId.get("mode-queue")!.title, "Queue as the next turn after the current response (Enter)");
-    assert.equal(byId.get("mode-steer")!.title, "Steer the active response (Alt+Enter)");
-    // The mark is a state rather than a word, so it is announced as one rather
-    // than left to the class the sheet paints the accent from.
-    assert.equal(byId.get("mode-queue")!.getAttribute("aria-pressed"), "true");
-    assert.equal(byId.get("mode-steer")!.getAttribute("aria-pressed"), "false");
-    byId.get("mode-steer")!.fire("click");
-    assert.equal(byId.get("mode-steer")!.classList.contains("active"), true);
-    assert.equal(byId.get("mode-steer")!.getAttribute("aria-pressed"), "true");
-    assert.equal(byId.get("mode-queue")!.getAttribute("aria-pressed"), "false");
-    assert.equal(byId.get("mode-queue")!.title, "Queue as the next turn after the current response (Alt+Enter)");
-    assert.equal(byId.get("mode-steer")!.title, "Steer the active response (Enter)");
-    assert.equal(byId.get("send")!.getAttribute("aria-label"), "Steer");
     byId.get("input")!.value = "";
     byId.get("input")!.fire("input");
     assert.equal(byId.get("send")!.hidden, true, "and the empty box offers Stop again");
@@ -1111,40 +1078,63 @@ describe("webview composer", () => {
     assert.equal(byId.get("send")!.disabled, true);
   });
 
-  it("sends the selected busy behavior and returns to Queue", () => {
+  it("sends the configured busy behavior", () => {
     const { byId, posted, send } = loadRenderer();
-    send(stateMessage({ busy: true, status: "Thinking…" }));
+    send(stateMessage({ busy: true, status: "Thinking…", followUpBehavior: "steer" }));
     const input = byId.get("input")!;
     input.value = "use the new API";
     input.fire("input");
-    byId.get("mode-steer")!.fire("click");
     byId.get("send")!.fire("click");
     assert.deepEqual(last(posted), { k: "send", text: "use the new API", mode: "steer" });
-
-    input.value = "one more thing";
-    input.fire("input");
-    assert.equal(byId.get("mode-queue")!.classList.contains("active"), true);
   });
 
-  it("sends the other way from the key beside the mark", () => {
+  it("sends the opposite behavior with Cmd/Ctrl+Shift+Enter", () => {
     const { byId, posted, send } = loadRenderer();
     send(stateMessage({ busy: true, status: "Thinking…" }));
     const input = byId.get("input")!;
-    // Alt+Enter is the key the unmarked option carries: the mark stays where it
-    // is and the message goes the other way.
     input.value = "steer this";
     input.fire("input");
-    input.fire("keydown", { key: "Enter", shiftKey: false, altKey: true, preventDefault: () => {} });
+    input.fire("keydown", { key: "Enter", shiftKey: true, metaKey: true, preventDefault: () => {} });
     assert.deepEqual(last(posted), { k: "send", text: "steer this", mode: "steer" });
-    assert.equal(byId.get("mode-queue")!.classList.contains("active"), true, "the mark did not move");
 
-    // With the mark moved to Steer, the plain key is the one that steers and the
-    // modified one queues.
-    byId.get("mode-steer")!.fire("click");
+    send(stateMessage({ busy: true, status: "Thinking…", followUpBehavior: "steer" }));
     input.value = "queue this";
     input.fire("input");
-    input.fire("keydown", { key: "Enter", shiftKey: false, altKey: true, preventDefault: () => {} });
+    input.fire("keydown", { key: "Enter", shiftKey: true, ctrlKey: true, preventDefault: () => {} });
     assert.deepEqual(last(posted), { k: "send", text: "queue this", mode: "queue" });
+  });
+
+  it("shows Codex-style queued messages and exposes their operations", () => {
+    const { byId, posted, send } = loadRenderer();
+    send(
+      stateMessage({
+        busy: true,
+        status: "Thinking…",
+        queued: 2,
+        queue: [
+          { index: 0, text: "first follow-up", attachmentCount: 0 },
+          { index: 1, text: "second follow-up", attachmentCount: 1 },
+        ],
+        followUpBehavior: "queue",
+      }),
+    );
+    const queue = byId.get("queue")!;
+    assert.equal(queue.hidden, false);
+    assert.deepEqual(queue.children.slice(0, 2).map((row) => row.children[0].textContent), [
+      "first follow-up",
+      "second follow-up",
+    ]);
+    assert.deepEqual(
+      queue.children[0].children[1].children.map((button) => button.textContent),
+      ["Steer", "Edit", "Delete"],
+    );
+    assert.equal(queue.children[2].textContent, "Turn off queueing");
+
+    const edit = queue.children[0].children[1].children[1];
+    queue.fire("click", { target: edit });
+    assert.deepEqual(last(posted), { k: "queueAction", action: "edit", index: 0 });
+    queue.fire("click", { target: queue.children[2] });
+    assert.deepEqual(last(posted), { k: "queueAction", action: "behavior", index: -1 });
   });
 
   it("asks the host what the caret is in once an @ is typed", () => {
@@ -1765,19 +1755,13 @@ describe("webview run strip", () => {
     byId.get("input")!.fire("input");
     assert.equal(byId.get("send")!.hidden, true, "nothing typed here is sent");
     assert.equal(byId.get("stop")!.hidden, false, "Stop is still reachable");
-    assert.equal(
-      byId.get("mode-bar")!.hidden,
-      true,
-      "and there is no queue-or-steer choice to make here",
-    );
 
     // Back in the run's own thread — the strip is gone with it — the corner is
-    // the queue/steer one it always was, with the bar above it.
+    // the configured queue/steer action again.
     send(stateMessage({ busy: true, status: "Thinking…" }));
     assert.equal(byId.get("send")!.hidden, false);
     assert.equal(byId.get("send")!.getAttribute("aria-label"), "Queue");
     assert.equal(byId.get("stop")!.hidden, true);
-    assert.equal(byId.get("mode-bar")!.hidden, false);
   });
 });
 

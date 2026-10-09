@@ -180,6 +180,14 @@ function setCheck(node, on) {
   node.innerHTML = on ? ICONS.check : "";
 }
 
+function savedFollowUpBehavior() {
+  try {
+    return window.localStorage?.getItem("oxide.followUpBehavior") === "steer" ? "steer" : "queue";
+  } catch {
+    return "queue";
+  }
+}
+
 const state = {
   projects: [],
   project: null,
@@ -190,7 +198,7 @@ const state = {
   runId: null,
   // New context sent during a run waits by default. Steering is a deliberate
   // choice because it changes the work already in progress.
-  busyMessageMode: "queue",
+  followUpBehavior: savedFollowUpBehavior(),
   // Messages rejected at the exact instant a run finishes. Their composed
   // payloads start against the same session, in submission order, as each
   // preceding turn ends — with the thread and folder they were typed in, since
@@ -1076,6 +1084,7 @@ async function selectProject(project) {
   state.session = null;
   state.trust = null;
   state.pendingSends = [];
+  paintQueue();
   // The window the ring measures against belonged to the folder being left, and
   // the one arriving is not known until its own facts do: left in place it would
   // label this folder's thread with another folder's window.
@@ -1462,6 +1471,7 @@ function canStartNewChat() {
 function newChat() {
   if (!canStartNewChat()) return;
   state.pendingSends = [];
+  paintQueue();
   resetTranscript();
   clearAttachments();
   loadSessions();
@@ -1572,8 +1582,8 @@ function resetTurn() {
   closeQuestion();
 }
 
-/// The composer's action while idle is Send. During a run it holds Stop until
-/// there is new context, then shows Send beside an explicit Queue/Steer choice.
+/// The composer's action while idle is Send. During a run it follows the saved
+/// Queue/Steer preference; Cmd/Ctrl+Shift+Enter inverts it once.
 function updateSendState() {
   const hasText =
     el("prompt").value.trim().length > 0 || state.attachments.length > 0;
@@ -1590,9 +1600,8 @@ function updateSendState() {
   el("send").disabled = !hasText;
   el("send").hidden = state.busy && (!hasText || !here);
   el("stop").hidden = !state.busy || (hasText && here);
-  paintModeBar(busyHere);
   el("send").title = busyHere
-    ? state.busyMessageMode === "steer"
+    ? state.followUpBehavior === "steer"
       ? "Steer the active response (Enter)"
       : "Queue as the next turn (Enter)"
     : "Send (Enter)";
@@ -1601,50 +1610,58 @@ function updateSendState() {
   // label the button was built with.
   el("send").setAttribute(
     "aria-label",
-    busyHere ? (state.busyMessageMode === "steer" ? "Steer" : "Queue") : "Send",
+    busyHere ? (state.followUpBehavior === "steer" ? "Steer" : "Queue") : "Send",
   );
 }
 
-/// The Queue/Steer bar on the composer's own top row: the way a message typed
-/// while a turn runs is delivered. It is up exactly while there is a turn to
-/// deliver into in the thread on screen — a run in another thread is reached by
-/// opening it, and the bar would be a choice about a message this composer
-/// refuses to send. The marked way is the one Enter sends with, so it is the one
-/// the key hints follow: the marked option carries `Enter`, the other its own
-/// key, and either can be picked with the pointer.
-function paintModeBar(busyHere) {
-  const bar = el("mode-bar");
-  bar.hidden = !busyHere;
-  const queue = state.busyMessageMode !== "steer";
-  el("mode-queue").classList.toggle("active", queue);
-  el("mode-steer").classList.toggle("active", !queue);
-  const keys = (marked) => (marked ? "Enter" : "Alt+Enter");
-  const notes = [
-    ["mode-queue", "Queue as the next turn after the current response", queue],
-    ["mode-steer", "Steer the active response", !queue],
-  ];
-  for (const [id, label, marked] of notes) {
-    const option = el(id);
-    const title = `${label} (${keys(marked)})`;
-    option.title = title;
-    option.setAttribute("aria-label", title);
-    // Which way is marked is a state rather than a word: the accent says it to a
-    // reader looking at the bar, and this says the same thing to a screen reader
-    // rather than leaving the mark to the stylesheet alone.
-    option.setAttribute("aria-pressed", marked ? "true" : "false");
+function setFollowUpBehavior(mode) {
+  state.followUpBehavior = mode === "steer" ? "steer" : "queue";
+  try {
+    window.localStorage?.setItem("oxide.followUpBehavior", state.followUpBehavior);
+  } catch {
+    // The preference still applies for this window when storage is unavailable.
   }
+  paintQueue();
+  updateSendState();
 }
 
-/// The two ways in, from the bar or from a key: the mark is what Enter sends
-/// with, and the other way is what its own key sends.
-function setBusyMessageMode(mode) {
-  state.busyMessageMode = mode === "steer" ? "steer" : "queue";
-  updateSendState();
+function paintQueue() {
+  const list = el("queue-list");
+  list.innerHTML = "";
+  list.hidden = state.pendingSends.length === 0 || (state.busy && !viewingRun());
+  state.pendingSends.forEach((pending, index) => {
+    const row = document.createElement("div");
+    row.className = "queued-message";
+    row.draggable = state.pendingSends.length > 1;
+    row.dataset.index = String(index);
+    const text = document.createElement("span");
+    text.className = "queued-message-text";
+    text.textContent = pending.prompt.split(/\r?\n/, 1)[0] || "Attachment";
+    const actions = document.createElement("span");
+    actions.className = "queued-message-actions";
+    for (const [action, label] of [["steer", "Steer"], ["edit", "Edit"], ["delete", "Delete"]]) {
+      const button = document.createElement("button");
+      button.type = "button";
+      button.dataset.action = action;
+      button.dataset.index = String(index);
+      button.textContent = label;
+      actions.appendChild(button);
+    }
+    row.append(text, actions);
+    list.appendChild(row);
+  });
+  if (state.pendingSends.length) {
+    const behavior = document.createElement("button");
+    behavior.type = "button";
+    behavior.className = "queue-behavior";
+    behavior.dataset.action = "behavior";
+    behavior.textContent = state.followUpBehavior === "queue" ? "Turn off queueing" : "Turn on queueing";
+    list.appendChild(behavior);
+  }
 }
 
 function setBusy() {
   state.busy = true;
-  state.busyMessageMode = "queue";
   updateSendState();
   // The status badge's icon is the state: a turn starting turns it into the
   // spinner, wherever the words it is wearing came from.
@@ -1823,6 +1840,7 @@ function updateRunBanner() {
     banner.title = `Open “${label}”`;
     banner.setAttribute("aria-label", `${text}. Open it.`);
   }
+  paintQueue();
   updateSendState();
 }
 
@@ -2156,14 +2174,24 @@ async function send(opposite = false) {
       setStatus(`A turn is running in “${runThreadLabel()}”; open it to queue or steer, or stop it.`);
       return;
     }
-    // The bar's own mark is what Enter and Send follow; the key beside the mark
-    // sends the other way, so a message can be queued or steered without moving
-    // the mark first.
-    const markedQueue = state.busyMessageMode === "queue";
-    const followUp = opposite ? !markedQueue : markedQueue;
+    const defaultQueue = state.followUpBehavior === "queue";
+    const followUp = opposite ? !defaultQueue : defaultQueue;
     textarea.value = "";
     clearAttachments();
     clearWelcome();
+    if (followUp) {
+      state.pendingSends.push({
+        prompt,
+        attachments,
+        project: state.project,
+        session: state.session,
+        showBubble: true,
+      });
+      paintQueue();
+      updateSendState();
+      setStatus(`Queued: ${prompt.split(/\r?\n/, 1)[0] || "an attachment"}`);
+      return;
+    }
     el("transcript").appendChild(
       bubble("user", prompt, attachments),
     );
@@ -2171,10 +2199,9 @@ async function send(opposite = false) {
     const accepted = await invoke("steer_run", {
       runId: state.runId,
       message: prompt,
-      followUp,
+      followUp: false,
       attachments: attachments.length ? attachments : null,
     });
-    state.busyMessageMode = "queue";
     updateSendState();
     if (!accepted) {
       // A message that arrived as the run finished is the next turn of the
@@ -2184,13 +2211,14 @@ async function send(opposite = false) {
         attachments,
         project: state.project,
         session: state.session,
+        showBubble: false,
       });
       setStatus("The response finished; starting this as the next turn…");
       // The end event may have beaten the command reply to the renderer.
       await startNextPendingSend();
       return;
     }
-    setStatus(followUp ? "Queued as the next turn." : "Steering the active response…");
+    setStatus("Steering the active response…");
     return;
   }
 
@@ -2247,7 +2275,49 @@ async function startPrompt(prompt, attachments, showBubble = true, target = null
 async function startNextPendingSend() {
   if (state.busy || state.pendingSends.length === 0) return;
   const pending = state.pendingSends.shift();
-  await startPrompt(pending.prompt, pending.attachments, false, pending);
+  paintQueue();
+  await startPrompt(pending.prompt, pending.attachments, pending.showBubble !== false, pending);
+}
+
+async function queueAction(action, index, direction = 0) {
+  if (action === "behavior") {
+    setFollowUpBehavior(state.followUpBehavior === "queue" ? "steer" : "queue");
+    return;
+  }
+  if (index < 0 || index >= state.pendingSends.length) return;
+  if (action === "delete") {
+    state.pendingSends.splice(index, 1);
+  } else if (action === "move") {
+    const target = Math.max(0, Math.min(state.pendingSends.length - 1, index + direction));
+    if (target !== index) {
+      const [pending] = state.pendingSends.splice(index, 1);
+      state.pendingSends.splice(target, 0, pending);
+    }
+  } else if (action === "edit") {
+    const [pending] = state.pendingSends.splice(index, 1);
+    el("prompt").value = pending.prompt;
+    state.attachments = pending.attachments.map((attachment) => ({ ...attachment }));
+    renderAttachments();
+    el("prompt").style.height = "auto";
+    el("prompt").style.height = `${Math.min(el("prompt").scrollHeight, 220)}px`;
+    el("prompt").focus();
+  } else if (action === "steer") {
+    if (!state.busy || state.runId == null || !viewingRun()) return;
+    const pending = state.pendingSends[index];
+    const accepted = await invoke("steer_run", {
+      runId: state.runId,
+      message: pending.prompt,
+      followUp: false,
+      attachments: pending.attachments.length ? pending.attachments : null,
+    });
+    if (!accepted) return;
+    state.pendingSends.splice(index, 1);
+    el("transcript").appendChild(bubble("user", pending.prompt, pending.attachments));
+    scrollDown();
+    setStatus("Steering the active response…");
+  }
+  paintQueue();
+  updateSendState();
 }
 
 async function stop() {
@@ -5519,8 +5589,26 @@ function init() {
   el("connect").onclick = openConnect;
 
   el("send").onclick = () => send(false);
-  el("mode-queue").onclick = () => setBusyMessageMode("queue");
-  el("mode-steer").onclick = () => setBusyMessageMode("steer");
+  el("queue-list").onclick = (event) => {
+    const button = event.target.closest?.("[data-action]");
+    if (!button) return;
+    void queueAction(button.dataset.action, Number(button.dataset.index ?? -1));
+  };
+  let draggedQueueIndex = -1;
+  el("queue-list").ondragstart = (event) => {
+    const row = event.target.closest?.(".queued-message");
+    draggedQueueIndex = row ? Number(row.dataset.index) : -1;
+  };
+  el("queue-list").ondragover = (event) => event.preventDefault();
+  el("queue-list").ondrop = (event) => {
+    event.preventDefault();
+    const row = event.target.closest?.(".queued-message");
+    const target = row ? Number(row.dataset.index) : -1;
+    if (draggedQueueIndex >= 0 && target >= 0 && target !== draggedQueueIndex) {
+      void queueAction("move", draggedQueueIndex, target - draggedQueueIndex);
+    }
+    draggedQueueIndex = -1;
+  };
   el("stop").onclick = stop;
   // The header's own line about the turn that is running while another thread is
   // on screen: the click opens that thread, so the Queue or Steer it takes is in
@@ -5720,9 +5808,14 @@ function init() {
       closePalette();
       return;
     }
+    if (event.key === "Enter" && state.busy && event.shiftKey && (event.metaKey || event.ctrlKey)) {
+      event.preventDefault();
+      send(true);
+      return;
+    }
     if (event.key === "Enter" && !event.shiftKey) {
       event.preventDefault();
-      send(event.altKey);
+      send(false);
     }
   });
 
