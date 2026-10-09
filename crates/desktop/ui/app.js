@@ -2399,12 +2399,20 @@ function toolSummary(name, argsJson) {
   } catch (error) {
     args = {};
   }
-  const raw = String(
-    args.command || args.path || args.pattern || args.query || args.url || args.prompt || "",
-  )
+  const subject =
+    name === "grep" || name === "find" || name === "glob"
+      ? args.pattern
+      : args.command || args.path || args.pattern || args.query || args.url || args.prompt;
+  const raw = String(subject || "")
     .replace(/\s+/g, " ")
     .trim();
   let text = raw;
+  let title = raw;
+  if ((name === "grep" || name === "find" || name === "glob") && raw) {
+    const path = String(args.path || ".").trim();
+    text = `${JSON.stringify(raw)}${path && path !== "." ? ` · ${path}` : ""}`;
+    title = `${name === "grep" ? "Search for" : "Find"} ${JSON.stringify(raw)} in ${path || "."}`;
+  }
   if (name === "bash" && raw) {
     const parts = raw
       .split(/\s*(?:&&|\|\||;)\s*/)
@@ -2414,7 +2422,7 @@ function toolSummary(name, argsJson) {
   }
   return {
     text: text.length > 96 ? `${text.slice(0, 96)}…` : text,
-    title: raw || text,
+    title: title || text,
   };
 }
 
@@ -2548,10 +2556,17 @@ function finishTool(tool, output, { isError = false, diff = null, elapsed = 0 } 
   tool.full = output || "";
   tool.block.classList.remove("running");
   if (isError) tool.block.classList.add("error");
+  tool.quiet =
+    !isError &&
+    (tool.name === "grep" || tool.name === "find" || tool.name === "glob") &&
+    /^(?:No matches found|No files found matching pattern)\s*$/.test(tool.full);
+  if (tool.quiet) tool.block.classList.add("quiet");
   const counts = diff ? diffCounts(diff.text) : "";
-  tool.tstate.textContent = `${isError ? "✖" : "✔"}${counts ? ` ${counts}` : ""}${
-    elapsed ? ` ${formatDuration(elapsed)}` : ""
-  }`;
+  tool.tstate.textContent = tool.quiet
+    ? `0 matches${elapsed ? ` · ${formatDuration(elapsed)}` : ""}`
+    : `${isError ? "✖" : "✔"}${counts ? ` ${counts}` : ""}${
+        elapsed ? ` ${formatDuration(elapsed)}` : ""
+      }`;
   if (diff) {
     tool.diffEl = diffBlock(diff);
     tool.diffEl.hidden = true;
@@ -2579,6 +2594,12 @@ function paintTool(tool) {
     return;
   }
   tool.block.classList.remove("expanded");
+  if (tool.quiet) {
+    tool.pre.hidden = true;
+    tool.hint.hidden = true;
+    markToolToggle(tool, false);
+    return;
+  }
   if (tool.inline) {
     tool.pre.hidden = true;
     tool.hint.hidden = true;
@@ -3125,6 +3146,17 @@ function handleEvent(event) {
     return;
   }
   switch (event.type) {
+    case "session_title": {
+      const title = String(event.title || "").trim();
+      if (!title) break;
+      state.runTitle = title;
+      if (state.heldThread?.id === state.runSession) state.heldThread.title = title;
+      if (state.parked?.session === state.runSession) state.parked.title = title;
+      refreshThreadTitle();
+      updateRunBanner();
+      loadSessions();
+      break;
+    }
     case "message_update": {
       const inner = event.assistantMessageEvent || {};
       if (inner.type === "text_delta") appendText(inner.delta || "");

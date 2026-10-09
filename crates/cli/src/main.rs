@@ -1591,13 +1591,18 @@ async fn run_print_text(mut rx: tokio::sync::mpsc::UnboundedReceiver<AgentEvent>
             }
             AgentEvent::ToolCall { name, args } => {
                 flush_stdout(&mut stdout, &mut pending)?;
-                eprintln!("\n[tool] {name} {args}");
+                let subject = tools::search_tool_summary(&name, &args).unwrap_or(args);
+                eprintln!("\n[tool] {name} {subject}");
             }
             AgentEvent::ToolProgress { chunk, .. } => {
                 eprintln!("{chunk}");
             }
             AgentEvent::ToolResult { name, output, .. } => {
-                eprintln!("[result: {name}] {} bytes", output.len());
+                if tools::is_empty_search_result(&name, &output) {
+                    eprintln!("[result: {name}] 0 matches");
+                } else {
+                    eprintln!("[result: {name}] {} bytes", output.len());
+                }
             }
             AgentEvent::Usage { .. } => {}
             // Print mode has no way to ask: it always runs a non-interactive
@@ -1606,6 +1611,9 @@ async fn run_print_text(mut rx: tokio::sync::mpsc::UnboundedReceiver<AgentEvent>
             // Print mode is given no asker, so `ask` is not offered to the
             // model and a question cannot arrive.
             AgentEvent::QuestionRequest { .. } | AgentEvent::QuestionClosed { .. } => {}
+            // The persisted name is consumed by interactive clients and session
+            // listings; print mode has no title chrome to update.
+            AgentEvent::SessionTitle { .. } => {}
             AgentEvent::Compaction {
                 summarized,
                 tokens_before,

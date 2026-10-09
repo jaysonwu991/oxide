@@ -434,6 +434,7 @@ body.resizing { cursor: col-resize; user-select: none; }
   font-size: 12.5px;
 }
 .tool.running, .tool.error { padding: 9px 12px; background: var(--tool-bg); }
+.tool.quiet { padding-top: 2px; padding-bottom: 2px; }
 .tool.running { box-shadow: inset 2px 0 0 var(--accent); }
 .tool.error { box-shadow: inset 2px 0 0 var(--error); }
 .tool .thead { display: flex; align-items: center; gap: 8px; color: var(--text); font-weight: 500; }

@@ -5,6 +5,7 @@ use crate::media;
 use anyhow::{Context, Result};
 use serde_json::{json, Value};
 use std::collections::{BTreeSet, HashMap, VecDeque};
+use std::ffi::OsString;
 use std::io::{BufRead, BufReader, BufWriter, Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
@@ -127,6 +128,39 @@ pub fn canonical_tool_name(name: &str) -> &str {
         "webfetch" => "webfetch",
         other => other,
     }
+}
+
+/// A compact, human-readable subject for a built-in search call. Search cards
+/// must lead with the pattern: leading with the project path makes several
+/// different searches look identical in every front-end.
+pub fn search_tool_summary(name: &str, args: &str) -> Option<String> {
+    if !matches!(canonical_tool_name(name), "grep" | "glob") {
+        return None;
+    }
+    let value: Value = serde_json::from_str(args).ok()?;
+    let pattern = value.get("pattern")?.as_str()?.trim();
+    if pattern.is_empty() {
+        return None;
+    }
+    let mut summary = serde_json::to_string(pattern).ok()?;
+    if let Some(path) = value
+        .get("path")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|path| !path.is_empty() && *path != ".")
+    {
+        summary.push_str(" · ");
+        summary.push_str(path);
+    }
+    Some(summary)
+}
+
+/// Whether a successful built-in search returned its exact no-hit sentinel.
+/// The raw text remains in the event/session stream for the model; renderers
+/// use this classification to replace a large body with a compact count.
+pub fn is_empty_search_result(name: &str, output: &str) -> bool {
+    matches!(canonical_tool_name(name), "grep" | "glob")
+        && matches!(output.trim(), NO_MATCHES | NO_FILES_FOUND)
 }
 
 /// A line-numbered diff of a file edit, carried alongside the tool result for
@@ -345,7 +379,7 @@ pub fn specs(mcp: &McpRegistry) -> Vec<ToolSpec> {
         ),
         spec(
             "webfetch",
-            "Fetch a URL and return its contents as Markdown (default), readable plain text, or raw HTML. GitHub and GitLab pull requests, merge requests, and issues should be read with their `gh`/`glab` CLIs instead.",
+            "Fetch a URL and return its contents as Markdown (default), readable plain text, or raw HTML. GitHub and GitLab repository files, pull requests, merge requests, and issues should be read with their authenticated `gh`/`glab` CLIs instead; an organization repository may be private even when its URL uses the public forge hostname.",
             json!({
                 "type": "object",
                 "properties": {
@@ -1649,7 +1683,10 @@ fn finish_hits(mut hits: Vec<String>, limit: usize) -> String {
 /// for every `find`, `grep`, and forge URL; successful lookups avoid repeatedly
 /// splitting and probing PATH, while misses remain visible to a later install.
 fn command_path(name: &str) -> Option<PathBuf> {
-    let path = std::env::var_os("PATH")?;
+    // Use the same enriched PATH as `bash`: a desktop process may not inherit
+    // the terminal's package-manager directories, and treating an installed
+    // `gh`, `rg`, or `fd` as absent sends the agent down a slower fallback.
+    let path = bash_path().or_else(|| std::env::var_os("PATH"))?;
     type CommandCache = HashMap<(std::ffi::OsString, String), PathBuf>;
     static CACHE: OnceLock<std::sync::Mutex<CommandCache>> = OnceLock::new();
     let cache = CACHE.get_or_init(|| std::sync::Mutex::new(HashMap::new()));
@@ -1988,6 +2025,9 @@ async fn webfetch_guarded(args: &Value, mcp: &McpRegistry) -> Result<String> {
             return Ok(forge_hint(route, item, url));
         }
     }
+    if let Some(hint) = github_file_hint(url) {
+        return Ok(hint);
+    }
     webfetch(args).await
 }
 
@@ -2101,6 +2141,58 @@ fn forge_hint(route: &ForgeRoute, item: &ForgeItem, url: &str) -> String {
         view = item.view,
         comment = item.comment,
     )
+}
+
+/// Routes a GitHub `blob` link through the authenticated contents API. A
+/// browser-style fetch cannot distinguish a private repository from a missing
+/// page (both commonly answer 404), while `gh api` carries the user's GitHub
+/// credential and can return the raw file at the revision named by the URL.
+fn github_file_hint(url: &str) -> Option<String> {
+    let parsed = reqwest::Url::parse(url).ok()?;
+    if parsed.host_str()? != "github.com" {
+        return None;
+    }
+    let segments: Vec<&str> = parsed.path_segments()?.collect();
+    if segments.len() < 5 || segments[2] != "blob" {
+        return None;
+    }
+    let owner = segments[0];
+    let repo = segments[1];
+    let revision = segments[3];
+    let path = segments[4..].join("/");
+    if owner.is_empty() || repo.is_empty() || revision.is_empty() || path.is_empty() {
+        return None;
+    }
+    let endpoint = format!("repos/{owner}/{repo}/contents/{path}?ref={revision}");
+    let line_hint = github_line_range(parsed.fragment()).map_or_else(String::new, |range| {
+        format!(" To read only the linked lines, pipe it to `sed -n '{range}p'`.")
+    });
+    let availability = if command_exists("gh") {
+        String::new()
+    } else {
+        " The `gh` CLI is not currently available; use an existing local checkout or install and authenticate `gh` before retrying.".to_string()
+    };
+    Some(format!(
+        "This URL is a GitHub repository file, which may be private. Do not use webfetch or raw.githubusercontent.com: both are unauthenticated and a private file commonly looks like a 404. Read it with `gh api -H 'Accept: application/vnd.github.raw+json' '{endpoint}'`.{line_hint}{availability}"
+    ))
+}
+
+fn github_line_range(fragment: Option<&str>) -> Option<String> {
+    let fragment = fragment?;
+    let (start, end) = fragment
+        .split_once("-L")
+        .map_or((fragment, None), |(start, end)| (start, Some(end)));
+    let start = start.strip_prefix('L')?;
+    if start.is_empty() || !start.chars().all(|ch| ch.is_ascii_digit()) {
+        return None;
+    }
+    match end {
+        Some(end) if !end.is_empty() && end.chars().all(|ch| ch.is_ascii_digit()) => {
+            Some(format!("{start},{end}"))
+        }
+        Some(_) => None,
+        None => Some(start.to_string()),
+    }
 }
 
 async fn webfetch(args: &Value) -> Result<String> {
@@ -2372,6 +2464,52 @@ fn is_build_command(command: &str) -> bool {
     })
 }
 
+/// The PATH inherited by a desktop app is commonly much smaller than the one
+/// in the user's terminal. Keep that inherited order, but put conventional
+/// user tool directories in front when they exist so a `bash` call can find
+/// the same Node, Rust, Python and Homebrew-installed commands without every
+/// prompt first having to rediscover and export their locations.
+fn bash_path() -> Option<OsString> {
+    static PATH: OnceLock<Option<OsString>> = OnceLock::new();
+    PATH.get_or_init(|| {
+        let inherited = std::env::var_os("PATH").unwrap_or_default();
+        let home = dirs::home_dir()?;
+        Some(augment_path(&inherited, &home))
+    })
+    .clone()
+}
+
+fn augment_path(inherited: &std::ffi::OsStr, home: &Path) -> OsString {
+    let mut paths = Vec::new();
+    let candidates = [
+        home.join(".local/bin"),
+        home.join(".volta/bin"),
+        home.join(".cargo/bin"),
+        home.join(".pyenv/shims"),
+        home.join(".pyenv/bin"),
+        home.join(".asdf/shims"),
+        home.join(".local/share/mise/shims"),
+        home.join(".bun/bin"),
+        home.join("Library/pnpm"),
+        home.join("go/bin"),
+        PathBuf::from("/opt/homebrew/bin"),
+        PathBuf::from("/opt/homebrew/sbin"),
+        PathBuf::from("/home/linuxbrew/.linuxbrew/bin"),
+        PathBuf::from("/home/linuxbrew/.linuxbrew/sbin"),
+        PathBuf::from("/usr/local/bin"),
+    ];
+    for path in candidates
+        .into_iter()
+        .filter(|path| path.is_dir())
+        .chain(std::env::split_paths(inherited))
+    {
+        if !paths.contains(&path) {
+            paths.push(path);
+        }
+    }
+    std::env::join_paths(paths).unwrap_or_else(|_| inherited.to_os_string())
+}
+
 async fn bash(cwd: &Path, args: &Value, progress: &Progress) -> Result<String> {
     let command = required_string(args, "bash", "command", r#"{"command":"cargo test"}"#)?;
     let secs = bash_timeout_secs(args, command);
@@ -2388,6 +2526,9 @@ async fn bash(cwd: &Path, args: &Value, progress: &Progress) -> Result<String> {
         shell.arg("-c").arg(command);
         shell
     };
+    if let Some(path) = bash_path() {
+        shell.env("PATH", path);
+    }
     crate::child::detach_terminal(&mut shell);
 
     let mut child = shell
@@ -3170,6 +3311,26 @@ mod tests {
     }
 
     #[test]
+    fn search_display_leads_with_pattern_and_recognizes_only_exact_no_hit_results() {
+        let args = r#"{"path":"/work/falcon","pattern":"generateUrl|ums-generation"}"#;
+        assert_eq!(
+            search_tool_summary("grep", args).as_deref(),
+            Some(r#""generateUrl|ums-generation" · /work/falcon"#)
+        );
+        assert_eq!(
+            search_tool_summary("find", r#"{"pattern":"**/*.rs"}"#).as_deref(),
+            Some(r#""**/*.rs""#)
+        );
+        assert!(is_empty_search_result("grep", NO_MATCHES));
+        assert!(is_empty_search_result("glob", NO_FILES_FOUND));
+        assert!(!is_empty_search_result("read", NO_MATCHES));
+        assert!(!is_empty_search_result(
+            "grep",
+            "No matches found\nadditional detail"
+        ));
+    }
+
+    #[test]
     fn specs_expose_pi_tool_names() {
         let mcp = McpRegistry::default();
         let names: Vec<String> = specs(&mcp).into_iter().map(|s| s.function.name).collect();
@@ -3889,6 +4050,31 @@ mod tests {
         assert!(forge_route("https://example.com/owner/repo/pull/1").is_none());
     }
 
+    #[test]
+    fn github_blob_links_route_to_the_authenticated_contents_api() {
+        let url = "https://github.com/Skyscanner/web-platform/blob/\
+                   e704e161bb89ff6a75f3e5c8ea54982d43712df3/\
+                   libs/shared/footer/searchPatternData.ts#L4699-L4702";
+        let hint = github_file_hint(url).unwrap();
+
+        assert!(hint.contains("may be private"), "{hint}");
+        assert!(hint.contains("Do not use webfetch"), "{hint}");
+        assert!(hint.contains("gh api"), "{hint}");
+        assert!(
+            hint.contains(
+                "repos/Skyscanner/web-platform/contents/libs/shared/footer/\
+                           searchPatternData.ts?ref=e704e161bb89ff6a75f3e5c8ea54982d43712df3"
+            ),
+            "{hint}"
+        );
+        assert!(hint.contains("sed -n '4699,4702p'"), "{hint}");
+
+        assert!(github_file_hint("https://github.com/owner/repo").is_none());
+        assert!(github_file_hint("https://example.com/owner/repo/blob/main/a.rs").is_none());
+        assert_eq!(github_line_range(Some("L12")), Some("12".to_string()));
+        assert_eq!(github_line_range(Some("heading")), None);
+    }
+
     #[tokio::test]
     async fn webfetch_converts_html_to_markdown() {
         use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -4263,6 +4449,39 @@ mod tests {
             ),
             42
         );
+    }
+
+    #[test]
+    fn bash_path_adds_existing_user_tools_without_duplicates() {
+        let dir = std::env::temp_dir().join(format!(
+            "oxide_bash_path_{}_{}",
+            std::process::id(),
+            TRUNCATION_ID.fetch_add(1, Ordering::Relaxed)
+        ));
+        let inherited_bin = dir.join("inherited/bin");
+        let local_bin = dir.join(".local/bin");
+        let volta_bin = dir.join(".volta/bin");
+        std::fs::create_dir_all(&inherited_bin).unwrap();
+        std::fs::create_dir_all(&local_bin).unwrap();
+        std::fs::create_dir_all(&volta_bin).unwrap();
+
+        let inherited = std::env::join_paths([&inherited_bin, &local_bin]).unwrap();
+        let augmented: Vec<PathBuf> =
+            std::env::split_paths(&augment_path(&inherited, &dir)).collect();
+
+        assert_eq!(augmented[0], local_bin);
+        assert_eq!(augmented[1], volta_bin);
+        assert_eq!(
+            augmented
+                .iter()
+                .filter(|path| **path == dir.join(".local/bin"))
+                .count(),
+            1
+        );
+        assert!(augmented.contains(&inherited_bin));
+        assert!(!augmented.contains(&dir.join(".cargo/bin")));
+
+        std::fs::remove_dir_all(&dir).ok();
     }
 
     #[tokio::test]

@@ -681,6 +681,10 @@ export class Transcript {
       case "session":
         this.sessionId = str(event.id) || this.sessionId;
         return [];
+      case "session_title":
+        // The controller owns the title because it also names a run parked in
+        // another thread. It consumes this metadata before applying the event.
+        return [];
       case "thinking":
         // The block itself is created by the first reasoning delta it carries:
         // a turn can start a thinking block and never fill it, and an empty

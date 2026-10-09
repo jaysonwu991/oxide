@@ -1,5 +1,5 @@
-//! One-line titles: the summarized name a front-end shows a thread, a session
-//! or a finished turn under.
+//! One-line titles: the provisional first-message summary and the normalization
+//! applied to a model-generated session name.
 //!
 //! The terminal, the desktop app and the VS Code panel all name the same
 //! conversation, so they agree on these rules. The panel is TypeScript and
@@ -18,6 +18,51 @@ pub fn summarize(text: &str, max: usize) -> String {
         Some(line) => bounded(&line, max),
         None => String::new(),
     }
+}
+
+/// Cleans the model's one-line session title before it is persisted. The model
+/// is asked for the title through a structured tool, but providers can still
+/// include presentation such as `Title:` or surrounding quotes in the string.
+pub fn generated(text: &str, max: usize) -> String {
+    let Some(mut title) = first_prose_line(text) else {
+        return String::new();
+    };
+    if title
+        .get(..6)
+        .is_some_and(|prefix| prefix.eq_ignore_ascii_case("title:"))
+    {
+        title = title[6..].trim_start().to_string();
+    }
+    title = title
+        .trim_matches(|ch| matches!(ch, '\'' | '"' | '“' | '”'))
+        .trim()
+        .to_string();
+    title = title
+        .split_whitespace()
+        .filter(|word| !looks_like_location(word))
+        .collect::<Vec<_>>()
+        .join(" ");
+    if !title.chars().any(char::is_alphanumeric) {
+        return String::new();
+    }
+    bounded(&title, max)
+}
+
+fn looks_like_location(word: &&str) -> bool {
+    let word = word.trim_matches(|ch: char| {
+        matches!(
+            ch,
+            '\'' | '"' | '‘' | '’' | '“' | '”' | '(' | ')' | '[' | ']' | ',' | ';'
+        )
+    });
+    let lower = word.to_ascii_lowercase();
+    lower.starts_with("http://")
+        || lower.starts_with("https://")
+        || lower.starts_with("file://")
+        || word.starts_with('/')
+        || word.starts_with("~/")
+        || (word.as_bytes().get(1) == Some(&b':')
+            && matches!(word.as_bytes().get(2), Some(b'\\' | b'/')))
 }
 
 /// The first line of `text` that reads as prose, with its Markdown taken off: a
@@ -177,6 +222,26 @@ mod tests {
         );
         assert_eq!(summarize("   ", TITLE_LIMIT), "");
         assert_eq!(summarize("", TITLE_LIMIT), "");
+    }
+
+    #[test]
+    fn cleans_generated_titles() {
+        assert_eq!(
+            generated("Title: Fix private GitHub lookup", TITLE_LIMIT),
+            "Fix private GitHub lookup"
+        );
+        assert_eq!(
+            generated("“Improve session titles”\nignored", TITLE_LIMIT),
+            "Improve session titles"
+        );
+        assert_eq!(generated("---", TITLE_LIMIT), "");
+        assert_eq!(
+            generated(
+                "/Users/jayson/Desktop/Earlier-Lines.png Improve the title",
+                TITLE_LIMIT
+            ),
+            "Improve the title"
+        );
     }
 
     #[test]

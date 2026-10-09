@@ -1084,17 +1084,21 @@ describe("command contributions", () => {
     );
   });
 
-  it("names the thread as soon as the first message is sent", () => {
-    // The header's title is computed from the first message, so it has to
-    // travel with the status line the send emits: the next full `state`
-    // message would repaint the whole view, and the header would lag behind
-    // the bubble until then.
+  it("shows a provisional title immediately and replaces it with the generated title", () => {
+    // The first-message summary prevents a blank header while the provider is
+    // working. The shared core then emits the generated title, which names both
+    // the open thread and a run parked while another thread is being read.
     const status = chat.slice(chat.indexOf("private broadcastStatus()"), chat.indexOf("get running"));
     assert.ok(status.includes("title: this.threadTitle()"), "the status carries the title");
     assert.ok(
       renderer.includes('titleLabel.textContent = message.title || "New chat"'),
       "and the webview paints it over the placeholder",
     );
+    const events = chat.slice(chat.indexOf("private handleEvent("), chat.indexOf("private handleExit("));
+    assert.ok(events.includes('event.type === "session_title"'));
+    assert.ok(events.includes("this.runTitle = title"));
+    assert.ok(events.includes("this.sessionTitle = title"));
+    assert.ok(events.includes("void this.syncSessions()"));
   });
 
   it("keeps a run's output in the thread it was started in", () => {

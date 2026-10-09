@@ -5202,6 +5202,9 @@ fn handle_agent_event(event: AgentEvent, app: &mut App) {
         // Nothing was painted for it here, so a request nobody answered is not
         // announced either: the tool result already says so in the transcript.
         AgentEvent::QuestionClosed { .. } => {}
+        AgentEvent::SessionTitle { title } => {
+            app.session_name = Some(title);
+        }
         // A message typed while the run was busy has now been delivered. Until
         // this point it lived in the composer's queued list, not the transcript,
         // the way Pi holds pending messages above the editor.
@@ -5726,6 +5729,22 @@ mod tests {
         );
         assert_eq!(app.items.len(), 1);
         assert!(matches!(&app.items[0], ChatItem::Assistant(text) if text == "summary"));
+    }
+
+    #[test]
+    fn generated_session_title_replaces_the_provisional_name() {
+        let mut app = test_app();
+        app.session_name = Some("/tmp/screenshot.png can you".into());
+        handle_agent_event(
+            AgentEvent::SessionTitle {
+                title: "Improve session title generation".into(),
+            },
+            &mut app,
+        );
+        assert_eq!(
+            app.session_name.as_deref(),
+            Some("Improve session title generation")
+        );
     }
 
     #[test]

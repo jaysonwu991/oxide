@@ -2533,6 +2533,7 @@ fn render_item_themed(
             let mut panel = Rows::default();
             let mut bg = theme.tool_success_bg;
             let command = bash_command(name, args);
+            let quiet_search = !*is_error && crate::tools::is_empty_search_result(name, output);
             if let Some(diff) = diff {
                 let failed = *is_error;
                 if failed {
@@ -2664,6 +2665,14 @@ fn render_item_themed(
                         tool_preview(name),
                     );
                 }
+            } else if quiet_search {
+                let subject = crate::tools::search_tool_summary(name, args).unwrap_or_default();
+                let mut result = format!("{subject} · 0 matches");
+                if *millis > 0 {
+                    result.push_str(" · ");
+                    result.push_str(&format_duration(*millis));
+                }
+                panel.extend(action_lines(name, &result, theme.success, bold, inner));
             } else {
                 let failed = *is_error;
                 if failed {
@@ -2687,7 +2696,10 @@ fn render_item_themed(
             }
             // Shell timings always show (Pi behavior); other tools only report
             // when they were slow enough to be worth calling out.
-            if *millis > 0 && (command.is_some() || *millis >= TOOL_TIME_THRESHOLD_MS) {
+            if !quiet_search
+                && *millis > 0
+                && (command.is_some() || *millis >= TOOL_TIME_THRESHOLD_MS)
+            {
                 panel.push(Line::from(""));
                 panel.push(Line::from(Span::styled(
                     format!("Took {}", format_duration(*millis)),
@@ -3371,6 +3383,9 @@ fn activity_summary(tool: &str, args: &str) -> String {
 }
 
 fn tool_arg_summary(name: &str, args: &str) -> String {
+    if let Some(summary) = crate::tools::search_tool_summary(name, args) {
+        return summary;
+    }
     if !is_file_tool(name) {
         return args.to_string();
     }
@@ -5299,8 +5314,8 @@ mod tests {
 
     #[test]
     fn a_search_without_hits_reports_one_short_line() {
-        // Pi's own wording, and never an empty string: the model has to be able
-        // to tell that the search ran and found nothing.
+        // The model/session retain Pi's non-empty sentinel, while the reader
+        // gets the distinct pattern, count and timing in one compact row.
         let mut lines = Vec::new();
         render_item(
             &ChatItem::ToolResult {
@@ -5309,19 +5324,24 @@ mod tests {
                 output: crate::tools::NO_MATCHES.into(),
                 is_error: false,
                 diff: None,
-                millis: 0,
+                millis: 569,
             },
             80,
             false,
             &mut lines,
         );
         let rendered: Vec<String> = lines.iter().map(line_text).collect();
-        assert!(
+        assert_eq!(panel_line(&lines), "→ grep \"nowhere\" · 0 matches · 569ms");
+        assert_eq!(
             rendered
                 .iter()
-                .any(|line| line.contains("No matches found")),
-            "{rendered:?}"
+                .filter(|line| !line.trim().is_empty())
+                .count(),
+            1
         );
+        assert!(!rendered
+            .iter()
+            .any(|line| line.contains("No matches found")));
     }
 
     #[test]
@@ -5563,7 +5583,7 @@ mod tests {
             &ChatItem::ToolResult {
                 name: "grep".into(),
                 args: r#"{"pattern":"x"}"#.into(),
-                output: crate::tools::NO_MATCHES.into(),
+                output: "src/main.rs:1:x".into(),
                 is_error: false,
                 diff: None,
                 millis: 900,
@@ -5584,7 +5604,7 @@ mod tests {
             &ChatItem::ToolResult {
                 name: "grep".into(),
                 args: r#"{"pattern":"x"}"#.into(),
-                output: crate::tools::NO_MATCHES.into(),
+                output: "src/main.rs:1:x".into(),
                 is_error: false,
                 diff: None,
                 millis: 40,

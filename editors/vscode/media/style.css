@@ -2306,6 +2306,16 @@ button.dialog-row:focus-visible {
   border-radius: 8px;
 }
 
+.tool.quiet {
+  margin-bottom: 2px;
+}
+
+.tool.quiet .thead {
+  min-height: 24px;
+  padding-top: 2px;
+  padding-bottom: 2px;
+}
+
 .tool:not(.expanded):not(.running):not(.error) .thead:hover {
   background: var(--vscode-toolbar-hoverBackground, rgba(128, 128, 128, 0.1));
 }
