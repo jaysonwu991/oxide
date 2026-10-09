@@ -292,7 +292,7 @@ pub fn specs(mcp: &McpRegistry) -> Vec<ToolSpec> {
         ),
         spec(
             "edit",
-            "Edit a single file using targeted text replacement. Every edits[].oldText must match a unique region of the file. A match is exact first; trailing whitespace differences and the `N|` line numbers that `read` prints are tolerated, so a block copied from a read result still lands. If the text has genuinely changed, the error names the closest region so you can copy it exactly. If two changes affect the same block or nearby lines, merge them into one edit instead of emitting overlapping edits. Do not include large unchanged regions just to connect distant changes.",
+            "Edit a single file using targeted text replacement. Put the file path once in the top-level `path`, not inside each edit. Every edits[].oldText must match a unique region of the file. A match is exact first; trailing whitespace differences and the `N|` line numbers that `read` prints are tolerated, so a block copied from a read result still lands. If the text has genuinely changed, the error names the closest region so you can copy it exactly. If two changes affect the same block or nearby lines, merge them into one edit instead of emitting overlapping edits. Do not include large unchanged regions just to connect distant changes.",
             json!({
                 "type": "object",
                 "properties": {
@@ -368,7 +368,7 @@ pub fn specs(mcp: &McpRegistry) -> Vec<ToolSpec> {
         ),
         spec(
             "patch",
-            "Apply a unified diff (the `---`/`+++`/`@@` format) to one or more files.",
+            "Apply a unified diff (the `---`/`+++`/`@@ -old,count +new,count @@` format) to one or more files. Include unchanged context around every hunk so its location is unambiguous.",
             json!({
                 "type": "object",
                 "properties": {
@@ -766,6 +766,10 @@ fn write_file(cwd: &Path, args: &Value) -> Result<ToolOutput> {
 struct Replacement {
     old: String,
     new: String,
+    /// Some models repeat the file on each replacement and omit the tool's
+    /// top-level `path`. Keep it so `edit` can recover that call when every
+    /// replacement names the same file.
+    path: Option<String>,
 }
 
 /// Normalizes the many shapes models send for `edit` into a list of
@@ -796,6 +800,7 @@ fn parse_edits(args: &Value) -> Result<Vec<Replacement>> {
         raw.push(Replacement {
             old: old.to_string(),
             new: new.to_string(),
+            path: None,
         });
     }
     if raw.is_empty() {
@@ -833,13 +838,24 @@ fn parse_edits_string(text: &str) -> Option<Value> {
 }
 
 fn collect_edits(value: &Value, out: &mut Vec<Replacement>) {
+    collect_edits_with_path(value, out, None);
+}
+
+fn edit_path_value(value: &Value) -> Option<&str> {
+    ["path", "file_path", "filePath"]
+        .into_iter()
+        .find_map(|key| value.get(key).and_then(Value::as_str))
+}
+
+fn collect_edits_with_path(value: &Value, out: &mut Vec<Replacement>, inherited: Option<&str>) {
     match value {
         Value::Array(items) => {
             for item in items {
-                collect_edits(item, out);
+                collect_edits_with_path(item, out, inherited);
             }
         }
         Value::Object(_) => {
+            let path = edit_path_value(value).or(inherited);
             if let (Some(old), Some(new)) = (
                 value.get("oldText").and_then(Value::as_str),
                 value.get("newText").and_then(Value::as_str),
@@ -847,7 +863,10 @@ fn collect_edits(value: &Value, out: &mut Vec<Replacement>) {
                 out.push(Replacement {
                     old: old.to_string(),
                     new: new.to_string(),
+                    path: path.map(str::to_string),
                 });
+            } else if let Some(edits) = value.get("edits") {
+                collect_edits_with_path(edits, out, path);
             }
         }
         _ => {}
@@ -1101,18 +1120,53 @@ fn strip_all_line_prefixes(text: &str) -> String {
 fn edit(cwd: &Path, args: &Value) -> Result<ToolOutput> {
     // Pi accepts `file_path` beside `path` (`coding-agent/src/core/tools/edit.ts`),
     // and some models spell it that way; either names the file to change.
-    let path = ["path", "file_path", "filePath"]
-        .into_iter()
-        .find_map(|key| args.get(key).and_then(Value::as_str))
-        .ok_or_else(|| {
-            anyhow::anyhow!(
-                "edit requires a `path` string, for example {{\"path\":\"src/main.rs\",\
-                 \"edits\":[{{\"oldText\":\"...\",\"newText\":\"...\"}}]}}{}",
-                received_keys(args)
-            )
-        })?;
-    let edits = parse_edits(args)?;
-    let full = resolve(cwd, path);
+    let top_level_path = edit_path_value(args);
+    let edits = match parse_edits(args) {
+        Ok(edits) => edits,
+        Err(_) if top_level_path.is_none() => anyhow::bail!(
+            "edit requires a `path` string, for example {{\"path\":\"src/main.rs\",\
+             \"edits\":[{{\"oldText\":\"...\",\"newText\":\"...\"}}]}}{}",
+            received_keys(args)
+        ),
+        Err(error) => return Err(error),
+    };
+    let nested_paths: BTreeSet<&str> = edits
+        .iter()
+        .filter_map(|replacement| replacement.path.as_deref())
+        .collect();
+    let path = match (top_level_path, nested_paths.len()) {
+        (Some(path), 0) => path.to_string(),
+        (Some(path), _) if nested_paths.iter().all(|nested| *nested == path) => path.to_string(),
+        (Some(path), _) => anyhow::bail!(
+            "edit received conflicting file paths: top-level path {path:?}, nested paths {}. Each \
+             edit call changes one file; split changes for different files into separate calls.",
+            nested_paths
+                .iter()
+                .map(|path| format!("{path:?}"))
+                .collect::<Vec<_>>()
+                .join(", ")
+        ),
+        (None, 1) => nested_paths
+            .iter()
+            .next()
+            .expect("one nested path")
+            .to_string(),
+        (None, count) if count > 1 => anyhow::bail!(
+            "edit received replacements for multiple files ({}). Each edit call changes one file; \
+             split them into separate calls.",
+            nested_paths
+                .iter()
+                .map(|path| format!("{path:?}"))
+                .collect::<Vec<_>>()
+                .join(", ")
+        ),
+        (None, _) => anyhow::bail!(
+            "edit requires a `path` string, for example {{\"path\":\"src/main.rs\",\
+             \"edits\":[{{\"oldText\":\"...\",\"newText\":\"...\"}}]}}{}",
+            received_keys(args)
+        ),
+    };
+    let full = resolve(cwd, &path);
     let raw = std::fs::read_to_string(&full)
         .with_context(|| format!("reading {} (use write to create new files)", full.display()))?;
 
@@ -1211,7 +1265,7 @@ fn edit(cwd: &Path, args: &Value) -> Result<ToolOutput> {
         &raw.replace("\r\n", "\n"),
         &final_content.replace("\r\n", "\n"),
     ) {
-        Some(diff) => Ok(output.with_diff(path, diff)),
+        Some(diff) => Ok(output.with_diff(&path, diff)),
         None => Ok(output),
     }
 }
@@ -1958,9 +2012,20 @@ fn patch(cwd: &Path, args: &Value) -> Result<ToolOutput> {
                 i += 1;
             }
 
-            let start = ((old_start as isize - 1) + offset).max(0) as usize;
-            let position = find_lines(&file_lines, &old_lines, start)
-                .with_context(|| format!("hunk at line {old_start} did not match {target}"))?;
+            let position = match old_start {
+                Some(old_start) => {
+                    let start = ((old_start as isize - 1) + offset).max(0) as usize;
+                    find_lines(&file_lines, &old_lines, start).with_context(|| {
+                        format!("hunk at line {old_start} did not match {target}")
+                    })?
+                }
+                None => find_unique_lines(&file_lines, &old_lines).with_context(|| {
+                    format!(
+                        "location-free hunk did not identify one unique region in {target}; add \
+                         unchanged context or a standard `@@ -old,count +new,count @@` header"
+                    )
+                })?,
+            };
             let _ = old_count;
             file_lines.splice(
                 position..position + old_lines.len(),
@@ -2368,17 +2433,19 @@ fn diff_target(header: &str) -> String {
     path.strip_prefix("b/").unwrap_or(path).to_string()
 }
 
-fn parse_hunk_header(header: &str) -> Result<(usize, usize)> {
+fn parse_hunk_header(header: &str) -> Result<(Option<usize>, usize)> {
     let body = header
         .trim_start_matches("@@")
         .split("@@")
         .next()
         .unwrap_or("")
         .trim();
-    let old = body
-        .split_whitespace()
-        .find(|part| part.starts_with('-'))
-        .context("malformed hunk header")?;
+    let Some(old) = body.split_whitespace().find(|part| part.starts_with('-')) else {
+        // Models often emit apply-patch-style bare `@@` markers while still
+        // supplying ordinary ---/+++ file headers. We can apply those safely
+        // when the removed/context block identifies exactly one region.
+        return Ok((None, 0));
+    };
     let mut parts = old.trim_start_matches('-').split(',');
     let start = parts
         .next()
@@ -2388,7 +2455,7 @@ fn parse_hunk_header(header: &str) -> Result<(usize, usize)> {
         .next()
         .and_then(|value| value.parse::<usize>().ok())
         .unwrap_or(1);
-    Ok((start, count))
+    Ok((Some(start), count))
 }
 
 fn find_lines(haystack: &[String], needle: &[String], start: usize) -> Option<usize> {
@@ -2400,6 +2467,18 @@ fn find_lines(haystack: &[String], needle: &[String], start: usize) -> Option<us
     }
     (start..=haystack.len() - needle.len())
         .find(|&index| haystack[index..index + needle.len()] == *needle)
+}
+
+/// Finds a location-free hunk only when its old/context lines identify one
+/// region. Guessing between repeated blocks could silently edit the wrong code.
+fn find_unique_lines(haystack: &[String], needle: &[String]) -> Option<usize> {
+    if needle.is_empty() || needle.len() > haystack.len() {
+        return None;
+    }
+    let mut matches = (0..=haystack.len() - needle.len())
+        .filter(|&index| haystack[index..index + needle.len()] == *needle);
+    let first = matches.next()?;
+    matches.next().is_none().then_some(first)
 }
 
 /// The timeout for a shell command. An explicit `timeout` (milliseconds, Pi's
@@ -3676,6 +3755,49 @@ mod tests {
             "She said \"hi\" - today\n"
         );
 
+        // Some providers put the path on each replacement and omit the
+        // top-level field. Recover the call when all replacements agree.
+        std::fs::write(dir.join("b.txt"), "before\n").unwrap();
+        let out = execute(
+            &call(
+                "edit",
+                json!({
+                    "edits": [{
+                        "file_path": "b.txt",
+                        "oldText": "before",
+                        "newText": "after"
+                    }]
+                }),
+            ),
+            &dir,
+            &mcp,
+            &progress,
+        )
+        .await;
+        assert!(!out.is_error, "{}", out.text);
+        assert_eq!(
+            std::fs::read_to_string(dir.join("b.txt")).unwrap(),
+            "after\n"
+        );
+
+        let out = execute(
+            &call(
+                "edit",
+                json!({
+                    "edits": [
+                        { "path": "a.txt", "oldText": "one", "newText": "ONE" },
+                        { "path": "b.txt", "oldText": "two", "newText": "TWO" }
+                    ]
+                }),
+            ),
+            &dir,
+            &mcp,
+            &progress,
+        )
+        .await;
+        assert!(out.is_error);
+        assert!(out.text.contains("multiple files"), "{}", out.text);
+
         // A wrong `path` is still named so the model can fix it.
         let out = execute(&call("edit", json!({ "edits": [] })), &dir, &mcp, &progress).await;
         assert!(out.is_error);
@@ -4773,6 +4895,47 @@ mod tests {
         assert_eq!(
             std::fs::read_to_string(dir.join("f.txt")).unwrap(),
             "one\nTWO\nthree\n"
+        );
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn applies_location_free_hunk_only_when_context_is_unique() {
+        let dir =
+            std::env::temp_dir().join(format!("oxide_location_free_patch_{}", std::process::id()));
+        std::fs::remove_dir_all(&dir).ok();
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("f.txt"), "one\ntwo\nthree\n").unwrap();
+
+        let diff = "\
+--- a/f.txt
++++ b/f.txt
+@@
+ two
+-three
++THREE
+";
+        let out = patch(&dir, &json!({ "diff": diff })).unwrap();
+        assert!(out.text.contains("f.txt"), "{}", out.text);
+        assert_eq!(
+            std::fs::read_to_string(dir.join("f.txt")).unwrap(),
+            "one\ntwo\nTHREE\n"
+        );
+
+        std::fs::write(dir.join("f.txt"), "same\nother\nsame\n").unwrap();
+        let ambiguous = "\
+--- a/f.txt
++++ b/f.txt
+@@
+-same
++changed
+";
+        let error = patch(&dir, &json!({ "diff": ambiguous })).unwrap_err();
+        assert!(error.to_string().contains("one unique region"), "{error:#}");
+        assert_eq!(
+            std::fs::read_to_string(dir.join("f.txt")).unwrap(),
+            "same\nother\nsame\n"
         );
 
         std::fs::remove_dir_all(&dir).ok();
