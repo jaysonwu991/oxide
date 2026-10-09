@@ -298,6 +298,12 @@ pub enum AgentEvent {
     QuestionClosed {
         id: u64,
     },
+    /// The model named a new conversation. This is session metadata rather
+    /// than a visible tool call, and every front-end updates the same row/header
+    /// from this event.
+    SessionTitle {
+        title: String,
+    },
     Text(String),
     /// A fragment of the model's reasoning, streamed before its answer.
     ThinkingDelta(String),
@@ -496,6 +502,9 @@ pub fn run_subagent(
                 AgentEvent::QuestionClosed { id } => {
                     let _ = tx.send(AgentEvent::QuestionClosed { id });
                 }
+                // Subagents have no persisted session and are never offered
+                // the title tool; ignore a synthetic event defensively.
+                AgentEvent::SessionTitle { .. } => {}
                 AgentEvent::SubagentActivity { agent, tool, args } => {
                     let _ = tx.send(AgentEvent::SubagentActivity { agent, tool, args });
                 }
@@ -636,6 +645,14 @@ async fn run_loop(
     // the top-of-loop poll does not immediately take the next one too: under
     // `one-at-a-time` only one queued message may precede a model call.
     let mut skip_steering_poll = false;
+    // A provider may return the metadata tool without the requested answer.
+    // Offer it at most once per run so an invalid title or an unwritable log
+    // cannot turn that fallback into an unbounded request loop.
+    let mut title_attempted = false;
+    // A title-only response is not a valid conversation message. Hold its
+    // usage until a real assistant response arrives, then persist both API
+    // requests on that response without replaying an empty assistant turn.
+    let mut pending_title_usage: Option<crate::compact::UsageRecord> = None;
 
     loop {
         if runtime.cancel.is_cancelled() {
@@ -644,6 +661,7 @@ async fn run_loop(
                 record_usage(&runtime.session, depth, &held, held_usage);
                 send_usage(&tx, held_usage);
             }
+            send_usage(&tx, pending_title_usage.take());
             finish(&runtime, &tx, messages, depth);
             return;
         }
@@ -740,6 +758,14 @@ async fn run_loop(
 
         let mut request = Vec::with_capacity(messages.len() + 3);
         let mut system = config.compose_system_prompt();
+        let offer_session_title = needs_session_title(&runtime, depth) && !title_attempted;
+        if offer_session_title {
+            system.push_str(concat!(
+                "\n\nThis unnamed conversation has no title. In this response, call ",
+                "`session_title` once alongside your complete user-facing response and any ",
+                "other tools; never call it alone."
+            ));
+        }
         // A loaded server's own instructions only reach the model here: one the
         // model loads itself says what it needs in its tool result, while an
         // auto-loaded server is never loaded by the model at all.
@@ -759,7 +785,7 @@ async fn run_loop(
             }
             None => false,
         };
-        let tool_specs = build_tool_specs(&config, &runtime, depth);
+        let tool_specs = build_tool_specs(&config, &runtime, depth, offer_session_title);
         // The held summary's text, replayed when the re-check is retried: the
         // failed attempt's item is discarded, and the retry has to restart the
         // bubble with the answer it is extending.
@@ -851,6 +877,7 @@ async fn run_loop(
                         record_usage(&runtime.session, depth, &held, held_usage);
                         send_usage(&tx, held_usage);
                     }
+                    send_usage(&tx, pending_title_usage.take());
                     let streamed = attempt_text
                         .lock()
                         .map(|text| text.clone())
@@ -878,6 +905,7 @@ async fn run_loop(
         }
 
         if turn.content.trim().is_empty() && turn.tool_calls.is_empty() {
+            send_usage(&tx, pending_title_usage.take());
             let _ = tx.send(AgentEvent::ThoughtDone {
                 millis: started.elapsed().as_millis() as u64,
             });
@@ -888,25 +916,72 @@ async fn run_loop(
             return;
         }
 
-        let usage = (turn.usage.total() > 0).then(|| crate::compact::UsageRecord::from(turn.usage));
-        if turn.content.trim().is_empty() && turn.tool_calls.is_empty() {
-            send_usage(&tx, usage);
-            let _ = tx.send(AgentEvent::ThoughtDone {
-                millis: started.elapsed().as_millis() as u64,
-            });
-            let _ = tx.send(AgentEvent::Error(
-                "the model returned an empty response".to_string(),
-            ));
-            finish(&runtime, &tx, messages, depth);
-            return;
-        }
+        let response_usage =
+            (turn.usage.total() > 0).then(|| crate::compact::UsageRecord::from(turn.usage));
 
-        let tool_calls = turn.tool_calls.clone();
-        let assistant = Message::assistant(turn.content, tool_calls.clone())
-            .with_thinking(turn.thinking.clone());
-        if let Some(usage) = &usage {
+        // A title is metadata, not an agent step. Consume it from the first
+        // response before constructing the assistant message: no tool result is
+        // sent back to the provider, so naming a simple conversation does not
+        // trigger a second full-context model request or enter session history.
+        let had_title_call = turn
+            .tool_calls
+            .iter()
+            .any(|call| internal_tool(&call.function.name));
+        let first_title_attempt = had_title_call && !title_attempted;
+        title_attempted |= had_title_call;
+        for call in turn
+            .tool_calls
+            .iter()
+            .filter(|call| internal_tool(&call.function.name))
+        {
+            let _ = set_session_title(&runtime, &tx, &call.function.arguments, depth);
+        }
+        let tool_calls: Vec<_> = turn
+            .tool_calls
+            .iter()
+            .filter(|call| !internal_tool(&call.function.name))
+            .cloned()
+            .collect();
+        let has_answer = !turn.content.trim().is_empty();
+        if let Some(usage) = &response_usage {
             context_tokens = usage.input + usage.cache_read + usage.cache_write + usage.output;
         }
+
+        // Some providers insist on returning a tool call without the answer we
+        // explicitly requested beside it. The title attempt is consumed and
+        // its tool is now absent, so retry once as an ordinary response. Compliant
+        // providers take the zero-extra-request path above; this fallback pays
+        // another request only to avoid ending the user's turn with no answer.
+        if first_title_attempt && tool_calls.is_empty() && !has_answer {
+            pending_title_usage = combine_usage(pending_title_usage, response_usage);
+            let _ = tx.send(AgentEvent::ThoughtDone {
+                millis: started.elapsed().as_millis() as u64,
+            });
+            continue;
+        }
+
+        // An internal-only response after the one permitted title attempt is
+        // empty from the conversation's perspective. Stop instead of storing a
+        // bare assistant role or asking the provider forever.
+        if tool_calls.is_empty() && !has_answer {
+            send_usage(
+                &tx,
+                combine_usage(pending_title_usage.take(), response_usage),
+            );
+            let _ = tx.send(AgentEvent::ThoughtDone {
+                millis: started.elapsed().as_millis() as u64,
+            });
+            let _ = tx.send(AgentEvent::Error(
+                "the model returned no user-facing response after setting the session title"
+                    .to_string(),
+            ));
+            finish(&runtime, &tx, messages, depth);
+            return;
+        }
+
+        let usage = combine_usage(pending_title_usage.take(), response_usage);
+        let assistant = Message::assistant(turn.content, tool_calls.clone())
+            .with_thinking(turn.thinking.clone());
 
         if tool_calls.is_empty() {
             // The final empty check and closing the input queues are one atomic
@@ -1401,7 +1476,12 @@ async fn auto_load_mcp_for_user_text<'a>(
     while loads.join_next().await.is_some() {}
 }
 
-fn build_tool_specs(config: &Config, runtime: &Runtime, depth: usize) -> Vec<ToolSpec> {
+fn build_tool_specs(
+    config: &Config,
+    runtime: &Runtime,
+    depth: usize,
+    offer_session_title: bool,
+) -> Vec<ToolSpec> {
     let mut specs = tools::specs(&runtime.mcp);
     if depth < MAX_TASK_DEPTH
         && config
@@ -1424,7 +1504,22 @@ fn build_tool_specs(config: &Config, runtime: &Runtime, depth: usize) -> Vec<Too
     specs.push(memory_spec());
     specs.push(lsp_spec());
     specs.retain(|spec| tool_enabled(config, &spec.function.name));
+    if offer_session_title && needs_session_title(runtime, depth) {
+        specs.push(session_title_spec());
+    }
     specs
+}
+
+fn needs_session_title(runtime: &Runtime, depth: usize) -> bool {
+    depth == 0
+        && runtime
+            .session
+            .as_ref()
+            .is_some_and(|session| session.name().is_none())
+}
+
+fn internal_tool(name: &str) -> bool {
+    name == "session_title"
 }
 
 fn tool_enabled(config: &Config, name: &str) -> bool {
@@ -2267,6 +2362,9 @@ async fn dispatch(
     depth: usize,
     progress: &tools::Progress,
 ) -> tools::ToolOutput {
+    if call.function.name == "session_title" {
+        return set_session_title(runtime, events, &call.function.arguments, depth);
+    }
     if !tool_enabled(config, &call.function.name) {
         return tools::ToolOutput::error(format!("tool `{}` is disabled", call.function.name));
     }
@@ -2299,6 +2397,38 @@ async fn dispatch(
         "diagnostics" => lsp_diagnostics(runtime, cwd, &call.function.arguments).await,
         _ => tools::execute(call, cwd, &runtime.mcp, progress).await,
     }
+}
+
+fn set_session_title(
+    runtime: &Runtime,
+    events: &UnboundedSender<AgentEvent>,
+    arguments: &str,
+    depth: usize,
+) -> tools::ToolOutput {
+    let Some(session) = runtime.session.as_ref().filter(|_| depth == 0) else {
+        return tools::ToolOutput::error(
+            "session titles are available only in a persisted primary conversation",
+        );
+    };
+    if let Some(title) = session.name() {
+        return tools::ToolOutput::text(format!("Session is already named `{title}`."));
+    }
+    let args: Value = serde_json::from_str(arguments).unwrap_or(Value::Null);
+    let title = args
+        .get("title")
+        .and_then(Value::as_str)
+        .map(|value| crate::title::generated(value, crate::title::TITLE_LIMIT))
+        .unwrap_or_default();
+    if title.is_empty() {
+        return tools::ToolOutput::error("title must contain a short descriptive phrase");
+    }
+    if let Err(err) = session.set_name(&title) {
+        return tools::ToolOutput::error(format!("could not save session title: {err:#}"));
+    }
+    let _ = events.send(AgentEvent::SessionTitle {
+        title: title.clone(),
+    });
+    tools::ToolOutput::text(format!("Session title set to `{title}`."))
 }
 
 /// Older agent-level tools still return a string. Interpret their established
@@ -2463,6 +2593,7 @@ async fn task_inner(
             AgentEvent::QuestionClosed { id } => {
                 let _ = events.send(AgentEvent::QuestionClosed { id });
             }
+            AgentEvent::SessionTitle { .. } => {}
             // A no-tool step commits here, not at the next tool call.
             AgentEvent::ThoughtDone { .. } => committed = output.len(),
             AgentEvent::ToolProgress { .. }
@@ -2786,6 +2917,32 @@ fn ask_spec() -> ToolSpec {
     }
 }
 
+fn session_title_spec() -> ToolSpec {
+    ToolSpec {
+        kind: "function",
+        function: FunctionSpec {
+            name: "session_title".to_string(),
+            description: concat!(
+                "Set the hidden display title for this conversation. Use a specific 3–7 word ",
+                "task or outcome phrase; omit paths, URLs, and filler, and paraphrase rather than ",
+                "copying the user's opening. Call once and never alone."
+            )
+            .to_string(),
+            parameters: json!({
+                "type": "object",
+                "properties": {
+                    "title": {
+                        "type": "string",
+                        "description": "A specific 3–7 word conversation title"
+                    }
+                },
+                "required": ["title"],
+                "additionalProperties": false
+            }),
+        },
+    }
+}
+
 fn memory(config: &Config, arguments: &str) -> String {
     match memory_inner(config, arguments) {
         Ok(output) => output,
@@ -3034,6 +3191,50 @@ mod tests {
         }
     }
 
+    #[tokio::test]
+    async fn session_title_is_persisted_once_and_removed_from_tools() {
+        let dir = std::env::temp_dir().join(format!(
+            "oxide_title_{}_{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let log = SessionLog::create_in(&dir, &dir).unwrap();
+        let mut runtime = test_runtime().await;
+        runtime.session = Some(Arc::new(log));
+        let config = Config::default();
+        assert!(
+            build_tool_specs(&config, &runtime, 0, needs_session_title(&runtime, 0))
+                .iter()
+                .any(|spec| spec.function.name == "session_title")
+        );
+
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        let output = set_session_title(
+            &runtime,
+            &tx,
+            r#"{"title":"Title: Diagnose private GitHub links"}"#,
+            0,
+        );
+        assert!(!output.is_error);
+        assert_eq!(
+            runtime.session.as_ref().unwrap().name().as_deref(),
+            Some("Diagnose private GitHub links")
+        );
+        assert!(matches!(
+            rx.try_recv(),
+            Ok(AgentEvent::SessionTitle { title }) if title == "Diagnose private GitHub links"
+        ));
+        assert!(
+            !build_tool_specs(&config, &runtime, 0, needs_session_title(&runtime, 0))
+                .iter()
+                .any(|spec| spec.function.name == "session_title")
+        );
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
     /// Deadline for a scripted request to arrive, so a test that stops short of
     /// its scripted turns fails instead of waiting out the job timeout. It has
     /// to outlast a single tool call: a `bash` command may legitimately run for
@@ -3203,6 +3404,15 @@ mod tests {
         ])
     }
 
+    fn titled_answer_body(title: &str, answer: &str) -> String {
+        let arguments = json!({"title": title}).to_string();
+        openai_sse(&[
+            json!({"choices": [{"delta": {"content": answer}, "finish_reason": null}]}),
+            json!({"choices": [{"delta": {"tool_calls": [{"index": 0, "id": "title_1", "function": {"name": "session_title", "arguments": arguments}}]}, "finish_reason": null}]}),
+            json!({"choices": [{"delta": {}, "finish_reason": "tool_calls"}]}),
+        ])
+    }
+
     fn answer_body(text: &str) -> String {
         openai_sse(&[
             serde_json::json!({"choices": [{"delta": {"content": text}, "finish_reason": null}]}),
@@ -3212,6 +3422,187 @@ mod tests {
 
     fn empty_body() -> String {
         openai_sse(&[serde_json::json!({"choices": [{"delta": {}, "finish_reason": "stop"}]})])
+    }
+
+    #[tokio::test]
+    async fn title_metadata_uses_the_first_model_request_without_a_tool_card() {
+        let (addr, server) = sse_server(vec![titled_answer_body(
+            "Improve session title generation",
+            "Implemented the shared title flow.",
+        )])
+        .await;
+        let dir = std::env::temp_dir().join(format!(
+            "oxide_title_turn_{}_{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let log = Arc::new(SessionLog::create_in(&dir, &dir).unwrap());
+        let mut runtime = test_runtime().await;
+        runtime.session = Some(Arc::clone(&log));
+        let config = Config {
+            provider: "deepseek".into(),
+            model: "deepseek-flash".into(),
+            base_url: format!("http://{addr}"),
+            api_key: "sk-test".into(),
+            ..Config::default()
+        };
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+
+        run(
+            config,
+            dir.clone(),
+            vec![Message::user("please improve this")],
+            tx,
+            runtime,
+        )
+        .await;
+
+        let requests = server.await.unwrap();
+        assert_eq!(requests.len(), 1, "title generation must not add a request");
+        assert!(requests[0].contains("session_title"));
+        let mut title = None;
+        let mut exposed_tool = false;
+        let mut finished = None;
+        while let Ok(event) = rx.try_recv() {
+            match event {
+                AgentEvent::SessionTitle { title: value } => title = Some(value),
+                AgentEvent::ToolCall { name, .. } if name == "session_title" => exposed_tool = true,
+                AgentEvent::Finished(messages) => finished = Some(messages),
+                _ => {}
+            }
+        }
+        assert_eq!(title.as_deref(), Some("Improve session title generation"));
+        assert!(!exposed_tool, "title metadata must not become a tool card");
+        assert_eq!(log.name().as_deref(), title.as_deref());
+        let finished = finished.expect("the run finished");
+        assert!(finished
+            .iter()
+            .flat_map(|message| message.tool_calls.iter().flatten())
+            .all(|call| call.function.name != "session_title"));
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[tokio::test]
+    async fn a_title_only_provider_response_is_retried_for_the_actual_answer() {
+        let title_args = json!({"title": "Improve session title generation"}).to_string();
+        let (addr, server) = sse_server(vec![
+            tool_call_body("session_title", &title_args),
+            answer_body("Implemented the shared title flow."),
+        ])
+        .await;
+        let dir = std::env::temp_dir().join(format!(
+            "oxide_title_retry_{}_{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let log = Arc::new(SessionLog::create_in(&dir, &dir).unwrap());
+        let mut runtime = test_runtime().await;
+        runtime.session = Some(Arc::clone(&log));
+        let config = Config {
+            provider: "deepseek".into(),
+            model: "deepseek-flash".into(),
+            base_url: format!("http://{addr}"),
+            api_key: "sk-test".into(),
+            ..Config::default()
+        };
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+
+        run(
+            config,
+            dir.clone(),
+            vec![Message::user("please improve this")],
+            tx,
+            runtime,
+        )
+        .await;
+
+        let requests = server.await.unwrap();
+        assert_eq!(requests.len(), 2);
+        assert!(requests[0].contains("session_title"));
+        assert!(!requests[1].contains("session_title"));
+        let mut text = String::new();
+        while let Ok(event) = rx.try_recv() {
+            if let AgentEvent::Text(delta) = event {
+                text.push_str(&delta);
+            }
+        }
+        assert_eq!(text, "Implemented the shared title flow.");
+        assert_eq!(
+            log.name().as_deref(),
+            Some("Improve session title generation")
+        );
+        let stored = log.messages().unwrap();
+        let assistants: Vec<_> = stored
+            .iter()
+            .filter(|message| message.role == "assistant")
+            .collect();
+        assert_eq!(assistants.len(), 1, "{stored:?}");
+        assert_eq!(
+            assistants[0].display().as_deref(),
+            Some("Implemented the shared title flow.")
+        );
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[tokio::test]
+    async fn an_invalid_title_is_attempted_once_without_storing_an_empty_message() {
+        let title_args = json!({"title": "   "}).to_string();
+        let (addr, server) = sse_server(vec![
+            tool_call_body("session_title", &title_args),
+            answer_body("Continued without a generated title."),
+        ])
+        .await;
+        let dir = std::env::temp_dir().join(format!(
+            "oxide_invalid_title_{}_{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let log = Arc::new(SessionLog::create_in(&dir, &dir).unwrap());
+        let mut runtime = test_runtime().await;
+        runtime.session = Some(Arc::clone(&log));
+        let config = Config {
+            provider: "deepseek".into(),
+            model: "deepseek-flash".into(),
+            base_url: format!("http://{addr}"),
+            api_key: "sk-test".into(),
+            ..Config::default()
+        };
+        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+
+        run(
+            config,
+            dir.clone(),
+            vec![Message::user("please improve this")],
+            tx,
+            runtime,
+        )
+        .await;
+
+        let requests = server.await.unwrap();
+        assert_eq!(requests.len(), 2);
+        assert!(requests[0].contains("session_title"));
+        assert!(!requests[1].contains("session_title"));
+        assert!(log.name().is_none());
+        let stored = log.messages().unwrap();
+        let assistants: Vec<_> = stored
+            .iter()
+            .filter(|message| message.role == "assistant")
+            .collect();
+        assert_eq!(assistants.len(), 1, "{stored:?}");
+        assert_eq!(
+            assistants[0].display().as_deref(),
+            Some("Continued without a generated title.")
+        );
+        std::fs::remove_dir_all(dir).unwrap();
     }
 
     /// A text delta with no `[DONE]` and no stop reason, paired with a
@@ -4155,7 +4546,7 @@ for line in sys.stdin:
     async fn ask_is_not_offered_without_an_asker() {
         let config = Config::default();
         let runtime = test_runtime().await;
-        let names: Vec<String> = build_tool_specs(&config, &runtime, 0)
+        let names: Vec<String> = build_tool_specs(&config, &runtime, 0, false)
             .into_iter()
             .map(|spec| spec.function.name)
             .collect();
@@ -4170,7 +4561,7 @@ for line in sys.stdin:
                 }]))
             })
         }));
-        let names: Vec<String> = build_tool_specs(&config, &runtime, 0)
+        let names: Vec<String> = build_tool_specs(&config, &runtime, 0, false)
             .into_iter()
             .map(|spec| spec.function.name)
             .collect();

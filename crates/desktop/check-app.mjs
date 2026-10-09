@@ -172,6 +172,9 @@ class StubElement {
     (this.attributes ||= {})[name] = String(value);
     if (name === "type") this.type = String(value);
   }
+  removeAttribute(name) {
+    if (this.attributes) delete this.attributes[name];
+  }
   getAttribute(name) {
     return (this.attributes || {})[name] ?? null;
   }
@@ -3652,6 +3655,45 @@ check(
   shortCard.hint.tabIndex === -1 && shortCard.head.tabIndex === -1,
   `hint tabIndex: ${shortCard.hint.tabIndex}, head tabIndex: ${shortCard.head.tabIndex}`,
 );
+// A run may probe several related names in one batch. Empty searches still
+// matter to the investigation, but repeating a path-only header followed by a
+// separate "No matches found" line made every distinct probe look identical
+// and doubled the height of the log. Keep each probe as one meaningful line.
+const emptySearch = app.startTool(
+  "grep",
+  JSON.stringify({
+    path: "/home/dev/Projects/falcon",
+    pattern: "generateUrl|ums-generation",
+    ignoreCase: true,
+  }),
+);
+app.finishTool(emptySearch, "No matches found", { elapsed: 569 });
+check(
+  "named an empty search by its pattern rather than its shared path",
+  emptySearch.head.children[2].textContent.startsWith('"generateUrl|ums-generation"') &&
+    emptySearch.head.title.includes("/home/dev/Projects/falcon"),
+  `${emptySearch.head.children[2].textContent} / ${emptySearch.head.title}`,
+);
+check(
+  "kept an empty search to one compact transcript line",
+  emptySearch.pre.hidden === true &&
+    emptySearch.hint.hidden === true &&
+    emptySearch.tstate.textContent === "0 matches · 569ms" &&
+    String(emptySearch.block.className).includes("quiet") &&
+    /\.tool\.quiet \{ padding-top: 2px; padding-bottom: 2px; \}/.test(sheet),
+  `body hidden: ${emptySearch.pre.hidden}, state: ${emptySearch.tstate.textContent}, class: ${emptySearch.block.className}`,
+);
+emptySearch.head.onclick();
+emptySearch.head.onkeydown?.({ key: "Enter", preventDefault() {} });
+check(
+  "left a quiet search inert when its header was pressed",
+  emptySearch.expanded === false &&
+    emptySearch.pre.hidden === true &&
+    emptySearch.head.tabIndex === -1 &&
+    emptySearch.head.getAttribute("role") === null &&
+    !String(emptySearch.block.className).includes("foldable"),
+  `expanded: ${emptySearch.expanded}, body hidden: ${emptySearch.pre.hidden}, class: ${emptySearch.block.className}`,
+);
 check(
   "offered the caret and the pointer only on a card that folds",
   String(editCard.block.className).includes("foldable") &&
@@ -5398,6 +5440,19 @@ check(
 // One conversation's reply is not painted into another's transcript, which is
 // what being able to read one while the other runs depends on.
 calls.length = 0;
+const provisionalRunTitle = app.state.runTitle;
+const provisionalParkedTitle = app.state.parked?.title;
+app.handleEvent({ type: "session_title", runId: 62, title: "Diagnose private GitHub links" });
+check(
+  "replaced the provisional title for a running thread",
+  app.state.runTitle === "Diagnose private GitHub links" &&
+    app.state.parked?.title === "Diagnose private GitHub links",
+  `${app.state.runTitle} / ${app.state.parked?.title}`,
+);
+// The rest of this scenario asserts the fixture's original label in notices;
+// put it back after isolating the metadata-event behavior above.
+app.state.runTitle = provisionalRunTitle;
+if (app.state.parked) app.state.parked.title = provisionalParkedTitle;
 app.handleEvent({
   type: "message_update",
   runId: 62,

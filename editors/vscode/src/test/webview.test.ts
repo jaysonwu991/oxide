@@ -3370,6 +3370,37 @@ describe("webview tool card", () => {
     },
   });
 
+  it("distinguishes search patterns and collapses an empty result to one line", () => {
+    const { byId, send } = loadRenderer();
+    send(stateMessage());
+    const transcript = byId.get("transcript")!;
+    send({
+      k: "push",
+      item: {
+        id: 8,
+        kind: "tool",
+        name: "grep",
+        args: JSON.stringify({
+          path: "/home/dev/Projects/falcon",
+          pattern: "generateUrl|ums-generation",
+        }),
+        output: "No matches found",
+        elapsed: 569,
+        running: false,
+        isError: false,
+      },
+    });
+
+    const card = find(transcript, "tool")!;
+    assert.equal(card.classList.contains("quiet"), true);
+    assert.equal(card.querySelector(".targ")!.textContent, '"generateUrl|ums-generation"');
+    assert.match(String((card.querySelector(".thead") as unknown as { title: string }).title), /falcon/);
+    assert.equal(card.querySelector(".tstate")!.textContent, "0 matches · 569ms");
+    assert.equal(card.querySelector(".tbody")!.hidden, true);
+    assert.equal(card.querySelector(".thint")!.hidden, true);
+    assert.equal(card.querySelector(".thead")!.getAttribute("role"), null);
+  });
+
   it("shows an edited file as one line with its counts", () => {
     const { byId, send } = loadRenderer();
     send(stateMessage());

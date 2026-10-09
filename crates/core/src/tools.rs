@@ -5,6 +5,7 @@ use crate::media;
 use anyhow::{Context, Result};
 use serde_json::{json, Value};
 use std::collections::{BTreeSet, HashMap, VecDeque};
+use std::ffi::OsString;
 use std::io::{BufRead, BufReader, BufWriter, Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
@@ -127,6 +128,39 @@ pub fn canonical_tool_name(name: &str) -> &str {
         "webfetch" => "webfetch",
         other => other,
     }
+}
+
+/// A compact, human-readable subject for a built-in search call. Search cards
+/// must lead with the pattern: leading with the project path makes several
+/// different searches look identical in every front-end.
+pub fn search_tool_summary(name: &str, args: &str) -> Option<String> {
+    if !matches!(canonical_tool_name(name), "grep" | "glob") {
+        return None;
+    }
+    let value: Value = serde_json::from_str(args).ok()?;
+    let pattern = value.get("pattern")?.as_str()?.trim();
+    if pattern.is_empty() {
+        return None;
+    }
+    let mut summary = serde_json::to_string(pattern).ok()?;
+    if let Some(path) = value
+        .get("path")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|path| !path.is_empty() && *path != ".")
+    {
+        summary.push_str(" · ");
+        summary.push_str(path);
+    }
+    Some(summary)
+}
+
+/// Whether a successful built-in search returned its exact no-hit sentinel.
+/// The raw text remains in the event/session stream for the model; renderers
+/// use this classification to replace a large body with a compact count.
+pub fn is_empty_search_result(name: &str, output: &str) -> bool {
+    matches!(canonical_tool_name(name), "grep" | "glob")
+        && matches!(output.trim(), NO_MATCHES | NO_FILES_FOUND)
 }
 
 /// A line-numbered diff of a file edit, carried alongside the tool result for
@@ -258,7 +292,7 @@ pub fn specs(mcp: &McpRegistry) -> Vec<ToolSpec> {
         ),
         spec(
             "edit",
-            "Edit a single file using targeted text replacement. Every edits[].oldText must match a unique region of the file. A match is exact first; trailing whitespace differences and the `N|` line numbers that `read` prints are tolerated, so a block copied from a read result still lands. If the text has genuinely changed, the error names the closest region so you can copy it exactly. If two changes affect the same block or nearby lines, merge them into one edit instead of emitting overlapping edits. Do not include large unchanged regions just to connect distant changes.",
+            "Edit a single file using targeted text replacement. Put the file path once in the top-level `path`, not inside each edit. Every edits[].oldText must match a unique region of the file. A match is exact first; trailing whitespace differences and the `N|` line numbers that `read` prints are tolerated, so a block copied from a read result still lands. If the text has genuinely changed, the error names the closest region so you can copy it exactly. If two changes affect the same block or nearby lines, merge them into one edit instead of emitting overlapping edits. Do not include large unchanged regions just to connect distant changes.",
             json!({
                 "type": "object",
                 "properties": {
@@ -334,7 +368,7 @@ pub fn specs(mcp: &McpRegistry) -> Vec<ToolSpec> {
         ),
         spec(
             "patch",
-            "Apply a unified diff (the `---`/`+++`/`@@` format) to one or more files.",
+            "Apply a unified diff (the `---`/`+++`/`@@ -old,count +new,count @@` format) to one or more files. Include unchanged context around every hunk so its location is unambiguous.",
             json!({
                 "type": "object",
                 "properties": {
@@ -345,7 +379,7 @@ pub fn specs(mcp: &McpRegistry) -> Vec<ToolSpec> {
         ),
         spec(
             "webfetch",
-            "Fetch a URL and return its contents as Markdown (default), readable plain text, or raw HTML. GitHub and GitLab pull requests, merge requests, and issues should be read with their `gh`/`glab` CLIs instead.",
+            "Fetch a URL and return its contents as Markdown (default), readable plain text, or raw HTML. GitHub and GitLab repository files, pull requests, merge requests, and issues should be read with their authenticated `gh`/`glab` CLIs instead; an organization repository may be private even when its URL uses the public forge hostname.",
             json!({
                 "type": "object",
                 "properties": {
@@ -732,6 +766,10 @@ fn write_file(cwd: &Path, args: &Value) -> Result<ToolOutput> {
 struct Replacement {
     old: String,
     new: String,
+    /// Some models repeat the file on each replacement and omit the tool's
+    /// top-level `path`. Keep it so `edit` can recover that call when every
+    /// replacement names the same file.
+    path: Option<String>,
 }
 
 /// Normalizes the many shapes models send for `edit` into a list of
@@ -762,6 +800,7 @@ fn parse_edits(args: &Value) -> Result<Vec<Replacement>> {
         raw.push(Replacement {
             old: old.to_string(),
             new: new.to_string(),
+            path: None,
         });
     }
     if raw.is_empty() {
@@ -799,13 +838,24 @@ fn parse_edits_string(text: &str) -> Option<Value> {
 }
 
 fn collect_edits(value: &Value, out: &mut Vec<Replacement>) {
+    collect_edits_with_path(value, out, None);
+}
+
+fn edit_path_value(value: &Value) -> Option<&str> {
+    ["path", "file_path", "filePath"]
+        .into_iter()
+        .find_map(|key| value.get(key).and_then(Value::as_str))
+}
+
+fn collect_edits_with_path(value: &Value, out: &mut Vec<Replacement>, inherited: Option<&str>) {
     match value {
         Value::Array(items) => {
             for item in items {
-                collect_edits(item, out);
+                collect_edits_with_path(item, out, inherited);
             }
         }
         Value::Object(_) => {
+            let path = edit_path_value(value).or(inherited);
             if let (Some(old), Some(new)) = (
                 value.get("oldText").and_then(Value::as_str),
                 value.get("newText").and_then(Value::as_str),
@@ -813,7 +863,10 @@ fn collect_edits(value: &Value, out: &mut Vec<Replacement>) {
                 out.push(Replacement {
                     old: old.to_string(),
                     new: new.to_string(),
+                    path: path.map(str::to_string),
                 });
+            } else if let Some(edits) = value.get("edits") {
+                collect_edits_with_path(edits, out, path);
             }
         }
         _ => {}
@@ -1067,18 +1120,53 @@ fn strip_all_line_prefixes(text: &str) -> String {
 fn edit(cwd: &Path, args: &Value) -> Result<ToolOutput> {
     // Pi accepts `file_path` beside `path` (`coding-agent/src/core/tools/edit.ts`),
     // and some models spell it that way; either names the file to change.
-    let path = ["path", "file_path", "filePath"]
-        .into_iter()
-        .find_map(|key| args.get(key).and_then(Value::as_str))
-        .ok_or_else(|| {
-            anyhow::anyhow!(
-                "edit requires a `path` string, for example {{\"path\":\"src/main.rs\",\
-                 \"edits\":[{{\"oldText\":\"...\",\"newText\":\"...\"}}]}}{}",
-                received_keys(args)
-            )
-        })?;
-    let edits = parse_edits(args)?;
-    let full = resolve(cwd, path);
+    let top_level_path = edit_path_value(args);
+    let edits = match parse_edits(args) {
+        Ok(edits) => edits,
+        Err(_) if top_level_path.is_none() => anyhow::bail!(
+            "edit requires a `path` string, for example {{\"path\":\"src/main.rs\",\
+             \"edits\":[{{\"oldText\":\"...\",\"newText\":\"...\"}}]}}{}",
+            received_keys(args)
+        ),
+        Err(error) => return Err(error),
+    };
+    let nested_paths: BTreeSet<&str> = edits
+        .iter()
+        .filter_map(|replacement| replacement.path.as_deref())
+        .collect();
+    let path = match (top_level_path, nested_paths.len()) {
+        (Some(path), 0) => path.to_string(),
+        (Some(path), _) if nested_paths.iter().all(|nested| *nested == path) => path.to_string(),
+        (Some(path), _) => anyhow::bail!(
+            "edit received conflicting file paths: top-level path {path:?}, nested paths {}. Each \
+             edit call changes one file; split changes for different files into separate calls.",
+            nested_paths
+                .iter()
+                .map(|path| format!("{path:?}"))
+                .collect::<Vec<_>>()
+                .join(", ")
+        ),
+        (None, 1) => nested_paths
+            .iter()
+            .next()
+            .expect("one nested path")
+            .to_string(),
+        (None, count) if count > 1 => anyhow::bail!(
+            "edit received replacements for multiple files ({}). Each edit call changes one file; \
+             split them into separate calls.",
+            nested_paths
+                .iter()
+                .map(|path| format!("{path:?}"))
+                .collect::<Vec<_>>()
+                .join(", ")
+        ),
+        (None, _) => anyhow::bail!(
+            "edit requires a `path` string, for example {{\"path\":\"src/main.rs\",\
+             \"edits\":[{{\"oldText\":\"...\",\"newText\":\"...\"}}]}}{}",
+            received_keys(args)
+        ),
+    };
+    let full = resolve(cwd, &path);
     let raw = std::fs::read_to_string(&full)
         .with_context(|| format!("reading {} (use write to create new files)", full.display()))?;
 
@@ -1177,7 +1265,7 @@ fn edit(cwd: &Path, args: &Value) -> Result<ToolOutput> {
         &raw.replace("\r\n", "\n"),
         &final_content.replace("\r\n", "\n"),
     ) {
-        Some(diff) => Ok(output.with_diff(path, diff)),
+        Some(diff) => Ok(output.with_diff(&path, diff)),
         None => Ok(output),
     }
 }
@@ -1649,7 +1737,10 @@ fn finish_hits(mut hits: Vec<String>, limit: usize) -> String {
 /// for every `find`, `grep`, and forge URL; successful lookups avoid repeatedly
 /// splitting and probing PATH, while misses remain visible to a later install.
 fn command_path(name: &str) -> Option<PathBuf> {
-    let path = std::env::var_os("PATH")?;
+    // Use the same enriched PATH as `bash`: a desktop process may not inherit
+    // the terminal's package-manager directories, and treating an installed
+    // `gh`, `rg`, or `fd` as absent sends the agent down a slower fallback.
+    let path = bash_path().or_else(|| std::env::var_os("PATH"))?;
     type CommandCache = HashMap<(std::ffi::OsString, String), PathBuf>;
     static CACHE: OnceLock<std::sync::Mutex<CommandCache>> = OnceLock::new();
     let cache = CACHE.get_or_init(|| std::sync::Mutex::new(HashMap::new()));
@@ -1921,9 +2012,20 @@ fn patch(cwd: &Path, args: &Value) -> Result<ToolOutput> {
                 i += 1;
             }
 
-            let start = ((old_start as isize - 1) + offset).max(0) as usize;
-            let position = find_lines(&file_lines, &old_lines, start)
-                .with_context(|| format!("hunk at line {old_start} did not match {target}"))?;
+            let position = match old_start {
+                Some(old_start) => {
+                    let start = ((old_start as isize - 1) + offset).max(0) as usize;
+                    find_lines(&file_lines, &old_lines, start).with_context(|| {
+                        format!("hunk at line {old_start} did not match {target}")
+                    })?
+                }
+                None => find_unique_lines(&file_lines, &old_lines).with_context(|| {
+                    format!(
+                        "location-free hunk did not identify one unique region in {target}; add \
+                         unchanged context or a standard `@@ -old,count +new,count @@` header"
+                    )
+                })?,
+            };
             let _ = old_count;
             file_lines.splice(
                 position..position + old_lines.len(),
@@ -1987,6 +2089,9 @@ async fn webfetch_guarded(args: &Value, mcp: &McpRegistry) -> Result<String> {
         if command_exists(route.cli) {
             return Ok(forge_hint(route, item, url));
         }
+    }
+    if let Some(hint) = github_file_hint(url) {
+        return Ok(hint);
     }
     webfetch(args).await
 }
@@ -2101,6 +2206,67 @@ fn forge_hint(route: &ForgeRoute, item: &ForgeItem, url: &str) -> String {
         view = item.view,
         comment = item.comment,
     )
+}
+
+/// Routes a GitHub `blob` link through the authenticated contents API. A
+/// browser-style fetch cannot distinguish a private repository from a missing
+/// page (both commonly answer 404), while `gh api` carries the user's GitHub
+/// credential and can return the raw file at the revision named by the URL.
+fn github_file_hint(url: &str) -> Option<String> {
+    let parsed = reqwest::Url::parse(url).ok()?;
+    if parsed.host_str()? != "github.com" {
+        return None;
+    }
+    let segments: Vec<&str> = parsed.path_segments()?.collect();
+    if segments.len() < 5 || segments[2] != "blob" {
+        return None;
+    }
+    let owner = segments[0];
+    let repo = segments[1];
+    let revision = segments[3];
+    let path = segments[4..].join("/");
+    if owner.is_empty() || repo.is_empty() || revision.is_empty() || path.is_empty() {
+        return None;
+    }
+    let availability = if command_exists("gh") {
+        String::new()
+    } else {
+        " The `gh` CLI is not currently available; use an existing local checkout or install and authenticate `gh` before retrying.".to_string()
+    };
+    // Only a full commit id fixes the ref/path boundary. For a named ref,
+    // `/blob/feature/foo/src/lib.rs` may mean branch `feature/foo` and path
+    // `src/lib.rs`; treating the first segment as the ref produces a plausible
+    // but wrong authenticated request.
+    if revision.len() != 40 || !revision.chars().all(|ch| ch.is_ascii_hexdigit()) {
+        return Some(format!(
+            "This URL is a GitHub repository file, which may be private. Do not use webfetch or raw.githubusercontent.com: both are unauthenticated and a private file commonly looks like a 404. Use an existing authenticated checkout or `gh repo clone {owner}/{repo}` and resolve the complete ref and file path from the original URL. Do not assume `{revision}` is the whole ref: GitHub branch and tag names can contain `/`.{availability}"
+        ));
+    }
+    let endpoint = format!("repos/{owner}/{repo}/contents/{path}?ref={revision}");
+    let line_hint = github_line_range(parsed.fragment()).map_or_else(String::new, |range| {
+        format!(" To read only the linked lines, pipe it to `sed -n '{range}p'`.")
+    });
+    Some(format!(
+        "This URL is a GitHub repository file, which may be private. Do not use webfetch or raw.githubusercontent.com: both are unauthenticated and a private file commonly looks like a 404. Read it with `gh api -H 'Accept: application/vnd.github.raw+json' '{endpoint}'`.{line_hint}{availability}"
+    ))
+}
+
+fn github_line_range(fragment: Option<&str>) -> Option<String> {
+    let fragment = fragment?;
+    let (start, end) = fragment
+        .split_once("-L")
+        .map_or((fragment, None), |(start, end)| (start, Some(end)));
+    let start = start.strip_prefix('L')?;
+    if start.is_empty() || !start.chars().all(|ch| ch.is_ascii_digit()) {
+        return None;
+    }
+    match end {
+        Some(end) if !end.is_empty() && end.chars().all(|ch| ch.is_ascii_digit()) => {
+            Some(format!("{start},{end}"))
+        }
+        Some(_) => None,
+        None => Some(start.to_string()),
+    }
 }
 
 async fn webfetch(args: &Value) -> Result<String> {
@@ -2276,17 +2442,19 @@ fn diff_target(header: &str) -> String {
     path.strip_prefix("b/").unwrap_or(path).to_string()
 }
 
-fn parse_hunk_header(header: &str) -> Result<(usize, usize)> {
+fn parse_hunk_header(header: &str) -> Result<(Option<usize>, usize)> {
     let body = header
         .trim_start_matches("@@")
         .split("@@")
         .next()
         .unwrap_or("")
         .trim();
-    let old = body
-        .split_whitespace()
-        .find(|part| part.starts_with('-'))
-        .context("malformed hunk header")?;
+    let Some(old) = body.split_whitespace().find(|part| part.starts_with('-')) else {
+        // Models often emit apply-patch-style bare `@@` markers while still
+        // supplying ordinary ---/+++ file headers. We can apply those safely
+        // when the removed/context block identifies exactly one region.
+        return Ok((None, 0));
+    };
     let mut parts = old.trim_start_matches('-').split(',');
     let start = parts
         .next()
@@ -2296,7 +2464,7 @@ fn parse_hunk_header(header: &str) -> Result<(usize, usize)> {
         .next()
         .and_then(|value| value.parse::<usize>().ok())
         .unwrap_or(1);
-    Ok((start, count))
+    Ok((Some(start), count))
 }
 
 fn find_lines(haystack: &[String], needle: &[String], start: usize) -> Option<usize> {
@@ -2308,6 +2476,18 @@ fn find_lines(haystack: &[String], needle: &[String], start: usize) -> Option<us
     }
     (start..=haystack.len() - needle.len())
         .find(|&index| haystack[index..index + needle.len()] == *needle)
+}
+
+/// Finds a location-free hunk only when its old/context lines identify one
+/// region. Guessing between repeated blocks could silently edit the wrong code.
+fn find_unique_lines(haystack: &[String], needle: &[String]) -> Option<usize> {
+    if needle.is_empty() || needle.len() > haystack.len() {
+        return None;
+    }
+    let mut matches = (0..=haystack.len() - needle.len())
+        .filter(|&index| haystack[index..index + needle.len()] == *needle);
+    let first = matches.next()?;
+    matches.next().is_none().then_some(first)
 }
 
 /// The timeout for a shell command. An explicit `timeout` (milliseconds, Pi's
@@ -2372,6 +2552,48 @@ fn is_build_command(command: &str) -> bool {
     })
 }
 
+/// The PATH inherited by a desktop app is commonly much smaller than the one
+/// in the user's terminal. Keep that inherited order, but put conventional
+/// user tool directories in front when they exist so a `bash` call can find
+/// the same Node, Rust, Python and Homebrew-installed commands without every
+/// prompt first having to rediscover and export their locations.
+fn bash_path() -> Option<OsString> {
+    let inherited = std::env::var_os("PATH").unwrap_or_default();
+    let home = dirs::home_dir()?;
+    Some(augment_path(&inherited, &home))
+}
+
+fn augment_path(inherited: &std::ffi::OsStr, home: &Path) -> OsString {
+    let mut paths = Vec::new();
+    let candidates = [
+        home.join(".local/bin"),
+        home.join(".volta/bin"),
+        home.join(".cargo/bin"),
+        home.join(".pyenv/shims"),
+        home.join(".pyenv/bin"),
+        home.join(".asdf/shims"),
+        home.join(".local/share/mise/shims"),
+        home.join(".bun/bin"),
+        home.join("Library/pnpm"),
+        home.join("go/bin"),
+        PathBuf::from("/opt/homebrew/bin"),
+        PathBuf::from("/opt/homebrew/sbin"),
+        PathBuf::from("/home/linuxbrew/.linuxbrew/bin"),
+        PathBuf::from("/home/linuxbrew/.linuxbrew/sbin"),
+        PathBuf::from("/usr/local/bin"),
+    ];
+    for path in candidates
+        .into_iter()
+        .filter(|path| path.is_dir())
+        .chain(std::env::split_paths(inherited))
+    {
+        if !paths.contains(&path) {
+            paths.push(path);
+        }
+    }
+    std::env::join_paths(paths).unwrap_or_else(|_| inherited.to_os_string())
+}
+
 async fn bash(cwd: &Path, args: &Value, progress: &Progress) -> Result<String> {
     let command = required_string(args, "bash", "command", r#"{"command":"cargo test"}"#)?;
     let secs = bash_timeout_secs(args, command);
@@ -2388,6 +2610,9 @@ async fn bash(cwd: &Path, args: &Value, progress: &Progress) -> Result<String> {
         shell.arg("-c").arg(command);
         shell
     };
+    if let Some(path) = bash_path() {
+        shell.env("PATH", path);
+    }
     crate::child::detach_terminal(&mut shell);
 
     let mut child = shell
@@ -3170,6 +3395,26 @@ mod tests {
     }
 
     #[test]
+    fn search_display_leads_with_pattern_and_recognizes_only_exact_no_hit_results() {
+        let args = r#"{"path":"/work/falcon","pattern":"generateUrl|ums-generation"}"#;
+        assert_eq!(
+            search_tool_summary("grep", args).as_deref(),
+            Some(r#""generateUrl|ums-generation" · /work/falcon"#)
+        );
+        assert_eq!(
+            search_tool_summary("find", r#"{"pattern":"**/*.rs"}"#).as_deref(),
+            Some(r#""**/*.rs""#)
+        );
+        assert!(is_empty_search_result("grep", NO_MATCHES));
+        assert!(is_empty_search_result("glob", NO_FILES_FOUND));
+        assert!(!is_empty_search_result("read", NO_MATCHES));
+        assert!(!is_empty_search_result(
+            "grep",
+            "No matches found\nadditional detail"
+        ));
+    }
+
+    #[test]
     fn specs_expose_pi_tool_names() {
         let mcp = McpRegistry::default();
         let names: Vec<String> = specs(&mcp).into_iter().map(|s| s.function.name).collect();
@@ -3514,6 +3759,49 @@ mod tests {
             std::fs::read_to_string(dir.join("a.txt")).unwrap(),
             "She said \"hi\" - today\n"
         );
+
+        // Some providers put the path on each replacement and omit the
+        // top-level field. Recover the call when all replacements agree.
+        std::fs::write(dir.join("b.txt"), "before\n").unwrap();
+        let out = execute(
+            &call(
+                "edit",
+                json!({
+                    "edits": [{
+                        "file_path": "b.txt",
+                        "oldText": "before",
+                        "newText": "after"
+                    }]
+                }),
+            ),
+            &dir,
+            &mcp,
+            &progress,
+        )
+        .await;
+        assert!(!out.is_error, "{}", out.text);
+        assert_eq!(
+            std::fs::read_to_string(dir.join("b.txt")).unwrap(),
+            "after\n"
+        );
+
+        let out = execute(
+            &call(
+                "edit",
+                json!({
+                    "edits": [
+                        { "path": "a.txt", "oldText": "one", "newText": "ONE" },
+                        { "path": "b.txt", "oldText": "two", "newText": "TWO" }
+                    ]
+                }),
+            ),
+            &dir,
+            &mcp,
+            &progress,
+        )
+        .await;
+        assert!(out.is_error);
+        assert!(out.text.contains("multiple files"), "{}", out.text);
 
         // A wrong `path` is still named so the model can fix it.
         let out = execute(&call("edit", json!({ "edits": [] })), &dir, &mcp, &progress).await;
@@ -3887,6 +4175,41 @@ mod tests {
         assert!(forge_route("https://github.com/owner/repo").is_none());
         assert!(forge_route("https://github.com/owner/repo/issues").is_none());
         assert!(forge_route("https://example.com/owner/repo/pull/1").is_none());
+    }
+
+    #[test]
+    fn github_blob_links_route_to_the_authenticated_contents_api() {
+        let url = "https://github.com/Skyscanner/web-platform/blob/\
+                   e704e161bb89ff6a75f3e5c8ea54982d43712df3/\
+                   libs/shared/footer/searchPatternData.ts#L4699-L4702";
+        let hint = github_file_hint(url).unwrap();
+
+        assert!(hint.contains("may be private"), "{hint}");
+        assert!(hint.contains("Do not use webfetch"), "{hint}");
+        assert!(hint.contains("gh api"), "{hint}");
+        assert!(
+            hint.contains(
+                "repos/Skyscanner/web-platform/contents/libs/shared/footer/\
+                           searchPatternData.ts?ref=e704e161bb89ff6a75f3e5c8ea54982d43712df3"
+            ),
+            "{hint}"
+        );
+        assert!(hint.contains("sed -n '4699,4702p'"), "{hint}");
+
+        let named_ref =
+            github_file_hint("https://github.com/owner/repo/blob/feature/foo/src/lib.rs#L12")
+                .unwrap();
+        assert!(named_ref.contains("branch and tag names can contain `/`"));
+        assert!(named_ref.contains("gh repo clone owner/repo"));
+        assert!(
+            !named_ref.contains("contents/foo/src/lib.rs?ref=feature"),
+            "{named_ref}"
+        );
+
+        assert!(github_file_hint("https://github.com/owner/repo").is_none());
+        assert!(github_file_hint("https://example.com/owner/repo/blob/main/a.rs").is_none());
+        assert_eq!(github_line_range(Some("L12")), Some("12".to_string()));
+        assert_eq!(github_line_range(Some("heading")), None);
     }
 
     #[tokio::test]
@@ -4265,6 +4588,47 @@ mod tests {
         );
     }
 
+    #[test]
+    fn bash_path_adds_existing_user_tools_without_duplicates() {
+        let dir = std::env::temp_dir().join(format!(
+            "oxide_bash_path_{}_{}",
+            std::process::id(),
+            TRUNCATION_ID.fetch_add(1, Ordering::Relaxed)
+        ));
+        let inherited_bin = dir.join("inherited/bin");
+        let local_bin = dir.join(".local/bin");
+        let volta_bin = dir.join(".volta/bin");
+        std::fs::create_dir_all(&inherited_bin).unwrap();
+        std::fs::create_dir_all(&local_bin).unwrap();
+        std::fs::create_dir_all(&volta_bin).unwrap();
+
+        let inherited = std::env::join_paths([&inherited_bin, &local_bin]).unwrap();
+        let augmented: Vec<PathBuf> =
+            std::env::split_paths(&augment_path(&inherited, &dir)).collect();
+
+        assert_eq!(augmented[0], local_bin);
+        assert_eq!(augmented[1], volta_bin);
+        assert_eq!(
+            augmented
+                .iter()
+                .filter(|path| **path == dir.join(".local/bin"))
+                .count(),
+            1
+        );
+        assert!(augmented.contains(&inherited_bin));
+        assert!(!augmented.contains(&dir.join(".cargo/bin")));
+
+        // The list is rebuilt for every command, so a tool directory created
+        // after a long-running app starts becomes visible without a restart.
+        let cargo_bin = dir.join(".cargo/bin");
+        std::fs::create_dir_all(&cargo_bin).unwrap();
+        let refreshed: Vec<PathBuf> =
+            std::env::split_paths(&augment_path(&inherited, &dir)).collect();
+        assert!(refreshed.contains(&cargo_bin));
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
     #[tokio::test]
     async fn bash_does_not_wait_for_a_background_output_holder() {
         let dir = std::env::temp_dir().join(format!("oxide_bash_bg_{}", std::process::id()));
@@ -4554,6 +4918,47 @@ mod tests {
         assert_eq!(
             std::fs::read_to_string(dir.join("f.txt")).unwrap(),
             "one\nTWO\nthree\n"
+        );
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn applies_location_free_hunk_only_when_context_is_unique() {
+        let dir =
+            std::env::temp_dir().join(format!("oxide_location_free_patch_{}", std::process::id()));
+        std::fs::remove_dir_all(&dir).ok();
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("f.txt"), "one\ntwo\nthree\n").unwrap();
+
+        let diff = "\
+--- a/f.txt
++++ b/f.txt
+@@
+ two
+-three
++THREE
+";
+        let out = patch(&dir, &json!({ "diff": diff })).unwrap();
+        assert!(out.text.contains("f.txt"), "{}", out.text);
+        assert_eq!(
+            std::fs::read_to_string(dir.join("f.txt")).unwrap(),
+            "one\ntwo\nTHREE\n"
+        );
+
+        std::fs::write(dir.join("f.txt"), "same\nother\nsame\n").unwrap();
+        let ambiguous = "\
+--- a/f.txt
++++ b/f.txt
+@@
+-same
++changed
+";
+        let error = patch(&dir, &json!({ "diff": ambiguous })).unwrap_err();
+        assert!(error.to_string().contains("one unique region"), "{error:#}");
+        assert_eq!(
+            std::fs::read_to_string(dir.join("f.txt")).unwrap(),
+            "same\nother\nsame\n"
         );
 
         std::fs::remove_dir_all(&dir).ok();

@@ -797,12 +797,10 @@ export class ChatController {
     );
   }
 
-  /// The thread's title: a known session name, else a one-line summary of the
-  /// first message the user sent. Empty for a thread that has not started; the
-  /// view shows a neutral placeholder for that, and the notification falls back
-  /// to a plain "finished" message. Claude Code names a conversation the same
-  /// way, so the panel says what the thread is about instead of repeating the
-  /// folder name.
+  /// The thread's generated session name, with a one-line summary of its first
+  /// message as the provisional fallback while the first response is in flight
+  /// or when an older CLI does not emit title metadata. Empty for a thread that
+  /// has not started, so the view can show a neutral placeholder.
   private threadTitle(): string {
     return this.sessionTitle || this.transcript.title();
   }
@@ -1712,6 +1710,12 @@ export class ChatController {
     // the conversation they belong to, never to the one on screen.
     const run = this.runTranscript ?? this.transcript;
     const id = run.sessionId;
+    if (event.type === "session_title" && typeof event.title === "string" && event.title.trim()) {
+      const title = event.title.trim();
+      this.runTitle = title;
+      if (run === this.transcript) this.sessionTitle = title;
+      void this.syncSessions();
+    }
     const messages = run.apply(event);
     if (run === this.transcript) this.broadcastItem(messages);
     // A request that holds the turn is answered in the transcript it was painted

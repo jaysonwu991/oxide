@@ -261,6 +261,10 @@ pub fn event_json(event: &AgentEvent) -> Option<Value> {
             "type": "question_closed",
             "id": id,
         }),
+        AgentEvent::SessionTitle { title } => json!({
+            "type": "session_title",
+            "title": title,
+        }),
         AgentEvent::Thought { .. } => json!({ "type": "thinking" }),
         // The model step finished streaming. A consumer that renders the live
         // transcript uses this as the step boundary: text and reasoning after
@@ -692,6 +696,13 @@ mod tests {
         let closed = event_json(&AgentEvent::QuestionClosed { id: 8 }).unwrap();
         assert_eq!(closed["type"], "question_closed");
         assert_eq!(closed["id"], 8);
+
+        let title = event_json(&AgentEvent::SessionTitle {
+            title: "Diagnose private GitHub links".into(),
+        })
+        .unwrap();
+        assert_eq!(title["type"], "session_title");
+        assert_eq!(title["title"], "Diagnose private GitHub links");
     }
 
     #[test]

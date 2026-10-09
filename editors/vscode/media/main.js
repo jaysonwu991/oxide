@@ -486,8 +486,10 @@
     } catch (error) {
       args = {};
     }
+    const search = name === "grep" || name === "find" || name === "glob";
     const subject = String(
-      args.command ||
+      (search && args.pattern) ||
+        args.command ||
         args.path ||
         args.pattern ||
         args.query ||
@@ -500,6 +502,7 @@
       .replace(/\s+/g, " ")
       .trim();
     let text = subject;
+    if (search && subject) text = JSON.stringify(subject);
     if (name === "bash" && subject) {
       const parts = subject
         .split(/\s*(?:&&|\|\||;)\s*/)
@@ -509,8 +512,19 @@
     }
     return {
       text: text.length > 96 ? `${text.slice(0, 96)}…` : text,
-      title: subject || text,
+      title: search && args.path ? `${JSON.stringify(subject)} · ${args.path}` : subject || text,
     };
+  }
+
+  function isQuietSearchResult(item) {
+    const search = item.name === "grep" || item.name === "find" || item.name === "glob";
+    const output = String(item.output || "").trim();
+    return Boolean(
+      search &&
+        !item.running &&
+        !item.isError &&
+        (output === "No matches found" || output === "No files found matching pattern"),
+    );
   }
 
   function toolPath(args) {
@@ -672,7 +686,9 @@
   /// the change card at the end of the run. `running` cards show the live output.
   function paintTool(entry) {
     const item = entry.item;
+    const quietSearch = isQuietSearchResult(item);
     entry.el.classList.toggle("running", Boolean(item.running));
+    entry.el.classList.toggle("quiet", quietSearch);
     // Each state is named as a boolean: `classList.toggle` with an absent force
     // is a plain toggle, so an item that omits one would otherwise flip a class
     // on (`error`, for a replayed card, whose `isError` is not set).
@@ -699,7 +715,9 @@
     // the call began, so a repaint and the other pane agree. A stored call took
     // no time here and carries none.
     const spent = item.elapsed ? ` ${formatDuration(item.elapsed)}` : "";
-    entry.state.textContent = `${mark}${counts ? ` ${counts}` : ""}${spent}`;
+    entry.state.textContent = quietSearch
+      ? `0 matches${item.elapsed ? ` · ${formatDuration(item.elapsed)}` : ""}`
+      : `${mark}${counts ? ` ${counts}` : ""}${spent}`;
     entry.state.title = item.unknown ? "Resumed thread: how this call ended was not recorded" : "";
     entry.inline = Boolean(item.diff);
     if (item.diff && !entry.diffEl) {
@@ -708,7 +726,15 @@
       entry.el.appendChild(entry.diffEl);
     }
     if (entry.diffEl) entry.diffEl.hidden = !entry.expanded;
-    if (entry.expanded) {
+    if (quietSearch) {
+      entry.inline = false;
+      entry.folded = false;
+      entry.expanded = false;
+      entry.pre.hidden = true;
+      entry.hint.hidden = true;
+      setFold(entry, false);
+      return;
+    } else if (entry.expanded) {
       entry.pre.hidden = false;
       setOutput(entry.pre, item.output, false);
       // A card with something folded offers the fold back where the output
