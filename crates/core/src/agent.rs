@@ -645,6 +645,14 @@ async fn run_loop(
     // the top-of-loop poll does not immediately take the next one too: under
     // `one-at-a-time` only one queued message may precede a model call.
     let mut skip_steering_poll = false;
+    // A provider may return the metadata tool without the requested answer.
+    // Offer it at most once per run so an invalid title or an unwritable log
+    // cannot turn that fallback into an unbounded request loop.
+    let mut title_attempted = false;
+    // A title-only response is not a valid conversation message. Hold its
+    // usage until a real assistant response arrives, then persist both API
+    // requests on that response without replaying an empty assistant turn.
+    let mut pending_title_usage: Option<crate::compact::UsageRecord> = None;
 
     loop {
         if runtime.cancel.is_cancelled() {
@@ -653,6 +661,7 @@ async fn run_loop(
                 record_usage(&runtime.session, depth, &held, held_usage);
                 send_usage(&tx, held_usage);
             }
+            send_usage(&tx, pending_title_usage.take());
             finish(&runtime, &tx, messages, depth);
             return;
         }
@@ -749,7 +758,8 @@ async fn run_loop(
 
         let mut request = Vec::with_capacity(messages.len() + 3);
         let mut system = config.compose_system_prompt();
-        if needs_session_title(&runtime, depth) {
+        let offer_session_title = needs_session_title(&runtime, depth) && !title_attempted;
+        if offer_session_title {
             system.push_str(concat!(
                 "\n\nThis unnamed conversation has no title. In this response, call ",
                 "`session_title` once alongside your complete user-facing response and any ",
@@ -775,7 +785,7 @@ async fn run_loop(
             }
             None => false,
         };
-        let tool_specs = build_tool_specs(&config, &runtime, depth);
+        let tool_specs = build_tool_specs(&config, &runtime, depth, offer_session_title);
         // The held summary's text, replayed when the re-check is retried: the
         // failed attempt's item is discarded, and the retry has to restart the
         // bubble with the answer it is extending.
@@ -867,6 +877,7 @@ async fn run_loop(
                         record_usage(&runtime.session, depth, &held, held_usage);
                         send_usage(&tx, held_usage);
                     }
+                    send_usage(&tx, pending_title_usage.take());
                     let streamed = attempt_text
                         .lock()
                         .map(|text| text.clone())
@@ -894,6 +905,7 @@ async fn run_loop(
         }
 
         if turn.content.trim().is_empty() && turn.tool_calls.is_empty() {
+            send_usage(&tx, pending_title_usage.take());
             let _ = tx.send(AgentEvent::ThoughtDone {
                 millis: started.elapsed().as_millis() as u64,
             });
@@ -904,18 +916,8 @@ async fn run_loop(
             return;
         }
 
-        let usage = (turn.usage.total() > 0).then(|| crate::compact::UsageRecord::from(turn.usage));
-        if turn.content.trim().is_empty() && turn.tool_calls.is_empty() {
-            send_usage(&tx, usage);
-            let _ = tx.send(AgentEvent::ThoughtDone {
-                millis: started.elapsed().as_millis() as u64,
-            });
-            let _ = tx.send(AgentEvent::Error(
-                "the model returned an empty response".to_string(),
-            ));
-            finish(&runtime, &tx, messages, depth);
-            return;
-        }
+        let response_usage =
+            (turn.usage.total() > 0).then(|| crate::compact::UsageRecord::from(turn.usage));
 
         // A title is metadata, not an agent step. Consume it from the first
         // response before constructing the assistant message: no tool result is
@@ -925,6 +927,8 @@ async fn run_loop(
             .tool_calls
             .iter()
             .any(|call| internal_tool(&call.function.name));
+        let first_title_attempt = had_title_call && !title_attempted;
+        title_attempted |= had_title_call;
         for call in turn
             .tool_calls
             .iter()
@@ -939,25 +943,45 @@ async fn run_loop(
             .cloned()
             .collect();
         let has_answer = !turn.content.trim().is_empty();
-        let assistant = Message::assistant(turn.content, tool_calls.clone())
-            .with_thinking(turn.thinking.clone());
-        if let Some(usage) = &usage {
+        if let Some(usage) = &response_usage {
             context_tokens = usage.input + usage.cache_read + usage.cache_write + usage.output;
         }
 
         // Some providers insist on returning a tool call without the answer we
-        // explicitly requested beside it. The title is already saved and its
-        // tool is now absent, so retry once as an ordinary response. Compliant
+        // explicitly requested beside it. The title attempt is consumed and
+        // its tool is now absent, so retry once as an ordinary response. Compliant
         // providers take the zero-extra-request path above; this fallback pays
         // another request only to avoid ending the user's turn with no answer.
-        if had_title_call && tool_calls.is_empty() && !has_answer {
-            record_usage(&runtime.session, depth, &assistant, usage);
-            send_usage(&tx, usage);
+        if first_title_attempt && tool_calls.is_empty() && !has_answer {
+            pending_title_usage = combine_usage(pending_title_usage, response_usage);
             let _ = tx.send(AgentEvent::ThoughtDone {
                 millis: started.elapsed().as_millis() as u64,
             });
             continue;
         }
+
+        // An internal-only response after the one permitted title attempt is
+        // empty from the conversation's perspective. Stop instead of storing a
+        // bare assistant role or asking the provider forever.
+        if tool_calls.is_empty() && !has_answer {
+            send_usage(
+                &tx,
+                combine_usage(pending_title_usage.take(), response_usage),
+            );
+            let _ = tx.send(AgentEvent::ThoughtDone {
+                millis: started.elapsed().as_millis() as u64,
+            });
+            let _ = tx.send(AgentEvent::Error(
+                "the model returned no user-facing response after setting the session title"
+                    .to_string(),
+            ));
+            finish(&runtime, &tx, messages, depth);
+            return;
+        }
+
+        let usage = combine_usage(pending_title_usage.take(), response_usage);
+        let assistant = Message::assistant(turn.content, tool_calls.clone())
+            .with_thinking(turn.thinking.clone());
 
         if tool_calls.is_empty() {
             // The final empty check and closing the input queues are one atomic
@@ -1452,7 +1476,12 @@ async fn auto_load_mcp_for_user_text<'a>(
     while loads.join_next().await.is_some() {}
 }
 
-fn build_tool_specs(config: &Config, runtime: &Runtime, depth: usize) -> Vec<ToolSpec> {
+fn build_tool_specs(
+    config: &Config,
+    runtime: &Runtime,
+    depth: usize,
+    offer_session_title: bool,
+) -> Vec<ToolSpec> {
     let mut specs = tools::specs(&runtime.mcp);
     if depth < MAX_TASK_DEPTH
         && config
@@ -1475,7 +1504,7 @@ fn build_tool_specs(config: &Config, runtime: &Runtime, depth: usize) -> Vec<Too
     specs.push(memory_spec());
     specs.push(lsp_spec());
     specs.retain(|spec| tool_enabled(config, &spec.function.name));
-    if needs_session_title(runtime, depth) {
+    if offer_session_title && needs_session_title(runtime, depth) {
         specs.push(session_title_spec());
     }
     specs
@@ -3176,9 +3205,11 @@ mod tests {
         let mut runtime = test_runtime().await;
         runtime.session = Some(Arc::new(log));
         let config = Config::default();
-        assert!(build_tool_specs(&config, &runtime, 0)
-            .iter()
-            .any(|spec| spec.function.name == "session_title"));
+        assert!(
+            build_tool_specs(&config, &runtime, 0, needs_session_title(&runtime, 0))
+                .iter()
+                .any(|spec| spec.function.name == "session_title")
+        );
 
         let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
         let output = set_session_title(
@@ -3196,9 +3227,11 @@ mod tests {
             rx.try_recv(),
             Ok(AgentEvent::SessionTitle { title }) if title == "Diagnose private GitHub links"
         ));
-        assert!(!build_tool_specs(&config, &runtime, 0)
-            .iter()
-            .any(|spec| spec.function.name == "session_title"));
+        assert!(
+            !build_tool_specs(&config, &runtime, 0, needs_session_title(&runtime, 0))
+                .iter()
+                .any(|spec| spec.function.name == "session_title")
+        );
         std::fs::remove_dir_all(dir).unwrap();
     }
 
@@ -3503,6 +3536,71 @@ mod tests {
         assert_eq!(
             log.name().as_deref(),
             Some("Improve session title generation")
+        );
+        let stored = log.messages().unwrap();
+        let assistants: Vec<_> = stored
+            .iter()
+            .filter(|message| message.role == "assistant")
+            .collect();
+        assert_eq!(assistants.len(), 1, "{stored:?}");
+        assert_eq!(
+            assistants[0].display().as_deref(),
+            Some("Implemented the shared title flow.")
+        );
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[tokio::test]
+    async fn an_invalid_title_is_attempted_once_without_storing_an_empty_message() {
+        let title_args = json!({"title": "   "}).to_string();
+        let (addr, server) = sse_server(vec![
+            tool_call_body("session_title", &title_args),
+            answer_body("Continued without a generated title."),
+        ])
+        .await;
+        let dir = std::env::temp_dir().join(format!(
+            "oxide_invalid_title_{}_{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let log = Arc::new(SessionLog::create_in(&dir, &dir).unwrap());
+        let mut runtime = test_runtime().await;
+        runtime.session = Some(Arc::clone(&log));
+        let config = Config {
+            provider: "deepseek".into(),
+            model: "deepseek-flash".into(),
+            base_url: format!("http://{addr}"),
+            api_key: "sk-test".into(),
+            ..Config::default()
+        };
+        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+
+        run(
+            config,
+            dir.clone(),
+            vec![Message::user("please improve this")],
+            tx,
+            runtime,
+        )
+        .await;
+
+        let requests = server.await.unwrap();
+        assert_eq!(requests.len(), 2);
+        assert!(requests[0].contains("session_title"));
+        assert!(!requests[1].contains("session_title"));
+        assert!(log.name().is_none());
+        let stored = log.messages().unwrap();
+        let assistants: Vec<_> = stored
+            .iter()
+            .filter(|message| message.role == "assistant")
+            .collect();
+        assert_eq!(assistants.len(), 1, "{stored:?}");
+        assert_eq!(
+            assistants[0].display().as_deref(),
+            Some("Continued without a generated title.")
         );
         std::fs::remove_dir_all(dir).unwrap();
     }
@@ -4448,7 +4546,7 @@ for line in sys.stdin:
     async fn ask_is_not_offered_without_an_asker() {
         let config = Config::default();
         let runtime = test_runtime().await;
-        let names: Vec<String> = build_tool_specs(&config, &runtime, 0)
+        let names: Vec<String> = build_tool_specs(&config, &runtime, 0, false)
             .into_iter()
             .map(|spec| spec.function.name)
             .collect();
@@ -4463,7 +4561,7 @@ for line in sys.stdin:
                 }]))
             })
         }));
-        let names: Vec<String> = build_tool_specs(&config, &runtime, 0)
+        let names: Vec<String> = build_tool_specs(&config, &runtime, 0, false)
             .into_iter()
             .map(|spec| spec.function.name)
             .collect();

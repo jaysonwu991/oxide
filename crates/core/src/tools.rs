@@ -2228,15 +2228,24 @@ fn github_file_hint(url: &str) -> Option<String> {
     if owner.is_empty() || repo.is_empty() || revision.is_empty() || path.is_empty() {
         return None;
     }
-    let endpoint = format!("repos/{owner}/{repo}/contents/{path}?ref={revision}");
-    let line_hint = github_line_range(parsed.fragment()).map_or_else(String::new, |range| {
-        format!(" To read only the linked lines, pipe it to `sed -n '{range}p'`.")
-    });
     let availability = if command_exists("gh") {
         String::new()
     } else {
         " The `gh` CLI is not currently available; use an existing local checkout or install and authenticate `gh` before retrying.".to_string()
     };
+    // Only a full commit id fixes the ref/path boundary. For a named ref,
+    // `/blob/feature/foo/src/lib.rs` may mean branch `feature/foo` and path
+    // `src/lib.rs`; treating the first segment as the ref produces a plausible
+    // but wrong authenticated request.
+    if revision.len() != 40 || !revision.chars().all(|ch| ch.is_ascii_hexdigit()) {
+        return Some(format!(
+            "This URL is a GitHub repository file, which may be private. Do not use webfetch or raw.githubusercontent.com: both are unauthenticated and a private file commonly looks like a 404. Use an existing authenticated checkout or `gh repo clone {owner}/{repo}` and resolve the complete ref and file path from the original URL. Do not assume `{revision}` is the whole ref: GitHub branch and tag names can contain `/`.{availability}"
+        ));
+    }
+    let endpoint = format!("repos/{owner}/{repo}/contents/{path}?ref={revision}");
+    let line_hint = github_line_range(parsed.fragment()).map_or_else(String::new, |range| {
+        format!(" To read only the linked lines, pipe it to `sed -n '{range}p'`.")
+    });
     Some(format!(
         "This URL is a GitHub repository file, which may be private. Do not use webfetch or raw.githubusercontent.com: both are unauthenticated and a private file commonly looks like a 404. Read it with `gh api -H 'Accept: application/vnd.github.raw+json' '{endpoint}'`.{line_hint}{availability}"
     ))
@@ -2549,13 +2558,9 @@ fn is_build_command(command: &str) -> bool {
 /// the same Node, Rust, Python and Homebrew-installed commands without every
 /// prompt first having to rediscover and export their locations.
 fn bash_path() -> Option<OsString> {
-    static PATH: OnceLock<Option<OsString>> = OnceLock::new();
-    PATH.get_or_init(|| {
-        let inherited = std::env::var_os("PATH").unwrap_or_default();
-        let home = dirs::home_dir()?;
-        Some(augment_path(&inherited, &home))
-    })
-    .clone()
+    let inherited = std::env::var_os("PATH").unwrap_or_default();
+    let home = dirs::home_dir()?;
+    Some(augment_path(&inherited, &home))
 }
 
 fn augment_path(inherited: &std::ffi::OsStr, home: &Path) -> OsString {
@@ -4191,6 +4196,16 @@ mod tests {
         );
         assert!(hint.contains("sed -n '4699,4702p'"), "{hint}");
 
+        let named_ref =
+            github_file_hint("https://github.com/owner/repo/blob/feature/foo/src/lib.rs#L12")
+                .unwrap();
+        assert!(named_ref.contains("branch and tag names can contain `/`"));
+        assert!(named_ref.contains("gh repo clone owner/repo"));
+        assert!(
+            !named_ref.contains("contents/foo/src/lib.rs?ref=feature"),
+            "{named_ref}"
+        );
+
         assert!(github_file_hint("https://github.com/owner/repo").is_none());
         assert!(github_file_hint("https://example.com/owner/repo/blob/main/a.rs").is_none());
         assert_eq!(github_line_range(Some("L12")), Some("12".to_string()));
@@ -4602,6 +4617,14 @@ mod tests {
         );
         assert!(augmented.contains(&inherited_bin));
         assert!(!augmented.contains(&dir.join(".cargo/bin")));
+
+        // The list is rebuilt for every command, so a tool directory created
+        // after a long-running app starts becomes visible without a restart.
+        let cargo_bin = dir.join(".cargo/bin");
+        std::fs::create_dir_all(&cargo_bin).unwrap();
+        let refreshed: Vec<PathBuf> =
+            std::env::split_paths(&augment_path(&inherited, &dir)).collect();
+        assert!(refreshed.contains(&cargo_bin));
 
         std::fs::remove_dir_all(&dir).ok();
     }

@@ -2620,17 +2620,21 @@ function paintTool(tool) {
 /// what `foldable` draws, the caret and the pointer both. A card can only gain
 /// output to fold, so the marks are never taken back.
 function markToolToggle(tool, expandable) {
-  if (expandable) tool.block.classList.add("foldable");
+  tool.block.classList.toggle("foldable", expandable);
   for (const toggle of [tool.head, tool.hint]) {
     toggle.tabIndex = expandable ? 0 : -1;
-    if (!expandable) continue;
-    toggle.setAttribute("role", "button");
-    toggle.setAttribute("aria-expanded", tool.expanded ? "true" : "false");
+    if (expandable) {
+      toggle.setAttribute("role", "button");
+      toggle.setAttribute("aria-expanded", tool.expanded ? "true" : "false");
+    } else {
+      toggle.removeAttribute("role");
+      toggle.removeAttribute("aria-expanded");
+    }
   }
 }
 
 function toggleTool(tool) {
-  if (!tool.done) return;
+  if (!tool.done || tool.quiet) return;
   tool.expanded = !tool.expanded;
   paintTool(tool);
 }

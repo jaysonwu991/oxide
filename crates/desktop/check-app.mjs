@@ -172,6 +172,9 @@ class StubElement {
     (this.attributes ||= {})[name] = String(value);
     if (name === "type") this.type = String(value);
   }
+  removeAttribute(name) {
+    if (this.attributes) delete this.attributes[name];
+  }
   getAttribute(name) {
     return (this.attributes || {})[name] ?? null;
   }
@@ -3679,6 +3682,17 @@ check(
     String(emptySearch.block.className).includes("quiet") &&
     /\.tool\.quiet \{ padding-top: 2px; padding-bottom: 2px; \}/.test(sheet),
   `body hidden: ${emptySearch.pre.hidden}, state: ${emptySearch.tstate.textContent}, class: ${emptySearch.block.className}`,
+);
+emptySearch.head.onclick();
+emptySearch.head.onkeydown?.({ key: "Enter", preventDefault() {} });
+check(
+  "left a quiet search inert when its header was pressed",
+  emptySearch.expanded === false &&
+    emptySearch.pre.hidden === true &&
+    emptySearch.head.tabIndex === -1 &&
+    emptySearch.head.getAttribute("role") === null &&
+    !String(emptySearch.block.className).includes("foldable"),
+  `expanded: ${emptySearch.expanded}, body hidden: ${emptySearch.pre.hidden}, class: ${emptySearch.block.className}`,
 );
 check(
   "offered the caret and the pointer only on a card that folds",
