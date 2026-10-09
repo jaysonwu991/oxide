@@ -1126,15 +1126,41 @@ describe("webview composer", () => {
     ]);
     assert.deepEqual(
       queue.children[0].children[1].children.map((button) => button.textContent),
-      ["Steer", "Edit", "Delete"],
+      ["Move up", "Move down", "Steer", "Edit", "Delete"],
     );
+    assert.equal(queue.children[0].children[1].children[0].disabled, true);
+    assert.equal(queue.children[0].children[1].children[1].disabled, false);
     assert.equal(queue.children[2].textContent, "Turn off queueing");
+    assert.match(style, /\.queued-messages \{[^}]*max-height: min\(240px, 35vh\);/s);
+    assert.match(style, /\.queued-messages \{[^}]*overflow-y: auto;/s);
 
-    const edit = queue.children[0].children[1].children[1];
+    const edit = queue.children[0].children[1].children[3];
+    byId.get("input")!.value = "an unsent draft";
     queue.fire("click", { target: edit });
-    assert.deepEqual(last(posted), { k: "queueAction", action: "edit", index: 0 });
+    assert.deepEqual(last(posted), {
+      k: "queueAction",
+      action: "edit",
+      index: 0,
+      direction: 0,
+      text: "an unsent draft",
+    });
+    const moveDown = queue.children[0].children[1].children[1];
+    queue.fire("click", { target: moveDown });
+    assert.deepEqual(last(posted), {
+      k: "queueAction",
+      action: "move",
+      index: 0,
+      direction: 1,
+      text: "an unsent draft",
+    });
     queue.fire("click", { target: queue.children[2] });
-    assert.deepEqual(last(posted), { k: "queueAction", action: "behavior", index: -1 });
+    assert.deepEqual(last(posted), {
+      k: "queueAction",
+      action: "behavior",
+      index: -1,
+      direction: 0,
+      text: "an unsent draft",
+    });
   });
 
   it("asks the host what the caret is in once an @ is typed", () => {

@@ -1580,10 +1580,15 @@ footer {
 .queued-messages {
   display: flex;
   flex-direction: column;
+  flex: 0 1 auto;
   gap: 2px;
+  min-height: 0;
+  max-height: min(240px, 35vh);
   margin: 0 0 7px;
+  padding-right: 12px;
   padding-bottom: 6px;
   border-bottom: 1px solid var(--vscode-panel-border, rgba(128, 128, 128, 0.25));
+  overflow-y: auto;
 }
 
 .queued-message {

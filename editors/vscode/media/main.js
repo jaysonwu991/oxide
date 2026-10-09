@@ -1818,12 +1818,21 @@
       if (message.attachmentCount) text.title = `${message.attachmentCount} attachment(s)`;
       const actions = document.createElement("span");
       actions.className = "queued-message-actions";
-      for (const [action, label] of [["steer", "Steer"], ["edit", "Edit"], ["delete", "Delete"]]) {
+      for (const [action, label, direction] of [
+        ["move", "Move up", -1],
+        ["move", "Move down", 1],
+        ["steer", "Steer", 0],
+        ["edit", "Edit", 0],
+        ["delete", "Delete", 0],
+      ]) {
         const button = document.createElement("button");
         button.type = "button";
         button.textContent = label;
         button.dataset.action = action;
         button.dataset.index = String(message.index);
+        button.dataset.direction = String(direction);
+        button.disabled = action === "move" &&
+          (message.index + direction < 0 || message.index + direction >= queuedMessages.length);
         actions.appendChild(button);
       }
       row.append(text, actions);
@@ -2645,6 +2654,8 @@
       k: "queueAction",
       action: button.dataset.action,
       index: Number(button.dataset.index ?? -1),
+      direction: Number(button.dataset.direction ?? 0),
+      text: input.value,
     });
   });
   let draggedQueueIndex = -1;

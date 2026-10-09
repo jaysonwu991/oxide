@@ -1440,7 +1440,7 @@ export class ChatController {
   }
 
   /// Operations exposed by each row in Codex Desktop's queued-message tray.
-  async queueAction(action: string, index: number, direction = 0): Promise<void> {
+  async queueAction(action: string, index: number, direction = 0, draft = ""): Promise<void> {
     if (action === "behavior") {
       await this.updateSetting(
         "followUpBehavior",
@@ -1457,8 +1457,13 @@ export class ChatController {
       if (target !== index) {
         const [message] = this.queue.splice(index, 1);
         if (message) this.queue.splice(target, 0, message);
+        this.showNotice(`Moved queued message to position ${target + 1} of ${this.queue.length}.`);
       }
     } else if (action === "edit") {
+      if (draft.length > 0 || this.contextCount > 0) {
+        this.showNotice("Send or clear the current draft before editing a queued message.", "warn");
+        return;
+      }
       const [message] = this.queue.splice(index, 1);
       if (!message) return;
       this.context = message.context;

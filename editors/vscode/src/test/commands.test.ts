@@ -1077,6 +1077,11 @@ describe("command contributions", () => {
     );
 
     assert.ok(send.includes('if (mode === "queue")'));
+    assert.ok(
+      chat.includes('if (draft.length > 0 || this.contextCount > 0)') &&
+        chat.includes('Send or clear the current draft before editing a queued message.'),
+      "editing a queued item refuses to overwrite an unsent draft",
+    );
   });
 
   it("names the thread as soon as the first message is sent", () => {

@@ -733,10 +733,15 @@ body.resizing { cursor: col-resize; user-select: none; }
 .queued-messages {
   display: flex;
   flex-direction: column;
+  flex: 0 1 auto;
   gap: 2px;
+  min-height: 0;
+  max-height: min(240px, 35vh);
   margin-bottom: 7px;
+  padding-right: 12px;
   padding-bottom: 6px;
   border-bottom: 1px solid var(--border);
+  overflow-y: auto;
 }
 .queued-message {
   display: flex;

@@ -1130,6 +1130,13 @@ app.state.runSession = "6f3031b2beef";
 app.state.runProject = projectRows[1].path;
 app.state.runTitle = "Fix the sidebar";
 app.state.parked = null;
+app.state.pendingSends = [{
+  prompt: "queued while running",
+  attachments: [],
+  project: projectRows[1].path,
+  session: "6f3031b2beef",
+  showBubble: true,
+}];
 app.setBusy();
 calls.length = 0;
 el("project").onclick();
@@ -1141,11 +1148,15 @@ check(
     app.state.session === null &&
     app.state.busy === true &&
     app.state.runSession === "6f3031b2beef" &&
+    app.state.pendingSends[0]?.prompt === "queued while running" &&
     app.state.parked?.session === "6f3031b2beef" &&
+    elementFor("queue-list").hidden === true &&
     elementFor("run-banner").hidden === false &&
     elementFor("run-banner-text").textContent === "A turn is running in “Fix the sidebar”",
   `${app.state.project} / ${app.state.session} / ${app.state.parked?.session} / ${elementFor("run-banner-text").textContent}`,
 );
+app.state.pendingSends = [];
+app.paintQueue();
 // A thread in another folder is the same switch by another door: opening it
 // leaves the run's own thread and folder alone, with the strip still saying
 // which thread it is in.
@@ -2092,6 +2103,7 @@ const scrolledRows = [
   ".model-list",
   ".provider-list",
   ".review-files",
+  ".queued-messages",
 ];
 const laneWidth = Number(
   (sheet.match(/::-webkit-scrollbar\s*\{\s*width:\s*([\d.]+)px/) || [])[1],
@@ -4844,6 +4856,16 @@ check(
   app.state.followUpBehavior === "queue",
   app.state.followUpBehavior,
 );
+
+elementFor("prompt").value = "an unsent draft";
+await app.queueAction("edit", 0);
+check(
+  "kept an unsent draft when a queued message was edited",
+  elementFor("prompt").value === "an unsent draft" &&
+    app.state.pendingSends[0]?.prompt === "run this after your current answer",
+  `${elementFor("prompt").value} / ${app.state.pendingSends[0]?.prompt}`,
+);
+elementFor("prompt").value = "";
 
 await app.queueAction("steer", 0);
 let runningMessage = projectCalls("steer_run").at(-1);

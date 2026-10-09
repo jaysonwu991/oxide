@@ -1083,7 +1083,9 @@ async function selectProject(project) {
   state.projectName = project.name;
   state.session = null;
   state.trust = null;
-  state.pendingSends = [];
+  // Follow-ups belong to the parked run, not the folder being viewed. Keep
+  // them while the reader looks at another project; `paintQueue` hides them
+  // until the run's own thread is opened again.
   paintQueue();
   // The window the ring measures against belonged to the folder being left, and
   // the one arriving is not known until its own facts do: left in place it would
@@ -1639,11 +1641,19 @@ function paintQueue() {
     text.textContent = pending.prompt.split(/\r?\n/, 1)[0] || "Attachment";
     const actions = document.createElement("span");
     actions.className = "queued-message-actions";
-    for (const [action, label] of [["steer", "Steer"], ["edit", "Edit"], ["delete", "Delete"]]) {
+    for (const [action, label, direction] of [
+      ["move", "Move up", -1],
+      ["move", "Move down", 1],
+      ["steer", "Steer", 0],
+      ["edit", "Edit", 0],
+      ["delete", "Delete", 0],
+    ]) {
       const button = document.createElement("button");
       button.type = "button";
       button.dataset.action = action;
       button.dataset.index = String(index);
+      button.dataset.direction = String(direction);
+      button.disabled = action === "move" && (index + direction < 0 || index + direction >= state.pendingSends.length);
       button.textContent = label;
       actions.appendChild(button);
     }
@@ -2292,8 +2302,13 @@ async function queueAction(action, index, direction = 0) {
     if (target !== index) {
       const [pending] = state.pendingSends.splice(index, 1);
       state.pendingSends.splice(target, 0, pending);
+      setStatus(`Moved queued message to position ${target + 1} of ${state.pendingSends.length}.`);
     }
   } else if (action === "edit") {
+    if (el("prompt").value.length > 0 || state.attachments.length > 0) {
+      setStatus("Send or clear the current draft before editing a queued message.");
+      return;
+    }
     const [pending] = state.pendingSends.splice(index, 1);
     el("prompt").value = pending.prompt;
     state.attachments = pending.attachments.map((attachment) => ({ ...attachment }));
@@ -5592,7 +5607,11 @@ function init() {
   el("queue-list").onclick = (event) => {
     const button = event.target.closest?.("[data-action]");
     if (!button) return;
-    void queueAction(button.dataset.action, Number(button.dataset.index ?? -1));
+    void queueAction(
+      button.dataset.action,
+      Number(button.dataset.index ?? -1),
+      Number(button.dataset.direction ?? 0),
+    );
   };
   let draggedQueueIndex = -1;
   el("queue-list").ondragstart = (event) => {

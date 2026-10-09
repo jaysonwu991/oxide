@@ -107,6 +107,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
           message.action ?? "",
           message.index ?? -1,
           message.direction ?? 0,
+          message.text ?? "",
         );
         return;
       case "stop":
