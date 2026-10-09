@@ -55,6 +55,7 @@ interface WebviewMessage {
   seq?: number;
   /// A change card's own field: which row of the listing was clicked.
   index?: number;
+  direction?: number;
   /// Whether that click came from a review walking the listing, which opens the
   /// file in a preview tab beside the panel instead of a tab of its own.
   review?: boolean;
@@ -100,6 +101,14 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         return;
       case "send":
         await this.controller.send(message.text ?? "", message.mode);
+        return;
+      case "queueAction":
+        await this.controller.queueAction(
+          message.action ?? "",
+          message.index ?? -1,
+          message.direction ?? 0,
+          message.text ?? "",
+        );
         return;
       case "stop":
         this.controller.stop();
@@ -367,10 +376,6 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
 </main>
 <footer>
   <div id="strip" class="composer-strip">
-    <div id="mode-bar" class="strip-mode" hidden>
-      <button id="mode-queue" class="mode-option" title="Queue as the next turn after the current response (Enter)" aria-label="Queue as the next turn after the current response">Queue<span class="mode-key mode-key-enter" aria-hidden="true">⏎</span><span class="mode-key mode-key-alt" aria-hidden="true">⌥⏎</span></button>
-      <button id="mode-steer" class="mode-option" title="Steer the active response (Enter)" aria-label="Steer the active response">Steer<span class="mode-key mode-key-enter" aria-hidden="true">⏎</span><span class="mode-key mode-key-alt" aria-hidden="true">⌥⏎</span></button>
-    </div>
     <div class="strip-facts">
       <span id="branch-wrap" class="branch-wrap" hidden><span class="foot-icon" aria-hidden="true"><svg viewBox="0 0 16 16"><circle cx="4" cy="3" r="1.5"/><circle cx="4" cy="13" r="1.5"/><circle cx="12" cy="5" r="1.5"/><path d="M4 4.5v7M5.5 11c4 0 6.5-1.5 6.5-4.5"/></svg></span><span id="branch"></span></span>
       <span id="usage" class="usage"><span id="usage-text" role="note" tabindex="0"></span></span>
@@ -378,6 +383,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     </div>
   </div>
   <div id="composer">
+    <div id="queue" class="queued-messages" aria-label="Queued messages" hidden></div>
     <div id="at" class="at-list" role="listbox" aria-label="Files and folders" hidden></div>
     <div id="chips" class="chips" hidden></div>
     <textarea id="input" rows="2" spellcheck="false"

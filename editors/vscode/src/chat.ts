@@ -132,6 +132,7 @@ import {
   type AttachmentChip,
   type ChangesItem,
   type ContextChip,
+  type QueuedMessage,
   type RunThread,
   type SentChip,
   type ViewMessage,
@@ -602,6 +603,8 @@ export class ChatController {
       k: "state",
       ...this.transcript.state({
         queued: this.queue.length,
+        queue: this.queuedMessages(),
+        followUpBehavior: this.followUpBehavior(),
         context: this.chips(),
         attachments: this.attachmentChips(),
         title: this.threadTitle(),
@@ -808,6 +811,20 @@ export class ChatController {
 
   private setting<T>(key: string, fallback: T): T {
     return vscode.workspace.getConfiguration("oxide").get<T>(key, fallback);
+  }
+
+  private followUpBehavior(): "queue" | "steer" {
+    return this.setting<"queue" | "steer">("followUpBehavior", "queue") === "steer"
+      ? "steer"
+      : "queue";
+  }
+
+  private queuedMessages(): QueuedMessage[] {
+    return this.queue.map((message, index) => ({
+      index,
+      text: firstLine(message.message) || "Attachment",
+      attachmentCount: message.attachments.length,
+    }));
   }
 
   private binary(): string {
@@ -1353,7 +1370,7 @@ export class ChatController {
   // ---------- turns ----------
 
   /// Sends a message, starting a turn or choosing how it joins a running one.
-  async send(text: string, busyMode: "queue" | "steer" = "queue"): Promise<void> {
+  async send(text: string, busyMode?: "queue" | "steer"): Promise<void> {
     const message = text.trim();
     if (!message && !this.contextCount) return;
     // The built-ins are the panel's own draws — the footer's chips under another
@@ -1391,12 +1408,18 @@ export class ChatController {
         );
         return;
       }
-      const followUp = busyMode === "queue";
-      // The active RPC process owns both queues, like the desktop and terminal:
-      // a follow-up waits for the current answer, while steering is read before
-      // the next model step. Keeping both in this process also preserves its
-      // in-memory tool and verification state.
-      const accepted = await this.turn.steer(prepared.prompt, prepared.images, followUp);
+      const mode = busyMode ?? this.followUpBehavior();
+      if (mode === "queue") {
+        this.queue.push(prepared);
+        this.dropComposerChips();
+        this.showNotice(`Queued: ${firstLine(prepared.message) || "an attachment"}`);
+        this.broadcastStatus();
+        return;
+      }
+      // Steering is handed to the active RPC process before its next model
+      // step. Queueing stays in the controller so the user can see, edit,
+      // delete and reorder the pending turns, as in Codex Desktop.
+      const accepted = await this.turn.steer(prepared.prompt, prepared.images, false);
       if (!accepted) {
         this.queue.push(prepared);
         this.dropComposerChips();
@@ -1407,13 +1430,57 @@ export class ChatController {
       this.dropComposerChips();
       this.broadcastItem((this.runTranscript ?? this.transcript).pushUser(prepared.message, prepared.labels));
       this.showNotice(
-        `${followUp ? "Queued" : "Steering"}: ${firstLine(prepared.message) || "an attachment"}`,
+        `Steering: ${firstLine(prepared.message) || "an attachment"}`,
       );
       this.broadcastStatus();
       return;
     }
     this.dropComposerChips();
     this.startTurn(prepared, true);
+  }
+
+  /// Operations exposed by each row in Codex Desktop's queued-message tray.
+  async queueAction(action: string, index: number, direction = 0, draft = ""): Promise<void> {
+    if (action === "behavior") {
+      await this.updateSetting(
+        "followUpBehavior",
+        this.followUpBehavior() === "queue" ? "steer" : "queue",
+      );
+      this.broadcastStatus();
+      return;
+    }
+    if (index < 0 || index >= this.queue.length) return;
+    if (action === "delete") {
+      this.queue.splice(index, 1);
+    } else if (action === "move") {
+      const target = Math.max(0, Math.min(this.queue.length - 1, index + direction));
+      if (target !== index) {
+        const [message] = this.queue.splice(index, 1);
+        if (message) this.queue.splice(target, 0, message);
+        this.showNotice(`Moved queued message to position ${target + 1} of ${this.queue.length}.`);
+      }
+    } else if (action === "edit") {
+      if (draft.length > 0 || this.contextCount > 0) {
+        this.showNotice("Send or clear the current draft before editing a queued message.", "warn");
+        return;
+      }
+      const [message] = this.queue.splice(index, 1);
+      if (!message) return;
+      this.context = message.context;
+      this.attachments = message.attachments;
+      this.broadcastChips();
+      this.broadcast({ k: "composer", text: message.message });
+    } else if (action === "steer") {
+      const message = this.queue[index];
+      if (!message || !this.turn || !this.viewingRun()) return;
+      if (!(await this.turn.steer(message.prompt, message.images, false))) return;
+      this.queue.splice(index, 1);
+      this.broadcastItem(
+        (this.runTranscript ?? this.transcript).pushUser(message.message, message.labels),
+      );
+      this.showNotice(`Steering: ${firstLine(message.message) || "an attachment"}`);
+    }
+    this.broadcastStatus();
   }
 
   /// Assembles one message from the composer into everything the turn needs.
@@ -1612,6 +1679,7 @@ export class ChatController {
     // The queued message continues the thread whose turn it followed — the run's
     // own, which need not be the one on screen.
     this.startTurn(next, true, this.runTranscript ?? this.transcript);
+    this.broadcastStatus();
   }
 
   stop(): void {
@@ -3202,10 +3270,11 @@ export class ChatController {
   }
 
   private broadcastStatus(): void {
-    const status = this.transcript.statusMessage(this.queue.length, this.footer()) as Extract<
-      ViewMessage,
-      { k: "status" }
-    >;
+    const status = this.transcript.statusMessage(
+      this.queuedMessages(),
+      this.followUpBehavior(),
+      this.footer(),
+    ) as Extract<ViewMessage, { k: "status" }>;
     this.broadcast({ ...status, title: this.threadTitle(), run: this.runThread() });
   }
 

@@ -917,7 +917,7 @@ vm.runInThisContext(
     " showApproval," +
     " resetTranscript, renderChanges, closeReview, undoChanges," +
     " updateRunBanner, viewingRun, openRun, handleEvent, removeProject, clearSelectedProject, selectProject," +
-    " loadSessions, renderProjectsTree, renderSessions, renderMcps, openSession, renderProjectMeta, updateSendState, setBusyMessageMode, setBusy, setIdle," +
+    " loadSessions, renderProjectsTree, renderSessions, renderMcps, openSession, renderProjectMeta, updateSendState, setFollowUpBehavior, paintQueue, queueAction, setBusy, setIdle," +
     " loadGit," +
     " loadMcps, openSessions," +
     " listedSessions, selectSessionFromTree, removeSession," +
@@ -1130,6 +1130,13 @@ app.state.runSession = "6f3031b2beef";
 app.state.runProject = projectRows[1].path;
 app.state.runTitle = "Fix the sidebar";
 app.state.parked = null;
+app.state.pendingSends = [{
+  prompt: "queued while running",
+  attachments: [],
+  project: projectRows[1].path,
+  session: "6f3031b2beef",
+  showBubble: true,
+}];
 app.setBusy();
 calls.length = 0;
 el("project").onclick();
@@ -1141,11 +1148,15 @@ check(
     app.state.session === null &&
     app.state.busy === true &&
     app.state.runSession === "6f3031b2beef" &&
+    app.state.pendingSends[0]?.prompt === "queued while running" &&
     app.state.parked?.session === "6f3031b2beef" &&
+    elementFor("queue-list").hidden === true &&
     elementFor("run-banner").hidden === false &&
     elementFor("run-banner-text").textContent === "A turn is running in “Fix the sidebar”",
   `${app.state.project} / ${app.state.session} / ${app.state.parked?.session} / ${elementFor("run-banner-text").textContent}`,
 );
+app.state.pendingSends = [];
+app.paintQueue();
 // A thread in another folder is the same switch by another door: opening it
 // leaves the run's own thread and folder alone, with the strip still saying
 // which thread it is in.
@@ -1490,38 +1501,20 @@ check(
 // The row's own facts are readouts rather than controls — the branch is a fact
 // about the folder and the context reading is a reading — each with its words in a
 // tooltip rather than a handler; the folder chip beside them is the row's one
-// control, and the only other controls the bar carries are the two the Queue/Steer
-// row is made of.
+// control.
 const facts = strip.slice(
   strip.indexOf('<div class="strip-facts">'),
   strip.lastIndexOf('        </div>'),
 );
-// The Queue/Steer bar: the way a message typed while a turn runs is delivered,
-// on the top row of the bar above the box — the choice the composer's own corner
-// used to keep in a chip — ruled off from the folder's facts below it and on
-// screen exactly while there is a turn to deliver into. Each option carries the
-// key that sends it, and the pair of hints travels with the mark: the marked way
-// is Enter's, the other way is its own, so the mark never lies about the keys.
-const modeBar = strip.slice(
-  strip.indexOf('<div id="mode-bar"'),
-  strip.indexOf('<div class="strip-facts">'),
-);
 check(
-  "put the Queue/Steer bar on the top row of the bar above the box",
-  modeBar.includes('class="strip-mode"') &&
-    /id="mode-bar"[^>]*hidden/.test(modeBar) &&
-    shellAt('id="mode-bar"') < shellAt('class="strip-facts"') &&
-    modeBar.includes('id="mode-queue"') &&
-    modeBar.includes('id="mode-steer"') &&
-    (modeBar.match(/mode-key-enter/g) || []).length === 2 &&
-    (modeBar.match(/mode-key-alt/g) || []).length === 2 &&
-    !shell.includes('id="busy-message-mode"') &&
-    /\.strip-mode \{[^}]*border-bottom: 1px solid var\(--border\);/.test(sheet) &&
-    /\.mode-option\.active \{ color: var\(--accent\); border-color: var\(--accent\); \}/.test(sheet) &&
-    /\.mode-key-enter \{ display: none; \}/.test(sheet) &&
-    /\.mode-option\.active \.mode-key-enter \{ display: inline; \}/.test(sheet) &&
-    /\.mode-option\.active \.mode-key-alt \{ display: none; \}/.test(sheet),
-  modeBar.slice(0, 320),
+  "put Codex's queued-message tray inside the composer",
+  shell.includes('id="queue-list"') &&
+    shellAt('id="composer"') < shellAt('id="queue-list"') &&
+    shellAt('id="queue-list"') < shellAt('id="prompt"') &&
+    !shell.includes('id="mode-bar"') &&
+    /\.queued-messages \{/.test(sheet) &&
+    /\.queued-message \{/.test(sheet),
+  shell.slice(shellAt('id="composer"'), shellAt('id="prompt"') + 80),
 );
 check(
   "left the row's own readouts without handlers",
@@ -1531,7 +1524,7 @@ check(
     /id="context-ring"[^>]*hidden/.test(facts) &&
     /<button[^>]*id="project"/.test(facts) &&
     (facts.match(/<button/g) || []).length === 1 &&
-    (strip.match(/<button/g) || []).length === 3,
+    (strip.match(/<button/g) || []).length === 1,
   facts.slice(0, 420),
 );
 // The context reading ends the row, held there by the totals that share it: what
@@ -2110,6 +2103,7 @@ const scrolledRows = [
   ".model-list",
   ".provider-list",
   ".review-files",
+  ".queued-messages",
 ];
 const laneWidth = Number(
   (sheet.match(/::-webkit-scrollbar\s*\{\s*width:\s*([\d.]+)px/) || [])[1],
@@ -4789,71 +4783,41 @@ check(
 );
 app.setBusy();
 check(
-  "offered Stop in the corner and the Queue/Steer bar above the box",
-  elementFor("stop").hidden === false &&
-    elementFor("send").hidden === true &&
-    elementFor("mode-bar").hidden === false,
-  `send ${elementFor("send").hidden} / stop ${elementFor("stop").hidden} / bar ${elementFor("mode-bar").hidden}`,
-);
-check(
-  "marked Queue by default, with each option carrying the key that sends it",
-  elementFor("mode-queue").classList.contains("active") === true &&
-    elementFor("mode-steer").classList.contains("active") === false &&
-    elementFor("mode-queue").title === "Queue as the next turn after the current response (Enter)" &&
-    elementFor("mode-steer").title === "Steer the active response (Alt+Enter)" &&
-    elementFor("mode-queue").getAttribute("aria-label") ===
-      "Queue as the next turn after the current response (Enter)",
-  `${elementFor("mode-queue").title} / ${elementFor("mode-steer").title}`,
-);
-// The mark is a state rather than a word: the accent says which way is marked to
-// a reader looking at the bar, and `aria-pressed` says the same thing to a screen
-// reader instead of leaving the mark to the stylesheet alone.
-check(
-  "announced the mark as a state rather than leaving it to the stylesheet",
-  elementFor("mode-queue").getAttribute("aria-pressed") === "true" &&
-    elementFor("mode-steer").getAttribute("aria-pressed") === "false",
-  `${elementFor("mode-queue").getAttribute("aria-pressed")} / ${elementFor("mode-steer").getAttribute("aria-pressed")}`,
+  "offered Stop alone until new follow-up context was typed",
+  elementFor("stop").hidden === false && elementFor("send").hidden === true,
+  `send ${elementFor("send").hidden} / stop ${elementFor("stop").hidden}`,
 );
 elementFor("prompt").value = "keep going";
 app.updateSendState();
 check(
-  "sent the marked way from the corner once there was new context",
+  "offered the saved Queue behavior from the corner once there was new context",
   elementFor("send").hidden === false &&
     elementFor("send").disabled === false &&
     elementFor("stop").hidden === true &&
     elementFor("send").title === "Queue as the next turn (Enter)",
   elementFor("send").title,
 );
-elementFor("mode-steer").onclick();
+app.setFollowUpBehavior("steer");
 check(
-  "made steering a deliberate visible choice, and moved the keys with it",
-  elementFor("mode-steer").getAttribute("aria-pressed") === "true" &&
-    elementFor("mode-queue").getAttribute("aria-pressed") === "false" &&
-    elementFor("mode-steer").classList.contains("active") === true &&
-    elementFor("mode-queue").classList.contains("active") === false &&
-    elementFor("mode-steer").title === "Steer the active response (Enter)" &&
-    elementFor("mode-queue").title ===
-      "Queue as the next turn after the current response (Alt+Enter)" &&
+  "used the saved Steer behavior for ordinary Enter",
+  app.state.followUpBehavior === "steer" &&
     elementFor("send").title === "Steer the active response (Enter)",
-  `${elementFor("mode-steer").title} / ${elementFor("mode-queue").title}`,
+  `${app.state.followUpBehavior} / ${elementFor("send").title}`,
 );
 elementFor("prompt").value = "";
 app.updateSendState();
 check(
-  "kept the bar up while the turn ran, whatever the box held",
-  elementFor("stop").hidden === false &&
-    elementFor("send").hidden === true &&
-    elementFor("mode-bar").hidden === false,
-  `send ${elementFor("send").hidden} / stop ${elementFor("stop").hidden} / bar ${elementFor("mode-bar").hidden}`,
+  "kept Stop up while the turn ran and the box was empty",
+  elementFor("stop").hidden === false && elementFor("send").hidden === true,
+  `send ${elementFor("send").hidden} / stop ${elementFor("stop").hidden}`,
 );
 app.setIdle();
 check(
   "gave Send back, alone, when the turn ended",
   elementFor("send").hidden === false &&
     elementFor("stop").hidden === true &&
-    elementFor("mode-bar").hidden === true &&
     elementFor("send").title === "Send (Enter)",
-  `${elementFor("send").title} / stop ${elementFor("stop").hidden} / bar ${elementFor("mode-bar").hidden}`,
+  `${elementFor("send").title} / stop ${elementFor("stop").hidden}`,
 );
 // The accessible name follows the action the button performs, so a screen
 // reader hears what the click will do rather than the label it was built with.
@@ -4861,9 +4825,9 @@ const cornerLabel = () => elementFor("send").getAttribute("aria-label");
 app.setBusy();
 elementFor("prompt").value = "keep going";
 app.updateSendState();
-const queuedLabel = cornerLabel();
-elementFor("mode-steer").onclick();
 const steeredLabel = cornerLabel();
+app.setFollowUpBehavior("queue");
+const queuedLabel = cornerLabel();
 app.setIdle();
 elementFor("prompt").value = "";
 app.updateSendState();
@@ -4880,22 +4844,41 @@ elementFor("prompt").value = "run this after your current answer";
 app.updateSendState();
 elementFor("send").onclick({ detail: 1 });
 await nextTick();
-let runningMessage = projectCalls("steer_run").at(-1);
 check(
   "queued new context for the next response by default",
-  runningMessage?.[1]?.followUp === true,
-  JSON.stringify(runningMessage),
+  projectCalls("steer_run").length === 0 &&
+    app.state.pendingSends[0]?.prompt === "run this after your current answer" &&
+    elementFor("queue-list").hidden === false,
+  JSON.stringify({ pending: app.state.pendingSends, calls }),
 );
 check(
-  "returned to the safe Queue default after sending",
-  app.state.busyMessageMode === "queue",
-  app.state.busyMessageMode,
+  "kept the saved Queue preference after sending",
+  app.state.followUpBehavior === "queue",
+  app.state.followUpBehavior,
+);
+
+elementFor("prompt").value = "an unsent draft";
+await app.queueAction("edit", 0);
+check(
+  "kept an unsent draft when a queued message was edited",
+  elementFor("prompt").value === "an unsent draft" &&
+    app.state.pendingSends[0]?.prompt === "run this after your current answer",
+  `${elementFor("prompt").value} / ${app.state.pendingSends[0]?.prompt}`,
+);
+elementFor("prompt").value = "";
+
+await app.queueAction("steer", 0);
+let runningMessage = projectCalls("steer_run").at(-1);
+check(
+  "let a queued message steer the active response",
+  runningMessage?.[1]?.followUp === false && app.state.pendingSends.length === 0,
+  JSON.stringify(runningMessage),
 );
 
 calls.length = 0;
 elementFor("prompt").value = "change direction now";
 app.updateSendState();
-elementFor("mode-steer").onclick();
+app.setFollowUpBehavior("steer");
 elementFor("send").onclick({ detail: 1 });
 await nextTick();
 runningMessage = projectCalls("steer_run").at(-1);
@@ -4912,31 +4895,32 @@ elementFor("prompt").value = "steer this one";
 app.updateSendState();
 await app.send(true);
 await nextTick();
-runningMessage = projectCalls("steer_run").at(-1);
 check(
-  "sent the other way from the key beside the mark",
-  runningMessage?.[1]?.followUp === false,
-  JSON.stringify(runningMessage),
+  "queued with Cmd/Ctrl+Shift+Enter when Steer was saved",
+  projectCalls("steer_run").length === 0 && app.state.pendingSends[0]?.prompt === "steer this one",
+  JSON.stringify({ pending: app.state.pendingSends, calls }),
 );
+app.state.pendingSends = [];
+app.paintQueue();
 calls.length = 0;
 elementFor("prompt").value = "queue this one";
 app.updateSendState();
-elementFor("mode-steer").onclick();
+app.setFollowUpBehavior("queue");
 await app.send(true);
 await nextTick();
 runningMessage = projectCalls("steer_run").at(-1);
 check(
-  "queued from that key with the mark on the other option",
-  runningMessage?.[1]?.followUp === true,
+  "steered with Cmd/Ctrl+Shift+Enter when Queue was saved",
+  runningMessage?.[1]?.followUp === false,
   JSON.stringify(runningMessage),
 );
-elementFor("mode-queue").onclick();
 
 // A response can finish between drawing Send and the app receiving the
 // message. Codex keeps that prompt and starts it as the next turn; it must not
 // report a successful queue operation and silently lose it.
 calls.length = 0;
 steerAccepted = false;
+app.setFollowUpBehavior("steer");
 elementFor("prompt").value = "do this in the next turn";
 app.updateSendState();
 elementFor("send").onclick({ detail: 1 });
@@ -5440,9 +5424,8 @@ app.updateSendState();
 check(
   "offered Stop alone in a thread the turn is not running in",
   elementFor("send").hidden === true &&
-    elementFor("stop").hidden === false &&
-    elementFor("mode-bar").hidden === true,
-  `send ${elementFor("send").hidden} / stop ${elementFor("stop").hidden} / bar ${elementFor("mode-bar").hidden}`,
+    elementFor("stop").hidden === false,
+  `send ${elementFor("send").hidden} / stop ${elementFor("stop").hidden}`,
 );
 calls.length = 0;
 elementFor("send").onclick({ detail: 1 });
@@ -5743,9 +5726,8 @@ app.updateSendState();
 check(
   "offered Stop alone while the turn had not named the thread it is in",
   elementFor("send").hidden === true &&
-    elementFor("stop").hidden === false &&
-    elementFor("mode-bar").hidden === true,
-  `send ${elementFor("send").hidden} / stop ${elementFor("stop").hidden} / bar ${elementFor("mode-bar").hidden}`,
+    elementFor("stop").hidden === false,
+  `send ${elementFor("send").hidden} / stop ${elementFor("stop").hidden}`,
 );
 calls.length = 0;
 elementFor("send").onclick({ detail: 1 });

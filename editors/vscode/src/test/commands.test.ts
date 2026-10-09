@@ -1048,17 +1048,16 @@ describe("command contributions", () => {
       "a message is only empty when it has neither prompt text nor media",
     );
 
-    // A message sent while a turn runs hands its assembled prompt and media to
-    // that RPC process before clearing the composer, so it keeps its chips and
-    // the image is not left in the box to be sent twice.
+    // Queue stays in the controller so it can be edited, deleted and reordered;
+    // Steer is handed to the active RPC process before clearing the composer.
     const send = chat.slice(
       chat.indexOf("async send("),
       chat.indexOf("private ", chat.indexOf("async send(")),
     );
+    const steer = send.indexOf("this.turn.steer(prepared.prompt, prepared.images, false)");
     assert.ok(
-      send.indexOf("this.turn.steer(prepared.prompt, prepared.images, followUp)") <
-        send.indexOf("this.dropComposerChips()"),
-      "a busy message is handed to the active turn before the composer is cleared",
+      steer >= 0 && steer < send.indexOf("this.dropComposerChips()", steer),
+      "a steering message is handed to the active turn before the composer is cleared",
     );
     assert.ok(
       send.includes("const accepted = await this.turn.steer") &&
@@ -1068,7 +1067,8 @@ describe("command contributions", () => {
     );
     assert.ok(send.includes("this.startTurn(prepared, true)"), "an idle send starts its own turn");
     assert.ok(
-      send.includes('`${followUp ? "Queued" : "Steering"}:'),
+      send.includes('`Queued: ${firstLine(prepared.message)') &&
+        send.includes('`Steering: ${firstLine(prepared.message)'),
       "the selected busy behavior is announced",
     );
     assert.ok(
@@ -1076,7 +1076,12 @@ describe("command contributions", () => {
       "and its bubble appears in the thread the turn is in",
     );
 
-    assert.ok(send.includes('const followUp = busyMode === "queue"'));
+    assert.ok(send.includes('if (mode === "queue")'));
+    assert.ok(
+      chat.includes('if (draft.length > 0 || this.contextCount > 0)') &&
+        chat.includes('Send or clear the current draft before editing a queued message.'),
+      "editing a queued item refuses to overwrite an unsent draft",
+    );
   });
 
   it("names the thread as soon as the first message is sent", () => {

@@ -346,6 +346,23 @@
           "default": [],
           "description": "Extra arguments appended to every oxide invocation."
         },
+        "oxide.followUpBehavior": {
+          "type": "string",
+          "enum": [
+            "queue",
+            "steer"
+          ],
+          "enumItemLabels": [
+            "Queue",
+            "Steer"
+          ],
+          "markdownEnumDescriptions": [
+            "Wait for the active response to finish, then send the follow-up as the next turn.",
+            "Apply the follow-up to the active response."
+          ],
+          "default": "queue",
+          "description": "How follow-up messages behave while Oxide is running. Press Cmd/Ctrl+Shift+Enter to do the opposite for one message."
+        },
         "oxide.showThinking": {
           "type": "boolean",
           "default": true,
