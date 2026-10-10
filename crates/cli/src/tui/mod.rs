@@ -4409,9 +4409,38 @@ fn handle_paste(text: String, app: &mut App) {
             state.selected = 0;
         }
     } else {
+        let text = repair_empty_pasted_image_name(&text).unwrap_or(text);
         app.insert_input(&text);
         app.auto_scroll = true;
     }
+}
+
+/// JetBrains' terminal image paste occasionally sends an existing temporary
+/// file named `pasted-image-.png`: the slot meant to distinguish the image is
+/// empty. It reaches us as bracketed text paste rather than as Ctrl+V, so the
+/// core's content-addressed clipboard path never gets a chance to name it.
+/// Copy only that exact malformed shape beside itself and fill the slot with
+/// the attachment's content id. Ordinary pasted paths and text are untouched.
+fn repair_empty_pasted_image_name(text: &str) -> Option<String> {
+    let path = PathBuf::from(text);
+    let name = path.file_name()?.to_str()?;
+    let extension = path.extension()?.to_str()?;
+    if !name.eq_ignore_ascii_case(&format!("pasted-image-.{extension}")) {
+        return None;
+    }
+    let part = media::load_attachment(&path).ok()?;
+    if !matches!(part, crate::llm::ContentPart::ImageUrl { .. }) {
+        return None;
+    }
+    let repaired = path.with_file_name(format!(
+        "pasted-image-{}.{}",
+        media::attachment_id(&part),
+        extension
+    ));
+    if !repaired.exists() {
+        std::fs::copy(&path, &repaired).ok()?;
+    }
+    Some(repaired.display().to_string())
 }
 
 /// Routes pointer interaction to suggestions, otherwise scrolling the chat or
@@ -6325,6 +6354,41 @@ mod tests {
         app.connect = Some(ConnectState::new());
         handle_paste("deepseek".to_string(), &mut app);
         assert_eq!(app.connect.as_ref().unwrap().input, "deepseek");
+    }
+
+    #[test]
+    fn repairs_jetbrains_empty_pasted_image_name() {
+        const PNG: &[u8] = &[
+            0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x00, 0x00, 0x00, 0x0d, 0x49, 0x48,
+            0x44, 0x52, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01, 0x08, 0x06, 0x00, 0x00,
+            0x00, 0x1f, 0x15, 0xc4, 0x89, 0x00, 0x00, 0x00, 0x0a, 0x49, 0x44, 0x41, 0x54, 0x78,
+            0x9c, 0x63, 0x00, 0x01, 0x00, 0x00, 0x05, 0x00, 0x01, 0x0d, 0x0a, 0x2d, 0xb4, 0x00,
+            0x00, 0x00, 0x00, 0x49, 0x45, 0x4e, 0x44, 0xae, 0x42, 0x60, 0x82,
+        ];
+        let dir = std::env::temp_dir().join(format!(
+            "oxide_empty_pasted_image_name_{}",
+            std::process::id()
+        ));
+        std::fs::remove_dir_all(&dir).ok();
+        std::fs::create_dir_all(&dir).unwrap();
+        let malformed = dir.join("pasted-image-.png");
+        std::fs::write(&malformed, PNG).unwrap();
+
+        let mut app = test_app();
+        handle_paste(malformed.display().to_string(), &mut app);
+
+        let repaired = PathBuf::from(&app.input);
+        assert_ne!(repaired, malformed);
+        assert!(repaired
+            .file_name()
+            .unwrap()
+            .to_string_lossy()
+            .starts_with("pasted-image-"));
+        assert_ne!(repaired.file_name().unwrap(), "pasted-image-.png");
+        assert_eq!(std::fs::read(repaired).unwrap(), PNG);
+        assert_eq!(repair_empty_pasted_image_name("ordinary text"), None);
+
+        std::fs::remove_dir_all(&dir).ok();
     }
 
     #[test]

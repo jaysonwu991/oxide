@@ -169,6 +169,7 @@ const ICONS = {
   archive: glyph('<path d="M4 8h16M5 8v11h14V8M3 4h18v4H3ZM9 12h6" ' + STROKE_24 + '/>'),
   chat: glyph('<path d="M21 15a4 4 0 0 1-4 4H8l-5 3 1.5-5A7 7 0 0 1 3 13V8a4 4 0 0 1 4-4h10a4 4 0 0 1 4 4Z" ' + STROKE_24 + '/>'),
   computer: glyph('<rect x="3" y="4" width="18" height="13" rx="2" ' + STROKE_24 + '/><path d="M8 21h8M12 17v4" ' + STROKE_24 + '/>'),
+  branch: glyph('<circle cx="4" cy="3" r="1.5" ' + STROKE_16 + '/><circle cx="4" cy="13" r="1.5" ' + STROKE_16 + '/><circle cx="12" cy="5" r="1.5" ' + STROKE_16 + '/><path d="M4 4.5v7M5.5 11c4 0 6.5-1.5 6.5-4.5" ' + STROKE_16 + '/>', 16),
   gear: glyph('<circle cx="12" cy="12" r="3" ' + STROKE_24 + '/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.9l.1.1-2.8 2.8-.1-.1a1.7 1.7 0 0 0-1.9-.3 1.7 1.7 0 0 0-1 1.6v.2h-4V21a1.7 1.7 0 0 0-1-1.6 1.7 1.7 0 0 0-1.9.3l-.1.1L4.2 17l.1-.1a1.7 1.7 0 0 0 .3-1.9A1.7 1.7 0 0 0 3 14H2.8v-4H3a1.7 1.7 0 0 0 1.6-1 1.7 1.7 0 0 0-.3-1.9L4.2 7 7 4.2l.1.1a1.7 1.7 0 0 0 1.9.3A1.7 1.7 0 0 0 10 3V2.8h4V3a1.7 1.7 0 0 0 1 1.6 1.7 1.7 0 0 0 1.9-.3l.1-.1L19.8 7l-.1.1a1.7 1.7 0 0 0-.3 1.9 1.7 1.7 0 0 0 1.6 1h.2v4H21a1.7 1.7 0 0 0-1.6 1Z" ' + STROKE_24 + '/>'),
   check: glyph('<path d="m5.6 8 1.5 1.5 3.5-3.5" ' + STROKE_16 + '/>', 16),
   caret: glyph(`<path d="M5.5 8.6 12 14.8l6.5-6.2" ${STROKE_24}/>`),
@@ -5336,6 +5337,7 @@ function openCreateProject() {
   el("create-project-sources").hidden = false;
   el("create-project-title").textContent = "Create project";
   el("create-project-save").textContent = "Create project";
+  el("create-project-remove").hidden = true;
   el("create-project-modal").hidden = false;
   el("create-project-name").focus();
 }
@@ -5354,6 +5356,7 @@ function openEditProject(project) {
   el("create-project-sources").hidden = true;
   el("create-project-title").textContent = "Edit project";
   el("create-project-save").textContent = "Save";
+  el("create-project-remove").hidden = false;
   el("create-project-modal").hidden = false;
   el("create-project-name").focus();
 }
@@ -5683,6 +5686,12 @@ function init() {
   el("create-project-add-folder").onclick = addCreateProjectFolder;
   el("create-project-cancel").onclick = () => (el("create-project-modal").hidden = true);
   el("create-project-save").onclick = saveCreateProject;
+  el("create-project-remove").onclick = () => {
+    const project = createProjectState.editing;
+    if (!project) return;
+    el("create-project-modal").hidden = true;
+    removeProject(project);
+  };
 
   el("reasoning").onclick = openReasoning;
   el("reasoning-close").onclick = closeReasoning;
@@ -6162,7 +6171,7 @@ function showProjectActions(project, sessions, row, trigger) {
   path.className = "sidebar-card-row sidebar-card-path";
   path.setAttribute("role", "presentation");
   const pathText = document.createElement("span");
-  pathText.textContent = project.path;
+  pathText.textContent = project.display_path || project.path;
   path.append(icon(ICONS.folder), pathText);
   const action = (className, drawing, label) => {
     const button = document.createElement("button");
@@ -6175,15 +6184,11 @@ function showProjectActions(project, sessions, row, trigger) {
     return button;
   };
   const edit = project.registered ? action("edit-project", ICONS.gear, "Edit project") : null;
-  const remove = action(
-    "remove-project",
-    ICONS.close,
-    project.registered ? "Remove project" : "Delete project",
-  );
+  const remove = project.registered ? null : action("remove-project", ICONS.close, "Delete project");
   card.append(head, pin, meta, path);
   if (edit) card.append(edit);
-  card.append(remove);
-  const menuItems = [pin, ...(edit ? [edit] : []), remove];
+  if (remove) card.append(remove);
+  const menuItems = [pin, ...(edit ? [edit] : []), ...(remove ? [remove] : [])];
   pin.onclick = async () => {
     try {
       state.projects = await invoke("set_project_pinned", { id: project.id, pinned: !project.pinned });
@@ -6194,10 +6199,12 @@ function showProjectActions(project, sessions, row, trigger) {
     }
   };
   if (edit) edit.onclick = () => openEditProject(project);
-  remove.onclick = () => {
-    closeSidebarCards();
-    removeProject(project);
-  };
+  if (remove) {
+    remove.onclick = () => {
+      closeSidebarCards();
+      removeProject(project);
+    };
+  }
   card.addEventListener("keydown", (event) => {
     const index = menuItems.indexOf(document.activeElement);
     let next = null;
@@ -6225,20 +6232,22 @@ function showProjectActions(project, sessions, row, trigger) {
   pin.focus();
 }
 
-function showThreadDetails(session, row) {
+async function showThreadDetails(session, row) {
   closeSidebarCards();
   const card = document.createElement("div");
   card.className = "sidebar-floating-card thread-details-card";
+  const head = document.createElement("div");
+  head.className = "thread-detail-head";
   const title = document.createElement("div");
   title.className = "thread-detail-title";
   title.textContent = sessionLabel(session);
-  const meta = document.createElement("div");
-  meta.className = "thread-detail-meta";
   const computer = document.createElement("span");
+  computer.className = "thread-detail-computer";
   computer.innerHTML = ICONS.computer;
   const age = document.createElement("span");
+  age.className = "thread-detail-age";
   age.textContent = sessionAge(session.modified_at || session.created_at);
-  meta.append(computer, age);
+  head.append(title, computer, age);
   const project = document.createElement("div");
   project.className = "thread-detail-project";
   const folder = document.createElement("span");
@@ -6246,8 +6255,25 @@ function showThreadDetails(session, row) {
   const projectName = document.createElement("span");
   projectName.textContent = projectNameOf(session.cwd);
   project.append(folder, projectName);
-  card.append(title, meta, project);
+  card.append(head, project);
   placeSidebarCard(card, row);
+  try {
+    const info = await invoke("git_info", { project: session.cwd });
+    if (!card.parentNode || !info?.repo) return;
+    const branchName = info.branch || info.detached;
+    if (!branchName) return;
+    const branch = document.createElement("div");
+    branch.className = "thread-detail-branch";
+    const branchIcon = document.createElement("span");
+    branchIcon.innerHTML = ICONS.branch;
+    const branchText = document.createElement("span");
+    branchText.textContent = branchName;
+    branch.append(branchIcon, branchText);
+    card.appendChild(branch);
+    placeSidebarCard(card, row);
+  } catch {
+    // A folder outside a repository has no branch row, like Codex.
+  }
 }
 
 async function pinSession(session) {
@@ -6335,6 +6361,7 @@ async function renderProjectsTree() {
     moreBtn.type = "button";
     moreBtn.className = "row-more";
     moreBtn.title = `Project options for ${project.name}`;
+    moreBtn.setAttribute("aria-label", moreBtn.title);
     moreBtn.setAttribute("aria-haspopup", "menu");
     moreBtn.setAttribute("aria-controls", "project-actions-menu");
     moreBtn.setAttribute("aria-expanded", "false");
@@ -6353,6 +6380,7 @@ async function renderProjectsTree() {
     newTaskBtn.type = "button";
     newTaskBtn.className = "row-add";
     newTaskBtn.title = `New task in ${project.name}`;
+    newTaskBtn.setAttribute("aria-label", newTaskBtn.title);
     newTaskBtn.innerHTML = ICONS.compose;
     newTaskBtn.onclick = (event) => {
       event.stopPropagation();
@@ -6459,6 +6487,7 @@ async function renderProjectsTree() {
         pinBtn.type = "button";
         pinBtn.className = "row-pin" + (session.pinned ? " active" : "");
         pinBtn.title = session.pinned ? "Unpin thread" : "Pin thread";
+        pinBtn.setAttribute("aria-label", pinBtn.title);
         pinBtn.innerHTML = ICONS.pin;
         pinBtn.onclick = (event) => {
           event.stopPropagation();
@@ -6470,6 +6499,7 @@ async function renderProjectsTree() {
         archiveBtn.type = "button";
         archiveBtn.className = "row-archive";
         archiveBtn.title = "Archive thread";
+        archiveBtn.setAttribute("aria-label", archiveBtn.title);
         archiveBtn.innerHTML = ICONS.archive;
         archiveBtn.onclick = (event) => {
           event.stopPropagation();

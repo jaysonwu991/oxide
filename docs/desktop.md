@@ -205,22 +205,18 @@ The regions, top to bottom:
   message: the theme and the check for updates, an icon button each (a
   half-filled circle, and the same refresh arrow the
   extension's own check carries). The tree groups each project's sessions
-  under it, and every project and stored session row carries a `✕` that removes
-  it (see [Multiple projects](#multiple-projects-cross-repo)), drawn on the row
-  itself rather than behind a pointer, beside the project's own **New task**
-  `+`. A row carries nothing else: the key a thread answers to is nowhere on
-  the row, since the shortcuts dialog is where that list is written down and a
-  badge beside the `✕` was a second thing the title had to make room for. A
-  control that exists only while the row is pointed at is one the reader has to
-  hover before they can click it, and a tree whose buttons appear under the
-  cursor changes what it says as the reader moves; the room each one takes
-  belongs to the row's own padding and nothing moves when a pointer crosses it,
-  and they are quiet at rest and take the accent or the error colour while
-  pointed at, which is a highlight rather than the reason they are there. That
-  padding is also what keeps them off the text: each row reserves the room the
-  control at its end takes (`padding-right` against that control's own width and
-  offset), so a press meant for a name is a press on the name and never on the
-  button drawn beside it. The active project and the active thread both
+  under it. Project options and **New task**, and a stored thread's pin and
+  archive actions, appear when their row is hovered or holds keyboard focus,
+  matching Codex's quiet resting tree. The key a thread answers to is nowhere
+  on the row, since the shortcuts dialog is where that list is written down.
+  A thread's hover card pairs its title with device and age, then names its
+  project and current Git branch; a project's options card contains its pin,
+  task count, home-shortened path and **Edit project**, with removal kept inside
+  that edit dialog rather than added as another card row.
+  Each row permanently reserves the actions' room, so revealing them does not
+  move or reflow its title; that padding also keeps the controls off the text,
+  so a press meant for a name is a press on the name rather than on the button
+  beside it. The active project and the active thread both
   carry the accent bar, so which one is on screen reads the same in either
   list, and a thread is listed — under the summarized title of its first
   message — as soon as its turn starts rather than once it ends: the thread the

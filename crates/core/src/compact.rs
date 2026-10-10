@@ -18,6 +18,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
+use std::sync::Mutex;
 
 pub const DEFAULT_RESERVE_TOKENS: u64 = 16_384;
 pub const DEFAULT_KEEP_RECENT_TOKENS: u64 = 20_000;
@@ -492,6 +493,26 @@ fn summary_max_tokens(budget: Option<Budget>, config: &Config, factor: f64) -> u
     reserved.min(ceiling).floor().max(1.0) as u32
 }
 
+#[derive(Default)]
+struct SummaryBuffer(Mutex<String>);
+
+impl SummaryBuffer {
+    fn push(&self, delta: &str) {
+        self.0
+            .lock()
+            .expect("summary buffer poisoned")
+            .push_str(delta);
+    }
+
+    fn reset(&self) {
+        self.0.lock().expect("summary buffer poisoned").clear();
+    }
+
+    fn finish(self) -> String {
+        self.0.into_inner().expect("summary buffer poisoned")
+    }
+}
+
 /// One summarization call: the system prompt, the prompt text, and a capped
 /// output budget. A one-off summary is not worth caching.
 async fn complete_summary(
@@ -508,20 +529,22 @@ async fn complete_summary(
         Message::user(prompt),
     ];
     let client = LlmClient::new(config);
-    let mut summary = String::new();
+    let summary = SummaryBuffer::default();
     let turn = {
         let mut ignore_thinking = |_: String| {};
-        let mut ignore_retry = |_: Retry| {};
+        let mut append_summary = |delta: String| summary.push(&delta);
+        let mut reset_summary = |_: Retry| summary.reset();
         let mut hooks = StreamHooks {
-            text: &mut |delta: String| summary.push_str(&delta),
+            text: &mut append_summary,
             thinking: &mut ignore_thinking,
-            retry: &mut ignore_retry,
+            retry: &mut reset_summary,
         };
         client
             .stream_chat(&messages, &[], &mut hooks)
             .await
             .context("summarizing conversation")?
     };
+    let summary = summary.finish();
     Ok((summary.trim().to_string(), turn.usage))
 }
 
@@ -823,6 +846,15 @@ mod tests {
             reserve_tokens: 100,
             keep_recent_tokens: 8,
         }
+    }
+
+    #[test]
+    fn a_summary_retry_discards_the_partial_attempt() {
+        let summary = SummaryBuffer::default();
+        summary.push("partial");
+        summary.reset();
+        summary.push("complete");
+        assert_eq!(summary.finish(), "complete");
     }
 
     #[test]

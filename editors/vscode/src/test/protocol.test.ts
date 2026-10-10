@@ -401,7 +401,7 @@ describe("Transcript", () => {
     assert.equal(transcript.status, "Retrying (2/5)…");
   });
 
-  it("discards the partial attempt when a retry starts", () => {
+  it("discards an output-limited partial attempt before its replacement starts", () => {
     const transcript = new Transcript();
     const partial = push(
       transcript.apply({
@@ -409,6 +409,9 @@ describe("Transcript", () => {
         assistantMessageEvent: { type: "text_delta", delta: "partial" },
       })[0],
     );
+    // This is the event the shared core emits when it rejects a response whose
+    // text or tool arguments reached max_tokens. Incomplete tool calls never
+    // cross RPC as `tool_call`; any text already streamed is removed here.
     const messages = transcript.apply({ type: "auto_retry_start", attempt: 2, maxAttempts: 5 });
     assert.deepEqual(messages.map((message) => removed(message).id), [partial.id]);
     assert.equal(transcript.items.length, 0);

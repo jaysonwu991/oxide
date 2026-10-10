@@ -570,6 +570,7 @@ let projectRows = [
   {
     id: "/home/dev/Projects/oxide",
     path: "/home/dev/Projects/oxide",
+    display_path: "~/Projects/oxide",
     name: "oxide",
     registered: true,
     exists: true,
@@ -1914,17 +1915,14 @@ check(
     sharedCharacters.filter((character) => extensionIcons.includes(`"${character}"`)).length
   }/${sharedCharacters.length}`,
 );
-// A control is drawn before the pointer reaches it: a ✕ that exists only while
-// the row is pointed at is a control the reader cannot click without hovering it
-// first, and the row changes what it says as the cursor crosses it. Every rule
-// this sheet writes for a hovered or keyboard-held element is read here with the
-// same selector at rest, and one whose resting rule hides the element —
-// `opacity: 0`, `display: none`, `visibility: hidden` — fails. Highlighting the
-// control that is under the pointer, or dimming one, is drawn either way.
+// Codex's project and thread actions stay out of the sidebar until their row is
+// hovered or holds keyboard focus. Other controls must still exist at rest, so
+// an accidental hover-only rule elsewhere remains a failed check.
 const sheetRules = [...sheet.matchAll(/([^{}]+)\{([^}]*)\}/g)].map(([, selectors, body]) => [
   selectors.trim(),
   body,
 ]);
+const sidebarActionRule = (selectors) => /\.row-(?:add|more|pin|archive)/.test(selectors);
 const hiddenAtRest = (body) =>
   /(^|[;\s])opacity:\s*0(?:[;\s]|$)/.test(body) ||
   /display:\s*none/.test(body) ||
@@ -1936,10 +1934,11 @@ const restingBody = (selectors) =>
     .join(";");
 const hiddenUntilPointedAt = sheetRules
   .filter(([selectors]) => /:hover|:focus/.test(selectors))
+  .filter(([selectors]) => !sidebarActionRule(selectors))
   .filter(([selectors]) => hiddenAtRest(restingBody(selectors)))
   .map(([selectors]) => selectors);
 check(
-  "left no control waiting for the pointer before it exists",
+  "left only sidebar row actions waiting for hover or keyboard focus",
   hiddenUntilPointedAt.length === 0,
   hiddenUntilPointedAt.join(" | "),
 );
@@ -1972,7 +1971,11 @@ const movedOnHover = sheetRules
       .split(";")
       .map((declaration) => declaration.split(":")[0].trim())
       .filter((property) => property && !property.startsWith("/*"))
-      .filter((property) => !cosmeticOnHover.includes(property))
+      .filter(
+        (property) =>
+          !cosmeticOnHover.includes(property) &&
+          !(property === "pointer-events" && sidebarActionRule(selectors)),
+      )
       .map((property) => `${selectors} { ${property} }`),
   );
 check(
@@ -1989,9 +1992,11 @@ check(
 const invisibleRules = [
   ...sheetRules
     .filter(([, body]) => /(^|[;\s])opacity:\s*0(?:[;\s]|$)/.test(body))
+    .filter(([selectors]) => !sidebarActionRule(selectors))
     .map(([selectors]) => `${selectors} { opacity: 0 }`),
   ...sheetRules
     .filter(([, body]) => /pointer-events/.test(body))
+    .filter(([selectors]) => !sidebarActionRule(selectors))
     .map(([selectors]) => `${selectors} { pointer-events }`),
 ];
 check(
@@ -2000,22 +2005,20 @@ check(
   invisibleRules.join(" | ") ||
     (/\[hidden\]/.test(sheet) ? "the [hidden] guard lost its !important" : "the [hidden] guard is gone"),
 );
-// What a row carries is on the row: the ✕ that removes a thread or a folder and
-// the `+` that starts a task in one. Each takes the room the row already
-// reserves for it, so a long title ellipsizes against them rather than pushing
-// them out.
+// What a row carries is present in the DOM but quiet at rest, then becomes
+// interactive on row hover or keyboard focus. Each action takes room the row
+// already reserves, so the title does not move when the controls appear.
 const rowRule = (selector) => {
   const start = sheet.indexOf(`${selector} {`);
   return start < 0 ? "" : sheet.slice(start, sheet.indexOf("}", start));
 };
 const drawnOnTheRow = [".row-add", ".row-more", ".row-pin", ".row-archive"];
 check(
-  "drew each row's controls without pointing at it",
-  drawnOnTheRow.every((selector) => {
-    const rule = rowRule(selector);
-    return rule.includes("color:") && !hiddenAtRest(rule);
-  }),
-  drawnOnTheRow.map((selector) => rowRule(selector).replace(/\s+/g, " ")).join(" | "),
+  "revealed project and thread actions only for a hovered or keyboard-held row",
+  /\.row-add \{[^}]*opacity:\s*0;[^}]*pointer-events:\s*none;/.test(sheet) &&
+    /\.row-more,[\s\S]*?\.row-archive \{[^}]*opacity:\s*0;[^}]*pointer-events:\s*none;/.test(sheet) &&
+    /\.project-item:hover \.row-more,[\s\S]*?\.session-item:focus-within \.row-archive \{[^}]*opacity:\s*1;[^}]*pointer-events:\s*auto;/.test(sheet),
+  drawnOnTheRow.join(" | "),
 );
 // The row the arrangement is dragged by says so: the whole row takes the grab
 // cursor, the row in the air is dimmed, and the row under the pointer wears the
@@ -5383,6 +5386,59 @@ threads = heldThreads;
 await app.loadSessions();
 app.setStatus("Ready");
 
+// The desktop links the same core directly. When that core rejects an
+// output-limited response, its retry event removes every live fragment before
+// the replacement response starts; a partial answer cannot remain beside the
+// fresh one, and a partial tool call is never emitted by the core at all.
+console.log("an output-limited desktop response");
+el("transcript").innerHTML = "";
+app.state.session = "retry-thread";
+app.state.runSession = "retry-thread";
+app.state.runId = 61;
+app.setBusy();
+app.handleEvent({
+  type: "message_update",
+  runId: 61,
+  assistantMessageEvent: { type: "thinking_delta", delta: "unfinished reasoning" },
+});
+app.handleEvent({
+  type: "message_update",
+  runId: 61,
+  assistantMessageEvent: { type: "text_delta", delta: "unfinished answer" },
+});
+check(
+  "painted the attempt while it was streaming",
+  /unfinished reasoning/.test(el("transcript").outline()) &&
+    /unfinished answer/.test(el("transcript").outline()),
+  el("transcript").outline(),
+);
+app.handleEvent({ type: "auto_retry_start", runId: 61, attempt: 1, maxAttempts: 3, delayMs: 500 });
+check(
+  "discarded the output-limited desktop attempt before retrying",
+  !/unfinished/.test(el("transcript").outline()) &&
+    app.state.currentAssistant === null &&
+    app.state.currentThinking === null &&
+    status() === "Retrying (1/3)…",
+  `${el("transcript").outline()} / ${status()}`,
+);
+app.handleEvent({
+  type: "message_update",
+  runId: 61,
+  assistantMessageEvent: { type: "text_delta", delta: "complete replacement" },
+});
+check(
+  "painted only the desktop retry's complete replacement",
+  el("transcript").querySelectorAll(".assistant").length === 1 &&
+    /complete replacement/.test(el("transcript").outline()) &&
+    !/unfinished/.test(el("transcript").outline()),
+  el("transcript").outline(),
+);
+app.handleEvent({ type: "thinking_done", runId: 61 });
+app.setIdle();
+app.setStatus("Ready");
+app.state.session = null;
+el("transcript").innerHTML = "";
+
 // ---------- a turn running in another thread ----------
 
 console.log("reading another thread while a turn runs");
@@ -6098,11 +6154,12 @@ app.state.parked = null;
 threads = existing;
 
 console.log("removing a project");
-// Removal remains available from the project's options card; opening and using
-// it must not select the project row underneath.
+// Codex keeps removal inside Edit project rather than adding another row to the
+// compact project card; opening it from the row must not select that row.
 const removeTarget = {
   id: "/home/dev/Projects/oxide",
   path: "/home/dev/Projects/oxide",
+  display_path: "~/Projects/oxide",
   name: "oxide",
   registered: true,
   exists: true,
@@ -6127,10 +6184,11 @@ const removePress = press({
 });
 optionsButton.onclick(removePress);
 const projectCard = document.body.children.at(-1);
-projectCard.querySelector(".remove-project").onclick(press({ target: projectCard }));
+projectCard.querySelector(".edit-project").onclick(press({ target: projectCard }));
+elementFor("create-project-remove").click();
 await nextTick();
 check(
-  "opened the confirm from the project's options, not the row",
+  "opened the removal confirm from Edit project, not the row",
   elementFor("confirm-modal").hidden === false && app.state.project === null,
   `${elementFor("confirm-modal").hidden} / ${app.state.project}`,
 );
@@ -6163,13 +6221,20 @@ await app.renderProjectsTree();
 let actionGroup = elementFor("projects-tree").children[0];
 let actionProject = actionGroup.children[0];
 let optionsTrigger = actionProject.querySelector(".row-more");
+check(
+  "named the project's icon-only row actions",
+  optionsTrigger.getAttribute("aria-label") === "Project options for oxide" &&
+    actionProject.querySelector(".row-add").getAttribute("aria-label") === "New task in oxide",
+  actionProject.outline(),
+);
 optionsTrigger.click();
 let actionCard = document.body.children.at(-1);
 check(
   "summarized a project in its options card",
   actionCard.querySelector("strong").textContent === "oxide" &&
     actionCard.querySelector(".sidebar-card-meta").children[1].textContent.includes("1 task") &&
-    actionCard.querySelector(".sidebar-card-path").children[1].textContent === removeTarget.path,
+    actionCard.querySelector(".sidebar-card-path").children[1].textContent === "~/Projects/oxide" &&
+    actionCard.querySelector(".remove-project") === null,
   actionCard.outline(),
 );
 check(
@@ -6244,13 +6309,23 @@ await app.renderProjectsTree();
 
 actionGroup = elementFor("projects-tree").children[0];
 const threadRow = actionGroup.children[1].children[0];
+check(
+  "named the thread's icon-only row actions",
+  threadRow.querySelector(".row-pin").getAttribute("aria-label") === "Pin thread" &&
+    threadRow.querySelector(".row-archive").getAttribute("aria-label") === "Archive thread",
+  threadRow.outline(),
+);
+gitAnswer = { repo: true, root: removeTarget.path, branch: "main", detached: "" };
 threadRow.fire("mouseenter", {});
+await nextTick();
 const detailCard = document.body.children.at(-1);
 check(
-  "showed the thread's title, age and project in its detail card",
+  "showed the Codex thread summary with title, device, age, project and branch",
   detailCard.querySelector(".thread-detail-title").textContent === "Pinned work" &&
-    detailCard.querySelector(".thread-detail-meta").children[1].textContent.length > 0 &&
-    detailCard.querySelector(".thread-detail-project").children[1].textContent === "oxide",
+    detailCard.querySelector(".thread-detail-computer") !== null &&
+    detailCard.querySelector(".thread-detail-age").textContent.length > 0 &&
+    detailCard.querySelector(".thread-detail-project").children[1].textContent === "oxide" &&
+    detailCard.querySelector(".thread-detail-branch").children[1].textContent === "main",
   detailCard.outline(),
 );
 calls.length = 0;
