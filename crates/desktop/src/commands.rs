@@ -13,13 +13,13 @@ use oxide_core::diff::{Diff, LineKind};
 use oxide_core::llm::LlmClient;
 use oxide_core::llm::Message;
 use oxide_core::llm::{ContentPart, MessageContent};
-use oxide_core::session::{SessionLog, SessionSummary};
+use oxide_core::session::SessionLog;
 use oxide_core::snapshots::Snapshots;
 use oxide_core::theme_view;
 use oxide_core::update_notice;
 use oxide_core::updates::Component;
 use oxide_desktop::at::{AtAnswer, PathCache};
-use oxide_desktop::manager::{expand_project_path, DesktopManager, ProjectView};
+use oxide_desktop::manager::{expand_project_path, DesktopManager, ProjectView, SessionView};
 use oxide_desktop::turn::{notify_finished, open_session, start_turn, Turn};
 use oxide_desktop::update;
 use serde::{de::DeserializeOwned, Serialize};
@@ -260,6 +260,26 @@ pub async fn remove_project(id: String, state: &DesktopState) -> CmdResult<Vec<P
     manager.overview().map_err(err)
 }
 
+pub async fn update_project(
+    id: String,
+    name: String,
+    state: &DesktopState,
+) -> CmdResult<Vec<ProjectView>> {
+    let mut manager = state.manager.lock().await;
+    manager.update_project(&id, &name).map_err(err)?;
+    manager.overview().map_err(err)
+}
+
+pub async fn set_project_pinned(
+    id: String,
+    pinned: bool,
+    state: &DesktopState,
+) -> CmdResult<Vec<ProjectView>> {
+    let mut manager = state.manager.lock().await;
+    manager.set_project_pinned(&id, pinned).map_err(err)?;
+    manager.overview().map_err(err)
+}
+
 /// Records the order the reader dragged the sidebar into, and answers with the
 /// listing as it now stands — the same shape `remove_project` answers with, so
 /// the sidebar is painted from what the app actually holds rather than from the
@@ -421,21 +441,35 @@ fn project_dir(project: &str) -> Result<PathBuf, String> {
 
 // ---------- sessions ----------
 
-pub async fn list_sessions(
-    project: String,
-    state: &DesktopState,
-) -> CmdResult<Vec<SessionSummary>> {
-    state
-        .manager
-        .lock()
-        .await
-        .sessions_for(&PathBuf::from(project))
-        .map_err(err)
+pub async fn list_sessions(project: String, state: &DesktopState) -> CmdResult<Vec<SessionView>> {
+    let manager = state.manager.lock().await;
+    let sessions = manager.sessions_for(&PathBuf::from(project)).map_err(err)?;
+    Ok(manager.session_views(sessions))
 }
 
 /// Sessions across every project, newest first (the cross-repo view).
-pub async fn all_sessions(state: &DesktopState) -> CmdResult<Vec<SessionSummary>> {
-    state.manager.lock().await.all_sessions().map_err(err)
+pub async fn all_sessions(state: &DesktopState) -> CmdResult<Vec<SessionView>> {
+    let manager = state.manager.lock().await;
+    let sessions = manager.all_sessions().map_err(err)?;
+    Ok(manager.session_views(sessions))
+}
+
+pub async fn set_session_pinned(
+    id: String,
+    pinned: bool,
+    state: &DesktopState,
+) -> CmdResult<Vec<SessionView>> {
+    let mut manager = state.manager.lock().await;
+    manager.set_session_pinned(&id, pinned).map_err(err)?;
+    let sessions = manager.all_sessions().map_err(err)?;
+    Ok(manager.session_views(sessions))
+}
+
+pub async fn archive_session(id: String, state: &DesktopState) -> CmdResult<Vec<SessionView>> {
+    let mut manager = state.manager.lock().await;
+    manager.archive_session(&id).map_err(err)?;
+    let sessions = manager.all_sessions().map_err(err)?;
+    Ok(manager.session_views(sessions))
 }
 
 /// The stored transcript for one session.
@@ -1241,9 +1275,19 @@ pub async fn dispatch(
             create_project(arg(&args, "name")?, optional_arg(&args, "folders")?, &state).await,
         ),
         "remove_project" => command_value(remove_project(arg(&args, "id")?, &state).await),
+        "update_project" => {
+            command_value(update_project(arg(&args, "id")?, arg(&args, "name")?, &state).await)
+        }
+        "set_project_pinned" => command_value(
+            set_project_pinned(arg(&args, "id")?, arg(&args, "pinned")?, &state).await,
+        ),
         "reorder_projects" => command_value(reorder_projects(arg(&args, "ids")?, &state).await),
         "list_sessions" => command_value(list_sessions(arg(&args, "project")?, &state).await),
         "all_sessions" => command_value(all_sessions(&state).await),
+        "set_session_pinned" => command_value(
+            set_session_pinned(arg(&args, "id")?, arg(&args, "pinned")?, &state).await,
+        ),
+        "archive_session" => command_value(archive_session(arg(&args, "id")?, &state).await),
         "project_info" => command_value(project_info(arg(&args, "project")?, &state).await),
         "git_info" => command_value(git_info(arg(&args, "project")?)),
         "reasoning_levels" => command_value(reasoning_levels(arg(&args, "project")?, &state).await),

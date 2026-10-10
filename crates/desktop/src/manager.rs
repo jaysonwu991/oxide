@@ -44,6 +44,18 @@ pub struct ProjectView {
     pub session_count: usize,
     pub last_session_at: u64,
     pub last_opened_at: Option<u64>,
+    /// Pinned folders stay ahead of the ordinary project order.
+    pub pinned: bool,
+}
+
+/// A stored thread annotated with desktop-only sidebar state. Session logs stay
+/// compatible with every front-end; pin/archive choices belong to the desktop
+/// registry beside the project ordering they affect.
+#[derive(Debug, Clone, Serialize)]
+pub struct SessionView {
+    #[serde(flatten)]
+    pub summary: SessionSummary,
+    pub pinned: bool,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -57,6 +69,12 @@ pub struct ProjectRegistry {
     /// registry that has never been arranged behaves exactly as it always did.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub order: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub pinned_projects: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub pinned_sessions: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub archived_sessions: Vec<String>,
 }
 
 /// How a project's local resources (agents, commands, skills, plugins, MCP)
@@ -211,9 +229,47 @@ impl DesktopManager {
             .retain(|project| project.id != id && project.path.to_string_lossy() != id);
         let removed = self.registry.projects.len() != before;
         if removed {
+            self.registry.pinned_projects.retain(|each| each != id);
             self.persist()?;
         }
         Ok(removed)
+    }
+
+    pub fn update_project(&mut self, id: &str, name: &str) -> Result<bool> {
+        let name = name.trim();
+        if name.is_empty() {
+            anyhow::bail!("project name cannot be empty");
+        }
+        let Some(project) = self
+            .registry
+            .projects
+            .iter_mut()
+            .find(|project| project.id == id)
+        else {
+            anyhow::bail!("project is not registered");
+        };
+        let changed = project.name != name;
+        project.name = name.to_string();
+        if changed {
+            self.persist()?;
+        }
+        Ok(changed)
+    }
+
+    pub fn set_project_pinned(&mut self, id: &str, pinned: bool) -> Result<()> {
+        set_membership(&mut self.registry.pinned_projects, id, pinned);
+        self.persist()
+    }
+
+    pub fn set_session_pinned(&mut self, id: &str, pinned: bool) -> Result<()> {
+        set_membership(&mut self.registry.pinned_sessions, id, pinned);
+        self.persist()
+    }
+
+    pub fn archive_session(&mut self, id: &str) -> Result<()> {
+        set_membership(&mut self.registry.archived_sessions, id, true);
+        set_membership(&mut self.registry.pinned_sessions, id, false);
+        self.persist()
     }
 
     /// Records the order the reader dragged the sidebar into: the ids exactly as
@@ -259,6 +315,19 @@ impl DesktopManager {
         SessionLog::list_all()
     }
 
+    pub fn session_views(&self, sessions: Vec<SessionSummary>) -> Vec<SessionView> {
+        let mut views: Vec<_> = sessions
+            .into_iter()
+            .filter(|summary| !self.registry.archived_sessions.contains(&summary.id))
+            .map(|summary| SessionView {
+                pinned: self.registry.pinned_sessions.contains(&summary.id),
+                summary,
+            })
+            .collect();
+        views.sort_by_cached_key(|view| (Reverse(view.pinned), Reverse(view.summary.modified_at)));
+        views
+    }
+
     /// The CLI configuration for a project: the same global `config.json` and
     /// `auth.json`, with that project's ecosystem loaded and project trust
     /// resolved exactly as the CLI does before running.
@@ -288,6 +357,7 @@ impl DesktopManager {
                 session_count: count,
                 last_session_at: last,
                 last_opened_at: project.last_opened_at,
+                pinned: self.registry.pinned_projects.contains(&project.id),
             });
         }
 
@@ -307,6 +377,7 @@ impl DesktopManager {
                 session_count: count,
                 last_session_at: last,
                 last_opened_at: None,
+                pinned: self.registry.pinned_projects.contains(&summary.cwd),
             });
         }
 
@@ -322,6 +393,7 @@ impl DesktopManager {
         views.sort_by_cached_key(|view| {
             let placed = rank(&view.id);
             (
+                Reverse(view.pinned),
                 placed.is_none(),
                 placed,
                 Reverse(view.registered),
@@ -331,6 +403,13 @@ impl DesktopManager {
             )
         });
         views
+    }
+}
+
+fn set_membership(values: &mut Vec<String>, id: &str, present: bool) {
+    values.retain(|each| each != id);
+    if present {
+        values.push(id.to_string());
     }
 }
 
@@ -557,6 +636,46 @@ mod tests {
 
         std::fs::remove_dir_all(&dir).ok();
         let _ = std::fs::remove_dir_all(manager.store_path().parent().unwrap());
+    }
+
+    #[test]
+    fn sidebar_pin_archive_and_edit_state_persists() {
+        let store = temp_store();
+        let mut manager = DesktopManager::load_from(store.clone()).unwrap();
+        let dir = std::env::temp_dir().join(format!("oxide_proj_sidebar_{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let project = manager.add_project(&dir).unwrap();
+        let session = summary(project.path.to_string_lossy().as_ref(), 42);
+
+        manager
+            .update_project(&project.id, "Pinned project")
+            .unwrap();
+        manager.set_project_pinned(&project.id, true).unwrap();
+        manager.set_session_pinned(&session.id, true).unwrap();
+
+        let reloaded = DesktopManager::load_from(store.clone()).unwrap();
+        let project_view = reloaded.overview_with(std::slice::from_ref(&session));
+        assert_eq!(project_view[0].name, "Pinned project");
+        assert!(project_view[0].pinned);
+        let session_view = reloaded.session_views(vec![session.clone()]);
+        assert_eq!(session_view.len(), 1);
+        assert!(session_view[0].pinned);
+
+        let mut reloaded = reloaded;
+        reloaded.archive_session(&session.id).unwrap();
+        assert!(reloaded.session_views(vec![session]).is_empty());
+        let persisted = DesktopManager::load_from(store).unwrap();
+        assert!(persisted
+            .registry
+            .archived_sessions
+            .contains(&"s42".to_string()));
+        assert!(!persisted
+            .registry
+            .pinned_sessions
+            .contains(&"s42".to_string()));
+
+        std::fs::remove_dir_all(&dir).ok();
+        let _ = std::fs::remove_dir_all(persisted.store_path().parent().unwrap());
     }
 
     #[test]

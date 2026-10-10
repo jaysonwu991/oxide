@@ -696,6 +696,24 @@ const invoke = async (command, args = {}) => {
     case "remove_project":
       projectRows = projectRows.filter((row) => row.id !== args.id);
       return projectRows.map((row) => ({ ...row }));
+    case "update_project":
+      projectRows = projectRows.map((row) =>
+        row.id === args.id ? { ...row, name: args.name } : row,
+      );
+      return projectRows.map((row) => ({ ...row }));
+    case "set_project_pinned":
+      projectRows = projectRows.map((row) =>
+        row.id === args.id ? { ...row, pinned: args.pinned } : row,
+      );
+      return projectRows.map((row) => ({ ...row }));
+    case "set_session_pinned":
+      threads = threads.map((row) =>
+        row.id === args.id ? { ...row, pinned: args.pinned } : row,
+      );
+      return threads.map((row) => ({ ...row }));
+    case "archive_session":
+      threads = threads.filter((row) => row.id !== args.id);
+      return threads.map((row) => ({ ...row }));
     case "reorder_projects": {
       if (reorderError) throw reorderError;
       // The app keeps the order it was given and answers with the listing as it
@@ -965,12 +983,12 @@ check(
   String(firstProjectRow.children[0].innerHTML) === app.ICONS.folder,
   firstProjectRow.outline(),
 );
-// Both of the row's controls are drawings too, and both are the VS Code panel's
-// own: the plus is the panel's plus, and the ✕ is the one its listing uses.
+// Both of the row's Codex-style controls are drawings too: project options and
+// starting a new task each have their own stable target.
 check(
   "drew a row's controls from the app's own set",
-  String(firstProjectRow.children[3].innerHTML) === app.ICONS.plus &&
-    String(firstProjectRow.children[4].innerHTML) === app.ICONS.close,
+  String(firstProjectRow.children[3].innerHTML) === app.ICONS.more &&
+    String(firstProjectRow.children[4].innerHTML) === app.ICONS.compose,
   firstProjectRow.outline(),
 );
 // The home state's mark is the app's own drawing as well, and the transcript
@@ -986,6 +1004,24 @@ check(
     elementFor("project").classList.contains("unset") &&
     /Pick the folder/.test(String(elementFor("project").title)),
   `${elementFor("project-name").textContent} / ${elementFor("project").title}`,
+);
+
+// Codex keeps a chronological way back to work below the project tree. It is
+// deliberately a second view of the same chats, ordered by activity rather
+// than grouped by folder.
+const sidebarRecentRows = () => elementFor("projects-tree").querySelectorAll(".recent-session-item");
+check(
+  "listed recent chats below the project tree",
+  elementFor("projects-tree").querySelector(".sidebar-section-title")?.textContent === "Recents" &&
+    sidebarRecentRows().length === existing.length &&
+    sidebarRecentRows().every((row) => row.tagName === "BUTTON" && row.type === "button"),
+  elementFor("projects-tree").outline(),
+);
+check(
+  "ordered sidebar recents by their latest activity",
+  sidebarRecentRows().map((row) => row.children[0].textContent).join(" / ") ===
+    "Other project / Fix the flaky test / say hi",
+  sidebarRecentRows().map((row) => row.outline()).join(" / "),
 );
 
 // The home state is where a thread is picked up again — the newest threads across
@@ -1972,7 +2008,7 @@ const rowRule = (selector) => {
   const start = sheet.indexOf(`${selector} {`);
   return start < 0 ? "" : sheet.slice(start, sheet.indexOf("}", start));
 };
-const drawnOnTheRow = [".row-add", ".row-remove"];
+const drawnOnTheRow = [".row-add", ".row-more", ".row-pin", ".row-archive"];
 check(
   "drew each row's controls without pointing at it",
   drawnOnTheRow.every((selector) => {
@@ -1993,17 +2029,18 @@ check(
     /\.project-item\.drop-after \{ box-shadow: inset 0 -2px 0 var\(--accent\); \}/.test(sheet),
   sheet.slice(sheet.indexOf(".project-item {"), sheet.indexOf(".project-item {") + 240),
 );
-// A thread's row carries its title and its ✕, and nothing else: the `⌘1`…`⌘9`
+// A thread's row carries its title and Codex's pin/archive controls: the `⌘1`…`⌘9`
 // badge it used to wear named a key the row does not have to list — the
 // shortcuts dialog is where that list is written down — and a badge beside the
 // ✕ was a second thing the title had to make room for. The title is the
 // flexible cell either way, so the ✕ keeps the row's own right-hand room.
 check(
-  "kept a thread's row down to its title and its ✕",
+  "kept a thread's row down to its title and pin/archive controls",
   !/"shortcut"/.test(source) &&
     !/\.session-item \.shortcut/.test(sheet) &&
     /\.session-item \.name \{ flex: 1/.test(sheet) &&
-    /position: absolute/.test(rowRule(".row-remove")),
+    /position: absolute/.test(rowRule(".row-pin")) &&
+    /position: absolute/.test(rowRule(".row-archive")),
   `badge ${/"shortcut"/.test(source)} / rule ${
     /\.session-item \.shortcut/.test(sheet)
   } / ${rowRule(".session-item .name").replace(/\s+/g, " ")}`,
@@ -6049,7 +6086,9 @@ app.state.sessions.unshift({ ...app.state.sessions[0], id: "6f3031b2beef", name:
 await app.renderProjectsTree();
 check(
   "stopped standing in once the store listed it",
-  elementFor("projects-tree").outline().split("Fix the sidebar").length - 1 === 1,
+  elementFor("projects-tree")
+    .querySelectorAll(".session-item")
+    .filter((row) => row.outline().includes("Fix the sidebar")).length === 1,
   elementFor("projects-tree").outline(),
 );
 app.setIdle();
@@ -6059,9 +6098,8 @@ app.state.parked = null;
 threads = existing;
 
 console.log("removing a project");
-// A row's ✕ is inside the row it removes, so the press it takes is the ✕'s and
-// not the row's, and the dialog that opens answers with the choice it was
-// opened with.
+// Removal remains available from the project's options card; opening and using
+// it must not select the project row underneath.
 const removeTarget = {
   id: "/home/dev/Projects/oxide",
   path: "/home/dev/Projects/oxide",
@@ -6078,21 +6116,21 @@ app.state.sessions = [
 app.state.project = null;
 await app.renderProjectsTree();
 const removeRow = elementFor("projects-tree").children[0].children[0];
-const removeButton = removeRow.children.find((node) => String(node.className).includes("row-remove"));
+const optionsButton = removeRow.children.find((node) => String(node.className).includes("row-more"));
 calls.length = 0;
-// The ✕ sits in the row that selects the project, so it stops the click there
-// rather than letting both act on one gesture.
 let stoppedAtTheRow = false;
 const removePress = press({
-  target: removeButton,
+  target: optionsButton,
   stopPropagation() {
     stoppedAtTheRow = true;
   },
 });
-removeButton.onclick(removePress);
+optionsButton.onclick(removePress);
+const projectCard = document.body.children.at(-1);
+projectCard.querySelector(".remove-project").onclick(press({ target: projectCard }));
 await nextTick();
 check(
-  "opened the confirm from the row's own ✕, not the row",
+  "opened the confirm from the project's options, not the row",
   elementFor("confirm-modal").hidden === false && app.state.project === null,
   `${elementFor("confirm-modal").hidden} / ${app.state.project}`,
 );
@@ -6114,6 +6152,130 @@ check(
   "answered with that dialog's own choice",
   calls.filter(([name]) => name === "delete_session").length === 2,
   JSON.stringify(calls.map(([name]) => name)),
+);
+
+console.log("project and thread actions");
+projectRows = [{ ...removeTarget, pinned: false }];
+threads = [{ id: "pin-me", cwd: removeTarget.path, name: "Pinned work", modified_at: 10, pinned: false }];
+app.state.projects = projectRows.map((row) => ({ ...row }));
+app.state.sessions = threads.map((row) => ({ ...row }));
+await app.renderProjectsTree();
+let actionGroup = elementFor("projects-tree").children[0];
+let actionProject = actionGroup.children[0];
+let optionsTrigger = actionProject.querySelector(".row-more");
+optionsTrigger.click();
+let actionCard = document.body.children.at(-1);
+check(
+  "summarized a project in its options card",
+  actionCard.querySelector("strong").textContent === "oxide" &&
+    actionCard.querySelector(".sidebar-card-meta").children[1].textContent.includes("1 task") &&
+    actionCard.querySelector(".sidebar-card-path").children[1].textContent === removeTarget.path,
+  actionCard.outline(),
+);
+check(
+  "opened the project actions as an accessible keyboard menu",
+  optionsTrigger.getAttribute("aria-haspopup") === "menu" &&
+    optionsTrigger.getAttribute("aria-expanded") === "true" &&
+    actionCard.getAttribute("role") === "menu" &&
+    actionCard.getAttribute("aria-label") === "oxide project actions" &&
+    actionCard.querySelector(".sidebar-card-pin").getAttribute("role") === "menuitem" &&
+    document.activeElement === actionCard.querySelector(".sidebar-card-pin"),
+  actionCard.outline(),
+);
+let menuPrevented = false;
+actionCard.fire("keydown", {
+  key: "ArrowDown",
+  preventDefault() { menuPrevented = true; },
+  stopPropagation() {},
+});
+check(
+  "walked the project menu with arrow keys",
+  menuPrevented && document.activeElement === actionCard.querySelector(".edit-project"),
+  actionCard.outline(),
+);
+actionCard.fire("keydown", {
+  key: "Escape",
+  preventDefault() {},
+  stopPropagation() {},
+});
+check(
+  "closed the project menu on Escape and returned focus to its trigger",
+  optionsTrigger.getAttribute("aria-expanded") === "false" && document.activeElement === optionsTrigger,
+  `${optionsTrigger.getAttribute("aria-expanded")} / ${document.activeElement?.className}`,
+);
+optionsTrigger.click();
+actionCard = document.body.children.at(-1);
+calls.length = 0;
+actionCard.querySelector(".sidebar-card-pin").click();
+await nextTick();
+check(
+  "persisted the project's pin from the card",
+  calls.some(([name, args]) => name === "set_project_pinned" && args.pinned === true) &&
+    app.state.projects[0].pinned === true,
+  JSON.stringify(calls),
+);
+
+actionGroup = elementFor("projects-tree").children[0];
+actionProject = actionGroup.children[0];
+actionProject.querySelector(".row-more").click();
+actionCard = document.body.children.at(-1);
+actionCard.querySelector(".edit-project").click();
+check(
+  "made project editing name-only instead of offering discarded folder changes",
+  elementFor("create-project-modal").hidden === false &&
+    elementFor("create-project-sources").hidden === true &&
+    elementFor("create-project-title").textContent === "Edit project",
+  `${elementFor("create-project-modal").hidden} / ${elementFor("create-project-sources").hidden}`,
+);
+elementFor("create-project-cancel").click();
+
+app.state.projects = [{ ...app.state.projects[0], registered: false }];
+await app.renderProjectsTree();
+actionProject = elementFor("projects-tree").children[0].children[0];
+actionProject.querySelector(".row-more").click();
+actionCard = document.body.children.at(-1);
+check(
+  "hid Edit for a session-derived project that cannot persist a name",
+  actionCard.querySelector(".edit-project") === null,
+  actionCard.outline(),
+);
+app.state.projects = [{ ...app.state.projects[0], registered: true }];
+await app.renderProjectsTree();
+
+actionGroup = elementFor("projects-tree").children[0];
+const threadRow = actionGroup.children[1].children[0];
+threadRow.fire("mouseenter", {});
+const detailCard = document.body.children.at(-1);
+check(
+  "showed the thread's title, age and project in its detail card",
+  detailCard.querySelector(".thread-detail-title").textContent === "Pinned work" &&
+    detailCard.querySelector(".thread-detail-meta").children[1].textContent.length > 0 &&
+    detailCard.querySelector(".thread-detail-project").children[1].textContent === "oxide",
+  detailCard.outline(),
+);
+calls.length = 0;
+threadRow.querySelector(".row-pin").click();
+await nextTick();
+check(
+  "persisted a thread pin",
+  calls.some(([name, args]) => name === "set_session_pinned" && args.id === "pin-me") &&
+    app.state.sessions[0].pinned === true,
+  JSON.stringify(calls),
+);
+const pinnedThread = elementFor("projects-tree").children[0].children[1].children[0];
+app.state.parked = { session: "pin-me", project: removeTarget.path, title: "Pinned work" };
+calls.length = 0;
+pinnedThread.querySelector(".row-archive").click();
+await nextTick();
+check(
+  "archived the thread without deleting its session file",
+  calls.some(([name, args]) => name === "archive_session" && args.id === "pin-me") &&
+    !calls.some(([name]) => name === "delete_session") &&
+    app.state.sessions.length === 0 &&
+    app.state.parked === null &&
+    elementFor("projects-tree").querySelector(".project-empty")?.textContent === "No chats" &&
+    elementFor("projects-tree").querySelectorAll(".recent-session-item").length === 0,
+  JSON.stringify(calls),
 );
 
 // ---------- check for updates ----------
@@ -7027,6 +7189,110 @@ app.state.providers = [];
 // the page
 // reaches nothing else directly, which is what keeps `pick_folder` and
 // `open_url` answering with the state the other commands hold.
+// ---------- Codex-style sidebar disclosure ----------
+
+// The highlighted Codex sidebar shows five projects and five chats per project,
+// then makes each longer list an explicit operation instead of letting one
+// folder consume the whole sidebar.
+const beforeDisclosureProjects = app.state.projects;
+const beforeDisclosureSessions = app.state.sessions;
+const beforeDisclosureProject = app.state.project;
+const beforeDisclosureProjectName = app.state.projectName;
+const beforeDisclosureSession = app.state.session;
+app.state.projects = Array.from({ length: 6 }, (_, index) => ({
+  id: `/tmp/sidebar-${index}`,
+  path: `/tmp/sidebar-${index}`,
+  name: `sidebar-${index}`,
+  registered: true,
+}));
+app.state.sessions = Array.from({ length: 7 }, (_, index) => ({
+  id: `sidebar-thread-${index}`,
+  name: `Sidebar thread ${index}`,
+  cwd: "/tmp/sidebar-0",
+  created_at: index + 1,
+  modified_at: index + 1,
+  message_count: 1,
+  preview: "",
+}));
+app.state.sidebarProjectsExpanded = false;
+app.state.expandedSidebarProjects.clear();
+await app.renderProjectsTree();
+const cappedProjectCount = elementFor("projects-tree").querySelectorAll(".project-group").length;
+const projectsMore = elementFor("projects-tree").querySelector(".projects-show-more");
+check(
+  "capped the project list the way Codex does",
+  cappedProjectCount === 5 && Boolean(projectsMore) && projectsMore.title === "Show 1 more projects",
+  `${cappedProjectCount} / ${Boolean(projectsMore)} / ${projectsMore?.title}`,
+);
+const cappedProjectSessions = elementFor("projects-tree").querySelector(".project-sessions");
+check(
+  "capped a project's chats and offered Show more",
+  cappedProjectSessions.querySelectorAll(".session-item").length === 5 &&
+    Boolean(cappedProjectSessions.querySelector(".project-show-more")),
+  cappedProjectSessions.outline(),
+);
+cappedProjectSessions.querySelector(".project-show-more").onclick({ stopPropagation() {} });
+check(
+  "expanded a project's chats from Show more",
+  elementFor("projects-tree").querySelector(".project-sessions").querySelectorAll(".session-item").length === 7,
+  elementFor("projects-tree").outline(),
+);
+elementFor("projects-tree").querySelector(".projects-show-more").onclick();
+check(
+  "expanded the remaining projects from Show more",
+  elementFor("projects-tree").querySelectorAll(".project-group").length === 6,
+  elementFor("projects-tree").outline(),
+);
+
+// Opening from Recents crosses both caps at once: the sixth project contains a
+// chat that is sixth in its structural list but most recent chronologically.
+// The pick must reveal both rows before marking the chat active.
+const hiddenProject = app.state.projects[5];
+const hiddenProjectSessions = Array.from({ length: 6 }, (_, index) => ({
+  id: `hidden-thread-${index}`,
+  name: `Hidden thread ${index}`,
+  cwd: hiddenProject.path,
+  created_at: index + 10,
+  modified_at: index === 5 ? 100 : index + 10,
+  message_count: 1,
+  preview: "",
+}));
+app.state.sessions = hiddenProjectSessions;
+threads = hiddenProjectSessions;
+app.state.project = app.state.projects[0].path;
+app.state.projectName = app.state.projects[0].name;
+app.state.session = null;
+app.state.sidebarProjectsExpanded = false;
+app.state.expandedSidebarProjects.clear();
+await app.renderProjectsTree();
+const hiddenRecent = elementFor("projects-tree")
+  .querySelectorAll(".recent-session-item")
+  .find((row) => row.children[0].textContent === "Hidden thread 5");
+await hiddenRecent.onclick();
+const revealedProject = elementFor("projects-tree")
+  .querySelectorAll(".project-group")
+  .find((group) => group.children[0].dataset.project === hiddenProject.id);
+const revealedSession = revealedProject
+  ?.querySelectorAll(".session-item")
+  .find((row) => row.children[0].textContent === "Hidden thread 5");
+check(
+  "revealed a capped project and chat opened from Recents",
+  app.state.sidebarProjectsExpanded === true &&
+    app.state.expandedSidebarProjects.has(hiddenProject.id) &&
+    revealedProject?.children[0].classList.contains("active") === true &&
+    revealedSession?.classList.contains("active") === true,
+  `${app.state.project} / ${app.state.session} / ${elementFor("projects-tree").outline()}`,
+);
+app.state.projects = beforeDisclosureProjects;
+app.state.sessions = beforeDisclosureSessions;
+threads = existing;
+app.state.project = beforeDisclosureProject;
+app.state.projectName = beforeDisclosureProjectName;
+app.state.session = beforeDisclosureSession;
+app.state.sidebarProjectsExpanded = false;
+app.state.expandedSidebarProjects.clear();
+await app.renderProjectsTree();
+
 // ---------- the arrangement the sidebar is dragged into ----------
 
 // A project's row is the handle for the order the sidebar lists its folders in:
@@ -7041,7 +7307,10 @@ projectRows = [
   { id: "/tmp/third", path: "/tmp/third", name: "third", registered: true, exists: true, session_count: 0, last_session_at: 0, last_opened_at: 3 },
 ];
 await app.loadProjects();
-const rowsOf = () => elementFor("projects-tree").children.map((group) => group.children[0]);
+const rowsOf = () =>
+  elementFor("projects-tree")
+    .querySelectorAll(".project-group")
+    .map((group) => group.children[0]);
 const listedIds = () => app.state.projects.map((project) => project.id);
 const rowIds = () => rowsOf().map((row) => row.dataset.project).join("|");
 await app.renderProjectsTree();
