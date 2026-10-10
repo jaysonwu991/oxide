@@ -22,6 +22,14 @@ use tokio::sync::mpsc::UnboundedSender;
 
 const MAX_TASK_DEPTH: usize = 2;
 
+/// A user can send several messages while one run is still working. Providers
+/// otherwise tend to treat the newest one as a replacement prompt, especially
+/// when it is only an attachment, and can abandon work requested by the earlier
+/// messages even though every message is present in the conversation. Keep the
+/// contract in the core request so the TUI, RPC clients, desktop app and any
+/// future front-end all get the same cumulative semantics.
+const CUMULATIVE_INPUT_REMINDER: &str = "The user has added one or more messages while you were working. Treat those messages as cumulative with every earlier request unless the user explicitly says to cancel, replace, or supersede one. Before finishing, verify that you have addressed every still-applicable user message, not only the most recent one.";
+
 pub type RunFuture = Pin<Box<dyn Future<Output = ()> + Send>>;
 
 pub type Approver =
@@ -645,6 +653,11 @@ async fn run_loop(
     // the top-of-loop poll does not immediately take the next one too: under
     // `one-at-a-time` only one queued message may precede a model call.
     let mut skip_steering_poll = false;
+    // Once the run accepts additional user input, later requests carry an
+    // explicit cumulative-input contract. The transcript already contains the
+    // messages themselves; this only prevents the newest from being mistaken
+    // for a replacement of unfinished earlier work.
+    let mut has_mid_run_input = false;
     // A provider may return the metadata tool without the requested answer.
     // Offer it at most once per run so an invalid title or an unwritable log
     // cannot turn that fallback into an unbounded request loop.
@@ -667,6 +680,7 @@ async fn run_loop(
         }
         if !skip_steering_poll {
             for queued in runtime.steering.drain_labeled(runtime.steering_mode) {
+                has_mid_run_input = true;
                 let Queued {
                     message: steered,
                     label,
@@ -775,6 +789,9 @@ async fn run_loop(
         }
         request.push(Message::system(system));
         request.extend(messages.iter().cloned());
+        if has_mid_run_input {
+            request.push(Message::system(CUMULATIVE_INPUT_REMINDER));
+        }
         // A reminder makes this request the hidden nudge: it asks the model to
         // confirm work it already summarized, so a provider that answers it
         // with nothing must not fail the turn the user already saw complete.
@@ -1065,6 +1082,7 @@ async fn run_loop(
                 finish(&runtime, &tx, messages, depth);
                 return;
             }
+            has_mid_run_input = true;
             for queued in steered {
                 let Queued { message, label } = queued;
                 let _ = tx.send(AgentEvent::Steered {
@@ -3848,6 +3866,12 @@ mod tests {
         assert!(bodies[1].contains("STEER_TWO"), "{}", bodies[1]);
         assert!(!bodies[1].contains("STEER_THREE"), "{}", bodies[1]);
         assert!(bodies[2].contains("STEER_THREE"), "{}", bodies[2]);
+        for body in &bodies {
+            assert!(
+                body.contains("not only the most recent one"),
+                "a request with mid-run input lost the cumulative-input contract: {body}"
+            );
+        }
 
         let mut delivered = 0;
         while let Ok(event) = rx.try_recv() {

@@ -1923,6 +1923,10 @@ const sheetRules = [...sheet.matchAll(/([^{}]+)\{([^}]*)\}/g)].map(([, selectors
   body,
 ]);
 const sidebarActionRule = (selectors) => /\.row-(?:add|more|pin|archive)/.test(selectors);
+const inertSidebarActionSurface = (selectors, body) =>
+  selectors.includes(".project-item::after") &&
+  selectors.includes(".session-item::after") &&
+  /pointer-events:\s*none/.test(body);
 const hiddenAtRest = (body) =>
   /(^|[;\s])opacity:\s*0(?:[;\s]|$)/.test(body) ||
   /display:\s*none/.test(body) ||
@@ -1992,11 +1996,17 @@ check(
 const invisibleRules = [
   ...sheetRules
     .filter(([, body]) => /(^|[;\s])opacity:\s*0(?:[;\s]|$)/.test(body))
-    .filter(([selectors]) => !sidebarActionRule(selectors))
+    .filter(
+      ([selectors, body]) =>
+        !sidebarActionRule(selectors) && !inertSidebarActionSurface(selectors, body),
+    )
     .map(([selectors]) => `${selectors} { opacity: 0 }`),
   ...sheetRules
     .filter(([, body]) => /pointer-events/.test(body))
-    .filter(([selectors]) => !sidebarActionRule(selectors))
+    .filter(
+      ([selectors, body]) =>
+        !sidebarActionRule(selectors) && !inertSidebarActionSurface(selectors, body),
+    )
     .map(([selectors]) => `${selectors} { pointer-events }`),
 ];
 check(
@@ -2006,8 +2016,8 @@ check(
     (/\[hidden\]/.test(sheet) ? "the [hidden] guard lost its !important" : "the [hidden] guard is gone"),
 );
 // What a row carries is present in the DOM but quiet at rest, then becomes
-// interactive on row hover or keyboard focus. Each action takes room the row
-// already reserves, so the title does not move when the controls appear.
+// interactive on row hover or keyboard focus. The title itself does not move;
+// the row paints an inert fade beneath the controls when they appear.
 const rowRule = (selector) => {
   const start = sheet.indexOf(`${selector} {`);
   return start < 0 ? "" : sheet.slice(start, sheet.indexOf("}", start));
@@ -2048,9 +2058,9 @@ check(
     /\.session-item \.shortcut/.test(sheet)
   } / ${rowRule(".session-item .name").replace(/\s+/g, " ")}`,
 );
-// The controls a row draws stand in the room the row reserves for them rather
-// than over what the row says: `padding-right` is that room, so a press on a
-// thread's name is a press on the name and never on the ✕ beside it.
+// Codex lets a row's title use the action strip while the controls are idle.
+// When they appear, an inert surface covers the title below them and the
+// controls sit above it, so the title neither moves nor steals their clicks.
 const rowBodies = (selector) =>
   sheetRules
     .filter(([selectors]) =>
@@ -2075,20 +2085,14 @@ const rightPadding = (row) => {
   if (!values.length) return NaN;
   return values.length === 1 ? values[0] : values[1];
 };
-const roomForControl = (row, control) =>
-  rightPadding(row) -
-  (lastPixels(rowBodies(control), "right") + lastPixels(rowBodies(control), "width"));
-const rowControls = [
-  [".session-item", ".row-remove"],
-  [".project-item", ".row-remove"],
-  [".project-item", ".row-add"],
-];
 check(
-  "kept each row's controls in the room the row reserves for them",
-  rowControls.every(([row, control]) => roomForControl(row, control) >= 0),
-  rowControls
-    .map(([row, control]) => `${row} ${control} ${roomForControl(row, control)}px`)
-    .join(" | "),
+  "let sidebar titles use the idle action strip without moving under its controls",
+  rightPadding(".project-item") === 10 &&
+    rightPadding(".session-item") === 10 &&
+    /\.project-item::after,[\s\S]*?\.session-item::after \{[^}]*width: 54px;[^}]*pointer-events: none;/.test(sheet) &&
+    /\.project-item:hover::after,[\s\S]*?\.session-item:focus-within::after \{ opacity: 1; \}/.test(sheet) &&
+    /\.row-more,[\s\S]*?\.row-archive \{[^}]*z-index: 1;/.test(sheet),
+  `${rightPadding(".project-item")}px / ${rightPadding(".session-item")}px`,
 );
 // The shortcut is a reference to a key, so the list itself is written down in
 // the shortcuts dialog, and the handler takes either platform's modifier.
@@ -3782,6 +3786,10 @@ check(
   "kept the conversation and the composer in one column",
   columnWidths.every((width) => width === "780"),
   columnCarriers.map((selector, index) => `${selector} ${columnWidths[index]}`).join(" · "),
+);
+check(
+  "made a user message hug its content and end on that same column",
+  /\.msg\.user \{[^}]*width: fit-content;[^}]*max-width: min\(78%, 780px\);[^}]*margin-left: auto;[^}]*margin-right: max\(0px, calc\(\(100% - 780px\) \/ 2\)\);/.test(sheet),
 );
 
 // ---------- a finished turn's changes ----------
