@@ -107,7 +107,15 @@ function createWindow(): BrowserWindow {
     },
   });
 
-  window.once("ready-to-show", () => window.show());
+  // Codex's own window opens filling the screen rather than at a fixed size,
+  // and this one follows it: maximized rather than the platform's own
+  // kiosk-style fullscreen, so the traffic lights and the menu bar stay where
+  // the reader expects them and the window still restores to the size above
+  // when the reader un-maximizes it.
+  window.once("ready-to-show", () => {
+    window.maximize();
+    window.show();
+  });
 
   // The window shows the app's own page and nothing else. It never navigates:
   // a link in a reply is opened in the machine's browser through `open_url`,
