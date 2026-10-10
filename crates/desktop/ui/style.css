@@ -1511,11 +1511,16 @@ tone, with tabular figures so a count that grows does not shift the row it ends.
   display: flex;
   align-items: center;
   gap: 7px;
+  width: 100%;
   min-width: 0;
   padding: 6px 10px;
+  border: 0;
   border-radius: 4px;
+  background: transparent;
   color: var(--dim);
+  font: inherit;
   font-size: 12.5px;
+  text-align: left;
   cursor: pointer;
   user-select: none;
 }

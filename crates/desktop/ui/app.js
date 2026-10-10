@@ -6283,7 +6283,8 @@ async function renderProjectsTree() {
     .sort((a, b) => (b.modified_at || b.created_at || 0) - (a.modified_at || a.created_at || 0))
     .slice(0, SIDEBAR_RECENT_LIMIT);
   for (const session of recentSessions) {
-    const row = document.createElement("div");
+    const row = document.createElement("button");
+    row.type = "button";
     row.className =
       "recent-session-item" +
       (session.id === state.session ? " active" : "") +

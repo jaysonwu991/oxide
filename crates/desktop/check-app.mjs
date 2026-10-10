@@ -995,7 +995,8 @@ const sidebarRecentRows = () => elementFor("projects-tree").querySelectorAll(".r
 check(
   "listed recent chats below the project tree",
   elementFor("projects-tree").querySelector(".sidebar-section-title")?.textContent === "Recents" &&
-    sidebarRecentRows().length === existing.length,
+    sidebarRecentRows().length === existing.length &&
+    sidebarRecentRows().every((row) => row.tagName === "BUTTON" && row.type === "button"),
   elementFor("projects-tree").outline(),
 );
 check(
@@ -7053,6 +7054,9 @@ app.state.providers = [];
 // folder consume the whole sidebar.
 const beforeDisclosureProjects = app.state.projects;
 const beforeDisclosureSessions = app.state.sessions;
+const beforeDisclosureProject = app.state.project;
+const beforeDisclosureProjectName = app.state.projectName;
+const beforeDisclosureSession = app.state.session;
 app.state.projects = Array.from({ length: 6 }, (_, index) => ({
   id: `/tmp/sidebar-${index}`,
   path: `/tmp/sidebar-${index}`,
@@ -7097,8 +7101,52 @@ check(
   elementFor("projects-tree").querySelectorAll(".project-group").length === 6,
   elementFor("projects-tree").outline(),
 );
+
+// Opening from Recents crosses both caps at once: the sixth project contains a
+// chat that is sixth in its structural list but most recent chronologically.
+// The pick must reveal both rows before marking the chat active.
+const hiddenProject = app.state.projects[5];
+const hiddenProjectSessions = Array.from({ length: 6 }, (_, index) => ({
+  id: `hidden-thread-${index}`,
+  name: `Hidden thread ${index}`,
+  cwd: hiddenProject.path,
+  created_at: index + 10,
+  modified_at: index === 5 ? 100 : index + 10,
+  message_count: 1,
+  preview: "",
+}));
+app.state.sessions = hiddenProjectSessions;
+threads = hiddenProjectSessions;
+app.state.project = app.state.projects[0].path;
+app.state.projectName = app.state.projects[0].name;
+app.state.session = null;
+app.state.sidebarProjectsExpanded = false;
+app.state.expandedSidebarProjects.clear();
+await app.renderProjectsTree();
+const hiddenRecent = elementFor("projects-tree")
+  .querySelectorAll(".recent-session-item")
+  .find((row) => row.children[0].textContent === "Hidden thread 5");
+await hiddenRecent.onclick();
+const revealedProject = elementFor("projects-tree")
+  .querySelectorAll(".project-group")
+  .find((group) => group.children[0].dataset.project === hiddenProject.id);
+const revealedSession = revealedProject
+  ?.querySelectorAll(".session-item")
+  .find((row) => row.children[0].textContent === "Hidden thread 5");
+check(
+  "revealed a capped project and chat opened from Recents",
+  app.state.sidebarProjectsExpanded === true &&
+    app.state.expandedSidebarProjects.has(hiddenProject.id) &&
+    revealedProject?.children[0].classList.contains("active") === true &&
+    revealedSession?.classList.contains("active") === true,
+  `${app.state.project} / ${app.state.session} / ${elementFor("projects-tree").outline()}`,
+);
 app.state.projects = beforeDisclosureProjects;
 app.state.sessions = beforeDisclosureSessions;
+threads = existing;
+app.state.project = beforeDisclosureProject;
+app.state.projectName = beforeDisclosureProjectName;
+app.state.session = beforeDisclosureSession;
 app.state.sidebarProjectsExpanded = false;
 app.state.expandedSidebarProjects.clear();
 await app.renderProjectsTree();
