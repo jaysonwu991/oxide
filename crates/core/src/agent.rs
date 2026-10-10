@@ -3882,6 +3882,44 @@ mod tests {
         assert_eq!(delivered, 3);
     }
 
+    /// A queued follow-up is not polled at the top of the loop: it enters at
+    /// the response boundary, after the first answer. Keep that distinct path
+    /// covered so its next request carries the same cumulative-input contract
+    /// as an immediate steering message.
+    #[tokio::test]
+    async fn a_follow_up_at_the_response_boundary_gets_the_cumulative_reminder() {
+        let (addr, server) = sse_server(vec![answer_body("one"), answer_body("two")]).await;
+        let config = Config {
+            provider: "deepseek".into(),
+            model: "deepseek-flash".into(),
+            base_url: format!("http://{addr}"),
+            api_key: "sk-test".into(),
+            ..Config::default()
+        };
+        let runtime = test_runtime().await;
+        runtime.follow_ups.push(Message::user("FOLLOW_UP"));
+        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+
+        run(
+            config,
+            std::env::temp_dir(),
+            vec![Message::user("hi")],
+            tx,
+            runtime,
+        )
+        .await;
+
+        let bodies = server.await.unwrap();
+        assert_eq!(bodies.len(), 2, "the follow-up gets its own request");
+        assert!(!bodies[0].contains("FOLLOW_UP"), "{}", bodies[0]);
+        assert!(bodies[1].contains("FOLLOW_UP"), "{}", bodies[1]);
+        assert!(
+            bodies[1].contains("not only the most recent one"),
+            "the response-boundary follow-up lost the cumulative-input contract: {}",
+            bodies[1]
+        );
+    }
+
     /// The regression from a real session: the model edited a file and
     /// summarized its work, oxide sent the hidden Definition-of-Done reminder,
     /// and the provider answered the reminder with an empty turn. The summary

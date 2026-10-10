@@ -527,6 +527,13 @@ check(
     /show: false/.test(shell) &&
     /window\.once\("ready-to-show"/.test(shell),
 );
+const readyToShow = between(shell, 'window.once("ready-to-show", () => {', "\n  });");
+check(
+  "maximized the first frame before showing it",
+  readyToShow.indexOf("window.maximize();") >= 0 &&
+    readyToShow.indexOf("window.maximize();") < readyToShow.indexOf("window.show();"),
+  readyToShow.replace(/\s+/g, " ").trim(),
+);
 // The page is this crate's `ui/` directory, both in a checkout and inside the
 // app's own archive, and the build has to carry it there: a `files` list that
 // forgot `ui/` is an app with no page.
