@@ -696,6 +696,24 @@ const invoke = async (command, args = {}) => {
     case "remove_project":
       projectRows = projectRows.filter((row) => row.id !== args.id);
       return projectRows.map((row) => ({ ...row }));
+    case "update_project":
+      projectRows = projectRows.map((row) =>
+        row.id === args.id ? { ...row, name: args.name } : row,
+      );
+      return projectRows.map((row) => ({ ...row }));
+    case "set_project_pinned":
+      projectRows = projectRows.map((row) =>
+        row.id === args.id ? { ...row, pinned: args.pinned } : row,
+      );
+      return projectRows.map((row) => ({ ...row }));
+    case "set_session_pinned":
+      threads = threads.map((row) =>
+        row.id === args.id ? { ...row, pinned: args.pinned } : row,
+      );
+      return threads.map((row) => ({ ...row }));
+    case "archive_session":
+      threads = threads.filter((row) => row.id !== args.id);
+      return threads.map((row) => ({ ...row }));
     case "reorder_projects": {
       if (reorderError) throw reorderError;
       // The app keeps the order it was given and answers with the listing as it
@@ -965,12 +983,12 @@ check(
   String(firstProjectRow.children[0].innerHTML) === app.ICONS.folder,
   firstProjectRow.outline(),
 );
-// Both of the row's controls are drawings too, and both are the VS Code panel's
-// own: the plus is the panel's plus, and the ✕ is the one its listing uses.
+// Both of the row's Codex-style controls are drawings too: project options and
+// starting a new task each have their own stable target.
 check(
   "drew a row's controls from the app's own set",
-  String(firstProjectRow.children[3].innerHTML) === app.ICONS.plus &&
-    String(firstProjectRow.children[4].innerHTML) === app.ICONS.close,
+  String(firstProjectRow.children[3].innerHTML) === app.ICONS.more &&
+    String(firstProjectRow.children[4].innerHTML) === app.ICONS.compose,
   firstProjectRow.outline(),
 );
 // The home state's mark is the app's own drawing as well, and the transcript
@@ -1990,7 +2008,7 @@ const rowRule = (selector) => {
   const start = sheet.indexOf(`${selector} {`);
   return start < 0 ? "" : sheet.slice(start, sheet.indexOf("}", start));
 };
-const drawnOnTheRow = [".row-add", ".row-remove"];
+const drawnOnTheRow = [".row-add", ".row-more", ".row-pin", ".row-archive"];
 check(
   "drew each row's controls without pointing at it",
   drawnOnTheRow.every((selector) => {
@@ -2011,17 +2029,18 @@ check(
     /\.project-item\.drop-after \{ box-shadow: inset 0 -2px 0 var\(--accent\); \}/.test(sheet),
   sheet.slice(sheet.indexOf(".project-item {"), sheet.indexOf(".project-item {") + 240),
 );
-// A thread's row carries its title and its ✕, and nothing else: the `⌘1`…`⌘9`
+// A thread's row carries its title and Codex's pin/archive controls: the `⌘1`…`⌘9`
 // badge it used to wear named a key the row does not have to list — the
 // shortcuts dialog is where that list is written down — and a badge beside the
 // ✕ was a second thing the title had to make room for. The title is the
 // flexible cell either way, so the ✕ keeps the row's own right-hand room.
 check(
-  "kept a thread's row down to its title and its ✕",
+  "kept a thread's row down to its title and pin/archive controls",
   !/"shortcut"/.test(source) &&
     !/\.session-item \.shortcut/.test(sheet) &&
     /\.session-item \.name \{ flex: 1/.test(sheet) &&
-    /position: absolute/.test(rowRule(".row-remove")),
+    /position: absolute/.test(rowRule(".row-pin")) &&
+    /position: absolute/.test(rowRule(".row-archive")),
   `badge ${/"shortcut"/.test(source)} / rule ${
     /\.session-item \.shortcut/.test(sheet)
   } / ${rowRule(".session-item .name").replace(/\s+/g, " ")}`,
@@ -6079,9 +6098,8 @@ app.state.parked = null;
 threads = existing;
 
 console.log("removing a project");
-// A row's ✕ is inside the row it removes, so the press it takes is the ✕'s and
-// not the row's, and the dialog that opens answers with the choice it was
-// opened with.
+// Removal remains available from the project's options card; opening and using
+// it must not select the project row underneath.
 const removeTarget = {
   id: "/home/dev/Projects/oxide",
   path: "/home/dev/Projects/oxide",
@@ -6098,21 +6116,21 @@ app.state.sessions = [
 app.state.project = null;
 await app.renderProjectsTree();
 const removeRow = elementFor("projects-tree").children[0].children[0];
-const removeButton = removeRow.children.find((node) => String(node.className).includes("row-remove"));
+const optionsButton = removeRow.children.find((node) => String(node.className).includes("row-more"));
 calls.length = 0;
-// The ✕ sits in the row that selects the project, so it stops the click there
-// rather than letting both act on one gesture.
 let stoppedAtTheRow = false;
 const removePress = press({
-  target: removeButton,
+  target: optionsButton,
   stopPropagation() {
     stoppedAtTheRow = true;
   },
 });
-removeButton.onclick(removePress);
+optionsButton.onclick(removePress);
+const projectCard = document.body.children.at(-1);
+projectCard.querySelector(".remove-project").onclick(press({ target: projectCard }));
 await nextTick();
 check(
-  "opened the confirm from the row's own ✕, not the row",
+  "opened the confirm from the project's options, not the row",
   elementFor("confirm-modal").hidden === false && app.state.project === null,
   `${elementFor("confirm-modal").hidden} / ${app.state.project}`,
 );
@@ -6134,6 +6152,65 @@ check(
   "answered with that dialog's own choice",
   calls.filter(([name]) => name === "delete_session").length === 2,
   JSON.stringify(calls.map(([name]) => name)),
+);
+
+console.log("project and thread actions");
+projectRows = [{ ...removeTarget, pinned: false }];
+threads = [{ id: "pin-me", cwd: removeTarget.path, name: "Pinned work", modified_at: 10, pinned: false }];
+app.state.projects = projectRows.map((row) => ({ ...row }));
+app.state.sessions = threads.map((row) => ({ ...row }));
+await app.renderProjectsTree();
+let actionGroup = elementFor("projects-tree").children[0];
+let actionProject = actionGroup.children[0];
+actionProject.querySelector(".row-more").click();
+let actionCard = document.body.children.at(-1);
+check(
+  "summarized a project in its options card",
+  actionCard.querySelector("strong").textContent === "oxide" &&
+    actionCard.querySelector(".sidebar-card-meta").children[1].textContent.includes("1 task") &&
+    actionCard.querySelector(".sidebar-card-path").children[1].textContent === removeTarget.path,
+  actionCard.outline(),
+);
+calls.length = 0;
+actionCard.querySelector(".sidebar-card-pin").click();
+await nextTick();
+check(
+  "persisted the project's pin from the card",
+  calls.some(([name, args]) => name === "set_project_pinned" && args.pinned === true) &&
+    app.state.projects[0].pinned === true,
+  JSON.stringify(calls),
+);
+
+actionGroup = elementFor("projects-tree").children[0];
+const threadRow = actionGroup.children[1].children[0];
+threadRow.fire("mouseenter", {});
+const detailCard = document.body.children.at(-1);
+check(
+  "showed the thread's title, age and project in its detail card",
+  detailCard.querySelector(".thread-detail-title").textContent === "Pinned work" &&
+    detailCard.querySelector(".thread-detail-meta").children[1].textContent.length > 0 &&
+    detailCard.querySelector(".thread-detail-project").children[1].textContent === "oxide",
+  detailCard.outline(),
+);
+calls.length = 0;
+threadRow.querySelector(".row-pin").click();
+await nextTick();
+check(
+  "persisted a thread pin",
+  calls.some(([name, args]) => name === "set_session_pinned" && args.id === "pin-me") &&
+    app.state.sessions[0].pinned === true,
+  JSON.stringify(calls),
+);
+const pinnedThread = elementFor("projects-tree").children[0].children[1].children[0];
+calls.length = 0;
+pinnedThread.querySelector(".row-archive").click();
+await nextTick();
+check(
+  "archived the thread without deleting its session file",
+  calls.some(([name, args]) => name === "archive_session" && args.id === "pin-me") &&
+    !calls.some(([name]) => name === "delete_session") &&
+    app.state.sessions.length === 0,
+  JSON.stringify(calls),
 );
 
 // ---------- check for updates ----------

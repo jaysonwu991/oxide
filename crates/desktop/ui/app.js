@@ -163,6 +163,13 @@ const ICONS = {
   ),
   close: glyph(`<path d="M18 6 6 18M6 6l12 12" ${STROKE_24}/>`),
   plus: glyph('<path d="M8 3.6v8.8M3.6 8h8.8" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>', 16),
+  more: glyph('<path d="M5 12h.01M12 12h.01M19 12h.01" ' + STROKE_24 + '/>'),
+  compose: glyph('<path d="M12 20h9M16.5 3.5a2.1 2.1 0 0 1 3 3L8 18l-4 1 1-4Z" ' + STROKE_24 + '/>'),
+  pin: glyph('<path d="m14 4 6 6-3 1-4 4-1 5-3-6-5-3 5-1 4-4Z" ' + STROKE_24 + '/>'),
+  archive: glyph('<path d="M4 8h16M5 8v11h14V8M3 4h18v4H3ZM9 12h6" ' + STROKE_24 + '/>'),
+  chat: glyph('<path d="M21 15a4 4 0 0 1-4 4H8l-5 3 1.5-5A7 7 0 0 1 3 13V8a4 4 0 0 1 4-4h10a4 4 0 0 1 4 4Z" ' + STROKE_24 + '/>'),
+  computer: glyph('<rect x="3" y="4" width="18" height="13" rx="2" ' + STROKE_24 + '/><path d="M8 21h8M12 17v4" ' + STROKE_24 + '/>'),
+  gear: glyph('<circle cx="12" cy="12" r="3" ' + STROKE_24 + '/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.9l.1.1-2.8 2.8-.1-.1a1.7 1.7 0 0 0-1.9-.3 1.7 1.7 0 0 0-1 1.6v.2h-4V21a1.7 1.7 0 0 0-1-1.6 1.7 1.7 0 0 0-1.9.3l-.1.1L4.2 17l.1-.1a1.7 1.7 0 0 0 .3-1.9A1.7 1.7 0 0 0 3 14H2.8v-4H3a1.7 1.7 0 0 0 1.6-1 1.7 1.7 0 0 0-.3-1.9L4.2 7 7 4.2l.1.1a1.7 1.7 0 0 0 1.9.3A1.7 1.7 0 0 0 10 3V2.8h4V3a1.7 1.7 0 0 0 1 1.6 1.7 1.7 0 0 0 1.9-.3l.1-.1L19.8 7l-.1.1a1.7 1.7 0 0 0-.3 1.9 1.7 1.7 0 0 0 1.6 1h.2v4H21a1.7 1.7 0 0 0-1.6 1Z" ' + STROKE_24 + '/>'),
   check: glyph('<path d="m5.6 8 1.5 1.5 3.5-3.5" ' + STROKE_16 + '/>', 16),
   caret: glyph(`<path d="M5.5 8.6 12 14.8l6.5-6.2" ${STROKE_24}/>`),
   power: glyph(
@@ -5309,6 +5316,7 @@ async function initEvents() {
 // Create project modal state
 const createProjectState = {
   folders: [],
+  editing: null,
 };
 
 // The last path segment, used to default the project name to the folder's name.
@@ -5319,11 +5327,28 @@ function folderBasename(path) {
 }
 
 function openCreateProject() {
+  createProjectState.editing = null;
   createProjectState.folders = [];
   el("create-project-name").value = "";
   el("create-project-path").value = "";
   el("create-project-folders").innerHTML = "";
   el("create-project-error").hidden = true;
+  el("create-project-title").textContent = "Create project";
+  el("create-project-save").textContent = "Create project";
+  el("create-project-modal").hidden = false;
+  el("create-project-name").focus();
+}
+
+function openEditProject(project) {
+  closeSidebarCards();
+  createProjectState.editing = project;
+  createProjectState.folders = [project.path];
+  el("create-project-name").value = project.name;
+  el("create-project-path").value = "";
+  renderCreateProjectFolders();
+  el("create-project-error").hidden = true;
+  el("create-project-title").textContent = "Edit project";
+  el("create-project-save").textContent = "Save";
   el("create-project-modal").hidden = false;
   el("create-project-name").focus();
 }
@@ -5408,6 +5433,19 @@ async function saveCreateProject() {
     return;
   }
   try {
+    if (createProjectState.editing) {
+      state.projects = await invoke("update_project", {
+        id: createProjectState.editing.id,
+        name,
+      });
+      if (state.project === createProjectState.editing.path) {
+        state.projectName = name;
+        updateProjectChip();
+      }
+      el("create-project-modal").hidden = true;
+      renderProjectsTree();
+      return;
+    }
     const result = await invoke("create_project", {
       name,
       folders: createProjectState.folders,
@@ -5801,6 +5839,7 @@ function init() {
   // The renderer cannot navigate to a remote page, so a link click opens the
   // platform browser through the app instead of reloading the app window.
   document.addEventListener("click", (event) => {
+    if (!event.target?.closest?.(".sidebar-floating-card,.row-more")) closeSidebarCards();
     const link = event.target?.closest?.("a[href]") || null;
     if (!link) return;
     event.preventDefault();
@@ -5891,6 +5930,7 @@ function init() {
 
   document.addEventListener("keydown", (event) => {
     if (event.key === "Escape") {
+      closeSidebarCards();
       closeImage();
       closeReasoning();
       if (!el("confirm-modal").hidden) resolveConfirm(false);
@@ -6048,9 +6088,145 @@ async function dropProject(fromId, toId, after) {
   renderProjectsTree();
 }
 
+function closeSidebarCards(except = null) {
+  for (const card of document.querySelectorAll(".sidebar-floating-card")) {
+    if (card !== except) card.remove();
+  }
+}
+
+function placeSidebarCard(card, row) {
+  document.body.appendChild(card);
+  const rect = row.getBoundingClientRect();
+  const width = card.offsetWidth || 292;
+  card.style.left = `${Math.min(rect.right + 8, window.innerWidth - width - 10)}px`;
+  card.style.top = `${Math.max(10, Math.min(rect.top, window.innerHeight - (card.offsetHeight || 150) - 10))}px`;
+}
+
+function projectActivity(project, sessions) {
+  const active = state.busy && state.runProject === project.path ? 1 : 0;
+  return `${sessions.length} task${sessions.length === 1 ? "" : "s"}${active ? ` · ${active} active` : ""}`;
+}
+
+function showProjectActions(project, sessions, row) {
+  closeSidebarCards();
+  const card = document.createElement("div");
+  card.className = "sidebar-floating-card project-actions-card";
+  card.setAttribute("role", "menu");
+  const icon = (drawing, className = "") => {
+    const node = document.createElement("span");
+    node.className = className;
+    node.innerHTML = drawing;
+    return node;
+  };
+  const head = document.createElement("div");
+  head.className = "sidebar-card-head";
+  const heading = document.createElement("strong");
+  heading.textContent = project.name;
+  head.append(icon(ICONS.folder, "sidebar-card-icon"), heading);
+  const pin = document.createElement("button");
+  pin.type = "button";
+  pin.className = "sidebar-card-pin";
+  pin.title = project.pinned ? "Unpin project" : "Pin project";
+  pin.innerHTML = ICONS.pin;
+  const meta = document.createElement("div");
+  meta.className = "sidebar-card-meta";
+  const metaText = document.createElement("span");
+  metaText.textContent = projectActivity(project, sessions);
+  meta.append(icon(ICONS.chat), metaText);
+  const path = document.createElement("div");
+  path.className = "sidebar-card-row sidebar-card-path";
+  const pathText = document.createElement("span");
+  pathText.textContent = project.path;
+  path.append(icon(ICONS.folder), pathText);
+  const action = (className, drawing, label) => {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = `sidebar-card-row sidebar-card-action ${className}`;
+    const text = document.createElement("span");
+    text.textContent = label;
+    button.append(icon(drawing), text);
+    return button;
+  };
+  const edit = action("edit-project", ICONS.gear, "Edit project");
+  const remove = action(
+    "remove-project",
+    ICONS.close,
+    project.registered ? "Remove project" : "Delete project",
+  );
+  card.append(head, pin, meta, path, edit, remove);
+  pin.onclick = async () => {
+    try {
+      state.projects = await invoke("set_project_pinned", { id: project.id, pinned: !project.pinned });
+      closeSidebarCards();
+      renderProjectsTree();
+    } catch (error) {
+      setStatus(`Could not ${project.pinned ? "unpin" : "pin"} project: ${error}`, "error");
+    }
+  };
+  edit.onclick = () => openEditProject(project);
+  remove.onclick = () => {
+    closeSidebarCards();
+    removeProject(project);
+  };
+  placeSidebarCard(card, row);
+}
+
+function showThreadDetails(session, row) {
+  closeSidebarCards();
+  const card = document.createElement("div");
+  card.className = "sidebar-floating-card thread-details-card";
+  const title = document.createElement("div");
+  title.className = "thread-detail-title";
+  title.textContent = sessionLabel(session);
+  const meta = document.createElement("div");
+  meta.className = "thread-detail-meta";
+  const computer = document.createElement("span");
+  computer.innerHTML = ICONS.computer;
+  const age = document.createElement("span");
+  age.textContent = sessionAge(session.modified_at || session.created_at);
+  meta.append(computer, age);
+  const project = document.createElement("div");
+  project.className = "thread-detail-project";
+  const folder = document.createElement("span");
+  folder.innerHTML = ICONS.folder;
+  const projectName = document.createElement("span");
+  projectName.textContent = projectNameOf(session.cwd);
+  project.append(folder, projectName);
+  card.append(title, meta, project);
+  placeSidebarCard(card, row);
+}
+
+async function pinSession(session) {
+  try {
+    state.sessions = await invoke("set_session_pinned", { id: session.id, pinned: !session.pinned });
+    renderProjectsTree();
+    repaintWelcome();
+  } catch (error) {
+    setStatus(`Could not ${session.pinned ? "unpin" : "pin"} thread: ${error}`, "error");
+  }
+}
+
+async function archiveSession(session) {
+  if (state.busy && (state.session === session.id || state.runSession === session.id)) {
+    setStatus("A turn is running; stop it before archiving this thread.");
+    return;
+  }
+  try {
+    state.sessions = await invoke("archive_session", { id: session.id });
+    if (state.session === session.id) resetTranscript();
+    closeSidebarCards();
+    renderProjectsTree();
+    repaintWelcome();
+    setStatus("Thread archived");
+  } catch (error) {
+    setStatus(`Could not archive thread: ${error}`, "error");
+  }
+}
+
 async function renderProjectsTree() {
   const container = el("projects-tree");
   if (!container) return;
+  closeSidebarCards();
   
   container.innerHTML = "";
   
@@ -6099,30 +6275,28 @@ async function renderProjectsTree() {
     count.textContent = sessionsForProject.length;
     projectItem.appendChild(count);
 
+    const moreBtn = document.createElement("button");
+    moreBtn.type = "button";
+    moreBtn.className = "row-more";
+    moreBtn.title = `Project options for ${project.name}`;
+    moreBtn.innerHTML = ICONS.more;
+    moreBtn.onclick = (event) => {
+      event.stopPropagation();
+      showProjectActions(project, sessionsForProject, projectItem);
+    };
+    projectItem.appendChild(moreBtn);
+
     const newTaskBtn = document.createElement("button");
     newTaskBtn.type = "button";
     newTaskBtn.className = "row-add";
     newTaskBtn.title = `New task in ${project.name}`;
-    newTaskBtn.innerHTML = ICONS.plus;
+    newTaskBtn.innerHTML = ICONS.compose;
     newTaskBtn.onclick = (event) => {
       event.stopPropagation();
       newTaskIn(project);
     };
     projectItem.appendChild(newTaskBtn);
 
-    const removeProjectBtn = document.createElement("button");
-    removeProjectBtn.type = "button";
-    removeProjectBtn.className = "row-remove";
-    removeProjectBtn.title = project.registered
-      ? "Remove or delete project…"
-      : "Delete project…";
-    removeProjectBtn.innerHTML = ICONS.close;
-    removeProjectBtn.onclick = (event) => {
-      event.stopPropagation();
-      removeProject(project);
-    };
-    projectItem.appendChild(removeProjectBtn);
-    
     projectItem.onclick = () => {
       selectProject(project);
     };
@@ -6218,21 +6392,36 @@ async function renderProjectsTree() {
       // A thread the store has not written has no file to remove, so its row
       // carries no ✕: leaving it is what starting a new thread does.
       if (!session.unstored) {
-        const removeSessionBtn = document.createElement("button");
-        removeSessionBtn.type = "button";
-        removeSessionBtn.className = "row-remove";
-        removeSessionBtn.title = "Delete thread";
-        removeSessionBtn.innerHTML = ICONS.close;
-        removeSessionBtn.onclick = (event) => {
+        const pinBtn = document.createElement("button");
+        pinBtn.type = "button";
+        pinBtn.className = "row-pin" + (session.pinned ? " active" : "");
+        pinBtn.title = session.pinned ? "Unpin thread" : "Pin thread";
+        pinBtn.innerHTML = ICONS.pin;
+        pinBtn.onclick = (event) => {
           event.stopPropagation();
-          removeSession(session);
+          pinSession(session);
         };
-        sessionItem.appendChild(removeSessionBtn);
+        sessionItem.appendChild(pinBtn);
+
+        const archiveBtn = document.createElement("button");
+        archiveBtn.type = "button";
+        archiveBtn.className = "row-archive";
+        archiveBtn.title = "Archive thread";
+        archiveBtn.innerHTML = ICONS.archive;
+        archiveBtn.onclick = (event) => {
+          event.stopPropagation();
+          archiveSession(session);
+        };
+        sessionItem.appendChild(archiveBtn);
       }
 
       sessionItem.onclick = () => {
         selectSessionFromTree(session);
       };
+      sessionItem.addEventListener("mouseenter", () => showThreadDetails(session, sessionItem));
+      sessionItem.addEventListener("mouseleave", closeSidebarCards);
+      sessionItem.addEventListener("focusin", () => showThreadDetails(session, sessionItem));
+      sessionItem.addEventListener("focusout", closeSidebarCards);
 
       sessionsContainer.appendChild(sessionItem);
     }

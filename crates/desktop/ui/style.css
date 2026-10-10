@@ -1465,7 +1465,7 @@ tone, with tabular figures so a count that grows does not shift the row it ends.
   display: flex;
   align-items: center;
   gap: 6px;
-  padding: 6px 30px 6px 32px;
+  padding: 6px 54px 6px 32px;
   border-radius: 4px;
   cursor: pointer;
   user-select: none;
@@ -1531,7 +1531,7 @@ tone, with tabular figures so a count that grows does not shift the row it ends.
 
 .row-add {
   position: absolute;
-  right: 28px;
+  right: 6px;
   top: 50%;
   transform: translateY(-50%);
   display: flex;
@@ -1549,6 +1549,74 @@ tone, with tabular figures so a count that grows does not shift the row it ends.
   transition: background 0.12s, color 0.12s;
 }
 .row-add:hover { background: var(--panel-3); color: var(--accent); }
+
+.row-more,
+.row-pin,
+.row-archive {
+  position: absolute;
+  top: 50%;
+  transform: translateY(-50%);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
+  padding: 0;
+  border: 0;
+  border-radius: 5px;
+  background: transparent;
+  color: var(--faint);
+  cursor: pointer;
+}
+.row-more { position: absolute; right: 28px; color: var(--faint); }
+.row-pin { position: absolute; right: 28px; color: var(--faint); }
+.row-archive { position: absolute; right: 6px; color: var(--faint); }
+.row-more:hover, .row-pin:hover, .row-archive:hover { background: var(--panel-3); color: var(--text); }
+.row-pin.active { color: var(--accent); }
+.row-more svg, .row-pin svg, .row-archive svg, .row-add svg { width: 14px; height: 14px; }
+
+.sidebar-floating-card {
+  position: fixed;
+  z-index: 70;
+  width: 292px;
+  padding: 10px;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: var(--panel-2);
+  box-shadow: 0 12px 34px rgba(0, 0, 0, 0.38);
+  color: var(--text);
+  font-size: 12.5px;
+}
+.sidebar-floating-card svg { width: 16px; height: 16px; flex: none; }
+.sidebar-card-head { display: flex; align-items: center; gap: 8px; min-height: 24px; padding-right: 28px; }
+.sidebar-card-icon { display: flex; color: var(--dim); }
+.sidebar-card-pin {
+  position: absolute;
+  right: 10px;
+  top: 8px;
+  display: flex;
+  width: 24px;
+  height: 24px;
+  align-items: center;
+  justify-content: center;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--dim);
+  cursor: pointer;
+}
+.sidebar-card-pin:hover { background: var(--panel-3); color: var(--accent); }
+.sidebar-card-meta { display: flex; align-items: center; gap: 8px; padding: 8px 0 10px; color: var(--dim); }
+.sidebar-card-row { display: flex; align-items: center; gap: 8px; width: 100%; min-width: 0; padding: 10px 2px; border-top: 1px solid var(--border); }
+.sidebar-card-path span:last-child { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--dim); }
+.sidebar-card-action { border-right: 0; border-bottom: 0; border-left: 0; background: transparent; color: var(--text); font: inherit; text-align: left; cursor: pointer; }
+.sidebar-card-action:hover { color: var(--accent); }
+.sidebar-card-action.remove-project:hover { color: var(--error); }
+.thread-details-card { padding: 12px; }
+.thread-detail-title { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 600; }
+.thread-detail-meta, .thread-detail-project { display: flex; align-items: center; gap: 8px; color: var(--dim); }
+.thread-detail-meta { justify-content: space-between; padding: 7px 0 10px; }
+.thread-detail-project { padding-top: 10px; border-top: 1px solid var(--border); }
 
 .row-remove {
   position: absolute;
