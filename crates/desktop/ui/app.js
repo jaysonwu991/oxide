@@ -5333,6 +5333,7 @@ function openCreateProject() {
   el("create-project-path").value = "";
   el("create-project-folders").innerHTML = "";
   el("create-project-error").hidden = true;
+  el("create-project-sources").hidden = false;
   el("create-project-title").textContent = "Create project";
   el("create-project-save").textContent = "Create project";
   el("create-project-modal").hidden = false;
@@ -5347,6 +5348,10 @@ function openEditProject(project) {
   el("create-project-path").value = "";
   renderCreateProjectFolders();
   el("create-project-error").hidden = true;
+  // A registered project is one source folder in the desktop model. Editing
+  // changes its display name only; do not offer add/remove folder controls whose
+  // changes the command cannot persist.
+  el("create-project-sources").hidden = true;
   el("create-project-title").textContent = "Edit project";
   el("create-project-save").textContent = "Save";
   el("create-project-modal").hidden = false;
@@ -6088,9 +6093,21 @@ async function dropProject(fromId, toId, after) {
   renderProjectsTree();
 }
 
+let sidebarCardTrigger = null;
+
 function closeSidebarCards(except = null) {
-  for (const card of document.querySelectorAll(".sidebar-floating-card")) {
+  for (const card of document.body.querySelectorAll(".sidebar-floating-card")) {
     if (card !== except) card.remove();
+  }
+  if (except) return;
+  const trigger = sidebarCardTrigger;
+  sidebarCardTrigger = null;
+  if (trigger) {
+    trigger.setAttribute("aria-expanded", "false");
+    // Closing a menu returns the keyboard to the control that opened it. An
+    // action may immediately open a dialog or repaint the row; those operations
+    // move focus on from here themselves.
+    if (trigger.parentNode) trigger.focus();
   }
 }
 
@@ -6107,11 +6124,15 @@ function projectActivity(project, sessions) {
   return `${sessions.length} task${sessions.length === 1 ? "" : "s"}${active ? ` · ${active} active` : ""}`;
 }
 
-function showProjectActions(project, sessions, row) {
+function showProjectActions(project, sessions, row, trigger) {
   closeSidebarCards();
+  sidebarCardTrigger = trigger;
+  trigger.setAttribute("aria-expanded", "true");
   const card = document.createElement("div");
+  card.id = "project-actions-menu";
   card.className = "sidebar-floating-card project-actions-card";
   card.setAttribute("role", "menu");
+  card.setAttribute("aria-label", `${project.name} project actions`);
   const icon = (drawing, className = "") => {
     const node = document.createElement("span");
     node.className = className;
@@ -6120,6 +6141,7 @@ function showProjectActions(project, sessions, row) {
   };
   const head = document.createElement("div");
   head.className = "sidebar-card-head";
+  head.setAttribute("role", "presentation");
   const heading = document.createElement("strong");
   heading.textContent = project.name;
   head.append(icon(ICONS.folder, "sidebar-card-icon"), heading);
@@ -6127,14 +6149,18 @@ function showProjectActions(project, sessions, row) {
   pin.type = "button";
   pin.className = "sidebar-card-pin";
   pin.title = project.pinned ? "Unpin project" : "Pin project";
+  pin.setAttribute("aria-label", pin.title);
+  pin.setAttribute("role", "menuitem");
   pin.innerHTML = ICONS.pin;
   const meta = document.createElement("div");
   meta.className = "sidebar-card-meta";
+  meta.setAttribute("role", "presentation");
   const metaText = document.createElement("span");
   metaText.textContent = projectActivity(project, sessions);
   meta.append(icon(ICONS.chat), metaText);
   const path = document.createElement("div");
   path.className = "sidebar-card-row sidebar-card-path";
+  path.setAttribute("role", "presentation");
   const pathText = document.createElement("span");
   pathText.textContent = project.path;
   path.append(icon(ICONS.folder), pathText);
@@ -6142,18 +6168,22 @@ function showProjectActions(project, sessions, row) {
     const button = document.createElement("button");
     button.type = "button";
     button.className = `sidebar-card-row sidebar-card-action ${className}`;
+    button.setAttribute("role", "menuitem");
     const text = document.createElement("span");
     text.textContent = label;
     button.append(icon(drawing), text);
     return button;
   };
-  const edit = action("edit-project", ICONS.gear, "Edit project");
+  const edit = project.registered ? action("edit-project", ICONS.gear, "Edit project") : null;
   const remove = action(
     "remove-project",
     ICONS.close,
     project.registered ? "Remove project" : "Delete project",
   );
-  card.append(head, pin, meta, path, edit, remove);
+  card.append(head, pin, meta, path);
+  if (edit) card.append(edit);
+  card.append(remove);
+  const menuItems = [pin, ...(edit ? [edit] : []), remove];
   pin.onclick = async () => {
     try {
       state.projects = await invoke("set_project_pinned", { id: project.id, pinned: !project.pinned });
@@ -6163,12 +6193,36 @@ function showProjectActions(project, sessions, row) {
       setStatus(`Could not ${project.pinned ? "unpin" : "pin"} project: ${error}`, "error");
     }
   };
-  edit.onclick = () => openEditProject(project);
+  if (edit) edit.onclick = () => openEditProject(project);
   remove.onclick = () => {
     closeSidebarCards();
     removeProject(project);
   };
+  card.addEventListener("keydown", (event) => {
+    const index = menuItems.indexOf(document.activeElement);
+    let next = null;
+    if (event.key === "ArrowDown") {
+      next = menuItems[(index + 1 + menuItems.length) % menuItems.length];
+    } else if (event.key === "ArrowUp") {
+      next = menuItems[(index - 1 + menuItems.length) % menuItems.length];
+    } else if (event.key === "Home") next = menuItems[0];
+    else if (event.key === "End") next = menuItems[menuItems.length - 1];
+    else if (event.key === "Escape") {
+      event.preventDefault();
+      event.stopPropagation();
+      closeSidebarCards();
+      return;
+    } else if (event.key === "Tab") {
+      closeSidebarCards();
+      return;
+    } else {
+      return;
+    }
+    event.preventDefault();
+    next?.focus();
+  });
   placeSidebarCard(card, row);
+  pin.focus();
 }
 
 function showThreadDetails(session, row) {
@@ -6213,7 +6267,9 @@ async function archiveSession(session) {
   }
   try {
     state.sessions = await invoke("archive_session", { id: session.id });
+    if (state.parked?.session === session.id) state.parked = null;
     if (state.session === session.id) resetTranscript();
+    updateRunBanner();
     closeSidebarCards();
     renderProjectsTree();
     repaintWelcome();
@@ -6279,10 +6335,17 @@ async function renderProjectsTree() {
     moreBtn.type = "button";
     moreBtn.className = "row-more";
     moreBtn.title = `Project options for ${project.name}`;
+    moreBtn.setAttribute("aria-haspopup", "menu");
+    moreBtn.setAttribute("aria-controls", "project-actions-menu");
+    moreBtn.setAttribute("aria-expanded", "false");
     moreBtn.innerHTML = ICONS.more;
     moreBtn.onclick = (event) => {
       event.stopPropagation();
-      showProjectActions(project, sessionsForProject, projectItem);
+      if (moreBtn.getAttribute("aria-expanded") === "true") {
+        closeSidebarCards();
+        return;
+      }
+      showProjectActions(project, sessionsForProject, projectItem, moreBtn);
     };
     projectItem.appendChild(moreBtn);
 

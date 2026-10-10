@@ -6162,7 +6162,8 @@ app.state.sessions = threads.map((row) => ({ ...row }));
 await app.renderProjectsTree();
 let actionGroup = elementFor("projects-tree").children[0];
 let actionProject = actionGroup.children[0];
-actionProject.querySelector(".row-more").click();
+let optionsTrigger = actionProject.querySelector(".row-more");
+optionsTrigger.click();
 let actionCard = document.body.children.at(-1);
 check(
   "summarized a project in its options card",
@@ -6171,6 +6172,39 @@ check(
     actionCard.querySelector(".sidebar-card-path").children[1].textContent === removeTarget.path,
   actionCard.outline(),
 );
+check(
+  "opened the project actions as an accessible keyboard menu",
+  optionsTrigger.getAttribute("aria-haspopup") === "menu" &&
+    optionsTrigger.getAttribute("aria-expanded") === "true" &&
+    actionCard.getAttribute("role") === "menu" &&
+    actionCard.getAttribute("aria-label") === "oxide project actions" &&
+    actionCard.querySelector(".sidebar-card-pin").getAttribute("role") === "menuitem" &&
+    document.activeElement === actionCard.querySelector(".sidebar-card-pin"),
+  actionCard.outline(),
+);
+let menuPrevented = false;
+actionCard.fire("keydown", {
+  key: "ArrowDown",
+  preventDefault() { menuPrevented = true; },
+  stopPropagation() {},
+});
+check(
+  "walked the project menu with arrow keys",
+  menuPrevented && document.activeElement === actionCard.querySelector(".edit-project"),
+  actionCard.outline(),
+);
+actionCard.fire("keydown", {
+  key: "Escape",
+  preventDefault() {},
+  stopPropagation() {},
+});
+check(
+  "closed the project menu on Escape and returned focus to its trigger",
+  optionsTrigger.getAttribute("aria-expanded") === "false" && document.activeElement === optionsTrigger,
+  `${optionsTrigger.getAttribute("aria-expanded")} / ${document.activeElement?.className}`,
+);
+optionsTrigger.click();
+actionCard = document.body.children.at(-1);
 calls.length = 0;
 actionCard.querySelector(".sidebar-card-pin").click();
 await nextTick();
@@ -6180,6 +6214,33 @@ check(
     app.state.projects[0].pinned === true,
   JSON.stringify(calls),
 );
+
+actionGroup = elementFor("projects-tree").children[0];
+actionProject = actionGroup.children[0];
+actionProject.querySelector(".row-more").click();
+actionCard = document.body.children.at(-1);
+actionCard.querySelector(".edit-project").click();
+check(
+  "made project editing name-only instead of offering discarded folder changes",
+  elementFor("create-project-modal").hidden === false &&
+    elementFor("create-project-sources").hidden === true &&
+    elementFor("create-project-title").textContent === "Edit project",
+  `${elementFor("create-project-modal").hidden} / ${elementFor("create-project-sources").hidden}`,
+);
+elementFor("create-project-cancel").click();
+
+app.state.projects = [{ ...app.state.projects[0], registered: false }];
+await app.renderProjectsTree();
+actionProject = elementFor("projects-tree").children[0].children[0];
+actionProject.querySelector(".row-more").click();
+actionCard = document.body.children.at(-1);
+check(
+  "hid Edit for a session-derived project that cannot persist a name",
+  actionCard.querySelector(".edit-project") === null,
+  actionCard.outline(),
+);
+app.state.projects = [{ ...app.state.projects[0], registered: true }];
+await app.renderProjectsTree();
 
 actionGroup = elementFor("projects-tree").children[0];
 const threadRow = actionGroup.children[1].children[0];
@@ -6202,6 +6263,7 @@ check(
   JSON.stringify(calls),
 );
 const pinnedThread = elementFor("projects-tree").children[0].children[1].children[0];
+app.state.parked = { session: "pin-me", project: removeTarget.path, title: "Pinned work" };
 calls.length = 0;
 pinnedThread.querySelector(".row-archive").click();
 await nextTick();
@@ -6209,7 +6271,10 @@ check(
   "archived the thread without deleting its session file",
   calls.some(([name, args]) => name === "archive_session" && args.id === "pin-me") &&
     !calls.some(([name]) => name === "delete_session") &&
-    app.state.sessions.length === 0,
+    app.state.sessions.length === 0 &&
+    app.state.parked === null &&
+    elementFor("projects-tree").querySelector(".project-empty")?.textContent === "No chats" &&
+    elementFor("projects-tree").querySelectorAll(".recent-session-item").length === 0,
   JSON.stringify(calls),
 );
 
