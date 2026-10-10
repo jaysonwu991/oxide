@@ -6133,15 +6133,6 @@ function projectActivity(project, sessions) {
   return `${sessions.length} task${sessions.length === 1 ? "" : "s"}${active ? ` · ${active} active` : ""}`;
 }
 
-/// Codex shortens a path inside the conventional macOS/Linux/Windows home
-/// directory to `~`, keeping the project card compact without hiding which
-/// folder it names.
-function compactHomePath(path) {
-  return String(path || "")
-    .replace(/^\/(?:Users|home)\/[^/]+(?=\/)/, "~")
-    .replace(/^[A-Za-z]:\\Users\\[^\\]+(?=\\)/i, "~");
-}
-
 function showProjectActions(project, sessions, row, trigger) {
   closeSidebarCards();
   sidebarCardTrigger = trigger;
@@ -6180,7 +6171,7 @@ function showProjectActions(project, sessions, row, trigger) {
   path.className = "sidebar-card-row sidebar-card-path";
   path.setAttribute("role", "presentation");
   const pathText = document.createElement("span");
-  pathText.textContent = compactHomePath(project.path);
+  pathText.textContent = project.display_path || project.path;
   path.append(icon(ICONS.folder), pathText);
   const action = (className, drawing, label) => {
     const button = document.createElement("button");

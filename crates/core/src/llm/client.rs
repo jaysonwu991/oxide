@@ -435,6 +435,7 @@ impl LlmClient {
         let mut attempt = 0u32;
         let mut max_tokens = self.config.max_tokens;
         let mut escalated_from: Option<u32> = None;
+        let mut discarded_usage = Usage::default();
         loop {
             attempt += 1;
             let result = {
@@ -474,6 +475,7 @@ impl LlmClient {
                     // answer as complete.
                     if turn_reached_output_limit(&turn, max_tokens) {
                         if max_tokens < MAX_ESCALATED_TOKENS && attempt < MAX_STREAM_ATTEMPTS {
+                            add_usage(&mut discarded_usage, turn.usage);
                             escalated_from.get_or_insert(max_tokens);
                             max_tokens = (max_tokens * 2).min(MAX_ESCALATED_TOKENS);
                             let delay = Duration::from_millis(500 * 2u64.pow(attempt - 1));
@@ -517,6 +519,7 @@ impl LlmClient {
                             && max_tokens < MAX_ESCALATED_TOKENS
                             && attempt < MAX_STREAM_ATTEMPTS
                         {
+                            add_usage(&mut discarded_usage, turn.usage);
                             escalated_from.get_or_insert(max_tokens);
                             max_tokens = (max_tokens * 2).min(MAX_ESCALATED_TOKENS);
                             let delay = Duration::from_millis(500 * 2u64.pow(attempt - 1));
@@ -529,6 +532,7 @@ impl LlmClient {
                             continue;
                         }
                         if attempt < MAX_STREAM_ATTEMPTS && !truncated {
+                            add_usage(&mut discarded_usage, turn.usage);
                             let delay = Duration::from_millis(500 * 2u64.pow(attempt - 1));
                             (hooks.retry)(Retry {
                                 attempt,
@@ -543,6 +547,7 @@ impl LlmClient {
                         }
                         return Err(NoAnswer::empty().into());
                     }
+                    add_usage(&mut turn.usage, discarded_usage);
                     turn.usage.cost = self.config.usage_cost(&turn.usage);
                     return Ok(turn);
                 }
@@ -552,8 +557,8 @@ impl LlmClient {
                         // explain the truncation that triggered it.
                         if let Some(original) = escalated_from {
                             return Err(err.context(format!(
-                                "the model spent the original output budget (max_tokens = \
-                                 {original}) on reasoning"
+                                "the model exhausted the original output budget (max_tokens = \
+                                 {original}) before completing its response"
                             )));
                         }
                         return Err(err);
@@ -1462,6 +1467,14 @@ fn assistant_turn_is_empty(turn: &AssistantTurn) -> bool {
 fn turn_reached_output_limit(turn: &AssistantTurn, max_tokens: u32) -> bool {
     turn.finish_reason.as_deref().is_some_and(is_output_limit)
         || (max_tokens > 0 && turn.usage.output >= u64::from(max_tokens))
+}
+
+fn add_usage(total: &mut Usage, usage: Usage) {
+    total.input += usage.input;
+    total.output += usage.output;
+    total.cache_read += usage.cache_read;
+    total.cache_write += usage.cache_write;
+    total.reasoning += usage.reasoning;
 }
 
 /// Adds an actionable hint to any failed request that carried native media.
@@ -2785,6 +2798,13 @@ mod tests {
         ])
     }
 
+    fn completed_turn_with_usage(content: &str, input: u64, output: u64) -> String {
+        sse(&[
+            serde_json::json!({"choices": [{"index": 0, "delta": {"content": content, "reasoning_content": null}, "logprobs": null, "finish_reason": null}]}),
+            serde_json::json!({"choices": [{"index": 0, "delta": {"content": "", "reasoning_content": null}, "logprobs": null, "finish_reason": "stop"}], "usage": {"prompt_tokens": input, "completion_tokens": output}}),
+        ])
+    }
+
     /// A tool call whose JSON arguments were cut off at the output limit.
     fn output_limited_tool_call(finish_reason: &str) -> String {
         sse(&[
@@ -3050,7 +3070,11 @@ mod tests {
 
     #[tokio::test]
     async fn an_output_limited_empty_turn_retries_with_a_larger_budget() {
-        let (addr, server) = sse_server(vec![length_limited_turn(), completed_turn("done")]).await;
+        let (addr, server) = sse_server(vec![
+            length_limited_turn(),
+            completed_turn_with_usage("done", 7, 3),
+        ])
+        .await;
         let client = LlmClient::new(sse_test_config(addr, 8192));
 
         let mut text = String::new();
@@ -3073,6 +3097,10 @@ mod tests {
         assert_eq!(text, "done");
         assert_eq!(retries.len(), 1);
         assert_eq!(retries[0].attempt, 1);
+        assert_eq!(turn.usage.input, 17);
+        assert_eq!(turn.usage.output, 8195);
+        assert_eq!(turn.usage.reasoning, 8192);
+        assert_eq!(turn.usage.cost, client.config.usage_cost(&turn.usage));
         let requests = server.await.unwrap();
         let budgets: Vec<u64> = requests.iter().map(|r| request_budget(r)).collect();
         assert_eq!(budgets, vec![8192, 16384]);

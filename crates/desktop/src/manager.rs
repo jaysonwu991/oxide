@@ -37,6 +37,8 @@ pub struct ProjectView {
     /// project and to select the one that was just added.
     pub id: String,
     pub path: String,
+    /// The same path shortened against this machine's actual home directory.
+    pub display_path: String,
     pub name: String,
     /// Whether the folder was explicitly added (vs. only seen in a session).
     pub registered: bool,
@@ -351,6 +353,7 @@ impl DesktopManager {
             views.push(ProjectView {
                 id: project.id.clone(),
                 exists: project.path.is_dir(),
+                display_path: compact_home_path(&project.path),
                 path,
                 name: project.name.clone(),
                 registered: true,
@@ -372,6 +375,7 @@ impl DesktopManager {
                 id: summary.cwd.clone(),
                 exists: path.is_dir(),
                 name: display_name(&path),
+                display_path: compact_home_path(&path),
                 path: summary.cwd.clone(),
                 registered: false,
                 session_count: count,
@@ -513,6 +517,18 @@ fn display_name(path: &Path) -> String {
         .filter(|name| !name.is_empty())
         .map(str::to_string)
         .unwrap_or_else(|| path.to_string_lossy().to_string())
+}
+
+fn compact_home_path(path: &Path) -> String {
+    if let Some(home) = dirs::home_dir() {
+        if let Ok(relative) = path.strip_prefix(home) {
+            if relative.as_os_str().is_empty() {
+                return "~".to_string();
+            }
+            return Path::new("~").join(relative).to_string_lossy().to_string();
+        }
+    }
+    path.to_string_lossy().to_string()
 }
 
 fn now_secs() -> u64 {
@@ -838,6 +854,18 @@ mod tests {
         let absolute = std::env::temp_dir();
         assert_eq!(expand_project_path(absolute.to_str().unwrap()), absolute);
         assert_eq!(expand_project_path("   "), PathBuf::from(""));
+    }
+
+    #[test]
+    fn compact_project_paths_only_shorten_the_actual_home() {
+        let home = dirs::home_dir().expect("a home directory");
+        assert_eq!(
+            compact_home_path(&home.join("Projects/app")),
+            "~/Projects/app"
+        );
+
+        let unrelated = std::env::temp_dir().join("someone-elses-home/Projects/app");
+        assert_eq!(compact_home_path(&unrelated), unrelated.to_string_lossy());
     }
 
     fn project_with_agents(tag: &str) -> PathBuf {

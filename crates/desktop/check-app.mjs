@@ -570,6 +570,7 @@ let projectRows = [
   {
     id: "/home/dev/Projects/oxide",
     path: "/home/dev/Projects/oxide",
+    display_path: "~/Projects/oxide",
     name: "oxide",
     registered: true,
     exists: true,
@@ -6158,6 +6159,7 @@ console.log("removing a project");
 const removeTarget = {
   id: "/home/dev/Projects/oxide",
   path: "/home/dev/Projects/oxide",
+  display_path: "~/Projects/oxide",
   name: "oxide",
   registered: true,
   exists: true,
