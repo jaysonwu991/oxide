@@ -861,7 +861,7 @@ mod tests {
         let home = dirs::home_dir().expect("a home directory");
         assert_eq!(
             compact_home_path(&home.join("Projects/app")),
-            "~/Projects/app"
+            Path::new("~").join("Projects/app").to_string_lossy()
         );
 
         let unrelated = std::env::temp_dir().join("someone-elses-home/Projects/app");
