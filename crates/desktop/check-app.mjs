@@ -988,6 +988,23 @@ check(
   `${elementFor("project-name").textContent} / ${elementFor("project").title}`,
 );
 
+// Codex keeps a chronological way back to work below the project tree. It is
+// deliberately a second view of the same chats, ordered by activity rather
+// than grouped by folder.
+const sidebarRecentRows = () => elementFor("projects-tree").querySelectorAll(".recent-session-item");
+check(
+  "listed recent chats below the project tree",
+  elementFor("projects-tree").querySelector(".sidebar-section-title")?.textContent === "Recents" &&
+    sidebarRecentRows().length === existing.length,
+  elementFor("projects-tree").outline(),
+);
+check(
+  "ordered sidebar recents by their latest activity",
+  sidebarRecentRows().map((row) => row.children[0].textContent).join(" / ") ===
+    "Other project / Fix the flaky test / say hi",
+  sidebarRecentRows().map((row) => row.outline()).join(" / "),
+);
+
 // The home state is where a thread is picked up again — the newest threads across
 // every folder the sidebar lists, nearest first — since a window that opens on no
 // project should open on something to do rather than on an empty box.
@@ -6049,7 +6066,9 @@ app.state.sessions.unshift({ ...app.state.sessions[0], id: "6f3031b2beef", name:
 await app.renderProjectsTree();
 check(
   "stopped standing in once the store listed it",
-  elementFor("projects-tree").outline().split("Fix the sidebar").length - 1 === 1,
+  elementFor("projects-tree")
+    .querySelectorAll(".session-item")
+    .filter((row) => row.outline().includes("Fix the sidebar")).length === 1,
   elementFor("projects-tree").outline(),
 );
 app.setIdle();
@@ -7027,6 +7046,63 @@ app.state.providers = [];
 // the page
 // reaches nothing else directly, which is what keeps `pick_folder` and
 // `open_url` answering with the state the other commands hold.
+// ---------- Codex-style sidebar disclosure ----------
+
+// The highlighted Codex sidebar shows five projects and five chats per project,
+// then makes each longer list an explicit operation instead of letting one
+// folder consume the whole sidebar.
+const beforeDisclosureProjects = app.state.projects;
+const beforeDisclosureSessions = app.state.sessions;
+app.state.projects = Array.from({ length: 6 }, (_, index) => ({
+  id: `/tmp/sidebar-${index}`,
+  path: `/tmp/sidebar-${index}`,
+  name: `sidebar-${index}`,
+  registered: true,
+}));
+app.state.sessions = Array.from({ length: 7 }, (_, index) => ({
+  id: `sidebar-thread-${index}`,
+  name: `Sidebar thread ${index}`,
+  cwd: "/tmp/sidebar-0",
+  created_at: index + 1,
+  modified_at: index + 1,
+  message_count: 1,
+  preview: "",
+}));
+app.state.sidebarProjectsExpanded = false;
+app.state.expandedSidebarProjects.clear();
+await app.renderProjectsTree();
+const cappedProjectCount = elementFor("projects-tree").querySelectorAll(".project-group").length;
+const projectsMore = elementFor("projects-tree").querySelector(".projects-show-more");
+check(
+  "capped the project list the way Codex does",
+  cappedProjectCount === 5 && Boolean(projectsMore) && projectsMore.title === "Show 1 more projects",
+  `${cappedProjectCount} / ${Boolean(projectsMore)} / ${projectsMore?.title}`,
+);
+const cappedProjectSessions = elementFor("projects-tree").querySelector(".project-sessions");
+check(
+  "capped a project's chats and offered Show more",
+  cappedProjectSessions.querySelectorAll(".session-item").length === 5 &&
+    Boolean(cappedProjectSessions.querySelector(".project-show-more")),
+  cappedProjectSessions.outline(),
+);
+cappedProjectSessions.querySelector(".project-show-more").onclick({ stopPropagation() {} });
+check(
+  "expanded a project's chats from Show more",
+  elementFor("projects-tree").querySelector(".project-sessions").querySelectorAll(".session-item").length === 7,
+  elementFor("projects-tree").outline(),
+);
+elementFor("projects-tree").querySelector(".projects-show-more").onclick();
+check(
+  "expanded the remaining projects from Show more",
+  elementFor("projects-tree").querySelectorAll(".project-group").length === 6,
+  elementFor("projects-tree").outline(),
+);
+app.state.projects = beforeDisclosureProjects;
+app.state.sessions = beforeDisclosureSessions;
+app.state.sidebarProjectsExpanded = false;
+app.state.expandedSidebarProjects.clear();
+await app.renderProjectsTree();
+
 // ---------- the arrangement the sidebar is dragged into ----------
 
 // A project's row is the handle for the order the sidebar lists its folders in:
@@ -7041,7 +7117,10 @@ projectRows = [
   { id: "/tmp/third", path: "/tmp/third", name: "third", registered: true, exists: true, session_count: 0, last_session_at: 0, last_opened_at: 3 },
 ];
 await app.loadProjects();
-const rowsOf = () => elementFor("projects-tree").children.map((group) => group.children[0]);
+const rowsOf = () =>
+  elementFor("projects-tree")
+    .querySelectorAll(".project-group")
+    .map((group) => group.children[0]);
 const listedIds = () => app.state.projects.map((project) => project.id);
 const rowIds = () => rowsOf().map((row) => row.dataset.project).join("|");
 await app.renderProjectsTree();

@@ -120,6 +120,14 @@ const SUGGESTIONS = [
   "Review the working tree changes and summarize the risks.",
 ];
 
+// The sidebar follows Codex's disclosure model: enough of every group to be
+// useful at a glance, with an explicit expansion instead of one unbounded wall
+// of projects and chats. Expansions live only for this window; the underlying
+// project order and complete session list are unchanged.
+const SIDEBAR_PROJECT_LIMIT = 5;
+const SIDEBAR_THREAD_LIMIT = 5;
+const SIDEBAR_RECENT_LIMIT = 5;
+
 // ---------- glyphs ----------
 
 /// Every icon the window draws: inline SVG stroked with `currentColor`, so a
@@ -194,6 +202,8 @@ const state = {
   projectName: "",
   session: null,
   sessions: [],
+  sidebarProjectsExpanded: false,
+  expandedSidebarProjects: new Set(),
   busy: false,
   runId: null,
   // New context sent during a run waits by default. Steering is a deliberate
@@ -1081,6 +1091,11 @@ async function selectProject(project) {
   const wasOpen = Boolean(state.project);
   state.project = project.path;
   state.projectName = project.name;
+  // A project reached through Recents or the picker must not become selected
+  // behind the five-row disclosure. Once the reader explicitly opens it, keep
+  // the project visible in the structural list too.
+  const sidebarIndex = state.projects.findIndex((candidate) => candidate.id === project.id);
+  if (sidebarIndex >= SIDEBAR_PROJECT_LIMIT) state.sidebarProjectsExpanded = true;
   state.session = null;
   state.trust = null;
   // Follow-ups belong to the parked run, not the folder being viewed. Keep
@@ -6046,7 +6061,11 @@ async function renderProjectsTree() {
   
   // Group sessions by project
   const sessionsByProject = {};
-  for (const project of state.projects) {
+  const visibleProjects = state.sidebarProjectsExpanded
+    ? state.projects
+    : state.projects.slice(0, SIDEBAR_PROJECT_LIMIT);
+
+  for (const project of visibleProjects) {
     sessionsByProject[project.path] = [];
   }
   
@@ -6056,7 +6075,7 @@ async function renderProjectsTree() {
     }
   }
   
-  for (const project of state.projects) {
+  for (const project of visibleProjects) {
     const projectGroup = document.createElement("div");
     projectGroup.className = "project-group";
     
@@ -6155,7 +6174,19 @@ async function renderProjectsTree() {
     const sessionsContainer = document.createElement("div");
     sessionsContainer.className = "project-sessions";
 
-    for (const session of sessionsForProject) {
+    const expanded = state.expandedSidebarProjects.has(project.id);
+    const visibleSessions = expanded
+      ? sessionsForProject
+      : sessionsForProject.slice(0, SIDEBAR_THREAD_LIMIT);
+
+    if (!sessionsForProject.length) {
+      const empty = document.createElement("div");
+      empty.className = "project-empty";
+      empty.textContent = "No chats";
+      sessionsContainer.appendChild(empty);
+    }
+
+    for (const session of visibleSessions) {
       // The thread a turn is running in says so on its own row, wherever the
       // reader is: the transcript they are looking at may be another thread's,
       // so this is what tells them which conversation is still working.
@@ -6206,14 +6237,82 @@ async function renderProjectsTree() {
       sessionsContainer.appendChild(sessionItem);
     }
 
+    if (!expanded && sessionsForProject.length > SIDEBAR_THREAD_LIMIT) {
+      const more = document.createElement("button");
+      more.type = "button";
+      more.className = "sidebar-show-more project-show-more";
+      more.textContent = "Show more";
+      more.title = `Show ${sessionsForProject.length - SIDEBAR_THREAD_LIMIT} more chats in ${project.name}`;
+      more.onclick = (event) => {
+        event.stopPropagation();
+        state.expandedSidebarProjects.add(project.id);
+        renderProjectsTree();
+      };
+      sessionsContainer.appendChild(more);
+    }
+
     projectGroup.appendChild(sessionsContainer);
     
     container.appendChild(projectGroup);
   }
+
+  if (!state.sidebarProjectsExpanded && state.projects.length > SIDEBAR_PROJECT_LIMIT) {
+    const moreProjects = document.createElement("button");
+    moreProjects.type = "button";
+    moreProjects.className = "sidebar-show-more projects-show-more";
+    moreProjects.textContent = "Show more";
+    moreProjects.title = `Show ${state.projects.length - SIDEBAR_PROJECT_LIMIT} more projects`;
+    moreProjects.onclick = () => {
+      state.sidebarProjectsExpanded = true;
+      renderProjectsTree();
+    };
+    container.appendChild(moreProjects);
+  }
+
+  // Codex keeps a project-independent way back to recent work below the
+  // project tree. These rows intentionally repeat chats that are also visible
+  // under a project: one view is structural, the other is chronological.
+  const recentSection = document.createElement("section");
+  recentSection.className = "sidebar-recents";
+  const recentTitle = document.createElement("div");
+  recentTitle.className = "sidebar-section-title";
+  recentTitle.textContent = "Recents";
+  recentSection.appendChild(recentTitle);
+
+  const recentSessions = [...listedSessions()]
+    .sort((a, b) => (b.modified_at || b.created_at || 0) - (a.modified_at || a.created_at || 0))
+    .slice(0, SIDEBAR_RECENT_LIMIT);
+  for (const session of recentSessions) {
+    const row = document.createElement("div");
+    row.className =
+      "recent-session-item" +
+      (session.id === state.session ? " active" : "") +
+      (session.id === state.runSession ? " running" : "");
+    const name = document.createElement("div");
+    name.className = "name";
+    name.textContent = sessionLabel(session);
+    row.title = `${sessionLabel(session)} — ${projectNameOf(session.cwd)}`;
+    row.appendChild(name);
+    if (session.id === state.runSession) {
+      const spinner = document.createElement("span");
+      spinner.className = "spinner";
+      spinner.setAttribute("aria-hidden", "true");
+      row.appendChild(spinner);
+    }
+    row.onclick = () => selectSessionFromTree(session);
+    recentSection.appendChild(row);
+  }
+  container.appendChild(recentSection);
 }
 
 async function selectSessionFromTree(session) {
   if (!session) return;
+
+  const projectSessions = listedSessions().filter((candidate) => candidate.cwd === session.cwd);
+  if (projectSessions.findIndex((candidate) => candidate.id === session.id) >= SIDEBAR_THREAD_LIMIT) {
+    const project = state.projects.find((candidate) => candidate.path === session.cwd);
+    if (project) state.expandedSidebarProjects.add(project.id);
+  }
 
   // The thread on screen whose store entry has not been written yet is the one
   // already being shown, with its title already in the header: there is no file
