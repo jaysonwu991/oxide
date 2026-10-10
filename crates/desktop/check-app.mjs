@@ -5385,6 +5385,59 @@ threads = heldThreads;
 await app.loadSessions();
 app.setStatus("Ready");
 
+// The desktop links the same core directly. When that core rejects an
+// output-limited response, its retry event removes every live fragment before
+// the replacement response starts; a partial answer cannot remain beside the
+// fresh one, and a partial tool call is never emitted by the core at all.
+console.log("an output-limited desktop response");
+el("transcript").innerHTML = "";
+app.state.session = "retry-thread";
+app.state.runSession = "retry-thread";
+app.state.runId = 61;
+app.setBusy();
+app.handleEvent({
+  type: "message_update",
+  runId: 61,
+  assistantMessageEvent: { type: "thinking_delta", delta: "unfinished reasoning" },
+});
+app.handleEvent({
+  type: "message_update",
+  runId: 61,
+  assistantMessageEvent: { type: "text_delta", delta: "unfinished answer" },
+});
+check(
+  "painted the attempt while it was streaming",
+  /unfinished reasoning/.test(el("transcript").outline()) &&
+    /unfinished answer/.test(el("transcript").outline()),
+  el("transcript").outline(),
+);
+app.handleEvent({ type: "auto_retry_start", runId: 61, attempt: 1, maxAttempts: 3, delayMs: 500 });
+check(
+  "discarded the output-limited desktop attempt before retrying",
+  !/unfinished/.test(el("transcript").outline()) &&
+    app.state.currentAssistant === null &&
+    app.state.currentThinking === null &&
+    status() === "Retrying (1/3)…",
+  `${el("transcript").outline()} / ${status()}`,
+);
+app.handleEvent({
+  type: "message_update",
+  runId: 61,
+  assistantMessageEvent: { type: "text_delta", delta: "complete replacement" },
+});
+check(
+  "painted only the desktop retry's complete replacement",
+  el("transcript").querySelectorAll(".assistant").length === 1 &&
+    /complete replacement/.test(el("transcript").outline()) &&
+    !/unfinished/.test(el("transcript").outline()),
+  el("transcript").outline(),
+);
+app.handleEvent({ type: "thinking_done", runId: 61 });
+app.setIdle();
+app.setStatus("Ready");
+app.state.session = null;
+el("transcript").innerHTML = "";
+
 // ---------- a turn running in another thread ----------
 
 console.log("reading another thread while a turn runs");

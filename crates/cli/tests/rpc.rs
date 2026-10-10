@@ -117,6 +117,15 @@ fn answer_body(text: &str) -> String {
     ])
 }
 
+/// A tool call cut off exactly at the default 8,192-token response budget.
+/// The RPC client must see the retry, never this incomplete call.
+fn output_limited_tool_call_body() -> String {
+    openai_sse(&[
+        json!({"choices": [{"delta": {"tool_calls": [{"index": 0, "id": "call_0", "function": {"name": "write", "arguments": "{\"path\":\"unfinished"}}]}, "finish_reason": null}]}),
+        json!({"choices": [{"delta": {}, "finish_reason": "length"}], "usage": {"prompt_tokens": 10, "completion_tokens": 8192}}),
+    ])
+}
+
 struct Rpc {
     child: Child,
     stdin: ChildStdin,
@@ -305,6 +314,47 @@ fn without_the_approval_flag_no_prompt_is_emitted() {
         2,
         "both model steps were served"
     );
+}
+
+/// VS Code consumes this exact RPC stream. An output-limited tool call is
+/// retried inside the shared core, and only the replacement response may cross
+/// the process boundary into the extension.
+#[test]
+fn an_rpc_client_never_receives_an_output_limited_tool_call() {
+    let project = TempDir::new("project_output_limit");
+    let config_home = TempDir::new("config_output_limit");
+    let (base_url, server) = serve(vec![
+        output_limited_tool_call_body(),
+        answer_body("Recovered."),
+    ]);
+
+    let mut rpc = start(config_home.path(), project.path(), &base_url, false);
+    let events = run_turn(&mut rpc, "finish safely", &mut Vec::new());
+
+    assert!(
+        events
+            .iter()
+            .any(|event| event["type"] == "auto_retry_start"),
+        "the extension is told to discard the failed attempt: {events:?}"
+    );
+    assert!(
+        events.iter().all(|event| event["type"] != "tool_call"),
+        "the truncated tool call never reaches the extension: {events:?}"
+    );
+    let answer = events
+        .iter()
+        .filter(|event| event["type"] == "message_update")
+        .filter_map(|event| event["assistantMessageEvent"]["delta"].as_str())
+        .collect::<String>();
+    assert_eq!(answer, "Recovered.");
+
+    let bodies = server.join().unwrap();
+    assert_eq!(bodies.len(), 2, "the core retried the model response");
+    let budgets = bodies
+        .iter()
+        .map(|body| serde_json::from_str::<Value>(body).unwrap()["max_tokens"].as_u64())
+        .collect::<Vec<_>>();
+    assert_eq!(budgets, vec![Some(8192), Some(16384)]);
 }
 
 #[test]
