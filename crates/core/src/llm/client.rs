@@ -26,8 +26,8 @@ const MODEL_CACHE_VERSION: u32 = 2;
 const MODEL_CACHE_FILE: &str = "model-cache.json";
 /// How many times a transient stream failure is retried before giving up.
 const MAX_STREAM_ATTEMPTS: u32 = 3;
-/// Ceiling for escalating `max_tokens` when a reasoning model burns the whole
-/// output budget before emitting anything.
+/// Ceiling for escalating `max_tokens` when a model reaches the output budget
+/// before completing its response.
 const MAX_ESCALATED_TOKENS: u32 = 32_768;
 /// Cap how long a connect or a single streamed read may stall before the
 /// request fails. Without this a dead proxy or dropped connection leaves the
@@ -423,10 +423,9 @@ impl LlmClient {
     /// `retry` fires, so the failed attempt is discarded rather than left to be
     /// extended by the new one.
     ///
-    /// An empty turn whose provider stop reason is the output limit (a
-    /// reasoning model that spent the whole budget thinking) is retried with a
-    /// larger `max_tokens` instead, since replaying the same budget would just
-    /// truncate again.
+    /// A turn whose provider stop reason is the output limit is retried with a
+    /// larger `max_tokens` instead, since its text or tool arguments may have
+    /// been cut off. A partial turn is never returned for the agent to act on.
     pub async fn stream_chat(
         &self,
         messages: &[Message],
@@ -466,6 +465,35 @@ impl LlmClient {
             .map_err(|error| media_request_error(error, messages));
             match result {
                 Ok(mut turn) => {
+                    // A provider can hit the output limit after streaming part
+                    // of an answer or tool call. The latter is especially
+                    // dangerous: its arguments are incomplete JSON, but it
+                    // still looks like a tool call to the agent. Discard and
+                    // replay the whole response with a larger budget rather
+                    // than executing a truncated call or displaying a partial
+                    // answer as complete.
+                    if turn_reached_output_limit(&turn, max_tokens) {
+                        if max_tokens < MAX_ESCALATED_TOKENS && attempt < MAX_STREAM_ATTEMPTS {
+                            escalated_from.get_or_insert(max_tokens);
+                            max_tokens = (max_tokens * 2).min(MAX_ESCALATED_TOKENS);
+                            let delay = Duration::from_millis(500 * 2u64.pow(attempt - 1));
+                            (hooks.retry)(Retry {
+                                attempt,
+                                max: MAX_STREAM_ATTEMPTS,
+                                delay,
+                            });
+                            tokio::time::sleep(delay).await;
+                            continue;
+                        }
+                        if assistant_turn_is_empty(&turn) {
+                            return Err(NoAnswer::reasoning(max_tokens).into());
+                        }
+                        anyhow::bail!(
+                            "the model reached the output budget before completing its response \
+                             (max_tokens = {max_tokens})"
+                        );
+                    }
+
                     // A turn with neither text nor tool calls carries nothing
                     // the agent can act on. It is usually a transient provider
                     // hiccup, so retry it like a dropped stream instead of
@@ -484,9 +512,7 @@ impl LlmClient {
                         // but reasoning - streamed or only billed in the usage -
                         // is treated as truncated too: it was the reasoning
                         // that consumed the budget.
-                        let truncated = turn.finish_reason.as_deref().is_some_and(is_output_limit)
-                            || !turn.thinking.is_empty()
-                            || turn.usage.reasoning > 0;
+                        let truncated = !turn.thinking.is_empty() || turn.usage.reasoning > 0;
                         if truncated
                             && max_tokens < MAX_ESCALATED_TOKENS
                             && attempt < MAX_STREAM_ATTEMPTS
@@ -1428,6 +1454,14 @@ fn stream_incomplete(outcome: &SseOutcome, finish_reason: Option<&str>, has_payl
 /// Whether a completed turn carries nothing the agent can act on.
 fn assistant_turn_is_empty(turn: &AssistantTurn) -> bool {
     turn.content.trim().is_empty() && turn.tool_calls.is_empty()
+}
+
+/// Whether the provider exhausted the response budget. Gateways do not always
+/// preserve the upstream stop reason, so a billed output count at the configured
+/// ceiling is the fallback signal that a seemingly normal response was cut off.
+fn turn_reached_output_limit(turn: &AssistantTurn, max_tokens: u32) -> bool {
+    turn.finish_reason.as_deref().is_some_and(is_output_limit)
+        || (max_tokens > 0 && turn.usage.output >= u64::from(max_tokens))
 }
 
 /// Adds an actionable hint to any failed request that carried native media.
@@ -2751,6 +2785,21 @@ mod tests {
         ])
     }
 
+    /// A tool call whose JSON arguments were cut off at the output limit.
+    fn output_limited_tool_call(finish_reason: &str) -> String {
+        sse(&[
+            serde_json::json!({"choices": [{"index": 0, "delta": {"tool_calls": [{"index": 0, "id": "call_0", "function": {"name": "create_page", "arguments": "{\"title\":\"Report\""}}]}, "finish_reason": null}]}),
+            serde_json::json!({"choices": [{"index": 0, "delta": {}, "finish_reason": finish_reason}], "usage": {"prompt_tokens": 10, "completion_tokens": 8192}}),
+        ])
+    }
+
+    fn completed_tool_call() -> String {
+        sse(&[
+            serde_json::json!({"choices": [{"index": 0, "delta": {"tool_calls": [{"index": 0, "id": "call_0", "function": {"name": "create_page", "arguments": "{\"title\":\"Report\",\"body\":\"complete\"}"}}]}, "finish_reason": null}]}),
+            serde_json::json!({"choices": [{"index": 0, "delta": {}, "finish_reason": "tool_calls"}]}),
+        ])
+    }
+
     fn request_budget(request: &str) -> u64 {
         let body = request.split_once("\r\n\r\n").map(|(_, b)| b).unwrap_or("");
         serde_json::from_str::<serde_json::Value>(body).unwrap()["max_tokens"]
@@ -3027,6 +3076,70 @@ mod tests {
         let requests = server.await.unwrap();
         let budgets: Vec<u64> = requests.iter().map(|r| request_budget(r)).collect();
         assert_eq!(budgets, vec![8192, 16384]);
+    }
+
+    #[tokio::test]
+    async fn an_output_limited_tool_call_is_retried_before_it_can_run() {
+        // Some gateways report a normal stop even when the billed output count
+        // proves the response reached the configured ceiling.
+        let (addr, server) = sse_server(vec![
+            output_limited_tool_call("stop"),
+            completed_tool_call(),
+        ])
+        .await;
+        let client = LlmClient::new(sse_test_config(addr, 8192));
+
+        let mut retries = Vec::new();
+        let turn = {
+            let mut hooks = StreamHooks {
+                text: &mut |_| {},
+                thinking: &mut |_| {},
+                retry: &mut |retry: Retry| retries.push(retry),
+            };
+            client
+                .stream_chat(&[Message::user("create it")], &[], &mut hooks)
+                .await
+                .unwrap()
+        };
+
+        assert_eq!(turn.tool_calls.len(), 1);
+        assert_eq!(
+            turn.tool_calls[0].function.arguments,
+            r#"{"title":"Report","body":"complete"}"#
+        );
+        assert_eq!(retries.len(), 1);
+        let requests = server.await.unwrap();
+        let budgets: Vec<u64> = requests.iter().map(|r| request_budget(r)).collect();
+        assert_eq!(budgets, vec![8192, 16384]);
+    }
+
+    #[tokio::test]
+    async fn an_output_limited_tool_call_never_escapes_at_the_budget_ceiling() {
+        let partial = output_limited_tool_call("length");
+        let (addr, server) = sse_server(vec![partial.clone(), partial.clone(), partial]).await;
+        let client = LlmClient::new(sse_test_config(addr, 8192));
+
+        let err = {
+            let mut hooks = StreamHooks {
+                text: &mut |_| {},
+                thinking: &mut |_| {},
+                retry: &mut |_| {},
+            };
+            client
+                .stream_chat(&[Message::user("create it")], &[], &mut hooks)
+                .await
+                .unwrap_err()
+        };
+
+        let message = err.to_string();
+        assert!(
+            message.contains("before completing its response"),
+            "{message}"
+        );
+        assert!(message.contains("max_tokens = 32768"), "{message}");
+        let requests = server.await.unwrap();
+        let budgets: Vec<u64> = requests.iter().map(|r| request_budget(r)).collect();
+        assert_eq!(budgets, vec![8192, 16384, 32768]);
     }
 
     #[tokio::test]
