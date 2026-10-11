@@ -699,8 +699,7 @@ export function sessionDialog(
     // leaves the thread title visible above the transcript while the list is up.
     pin: "footer",
     title: "Sessions",
-    subtitle:
-      "Threads stored for this project, most recent first. Picking one opens it here; the sidebar shows the same list beside every project.",
+    subtitle: "Threads stored for this project, most recent first. Picking one opens it here.",
     note: note || empty,
     rows: [
       row(NEW_SESSION, "New chat", {

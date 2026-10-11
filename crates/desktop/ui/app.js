@@ -1655,8 +1655,52 @@ function setFollowUpBehavior(mode) {
   updateSendState();
 }
 
+let queueMenuTrigger = null;
+
+function closeQueueMenu() {
+  if (queueMenuTrigger) queueMenuTrigger.setAttribute("aria-expanded", "false");
+  queueMenuTrigger = null;
+  const menu = el("queue-menu");
+  menu.hidden = true;
+  menu.innerHTML = "";
+}
+
+function openQueueMenu(trigger, index) {
+  const menu = el("queue-menu");
+  if (queueMenuTrigger === trigger && !menu.hidden) {
+    closeQueueMenu();
+    return;
+  }
+  closeQueueMenu();
+  queueMenuTrigger = trigger;
+  trigger.setAttribute("aria-expanded", "true");
+  for (const [action, label, direction] of [
+    ["move", "Move up", -1],
+    ["move", "Move down", 1],
+    ["edit", "Edit", 0],
+    ["behavior", state.followUpBehavior === "queue" ? "Use Steer for new messages" : "Use Queue for new messages", 0],
+  ]) {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.setAttribute("role", "menuitem");
+    button.dataset.action = action;
+    button.dataset.index = String(action === "behavior" ? -1 : index);
+    button.dataset.direction = String(direction);
+    button.disabled = action === "move" && (index + direction < 0 || index + direction >= state.pendingSends.length);
+    button.textContent = label;
+    menu.appendChild(button);
+  }
+  menu.hidden = false;
+  const rect = trigger.getBoundingClientRect();
+  const width = menu.offsetWidth || 176;
+  const height = menu.offsetHeight || 132;
+  menu.style.left = `${Math.max(8, Math.min(rect.right - width, window.innerWidth - width - 8))}px`;
+  menu.style.top = `${rect.top - height >= 8 ? rect.top - height - 4 : rect.bottom + 4}px`;
+}
+
 function paintQueue() {
   const list = el("queue-list");
+  closeQueueMenu();
   list.innerHTML = "";
   list.hidden = state.pendingSends.length === 0 || (state.busy && !viewingRun());
   state.pendingSends.forEach((pending, index) => {
@@ -1696,36 +1740,25 @@ function paintQueue() {
     more.dataset.menu = String(index);
     more.title = "More queued-message actions";
     more.setAttribute("aria-label", more.title);
+    more.setAttribute("aria-haspopup", "menu");
+    more.setAttribute("aria-expanded", "false");
+    more.setAttribute("aria-controls", "queue-menu");
     more.innerHTML = ICONS.more;
     actions.appendChild(more);
-
-    const menu = document.createElement("span");
-    menu.className = "queued-message-menu";
-    for (const [action, label, direction] of [
-      ["move", "Move up", -1],
-      ["move", "Move down", 1],
-      ["edit", "Edit", 0],
-      ["behavior", state.followUpBehavior === "queue" ? "Use Steer for new messages" : "Use Queue for new messages", 0],
-    ]) {
-      const button = document.createElement("button");
-      button.type = "button";
-      button.dataset.action = action;
-      button.dataset.index = String(action === "behavior" ? -1 : index);
-      button.dataset.direction = String(direction);
-      button.disabled = action === "move" && (index + direction < 0 || index + direction >= state.pendingSends.length);
-      button.textContent = label;
-      menu.appendChild(button);
-    }
-    row.append(mark, text, actions, menu);
+    row.append(mark, text, actions);
     list.appendChild(row);
   });
+}
+
+function paintRunningChrome() {
+  document.body.classList.toggle("running", state.busy && viewingRun());
+  paintLiveChanges();
 }
 
 function setBusy() {
   state.busy = true;
   state.liveChanges.clear();
-  document.body.classList.add("running");
-  paintLiveChanges();
+  paintRunningChrome();
   updateSendState();
   // The status badge's icon is the state: a turn starting turns it into the
   // spinner, wherever the words it is wearing came from.
@@ -1734,8 +1767,7 @@ function setBusy() {
 
 function setIdle() {
   state.busy = false;
-  document.body.classList.remove("running");
-  paintLiveChanges();
+  paintRunningChrome();
   state.runId = null;
   // The turn is over, so the thread it was in is nobody's running thread: what
   // the window shows is the reader's own thread again, wherever that is. The
@@ -1907,6 +1939,7 @@ function updateRunBanner() {
     banner.setAttribute("aria-label", `${text}. Open it.`);
   }
   paintQueue();
+  paintRunningChrome();
   updateSendState();
 }
 
@@ -2652,6 +2685,7 @@ function finishTool(tool, output, { isError = false, diff = null, elapsed = 0 } 
     tool.diffEl.hidden = true;
     tool.block.appendChild(tool.diffEl);
     if (!isError && diff.path) {
+      state.liveChanges.delete(diff.path);
       state.liveChanges.set(diff.path, { ...diffCountValues(diff.text), tool });
       paintLiveChanges();
     }
@@ -5776,17 +5810,23 @@ function init() {
     latest.block.scrollIntoView?.({ block: "nearest" });
   };
   el("queue-list").onclick = (event) => {
-    const menu = event.target.closest?.("[data-menu]");
+    const menu = event.target.closest?.(".queued-more");
     if (menu) {
-      const row = menu.closest?.(".queued-message");
-      for (const queued of el("queue-list").children) {
-        if (queued !== row) queued.classList.remove("menu-open");
-      }
-      row?.classList.toggle("menu-open");
+      openQueueMenu(menu, Number(menu.dataset.menu));
       return;
     }
     const button = event.target.closest?.("[data-action]");
     if (!button) return;
+    void queueAction(
+      button.dataset.action,
+      Number(button.dataset.index ?? -1),
+      Number(button.dataset.direction ?? 0),
+    );
+  };
+  el("queue-menu").onclick = (event) => {
+    const button = event.target.closest?.("[data-action]");
+    if (!button) return;
+    closeQueueMenu();
     void queueAction(
       button.dataset.action,
       Number(button.dataset.index ?? -1),
@@ -6508,7 +6548,7 @@ async function renderProjectsTree() {
     // takes focus away from the composer or a keyboard-held row.
     projectItem.addEventListener("mouseenter", () => {
       cancelSidebarCardHover();
-      if (draggedProjectId || sidebarCardTrigger === moreBtn) return;
+      if (draggedProjectId || sidebarCardOrigin === "click" || sidebarCardTrigger === moreBtn) return;
       sidebarCardHoverTimer = setTimeout(
         () => showProjectActions(project, sessionsForProject, projectItem, moreBtn, false),
         280,

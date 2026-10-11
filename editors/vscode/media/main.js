@@ -671,7 +671,10 @@
         if (entry.item.kind === "user") liveChanges.clear();
         if (entry.item.kind !== "tool" || !entry.item.diff || entry.item.isError || entry.item.unknown) continue;
         const path = diffTarget(entry);
-        if (path) liveChanges.set(path, { ...diffCountValues(entry.item.diff), entry });
+        if (path) {
+          liveChanges.delete(path);
+          liveChanges.set(path, { ...diffCountValues(entry.item.diff), entry });
+        }
       }
     }
     liveChangesPill.hidden = liveChanges.size === 0;
@@ -1595,6 +1598,7 @@
       runStrip.removeAttribute("aria-label");
       runStrip.title = "";
     }
+    paintRunningChrome();
     paintQueue();
     paintLiveChanges();
     // The corner follows: a message typed here while the run is in another
@@ -1610,7 +1614,7 @@
 
   function setStatus(text, isBusy, queuedCount, queue, behavior) {
     busy = Boolean(isBusy);
-    document.body.classList.toggle("running", busy);
+    paintRunningChrome();
     followUpBehavior = behavior === "steer" ? "steer" : "queue";
     queued = queuedCount || 0;
     queuedMessages = Array.isArray(queue) ? queue : [];
@@ -1626,6 +1630,10 @@
     updateElapsed();
     updateSendState();
     paintLiveChanges();
+  }
+
+  function paintRunningChrome() {
+    document.body.classList.toggle("running", busy && !runAway());
   }
 
   /// A running turn reports how long it has been running, like the terminal's
@@ -1870,7 +1878,51 @@
     sendButton.setAttribute("aria-label", busy ? followUpBehavior === "steer" ? "Steer" : "Queue" : "Send");
   }
 
+  let queueMenuTrigger = null;
+
+  function closeQueueMenu() {
+    if (queueMenuTrigger) queueMenuTrigger.setAttribute("aria-expanded", "false");
+    queueMenuTrigger = null;
+    const menu = $("queue-menu");
+    menu.hidden = true;
+    menu.innerHTML = "";
+  }
+
+  function openQueueMenu(trigger, index) {
+    const menu = $("queue-menu");
+    if (queueMenuTrigger === trigger && !menu.hidden) {
+      closeQueueMenu();
+      return;
+    }
+    closeQueueMenu();
+    queueMenuTrigger = trigger;
+    trigger.setAttribute("aria-expanded", "true");
+    for (const [action, label, direction] of [
+      ["move", "Move up", -1],
+      ["move", "Move down", 1],
+      ["edit", "Edit", 0],
+      ["behavior", followUpBehavior === "queue" ? "Use Steer for new messages" : "Use Queue for new messages", 0],
+    ]) {
+      const button = document.createElement("button");
+      button.type = "button";
+      button.setAttribute("role", "menuitem");
+      button.textContent = label;
+      button.dataset.action = action;
+      button.dataset.index = String(action === "behavior" ? -1 : index);
+      button.dataset.direction = String(direction);
+      button.disabled = action === "move" && (index + direction < 0 || index + direction >= queuedMessages.length);
+      menu.appendChild(button);
+    }
+    menu.hidden = false;
+    const rect = trigger.getBoundingClientRect();
+    const width = menu.offsetWidth || 176;
+    const height = menu.offsetHeight || 132;
+    menu.style.left = `${Math.max(8, Math.min(rect.right - width, window.innerWidth - width - 8))}px`;
+    menu.style.top = `${rect.top - height >= 8 ? rect.top - height - 4 : rect.bottom + 4}px`;
+  }
+
   function paintQueue() {
+    closeQueueMenu();
     queueBox.innerHTML = "";
     queueBox.hidden = queuedMessages.length === 0 || runAway();
     for (const message of queuedMessages) {
@@ -1908,28 +1960,12 @@
       more.dataset.menu = String(message.index);
       more.title = "More queued-message actions";
       more.setAttribute("aria-label", more.title);
+      more.setAttribute("aria-haspopup", "menu");
+      more.setAttribute("aria-expanded", "false");
+      more.setAttribute("aria-controls", "queue-menu");
       more.innerHTML = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 12h.01M12 12h.01M19 12h.01" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>';
       actions.appendChild(more);
-
-      const menu = document.createElement("span");
-      menu.className = "queued-message-menu";
-      for (const [action, label, direction] of [
-        ["move", "Move up", -1],
-        ["move", "Move down", 1],
-        ["edit", "Edit", 0],
-        ["behavior", followUpBehavior === "queue" ? "Use Steer for new messages" : "Use Queue for new messages", 0],
-      ]) {
-        const button = document.createElement("button");
-        button.type = "button";
-        button.textContent = label;
-        button.dataset.action = action;
-        button.dataset.index = String(action === "behavior" ? -1 : message.index);
-        button.dataset.direction = String(direction);
-        button.disabled = action === "move" &&
-          (message.index + direction < 0 || message.index + direction >= queuedMessages.length);
-        menu.appendChild(button);
-      }
-      row.append(mark, text, actions, menu);
+      row.append(mark, text, actions);
       queueBox.appendChild(row);
     }
   }
@@ -2742,17 +2778,25 @@
     if (button) fillComposer(button.dataset.prompt || "");
   });
   queueBox.addEventListener("click", (event) => {
-    const menu = event.target instanceof Element ? event.target.closest("[data-menu]") : null;
+    const menu = event.target instanceof Element ? event.target.closest(".queued-more") : null;
     if (menu) {
-      const row = menu.closest(".queued-message");
-      for (const queued of queueBox.children) {
-        if (queued !== row) queued.classList.remove("menu-open");
-      }
-      row?.classList.toggle("menu-open");
+      openQueueMenu(menu, Number(menu.dataset.menu));
       return;
     }
     const button = event.target instanceof Element ? event.target.closest("[data-action]") : null;
     if (!button) return;
+    vscode.postMessage({
+      k: "queueAction",
+      action: button.dataset.action,
+      index: Number(button.dataset.index ?? -1),
+      direction: Number(button.dataset.direction ?? 0),
+      text: input.value,
+    });
+  });
+  $("queue-menu").addEventListener("click", (event) => {
+    const button = event.target instanceof Element ? event.target.closest("[data-action]") : null;
+    if (!button) return;
+    closeQueueMenu();
     vscode.postMessage({
       k: "queueAction",
       action: button.dataset.action,

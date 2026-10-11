@@ -1610,7 +1610,7 @@ body.running #composer { border-radius: 16px; }
   max-height: min(180px, 28vh);
   margin: -2px 0 8px;
   padding-right: 12px;
-  overflow: visible auto;
+  overflow: hidden auto;
 }
 
 .queued-message {
@@ -1659,11 +1659,10 @@ body.running #composer { border-radius: 16px; }
 }
 .queued-message-actions svg { width: 15px; height: 15px; }
 .queued-message-menu {
-  position: absolute;
-  z-index: 12;
-  right: 6px;
-  bottom: calc(100% - 2px);
-  display: none;
+  position: fixed;
+  z-index: 120;
+  display: flex;
+  flex-direction: column;
   min-width: 176px;
   padding: 5px;
   border: 1px solid var(--vscode-panel-border, rgba(128, 128, 128, 0.3));
@@ -1671,8 +1670,7 @@ body.running #composer { border-radius: 16px; }
   background: var(--vscode-menu-background, var(--vscode-editorWidget-background));
   box-shadow: 0 10px 28px rgba(0, 0, 0, 0.3);
 }
-.queued-message.menu-open .queued-message-menu { display: flex; flex-direction: column; }
-.queued-messages:has(.menu-open) { overflow: visible; }
+.queued-message-menu[hidden] { display: none; }
 .queued-message-menu button {
   padding: 6px 8px;
   border: 0;
