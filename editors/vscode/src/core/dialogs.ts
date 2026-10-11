@@ -60,9 +60,9 @@ export interface DialogRow {
   current: boolean;
 }
 
-/// Which end of the panel a dialog card sits near. Session history belongs near
-/// the header it describes; settings and MCP servers belong near the composer
-/// where they are opened.
+/// Which end of the panel a dialog card sits near. Session history, settings
+/// and MCP servers belong near the composer where they are opened, matching the
+/// desktop panels; confirmations can still replace a header-side listing.
 export type DialogPin = "header" | "footer";
 
 /// Which dialog is open. Carried rather than inferred from the pin and the rows,
@@ -694,12 +694,13 @@ export function sessionDialog(
     : "No sessions for this project yet — the next message starts one.";
   return {
     kind: "sessions",
-    pin: "header",
+    // `/session` grows out of the composer in Desktop. Keeping the extension's
+    // copy on that same edge makes the two front-ends read as one operation and
+    // leaves the thread title visible above the transcript while the list is up.
+    pin: "footer",
     title: "Sessions",
-    // No subtitle: the count beside the title and the rows themselves are the
-    // whole story, and a line of prose above them only pushed the list down in a
-    // side bar that is already narrow.
-    subtitle: "",
+    subtitle:
+      "Threads stored for this project, most recent first. Picking one opens it here; the sidebar shows the same list beside every project.",
     note: note || empty,
     rows: [
       row(NEW_SESSION, "New chat", {

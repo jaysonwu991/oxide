@@ -1521,7 +1521,7 @@ check(
 // is a constant rather than a fact.
 const strip = shell.slice(
   shell.indexOf('<div class="composer-strip">'),
-  shellAt('id="composer"'),
+  shell.indexOf('<button id="live-changes"'),
 );
 check(
   "put the folder and the branch on the composer's own top row",
@@ -3572,6 +3572,7 @@ check(
 // moved — because the turn's changes are listed together by the card above; the
 // diff it kept is there for the reader who clicks the card.
 console.log("an edit tool's card");
+app.setBusy();
 const editCard = app.startTool(
   "edit",
   JSON.stringify({ path: "src/main.rs", edits: [{ oldText: "a", newText: "b" }] }),
@@ -3601,6 +3602,14 @@ check(
     editCard.diffEl.innerHTML.includes("dline add"),
   editCard.diffEl.innerHTML,
 );
+check(
+  "summarized live file changes above the running composer",
+  elementFor("live-changes").hidden === false &&
+    elementFor("live-changes").innerHTML.includes("1 file changed") &&
+    elementFor("live-changes").innerHTML.includes("+1") &&
+    elementFor("live-changes").innerHTML.includes("−1"),
+  elementFor("live-changes").innerHTML,
+);
 app.toggleTool(editCard);
 check(
   "showed the call's own diff when the card is expanded",
@@ -3621,6 +3630,12 @@ check(
   "made the diff card a fold a keyboard can work",
   editCard.head.tabIndex === 0 && editCard.hint.tabIndex === 0,
   `head tabIndex: ${editCard.head.tabIndex}, hint tabIndex: ${editCard.hint.tabIndex}`,
+);
+app.setIdle();
+check(
+  "hid the live change summary when the turn ended",
+  elementFor("live-changes").hidden === true,
+  String(elementFor("live-changes").hidden),
 );
 // A card for a call that changed no file is not the one-line form: it keeps the
 // preview of what it printed, so the treatment above is only for a diff.
@@ -4874,7 +4889,11 @@ check(
 app.setBusy();
 check(
   "offered Stop alone until new follow-up context was typed",
-  elementFor("stop").hidden === false && elementFor("send").hidden === true,
+  elementFor("stop").hidden === false &&
+    elementFor("send").hidden === true &&
+    document.body.classList.contains("running") &&
+    /body\.running \.composer-strip \{ display: none; \}/.test(sheet) &&
+    /body\.running \.composer \{ border-radius: 16px; \}/.test(sheet),
   `send ${elementFor("send").hidden} / stop ${elementFor("stop").hidden}`,
 );
 elementFor("prompt").value = "keep going";
@@ -4906,6 +4925,7 @@ check(
   "gave Send back, alone, when the turn ended",
   elementFor("send").hidden === false &&
     elementFor("stop").hidden === true &&
+    !document.body.classList.contains("running") &&
     elementFor("send").title === "Send (Enter)",
   `${elementFor("send").title} / stop ${elementFor("stop").hidden}`,
 );
@@ -4940,6 +4960,18 @@ check(
     app.state.pendingSends[0]?.prompt === "run this after your current answer" &&
     elementFor("queue-list").hidden === false,
   JSON.stringify({ pending: app.state.pendingSends, calls }),
+);
+const queuedRow = elementFor("queue-list").children[0];
+check(
+  "drew a queued follow-up as Codex's compact row",
+  queuedRow.children[0].classList.contains("queued-message-mark") &&
+    queuedRow.children[1].textContent === "run this after your current answer" &&
+    queuedRow.children[2].children.length === 3 &&
+    queuedRow.children[2].children[0].getAttribute("aria-label") === "Steer" &&
+    queuedRow.children[2].children[1].getAttribute("aria-label") === "Delete" &&
+    queuedRow.children[2].children[2].getAttribute("aria-label") === "More queued-message actions" &&
+    queuedRow.children[3].classList.contains("queued-message-menu"),
+  queuedRow.innerHTML,
 );
 check(
   "kept the saved Queue preference after sending",
@@ -6234,6 +6266,26 @@ check(
   optionsTrigger.getAttribute("aria-label") === "Project options for oxide" &&
     actionProject.querySelector(".row-add").getAttribute("aria-label") === "New task in oxide",
   actionProject.outline(),
+);
+elementFor("prompt").focus();
+actionProject.fire("mouseenter", {});
+await new Promise((resolve) => setTimeout(resolve, 300));
+let hoverCard = document.body.children.at(-1);
+check(
+  "previewed the Codex project card from a deliberate hover without taking the caret",
+  hoverCard.querySelector("strong")?.textContent === "oxide" &&
+    optionsTrigger.getAttribute("aria-expanded") === "true" &&
+    document.activeElement === elementFor("prompt"),
+  `${hoverCard.outline()} / ${document.activeElement?.id}`,
+);
+actionProject.fire("mouseleave", { relatedTarget: null });
+await new Promise((resolve) => setTimeout(resolve, 140));
+check(
+  "closed the project preview after leaving it without returning focus to a hover-only trigger",
+  document.body.querySelector(".project-actions-card") === null &&
+    optionsTrigger.getAttribute("aria-expanded") === "false" &&
+    document.activeElement === elementFor("prompt"),
+  `${optionsTrigger.getAttribute("aria-expanded")} / ${document.activeElement?.id}`,
 );
 optionsTrigger.click();
 let actionCard = document.body.children.at(-1);
