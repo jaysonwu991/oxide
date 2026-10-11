@@ -382,8 +382,12 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       <span id="gauge" class="gauge" hidden><span id="gauge-fill"></span></span>
     </div>
   </div>
+  <button id="live-changes" class="live-changes" type="button" hidden
+    title="Show the latest file change" aria-label="Show the latest file change"></button>
   <div id="composer">
     <div id="queue" class="queued-messages" aria-label="Queued messages" hidden></div>
+    <div id="queue-menu" class="queued-message-menu" role="menu"
+      aria-label="Queued message actions" hidden></div>
     <div id="at" class="at-list" role="listbox" aria-label="Files and folders" hidden></div>
     <div id="chips" class="chips" hidden></div>
     <textarea id="input" rows="2" spellcheck="false"

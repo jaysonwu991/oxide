@@ -114,6 +114,28 @@ class StubElement {
 
   constructor(readonly tagName: string, readonly id = "") {}
 
+  getBoundingClientRect() {
+    return {
+      left: 0,
+      top: 0,
+      right: 300,
+      bottom: 40,
+      width: 300,
+      height: 40,
+      x: 0,
+      y: 0,
+      toJSON: () => ({}),
+    };
+  }
+
+  get offsetWidth(): number {
+    return 220;
+  }
+
+  get offsetHeight(): number {
+    return 140;
+  }
+
   /// A scroll reports itself to the element's own listeners, which is how the
   /// renderer learns that the reader left the bottom.
   get scrollTop(): number {
@@ -375,6 +397,7 @@ class StubResizeObserver {
 
 interface Harness {
   byId: Map<string, StubElement>;
+  body: StubElement;
   posted: Record<string, unknown>[];
   send(message: unknown): void;
   fireDocument(kind: string, event?: unknown): void;
@@ -411,6 +434,7 @@ function loadRenderer(options: { image?: StubImage } = {}): Harness {
   const image = options.image ?? new StubImage();
   let canvas: StubCanvas | null = null;
 
+  const body = new StubElement("body");
   const document = {
     getElementById: (id: string) => byId.get(id) ?? null,
     get activeElement(): StubElement | null {
@@ -428,7 +452,7 @@ function loadRenderer(options: { image?: StubImage } = {}): Harness {
       list.push(handler);
       documentListeners.set(kind, list);
     },
-    body: new StubElement("body"),
+    body,
   };
 
   const context = vm.createContext({
@@ -436,6 +460,8 @@ function loadRenderer(options: { image?: StubImage } = {}): Harness {
     window: {
       addEventListener: document.addEventListener,
       matchMedia: () => ({ matches: false }),
+      innerWidth: 1280,
+      innerHeight: 800,
       setTimeout,
       clearTimeout,
     },
@@ -457,6 +483,7 @@ function loadRenderer(options: { image?: StubImage } = {}): Harness {
 
   return {
     byId,
+    body,
     posted,
     send: (message) => {
       for (const handler of documentListeners.get("message") ?? []) handler({ data: message });
@@ -584,7 +611,7 @@ describe("webview footer", () => {
   /// they are reached. Nothing is left under the box — the readout that line
   /// carried is the bar's own now, next to the gauge it belongs with.
   it("carries the branch, the usage and the gauge on the bar above the box", () => {
-    const strip = between(shell, '<div id="strip"', '<div id="composer">');
+    const strip = between(shell, '<div id="strip"', '<button id="live-changes"');
     assert.match(strip, /class="composer-strip"/);
     for (const id of ["branch-wrap", "usage", "gauge"]) {
       assert.match(strip, new RegExp(`id="${id}"`), id);
@@ -1105,7 +1132,7 @@ describe("webview composer", () => {
   });
 
   it("shows Codex-style queued messages and exposes their operations", () => {
-    const { byId, posted, send } = loadRenderer();
+    const { byId, body, posted, send } = loadRenderer();
     send(
       stateMessage({
         busy: true,
@@ -1120,23 +1147,48 @@ describe("webview composer", () => {
     );
     const queue = byId.get("queue")!;
     assert.equal(queue.hidden, false);
-    assert.deepEqual(queue.children.slice(0, 2).map((row) => row.children[0].textContent), [
+    assert.equal(body.classList.contains("running"), true);
+    assert.match(style, /body\.running \.composer-strip \{ display: none; \}/);
+    assert.match(style, /body\.running #composer \{ border-radius: 16px; \}/);
+    assert.deepEqual(queue.children.slice(0, 2).map((row) => row.children[1].textContent), [
       "first follow-up",
       "second follow-up",
     ]);
+    const actions = queue.children[0].children[2];
     assert.deepEqual(
-      queue.children[0].children[1].children.map((button) => button.textContent),
-      ["Move up", "Move down", "Steer", "Edit", "Delete"],
+      actions.children.map((button) => button.getAttribute("aria-label")),
+      ["Steer", "Delete", "More queued-message actions"],
     );
-    assert.equal(queue.children[0].children[1].children[0].disabled, true);
-    assert.equal(queue.children[0].children[1].children[1].disabled, false);
-    assert.equal(queue.children[2].textContent, "Turn off queueing");
-    assert.match(style, /\.queued-messages \{[^}]*max-height: min\(240px, 35vh\);/s);
-    assert.match(style, /\.queued-messages \{[^}]*overflow-y: auto;/s);
+    const more = actions.children[2];
+    const menu = byId.get("queue-menu")!;
+    assert.equal(queue.children[0].children.length, 3, "the popup is not clipped by the queue row");
+    assert.equal(more.getAttribute("aria-haspopup"), "menu");
+    assert.equal(more.getAttribute("aria-expanded"), "false");
+    assert.equal(more.getAttribute("aria-controls"), "queue-menu");
+    assert.equal(menu.hidden, true);
 
-    const edit = queue.children[0].children[1].children[3];
+    queue.fire("click", { target: more });
+    assert.equal(menu.hidden, false);
+    assert.equal(more.getAttribute("aria-expanded"), "true");
+    assert.deepEqual(menu.children.map((button) => button.textContent), [
+      "Move up",
+      "Move down",
+      "Edit",
+      "Use Steer for new messages",
+    ]);
+    assert.match(shell, /id="queue-menu"[^>]*role="menu"/);
+    assert.ok(menu.children.every((button) => button.getAttribute("role") === "menuitem"));
+    assert.equal(menu.children[0].disabled, true);
+    assert.equal(menu.children[1].disabled, false);
+    assert.match(style, /\.queued-messages \{[^}]*max-height: min\(180px, 28vh\);/s);
+    assert.match(style, /\.queued-messages \{[^}]*overflow: hidden auto;/s);
+    assert.match(style, /\.queued-message-menu \{[^}]*position: fixed;/s);
+    assert.match(style, /\.queued-message-menu\[hidden\] \{ display: none; \}/s);
+    assert.doesNotMatch(style, /:has\(\.menu-open\)/);
+
+    const edit = menu.children[2];
     byId.get("input")!.value = "an unsent draft";
-    queue.fire("click", { target: edit });
+    menu.fire("click", { target: edit });
     assert.deepEqual(last(posted), {
       k: "queueAction",
       action: "edit",
@@ -1144,8 +1196,9 @@ describe("webview composer", () => {
       direction: 0,
       text: "an unsent draft",
     });
-    const moveDown = queue.children[0].children[1].children[1];
-    queue.fire("click", { target: moveDown });
+    queue.fire("click", { target: more });
+    const moveDown = menu.children[1];
+    menu.fire("click", { target: moveDown });
     assert.deepEqual(last(posted), {
       k: "queueAction",
       action: "move",
@@ -1153,7 +1206,8 @@ describe("webview composer", () => {
       direction: 1,
       text: "an unsent draft",
     });
-    queue.fire("click", { target: queue.children[2] });
+    queue.fire("click", { target: more });
+    menu.fire("click", { target: menu.children[3] });
     assert.deepEqual(last(posted), {
       k: "queueAction",
       action: "behavior",
@@ -1161,6 +1215,9 @@ describe("webview composer", () => {
       direction: 0,
       text: "an unsent draft",
     });
+
+    send(stateMessage({ busy: false, status: "Ready" }));
+    assert.equal(body.classList.contains("running"), false);
   });
 
   it("asks the host what the caret is in once an @ is typed", () => {
@@ -1729,7 +1786,7 @@ describe("webview run strip", () => {
   const run = { sessionId: "s2", title: "Fix the build", running: true };
 
   it("hides the strip while the run is the thread on screen", () => {
-    const { byId, send } = loadRenderer();
+    const { byId, body, send } = loadRenderer();
     send(stateMessage());
     assert.equal(byId.get("run-strip")!.hidden, true, "nothing to say about another thread");
     assert.equal(
@@ -1738,9 +1795,27 @@ describe("webview run strip", () => {
       "and nothing for a screen reader either",
     );
 
+    send(stateMessage({ busy: true, status: "Editing…" }));
+    send({
+      k: "push",
+      item: {
+        id: 91,
+        kind: "tool",
+        name: "edit",
+        args: JSON.stringify({ path: "src/main.rs" }),
+        output: "Updated src/main.rs.",
+        diff: "+latest",
+        running: false,
+      },
+    });
+    assert.equal(body.classList.contains("running"), true);
+    assert.equal(byId.get("live-changes")!.hidden, false);
+
     // The reader opened another thread while the turn went on: the strip names
     // the conversation the running turn owns and is the way back to it.
     send(stateMessage({ busy: true, status: "Thinking…", run }));
+    assert.equal(body.classList.contains("running"), false);
+    assert.equal(byId.get("live-changes")!.hidden, true);
     assert.equal(byId.get("run-strip")!.hidden, false);
     assert.equal(byId.get("run-strip-text")!.textContent, "A turn is running in “Fix the build”");
     assert.equal(byId.get("run-open")!.title, "Open “Fix the build”");
@@ -1840,7 +1915,7 @@ describe("webview dialogs", () => {
     k: "dialog",
     dialog: {
       kind: "sessions",
-      pin: "header",
+      pin: "footer",
       title: "Sessions",
       subtitle: "",
       note: "",
@@ -1960,6 +2035,8 @@ describe("webview dialogs", () => {
     assert.equal(byId.get("dialog-search")!.hidden, true, "a server list is not searched");
 
     send(sessions);
+    assert.ok(byId.get("dialog")!.classList.contains("pin-footer"));
+    assert.equal(byId.get("dialog")!.dataset.kind, "sessions");
     assert.equal(byId.get("dialog-count")!.textContent, "1", "the threads, not the ways out of them");
     assert.equal(byId.get("dialog-search")!.hidden, false);
     assert.equal(byId.get("dialog-search-clear")!.hidden, true, "nothing to clear yet");
@@ -2088,9 +2165,9 @@ describe("webview dialogs", () => {
   /// and `Disable` on every row is a column of text where a switch will do.
   it("paints each listing near the end its host selected", () => {
     const { byId, send } = loadRenderer();
-    // The host decides — `dialogs.ts` pins the server list to the composer and
-    // the session history to the header — and the renderer only carries it: the
-    // class is what the stylesheet moves. Read the name from
+    // The host decides — `dialogs.ts` pins both project listings to the
+    // composer, matching Desktop — and the renderer only carries it: the class
+    // is what the stylesheet moves. Read the name from
     // the stylesheet rather than spelling it a second time here, since a class
     // the two sides disagree about would leave the listing under the header.
     const pinned = /#dialog\.([\w-]+) \{/.exec(style)?.[1];
@@ -2098,7 +2175,7 @@ describe("webview dialogs", () => {
     send(mcp);
     assert.equal(byId.get("dialog")!.classList.contains(pinned!), true);
     send(sessions);
-    assert.equal(byId.get("dialog")!.classList.contains(pinned!), false);
+    assert.equal(byId.get("dialog")!.classList.contains(pinned!), true);
     // And back, since both panes paint whichever listing the controller holds.
     send(mcp);
     assert.equal(byId.get("dialog")!.classList.contains(pinned!), true);
@@ -3368,6 +3445,34 @@ describe("webview tool card", () => {
       running: false,
       ...over,
     },
+  });
+
+  it("summarizes the active turn's file changes above the compact composer", () => {
+    const { byId, send } = loadRenderer();
+    send(stateMessage({ busy: true, status: "Editing…" }));
+    send({ k: "push", item: { id: 3, kind: "user", text: "make the change" } });
+    send(editCard());
+    const pill = byId.get("live-changes")!;
+    assert.equal(pill.hidden, false);
+    assert.match(pill.innerHTML, /1 file changed/);
+    assert.match(pill.innerHTML, /\+2/);
+    assert.match(pill.innerHTML, /−1/);
+    assert.match(style, /\.live-changes \{[^}]*border-radius: 999px;/s);
+
+    pill.fire("click");
+    assert.equal(find(byId.get("transcript")!, "tool")!.classList.contains("expanded"), true);
+
+    send(editCard({ id: 5, args: JSON.stringify({ path: "src/other.rs" }), diff: "+other" }));
+    send(editCard({ id: 6, diff: "+latest" }));
+    const toolCards = byId
+      .get("transcript")!
+      .children.filter((child) => child.classList.contains("tool"));
+    pill.fire("click");
+    assert.equal(toolCards[2].classList.contains("expanded"), true);
+    assert.equal(toolCards[1].classList.contains("expanded"), false);
+
+    send({ k: "status", status: "Ready", busy: false, queued: 0, queue: [] });
+    assert.equal(pill.hidden, true);
   });
 
   it("distinguishes search patterns and collapses an empty result to one line", () => {

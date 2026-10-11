@@ -283,6 +283,10 @@ const state = {
   usage: null,
   currentAssistant: null,
   tools: [],
+  // Tool-reported diffs in the active turn. This drives the compact running
+  // summary above the composer; the snapshot-backed card remains authoritative
+  // once the turn finishes.
+  liveChanges: new Map(),
   currentThinking: null,
   attachments: [],
   mcps: null,
@@ -1647,11 +1651,56 @@ function setFollowUpBehavior(mode) {
     // The preference still applies for this window when storage is unavailable.
   }
   paintQueue();
+  paintLiveChanges();
   updateSendState();
+}
+
+let queueMenuTrigger = null;
+
+function closeQueueMenu() {
+  if (queueMenuTrigger) queueMenuTrigger.setAttribute("aria-expanded", "false");
+  queueMenuTrigger = null;
+  const menu = el("queue-menu");
+  menu.hidden = true;
+  menu.innerHTML = "";
+}
+
+function openQueueMenu(trigger, index) {
+  const menu = el("queue-menu");
+  if (queueMenuTrigger === trigger && !menu.hidden) {
+    closeQueueMenu();
+    return;
+  }
+  closeQueueMenu();
+  queueMenuTrigger = trigger;
+  trigger.setAttribute("aria-expanded", "true");
+  for (const [action, label, direction] of [
+    ["move", "Move up", -1],
+    ["move", "Move down", 1],
+    ["edit", "Edit", 0],
+    ["behavior", state.followUpBehavior === "queue" ? "Use Steer for new messages" : "Use Queue for new messages", 0],
+  ]) {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.setAttribute("role", "menuitem");
+    button.dataset.action = action;
+    button.dataset.index = String(action === "behavior" ? -1 : index);
+    button.dataset.direction = String(direction);
+    button.disabled = action === "move" && (index + direction < 0 || index + direction >= state.pendingSends.length);
+    button.textContent = label;
+    menu.appendChild(button);
+  }
+  menu.hidden = false;
+  const rect = trigger.getBoundingClientRect();
+  const width = menu.offsetWidth || 176;
+  const height = menu.offsetHeight || 132;
+  menu.style.left = `${Math.max(8, Math.min(rect.right - width, window.innerWidth - width - 8))}px`;
+  menu.style.top = `${rect.top - height >= 8 ? rect.top - height - 4 : rect.bottom + 4}px`;
 }
 
 function paintQueue() {
   const list = el("queue-list");
+  closeQueueMenu();
   list.innerHTML = "";
   list.hidden = state.pendingSends.length === 0 || (state.busy && !viewingRun());
   state.pendingSends.forEach((pending, index) => {
@@ -1659,42 +1708,57 @@ function paintQueue() {
     row.className = "queued-message";
     row.draggable = state.pendingSends.length > 1;
     row.dataset.index = String(index);
+    const mark = document.createElement("span");
+    mark.className = "queued-message-mark";
+    mark.innerHTML = glyph(
+      `<path d="M7 7h10M7 12h7M7 17h5M3.5 6.5v11" ${STROKE_24}/>` +
+        `<path d="m1.5 15.5 2 2 2-2" ${STROKE_24}/>`,
+    );
     const text = document.createElement("span");
     text.className = "queued-message-text";
     text.textContent = pending.prompt.split(/\r?\n/, 1)[0] || "Attachment";
     const actions = document.createElement("span");
     actions.className = "queued-message-actions";
-    for (const [action, label, direction] of [
-      ["move", "Move up", -1],
-      ["move", "Move down", 1],
-      ["steer", "Steer", 0],
-      ["edit", "Edit", 0],
-      ["delete", "Delete", 0],
+    for (const [action, label, direction, icon] of [
+      ["steer", "Steer", 0, `<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M2 4v2.5A3.5 3.5 0 0 0 5.5 10H14m-3-3 3 3-3 3" ${STROKE_16}/></svg>`],
+      ["delete", "Delete", 0, `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h16M10 11v6M14 11v6M6 7l1 13h10l1-13M9 7V4h6v3" ${STROKE_24}/></svg>`],
     ]) {
       const button = document.createElement("button");
       button.type = "button";
       button.dataset.action = action;
       button.dataset.index = String(index);
       button.dataset.direction = String(direction);
-      button.disabled = action === "move" && (index + direction < 0 || index + direction >= state.pendingSends.length);
-      button.textContent = label;
+      button.className = `queued-${action}`;
+      button.title = label;
+      button.setAttribute("aria-label", label);
+      button.innerHTML = action === "steer" ? `${icon}<span>${label}</span>` : icon;
       actions.appendChild(button);
     }
-    row.append(text, actions);
+    const more = document.createElement("button");
+    more.type = "button";
+    more.className = "queued-more";
+    more.dataset.menu = String(index);
+    more.title = "More queued-message actions";
+    more.setAttribute("aria-label", more.title);
+    more.setAttribute("aria-haspopup", "menu");
+    more.setAttribute("aria-expanded", "false");
+    more.setAttribute("aria-controls", "queue-menu");
+    more.innerHTML = ICONS.more;
+    actions.appendChild(more);
+    row.append(mark, text, actions);
     list.appendChild(row);
   });
-  if (state.pendingSends.length) {
-    const behavior = document.createElement("button");
-    behavior.type = "button";
-    behavior.className = "queue-behavior";
-    behavior.dataset.action = "behavior";
-    behavior.textContent = state.followUpBehavior === "queue" ? "Turn off queueing" : "Turn on queueing";
-    list.appendChild(behavior);
-  }
+}
+
+function paintRunningChrome() {
+  document.body.classList.toggle("running", state.busy && viewingRun());
+  paintLiveChanges();
 }
 
 function setBusy() {
   state.busy = true;
+  state.liveChanges.clear();
+  paintRunningChrome();
   updateSendState();
   // The status badge's icon is the state: a turn starting turns it into the
   // spinner, wherever the words it is wearing came from.
@@ -1703,6 +1767,7 @@ function setBusy() {
 
 function setIdle() {
   state.busy = false;
+  paintRunningChrome();
   state.runId = null;
   // The turn is over, so the thread it was in is nobody's running thread: what
   // the window shows is the reader's own thread again, wherever that is. The
@@ -1874,6 +1939,7 @@ function updateRunBanner() {
     banner.setAttribute("aria-label", `${text}. Open it.`);
   }
   paintQueue();
+  paintRunningChrome();
   updateSendState();
 }
 
@@ -2566,6 +2632,30 @@ function diffCounts(text) {
   return `+${added} −${removed}`;
 }
 
+function diffCountValues(text) {
+  let added = 0;
+  let removed = 0;
+  for (const line of String(text || "").split("\n")) {
+    if (line.startsWith("+")) added += 1;
+    else if (line.startsWith("-")) removed += 1;
+  }
+  return { added, removed };
+}
+
+function paintLiveChanges() {
+  const pill = el("live-changes");
+  pill.hidden = !state.busy || state.liveChanges.size === 0 || !viewingRun();
+  if (pill.hidden) return;
+  let added = 0;
+  let removed = 0;
+  for (const change of state.liveChanges.values()) {
+    added += change.added;
+    removed += change.removed;
+  }
+  const count = state.liveChanges.size;
+  pill.innerHTML = `<span>${count} file${count === 1 ? "" : "s"} changed</span>${statsHtml(added, removed)}`;
+}
+
 /// Marks a card finished. A call that changed a file reads as the one line its
 /// header builds — the path, and how many lines moved — and keeps its own diff
 /// for the reader who expands the card: the turn's changes are listed together
@@ -2594,6 +2684,11 @@ function finishTool(tool, output, { isError = false, diff = null, elapsed = 0 } 
     tool.diffEl = diffBlock(diff);
     tool.diffEl.hidden = true;
     tool.block.appendChild(tool.diffEl);
+    if (!isError && diff.path) {
+      state.liveChanges.delete(diff.path);
+      state.liveChanges.set(diff.path, { ...diffCountValues(diff.text), tool });
+      paintLiveChanges();
+    }
   }
   tool.inline = Boolean(diff);
   paintTool(tool);
@@ -5707,9 +5802,31 @@ function init() {
   el("connect").onclick = openConnect;
 
   el("send").onclick = () => send(false);
+  el("live-changes").onclick = () => {
+    const latest = [...state.liveChanges.values()].at(-1)?.tool;
+    if (!latest) return;
+    latest.expanded = true;
+    paintTool(latest);
+    latest.block.scrollIntoView?.({ block: "nearest" });
+  };
   el("queue-list").onclick = (event) => {
+    const menu = event.target.closest?.(".queued-more");
+    if (menu) {
+      openQueueMenu(menu, Number(menu.dataset.menu));
+      return;
+    }
     const button = event.target.closest?.("[data-action]");
     if (!button) return;
+    void queueAction(
+      button.dataset.action,
+      Number(button.dataset.index ?? -1),
+      Number(button.dataset.direction ?? 0),
+    );
+  };
+  el("queue-menu").onclick = (event) => {
+    const button = event.target.closest?.("[data-action]");
+    if (!button) return;
+    closeQueueMenu();
     void queueAction(
       button.dataset.action,
       Number(button.dataset.index ?? -1),
@@ -6103,20 +6220,34 @@ async function dropProject(fromId, toId, after) {
 }
 
 let sidebarCardTrigger = null;
+let sidebarCardHoverTimer = null;
+let sidebarCardReturnFocus = false;
+let sidebarCardOrigin = "";
+
+function cancelSidebarCardHover() {
+  if (sidebarCardHoverTimer !== null) {
+    clearTimeout(sidebarCardHoverTimer);
+    sidebarCardHoverTimer = null;
+  }
+}
 
 function closeSidebarCards(except = null) {
+  cancelSidebarCardHover();
   for (const card of document.body.querySelectorAll(".sidebar-floating-card")) {
     if (card !== except) card.remove();
   }
   if (except) return;
   const trigger = sidebarCardTrigger;
+  const returnFocus = sidebarCardReturnFocus;
   sidebarCardTrigger = null;
+  sidebarCardReturnFocus = false;
+  sidebarCardOrigin = "";
   if (trigger) {
     trigger.setAttribute("aria-expanded", "false");
     // Closing a menu returns the keyboard to the control that opened it. An
     // action may immediately open a dialog or repaint the row; those operations
     // move focus on from here themselves.
-    if (trigger.parentNode) trigger.focus();
+    if (returnFocus && trigger.parentNode) trigger.focus();
   }
 }
 
@@ -6133,15 +6264,25 @@ function projectActivity(project, sessions) {
   return `${sessions.length} task${sessions.length === 1 ? "" : "s"}${active ? ` · ${active} active` : ""}`;
 }
 
-function showProjectActions(project, sessions, row, trigger) {
+function showProjectActions(project, sessions, row, trigger, focusMenu = true) {
   closeSidebarCards();
   sidebarCardTrigger = trigger;
+  sidebarCardReturnFocus = focusMenu;
+  sidebarCardOrigin = focusMenu ? "click" : "hover";
   trigger.setAttribute("aria-expanded", "true");
   const card = document.createElement("div");
   card.id = "project-actions-menu";
   card.className = "sidebar-floating-card project-actions-card";
   card.setAttribute("role", "menu");
   card.setAttribute("aria-label", `${project.name} project actions`);
+  // A hover card remains under the pointer when it crosses the narrow gap from
+  // the sidebar. Once the pointer leaves both surfaces it closes; a card opened
+  // with the ellipsis stays up until the menu is dismissed.
+  card.addEventListener("mouseenter", cancelSidebarCardHover);
+  card.addEventListener("mouseleave", () => {
+    if (sidebarCardOrigin !== "hover") return;
+    sidebarCardHoverTimer = setTimeout(closeSidebarCards, 120);
+  });
   const icon = (drawing, className = "") => {
     const node = document.createElement("span");
     node.className = className;
@@ -6229,7 +6370,7 @@ function showProjectActions(project, sessions, row, trigger) {
     next?.focus();
   });
   placeSidebarCard(card, row);
-  pin.focus();
+  if (focusMenu) pin.focus();
 }
 
 async function showThreadDetails(session, row) {
@@ -6369,6 +6510,16 @@ async function renderProjectsTree() {
     moreBtn.onclick = (event) => {
       event.stopPropagation();
       if (moreBtn.getAttribute("aria-expanded") === "true") {
+        // The hover preview is already the right card. Clicking the ellipsis
+        // promotes it to the persistent keyboard menu instead of making the
+        // first click appear to close the control it was meant to open.
+        if (sidebarCardOrigin === "hover") {
+          cancelSidebarCardHover();
+          sidebarCardOrigin = "click";
+          sidebarCardReturnFocus = true;
+          document.body.querySelector(".project-actions-card .sidebar-card-pin")?.focus();
+          return;
+        }
         closeSidebarCards();
         return;
       }
@@ -6391,6 +6542,25 @@ async function renderProjectsTree() {
     projectItem.onclick = () => {
       selectProject(project);
     };
+
+    // Codex previews a project's summary from the row itself. The short delay
+    // keeps an incidental pass down the sidebar quiet, and the preview never
+    // takes focus away from the composer or a keyboard-held row.
+    projectItem.addEventListener("mouseenter", () => {
+      cancelSidebarCardHover();
+      if (draggedProjectId || sidebarCardOrigin === "click" || sidebarCardTrigger === moreBtn) return;
+      sidebarCardHoverTimer = setTimeout(
+        () => showProjectActions(project, sessionsForProject, projectItem, moreBtn, false),
+        280,
+      );
+    });
+    projectItem.addEventListener("mouseleave", (event) => {
+      cancelSidebarCardHover();
+      if (isInside(event.relatedTarget, projectItem)) return;
+      if (sidebarCardTrigger === moreBtn && sidebarCardOrigin === "hover") {
+        sidebarCardHoverTimer = setTimeout(closeSidebarCards, 120);
+      }
+    });
 
     // The row is what the arrangement is dragged by: the whole row moves — the
     // project and the threads under it — and the app writes the order down.

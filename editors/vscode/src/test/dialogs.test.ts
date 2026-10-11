@@ -479,9 +479,9 @@ describe("session dialog", () => {
   it("offers the two ways out of the current thread first", () => {
     const dialog = sessionDialog(sessions, null);
     assert.equal(dialog.title, "Sessions");
-    // It drops from the header: the header names the thread the listing is
-    // about, and the "New chat" row is about leaving that one.
-    assert.equal(dialog.pin, "header");
+    // It grows from the composer, like Desktop's `/session` panel.
+    assert.equal(dialog.pin, "footer");
+    assert.match(dialog.subtitle, /most recent first/);
     assert.deepEqual(
       dialog.rows.map((row) => row.value),
       [NEW_SESSION, CONTINUE_SESSION, "fe0031b1", "7c8031b1"],

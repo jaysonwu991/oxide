@@ -109,6 +109,7 @@ button.icon.danger:hover:not(:disabled) {
    both of the corner's actions would sit side by side. A change card's folded
    rows and Undo are hidden the same way, from the same kind of `display`. */
 .queued-messages[hidden],
+.live-changes[hidden],
 button.icon[hidden],
 .change-row[hidden],
 .changes-more[hidden],
@@ -1568,6 +1569,29 @@ footer {
   font-size: 0.75em;
 }
 
+/* The active turn uses Codex's compact composer. The project/branch/context
+   facts are restored as soon as the turn ends. */
+body.running .composer-strip { display: none; }
+body.running #composer { border-radius: 16px; }
+.live-changes {
+  align-self: center;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  margin: 0 auto 8px;
+  padding: 6px 10px;
+  border: 1px solid var(--vscode-panel-border, rgba(128, 128, 128, 0.28));
+  border-radius: 999px;
+  background: var(--vscode-editorWidget-background, var(--vscode-input-background));
+  color: var(--vscode-descriptionForeground);
+  font: inherit;
+  font-size: 0.78em;
+  box-shadow: 0 6px 18px rgba(0, 0, 0, 0.16);
+}
+.live-changes:hover { color: var(--vscode-foreground); background: var(--vscode-toolbar-hoverBackground); }
+.live-changes .add { color: var(--vscode-gitDecoration-addedResourceForeground, #2ea043); }
+.live-changes .del { color: var(--vscode-gitDecoration-deletedResourceForeground, #f85149); }
+
 /* The row of facts, one line whatever the branch's own name is. */
 .strip-facts {
   display: flex;
@@ -1581,22 +1605,25 @@ footer {
   display: flex;
   flex-direction: column;
   flex: 0 1 auto;
-  gap: 2px;
+  gap: 6px;
   min-height: 0;
-  max-height: min(240px, 35vh);
-  margin: 0 0 7px;
+  max-height: min(180px, 28vh);
+  margin: -2px 0 8px;
   padding-right: 12px;
-  padding-bottom: 6px;
-  border-bottom: 1px solid var(--vscode-panel-border, rgba(128, 128, 128, 0.25));
-  overflow-y: auto;
+  overflow: hidden auto;
 }
 
 .queued-message {
+  position: relative;
   display: flex;
   align-items: center;
   gap: 8px;
   min-width: 0;
-  padding: 3px 2px;
+  min-height: 36px;
+  padding: 5px 7px;
+  border: 1px solid var(--vscode-panel-border, rgba(128, 128, 128, 0.28));
+  border-radius: 11px;
+  background: var(--vscode-editorWidget-background, var(--vscode-input-background));
   color: var(--vscode-descriptionForeground);
 }
 
@@ -1608,19 +1635,54 @@ footer {
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-.queued-message-actions { display: inline-flex; gap: 3px; }
-.queued-message-actions button,
-.queue-behavior {
+.queued-message-mark { display: flex; flex: none; opacity: 0.72; }
+.queued-message-mark svg { width: 16px; height: 16px; }
+.queued-message-actions { display: inline-flex; align-items: center; gap: 2px; flex: none; }
+.queued-message-actions button {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  min-width: 26px;
+  height: 26px;
+  padding: 3px 5px;
   border: 0;
+  border-radius: 6px;
   background: transparent;
   color: var(--vscode-descriptionForeground);
   font: inherit;
   font-size: 0.82em;
   cursor: pointer;
 }
-.queued-message-actions button:hover,
-.queue-behavior:hover { color: var(--vscode-foreground); }
-.queue-behavior { align-self: flex-end; }
+.queued-message-actions button:hover {
+  color: var(--vscode-foreground);
+  background: var(--vscode-toolbar-hoverBackground, rgba(128, 128, 128, 0.12));
+}
+.queued-message-actions svg { width: 15px; height: 15px; }
+.queued-message-menu {
+  position: fixed;
+  z-index: 120;
+  display: flex;
+  flex-direction: column;
+  min-width: 176px;
+  padding: 5px;
+  border: 1px solid var(--vscode-panel-border, rgba(128, 128, 128, 0.3));
+  border-radius: 9px;
+  background: var(--vscode-menu-background, var(--vscode-editorWidget-background));
+  box-shadow: 0 10px 28px rgba(0, 0, 0, 0.3);
+}
+.queued-message-menu[hidden] { display: none; }
+.queued-message-menu button {
+  padding: 6px 8px;
+  border: 0;
+  border-radius: 5px;
+  background: transparent;
+  color: var(--vscode-menu-foreground, var(--vscode-foreground));
+  font: inherit;
+  font-size: 0.82em;
+  text-align: left;
+}
+.queued-message-menu button:hover { background: var(--vscode-menu-selectionBackground, var(--vscode-toolbar-hoverBackground)); }
+.queued-message-menu button:disabled { opacity: 0.35; }
 
 /* The row's end belongs to the two readings that belong together: what the thread
    has spent of its window and the gauge that draws it. The usage is the first of
@@ -1752,6 +1814,16 @@ footer {
   order: 2;
   margin: 0 auto;
   box-shadow: 0 -10px 24px rgba(0, 0, 0, 0.28);
+}
+
+/* Session history is the extension's copy of Desktop's `/session` panel: it
+   sits immediately above the composer and uses the same softer, roomier card
+   instead of looking like a header alert moved to the bottom. */
+#dialog[data-kind="sessions"].pin-footer {
+  max-width: 780px;
+  margin: 0 auto 8px;
+  padding: 10px 8px 8px;
+  border-radius: 16px;
 }
 
 #dialog.pin-footer ~ #transcript {

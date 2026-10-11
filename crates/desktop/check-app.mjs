@@ -1521,7 +1521,7 @@ check(
 // is a constant rather than a fact.
 const strip = shell.slice(
   shell.indexOf('<div class="composer-strip">'),
-  shellAt('id="composer"'),
+  shell.indexOf('<button id="live-changes"'),
 );
 check(
   "put the folder and the branch on the composer's own top row",
@@ -3572,6 +3572,7 @@ check(
 // moved — because the turn's changes are listed together by the card above; the
 // diff it kept is there for the reader who clicks the card.
 console.log("an edit tool's card");
+app.setBusy();
 const editCard = app.startTool(
   "edit",
   JSON.stringify({ path: "src/main.rs", edits: [{ oldText: "a", newText: "b" }] }),
@@ -3601,6 +3602,14 @@ check(
     editCard.diffEl.innerHTML.includes("dline add"),
   editCard.diffEl.innerHTML,
 );
+check(
+  "summarized live file changes above the running composer",
+  elementFor("live-changes").hidden === false &&
+    elementFor("live-changes").innerHTML.includes("1 file changed") &&
+    elementFor("live-changes").innerHTML.includes("+1") &&
+    elementFor("live-changes").innerHTML.includes("−1"),
+  elementFor("live-changes").innerHTML,
+);
 app.toggleTool(editCard);
 check(
   "showed the call's own diff when the card is expanded",
@@ -3621,6 +3630,26 @@ check(
   "made the diff card a fold a keyboard can work",
   editCard.head.tabIndex === 0 && editCard.hint.tabIndex === 0,
   `head tabIndex: ${editCard.head.tabIndex}, hint tabIndex: ${editCard.hint.tabIndex}`,
+);
+const secondEditCard = app.startTool("edit", JSON.stringify({ path: "src/other.rs" }));
+app.finishTool(secondEditCard, "Updated src/other.rs.", {
+  diff: { path: "src/other.rs", text: "+      1  other" },
+});
+const latestEditCard = app.startTool("edit", JSON.stringify({ path: "src/main.rs" }));
+app.finishTool(latestEditCard, "Updated src/main.rs again.", {
+  diff: { path: "src/main.rs", text: "+      2  latest" },
+});
+elementFor("live-changes").click();
+check(
+  "opened the most recently changed file when a path changed twice",
+  latestEditCard.expanded === true && secondEditCard.expanded === false,
+  `${latestEditCard.expanded} / ${secondEditCard.expanded}`,
+);
+app.setIdle();
+check(
+  "hid the live change summary when the turn ended",
+  elementFor("live-changes").hidden === true,
+  String(elementFor("live-changes").hidden),
 );
 // A card for a call that changed no file is not the one-line form: it keeps the
 // preview of what it printed, so the treatment above is only for a diff.
@@ -4874,7 +4903,11 @@ check(
 app.setBusy();
 check(
   "offered Stop alone until new follow-up context was typed",
-  elementFor("stop").hidden === false && elementFor("send").hidden === true,
+  elementFor("stop").hidden === false &&
+    elementFor("send").hidden === true &&
+    document.body.classList.contains("running") &&
+    /body\.running \.composer-strip \{ display: none; \}/.test(sheet) &&
+    /body\.running \.composer \{ border-radius: 16px; \}/.test(sheet),
   `send ${elementFor("send").hidden} / stop ${elementFor("stop").hidden}`,
 );
 elementFor("prompt").value = "keep going";
@@ -4906,6 +4939,7 @@ check(
   "gave Send back, alone, when the turn ended",
   elementFor("send").hidden === false &&
     elementFor("stop").hidden === true &&
+    !document.body.classList.contains("running") &&
     elementFor("send").title === "Send (Enter)",
   `${elementFor("send").title} / stop ${elementFor("stop").hidden}`,
 );
@@ -4940,6 +4974,38 @@ check(
     app.state.pendingSends[0]?.prompt === "run this after your current answer" &&
     elementFor("queue-list").hidden === false,
   JSON.stringify({ pending: app.state.pendingSends, calls }),
+);
+const queuedRow = elementFor("queue-list").children[0];
+const queuedMore = queuedRow.children[2].children[2];
+const queuedMenu = elementFor("queue-menu");
+check(
+  "drew a queued follow-up as Codex's compact row",
+  queuedRow.children[0].classList.contains("queued-message-mark") &&
+    queuedRow.children[1].textContent === "run this after your current answer" &&
+    queuedRow.children[2].children.length === 3 &&
+    queuedRow.children[2].children[0].getAttribute("aria-label") === "Steer" &&
+    queuedRow.children[2].children[1].getAttribute("aria-label") === "Delete" &&
+    queuedRow.children[2].children[2].getAttribute("aria-label") === "More queued-message actions" &&
+    queuedRow.children.length === 3 &&
+    queuedMore.getAttribute("aria-haspopup") === "menu" &&
+    queuedMore.getAttribute("aria-expanded") === "false" &&
+    queuedMore.getAttribute("aria-controls") === "queue-menu" &&
+    queuedMenu.hidden === true,
+  queuedRow.innerHTML,
+);
+elementFor("queue-list").onclick({ target: queuedMore });
+check(
+  "opened the queued message's actions as an unclipped accessible popup",
+  queuedMenu.hidden === false &&
+    queuedMore.getAttribute("aria-expanded") === "true" &&
+    /id="queue-menu"[^>]*role="menu"/.test(shell) &&
+    queuedMenu.children.every((button) => button.getAttribute("role") === "menuitem") &&
+    queuedMenu.children.map((button) => button.textContent).join(" / ") ===
+      "Move up / Move down / Edit / Use Steer for new messages" &&
+    /\.queued-messages \{[^}]*overflow: hidden auto;/s.test(sheet) &&
+    /\.queued-message-menu \{[^}]*position: fixed;/s.test(sheet) &&
+    !/:has\(\.menu-open\)/.test(sheet),
+  `${queuedMenu.outline()} / ${queuedMore.getAttribute("aria-expanded")}`,
 );
 check(
   "kept the saved Queue preference after sending",
@@ -5487,9 +5553,18 @@ el("transcript").innerHTML = "";
 // The turn starts in a thread of its own, from the message the reader typed
 // there, and the reader opens another conversation while it works.
 app.state.session = null;
-app.state.sendView = { session: null };
+app.state.sendView = { session: null, project: app.state.project };
 app.setBusy();
 await emit("agent-start", { runId: 62, sessionId: runningThread.id, title: "Rename oxide update" });
+const runningThreadEdit = app.startTool("edit", JSON.stringify({ path: "src/running.rs" }));
+app.finishTool(runningThreadEdit, "Updated src/running.rs.", {
+  diff: { path: "src/running.rs", text: "+      1  running" },
+});
+check(
+  "used the compact running chrome in the thread that owns the turn",
+  document.body.classList.contains("running") && elementFor("live-changes").hidden === false,
+  `${document.body.className} / ${elementFor("live-changes").hidden}`,
+);
 await app.openSession(readThread);
 check(
   "said where the running turn is while another thread was on screen",
@@ -5499,6 +5574,11 @@ check(
     elementFor("run-banner-text").textContent === "A turn is running in “Rename oxide update”" &&
     elementFor("run-banner").title === "Open “Rename oxide update”",
   `${app.state.session} / ${app.state.runSession} / ${elementFor("run-banner").hidden} / ${elementFor("run-banner-text").textContent}`,
+);
+check(
+  "restored the full composer and hid another thread's live changes",
+  !document.body.classList.contains("running") && elementFor("live-changes").hidden === true,
+  `${document.body.className} / ${elementFor("live-changes").hidden}`,
 );
 check(
   "left the transcript on the thread the reader had opened",
@@ -5609,8 +5689,11 @@ check(
 );
 check(
   "handed the composer back to the thread the turn is in",
-  elementFor("send").hidden === false && elementFor("stop").hidden === true,
-  `send ${elementFor("send").hidden} / stop ${elementFor("stop").hidden}`,
+  elementFor("send").hidden === false &&
+    elementFor("stop").hidden === true &&
+    document.body.classList.contains("running") &&
+    elementFor("live-changes").hidden === false,
+  `send ${elementFor("send").hidden} / stop ${elementFor("stop").hidden} / ${document.body.className}`,
 );
 calls.length = 0;
 app.handleEvent({
@@ -6221,7 +6304,17 @@ check(
 );
 
 console.log("project and thread actions");
-projectRows = [{ ...removeTarget, pinned: false }];
+projectRows = [
+  { ...removeTarget, pinned: false },
+  {
+    ...removeTarget,
+    id: "/tmp/other-project",
+    path: "/tmp/other-project",
+    name: "other-project",
+    display_path: "/tmp/other-project",
+    pinned: false,
+  },
+];
 threads = [{ id: "pin-me", cwd: removeTarget.path, name: "Pinned work", modified_at: 10, pinned: false }];
 app.state.projects = projectRows.map((row) => ({ ...row }));
 app.state.sessions = threads.map((row) => ({ ...row }));
@@ -6235,6 +6328,26 @@ check(
     actionProject.querySelector(".row-add").getAttribute("aria-label") === "New task in oxide",
   actionProject.outline(),
 );
+elementFor("prompt").focus();
+actionProject.fire("mouseenter", {});
+await new Promise((resolve) => setTimeout(resolve, 300));
+let hoverCard = document.body.children.at(-1);
+check(
+  "previewed the Codex project card from a deliberate hover without taking the caret",
+  hoverCard.querySelector("strong")?.textContent === "oxide" &&
+    optionsTrigger.getAttribute("aria-expanded") === "true" &&
+    document.activeElement === elementFor("prompt"),
+  `${hoverCard.outline()} / ${document.activeElement?.id}`,
+);
+actionProject.fire("mouseleave", { relatedTarget: null });
+await new Promise((resolve) => setTimeout(resolve, 140));
+check(
+  "closed the project preview after leaving it without returning focus to a hover-only trigger",
+  document.body.querySelector(".project-actions-card") === null &&
+    optionsTrigger.getAttribute("aria-expanded") === "false" &&
+    document.activeElement === elementFor("prompt"),
+  `${optionsTrigger.getAttribute("aria-expanded")} / ${document.activeElement?.id}`,
+);
 optionsTrigger.click();
 let actionCard = document.body.children.at(-1);
 check(
@@ -6244,6 +6357,16 @@ check(
     actionCard.querySelector(".sidebar-card-path").children[1].textContent === "~/Projects/oxide" &&
     actionCard.querySelector(".remove-project") === null,
   actionCard.outline(),
+);
+const otherProjectRow = elementFor("projects-tree").children[1].children[0];
+otherProjectRow.fire("mouseenter", {});
+await new Promise((resolve) => setTimeout(resolve, 300));
+check(
+  "kept a click-opened project menu when another project was hovered",
+  document.body.querySelector(".project-actions-card") === actionCard &&
+    actionCard.querySelector("strong").textContent === "oxide" &&
+    optionsTrigger.getAttribute("aria-expanded") === "true",
+  `${document.body.querySelector(".project-actions-card")?.outline()} / ${optionsTrigger.getAttribute("aria-expanded")}`,
 );
 check(
   "opened the project actions as an accessible keyboard menu",

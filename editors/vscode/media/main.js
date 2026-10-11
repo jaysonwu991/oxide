@@ -54,6 +54,7 @@
   const branchWrap = $("branch-wrap");
   const attachButton = $("attach");
   const composer = $("composer");
+  const liveChangesPill = $("live-changes");
   const dropHint = $("dropzone");
   const titleLabel = $("title");
   const dialogBox = $("dialog");
@@ -101,6 +102,7 @@
   let startedAt = 0;
   let elapsedTimer = 0;
   let dirty = new Set();
+  let liveChanges = new Map();
   let frame = 0;
   /// The change card a review is open on and the file it is showing. The listing
   /// is the card's own, so a review never disagrees with the rows behind it.
@@ -652,6 +654,43 @@
     return `+${added} −${removed}`;
   }
 
+  function diffCountValues(diff) {
+    let added = 0;
+    let removed = 0;
+    for (const line of String(diff || "").split("\n")) {
+      if (line.startsWith("+")) added += 1;
+      else if (line.startsWith("-")) removed += 1;
+    }
+    return { added, removed };
+  }
+
+  function paintLiveChanges() {
+    liveChanges = new Map();
+    if (busy && !runAway()) {
+      for (const entry of entries.values()) {
+        if (entry.item.kind === "user") liveChanges.clear();
+        if (entry.item.kind !== "tool" || !entry.item.diff || entry.item.isError || entry.item.unknown) continue;
+        const path = diffTarget(entry);
+        if (path) {
+          liveChanges.delete(path);
+          liveChanges.set(path, { ...diffCountValues(entry.item.diff), entry });
+        }
+      }
+    }
+    liveChangesPill.hidden = liveChanges.size === 0;
+    if (liveChangesPill.hidden) return;
+    let added = 0;
+    let removed = 0;
+    for (const change of liveChanges.values()) {
+      added += change.added;
+      removed += change.removed;
+    }
+    const count = liveChanges.size;
+    liveChangesPill.innerHTML = `<span>${count} file${count === 1 ? "" : "s"} changed</span>` +
+      `${added ? `<span class="add">+${added}</span>` : ""}` +
+      `${removed ? `<span class="del">−${removed}</span>` : ""}`;
+  }
+
   /// Replace a streaming body without losing the reader's place: writing the
   /// text of a scroll container back resets it to the top, so a running command
   /// would keep showing its first line instead of its latest, and a body that
@@ -726,6 +765,7 @@
       entry.el.appendChild(entry.diffEl);
     }
     if (entry.diffEl) entry.diffEl.hidden = !entry.expanded;
+    paintLiveChanges();
     if (quietSearch) {
       entry.inline = false;
       entry.folded = false;
@@ -1558,7 +1598,9 @@
       runStrip.removeAttribute("aria-label");
       runStrip.title = "";
     }
+    paintRunningChrome();
     paintQueue();
+    paintLiveChanges();
     // The corner follows: a message typed here while the run is in another
     // thread has nowhere on screen to be answered, so the panel offers Stop
     // alone — the host refuses the send in the same words the desktop app does.
@@ -1572,6 +1614,7 @@
 
   function setStatus(text, isBusy, queuedCount, queue, behavior) {
     busy = Boolean(isBusy);
+    paintRunningChrome();
     followUpBehavior = behavior === "steer" ? "steer" : "queue";
     queued = queuedCount || 0;
     queuedMessages = Array.isArray(queue) ? queue : [];
@@ -1586,6 +1629,11 @@
     statusLabel.title = busy ? "Oxide is working" : "Ready for the next message";
     updateElapsed();
     updateSendState();
+    paintLiveChanges();
+  }
+
+  function paintRunningChrome() {
+    document.body.classList.toggle("running", busy && !runAway());
   }
 
   /// A running turn reports how long it has been running, like the terminal's
@@ -1830,7 +1878,51 @@
     sendButton.setAttribute("aria-label", busy ? followUpBehavior === "steer" ? "Steer" : "Queue" : "Send");
   }
 
+  let queueMenuTrigger = null;
+
+  function closeQueueMenu() {
+    if (queueMenuTrigger) queueMenuTrigger.setAttribute("aria-expanded", "false");
+    queueMenuTrigger = null;
+    const menu = $("queue-menu");
+    menu.hidden = true;
+    menu.innerHTML = "";
+  }
+
+  function openQueueMenu(trigger, index) {
+    const menu = $("queue-menu");
+    if (queueMenuTrigger === trigger && !menu.hidden) {
+      closeQueueMenu();
+      return;
+    }
+    closeQueueMenu();
+    queueMenuTrigger = trigger;
+    trigger.setAttribute("aria-expanded", "true");
+    for (const [action, label, direction] of [
+      ["move", "Move up", -1],
+      ["move", "Move down", 1],
+      ["edit", "Edit", 0],
+      ["behavior", followUpBehavior === "queue" ? "Use Steer for new messages" : "Use Queue for new messages", 0],
+    ]) {
+      const button = document.createElement("button");
+      button.type = "button";
+      button.setAttribute("role", "menuitem");
+      button.textContent = label;
+      button.dataset.action = action;
+      button.dataset.index = String(action === "behavior" ? -1 : index);
+      button.dataset.direction = String(direction);
+      button.disabled = action === "move" && (index + direction < 0 || index + direction >= queuedMessages.length);
+      menu.appendChild(button);
+    }
+    menu.hidden = false;
+    const rect = trigger.getBoundingClientRect();
+    const width = menu.offsetWidth || 176;
+    const height = menu.offsetHeight || 132;
+    menu.style.left = `${Math.max(8, Math.min(rect.right - width, window.innerWidth - width - 8))}px`;
+    menu.style.top = `${rect.top - height >= 8 ? rect.top - height - 4 : rect.bottom + 4}px`;
+  }
+
   function paintQueue() {
+    closeQueueMenu();
     queueBox.innerHTML = "";
     queueBox.hidden = queuedMessages.length === 0 || runAway();
     for (const message of queuedMessages) {
@@ -1838,39 +1930,43 @@
       row.className = "queued-message";
       row.draggable = queuedMessages.length > 1;
       row.dataset.index = String(message.index);
+      const mark = document.createElement("span");
+      mark.className = "queued-message-mark";
+      mark.innerHTML = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M7 7h10M7 12h7M7 17h5M3.5 6.5v11M1.5 15.5l2 2 2-2" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>';
       const text = document.createElement("span");
       text.className = "queued-message-text";
       text.textContent = message.text || "Attachment";
       if (message.attachmentCount) text.title = `${message.attachmentCount} attachment(s)`;
       const actions = document.createElement("span");
       actions.className = "queued-message-actions";
-      for (const [action, label, direction] of [
-        ["move", "Move up", -1],
-        ["move", "Move down", 1],
-        ["steer", "Steer", 0],
-        ["edit", "Edit", 0],
-        ["delete", "Delete", 0],
+      for (const [action, label, direction, icon] of [
+        ["steer", "Steer", 0, '<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M2 4v2.5A3.5 3.5 0 0 0 5.5 10H14m-3-3 3 3-3 3" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>'],
+        ["delete", "Delete", 0, TRASH_ICON],
       ]) {
         const button = document.createElement("button");
         button.type = "button";
-        button.textContent = label;
+        button.className = `queued-${action}`;
+        button.title = label;
+        button.setAttribute("aria-label", label);
+        button.innerHTML = action === "steer" ? `${icon}<span>${label}</span>` : icon;
         button.dataset.action = action;
         button.dataset.index = String(message.index);
         button.dataset.direction = String(direction);
-        button.disabled = action === "move" &&
-          (message.index + direction < 0 || message.index + direction >= queuedMessages.length);
         actions.appendChild(button);
       }
-      row.append(text, actions);
+      const more = document.createElement("button");
+      more.type = "button";
+      more.className = "queued-more";
+      more.dataset.menu = String(message.index);
+      more.title = "More queued-message actions";
+      more.setAttribute("aria-label", more.title);
+      more.setAttribute("aria-haspopup", "menu");
+      more.setAttribute("aria-expanded", "false");
+      more.setAttribute("aria-controls", "queue-menu");
+      more.innerHTML = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 12h.01M12 12h.01M19 12h.01" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>';
+      actions.appendChild(more);
+      row.append(mark, text, actions);
       queueBox.appendChild(row);
-    }
-    if (queuedMessages.length) {
-      const behavior = document.createElement("button");
-      behavior.type = "button";
-      behavior.className = "queue-behavior";
-      behavior.dataset.action = "behavior";
-      behavior.textContent = followUpBehavior === "queue" ? "Turn off queueing" : "Turn on queueing";
-      queueBox.appendChild(behavior);
     }
   }
 
@@ -1931,6 +2027,7 @@
       return;
     }
     dialogBox.classList.toggle("pin-footer", dialog.pin === "footer");
+    dialogBox.dataset.kind = dialog.kind || "";
     dialogTitle.textContent = dialog.title || "";
     const count = dialog.count || 0;
     dialogCount.textContent = count ? String(count) : "";
@@ -2665,6 +2762,13 @@
   });
 
   sendButton.addEventListener("click", () => submit());
+  liveChangesPill.addEventListener("click", () => {
+    const latest = [...liveChanges.values()].at(-1)?.entry;
+    if (!latest) return;
+    latest.expanded = true;
+    paintTool(latest);
+    latest.el.scrollIntoView?.({ block: "nearest" });
+  });
   // A suggestion is a message to start from rather than a message to send: it
   // goes into the box, where the reader names the file or narrows the question.
   suggestions.addEventListener("click", (event) => {
@@ -2674,8 +2778,25 @@
     if (button) fillComposer(button.dataset.prompt || "");
   });
   queueBox.addEventListener("click", (event) => {
+    const menu = event.target instanceof Element ? event.target.closest(".queued-more") : null;
+    if (menu) {
+      openQueueMenu(menu, Number(menu.dataset.menu));
+      return;
+    }
     const button = event.target instanceof Element ? event.target.closest("[data-action]") : null;
     if (!button) return;
+    vscode.postMessage({
+      k: "queueAction",
+      action: button.dataset.action,
+      index: Number(button.dataset.index ?? -1),
+      direction: Number(button.dataset.direction ?? 0),
+      text: input.value,
+    });
+  });
+  $("queue-menu").addEventListener("click", (event) => {
+    const button = event.target instanceof Element ? event.target.closest("[data-action]") : null;
+    if (!button) return;
+    closeQueueMenu();
     vscode.postMessage({
       k: "queueAction",
       action: button.dataset.action,
