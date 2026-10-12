@@ -162,7 +162,7 @@
             if ($previous) { $asset = Get-ManifestValue $manifest $previous }
         }
         if (-not $asset) {
-            throw "no asset for $Platform; supported targets: macos-arm64, macos-x64, linux-x64, linux-arm64"
+            throw "no asset for $Platform; supported targets: macos-arm64, macos-x64, linux-x64, linux-arm64, win-x64"
         }
         return "$BaseUrl/releases/download/$ver/$asset"
     }

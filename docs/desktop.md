@@ -1225,7 +1225,10 @@ version first, the way the CLI's own archives are named: a
 which is the one the updater resolves. Each installer is copied to the name
 releases carried before the versioning (`macos-arm64-Oxide.dmg` and so on) as
 well, so a copy already installed resolves this release and takes up the new
-naming from there. electron-builder also writes its own `latest*.yml`
+naming from there — and the Linux x64 AppImage to the `x64` spelling as well,
+since that is the name an installed copy's own updater read before it. That is
+what makes this release reachable by a copy installed either side of the change.
+electron-builder also writes its own `latest*.yml`
 metadata and a blockmap beside the installer; this app resolves its release
 through GitHub itself, so metadata describing a feed it does not read is
 deliberately not published.
@@ -1351,8 +1354,9 @@ Each `desktop-v*` release carries installers for the four platforms the app is
 built for. Pick the asset whose platform matches the machine; each name carries
 the version and the platform, read off the release it belongs to. Every release
 carries the pre-versioning name of each of them too — `macos-arm64-Oxide.dmg`
-and so on — which is what a copy installed before the change resolves its own
-update by:
+and so on, and for the Linux x64 AppImage both `linux-x86_64-Oxide-Setup.AppImage`
+and `linux-x64-Oxide-Setup.AppImage` — which is what a copy installed before the
+change resolves its own update by:
 
 | Asset | Platform |
 | --- | --- |
