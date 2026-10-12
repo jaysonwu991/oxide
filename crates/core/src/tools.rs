@@ -2630,7 +2630,7 @@ fn shell_command_index(words: &[&str]) -> Option<usize> {
         index += 1;
     }
     loop {
-        let name = shell_word_name(*words.get(index)?);
+        let name = shell_word_name(words.get(index)?);
         if !matches!(name, "command" | "exec" | "env" | "nohup" | "sudo") {
             return Some(index);
         }
