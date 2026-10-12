@@ -461,7 +461,9 @@ mod tests {
 
         let allow = ToolFilter::new(Some("read,bash".into()), None);
         assert!(allow.permits("read"));
-        assert!(allow.permits("read"));
+        // The names in the filter are the tools' own: an alias the run no
+        // longer accepts is not a second spelling of one.
+        assert!(!allow.permits("read_file"));
         assert!(!allow.permits("write"));
 
         let exclude = ToolFilter::new(None, Some("bash".into()));

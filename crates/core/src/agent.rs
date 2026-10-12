@@ -3173,6 +3173,9 @@ mod tests {
         assert!(tool_enabled(&config, "grep"));
         assert!(tool_enabled(&config, "find"));
         assert!(tool_enabled(&config, "ls"));
+        // A tool is named by the name it is registered under, so a name no
+        // tool answers to is not allowed by being an old one of it.
+        assert!(!tool_enabled(&config, "read_file"));
         assert!(!tool_enabled(&config, "write"));
         assert!(!tool_enabled(&config, "edit"));
         assert!(!tool_enabled(&config, "bash"));
