@@ -1626,6 +1626,7 @@
   }
 
   function setStatus(text, isBusy, queuedCount, queue, behavior) {
+    const wasBusy = busy;
     busy = Boolean(isBusy);
     paintRunningChrome();
     followUpBehavior = behavior === "steer" ? "steer" : "queue";
@@ -1646,7 +1647,7 @@
       stopButton.title = `Stop the running turn (Esc)${label ? ` · ${label}` : ""}`;
       stopButton.setAttribute("aria-label", stopButton.title);
     }
-    updateElapsed();
+    updateElapsed(wasBusy && !busy);
     updateSendState();
     paintLiveChanges();
   }
@@ -1657,11 +1658,11 @@
 
   /// A running turn reports its total above the transcript, then keeps the
   /// completed total as “Worked for …” instead of discarding it at the end.
-  function updateElapsed() {
+  function updateElapsed(finished = false) {
     if (!busy) {
       clearInterval(elapsedTimer);
       elapsedTimer = 0;
-      if (startedAt) finishedElapsed = Math.max(0, Date.now() - startedAt);
+      if (finished && startedAt) finishedElapsed = Math.max(0, Date.now() - startedAt);
       const belongsHere = clockSession === currentSession && clockFolder === currentFolder;
       runTime.hidden = runAway() || !startedAt || !belongsHere;
       if (startedAt) runTimeText.textContent = `Worked for ${workingDuration(finishedElapsed)}`;

@@ -1084,10 +1084,10 @@ tone, with tabular figures so a count that grows does not shift the row it ends.
   height: 30px;
   padding: 0 8px;
   border-radius: 9px;
-  color: var(--faint);
   font-size: 11.5px;
   white-space: nowrap;
 }
+#stop.run-control:hover:not(:disabled) { color: var(--error); }
 #stop.run-control .spinner {
   width: 10px;
   height: 10px;
@@ -1097,7 +1097,6 @@ tone, with tabular figures so a count that grows does not shift the row it ends.
 }
 #stop.run-control .stop-icon {
   display: inline-flex;
-  color: var(--dim);
 }
 #stop.run-control .stop-icon svg {
   display: block;

@@ -350,7 +350,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
   <span id="run-strip-text"></span>
   <button id="run-open" class="run-open" type="button">Open</button>
 </section>
-<div id="run-time" class="run-time" role="status" hidden><span id="run-time-text"></span></div>
+<div id="run-time" class="run-time" role="timer" hidden><span id="run-time-text"></span></div>
 <section id="dialog" class="popover" hidden aria-labelledby="dialog-title">
   <div class="popover-head">
     <h2 id="dialog-title"></h2>

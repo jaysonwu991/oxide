@@ -1526,7 +1526,6 @@ footer {
   width: auto;
   gap: 5px;
   padding: 0 7px;
-  color: var(--vscode-descriptionForeground);
   font-size: 0.82em;
   white-space: nowrap;
 }

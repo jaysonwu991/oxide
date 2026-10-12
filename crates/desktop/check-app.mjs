@@ -4925,6 +4925,7 @@ check(
 check(
   "showed the turn's total working time above the transcript",
   elementFor("run-time").hidden === false &&
+    /id="run-time"[^>]*role="timer"/.test(shell) &&
     /^Working for \d+s$/.test(elementFor("run-time-text").textContent) &&
     /\.run-time \{[^}]*max-width: 780px;[^}]*font-variant-numeric: tabular-nums;/.test(sheet),
   `${elementFor("run-time").hidden} / ${elementFor("run-time-text").textContent}`,

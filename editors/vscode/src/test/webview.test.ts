@@ -421,7 +421,7 @@ function find(node: StubElement, className: string): StubElement | null {
   return null;
 }
 
-function loadRenderer(options: { image?: StubImage } = {}): Harness {
+function loadRenderer(options: { image?: StubImage; now?: () => number } = {}): Harness {
   activeElement = null;
   const byId = new Map<string, StubElement>();
   for (const { id, hidden } of shellElements()) {
@@ -471,6 +471,7 @@ function loadRenderer(options: { image?: StubImage } = {}): Harness {
     clearTimeout,
     setInterval: () => 0,
     clearInterval: () => {},
+    Date: { now: options.now ?? Date.now },
     Element: StubElement,
     Image: function Image() {
       return image;
@@ -780,7 +781,8 @@ describe("webview composer", () => {
     // something to say the same corner becomes Send, which the host queues for
     // after the turn. The desktop app swaps them the same way, so the button
     // does not move as the box is typed into.
-    const { byId, send } = loadRenderer();
+    let now = 1_000;
+    const { byId, send } = loadRenderer({ now: () => now });
     send(stateMessage({ busy: true, status: "Thinking…", queued: 2 }));
     assert.equal(byId.get("status")!.textContent, "Thinking… · 2 queued");
     assert.equal(byId.get("status")!.classList.contains("busy"), true);
@@ -790,15 +792,24 @@ describe("webview composer", () => {
     assert.match(shell, /id="stop"[\s\S]*?spinner[\s\S]*?stop-label[\s\S]*?stop-icon[\s\S]*?<\/button>/);
     assert.equal(byId.get("send")!.hidden, true, "and nothing to send hides Send");
     assert.equal(byId.get("run-time")!.hidden, false);
-    assert.match(byId.get("run-time-text")!.textContent, /^Working for \d+s$/);
+    assert.match(shell, /id="run-time"[^>]*role="timer"/);
+    assert.equal(byId.get("run-time-text")!.textContent, "Working for 0s");
 
     // An idle turn has no phase to report, so the label (and its dot) goes
     // rather than sitting there reading like a control.
+    now = 6_500;
     send(stateMessage());
     assert.equal(byId.get("status")!.hidden, true);
     assert.equal(byId.get("stop")!.hidden, true);
     assert.equal(byId.get("run-time")!.hidden, false);
-    assert.match(byId.get("run-time-text")!.textContent, /^Worked for \d+s$/);
+    assert.equal(byId.get("run-time-text")!.textContent, "Worked for 5s");
+    now = 66_500;
+    send(stateMessage());
+    assert.equal(
+      byId.get("run-time-text")!.textContent,
+      "Worked for 5s",
+      "idle refreshes do not count time after the turn finished",
+    );
     send(stateMessage({ sessionId: "another-thread", folder: "/repo" }));
     assert.equal(byId.get("run-time")!.hidden, true, "another thread does not inherit the total");
     assert.equal(byId.get("send")!.hidden, false);

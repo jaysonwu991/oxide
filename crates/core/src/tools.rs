@@ -2561,15 +2561,11 @@ fn is_build_command(command: &str) -> bool {
 /// grep used as a pipe filter. It also inspects every shell segment so a
 /// leading `cd`, environment assignment, or pipeline cannot hide the grep.
 fn uses_recursive_shell_grep(command: &str) -> bool {
-    command.split(['\n', ';', '&', '|']).any(|segment| {
+    shell_segments(command).into_iter().any(|segment| {
         let words: Vec<&str> = segment.split_whitespace().collect();
-        let Some(grep_index) = words.iter().position(|word| {
-            let executable = word.trim_matches(['\'', '"']);
-            executable
-                .rsplit(['/', '\\'])
-                .next()
-                .is_some_and(|name| name == "grep" || name == "grep.exe")
-        }) else {
+        let Some(grep_index) = shell_command_index(&words)
+            .filter(|index| matches!(shell_word_name(words[*index]), "grep" | "grep.exe"))
+        else {
             return false;
         };
 
@@ -2592,6 +2588,114 @@ fn uses_recursive_shell_grep(command: &str) -> bool {
         }
         false
     })
+}
+
+/// Splits commands only at shell separators outside quotes. Treating a quoted
+/// `| grep -r` example as another pipeline stage would turn data into a command.
+fn shell_segments(command: &str) -> Vec<&str> {
+    let mut segments = Vec::new();
+    let mut start = 0;
+    let mut quote = None;
+    let mut escaped = false;
+    for (index, ch) in command.char_indices() {
+        if escaped {
+            escaped = false;
+            continue;
+        }
+        if ch == '\\' && quote != Some('\'') {
+            escaped = true;
+            continue;
+        }
+        match quote {
+            Some(open) if ch == open => quote = None,
+            Some(_) => {}
+            None if ch == '\'' || ch == '"' => quote = Some(ch),
+            None if matches!(ch, '\n' | ';' | '&' | '|') => {
+                segments.push(&command[start..index]);
+                start = index + ch.len_utf8();
+            }
+            None => {}
+        }
+    }
+    segments.push(&command[start..]);
+    segments
+}
+
+/// Finds the executable token rather than any argument that happens to spell
+/// `grep`. Shell assignments and the common wrappers an agent may put before a
+/// command are skipped; wrapper options are skipped conservatively too.
+fn shell_command_index(words: &[&str]) -> Option<usize> {
+    let mut index = 0;
+    while index < words.len() && shell_assignment(words[index]) {
+        index += 1;
+    }
+    loop {
+        let name = shell_word_name(*words.get(index)?);
+        if !matches!(name, "command" | "exec" | "env" | "nohup" | "sudo") {
+            return Some(index);
+        }
+        let wrapper = name;
+        index += 1;
+        while let Some(word) = words.get(index) {
+            if *word == "--" {
+                index += 1;
+                break;
+            }
+            if shell_assignment(word) || word.starts_with('-') {
+                if wrapper_option_takes_value(wrapper, word) {
+                    index += 1;
+                }
+                index += 1;
+                continue;
+            }
+            break;
+        }
+    }
+}
+
+fn wrapper_option_takes_value(wrapper: &str, option: &str) -> bool {
+    if option.contains('=') {
+        return false;
+    }
+    match wrapper {
+        "env" => matches!(
+            option,
+            "-u" | "--unset" | "-C" | "--chdir" | "-S" | "--split-string"
+        ),
+        "sudo" => matches!(
+            option,
+            "-u" | "--user"
+                | "-g"
+                | "--group"
+                | "-h"
+                | "--host"
+                | "-p"
+                | "--prompt"
+                | "-C"
+                | "--close-from"
+                | "-R"
+                | "--chroot"
+                | "-D"
+                | "--chdir"
+        ),
+        _ => false,
+    }
+}
+
+fn shell_word_name(word: &str) -> &str {
+    let word = word.trim_matches(['\'', '"']);
+    word.rsplit(['/', '\\']).next().unwrap_or(word)
+}
+
+fn shell_assignment(word: &str) -> bool {
+    let Some((name, _)) = word.split_once('=') else {
+        return false;
+    };
+    let mut chars = name.chars();
+    chars
+        .next()
+        .is_some_and(|ch| ch == '_' || ch.is_ascii_alphabetic())
+        && chars.all(|ch| ch == '_' || ch.is_ascii_alphanumeric())
 }
 
 /// The PATH inherited by a desktop app is commonly much smaller than the one
@@ -4646,9 +4750,16 @@ mod tests {
             "cd jobs && /usr/bin/grep --recursive needle data"
         ));
         assert!(uses_recursive_shell_grep("LC_ALL=C grep -Rl needle ."));
+        assert!(uses_recursive_shell_grep(
+            "env LC_ALL=C command /usr/bin/grep -rn needle ."
+        ));
+        assert!(uses_recursive_shell_grep("sudo -u root grep -rn needle ."));
 
         assert!(!uses_recursive_shell_grep("grep needle config.json"));
         assert!(!uses_recursive_shell_grep("printf '%s' value | grep value"));
+        assert!(!uses_recursive_shell_grep("echo grep -r"));
+        assert!(!uses_recursive_shell_grep("printf '%s\\n' grep -r"));
+        assert!(!uses_recursive_shell_grep("echo 'example | grep -r .'"));
         assert!(!uses_recursive_shell_grep("git log --grep latest"));
         assert!(!uses_recursive_shell_grep("grep -- '-r' config.json"));
     }
