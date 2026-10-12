@@ -40,9 +40,11 @@
   ];
   const sendButton = $("send");
   const stopButton = $("stop");
+  const stopLabel = $("stop-label");
   const queueBox = $("queue");
   const statusLabel = $("status");
-  const elapsedLabel = $("elapsed");
+  const runTime = $("run-time");
+  const runTimeText = $("run-time-text");
   const usageRow = $("usage");
   const usageText = $("usage-text");
   const gauge = $("gauge");
@@ -99,7 +101,12 @@
   /// offering a Send whose answer would land in a conversation nobody is
   /// reading.
   let runThread = null;
+  let currentSession = null;
+  let currentFolder = null;
+  let clockSession = null;
+  let clockFolder = null;
   let startedAt = 0;
+  let finishedElapsed = 0;
   let elapsedTimer = 0;
   let dirty = new Set();
   let liveChanges = new Map();
@@ -1470,6 +1477,11 @@
         empty.hidden = message.items.some(isConversation);
         transcript.classList.toggle("hide-thinking", message.showThinking === false);
         titleLabel.textContent = message.title || "New chat";
+        currentSession = message.sessionId ?? null;
+        currentFolder = message.folder ?? null;
+        if (message.busy && clockSession == null && clockFolder === currentFolder) {
+          clockSession = currentSession;
+        }
         paintHome(message.folder);
         for (const item of message.items) appendItem(item, false);
         setStatus(message.status, message.busy, message.queued, message.queue, message.followUpBehavior);
@@ -1601,6 +1613,7 @@
     paintRunningChrome();
     paintQueue();
     paintLiveChanges();
+    updateElapsed();
     // The corner follows: a message typed here while the run is in another
     // thread has nowhere on screen to be answered, so the panel offers Stop
     // alone — the host refuses the send in the same words the desktop app does.
@@ -1613,6 +1626,7 @@
   }
 
   function setStatus(text, isBusy, queuedCount, queue, behavior) {
+    const wasBusy = busy;
     busy = Boolean(isBusy);
     paintRunningChrome();
     followUpBehavior = behavior === "steer" ? "steer" : "queue";
@@ -1627,7 +1641,13 @@
     statusLabel.textContent = label;
     statusLabel.classList.toggle("busy", busy);
     statusLabel.title = busy ? "Oxide is working" : "Ready for the next message";
-    updateElapsed();
+    if (busy) {
+      statusLabel.hidden = true;
+      stopLabel.textContent = label || "Working…";
+      stopButton.title = `Stop the running turn (Esc)${label ? ` · ${label}` : ""}`;
+      stopButton.setAttribute("aria-label", stopButton.title);
+    }
+    updateElapsed(wasBusy && !busy);
     updateSendState();
     paintLiveChanges();
   }
@@ -1636,20 +1656,35 @@
     document.body.classList.toggle("running", busy && !runAway());
   }
 
-  /// A running turn reports how long it has been running, like the terminal's
-  /// status row (and the tool panels' live `Elapsed`) do.
-  function updateElapsed() {
+  /// A running turn reports its total above the transcript, then keeps the
+  /// completed total as “Worked for …” instead of discarding it at the end.
+  function updateElapsed(finished = false) {
     if (!busy) {
       clearInterval(elapsedTimer);
       elapsedTimer = 0;
-      startedAt = 0;
-      elapsedLabel.hidden = true;
+      if (finished && startedAt) finishedElapsed = Math.max(0, Date.now() - startedAt);
+      const belongsHere = clockSession === currentSession && clockFolder === currentFolder;
+      runTime.hidden = runAway() || !startedAt || !belongsHere;
+      if (startedAt) runTimeText.textContent = `Worked for ${workingDuration(finishedElapsed)}`;
       return;
     }
-    if (!startedAt) startedAt = Date.now();
-    elapsedLabel.hidden = false;
-    elapsedLabel.textContent = `${((Date.now() - startedAt) / 1000).toFixed(1)}s`;
+    if (!startedAt || finishedElapsed) {
+      startedAt = Date.now();
+      finishedElapsed = 0;
+      clockSession = currentSession;
+      clockFolder = currentFolder;
+    }
+    runTime.hidden = runAway();
+    runTimeText.textContent = `Working for ${workingDuration(Date.now() - startedAt)}`;
     if (!elapsedTimer) elapsedTimer = setInterval(updateElapsed, 500);
+  }
+
+  function workingDuration(ms) {
+    const seconds = Math.max(0, Math.floor(ms / 1000));
+    if (seconds < 60) return `${seconds}s`;
+    const minutes = Math.floor(seconds / 60);
+    if (minutes < 60) return `${minutes}m ${seconds % 60}s`;
+    return `${Math.floor(minutes / 60)}h ${minutes % 60}m`;
   }
 
   /// The footer the extension host composes: compact controls in the composer's

@@ -264,6 +264,10 @@ const state = {
   // the idle placeholder, so the badge is the icon alone.
   statusText: "",
   statusLevel: "info",
+  runStartedAt: 0,
+  runElapsed: 0,
+  runClockProject: null,
+  runClockSession: null,
   // The repository the row names: what `git_info` answered for the folder on
   // screen, read when the folder changes, when a turn ends and when the reader
   // comes back to the window.
@@ -351,9 +355,9 @@ function setStatus(text, level = "info") {
   paintStatus();
 }
 
-/// The status badge: the icon for the state — the spinner while a turn runs,
-/// the warning triangle a failure wears, a dot otherwise — and the words beside
-/// it when they are not the idle placeholder.
+/// The idle status badge carries a warning triangle for failures and a dot for
+/// ordinary notices. During a turn, the phase moves into the Stop button beside
+/// its spinner, making the running state and its action one control.
 function paintStatus() {
   const busy = Boolean(state.busy || state.sendView);
   const level = busy ? "busy" : state.statusLevel;
@@ -365,8 +369,50 @@ function paintStatus() {
   const text = state.statusText || "";
   el("status-text").textContent = text;
   el("status-text").hidden = text === IDLE_STATUS;
+  badge.hidden = busy;
+  el("stop-label").textContent = text && text !== IDLE_STATUS ? text : "Working…";
+  el("stop").title = `Stop the running turn${text && text !== IDLE_STATUS ? ` · ${text}` : ""}`;
+  el("stop").setAttribute("aria-label", el("stop").title);
   badge.title = text;
   badge.setAttribute("aria-label", text || IDLE_STATUS);
+}
+
+let runClockTimer = 0;
+
+function runDuration(ms) {
+  const seconds = Math.max(0, Math.floor(ms / 1000));
+  if (seconds < 60) return `${seconds}s`;
+  const minutes = Math.floor(seconds / 60);
+  if (minutes < 60) return `${minutes}m ${seconds % 60}s`;
+  return `${Math.floor(minutes / 60)}h ${minutes % 60}m`;
+}
+
+function paintRunClock() {
+  const active = state.busy && viewingRun();
+  const belongsHere =
+    state.runClockProject === state.project && state.runClockSession === state.session;
+  const visible = state.runStartedAt > 0 && (active || (!state.busy && belongsHere));
+  const clock = el("run-time");
+  clock.hidden = !visible;
+  if (!visible) return;
+  const elapsed = active ? Date.now() - state.runStartedAt : state.runElapsed;
+  el("run-time-text").textContent = `${active ? "Working" : "Worked"} for ${runDuration(elapsed)}`;
+}
+
+function startRunClock() {
+  if (state.runStartedAt) return;
+  state.runStartedAt = Date.now();
+  state.runElapsed = 0;
+  state.runClockProject = state.runProject || state.project;
+  state.runClockSession = state.sendView?.session ?? state.session;
+  paintRunClock();
+  if (!runClockTimer) runClockTimer = setInterval(paintRunClock, 1000);
+}
+
+function finishRunClock() {
+  if (state.runStartedAt) state.runElapsed = Math.max(0, Date.now() - state.runStartedAt);
+  if (runClockTimer) clearInterval(runClockTimer);
+  runClockTimer = 0;
 }
 
 /// The word the window is idle under: the words are dropped for it and the icon
@@ -1756,7 +1802,12 @@ function paintRunningChrome() {
 }
 
 function setBusy() {
+  const starting = !state.busy;
   state.busy = true;
+  if (starting) {
+    state.runStartedAt = 0;
+    startRunClock();
+  }
   state.liveChanges.clear();
   paintRunningChrome();
   updateSendState();
@@ -1766,6 +1817,7 @@ function setBusy() {
 }
 
 function setIdle() {
+  finishRunClock();
   state.busy = false;
   paintRunningChrome();
   state.runId = null;
@@ -1782,6 +1834,7 @@ function setIdle() {
   updateSendState();
   updateRunBanner();
   paintStatus();
+  paintRunClock();
 }
 
 /// Whether the thread the transcript is showing is the one the turn on the window
@@ -1941,6 +1994,7 @@ function updateRunBanner() {
   paintQueue();
   paintRunningChrome();
   updateSendState();
+  paintRunClock();
 }
 
 /// The banner's click: the thread the running turn is in — or the one a finished
@@ -5333,6 +5387,7 @@ async function initEvents() {
     // has opened since: `state.session` follows the transcript, so the run's own
     // id is kept apart from it and the sidebar and the header can name it.
     state.runSession = payload.sessionId || null;
+    state.runClockSession = payload.sessionId || state.runClockSession;
     // A turn titles its thread the moment it starts, so the header names it now
     // and the sidebar lists it — with the same label — without waiting for the
     // turn to end. The session is on disk from here, so the listing has it.

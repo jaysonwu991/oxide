@@ -350,6 +350,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
   <span id="run-strip-text"></span>
   <button id="run-open" class="run-open" type="button">Open</button>
 </section>
+<div id="run-time" class="run-time" role="timer" hidden><span id="run-time-text"></span></div>
 <section id="dialog" class="popover" hidden aria-labelledby="dialog-title">
   <div class="popover-head">
     <h2 id="dialog-title"></h2>
@@ -396,9 +397,8 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       <button id="attach" class="icon" title="Attach images, PDFs or files (paste or drop them here too)" aria-label="Attach">${ICONS.attach}</button>
       <div id="meta" class="meta" aria-label="Turn settings"></div>
       <span id="status" hidden></span>
-      <span id="elapsed" hidden></span>
       <span class="spacer"></span>
-      <button id="stop" class="icon danger" hidden title="Stop the running turn (Esc)" aria-label="Stop">${ICONS.stop}</button>
+      <button id="stop" class="icon danger run-control" hidden title="Stop the running turn (Esc)" aria-label="Stop"><span class="spinner" aria-hidden="true"></span><span id="stop-label">Working…</span><span class="stop-icon" aria-hidden="true">${ICONS.stop}</span></button>
       <button id="send" class="icon primary" disabled title="Send (Enter)" aria-label="Send">${ICONS.send}</button>
     </div>
     <div id="dropzone" hidden><span>Drop files to attach</span></div>

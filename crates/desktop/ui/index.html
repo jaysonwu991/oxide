@@ -83,6 +83,10 @@
         </button>
       </header>
 
+      <div id="run-time" class="run-time" role="timer" hidden>
+        <span id="run-time-text"></span>
+      </div>
+
       <div id="transcript" class="conversation"></div>
 
       <div class="composer-wrap">
@@ -253,22 +257,20 @@
               ><svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true"><circle cx="8" cy="8" r="6" fill="none" stroke="currentColor" stroke-width="1.3"/><path d="M6.4 6.2a1.6 1.6 0 1 1 2.2 1.5c-.5.2-.7.5-.7 1.1v.3" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/><path d="M8 11v.01" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/></svg></button>
             </div>
             <div class="composer-right">
-              <!-- The window's own status, at the end of the composer's own row:
-                   an icon for the state — a dot while there is nothing to
-                   report, the spinner while a turn runs, the warning triangle a
-                   failure wears — with the words beside it only when there are
-                   words to read, since `Ready` is the icon's own tooltip. -->
+              <!-- Idle notices remain a compact status badge. While a turn is
+                   running, its spinner and phase move into Stop so the phase and
+                   action are one control rather than two adjacent targets. -->
               <span id="status" class="status" role="status">
                 <span id="status-icon" class="status-icon" aria-hidden="true"></span>
                 <span id="status-text"></span>
               </span>
               <button
                 id="stop"
-                class="icon danger"
+                class="icon danger run-control"
                 hidden
-                title="Stop"
-                aria-label="Stop"
-              ><svg viewBox="0 0 16 16" width="13" height="13" aria-hidden="true"><rect x="4" y="4" width="8" height="8" rx="1.7" fill="currentColor"/></svg></button>
+                title="Stop the running turn"
+                aria-label="Stop the running turn"
+              ><span class="spinner" aria-hidden="true"></span><span id="stop-label">Working…</span><span class="stop-icon" aria-hidden="true"><svg viewBox="0 0 16 16" width="13" height="13"><rect x="4" y="4" width="8" height="8" rx="1.7" fill="currentColor"/></svg></span></button>
               <button id="send" class="send" disabled title="Send (Enter)" aria-label="Send"><svg viewBox="0 0 16 16" width="15" height="15" aria-hidden="true"><path d="M8 13.4V3.4M4 7.4 8 3.4l4 4" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg></button>
             </div>
           </div>

@@ -326,7 +326,7 @@ pub fn specs(mcp: &McpRegistry) -> Vec<ToolSpec> {
         ),
         spec(
             "bash",
-            "Run one focused shell command from the project root and return its combined output. Use it for programs, not for inspecting files: prefer `read`, `grep`, `find`, and `ls`, and never chain unrelated commands with `;`/`&&` or sweep the whole filesystem with `find /`.",
+            "Run one focused shell command from the project root and return its combined output. Use it for programs, not for inspecting files: prefer `read`, `grep`, `find`, and `ls`. Recursive shell `grep` is refused because the dedicated `grep` tool bounds results and skips dependencies and generated files. Never chain unrelated commands with `;`/`&&` or sweep the whole filesystem with `find /`.",
             json!({
                 "type": "object",
                 "properties": {
@@ -2552,6 +2552,152 @@ fn is_build_command(command: &str) -> bool {
     })
 }
 
+/// Refuses the recursive shell-grep pattern that most often turns a narrow
+/// code search into a walk through dependency and build-output trees. The
+/// dedicated grep tool applies the repository's ignore rules, bounds its
+/// results, and is the right place for content searches.
+///
+/// This intentionally permits non-recursive grep over explicit files and
+/// grep used as a pipe filter. It also inspects every shell segment so a
+/// leading `cd`, environment assignment, or pipeline cannot hide the grep.
+fn uses_recursive_shell_grep(command: &str) -> bool {
+    shell_segments(command).into_iter().any(|segment| {
+        let words: Vec<&str> = segment.split_whitespace().collect();
+        let Some(grep_index) = shell_command_index(&words)
+            .filter(|index| matches!(shell_word_name(words[*index]), "grep" | "grep.exe"))
+        else {
+            return false;
+        };
+
+        for word in &words[grep_index + 1..] {
+            if *word == "--" {
+                return false;
+            }
+            if *word == "--recursive" {
+                return true;
+            }
+            if let Some(flags) = word.strip_prefix('-') {
+                if !flags.starts_with('-') && flags.chars().any(|flag| flag == 'r' || flag == 'R') {
+                    return true;
+                }
+                continue;
+            }
+            // The first positional argument is the pattern; options cannot
+            // follow it in the portable grep syntax Oxide should generate.
+            return false;
+        }
+        false
+    })
+}
+
+/// Splits commands only at shell separators outside quotes. Treating a quoted
+/// `| grep -r` example as another pipeline stage would turn data into a command.
+fn shell_segments(command: &str) -> Vec<&str> {
+    let mut segments = Vec::new();
+    let mut start = 0;
+    let mut quote = None;
+    let mut escaped = false;
+    for (index, ch) in command.char_indices() {
+        if escaped {
+            escaped = false;
+            continue;
+        }
+        if ch == '\\' && quote != Some('\'') {
+            escaped = true;
+            continue;
+        }
+        match quote {
+            Some(open) if ch == open => quote = None,
+            Some(_) => {}
+            None if ch == '\'' || ch == '"' => quote = Some(ch),
+            None if matches!(ch, '\n' | ';' | '&' | '|') => {
+                segments.push(&command[start..index]);
+                start = index + ch.len_utf8();
+            }
+            None => {}
+        }
+    }
+    segments.push(&command[start..]);
+    segments
+}
+
+/// Finds the executable token rather than any argument that happens to spell
+/// `grep`. Shell assignments and the common wrappers an agent may put before a
+/// command are skipped; wrapper options are skipped conservatively too.
+fn shell_command_index(words: &[&str]) -> Option<usize> {
+    let mut index = 0;
+    while index < words.len() && shell_assignment(words[index]) {
+        index += 1;
+    }
+    loop {
+        let name = shell_word_name(words.get(index)?);
+        if !matches!(name, "command" | "exec" | "env" | "nohup" | "sudo") {
+            return Some(index);
+        }
+        let wrapper = name;
+        index += 1;
+        while let Some(word) = words.get(index) {
+            if *word == "--" {
+                index += 1;
+                break;
+            }
+            if shell_assignment(word) || word.starts_with('-') {
+                if wrapper_option_takes_value(wrapper, word) {
+                    index += 1;
+                }
+                index += 1;
+                continue;
+            }
+            break;
+        }
+    }
+}
+
+fn wrapper_option_takes_value(wrapper: &str, option: &str) -> bool {
+    if option.contains('=') {
+        return false;
+    }
+    match wrapper {
+        "env" => matches!(
+            option,
+            "-u" | "--unset" | "-C" | "--chdir" | "-S" | "--split-string"
+        ),
+        "sudo" => matches!(
+            option,
+            "-u" | "--user"
+                | "-g"
+                | "--group"
+                | "-h"
+                | "--host"
+                | "-p"
+                | "--prompt"
+                | "-C"
+                | "--close-from"
+                | "-R"
+                | "--chroot"
+                | "-D"
+                | "--chdir"
+        ),
+        _ => false,
+    }
+}
+
+fn shell_word_name(word: &str) -> &str {
+    let word = word.trim_matches(['\'', '"']);
+    word.rsplit(['/', '\\']).next().unwrap_or(word)
+}
+
+fn shell_assignment(word: &str) -> bool {
+    let Some((name, _)) = word.split_once('=') else {
+        return false;
+    };
+    let mut chars = name.chars();
+    chars
+        .next()
+        .is_some_and(|ch| ch == '_' || ch.is_ascii_alphabetic())
+        && chars.all(|ch| ch == '_' || ch.is_ascii_alphanumeric())
+}
+
 /// The PATH inherited by a desktop app is commonly much smaller than the one
 /// in the user's terminal. Keep that inherited order, but put conventional
 /// user tool directories in front when they exist so a `bash` call can find
@@ -2596,6 +2742,13 @@ fn augment_path(inherited: &std::ffi::OsStr, home: &Path) -> OsString {
 
 async fn bash(cwd: &Path, args: &Value, progress: &Progress) -> Result<String> {
     let command = required_string(args, "bash", "command", r#"{"command":"cargo test"}"#)?;
+    if uses_recursive_shell_grep(command) {
+        anyhow::bail!(
+            "recursive shell grep refused; use the `grep` tool with `pattern` and optional \
+             `path`, `glob`, and `limit` instead. It skips dependency/generated directories \
+             and respects ignore files"
+        );
+    }
     let secs = bash_timeout_secs(args, command);
 
     #[cfg(windows)]
@@ -4586,6 +4739,47 @@ mod tests {
             ),
             42
         );
+    }
+
+    #[test]
+    fn recursive_shell_grep_is_refused_without_blocking_file_filters() {
+        assert!(uses_recursive_shell_grep(
+            r#"grep -rn "faqsItemId" /Users/example/Projects/falcon 2>/dev/null | head -20"#
+        ));
+        assert!(uses_recursive_shell_grep(
+            "cd jobs && /usr/bin/grep --recursive needle data"
+        ));
+        assert!(uses_recursive_shell_grep("LC_ALL=C grep -Rl needle ."));
+        assert!(uses_recursive_shell_grep(
+            "env LC_ALL=C command /usr/bin/grep -rn needle ."
+        ));
+        assert!(uses_recursive_shell_grep("sudo -u root grep -rn needle ."));
+
+        assert!(!uses_recursive_shell_grep("grep needle config.json"));
+        assert!(!uses_recursive_shell_grep("printf '%s' value | grep value"));
+        assert!(!uses_recursive_shell_grep("echo grep -r"));
+        assert!(!uses_recursive_shell_grep("printf '%s\\n' grep -r"));
+        assert!(!uses_recursive_shell_grep("echo 'example | grep -r .'"));
+        assert!(!uses_recursive_shell_grep("git log --grep latest"));
+        assert!(!uses_recursive_shell_grep("grep -- '-r' config.json"));
+    }
+
+    #[tokio::test]
+    async fn bash_redirects_recursive_grep_to_the_search_tool() {
+        let output = execute(
+            &call(
+                "bash",
+                json!({ "command": "grep -rn needle . 2>/dev/null | head -20" }),
+            ),
+            Path::new("."),
+            &McpRegistry::default(),
+            &Progress::default(),
+        )
+        .await;
+
+        assert!(output.is_error);
+        assert!(output.text.contains("recursive shell grep refused"));
+        assert!(output.text.contains("`grep` tool"));
     }
 
     #[test]
