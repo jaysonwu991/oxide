@@ -57,7 +57,7 @@ detect_platform() {
     arch="$(uname -m)"
 
     case "$os" in
-        Darwin) os_part="darwin" ;;
+        Darwin) os_part="macos" ;;
         Linux) os_part="linux" ;;
         *) err "unsupported operating system: $os" ;;
     esac
@@ -70,18 +70,36 @@ detect_platform() {
 
     platform="${os_part}-${arch_part}"
     case "$platform" in
-        darwin-arm64 | darwin-x64 | linux-x64 | linux-arm64) ;;
+        macos-arm64 | macos-x64 | linux-x64 | linux-arm64) ;;
         *) err "no prebuilt binary available for ${platform}" ;;
     esac
 
     printf '%s' "$platform"
 }
 
+# The token a release was named after before the version moved into the name,
+# which is the key an older manifest carries and the name an older archive
+# carries.
+previous_platform() {
+    case "$1" in
+        macos-arm64) printf '%s' "darwin-arm64" ;;
+        macos-x64) printf '%s' "darwin-x64" ;;
+        linux-x64 | linux-arm64) printf '%s' "$1" ;;
+        *) return 1 ;;
+    esac
+}
+
 manifest_asset() {
     body="$1"
     platform="$2"
     name="$(printf '%s\n' "$body" | awk -F': ' -v k="$platform" '$1 == k {sub(/^[[:space:]]*/, "", $2); sub(/[[:space:]]*$/, "", $2); print $2; exit}')"
-    [ -n "$name" ] || err "no asset for ${platform}; supported targets: darwin-arm64, darwin-x64, linux-x64, linux-arm64"
+    if [ -z "$name" ]; then
+        previous="$(previous_platform "$platform")" || previous=""
+        if [ -n "$previous" ]; then
+            name="$(printf '%s\n' "$body" | awk -F': ' -v k="$previous" '$1 == k {sub(/^[[:space:]]*/, "", $2); sub(/[[:space:]]*$/, "", $2); print $2; exit}')"
+        fi
+    fi
+    [ -n "$name" ] || err "no asset for ${platform}; supported targets: macos-arm64, macos-x64, linux-x64, linux-arm64"
     printf '%s' "$name"
 }
 
@@ -113,7 +131,7 @@ resolve_url() {
 
     if [ -n "$VERSION" ]; then
         ver="${VERSION#v}"
-        printf '%s/releases/download/v%s/Oxide-v%s-%s.tar.gz' "$BASE_URL" "$ver" "$ver" "$platform"
+        printf '%s/releases/download/v%s/Oxide-%s-%s.tar.gz' "$BASE_URL" "$ver" "$ver" "$platform"
         return
     fi
 
@@ -126,13 +144,17 @@ resolve_url() {
     printf '%s/releases/download/%s/%s' "$BASE_URL" "$ver" "$asset"
 }
 
-# Pre-branding releases published only the lowercase archive names, so an
-# explicit OXIDE_VERSION (pin or rollback) can still need the old name.
-legacy_url() {
-    case "$1" in
-        */Oxide-v*) printf '%s' "$1" | sed 's#/Oxide-v#/oxide-v#' ;;
-        *) return 1 ;;
-    esac
+# The names an archive can still be published under: the token a release was
+# named after before the version moved into it, and the lowercase name the
+# releases before the branding published. A pinned version — a rollback — can
+# need either, and an older release only carries them.
+legacy_urls() {
+    platform="$1"
+    ver="$2"
+    ver="${ver#v}"
+    previous="$(previous_platform "$platform")" || return 1
+    printf '%s/releases/download/v%s/Oxide-v%s-%s.tar.gz\n' "$BASE_URL" "$ver" "$ver" "$previous"
+    printf '%s/releases/download/v%s/oxide-v%s-%s.tar.gz\n' "$BASE_URL" "$ver" "$ver" "$previous"
 }
 
 verify_checksum() {
@@ -169,15 +191,18 @@ main() {
 
     info "downloading ${archive} for ${platform}"
     if ! download "$url" "${tmp}/${archive}"; then
-        if fallback="$(legacy_url "$url")"; then
-            archive="${fallback##*/}"
-            info "downloading ${archive} for ${platform}"
-            download "$fallback" "${tmp}/${archive}" \
-                || err "download failed for ${archive}"
-            url="$fallback"
-        else
-            err "download failed for ${archive}"
-        fi
+        fallback=""
+        for candidate in $(legacy_urls "$platform" "$ver"); do
+            name="${candidate##*/}"
+            info "downloading ${name} for ${platform}"
+            if download "$candidate" "${tmp}/${name}"; then
+                fallback="$candidate"
+                archive="$name"
+                break
+            fi
+        done
+        [ -n "$fallback" ] || err "download failed for ${archive}"
+        url="$fallback"
     fi
 
     if download "${url}.sha256" "${tmp}/${archive}.sha256" 2>/dev/null; then

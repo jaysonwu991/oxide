@@ -3,12 +3,10 @@
 The tools the agent can call, their parameters, and the limits their results are
 subject to.
 
-Built-in file and shell tools use Pi-style names: `read`, `write`, `edit`,
-`bash`, `grep`, `find`, `ls`, and `webfetch`. Compatibility names `read_file`,
-`write_file`, `list_dir`, and `glob` remain accepted; `patch` is the unified-diff
-editing tool. Agent-level tools: `task`, `skill`, `command`, `memory`,
-`diagnostics`, and `ask`. `mcp_load` reveals a configured server on demand; its
-tools then appear as `<server>__<tool>`.
+Built-in file and shell tools are `read`, `write`, `edit`, `bash`, `grep`,
+`find`, `ls`, and `webfetch`. Agent-level tools: `task`, `skill`, `command`,
+`memory`, `diagnostics`, and `ask`. `mcp_load` reveals a configured server on
+demand; its tools then appear as `<server>__<tool>`.
 
 | Tool | Parameters |
 | --- | --- |
@@ -19,7 +17,6 @@ tools then appear as `<server>__<tool>`.
 | `grep` | `pattern`, `path?`, `glob?`, `ignoreCase?`, `regex?`, `context?`, `limit?` |
 | `find` | `pattern`, `path?`, `limit?` |
 | `ls` | `path?`, `limit?` |
-| `patch` | `diff` (unified diff) |
 | `webfetch` | `url`, `format?` (`markdown` default, `text`, or raw `html`) |
 
 ## Behavior
@@ -68,7 +65,7 @@ Tool results are capped before they enter the model's context. The default cap i
 250 lines and 6 KB, but `read` gets a larger budget (400 lines / 16 KB) so an
 ordinary source file is returned whole instead of paged in slices; other per-tool
 overrides are `bash` 160 lines / 5 KB, `grep`, `find`, and `ls` 160 / 4 KB,
-`webfetch` 200 / 6 KB, and `write`, `edit`, and `patch` 120 / 3 KB. A connected
+`webfetch` 200 / 6 KB, and `write` and `edit` 120 / 3 KB. A connected
 MCP tool (`<server>__<tool>`) gets the largest budget of all, 500 lines / 20 KB:
 its result is structured data whose shape the server chose, so unlike a file read
 it cannot be narrowed with `offset`/`limit` and unlike a search it cannot be

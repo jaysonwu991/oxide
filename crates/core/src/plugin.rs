@@ -383,7 +383,7 @@ mod tests {
             r#"
 export default async () => ({
   "tool.execute.before": async (input, output) => {
-    if (input.tool === "write_file") output.args = { ...output.args, content: "hooked" };
+    if (input.tool === "write") output.args = { ...output.args, content: "hooked" };
   },
   "tool.execute.after": async (input, output) => {
     output.output = `${output.output} [seen]`;
@@ -399,10 +399,7 @@ export default async () => ({
         assert!(host.is_active());
 
         let before = host
-            .tool_before(
-                "write_file",
-                &json!({ "path": "a.rs", "content": "original" }),
-            )
+            .tool_before("write", &json!({ "path": "a.rs", "content": "original" }))
             .await
             .unwrap();
         assert_eq!(
@@ -411,7 +408,7 @@ export default async () => ({
         );
 
         let after = host
-            .tool_after("write_file", &json!({ "path": "a.rs" }), "done", true)
+            .tool_after("write", &json!({ "path": "a.rs" }), "done", true)
             .await
             .unwrap();
         assert_eq!(after.output, "done [seen] [failed]");
@@ -461,6 +458,6 @@ export default async () => ({
         let host = PluginHost::spawn(&[], Path::new(".")).await;
         assert!(!host.is_active());
         assert_eq!(host.hook_count(), 0);
-        assert!(host.tool_before("write_file", &json!({})).await.is_none());
+        assert!(host.tool_before("write", &json!({})).await.is_none());
     }
 }

@@ -1,4 +1,4 @@
-// File-change previews for `write`/`edit`/`patch` tool calls.
+// File-change previews for `write`/`edit` tool calls.
 //
 // The JSON event stream does not carry `AgentEvent::ToolResult`'s `DiffPreview`
 // (see `oxide_core::cli::event_json`), but the tool *arguments* are on the
@@ -142,26 +142,6 @@ export interface ToolDiff {
 interface Edit {
   old: string;
   next: string;
-}
-
-/// Canonical tool names, mirroring `oxide_core::tools::canonical_tool_name`.
-export function canonicalTool(name: string): string {
-  switch (name) {
-    case "read":
-    case "read_file":
-      return "read_file";
-    case "write":
-    case "write_file":
-      return "write_file";
-    case "ls":
-    case "list_dir":
-      return "list_dir";
-    case "find":
-    case "glob":
-      return "glob";
-    default:
-      return name;
-  }
 }
 
 function record(value: unknown): Record<string, unknown> {
@@ -334,9 +314,8 @@ function editBlocks(edits: Edit[]): string {
 }
 
 /// The diff a call describes in its own arguments, for a card replayed from a
-/// stored thread: `patch` states its change outright and an `edit` gives both
-/// sides of every replacement it made, so both can be shown later without
-/// asking the file what it holds now.
+/// stored thread: an `edit` gives both sides of every replacement it made, so
+/// the change can be shown later without asking the file what it holds now.
 ///
 /// A `write` is left out rather than previewed against the file as it stands:
 /// it names only the content it wrote, so the state it replaced is nowhere on
@@ -344,12 +323,7 @@ function editBlocks(edits: Edit[]): string {
 /// between then and now rather than the change the call made.
 export function argumentDiff(name: string, args: unknown): ToolDiff | null {
   const parsed = record(args);
-  const canonical = canonicalTool(name);
-  if (canonical === "patch") {
-    const diff = text(parsed.diff).trim();
-    return diff ? { path: text(parsed.path) || "patch", diff } : null;
-  }
-  if (canonical !== "edit") return null;
+  if (name !== "edit") return null;
   const path = text(parsed.path);
   const edits = parseEdits(parsed);
   if (!path || edits.length === 0) return null;
@@ -371,16 +345,10 @@ export function toolDiff(
   readFile: (path: string) => string | null,
 ): ToolDiff | null {
   const parsed = record(args);
-  const canonical = canonicalTool(name);
   const path = text(parsed.path);
-
-  if (canonical === "patch") {
-    const diff = text(parsed.diff).trim();
-    return diff ? { path: path || "patch", diff } : null;
-  }
   if (!path) return null;
 
-  if (canonical === "write_file") {
+  if (name === "write") {
     const content = typeof parsed.content === "string" ? parsed.content : null;
     if (content === null) return null;
     const before = readFile(path);
@@ -390,7 +358,7 @@ export function toolDiff(
     return diff ? { path, diff } : null;
   }
 
-  if (canonical === "edit") {
+  if (name === "edit") {
     const before = readFile(path);
     if (before === null) return null;
     const after = applyEdits(before, parseEdits(parsed));

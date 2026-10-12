@@ -236,7 +236,7 @@ mod tests {
     }
 
     fn notice(version: &str, checked_at: u64) -> Notice {
-        let release = Release::new(Component::Cli, &format!("v{version}"), None, "darwin-arm64");
+        let release = Release::new(Component::Cli, &format!("v{version}"), None, "macos-arm64");
         Notice::from_release(&release, "acme/oxide", checked_at)
     }
 

@@ -93,23 +93,18 @@ impl ToolFilter {
     }
 
     pub fn permits(&self, name: &str) -> bool {
-        let canonical = crate::tools::canonical_tool_name(name);
-        if self
-            .exclude
-            .iter()
-            .any(|rule| matches_tool(rule, name, canonical))
-        {
+        if self.exclude.iter().any(|rule| matches_tool(rule, name)) {
             return false;
         }
         match &self.allow {
-            Some(allow) => allow.iter().any(|rule| matches_tool(rule, name, canonical)),
+            Some(allow) => allow.iter().any(|rule| matches_tool(rule, name)),
             None => true,
         }
     }
 }
 
-fn matches_tool(rule: &str, raw: &str, canonical: &str) -> bool {
-    rule == raw || rule == canonical || crate::tools::canonical_tool_name(rule) == canonical
+fn matches_tool(rule: &str, name: &str) -> bool {
+    rule == name
 }
 
 /// A request a front-end sends over the `--mode rpc` input channel.
@@ -466,7 +461,7 @@ mod tests {
 
         let allow = ToolFilter::new(Some("read,bash".into()), None);
         assert!(allow.permits("read"));
-        assert!(allow.permits("read_file"));
+        assert!(allow.permits("read"));
         assert!(!allow.permits("write"));
 
         let exclude = ToolFilter::new(None, Some("bash".into()));
@@ -475,7 +470,7 @@ mod tests {
 
         let both = ToolFilter::new(Some("read,write".into()), Some("write".into()));
         assert!(both.permits("read"));
-        assert!(!both.permits("write_file"));
+        assert!(!both.permits("write"));
         assert!(!both.permits("bash"));
     }
 

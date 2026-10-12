@@ -362,9 +362,9 @@ pub fn extract_file_ops(messages: &[Message]) -> (Vec<String>, Vec<String>) {
             let Some(path) = args.get("path").and_then(Value::as_str) else {
                 continue;
             };
-            match crate::tools::canonical_tool_name(&call.function.name) {
-                "read_file" => read.push(path.to_string()),
-                "write_file" | "edit" | "patch" => modified.push(path.to_string()),
+            match call.function.name.as_str() {
+                "read" => read.push(path.to_string()),
+                "write" | "edit" => modified.push(path.to_string()),
                 _ => {}
             }
         }
@@ -894,7 +894,7 @@ mod tests {
     fn prepare_never_cuts_between_tool_call_and_result() {
         let messages = vec![
             Message::user("read the file"),
-            tool_call("a", "read_file", r#"{"path":"src/a.rs"}"#),
+            tool_call("a", "read", r#"{"path":"src/a.rs"}"#),
             Message::tool("a", "file contents"),
             Message::user("thanks"),
         ];

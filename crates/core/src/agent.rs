@@ -1320,7 +1320,7 @@ async fn run_loop(
                         }
                     }));
                     let started = std::time::Instant::now();
-                    let canonical = crate::tools::canonical_tool_name(&name);
+                    let canonical = name.as_str();
                     let block_reply = if canonical == "bash" {
                         match effective_args.get("command").and_then(Value::as_str) {
                             Some(command) if posts_review_reply(command) => {
@@ -1355,7 +1355,7 @@ async fn run_loop(
                         tools::ToolOutput::error(format!("permission denied for `{name}`"))
                     };
                     let canonical_name = canonical;
-                    if matches!(canonical_name, "write_file" | "edit") && !output.is_error {
+                    if matches!(canonical_name, "write" | "edit") && !output.is_error {
                         if let Some(path) = effective_args.get("path").and_then(Value::as_str) {
                             if let Some(diagnostics) =
                                 runtime.lsp.diagnostics(&cwd, Path::new(path)).await
@@ -1551,10 +1551,7 @@ fn tool_enabled(config: &Config, name: &str) -> bool {
     else {
         return true;
     };
-    let canonical = crate::tools::canonical_tool_name(name);
-    tools
-        .iter()
-        .any(|tool| tool == name || crate::tools::canonical_tool_name(tool) == canonical)
+    tools.iter().any(|tool| tool == name)
 }
 
 /// A batch ends the turn when every tool result in it requested termination.
@@ -1593,27 +1590,18 @@ fn batch_runs(calls: Vec<ToolCall>) -> Vec<Vec<ToolCall>> {
 }
 
 /// Tools with no cross-call side effects can run concurrently when the model
-/// batches several of them. Anything that mutates the workspace (`write_file`,
-/// `patch`, `bash`), spawns work (`task`), or has unknown remote effects (MCP)
+/// batches several of them. Anything that mutates the workspace (`write`,
+/// `edit`, `bash`), spawns work (`task`), or has unknown remote effects (MCP)
 /// stays on the sequential path so result ordering and side effects are stable.
 fn concurrency_safe(name: &str) -> bool {
     matches!(
-        crate::tools::canonical_tool_name(name),
-        "read_file"
-            | "list_dir"
-            | "glob"
-            | "grep"
-            | "webfetch"
-            | "memory"
-            | "skill"
-            | "diagnostics"
+        name,
+        "read" | "ls" | "find" | "grep" | "webfetch" | "memory" | "skill" | "diagnostics"
     )
 }
 
 fn tool_may_mutate_workspace(name: &str) -> bool {
-    let canonical = crate::tools::canonical_tool_name(name);
-    matches!(canonical, "write_file" | "patch" | "edit" | "bash" | "task")
-        || canonical.contains("__")
+    matches!(name, "write" | "edit" | "bash" | "task") || name.contains("__")
 }
 
 /// A state-changing action that should be confirmed before a run reports
@@ -1829,10 +1817,10 @@ impl VerificationState {
     /// command confirms everything at once. Side-effecting shell commands add a
     /// pending check that the matching rule's status command clears.
     fn record_result(&mut self, name: &str, args: &Value, output: &str, is_error: bool) {
-        let canonical = crate::tools::canonical_tool_name(name);
+        let canonical = name;
         let path = args.get("path").and_then(Value::as_str);
         match canonical {
-            "write_file" | "edit" | "patch" => {
+            "write" | "edit" => {
                 if !output_failed_with_state(output, is_error) {
                     // A write outside the repository the run works in is not on
                     // the branch under review, so it neither waits on a push nor
@@ -1848,7 +1836,7 @@ impl VerificationState {
                     }
                 }
             }
-            "read_file" | "diagnostics" => {
+            "read" | "diagnostics" => {
                 if let Some(path) = path.filter(|path| !path.is_empty()) {
                     self.edited.retain(|edited| !same_path(edited, path));
                 }
@@ -2355,15 +2343,14 @@ fn note_verifier(seen: &mut BTreeSet<String>, dispatched: bool, command: &str) -
 }
 
 /// Whether a tool result invalidates a build/test result seen earlier in the
-/// run. Only a successful `write`/`edit`/`patch` changes the workspace; a failed
+/// run. Only a successful `write`/`edit` changes the workspace; a failed
 /// one leaves it untouched, so the earlier verifier still applies.
 fn mutation_invalidates_verifier_result(
     canonical_name: &str,
     output: &str,
     is_error: bool,
 ) -> bool {
-    matches!(canonical_name, "write_file" | "edit" | "patch")
-        && !output_failed_with_state(output, is_error)
+    matches!(canonical_name, "write" | "edit") && !output_failed_with_state(output, is_error)
 }
 
 #[cfg(test)]
@@ -3182,13 +3169,12 @@ mod tests {
             ..Config::default()
         };
 
-        assert!(tool_enabled(&config, "read_file"));
+        assert!(tool_enabled(&config, "read"));
         assert!(tool_enabled(&config, "grep"));
-        assert!(tool_enabled(&config, "glob"));
-        assert!(tool_enabled(&config, "list_dir"));
+        assert!(tool_enabled(&config, "find"));
+        assert!(tool_enabled(&config, "ls"));
         assert!(!tool_enabled(&config, "write"));
         assert!(!tool_enabled(&config, "edit"));
-        assert!(!tool_enabled(&config, "patch"));
         assert!(!tool_enabled(&config, "bash"));
     }
 
@@ -4410,7 +4396,7 @@ for line in sys.stdin:
 
     #[test]
     fn snapshot_classification_covers_unknown_side_effects() {
-        for name in ["write", "edit", "patch", "bash", "task", "server__tool"] {
+        for name in ["write", "edit", "bash", "task", "server__tool"] {
             assert!(tool_may_mutate_workspace(name), "{name} may mutate");
         }
         for name in ["read", "ls", "find", "grep", "webfetch", "diagnostics"] {
@@ -4982,7 +4968,7 @@ for line in sys.stdin:
         // other half of the guard, so a push delivers it and the reply waits.
         let mut state = VerificationState::new(&run);
         state.record(
-            "write_file",
+            "write",
             &json!({ "path": repo.join("docs.md").to_string_lossy() }),
             "wrote 4 bytes",
         );
@@ -4991,7 +4977,7 @@ for line in sys.stdin:
         // Outside the repository is still nothing a push delivers.
         state.record("bash", &json!({ "command": "git push" }), "[exit: 0]");
         state.record(
-            "write_file",
+            "write",
             &json!({ "path": root.join("scratch.md").to_string_lossy() }),
             "wrote 7 bytes",
         );
@@ -5018,7 +5004,7 @@ for line in sys.stdin:
         // neither holds the reply nor asks to be confirmed.
         let mut state = VerificationState::new(&project);
         state.record(
-            "write_file",
+            "write",
             &json!({ "path": root.join("reply.md").to_string_lossy() }),
             "wrote 640 bytes",
         );
@@ -5029,7 +5015,7 @@ for line in sys.stdin:
         assert!(state.reminder().is_none(), "{:?}", state.reminder());
 
         // The project's own files still are: relative, and by absolute path.
-        state.record("write_file", &json!({ "path": "src/a.rs" }), "ok");
+        state.record("write", &json!({ "path": "src/a.rs" }), "ok");
         assert!(state.blocks_review_reply("gh pr comment 5 --body fixed", false));
         state.record("bash", &json!({ "command": "git push" }), "[exit: 0]");
         state.record(
@@ -5309,20 +5295,16 @@ for line in sys.stdin:
             "edit",
             "applied 1 replacement"
         ));
-        assert!(mutation_invalidates_verifier("write_file", "wrote a.rs"));
-        assert!(mutation_invalidates_verifier("patch", "patched a.rs"));
+        assert!(mutation_invalidates_verifier("write", "wrote a.rs"));
         // A failed mutation left the workspace unchanged and must not.
         assert!(!mutation_invalidates_verifier(
             "edit",
             "error: oldText not found"
         ));
-        assert!(!mutation_invalidates_verifier(
-            "write_file",
-            "error: denied"
-        ));
+        assert!(!mutation_invalidates_verifier("write", "error: denied"));
         // Non-mutating tools never invalidate.
         assert!(!mutation_invalidates_verifier("bash", "ok"));
-        assert!(!mutation_invalidates_verifier("read_file", "1|line"));
+        assert!(!mutation_invalidates_verifier("read", "1|line"));
     }
 
     #[test]

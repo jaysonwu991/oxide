@@ -683,7 +683,7 @@ skills.
 ## Permissions
 
 Default actions: `read`, `ls`, `find`, `grep`, and `webfetch` are allowed;
-`write`, `edit`, `patch`, and `bash` ask; everything else is allowed.
+`write`, `edit`, and `bash` ask; everything else is allowed.
 
 Override per agent with `permission` in the agent frontmatter. Use a flat action
 for every tool:
@@ -706,9 +706,8 @@ permission:
 ```
 
 - Actions are `allow`, `ask`, and `deny`.
-- Tool keys accept Pi names (`read`, `write`, `edit`, `bash`, `ls`, `find`,
-  `grep`, `webfetch`) and legacy aliases (`read_file`, `write_file`, `patch`,
-  `list_dir`, `glob`).
+- Tool keys are the tool names (`read`, `write`, `edit`, `bash`, `ls`, `find`,
+  `grep`, `webfetch`).
 - Patterns match the `bash` command or a file tool's `path`; `*` and `?` are
   wildcards. The last matching rule wins.
 - `auto_approve: true` in `config.json` (the default) skips prompts for `ask`

@@ -205,6 +205,31 @@ jobs:
       # blockmap beside the installer; this app's updater resolves the release
       # through GitHub itself, so metadata describing a feed it does not read is
       # left out.
+      #
+      # Each installer is published under the name this app's releases carried
+      # before the version moved into it as well, so a copy already installed —
+      # which resolves its own release by the name it was published under — can
+      # install this one and take up the new naming from there.
+      - name: Name the copies an older app resolves
+        if: startsWith(github.ref, 'refs/tags/desktop-v')
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd crates/desktop/artifacts
+          for file in *; do
+            case "${file}" in
+              *-macos-arm64.dmg) legacy="macos-arm64-Oxide.dmg" ;;
+              *-linux-x86_64-Setup.AppImage) legacy="linux-x86_64-Oxide-Setup.AppImage" ;;
+              *-linux-x64-Setup.tar.gz) legacy="linux-x64-Oxide-Setup.tar.gz" ;;
+              *-linux-arm64-Setup.AppImage) legacy="linux-arm64-Oxide-Setup.AppImage" ;;
+              *-linux-arm64-Setup.tar.gz) legacy="linux-arm64-Oxide-Setup.tar.gz" ;;
+              *-win-x64-Setup.exe) legacy="win-x64-Oxide-Setup.exe" ;;
+              *) continue ;;
+            esac
+            cp -f "${file}" "${legacy}"
+            echo "published ${file} as ${legacy}"
+          done
+
       - uses: actions/upload-artifact@v4
         with:
           name: oxide-desktop-${{ matrix.artifact }}

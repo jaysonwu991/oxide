@@ -38,28 +38,33 @@ jobs:
         include:
           - target: aarch64-apple-darwin
             os: macos-latest
-            platform: darwin-arm64
+            platform: macos-arm64
+            legacy_platform: darwin-arm64
             archive_ext: tar.gz
 
           - target: x86_64-apple-darwin
             os: macos-latest
-            platform: darwin-x64
+            platform: macos-x64
+            legacy_platform: darwin-x64
             archive_ext: tar.gz
 
           - target: x86_64-unknown-linux-gnu
             os: ubuntu-latest
             platform: linux-x64
+            legacy_platform: linux-x64
             archive_ext: tar.gz
 
           - target: aarch64-unknown-linux-gnu
             os: ubuntu-latest
             platform: linux-arm64
+            legacy_platform: linux-arm64
             archive_ext: tar.gz
             use_cross: true
 
           - target: x86_64-pc-windows-msvc
             os: windows-latest
-            platform: win32-x64
+            platform: win-x64
+            legacy_platform: win32-x64
             archive_ext: zip
     steps:
       - uses: actions/checkout@v4
@@ -88,34 +93,44 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          ver="${GITHUB_REF_NAME}"
-          asset="Oxide-${ver}-${{ matrix.platform }}"
+          # The name carries the version, so the tag's `v` (and the `cli-` a
+          # component-prefixed tag may wear) comes off it.
+          ver="${GITHUB_REF_NAME#cli-}"
+          ver="${ver#v}"
+          ext="${{ matrix.archive_ext }}"
+          asset="Oxide-${ver}-${{ matrix.platform }}.${ext}"
+          # The name a binary installed before the version moved into it asks
+          # for, published beside it so that copy can install this release and
+          # take up the new naming from there.
+          legacy="Oxide-v${ver}-${{ matrix.legacy_platform }}.${ext}"
           binary="oxide"
           [ "${{ matrix.target }}" = "x86_64-pc-windows-msvc" ] && binary="oxide.exe"
           staged="$(mktemp -d)"
           cp "target/${{ matrix.target }}/release/${binary}" "${staged}/${binary}"
           cd "${staged}"
-          if [ "${{ matrix.archive_ext }}" = "zip" ]; then
-            python -m zipfile -c "${asset}.zip" "${binary}"
-            mv "${asset}.zip" "${GITHUB_WORKSPACE}/${asset}.zip"
-            archive="${asset}.zip"
+          if [ "${ext}" = "zip" ]; then
+            python -m zipfile -c "${asset}" "${binary}"
           else
-            tar -czf "${asset}.tar.gz" "${binary}"
-            mv "${asset}.tar.gz" "${GITHUB_WORKSPACE}/${asset}.tar.gz"
-            archive="${asset}.tar.gz"
+            tar -czf "${asset}" "${binary}"
           fi
           cd "${GITHUB_WORKSPACE}"
-          if command -v sha256sum >/dev/null 2>&1; then
-            sha256sum "${archive}" > "${archive}.sha256"
-          else
-            shasum -a 256 "${archive}" > "${archive}.sha256"
-          fi
+          cp "${staged}/${asset}" "${asset}"
+          cp "${asset}" "${legacy}"
+          hash() {
+            if command -v sha256sum >/dev/null 2>&1; then
+              sha256sum "$1" > "$1.sha256"
+            else
+              shasum -a 256 "$1" > "$1.sha256"
+            fi
+          }
+          hash "${asset}"
+          hash "${legacy}"
       - uses: actions/upload-artifact@v4
         with:
           name: asset-${{ matrix.platform }}
           path: |
-            Oxide-${{ github.ref_name }}-${{ matrix.platform }}.${{ matrix.archive_ext }}
-            Oxide-${{ github.ref_name }}-${{ matrix.platform }}.${{ matrix.archive_ext }}.sha256
+            Oxide-*.${{ matrix.archive_ext }}
+            Oxide-*.${{ matrix.archive_ext }}.sha256
           if-no-files-found: error
 
   release:
@@ -135,13 +150,22 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          ver="${GITHUB_REF_NAME}"
+          ver="${GITHUB_REF_NAME#cli-}"
+          ver_nov="${ver#v}"
           {
             printf 'version: %s\n' "${ver}"
-            for platform in darwin-arm64 darwin-x64 linux-x64 linux-arm64 win32-x64; do
+            # Both spellings of a key: the token a release is named after now,
+            # and the one it was named after before the version moved into the
+            # name — what an installer downloaded then still asks for.
+            for entry in macos-arm64:darwin-arm64 macos-x64:darwin-x64 \
+                         linux-x64:linux-x64 linux-arm64:linux-arm64 \
+                         win-x64:win32-x64; do
+              platform="${entry%%:*}"
+              previous="${entry##*:}"
               ext="tar.gz"
-              [ "${platform}" = "win32-x64" ] && ext="zip"
-              printf '%s: Oxide-%s-%s.%s\n' "${platform}" "${ver}" "${platform}" "${ext}"
+              [ "${platform}" = "win-x64" ] && ext="zip"
+              printf '%s: Oxide-%s-%s.%s\n' "${platform}" "${ver_nov}" "${platform}" "${ext}"
+              printf '%s: Oxide-v%s-%s.%s\n' "${previous}" "${ver_nov}" "${previous}" "${ext}"
             done
           } > assets/Oxide-manifest
           cat assets/Oxide-manifest

@@ -495,7 +495,7 @@
     } catch (error) {
       args = {};
     }
-    const search = name === "grep" || name === "find" || name === "glob";
+    const search = name === "grep" || name === "find";
     const subject = String(
       (search && args.pattern) ||
         args.command ||
@@ -526,7 +526,7 @@
   }
 
   function isQuietSearchResult(item) {
-    const search = item.name === "grep" || item.name === "find" || item.name === "glob";
+    const search = item.name === "grep" || item.name === "find";
     const output = String(item.output || "").trim();
     return Boolean(
       search &&
@@ -544,7 +544,7 @@
   // A side bar should summarize activity rather than turn every tool into a
   // terminal. Keep a small useful sample here; the fold still exposes the full
   // result. Shell keeps its tail (where the exit code is), readers keep the head.
-  const PREVIEW_LINES = { bash: 3, read: 4, read_file: 4, grep: 5, find: 5, glob: 5, ls: 5, list_dir: 5 };
+  const PREVIEW_LINES = { bash: 3, read: 4, grep: 5, find: 5, ls: 5 };
 
   function previewLines(name) {
     return PREVIEW_LINES[name] || 5;

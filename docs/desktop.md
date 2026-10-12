@@ -849,7 +849,7 @@ returns `None`, the run goes ahead, `agent-end` carries no `changes`, and the
 turn simply leaves no card.
 
 Because the call's own diff is already in that listing, a tool card that changed
-a file (`write`, `edit`, `patch`) reads as one line — its header carries the path
+a file (`write`, `edit`) reads as one line — its header carries the path
 and its state the `+`/`−` counts — and keeps its own diff for the reader who
 clicks it, so the same change is not painted twice.
 
@@ -1076,8 +1076,8 @@ are on screen, so nothing offered belongs to a step the reader has left:
   and the day it went out (`released_at`), with the facts under them: the version
   this app runs, the version it would install (`0.34.0`), the installation the
   app found itself in and its path, and the installer it would fetch —
-  `macos-arm64-Oxide.dmg` on this Mac, the `-Setup.AppImage` on Linux, the
-  `-Setup.exe` on Windows. **Update** appears only where this copy may be written
+  `Oxide-0.34.0-macos-arm64.dmg` on this Mac, the `-Setup.AppImage` on Linux,
+  the `-Setup.exe` on Windows. **Update** appears only where this copy may be written
   over from inside the app; **Release notes** — the release page, in the system
   browser — appears where it may not, and where the release carried no notes to
   draw; **Dismiss** closes it.
@@ -1213,10 +1213,19 @@ carried beside them as `Resources/harness/oxide-desktop`
 binary so it is signed along with the bundle that runs it.
 
 Each build writes to `crates/desktop/artifacts/`, named the way
-`oxide_core::updates::Component::Desktop` resolves a release's assets: a
-`macos-arm64-Oxide.dmg`, a `linux-<arch>-Oxide-Setup.AppImage` and a
-`linux-<arch>-Oxide-Setup.tar.gz` for each Linux architecture, and a
-`win-x64-Oxide-Setup.exe`. electron-builder also writes its own `latest*.yml`
+`oxide_core::updates::Component::Desktop` resolves a release's assets — the
+version first, the way the CLI's own archives are named: a
+`Oxide-<version>-macos-<arch>.dmg`, a
+`Oxide-<version>-linux-<arch>-Setup.AppImage` and a
+`Oxide-<version>-linux-<arch>-Setup.tar.gz` for each Linux architecture, and a
+`Oxide-<version>-win-<arch>-Setup.exe`. electron-builder spells an AppImage's x64
+`x86_64` rather than `x64`, so the Linux x64 AppImage is
+`Oxide-<version>-linux-x86_64-Setup.AppImage` while its archive is
+`Oxide-<version>-linux-x64-Setup.tar.gz` — the spelling the build really writes,
+which is the one the updater resolves. Each installer is copied to the name
+releases carried before the versioning (`macos-arm64-Oxide.dmg` and so on) as
+well, so a copy already installed resolves this release and takes up the new
+naming from there. electron-builder also writes its own `latest*.yml`
 metadata and a blockmap beside the installer; this app resolves its release
 through GitHub itself, so metadata describing a feed it does not read is
 deliberately not published.
@@ -1339,31 +1348,34 @@ shell history.
 ## Release assets
 
 Each `desktop-v*` release carries installers for the four platforms the app is
-built for. Pick the asset whose platform matches the machine — the names carry
-the app name and the platform rather than the version, so they read the same in
-every release. The desktop app is versioned separately from the CLI, so a CLI
-release never rebuilds these:
+built for. Pick the asset whose platform matches the machine; each name carries
+the version and the platform, read off the release it belongs to. Every release
+carries the pre-versioning name of each of them too — `macos-arm64-Oxide.dmg`
+and so on — which is what a copy installed before the change resolves its own
+update by:
 
 | Asset | Platform |
 | --- | --- |
-| `macos-arm64-Oxide.dmg` | macOS, Apple Silicon (`uname -m` → `arm64`) |
-| `linux-x64-Oxide-Setup.AppImage` | Linux x64 (the file the app replaces itself with) |
-| `linux-x64-Oxide-Setup.tar.gz` | Linux x64, an archive to unpack by hand |
-| `linux-arm64-Oxide-Setup.AppImage` | Linux arm64 |
-| `linux-arm64-Oxide-Setup.tar.gz` | Linux arm64, an archive to unpack by hand |
-| `win-x64-Oxide-Setup.exe` | Windows x64 (a one-click, per-user install) |
+| `Oxide-<v>-macos-arm64.dmg` | macOS, Apple Silicon (`uname -m` → `arm64`) |
+| `Oxide-<v>-linux-x86_64-Setup.AppImage` | Linux x64 (the file the app replaces itself with) |
+| `Oxide-<v>-linux-x64-Setup.tar.gz` | Linux x64, an archive to unpack by hand |
+| `Oxide-<v>-linux-arm64-Setup.AppImage` | Linux arm64 |
+| `Oxide-<v>-linux-arm64-Setup.tar.gz` | Linux arm64, an archive to unpack by hand |
+| `Oxide-<v>-win-x64-Setup.exe` | Windows x64 (a one-click, per-user install) |
 
 There is no **macOS Intel** asset: the app is built for Apple Silicon alone, and
-`Component::Desktop` resolves no asset for `darwin-x64`, so a check on an Intel
+`Component::Desktop` resolves no asset for `macos-x64`, so a check on an Intel
 Mac is offered no desktop release. electron-builder's own update metadata
 (`latest*.yml` and the blockmap naming an archive) is not uploaded: this app
 resolves its release through GitHub itself and installs the artifact
 `Component::Desktop::assets()` names for this platform — macOS the disk image,
 Linux the AppImage, Windows the setup — rather than a feed beside it.
 
-The CLI archives (`Oxide-v<version>-<platform>.tar.gz` and
-`Oxide-v<version>-win32-x64.zip`) plus `install.sh`/`install.ps1` live in the
-separate `v*` CLI releases, not here; see [install.md](install.md).
+The CLI archives (`Oxide-<version>-<platform>.tar.gz` and
+`Oxide-<version>-win-x64.zip`, with the `Oxide-v<version>-<platform>...` names a
+copy installed before the change resolves published beside them) plus
+`install.sh`/`install.ps1` live in the separate `v*` CLI releases, not here; see
+[install.md](install.md).
 
 The workflow builds every platform in its own job and hands the installers to
 the release job: each build job uploads what it produced — `*.dmg`, `*.AppImage`,

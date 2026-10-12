@@ -13,7 +13,7 @@ import {
   parseConfigSummary,
   type ConfigSummary,
 } from "../core/config";
-import { argumentDiff, canonicalTool, diffPreview, toolDiff } from "../core/preview";
+import { argumentDiff, diffPreview, toolDiff } from "../core/preview";
 import {
   buildPrompt,
   contextHeader,
@@ -542,7 +542,7 @@ describe("tool diff", () => {
   });
 
   it("previews a write to a file that does not exist yet", () => {
-    const change = toolDiff("write_file", { path: "new.txt", content: "b\n" }, reader(null));
+    const change = toolDiff("write", { path: "new.txt", content: "b\n" }, reader(null));
     assert.ok(change);
     assert.equal(change.diff, diffRow("+", "", "1", "b"));
   });
@@ -624,13 +624,6 @@ describe("tool diff", () => {
     assert.equal(toolDiff("edit", { path: "a.rs", edits: [] }, reader("b\n")), null);
   });
 
-  it("passes a unified patch through as its own preview", () => {
-    const patch = "--- a/a.rs\n+++ b/a.rs\n@@ -1 +1 @@\n-old\n+new";
-    const change = toolDiff("patch", { path: "a.rs", diff: patch }, reader("old\n"));
-    assert.deepEqual(change, { path: "a.rs", diff: patch });
-    assert.equal(toolDiff("patch", { diff: "   " }, reader(null)), null);
-  });
-
   it("knows which tools change files", () => {
     assert.equal(toolDiff("read", { path: "a.rs" }, reader("x")), null);
     assert.equal(toolDiff("bash", { command: "sed -i s/a/b/ a.rs" }, reader("x")), null);
@@ -673,15 +666,6 @@ describe("tool diff", () => {
     );
   });
 
-  it("previews a patch and its own diff, for a replayed card", () => {
-    const patch = "--- a/a.rs\n+++ b/a.rs\n@@ -1 +1 @@\n-old\n+new";
-    assert.deepEqual(argumentDiff("patch", { path: "a.rs", diff: patch }), {
-      path: "a.rs",
-      diff: patch,
-    });
-    assert.equal(argumentDiff("patch", { diff: "  " }), null);
-  });
-
   it("leaves a write to the file it no longer holds", () => {
     // A `write` says only what it wrote: the state it replaced is nowhere on
     // disk, so there is no diff to show rather than one against today's file.
@@ -690,15 +674,6 @@ describe("tool diff", () => {
     assert.equal(argumentDiff("edit", { path: "a.rs", edits: [] }), null);
     assert.equal(argumentDiff("read", { path: "a.rs" }), null);
     assert.equal(argumentDiff("bash", { command: "sed -i s/a/b/ a.rs" }), null);
-  });
-
-  it("maps the Pi and legacy tool names onto one canonical name", () => {
-    assert.equal(canonicalTool("read_file"), "read_file");
-    assert.equal(canonicalTool("read"), "read_file");
-    assert.equal(canonicalTool("write"), "write_file");
-    assert.equal(canonicalTool("list_dir"), "list_dir");
-    assert.equal(canonicalTool("glob"), "glob");
-    assert.equal(canonicalTool("grep"), "grep");
   });
 });
 

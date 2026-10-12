@@ -3,8 +3,6 @@ description: Writes and updates project documentation, README, and doc comments.
 mode: subagent
 color: info
 permission:
-  write_file: allow
-  patch: allow
   bash:
     "*": ask
     "cargo doc*": allow

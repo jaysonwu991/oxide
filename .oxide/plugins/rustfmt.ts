@@ -2,7 +2,7 @@ export const RustFmt = async ({ $, directory }) => {
   return {
     "tool.execute.after": async (input) => {
       const tool = input.tool
-      if (tool !== "edit" && tool !== "write" && tool !== "write_file") return
+      if (tool !== "edit" && tool !== "write") return
 
       const args = input.args ?? {}
       const filePath = args.filePath ?? args.path
