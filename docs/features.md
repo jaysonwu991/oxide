@@ -50,9 +50,7 @@ page is the detail behind it, and the task-by-task guides live in
 ## Tools and the agent loop
 
 - Built-in tools under Pi-style names: `read`, `write`, `edit`, `bash`, `grep`,
-  `find`, `ls`, `webfetch`. Compatibility names (`read_file`, `write_file`,
-  `list_dir`, `glob`) and the unified-diff `patch` tool are accepted everywhere,
-  including in permission rules. See [tools.md](tools.md).
+  `find`, `ls`, `webfetch`. See [tools.md](tools.md).
 - Agent-level tools: `task` (subagents), `skill` (on-demand skill loading),
   `command` (model-invoked commands), `memory` (cross-session notes),
   `diagnostics` (LSP diagnostics), and `ask` (a question put to the user by a
@@ -67,8 +65,7 @@ page is the detail behind it, and the task-by-task guides live in
 - Read-only runs via the tool allowlist, e.g.
   `oxide -t read,grep,find,ls -p "review this"`.
 - Tool selection: `--tools`/`-t` allowlists and `--exclude-tools`/`-x` disables
-  tools (accepting both Pi and legacy names); disabled tools are hidden from the
-  model and refused if requested.
+  tools; disabled tools are hidden from the model and refused if requested.
 - LSP diagnostics via rust-analyzer, typescript-language-server, pyright, gopls;
   a language server that crashes or closes its pipe is evicted and respawned on
   the next edit instead of poisoning every later call with a broken pipe.

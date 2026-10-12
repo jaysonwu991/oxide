@@ -51,14 +51,11 @@ describe("approvalTitle", () => {
     assert.equal(approvalTitle("bash"), "Run a shell command");
     assert.equal(approvalTitle("write"), "Write a file");
     assert.equal(approvalTitle("edit"), "Edit a file");
-    // A saved rule may still name the legacy tool, so those read as well as the
-    // Pi names do.
-    assert.equal(approvalTitle("write_file"), "Write a file");
-    assert.equal(approvalTitle("list_dir"), "List a directory");
+    assert.equal(approvalTitle("ls"), "List a directory");
   });
 
   it("names an MCP tool after the server it belongs to", () => {
-    assert.equal(approvalTitle("files__read_file"), "Call read_file on files");
+    assert.equal(approvalTitle("files__read"), "Call read on files");
   });
 
   it("falls back to the tool's own name", () => {

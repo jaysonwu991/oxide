@@ -109,7 +109,7 @@ export interface ToolItem {
   startedAt?: number | null;
   /// What the call took, in milliseconds, once it has settled.
   elapsed?: number | null;
-  /// A preview of the file change (`write`/`edit`/`patch`), already rendered in
+  /// A preview of the file change (`write`/`edit`), already rendered in
   /// the same compact line format `oxide_core::diff` uses.
   diff: string | null;
   running: boolean;
@@ -628,8 +628,8 @@ export class Transcript {
 
   /// A tool call pushed whole, as a stored thread records it: finished, with the
   /// result the thread stored beside it. It carries the diff its own arguments
-  /// describe — the replacements an `edit` made, a `patch`'s own diff — rather
-  /// than one built against the file as it stands.
+  /// describe — the replacements an `edit` made — rather than one built
+  /// against the file as it stands.
   ///
   /// Successful stored calls remain unknown because the store does not record
   /// whether a file change applied. The compatibility error marker does record

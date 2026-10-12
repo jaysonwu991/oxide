@@ -31,7 +31,7 @@ const MAX_SUGGESTION_ROWS: usize = 8;
 /// the whole suggestion line.
 const MIN_SUGGESTION_DESCRIPTION: usize = 12;
 
-const FILE_TOOLS: [&str; 4] = ["read_file", "write_file", "patch", "edit"];
+const FILE_TOOLS: [&str; 3] = ["read", "write", "edit"];
 
 // Crossterm maps unsuffixed ANSI colors to dark variants, so accents use the
 // light variants to remain readable on common dark terminal backgrounds.
@@ -47,7 +47,7 @@ const BANNER: [&str; 6] = [
 ];
 
 fn is_file_tool(name: &str) -> bool {
-    FILE_TOOLS.contains(&crate::tools::canonical_tool_name(name))
+    FILE_TOOLS.contains(&name)
 }
 
 /// A rounded panel with a colored border and title, shared by the input and
@@ -2439,10 +2439,7 @@ fn render_item_themed(
             let inner = box_inner_width(width);
             let mut panel = Rows::default();
             if let Some(path) = file_tool_path(name, args) {
-                let (verb, color) = if matches!(
-                    crate::tools::canonical_tool_name(name),
-                    "write_file" | "patch" | "edit"
-                ) {
+                let (verb, color) = if matches!(name.as_str(), "write" | "edit") {
                     ("Edit", theme.tool)
                 } else {
                     ("Read", theme.accent)
@@ -2501,7 +2498,7 @@ fn render_item_themed(
         }
         ChatItem::ToolProgress { name, output } => {
             let mut panel = Rows::default();
-            if crate::tools::canonical_tool_name(name) != "bash" {
+            if name != "bash" {
                 panel.push(Line::from(vec![
                     Span::styled("⋯ ", Style::default().fg(theme.info)),
                     Span::styled(name.clone(), Style::default().fg(theme.info)),
@@ -2575,7 +2572,7 @@ fn render_item_themed(
                     }
                 }
             } else if let Some(path) = file_tool_path(name, args) {
-                if crate::tools::canonical_tool_name(name) == "read_file" {
+                if name == "read" {
                     if *is_error {
                         bg = theme.tool_error_bg;
                         panel.extend(action_lines("Read failed", &path, theme.error, bold, inner));
@@ -3221,10 +3218,9 @@ fn input_cursor_position(input: &str, cursor: usize, width: usize) -> (usize, us
     (row, 0)
 }
 
-/// Path argument for a `read_file`/`write_file` call, when present.
+/// Path argument for a `read`/`write` call, when present.
 fn file_tool_path(name: &str, args: &str) -> Option<String> {
-    let name = crate::tools::canonical_tool_name(name);
-    if !matches!(name, "read_file" | "write_file" | "patch" | "edit") {
+    if !matches!(name, "read" | "write" | "edit") {
         return None;
     }
     let value: serde_json::Value = serde_json::from_str(args).ok()?;
@@ -3309,7 +3305,7 @@ fn wrapped_with_prefix(
 
 /// Shell command for a `bash` call, flattened to a single line for display.
 fn bash_command(name: &str, args: &str) -> Option<String> {
-    if crate::tools::canonical_tool_name(name) != "bash" {
+    if name != "bash" {
         return None;
     }
     let value: serde_json::Value = serde_json::from_str(args).ok()?;
@@ -3336,7 +3332,7 @@ fn bash_exit_code(output: &str) -> Option<i32> {
 
 /// A ` (timeout Ns)` suffix for a `bash` call whose args set a timeout.
 fn bash_timeout_suffix(name: &str, args: &str) -> String {
-    if crate::tools::canonical_tool_name(name) != "bash" {
+    if name != "bash" {
         return String::new();
     }
     let Ok(value) = serde_json::from_str::<serde_json::Value>(args) else {
@@ -3362,7 +3358,7 @@ fn format_duration(millis: u64) -> String {
 }
 
 /// Summarize a tool call's arguments for display. File tools otherwise dump
-/// their entire payload (e.g. `write_file` carries the full file content), so
+/// their entire payload (e.g. `write` carries the full file content), so
 /// show just the path and a compact size hint instead.
 /// A compact one-line description of what a subagent is doing, for the `task`
 /// panel under the call that spawned it.
@@ -3393,8 +3389,8 @@ fn tool_arg_summary(name: &str, args: &str) -> String {
         return args.to_string();
     };
     let path = value.get("path").and_then(|v| v.as_str()).unwrap_or("");
-    let summary = match crate::tools::canonical_tool_name(name) {
-        "write_file" => value
+    let summary = match name {
+        "write" => value
             .get("content")
             .and_then(|v| v.as_str())
             .map(|content| format!("{path} · {} lines", content.lines().count())),
@@ -3402,7 +3398,7 @@ fn tool_arg_summary(name: &str, args: &str) -> String {
             .get("edits")
             .and_then(|v| v.as_array())
             .map(|edits| format!("{path} · {} edit(s)", edits.len())),
-        "read_file" => value
+        "read" => value
             .get("offset")
             .and_then(|v| v.as_u64())
             .map(|offset| format!("{path} · from line {offset}")),
@@ -3731,7 +3727,7 @@ enum Preview {
 /// Per-tool preview budgets: a shell command keeps its newest lines, searches
 /// keep more from the top, and everything else uses the default.
 fn tool_preview(name: &str) -> Preview {
-    match crate::tools::canonical_tool_name(name) {
+    match name {
         "bash" => Preview::Tail(BASH_PREVIEW_LINES),
         "grep" => Preview::Head(GREP_PREVIEW_LINES),
         "find" | "ls" => Preview::Head(LIST_PREVIEW_LINES),
@@ -4587,15 +4583,9 @@ mod tests {
     #[test]
     fn file_tool_args_are_abbreviated() {
         let write = r#"{"path":"src/main.rs","content":"a\nb\nc"}"#;
-        assert_eq!(
-            tool_arg_summary("write_file", write),
-            "src/main.rs · 3 lines"
-        );
+        assert_eq!(tool_arg_summary("write", write), "src/main.rs · 3 lines");
         let read = r#"{"path":"src/main.rs","offset":10}"#;
-        assert_eq!(
-            tool_arg_summary("read_file", read),
-            "src/main.rs · from line 10"
-        );
+        assert_eq!(tool_arg_summary("read", read), "src/main.rs · from line 10");
         assert_eq!(tool_arg_summary("bash", "ls -la"), "ls -la");
     }
 
@@ -4877,7 +4867,7 @@ mod tests {
         let mut lines = Vec::new();
         render_item(
             &ChatItem::Tool {
-                name: "read_file".into(),
+                name: "read".into(),
                 args: args.into(),
             },
             80,
@@ -4889,7 +4879,7 @@ mod tests {
         let mut lines = Vec::new();
         render_item(
             &ChatItem::Tool {
-                name: "write_file".into(),
+                name: "write".into(),
                 args: args.into(),
             },
             80,
@@ -4905,7 +4895,7 @@ mod tests {
         let mut lines = Vec::new();
         render_item(
             &ChatItem::ToolResult {
-                name: "read_file".into(),
+                name: "read".into(),
                 args: args.into(),
                 output: long_read,
                 is_error: false,
@@ -4925,7 +4915,7 @@ mod tests {
         let mut lines = Vec::new();
         render_item(
             &ChatItem::ToolResult {
-                name: "read_file".into(),
+                name: "read".into(),
                 args: args.into(),
                 output: "     1\tfn main() {}".into(),
                 is_error: false,
@@ -4942,7 +4932,7 @@ mod tests {
         let mut lines = Vec::new();
         render_item(
             &ChatItem::ToolResult {
-                name: "write_file".into(),
+                name: "write".into(),
                 args: args.into(),
                 output: "wrote 12 bytes to /x".into(),
                 is_error: false,
@@ -5353,7 +5343,7 @@ mod tests {
         let mut lines = Vec::new();
         render_item(
             &ChatItem::ToolResult {
-                name: "write_file".into(),
+                name: "write".into(),
                 args: r#"{"path":"src/main.rs"}"#.into(),
                 output: "wrote 12 bytes to /x".into(),
                 is_error: false,

@@ -136,13 +136,17 @@ template: |
   built for Apple Silicon and for 64-bit Windows and Linux; there is no Intel
   Mac build.
 
-  - **macOS, Apple Silicon** — `macos-arm64-Oxide.dmg`
-  - **Windows x64** — `win-x64-Oxide-Setup.exe`, a one-click install for the
+  - **macOS, Apple Silicon** — `Oxide-<version>-macos-arm64.dmg`
+  - **Windows x64** — `Oxide-<version>-win-x64-Setup.exe`, a one-click install for the
     user who runs it
-  - **Linux x64** — `linux-x86_64-Oxide-Setup.AppImage`, or
-    `linux-x64-Oxide-Setup.tar.gz` to unpack by hand
-  - **Linux arm64** — `linux-arm64-Oxide-Setup.AppImage`, or
-    `linux-arm64-Oxide-Setup.tar.gz` to unpack by hand
+  - **Linux x64** — `Oxide-<version>-linux-x86_64-Setup.AppImage`, or
+    `Oxide-<version>-linux-x64-Setup.tar.gz` to unpack by hand
+  - **Linux arm64** — `Oxide-<version>-linux-arm64-Setup.AppImage`, or
+    `Oxide-<version>-linux-arm64-Setup.tar.gz` to unpack by hand
+
+  Each of them is published under the name releases carried before the version
+  moved into it — `macos-arm64-Oxide.dmg` and so on — as well, which is what an
+  app already installed resolves its own update by.
 
   On macOS the app is notarized only when this release was built with both an
   Apple Developer certificate and an App Store Connect key configured; a build

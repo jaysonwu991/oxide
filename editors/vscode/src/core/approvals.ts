@@ -36,20 +36,14 @@ export function approvalRequest(event: WireEvent): ApprovalRequest | null {
 }
 
 /// What the tool would do, in a few words, so the card is readable without
-/// knowing the tool names. Legacy aliases are listed too, because a saved
-/// permission rule may still name them.
+/// knowing the tool names.
 const TOOL_TITLES: Record<string, string> = {
   bash: "Run a shell command",
   write: "Write a file",
-  write_file: "Write a file",
   edit: "Edit a file",
-  patch: "Apply a patch",
   read: "Read a file",
-  read_file: "Read a file",
   ls: "List a directory",
-  list_dir: "List a directory",
   find: "Find files",
-  glob: "Find files",
   grep: "Search the workspace",
   webfetch: "Fetch a URL",
   task: "Run a subagent",

@@ -362,9 +362,12 @@ pub fn extract_file_ops(messages: &[Message]) -> (Vec<String>, Vec<String>) {
             let Some(path) = args.get("path").and_then(Value::as_str) else {
                 continue;
             };
-            match crate::tools::canonical_tool_name(&call.function.name) {
-                "read_file" => read.push(path.to_string()),
-                "write_file" | "edit" | "patch" => modified.push(path.to_string()),
+            // A session an older release wrote names the same calls with the
+            // tool names it had then; those are read here alone, since a
+            // history that recorded its files keeps them across the rename.
+            match call.function.name.as_str() {
+                "read" | "read_file" => read.push(path.to_string()),
+                "write" | "write_file" | "edit" | "patch" => modified.push(path.to_string()),
                 _ => {}
             }
         }
@@ -858,6 +861,30 @@ mod tests {
     }
 
     #[test]
+    fn a_stored_history_keeps_the_files_an_older_naming_recorded() {
+        let messages = vec![
+            tool_call("1", "read_file", r#"{"path":"src/a.rs"}"#),
+            tool_call("2", "write_file", r#"{"path":"src/b.rs"}"#),
+            tool_call("3", "patch", r#"{"path":"src/c.rs"}"#),
+        ];
+        let (read, modified) = extract_file_ops(&messages);
+        assert_eq!(read, ["src/a.rs"]);
+        assert_eq!(modified, ["src/b.rs", "src/c.rs"]);
+    }
+
+    #[test]
+    fn extracts_the_files_of_the_tools_a_run_names() {
+        let messages = vec![
+            tool_call("1", "read", r#"{"path":"src/a.rs"}"#),
+            tool_call("2", "edit", r#"{"path":"src/b.rs"}"#),
+            tool_call("3", "bash", r#"{"command":"ls"}"#),
+        ];
+        let (read, modified) = extract_file_ops(&messages);
+        assert_eq!(read, ["src/a.rs"]);
+        assert_eq!(modified, ["src/b.rs"]);
+    }
+
+    #[test]
     fn needs_compaction_only_above_threshold() {
         let budget = Budget {
             enabled: true,
@@ -894,7 +921,7 @@ mod tests {
     fn prepare_never_cuts_between_tool_call_and_result() {
         let messages = vec![
             Message::user("read the file"),
-            tool_call("a", "read_file", r#"{"path":"src/a.rs"}"#),
+            tool_call("a", "read", r#"{"path":"src/a.rs"}"#),
             Message::tool("a", "file contents"),
             Message::user("thanks"),
         ];

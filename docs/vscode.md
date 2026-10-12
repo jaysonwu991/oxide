@@ -30,7 +30,7 @@ editors/vscode/
       rpc.ts          the rpc request frames written to the child's stdin
       prompt.ts       prompt assembly, @path expansion, attachments
       attachments.ts  attachment types, extensions, naming and data URLs
-      preview.ts      write/edit/patch diff previews
+      preview.ts      write/edit diff previews
       changes.ts      a finished turn's `turn_changes`, and its Undo
       history.ts      a resumed thread's stored conversation
       at.ts           the `@` completion's token and ranking
@@ -287,7 +287,7 @@ card the live turn painted, and the result the CLI stores as a message of its ow
 is folded into the card it answers rather than shown beside it. The tail is
 counted in those stored messages, so reopening a long thread shows several of its
 turns rather than its last reply only. A replayed card carries the change its own
-arguments describe — an `edit`'s replacements, a `patch`'s diff — rather than one
+arguments describe — an `edit`'s replacements — rather than one
 built against the file as it stands, which is no longer the state the call found;
 an `edit`'s replacements are previewed one block each, separated by the same `⋯`
 the preview draws between hunks, since joining them into one pair of sides could
@@ -1030,7 +1030,7 @@ snapshot is refused there is no `baseline`, so `turn_changes` is never emitted,
 the run is unaffected, and the panel simply has no card to show.
 
 Because the call's own diff is already in that listing, a tool card that changed
-a file (`write`, `edit`, `patch`) reads as one line — its header carries the path
+a file (`write`, `edit`) reads as one line — its header carries the path
 and its state the `+`/`−` counts — and keeps its own diff for the reader who
 clicks it, so the same change is not painted twice. `media/main.js` counts the
 markers itself, the way `oxide_core::changes` does, so a card's numbers and a
@@ -1170,7 +1170,7 @@ Assistant replies are Markdown (headings, lists, tables, fenced code with
 lightweight syntax highlighting, inline emphasis/code/links, and auto-linked
 bare URLs). Tool calls are collapsible cards colored by state, with a spinner
 and elapsed time while running, a short per-tool output preview that expands on
-click, and a colored diff for `write` / `edit` / `patch`. A card whose output was
+click, and a colored diff for `write` / `edit`. A card whose output was
 cut carries the words offering the rest — `Show 36 more lines` — as a second
 handle under the preview it kept, which opens and closes the card the same way
 the header does and keeps that count off the body it stands for. The header is

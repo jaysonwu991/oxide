@@ -105,7 +105,7 @@ struct Cli {
     #[arg(long = "ask-questions")]
     ask_questions: bool,
 
-    /// Allowlist specific tools (comma-separated); accepts Pi and legacy names
+    /// Allowlist specific tools (comma-separated)
     #[arg(long = "tools", short = 't', value_name = "LIST")]
     tools: Option<String>,
 

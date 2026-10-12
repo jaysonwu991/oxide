@@ -151,7 +151,7 @@ impl Message {
         }
     }
 
-    /// A tool result carrying media parts (e.g. an image read by `read_file`).
+    /// A tool result carrying media parts (e.g. an image read by `read`).
     pub fn tool_parts(
         tool_call_id: impl Into<String>,
         text: impl Into<String>,

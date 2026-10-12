@@ -652,12 +652,25 @@ console.log("the release");
 // release, and it resolves the file a release carries by that name. So every
 // name `oxide_core::updates` resolves for this component is checked against the
 // one `electron-builder.yml` would write — the join a rename on either side
-// breaks, and a rename anybody could make by hand.
+// breaks, and a rename anybody could make by hand. electron-builder spells an
+// AppImage's x64 `x86_64`, so the arch the AppImage template is expanded with
+// is that spelling while the archive's is `x64`.
+const versioned = (name) => `Oxide-${packaged.version}-${name}`;
 const artifacts = [
-  { platform: "mac", arch: "arm64", ext: "dmg", asset: "macos-arm64-Oxide.dmg" },
-  { platform: "linux", arch: "x64", ext: "AppImage", asset: "linux-x64-Oxide-Setup.AppImage" },
-  { platform: "linux", arch: "arm64", ext: "tar.gz", asset: "linux-arm64-Oxide-Setup.tar.gz" },
-  { platform: "win", arch: "x64", ext: "exe", asset: "win-x64-Oxide-Setup.exe" },
+  { platform: "mac", arch: "arm64", ext: "dmg", asset: versioned("macos-arm64.dmg") },
+  {
+    platform: "linux",
+    arch: "x86_64",
+    ext: "AppImage",
+    asset: versioned("linux-x86_64-Setup.AppImage"),
+  },
+  {
+    platform: "linux",
+    arch: "arm64",
+    ext: "tar.gz",
+    asset: versioned("linux-arm64-Setup.tar.gz"),
+  },
+  { platform: "win", arch: "x64", ext: "exe", asset: versioned("win-x64-Setup.exe") },
 ];
 const named = artifacts.map(({ platform, arch, ext, asset }) => {
   const template = scalar(block(builder, platform), "artifactName");
@@ -666,16 +679,23 @@ const named = artifacts.map(({ platform, arch, ext, asset }) => {
     .replace("${ext}", ext)
     .replace("${name}", "Oxide")
     .replace("${version}", packaged.version);
-  return { asset, expanded, template };
+  // The core builds the name from the release's own version, so what it holds
+  // is the pattern rather than this build's placeholder version.
+  const pattern = asset.replace(`-${packaged.version}-`, "-{version}-");
+  return { asset, expanded, template, pattern };
 });
-const resolved = (asset) => new RegExp(`"${asset.replace(/[.$]/g, "\\$&")}"`).test(coreUpdates);
+const resolved = ({ pattern }) => coreUpdates.includes(`"${pattern}"`);
 check(
   "named the files a release carries the way the updater resolves them",
   named.length === artifacts.length &&
-    named.every(({ asset, expanded }) => expanded === asset && resolved(asset)),
+    named.every(({ asset, expanded }) => expanded === asset) &&
+    named.every(resolved),
   named
-    .filter(({ asset, expanded }) => expanded !== asset || !resolved(asset))
-    .map(({ template, expanded, asset }) => `${template} → ${expanded} ≠ ${asset}`)
+    .filter((named) => named.expanded !== named.asset || !resolved(named))
+    .map(
+      ({ template, expanded, asset, pattern }) =>
+        `${template} → ${expanded} ≠ ${asset} / ${pattern}`,
+    )
     .join(" | "),
 );
 // A target list and the names are two halves of one release: a name for an
@@ -722,7 +742,7 @@ check(
   archesOf("mac", "arm64") &&
     archesOf("win", "x64") &&
     archesOf("linux", "arm64,x64") &&
-    /const SUPPORTED_PLATFORMS: &str = "darwin-arm64, darwin-x64, linux-x64, linux-arm64, win32-x64"/.test(
+    /const SUPPORTED_PLATFORMS: &str = "macos-arm64, macos-x64, linux-x64, linux-arm64, win-x64"/.test(
       coreUpdates,
     ),
   ["mac", "win", "linux"]

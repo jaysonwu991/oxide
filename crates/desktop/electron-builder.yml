@@ -9,10 +9,13 @@
 #
 # The artifact names are not decoration. The app updates itself from its own
 # release, and `oxide_core::updates::Component::Desktop` resolves the assets a
-# release carries by name (`macos-<arch>-Oxide.dmg`, `linux-<arch>-Oxide-Setup.
-# <ext>`, `win-<arch>-Oxide-Setup.exe`), so a release whose files are named
+# release carries by name — `Oxide-<version>-macos-<arch>.dmg`,
+# `Oxide-<version>-linux-<arch>-Setup.<ext>`,
+# `Oxide-<version>-win-<arch>-Setup.exe` — so a release whose files are named
 # anything else is one the app cannot see. Renaming one here means renaming it
 # in `crates/core/src/updates.rs` too, which is what its own test holds.
+# electron-builder spells an AppImage's x64 as `x86_64` rather than `x64`, so
+# that one name carries the spelling the build really writes.
 appId: dev.oxide.desktop
 productName: Oxide
 copyright: Copyright © Oxide
@@ -33,7 +36,7 @@ mac:
     - target: dmg
       arch:
         - arm64
-  artifactName: macos-${arch}-Oxide.${ext}
+  artifactName: Oxide-${version}-macos-${arch}.${ext}
   icon: icons/icon.icns
   # A hardened runtime is what notarization requires; these are the two
   # exceptions Electron needs for its own JavaScript engine, and the third lets
@@ -55,7 +58,7 @@ win:
     - target: nsis
       arch:
         - x64
-  artifactName: win-${arch}-Oxide-Setup.${ext}
+  artifactName: Oxide-${version}-win-${arch}-Setup.${ext}
   icon: icons/icon.ico
   extraResources:
     - from: target/release/oxide-desktop.exe
@@ -83,7 +86,7 @@ linux:
       arch:
         - x64
         - arm64
-  artifactName: linux-${arch}-Oxide-Setup.${ext}
+  artifactName: Oxide-${version}-linux-${arch}-Setup.${ext}
   icon: icons/icon.png
   category: Development
   synopsis: An AI coding agent

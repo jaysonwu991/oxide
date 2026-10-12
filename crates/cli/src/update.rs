@@ -203,7 +203,7 @@ async fn run_for(options: Options, executable: &Path, repo: &str) -> Result<()> 
     }
 
     let work = WorkDir::new()?;
-    let (url, bytes) = archive(&client, repo, &release).await?;
+    let (url, bytes) = archive(&client, repo, &release, platform).await?;
     let download = work.path().join(&release.asset);
     fs::write(&download, &bytes).with_context(|| format!("writing {}", download.display()))?;
     match updates::fetch(&client, &format!("{url}.sha256"), None).await? {
@@ -275,24 +275,26 @@ fn advice(method: InstallMethod, executable: &Path) -> String {
     }
 }
 
-/// The archive to install, trying the pre-branding lowercase name when a pinned
-/// release predates the `Oxide-v*` assets. Returns the URL that answered, so
-/// its checksum is fetched from beside it.
+/// The archive to install, trying the names a release carried before the
+/// version moved into them — the name this binary asked for before the change,
+/// and the lowercase one the releases before the branding published — so a
+/// version pinned to an older release is still installable. Returns the URL
+/// that answered, so its checksum is fetched from beside it.
 async fn archive(
     client: &reqwest::Client,
     repo: &str,
     release: &Release,
+    platform: &str,
 ) -> Result<(String, Vec<u8>)> {
-    let url = release.url(repo);
-    println!("Downloading {}", release.asset);
-    if let Some(bytes) = updates::fetch(client, &url, None).await? {
-        return Ok((url, bytes));
-    }
-    if let Some(legacy) = legacy_url(&url) {
-        let asset = legacy.rsplit('/').next().unwrap_or(&release.asset);
-        println!("Downloading {asset}");
-        if let Some(bytes) = updates::fetch(client, &legacy, None).await? {
-            return Ok((legacy, bytes));
+    let names = archive_names(release, platform);
+    for name in &names {
+        let url = format!(
+            "https://github.com/{repo}/releases/download/{}/{name}",
+            release.tag
+        );
+        println!("Downloading {name}");
+        if let Some(bytes) = updates::fetch(client, &url, None).await? {
+            return Ok((url, bytes));
         }
     }
     bail!(
@@ -302,13 +304,27 @@ async fn archive(
     )
 }
 
-/// The lowercase archive name the releases before the rename published, which
-/// a pinned version can still need.
-fn legacy_url(url: &str) -> Option<String> {
-    let (head, asset) = url.rsplit_once('/')?;
-    asset
-        .strip_prefix("Oxide-v")
-        .map(|rest| format!("{head}/oxide-v{rest}"))
+/// The names a release of this train may carry the archive under: the one it
+/// was resolved by, the one releases carried before the version moved into the
+/// name, and the lowercase one the releases before the branding published.
+fn archive_names(release: &Release, platform: &str) -> Vec<String> {
+    let mut names: Vec<String> = Vec::new();
+    for name in
+        std::iter::once(release.asset.clone()).chain(Component::Cli.assets(&release.tag, platform))
+    {
+        if !name.is_empty() && !names.contains(&name) {
+            names.push(name);
+        }
+    }
+    if let Some(previous) = names
+        .iter()
+        .find(|name| name.starts_with("Oxide-v"))
+        .and_then(|name| name.strip_prefix("Oxide"))
+        .map(str::to_string)
+    {
+        names.push(format!("oxide{previous}"));
+    }
+    names
 }
 
 /// Checks a downloaded archive against the `.sha256` file published beside it,
@@ -532,7 +548,7 @@ mod tests {
             component: Component::Desktop,
             current: Some("0.33.0".to_string()),
         };
-        let release = Release::new(Component::Desktop, "desktop-v0.34.0", None, "darwin-arm64");
+        let release = Release::new(Component::Desktop, "desktop-v0.34.0", None, "macos-arm64");
         let check = check_of(
             &options,
             &release,
@@ -547,10 +563,10 @@ mod tests {
         assert!(!check.installable);
         assert!(check.path.is_empty());
         let asset = check.asset.as_ref().unwrap();
-        assert_eq!(asset.name, "macos-arm64-Oxide.dmg");
+        assert_eq!(asset.name, "Oxide-0.34.0-macos-arm64.dmg");
         assert_eq!(
             asset.url,
-            "https://github.com/jaysonwu991/oxide/releases/download/desktop-v0.34.0/macos-arm64-Oxide.dmg"
+            "https://github.com/jaysonwu991/oxide/releases/download/desktop-v0.34.0/Oxide-0.34.0-macos-arm64.dmg"
         );
         assert!(check
             .advice
@@ -560,7 +576,7 @@ mod tests {
 
         // A release the caller already runs leaves nothing to offer, and so no
         // advice either.
-        let release = Release::new(Component::Desktop, "desktop-v0.33.0", None, "darwin-arm64");
+        let release = Release::new(Component::Desktop, "desktop-v0.33.0", None, "macos-arm64");
         let check = check_of(
             &options,
             &release,
@@ -588,7 +604,7 @@ mod tests {
         };
         // As `updates::api_release` leaves it when the release carries none of
         // the names this platform installs.
-        let mut release = Release::new(Component::Cli, "v0.34.0", None, "darwin-arm64");
+        let mut release = Release::new(Component::Cli, "v0.34.0", None, "macos-arm64");
         release.asset.clear();
         let check = check_of(
             &options,
@@ -642,13 +658,32 @@ mod tests {
         assert_eq!(release.version, "0.26.0");
         assert_eq!(
             release.url("jaysonwu991/oxide"),
-            "https://github.com/jaysonwu991/oxide/releases/download/v0.26.0/Oxide-v0.26.0-linux-x64.tar.gz"
+            "https://github.com/jaysonwu991/oxide/releases/download/v0.26.0/Oxide-0.26.0-linux-x64.tar.gz"
         );
+        // A release published before the version moved into the name is
+        // installed from the name it carried then, and one older still from the
+        // lowercase name the releases before the branding published — in that
+        // order, so the newest name a release could carry is what answers.
         assert_eq!(
-            legacy_url(&release.url("jaysonwu991/oxide")).unwrap(),
-            "https://github.com/jaysonwu991/oxide/releases/download/v0.26.0/oxide-v0.26.0-linux-x64.tar.gz"
+            archive_names(&release, "linux-x64"),
+            [
+                "Oxide-0.26.0-linux-x64.tar.gz",
+                "Oxide-v0.26.0-linux-x64.tar.gz",
+                "oxide-v0.26.0-linux-x64.tar.gz"
+            ]
         );
-        assert!(legacy_url("https://github.com/o/r/releases/download/v1/other.tar.gz").is_none());
+        // A release the API listed offers the name it really carries first, and
+        // a name it appears under only once.
+        let mut listed = updates::pinned(Component::Cli, "0.26.0", "linux-x64").unwrap();
+        listed.asset = "Oxide-v0.26.0-linux-x64.tar.gz".to_string();
+        assert_eq!(
+            archive_names(&listed, "linux-x64"),
+            [
+                "Oxide-v0.26.0-linux-x64.tar.gz",
+                "Oxide-0.26.0-linux-x64.tar.gz",
+                "oxide-v0.26.0-linux-x64.tar.gz"
+            ]
+        );
     }
 
     /// The JSON a front-end offers the update from, and the keys it reads: a
@@ -689,7 +724,7 @@ mod tests {
         );
         assert_eq!(
             value["asset"]["name"],
-            serde_json::json!("Oxide-v0.27.0-linux-x64.tar.gz")
+            serde_json::json!("Oxide-0.27.0-linux-x64.tar.gz")
         );
         // This binary is the workspace's `0.0.0` placeholder, which is older
         // than the release and so leaves an update to offer.

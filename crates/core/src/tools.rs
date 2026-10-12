@@ -110,31 +110,11 @@ fn module_failure_hint(output: &str, cwd: &Path) -> &'static str {
 
 static TRUNCATION_ID: AtomicU64 = AtomicU64::new(0);
 
-/// Maps a tool name to its internal canonical form, accepting both the Pi-style
-/// names (`read`, `write`, `edit`, `ls`, `find`, `grep`, `bash`) and the legacy
-/// oxide names (`read_file`, `write_file`, `patch`, `list_dir`, `glob`). The
-/// agent-level tools (`task`, `skill`, `memory`, `diagnostics`) and
-/// MCP names (`server__tool`) pass through unchanged.
-pub fn canonical_tool_name(name: &str) -> &str {
-    match name {
-        "read" | "read_file" => "read_file",
-        "write" | "write_file" => "write_file",
-        "edit" => "edit",
-        "patch" => "patch",
-        "ls" | "list_dir" => "list_dir",
-        "find" | "glob" => "glob",
-        "grep" => "grep",
-        "bash" => "bash",
-        "webfetch" => "webfetch",
-        other => other,
-    }
-}
-
 /// A compact, human-readable subject for a built-in search call. Search cards
 /// must lead with the pattern: leading with the project path makes several
 /// different searches look identical in every front-end.
 pub fn search_tool_summary(name: &str, args: &str) -> Option<String> {
-    if !matches!(canonical_tool_name(name), "grep" | "glob") {
+    if !matches!(name, "grep" | "find") {
         return None;
     }
     let value: Value = serde_json::from_str(args).ok()?;
@@ -159,8 +139,7 @@ pub fn search_tool_summary(name: &str, args: &str) -> Option<String> {
 /// The raw text remains in the event/session stream for the model; renderers
 /// use this classification to replace a large body with a compact count.
 pub fn is_empty_search_result(name: &str, output: &str) -> bool {
-    matches!(canonical_tool_name(name), "grep" | "glob")
-        && matches!(output.trim(), NO_MATCHES | NO_FILES_FOUND)
+    matches!(name, "grep" | "find") && matches!(output.trim(), NO_MATCHES | NO_FILES_FOUND)
 }
 
 /// A line-numbered diff of a file edit, carried alongside the tool result for
@@ -367,17 +346,6 @@ pub fn specs(mcp: &McpRegistry) -> Vec<ToolSpec> {
             }),
         ),
         spec(
-            "patch",
-            "Apply a unified diff (the `---`/`+++`/`@@ -old,count +new,count @@` format) to one or more files. Include unchanged context around every hunk so its location is unambiguous.",
-            json!({
-                "type": "object",
-                "properties": {
-                    "diff": { "type": "string", "description": "Unified diff text to apply" }
-                },
-                "required": ["diff"]
-            }),
-        ),
-        spec(
             "webfetch",
             "Fetch a URL and return its contents as Markdown (default), readable plain text, or raw HTML. GitHub and GitLab repository files, pull requests, merge requests, and issues should be read with their authenticated `gh`/`glab` CLIs instead; an organization repository may be private even when its URL uses the public forge hostname.",
             json!({
@@ -476,7 +444,7 @@ pub async fn execute(
         Err(message) => return ToolOutput::error(message),
     };
 
-    let canonical = canonical_tool_name(name);
+    let canonical = name;
     let result = if mcp.is_tool(name) {
         mcp.call(name, args).await.map(|result| {
             if result.is_error {
@@ -495,20 +463,19 @@ pub async fn execute(
             },
             "bash" => bash(cwd, &args, progress).await.map(ToolOutput::text),
             "webfetch" => webfetch_guarded(&args, mcp).await.map(ToolOutput::text),
-            "read_file" | "write_file" | "edit" | "list_dir" | "glob" | "grep" | "patch" => {
+            "read" | "write" | "edit" | "ls" | "find" | "grep" => {
                 let cwd = cwd.to_path_buf();
                 let args = args.clone();
                 // `spawn_blocking` requires a `'static` closure, so the owned tool
                 // name has to be moved in.
                 let tool = canonical.to_string();
                 match tokio::task::spawn_blocking(move || match tool.as_str() {
-                    "read_file" => read_file(&cwd, &args),
-                    "write_file" => write_file(&cwd, &args),
+                    "read" => read(&cwd, &args),
+                    "write" => write(&cwd, &args),
                     "edit" => edit(&cwd, &args),
-                    "list_dir" => list_dir(&cwd, &args).map(ToolOutput::text),
-                    "glob" => glob(&cwd, &args).map(ToolOutput::text),
+                    "ls" => ls(&cwd, &args).map(ToolOutput::text),
+                    "find" => find(&cwd, &args).map(ToolOutput::text),
                     "grep" => grep(&cwd, &args).map(ToolOutput::text),
-                    "patch" => patch(&cwd, &args),
                     _ => unreachable!(),
                 })
                 .await
@@ -561,13 +528,12 @@ fn parse_tool_arguments(name: &str, arguments: &str) -> Result<Value, String> {
 }
 
 fn expected_arguments(name: &str) -> &'static str {
-    match canonical_tool_name(name) {
-        "read_file" => " with a string `path` and optional integer `offset` and `limit`",
-        "write_file" => " with string `path` and `content` fields",
+    match name {
+        "read" => " with a string `path` and optional integer `offset` and `limit`",
+        "write" => " with string `path` and `content` fields",
         "edit" => " with a string `path` and an `edits` array of {oldText,newText} objects",
-        "glob" => " with a string `pattern` and optional `path`",
+        "find" => " with a string `pattern` and optional `path`",
         "grep" => " with a string `pattern` and optional `path`, `glob`, and search options",
-        "patch" => " with a unified diff string in `diff`",
         "bash" => " with a shell command string in `command`",
         "webfetch" => " with a URL string in `url`",
         "mcp_load" => " with an MCP server name string in `server`",
@@ -611,7 +577,7 @@ fn resolve(cwd: &Path, path: &str) -> PathBuf {
     }
 }
 
-fn read_file(cwd: &Path, args: &Value) -> Result<ToolOutput> {
+fn read(cwd: &Path, args: &Value) -> Result<ToolOutput> {
     let path = required_string(args, "read", "path", r#"{"path":"src/main.rs"}"#)?;
 
     let full = resolve(cwd, path);
@@ -734,7 +700,7 @@ fn line_chunks(line: &str) -> Vec<&str> {
     chunks
 }
 
-fn write_file(cwd: &Path, args: &Value) -> Result<ToolOutput> {
+fn write(cwd: &Path, args: &Value) -> Result<ToolOutput> {
     let path = required_string(
         args,
         "write",
@@ -1304,7 +1270,7 @@ fn dir_entries(full: &Path) -> Result<Vec<String>> {
     Ok(entries)
 }
 
-fn list_dir(cwd: &Path, args: &Value) -> Result<String> {
+fn ls(cwd: &Path, args: &Value) -> Result<String> {
     let path = args.get("path").and_then(Value::as_str).unwrap_or(".");
     let limit = int_arg(args, "limit").unwrap_or(MAX_MATCHES).max(1);
     let full = resolve(cwd, path);
@@ -1321,8 +1287,8 @@ fn list_dir(cwd: &Path, args: &Value) -> Result<String> {
 
 const MAX_MATCHES: usize = 200;
 
-fn glob(cwd: &Path, args: &Value) -> Result<String> {
-    let pattern = required_string(args, "glob", "pattern", r#"{"pattern":"**/*.rs"}"#)?;
+fn find(cwd: &Path, args: &Value) -> Result<String> {
+    let pattern = required_string(args, "find", "pattern", r#"{"pattern":"**/*.rs"}"#)?;
     let base = args.get("path").and_then(Value::as_str).unwrap_or(".");
     let limit = int_arg(args, "limit").unwrap_or(MAX_MATCHES).max(1);
     let root = resolve(cwd, base);
@@ -1955,122 +1921,6 @@ fn bool_arg(args: &Value, primary: &str, legacy: &str) -> bool {
         .unwrap_or(false)
 }
 
-fn patch(cwd: &Path, args: &Value) -> Result<ToolOutput> {
-    let diff = required_string(
-        args,
-        "patch",
-        "diff",
-        r#"{"diff":"--- a/file\n+++ b/file\n@@ ..."}"#,
-    )?;
-    let lines: Vec<&str> = diff.lines().collect();
-    let mut applied: Vec<String> = Vec::new();
-    let mut previews: Vec<(String, String)> = Vec::new();
-    let mut i = 0;
-
-    while i < lines.len() {
-        if !lines[i].starts_with("--- ") {
-            i += 1;
-            continue;
-        }
-        i += 1;
-        if i >= lines.len() || !lines[i].starts_with("+++ ") {
-            anyhow::bail!("malformed diff: `---` without `+++`");
-        }
-        let target = diff_target(lines[i]);
-        i += 1;
-
-        let full = resolve(cwd, &target);
-        let original = std::fs::read_to_string(&full).unwrap_or_default();
-        let trailing_newline = original.ends_with('\n');
-        let mut file_lines: Vec<String> = original.lines().map(str::to_string).collect();
-        let mut offset: isize = 0;
-
-        while i < lines.len() && lines[i].starts_with("@@") {
-            let (old_start, old_count) = parse_hunk_header(lines[i])?;
-            i += 1;
-            let mut old_lines: Vec<String> = Vec::new();
-            let mut new_lines: Vec<String> = Vec::new();
-            while i < lines.len() {
-                let line = lines[i];
-                if line.starts_with("@@") || line.starts_with("--- ") {
-                    break;
-                }
-                if let Some(rest) = line.strip_prefix(' ') {
-                    old_lines.push(rest.to_string());
-                    new_lines.push(rest.to_string());
-                } else if let Some(rest) = line.strip_prefix('-') {
-                    old_lines.push(rest.to_string());
-                } else if let Some(rest) = line.strip_prefix('+') {
-                    new_lines.push(rest.to_string());
-                } else if line.is_empty() {
-                    old_lines.push(String::new());
-                    new_lines.push(String::new());
-                } else if line.starts_with('\\') {
-                } else {
-                    break;
-                }
-                i += 1;
-            }
-
-            let position = match old_start {
-                Some(old_start) => {
-                    let start = ((old_start as isize - 1) + offset).max(0) as usize;
-                    find_lines(&file_lines, &old_lines, start).with_context(|| {
-                        format!("hunk at line {old_start} did not match {target}")
-                    })?
-                }
-                None => find_unique_lines(&file_lines, &old_lines).with_context(|| {
-                    format!(
-                        "location-free hunk did not identify one unique region in {target}; add \
-                         unchanged context or a standard `@@ -old,count +new,count @@` header"
-                    )
-                })?,
-            };
-            let _ = old_count;
-            file_lines.splice(
-                position..position + old_lines.len(),
-                new_lines.iter().cloned(),
-            );
-            offset += new_lines.len() as isize - old_lines.len() as isize;
-        }
-
-        let mut out = file_lines.join("\n");
-        if trailing_newline {
-            out.push('\n');
-        }
-        std::fs::write(&full, &out).with_context(|| format!("writing {}", full.display()))?;
-        if let Some(preview) = diff::preview(&original, &out) {
-            previews.push((target.clone(), preview));
-        }
-        applied.push(target);
-    }
-
-    if applied.is_empty() {
-        anyhow::bail!("no file patches found in diff");
-    }
-    let output = ToolOutput::text(format!("patched {}", applied.join(", ")));
-    if previews.is_empty() {
-        return Ok(output);
-    }
-    let path = if previews.len() == 1 {
-        previews[0].0.clone()
-    } else {
-        format!("{} files", previews.len())
-    };
-    let text = previews
-        .iter()
-        .map(|(file, diff)| {
-            if previews.len() == 1 {
-                diff.clone()
-            } else {
-                format!("  {file}\n{diff}")
-            }
-        })
-        .collect::<Vec<_>>()
-        .join("\n");
-    Ok(output.with_diff(path, text))
-}
-
 /// Fetches a URL unless a configured MCP server owns it, in which case the
 /// server is loaded on demand and the model is pointed at its tools instead of
 /// an unauthenticated fetch.
@@ -2436,63 +2286,6 @@ fn wildcard(pattern: &[char], text: &[char]) -> bool {
     }
 }
 
-fn diff_target(header: &str) -> String {
-    let rest = header.trim_start_matches("+++ ").trim();
-    let path = rest.split('\t').next().unwrap_or(rest);
-    path.strip_prefix("b/").unwrap_or(path).to_string()
-}
-
-fn parse_hunk_header(header: &str) -> Result<(Option<usize>, usize)> {
-    let body = header
-        .trim_start_matches("@@")
-        .split("@@")
-        .next()
-        .unwrap_or("")
-        .trim();
-    let Some(old) = body.split_whitespace().find(|part| part.starts_with('-')) else {
-        // Models often emit apply-patch-style bare `@@` markers while still
-        // supplying ordinary ---/+++ file headers. We can apply those safely
-        // when the removed/context block identifies exactly one region.
-        return Ok((None, 0));
-    };
-    let mut parts = old.trim_start_matches('-').split(',');
-    let start = parts
-        .next()
-        .and_then(|value| value.parse::<usize>().ok())
-        .context("malformed hunk start")?;
-    let count = parts
-        .next()
-        .and_then(|value| value.parse::<usize>().ok())
-        .unwrap_or(1);
-    Ok((Some(start), count))
-}
-
-fn find_lines(haystack: &[String], needle: &[String], start: usize) -> Option<usize> {
-    if needle.is_empty() {
-        return Some(start.min(haystack.len()));
-    }
-    if needle.len() > haystack.len() {
-        return None;
-    }
-    (start..=haystack.len() - needle.len())
-        .find(|&index| haystack[index..index + needle.len()] == *needle)
-}
-
-/// Finds a location-free hunk only when its old/context lines identify one
-/// region. Guessing between repeated blocks could silently edit the wrong code.
-fn find_unique_lines(haystack: &[String], needle: &[String]) -> Option<usize> {
-    if needle.is_empty() || needle.len() > haystack.len() {
-        return None;
-    }
-    let mut matches = (0..=haystack.len() - needle.len())
-        .filter(|&index| haystack[index..index + needle.len()] == *needle);
-    let first = matches.next()?;
-    matches.next().is_none().then_some(first)
-}
-
-/// The timeout for a shell command. An explicit `timeout` (milliseconds, Pi's
-/// form) or `timeout_secs` wins; otherwise build and test runners get a longer
-/// budget than an arbitrary command.
 fn bash_timeout_secs(args: &Value, command: &str) -> u64 {
     if let Some(millis) = int_arg(args, "timeout") {
         return (millis as u64).div_ceil(1000).max(1);
@@ -3449,12 +3242,12 @@ fn is_mcp_tool(name: &str) -> bool {
 fn output_limits(name: &str) -> (usize, usize) {
     match name {
         "bash" => (5_000, 160),
-        "grep" | "glob" | "list_dir" => (4_000, 160),
+        "grep" | "find" | "ls" => (4_000, 160),
         "webfetch" => (6_000, 200),
-        "write_file" | "patch" | "edit" => (3_000, 120),
+        "write" | "edit" => (3_000, 120),
         // One extra line for the `… more lines; use offset=` pointer, so a
         // full page of `read` output is never trimmed by the central cap.
-        "read_file" => (READ_MAX_BYTES, READ_MAX_LINES + 1),
+        "read" => (READ_MAX_BYTES, READ_MAX_LINES + 1),
         // A server's result is structured data, not a file: it needs more room
         // than the generic cap, and it is the one output a reader cannot
         // narrow with `offset`/`limit` or a tighter query.
@@ -3534,20 +3327,6 @@ mod tests {
     }
 
     #[test]
-    fn canonical_tool_names_accept_pi_and_legacy_aliases() {
-        assert_eq!(canonical_tool_name("read"), "read_file");
-        assert_eq!(canonical_tool_name("read_file"), "read_file");
-        assert_eq!(canonical_tool_name("write"), "write_file");
-        assert_eq!(canonical_tool_name("edit"), "edit");
-        assert_eq!(canonical_tool_name("patch"), "patch");
-        assert_eq!(canonical_tool_name("ls"), "list_dir");
-        assert_eq!(canonical_tool_name("find"), "glob");
-        assert_eq!(canonical_tool_name("bash"), "bash");
-        assert_eq!(canonical_tool_name("server__tool"), "server__tool");
-        assert_eq!(canonical_tool_name("task"), "task");
-    }
-
-    #[test]
     fn search_display_leads_with_pattern_and_recognizes_only_exact_no_hit_results() {
         let args = r#"{"path":"/work/falcon","pattern":"generateUrl|ums-generation"}"#;
         assert_eq!(
@@ -3559,7 +3338,7 @@ mod tests {
             Some(r#""**/*.rs""#)
         );
         assert!(is_empty_search_result("grep", NO_MATCHES));
-        assert!(is_empty_search_result("glob", NO_FILES_FOUND));
+        assert!(is_empty_search_result("find", NO_FILES_FOUND));
         assert!(!is_empty_search_result("read", NO_MATCHES));
         assert!(!is_empty_search_result(
             "grep",
@@ -4244,7 +4023,7 @@ mod tests {
     }
 
     #[test]
-    fn list_dir_shows_symlink_targets() {
+    fn ls_shows_symlink_targets() {
         let dir = std::env::temp_dir().join(format!("oxide_ls_symlink_{}", std::process::id()));
         std::fs::remove_dir_all(&dir).ok();
         std::fs::create_dir_all(&dir).unwrap();
@@ -4252,7 +4031,7 @@ mod tests {
         #[cfg(unix)]
         std::os::unix::fs::symlink("target.txt", dir.join("link.txt")).unwrap();
 
-        let out = list_dir(&dir, &json!({})).unwrap();
+        let out = ls(&dir, &json!({})).unwrap();
         assert!(out.contains("target.txt"), "{out}");
         #[cfg(unix)]
         assert!(out.contains("link.txt -> target.txt"), "{out}");
@@ -4432,7 +4211,7 @@ mod tests {
         let progress = Progress::default();
         let out = execute(
             &call(
-                "write_file",
+                "write",
                 json!({ "path": "a.txt", "content": "one\ntwo\nthree" }),
             ),
             &dir,
@@ -4443,10 +4222,7 @@ mod tests {
         assert!(out.text.contains("wrote"), "{}", out.text);
 
         let out = execute(
-            &call(
-                "read_file",
-                json!({ "path": "a.txt", "offset": 2, "limit": 1 }),
-            ),
+            &call("read", json!({ "path": "a.txt", "offset": 2, "limit": 1 })),
             &dir,
             &mcp,
             &progress,
@@ -4454,7 +4230,7 @@ mod tests {
         .await;
         assert!(out.text.contains("two"), "{}", out.text);
 
-        let out = execute(&call("list_dir", json!({})), &dir, &mcp, &progress).await;
+        let out = execute(&call("ls", json!({})), &dir, &mcp, &progress).await;
         assert!(out.text.contains("a.txt"), "{}", out.text);
 
         let out = execute(
@@ -4471,7 +4247,7 @@ mod tests {
         );
 
         let out = execute(
-            &call("read_file", json!({ "path": "missing.txt" })),
+            &call("read", json!({ "path": "missing.txt" })),
             &dir,
             &mcp,
             &progress,
@@ -4488,7 +4264,7 @@ mod tests {
         png.extend_from_slice(&[0u8; 17]);
         std::fs::write(dir.join("shot.png"), &png).unwrap();
         let out = execute(
-            &call("read_file", json!({ "path": "shot.png" })),
+            &call("read", json!({ "path": "shot.png" })),
             &dir,
             &mcp,
             &progress,
@@ -4499,7 +4275,7 @@ mod tests {
 
         std::fs::write(dir.join("notes.png"), b"f").unwrap();
         let out = execute(
-            &call("read_file", json!({ "path": "notes.png" })),
+            &call("read", json!({ "path": "notes.png" })),
             &dir,
             &mcp,
             &progress,
@@ -5004,11 +4780,11 @@ mod tests {
         std::fs::write(dir.join("nested/child.txt"), "child").unwrap();
         std::fs::write(dir.join("nested/skip.rs"), "skip").unwrap();
 
-        let all = glob(&dir, &json!({ "pattern": "*.txt" })).unwrap();
+        let all = find(&dir, &json!({ "pattern": "*.txt" })).unwrap();
         assert!(all.contains("root.txt"), "{all}");
         assert!(all.contains("nested/child.txt"), "{all}");
 
-        let limited = glob(&dir, &json!({ "pattern": "*.txt", "limit": 1 })).unwrap();
+        let limited = find(&dir, &json!({ "pattern": "*.txt", "limit": 1 })).unwrap();
         assert_eq!(limited.lines().count(), 2, "{limited}");
         assert!(limited.ends_with("... [truncated]"), "{limited}");
 
@@ -5091,82 +4867,14 @@ mod tests {
     }
 
     #[test]
-    fn applies_unified_diff() {
-        let dir = std::env::temp_dir().join(format!("oxide_patch_{}", std::process::id()));
-        std::fs::remove_dir_all(&dir).ok();
-        std::fs::create_dir_all(&dir).unwrap();
-        std::fs::write(dir.join("f.txt"), "one\ntwo\nthree\n").unwrap();
-
-        let diff = "\
---- a/f.txt
-+++ b/f.txt
-@@ -1,3 +1,3 @@
- one
--two
-+TWO
- three
-";
-        let out = patch(&dir, &json!({ "diff": diff })).unwrap();
-        assert!(out.text.contains("f.txt"), "{}", out.text);
-        assert!(out.diff.is_some());
-        assert_eq!(
-            std::fs::read_to_string(dir.join("f.txt")).unwrap(),
-            "one\nTWO\nthree\n"
-        );
-
-        std::fs::remove_dir_all(&dir).ok();
-    }
-
-    #[test]
-    fn applies_location_free_hunk_only_when_context_is_unique() {
-        let dir =
-            std::env::temp_dir().join(format!("oxide_location_free_patch_{}", std::process::id()));
-        std::fs::remove_dir_all(&dir).ok();
-        std::fs::create_dir_all(&dir).unwrap();
-        std::fs::write(dir.join("f.txt"), "one\ntwo\nthree\n").unwrap();
-
-        let diff = "\
---- a/f.txt
-+++ b/f.txt
-@@
- two
--three
-+THREE
-";
-        let out = patch(&dir, &json!({ "diff": diff })).unwrap();
-        assert!(out.text.contains("f.txt"), "{}", out.text);
-        assert_eq!(
-            std::fs::read_to_string(dir.join("f.txt")).unwrap(),
-            "one\ntwo\nTHREE\n"
-        );
-
-        std::fs::write(dir.join("f.txt"), "same\nother\nsame\n").unwrap();
-        let ambiguous = "\
---- a/f.txt
-+++ b/f.txt
-@@
--same
-+changed
-";
-        let error = patch(&dir, &json!({ "diff": ambiguous })).unwrap_err();
-        assert!(error.to_string().contains("one unique region"), "{error:#}");
-        assert_eq!(
-            std::fs::read_to_string(dir.join("f.txt")).unwrap(),
-            "same\nother\nsame\n"
-        );
-
-        std::fs::remove_dir_all(&dir).ok();
-    }
-
-    #[test]
-    fn write_file_reports_a_diff() {
+    fn write_reports_a_diff() {
         let dir = std::env::temp_dir().join(format!("oxide_write_diff_{}", std::process::id()));
         std::fs::remove_dir_all(&dir).ok();
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(dir.join("f.txt"), "one\ntwo\n").unwrap();
 
-        let out = write_file(&dir, &json!({ "path": "f.txt", "content": "one\nTWO\n" })).unwrap();
-        let diff = out.diff.expect("write_file should report a diff");
+        let out = write(&dir, &json!({ "path": "f.txt", "content": "one\nTWO\n" })).unwrap();
+        let diff = out.diff.expect("write should report a diff");
         assert!(diff.text.contains("TWO"), "{}", diff.text);
         assert!(diff.text.contains("two"), "{}", diff.text);
 
@@ -5202,7 +4910,7 @@ mod tests {
             output.push_str(&format!("line {i}\n"));
         }
 
-        let result = truncate_into("read_file", output, Some(&dir));
+        let result = truncate_into("read", output, Some(&dir));
         assert!(result.contains("line 0\n"), "{result}");
         assert!(
             !result.contains(&format!("line {}\n", READ_MAX_LINES + 40)),
@@ -5218,7 +4926,7 @@ mod tests {
         std::fs::remove_dir_all(&dir).ok();
 
         let output = "x".repeat(READ_MAX_BYTES + 100);
-        let result = truncate_into("read_file", output.clone(), Some(&dir));
+        let result = truncate_into("read", output.clone(), Some(&dir));
         assert!(result.contains("; full:"), "{result}");
 
         let saved: Vec<_> = std::fs::read_dir(&dir).unwrap().flatten().collect();
@@ -5438,11 +5146,11 @@ mod tests {
     #[test]
     fn built_in_tools_keep_their_own_ends() {
         assert_eq!(keep_end("bash"), Keep::Tail);
-        assert_eq!(keep_end("read_file"), Keep::Head);
+        assert_eq!(keep_end("read"), Keep::Head);
         assert_eq!(keep_end("grep"), Keep::Head);
         assert_eq!(keep_end("webfetch"), Keep::Head);
-        assert!(!is_mcp_tool("read_file"));
-        assert!(!is_mcp_tool("list_dir"));
+        assert!(!is_mcp_tool("read"));
+        assert!(!is_mcp_tool("ls"));
         assert!(is_mcp_tool("mock__echo"));
     }
 
@@ -5597,7 +5305,7 @@ mod tests {
     }
 
     #[test]
-    fn read_file_pages_through_long_lines() {
+    fn read_pages_through_long_lines() {
         let dir = std::env::temp_dir().join(format!("oxide_read_cap_{}", std::process::id()));
         std::fs::remove_dir_all(&dir).ok();
         std::fs::create_dir_all(&dir).unwrap();
@@ -5606,7 +5314,7 @@ mod tests {
 
         // The line is served in continuation chunks, not cut off, and the
         // footer points at the next display line.
-        let out = read_file(&dir, &json!({ "path": "long.txt" })).unwrap();
+        let out = read(&dir, &json!({ "path": "long.txt" })).unwrap();
         assert!(out.text.starts_with("1|"), "{}", out.text);
         assert!(out.text.contains("1+|"), "{}", out.text);
         assert!(out.text.contains("use offset="), "{}", out.text);
@@ -5615,7 +5323,7 @@ mod tests {
         let mut offset = 1usize;
         let mut assembled = String::new();
         loop {
-            let page = read_file(&dir, &json!({ "path": "long.txt", "offset": offset })).unwrap();
+            let page = read(&dir, &json!({ "path": "long.txt", "offset": offset })).unwrap();
             for entry in page.text.lines() {
                 if entry.contains("more lines; use offset=") {
                     break;
@@ -5652,29 +5360,29 @@ mod tests {
 
         // A full page plus the `… more lines` pointer must survive the central
         // cap, otherwise the model never learns the offset to page with.
-        let out = read_file(&dir, &json!({ "path": "big.txt" })).unwrap();
+        let out = read(&dir, &json!({ "path": "big.txt" })).unwrap();
         assert!(out.text.contains("use offset="), "{}", out.text);
-        let capped = truncate_into("read_file", out.text.clone(), None);
+        let capped = truncate_into("read", out.text.clone(), None);
         assert!(!capped.starts_with("[truncated:"), "{capped}");
         assert!(capped.contains("use offset="), "{capped}");
 
         // An oversized explicit limit is clamped, so it cannot produce a page
         // the central cap would silently cut.
-        let out = read_file(&dir, &json!({ "path": "big.txt", "limit": 10_000 })).unwrap();
-        let capped = truncate_into("read_file", out.text.clone(), None);
+        let out = read(&dir, &json!({ "path": "big.txt", "limit": 10_000 })).unwrap();
+        let capped = truncate_into("read", out.text.clone(), None);
         assert!(!capped.starts_with("[truncated:"), "{capped}");
 
         std::fs::remove_dir_all(&dir).ok();
     }
 
     #[test]
-    fn read_file_lists_directories_instead_of_erroring() {
+    fn read_lists_directories_instead_of_erroring() {
         let dir = std::env::temp_dir().join(format!("oxide_read_dir_{}", std::process::id()));
         std::fs::remove_dir_all(&dir).ok();
         std::fs::create_dir_all(dir.join("components/nested")).unwrap();
         std::fs::write(dir.join("components/index.tsx"), "export {}").unwrap();
 
-        let out = read_file(&dir, &json!({ "path": "components" })).unwrap();
+        let out = read(&dir, &json!({ "path": "components" })).unwrap();
         assert!(out.text.contains("is a directory"), "{}", out.text);
         assert!(out.text.contains("index.tsx"), "{}", out.text);
         assert!(out.text.contains("nested/"), "{}", out.text);
@@ -5683,13 +5391,13 @@ mod tests {
     }
 
     #[test]
-    fn read_file_reports_binary_files_without_erroring() {
+    fn read_reports_binary_files_without_erroring() {
         let dir = std::env::temp_dir().join(format!("oxide_read_bin_{}", std::process::id()));
         std::fs::remove_dir_all(&dir).ok();
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(dir.join("blob.bin"), [0xff, 0xfe, 0x00, 0x01]).unwrap();
 
-        let out = read_file(&dir, &json!({ "path": "blob.bin" })).unwrap();
+        let out = read(&dir, &json!({ "path": "blob.bin" })).unwrap();
         assert!(out.text.contains("binary file"), "{}", out.text);
         assert!(out.text.contains("4 bytes"), "{}", out.text);
 
@@ -5697,28 +5405,28 @@ mod tests {
     }
 
     #[test]
-    fn read_file_rejects_an_unparseable_offset() {
+    fn read_rejects_an_unparseable_offset() {
         let dir =
             std::env::temp_dir().join(format!("oxide_read_bad_offset_{}", std::process::id()));
         std::fs::remove_dir_all(&dir).ok();
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(dir.join("a.txt"), "one\ntwo\nthree\n").unwrap();
 
-        let err = read_file(&dir, &json!({ "path": "a.txt", "offset": ".2" })).unwrap_err();
+        let err = read(&dir, &json!({ "path": "a.txt", "offset": ".2" })).unwrap_err();
         assert!(
             err.to_string().contains("`offset` must be an integer"),
             "{err}"
         );
 
         // An explicit `null` is a present, non-integer value, not an omission.
-        let err = read_file(&dir, &json!({ "path": "a.txt", "limit": null })).unwrap_err();
+        let err = read(&dir, &json!({ "path": "a.txt", "limit": null })).unwrap_err();
         assert!(
             err.to_string().contains("`limit` must be an integer"),
             "{err}"
         );
 
         // A numeric string is still accepted.
-        let out = read_file(
+        let out = read(
             &dir,
             &json!({ "path": "a.txt", "offset": "2", "limit": "1" }),
         )
@@ -5776,13 +5484,13 @@ mod tests {
     }
 
     #[test]
-    fn read_file_accepts_a_range_offset() {
+    fn read_accepts_a_range_offset() {
         let dir = std::env::temp_dir().join(format!("oxide_read_range_{}", std::process::id()));
         std::fs::remove_dir_all(&dir).ok();
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(dir.join("a.txt"), "one\ntwo\nthree\nfour\n").unwrap();
 
-        let out = read_file(&dir, &json!({ "path": "a.txt", "offset": [2, 3] })).unwrap();
+        let out = read(&dir, &json!({ "path": "a.txt", "offset": [2, 3] })).unwrap();
         assert!(out.text.contains("2|two"), "{}", out.text);
         assert!(out.text.contains("3|three"), "{}", out.text);
         assert!(!out.text.contains("1|one"), "{}", out.text);
@@ -5790,11 +5498,11 @@ mod tests {
 
         // A reversed or overflowing range must not panic; the first number is
         // still the offset and the page falls back to the default span.
-        let out = read_file(&dir, &json!({ "path": "a.txt", "offset": [3, 2] })).unwrap();
+        let out = read(&dir, &json!({ "path": "a.txt", "offset": [3, 2] })).unwrap();
         assert!(out.text.contains("3|three"), "{}", out.text);
         assert!(!out.text.contains("1|one"), "{}", out.text);
 
-        let out = read_file(&dir, &json!({ "path": "a.txt", "offset": [0, u64::MAX] })).unwrap();
+        let out = read(&dir, &json!({ "path": "a.txt", "offset": [0, u64::MAX] })).unwrap();
         assert!(out.text.contains("1|one"), "{}", out.text);
 
         std::fs::remove_dir_all(&dir).ok();

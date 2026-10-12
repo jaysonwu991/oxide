@@ -133,11 +133,9 @@ relative to the repository root.
 - **Tools.** Register built-in tools in `tools::specs(&McpRegistry)` and
   dispatch them in `tools::execute(call, cwd, &McpRegistry, &Progress)`; report
   incremental output through `Progress` and set `ToolOutput::terminate` to end
-  the turn. Tool names are canonicalized with `tools::canonical_tool_name`,
-  which accepts Pi names (`read`, `write`, `edit`, `ls`, `find`) and legacy
-  aliases (`read_file`, `write_file`, `patch`, `list_dir`, `glob`); permission
-  rules, concurrency checks, and TUI rendering must go through it. Read-only
-  tools are listed in the `concurrency_safe` classifier in
+  the turn. Permission rules, the concurrency classifier and the TUI compare a
+  call's name directly, so a tool's name in `specs` is the name everything else
+  matches. Read-only tools are listed in the `concurrency_safe` classifier in
   `crates/core/src/agent.rs` to run in parallel. Agent-level tools (`task`,
   `skill`, `command`, `memory`, `diagnostics`) are defined and dispatched in
   `crates/core/src/agent.rs`.

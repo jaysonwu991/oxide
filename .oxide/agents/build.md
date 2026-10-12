@@ -2,8 +2,7 @@
 description: General build-and-fix agent for the oxide workspace. Runs cargo and git, applies focused changes, and is used by the build, commit, lint, and test slash commands.
 mode: subagent
 permission:
-  write_file: allow
-  patch: allow
+  write: allow
   bash:
     "*": ask
     "cargo *": allow

@@ -2543,7 +2543,7 @@ function toolSummary(name, argsJson) {
     args = {};
   }
   const subject =
-    name === "grep" || name === "find" || name === "glob"
+    name === "grep" || name === "find"
       ? args.pattern
       : args.command || args.path || args.pattern || args.query || args.url || args.prompt;
   const raw = String(subject || "")
@@ -2551,7 +2551,7 @@ function toolSummary(name, argsJson) {
     .trim();
   let text = raw;
   let title = raw;
-  if ((name === "grep" || name === "find" || name === "glob") && raw) {
+  if ((name === "grep" || name === "find") && raw) {
     const path = String(args.path || ".").trim();
     text = `${JSON.stringify(raw)}${path && path !== "." ? ` · ${path}` : ""}`;
     title = `${name === "grep" ? "Search for" : "Find"} ${JSON.stringify(raw)} in ${path || "."}`;
@@ -2725,7 +2725,7 @@ function finishTool(tool, output, { isError = false, diff = null, elapsed = 0 } 
   if (isError) tool.block.classList.add("error");
   tool.quiet =
     !isError &&
-    (tool.name === "grep" || tool.name === "find" || tool.name === "glob") &&
+    (tool.name === "grep" || tool.name === "find") &&
     /^(?:No matches found|No files found matching pattern)\s*$/.test(tool.full);
   if (tool.quiet) tool.block.classList.add("quiet");
   const counts = diff ? diffCounts(diff.text) : "";

@@ -60,12 +60,26 @@
     function Get-Platform {
         $key = "$(Get-Os)-$(Get-Arch)"
         switch ($key) {
-            "windows-x64" { return "win32-x64" }
-            "darwin-arm64" { return "darwin-arm64" }
-            "darwin-x64" { return "darwin-x64" }
+            "windows-x64" { return "win-x64" }
+            "darwin-arm64" { return "macos-arm64" }
+            "darwin-x64" { return "macos-x64" }
             "linux-x64" { return "linux-x64" }
             "linux-arm64" { return "linux-arm64" }
             default { throw "no prebuilt binary available for $key" }
+        }
+    }
+
+    # The token a release was named after before the version moved into the
+    # name, which is the key an older manifest carries and the name an older
+    # archive carries.
+    function Get-PreviousPlatform([string]$Platform) {
+        switch ($Platform) {
+            "win-x64" { return "win32-x64" }
+            "macos-arm64" { return "darwin-arm64" }
+            "macos-x64" { return "darwin-x64" }
+            "linux-x64" { return "linux-x64" }
+            "linux-arm64" { return "linux-arm64" }
+            default { return $null }
         }
     }
 
@@ -128,11 +142,11 @@
     }
 
     function Resolve-Url([string]$Platform) {
-        $ext = if ($Platform -like "win32-*") { "zip" } else { "tar.gz" }
+        $ext = if ($Platform -like "win-*") { "zip" } else { "tar.gz" }
 
         if ($Version) {
             $ver = $Version -replace "^v", ""
-            return "$BaseUrl/releases/download/v$ver/Oxide-v$ver-$Platform.$ext"
+            return "$BaseUrl/releases/download/v$ver/Oxide-$ver-$Platform.$ext"
         }
 
         Write-Info "fetching $ManifestName"
@@ -144,18 +158,28 @@
         if (-not $ver) { throw "could not read version from $ManifestName" }
         $asset = Get-ManifestValue $manifest $Platform
         if (-not $asset) {
-            throw "no asset for $Platform; supported targets: darwin-arm64, darwin-x64, linux-x64, linux-arm64, win32-x64"
+            $previous = Get-PreviousPlatform $Platform
+            if ($previous) { $asset = Get-ManifestValue $manifest $previous }
+        }
+        if (-not $asset) {
+            throw "no asset for $Platform; supported targets: macos-arm64, macos-x64, linux-x64, linux-arm64, win-x64"
         }
         return "$BaseUrl/releases/download/$ver/$asset"
     }
 
-    # Pre-branding releases published only the lowercase archive names, so an
-    # explicit OXIDE_VERSION (pin or rollback) can still need the old name.
-    function Get-LegacyUrl([string]$Url) {
-        if ($Url -match "/Oxide-v") {
-            return $Url -replace "/Oxide-v", "/oxide-v"
-        }
-        return $null
+    # The names an archive can still be published under: the token a release was
+    # named after before the version moved into it, and the lowercase name the
+    # releases before the branding published. A pinned version — a rollback —
+    # can need either, and an older release only carries them.
+    function Get-LegacyUrls([string]$Platform, [string]$Ver) {
+        $previous = Get-PreviousPlatform $Platform
+        if (-not $previous) { return @() }
+        $ver = $Ver -replace "^v", ""
+        $ext = if ($Platform -like "win-*") { "zip" } else { "tar.gz" }
+        return @(
+            "$BaseUrl/releases/download/v$ver/Oxide-v$ver-$previous.$ext",
+            "$BaseUrl/releases/download/v$ver/oxide-v$ver-$previous.$ext"
+        )
     }
 
     function Test-Checksum([string]$File, [string]$SumsFile) {
@@ -171,18 +195,18 @@
     }
 
     function Get-DefaultInstallDir([string]$Platform) {
-        if ($Platform -like "win32-*") {
+        if ($Platform -like "win-*") {
             return (Join-Path $env:LOCALAPPDATA "Programs\Oxide")
         }
         return (Join-Path $HOME ".local/bin")
     }
 
     function Test-PathWarning([string]$Dir, [string]$Platform) {
-        $sep = if ($Platform -like "win32-*") { ";" } else { ":" }
+        $sep = if ($Platform -like "win-*") { ";" } else { ":" }
         $entries = $env:PATH -split [regex]::Escape($sep)
         if ($entries -contains $Dir) { return }
         Write-Warn "$Dir is not on your PATH"
-        if ($Platform -like "win32-*") {
+        if ($Platform -like "win-*") {
             Write-Host "oxide-install: add it with: setx PATH `"$Dir;%PATH%`""
         } else {
             Write-Host "oxide-install: add it with: export PATH=`"$Dir`:`$PATH`""
@@ -192,6 +216,7 @@
     $platform = Get-Platform
     $url = Resolve-Url $platform
     $archiveName = ($url -split "/")[-1]
+    $tag = ($url -split "/")[-2]
 
     $tmp = Join-Path ([System.IO.Path]::GetTempPath()) ("oxide-install-" + [Guid]::NewGuid().ToString("N"))
     New-Item -ItemType Directory -Path $tmp -Force | Out-Null
@@ -202,12 +227,21 @@
         try {
             Get-Binary $url $archivePath
         } catch {
-            $fallback = Get-LegacyUrl $url
+            $fallback = $null
+            foreach ($candidate in (Get-LegacyUrls $platform $tag)) {
+                $name = ($candidate -split "/")[-1]
+                Write-Info "downloading $name for $platform"
+                try {
+                    Get-Binary $candidate (Join-Path $tmp $name)
+                } catch {
+                    continue
+                }
+                $fallback = $candidate
+                $archiveName = $name
+                $archivePath = Join-Path $tmp $name
+                break
+            }
             if (-not $fallback) { throw }
-            $archiveName = ($fallback -split "/")[-1]
-            $archivePath = Join-Path $tmp $archiveName
-            Write-Info "downloading $archiveName for $platform"
-            Get-Binary $fallback $archivePath
             $url = $fallback
         }
 
@@ -223,7 +257,7 @@
             Test-Checksum $archivePath $sumsPath
         }
 
-        if ($platform -like "win32-*") {
+        if ($platform -like "win-*") {
             Expand-Archive -Path $archivePath -DestinationPath $tmp -Force
             $binary = "oxide.exe"
         } else {
@@ -236,7 +270,7 @@
         New-Item -ItemType Directory -Path $installDir -Force | Out-Null
         $dest = Join-Path $installDir $binary
         Move-Item -Force (Join-Path $tmp $binary) $dest
-        if ($platform -notlike "win32-*") {
+        if ($platform -notlike "win-*") {
             & chmod 0755 $dest
         }
 

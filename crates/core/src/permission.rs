@@ -68,10 +68,9 @@ impl Permissions {
     }
 
     pub fn decide(&self, tool: &str, subject: &str) -> Action {
-        let tool = crate::tools::canonical_tool_name(tool);
         let mut action = self.baseline.unwrap_or_else(|| default_action(tool));
         for (name, rule) in &self.rules {
-            if name != "*" && name != tool && crate::tools::canonical_tool_name(name) != tool {
+            if name != "*" && name != tool {
                 continue;
             }
             match rule {
@@ -102,14 +101,14 @@ impl Action {
 
 fn default_action(tool: &str) -> Action {
     match tool {
-        "read_file" | "list_dir" | "glob" | "grep" | "webfetch" => Action::Allow,
-        "write_file" | "patch" | "edit" | "bash" => Action::Ask,
+        "read" | "ls" | "find" | "grep" | "webfetch" => Action::Allow,
+        "write" | "edit" | "bash" => Action::Ask,
         _ => Action::Allow,
     }
 }
 
 pub fn subject_for(tool: &str, args: &Value) -> String {
-    match crate::tools::canonical_tool_name(tool) {
+    match tool {
         "bash" => args
             .get("command")
             .and_then(Value::as_str)
@@ -152,9 +151,9 @@ mod tests {
     #[test]
     fn defaults_allow_reads_and_ask_writes() {
         let permissions = Permissions::default();
-        assert_eq!(permissions.decide("read_file", "a.rs"), Action::Allow);
+        assert_eq!(permissions.decide("read", "a.rs"), Action::Allow);
         assert_eq!(permissions.decide("bash", "ls"), Action::Ask);
-        assert_eq!(permissions.decide("write_file", "a.rs"), Action::Ask);
+        assert_eq!(permissions.decide("write", "a.rs"), Action::Ask);
     }
 
     #[test]
@@ -176,12 +175,12 @@ mod tests {
     #[test]
     fn top_level_string_sets_baseline() {
         let permissions = Permissions::from_value(&json!("deny"));
-        assert_eq!(permissions.decide("read_file", "a.rs"), Action::Deny);
+        assert_eq!(permissions.decide("read", "a.rs"), Action::Deny);
     }
 
     #[test]
     fn extracts_subject_from_arguments() {
         assert_eq!(subject_for("bash", &json!({"command":"ls"})), "ls");
-        assert_eq!(subject_for("write_file", &json!({"path":"a.rs"})), "a.rs");
+        assert_eq!(subject_for("write", &json!({"path":"a.rs"})), "a.rs");
     }
 }
