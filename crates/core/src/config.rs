@@ -2754,8 +2754,10 @@ impl Config {
             "# Tool use\nWork in larger batches to avoid extra round trips. Read a whole file (or a \
              wide `offset`/`limit`) once instead of re-reading the same path in small slices, and \
              issue several independent `read`, `grep`, `find`, or `ls` calls in the same step. Use \
-             `grep` to locate a symbol or string, then read the surrounding lines. Only re-read a \
-             file after you edit it. Before you edit a region, read it and copy `oldText` from \
+             `grep` to locate a symbol or string, then read the surrounding lines. Once a search \
+             identifies likely files, inspect those results and act on them instead of repeatedly \
+             rephrasing the same repository-wide search. Only re-read a file after you edit it. \
+             Before you edit a region, read it and copy `oldText` from \
              that result — the `N|` line numbers and trailing whitespace are tolerated, but text \
              that has moved on is not, and a mismatch replies with the closest region to copy. \
              Prefer the dedicated tools over shell equivalents: `read` to \
@@ -2966,6 +2968,7 @@ mod tests {
         let prompt = config.compose_system_prompt();
         assert!(prompt.contains("# Tool use"));
         assert!(prompt.contains("batches"));
+        assert!(prompt.contains("instead of repeatedly"), "{prompt}");
         assert!(
             prompt.contains("already starts in the project root"),
             "{prompt}"

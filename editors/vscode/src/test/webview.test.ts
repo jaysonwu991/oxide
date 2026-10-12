@@ -705,7 +705,7 @@ describe("webview composer", () => {
     }
     // Stop is the one icon that turns red: it ends the turn rather than
     // opening something.
-    assert.match(shell, /id="stop" class="icon danger"/);
+    assert.match(shell, /id="stop" class="icon danger run-control"/);
   });
 
   /// The full-size preview is the desktop app's: a ✕ in a head row above the
@@ -784,15 +784,23 @@ describe("webview composer", () => {
     send(stateMessage({ busy: true, status: "Thinking…", queued: 2 }));
     assert.equal(byId.get("status")!.textContent, "Thinking… · 2 queued");
     assert.equal(byId.get("status")!.classList.contains("busy"), true);
-    assert.equal(byId.get("status")!.hidden, false);
+    assert.equal(byId.get("status")!.hidden, true, "the phase is part of the Stop control");
     assert.equal(byId.get("stop")!.hidden, false, "a running turn offers Stop");
+    assert.equal(byId.get("stop-label")!.textContent, "Thinking… · 2 queued");
+    assert.match(shell, /id="stop"[\s\S]*?spinner[\s\S]*?stop-label[\s\S]*?stop-icon[\s\S]*?<\/button>/);
     assert.equal(byId.get("send")!.hidden, true, "and nothing to send hides Send");
+    assert.equal(byId.get("run-time")!.hidden, false);
+    assert.match(byId.get("run-time-text")!.textContent, /^Working for \d+s$/);
 
     // An idle turn has no phase to report, so the label (and its dot) goes
     // rather than sitting there reading like a control.
     send(stateMessage());
     assert.equal(byId.get("status")!.hidden, true);
     assert.equal(byId.get("stop")!.hidden, true);
+    assert.equal(byId.get("run-time")!.hidden, false);
+    assert.match(byId.get("run-time-text")!.textContent, /^Worked for \d+s$/);
+    send(stateMessage({ sessionId: "another-thread", folder: "/repo" }));
+    assert.equal(byId.get("run-time")!.hidden, true, "another thread does not inherit the total");
     assert.equal(byId.get("send")!.hidden, false);
     assert.equal(byId.get("send")!.getAttribute("aria-label"), "Send");
     assert.equal(byId.get("send")!.disabled, true);
@@ -3458,6 +3466,11 @@ describe("webview tool card", () => {
     assert.match(pill.innerHTML, /\+2/);
     assert.match(pill.innerHTML, /−1/);
     assert.match(style, /\.live-changes \{[^}]*border-radius: 999px;/s);
+    assert.match(
+      style,
+      /\.live-changes \{[^}]*display: flex;[^}]*width: max-content;[^}]*margin: 0 auto 8px;/s,
+      "the shrink-wrapped summary is centered on the composer",
+    );
 
     pill.fire("click");
     assert.equal(find(byId.get("transcript")!, "tool")!.classList.contains("expanded"), true);

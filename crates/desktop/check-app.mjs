@@ -1604,15 +1604,13 @@ check(
     /id="status-icon"[^>]*aria-hidden="true"/.test(badgeRow),
   badgeRow.slice(0, 320),
 );
-// The state the badge wears: the spinner the sidebar's rows use while a turn is
-// running, the theme's error color for a failure, and the window's own dim tone
-// for the readout — chrome about the turn rather than a word from the
-// conversation.
+// Idle notices use the badge; while a turn runs, its spinner and phase share the
+// Stop control. A failure keeps the theme's error color.
 check(
   "drew the badge's states in the window's own chrome",
   /\.status \{[^}]*color: var\(--faint\);[^}]*font-size: 11.5px;/.test(sheet) &&
     /\.status\[data-level="error"\] \.status-icon \{ color: var\(--error\); \}/.test(sheet) &&
-    /\.status\[data-level="busy"\] \.status-icon \{[^}]*animation: spin/.test(sheet) &&
+    /#stop\.run-control \.spinner \{[^}]*border-color: var\(--accent\);/.test(sheet) &&
     /#usage \{ color: var\(--faint\); font-size: 11.5px;/.test(sheet),
   sheet.slice(sheet.indexOf(".status {"), sheet.indexOf(".status {") + 220),
 );
@@ -3610,6 +3608,11 @@ check(
     elementFor("live-changes").innerHTML.includes("−1"),
   elementFor("live-changes").innerHTML,
 );
+check(
+  "centered the live file summary over the composer",
+  /\.live-changes \{[^}]*display: flex;[^}]*width: max-content;[^}]*margin: 0 auto 8px;/.test(sheet),
+  sheet.slice(sheet.indexOf(".live-changes {"), sheet.indexOf(".live-changes {") + 220),
+);
 app.toggleTool(editCard);
 check(
   "showed the call's own diff when the card is expanded",
@@ -4821,7 +4824,9 @@ console.log("composer action");
 // arrow and the stop square the extension's own composer wears.
 check(
   "drew the composer's corner as glyphs",
-  ["send", "stop"].every((id) => buttonFor(id).includes("<svg") && /<\/svg>$/.test(buttonFor(id))),
+  ["send", "stop"].every((id) => buttonFor(id).includes("<svg")) &&
+    buttonFor("stop").includes('id="stop-label"') &&
+    buttonFor("stop").includes('class="spinner"'),
   `${buttonFor("send")} / ${buttonFor("stop")}`,
 );
 // Stop and Send swap as the box gains text. New context waits by default; the
@@ -4910,6 +4915,20 @@ check(
     /body\.running \.composer \{ border-radius: 16px; \}/.test(sheet),
   `send ${elementFor("send").hidden} / stop ${elementFor("stop").hidden}`,
 );
+check(
+  "combined the running phase and Stop in one control",
+  elementFor("status").hidden === true &&
+    elementFor("stop-label").textContent.length > 0 &&
+    buttonFor("stop").includes('class="stop-icon"'),
+  `${elementFor("status").hidden} / ${elementFor("stop-label").textContent}`,
+);
+check(
+  "showed the turn's total working time above the transcript",
+  elementFor("run-time").hidden === false &&
+    /^Working for \d+s$/.test(elementFor("run-time-text").textContent) &&
+    /\.run-time \{[^}]*max-width: 780px;[^}]*font-variant-numeric: tabular-nums;/.test(sheet),
+  `${elementFor("run-time").hidden} / ${elementFor("run-time-text").textContent}`,
+);
 elementFor("prompt").value = "keep going";
 app.updateSendState();
 check(
@@ -4942,6 +4961,12 @@ check(
     !document.body.classList.contains("running") &&
     elementFor("send").title === "Send (Enter)",
   `${elementFor("send").title} / stop ${elementFor("stop").hidden}`,
+);
+check(
+  "kept the completed turn's total working time",
+  elementFor("run-time").hidden === false &&
+    /^Worked for \d+s$/.test(elementFor("run-time-text").textContent),
+  `${elementFor("run-time").hidden} / ${elementFor("run-time-text").textContent}`,
 );
 // The accessible name follows the action the button performs, so a screen
 // reader hears what the click will do rather than the label it was built with.
@@ -5430,9 +5455,11 @@ check(
 );
 app.setBusy();
 check(
-  "spun the badge while a turn runs",
-  el("status").dataset.level === "busy" && el("status-text").hidden === true,
-  `${el("status").dataset.level} / ${el("status-text").hidden}`,
+  "moved the running state into Stop",
+  el("status").dataset.level === "busy" &&
+    el("status").hidden === true &&
+    el("stop-label").textContent === "Working…",
+  `${el("status").dataset.level} / ${el("status").hidden} / ${el("stop-label").textContent}`,
 );
 app.setIdle();
 app.setStatus("Queued as the next turn.");

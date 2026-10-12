@@ -203,6 +203,18 @@ pre,
   background: var(--vscode-button-secondaryHoverBackground, var(--vscode-toolbar-hoverBackground));
 }
 
+.run-time {
+  flex: 0 0 auto;
+  width: calc(100% - 20px);
+  max-width: 760px;
+  margin: 10px auto 0;
+  padding: 0 0 7px;
+  border-bottom: 1px solid var(--vscode-panel-border, rgba(128, 128, 128, 0.25));
+  color: var(--vscode-descriptionForeground);
+  font-size: 0.86em;
+  font-variant-numeric: tabular-nums;
+}
+
 /* ---------- transcript ---------- */
 
 #transcript {
@@ -1510,24 +1522,29 @@ footer {
   opacity: 0.55;
 }
 
-/* While a turn runs the dot becomes the spinner the tool panels use. */
-#status.busy {
+#stop.run-control {
+  width: auto;
+  gap: 5px;
+  padding: 0 7px;
+  color: var(--vscode-descriptionForeground);
+  font-size: 0.82em;
+  white-space: nowrap;
+}
+
+#stop.run-control .spinner {
+  width: 8px;
+  height: 8px;
+  margin: 0;
   color: var(--vscode-charts-blue, var(--vscode-foreground));
 }
 
-#status.busy::before {
-  background: none;
-  border: 1px solid currentColor;
-  border-top-color: transparent;
-  opacity: 1;
-  animation: spin 0.8s linear infinite;
+#stop.run-control .stop-icon {
+  display: inline-flex;
 }
 
-#elapsed {
-  color: var(--vscode-descriptionForeground);
-  font-size: 0.82em;
-  font-variant-numeric: tabular-nums;
-  flex: 0 0 auto;
+#stop.run-control .stop-icon svg {
+  width: 11px;
+  height: 11px;
 }
 
 #dropzone {
@@ -1575,8 +1592,9 @@ body.running .composer-strip { display: none; }
 body.running #composer { border-radius: 16px; }
 .live-changes {
   align-self: center;
-  display: inline-flex;
+  display: flex;
   align-items: center;
+  width: max-content;
   gap: 5px;
   margin: 0 auto 8px;
   padding: 6px 10px;
