@@ -185,6 +185,11 @@ main() {
     platform="$(detect_platform)"
     url="$(resolve_url "$platform")"
     archive="${url##*/}"
+    # The tag the resolved URL sits under, which is the version a fallback name
+    # is built with: `resolve_url` runs in a subshell, so the `ver` it reads out
+    # of the manifest is gone by the time a download fails.
+    tag="${url%/*}"
+    tag="${tag##*/}"
 
     tmp="$(mktemp -d)"
     trap 'rm -rf "$tmp"' EXIT INT TERM
@@ -192,7 +197,7 @@ main() {
     info "downloading ${archive} for ${platform}"
     if ! download "$url" "${tmp}/${archive}"; then
         fallback=""
-        for candidate in $(legacy_urls "$platform" "$ver"); do
+        for candidate in $(legacy_urls "$platform" "$tag"); do
             name="${candidate##*/}"
             info "downloading ${name} for ${platform}"
             if download "$candidate" "${tmp}/${name}"; then
