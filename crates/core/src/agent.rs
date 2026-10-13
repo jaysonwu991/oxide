@@ -16,7 +16,7 @@ use crate::tools;
 use anyhow::{Context, Result};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
-use std::collections::BTreeSet;
+use std::collections::{BTreeSet, HashSet};
 use std::future::Future;
 use std::path::{Path, PathBuf};
 use std::pin::Pin;
@@ -1462,14 +1462,28 @@ async fn run_loop(
 /// read it. The same file can be named through an absolute path, a relative
 /// path, or a symlink, and none of those should buy another copy of its base64
 /// data in the model context.
-fn media_fingerprint(part: &ContentPart) -> Option<String> {
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+enum MediaKind {
+    Image,
+    File,
+}
+
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+struct MediaFingerprint {
+    kind: MediaKind,
+    digest: [u8; 32],
+}
+
+fn media_fingerprint(part: &ContentPart) -> Option<MediaFingerprint> {
     let (kind, payload) = match part {
-        ContentPart::ImageUrl { image_url } => ("image", image_url.url.as_str()),
-        ContentPart::File { file } => ("file", file.file_data.as_str()),
+        ContentPart::ImageUrl { image_url } => (MediaKind::Image, image_url.url.as_str()),
+        ContentPart::File { file } => (MediaKind::File, file.file_data.as_str()),
         ContentPart::Text { .. } => return None,
     };
-    let digest = Sha256::digest(payload.as_bytes());
-    Some(format!("{kind}:{digest:x}"))
+    Some(MediaFingerprint {
+        kind,
+        digest: Sha256::digest(payload.as_bytes()).into(),
+    })
 }
 
 /// Removes duplicate media from stored tool results before constructing the
@@ -1478,8 +1492,8 @@ fn media_fingerprint(part: &ContentPart) -> Option<String> {
 /// makes those sessions recover immediately without rewriting their history.
 /// User attachments keep their original placement even when repeated because
 /// attaching the same artifact to a later instruction can itself be meaningful.
-fn deduplicate_tool_media(messages: &mut [Message]) -> BTreeSet<String> {
-    let mut seen = BTreeSet::new();
+fn deduplicate_tool_media(messages: &mut [Message]) -> HashSet<MediaFingerprint> {
+    let mut seen = HashSet::new();
     for message in messages {
         let Some(MessageContent::Parts(parts)) = message.content.as_mut() else {
             continue;
@@ -1499,7 +1513,7 @@ fn deduplicate_tool_media(messages: &mut [Message]) -> BTreeSet<String> {
 /// short, actionable result. The original text result remains intact so tool
 /// cards still say which path was read; only the expensive duplicate part is
 /// removed from the provider request and session log.
-fn omit_duplicate_media(output: &mut tools::ToolOutput, seen: &mut BTreeSet<String>) {
+fn omit_duplicate_media(output: &mut tools::ToolOutput, seen: &mut HashSet<MediaFingerprint>) {
     let before = output.media.len();
     output
         .media
@@ -3203,6 +3217,15 @@ mod tests {
         }
     }
 
+    fn file_part(data: &str) -> ContentPart {
+        ContentPart::File {
+            file: crate::llm::FileData {
+                filename: Some("attachment.pdf".into()),
+                file_data: data.into(),
+            },
+        }
+    }
+
     #[test]
     fn repeated_media_is_not_appended_to_the_context_again() {
         let mut history = vec![Message::tool_parts(
@@ -3229,7 +3252,7 @@ mod tests {
 
     #[test]
     fn first_media_result_is_left_unchanged() {
-        let mut seen = BTreeSet::new();
+        let mut seen = HashSet::new();
         let mut output =
             tools::ToolOutput::with_media("attached shot.png", vec![image_part("AAAA")]);
 
@@ -3238,6 +3261,20 @@ mod tests {
         assert_eq!(output.media, vec![image_part("AAAA")]);
         assert_eq!(output.text, "attached shot.png");
         assert_eq!(seen.len(), 1);
+    }
+
+    #[test]
+    fn identical_payloads_of_different_media_kinds_are_not_deduplicated() {
+        let mut seen = HashSet::new();
+        let mut output = tools::ToolOutput::with_media(
+            "attached image and file",
+            vec![image_part("AAAA"), file_part("AAAA")],
+        );
+
+        omit_duplicate_media(&mut output, &mut seen);
+
+        assert_eq!(output.media, vec![image_part("AAAA"), file_part("AAAA")]);
+        assert_eq!(seen.len(), 2);
     }
 
     #[test]
