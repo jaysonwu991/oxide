@@ -1,7 +1,10 @@
 use crate::ask::{self, Asker, Question, Reply};
 use crate::config::Config;
 use crate::ecosystem::AgentMode;
-use crate::llm::{FunctionSpec, LlmClient, Message, Retry, StreamHooks, ToolCall, ToolSpec};
+use crate::llm::{
+    ContentPart, FunctionSpec, LlmClient, Message, MessageContent, Retry, StreamHooks, ToolCall,
+    ToolSpec,
+};
 use crate::lsp::LspManager;
 use crate::mcp::McpRegistry;
 use crate::memory::QueryScope;
@@ -12,7 +15,8 @@ use crate::snapshots::Snapshots;
 use crate::tools;
 use anyhow::{Context, Result};
 use serde_json::{json, Value};
-use std::collections::BTreeSet;
+use sha2::{Digest, Sha256};
+use std::collections::{BTreeSet, HashSet};
 use std::future::Future;
 use std::path::{Path, PathBuf};
 use std::pin::Pin;
@@ -642,6 +646,12 @@ async fn run_loop(
     // Verification commands already run this turn, so an exact repeat can be
     // flagged instead of silently re-run (a slow build or test suite).
     let mut seen_verifications: BTreeSet<String> = BTreeSet::new();
+    // A model that cannot make out an attachment sometimes calls `read` on the
+    // same image repeatedly. Each successful read used to append the complete
+    // base64 payload again, multiplying the context without adding evidence.
+    // Seed this from the active history so resumed turns also reuse media that
+    // is still present (a compaction naturally removes media it replaced).
+    let mut seen_media = deduplicate_tool_media(&mut messages);
     // A summary whose verification re-check is still pending. It is kept out of
     // the log and the transcript until the re-check either extends it or the run
     // ends, so a re-checked answer reads as one summary instead of two.
@@ -751,6 +761,7 @@ async fn run_loop(
                             }
                             if let Ok(refreshed) = log.messages() {
                                 messages = refreshed;
+                                seen_media = deduplicate_tool_media(&mut messages);
                             }
                             // The held summary is deliberately not in the log,
                             // so the compacted view dropped it; put it back so
@@ -1250,7 +1261,7 @@ async fn run_loop(
                 }
 
                 for (handle, original) in handles.into_iter().zip(&tool_calls) {
-                    let (output, millis) = match handle.await {
+                    let (mut output, millis) = match handle.await {
                         Ok(result) => result,
                         Err(_) => (
                             tools::ToolOutput::error(format!(
@@ -1261,6 +1272,7 @@ async fn run_loop(
                             0,
                         ),
                     };
+                    omit_duplicate_media(&mut output, &mut seen_media);
                     let args = serde_json::from_str::<Value>(&original.function.arguments)
                         .unwrap_or(Value::Null);
                     verification.record_result(
@@ -1376,6 +1388,7 @@ async fn run_loop(
                         }
                         output.terminate |= result.terminate;
                     }
+                    omit_duplicate_media(&mut output, &mut seen_media);
                     let millis = started.elapsed().as_millis() as u64;
                     verification.record_result(
                         &name,
@@ -1443,6 +1456,77 @@ async fn run_loop(
             return;
         }
     }
+}
+
+/// Fingerprints media by its actual payload rather than by the path used to
+/// read it. The same file can be named through an absolute path, a relative
+/// path, or a symlink, and none of those should buy another copy of its base64
+/// data in the model context.
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+enum MediaKind {
+    Image,
+    File,
+}
+
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+struct MediaFingerprint {
+    kind: MediaKind,
+    digest: [u8; 32],
+}
+
+fn media_fingerprint(part: &ContentPart) -> Option<MediaFingerprint> {
+    let (kind, payload) = match part {
+        ContentPart::ImageUrl { image_url } => (MediaKind::Image, image_url.url.as_str()),
+        ContentPart::File { file } => (MediaKind::File, file.file_data.as_str()),
+        ContentPart::Text { .. } => return None,
+    };
+    Some(MediaFingerprint {
+        kind,
+        digest: Sha256::digest(payload.as_bytes()).into(),
+    })
+}
+
+/// Removes duplicate media from stored tool results before constructing the
+/// next provider request. Session logs written by older Oxide versions can
+/// already contain several copies of one screenshot; cleaning the active view
+/// makes those sessions recover immediately without rewriting their history.
+/// User attachments keep their original placement even when repeated because
+/// attaching the same artifact to a later instruction can itself be meaningful.
+fn deduplicate_tool_media(messages: &mut [Message]) -> HashSet<MediaFingerprint> {
+    let mut seen = HashSet::new();
+    for message in messages {
+        let Some(MessageContent::Parts(parts)) = message.content.as_mut() else {
+            continue;
+        };
+        if message.role == "tool" {
+            parts.retain(|part| {
+                media_fingerprint(part).is_none_or(|fingerprint| seen.insert(fingerprint))
+            });
+        } else {
+            seen.extend(parts.iter().filter_map(media_fingerprint));
+        }
+    }
+    seen
+}
+
+/// Keeps the first copy of each media payload and turns later copies into a
+/// short, actionable result. The original text result remains intact so tool
+/// cards still say which path was read; only the expensive duplicate part is
+/// removed from the provider request and session log.
+fn omit_duplicate_media(output: &mut tools::ToolOutput, seen: &mut HashSet<MediaFingerprint>) {
+    let before = output.media.len();
+    output
+        .media
+        .retain(|part| media_fingerprint(part).is_none_or(|fingerprint| seen.insert(fingerprint)));
+    let omitted = before.saturating_sub(output.media.len());
+    if omitted == 0 {
+        return;
+    }
+    output.text.push_str(&format!(
+        "\n\n[note: {omitted} media attachment(s) already appear earlier in the active context, \
+         so their duplicate bytes were omitted. Inspect the earlier attachment instead of reading \
+         the same file again; use OCR or another image tool if the visual is unclear.]"
+    ));
 }
 
 fn finish(
@@ -3122,6 +3206,101 @@ mod tests {
             content: "Audit the deps.".into(),
         });
         config
+    }
+
+    fn image_part(data: &str) -> ContentPart {
+        ContentPart::ImageUrl {
+            image_url: crate::llm::ImageUrl {
+                url: format!("data:image/png;base64,{data}"),
+                detail: None,
+            },
+        }
+    }
+
+    fn file_part(data: &str) -> ContentPart {
+        ContentPart::File {
+            file: crate::llm::FileData {
+                filename: Some("attachment.pdf".into()),
+                file_data: data.into(),
+            },
+        }
+    }
+
+    #[test]
+    fn repeated_media_is_not_appended_to_the_context_again() {
+        let mut history = vec![Message::tool_parts(
+            "first",
+            "attached shot.png",
+            vec![image_part("AAAA")],
+        )];
+        let mut seen = deduplicate_tool_media(&mut history);
+        let mut output = tools::ToolOutput::with_media(
+            "attached ./shot.png",
+            vec![image_part("AAAA"), image_part("BBBB")],
+        );
+
+        omit_duplicate_media(&mut output, &mut seen);
+
+        assert_eq!(output.media, vec![image_part("BBBB")]);
+        assert!(
+            output.text.contains("1 media attachment(s)"),
+            "{}",
+            output.text
+        );
+        assert!(output.text.contains("duplicate bytes were omitted"));
+    }
+
+    #[test]
+    fn first_media_result_is_left_unchanged() {
+        let mut seen = HashSet::new();
+        let mut output =
+            tools::ToolOutput::with_media("attached shot.png", vec![image_part("AAAA")]);
+
+        omit_duplicate_media(&mut output, &mut seen);
+
+        assert_eq!(output.media, vec![image_part("AAAA")]);
+        assert_eq!(output.text, "attached shot.png");
+        assert_eq!(seen.len(), 1);
+    }
+
+    #[test]
+    fn identical_payloads_of_different_media_kinds_are_not_deduplicated() {
+        let mut seen = HashSet::new();
+        let mut output = tools::ToolOutput::with_media(
+            "attached image and file",
+            vec![image_part("AAAA"), file_part("AAAA")],
+        );
+
+        omit_duplicate_media(&mut output, &mut seen);
+
+        assert_eq!(output.media, vec![image_part("AAAA"), file_part("AAAA")]);
+        assert_eq!(seen.len(), 2);
+    }
+
+    #[test]
+    fn resumed_history_drops_duplicate_tool_media_but_keeps_user_attachments() {
+        let mut messages = vec![
+            Message::user_parts("original", vec![image_part("AAAA")]),
+            Message::tool_parts("first", "attached first", vec![image_part("AAAA")]),
+            Message::tool_parts("second", "attached second", vec![image_part("BBBB")]),
+            Message::tool_parts("third", "attached third", vec![image_part("BBBB")]),
+            Message::user_parts("again", vec![image_part("AAAA")]),
+        ];
+
+        let seen = deduplicate_tool_media(&mut messages);
+
+        assert_eq!(seen.len(), 2);
+        let media_counts: Vec<_> = messages
+            .iter()
+            .map(|message| match message.content.as_ref() {
+                Some(MessageContent::Parts(parts)) => parts
+                    .iter()
+                    .filter(|part| !matches!(part, ContentPart::Text { .. }))
+                    .count(),
+                _ => 0,
+            })
+            .collect();
+        assert_eq!(media_counts, vec![1, 0, 1, 0, 1]);
     }
 
     #[test]
