@@ -352,7 +352,7 @@ pub fn specs_for_scope(mcp: &McpRegistry, scope: PathScope<'_>) -> Vec<ToolSpec>
         ),
         spec(
             "bash",
-            if project_only { "Run one focused shell command from the project root and return its combined output. The command must stay inside the current project: do not change to another directory or name paths outside the project. Use it for programs, not for inspecting files: prefer `read`, `grep`, `find`, and `ls`. Recursive shell `grep` is refused because the dedicated `grep` tool bounds results and skips dependencies and generated files. Never chain unrelated commands with `;`/`&&` or sweep the whole filesystem with `find /`." } else if registered_only { "Run one focused shell command from the project root and return its combined output. The command may name another project registered in Oxide, but must not access unregistered paths. Use it for programs, not for inspecting files: prefer `read`, `grep`, `find`, and `ls`. Recursive shell `grep` is refused because the dedicated `grep` tool bounds results and skips dependencies and generated files. Never chain unrelated commands with `;`/`&&` or sweep the whole filesystem with `find /`." } else { "Run one focused shell command from the project root and return its combined output. Use it for programs, not for inspecting files: prefer `read`, `grep`, `find`, and `ls`. Recursive shell `grep` is refused because the dedicated `grep` tool bounds results and skips dependencies and generated files. Never chain unrelated commands with `;`/`&&` or sweep the whole filesystem with `find /`." },
+            if project_only { "Run one focused shell command from the project root and return its combined output. The command must stay inside the current project: do not change to another directory or name paths outside the project. Use it for programs, not for inspecting files. For content searches, call the `grep` tool directly instead of running `grep` or `rg` here; that tool uses ripgrep when available, bounds results, skips dependencies and generated files, and respects ignore files. Prefer `read`, `find`, and `ls` for other inspection. Recursive shell `grep` is refused. Never chain unrelated commands with `;`/`&&` or sweep the whole filesystem with `find /`." } else if registered_only { "Run one focused shell command from the project root and return its combined output. The command may name another project registered in Oxide, but must not access unregistered paths. Use it for programs, not for inspecting files. For content searches, call the `grep` tool directly instead of running `grep` or `rg` here; that tool uses ripgrep when available, bounds results, skips dependencies and generated files, and respects ignore files. Prefer `read`, `find`, and `ls` for other inspection. Recursive shell `grep` is refused. Never chain unrelated commands with `;`/`&&` or sweep the whole filesystem with `find /`." } else { "Run one focused shell command from the project root and return its combined output. Use it for programs, not for inspecting files. For content searches, call the `grep` tool directly instead of running `grep` or `rg` here; that tool uses ripgrep when available, bounds results, skips dependencies and generated files, and respects ignore files. Prefer `read`, `find`, and `ls` for other inspection. Recursive shell `grep` is refused. Never chain unrelated commands with `;`/`&&` or sweep the whole filesystem with `find /`." },
             json!({
                 "type": "object",
                 "properties": {
@@ -377,7 +377,7 @@ pub fn specs_for_scope(mcp: &McpRegistry, scope: PathScope<'_>) -> Vec<ToolSpec>
         ),
         spec(
             "grep",
-            if project_only { "Search file contents inside the current project for a pattern and return matching `path:line: text` entries. The pattern matches a literal substring by default; set `regex` to treat it as a regular expression." } else if registered_only { "Search file contents inside projects registered in Oxide for a pattern and return matching `path:line: text` entries. The pattern matches a literal substring by default; set `regex` to treat it as a regular expression. Absolute paths inside those projects are allowed." } else { "Search file contents for a pattern and return matching `path:line: text` entries. The pattern matches a literal substring by default; set `regex` to treat it as a regular expression. Absolute paths are allowed." },
+            if project_only { "Search file contents inside the current project and return matching `path:line: text` entries. Use this directly for repository searches instead of calling `bash` with `grep` or `rg`. It runs ripgrep when available, respects ignore files, and skips dependency and generated directories. The pattern matches a literal substring by default; set `regex` to treat it as a regular expression." } else if registered_only { "Search file contents inside projects registered in Oxide and return matching `path:line: text` entries. Use this directly for repository searches instead of calling `bash` with `grep` or `rg`. It runs ripgrep when available, respects ignore files, and skips dependency and generated directories. The pattern matches a literal substring by default; set `regex` to treat it as a regular expression. Absolute paths inside those projects are allowed." } else { "Search file contents and return matching `path:line: text` entries. Use this directly for repository searches instead of calling `bash` with `grep` or `rg`. It runs ripgrep when available, respects ignore files, and skips dependency and generated directories. The pattern matches a literal substring by default; set `regex` to treat it as a regular expression. Absolute paths are allowed." },
             json!({
                 "type": "object",
                 "properties": {
@@ -1024,7 +1024,7 @@ fn parse_edits(args: &Value) -> Result<Vec<Replacement>> {
     let mut invalid_string: Option<String> = None;
     match args.get("edits") {
         Some(Value::String(text)) => match parse_edits_string(text) {
-            Some(parsed) => collect_edits(&parsed, &mut raw),
+            Some(parsed) => collect_edits(&parsed, &mut raw)?,
             None => {
                 let mut snippet: String = text.chars().take(80).collect();
                 if text.chars().count() > 80 {
@@ -1033,7 +1033,7 @@ fn parse_edits(args: &Value) -> Result<Vec<Replacement>> {
                 invalid_string = Some(snippet.replace(['\n', '\r', '\t'], " "));
             }
         },
-        Some(value) => collect_edits(value, &mut raw),
+        Some(value) => collect_edits(value, &mut raw)?,
         None => {}
     }
     if let (Some(old), Some(new)) = (
@@ -1080,8 +1080,8 @@ fn parse_edits_string(text: &str) -> Option<Value> {
     None
 }
 
-fn collect_edits(value: &Value, out: &mut Vec<Replacement>) {
-    collect_edits_with_path(value, out, None);
+fn collect_edits(value: &Value, out: &mut Vec<Replacement>) -> Result<()> {
+    collect_edits_with_path(value, out, None, "edits")
 }
 
 fn edit_path_value(value: &Value) -> Option<&str> {
@@ -1090,30 +1090,46 @@ fn edit_path_value(value: &Value) -> Option<&str> {
         .find_map(|key| value.get(key).and_then(Value::as_str))
 }
 
-fn collect_edits_with_path(value: &Value, out: &mut Vec<Replacement>, inherited: Option<&str>) {
+fn collect_edits_with_path(
+    value: &Value,
+    out: &mut Vec<Replacement>,
+    inherited: Option<&str>,
+    location: &str,
+) -> Result<()> {
     match value {
         Value::Array(items) => {
-            for item in items {
-                collect_edits_with_path(item, out, inherited);
+            for (index, item) in items.iter().enumerate() {
+                collect_edits_with_path(item, out, inherited, &format!("{location}[{index}]"))?;
             }
         }
         Value::Object(_) => {
             let path = edit_path_value(value).or(inherited);
-            if let (Some(old), Some(new)) = (
-                value.get("oldText").and_then(Value::as_str),
-                value.get("newText").and_then(Value::as_str),
-            ) {
+            let old = value.get("oldText");
+            let new = value.get("newText");
+            if old.is_some() || new.is_some() {
+                let (Some(old), Some(new)) =
+                    (old.and_then(Value::as_str), new.and_then(Value::as_str))
+                else {
+                    anyhow::bail!("{location} requires string `oldText` and `newText` fields");
+                };
                 out.push(Replacement {
                     old: old.to_string(),
                     new: new.to_string(),
                     path: path.map(str::to_string),
                 });
             } else if let Some(edits) = value.get("edits") {
-                collect_edits_with_path(edits, out, path);
+                collect_edits_with_path(edits, out, path, &format!("{location}.edits"))?;
+            } else {
+                anyhow::bail!(
+                    "{location} must be a replacement with string `oldText` and `newText` fields"
+                );
             }
         }
-        _ => {}
+        _ => anyhow::bail!(
+            "{location} must be a replacement object or an array of replacement objects"
+        ),
     }
+    Ok(())
 }
 
 /// One line of a file with its byte range, used by the whitespace-insensitive
@@ -1185,7 +1201,7 @@ enum MatchFailure {
 /// indentation is deliberately not ignored: a replacement that silently lost
 /// its indentation would corrupt the file's formatting.
 fn locate(base: &str, old: &str) -> Result<Located, MatchFailure> {
-    let exact: Vec<usize> = base.match_indices(old).map(|(start, _)| start).collect();
+    let exact = overlapping_match_indices(base, old);
     match exact.len() {
         1 => {
             let start = exact[0];
@@ -1268,6 +1284,28 @@ fn locate(base: &str, old: &str) -> Result<Located, MatchFailure> {
             &old_lines,
         ))),
     }
+}
+
+/// Every byte offset at which `needle` starts, including overlapping matches.
+/// `str::match_indices` advances by the whole match and would call `aa` unique
+/// in `aaa`, even though either pair of characters could be the intended edit.
+fn overlapping_match_indices(haystack: &str, needle: &str) -> Vec<usize> {
+    if needle.is_empty() {
+        return Vec::new();
+    }
+    let mut offsets = Vec::new();
+    let mut from = 0;
+    while let Some(relative) = haystack[from..].find(needle) {
+        let start = from + relative;
+        offsets.push(start);
+        let next = haystack[start..]
+            .chars()
+            .next()
+            .expect("a non-empty match starts on a character boundary")
+            .len_utf8();
+        from = start + next;
+    }
+    offsets
 }
 
 /// The file region most similar to a failed `oldText`, as its 1-based line
@@ -1414,8 +1452,7 @@ fn edit(cwd: &Path, args: &Value) -> Result<ToolOutput> {
         .with_context(|| format!("reading {} (use write to create new files)", full.display()))?;
 
     let (bom, content) = split_bom(&raw);
-    let crlf = content.contains("\r\n");
-    let mut base = content.replace("\r\n", "\n");
+    let mut base = content.to_string();
     let mut failures: Vec<String> = Vec::new();
     // Every edit is matched against the original file, so a later edit cannot
     // be broken by an earlier one rewriting nearby text (or introducing a
@@ -1424,24 +1461,36 @@ fn edit(cwd: &Path, args: &Value) -> Result<ToolOutput> {
 
     for (index, replacement) in edits.iter().enumerate() {
         let raw_old = replacement.old.replace("\r\n", "\n");
-        let (old, copied_listing) = match strip_line_prefixes(&raw_old) {
-            Some(stripped) => (stripped, true),
-            None => (raw_old, false),
-        };
         // Only a truly empty target is rejected; a whitespace-only one is
         // allowed as long as it matches uniquely, as the exact matcher decides.
-        if old.is_empty() {
+        if raw_old.is_empty() {
             failures.push(format!("edits[{index}].oldText must not be empty"));
             continue;
         }
-        let new = replacement.new.replace("\r\n", "\n");
-        let new = if copied_listing {
-            strip_all_line_prefixes(&new)
-        } else {
-            new
+        // A literal `1|text` can genuinely exist in a file. Try the text as
+        // supplied before treating it as a numbered `read` listing; only a
+        // missing literal target enables the prefix-stripping fallback.
+        let (found, copied_listing) = match locate(&base, &raw_old) {
+            ok @ Ok(_) => (ok, false),
+            ambiguous @ Err(MatchFailure::Ambiguous(_)) => (ambiguous, false),
+            Err(MatchFailure::Missing(_)) => match strip_line_prefixes(&raw_old) {
+                Some(stripped) if stripped != raw_old => (locate(&base, &stripped), true),
+                _ => (locate(&base, &raw_old), false),
+            },
         };
-        match locate(&base, &old) {
-            Ok(range) => located.push((index, range, new)),
+        match found {
+            Ok(range) => {
+                let mut new = replacement.new.replace("\r\n", "\n");
+                if copied_listing {
+                    new = strip_all_line_prefixes(&new);
+                }
+                new = replacement_with_matching_line_endings(
+                    &new,
+                    &base[range.start..range.end],
+                    content,
+                );
+                located.push((index, range, new));
+            }
             Err(MatchFailure::Ambiguous(lines)) => failures.push(format!(
                 "edits[{index}].oldText matched {} times in {path} (lines {}); include more \
                  surrounding text to make it unique",
@@ -1489,11 +1538,7 @@ fn edit(cwd: &Path, args: &Value) -> Result<ToolOutput> {
         base.replace_range(range.start..range.end, new);
     }
 
-    let final_content = if crlf {
-        format!("{bom}{}", base.replace('\n', "\r\n"))
-    } else {
-        format!("{bom}{base}")
-    };
+    let final_content = format!("{bom}{base}");
     std::fs::write(&full, &final_content).with_context(|| format!("writing {}", full.display()))?;
 
     // Pi's own wording (`coding-agent/src/core/tools/edit.ts`). The redundancy a
@@ -1511,6 +1556,32 @@ fn edit(cwd: &Path, args: &Value) -> Result<ToolOutput> {
         Some(diff) => Ok(output.with_diff(&path, diff)),
         None => Ok(output),
     }
+}
+
+/// Adapts newly inserted lines to the target region without normalizing line
+/// endings elsewhere in the file. If the target has no newline of its own, a
+/// consistently-CRLF file supplies the default; mixed files retain their
+/// untouched mixture byte for byte.
+fn replacement_with_matching_line_endings(new: &str, target: &str, file: &str) -> String {
+    let target_has_newline = target.contains('\n');
+    let use_crlf = if target_has_newline {
+        target.contains("\r\n") && !has_lone_lf(target)
+    } else {
+        file.contains("\r\n") && !has_lone_lf(file)
+    };
+    if use_crlf {
+        new.replace('\n', "\r\n")
+    } else {
+        new.to_string()
+    }
+}
+
+fn has_lone_lf(text: &str) -> bool {
+    let bytes = text.as_bytes();
+    bytes
+        .iter()
+        .enumerate()
+        .any(|(index, byte)| *byte == b'\n' && (index == 0 || bytes[index - 1] != b'\r'))
 }
 
 /// Splits a leading UTF-8 BOM from file content so edits match text the model
@@ -3025,9 +3096,9 @@ async fn bash(cwd: &Path, args: &Value, progress: &Progress) -> Result<String> {
     let command = required_string(args, "bash", "command", r#"{"command":"cargo test"}"#)?;
     if uses_recursive_shell_grep(command) {
         anyhow::bail!(
-            "recursive shell grep refused; use the `grep` tool with `pattern` and optional \
-             `path`, `glob`, and `limit` instead. It skips dependency/generated directories \
-             and respects ignore files"
+            "recursive shell grep refused; call the `grep` tool directly with `pattern` and \
+             optional `path`, `glob`, and `limit` instead. The tool uses ripgrep when \
+             available, skips dependency/generated directories, and respects ignore files"
         );
     }
     let secs = bash_timeout_secs(args, command);
@@ -4494,6 +4565,185 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn edit_rejects_overlapping_occurrences_and_prefers_literal_numbered_text() {
+        let dir = std::env::temp_dir().join(format!("oxide_edit_exact_{}", std::process::id()));
+        std::fs::remove_dir_all(&dir).ok();
+        std::fs::create_dir_all(&dir).unwrap();
+        let mcp = McpRegistry::default();
+        let progress = Progress::default();
+
+        // Both occurrences of `aa` count even though they overlap. Choosing
+        // the first one would silently turn `aaa` into `ba`.
+        std::fs::write(dir.join("overlap.txt"), "aaa\n").unwrap();
+        let out = execute(
+            &call(
+                "edit",
+                json!({
+                    "path": "overlap.txt",
+                    "edits": [{ "oldText": "aa", "newText": "b" }]
+                }),
+            ),
+            &dir,
+            &mcp,
+            &progress,
+        )
+        .await;
+        assert!(out.is_error, "{}", out.text);
+        assert!(out.text.contains("matched 2 times"), "{}", out.text);
+        assert_eq!(
+            std::fs::read_to_string(dir.join("overlap.txt")).unwrap(),
+            "aaa\n"
+        );
+
+        // Advancing overlap detection by a Unicode scalar boundary keeps the
+        // same protection for multibyte text without slicing UTF-8 mid-codepoint.
+        std::fs::write(dir.join("unicode.txt"), "ééé\n").unwrap();
+        let out = execute(
+            &call(
+                "edit",
+                json!({
+                    "path": "unicode.txt",
+                    "edits": [{ "oldText": "éé", "newText": "x" }]
+                }),
+            ),
+            &dir,
+            &mcp,
+            &progress,
+        )
+        .await;
+        assert!(out.is_error, "{}", out.text);
+        assert!(out.text.contains("matched 2 times"), "{}", out.text);
+        assert_eq!(
+            std::fs::read_to_string(dir.join("unicode.txt")).unwrap(),
+            "ééé\n"
+        );
+
+        // A real line beginning with digits and `|` wins as an exact literal;
+        // prefix stripping is only a fallback for text copied from `read`.
+        std::fs::write(dir.join("numbered.txt"), "1|alpha\nbeta\n").unwrap();
+        let out = execute(
+            &call(
+                "edit",
+                json!({
+                    "path": "numbered.txt",
+                    "edits": [{ "oldText": "1|alpha", "newText": "literal" }]
+                }),
+            ),
+            &dir,
+            &mcp,
+            &progress,
+        )
+        .await;
+        assert!(!out.is_error, "{}", out.text);
+        assert_eq!(
+            std::fs::read_to_string(dir.join("numbered.txt")).unwrap(),
+            "literal\nbeta\n"
+        );
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[tokio::test]
+    async fn edit_preserves_mixed_line_endings_and_adapts_crlf_replacements() {
+        let dir = std::env::temp_dir().join(format!("oxide_edit_endings_{}", std::process::id()));
+        std::fs::remove_dir_all(&dir).ok();
+        std::fs::create_dir_all(&dir).unwrap();
+        let mcp = McpRegistry::default();
+        let progress = Progress::default();
+
+        let mixed = "one\r\ntwo\nthree\r\n";
+        std::fs::write(dir.join("mixed.txt"), mixed).unwrap();
+        let out = execute(
+            &call(
+                "edit",
+                json!({
+                    "path": "mixed.txt",
+                    "edits": [{ "oldText": "two", "newText": "TWO" }]
+                }),
+            ),
+            &dir,
+            &mcp,
+            &progress,
+        )
+        .await;
+        assert!(!out.is_error, "{}", out.text);
+        assert_eq!(
+            std::fs::read_to_string(dir.join("mixed.txt")).unwrap(),
+            "one\r\nTWO\nthree\r\n"
+        );
+
+        std::fs::write(dir.join("crlf.txt"), "one\r\ntwo\r\n").unwrap();
+        let out = execute(
+            &call(
+                "edit",
+                json!({
+                    "path": "crlf.txt",
+                    "edits": [{ "oldText": "two", "newText": "two-a\ntwo-b" }]
+                }),
+            ),
+            &dir,
+            &mcp,
+            &progress,
+        )
+        .await;
+        assert!(!out.is_error, "{}", out.text);
+        assert_eq!(
+            std::fs::read_to_string(dir.join("crlf.txt")).unwrap(),
+            "one\r\ntwo-a\r\ntwo-b\r\n"
+        );
+
+        std::fs::write(dir.join("bom.txt"), "\u{feff}alpha\n").unwrap();
+        let out = execute(
+            &call(
+                "edit",
+                json!({
+                    "path": "bom.txt",
+                    "edits": [{ "oldText": "alpha", "newText": "beta" }]
+                }),
+            ),
+            &dir,
+            &mcp,
+            &progress,
+        )
+        .await;
+        assert!(!out.is_error, "{}", out.text);
+        assert_eq!(
+            std::fs::read_to_string(dir.join("bom.txt")).unwrap(),
+            "\u{feff}beta\n"
+        );
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn edit_rejects_each_malformed_replacement_instead_of_silently_dropping_it() {
+        let dir = std::env::temp_dir().join(format!("oxide_edit_shape_{}", std::process::id()));
+        std::fs::remove_dir_all(&dir).ok();
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("a.txt"), "one\ntwo\n").unwrap();
+
+        let err = edit(
+            &dir,
+            &json!({
+                "path": "a.txt",
+                "edits": [
+                    { "oldText": "one", "newText": "ONE" },
+                    { "oldText": "two" }
+                ]
+            }),
+        )
+        .unwrap_err();
+        assert!(err.to_string().contains("edits[1]"), "{err}");
+        assert!(err.to_string().contains("`newText`"), "{err}");
+        assert_eq!(
+            std::fs::read_to_string(dir.join("a.txt")).unwrap(),
+            "one\ntwo\n"
+        );
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[tokio::test]
     async fn find_and_grep_respect_gitignore() {
         let dir = std::env::temp_dir().join(format!("oxide_gitignore_{}", std::process::id()));
         std::fs::remove_dir_all(&dir).ok();
@@ -5244,7 +5494,38 @@ mod tests {
 
         assert!(output.is_error);
         assert!(output.text.contains("recursive shell grep refused"));
-        assert!(output.text.contains("`grep` tool"));
+        assert!(output.text.contains("call the `grep` tool directly"));
+        assert!(output.text.contains("uses ripgrep when available"));
+    }
+
+    #[test]
+    fn search_tool_descriptions_direct_repository_searches_to_ripgrep_backed_grep() {
+        let specs = specs(&McpRegistry::default());
+        let bash = specs
+            .iter()
+            .find(|spec| spec.function.name == "bash")
+            .unwrap();
+        let grep = specs
+            .iter()
+            .find(|spec| spec.function.name == "grep")
+            .unwrap();
+
+        assert!(bash
+            .function
+            .description
+            .contains("call the `grep` tool directly"));
+        assert!(bash
+            .function
+            .description
+            .contains("uses ripgrep when available"));
+        assert!(grep
+            .function
+            .description
+            .contains("instead of calling `bash`"));
+        assert!(grep
+            .function
+            .description
+            .contains("runs ripgrep when available"));
     }
 
     #[test]
