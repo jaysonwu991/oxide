@@ -742,11 +742,31 @@ fn enforce_project_shell(cwd: &Path, command: &str) -> Result<()> {
         }
     }
     // Also catch paths inside a quoted program argument, for example
-    // `python -c "open('/sibling/file')"`. A slash begins an absolute path
-    // there when it follows a quote, opening delimiter, assignment, or comma.
+    // `python -c "open('/sibling/file')"` or its Windows drive-path form.
+    for path in embedded_absolute_paths(command) {
+        if path == "/dev/null" || path.starts_with("//") {
+            continue;
+        }
+        ensure_project_path(cwd, path)?;
+    }
+    Ok(())
+}
+
+/// Finds Unix-rooted and Windows drive-rooted paths embedded in a quoted
+/// script or expression. `Path::is_absolute` only understands the host syntax,
+/// so recognizing both shapes here also keeps this parser directly testable on
+/// every platform.
+fn embedded_absolute_paths(command: &str) -> Vec<&str> {
     let chars: Vec<(usize, char)> = command.char_indices().collect();
+    let mut paths = Vec::new();
     for (position, (start, ch)) in chars.iter().enumerate() {
-        if *ch != '/' {
+        let unix_rooted = *ch == '/';
+        let windows_rooted = ch.is_ascii_alphabetic()
+            && chars.get(position + 1).is_some_and(|(_, ch)| *ch == ':')
+            && chars
+                .get(position + 2)
+                .is_some_and(|(_, ch)| matches!(ch, '/' | '\\'));
+        if !unix_rooted && !windows_rooted {
             continue;
         }
         let previous = position.checked_sub(1).map(|index| chars[index].1);
@@ -763,12 +783,9 @@ fn enforce_project_shell(cwd: &Path, command: &str) -> Result<()> {
             .map(|(index, _)| *index)
             .unwrap_or(command.len());
         let path = &command[*start..end];
-        if path == "/dev/null" || path.starts_with("//") {
-            continue;
-        }
-        ensure_project_path(cwd, path)?;
+        paths.push(path);
     }
-    Ok(())
+    paths
 }
 
 fn read(cwd: &Path, args: &Value) -> Result<ToolOutput> {
@@ -3809,6 +3826,17 @@ mod tests {
         .is_err());
 
         std::fs::remove_dir_all(base).ok();
+    }
+
+    #[test]
+    fn embedded_shell_paths_recognize_unix_and_windows_roots() {
+        assert_eq!(
+            embedded_absolute_paths(
+                "python -c \"open('/private/project/a')\" && python -c \"open('D:\\\\work\\\\other\\\\b')\""
+            ),
+            vec!["/private/project/a", r"D:\\work\\other\\b"]
+        );
+        assert!(embedded_absolute_paths("curl https://example.com/a").is_empty());
     }
 
     #[cfg(unix)]
