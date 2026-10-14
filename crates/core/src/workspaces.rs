@@ -31,6 +31,10 @@ pub struct Project {
 pub struct Workspaces {
     current: PathBuf,
     others: Vec<Project>,
+    /// Every live registered project root, including entries omitted from the
+    /// prompt's bounded display list. Desktop tool access uses this complete
+    /// set, so tightening the filesystem boundary does not hide older projects.
+    roots: Vec<PathBuf>,
     /// How many known projects the list left out.
     omitted: usize,
 }
@@ -51,6 +55,7 @@ impl Workspaces {
         let current = normalize(cwd);
         let mut workspaces = Self {
             current: current.clone(),
+            roots: vec![current.clone()],
             ..Self::default()
         };
         let Some(registry) = Registry::load(registry) else {
@@ -90,6 +95,9 @@ impl Workspaces {
                 .then(b.1.cmp(&a.1))
                 .then_with(|| a.2.name.to_lowercase().cmp(&b.2.name.to_lowercase()))
         });
+        workspaces
+            .roots
+            .extend(rows.iter().map(|(_, _, project)| project.path.clone()));
         workspaces.omitted = rows.len().saturating_sub(MAX_LISTED);
         rows.truncate(MAX_LISTED);
         workspaces.others = rows.into_iter().map(|(_, _, project)| project).collect();
@@ -104,6 +112,12 @@ impl Workspaces {
     /// This run's own project directory.
     pub fn current(&self) -> &Path {
         &self.current
+    }
+
+    /// Every project root the desktop registry authorizes this run to reach.
+    /// Unlike `others`, this is not truncated for prompt readability.
+    pub fn roots(&self) -> &[PathBuf] {
+        &self.roots
     }
 
     /// The `# Workspaces` section of the system prompt. `None` for a run whose
@@ -126,10 +140,11 @@ impl Workspaces {
         }
         text.push_str(
             " The other folders added to Oxide on this machine are listed below. Each is an \
-             ordinary directory with no sandbox in the way: `read`, `grep`, `find`, `ls`, `write` \
-             and `edit` take absolute paths, so a file in another project can be read, searched \
-             and edited from this run — but a `bash` command starts in this project's root, so \
-             name the path instead of changing directory into it. Resolve a repository the user \
+             allowed project root: `read`, `grep`, `find`, `ls`, `write` and `edit` take its \
+             absolute path, so a file in another registered project can be read, searched and \
+             edited directly from this run. Unregistered paths remain outside the run. A `bash` \
+             command starts in this project's root, so name a registered path when work spans \
+             projects. Resolve a repository the user \
              names here, or by listing the folder beside this one, before searching: do not scan \
              the home directory (`find ~`), which reads every unrelated file on the machine.",
         );
@@ -298,7 +313,11 @@ mod tests {
         let section = workspaces.section().unwrap();
         assert!(section.contains("# Workspaces"));
         assert!(section.contains(&canonical(&here)));
-        assert!(section.contains("absolute paths"), "{section}");
+        assert!(section.contains("registered project"), "{section}");
+        assert!(
+            section.contains("Unregistered paths remain outside"),
+            "{section}"
+        );
         assert!(section.contains("find ~"), "{section}");
         assert!(section.contains(&sibling.to_string_lossy().to_string()));
 
@@ -327,6 +346,7 @@ mod tests {
 
         let workspaces = Workspaces::load_from(&here, &store);
         assert_eq!(workspaces.others().len(), MAX_LISTED);
+        assert_eq!(workspaces.roots().len(), MAX_LISTED + 4);
         assert_eq!(workspaces.others()[0].name, "p26");
         assert_eq!(workspaces.others().last().unwrap().name, "p03");
         let section = workspaces.section().unwrap();

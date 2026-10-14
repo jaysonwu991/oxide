@@ -1584,7 +1584,7 @@ fn build_tool_specs(
     depth: usize,
     offer_session_title: bool,
 ) -> Vec<ToolSpec> {
-    let mut specs = tools::specs(&runtime.mcp);
+    let mut specs = tools::specs_for_scope(&runtime.mcp, path_scope(config));
     if depth < MAX_TASK_DEPTH
         && config
             .ecosystem
@@ -2483,8 +2483,10 @@ async fn dispatch(
             .await,
         ),
         "memory" => legacy_tool_output(memory(config, &call.function.arguments)),
-        "diagnostics" => lsp_diagnostics(runtime, cwd, &call.function.arguments).await,
-        _ => tools::execute(call, cwd, &runtime.mcp, progress).await,
+        "diagnostics" => {
+            lsp_diagnostics(runtime, cwd, &call.function.arguments, path_scope(config)).await
+        }
+        _ => tools::execute_with_scope(call, cwd, &runtime.mcp, progress, path_scope(config)).await,
     }
 }
 
@@ -2549,19 +2551,37 @@ async fn ask(runtime: &Runtime, arguments: &str) -> tools::ToolOutput {
     tools::ToolOutput::text(ask::format_reply(&questions, reply))
 }
 
-async fn lsp_diagnostics(runtime: &Runtime, cwd: &Path, arguments: &str) -> tools::ToolOutput {
+async fn lsp_diagnostics(
+    runtime: &Runtime,
+    cwd: &Path,
+    arguments: &str,
+    scope: tools::PathScope<'_>,
+) -> tools::ToolOutput {
     let args: Value = serde_json::from_str(arguments).unwrap_or(Value::Null);
     let Some(path) = args.get("path").and_then(Value::as_str) else {
         return tools::ToolOutput::error(
             "diagnostics requires a `path` string, for example {\"path\":\"src/main.rs\"}",
         );
     };
+    if let Err(error) = tools::ensure_scoped_path(cwd, path, scope) {
+        return tools::ToolOutput::error(format!("{error:#}"));
+    }
     match runtime.lsp.diagnostics(cwd, Path::new(path)).await {
         Some(diagnostics) => tools::ToolOutput::text(diagnostics),
         None => tools::ToolOutput::error(format!(
             "no language server is available for `{path}`; check that the file type is supported \
              and its language server is installed"
         )),
+    }
+}
+
+fn path_scope(config: &Config) -> tools::PathScope<'_> {
+    if config.project_only {
+        tools::PathScope::CurrentProject
+    } else if config.workspaces.roots().is_empty() {
+        tools::PathScope::Unrestricted
+    } else {
+        tools::PathScope::RegisteredProjects(config.workspaces.roots())
     }
 }
 

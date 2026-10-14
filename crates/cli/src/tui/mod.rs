@@ -1582,7 +1582,7 @@ fn handle_key(
                 .map(|attachment| attachment.part)
                 .collect();
             for path in media::referenced_attachments(&raw, cwd) {
-                match media::load_attachment(&path) {
+                match load_project_attachment(cwd, &path) {
                     Ok(part) => {
                         names.push(path.display().to_string());
                         parts.push(part);
@@ -4553,7 +4553,7 @@ fn queue_while_busy(app: &mut App, raw: &str, cwd: &Path, follow_up: bool) {
         .map(|attachment| attachment.part.clone())
         .collect();
     for path in media::referenced_attachments(raw, cwd) {
-        match media::load_attachment(&path) {
+        match load_project_attachment(cwd, &path) {
             Ok(part) => {
                 names.push(path.display().to_string());
                 parts.push(part);
@@ -4605,6 +4605,14 @@ fn queue_while_busy(app: &mut App, raw: &str, cwd: &Path, follow_up: bool) {
     } else {
         app.status = "steering active response...".to_string();
     }
+}
+
+/// An `@path` typed into the terminal is still a filesystem read initiated by
+/// the agent front-end, so it follows the same project boundary as tools and
+/// RPC attachments. Clipboard bytes are already loaded and do not pass here.
+fn load_project_attachment(cwd: &Path, path: &Path) -> anyhow::Result<ContentPart> {
+    oxide_core::tools::ensure_project_path(cwd, &path.to_string_lossy())?;
+    media::load_attachment(path)
 }
 
 /// Pulls every queued message back into the editor so it can be edited or

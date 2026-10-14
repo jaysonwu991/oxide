@@ -849,6 +849,10 @@ async fn main() -> Result<()> {
             .unwrap_or(false);
     let config = Config::load(&cwd, cli.model, cli.provider, cli.agent, cli.reasoning)?;
     let mut config = config;
+    // Every terminal run is scoped to the directory it was launched for. RPC
+    // is the VS Code extension's transport, so the same boundary applies there
+    // without the extension maintaining a second filesystem policy.
+    config.project_only = true;
     config.ephemeral = cli.no_session;
     config.load_context_files = !cli.no_context_files;
     let theme_name = cli.theme.clone().unwrap_or_else(|| {
@@ -1530,7 +1534,7 @@ async fn run_print(
         Some(log) => log.messages()?,
         None => Vec::new(),
     };
-    let user = runner::build_user_message(&prompt, &cwd, &attachments, &[])?;
+    let user = runner::build_user_message_scoped(&prompt, &cwd, &attachments, &[], true)?;
     if let Some(log) = &log {
         log.append(&user)?;
     }
@@ -1685,10 +1689,13 @@ fn build_prompt(
     positional: Vec<String>,
     images: &[PathBuf],
 ) -> Result<(String, Vec<PathBuf>)> {
+    for image in images {
+        oxide_core::tools::ensure_project_path(cwd, &image.to_string_lossy())?;
+    }
     if positional.is_empty() {
         return Ok((String::new(), images.to_vec()));
     }
-    let expanded = cli::expand_file_args(cwd, &positional)?;
+    let expanded = cli::expand_file_args_scoped(cwd, &positional, true)?;
     let mut attachments = expanded.attachments;
     attachments.extend(images.iter().cloned());
     Ok((expanded.text, attachments))
@@ -1779,7 +1786,7 @@ async fn run_rpc_mode(
             let prompt = resolved.text;
             let command_agent = resolved.agent;
             let subtask = resolved.subtask;
-            let user = runner::build_user_message(&prompt, &cwd, &images, &[])?;
+            let user = runner::build_user_message_scoped(&prompt, &cwd, &images, &[], true)?;
             if let Some(log) = &log {
                 log.append(&user)?;
             }
@@ -1822,7 +1829,13 @@ async fn run_rpc_mode(
                     request = prompt_rx.recv(), if input_open => {
                         match request {
                             Some(RpcRequest::Steer { id, text, images, follow_up }) => {
-                                match runner::build_user_message(&text, &cwd, &images, &[]) {
+                                match runner::build_user_message_scoped(
+                                    &text,
+                                    &cwd,
+                                    &images,
+                                    &[],
+                                    true,
+                                ) {
                                     Ok(message) => {
                                         let accepted = if follow_up {
                                             follow_ups.push(message)

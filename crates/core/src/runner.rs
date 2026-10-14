@@ -82,11 +82,29 @@ pub fn build_user_message(
     attachments: &[PathBuf],
     inline: &[ContentPart],
 ) -> Result<Message> {
+    build_user_message_scoped(prompt, cwd, attachments, inline, false)
+}
+
+/// Builds a user message while optionally applying the CLI/extension project
+/// boundary to `@path` references the prompt asks Oxide to resolve. Explicit
+/// attachments are user-selected inputs: the CLI validates `--image` itself,
+/// while the extension validates file attachments and may use an outside temp
+/// file for pasted bytes.
+pub fn build_user_message_scoped(
+    prompt: &str,
+    cwd: &Path,
+    attachments: &[PathBuf],
+    inline: &[ContentPart],
+    project_only: bool,
+) -> Result<Message> {
     let mut parts: Vec<ContentPart> = inline.to_vec();
     for path in attachments {
         parts.push(media::load_attachment(path)?);
     }
     for path in media::referenced_attachments(prompt, cwd) {
+        if project_only {
+            crate::tools::ensure_project_path(cwd, &path.to_string_lossy())?;
+        }
         parts.push(media::load_attachment(&path)?);
     }
     if parts.is_empty() {
@@ -176,4 +194,38 @@ pub fn begin_session(
     }
     history.push(user);
     Ok((history, log))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    static NEXT: AtomicUsize = AtomicUsize::new(0);
+
+    #[test]
+    fn project_scoped_messages_refuse_at_paths_outside_the_project() {
+        let base = std::env::temp_dir().join(format!(
+            "oxide_runner_scope_{}_{}",
+            std::process::id(),
+            NEXT.fetch_add(1, Ordering::Relaxed)
+        ));
+        let project = base.join("project");
+        let sibling = base.join("sibling");
+        std::fs::create_dir_all(&project).unwrap();
+        std::fs::create_dir_all(&sibling).unwrap();
+        let outside = sibling.join("brief.pdf");
+        std::fs::write(&outside, b"%PDF-1.4\n").unwrap();
+
+        assert!(build_user_message_scoped(
+            &format!("review @{}", outside.display()),
+            &project,
+            &[],
+            &[],
+            true,
+        )
+        .is_err());
+
+        std::fs::remove_dir_all(base).ok();
+    }
 }

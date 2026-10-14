@@ -30,6 +30,17 @@ pub struct FileArgs {
 }
 
 pub fn expand_file_args(cwd: &Path, args: &[String]) -> Result<FileArgs> {
+    expand_file_args_scoped(cwd, args, false)
+}
+
+/// Expands CLI `@file` arguments while optionally refusing paths outside the
+/// launch directory. This check happens before a text file is read, so the
+/// project boundary covers prompt context as well as agent tool calls.
+pub fn expand_file_args_scoped(
+    cwd: &Path,
+    args: &[String],
+    project_only: bool,
+) -> Result<FileArgs> {
     let mut text = String::new();
     let mut attachments = Vec::new();
     for arg in args {
@@ -45,6 +56,9 @@ pub fn expand_file_args(cwd: &Path, args: &[String]) -> Result<FileArgs> {
         } else {
             cwd.join(path)
         };
+        if project_only {
+            crate::tools::ensure_project_path(cwd, path)?;
+        }
         if crate::media::is_attachment_path(&full) {
             attachments.push(full);
         } else {
@@ -714,6 +728,22 @@ mod tests {
         assert!(args.attachments.is_empty());
 
         std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn scoped_at_file_arguments_refuse_a_sibling() {
+        let base = std::env::temp_dir().join(format!("oxide_cli_scope_{}", std::process::id()));
+        let project = base.join("project");
+        let sibling = base.join("sibling");
+        std::fs::create_dir_all(&project).unwrap();
+        std::fs::create_dir_all(&sibling).unwrap();
+        let outside = sibling.join("prompt.md");
+        std::fs::write(&outside, "not this project").unwrap();
+
+        let result = expand_file_args_scoped(&project, &[format!("@{}", outside.display())], true);
+        assert!(result.is_err());
+
+        std::fs::remove_dir_all(base).ok();
     }
 
     /// A file argument this process may not read names the grant rather than

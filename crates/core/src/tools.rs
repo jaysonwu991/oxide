@@ -7,7 +7,7 @@ use serde_json::{json, Value};
 use std::collections::{BTreeSet, HashMap, VecDeque};
 use std::ffi::OsString;
 use std::io::{BufRead, BufReader, BufWriter, Read, Write};
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 use std::process::Stdio;
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, OnceLock};
@@ -243,14 +243,61 @@ impl Progress {
 }
 
 pub fn specs(mcp: &McpRegistry) -> Vec<ToolSpec> {
+    specs_for_scope(mcp, PathScope::Unrestricted)
+}
+
+/// Backward-compatible tool descriptions for callers that only distinguish a
+/// current-project boundary from unrestricted access.
+pub fn specs_scoped(mcp: &McpRegistry, project_only: bool) -> Vec<ToolSpec> {
+    specs_for_scope(
+        mcp,
+        if project_only {
+            PathScope::CurrentProject
+        } else {
+            PathScope::Unrestricted
+        },
+    )
+}
+
+#[derive(Clone, Copy)]
+pub enum PathScope<'a> {
+    Unrestricted,
+    CurrentProject,
+    RegisteredProjects(&'a [PathBuf]),
+}
+
+pub fn specs_for_scope(mcp: &McpRegistry, scope: PathScope<'_>) -> Vec<ToolSpec> {
+    let project_only = matches!(scope, PathScope::CurrentProject);
+    let registered_only = matches!(scope, PathScope::RegisteredProjects(_));
+    let read_scope = if project_only {
+        " Paths must stay inside the current project."
+    } else if registered_only {
+        " Paths must stay inside a project registered in Oxide."
+    } else {
+        " Absolute paths and paths outside the project are allowed."
+    };
+    let path_description = if project_only {
+        "File path relative to the project root"
+    } else if registered_only {
+        "File path inside a project registered in Oxide; absolute paths are allowed"
+    } else {
+        "File path; absolute paths are allowed"
+    };
+    let directory_scope = if project_only {
+        " Paths must stay inside the current project."
+    } else if registered_only {
+        " Paths must stay inside a project registered in Oxide."
+    } else {
+        " Absolute paths and paths outside the project are allowed."
+    };
     let mut specs = vec![
         spec(
             "read",
-            "Read a file. Text files are returned with line numbers; image (png/jpg/gif/webp) and PDF files are returned as viewable attachments. If `path` is a directory, its entries are listed instead. Absolute paths and paths outside the project are allowed. A line longer than 1000 characters is split into continuation chunks (`N|`, `N+|`, …), and `offset`/`limit` count those display lines, so an over-long line (a minified JSON value) can be paged through instead of being cut off.",
+            &format!("Read a file. Text files are returned with line numbers; image (png/jpg/gif/webp) and PDF files are returned as viewable attachments. If `path` is a directory, its entries are listed instead.{read_scope} A line longer than 1000 characters is split into continuation chunks (`N|`, `N+|`, …), and `offset`/`limit` count those display lines, so an over-long line (a minified JSON value) can be paged through instead of being cut off."),
             json!({
                 "type": "object",
                 "properties": {
-                    "path": { "type": "string", "description": "File path; absolute paths are allowed" },
+                    "path": { "type": "string", "description": path_description },
                     "offset": { "type": "integer", "description": "1-based display line to start from (text only; a long line counts once per chunk)" },
                     "limit": { "type": "integer", "description": "Maximum number of display lines to return (text only, default 400)" }
                 },
@@ -259,11 +306,11 @@ pub fn specs(mcp: &McpRegistry) -> Vec<ToolSpec> {
         ),
         spec(
             "write",
-            "Create or overwrite a file with the given content.",
+            if project_only { "Create or overwrite a file inside the current project." } else if registered_only { "Create or overwrite a file inside a project registered in Oxide." } else { "Create or overwrite a file with the given content." },
             json!({
                 "type": "object",
                 "properties": {
-                    "path": { "type": "string", "description": "File path relative to the project root" },
+                    "path": { "type": "string", "description": path_description },
                     "content": { "type": "string", "description": "Full file content to write" }
                 },
                 "required": ["path", "content"]
@@ -275,7 +322,7 @@ pub fn specs(mcp: &McpRegistry) -> Vec<ToolSpec> {
             json!({
                 "type": "object",
                 "properties": {
-                    "path": { "type": "string", "description": "Path to the file to edit (relative or absolute)" },
+                    "path": { "type": "string", "description": path_description },
                     "edits": {
                         "type": "array",
                         "description": "One or more targeted replacements. Each edit is matched against the original file, not incrementally. Do not include overlapping or nested edits. If two changes touch the same block or nearby lines, merge them into one edit instead.",
@@ -294,18 +341,18 @@ pub fn specs(mcp: &McpRegistry) -> Vec<ToolSpec> {
         ),
         spec(
             "ls",
-            "List the entries of a directory. Absolute paths and paths outside the project are allowed.",
+            &format!("List the entries of a directory.{directory_scope}"),
             json!({
                 "type": "object",
                 "properties": {
-                    "path": { "type": "string", "description": "Directory path (default: .); absolute paths are allowed" },
+                    "path": { "type": "string", "description": if project_only { "Directory inside the current project (default: .)" } else if registered_only { "Directory inside a project registered in Oxide (default: .); absolute paths are allowed" } else { "Directory path (default: .); absolute paths are allowed" } },
                     "limit": { "type": "integer", "description": "Maximum number of entries to return" }
                 }
             }),
         ),
         spec(
             "bash",
-            "Run one focused shell command from the project root and return its combined output. Use it for programs, not for inspecting files: prefer `read`, `grep`, `find`, and `ls`. Recursive shell `grep` is refused because the dedicated `grep` tool bounds results and skips dependencies and generated files. Never chain unrelated commands with `;`/`&&` or sweep the whole filesystem with `find /`.",
+            if project_only { "Run one focused shell command from the project root and return its combined output. The command must stay inside the current project: do not change to another directory or name paths outside the project. Use it for programs, not for inspecting files: prefer `read`, `grep`, `find`, and `ls`. Recursive shell `grep` is refused because the dedicated `grep` tool bounds results and skips dependencies and generated files. Never chain unrelated commands with `;`/`&&` or sweep the whole filesystem with `find /`." } else if registered_only { "Run one focused shell command from the project root and return its combined output. The command may name another project registered in Oxide, but must not access unregistered paths. Use it for programs, not for inspecting files: prefer `read`, `grep`, `find`, and `ls`. Recursive shell `grep` is refused because the dedicated `grep` tool bounds results and skips dependencies and generated files. Never chain unrelated commands with `;`/`&&` or sweep the whole filesystem with `find /`." } else { "Run one focused shell command from the project root and return its combined output. Use it for programs, not for inspecting files: prefer `read`, `grep`, `find`, and `ls`. Recursive shell `grep` is refused because the dedicated `grep` tool bounds results and skips dependencies and generated files. Never chain unrelated commands with `;`/`&&` or sweep the whole filesystem with `find /`." },
             json!({
                 "type": "object",
                 "properties": {
@@ -317,12 +364,12 @@ pub fn specs(mcp: &McpRegistry) -> Vec<ToolSpec> {
         ),
         spec(
             "find",
-            "Find files by glob pattern (e.g. `**/*.rs`, `src/*.md`). Patterns match paths relative to the search directory; use `**` for recursive matching. Absolute paths are allowed.",
+            if project_only { "Find files by glob pattern (e.g. `**/*.rs`, `src/*.md`). Patterns match paths relative to the search directory; use `**` for recursive matching. The search directory must stay inside the current project." } else if registered_only { "Find files by glob pattern (e.g. `**/*.rs`, `src/*.md`). Patterns match paths relative to the search directory; use `**` for recursive matching. The search directory must stay inside a project registered in Oxide." } else { "Find files by glob pattern (e.g. `**/*.rs`, `src/*.md`). Patterns match paths relative to the search directory; use `**` for recursive matching. Absolute paths are allowed." },
             json!({
                 "type": "object",
                 "properties": {
                     "pattern": { "type": "string", "description": "Glob pattern to match" },
-                    "path": { "type": "string", "description": "Directory to search in (default: .); absolute paths are allowed" },
+                    "path": { "type": "string", "description": if project_only { "Directory inside the current project (default: .)" } else if registered_only { "Directory inside a project registered in Oxide (default: .); absolute paths are allowed" } else { "Directory to search in (default: .); absolute paths are allowed" } },
                     "limit": { "type": "integer", "description": "Maximum number of results to return" }
                 },
                 "required": ["pattern"]
@@ -330,7 +377,7 @@ pub fn specs(mcp: &McpRegistry) -> Vec<ToolSpec> {
         ),
         spec(
             "grep",
-            "Search file contents for a pattern and return matching `path:line: text` entries. The pattern matches a literal substring by default; set `regex` to treat it as a regular expression. Absolute paths are allowed.",
+            if project_only { "Search file contents inside the current project for a pattern and return matching `path:line: text` entries. The pattern matches a literal substring by default; set `regex` to treat it as a regular expression." } else if registered_only { "Search file contents inside projects registered in Oxide for a pattern and return matching `path:line: text` entries. The pattern matches a literal substring by default; set `regex` to treat it as a regular expression. Absolute paths inside those projects are allowed." } else { "Search file contents for a pattern and return matching `path:line: text` entries. The pattern matches a literal substring by default; set `regex` to treat it as a regular expression. Absolute paths are allowed." },
             json!({
                 "type": "object",
                 "properties": {
@@ -347,7 +394,7 @@ pub fn specs(mcp: &McpRegistry) -> Vec<ToolSpec> {
         ),
         spec(
             "webfetch",
-            "Fetch a URL and return its contents as Markdown (default), readable plain text, or raw HTML. GitHub and GitLab repository files, pull requests, merge requests, and issues should be read with their authenticated `gh`/`glab` CLIs instead; an organization repository may be private even when its URL uses the public forge hostname.",
+            "Fetch a public URL and return its contents as Markdown (default), readable plain text, or raw HTML. Do not use this for an authenticated service or console URL: prefer a configured MCP server, then the service's authenticated CLI. In particular, use `aws` for AWS Console URLs and `gh`/`glab` for GitHub or GitLab URLs, because an unauthenticated fetch can disguise a private resource as missing.",
             json!({
                 "type": "object",
                 "properties": {
@@ -438,6 +485,37 @@ pub async fn execute(
     mcp: &McpRegistry,
     progress: &Progress,
 ) -> ToolOutput {
+    execute_with_scope(call, cwd, mcp, progress, PathScope::Unrestricted).await
+}
+
+pub async fn execute_scoped(
+    call: &ToolCall,
+    cwd: &Path,
+    mcp: &McpRegistry,
+    progress: &Progress,
+    project_only: bool,
+) -> ToolOutput {
+    execute_with_scope(
+        call,
+        cwd,
+        mcp,
+        progress,
+        if project_only {
+            PathScope::CurrentProject
+        } else {
+            PathScope::Unrestricted
+        },
+    )
+    .await
+}
+
+pub async fn execute_with_scope(
+    call: &ToolCall,
+    cwd: &Path,
+    mcp: &McpRegistry,
+    progress: &Progress,
+    scope: PathScope<'_>,
+) -> ToolOutput {
     let name = call.function.name.as_str();
     let args = match parse_tool_arguments(name, &call.function.arguments) {
         Ok(args) => args,
@@ -445,6 +523,9 @@ pub async fn execute(
     };
 
     let canonical = name;
+    if let Err(error) = enforce_path_scope(cwd, canonical, &args, scope) {
+        return ToolOutput::error(format!("{error:#}"));
+    }
     let result = if mcp.is_tool(name) {
         mcp.call(name, args).await.map(|result| {
             if result.is_error {
@@ -575,6 +656,202 @@ fn resolve(cwd: &Path, path: &str) -> PathBuf {
     } else {
         cwd.join(candidate)
     }
+}
+
+/// Enforces the front-end's filesystem boundary before a built-in tool is
+/// dispatched. Existing paths are canonicalized so a symlink inside an allowed
+/// root cannot lead outside it; new paths canonicalize their nearest existing
+/// parent for the same reason.
+fn enforce_path_scope(cwd: &Path, tool: &str, args: &Value, scope: PathScope<'_>) -> Result<()> {
+    if matches!(scope, PathScope::Unrestricted) {
+        return Ok(());
+    }
+    let path = match tool {
+        "read" | "write" | "ls" => args.get("path").and_then(Value::as_str),
+        "find" | "grep" => args.get("path").and_then(Value::as_str).or(Some(".")),
+        "edit" => edit_path_value(args),
+        "bash" => {
+            let command = args
+                .get("command")
+                .and_then(Value::as_str)
+                .unwrap_or_default();
+            return enforce_scoped_shell(cwd, command, scope);
+        }
+        _ => None,
+    };
+    if let Some(path) = path {
+        ensure_path_scope(cwd, path, scope)?;
+    }
+    Ok(())
+}
+
+/// Checks that one path resolves inside `cwd`, including through symlinks. CLI
+/// front-ends use this for context and attachments as well as tool calls.
+pub fn ensure_project_path(cwd: &Path, path: &str) -> Result<()> {
+    ensure_path_scope(cwd, path, PathScope::CurrentProject)
+}
+
+pub fn ensure_scoped_path(cwd: &Path, path: &str, scope: PathScope<'_>) -> Result<()> {
+    ensure_path_scope(cwd, path, scope)
+}
+
+fn ensure_path_scope(cwd: &Path, path: &str, scope: PathScope<'_>) -> Result<()> {
+    let candidate = canonical_or_normalized(&resolve(cwd, path))?;
+    let allowed = match scope {
+        PathScope::Unrestricted => true,
+        PathScope::CurrentProject => candidate.starts_with(canonical_or_normalized(cwd)?),
+        PathScope::RegisteredProjects(roots) => roots.iter().any(|root| {
+            canonical_or_normalized(root).is_ok_and(|root| candidate.starts_with(root))
+        }),
+    };
+    if allowed {
+        return Ok(());
+    }
+    match scope {
+        PathScope::CurrentProject => anyhow::bail!(
+            "project boundary refused path `{path}`; CLI and VS Code may access only {}. Open the other folder as the active project to work there",
+            cwd.display(),
+        ),
+        PathScope::RegisteredProjects(_) => anyhow::bail!(
+            "project boundary refused path `{path}`; Desktop may access only projects added to Oxide. Add the folder as a project before working in it"
+        ),
+        PathScope::Unrestricted => Ok(()),
+    }
+}
+
+fn canonical_or_normalized(path: &Path) -> Result<PathBuf> {
+    if let Ok(path) = std::fs::canonicalize(path) {
+        return Ok(path);
+    }
+
+    // A write target may not exist yet. Canonicalize its closest existing
+    // ancestor, then restore the missing suffix and normalize `..` components.
+    let mut ancestor = path;
+    let mut suffix = Vec::new();
+    while !ancestor.exists() {
+        let Some(name) = ancestor.file_name() else {
+            break;
+        };
+        suffix.push(name.to_os_string());
+        let Some(parent) = ancestor.parent() else {
+            break;
+        };
+        ancestor = parent;
+    }
+    let mut resolved = std::fs::canonicalize(ancestor).unwrap_or_else(|_| normalize_path(ancestor));
+    for part in suffix.iter().rev() {
+        resolved.push(part);
+    }
+    Ok(normalize_path(&resolved))
+}
+
+fn normalize_path(path: &Path) -> PathBuf {
+    let mut out = PathBuf::new();
+    for component in path.components() {
+        match component {
+            Component::CurDir => {}
+            Component::ParentDir => {
+                out.pop();
+            }
+            other => out.push(other.as_os_str()),
+        }
+    }
+    out
+}
+
+/// Shells cannot be made into a portable OS sandbox here, but deliberate
+/// cross-project commands have concrete path operands. Refuse absolute/home
+/// paths and parent traversal before starting the process. This catches the
+/// `cd /sibling/repo` and absolute grep/read forms while leaving ordinary build
+/// commands, URLs, and `/dev/null` redirection alone.
+fn enforce_scoped_shell(cwd: &Path, command: &str, scope: PathScope<'_>) -> Result<()> {
+    if command.contains("$HOME")
+        || command.contains("${HOME}")
+        || command.contains("$PWD/..")
+        || command.contains("${PWD}/..")
+    {
+        anyhow::bail!(
+            "project boundary refused a home-directory expansion; shell commands must stay inside the allowed project roots"
+        );
+    }
+    for raw in command.split_whitespace() {
+        let raw = raw.trim_matches(|ch: char| {
+            matches!(
+                ch,
+                '\'' | '"' | '(' | ')' | '[' | ']' | '{' | '}' | ';' | ',' | '|' | '&'
+            )
+        });
+        let value = raw
+            .split_once('=')
+            .map(|(_, value)| value)
+            .unwrap_or(raw)
+            .trim_matches(['\'', '"']);
+        let value = value
+            .trim_start_matches(|ch: char| ch.is_ascii_digit())
+            .strip_prefix('>')
+            .or_else(|| value.strip_prefix('<'))
+            .unwrap_or(value);
+        if value == "/dev/null" || value.contains("://") {
+            continue;
+        }
+        if value.starts_with('~') {
+            anyhow::bail!(
+                "project boundary refused path `{value}`; shell commands must stay inside the allowed project roots"
+            );
+        }
+        if Path::new(value).is_absolute()
+            || value == ".."
+            || value.starts_with("../")
+            || value.starts_with("..\\")
+        {
+            ensure_path_scope(cwd, value, scope)?;
+        }
+    }
+    // Also catch paths inside a quoted program argument, for example
+    // `python -c "open('/sibling/file')"` or its Windows drive-path form.
+    for path in embedded_absolute_paths(command) {
+        if path == "/dev/null" || path.starts_with("//") {
+            continue;
+        }
+        ensure_path_scope(cwd, path, scope)?;
+    }
+    Ok(())
+}
+
+/// Finds Unix-rooted and Windows drive-rooted paths embedded in a quoted
+/// script or expression. `Path::is_absolute` only understands the host syntax,
+/// so recognizing both shapes here also keeps this parser directly testable on
+/// every platform.
+fn embedded_absolute_paths(command: &str) -> Vec<&str> {
+    let chars: Vec<(usize, char)> = command.char_indices().collect();
+    let mut paths = Vec::new();
+    for (position, (start, ch)) in chars.iter().enumerate() {
+        let unix_rooted = *ch == '/';
+        let windows_rooted = ch.is_ascii_alphabetic()
+            && chars.get(position + 1).is_some_and(|(_, ch)| *ch == ':')
+            && chars
+                .get(position + 2)
+                .is_some_and(|(_, ch)| matches!(ch, '/' | '\\'));
+        if !unix_rooted && !windows_rooted {
+            continue;
+        }
+        let previous = position.checked_sub(1).map(|index| chars[index].1);
+        if previous.is_some_and(|ch| !matches!(ch, '\'' | '"' | '(' | '[' | '{' | '=' | ',')) {
+            continue;
+        }
+        let end = chars
+            .iter()
+            .skip(position + 1)
+            .find(|(_, ch)| {
+                ch.is_whitespace()
+                    || matches!(ch, '\'' | '"' | ')' | ']' | '}' | ',' | ';' | '|' | '&')
+            })
+            .map(|(index, _)| *index)
+            .unwrap_or(command.len());
+        let path = &command[*start..end];
+        paths.push(path);
+    }
+    paths
 }
 
 fn read(cwd: &Path, args: &Value) -> Result<ToolOutput> {
@@ -1935,15 +2212,196 @@ async fn webfetch_guarded(args: &Value, mcp: &McpRegistry) -> Result<String> {
         );
         return Ok(hint);
     }
+    if let Some(hint) = aws_console_hint(url) {
+        return Ok(hint);
+    }
     if let Some((route, item)) = forge_route(url) {
-        if command_exists(route.cli) {
-            return Ok(forge_hint(route, item, url));
-        }
+        return Ok(forge_hint(route, item, url));
     }
     if let Some(hint) = github_file_hint(url) {
         return Ok(hint);
     }
+    if let Some(hint) = forge_host_hint(url) {
+        return Ok(hint);
+    }
     webfetch(args).await
+}
+
+/// Keeps account-scoped AWS Console links on an authenticated route. This is
+/// intentionally limited to console hosts: an arbitrary `amazonaws.com` URL
+/// may be a public object or a time-limited presigned download that webfetch
+/// should still be allowed to read.
+fn aws_console_hint(url: &str) -> Option<String> {
+    let parsed = reqwest::Url::parse(url).ok()?;
+    let host = parsed.host_str()?.to_ascii_lowercase();
+    let console_suffix = [
+        ".console.aws.amazon.com",
+        ".console.amazonaws.cn",
+        ".console.amazonaws-us-gov.com",
+    ]
+    .into_iter()
+    .find(|suffix| host.ends_with(suffix));
+    let is_console = host == "console.aws.amazon.com"
+        || host == "console.amazonaws.cn"
+        || host == "console.amazonaws-us-gov.com"
+        || console_suffix.is_some();
+    if !is_console {
+        return None;
+    }
+
+    let query_region = parsed
+        .query_pairs()
+        .find(|(key, _)| key == "region")
+        .map(|(_, value)| value.into_owned())
+        .filter(|value| aws_region_name(value));
+    let host_region = console_suffix
+        .and_then(|suffix| host.strip_suffix(suffix))
+        .filter(|value| aws_region_name(value))
+        .map(str::to_string);
+    let region = query_region.or(host_region);
+    let region_flag = region.as_deref().map_or_else(
+        || " --region <region>".to_string(),
+        |region| format!(" --region {region}"),
+    );
+    let decoded_fragment = parsed.fragment().map(decode_aws_console_fragment);
+    let command = aws_console_command(&parsed, decoded_fragment.as_deref(), &region_flag);
+    let availability = if command_exists("aws") {
+        String::new()
+    } else {
+        " The `aws` CLI is not currently available; install AWS CLI v2 and authenticate the intended profile before retrying.".to_string()
+    };
+
+    Some(format!(
+        "This is an account-scoped AWS Console URL. Do not use webfetch: it cannot reuse the browser's AWS session and may turn an authorization failure into an empty page, redirect, or 404. Use the authenticated AWS CLI with the same account and region. Confirm the account first with `aws sts get-caller-identity --profile <profile>`, then read the resource with `{command}`. If the profile uses IAM Identity Center and its session expired, run `aws sso login --profile <profile>` first.{availability}"
+    ))
+}
+
+fn aws_region_name(value: &str) -> bool {
+    !value.is_empty()
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'-')
+        && value.bytes().filter(|byte| *byte == b'-').count() >= 2
+}
+
+fn aws_console_command(parsed: &reqwest::Url, fragment: Option<&str>, region: &str) -> String {
+    let path = parsed.path().to_ascii_lowercase();
+    let fragment_lower = fragment.unwrap_or_default().to_ascii_lowercase();
+    let route = format!("{path}#{fragment_lower}");
+
+    if route.contains("cloudwatch") || route.contains("log-groups") {
+        if let Some((group, stream)) = aws_cloudwatch_log_target(fragment.unwrap_or_default()) {
+            return format!(
+                "aws logs get-log-events --log-group-name {} --log-stream-name {}{region} --profile <profile>",
+                shell_quote_hint(&group),
+                shell_quote_hint(&stream)
+            );
+        }
+        return format!(
+            "aws logs get-log-events --log-group-name <log-group> --log-stream-name <log-stream>{region} --profile <profile>"
+        );
+    }
+    if route.contains("batch") {
+        if let Some(job_id) = aws_fragment_value(fragment.unwrap_or_default(), "jobs/detail/") {
+            return format!(
+                "aws batch describe-jobs --jobs {}{region} --profile <profile>",
+                shell_quote_hint(job_id)
+            );
+        }
+        return format!("aws batch describe-jobs --jobs <job-id>{region} --profile <profile>");
+    }
+    if route.contains("/s3/") || path.starts_with("/s3") {
+        if let Some(bucket) = parsed
+            .path_segments()
+            .and_then(|mut segments| {
+                segments
+                    .find(|segment| *segment == "buckets")
+                    .and_then(|_| segments.next())
+            })
+            .filter(|bucket| !bucket.is_empty())
+        {
+            return format!(
+                "aws s3 ls {}{region} --profile <profile>",
+                shell_quote_hint(&format!("s3://{bucket}"))
+            );
+        }
+        return format!("aws s3 ls s3://<bucket>/<prefix>{region} --profile <profile>");
+    }
+    if route.contains("lambda") {
+        return format!(
+            "aws lambda get-function --function-name <function>{region} --profile <profile>"
+        );
+    }
+    if route.contains("ecs") {
+        return format!(
+            "aws ecs describe-services --cluster <cluster> --services <service>{region} --profile <profile>"
+        );
+    }
+    format!("aws <service> <read-command>{region} --profile <profile>")
+}
+
+fn aws_cloudwatch_log_target(fragment: &str) -> Option<(String, String)> {
+    let rest = fragment.split("log-group/").nth(1)?;
+    let (group, stream) = rest.split_once("/log-events/")?;
+    let stream = stream.split(['?', '#']).next().unwrap_or(stream);
+    if group.is_empty() || stream.is_empty() {
+        return None;
+    }
+    Some((group.to_string(), stream.to_string()))
+}
+
+fn aws_fragment_value<'a>(fragment: &'a str, marker: &str) -> Option<&'a str> {
+    let value = fragment.split(marker).nth(1)?;
+    let value = value.split(['?', '#', '/']).next().unwrap_or(value);
+    (!value.is_empty()).then_some(value)
+}
+
+fn decode_url_component(value: &str) -> String {
+    let bytes = value.as_bytes();
+    let mut decoded = Vec::with_capacity(bytes.len());
+    let mut index = 0;
+    while index < bytes.len() {
+        if bytes[index] == b'%' && index + 2 < bytes.len() {
+            let high = (bytes[index + 1] as char).to_digit(16);
+            let low = (bytes[index + 2] as char).to_digit(16);
+            if let (Some(high), Some(low)) = (high, low) {
+                decoded.push(((high << 4) | low) as u8);
+                index += 3;
+                continue;
+            }
+        }
+        decoded.push(bytes[index]);
+        index += 1;
+    }
+    String::from_utf8_lossy(&decoded).into_owned()
+}
+
+/// CloudWatch's fragment router uses `$252F` for a double-encoded slash (and
+/// the same `$` prefix for other percent escapes). Normalize that convention,
+/// then decode twice so both ordinary `%2F` links and CloudWatch's `$252F`
+/// links yield the resource names expected by the CLI.
+fn decode_aws_console_fragment(value: &str) -> String {
+    let bytes = value.as_bytes();
+    let mut normalized = Vec::with_capacity(bytes.len());
+    let mut index = 0;
+    while index < bytes.len() {
+        if bytes[index] == b'$'
+            && index + 2 < bytes.len()
+            && (bytes[index + 1] as char).is_ascii_hexdigit()
+            && (bytes[index + 2] as char).is_ascii_hexdigit()
+        {
+            normalized.push(b'%');
+        } else {
+            normalized.push(bytes[index]);
+        }
+        index += 1;
+    }
+    let once = decode_url_component(&String::from_utf8_lossy(&normalized));
+    decode_url_component(&once)
+}
+
+fn shell_quote_hint(value: &str) -> String {
+    format!("'{}'", value.replace('\'', "'\"'\"'"))
 }
 
 /// A hosted forge whose pull/merge requests and issues are better read through
@@ -2098,6 +2556,36 @@ fn github_file_hint(url: &str) -> Option<String> {
     });
     Some(format!(
         "This URL is a GitHub repository file, which may be private. Do not use webfetch or raw.githubusercontent.com: both are unauthenticated and a private file commonly looks like a 404. Read it with `gh api -H 'Accept: application/vnd.github.raw+json' '{endpoint}'`.{line_hint}{availability}"
+    ))
+}
+
+/// Keeps every GitHub/GitLab page on an authenticated route, not just the
+/// work-item and blob shapes for which Oxide can print an exact command. A
+/// repository root, commit, comparison, action or tree can be private too, and
+/// falling through to webfetch turns an authentication problem into a
+/// misleading 404.
+fn forge_host_hint(url: &str) -> Option<String> {
+    let parsed = reqwest::Url::parse(url).ok()?;
+    let host = parsed.host_str()?;
+    let (service, cli, example) = if host == "github.com"
+        || host.ends_with(".github.com")
+        || host == "raw.githubusercontent.com"
+    {
+        ("GitHub", "gh", "gh repo view OWNER/REPO")
+    } else if host == "gitlab.com" || host.ends_with(".gitlab.com") {
+        ("GitLab", "glab", "glab repo view OWNER/REPO")
+    } else {
+        return None;
+    };
+    let availability = if command_exists(cli) {
+        String::new()
+    } else {
+        format!(
+            " The `{cli}` CLI is not currently available; install and authenticate it before retrying."
+        )
+    };
+    Some(format!(
+        "This {service} URL may be private. Use the authenticated `{cli}` CLI instead of webfetch; start with `{example}` or the matching `{cli} api` endpoint for the URL.{availability}"
     ))
 }
 
@@ -3359,6 +3847,135 @@ mod tests {
     }
 
     #[test]
+    fn project_only_specs_do_not_advertise_cross_project_paths() {
+        let specs = specs_scoped(&McpRegistry::default(), true);
+        let descriptions = specs
+            .iter()
+            .map(|spec| spec.function.description.as_str())
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(descriptions.contains("current project"), "{descriptions}");
+        assert!(!descriptions.contains("outside the project are allowed"));
+    }
+
+    #[test]
+    fn project_boundary_refuses_parent_and_absolute_sibling_paths() {
+        let base = std::env::temp_dir().join(format!(
+            "oxide_project_boundary_{}_{}",
+            std::process::id(),
+            TRUNCATION_ID.fetch_add(1, Ordering::Relaxed)
+        ));
+        let project = base.join("project");
+        let sibling = base.join("sibling");
+        std::fs::create_dir_all(&project).unwrap();
+        std::fs::create_dir_all(&sibling).unwrap();
+        std::fs::write(project.join("inside.txt"), "inside").unwrap();
+        std::fs::write(sibling.join("outside.txt"), "outside").unwrap();
+
+        assert!(ensure_project_path(&project, "inside.txt").is_ok());
+        assert!(ensure_project_path(&project, "new/nested.txt").is_ok());
+        assert!(ensure_project_path(&project, "../sibling/outside.txt").is_err());
+        assert!(ensure_project_path(&project, sibling.to_str().unwrap()).is_err());
+        assert!(enforce_scoped_shell(&project, "cargo test", PathScope::CurrentProject).is_ok());
+        assert!(enforce_scoped_shell(
+            &project,
+            &format!("cd {} && git status", sibling.display()),
+            PathScope::CurrentProject
+        )
+        .is_err());
+        assert!(enforce_scoped_shell(
+            &project,
+            &format!(
+                "python3 -c \"open('{}')\"",
+                sibling.join("outside.txt").display()
+            ),
+            PathScope::CurrentProject
+        )
+        .is_err());
+
+        std::fs::remove_dir_all(base).ok();
+    }
+
+    #[test]
+    fn desktop_scope_allows_registered_projects_and_refuses_other_paths() {
+        let base = std::env::temp_dir().join(format!(
+            "oxide_registered_boundary_{}_{}",
+            std::process::id(),
+            TRUNCATION_ID.fetch_add(1, Ordering::Relaxed)
+        ));
+        let current = base.join("current");
+        let registered = base.join("registered");
+        let outside = base.join("outside");
+        for path in [&current, &registered, &outside] {
+            std::fs::create_dir_all(path).unwrap();
+        }
+        let roots = vec![current.clone(), registered.clone()];
+        let scope = PathScope::RegisteredProjects(&roots);
+
+        assert!(ensure_scoped_path(&current, "inside.txt", scope).is_ok());
+        assert!(ensure_scoped_path(&current, registered.to_str().unwrap(), scope).is_ok());
+        assert!(ensure_scoped_path(&current, outside.to_str().unwrap(), scope).is_err());
+        assert!(enforce_scoped_shell(
+            &current,
+            &format!("git -C {} status", registered.display()),
+            scope
+        )
+        .is_ok());
+        assert!(enforce_scoped_shell(
+            &current,
+            &format!("git -C {} status", outside.display()),
+            scope
+        )
+        .is_err());
+
+        let descriptions = specs_for_scope(&McpRegistry::default(), scope)
+            .into_iter()
+            .map(|spec| spec.function.description)
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(
+            descriptions.contains("registered in Oxide"),
+            "{descriptions}"
+        );
+        assert!(!descriptions.contains("outside the project are allowed"));
+
+        std::fs::remove_dir_all(base).ok();
+    }
+
+    #[test]
+    fn embedded_shell_paths_recognize_unix_and_windows_roots() {
+        assert_eq!(
+            embedded_absolute_paths(
+                "python -c \"open('/private/project/a')\" && python -c \"open('D:\\\\work\\\\other\\\\b')\""
+            ),
+            vec!["/private/project/a", r"D:\\work\\other\\b"]
+        );
+        assert!(embedded_absolute_paths("curl https://example.com/a").is_empty());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn project_boundary_refuses_a_symlink_into_a_sibling() {
+        use std::os::unix::fs::symlink;
+
+        let base = std::env::temp_dir().join(format!(
+            "oxide_project_boundary_link_{}_{}",
+            std::process::id(),
+            TRUNCATION_ID.fetch_add(1, Ordering::Relaxed)
+        ));
+        let project = base.join("project");
+        let sibling = base.join("sibling");
+        std::fs::create_dir_all(&project).unwrap();
+        std::fs::create_dir_all(&sibling).unwrap();
+        std::fs::write(sibling.join("outside.txt"), "outside").unwrap();
+        symlink(&sibling, project.join("linked")).unwrap();
+
+        assert!(ensure_project_path(&project, "linked/outside.txt").is_err());
+
+        std::fs::remove_dir_all(base).ok();
+    }
+
+    #[test]
     fn specs_expose_compact_loader_for_configured_mcp_servers() {
         let server = crate::ecosystem::McpServer {
             name: "atlassian".to_string(),
@@ -4142,6 +4759,78 @@ mod tests {
         assert!(github_file_hint("https://example.com/owner/repo/blob/main/a.rs").is_none());
         assert_eq!(github_line_range(Some("L12")), Some("12".to_string()));
         assert_eq!(github_line_range(Some("heading")), None);
+    }
+
+    #[test]
+    fn every_public_forge_host_uses_its_authenticated_cli() {
+        let github = forge_host_hint("https://github.com/acme/private-repo/commit/abc").unwrap();
+        assert!(github.contains("may be private"), "{github}");
+        assert!(github.contains("`gh` CLI instead of webfetch"), "{github}");
+        let raw =
+            forge_host_hint("https://raw.githubusercontent.com/acme/private/main/a.rs").unwrap();
+        assert!(raw.contains("`gh` CLI instead of webfetch"), "{raw}");
+
+        let gitlab = forge_host_hint("https://gitlab.com/acme/private-repo/-/pipelines/7").unwrap();
+        assert!(gitlab.contains("may be private"), "{gitlab}");
+        assert!(
+            gitlab.contains("`glab` CLI instead of webfetch"),
+            "{gitlab}"
+        );
+
+        assert!(forge_host_hint("https://example.com/acme/repo").is_none());
+    }
+
+    #[test]
+    fn aws_console_urls_use_the_authenticated_cli() {
+        let logs = aws_console_hint(
+            "https://eu-west-1.console.aws.amazon.com/cloudwatch/home?region=eu-west-1\
+             #logsV2:log-groups/log-group/%2Faws%2Fbatch%2Fjob/log-events/run%2F123",
+        )
+        .unwrap();
+        assert!(logs.contains("account-scoped AWS Console URL"), "{logs}");
+        assert!(logs.contains("Do not use webfetch"), "{logs}");
+        assert!(logs.contains("aws sts get-caller-identity"), "{logs}");
+        assert!(logs.contains("aws logs get-log-events"), "{logs}");
+        assert!(logs.contains("'/aws/batch/job'"), "{logs}");
+        assert!(logs.contains("'run/123'"), "{logs}");
+        assert!(logs.contains("--region eu-west-1"), "{logs}");
+        assert!(logs.contains("--profile <profile>"), "{logs}");
+
+        let cloudwatch_escaped = aws_console_hint(
+            "https://eu-west-1.console.aws.amazon.com/cloudwatch/home\
+             #logsV2:log-groups/log-group/$252Faws$252Flambda$252Fworker/log-events/2026$252F10$252F14",
+        )
+        .unwrap();
+        assert!(
+            cloudwatch_escaped.contains("'/aws/lambda/worker'"),
+            "{cloudwatch_escaped}"
+        );
+        assert!(
+            cloudwatch_escaped.contains("'2026/10/14'"),
+            "{cloudwatch_escaped}"
+        );
+
+        let batch = aws_console_hint(
+            "https://console.aws.amazon.com/batch/home?region=us-east-2#jobs/detail/abc-123",
+        )
+        .unwrap();
+        assert!(batch.contains("aws batch describe-jobs"), "{batch}");
+        assert!(batch.contains("'abc-123'"), "{batch}");
+        assert!(batch.contains("--region us-east-2"), "{batch}");
+
+        let s3 = aws_console_hint(
+            "https://us-west-2.console.aws.amazon.com/s3/buckets/private-bucket?region=us-west-2",
+        )
+        .unwrap();
+        assert!(s3.contains("aws s3 ls 's3://private-bucket'"), "{s3}");
+
+        let no_region = aws_console_hint("https://console.aws.amazon.com/lambda/home").unwrap();
+        assert!(no_region.contains("--region <region>"), "{no_region}");
+
+        // AWS API/object endpoints are not necessarily private. In particular,
+        // public and presigned S3 URLs still belong on the normal fetch path.
+        assert!(aws_console_hint("https://bucket.s3.amazonaws.com/public.txt").is_none());
+        assert!(aws_console_hint("https://example.amazonaws.com/resource").is_none());
     }
 
     #[tokio::test]
