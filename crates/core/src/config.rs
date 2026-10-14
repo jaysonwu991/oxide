@@ -2998,8 +2998,10 @@ mod tests {
 
     #[test]
     fn project_only_prompt_hides_other_workspaces_and_states_the_boundary() {
-        let mut config = Config::default();
-        config.project_only = true;
+        let config = Config {
+            project_only: true,
+            ..Config::default()
+        };
         let prompt = config.compose_system_prompt();
         assert!(prompt.contains("# Project boundary"), "{prompt}");
         assert!(
