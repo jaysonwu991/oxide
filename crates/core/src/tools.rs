@@ -243,24 +243,50 @@ impl Progress {
 }
 
 pub fn specs(mcp: &McpRegistry) -> Vec<ToolSpec> {
-    specs_scoped(mcp, false)
+    specs_for_scope(mcp, PathScope::Unrestricted)
 }
 
-/// Tool descriptions for one front-end. CLI-backed clients are project-only;
-/// the desktop's multi-project surface retains the unrestricted descriptions.
+/// Backward-compatible tool descriptions for callers that only distinguish a
+/// current-project boundary from unrestricted access.
 pub fn specs_scoped(mcp: &McpRegistry, project_only: bool) -> Vec<ToolSpec> {
+    specs_for_scope(
+        mcp,
+        if project_only {
+            PathScope::CurrentProject
+        } else {
+            PathScope::Unrestricted
+        },
+    )
+}
+
+#[derive(Clone, Copy)]
+pub enum PathScope<'a> {
+    Unrestricted,
+    CurrentProject,
+    RegisteredProjects(&'a [PathBuf]),
+}
+
+pub fn specs_for_scope(mcp: &McpRegistry, scope: PathScope<'_>) -> Vec<ToolSpec> {
+    let project_only = matches!(scope, PathScope::CurrentProject);
+    let registered_only = matches!(scope, PathScope::RegisteredProjects(_));
     let read_scope = if project_only {
         " Paths must stay inside the current project."
+    } else if registered_only {
+        " Paths must stay inside a project registered in Oxide."
     } else {
         " Absolute paths and paths outside the project are allowed."
     };
     let path_description = if project_only {
         "File path relative to the project root"
+    } else if registered_only {
+        "File path inside a project registered in Oxide; absolute paths are allowed"
     } else {
         "File path; absolute paths are allowed"
     };
     let directory_scope = if project_only {
         " Paths must stay inside the current project."
+    } else if registered_only {
+        " Paths must stay inside a project registered in Oxide."
     } else {
         " Absolute paths and paths outside the project are allowed."
     };
@@ -280,7 +306,7 @@ pub fn specs_scoped(mcp: &McpRegistry, project_only: bool) -> Vec<ToolSpec> {
         ),
         spec(
             "write",
-            if project_only { "Create or overwrite a file inside the current project." } else { "Create or overwrite a file with the given content." },
+            if project_only { "Create or overwrite a file inside the current project." } else if registered_only { "Create or overwrite a file inside a project registered in Oxide." } else { "Create or overwrite a file with the given content." },
             json!({
                 "type": "object",
                 "properties": {
@@ -319,14 +345,14 @@ pub fn specs_scoped(mcp: &McpRegistry, project_only: bool) -> Vec<ToolSpec> {
             json!({
                 "type": "object",
                 "properties": {
-                    "path": { "type": "string", "description": if project_only { "Directory inside the current project (default: .)" } else { "Directory path (default: .); absolute paths are allowed" } },
+                    "path": { "type": "string", "description": if project_only { "Directory inside the current project (default: .)" } else if registered_only { "Directory inside a project registered in Oxide (default: .); absolute paths are allowed" } else { "Directory path (default: .); absolute paths are allowed" } },
                     "limit": { "type": "integer", "description": "Maximum number of entries to return" }
                 }
             }),
         ),
         spec(
             "bash",
-            if project_only { "Run one focused shell command from the project root and return its combined output. The command must stay inside the current project: do not change to another directory or name paths outside the project. Use it for programs, not for inspecting files: prefer `read`, `grep`, `find`, and `ls`. Recursive shell `grep` is refused because the dedicated `grep` tool bounds results and skips dependencies and generated files. Never chain unrelated commands with `;`/`&&` or sweep the whole filesystem with `find /`." } else { "Run one focused shell command from the project root and return its combined output. Use it for programs, not for inspecting files: prefer `read`, `grep`, `find`, and `ls`. Recursive shell `grep` is refused because the dedicated `grep` tool bounds results and skips dependencies and generated files. Never chain unrelated commands with `;`/`&&` or sweep the whole filesystem with `find /`." },
+            if project_only { "Run one focused shell command from the project root and return its combined output. The command must stay inside the current project: do not change to another directory or name paths outside the project. Use it for programs, not for inspecting files: prefer `read`, `grep`, `find`, and `ls`. Recursive shell `grep` is refused because the dedicated `grep` tool bounds results and skips dependencies and generated files. Never chain unrelated commands with `;`/`&&` or sweep the whole filesystem with `find /`." } else if registered_only { "Run one focused shell command from the project root and return its combined output. The command may name another project registered in Oxide, but must not access unregistered paths. Use it for programs, not for inspecting files: prefer `read`, `grep`, `find`, and `ls`. Recursive shell `grep` is refused because the dedicated `grep` tool bounds results and skips dependencies and generated files. Never chain unrelated commands with `;`/`&&` or sweep the whole filesystem with `find /`." } else { "Run one focused shell command from the project root and return its combined output. Use it for programs, not for inspecting files: prefer `read`, `grep`, `find`, and `ls`. Recursive shell `grep` is refused because the dedicated `grep` tool bounds results and skips dependencies and generated files. Never chain unrelated commands with `;`/`&&` or sweep the whole filesystem with `find /`." },
             json!({
                 "type": "object",
                 "properties": {
@@ -338,12 +364,12 @@ pub fn specs_scoped(mcp: &McpRegistry, project_only: bool) -> Vec<ToolSpec> {
         ),
         spec(
             "find",
-            if project_only { "Find files by glob pattern (e.g. `**/*.rs`, `src/*.md`). Patterns match paths relative to the search directory; use `**` for recursive matching. The search directory must stay inside the current project." } else { "Find files by glob pattern (e.g. `**/*.rs`, `src/*.md`). Patterns match paths relative to the search directory; use `**` for recursive matching. Absolute paths are allowed." },
+            if project_only { "Find files by glob pattern (e.g. `**/*.rs`, `src/*.md`). Patterns match paths relative to the search directory; use `**` for recursive matching. The search directory must stay inside the current project." } else if registered_only { "Find files by glob pattern (e.g. `**/*.rs`, `src/*.md`). Patterns match paths relative to the search directory; use `**` for recursive matching. The search directory must stay inside a project registered in Oxide." } else { "Find files by glob pattern (e.g. `**/*.rs`, `src/*.md`). Patterns match paths relative to the search directory; use `**` for recursive matching. Absolute paths are allowed." },
             json!({
                 "type": "object",
                 "properties": {
                     "pattern": { "type": "string", "description": "Glob pattern to match" },
-                    "path": { "type": "string", "description": if project_only { "Directory inside the current project (default: .)" } else { "Directory to search in (default: .); absolute paths are allowed" } },
+                    "path": { "type": "string", "description": if project_only { "Directory inside the current project (default: .)" } else if registered_only { "Directory inside a project registered in Oxide (default: .); absolute paths are allowed" } else { "Directory to search in (default: .); absolute paths are allowed" } },
                     "limit": { "type": "integer", "description": "Maximum number of results to return" }
                 },
                 "required": ["pattern"]
@@ -351,7 +377,7 @@ pub fn specs_scoped(mcp: &McpRegistry, project_only: bool) -> Vec<ToolSpec> {
         ),
         spec(
             "grep",
-            if project_only { "Search file contents inside the current project for a pattern and return matching `path:line: text` entries. The pattern matches a literal substring by default; set `regex` to treat it as a regular expression." } else { "Search file contents for a pattern and return matching `path:line: text` entries. The pattern matches a literal substring by default; set `regex` to treat it as a regular expression. Absolute paths are allowed." },
+            if project_only { "Search file contents inside the current project for a pattern and return matching `path:line: text` entries. The pattern matches a literal substring by default; set `regex` to treat it as a regular expression." } else if registered_only { "Search file contents inside projects registered in Oxide for a pattern and return matching `path:line: text` entries. The pattern matches a literal substring by default; set `regex` to treat it as a regular expression. Absolute paths inside those projects are allowed." } else { "Search file contents for a pattern and return matching `path:line: text` entries. The pattern matches a literal substring by default; set `regex` to treat it as a regular expression. Absolute paths are allowed." },
             json!({
                 "type": "object",
                 "properties": {
@@ -459,7 +485,7 @@ pub async fn execute(
     mcp: &McpRegistry,
     progress: &Progress,
 ) -> ToolOutput {
-    execute_scoped(call, cwd, mcp, progress, false).await
+    execute_with_scope(call, cwd, mcp, progress, PathScope::Unrestricted).await
 }
 
 pub async fn execute_scoped(
@@ -469,6 +495,27 @@ pub async fn execute_scoped(
     progress: &Progress,
     project_only: bool,
 ) -> ToolOutput {
+    execute_with_scope(
+        call,
+        cwd,
+        mcp,
+        progress,
+        if project_only {
+            PathScope::CurrentProject
+        } else {
+            PathScope::Unrestricted
+        },
+    )
+    .await
+}
+
+pub async fn execute_with_scope(
+    call: &ToolCall,
+    cwd: &Path,
+    mcp: &McpRegistry,
+    progress: &Progress,
+    scope: PathScope<'_>,
+) -> ToolOutput {
     let name = call.function.name.as_str();
     let args = match parse_tool_arguments(name, &call.function.arguments) {
         Ok(args) => args,
@@ -476,10 +523,8 @@ pub async fn execute_scoped(
     };
 
     let canonical = name;
-    if project_only {
-        if let Err(error) = enforce_project_boundary(cwd, canonical, &args) {
-            return ToolOutput::error(format!("{error:#}"));
-        }
+    if let Err(error) = enforce_path_scope(cwd, canonical, &args, scope) {
+        return ToolOutput::error(format!("{error:#}"));
     }
     let result = if mcp.is_tool(name) {
         mcp.call(name, args).await.map(|result| {
@@ -613,11 +658,14 @@ fn resolve(cwd: &Path, path: &str) -> PathBuf {
     }
 }
 
-/// Enforces the CLI/extension filesystem boundary before a built-in tool is
-/// dispatched. Existing paths are canonicalized so a symlink inside the
-/// project cannot lead into a sibling repository; new paths canonicalize their
-/// nearest existing parent for the same reason.
-fn enforce_project_boundary(cwd: &Path, tool: &str, args: &Value) -> Result<()> {
+/// Enforces the front-end's filesystem boundary before a built-in tool is
+/// dispatched. Existing paths are canonicalized so a symlink inside an allowed
+/// root cannot lead outside it; new paths canonicalize their nearest existing
+/// parent for the same reason.
+fn enforce_path_scope(cwd: &Path, tool: &str, args: &Value, scope: PathScope<'_>) -> Result<()> {
+    if matches!(scope, PathScope::Unrestricted) {
+        return Ok(());
+    }
     let path = match tool {
         "read" | "write" | "ls" => args.get("path").and_then(Value::as_str),
         "find" | "grep" => args.get("path").and_then(Value::as_str).or(Some(".")),
@@ -627,12 +675,12 @@ fn enforce_project_boundary(cwd: &Path, tool: &str, args: &Value) -> Result<()> 
                 .get("command")
                 .and_then(Value::as_str)
                 .unwrap_or_default();
-            return enforce_project_shell(cwd, command);
+            return enforce_scoped_shell(cwd, command, scope);
         }
         _ => None,
     };
     if let Some(path) = path {
-        ensure_project_path(cwd, path)?;
+        ensure_path_scope(cwd, path, scope)?;
     }
     Ok(())
 }
@@ -640,15 +688,35 @@ fn enforce_project_boundary(cwd: &Path, tool: &str, args: &Value) -> Result<()> 
 /// Checks that one path resolves inside `cwd`, including through symlinks. CLI
 /// front-ends use this for context and attachments as well as tool calls.
 pub fn ensure_project_path(cwd: &Path, path: &str) -> Result<()> {
-    let root = canonical_or_normalized(cwd)?;
+    ensure_path_scope(cwd, path, PathScope::CurrentProject)
+}
+
+pub fn ensure_scoped_path(cwd: &Path, path: &str, scope: PathScope<'_>) -> Result<()> {
+    ensure_path_scope(cwd, path, scope)
+}
+
+fn ensure_path_scope(cwd: &Path, path: &str, scope: PathScope<'_>) -> Result<()> {
     let candidate = canonical_or_normalized(&resolve(cwd, path))?;
-    if candidate.starts_with(&root) {
+    let allowed = match scope {
+        PathScope::Unrestricted => true,
+        PathScope::CurrentProject => candidate.starts_with(canonical_or_normalized(cwd)?),
+        PathScope::RegisteredProjects(roots) => roots.iter().any(|root| {
+            canonical_or_normalized(root).is_ok_and(|root| candidate.starts_with(root))
+        }),
+    };
+    if allowed {
         return Ok(());
     }
-    anyhow::bail!(
-        "project boundary refused path `{path}`; CLI and VS Code may access only {}. Open the other folder as the active project to work there",
-        root.display(),
-    )
+    match scope {
+        PathScope::CurrentProject => anyhow::bail!(
+            "project boundary refused path `{path}`; CLI and VS Code may access only {}. Open the other folder as the active project to work there",
+            cwd.display(),
+        ),
+        PathScope::RegisteredProjects(_) => anyhow::bail!(
+            "project boundary refused path `{path}`; Desktop may access only projects added to Oxide. Add the folder as a project before working in it"
+        ),
+        PathScope::Unrestricted => Ok(()),
+    }
 }
 
 fn canonical_or_normalized(path: &Path) -> Result<PathBuf> {
@@ -696,15 +764,14 @@ fn normalize_path(path: &Path) -> PathBuf {
 /// paths and parent traversal before starting the process. This catches the
 /// `cd /sibling/repo` and absolute grep/read forms while leaving ordinary build
 /// commands, URLs, and `/dev/null` redirection alone.
-fn enforce_project_shell(cwd: &Path, command: &str) -> Result<()> {
+fn enforce_scoped_shell(cwd: &Path, command: &str, scope: PathScope<'_>) -> Result<()> {
     if command.contains("$HOME")
         || command.contains("${HOME}")
         || command.contains("$PWD/..")
         || command.contains("${PWD}/..")
     {
         anyhow::bail!(
-            "project boundary refused a home-directory expansion; CLI and VS Code shell commands must stay inside {}",
-            cwd.display()
+            "project boundary refused a home-directory expansion; shell commands must stay inside the allowed project roots"
         );
     }
     for raw in command.split_whitespace() {
@@ -729,8 +796,7 @@ fn enforce_project_shell(cwd: &Path, command: &str) -> Result<()> {
         }
         if value.starts_with('~') {
             anyhow::bail!(
-                "project boundary refused path `{value}`; CLI and VS Code shell commands must stay inside {}",
-                cwd.display()
+                "project boundary refused path `{value}`; shell commands must stay inside the allowed project roots"
             );
         }
         if Path::new(value).is_absolute()
@@ -738,7 +804,7 @@ fn enforce_project_shell(cwd: &Path, command: &str) -> Result<()> {
             || value.starts_with("../")
             || value.starts_with("..\\")
         {
-            ensure_project_path(cwd, value)?;
+            ensure_path_scope(cwd, value, scope)?;
         }
     }
     // Also catch paths inside a quoted program argument, for example
@@ -747,7 +813,7 @@ fn enforce_project_shell(cwd: &Path, command: &str) -> Result<()> {
         if path == "/dev/null" || path.starts_with("//") {
             continue;
         }
-        ensure_project_path(cwd, path)?;
+        ensure_path_scope(cwd, path, scope)?;
     }
     Ok(())
 }
@@ -3810,20 +3876,68 @@ mod tests {
         assert!(ensure_project_path(&project, "new/nested.txt").is_ok());
         assert!(ensure_project_path(&project, "../sibling/outside.txt").is_err());
         assert!(ensure_project_path(&project, sibling.to_str().unwrap()).is_err());
-        assert!(enforce_project_shell(&project, "cargo test").is_ok());
-        assert!(enforce_project_shell(
+        assert!(enforce_scoped_shell(&project, "cargo test", PathScope::CurrentProject).is_ok());
+        assert!(enforce_scoped_shell(
             &project,
-            &format!("cd {} && git status", sibling.display())
+            &format!("cd {} && git status", sibling.display()),
+            PathScope::CurrentProject
         )
         .is_err());
-        assert!(enforce_project_shell(
+        assert!(enforce_scoped_shell(
             &project,
             &format!(
                 "python3 -c \"open('{}')\"",
                 sibling.join("outside.txt").display()
-            )
+            ),
+            PathScope::CurrentProject
         )
         .is_err());
+
+        std::fs::remove_dir_all(base).ok();
+    }
+
+    #[test]
+    fn desktop_scope_allows_registered_projects_and_refuses_other_paths() {
+        let base = std::env::temp_dir().join(format!(
+            "oxide_registered_boundary_{}_{}",
+            std::process::id(),
+            TRUNCATION_ID.fetch_add(1, Ordering::Relaxed)
+        ));
+        let current = base.join("current");
+        let registered = base.join("registered");
+        let outside = base.join("outside");
+        for path in [&current, &registered, &outside] {
+            std::fs::create_dir_all(path).unwrap();
+        }
+        let roots = vec![current.clone(), registered.clone()];
+        let scope = PathScope::RegisteredProjects(&roots);
+
+        assert!(ensure_scoped_path(&current, "inside.txt", scope).is_ok());
+        assert!(ensure_scoped_path(&current, registered.to_str().unwrap(), scope).is_ok());
+        assert!(ensure_scoped_path(&current, outside.to_str().unwrap(), scope).is_err());
+        assert!(enforce_scoped_shell(
+            &current,
+            &format!("git -C {} status", registered.display()),
+            scope
+        )
+        .is_ok());
+        assert!(enforce_scoped_shell(
+            &current,
+            &format!("git -C {} status", outside.display()),
+            scope
+        )
+        .is_err());
+
+        let descriptions = specs_for_scope(&McpRegistry::default(), scope)
+            .into_iter()
+            .map(|spec| spec.function.description)
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(
+            descriptions.contains("registered in Oxide"),
+            "{descriptions}"
+        );
+        assert!(!descriptions.contains("outside the project are allowed"));
 
         std::fs::remove_dir_all(base).ok();
     }
