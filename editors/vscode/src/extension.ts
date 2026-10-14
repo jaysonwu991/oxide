@@ -150,10 +150,17 @@ export function activate(context: vscode.ExtensionContext): void {
           void vscode.window.showInformationMessage("Oxide: open a file first.");
           return;
         }
+        const projectPath = controller.projectRelative(editor.document.uri.fsPath);
+        if (projectPath === null) {
+          void vscode.window.showInformationMessage(
+            "Oxide: open the file's folder as the active workspace before referencing it.",
+          );
+          return;
+        }
         // The same rule the tracked chip reads a selection by, so a drag that
         // stopped where a line starts does not name that line.
         const reference = fileReference(
-          controller.relativeTo(editor.document.uri.fsPath),
+          projectPath,
           selectionLines(editor.selection) ?? undefined,
         );
         await focusChat(controller);
@@ -343,11 +350,18 @@ async function addSelection(controller: ChatController): Promise<{ id: number } 
     void vscode.window.showInformationMessage("Oxide: only files on disk can be attached.");
     return null;
   }
+  const projectPath = controller.projectRelative(document.uri.fsPath);
+  if (projectPath === null) {
+    void vscode.window.showInformationMessage(
+      "Oxide: open the file's folder as the active workspace before attaching it.",
+    );
+    return null;
+  }
   const lines = selectionLines(editor.selection);
   return add(
     controller,
     controller.addContext({
-      path: controller.relativeTo(document.uri.fsPath),
+      path: projectPath,
       startLine: lines?.start,
       endLine: lines?.end,
       text: lines ? document.getText(editor.selection) : document.getText(),

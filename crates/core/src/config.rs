@@ -1238,6 +1238,11 @@ pub struct Config {
     pub default_project_trust: crate::trust::DefaultTrust,
     #[serde(skip)]
     pub trusted: bool,
+    /// Keep the agent's local file and shell tools inside `cwd`. The CLI sets
+    /// this for every run (including rpc, which powers the VS Code extension);
+    /// the desktop keeps its explicitly multi-project runtime unrestricted.
+    #[serde(skip)]
+    pub project_only: bool,
     /// The local projects this run can reach, named in the system prompt so a
     /// repository elsewhere on the machine is found from the list instead of a
     /// scan of the home directory.
@@ -1634,6 +1639,7 @@ impl Default for Config {
             load_context_files: true,
             default_project_trust: crate::trust::DefaultTrust::default(),
             trusted: true,
+            project_only: false,
             workspaces: crate::workspaces::Workspaces::default(),
         }
     }
@@ -2617,7 +2623,13 @@ impl Config {
             ));
         }
 
-        if let Some(section) = self.workspaces.section() {
+        if self.project_only {
+            sections.push(
+                "# Project boundary\nWork only in the current project. Do not read, search, edit, \
+                 or run commands against another repository or any path outside the project root."
+                    .to_string(),
+            );
+        } else if let Some(section) = self.workspaces.section() {
             sections.push(section);
         }
 
@@ -2827,9 +2839,15 @@ impl Config {
         );
 
         sections.push(
-            "# GitHub and GitLab\nWork with GitHub and GitLab pull/merge requests and issues through \
-             their CLIs (`gh` and `glab`) rather than `webfetch`: they authenticate, so private \
-             repositories and review threads are reachable, and return structured data. Use \
+            "# Authenticated URLs\nTreat a URL behind a sign-in as an authenticated resource, not a public web page. Route it to a configured MCP server first when one owns the service; otherwise use the service's official authenticated CLI instead of `webfetch`. For an AWS Console URL, preserve the account/profile and region and use the matching `aws` read command; confirm an uncertain account with `aws sts get-caller-identity`, and refresh an expired IAM Identity Center session with `aws sso login`. Do not treat a web fetch's redirect, 401, 403, or 404 as proof that the private resource does not exist."
+                .to_string(),
+        );
+
+        sections.push(
+            "# GitHub and GitLab\nWork with every GitHub and GitLab URL through their CLIs \
+             (`gh` and `glab`) rather than `webfetch`: repository files, commits, checks and \
+             ordinary pages may be private too, and an unauthenticated fetch often disguises that \
+             as a 404. The CLIs authenticate and return structured data. Use \
              `gh pr view <url-or-number> --comments` / `glab mr view` to read an item, `gh pr diff` / \
              `glab mr diff` for its changes, `gh pr checks` for CI, and `gh pr comment` / \
              `glab mr note` for a new top-level comment. Reserve `webfetch` for public pages \
@@ -2979,6 +2997,22 @@ mod tests {
     }
 
     #[test]
+    fn project_only_prompt_hides_other_workspaces_and_states_the_boundary() {
+        let mut config = Config::default();
+        config.project_only = true;
+        let prompt = config.compose_system_prompt();
+        assert!(prompt.contains("# Project boundary"), "{prompt}");
+        assert!(
+            prompt.contains("Work only in the current project"),
+            "{prompt}"
+        );
+        assert!(
+            !prompt.contains("ordinary directory with no sandbox"),
+            "{prompt}"
+        );
+    }
+
+    #[test]
     fn system_prompt_keeps_searches_out_of_the_shell() {
         let config = Config::default();
         let prompt = config.compose_system_prompt();
@@ -3013,6 +3047,30 @@ mod tests {
             "{prompt}"
         );
         assert!(!prompt.contains("`glab mr note` to reply"), "{prompt}");
+    }
+
+    #[test]
+    fn system_prompt_routes_authenticated_urls_to_service_clients() {
+        let prompt = Config::default().compose_system_prompt();
+        let authenticated = prompt
+            .split("# Authenticated URLs")
+            .nth(1)
+            .and_then(|rest| rest.split("# ").next())
+            .expect("the section is composed");
+        assert!(
+            authenticated.contains("configured MCP server first"),
+            "{authenticated}"
+        );
+        assert!(authenticated.contains("AWS Console URL"), "{authenticated}");
+        assert!(
+            authenticated.contains("aws sts get-caller-identity"),
+            "{authenticated}"
+        );
+        assert!(authenticated.contains("aws sso login"), "{authenticated}");
+        assert!(
+            authenticated.contains("401, 403, or 404"),
+            "{authenticated}"
+        );
     }
 
     #[test]

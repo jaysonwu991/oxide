@@ -21,6 +21,7 @@ import {
   expandAtReferences,
   fileReference,
   isAttachmentPath,
+  pathInside,
   relativePath,
   selectionLines,
   type AtReferenceSources,
@@ -220,6 +221,13 @@ describe("prompt assembly", () => {
     assert.equal(relativePath("/w/oxide", "/other/a.rs"), "/other/a.rs");
     assert.equal(relativePath("/w/oxide", "/w/oxide"), "/w/oxide");
     assert.equal(relativePath("/w/oxide", "/w/oxidex/a.rs"), "/w/oxidex/a.rs");
+  });
+
+  it("recognizes only paths inside the active project", () => {
+    assert.equal(pathInside("/w/oxide", "/w/oxide/src/a.rs"), true);
+    assert.equal(pathInside("/w/oxide", "/w/oxide"), true);
+    assert.equal(pathInside("/w/oxide", "/w/oxide/../other/a.rs"), false);
+    assert.equal(pathInside("/w/oxide", "/w/oxidex/a.rs"), false);
   });
 });
 

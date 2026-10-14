@@ -1584,7 +1584,7 @@ fn build_tool_specs(
     depth: usize,
     offer_session_title: bool,
 ) -> Vec<ToolSpec> {
-    let mut specs = tools::specs(&runtime.mcp);
+    let mut specs = tools::specs_scoped(&runtime.mcp, config.project_only);
     if depth < MAX_TASK_DEPTH
         && config
             .ecosystem
@@ -2483,8 +2483,10 @@ async fn dispatch(
             .await,
         ),
         "memory" => legacy_tool_output(memory(config, &call.function.arguments)),
-        "diagnostics" => lsp_diagnostics(runtime, cwd, &call.function.arguments).await,
-        _ => tools::execute(call, cwd, &runtime.mcp, progress).await,
+        "diagnostics" => {
+            lsp_diagnostics(runtime, cwd, &call.function.arguments, config.project_only).await
+        }
+        _ => tools::execute_scoped(call, cwd, &runtime.mcp, progress, config.project_only).await,
     }
 }
 
@@ -2549,13 +2551,23 @@ async fn ask(runtime: &Runtime, arguments: &str) -> tools::ToolOutput {
     tools::ToolOutput::text(ask::format_reply(&questions, reply))
 }
 
-async fn lsp_diagnostics(runtime: &Runtime, cwd: &Path, arguments: &str) -> tools::ToolOutput {
+async fn lsp_diagnostics(
+    runtime: &Runtime,
+    cwd: &Path,
+    arguments: &str,
+    project_only: bool,
+) -> tools::ToolOutput {
     let args: Value = serde_json::from_str(arguments).unwrap_or(Value::Null);
     let Some(path) = args.get("path").and_then(Value::as_str) else {
         return tools::ToolOutput::error(
             "diagnostics requires a `path` string, for example {\"path\":\"src/main.rs\"}",
         );
     };
+    if project_only {
+        if let Err(error) = tools::ensure_project_path(cwd, path) {
+            return tools::ToolOutput::error(format!("{error:#}"));
+        }
+    }
     match runtime.lsp.diagnostics(cwd, Path::new(path)).await {
         Some(diagnostics) => tools::ToolOutput::text(diagnostics),
         None => tools::ToolOutput::error(format!(

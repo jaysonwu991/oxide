@@ -4,6 +4,8 @@
 // CLI's own `@file` expansion uses, so a run started from the extension reads
 // the same way as one started from the terminal.
 
+import * as path from "node:path";
+
 export interface ContextBlock {
   /// Workspace-relative path shown to the model.
   path: string;
@@ -120,6 +122,17 @@ export function relativePath(root: string, file: string): string {
     return to.slice(from.length + 1);
   }
   return to;
+}
+
+/// Whether a resolved file belongs to the active workspace folder. Comparing
+/// path components avoids the `/repo` vs `/repository` prefix bug and works for
+/// both POSIX and Windows paths on the platform running the extension.
+export function pathInside(root: string, file: string): boolean {
+  const relative = path.relative(path.resolve(root), path.resolve(file));
+  return (
+    relative === "" ||
+    (relative !== ".." && !relative.startsWith(`..${path.sep}`) && !path.isAbsolute(relative))
+  );
 }
 
 /// The chip label shown in the composer for a context block.

@@ -118,6 +118,7 @@ import {
   buildPrompt,
   contextLabel,
   expandAtReferences,
+  pathInside,
   relativePath,
   selectionLines,
   sliceLines,
@@ -142,6 +143,7 @@ import {
   isFile,
   readFileHead,
   readTextFile,
+  realPath,
   resolveBinary,
   runCapture,
   startTurn,
@@ -907,6 +909,16 @@ export class ChatController {
     return folder ? relativePath(folder.uri.fsPath, file) : file;
   }
 
+  /// The path shown to the model when `file` is inside the active project, or
+  /// null when attaching it would let this chat read another workspace. Real
+  /// paths close the same symlink escape as the CLI's core boundary.
+  projectRelative(file: string): string | null {
+    const folder = this.folder();
+    if (!folder) return null;
+    if (!pathInside(realPath(folder.uri.fsPath), realPath(file))) return null;
+    return relativePath(folder.uri.fsPath, file);
+  }
+
   /// The folder a turn runs in. The change card carries the folder its own run
   /// started in (see `ChangesItem.project`), so this is the fallback: the active
   /// editor's folder, else the first one.
@@ -1054,7 +1066,10 @@ export class ChatController {
     const editor = vscode.window.activeTextEditor;
     const document = editor?.document;
     const file = document && document.uri.scheme === "file" ? document.uri.fsPath : null;
-    const wanted = file && this.setting<boolean>("autoContext", true) ? file : null;
+    const wanted =
+      file && this.projectRelative(file) !== null && this.setting<boolean>("autoContext", true)
+        ? file
+        : null;
     if (!wanted) {
       if (!this.auto) return;
       this.auto = null;
@@ -1136,9 +1151,14 @@ export class ChatController {
   /// image or PDF travels as media, a text file is inlined as context, and
   /// anything else is refused rather than shipped as mojibake.
   addFile(file: string): ContextChip | null {
+    const projectPath = this.projectRelative(file);
+    if (projectPath === null) {
+      this.showNotice("Only files inside the current project can be attached.", "warn");
+      return null;
+    }
     const mime = this.mediaMimeFor(file);
     if (mime) return this.addAttachmentFile(file, mime);
-    const label = this.relativeTo(file);
+    const label = projectPath;
     const text = readTextFile(file);
     if (text === null || text.includes("\u0000")) {
       this.showNotice(`${label} is not a text file, an image or a PDF.`, "warn");
@@ -1502,7 +1522,7 @@ export class ChatController {
     const expanded = expandAtReferences(message, {
       resolve: (reference) => {
         const absolute = path.resolve(cwd, reference);
-        return isFile(absolute) ? absolute : null;
+        return this.projectRelative(absolute) !== null && isFile(absolute) ? absolute : null;
       },
       read: (absolute) => readTextFile(absolute),
       label: (absolute) => relativePath(cwd, absolute),
